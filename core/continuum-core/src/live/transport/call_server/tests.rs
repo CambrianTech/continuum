@@ -1,6 +1,6 @@
 #![cfg(test)]
     use super::*;
-    use crate::audio_constants::{AUDIO_FRAME_SIZE, AUDIO_SAMPLE_RATE};
+    use continuum_base::audio_constants::{AUDIO_FRAME_SIZE, AUDIO_SAMPLE_RATE};
     use crate::live::audio::mixer::test_utils::*;
     use crate::live::audio::pcm::base64_encode_i16;
 

@@ -605,7 +605,7 @@ impl DiskPressureMonitor {
             let reading = volume_reading(&drives, &home);
             match reading.source {
                 VolumeSource::Home => {}
-                VolumeSource::HottestVolume => crate::probe!(
+                VolumeSource::HottestVolume => continuum_base::probe!(
                     class = "disk.pressure.unmeasured_home",
                     home = %home.display(),
                     mounts = drives.len() as u64,
@@ -613,7 +613,7 @@ impl DiskPressureMonitor {
                     fallback_available = reading.available,
                     "no mounted volume holds the substrate's home — reporting the HOTTEST mounted volume, named as a fallback, never a zero"
                 ),
-                VolumeSource::None => crate::probe!(
+                VolumeSource::None => continuum_base::probe!(
                     class = "disk.pressure.unmeasured",
                     home = %home.display(),
                     "no mounted volume at all — disk pressure is UNKNOWN (typed), not Normal"
@@ -760,7 +760,7 @@ impl DiskPressureMonitor {
 
             // Build the snapshot. Timestamp via SystemTime (not a Date.now
             // equivalent) so the value is real even in resume / replay contexts.
-            let now_ms = crate::time::EpochMs::now().millis();
+            let now_ms = continuum_base::time::EpochMs::now().millis();
             let snapshot = DiskPressureSnapshot {
                 level,
                 pressure,
@@ -823,7 +823,7 @@ impl DiskPressureMonitor {
 
         if fire_ready {
             let _ = self.ready_tx.send(true);
-            crate::probe!(class = "ready.observed", module = "disk-pressure-monitor");
+            continuum_base::probe!(class = "ready.observed", module = "disk-pressure-monitor");
         }
     }
 }

@@ -124,7 +124,7 @@ pub fn note_real_decode() {
     // A clock we cannot read must NOT be stored: 0 is this atomic's "never decoded"
     // sentinel, so `.unwrap_or(0)` here would erase a real decode rather than record
     // one. Leave the last good stamp in place and say so.
-    let Ok(since_epoch) = crate::time::EpochMs::read() else {
+    let Ok(since_epoch) = continuum_base::time::EpochMs::read() else {
         tracing::warn!(target: "continuum_core::inference::llama_server", "system clock is before the UNIX epoch — cannot stamp this decode; \
              liveness will be judged from the previous stamp or by probing"
         );
@@ -322,7 +322,7 @@ pub(super) static LAST_REAL_PREFILL_MS: std::sync::atomic::AtomicU64 = std::sync
 
 /// Record that a real generation's PREFILL advanced on the served lane.
 pub fn note_real_prefill_progress() {
-    let Ok(since_epoch) = crate::time::EpochMs::read() else {
+    let Ok(since_epoch) = continuum_base::time::EpochMs::read() else {
         // Same clock discipline as note_real_decode: 0 is the "never" sentinel,
         // an unreadable clock must not erase a real stamp.
         return;
@@ -353,7 +353,7 @@ pub(super) fn ms_since_stamp(stamp: &std::sync::atomic::AtomicU64) -> Option<u64
     if last == 0 {
         return None;
     }
-    let now = crate::time::EpochMs::read().ok()?.millis();
+    let now = continuum_base::time::EpochMs::read().ok()?.millis();
     Some(now.saturating_sub(last))
 }
 
@@ -369,6 +369,6 @@ pub fn ms_since_real_decode() -> Option<u64> {
     // yield 0, i.e. "a token came out 0 ms ago" — an unreadable clock would present a
     // WEDGED lane as perfectly fresh, and the caller's documented fallback (probe it)
     // would never run. `None` already means "no usable evidence, go probe".
-    let now = crate::time::EpochMs::read().ok()?.millis();
+    let now = continuum_base::time::EpochMs::read().ok()?.millis();
     Some(now.saturating_sub(last))
 }

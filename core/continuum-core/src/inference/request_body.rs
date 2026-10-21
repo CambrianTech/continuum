@@ -137,7 +137,7 @@ pub(crate) fn finish_body(
             Some(VISION_DESCRIPTION_PURPOSE) => "vision.description.reasoning_budgeted",
             _ => "delib.pass.reasoning_budgeted",
         };
-        crate::probe!(
+        continuum_base::probe!(
             class = budget_class,
             model = %model,
             budget,
@@ -204,7 +204,7 @@ pub(crate) fn finish_body(
     // same context+tools+sampling called instantly — the ONLY remaining unknown
     // was what this body actually carried. This probe states it per request so
     // "tools offered" is never inferred from a capture again.
-    crate::probe!(
+    continuum_base::probe!(
         class = "ai.request.tool_surface",
         model = %model,
         tools_n = body.get("tools").and_then(|t| t.as_array()).map_or(0, |a| a.len()),

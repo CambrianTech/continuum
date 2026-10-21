@@ -44,7 +44,7 @@ impl ServiceModule for ServingDaemonModule {
         // reclaim record but the registry. Sweeping first frees that VRAM so the
         // new live lane comes up without competing against dead siblings.
         for outcome in crate::inference::lane_registry::sweep_orphans() {
-            crate::probe!(
+            continuum_base::probe!(
                 target: "continuum_core::modules::serving_daemon", class = "serving.lane_registry.sweep",
                 outcome = format!("{outcome:?}").as_str(),
                 "boot lane-registry sweep",
@@ -68,7 +68,7 @@ impl ServiceModule for ServingDaemonModule {
         // (docs/architecture/BENCHMARKS-ARE-ADAPTERS-NOT-A-RUNNER.md). Auto-re-post belongs on
         // the benchmark side, consuming this report.
         for (run_id, instance) in crate::cognition::swe_bench::reap_orphaned_solve_runs() {
-            crate::probe!(
+            continuum_base::probe!(
                 target: "continuum_core::modules::serving_daemon", class = "benchmark.swe.orphan_reaped",
                 run_id = run_id.as_str(),
                 instance = instance.as_str(),
@@ -81,7 +81,7 @@ impl ServiceModule for ServingDaemonModule {
         // restart — residents pull from it as they choose
         // (BENCHMARKS-ARE-ADAPTERS-NOT-A-RUNNER; never this daemon re-fires). Only TTL-expired abandoned rounds are swept here.
         for (benchmark, remaining) in crate::cognition::bench_round::reap_orphaned_rounds() {
-            crate::probe!(
+            continuum_base::probe!(
                 target: "continuum_core::modules::serving_daemon", class = "bench.round.expired",
                 benchmark = benchmark.as_str(),
                 remaining = remaining,
@@ -239,7 +239,7 @@ impl ServingDaemonModule {
                 &expert_pager_policy::division::CoverageModel::k3_measured(),
                 served.as_deref(),
             );
-            crate::probe!(
+            continuum_base::probe!(
                 target: "continuum_core::modules::serving_daemon", class = "serving.division",
                 model = active,
                 tiers = n_tiers as u64,
@@ -253,7 +253,7 @@ impl ServingDaemonModule {
         }
         let act = guard.as_mut()?;
         if let Some(tok_s) = act.observe_tick(tokens_observed, std::time::Instant::now()) {
-            crate::probe!(
+            continuum_base::probe!(
                 target: "continuum_core::modules::serving_daemon", class = "serving.division_reward",
                 model = active,
                 served_tier = act.served_tier_label(),
@@ -265,7 +265,7 @@ impl ServingDaemonModule {
         }
         let (label, moved) = act.choose()?;
         if moved {
-            crate::probe!(
+            continuum_base::probe!(
                 target: "continuum_core::modules::serving_daemon", class = "serving.division",
                 model = active,
                 chosen_tier = label.as_str(),

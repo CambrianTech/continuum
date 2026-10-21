@@ -39,7 +39,7 @@ pub(super) async fn desktop_receipt_line() -> String {
     // background" was a promise nothing kept: the M5 printed it on eight consecutive
     // deploys (2026-09-26) while the core booted `desktop.dm.unconfigured` each time.
     let configured = std::env::var("CONTINUUM_UI_DIST").ok().filter(|v| !v.trim().is_empty()).is_some()
-        || continuum_core::config_env::read("CONTINUUM_UI_DIST").is_some();
+        || continuum_base::config_env::read("CONTINUUM_UI_DIST").is_some();
     desktop_receipt(desktop_answering().await, configured, desktop_port())
 }
 

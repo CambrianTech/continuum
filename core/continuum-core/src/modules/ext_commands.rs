@@ -25,13 +25,13 @@ impl ExtCommandsModule {
         let dir = overlay_dir(continuum_root);
         let (loaded, refused) = load_manifests(&dir, &shipped_refs);
         for e in &refused {
-            crate::probe!(
+            continuum_base::probe!(
                 class = "ext.command.refused",
                 reason = %e,
                 "an authored command manifest was refused — fix or remove the named file"
             );
         }
-        crate::probe!(
+        continuum_base::probe!(
             class = "ext.command.loaded",
             dir = %dir.display(),
             loaded = loaded.len() as u64,

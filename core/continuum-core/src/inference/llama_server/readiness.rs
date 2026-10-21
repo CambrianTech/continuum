@@ -147,7 +147,7 @@ impl LlamaServerProcess {
                                 if self.owned_engine().as_ref() == Some(expected)
                                     && progress.observe(&sample, *pid, started.elapsed())
                                 {
-                                    crate::probe!(target: "continuum_core::inference::llama_server", class = "serving.load.progress",
+                                    continuum_base::probe!(target: "continuum_core::inference::llama_server", class = "serving.load.progress",
                                         pid = *pid,
                                         elapsed_ms = started.elapsed().as_millis() as u64,
                                         stage = %sample.current,

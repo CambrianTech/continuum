@@ -193,7 +193,7 @@ pub(crate) async fn return_parked_remainder(
     request.dataset.examples = parked.iter().map(|&i| request.dataset.examples[i].clone()).collect();
     let outcome = return_request(state, request, id, ReturnScope::Parked(&parked)).await?;
     if outcome.success {
-        let receipt = RemainderReceipt { job: id, parked, at_ms: crate::time::EpochMs::now().millis() };
+        let receipt = RemainderReceipt { job: id, parked, at_ms: continuum_base::time::EpochMs::now().millis() };
         write_receipt(&dir, &receipt).map_err(|e| {
             CommandError::Internal(format!(
                 "job {id}: its remainder is in her bucket, but its receipt could not be written ({e}); the next pass replays it by identity"

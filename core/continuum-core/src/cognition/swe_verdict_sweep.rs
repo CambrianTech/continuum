@@ -6,7 +6,7 @@
 //! sweep that used to write these markers on a clock is gone (card c4f4b8cd step 1:
 //! nothing scans workspaces and pushes grades; a hand-in is graded when it is submitted).
 
-use crate::time::EpochMs;
+use continuum_base::time::EpochMs;
 use std::path::PathBuf;
 
 /// A refusal ("ungradeable") remembered beside the verdicts, keyed by instance.

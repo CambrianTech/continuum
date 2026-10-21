@@ -246,7 +246,7 @@ where
                 match observed {
                     EngineProbe::Unreachable | EngineProbe::OperationEnded => return None,
                     EngineProbe::Condemned => {
-                        crate::probe!(target: "continuum_core::inference::llama_server", class = "inference.wait.engine_condemned",
+                        continuum_base::probe!(target: "continuum_core::inference::llama_server", class = "inference.wait.engine_condemned",
                             busy_checkpoints,
                             "a wait reached its checkpoint on an engine the daemon is replacing — ending it so the relaunch's drain can finish"
                         );

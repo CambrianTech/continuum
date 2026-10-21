@@ -23,7 +23,7 @@ pub(super) fn deploy_gate(verb: &str) -> Result<(), String> {
     };
     let claim = deploy_claim::read(&root);
     let alive = claim.as_ref().is_some_and(|c| pid_alive(c.pid));
-    let now = continuum_core::time::EpochMs::now().millis();
+    let now = continuum_base::time::EpochMs::now().millis();
     match deploy_claim::with_wait(deploy_claim::decide(claim.as_ref(), alive, now), deploy_claim::read_waiting(&root).as_ref(), now) {
         // A deploy waiting on CI has swapped nothing: the installed core is the running build.
         DeployGate::Clear | DeployGate::Waiting { .. } => Ok(()),
@@ -84,7 +84,7 @@ impl DeployClaimGuard {
         use continuum_cli_lifecycle::deploy_claim::{self, DeployClaim, CLAIM_RENEW_EVERY_MS};
         let root = continuum_root().ok()?;
         let pid = std::process::id() as i32;
-        let started = continuum_core::time::EpochMs::now().millis();
+        let started = continuum_base::time::EpochMs::now().millis();
         let claim = DeployClaim {
             pid,
             started_ms: started,
@@ -107,7 +107,7 @@ impl DeployClaimGuard {
                             match stopped.recv_timeout(std::time::Duration::from_millis(CLAIM_RENEW_EVERY_MS)) {
                                 Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
                                     let working = deploy_working(&mut sys, pid);
-                                    if !deploy_claim::renew(&renew_root, pid, continuum_core::time::EpochMs::now().millis(), working) {
+                                    if !deploy_claim::renew(&renew_root, pid, continuum_base::time::EpochMs::now().millis(), working) {
                                         return; // no longer ours (or unwritable): stop renewing
                                     }
                                 }

@@ -184,7 +184,7 @@ pub fn live_host_budget(
         available_bytes: vram_ceiling,
         total_vram_bytes: vram_ceiling,
         perf_cores: perf_cores(),
-        budget_fraction: crate::config_env::vram_headroom(),
+        budget_fraction: continuum_base::config_env::vram_headroom(),
     })
 }
 
@@ -194,7 +194,7 @@ pub fn governed_host_budget(resource_daemon: &ResourceDaemon) -> HostBudget {
         available_bytes: available,
         total_vram_bytes: available,
         perf_cores: perf_cores(),
-        budget_fraction: plan_fraction(crate::config_env::vram_headroom()),
+        budget_fraction: plan_fraction(continuum_base::config_env::vram_headroom()),
     })
 }
 
@@ -298,7 +298,7 @@ impl ServingDaemonModule {
                     mode,
                     available / (1 << 30)
                 );
-                crate::probe!(
+                continuum_base::probe!(
                     target: "continuum_core::modules::serving_daemon", class = "serving.mode.transition",
                     to = ?mode,
                     from = was as u64,
@@ -316,10 +316,10 @@ impl ServingDaemonModule {
         let usable_bytes = self
             .budget_readings
             .lock()
-            .observe(crate::time::EpochMs::now().millis(), instant)
+            .observe(continuum_base::time::EpochMs::now().millis(), instant)
             .min;
         if usable_bytes != instant {
-            crate::probe!(
+            continuum_base::probe!(
                 target: "continuum_core::modules::serving_daemon", class = "serving.budget.sustained",
                 instant_bytes = instant,
                 usable_bytes,

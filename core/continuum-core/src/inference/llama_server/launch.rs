@@ -95,7 +95,7 @@ impl LlamaServerProcess {
         // ([[fallbacks-are-illegal-fail-loud]]).
         if self.is_live_lane && !had_own_child && !restoring {
             let outcome = crate::inference::lane_pidfile::reclaim(port).await;
-            crate::probe!(target: "continuum_core::inference::llama_server", class = "serving.lane_reclaim",
+            continuum_base::probe!(target: "continuum_core::inference::llama_server", class = "serving.lane_reclaim",
                 port = port,
                 outcome = format!("{outcome:?}").as_str(),
                 "fresh-claim reclaim of canonical serving port before spawn",
@@ -120,7 +120,7 @@ impl LlamaServerProcess {
             }
             match crate::inference::lane_process::pid_listening_on_port(port) {
                 Some(pid) if crate::inference::lane_process::is_llama_server(pid) => {
-                    crate::probe!(target: "continuum_core::inference::llama_server", class = "serving.lane_kill_verify",
+                    continuum_base::probe!(target: "continuum_core::inference::llama_server", class = "serving.lane_kill_verify",
                         port = port,
                         holder_pid = pid,
                         "port still held after teardown grace — reaping the verified llama-server holder",
@@ -252,7 +252,7 @@ impl LlamaServerProcess {
         self.install_child(child, generation.clone(), child_install, child_inputs);
         // Launch arguments are evidence of what we requested, not a readback of
         // cache capacity or occupancy. Adopted engines do not pass this seam.
-        crate::probe!(target: "continuum_core::inference::llama_server", class = "serving.prompt_cache.launch",
+        continuum_base::probe!(target: "continuum_core::inference::llama_server", class = "serving.prompt_cache.launch",
             model = target.model.id.as_str(),
             artifact = %gguf.display(),
             engine = %prepared.engine_program,
@@ -323,14 +323,14 @@ impl LlamaServerProcess {
             match child_pid {
                 Some(pid) => {
                     if let Err(e) = crate::inference::lane_pidfile::write(pid) {
-                        crate::probe!(target: "continuum_core::inference::llama_server", class = "serving.lane_pidfile",
+                        continuum_base::probe!(target: "continuum_core::inference::llama_server", class = "serving.lane_pidfile",
                             port = port,
                             error = e.to_string().as_str(),
                             "lane pidfile write failed — orphan reclaim disarmed for this run",
                         );
                     }
                 }
-                None => crate::probe!(target: "continuum_core::inference::llama_server", class = "serving.lane_pidfile",
+                None => continuum_base::probe!(target: "continuum_core::inference::llama_server", class = "serving.lane_pidfile",
                     port = port,
                     "spawned child has no pid — orphan reclaim disarmed for this run",
                 ),
@@ -367,7 +367,7 @@ impl LlamaServerProcess {
             // Record + release under the page-dir guard (one critical section); a
             // failed write keeps the reservation for the lane's lifetime.
             if let Err(e) = page_dir_reservation.handoff(&rec) {
-                crate::probe!(target: "continuum_core::inference::llama_server", class = "serving.lane_registry",
+                continuum_base::probe!(target: "continuum_core::inference::llama_server", class = "serving.lane_registry",
                     port = port,
                     error = e.to_string().as_str(),
                     "lane registry write failed — orphan reclaim disarmed for this lane",
@@ -391,7 +391,7 @@ impl LlamaServerProcess {
             if let Some(pid) = child_pid {
                 crate::inference::lane_process::kill9(pid);
             }
-            crate::probe!(target: "continuum_core::inference::llama_server", class = "serving.debug_build_refused",
+            continuum_base::probe!(target: "continuum_core::inference::llama_server", class = "serving.debug_build_refused",
                 bin = %prepared.engine_program,
                 "refused to serve from a DEBUG build (startup stderr) — build for speed"
             );
@@ -415,7 +415,7 @@ impl LlamaServerProcess {
         } else if sweep_stale_page_generations_guarded(&slot_save_dir).is_some() {
             // swept (possibly zero) with a complete inventory
         } else {
-            crate::probe!(target: "continuum_core::inference::llama_server", class = "inference.kv_page.sweep_skipped",
+            continuum_base::probe!(target: "continuum_core::inference::llama_server", class = "inference.kv_page.sweep_skipped",
                 reason = "a live lane's page dir is unknown (recorded before the field existed)",
                 "stale-generation sweep skipped — the live-lane inventory is incomplete"
             );
@@ -487,7 +487,7 @@ impl LlamaServerProcess {
                 } else {
                     "offload banner: 0 layers on the GPU"
                 };
-                crate::probe!(target: "continuum_core::inference::llama_server", class = "serving.placement.refused",
+                continuum_base::probe!(target: "continuum_core::inference::llama_server", class = "serving.placement.refused",
                     port = port,
                     model = target.model_id(),
                     evidence = evidence,
@@ -506,7 +506,7 @@ impl LlamaServerProcess {
                 )));
             }
             if let Some(r) = residency.as_ref() {
-                crate::probe!(target: "continuum_core::inference::llama_server", class = "serving.placement.measured",
+                continuum_base::probe!(target: "continuum_core::inference::llama_server", class = "serving.placement.measured",
                     port = port,
                     model = target.model_id(),
                     accelerator_bytes = r.accelerator_bytes(),

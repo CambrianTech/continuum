@@ -32,7 +32,7 @@ impl VoiceModule {
             "voice_transcribe",
             "Transcribing {} samples ({:.1}s)",
             samples.len(),
-            samples.len() as f64 / crate::audio_constants::AUDIO_SAMPLE_RATE as f64
+            samples.len() as f64 / continuum_base::audio_constants::AUDIO_SAMPLE_RATE as f64
         );
 
         let transcript = stt_service::transcribe_speech_async(&samples, language)
@@ -133,7 +133,7 @@ impl VoiceModule {
             "voice_transcribe_with_adapter",
             "Transcribing {} samples ({:.1}s) with adapter '{}'",
             samples.len(),
-            samples.len() as f64 / crate::audio_constants::AUDIO_SAMPLE_RATE as f64,
+            samples.len() as f64 / continuum_base::audio_constants::AUDIO_SAMPLE_RATE as f64,
             adapter_name
         );
 

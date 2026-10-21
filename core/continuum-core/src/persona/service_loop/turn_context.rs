@@ -3,7 +3,7 @@ use super::*;
 /// Mark the turn as started on the probe stream and take in the room up to this line.
 pub(super) fn announce_turn_start(ctx: &HostedPersona, trigger: TurnTrigger<'_>, opts: &ServeOptions) {
     let TurnTrigger { msg, turn_room, admitted_retry } = trigger;
-    crate::probe!(
+    continuum_base::probe!(
         class = "persona.turn.start",
         persona = %ctx.identity.agent_name,
         persona_id = %ctx.identity.peer_id.as_uuid(),

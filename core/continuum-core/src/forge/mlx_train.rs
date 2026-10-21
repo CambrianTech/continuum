@@ -405,7 +405,7 @@ pub fn run_mlx_train(
     // chat_template). Caller-supplied + idempotent; a no-op when already ready.
     let prep_changes = prepare_base_for_mlx(&spec.base_model_dir, &spec.base_prep)?;
     for change in &prep_changes {
-        crate::probe!(
+        continuum_base::probe!(
             class = "forge.mlx_train.base_prep",
             change = %change,
             "normalized HF base for mlx_lm before training"

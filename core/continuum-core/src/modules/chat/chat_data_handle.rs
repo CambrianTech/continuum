@@ -284,7 +284,7 @@ impl ChatModule {
     pub(super) async fn persist(&self, params: &ChatSendParams) -> Result<(Uuid, u64), String> {
         let executor = self.executor()?;
         let message_id = Uuid::new_v4();
-        let now_ms = crate::time::EpochMs::now().millis();
+        let now_ms = continuum_base::time::EpochMs::now().millis();
         let now_iso = now_iso(now_ms);
 
         // ── Step 1: persist locally (ground truth) ───────────────────
@@ -487,7 +487,7 @@ impl ChatModule {
                 .get("error")
                 .and_then(serde_json::Value::as_str)
                 .unwrap_or("success=false");
-            crate::probe!(
+            continuum_base::probe!(
                 class = "chat.persist.skipped",
                 message_id = message_id.as_str(),
                 detail = detail,
@@ -569,7 +569,7 @@ impl ChatModule {
             }
             seeded += 1;
         }
-        crate::probe!(
+        continuum_base::probe!(
             class = "speech.rings.hydrated",
             seeded = seeded,
             scanned = result.count,

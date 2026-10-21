@@ -16,7 +16,7 @@ impl VoiceModule {
             .map_err(|e| format!("Invalid noise type: {}", e))?;
 
         let gen = TestAudioGenerator::default();
-        let duration_samples = (crate::audio_constants::AUDIO_SAMPLE_RATE as u64
+        let duration_samples = (continuum_base::audio_constants::AUDIO_SAMPLE_RATE as u64
             * duration_ms as u64
             / 1000) as usize;
 
@@ -40,7 +40,7 @@ impl VoiceModule {
             "samples": samples.len(),
             "duration_ms": duration_ms,
             "noise_type": noise_type.label(),
-            "sample_rate": crate::audio_constants::AUDIO_SAMPLE_RATE,
+            "sample_rate": continuum_base::audio_constants::AUDIO_SAMPLE_RATE,
         })))
     }
 
@@ -108,11 +108,11 @@ impl VoiceModule {
             let mut transcripts = joined.transcription_rx;
             let mut pcm = synthesis.samples.clone();
             pcm.extend(std::iter::repeat(0i16).take(
-                (crate::audio_constants::AUDIO_SAMPLE_RATE as usize) * 2,
+                (continuum_base::audio_constants::AUDIO_SAMPLE_RATE as usize) * 2,
             ));
-            for chunk in pcm.chunks(crate::audio_constants::AUDIO_FRAME_SIZE) {
+            for chunk in pcm.chunks(continuum_base::audio_constants::AUDIO_FRAME_SIZE) {
                 let mut frame = chunk.to_vec();
-                frame.resize(crate::audio_constants::AUDIO_FRAME_SIZE, 0);
+                frame.resize(continuum_base::audio_constants::AUDIO_FRAME_SIZE, 0);
                 self.state.call_manager.push_audio(&handle, frame).await;
                 tokio::time::sleep(std::time::Duration::from_millis(2)).await;
             }
@@ -158,7 +158,7 @@ impl VoiceModule {
         // that this synthesized nonce survived the audio path.
         let matched = hits >= 2 && lower.contains(word) && !transcript.contains('\t');
         let leg = if room_leg { "room" } else { "engine" };
-        crate::probe!(
+        continuum_base::probe!(
             class = "live.selftest",
             adapter = adapter.unwrap_or("active"), // safe: no adapter = the active one, a display label
             leg = leg,

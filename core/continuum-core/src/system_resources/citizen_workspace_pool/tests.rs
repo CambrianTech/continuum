@@ -92,7 +92,7 @@
         let tar = dropped.join("swe_django__django-1.uncommitted.tar.gz");
         assert!(tar.exists(), "the archive exists");
         assert!(dropped.join("swe_django__django-1.base").exists(), "the base commit is recorded");
-        let listed = crate::shell_portable::tar_on(&tar, "-tzf").expect("archive path").output().expect("tar -t");
+        let listed = continuum_base::shell_portable::tar_on(&tar, "-tzf").expect("archive path").output().expect("tar -t");
         let names = String::from_utf8_lossy(&listed.stdout);
         for want in ["tracked.py", "new_test.py", "fixture.bin"] {
             assert!(names.contains(want), "{want} is in the archive: {names}");
@@ -152,7 +152,7 @@
         let archived = preserve_workspace(&workspace, &dropped).expect("preserve loose work");
         assert_eq!(archived, 1, "one loose archive");
         let tar = dropped.join("loose.tar.gz");
-        let listed = crate::shell_portable::tar_on(&tar, "-tzf").expect("archive path").output().expect("tar -t");
+        let listed = continuum_base::shell_portable::tar_on(&tar, "-tzf").expect("archive path").output().expect("tar -t");
         let names = String::from_utf8_lossy(&listed.stdout);
         assert!(names.contains("NOTES.md"), "her note is preserved: {names}");
         assert!(names.contains("scratch/repro.py"), "her scratch script is preserved: {names}");

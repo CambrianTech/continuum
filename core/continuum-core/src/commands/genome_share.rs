@@ -26,7 +26,7 @@
 //! ([`passes_publish_lift_gate`]) then refuses measured-harm genes. Only
 //! measured-positive experience enters the commons under our name.
 
-use crate::time::EpochMs;
+use continuum_base::time::EpochMs;
 use async_trait::async_trait;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -73,7 +73,7 @@ const CONSENT_KEY: &str = "CONTINUUM_GENOME_SHARING_AGREED";
 /// The one consent read every verb (and every settings surface) shares:
 /// consented iff the recorded agreement matches the CURRENT covenant version.
 fn sharing_enabled() -> bool {
-    crate::config_env::read(CONSENT_KEY)
+    continuum_base::config_env::read(CONSENT_KEY)
         .and_then(|v| v.trim().split('@').next().map(str::to_string))
         .map(|ver| ver == COVENANT_VERSION)
         .unwrap_or(false) // unset = NOT consented — the only safe default for publishing a being's experience
@@ -182,9 +182,9 @@ impl ActionCommand for GenomeSharing {
             Some(true) => {
                 // A pre-1970 clock reads 0 here: decay saturates instead of the verb failing.
                 let receipt = format!("{}@{}", COVENANT_VERSION, EpochMs::now().millis());
-                crate::config_env::upsert(CONSENT_KEY, &receipt)
+                continuum_base::config_env::upsert(CONSENT_KEY, &receipt)
                     .map_err(CommandError::Invalid)?;
-                crate::probe!(class = "genome.sharing.agreed", receipt = %receipt,
+                continuum_base::probe!(class = "genome.sharing.agreed", receipt = %receipt,
                     "operator accepted the genome-commons covenant");
                 // Consent is the moment the commons promise activates: seed the
                 // currently-serving base right now instead of waiting for the
@@ -196,9 +196,9 @@ impl ActionCommand for GenomeSharing {
                 }
             }
             Some(false) => {
-                crate::config_env::upsert(CONSENT_KEY, "revoked")
+                continuum_base::config_env::upsert(CONSENT_KEY, "revoked")
                     .map_err(CommandError::Invalid)?;
-                crate::probe!(class = "genome.sharing.revoked",
+                continuum_base::probe!(class = "genome.sharing.revoked",
                     "operator revoked genome-commons consent — future sharing stops now");
             }
             None => {}
@@ -206,7 +206,7 @@ impl ActionCommand for GenomeSharing {
         Ok(GenomeSharingResult {
             agreed: sharing_enabled(),
             covenant_version: COVENANT_VERSION.to_string(),
-            receipt: crate::config_env::read(CONSENT_KEY),
+            receipt: continuum_base::config_env::read(CONSENT_KEY),
             covenant: COVENANT.to_string(),
             hf_account: hf_account().await,
         })
@@ -457,7 +457,7 @@ impl ActionCommand for GenomePush {
                 Err(e) => failures.push(format!("{target}: {e}")),
             }
         }
-        crate::probe!(
+        continuum_base::probe!(
             class = "genome.push",
             gene = %p.gene,
             repo = %p.repo,
@@ -637,7 +637,7 @@ pub(crate) async fn pull_gene(p: &GenomePullParams) -> Result<GenomePullResult, 
             }
         }
 
-        crate::probe!(
+        continuum_base::probe!(
             class = "genome.pull",
             gene = %alias,
             repo = %p.repo,
@@ -786,7 +786,7 @@ pub(crate) async fn bootstrap_for(
     let org = p.org.clone().unwrap_or_else(|| COMMONS_ORG.to_string()); // unwrap_or: the commons org is the documented default, not a guess
     let limit = p.limit.unwrap_or(3).clamp(1, 8) as usize;
     if !sharing_enabled() {
-        crate::probe!(
+        continuum_base::probe!(
             class = "genome.bootstrap.no_consent",
             base_model = %p.base_model,
             "genome bootstrap waiting on the covenant — accept via genome/sharing --agree true (or the desktop Settings genome tab) and the seed runs on the next serve"
@@ -802,7 +802,7 @@ pub(crate) async fn bootstrap_for(
     // seeded — bootstrap never overwrites a lived-in genome.
     let manifest = crate::forge::adapter_manifest::load().map_err(CommandError::Invalid)?;
     if manifest.iter().any(|a| a.base_model_id == p.base_model) {
-        crate::probe!(
+        continuum_base::probe!(
             class = "genome.bootstrap.already_seeded",
             base_model = %p.base_model,
             "node already carries genes for this base — bootstrap is a no-op"
@@ -842,7 +842,7 @@ pub(crate) async fn bootstrap_for(
         .take(limit)
         .collect();
     if candidates.is_empty() {
-        crate::probe!(
+        continuum_base::probe!(
             class = "genome.bootstrap.none_found",
             base_model = %p.base_model,
             org = %org,
@@ -869,7 +869,7 @@ pub(crate) async fn bootstrap_for(
             Err(e) => skipped.push(format!("{repo}: {e}")),
         }
     }
-    crate::probe!(
+    continuum_base::probe!(
         class = "genome.bootstrap.seeded",
         base_model = %p.base_model,
         pulled = pulled.len() as u64,
@@ -885,7 +885,7 @@ pub(crate) async fn bootstrap_for(
 pub fn spawn_bootstrap(base_model: String) {
     use std::sync::{Mutex, OnceLock};
     static DONE: OnceLock<Mutex<std::collections::HashSet<String>>> = OnceLock::new();
-    if crate::config_env::read("CONTINUUM_GENOME_BOOTSTRAP").as_deref() == Some("0") {
+    if continuum_base::config_env::read("CONTINUUM_GENOME_BOOTSTRAP").as_deref() == Some("0") {
         return;
     }
     let done = DONE.get_or_init(|| Mutex::new(std::collections::HashSet::new()));

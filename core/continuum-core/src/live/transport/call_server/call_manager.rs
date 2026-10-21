@@ -70,7 +70,7 @@ impl CallManager {
             // debug affordance — it used to auto-start and mask the real avatar with
             // 160x120 color bars for every native client. Set CONTINUUM_CALL_TEST_PATTERN=1
             // to bring it back for plumbing checks on a call with no real source.
-            if crate::config_env::read("CONTINUUM_CALL_TEST_PATTERN")
+            if continuum_base::config_env::read("CONTINUUM_CALL_TEST_PATTERN")
                 .map(|v| v.trim() == "1" || v.trim().eq_ignore_ascii_case("true"))
                 .unwrap_or(false)
             {
@@ -464,7 +464,7 @@ impl CallManager {
                     if let (Some(user_id), Some(display_name), Some(speech_samples)) =
                         (result.user_id, result.display_name, result.speech_samples)
                     {
-                        crate::probe!(
+                        continuum_base::probe!(
                             class = "live.stt.speech_ended",
                             module = "live",
                             call_id = call_id.as_str(),
@@ -491,7 +491,7 @@ impl CallManager {
                                         speech_samples,
                                     )
                                     .await;
-                                    crate::probe!(
+                                    continuum_base::probe!(
                                         class = "live.stt.transcribed",
                                         module = "live",
                                         call_id = room.as_str(),
@@ -509,7 +509,7 @@ impl CallManager {
                             }
                             Err(_) => {
                                 // Queue full - drop this audio to stay current
-                                crate::probe!(
+                                continuum_base::probe!(
                                     class = "live.stt.refused",
                                     module = "live",
                                     call_id = call_id.as_str(),

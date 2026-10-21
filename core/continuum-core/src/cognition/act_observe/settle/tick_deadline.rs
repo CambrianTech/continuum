@@ -63,7 +63,7 @@ pub(super) async fn until_act_stalls<F: std::future::Future>(
                 extensions += 1;
                 previous = now;
                 deadline += bound;
-                crate::probe!(
+                continuum_base::probe!(
                     class = "settle.tick.extended",
                     slot = pinned.as_ref().map(|p| p.slot as u64).unwrap_or(0), // probe field: extension implies a pinned slot
                     extensions = extensions as u64,

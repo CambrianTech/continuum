@@ -564,7 +564,7 @@ pub(super) fn append_batch(
 /// strip; the same number job-create decides on, read here so a fill that would only
 /// come back unsurprised is never dispatched.
 pub(super) fn unsurprised(persona: Uuid) -> Option<f32> {
-    let now_ms = crate::time::EpochMs::now().millis(); // pre-epoch clock: every tally reads outside its window = not measured
+    let now_ms = continuum_base::time::EpochMs::now().millis(); // pre-epoch clock: every tally reads outside its window = not measured
     crate::persona::perception_feed::awareness_of(persona, now_ms)
         .and_then(|a| a.verdict_surprise())
         .map(|v| v.s)

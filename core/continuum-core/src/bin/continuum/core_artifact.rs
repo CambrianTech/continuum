@@ -146,7 +146,7 @@ pub(super) fn apply_runtime_library_path(cmd: &mut std::process::Command) -> Res
 /// The candidate's provenance probe and the actual launch need the same loader
 /// environment. Configure only the child; never export into the calling shell.
 pub(super) fn apply_core_runtime_env(cmd: &mut std::process::Command) -> Result<(), String> {
-    for (k, v) in continuum_core::config_env::read_all() {
+    for (k, v) in continuum_base::config_env::read_all() {
         cmd.env(k, v);
     }
     apply_runtime_library_path(cmd)

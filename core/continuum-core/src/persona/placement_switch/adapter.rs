@@ -177,7 +177,7 @@ impl PlacementSwitch {
         if let Some(home) = &self.home {
             let over = PersonaModelOverride::new_remote(model, Some("placement:fleet".to_string()), now_ms, &peer.to_string());
             if let Err(e) = over.write(home) {
-                crate::probe!(
+                continuum_base::probe!(
                     class = "persona.placement.override_unpersisted",
                     persona = %self.persona_name,
                     error = %e,
@@ -250,7 +250,7 @@ impl PlacementSwitch {
         if !(first || dropped_lane) {
             return;
         }
-        crate::probe!(
+        continuum_base::probe!(
             class = "persona.placement.seat_retired",
             persona = %self.persona_name,
             peer = %peer,
@@ -271,7 +271,7 @@ impl PlacementSwitch {
         *self.peer.write().unwrap_or_else(|p| p.into_inner()) = None; // JUSTIFIED unwrap_or_else: a poisoned lock still holds the value; the switch is bookkeeping, never truth
         if let Some(home) = &self.home {
             if let Err(e) = PersonaModelOverride::clear(home) {
-                crate::probe!(
+                continuum_base::probe!(
                     class = "persona.placement.override_unpersisted",
                     persona = %self.persona_name,
                     error = %e,
@@ -288,7 +288,7 @@ impl PlacementSwitch {
                 match self.local_factory.build_adapter(&self.profile).await {
                     Ok(a) => Some(a),
                     Err(e) => {
-                        crate::probe!(
+                        continuum_base::probe!(
                             class = "persona.placement.no_home_lane",
                             persona = %self.persona_name,
                             error = %e,
@@ -328,7 +328,7 @@ impl PlacementSwitch {
         match mv {
             PlacementMove::Stay => None,
             PlacementMove::Park { reason } => {
-                crate::probe!(
+                continuum_base::probe!(
                     class = "persona.placement.parked",
                     persona = %self.persona_name,
                     peer = %self.peer().map(|p| p.to_string()).unwrap_or_default(), // JUSTIFIED unwrap_or_default: probe label only
@@ -346,7 +346,7 @@ impl PlacementSwitch {
                 }
                 self.set_seat(Seat::Home, now_ms);
                 crate::modules::citizen_health::note_move(false);
-                crate::probe!(
+                continuum_base::probe!(
                     class = "persona.placement.fell_home",
                     persona = %self.persona_name,
                     peer = %self.peer().map(|p| p.to_string()).unwrap_or_default(), // JUSTIFIED unwrap_or_default: probe label only
@@ -373,7 +373,7 @@ impl PlacementSwitch {
             PlacementMove::ReturnRemote => {
                 self.set_seat(Seat::Remote, now_ms);
                 crate::modules::citizen_health::note_move(false);
-                crate::probe!(
+                continuum_base::probe!(
                     class = "persona.placement.returned",
                     persona = %self.persona_name,
                     peer = %self.peer().map(|p| p.to_string()).unwrap_or_default(), // JUSTIFIED unwrap_or_default: probe label only

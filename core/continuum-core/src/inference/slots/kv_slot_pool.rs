@@ -29,7 +29,7 @@ impl KvSlotPool {
             // later drop-in behind this same closure seam.
             eviction_priority: Arc::new(|view, lease: &Arc<KvSlotLease>| {
                 let tokens = lease.tail_tokens.load(Ordering::Relaxed).max(1);
-                let now_ms = crate::time::EpochMs::read().map_or(view.last_access_at, crate::time::EpochMs::millis); // engine has no view of a just-inserted key: fall back to its own stamp
+                let now_ms = continuum_base::time::EpochMs::read().map_or(view.last_access_at, continuum_base::time::EpochMs::millis); // engine has no view of a just-inserted key: fall back to its own stamp
                 let stale_hours =
                     now_ms.saturating_sub(view.last_access_at) / (3600 * 1000);
                 let cost = (tokens >> stale_hours.min(20)) as i64;
@@ -167,7 +167,7 @@ impl KvSlotPool {
                     // Nothing to evict: every lease is pinned by an in-flight turn. Said as
                     // what it is (it read "engine evicted" with evicted_count 0, Fable on the
                     // M5); the caller waits for a release rather than running unpinned.
-                    crate::probe!(
+                    continuum_base::probe!(
                         class = "inference.slot_affinity.all_pinned",
                         persona = %key.persona,
                         room = %key.room,
@@ -175,7 +175,7 @@ impl KvSlotPool {
                     );
                     return None;
                 }
-                crate::probe!(
+                continuum_base::probe!(
                     class = "inference.slot_affinity.evicted",
                     evicted_count = evicted,
                     "all slots held — engine evicted the least-valuable activity; its \
@@ -200,7 +200,7 @@ impl KvSlotPool {
                 .await;
             match res {
                 Ok(lease) => {
-                    crate::probe!(
+                    continuum_base::probe!(
                         class = "inference.slot_affinity.pinned",
                         persona = %key.persona,
                         room = %key.room,
@@ -353,7 +353,7 @@ impl KvSlotPool {
         if let Err(error) = ledger.write(generation, keys) {
             // The in-memory set stays authoritative for this process; only a restart
             // loses the eligibility the file would have carried.
-            crate::probe!(
+            continuum_base::probe!(
                 class = "inference.kv_page.ledger_unwritten",
                 path = %ledger.path.display(),
                 error = %error,
@@ -442,7 +442,7 @@ impl SavedLedger {
         let bytes = serde_json::to_vec(&file)?; // file on disk: the page dir's confirmed-save ledger, read back by `load`
         let tmp = self.path.with_extension("json.tmp");
         std::fs::write(&tmp, bytes)?;
-        crate::fs_portable::replace::replace_file(&tmp, &self.path)?;
+        continuum_base::fs_portable::replace::replace_file(&tmp, &self.path)?;
         *written = generation;
         Ok(())
     }
@@ -455,7 +455,7 @@ impl SavedLedger {
             return std::collections::HashSet::new();
         };
         let unread = |why: &str| {
-            crate::probe!(
+            continuum_base::probe!(
                 class = "inference.kv_page.ledger_unread",
                 path = %self.path.display(),
                 why = why,

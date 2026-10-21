@@ -64,7 +64,7 @@ impl LlmDeliberationFaculty {
             // (the silver-harbor failure class: recall surfaced with the winning
             // bid, yet [recall] never reached the prompt; WHERE it vanished was
             // undebuggable without this seam probe).
-            crate::probe!(
+            continuum_base::probe!(
                 class = "delib.context.render",
                 persona = %self.persona_name,
                 budget_tokens = 0usize,
@@ -181,7 +181,7 @@ impl LlmDeliberationFaculty {
         // contribution can silently vanish between attention and the prompt.
         // Glass box: what recall/grounding WON upstream must be attributable
         // HERE if it never renders (#130).
-        crate::probe!(
+        continuum_base::probe!(
             class = "delib.context.render",
             persona = %self.persona_name,
             budget_tokens,
@@ -293,7 +293,7 @@ impl LlmDeliberationFaculty {
                     }
                     Some(k) => format!("dropped {worst_sal:.2} while keeping {k:.2}"),
                 };
-                crate::probe!(
+                continuum_base::probe!(
                     class = "delib.context.salience_inversion",
                     persona = %self.persona_name,
                     dropped_faculty = %worst_name,

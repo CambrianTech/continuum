@@ -336,7 +336,7 @@
         fs::write(&staging, "retained").unwrap();
         assert!(matches!(evict_unless_live(&staging), Removal::Protected));
         let published = parent.join(format!("{handle}.log"));
-        crate::fs_portable::durable_publish_new(&staging, &published).unwrap();
+        continuum_base::fs_portable::durable_publish_new(&staging, &published).unwrap();
         let _ = fs::remove_file(&staging);
         assert!(matches!(evict_unless_live(&published), Removal::Protected));
         drop(pin);
@@ -355,7 +355,7 @@
         let pin = LivePin::new();
         pin.hold(&handle);
         let path = persona_dir(dir.path(), persona).join(format!("{handle}.log"));
-        crate::fs_portable::tests::with_failed_publication_fence(|| {
+        continuum_base::fs_portable::fault_injection::with_failed_publication_fence(|| {
             assert!(write_in(dir.path(), persona, &handle, body).is_err());
             assert_eq!(fs::read_to_string(&path).unwrap(), body);
             // The object is already visible; byte equality must not bypass the fence.

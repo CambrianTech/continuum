@@ -27,7 +27,7 @@
 //! Nothing here holds a node, a model or a number of Joel's grid: a node that joins is
 //! one more offer; a bigger box is a better plan in its offer.
 
-use crate::time::EpochMs;
+use continuum_base::time::EpochMs;
 use crate::cognition::grid_allocation::{allocate, inputs_key, roles_from, GridAllocation, GridInputs, GridRoster, Hold, LanePlan, ask_within, Mind, NodeOffer, OfferBook, OfferTerms, OpenSeats, Role};
 use crate::cognition::serving_plan::ServingPlan;
 use crate::cognition::window_allocator::{largest_known, requirements_for};
@@ -479,7 +479,7 @@ impl Inner {
             .iter()
             .map(|n| format!("{}:{}", &n.node.to_string()[..8], n.seats))
             .collect();
-        crate::probe!(
+        continuum_base::probe!(
             class = "grid.allocation.published",
             key = key,
             nodes = published.allocation.nodes.len() as u64,
@@ -519,7 +519,7 @@ impl Inner {
         );
         let over_the_grid = minds_over_the_grid(&requirements, widest_window);
         if !over_the_grid.is_empty() {
-            crate::probe!(
+            continuum_base::probe!(
                 class = "grid.mind.unservable",
                 minds = %over_the_grid
                     .iter()
@@ -543,7 +543,7 @@ impl Inner {
                 "their own measured turn exceeds the widest lane on this grid — seated or not, this grid cannot serve them"
             );
         }
-        crate::probe!(
+        continuum_base::probe!(
             class = "grid.dormant.oldest_turn_age_ms",
             dormant = published.dormant_by_age.len() as u64,
             oldest_turn_age_ms = published.oldest_dormant_turn_age_ms().unwrap_or(0), // unwrap_or: 0 with dormant 0 = nobody waits
@@ -594,13 +594,13 @@ impl ServiceModule for GridAllocatorModule {
                     Ok(()) => panics = 0,
                     Err(_) => {
                         panics += 1;
-                        crate::probe!(
+                        continuum_base::probe!(
                             class = "grid.allocation.pass_panicked",
                             consecutive = panics,
                             "the allocator pass panicked — counted; quarantined after three in a row"
                         );
                         if panics >= QUARANTINE_AFTER_PANICS {
-                            crate::probe!(
+                            continuum_base::probe!(
                                 class = "grid.allocation.quarantined",
                                 consecutive = panics,
                                 "the allocator daemon quarantined itself: the last published allocation stands; a reboot restarts it"

@@ -354,7 +354,7 @@ impl RecipeRuns {
             }
             run.revision += 1;
             self.write(&run).await?;
-            crate::probe!(class = "recipe.run.exposed_at_boot", run = %run.base.id, recipe = %run.purpose, phase = ?run.phase, "a run left Running by the last process");
+            continuum_base::probe!(class = "recipe.run.exposed_at_boot", run = %run.base.id, recipe = %run.purpose, phase = ?run.phase, "a run left Running by the last process");
         }
         Ok((recovery, interrupted))
     }

@@ -6,7 +6,7 @@
 //! Thread safety: Each persona gets their own FileEngine instance.
 //! The underlying ChangeGraph and PathSecurity handle concurrency.
 
-use crate::time::EpochMs;
+use continuum_base::time::EpochMs;
 use std::fs;
 use std::path::{Path, PathBuf};
 

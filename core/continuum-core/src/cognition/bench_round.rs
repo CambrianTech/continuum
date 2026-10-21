@@ -26,7 +26,7 @@
 //! decision is made once at dispatch and read later at claim time — in a different verb,
 //! on a different task, with nothing threaded between them.
 
-use crate::time::EpochMs;
+use continuum_base::time::EpochMs;
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::{LazyLock, Mutex};

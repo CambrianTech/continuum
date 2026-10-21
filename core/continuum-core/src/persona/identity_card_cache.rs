@@ -9,7 +9,7 @@
 //! changes when the peer republishes it, not every two seconds. This cache is the
 //! one place a card is fetched, with a TTL and an explicit invalidate; a peer with
 //! no card is remembered as such for the same TTL so it is not re-asked per tick.
-use crate::time::EpochMs;
+use continuum_base::time::EpochMs;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use airc_core::identity::Identity;
@@ -74,7 +74,7 @@ pub async fn identity_for(
     let identity = airc.peer_identity_card(peer).await?.map(|card| card.identity);
     global().put(peer, identity.clone(), now);
     let (h, m) = (global().hits.load(Ordering::Relaxed), global().misses.load(Ordering::Relaxed));
-    crate::probe!(
+    continuum_base::probe!(
         class = "roster.identity_card.fetched",
         peer = %peer.as_uuid(),
         known = identity.is_some(),

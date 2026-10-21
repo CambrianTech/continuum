@@ -176,7 +176,7 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
                         if target > cur {
                             sem.add_permits(target - cur);
                             issued.store(target, std::sync::atomic::Ordering::SeqCst);
-                            crate::probe!(
+                            continuum_base::probe!(
                                 class = "inference.permits.grown",
                                 from = cur as u64,
                                 to = target as u64,
@@ -194,7 +194,7 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
                                 }
                             }
                             issued.store(target, std::sync::atomic::Ordering::SeqCst);
-                            crate::probe!(
+                            continuum_base::probe!(
                                 class = "inference.permits.shrunk",
                                 from = cur as u64,
                                 to = target as u64,
@@ -372,7 +372,7 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
                 api_available: false,
                 response_time_ms: 0,
                 error_rate: 1.0,
-                last_checked: crate::time::EpochMs::now().millis(),
+                last_checked: continuum_base::time::EpochMs::now().millis(),
                 message: Some(format!("{} API key not configured", self.config.name)),
             };
         }
@@ -405,7 +405,7 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
                 api_available: true,
                 response_time_ms,
                 error_rate: 0.0,
-                last_checked: crate::time::EpochMs::now().millis(),
+                last_checked: continuum_base::time::EpochMs::now().millis(),
                 message: Some(format!("{} API is accessible", self.config.name)),
             },
             Ok(resp) => HealthStatus {
@@ -413,7 +413,7 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
                 api_available: false,
                 response_time_ms,
                 error_rate: 1.0,
-                last_checked: crate::time::EpochMs::now().millis(),
+                last_checked: continuum_base::time::EpochMs::now().millis(),
                 message: Some(format!("{} returned {}", self.config.name, resp.status())),
             },
             Err(e) => HealthStatus {
@@ -421,7 +421,7 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
                 api_available: false,
                 response_time_ms,
                 error_rate: 1.0,
-                last_checked: crate::time::EpochMs::now().millis(),
+                last_checked: continuum_base::time::EpochMs::now().millis(),
                 message: Some(format!("{} error: {}", self.config.name, e)),
             },
         }

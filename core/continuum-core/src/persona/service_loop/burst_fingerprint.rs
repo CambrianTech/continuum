@@ -228,7 +228,7 @@ pub(super) async fn run_self_cycle(
         Some(citizen) => match super::super::work_focus::focus_room(citizen.as_ref()).await {
             Ok(room) => room,
             Err(error) => {
-                crate::probe!(
+                continuum_base::probe!(
                     class = "persona.selftick.focus_unavailable",
                     persona = %ctx.identity.agent_name,
                     error = %error,
@@ -241,7 +241,7 @@ pub(super) async fn run_self_cycle(
     } };
     if let Some(room) = focus_room {
         if room != ctx.identity.default_room {
-            crate::probe!(
+            continuum_base::probe!(
                 class = "persona.selftick.focused",
                 persona = %ctx.identity.agent_name,
                 room = %room,
@@ -399,7 +399,7 @@ pub(super) async fn run_self_cycle(
                 .unwrap_or(true) // unwrap_or: an unreadable board counts as claimable so the pull tries, never silently skips
         })
         .any(|item| identity.mentions(&item.content));
-    crate::probe!(
+    continuum_base::probe!(
         class = "persona.selftick.perceive",
         persona = %ctx.identity.agent_name,
         addressed,
@@ -428,7 +428,7 @@ pub(super) async fn run_self_cycle(
         focus.wakes_on(ctx.identity.default_room, addressed, now_ms)
     };
     if !wakes {
-        crate::probe!(
+        continuum_base::probe!(
             class = "persona.selftick.muted",
             persona = %ctx.identity.agent_name,
             room = %ctx.identity.default_room,
@@ -523,7 +523,7 @@ pub(super) async fn run_self_cycle(
     // separates a cold boot from a lane that HAS served and dropped, which the empty
     // snapshot itself cannot say (`ready_verified_at_ms` is erased by `empty()`).
     if !crate::inference::llama_server::current_serving().is_live() {
-        crate::probe!(
+        continuum_base::probe!(
             class = "persona.selftick.awaiting_serving",
             persona = %ctx.identity.agent_name,
             served_before = crate::inference::llama_server::has_reconciled(),
@@ -564,7 +564,7 @@ pub(super) async fn run_self_cycle(
                 tracing::warn!(persona = %ctx.identity.agent_name, error = %e, "self-cycle say failed");
                 return false;
             }
-            crate::probe!(
+            continuum_base::probe!(
                 class = "persona.selftick.spoke",
                 persona = %ctx.identity.agent_name,
                 response_len = text.len(),
@@ -572,7 +572,7 @@ pub(super) async fn run_self_cycle(
             );
         }
         crate::cognition::act_observe::SettleStep::Acted { calls, intent } => {
-            crate::probe!(
+            continuum_base::probe!(
                 class = "persona.selftick.acted",
                 persona = %ctx.identity.agent_name,
                 tools = calls.len(),
@@ -589,7 +589,7 @@ pub(super) async fn run_self_cycle(
                 error = %error,
                 "self-cycle deliberation inference FAILED — sleeping this tick (not a chosen silence)"
             );
-            crate::probe!(
+            continuum_base::probe!(
                 class = "persona.selftick.inference_failed",
                 persona = %ctx.identity.agent_name,
                 error = %error,

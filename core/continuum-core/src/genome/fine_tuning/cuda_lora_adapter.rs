@@ -45,7 +45,7 @@ fn failure(error: impl std::fmt::Display) -> FineTuningError {
 
 impl CudaLoraFineTuner {
     pub fn new() -> Self {
-        let python = crate::config_env::read("CUDA_TRAIN_PYTHON")
+        let python = continuum_base::config_env::read("CUDA_TRAIN_PYTHON")
             .map(PathBuf::from)
             .unwrap_or_else(|| {
                 // An absent explicit override selects the conventional local installation.
@@ -172,7 +172,7 @@ impl FineTuningAdapter for CudaLoraFineTuner {
             // THE VRAM RECEIPT BEFORE STEP 0 (readiness item 1): what the plan asks, what the
             // governor exposes right now, and the headroom between them — a number, not a
             // hope, on the row the room reads before the run is admitted.
-            crate::probe!(
+            continuum_base::probe!(
                 class = "training.job.planned",
                 job = %id,
                 base = spec.canonical_base.as_str(),

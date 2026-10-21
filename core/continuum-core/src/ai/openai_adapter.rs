@@ -21,7 +21,7 @@ use std::collections::BTreeSet;
 use std::time::Instant;
 
 use crate::model_registry::{AuthKind, Capability};
-use crate::secrets::get_secret;
+use continuum_base::secrets::get_secret;
 use crate::{clog_info, clog_warn};
 
 use super::adapter::{

@@ -42,13 +42,13 @@ pub(crate) async fn bridge_review(event: &airc_core::TranscriptEvent, observer: 
     .await;
     match result {
         Ok(Some(credit)) => {
-            crate::probe!(class = "training.credit.reviewed", event = %event.event_id,
+            continuum_base::probe!(class = "training.credit.reviewed", event = %event.event_id,
             state = ?credit.state, revision = ?credit.staged_revision_id, review = ?credit.decision_review_id,
             "signed review consumed; acceptance and training remain separate outcomes")
         }
         Ok(None) => {}
         Err(error) => {
-            crate::probe!(class = "training.credit.review_deferred", event = %event.event_id,
+            continuum_base::probe!(class = "training.credit.review_deferred", event = %event.event_id,
             error = %error, "review evidence retained; an exact replay can retry the transfer")
         }
     }

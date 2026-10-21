@@ -110,7 +110,7 @@ pub fn plan_expert_residency_with_resident(
                 .gpu_free_bytes_live
                 .saturating_add(budgeted.system_ram_free_bytes);
             if fast_total <= one_token_ws {
-                crate::probe!(
+                continuum_base::probe!(
                     class = "expert_pager.below_cliff",
                     fast_total_bytes = fast_total,
                     one_token_ws_bytes = one_token_ws,

@@ -163,7 +163,7 @@ impl LlmDeliberationFaculty {
         ) else {
             return decision;
         };
-        crate::probe!(
+        continuum_base::probe!(
             class = "persona.speech.parroted_perception",
             persona = %self.persona_name,
             echoed_fact = %echoed.chars().take(120).collect::<String>(),
@@ -206,7 +206,7 @@ impl LlmDeliberationFaculty {
         {
             return None;
         }
-        crate::probe!(
+        continuum_base::probe!(
             class = "persona.verdict.yield_turn",
             persona = %self.persona_name,
             "she yielded the turn through the structured verb — silent Pass, no room message"
@@ -328,7 +328,7 @@ fn metrics_from(
     // should climb off the floor from the second act of a task onward, WITHOUT anyone
     // re-reading a capture by hand.
     if t.is_some() {
-        crate::probe!(
+        continuum_base::probe!(
             class = "delib.generate.cache",
             persona = %persona,
             cached_tokens = m.cached_tokens,

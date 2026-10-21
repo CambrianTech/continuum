@@ -245,7 +245,7 @@ impl WorkspaceLayoutReader for CitizenLayerWorkspaceLayoutReader {
                 .await
                 .map_err(|e| format!("citizen layer unavailable: {e}"))?,
         };
-        crate::probe!(
+        continuum_base::probe!(
             class = "workspace.map.rendered",
             peer = %self.peer,
             root = %root.display(),

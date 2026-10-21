@@ -44,7 +44,7 @@ pub(super) fn serve_host_bytes(
 /// Performance). One reader, cached by `config_env`.
 pub(super) fn everyday_drive_mode() -> crate::provisioning::model_catalog::PowerMode {
     crate::provisioning::model_catalog::PowerMode::everyday_for_headroom(
-        crate::config_env::vram_headroom(),
+        continuum_base::config_env::vram_headroom(),
     )
 }
 
@@ -318,7 +318,7 @@ impl ServingDaemonModule {
         let retention_x100 =
             crate::capacity::host_cache_lease::retention_tokens_x100(budget_bytes, per_token_ws);
         if retention_x100 < 100 {
-            crate::probe!(
+            continuum_base::probe!(
                 target: "continuum_core::modules::serving_daemon", class = "serving.moe_host_cache_retention",
                 model = active.as_str(),
                 budget_bytes,
@@ -330,7 +330,7 @@ impl ServingDaemonModule {
             );
         }
         match crate::capacity::plan_file::write_plan_file(&gb.plan, &doc) {
-            Ok(()) => crate::probe!(
+            Ok(()) => continuum_base::probe!(
                 target: "continuum_core::modules::serving_daemon", class = "serving.moe_host_cache_lease",
                 model = active.as_str(),
                 budget_bytes,
@@ -355,7 +355,7 @@ impl ServingDaemonModule {
                 retention_x100 / 100,
                 retention_x100 % 100,
             ),
-            Err(e) => crate::probe!(
+            Err(e) => continuum_base::probe!(
                 target: "continuum_core::modules::serving_daemon", class = "serving.moe_host_cache_lease",
                 model = active.as_str(),
                 budget_bytes,

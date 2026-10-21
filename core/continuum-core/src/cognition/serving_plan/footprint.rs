@@ -84,7 +84,7 @@ pub fn footprint_for(model: &Model) -> Option<ModelFootprint> {
             if fp.fixed_per_lane_bytes > 0
                 && LAST_FIXED.swap(fp.fixed_per_lane_bytes, std::sync::atomic::Ordering::Relaxed) != fp.fixed_per_lane_bytes
             {
-                crate::probe!(
+                continuum_base::probe!(
                     class = "serving.footprint.excess_is_fixed",
                     model = fp.model_id.as_str(),
                     header_rate = fp.kv_per_token,
@@ -165,7 +165,7 @@ fn kv_rate_from_header_cached(path: &std::path::Path) -> Option<u64> {
         let arch = crate::inference_capability::gguf_keys::architecture(&content)?;
         crate::inference_capability::gguf_keys::kv_bytes_per_token_f16(&content, &arch)
     })();
-    crate::probe!(
+    continuum_base::probe!(
         class = "serving.kv_rate.header",
         path = %path.display(),
         rate_f16 = rate.unwrap_or(0), // 0 = header did not answer; the weights heuristic stands (the probe's absence-vs-zero reading rides `answered`)

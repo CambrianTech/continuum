@@ -154,7 +154,7 @@ impl ExpertDepot {
             tiers,
             banks,
         };
-        crate::probe!(
+        continuum_base::probe!(
             class = "depot.manifest",
             model = %manifest.model,
             n_layers = manifest.n_layers,
@@ -221,7 +221,7 @@ impl ExpertDepot {
             let resp = match self.http.get(&url).send().await {
                 Ok(r) if r.status().is_success() => r,
                 Ok(r) => {
-                    crate::probe!(
+                    continuum_base::probe!(
                         class = "depot.peer.miss",
                         layer = key.layer,
                         expert = key.expert,
@@ -233,7 +233,7 @@ impl ExpertDepot {
                     continue;
                 }
                 Err(error) => {
-                    crate::probe!(
+                    continuum_base::probe!(
                         class = "depot.peer.unreachable",
                         peer = %peer.base_url,
                         error = %error,
@@ -250,7 +250,7 @@ impl ExpertDepot {
             let body = match resp.bytes().await {
                 Ok(b) => b.to_vec(),
                 Err(error) => {
-                    crate::probe!(
+                    continuum_base::probe!(
                         class = "depot.peer.unreachable",
                         peer = %peer.base_url,
                         error = %error,
@@ -263,7 +263,7 @@ impl ExpertDepot {
             // A mismatch is a corrupt or lying peer — skip it, NEVER serve wrong weights.
             let digest = hex_sha256(&body);
             if advertised.as_deref() != Some(digest.as_str()) {
-                crate::probe!(
+                continuum_base::probe!(
                     class = "depot.peer.corrupt",
                     layer = key.layer,
                     expert = key.expert,
@@ -279,7 +279,7 @@ impl ExpertDepot {
                     cache.insert(key, body.clone());
                 }
             }
-            crate::probe!(
+            continuum_base::probe!(
                 class = "depot.peer.served",
                 layer = key.layer,
                 expert = key.expert,
@@ -331,7 +331,7 @@ impl ExpertDepot {
             .route("/manifest", get(get_manifest))
             .route("/expert/{layer}/{expert}", get(get_expert))
             .with_state(self.clone());
-        crate::probe!(
+        continuum_base::probe!(
             class = "depot.listen",
             port = bound,
             model = %self.manifest.model,
@@ -341,7 +341,7 @@ impl ExpertDepot {
             if let Err(error) = axum::serve(listener, router).await {
                 // A dead depot degrades serving (fork falls back to its
                 // current source) but must never be silent about it.
-                crate::probe!(
+                continuum_base::probe!(
                     class = "depot.died",
                     error = %error,
                     "expert depot HTTP server exited with error — grid share degraded to local-only"
@@ -379,7 +379,7 @@ async fn get_expert(
         if let Some(bytes) = depot.resolve_from_peer(key).await {
             return expert_ok_response(layer, expert, tier, bytes);
         }
-        crate::probe!(
+        continuum_base::probe!(
             class = "depot.miss",
             layer,
             expert,
@@ -397,7 +397,7 @@ async fn get_expert(
         Ok(Ok(bytes)) => expert_ok_response(layer, expert, tier, bytes),
         Ok(Err(error)) => {
             let status = miss_or_defect(&error);
-            crate::probe!(
+            continuum_base::probe!(
                 class = "depot.miss",
                 layer,
                 expert,
@@ -409,7 +409,7 @@ async fn get_expert(
             (status, error.to_string()).into_response()
         }
         Err(join_error) => {
-            crate::probe!(
+            continuum_base::probe!(
                 class = "depot.miss",
                 layer,
                 expert,
@@ -433,7 +433,7 @@ pub const EXPERT_SHA256_HEADER: header::HeaderName =
 /// carry the exact same verify seam the fork reads.
 fn expert_ok_response(layer: u16, expert: u16, tier: u16, bytes: Vec<u8>) -> Response {
     let digest = hex_sha256(&bytes);
-    crate::probe!(
+    continuum_base::probe!(
         class = "depot.serve",
         layer,
         expert,

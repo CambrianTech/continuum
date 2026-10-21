@@ -130,7 +130,7 @@ impl ReviewBoundaryStore {
                 Ok(Ok((id, false))) => pending.push(id),
                 Ok(Ok((_, true))) => {}
                 other => {
-                    crate::probe!(class = "dream.review_recovery_row_deferred", persona = %self.persona_id,
+                    continuum_base::probe!(class = "dream.review_recovery_row_deferred", persona = %self.persona_id,
                         acceptance = %key, error = ?other, "retained row deferred; scan continues and retries on wrap");
                 }
             }

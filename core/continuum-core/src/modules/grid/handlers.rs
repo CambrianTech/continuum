@@ -3,7 +3,7 @@
 //! Each handler takes GridState + params, returns CommandResult.
 //! Separated from the ServiceModule impl for testability and clarity.
 
-use crate::time::EpochMs;
+use continuum_base::time::EpochMs;
 use super::audit::{AuditDirection, AuditEntry, AuditOutcome};
 use super::frame::{GridFrame, GridPayload};
 use super::node::{GridNode, TransportAddress, TrustLevel};

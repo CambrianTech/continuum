@@ -145,7 +145,7 @@ pub fn policy() -> AccessPolicy {
         return p.clone();
     }
     let unreadable = |path: &std::path::Path, error: String| {
-        crate::probe!(
+        continuum_base::probe!(
             class = "access.policy.unreadable",
             path = %path.display(),
             error = %error,

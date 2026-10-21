@@ -38,7 +38,7 @@
 //! steer the persona's behavior or output ([[no-hardcoded-heuristics-to-steer-cognition]]
 //! is about puppeting cognition; this is corpus hygiene).
 
-use crate::time::EpochMs;
+use continuum_base::time::EpochMs;
 use std::sync::{Arc, OnceLock};
 
 use serde_json::json;

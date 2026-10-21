@@ -80,7 +80,7 @@ pub async fn settle_step(
     // included, and the loop folds them together.
     let step_receipts: Vec<crate::cognition::provenance::GenerationReceipt> =
         ws.generation_receipts().cloned().collect();
-    crate::probe!(
+    continuum_base::probe!(
         class = "cognition.cycle.cost",
         room = %room_id,
         cycle_ms,
@@ -109,7 +109,7 @@ pub async fn settle_step(
         // 2026-08-29: 18 solve attempts died on this path in six hours with ZERO
         // probe trail — the lane OOM'd every deep prefill and the harness read
         // silence. A failed generation is a loud event or it is an invisible one.
-        crate::probe!(
+        continuum_base::probe!(
             class = "settle.inference_failed",
             room = %room_id,
             error = &error.to_string()[..error.to_string().len().min(160)],
@@ -203,7 +203,7 @@ pub async fn settle_step(
                          not read from the workspace. Only a tool result can show \
                          real file contents.",
                     );
-                    crate::probe!(
+                    continuum_base::probe!(
                         class = "persona.act.unverified_artifact",
                         persona = %body.persona_name,
                         room_id = %room_id,
@@ -228,7 +228,7 @@ pub async fn settle_step(
                          but a stage direction is words only — no tool ran, no file \
                          exists. To actually do it I must call a tool."
                     });
-                    crate::probe!(
+                    continuum_base::probe!(
                         class = "persona.act.unfulfilled_promise",
                         persona = %body.persona_name,
                         room_id = %room_id,
@@ -257,7 +257,7 @@ pub async fn settle_step(
                          report acts that actually ran, and own my compositions \
                          as my own work.",
                     );
-                    crate::probe!(
+                    continuum_base::probe!(
                         class = "persona.act.confabulated_execution",
                         persona = %body.persona_name,
                         room_id = %room_id,
@@ -279,7 +279,7 @@ pub async fn settle_step(
                          unobserved. Only a tool result (run, test, read, screenshot) \
                          can show what actually happened.",
                     );
-                    crate::probe!(
+                    continuum_base::probe!(
                         class = "persona.act.unobserved_mutation",
                         persona = %body.persona_name,
                         room_id = %room_id,
@@ -306,7 +306,7 @@ pub async fn settle_step(
                     crate::cognition::deliberation_budget::draft_peer_echo(&text, &peer_turns)
                 {
                     body.working_memory.record_fact(&fact);
-                    crate::probe!(
+                    continuum_base::probe!(
                         class = "persona.act.draft_peer_echo",
                         persona = %body.persona_name,
                         room_id = %room_id,
@@ -330,7 +330,7 @@ pub async fn settle_step(
                          If that work happened in a past session it is unverified now \
                          — only reading or running the file can show its real state."
                     ));
-                    crate::probe!(
+                    continuum_base::probe!(
                         class = "persona.act.unacted_claim",
                         persona = %body.persona_name,
                         room_id = %room_id,

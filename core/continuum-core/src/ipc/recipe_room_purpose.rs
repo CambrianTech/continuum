@@ -120,7 +120,7 @@ impl RecipeRoomPurpose {
         let mut parent: Option<Uuid> = None;
         let purpose = match reader.recipe_posts(room_id).await {
             Err(error) => {
-                crate::probe!(
+                continuum_base::probe!(
                     class = "activity.purpose.read_failed",
                     room_id = %room_id,
                     error = %error,
@@ -137,7 +137,7 @@ impl RecipeRoomPurpose {
                 }
                 Ok(None) => UNBOUND_PURPOSE.to_string(),
                 Err(error) => {
-                    crate::probe!(
+                    continuum_base::probe!(
                         class = "activity.purpose.unreadable_binding",
                         room_id = %room_id,
                         error = %error,
@@ -284,7 +284,7 @@ async fn run_purpose_loop(
                 let resolved = purpose.refresh(room_id, reader.as_ref()).await;
                 if resolved != UNBOUND_PURPOSE {
                     bound += 1;
-                    crate::probe!(
+                    continuum_base::probe!(
                         class = "activity.purpose.resolved",
                         room_id = %room_id,
                         purpose = %resolved,
@@ -293,7 +293,7 @@ async fn run_purpose_loop(
                     );
                 }
             }
-            crate::probe!(
+            continuum_base::probe!(
                 class = "activity.purpose.seeded",
                 rooms = total,
                 bound,
@@ -302,7 +302,7 @@ async fn run_purpose_loop(
             );
         }
         Err(error) => {
-            crate::probe!(
+            continuum_base::probe!(
                 class = "activity.purpose.seed_failed",
                 error = %error,
                 "could not enumerate rooms to seed activity purposes — every room reads as \
@@ -321,7 +321,7 @@ async fn run_purpose_loop(
                 // costs nothing and makes the invalidation path observable instead of
                 // inferred ([[the-whole-system-is-event-based-not-polling]] wants the
                 // EVENT visible, not just its side effect).
-                crate::probe!(
+                continuum_base::probe!(
                     class = "activity.purpose.refreshed",
                     room_id = %room_id,
                     purpose = %resolved,

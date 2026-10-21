@@ -471,7 +471,7 @@ impl ChannelModule {
         task_id: Option<Uuid>,
         persona_id: &Uuid,
     ) -> Option<TaskQueueItem> {
-        let now_ms = crate::time::EpochMs::now().millis();
+        let now_ms = continuum_base::time::EpochMs::now().millis();
 
         Some(TaskQueueItem {
             id: Uuid::new_v4(),

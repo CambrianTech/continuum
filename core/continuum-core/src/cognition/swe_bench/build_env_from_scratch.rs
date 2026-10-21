@@ -593,7 +593,7 @@ pub(super) async fn era_pinned_uv_install(
         // failure recorded as the instance's env verdict, card cffc9c5e again. A step
         // change in unmatched failures is how that drift is seen the day it lands.
         let matched = network_failure_signature(&stderr);
-        crate::probe!(
+        continuum_base::probe!(
             class = "benchmark.env.install_failed",
             signature_matched = matched,
             tail = ?tail,
@@ -666,7 +666,7 @@ pub(super) async fn era_pinned_uv_install(
 }
 
 pub(super) fn which(bin: &str) -> Option<String> {
-    crate::shell_portable::locate_executable(bin)
+    continuum_base::shell_portable::locate_executable(bin)
         .map(|path| path.to_string_lossy().into_owned())
 }
 

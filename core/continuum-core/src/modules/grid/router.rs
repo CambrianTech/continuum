@@ -371,7 +371,7 @@ fn gpu_vram(node: &GridNode) -> u64 {
 
 /// Check if a node was seen recently (within 5 minutes).
 fn is_online(node: &GridNode) -> bool {
-    let cutoff = crate::time::EpochMs::now().millis();
+    let cutoff = continuum_base::time::EpochMs::now().millis();
     node.last_seen >= cutoff.saturating_sub(5 * 60 * 1000)
 }
 
@@ -397,7 +397,7 @@ mod tests {
                 vram_mb: Some(32768),
             }],
             trust_level: TrustLevel::Owner,
-            last_seen: crate::time::EpochMs::now().millis(),
+            last_seen: continuum_base::time::EpochMs::now().millis(),
             latency_ms: Some(47),
             peer_id: None,
             build_sha: None,
@@ -433,7 +433,7 @@ mod tests {
                     vram_mb: Some(vram_mb),
                 }],
                 trust_level: TrustLevel::Owner,
-                last_seen: crate::time::EpochMs::now().millis(),
+                last_seen: continuum_base::time::EpochMs::now().millis(),
                 latency_ms: Some(latency_ms),
                 // These fixtures predate the #2228 join key and describe nodes known
                 // only by transport identity — which is the honest state for a node

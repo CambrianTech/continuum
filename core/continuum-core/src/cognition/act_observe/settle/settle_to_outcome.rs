@@ -30,7 +30,7 @@ pub(super) async fn settle_to_outcome(
     // connected in the one path I happened to wire by hand
     // ([[an-absence-is-an-unfinished-measurement]]). An `ambient` row is not a fault;
     // it is an idle tick whose stimulus the projection layer discarded.
-    crate::probe!(
+    continuum_base::probe!(
         class = "engram.chain.rooted",
         cause = burst.cause.as_str(),
         room = %room_id,
@@ -132,7 +132,7 @@ pub(super) async fn settle_to_outcome(
         // room. Only after an act: a turn that has not acted yet is the settle's business
         // as a whole turn, and is never admitted once the door has closed.
         if acts > 0 && crate::cognition::turn_ingress::is_closing() {
-            crate::probe!(
+            continuum_base::probe!(
                 class = "cognition.turn.ended_for_stop",
                 room = %room_id,
                 acts = acts,
@@ -217,7 +217,7 @@ pub(super) async fn settle_to_outcome(
                                 crate::ipc::positron_presence::is_human_peer(message.peer_id),
                             ),
                         );
-                        crate::probe!(
+                        continuum_base::probe!(
                             class = "persona.turn.input_perceived",
                             persona = %body.persona_id,
                             active_room = %room_id,
@@ -290,7 +290,7 @@ pub(super) async fn settle_to_outcome(
                 // stopwatch is visible to her" was unprovable from the live
                 // stream the day it shipped ([[observability-as-substrate]]).
                 let probe_budget_fact = |milestone: &str| {
-                    crate::probe!(
+                    continuum_base::probe!(
                         class = "persona.act_budget.fact",
                         persona = body.persona_name.as_str(),
                         milestone = milestone,
@@ -358,7 +358,7 @@ pub(super) async fn settle_to_outcome(
             !framing.workspace_deliverable || mutated_yet || acts < discovery_budget;
         if !discovery_open && acts < max_acts && stuck < STUCK_LIMIT && !saturation_probed {
             saturation_probed = true;
-            crate::probe!(
+            continuum_base::probe!(
                 class = "persona.settle.discovery_saturated",
                 room_id = %room_id,
                 acts = acts,
@@ -371,7 +371,7 @@ pub(super) async fn settle_to_outcome(
         }
         let may_act = acts < max_acts && stuck < STUCK_LIMIT && discovery_open;
         let act_started = std::time::Instant::now();
-        crate::probe!(
+        continuum_base::probe!(
             class = "settle.tick.start",
             room = %room_id,
             acts_so_far = acts as u64,
@@ -401,7 +401,7 @@ pub(super) async fn settle_to_outcome(
         {
             Ok(r) => r,
             Err(_) => {
-                crate::probe!(
+                continuum_base::probe!(
                     class = "settle.tick.deadline",
                     room = %room_id,
                     acts_so_far = acts as u64,
@@ -470,7 +470,7 @@ pub(super) async fn settle_to_outcome(
                 // how many lanes were free while she waited — so "8 acts, 0 writes"
                 // can never again read as eight turns of work when two of them were a
                 // mind parked at the serving gate.
-                crate::probe!(
+                continuum_base::probe!(
                     class = "persona.act.lane_starved",
                     persona = who.as_str(),
                     room_id = %room_id,
@@ -483,7 +483,7 @@ pub(super) async fn settle_to_outcome(
                 );
                 crate::modules::citizen_health::note_lane_starved();
             }
-            crate::probe!(
+            continuum_base::probe!(
                 class = "persona.act.pace",
                 room_id = %room_id,
                 act = acts,
@@ -551,7 +551,7 @@ pub(super) async fn settle_to_outcome(
                                  {NARRATION_BUDGET} plans in a row); no act of mine has changed a \
                                  file in this workspace yet."
                             ));
-                            crate::probe!(
+                            continuum_base::probe!(
                                 class = "persona.settle.no_deliverable",
                                 persona = %body.persona_name,
                                 room_id = %room_id,
@@ -621,7 +621,7 @@ pub(super) async fn settle_to_outcome(
                                 "[no-deliverable] {acts} actions taken on this task; no act \
                                  of mine has changed a file in this workspace yet."
                             ));
-                            crate::probe!(
+                            continuum_base::probe!(
                                 class = "persona.act.no_deliverable_yet",
                                 persona = %body.persona_name,
                                 room_id = %room_id,
@@ -641,7 +641,7 @@ pub(super) async fn settle_to_outcome(
                 }
                 prior_evidence = evidence;
                 if stuck >= STUCK_LIMIT {
-                    crate::probe!(
+                    continuum_base::probe!(
                         class = "persona.settle.stuck_backstop",
                         room_id = %room_id,
                         acts = acts,
@@ -724,7 +724,7 @@ pub(super) async fn settle_to_outcome(
                 // Earlier dispatched work keeps the existing continuation policy;
                 // its original input must not be replayed as a new request.
                 if act_class == ActClass::LaneStarved {
-                    crate::probe!(
+                    continuum_base::probe!(
                         class = "persona.act.lane_starved",
                         room_id = %room_id,
                         act = acts,
@@ -759,7 +759,7 @@ pub(super) async fn settle_to_outcome(
                 // as before.
                 if delib_retries < DELIBERATION_RETRY_BUDGET {
                     delib_retries += 1;
-                    crate::probe!(
+                    continuum_base::probe!(
                         class = "persona.settle.deliberation_retry",
                         room_id = %room_id,
                         acts = acts,

@@ -101,7 +101,7 @@ pub async fn follow_the_fleet(
         // refused: the next tick asks again, and the act-end sync retries the push.
         if moves_between_machines(&mv, seat_is_self) {
             if let Some(why) = crate::persona::workspace_transfer::move_blocker_bounded(sw.persona_id()).await {
-                crate::probe!(
+                continuum_base::probe!(
                     class = "placement.move.deferred_unpushed",
                     persona = %sw.persona_name(),
                     peer = %peer,
@@ -125,7 +125,7 @@ pub async fn follow_the_fleet(
                 None => Err("no airc handle for her — cannot ask the seat".to_string()),
             };
             match asked {
-                Ok(g) if g.granted => crate::probe!(
+                Ok(g) if g.granted => continuum_base::probe!(
                     class = "placement.return.leased",
                     persona = %sw.persona_name(),
                     peer = %peer,
@@ -135,7 +135,7 @@ pub async fn follow_the_fleet(
                     "the seat granted her slot back — returning"
                 ),
                 Ok(g) => {
-                    crate::probe!(
+                    continuum_base::probe!(
                         class = "placement.return.refused",
                         persona = %sw.persona_name(),
                         peer = %peer,
@@ -147,7 +147,7 @@ pub async fn follow_the_fleet(
                     mv = PlacementMove::Stay;
                 }
                 Err(e) => {
-                    crate::probe!(
+                    continuum_base::probe!(
                         class = "placement.return.refused",
                         persona = %sw.persona_name(),
                         peer = %peer,
@@ -188,7 +188,7 @@ pub async fn follow_the_fleet(
         if o.beacon_age_ms > REMOTE_SEAT_FRESH_MS {
             continue; // a dark seat is the fall-home story, not a full one
         }
-        crate::probe!(
+        continuum_base::probe!(
             class = "placement.return.withheld",
             peer = %peer,
             minds = minds,
@@ -207,7 +207,7 @@ pub async fn follow_the_fleet(
             // A spill is a move between machines too (card 73eefbbb): same gate, before
             // the seat is asked for a grant that a deferral would waste.
             if let Some(why) = crate::persona::workspace_transfer::move_blocker_bounded(mind).await {
-                crate::probe!(
+                continuum_base::probe!(
                     class = "placement.move.deferred_unpushed",
                     persona = %sw.persona_name(),
                     peer = %peer,
@@ -227,7 +227,7 @@ pub async fn follow_the_fleet(
             let grant = match asked {
                 Ok(g) if g.granted => g,
                 Ok(g) => {
-                    crate::probe!(
+                    continuum_base::probe!(
                         class = "placement.spill.refused",
                         persona = %sw.persona_name(),
                         peer = %peer,
@@ -241,7 +241,7 @@ pub async fn follow_the_fleet(
                     continue;
                 }
                 Err(e) => {
-                    crate::probe!(
+                    continuum_base::probe!(
                         class = "placement.spill.refused",
                         persona = %sw.persona_name(),
                         peer = %peer,
@@ -251,7 +251,7 @@ pub async fn follow_the_fleet(
                     continue;
                 }
             };
-            crate::probe!(
+            continuum_base::probe!(
                 class = "placement.spill.leased",
                 persona = %sw.persona_name(),
                 peer = %peer,
@@ -265,7 +265,7 @@ pub async fn follow_the_fleet(
             match sw.go_remote(peer, &model, now_ms) {
                 Ok(()) => {
                     crate::modules::citizen_health::note_move(false);
-                    crate::probe!(
+                    continuum_base::probe!(
                         class = "persona.placement.offloaded",
                         persona = %sw.persona_name(),
                         peer = %peer,
@@ -280,7 +280,7 @@ pub async fn follow_the_fleet(
                         grant.free_slots_live, grant.lane_wait_p50_ms, grant.lane_wait_samples
                     ));
                 }
-                Err(e) => crate::probe!(
+                Err(e) => continuum_base::probe!(
                     class = "persona.placement.offload_failed",
                     persona = %sw.persona_name(),
                     peer = %peer,

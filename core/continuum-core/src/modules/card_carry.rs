@@ -50,7 +50,7 @@ impl CardCarryModule {
         let Some(registry) = crate::persona::airc_runtime_registry::PersonaAircRuntimeRegistry::try_global() else {
             return 0;
         };
-        let now_ms = crate::time::EpochMs::now().millis();
+        let now_ms = continuum_base::time::EpochMs::now().millis();
         let mut carried = 0;
         for persona in registry.live_personas() {
             let Some(runtime) = registry.get(persona) else { continue };
@@ -65,7 +65,7 @@ impl CardCarryModule {
                 let lease = match crate::code::hands::admit(context) {
                     Ok(lease) => Arc::new(lease),
                     Err(why) => {
-                        crate::probe!(class = "workspace.carry.refused", persona = %name, card = %card.card_id, admission = %why, "held card's hands are closing; not carried");
+                        continuum_base::probe!(class = "workspace.carry.refused", persona = %name, card = %card.card_id, admission = %why, "held card's hands are closing; not carried");
                         continue;
                     }
                 };
@@ -104,16 +104,16 @@ impl ServiceModule for CardCarryModule {
             loop {
                 WAKE.notified().await;
                 let carried = CardCarryModule::sweep().await;
-                crate::probe!(class = "workspace.carry.sweep", trigger = "request", carried = carried as u64, "carry owner swept on request");
+                continuum_base::probe!(class = "workspace.carry.sweep", trigger = "request", carried = carried as u64, "carry owner swept on request");
             }
         });
-        crate::probe!(class = "workspace.carry.ready", sweep_secs = CARRY_SWEEP.as_secs(), "card carry owner up");
+        continuum_base::probe!(class = "workspace.carry.ready", sweep_secs = CARRY_SWEEP.as_secs(), "card carry owner up");
         Ok(())
     }
 
     async fn tick(&self) -> Result<(), String> {
         let carried = Self::sweep().await;
-        crate::probe!(class = "workspace.carry.sweep", trigger = "tick", carried = carried as u64, "carry owner swept on its tick");
+        continuum_base::probe!(class = "workspace.carry.sweep", trigger = "tick", carried = carried as u64, "carry owner swept on its tick");
         Ok(())
     }
 

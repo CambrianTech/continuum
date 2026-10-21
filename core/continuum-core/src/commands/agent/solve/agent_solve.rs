@@ -164,7 +164,7 @@ impl ActionCommand for AgentSolve {
                     let mut this_attempt = inner.clone();
                     this_attempt.task = next_task.clone();
                     this_attempt.prev_failed_patch_sha = prev_patch_sha.clone();
-                    crate::probe!(
+                    continuum_base::probe!(
                         class = "benchmark.attempt.start",
                         run_id = %run_id,
                         attempt,
@@ -197,7 +197,7 @@ impl ActionCommand for AgentSolve {
                                      never a capability verdict"
                                 )
                             };
-                            crate::probe!(
+                            continuum_base::probe!(
                                 class = "benchmark.stall",
                                 run_id = %run_id,
                                 attempt,
@@ -266,7 +266,7 @@ impl ActionCommand for AgentSolve {
                             if r.infra_error.is_some() || (r.acts == 0 && r.patch.is_empty()) {
                                 if infra_void_retries < INFRA_VOID_RETRIES_MAX {
                                     infra_void_retries += 1;
-                                    crate::probe!(
+                                    continuum_base::probe!(
                                         class = "benchmark.attempt.infra_void",
                                         run_id = %run_id,
                                         attempt,
@@ -278,7 +278,7 @@ impl ActionCommand for AgentSolve {
                                     tokio::time::sleep(std::time::Duration::from_secs(90)).await;
                                     continue;
                                 }
-                                crate::probe!(
+                                continuum_base::probe!(
                                     class = "benchmark.attempt.infra_void",
                                     run_id = %run_id,
                                     attempt,
@@ -353,7 +353,7 @@ impl ActionCommand for AgentSolve {
                                                          have no evidence behind it"
                                                     );
                                                 } else {
-                                                    crate::probe!(
+                                                    continuum_base::probe!(
                                                         class = "benchmark.patch.kept",
                                                         run_id = %run_id,
                                                         attempt,
@@ -418,7 +418,7 @@ impl ActionCommand for AgentSolve {
                                     // the verdict so no consumer has to scrape a file to tell a
                                     // capability zero from an absent measurement.
                                     let ungradeable = g.error.is_some();
-                                    crate::probe!(
+                                    continuum_base::probe!(
                                         class = "benchmark.attempt.end",
                                         run_id = %run_id,
                                         instance = %instance,
@@ -437,7 +437,7 @@ impl ActionCommand for AgentSolve {
                                         failed_tests = %g.failed_tests.join(","),
                                         "solve attempt graded — the verdict, on the wire"
                                     );
-                                    crate::probe!(
+                                    continuum_base::probe!(
                                         class = "benchmark.autograde",
                                         run_id = %run_id,
                                         instance = %instance,
@@ -466,7 +466,7 @@ impl ActionCommand for AgentSolve {
                                         && !patch_sha256.is_empty()
                                         && prev_patch_sha.as_deref() == Some(patch_sha256.as_str());
                                     if identical_resubmit {
-                                        crate::probe!(
+                                        continuum_base::probe!(
                                             class = "benchmark.resubmit.identical",
                                             run_id = %run_id,
                                             instance = %instance,
@@ -674,7 +674,7 @@ impl ActionCommand for AgentSolve {
                                                     )
                                                     .await
                                                     {
-                                                        Ok(_) => crate::probe!(
+                                                        Ok(_) => continuum_base::probe!(
                                                             class = "team.review.requested",
                                                             run_id = %run_id,
                                                             instance = %instance,
@@ -682,7 +682,7 @@ impl ActionCommand for AgentSolve {
                                                             mates = %mates.join(","),
                                                             "failed attempt published a solver-voiced review request — the review-landing event"
                                                         ),
-                                                        Err(e) => crate::probe!(
+                                                        Err(e) => continuum_base::probe!(
                                                             class = "team.review.request_failed",
                                                             run_id = %run_id,
                                                             instance = %instance,
@@ -698,7 +698,7 @@ impl ActionCommand for AgentSolve {
                                 Err(e) => {
                                     // A failed GRADE is not a failed solve — surface it
                                     // loud on its own channel; the solve result stands.
-                                    crate::probe!(
+                                    continuum_base::probe!(
                                         class = "benchmark.autograde",
                                         run_id = %run_id,
                                         instance = %instance,

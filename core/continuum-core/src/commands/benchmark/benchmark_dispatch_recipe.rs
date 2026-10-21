@@ -44,7 +44,7 @@ impl BenchmarkDispatch {
                     None => Vec::new(),
                 };
                 if (picked.len() as u32) < n {
-                    crate::probe!(
+                    continuum_base::probe!(
                         class = "recipe.reviewers.short",
                         benchmark = %d.benchmark,
                         wanted = n as u64,

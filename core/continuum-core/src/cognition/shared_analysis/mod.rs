@@ -23,7 +23,7 @@ pub mod types;
 pub use error::AnalysisError;
 pub use types::{AnalysisInput, RecentMessage};
 
-use crate::time::EpochMs;
+use continuum_base::time::EpochMs;
 use crate::ai::{ChatMessage, MessageContent, TextGenerationRequest};
 use crate::cognition::types::SharedAnalysis;
 use crate::concurrency::{ConcurrencyPolicy, TokioConcurrencyPolicy};
@@ -94,7 +94,7 @@ pub async fn analyze(input: AnalysisInput) -> Result<SharedAnalysis, AnalysisErr
     // Captures the input fingerprint so an operator can correlate
     // multiple personas hitting the same single-flight cache.
     // Per docs/architecture/RTOS-DEBUGGER-PROBES.md class taxonomy.
-    crate::probe!(
+    continuum_base::probe!(
         class = "cognition.analyze.enter",
         message_id = %input.message_id,
         room_id = %input.room_id,
@@ -112,7 +112,7 @@ pub async fn analyze(input: AnalysisInput) -> Result<SharedAnalysis, AnalysisErr
         // silence because no angle matched" vs "I chose silence
         // because analyze was skipped" — they look identical
         // downstream without this probe.
-        crate::probe!(
+        continuum_base::probe!(
             class = "cognition.analyze.noop_single_specialty",
             message_id = %input.message_id,
             specialties_seen = ?input.known_specialties,
@@ -148,7 +148,7 @@ pub async fn analyze(input: AnalysisInput) -> Result<SharedAnalysis, AnalysisErr
             // substrate's biggest correctness/perf wins. If hit-rate
             // is low across a run, the cache key is too granular
             // (continuum#1206 history-inclusion bug).
-            crate::probe!(
+            continuum_base::probe!(
                 class = "cognition.analyze.cache_hit",
                 message_id = %input.message_id,
                 cache_key = %cache_key,
@@ -321,7 +321,7 @@ async fn run_analysis(
         .filter(|v| v.is_empty())
         .count();
     let non_empty_angles = parsed.suggested_angles.len().saturating_sub(empty_angles);
-    crate::probe!(
+    continuum_base::probe!(
         class = "cognition.analyze.parse",
         message_id = %input.message_id,
         model_used = %response.model,

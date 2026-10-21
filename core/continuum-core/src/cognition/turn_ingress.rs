@@ -21,7 +21,7 @@
 //! immediately afterwards; a reopen verb would exist solely to be called by mistake. A
 //! node that wants turns again starts a core.
 
-use crate::time::EpochMs;
+use continuum_base::time::EpochMs;
 use crate::runtime::AdmissionGate;
 
 /// The process's turn gate. One [`AdmissionGate`]: open/closed and the in-flight count in

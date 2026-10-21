@@ -20,7 +20,7 @@ pub(super) async fn finish_spoken_turn(
     // peers with JSON (observed live). Treat it as silence — the deliberation
     // already executes real calls internally; only prose is a contribution.
     if crate::ai::json_in_prompt_tools::parse_tool_call(&response_text).is_some() {
-        crate::probe!(
+        continuum_base::probe!(
             class = "persona.turn.raw_envelope_withheld",
             persona = %ctx.identity.agent_name,
             lamport = msg.lamport,
@@ -52,7 +52,7 @@ pub(super) async fn finish_spoken_turn(
         // RTOS-debugger breakpoint: cognition succeeded, airc
         // publish failed. Distinct error stage from
         // `stage="respond"`.
-        crate::probe!(
+        continuum_base::probe!(
             class = "persona.turn.error",
             persona = %ctx.identity.agent_name,
             lamport = msg.lamport,
@@ -93,7 +93,7 @@ pub(super) async fn finish_spoken_turn(
     // a separate timing probe per stage. Per Joel
     // [[jtag-probes-are-rtos-debugger]]: "timing of anything,
     // so we can hunt down bottlenecks."
-    crate::probe!(
+    continuum_base::probe!(
         class = "persona.turn.spoke",
         persona = %ctx.identity.agent_name,
         lamport = msg.lamport,

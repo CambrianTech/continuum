@@ -42,7 +42,7 @@
 //! persona at boot, before any of them have necessarily attached to
 //! their rooms yet.
 
-use crate::time::EpochMs;
+use continuum_base::time::EpochMs;
 use crate::persona::airc_citizen::AircCitizen;
 use crate::persona::service_loop::{IncomingMessage, PersonaConversation};
 use airc_core::TranscriptEvent;

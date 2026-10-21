@@ -272,8 +272,8 @@ impl WorkGet {
         requested: &str,
         reader: Uuid,
     ) -> Result<WorkGetResult, CommandError> {
-        let exact = match crate::id_resolve::normalize(requested) {
-            crate::id_resolve::IdMatch::Full(id) => Some(WorkCardId::from_uuid(id)),
+        let exact = match continuum_base::id_resolve::normalize(requested) {
+            continuum_base::id_resolve::IdMatch::Full(id) => Some(WorkCardId::from_uuid(id)),
             _ => None,
         };
         let horizon = board_horizon_for_card(airc, exact)

@@ -65,7 +65,7 @@ pub fn observe_decode(model: &str, streams: u32, tps: f64, now_ms: u64) {
         rates.entry(model.to_string()).or_default().decode.observe(streams, tps, now_ms);
         rates.clone()
     };
-    crate::probe!(
+    continuum_base::probe!(
         class = "serving.rates.clean_decode",
         model = model,
         streams = u64::from(streams),

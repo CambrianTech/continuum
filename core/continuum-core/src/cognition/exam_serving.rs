@@ -113,7 +113,7 @@ impl ExamServingContext {
         } else {
             None
         };
-        crate::probe!(
+        continuum_base::probe!(
             class = "exam.acquire",
             verdict = acquire.tag(),
             ludicrous = hold.is_some(),
@@ -130,7 +130,7 @@ impl ExamServingContext {
     /// verdict `unresolved` so the gap is visible rather than silently assumed. The exam still
     /// gets the biggest window; only the placement decision is recorded as "couldn't compute".
     pub async fn ludicrous_fallback() -> Self {
-        crate::probe!(
+        continuum_base::probe!(
             class = "exam.acquire.fallback",
             "exam serving inputs unresolved — growing the live lane LUDICROUS on the share assumption"
         );
@@ -154,7 +154,7 @@ impl ExamServingContext {
             LUDICROUS_SETTLE_TIMEOUT,
         )
         .await;
-        crate::probe!(
+        continuum_base::probe!(
             class = "exam.acquire.ludicrous",
             settled_window = settled.unwrap_or(0),
             settled = settled.is_some(),

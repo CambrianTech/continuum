@@ -16,7 +16,7 @@
 //! RTOS shape per CONCURRENCY-STYLE-GUIDE: own task, `interval`, no locks, no blocking,
 //! nothing on the hot path; the only side effect is a probe row.
 
-use crate::time::EpochMs;
+use continuum_base::time::EpochMs;
 use std::time::Duration;
 
 /// How often the watch ticks. Short enough that a tick gap names the absence to the
@@ -45,7 +45,7 @@ pub fn spawn() {
             ticker.tick().await;
             let Some(now) = EpochMs::read().ok().map(EpochMs::millis) else {
                 // A clock before the epoch is its own absence of measurement; say so once.
-                crate::probe!(
+                continuum_base::probe!(
                     class = "boot.absent",
                     from_ms = prev.unwrap_or(0), // unwrap_or: 0 = no previous reading, a legible absence in the row
                     to_ms = 0u64,
@@ -56,7 +56,7 @@ pub fn spawn() {
                 continue;
             };
             if let Some(gap_s) = prev.and_then(|p| absence_gap_s(p, now)) {
-                crate::probe!(
+                continuum_base::probe!(
                     class = "boot.absent",
                     from_ms = prev.unwrap_or(0), // unwrap_or: unreachable here (gap needs prev) — 0 stays legible
                     to_ms = now,

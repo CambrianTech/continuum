@@ -16,7 +16,7 @@ pub(super) async fn finish_review_boundaries(
         )
         .await
         {
-            crate::probe!(class = "dream.review_completion_deferred", persona = %persona, error = ?error,
+            continuum_base::probe!(class = "dream.review_completion_deferred", persona = %persona, error = ?error,
                 "processed boundary remains pending until its durable receipt is acknowledged");
             return;
         }
@@ -29,7 +29,7 @@ pub(super) async fn finish_review_boundaries(
                     receipts.completed.pop_front();
                 }
                 receipts.completed.push_back(*review);
-                crate::probe!(class = "dream.review_boundary_processed", persona = %persona,
+                continuum_base::probe!(class = "dream.review_boundary_processed", persona = %persona,
                     acceptance = %review, eligible_clusters,
                     "eligible episode clusters processed; not a training or adoption receipt");
             }
@@ -125,7 +125,7 @@ pub(super) async fn dream_pass(
             };
             let rotating = reflector.admission.semantic_beliefs_oldest_excluding(
                 &already,
-                crate::time::EpochMs::now().millis().saturating_sub(REVIEW_MIN_AGE_MS),
+                continuum_base::time::EpochMs::now().millis().saturating_sub(REVIEW_MIN_AGE_MS),
                 ROTATING_REVIEW_PER_PASS,
             );
             let mut seen = reviewed.lock().unwrap(); // JUSTIFIED: std Mutex poisons only after a panic in another dream task; fail loud rather than read a half-updated ledger.
@@ -246,7 +246,7 @@ pub(super) async fn dream_pass(
         .unwrap_or_default(); // JUSTIFIED: no entry for this persona yet means nothing reviewed; the empty set is the true value, not a guess.
     let backlog = reflector.admission.semantic_beliefs_oldest_excluding(
         &already,
-        crate::time::EpochMs::now().millis().saturating_sub(REVIEW_MIN_AGE_MS),
+        continuum_base::time::EpochMs::now().millis().saturating_sub(REVIEW_MIN_AGE_MS),
         REVIEW_ONLY_BATCH,
     );
     if !backlog.is_empty() {
@@ -303,14 +303,14 @@ fn apply_supersessions(reflector: &PersonaReflector, persona_id: Uuid, supersede
     if superseded.is_empty() {
         return;
     }
-    let now = crate::time::EpochMs::now().millis();
+    let now = continuum_base::time::EpochMs::now().millis();
     for id in superseded {
         reflector
             .admission
             .recall_metadata()
             .demote_to_floor(*id, now);
     }
-    crate::probe!(
+    continuum_base::probe!(
         class = "hippocampus.supersede",
         persona = %persona_id,
         superseded = superseded.len(),

@@ -93,7 +93,7 @@ pub(crate) async fn emit_card_state_changed(payload: Value, via: &'static str) {
     if !first_transition_sighting(&card_id, &state) {
         return;
     }
-    crate::probe!(
+    continuum_base::probe!(
         class = "work.card.state_changed.bridged",
         via = via,
         card_id = %card_id,
@@ -201,7 +201,7 @@ pub(super) fn priority_str(p: Priority) -> &'static str {
 /// be accepted by the verbs that consume it (positron consistency).
 ///
 /// The prefix/near-miss decision + candidate resolution now live in the shared
-/// [`crate::id_resolve`] primitive (this was the proven outlier it was lifted
+/// [`continuum_base::id_resolve`] primitive (this was the proven outlier it was lifted
 /// from); here we supply the ONLY card-specific knowledge — the candidate set is
 /// the live board's card ids.
 pub(super) async fn resolve_card_id(
@@ -209,7 +209,7 @@ pub(super) async fn resolve_card_id(
     s: &str,
 ) -> Result<WorkCardId, CommandError> {
     // Fast path: a clean UUID needs no board read.
-    if let crate::id_resolve::IdMatch::Full(id) = crate::id_resolve::normalize(s) {
+    if let continuum_base::id_resolve::IdMatch::Full(id) = continuum_base::id_resolve::normalize(s) {
         return Ok(WorkCardId::from_uuid(id));
     }
     let horizon = board_horizon(airc)
@@ -221,7 +221,7 @@ pub(super) async fn resolve_card_id(
 /// Resolve against an already-read view, so reading a card need not fold the
 /// subscribed boards again after expanding its short id.
 pub(super) fn resolve_card_id_in_boards(horizon: &BoardHorizon, s: &str) -> Result<WorkCardId, CommandError> {
-    if let crate::id_resolve::IdMatch::Full(id) = crate::id_resolve::normalize(s) {
+    if let continuum_base::id_resolve::IdMatch::Full(id) = continuum_base::id_resolve::normalize(s) {
         return Ok(WorkCardId::from_uuid(id));
     }
     let candidates: Vec<Uuid> = horizon
@@ -240,7 +240,7 @@ pub(super) fn resolve_card_id_in_boards(horizon: &BoardHorizon, s: &str) -> Resu
     if candidates.is_empty() {
         return Err(horizon.not_found("card", s));
     }
-    crate::id_resolve::resolve(s, &candidates, "card")
+    continuum_base::id_resolve::resolve(s, &candidates, "card")
         .map(WorkCardId::from_uuid)
         .map_err(CommandError::Invalid)
 }
@@ -256,7 +256,7 @@ pub(super) async fn resolve_claim_id(
     airc: &std::sync::Arc<airc_lib::Airc>,
     s: &str,
 ) -> Result<ClaimId, CommandError> {
-    if let crate::id_resolve::IdMatch::Full(id) = crate::id_resolve::normalize(s) {
+    if let continuum_base::id_resolve::IdMatch::Full(id) = continuum_base::id_resolve::normalize(s) {
         return Ok(ClaimId::from_uuid(id));
     }
     let horizon = board_horizon(airc)
@@ -279,7 +279,7 @@ pub(super) async fn resolve_claim_id(
     if candidates.is_empty() {
         return Err(horizon.not_found("claim", s));
     }
-    crate::id_resolve::resolve(s, &candidates, "claim")
+    continuum_base::id_resolve::resolve(s, &candidates, "claim")
         .map(ClaimId::from_uuid)
         .map_err(|e| CommandError::Invalid(claim_gone_hint(e)))
 }
@@ -558,7 +558,7 @@ pub(crate) async fn follow_card_room(
     if airc.join(&room_name).await.is_err() {
         return None;
     }
-    crate::probe!(
+    continuum_base::probe!(
         class = "work.followed_card_room",
         verb = verb,
         card_id = %short8(card_id.as_uuid()),

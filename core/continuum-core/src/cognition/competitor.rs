@@ -27,7 +27,7 @@
 //! Continuum's native arm is the existing [`crate::cognition::eval`] cognition path;
 //! it is wrapped into the same runner in the follow-up slice.
 
-use crate::time::EpochMs;
+use continuum_base::time::EpochMs;
 use crate::cognition::eval::EvalTask;
 use async_trait::async_trait;
 use serde::Deserialize;
@@ -559,7 +559,7 @@ pub async fn run_competition(
         let name = arm.name();
         let kind = arm.kind();
         if !arm.available() {
-            crate::probe!(
+            continuum_base::probe!(
                 class = "benchmark.arm",
                 arm = name,
                 "skipped: arm unavailable in this environment"
@@ -624,7 +624,7 @@ pub async fn run_competition(
         }
 
         let class = classify(&results);
-        crate::probe!(
+        continuum_base::probe!(
             class = "benchmark.arm",
             arm = name,
             score = pass,

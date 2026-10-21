@@ -41,7 +41,7 @@
 //!   through the [`PersonaConversation`] trait. The trait is the
 //!   substrate's IPC boundary; tests stub it without any daemon.
 
-use crate::time::EpochMs;
+use continuum_base::time::EpochMs;
 use crate::ai::adapter::AIProviderAdapter;
 use crate::persona::supervisor::HostedPersona;
 use crate::persona::work_burst::{held_work_burst, own_recent_thoughts, work_board_anchor};

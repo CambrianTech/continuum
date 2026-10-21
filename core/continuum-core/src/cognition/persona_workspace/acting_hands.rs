@@ -224,7 +224,7 @@ pub(super) fn note_acting_root_in(
     // The map she perceives is the place of the hands she is focused on; an eval or a fork
     // placing its own hands changes nothing she perceives.
     let marked = context == focus_of(persona_id) && crate::persona::grounding_invalidation::mark_workspace_map_dirty(persona_id);
-    crate::probe!(
+    continuum_base::probe!(
         class = "workspace.acting_root",
         persona_id = %persona_id,
         context = %context.map(|c| c.id().to_string()).unwrap_or_else(|| "live".to_string()), // unwrap_or_else: no context = her live hands, named
@@ -343,7 +343,7 @@ pub(super) async fn bind_held_card(
                     ),
                 }
                 if !matches!(verdict, Some(None)) {
-                    crate::probe!(
+                    continuum_base::probe!(
                         class = "persona.claim.gone_on_wake",
                         peer = %peer_id,
                         card = %believed,
@@ -449,7 +449,7 @@ pub(crate) async fn bind_card(
         // NOT a silent `?`. The ambiguous case has always been probed; the
         // not-found case was the one that said nothing, which is why this went
         // unnoticed until a citizen's commit turned up in the wrong tree.
-        crate::probe!(
+        continuum_base::probe!(
             class = "persona.work.checkout_unresolved",
             peer = %peer_id,
             card = %focus.card_id.as_uuid(),
@@ -469,7 +469,7 @@ pub(crate) async fn bind_card(
     // Her default hands stay home; no turn moves another's hands, so concurrent turns can't
     // split her shell from her code tools (Kimi #11697, card 2d58192d).
     let Some(claim) = focus.claim_id else {
-        crate::probe!(
+        continuum_base::probe!(
             class = "persona.work.claim_unknown",
             peer = %peer_id,
             card = %focus.card_id.as_uuid(),
@@ -484,7 +484,7 @@ pub(crate) async fn bind_card(
     let lease = match crate::code::hands::admit(context) {
         Ok(lease) => lease,
         Err(why) => {
-            crate::probe!(class = "persona.work.hands_closing", peer = %peer_id, card = %focus.card_id.as_uuid(), why = %why, "the claim's hands are closing; nothing acts on the card this turn");
+            continuum_base::probe!(class = "persona.work.hands_closing", peer = %peer_id, card = %focus.card_id.as_uuid(), why = %why, "the claim's hands are closing; nothing acts on the card this turn");
             return HeldCardTurn::unrooted(credit, peer_id, focus.card_id.as_uuid());
         }
     };
@@ -512,7 +512,7 @@ pub(crate) async fn bind_card(
             let branch = crate::modules::card_staging::card_branch(focus);
             body.working_memory.pin_fact_for_turns("rooted", &rooted_notice(&focus.repo.to_string(), &ws, &branch), 3);
             mark_told(peer_id, &ws);
-            crate::probe!(
+            continuum_base::probe!(
                 class = "persona.work.root_moved",
                 peer = %peer_id,
                 card = %focus.card_id.as_uuid(),
@@ -617,7 +617,7 @@ pub(crate) async fn end_card_turn(card: &CardHands, acts: usize) {
     // ended without reaching the model and the carry still ran git on each one, 374 ms
     // a time, 33 times per resident per 5 min, committed=false pushed=false throughout.
     if acts == 0 {
-        crate::probe!(
+        continuum_base::probe!(
             class = "workspace.push.skipped_no_act",
             persona = %hands.persona_name,
             "turn took no act: the card's checkout is as it was, nothing to carry"
@@ -682,7 +682,7 @@ pub(super) async fn close_ended_claims(
         if claim_has_ended(context, row.as_ref(), her) {
             ended.push(context);
         } else {
-            crate::probe!(
+            continuum_base::probe!(
                 class = "persona.work.hands_kept",
                 peer = %her,
                 card = %card,

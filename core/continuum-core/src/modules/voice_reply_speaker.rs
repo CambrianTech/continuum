@@ -13,7 +13,7 @@
 //! speech (voices never overlap — one utterance at a time across the node),
 //! lag on the broadcast channel is skipped and counted, never a crash.
 
-use crate::time::EpochMs;
+use continuum_base::time::EpochMs;
 use std::sync::Arc;
 
 use tokio::sync::broadcast::error::RecvError;
@@ -49,7 +49,7 @@ pub(crate) fn spawn(bus: Arc<MessageBus>, state: Arc<VoiceState>) {
             let event = match rx.recv().await {
                 Ok(e) => e,
                 Err(RecvError::Lagged(n)) => {
-                    crate::probe!(
+                    continuum_base::probe!(
                         class = "live.tts.bus_lagged",
                         module = "live",
                         skipped = n,
@@ -81,7 +81,7 @@ pub(crate) fn spawn(bus: Arc<MessageBus>, state: Arc<VoiceState>) {
             // A pre-1970 clock reads 0 here: not a case this guard needs to reason about.
             let age_ms = EpochMs::now().millis().saturating_sub(posted.timestamp);
             if !fresh_enough(posted.timestamp, EpochMs::now().millis()) {
-                crate::probe!(
+                continuum_base::probe!(
                     class = "live.tts.stale_dropped",
                     module = "live",
                     room = room.as_str(),
@@ -97,7 +97,7 @@ pub(crate) fn spawn(bus: Arc<MessageBus>, state: Arc<VoiceState>) {
                 .speak_in_room(&room, &persona, &text, None, None, Some(&name))
                 .await
             {
-                Ok((_, duration_ms, _)) => crate::probe!(
+                Ok((_, duration_ms, _)) => continuum_base::probe!(
                     class = "live.tts.spoken",
                     module = "live",
                     room = room.as_str(),
@@ -108,7 +108,7 @@ pub(crate) fn spawn(bus: Arc<MessageBus>, state: Arc<VoiceState>) {
                     synth_ms = started.elapsed().as_millis() as u64,
                     "a room line became her voice in the call"
                 ),
-                Err(e) => crate::probe!(
+                Err(e) => continuum_base::probe!(
                     class = "live.tts.failed",
                     module = "live",
                     room = room.as_str(),

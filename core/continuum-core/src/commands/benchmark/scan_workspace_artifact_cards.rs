@@ -75,8 +75,8 @@ pub(super) fn scan_workspace_artifact_cards(graded: &std::collections::HashSet<S
             let last_activity_ms = std::fs::metadata(inst.path())
                 .and_then(|m| m.modified())
                 .ok()
-                .and_then(|t| crate::time::EpochMs::of(t).ok())
-                .map(crate::time::EpochMs::millis)
+                .and_then(|t| continuum_base::time::EpochMs::of(t).ok())
+                .map(continuum_base::time::EpochMs::millis)
                 .unwrap_or(0);
             cards.push(BenchRunCard {
                 run_id: format!("workspace:{}:{instance}", &peer_id[..8.min(peer_id.len())]),
@@ -151,8 +151,8 @@ pub(super) fn scan_verdict_cards(now_ms: u64) -> Vec<BenchRunCard> {
             let last_activity_ms = std::fs::metadata(swe_bench::verdict_path(&instance))
                 .and_then(|m| m.modified())
                 .ok()
-                .and_then(|t| crate::time::EpochMs::of(t).ok())
-                .map(crate::time::EpochMs::millis)
+                .and_then(|t| continuum_base::time::EpochMs::of(t).ok())
+                .map(continuum_base::time::EpochMs::millis)
                 .unwrap_or(0);
             BenchRunCard {
                 run_id: format!("verdict:{instance}"),
@@ -192,7 +192,7 @@ pub(crate) fn scan_run_cards(
     limit: usize,
 ) -> Result<RunScan, String> {
     let base = crate::paths::continuum_home()?.join("progress");
-    let now_ms = crate::time::EpochMs::now().millis();
+    let now_ms = continuum_base::time::EpochMs::now().millis();
     let mut cards: Vec<BenchRunCard> = Vec::new();
     let entries = std::fs::read_dir(&base).map_err(|e| format!("read {}: {e}", base.display()))?;
     for entry in entries.flatten() {
@@ -218,8 +218,8 @@ pub(crate) fn scan_run_cards(
             std::fs::metadata(p)
                 .and_then(|m| m.modified())
                 .ok()
-                .and_then(|t| crate::time::EpochMs::of(t).ok())
-                .map(crate::time::EpochMs::millis)
+                .and_then(|t| continuum_base::time::EpochMs::of(t).ok())
+                .map(continuum_base::time::EpochMs::millis)
         };
         let result_path = entry.path();
         let grade_path = base.join(format!("agent-solve-{run_id}.grade.json"));
@@ -384,7 +384,7 @@ impl ActionCommand for BenchmarkRounds {
         crate::cognition::bench_round::enrich_rounds(
             &mut rounds,
             &facts,
-            crate::time::EpochMs::now().millis(),
+            continuum_base::time::EpochMs::now().millis(),
         );
         enrich_rounds_from_board_and_verdicts(&mut rounds).await;
         Ok(BenchmarkRoundsResult {

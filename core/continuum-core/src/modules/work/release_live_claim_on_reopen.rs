@@ -29,13 +29,13 @@ pub(super) async fn release_live_claim_on_reopen(airc: &Arc<Airc>, card_id: Work
         })
         .await
     {
-        Ok(_) => crate::probe!(
+        Ok(_) => continuum_base::probe!(
             class = "work.reopen.claim_released",
             card = %card_id.as_uuid(),
             owner = %owner.as_uuid(),
             "reopen released the holder's live claim — the card is nobody's"
         ),
-        Err(error) => crate::probe!(
+        Err(error) => continuum_base::probe!(
             class = "work.reopen.claim_release_refused",
             card = %card_id.as_uuid(),
             owner = %owner.as_uuid(),
@@ -147,7 +147,7 @@ impl ActionCommand for WorkNote {
         // Stamped for the seam as written: the handoff record carries her ledger whole
         // without a wall read at stop time (card 49b5e806).
         crate::cognition::handoff::note_ledger(airc.peer_id().as_uuid(), &ledger);
-        crate::probe!(
+        continuum_base::probe!(
             class = "work.ledger.noted",
             card = %short8(card_id.as_uuid()),
             by = %short8(airc.peer_id().as_uuid()),

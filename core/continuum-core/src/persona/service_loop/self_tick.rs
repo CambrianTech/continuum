@@ -81,7 +81,7 @@ pub(super) async fn serve_self_tick(
                 EpochMs::now().millis(), // pre-1970 reads 0: clock before the epoch = 0
             )
         {
-            crate::probe!(
+            continuum_base::probe!(
                 class = "persona.selftick.starved",
                 yields_since_last_report = yields,
                 total_yields =

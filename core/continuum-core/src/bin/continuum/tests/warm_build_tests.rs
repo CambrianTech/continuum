@@ -42,7 +42,7 @@ fn the_deploy_log_handle_is_one_bash_can_run_under() {
     let dir = tempfile::tempdir().expect("tempdir");
     let log = dir.path().join("deploy.log");
     std::fs::write(&log, "seed\n").expect("seed");
-    let bash = continuum_core::shell_portable::locate_bash().expect("Git bash is a build prerequisite on Windows");
+    let bash = continuum_base::shell_portable::locate_bash().expect("Git bash is a build prerequisite on Windows");
     let status = std::process::Command::new(bash)
         .args(["-c", "echo from-bash"])
         .stdin(Stdio::null())

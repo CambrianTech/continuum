@@ -219,7 +219,7 @@ pub(super) fn write_partition(job_dir: &Path, partition: &Partition) -> Result<(
     let tmp = path.with_extension("json.tmp");
     let text = serde_json::to_vec(partition).map_err(|e| e.to_string())?; // file on disk: the job dir's partition.json, read back by `return` after a restart
     std::fs::write(&tmp, text).map_err(|e| format!("{}: {e}", tmp.display()))?;
-    crate::fs_portable::replace::replace_file(&tmp, &path).map_err(|e| format!("{}: {e}", path.display()))
+    continuum_base::fs_portable::replace::replace_file(&tmp, &path).map_err(|e| format!("{}: {e}", path.display()))
 }
 
 /// What `job_dir` records about its partition. `Ok(None)` only when the file is confirmed absent
@@ -574,7 +574,7 @@ impl Footprints {
             FootprintRow {
                 engine: self.engine.clone(),
                 bytes,
-                measured_at_ms: crate::time::EpochMs::now().millis(),
+                measured_at_ms: continuum_base::time::EpochMs::now().millis(),
                 job: job.to_string(),
                 includes_context,
             },
@@ -585,7 +585,7 @@ impl Footprints {
         let tmp = self.path.with_extension("json.tmp");
         std::fs::write(&tmp, serde_json::to_vec_pretty(&all).map_err(std::io::Error::other)?)?;
         // a scanner holding the new temp must not lose the measurement (the 5090, 2026-10-10)
-        crate::fs_portable::replace::replace_file(&tmp, &self.path)
+        continuum_base::fs_portable::replace::replace_file(&tmp, &self.path)
     }
 }
 

@@ -83,7 +83,7 @@ impl ChangeGraph {
             id: Uuid::new_v4(),
             parent_ids: vec![target_id],
             author_id: author_id.to_string(),
-            timestamp: crate::time::EpochMs::now().millis(),
+            timestamp: continuum_base::time::EpochMs::now().millis(),
             file_path: target.file_path.clone(),
             operation: FileOperation::Undo {
                 reverted_id: target_id,
@@ -234,7 +234,7 @@ mod tests {
             id: Uuid::new_v4(),
             parent_ids: Vec::new(),
             author_id: "test-persona".to_string(),
-            timestamp: crate::time::EpochMs::now().millis(),
+            timestamp: continuum_base::time::EpochMs::now().millis(),
             file_path: file_path.to_string(),
             operation: FileOperation::Write,
             forward_diff: make_diff("+new content"),

@@ -187,7 +187,7 @@ impl ServingDaemonModule {
                 parking_lot::Mutex::new(None);
             let now = Some((ledger_credited, planned));
             if say_on_change(&mut *LAST_BRANCH.lock(), now).is_some() {
-                crate::probe!(
+                continuum_base::probe!(
                     target: "continuum_core::modules::serving_daemon", class = "serving.plan.branch",
                     branch = if ledger_credited { "at_rest" } else { "stable" },
                     ledger_credited = ledger_credited,
@@ -236,7 +236,7 @@ impl ServingDaemonModule {
                     );
                     let mut last = LAST_STARVED.lock();
                     if last.as_ref() != Some(&key) || retired {
-                        crate::probe!(
+                        continuum_base::probe!(
                             target: "continuum_core::modules::serving_daemon", class = "serving.plan.below_persona_floor",
                             model = plan.base_model.model_id.as_str(),
                             lanes = plan.lanes as u64,
@@ -296,7 +296,7 @@ impl ServingDaemonModule {
                             parking_lot::Mutex::new(None);
                         let key = (floor.clone(), wanted.clone());
                         if LAST_REFUSED.lock().as_ref() != Some(&key) {
-                            crate::probe!(
+                            continuum_base::probe!(
                                 target: "continuum_core::modules::serving_daemon", class = "serving.plan.demotion_refused",
                                 floor = floor.as_str(),
                                 wanted = wanted.as_str(),
@@ -333,7 +333,7 @@ impl ServingDaemonModule {
                                     geometry,
                                 ) {
                                     Some(plan) => {
-                                        crate::probe!(
+                                        continuum_base::probe!(
                                             target: "continuum_core::modules::serving_daemon", class = "serving.plan.incumbent_adopted",
                                             model = inc,
                                             lanes = plan.lanes as u64,
@@ -347,7 +347,7 @@ impl ServingDaemonModule {
                                         );
                                         self.publish_plan_snapshot(intent_revision, Some(plan));
                                     }
-                                    None => crate::probe!(
+                                    None => continuum_base::probe!(
                                         target: "continuum_core::modules::serving_daemon", class = "serving.plan.incumbent_unplannable",
                                         model = inc,
                                         physical_usable_gb =
@@ -368,7 +368,7 @@ impl ServingDaemonModule {
                     // floor's other half — count only models with a VIABLE served window, so
                     // the 4B whose weights fit but whose window is a dead 2048 stops out-ranking
                     // a serviceable 1.5B — stays card 48f5438a and is owned with its measurements.
-                    crate::probe!(
+                    continuum_base::probe!(
                         target: "continuum_core::modules::serving_daemon", class = "serving.plan.cold_boot_below_floor_served",
                         floor = floor.as_str(),
                         wanted = wanted.as_str(),
@@ -401,7 +401,7 @@ impl ServingDaemonModule {
                             .fetch_add(1, Ordering::Relaxed)
                             .saturating_add(1);
                         if streak < DOWNSHIFT_SUSTAINED_TICKS {
-                            crate::probe!(
+                            continuum_base::probe!(
                                 target: "continuum_core::modules::serving_daemon", class = "serving.plan",
                                 decision = "downshift-held",
                                 incumbent = incumbent.as_deref().unwrap_or("<none>"),
@@ -474,7 +474,7 @@ impl ServingDaemonModule {
                     }
                 };
                 if plan_probe_changed {
-                    crate::probe!(
+                    continuum_base::probe!(
                         target: "continuum_core::modules::serving_daemon", class = "serving.plan",
                         base_model = plan.base_model.model_id.as_str(),
                         lanes = plan.lanes,
@@ -531,7 +531,7 @@ impl ServingDaemonModule {
                     // plan-fingerprint changed, so a standing condition emits at
                     // its transitions, not per tick (#399).
                     if (plan.lanes as u32) < demand.lanes {
-                        crate::probe!(
+                        continuum_base::probe!(
                             target: "continuum_core::modules::serving_daemon", class = "serving.plan",
                             decision = "warm-slot-oversubscribed",
                             resident_personas = demand.lanes,
@@ -570,7 +570,7 @@ impl ServingDaemonModule {
                 // #415 decision on what a deadband means with no spike — but it can
                 // no longer happen invisibly.
                 if spike_of_served.is_none() && plan_probe_changed {
-                    crate::probe!(
+                    continuum_base::probe!(
                         target: "continuum_core::modules::serving_daemon", class = "serving.plan.spike_missing",
                         base_model = plan.base_model.model_id.as_str(),
                         candidates = candidates.len(),
@@ -601,7 +601,7 @@ impl ServingDaemonModule {
                     }
                 };
                 if entered_empty {
-                    crate::probe!(
+                    continuum_base::probe!(
                         target: "continuum_core::modules::serving_daemon", class = "serving.plan",
                         candidates = 0usize,
                         "no servable model on disk — serving plan empty",

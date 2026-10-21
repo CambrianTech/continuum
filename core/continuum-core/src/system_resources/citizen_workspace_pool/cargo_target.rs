@@ -86,7 +86,7 @@ impl Drop for HeldCargoLocks {
     fn drop(&mut self) {
         for lock in &self.0 {
             if let Err(error) = lock.unlock() {
-                crate::probe!(
+                continuum_base::probe!(
                     class = "disk.citizens.residue",
                     error = %error,
                     "a held cargo build lock did not unlock; it is released when the last descriptor closes"

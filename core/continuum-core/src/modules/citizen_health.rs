@@ -21,7 +21,7 @@
 //! Cadence follows the RTOS shape: the module's own `tick_interval`, no task of its own
 //! ([[docs/architecture/CONCURRENCY-STYLE-GUIDE.md]]).
 
-use crate::time::EpochMs;
+use continuum_base::time::EpochMs;
 use crate::runtime::{CommandResult, CommandSchema, ModuleConfig, ModulePriority, ServiceModule};
 use std::any::Any;
 use std::sync::atomic::{AtomicU64, Ordering};

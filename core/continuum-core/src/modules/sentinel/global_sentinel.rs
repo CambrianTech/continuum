@@ -164,7 +164,7 @@ impl SentinelModule {
             sentinel_type: sentinel_type.clone(),
             status: SentinelStatus::Running,
             progress: 0,
-            start_time: crate::time::EpochMs::now().millis(),
+            start_time: continuum_base::time::EpochMs::now().millis(),
             end_time: None,
             exit_code: None,
             error: None,
@@ -307,7 +307,7 @@ impl SentinelModule {
 
             // Update handle status
             if let Some(mut entry) = sentinels.get_mut(&handle_id_clone) {
-                let now = crate::time::EpochMs::now().millis();
+                let now = continuum_base::time::EpochMs::now().millis();
 
                 let (final_status, error_msg) = match result {
                     Ok((exit_code, _output)) => {

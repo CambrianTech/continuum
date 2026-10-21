@@ -233,7 +233,7 @@ fn checkpoint_protects(path: &Path, handle: &str) -> bool {
     match crate::cognition::persona_workspace::persisted_result_handles(persona_id) {
         Ok(handles) => handles.contains(handle),
         Err(error) => {
-            crate::probe!(
+            continuum_base::probe!(
                 class = "tool.output.evict_fail_closed",
                 persona_id = %persona_id,
                 error = %error,
@@ -315,7 +315,7 @@ fn retain_in(root: &Path, persona_id: Uuid, content: &str, pin: &LivePin) -> Res
 }
 
 fn unretained(content: &str, error: &std::io::Error) -> ResultCustody {
-    crate::probe!(
+    continuum_base::probe!(
         class = "tool.output.unsaved",
         chars = %content.chars().count(),
         error = %error,
@@ -372,7 +372,7 @@ fn write_in(
         file.write_all(content.as_bytes())?;
         file.sync_all()?;
         drop(file);
-        crate::fs_portable::durable_publish_new(&staging, &path)
+        continuum_base::fs_portable::durable_publish_new(&staging, &path)
     };
     if let Err(error) = publish() {
         let _ = fs::remove_file(&staging);
@@ -436,7 +436,7 @@ fn existing_matches(path: &Path, expected: &[u8]) -> std::io::Result<bool> {
     if offset != expected.len() {
         return Err(mismatch());
     }
-    crate::fs_portable::sync_publication(reader.get_ref(), path)?;
+    continuum_base::fs_portable::sync_publication(reader.get_ref(), path)?;
     Ok(true)
 }
 fn whole_or_handle_in(root: &Path, full: String, share: usize, persona_id: Uuid, pin: &LivePin) -> Fitted {
@@ -454,7 +454,7 @@ fn whole_or_handle_in(root: &Path, full: String, share: usize, persona_id: Uuid,
             // without a write). What a person gets from `head` she gets here: the first lines,
             // the line count, and the handle for the rest. Never passed off as the whole.
             let (head, head_lines) = head_of(&full, share / HEAD_SHARE_DENOM);
-            crate::probe!(
+            continuum_base::probe!(
                 class = "tool.output.spilled",
                 handle = %r.handle,
                 chars = %chars,
@@ -572,7 +572,7 @@ fn head_of(full: &str, max_chars: usize) -> (String, usize) {
 /// [`Fitted::RetentionFailed`]: the failure said first, then the whole result.
 fn unsaved_whole(full: String, share: usize, error: &std::io::Error) -> Fitted {
     let chars = full.chars().count();
-    crate::probe!(
+    continuum_base::probe!(
         class = "tool.output.unsaved",
         chars = %chars,
         share = %share,
@@ -656,7 +656,7 @@ pub fn read_extent(
         .min(capacity)
         .min((total_bytes - offset).min(usize::MAX as u64) as usize);
     let mut bytes = vec![0; len];
-    crate::fs_portable::read_exact_at(&file, &mut bytes, offset)
+    continuum_base::fs_portable::read_exact_at(&file, &mut bytes, offset)
         .map_err(|e| format!("read saved extent at {offset}: {e}"))?;
     let end = offset + len as u64;
     let (content, encoding) = match String::from_utf8(bytes) {
@@ -734,7 +734,7 @@ impl std::io::Read for ExtentReader<'_> {
         let n = buf
             .len()
             .min(self.end.saturating_sub(self.offset).min(usize::MAX as u64) as usize);
-        crate::fs_portable::read_exact_at(self.file, &mut buf[..n], self.offset)?;
+        continuum_base::fs_portable::read_exact_at(self.file, &mut buf[..n], self.offset)?;
         self.offset += n as u64;
         Ok(n)
     }

@@ -28,7 +28,7 @@ pub(super) fn sweep_orphan_eval_roots(parent: &std::path::Path, keep: &std::path
             continue;
         }
         match std::fs::remove_dir_all(&path) {
-            Ok(()) => crate::probe!(
+            Ok(()) => continuum_base::probe!(
                 class = "eval.workspace.orphan_swept",
                 root = path.display().to_string().as_str(),
                 "orphaned exam world from a killed process removed — Drop cannot run \

@@ -60,7 +60,7 @@ pub(super) fn prewarm_swe_envs(prepared: &[PreparedCard]) {
                     match crate::cognition::swe_bench::ensure_grade_checkout(&inst).await {
                         Ok(dir) => dir,
                         Err(e) => {
-                            crate::probe!(
+                            continuum_base::probe!(
                                 class = "benchmark.env.prewarm_failed",
                                 instance = %inst.instance_id,
                                 stage = "checkout",
@@ -73,12 +73,12 @@ pub(super) fn prewarm_swe_envs(prepared: &[PreparedCard]) {
                         }
                     };
                 match crate::cognition::swe_bench::ensure_env(&inst, &checkout).await {
-                    Ok(_) => crate::probe!(
+                    Ok(_) => continuum_base::probe!(
                         class = "benchmark.env.prewarmed",
                         instance = %inst.instance_id,
                         "env ready ahead of the driver"
                     ),
-                    Err(e) => crate::probe!(
+                    Err(e) => continuum_base::probe!(
                         class = "benchmark.env.prewarm_failed",
                         instance = %inst.instance_id,
                         stage = "env",
@@ -235,7 +235,7 @@ impl BenchmarkDispatch {
             .await
             {
                 if s.ready && s.active_model.as_deref() == Some(model_id) {
-                    crate::probe!(
+                    continuum_base::probe!(
                         class = "benchmark.recipe.model_ready",
                         model = model_id,
                         waited_ms = started.elapsed().as_millis() as u64,
@@ -251,7 +251,7 @@ impl BenchmarkDispatch {
                     RECIPE_SERVE_DEADLINE.as_secs()
                 )));
             }
-            crate::probe!(
+            continuum_base::probe!(
                 class = "benchmark.recipe.awaiting_model",
                 model = model_id,
                 waited_ms = started.elapsed().as_millis() as u64,

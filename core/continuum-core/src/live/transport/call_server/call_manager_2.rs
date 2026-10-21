@@ -17,7 +17,7 @@ impl CallManager {
             .entry((call_id.to_string(), user_id.to_string(), reason))
             .or_insert_with(|| super::super::pump_tally::PumpTally::new(std::time::Duration::from_secs(1)));
         if let Some(sum) = t.record(1, 0) {
-            crate::probe!(
+            continuum_base::probe!(
                 class = "live.stt.audio_dropped",
                 module = "live",
                 call_id = call_id,
@@ -46,7 +46,7 @@ impl CallManager {
             .entry((source, user_id.to_string()))
             .or_insert_with(|| super::super::pump_tally::PumpTally::new(std::time::Duration::from_secs(1)));
         if let Some(sum) = t.record(samples.len() as u64, peak) {
-            crate::probe!(
+            continuum_base::probe!(
                 class = "live.stt.level",
                 module = "live",
                 source = source,

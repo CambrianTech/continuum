@@ -27,7 +27,7 @@ use crate::runtime::{
     CommandResult, LateBound, ModuleConfig, ModuleContext, ModuleLogger, ModulePriority,
     ServiceModule,
 };
-use crate::secrets::get_secret;
+use continuum_base::secrets::get_secret;
 use async_trait::async_trait;
 use once_cell::sync::Lazy;
 use serde_json::Value;

@@ -7,7 +7,7 @@
 //! and the eval driver (`drive_to_settle`, which loops because the grader replaces
 //! the metronome). Live and eval make a turn the IDENTICAL way; only pacing differs.
 
-use crate::time::EpochMs;
+use continuum_base::time::EpochMs;
 use std::sync::Arc;
 use uuid::Uuid;
 

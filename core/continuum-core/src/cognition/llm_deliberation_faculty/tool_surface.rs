@@ -206,7 +206,7 @@ impl LlmDeliberationFaculty {
             .map(|(_, spec)| spec.clone())
             .collect();
         if granted == 0 {
-            crate::probe!(
+            continuum_base::probe!(
                 class = "delib.surface.room_affordances_unmatched",
                 persona = %self.persona_name,
                 room = %ws.activity_room_id,
@@ -272,7 +272,7 @@ impl LlmDeliberationFaculty {
             return;
         }
         let tools = self.describe_tool_tokens();
-        crate::probe!(
+        continuum_base::probe!(
             class = "persona.window.cannot_host_tools",
             persona = %self.persona_name,
             window = window,

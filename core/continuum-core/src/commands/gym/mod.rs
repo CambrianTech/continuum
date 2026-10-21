@@ -295,7 +295,7 @@ impl ActionCommand for GymMine {
         std::fs::write(&out_path, lines)
             .map_err(|e| CommandError::Internal(format!("write {}: {e}", out_path.display())))?;
 
-        crate::probe!(
+        continuum_base::probe!(
             class = "gym.mine",
             repo = %p.repo_path,
             mined = mined.tasks.len(),

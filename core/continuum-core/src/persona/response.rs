@@ -30,7 +30,7 @@
 //!   - <think> parsing is a hot path on every response; regex/str
 //!     manipulation in Rust is ~100x what TS does on the same input.
 
-use crate::time::EpochMs;
+use continuum_base::time::EpochMs;
 use crate::cognition::tool_executor::types::MediaItemLite;
 use crate::cognition::{analyze, AnalysisInput, PersonaSlot, SharedAnalysis};
 use crate::persona::turn_context::TurnContext;
@@ -259,7 +259,7 @@ async fn respond_inner(
     // responding to what, plus the size of the contextual inputs the
     // brain will see. See docs/architecture/RTOS-DEBUGGER-PROBES.md
     // class taxonomy for the stable name.
-    crate::probe!(
+    continuum_base::probe!(
         class = "persona.response.enter",
         persona = %input.persona.display_name,
         persona_id = %input.persona.persona_id,
@@ -294,7 +294,7 @@ async fn respond_inner(
     // `probe!(class = "persona.response.analyze.result", ...)` events
     // stay — they carry semantic data (from_cache, matched_angle,
     // intent) that the bare timing probe doesn't.
-    let analysis = crate::time_probe!(
+    let analysis = continuum_base::time_probe!(
         "persona.respond.analyze",
         analyze(AnalysisInput {
             message_id: input.message_id,
@@ -343,7 +343,7 @@ async fn respond_inner(
         .get(&input.persona.specialty)
         .cloned()
         .unwrap_or_default();
-    crate::probe!(
+    continuum_base::probe!(
         class = "persona.response.analyze.result",
         persona = %input.persona.display_name,
         specialty = %input.persona.specialty,
@@ -382,7 +382,7 @@ async fn respond_inner(
     // `persona.respond` / `persona.respond.analyze` for full-stack
     // turn breakdowns.
     let raw_response =
-        crate::time_probe!("persona.respond.run_render", run_render(input, &analysis))?;
+        continuum_base::time_probe!("persona.respond.run_render", run_render(input, &analysis))?;
     let inference_ms = EpochMs::now().millis().saturating_sub(inference_start);
     trace.record(
         SEAM_INFERENCE,
@@ -404,7 +404,7 @@ async fn respond_inner(
     // can reconstruct the model's actual output verbatim. Per
     // [[jtag-probes-are-rtos-debugger]]: "what's going in and
     // out of an LLM."
-    crate::probe!(
+    continuum_base::probe!(
         class = "persona.response.render.raw",
         persona = %input.persona.display_name,
         model_used = %raw_response.model_used,
@@ -451,7 +451,7 @@ async fn respond_inner(
         // the PASS affordance. The `reason` is observable so a
         // training loop can analyze when personas use the signal
         // (good silences vs unnecessary ones).
-        crate::probe!(
+        continuum_base::probe!(
             class = "persona.response.exit.silent",
             persona = %input.persona.display_name,
             persona_id = %input.persona.persona_id,
@@ -473,7 +473,7 @@ async fn respond_inner(
     // RTOS-debugger breakpoint: the persona's final answer to
     // "what does this turn produce?" Pair with `persona.response.enter`
     // (same persona_id + message_id) for a complete turn record.
-    crate::probe!(
+    continuum_base::probe!(
         class = "persona.response.exit.spoke",
         persona = %input.persona.display_name,
         persona_id = %input.persona.persona_id,
@@ -624,7 +624,7 @@ async fn run_render(
     // [[jtag-probes-are-rtos-debugger]]: "what's going in and out
     // of an LLM." Going-in lives here; going-out lives in the
     // `persona.response.render.raw` probe above.
-    crate::probe!(
+    continuum_base::probe!(
         class = "persona.response.render.prompt",
         persona = %input.persona.display_name,
         specialty = %input.persona.specialty,
@@ -722,7 +722,7 @@ async fn run_render(
         crate::capacity::lease::Leasability::LocalOnly
     };
     let lane = crate::capacity::lease::decide_render_lane(leasability);
-    crate::probe!(
+    continuum_base::probe!(
         class = "capacity.lane_decision",
         persona = %input.persona.persona_id,
         model = input.model.as_str(),

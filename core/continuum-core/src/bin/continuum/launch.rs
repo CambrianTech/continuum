@@ -67,11 +67,11 @@ pub(super) fn build_env_cuda(repo: &Path) -> Result<BuildEnvCuda, String> {
 }
 
 pub(super) fn locate_bash() -> Result<PathBuf, String> {
-    // Body moved to `continuum_core::shell_portable` — a private `fn` here could
+    // Body moved to `continuum_base::shell_portable` — a private `fn` here could
     // not be reused, so `code/shell` (a persona's HANDS) grew the identical
     // WSL-shim bug one directory away and stayed broken after this was fixed.
     // A portability decision belongs in exactly one place.
-    continuum_core::shell_portable::locate_bash()
+    continuum_base::shell_portable::locate_bash()
 }
 
 /// What the CALLER needs out of a launch — not what happens to be on disk.

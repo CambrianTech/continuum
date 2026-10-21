@@ -16,7 +16,7 @@ impl DreamConsolidationRegion {
         let (store, storage_available) = match self.source.review_boundary_store(persona_id) {
             Ok(store) => (store, true),
             Err(error) => {
-                crate::probe!(class = "dream.review_recovery_deferred", persona = %persona_id, error = %error,
+                continuum_base::probe!(class = "dream.review_recovery_deferred", persona = %persona_id, error = %error,
                     "resident credit storage unavailable; retained boundaries will retry");
                 (None, false)
             }
@@ -56,7 +56,7 @@ impl DreamConsolidationRegion {
                         }
                     }
                     error => {
-                        crate::probe!(class = "dream.review_recovery_deferred", persona = %persona_id, error = ?error,
+                        continuum_base::probe!(class = "dream.review_recovery_deferred", persona = %persona_id, error = ?error,
                             "accepted credit remains durable; existing governor retries recovery");
                     }
                 }
@@ -94,10 +94,10 @@ impl DreamConsolidationRegion {
         // rehearsed knowledge (high access_count) stays strong.
         let decay = crate::persona::decay_tick::apply_decay_sweep(
             reflector.admission.recall_metadata(),
-            crate::time::EpochMs::now().millis(),
+            continuum_base::time::EpochMs::now().millis(),
         );
         if decay.engrams_decayed > 0 {
-            crate::probe!(
+            continuum_base::probe!(
                 class = "hippocampus.decay",
                 persona = %persona_id,
                 scanned = decay.engrams_scanned,
@@ -149,7 +149,7 @@ impl DreamConsolidationRegion {
         if crate::cognition::eval::live_eval_run_id().is_some()
             || !crate::cognition::eval::detached_evals_in_flight().is_empty()
         {
-            crate::probe!(
+            continuum_base::probe!(
                 class = "dream.deferred_for_exam",
                 persona = %persona_id,
                 "measured round in flight — dream deferred (slot KV courtesy)"
@@ -237,9 +237,9 @@ impl DreamConsolidationRegion {
                     crate::inference::measured_hold::subscribe()
                         .borrow()
                         .is_some(),
-                    crate::time::EpochMs::now().millis(),
+                    continuum_base::time::EpochMs::now().millis(),
                 ) {
-                    crate::probe!(
+                    continuum_base::probe!(
                         class = "dream.awaiting_boredom",
                         persona = %persona_id,
                         "dream pass parked on HER activity gate — arises only in her sustained idle"
@@ -247,7 +247,7 @@ impl DreamConsolidationRegion {
                 }
             }
             if trigger == DreamTrigger::CardBoundary {
-                crate::probe!(
+                continuum_base::probe!(
                     class = "dream.card_boundary",
                     persona = %persona_id,
                     "a settled card is a consolidation boundary — one bounded pass, no boredom wait, not paged out by her next act"
@@ -277,7 +277,7 @@ impl DreamConsolidationRegion {
                         .await
                     }
                     other => {
-                        crate::probe!(class = "dream.review_boundary_retry", persona = %persona_id,
+                        continuum_base::probe!(class = "dream.review_boundary_retry", persona = %persona_id,
                             acceptances = boundary_ids.len(), timed_out = other.is_err(),
                             "unfinished episode clusters retain their boundary for the existing governor");
                     }
@@ -316,7 +316,7 @@ impl DreamConsolidationRegion {
                     reviewed,
                 ) => {}
                 _ = crate::cognition::activity_gate::wait_for_engagement_of(persona_id) => {
-                    crate::probe!(
+                    continuum_base::probe!(
                         class = "dream.paged_out",
                         persona = %persona_id,
                         "activity arrived mid-dream — dream cancelled and discarded (re-dreamable)"
@@ -351,7 +351,7 @@ impl DreamConsolidationRegion {
         // — the lane stays free for reactive responding + real work rather than
         // a back-to-back review storm (see REVIEW_ONLY_COOLDOWN_MS). The first
         // pass (no prior timestamp) is always allowed.
-        let now = crate::time::EpochMs::now().millis();
+        let now = continuum_base::time::EpochMs::now().millis();
         if let Some(&last) = self.last_review_ms.lock().unwrap().get(&persona_id) {
             if now.saturating_sub(last) < REVIEW_ONLY_COOLDOWN_MS {
                 return None;
@@ -393,7 +393,7 @@ impl DreamConsolidationRegion {
             tokio::select! {
                 _ = review_pass(reflector, persona_id, beliefs, reviewed) => {}
                 _ = crate::cognition::activity_gate::wait_for_engagement_of(persona_id) => {
-                    crate::probe!(
+                    continuum_base::probe!(
                         class = "dream.review_paged_out",
                         persona = %persona_id,
                         "activity arrived mid-review: the review is cancelled and its beliefs stay unreviewed for the next pass"
@@ -427,7 +427,7 @@ impl DreamConsolidationRegion {
         permit: &mut Option<DreamPermit>,
     ) -> Option<TickOutcome> {
         // Rest gate — trickle, never storm (a pass launches a training job).
-        let now = crate::time::EpochMs::now().millis();
+        let now = continuum_base::time::EpochMs::now().millis();
         let last = self
             .last_consolidated_ms
             .lock()
@@ -490,7 +490,7 @@ impl DreamConsolidationRegion {
                     if let Some(ts) = v.get("latest_consolidated_ts").and_then(|t| t.as_str()) {
                         watermark.lock().unwrap().insert(persona_id, ts.to_string());
                     }
-                    crate::probe!(
+                    continuum_base::probe!(
                         class = "dream.consolidate_received",
                         persona = %persona_id,
                         consolidated = v.get("consolidated").and_then(|c| c.as_u64()).unwrap_or(0),

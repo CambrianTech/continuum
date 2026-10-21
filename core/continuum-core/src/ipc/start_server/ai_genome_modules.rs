@@ -45,7 +45,7 @@ pub(super) fn register_ai_provider_and_genome_modules(
         // adapters (Mistral, Anthropic, Fireworks, DeepSeek,
         // Together) plug in here as their impls land — same pattern,
         // gate on the matching `*_API_KEY` secret.
-        if crate::secrets::get_secret("OPENAI_API_KEY").is_some() {
+        if continuum_base::secrets::get_secret("OPENAI_API_KEY").is_some() {
             ft_registry.register(std::sync::Arc::new(OpenAIFineTuningAdapter::new()));
             log_info!(
                 "ipc",

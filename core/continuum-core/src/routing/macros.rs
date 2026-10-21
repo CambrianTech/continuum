@@ -39,7 +39,8 @@
 /// establishes) to whatever scope `stack!()` is called from.
 ///
 /// ```ignore
-/// use continuum_core::{stack, probe};
+/// use continuum_core::stack;
+/// use continuum_base::probe;
 ///
 /// // Typical pattern: attach the URI stack to an error probe so the
 /// // operator looking at /debug/probes/error/stream sees the chain
@@ -81,14 +82,14 @@ mod tests {
 
     #[test]
     fn probe_with_class_only_message_compiles() {
-        crate::probe!(class = "latency", "turn complete");
+        continuum_base::probe!(class = "latency", "turn complete");
     }
 
     #[test]
     fn probe_with_class_and_fields_compiles() {
         let id: u64 = 42;
         let elapsed: u64 = 1697;
-        crate::probe!(
+        continuum_base::probe!(
             class = "latency",
             turn_id = id,
             duration_ms = elapsed,
@@ -98,7 +99,7 @@ mod tests {
 
     #[test]
     fn probe_decision_class_compiles() {
-        crate::probe!(
+        continuum_base::probe!(
             class = "decision",
             action = "evict-lora",
             target = "typescript-expertise",
@@ -110,12 +111,12 @@ mod tests {
     fn probe_state_class_compiles() {
         let working_set_size: usize = 12;
         let recall_candidates: usize = 23;
-        crate::probe!(class = "state", working_set_size, recall_candidates);
+        continuum_base::probe!(class = "state", working_set_size, recall_candidates);
     }
 
     #[test]
     fn time_block_returns_block_value() {
-        let result = crate::time_sync!("test_phase", {
+        let result = continuum_base::time_sync!("test_phase", {
             let x = 21;
             x * 2
         });
@@ -124,7 +125,7 @@ mod tests {
 
     #[test]
     fn time_expression_returns_expression_value() {
-        let result = crate::time_sync!("test_phase", 21 * 2);
+        let result = continuum_base::time_sync!("test_phase", 21 * 2);
         assert_eq!(result, 42);
     }
 
@@ -146,7 +147,7 @@ mod tests {
             .build()
             .expect("current-thread runtime");
         let result =
-            runtime.block_on(async { crate::time_probe!("test_phase", produces_forty_two()) });
+            runtime.block_on(async { continuum_base::time_probe!("test_phase", produces_forty_two()) });
         assert_eq!(result, 42);
     }
 
@@ -165,7 +166,7 @@ mod tests {
             .build()
             .expect("current-thread runtime");
         let result: Result<i32, &str> =
-            runtime.block_on(async { crate::time_probe!("test_error_path", fails()) });
+            runtime.block_on(async { continuum_base::time_probe!("test_error_path", fails()) });
         assert_eq!(result, Err("intentional"));
     }
 
@@ -183,7 +184,7 @@ mod tests {
             .expect("current-thread runtime");
         let result = runtime.block_on(async {
             let outer =
-                crate::time_probe!("outer", async { crate::time_probe!("inner", doubled(21)) });
+                continuum_base::time_probe!("outer", async { continuum_base::time_probe!("inner", doubled(21)) });
             outer
         });
         assert_eq!(result, 42);
@@ -255,10 +256,10 @@ mod tests {
         // Mechanic pattern: probe a measurement that itself measures
         // a sub-block. The nested time! span becomes a child of the
         // outer probe's span; the timing flamegraph shows the chain.
-        let total = crate::time_sync!("outer", {
-            let inner_result = crate::time_sync!("inner", { 21 + 21 });
-            crate::probe!(class = "state", inner = inner_result);
-            crate::probe!(target: "continuum_core::inference::llama_server", class = "state", inner = inner_result);
+        let total = continuum_base::time_sync!("outer", {
+            let inner_result = continuum_base::time_sync!("inner", { 21 + 21 });
+            continuum_base::probe!(class = "state", inner = inner_result);
+            continuum_base::probe!(target: "continuum_core::inference::llama_server", class = "state", inner = inner_result);
             inner_result
         });
         assert_eq!(total, 42);

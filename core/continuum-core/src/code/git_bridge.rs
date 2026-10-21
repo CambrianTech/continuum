@@ -306,7 +306,7 @@ pub async fn git_sync_from_shared(
         .trim()
         .to_string();
     if crate::modules::card_staging::is_card_branch(&branch) {
-        crate::probe!(
+        continuum_base::probe!(
             class = "workspace.sync.skipped_card_branch",
             root = %workspace_root.display(),
             branch = %branch,
@@ -369,7 +369,7 @@ pub async fn git_sync_from_shared(
         // without staging anything still aborts loud, workspace intact.
         match resolve_conflicts_shared_wins(workspace_root).await {
             Ok(true) => {
-                crate::probe!(
+                continuum_base::probe!(
                     class = "workspace.sync.conflicts_resolved",
                     root = %workspace_root.display(),
                     "merge blocked on gitlink/modify-delete conflicts — resolved shared-wins and concluded"

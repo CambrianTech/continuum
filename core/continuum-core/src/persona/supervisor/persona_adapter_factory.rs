@@ -80,7 +80,7 @@ impl PersonaAdapterFactory for ServedModelPersonaAdapterFactory {
             "serving daemon reports ready but no active model (daemon invariant violated)"
                 .to_string()
         })?;
-        crate::probe!(
+        continuum_base::probe!(
             class = "persona.upstart.bind",
             persona = %profile.persona_name,
             persona_id = %profile.persona_id,

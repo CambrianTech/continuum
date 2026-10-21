@@ -328,7 +328,7 @@ impl ExpertBank {
         }
         debug_assert_eq!(buf.len() as u64, self.record_bytes);
         let offset = expert as u64 * self.record_bytes;
-        crate::fs_portable::read_exact_at(&self.file, buf, offset).map_err(|source| {
+        continuum_base::fs_portable::read_exact_at(&self.file, buf, offset).map_err(|source| {
             ContainerError::BankIo {
                 path: self.path.clone(),
                 source,

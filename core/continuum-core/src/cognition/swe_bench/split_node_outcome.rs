@@ -480,7 +480,7 @@ impl Drop for GradeCheckoutHold {
         let remove = move || {
             if let Err(e) = std::fs::remove_dir_all(&dir) {
                 if e.kind() != std::io::ErrorKind::NotFound {
-                    crate::probe!(class = "swe.grade_checkout_release_failed", dir = %dir.display(), error = %e);
+                    continuum_base::probe!(class = "swe.grade_checkout_release_failed", dir = %dir.display(), error = %e);
                 }
             }
         };
@@ -510,7 +510,7 @@ pub(super) fn sweep_orphan_grade_checkouts(root: &Path, live: &std::collections:
         }
     }
     if removed > 0 {
-        crate::probe!(class = "swe.grade_checkouts_swept", root = %root.display(), removed = removed);
+        continuum_base::probe!(class = "swe.grade_checkouts_swept", root = %root.display(), removed = removed);
     }
     removed
 }

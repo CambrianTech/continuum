@@ -597,7 +597,7 @@ impl InferenceCoordinator {
     pub fn close_lane(&self, handle: &HandleRef) -> Result<bool, CoordinatorError> {
         let Some((_, lane)) = self.lanes.remove(&handle.id.as_uuid()) else {
             self.capture_sink.record(LaneCaptureEvent::LaneClosed {
-                captured_at_ms: crate::time::EpochMs::now().millis(),
+                captured_at_ms: continuum_base::time::EpochMs::now().millis(),
                 persona: PeerId::from_uuid(Uuid::nil()),
                 task: TaskKind::Chat,
                 handle_id: handle.id.as_uuid(),
@@ -612,7 +612,7 @@ impl InferenceCoordinator {
         let _ = self.footprint.release_lease(&lease_id);
         let _ = self.handle_store.close(handle);
         self.capture_sink.record(LaneCaptureEvent::LaneClosed {
-            captured_at_ms: crate::time::EpochMs::now().millis(),
+            captured_at_ms: continuum_base::time::EpochMs::now().millis(),
             persona,
             task,
             handle_id: handle.id.as_uuid(),

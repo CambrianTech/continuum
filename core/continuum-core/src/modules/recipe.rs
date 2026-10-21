@@ -69,7 +69,7 @@ impl ServiceModule for RecipeModule {
             .ok_or_else(|| "recipe: data module type mismatch".to_string())?;
         let runs = RecipeRuns::open(data.state.get_adapter("main").await?).await?;
         let (recovery, interrupted) = runs.expose_interrupted().await?;
-        crate::probe!(
+        continuum_base::probe!(
             class = "recipe.boot.exposed",
             recovery_required = recovery as u64,
             interrupted = interrupted as u64,

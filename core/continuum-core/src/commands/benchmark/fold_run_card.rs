@@ -486,7 +486,7 @@ impl ActionCommand for BenchmarkValidate {
                 let t: String = e.chars().take(500).collect();
                 t
             });
-            crate::probe!(
+            continuum_base::probe!(
                 class = "benchmark.validate.class",
                 repo = %repo,
                 era = %era,
@@ -525,7 +525,7 @@ impl ActionCommand for BenchmarkValidate {
         // was red). Written per (dataset × machine_class) because a coverage
         // claim is only true for the platform that earned it.
         if let Err(e) = write_coverage_map(name, &result) {
-            crate::probe!(
+            continuum_base::probe!(
                 class = "benchmark.validate.map_unwritten",
                 error = %e,
                 "coverage map could not be persisted — dispatch keeps its \

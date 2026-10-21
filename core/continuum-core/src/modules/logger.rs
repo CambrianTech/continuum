@@ -464,7 +464,7 @@ fn write_header(
          \n",
         component,
         category,
-        crate::time::EpochMs::now().millis(),
+        continuum_base::time::EpochMs::now().millis(),
         timestamp,
         std::process::id()
     );

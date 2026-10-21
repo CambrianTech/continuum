@@ -43,7 +43,7 @@ pub(crate) fn over_affordable_receipt(
     let affordable_tokens =
         super::context_budget::ContextBudget::from_window(context_window).affordable_tokens();
     if let Some(affordable) = affordable_tokens.filter(|a| framing_tokens + tool_tokens > *a) {
-        crate::probe!(
+        continuum_base::probe!(
             class = "delib.tool_surface.over_affordable",
             persona = %persona,
             surface_reason = ?surface_reason,

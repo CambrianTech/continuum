@@ -44,7 +44,7 @@
 //!    and no fresh point above contradicts it — one flap per model per hour at most.
 //! 3. The clamp probe fires when the clamp CHANGES, not every planning tick.
 
-use crate::time::EpochMs;
+use continuum_base::time::EpochMs;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::LazyLock;
@@ -234,7 +234,7 @@ pub fn observe(model: &str, inflight: u32, measured_tps: f64, expected_tps: f64)
     let now = EpochMs::now().millis();
     // A decode measured inside our own transients measures them, not the lane.
     if let Some(why) = own_transient(now) {
-        crate::probe!(
+        continuum_base::probe!(
             class = "serving.decode_knee.sample_skipped",
             model = model,
             inflight = inflight as u64,
@@ -252,7 +252,7 @@ pub fn observe(model: &str, inflight: u32, measured_tps: f64, expected_tps: f64)
     let after = curve.knee(DECODE_FLOOR_TPS, now);
     let moved = before != after;
     if moved {
-        crate::probe!(
+        continuum_base::probe!(
             class = "serving.decode_knee.moved",
             model = model,
             from = before.map(|k| k as u64).unwrap_or(0),

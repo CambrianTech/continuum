@@ -1,7 +1,7 @@
 //! Public submission/review commands on the existing work owner. Artifact
 //! references carry content identity; publication does not imply blob verification.
 
-use crate::time::EpochMs;
+use continuum_base::time::EpochMs;
 use super::*;
 use crate::persona::training_producer::reviewed::{self, SubmissionSelection};
 use crate::runtime::{CommandExecutor, InProcessTransport, LateBound};

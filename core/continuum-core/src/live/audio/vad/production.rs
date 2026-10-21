@@ -102,7 +102,7 @@ impl SentenceBuffer {
             silence_frames: 0,
             speech_frames: 0,
             config,
-            frame_size: crate::audio_constants::AUDIO_FRAME_SIZE, // 512 (32ms @ 16kHz) — matches Silero's trained chunk size
+            frame_size: continuum_base::audio_constants::AUDIO_FRAME_SIZE, // 512 (32ms @ 16kHz) — matches Silero's trained chunk size
         }
     }
 
@@ -304,7 +304,7 @@ impl Default for ProductionVAD {
 }
 
 fn take_analysis_frame(pending: &mut std::collections::VecDeque<i16>) -> Option<Vec<i16>> {
-    let size = crate::audio_constants::AUDIO_FRAME_SIZE;
+    let size = continuum_base::audio_constants::AUDIO_FRAME_SIZE;
     if pending.len() < size { return None; }
     Some(pending.drain(..size).collect())
 }

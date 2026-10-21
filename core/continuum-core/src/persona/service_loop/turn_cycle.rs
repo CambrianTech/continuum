@@ -53,7 +53,7 @@ pub(super) async fn run_turn_cycle(
             let _genome_pin = {
                 let pin = crate::genome::gene_trial::GenomeRestore::snapshot(std::sync::Arc::clone(&cycle));
                 if let Some(genes) = crate::genome::gene_trial::live_genes(ctx.identity.peer_id.as_uuid()) {
-                    crate::probe!(
+                    continuum_base::probe!(
                         class = "persona.genome.turn_genes",
                         persona = %ctx.identity.agent_name,
                         room = %turn_room,
@@ -163,7 +163,7 @@ pub(super) async fn run_turn_cycle(
                 None => false,
             };
             if holds_work && !attention.requires_priority() {
-                crate::probe!(
+                continuum_base::probe!(
                     class = "persona.turn.work_holder_bypasses_ambient_permit",
                     persona = %ctx.identity.agent_name,
                     "a mind holding a card goes straight to the lane gate — the ambient anti-stampede permit is for minds deciding whether a room line is theirs"
@@ -175,7 +175,7 @@ pub(super) async fn run_turn_cycle(
                 match crate::cognition::resource_admission::try_hold_ambient_turn() {
                     Some(permit) => Some(permit),
                     None => {
-                        crate::probe!(
+                        continuum_base::probe!(
                             class = "persona.turn.ambient_yielded",
                             persona = %ctx.identity.agent_name,
                             lamport = msg.lamport,
@@ -283,7 +283,7 @@ pub(super) async fn run_turn_cycle(
             // conversation" and submit the turn immediately (Astra/S6 on 799b8fe9).
             let turn_credit = held_card.credit.clone();
             let turn_generation_receipts = settled_receipts;
-            crate::probe!(
+            continuum_base::probe!(
                 class = "training.hook.directed_turn",
                 persona = %ctx.identity.agent_name,
                 acts = turn_act_count as u64,
@@ -306,7 +306,7 @@ pub(super) async fn run_turn_cycle(
             // numbers the eval gym accumulates per task. Observability only; the
             // turn proceeds identically whether or not anyone is watching.
             if let Some(m) = turn_metrics {
-                crate::probe!(
+                continuum_base::probe!(
                     class = "persona.turn.metrics",
                     persona = %ctx.identity.agent_name,
                     lamport = msg.lamport,
@@ -328,7 +328,7 @@ pub(super) async fn run_turn_cycle(
                     turn_generation_receipts,
                 }),
                 crate::cognition::act_observe::SettleStep::Acted { calls, intent } => {
-                    crate::probe!(
+                    continuum_base::probe!(
                         class = "persona.turn.acted",
                         persona = %ctx.identity.agent_name,
                         lamport = msg.lamport,
@@ -345,7 +345,7 @@ pub(super) async fn run_turn_cycle(
                     // Every turn ends on a probe (Kimi, 5090, 2026-10-04: a turn on an
                     // addressed line ended with no outcome on the probe stream, so a
                     // chosen silence and a failed act read the same).
-                    crate::probe!(
+                    continuum_base::probe!(
                         class = "persona.turn.act_unfulfilled",
                         persona = %ctx.identity.agent_name,
                         lamport = msg.lamport,
@@ -375,7 +375,7 @@ pub(super) async fn run_turn_cycle(
                         Some(r) => (r.starts_with(crate::cognition::workspace::GATE_REFUSAL_PREFIX), r),
                         None => (false, "no-decision"),
                     };
-                    crate::probe!(
+                    continuum_base::probe!(
                         class = "persona.turn.silent",
                         persona = %ctx.identity.agent_name,
                         lamport = msg.lamport,
@@ -412,7 +412,7 @@ pub(super) async fn run_turn_cycle(
                         error = %error,
                         "deliberation inference FAILED — skipping turn (not a chosen silence)"
                     );
-                    crate::probe!(
+                    continuum_base::probe!(
                         class = "persona.turn.inference_failed",
                         persona = %ctx.identity.agent_name,
                         lamport = msg.lamport,
@@ -440,7 +440,7 @@ pub(super) async fn run_turn_cycle(
                 lamport = msg.lamport,
                 "no WorkspaceCycle registered — spawn wiring bug; dropping turn (no respond() fallback)"
             );
-            crate::probe!(
+            continuum_base::probe!(
                 class = "persona.turn.error",
                 persona = %ctx.identity.agent_name,
                 lamport = msg.lamport,

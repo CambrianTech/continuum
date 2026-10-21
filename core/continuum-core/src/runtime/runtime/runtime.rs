@@ -52,7 +52,7 @@ impl Runtime {
                             }
                         }
                     };
-                    crate::probe!(
+                    continuum_base::probe!(
                         class = "shutdown.step",
                         module = %name,
                         outcome = format!("{outcome:?}"),
@@ -217,7 +217,7 @@ pub(super) async fn run_tick_loop_for(
                 consecutive_panics = 0;
                 warn!("Tick error in '{}': {}", module_name, e);
                 log.warn_fmt(format_args!("tick error: {e}"));
-                crate::probe!(
+                continuum_base::probe!(
                     class = "tick.error",
                     module = module_name,
                     error = %e
@@ -233,7 +233,7 @@ pub(super) async fn run_tick_loop_for(
                 log.warn_fmt(format_args!(
                     "tick panicked ({consecutive_panics}/{TICK_QUARANTINE_AFTER}): {panic_msg}"
                 ));
-                crate::probe!(
+                continuum_base::probe!(
                     class = "tick.panic",
                     module = module_name,
                     count = consecutive_panics,
@@ -247,7 +247,7 @@ pub(super) async fn run_tick_loop_for(
                     log.warn_fmt(format_args!(
                         "module quarantined after {TICK_QUARANTINE_AFTER} consecutive panics; tick loop exits"
                     ));
-                    crate::probe!(
+                    continuum_base::probe!(
                         class = "tick.quarantined",
                         module = module_name,
                         ticks_total = ticks_total
@@ -265,7 +265,7 @@ pub(super) async fn run_tick_loop_for(
         // expose a setter for its period, and rebuilding is cheap on that slow path.
         let new_interval = module.tick_interval_now().unwrap_or(initial_interval);
         if new_interval != current_interval {
-            crate::probe!(
+            continuum_base::probe!(
                 class = "tick.cadence_changed",
                 module = module_name,
                 old_ms = current_interval.as_millis() as u64,
@@ -328,7 +328,7 @@ pub(crate) async fn dispatch_with_panic_guard(
                 "Command '{}' panicked in module '{}': {}",
                 full_cmd, module_name, panic_msg
             );
-            crate::probe!(
+            continuum_base::probe!(
                 class = "command.dispatch.panicked",
                 command = full_cmd,
                 module = module_name,
@@ -363,7 +363,7 @@ pub(crate) async fn dispatch_object_with_panic_guard(
                 "Command '{}' panicked in DynCommand object: {}",
                 name, panic_msg
             );
-            crate::probe!(
+            continuum_base::probe!(
                 class = "command.dispatch.panicked",
                 command = name,
                 reason = %panic_msg

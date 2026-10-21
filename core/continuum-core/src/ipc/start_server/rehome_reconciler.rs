@@ -95,7 +95,7 @@ pub(super) fn spawn_rehome_reconciler(
                 Some(active.clone()),
                 snap.served_context_window,
             );
-            crate::probe!(
+            continuum_base::probe!(
                 class = "persona.rehome",
                 model = %active,
                 context_window = snap.served_context_window,

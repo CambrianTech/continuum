@@ -19,7 +19,7 @@
 
     #[test]
     fn test_token_expiry() {
-        let now = crate::time::EpochMs::now().secs();
+        let now = continuum_base::time::EpochMs::now().secs();
 
         let expired = TokenSet {
             access_token: "tok".into(),

@@ -23,7 +23,7 @@ impl CognitionEval {
         let _fleet_lease = match crate::persona::PersonaAircRuntimeRegistry::try_global() {
             Some(r) => {
                 let lease = r.quiesce_all();
-                crate::probe!(
+                continuum_base::probe!(
                     class = "eval.quiesce",
                     personas = lease.count(),
                     "eval-preemption lease: fleet quiesced for the measurement"
@@ -31,7 +31,7 @@ impl CognitionEval {
                 Some(lease)
             }
             None => {
-                crate::probe!(
+                continuum_base::probe!(
                     class = "eval.quiesce.absent",
                     "eval-preemption: no global roster published — fleet NOT quiesced; measurement may be GPU-contended"
                 );
@@ -459,7 +459,7 @@ impl CognitionEval {
             // so an inert edit is unrecoverable here for the same reason as `benchmark/swe-solve`.
             crate::cognition::persona_workspace::root_acting_workspace(&cycle, root, &[], true)
                 .await?;
-            crate::probe!(
+            continuum_base::probe!(
                 class = "eval.hands_rooted",
                 root = %root,
                 explicit = %p.workspace_root.is_some(),
@@ -702,7 +702,7 @@ impl CognitionEval {
                                         &sp.content,
                                         crate::cognition::working_memory::DispatchStatus::Done,
                                     );
-                                    crate::probe!(
+                                    continuum_base::probe!(
                                         class = "eval.help.voice_folded",
                                         room = %room,
                                         sender = %who,

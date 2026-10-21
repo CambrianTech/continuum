@@ -415,7 +415,7 @@ impl SemanticDistiller {
         // without this; the distiller path has no prompt-capture yet).
         if !prior_beliefs.is_empty() {
             let tail = raw.lines().last().unwrap_or("").trim();
-            crate::probe!(
+            continuum_base::probe!(
                 class = "dream.review.raw_tail",
                 persona = ?persona_id,
                 tail = %&tail[..tail.len().min(120)],

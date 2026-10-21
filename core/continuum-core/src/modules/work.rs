@@ -18,7 +18,7 @@
 //! remote `Provisional` peer (who could otherwise spam claims). Board READS can
 //! open up later; writes stay trusted.
 
-use crate::time::EpochMs;
+use continuum_base::time::EpochMs;
 use std::any::Any;
 use std::sync::{Arc, OnceLock};
 

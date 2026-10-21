@@ -50,7 +50,7 @@
 //!   inside the `Airc` handle (delegating to airc-identity) — this
 //!   struct only holds the Arc.
 
-use crate::time::EpochMs;
+use continuum_base::time::EpochMs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 

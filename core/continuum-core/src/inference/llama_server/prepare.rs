@@ -173,7 +173,7 @@ impl LlamaServerProcess {
         let planned_kv_per_token = crate::cognition::serving_plan::footprint::footprint_for(&target.model)
             .map(|fp| fp.kv_per_token)
             .unwrap_or(0); // 0 = no footprint resolvable for this row; `answered` carries the absence
-        crate::probe!(target: "continuum_core::inference::llama_server", class = "serving.kv_cache.decided",
+        continuum_base::probe!(target: "continuum_core::inference::llama_server", class = "serving.kv_cache.decided",
             model = %target.model.id,
             cache_type = %kv_plan.cache_type,
             source = kv_plan.source.as_str(),
@@ -229,13 +229,13 @@ impl LlamaServerProcess {
             None
         };
         match decision {
-            MainLaneMmproj::Withhold => crate::probe!(target: "continuum_core::inference::llama_server", class = "serving.vision.mmproj_withheld",
+            MainLaneMmproj::Withhold => continuum_base::probe!(target: "continuum_core::inference::llama_server", class = "serving.vision.mmproj_withheld",
                 model = %target.model.id,
                 "mmproj resolved but WITHHELD from the main lane (model row: \
                  mmproj_on_main_lane=false — multimodal disables cache_reuse); a \
                  sidecar VL candidate exists on this node and sight routes through it"
             ),
-            MainLaneMmproj::WearAsOnlyEyes => crate::probe!(target: "continuum_core::inference::llama_server", class = "serving.vision.mmproj_on_main_lane_as_only_eyes",
+            MainLaneMmproj::WearAsOnlyEyes => continuum_base::probe!(target: "continuum_core::inference::llama_server", class = "serving.vision.mmproj_on_main_lane_as_only_eyes",
                 model = %target.model.id,
                 "mmproj goes on the MAIN lane: the row prefers a sidecar but no other \
                  VL candidate is on this node — the only eyes here beat cache_reuse \
@@ -362,20 +362,20 @@ impl LlamaServerProcess {
                 })
                 .unwrap_or_default(), // unwrap_or: a binary that cannot answer --version fails at spawn below with its own error
             Err(_) => {
-                crate::probe!(target: "continuum_core::inference::llama_server", class = "serving.version_probe_timeout",
+                continuum_base::probe!(target: "continuum_core::inference::llama_server", class = "serving.version_probe_timeout",
                     bin = %bin,
                     "`--version` did not answer in 10 s — neither verified nor refused; launching anyway"
                 );
                 String::new()
             }
         };
-        crate::probe!(target: "continuum_core::inference::llama_server", class = "serving.server_version",
+        continuum_base::probe!(target: "continuum_core::inference::llama_server", class = "serving.server_version",
             bin = %bin,
             version = %version.lines().next().unwrap_or("").trim(), // unwrap_or: no output = empty receipt, spawn reports the real failure
             "the serving binary named its build"
         );
         if is_debug_build(&version) {
-            crate::probe!(target: "continuum_core::inference::llama_server", class = "serving.debug_build_refused",
+            continuum_base::probe!(target: "continuum_core::inference::llama_server", class = "serving.debug_build_refused",
                 bin = %bin,
                 "refused to serve from a DEBUG build — build for speed"
             );
@@ -406,7 +406,7 @@ impl LlamaServerProcess {
                 Some(crate::inference::backend_receipt::parse_list_devices(&text))
             }
             Ok(Err(e)) => {
-                crate::probe!(target: "continuum_core::inference::llama_server", class = "serving.backend_probe_failed",
+                continuum_base::probe!(target: "continuum_core::inference::llama_server", class = "serving.backend_probe_failed",
                     bin = %bin,
                     error = %e,
                     "`--list-devices` could not run — the spawn below reports the real failure"
@@ -414,7 +414,7 @@ impl LlamaServerProcess {
                 None
             }
             Err(_) => {
-                crate::probe!(target: "continuum_core::inference::llama_server", class = "serving.backend_probe_timeout",
+                continuum_base::probe!(target: "continuum_core::inference::llama_server", class = "serving.backend_probe_timeout",
                     bin = %bin,
                     "`--list-devices` did not answer in 10 s — backend initialisation hangs on \
                      this host; the GPU lane is refused (never moved to the CPU) and retried"
@@ -428,7 +428,7 @@ impl LlamaServerProcess {
             receipt.as_ref(),
             cpu_by_plan,
         );
-        crate::probe!(target: "continuum_core::inference::llama_server", class = "serving.backend_receipt",
+        continuum_base::probe!(target: "continuum_core::inference::llama_server", class = "serving.backend_receipt",
             bin = %bin,
             backend = verdict.backend_label(),
             device = %match &verdict {
@@ -440,7 +440,7 @@ impl LlamaServerProcess {
         );
         match &verdict {
             crate::inference::backend_receipt::BackendVerdict::Refused { reason } => {
-                crate::probe!(target: "continuum_core::inference::llama_server", class = "serving.backend_refused",
+                continuum_base::probe!(target: "continuum_core::inference::llama_server", class = "serving.backend_refused",
                     bin = %bin,
                     reason = %reason,
                     "refused to serve from a binary that loads no GPU backend on a GPU host"

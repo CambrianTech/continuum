@@ -342,7 +342,7 @@ impl AircLiveTransport {
                 polls += 1;
                 if let Ok(page) = self.airc.page_recent_in(room, REPLY_RECOVERY_PAGE).await {
                     if let Some(reply) = page.into_iter().find(|e| expected.matches(e)) {
-                        crate::probe!(
+                        continuum_base::probe!(
                             class = "remote_lane.reply_recovered",
                             correlation = %expected.correlation,
                             polls = polls,
@@ -464,7 +464,7 @@ impl AircInferenceTransport for AircLiveTransport {
             match crate::persona::airc_citizen::subscribe_every_room(&self.airc).await {
                 Ok(s) => Some(s),
                 Err(e) => {
-                    crate::probe!(
+                    continuum_base::probe!(
                         class = "remote_lane.stream_unsubscribed",
                         peer = %target.0,
                         error = %e,
@@ -587,7 +587,7 @@ impl AircInferenceTransport for AircLiveTransport {
                             streamed += 1;
                             last_chunk_at = Some(std::time::Instant::now());
                             if streamed == 1 {
-                                crate::probe!(
+                                continuum_base::probe!(
                                     class = "remote_lane.stream_started",
                                     peer = %target.0,
                                     correlation = %stream_id,
@@ -607,7 +607,7 @@ impl AircInferenceTransport for AircLiveTransport {
                     None => chunks = None,
                 },
                 _ = idle => {
-                    crate::probe!(
+                    continuum_base::probe!(
                         class = "remote_lane.stream_stalled",
                         peer = %target.0,
                         correlation = %stream_id,
@@ -623,7 +623,7 @@ impl AircInferenceTransport for AircLiveTransport {
             }
         };
         if streamed > 0 {
-            crate::probe!(
+            continuum_base::probe!(
                 class = "remote_lane.streamed",
                 peer = %target.0,
                 correlation = %stream_id,
@@ -661,7 +661,7 @@ impl AircInferenceTransport for AircLiveTransport {
                 // "timeouts" in 200 s under a 600 s deadline, tripping the
                 // breaker three times while the peer's answers sat in the
                 // store. The reply is a durable event — recover it from there.
-                crate::probe!(
+                continuum_base::probe!(
                     class = "remote_lane.reply_stream_ended",
                     peer = %target.0,
                     correlation = %pending_correlation,

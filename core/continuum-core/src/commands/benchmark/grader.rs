@@ -639,7 +639,7 @@ impl ActionCommand for BenchmarkRecord {
         }
         let mut row = serde_json::to_value(&p)
             .map_err(|e| CommandError::Internal(format!("encode row: {e}")))?;
-        row["atMs"] = serde_json::json!(crate::time::EpochMs::now().millis());
+        row["atMs"] = serde_json::json!(continuum_base::time::EpochMs::now().millis());
         let line = serde_json::to_string(&row)
             .map_err(|e| CommandError::Internal(format!("encode row: {e}")))?;
         use std::io::Write;

@@ -46,7 +46,7 @@
 //! drift surface). The current TS file uses the legacy template; this
 //! Rust version is byte-for-byte the same modulo a `format!` call.
 
-use crate::time::EpochMs;
+use continuum_base::time::EpochMs;
 use crate::ai::types::ResponseFormat;
 use crate::ai::{ChatMessage, MessageContent, TextGenerationRequest};
 use crate::cognition::should_respond::{AIDecisionContext, GatingConversationMessage};

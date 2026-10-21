@@ -18,7 +18,7 @@ pub(super) fn initialize_and_start_runtime(
     phase_started: std::time::Instant,
 ) -> std::io::Result<RuntimeStarted> {
     // Initialize modules (runs async init in sync context)
-    crate::probe!(
+    continuum_base::probe!(
         class = "boot.phase",
         phase = "construct_modules",
         ms = phase_started.elapsed().as_millis() as u64,
@@ -34,7 +34,7 @@ pub(super) fn initialize_and_start_runtime(
         // and the SIGNAL handlers run the parallel save-and-join broadcast
         // before exit — a stop finally saves, a boot finally loads, both
         // receipted per node (boot.load_state / shutdown.step).
-        crate::probe!(
+        continuum_base::probe!(
             class = "boot.phase",
             phase = "initialize",
             ms = phase_started.elapsed().as_millis() as u64,
@@ -42,7 +42,7 @@ pub(super) fn initialize_and_start_runtime(
         );
         let load_started = std::time::Instant::now();
         runtime.load_all_state().await;
-        crate::probe!(
+        continuum_base::probe!(
             class = "boot.phase",
             phase = "load_state",
             ms = load_started.elapsed().as_millis() as u64,

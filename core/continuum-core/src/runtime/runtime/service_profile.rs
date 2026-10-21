@@ -255,7 +255,7 @@ impl ShutdownOperation {
                         // would leave every citizen refusing work with no stop behind it.
                         if !settle.is_zero() {
                             let s = crate::cognition::turn_ingress::settle(settle).await;
-                            crate::probe!(
+                            continuum_base::probe!(
                                 class = "cognition.turns.settled",
                                 in_flight_at_close = s.in_flight_at_close,
                                 cut = s.cut,

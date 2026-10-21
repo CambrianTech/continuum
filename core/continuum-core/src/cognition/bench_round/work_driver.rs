@@ -483,7 +483,7 @@ pub fn restore_round_from_bundle(bundle: &Value) -> Result<Option<Uuid>, String>
         return Ok(None);
     }
     let id = round.round_id;
-    crate::probe!(
+    continuum_base::probe!(
         class = "activity.state.restored",
         kind = "benchmark/round",
         round_id = %id,
@@ -548,7 +548,7 @@ pub(super) fn load_rounds_in(dir: &Path) -> HashMap<Uuid, BenchRound> {
             let _ = std::fs::remove_file(entry.path());
             continue;
         }
-        crate::probe!(
+        continuum_base::probe!(
             class = "bench.round.reloaded",
             round_id = %round.round_id,
             benchmark = %round.benchmark,

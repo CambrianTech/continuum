@@ -65,7 +65,7 @@ pub fn produce_speech_discipline(
         );
         return;
     };
-    crate::probe!(
+    continuum_base::probe!(
         class = "training.example.speech_discipline",
         persona = %persona_name,
         marker = marker,
@@ -214,7 +214,7 @@ pub(super) async fn submit_plan(
     let params = build_submit_params(persona_id, &persona_name, &base_model, &plan, provenance);
     match submit_training(&conn, params).await {
         Ok(receipt) if receipt.success => {
-            crate::probe!(
+            continuum_base::probe!(
                 class = "training.example.produced",
                 persona = %persona_name,
                 domain = %plan.trait_kind,
@@ -246,7 +246,7 @@ pub(super) async fn submit_plan(
             );
         }
         Ok(receipt) => {
-            crate::probe!(
+            continuum_base::probe!(
                 class = "training.example.rejected",
                 persona = %persona_name,
                 domain = %plan.trait_kind,
@@ -263,7 +263,7 @@ pub(super) async fn submit_plan(
             );
         }
         Err(error) => {
-            crate::probe!(
+            continuum_base::probe!(
                 class = "training.example.failed",
                 persona = %persona_name,
                 domain = %plan.trait_kind,
@@ -353,7 +353,7 @@ pub(super) async fn stage_credit<T: Transport>(
         prompt,
         completion,
         lived,
-        staged_at_ms: crate::time::EpochMs::now().millis(),
+        staged_at_ms: continuum_base::time::EpochMs::now().millis(),
         coursework_set: crate::cognition::bench_round::coursework_set_of(credit.card_id).map(String::from),
         task: Some(credit.task.clone()),
         rejected_at_ms: None,
@@ -439,7 +439,7 @@ pub(super) async fn read_lived(
     };
     match (&missing, calls.is_empty()) {
         (None, false) => {
-            crate::probe!(
+            continuum_base::probe!(
                 class = "training.credit.lived_read",
                 persona = %persona_name,
                 calls = calls.len() as u64,
@@ -449,7 +449,7 @@ pub(super) async fn read_lived(
         }
         _ => {
             let reason = missing.unwrap_or_else(|| "the turn has no served call".into());
-            crate::probe!(
+            continuum_base::probe!(
                 class = "training.credit.lived_unavailable",
                 persona = %persona_name,
                 reason = %reason,

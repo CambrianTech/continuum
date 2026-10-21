@@ -135,7 +135,7 @@ pub fn project_ledger(
             |post| match serde_json::from_str::<CardLedger>(&post.body) {
                 Ok(l) => Some(l),
                 Err(e) => {
-                    crate::probe!(
+                    continuum_base::probe!(
                         class = "card.ledger.unreadable",
                         post = %post.post_id,
                         error = %e.to_string(),

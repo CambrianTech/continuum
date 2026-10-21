@@ -113,7 +113,7 @@ pub async fn ensure_model_serving_if_current<C: LlamaServerControl + ?Sized>(
                 // Only an engine that cannot falls through to the relaunch.
                 match ctrl.adopt_genome_in_place(target).await {
                     Ok(GenomeInPlace::Adopted) => {
-                        crate::probe!(target: "continuum_core::inference::llama_server", class = "serving.genome.adopted_in_place",
+                        continuum_base::probe!(target: "continuum_core::inference::llama_server", class = "serving.genome.adopted_in_place",
                             model = target.model_id(),
                             from = active.len() as u64,
                             to = desired.len() as u64,
@@ -124,7 +124,7 @@ pub async fn ensure_model_serving_if_current<C: LlamaServerControl + ?Sized>(
                     Ok(GenomeInPlace::Busy) => {
                         // The set stands this tick, and the window, lane and engine checks
                         // below still run: a busy retire must not hide a starved lane.
-                        crate::probe!(target: "continuum_core::inference::llama_server", class = "serving.genome.in_place_busy",
+                        continuum_base::probe!(target: "continuum_core::inference::llama_server", class = "serving.genome.in_place_busy",
                             model = target.model_id(),
                             "a retiring gene is active in a turn in flight: the change waits a tick"
                         );
@@ -132,7 +132,7 @@ pub async fn ensure_model_serving_if_current<C: LlamaServerControl + ?Sized>(
                     }
                     Ok(GenomeInPlace::Unsupported) => false,
                     Err(e) => {
-                        crate::probe!(target: "continuum_core::inference::llama_server", class = "serving.genome.in_place_failed",
+                        continuum_base::probe!(target: "continuum_core::inference::llama_server", class = "serving.genome.in_place_failed",
                             model = target.model_id(),
                             error = %e,
                             "the in-place gene change failed: relaunching onto the target set"
@@ -315,7 +315,7 @@ pub async fn ensure_model_serving_if_current<C: LlamaServerControl + ?Sized>(
                     served_window_n,
                 );
             if refused_trade {
-                crate::probe!(target: "continuum_core::inference::llama_server", class = "serving.grow_refused_trade",
+                continuum_base::probe!(target: "continuum_core::inference::llama_server", class = "serving.grow_refused_trade",
                     model = target.model_id(),
                     target_lanes = target.lanes,
                     target_window = target.context_window,
@@ -330,7 +330,7 @@ pub async fn ensure_model_serving_if_current<C: LlamaServerControl + ?Sized>(
             let gate_closed = crate::system_resources::is_memory_gate_closed();
             let refused_pressure = !refused_trade && grow_refused_by_memory_gate(gate_closed, window_ok, lanes_ok, cache_ok);
             if refused_pressure {
-                crate::probe!(target: "continuum_core::inference::llama_server", class = "serving.grow_refused_memory_gate",
+                continuum_base::probe!(target: "continuum_core::inference::llama_server", class = "serving.grow_refused_memory_gate",
                     model = target.model_id(),
                     target_lanes = target.lanes,
                     target_window = target.context_window,
@@ -376,7 +376,7 @@ pub async fn ensure_model_serving_if_current<C: LlamaServerControl + ?Sized>(
             let engine_ok = engine_current || {
                 let mut tried = ENGINE_CONVERGE_TRIED.lock();
                 if tried.as_deref() == Some(pair.as_str()) {
-                    crate::probe!(target: "continuum_core::inference::llama_server", class = "serving.engine.converge_failed",
+                    continuum_base::probe!(target: "continuum_core::inference::llama_server", class = "serving.engine.converge_failed",
                         model = target.model_id(),
                         pair = pair.as_str(),
                         "the lane still reports an older engine after one relaunch onto the \
@@ -391,7 +391,7 @@ pub async fn ensure_model_serving_if_current<C: LlamaServerControl + ?Sized>(
             };
             *ENGINE_STALE.lock() = (!engine_current).then(|| pair.clone());
             if !engine_ok {
-                crate::probe!(target: "continuum_core::inference::llama_server", class = "serving.engine.converged",
+                continuum_base::probe!(target: "continuum_core::inference::llama_server", class = "serving.engine.converged",
                     model = target.model_id(),
                     from = served_engine.as_deref().unwrap_or(""), // probe field: engine_ok=false implies both are known
                     to = installed_engine.as_deref().unwrap_or(""), // probe field: as above
@@ -402,7 +402,7 @@ pub async fn ensure_model_serving_if_current<C: LlamaServerControl + ?Sized>(
             if !engine_ok
                 || ((!window_ok || !lanes_ok || !sight_ok || !kv_ok || !cache_ok) && !refused_trade && !refused_pressure)
             {
-                crate::probe!(target: "continuum_core::inference::llama_server", class = "serving.grow",
+                continuum_base::probe!(target: "continuum_core::inference::llama_server", class = "serving.grow",
                     model = target.model_id(),
                     target_window = target.context_window,
                     target_lanes = target.lanes,
@@ -453,7 +453,7 @@ pub async fn ensure_model_serving_if_current<C: LlamaServerControl + ?Sized>(
                 }
                 let after = ctrl.slots_activity_fingerprint().await;
                 if judge_smoke_miss(before, after) == SmokeMissVerdict::AliveViaSlotProgress {
-                    crate::probe!(target: "continuum_core::inference::llama_server", class = "serving.adopt_busy_alive",
+                    continuum_base::probe!(target: "continuum_core::inference::llama_server", class = "serving.adopt_busy_alive",
                         model = target.model_id(),
                         owned = ctrl.owns_child(),
                         force_probe,
@@ -462,7 +462,7 @@ pub async fn ensure_model_serving_if_current<C: LlamaServerControl + ?Sized>(
                     );
                     return EnsureOutcome::AlreadyServing;
                 }
-                crate::probe!(target: "continuum_core::inference::llama_server", class = "serving.adopt_rejected",
+                continuum_base::probe!(target: "continuum_core::inference::llama_server", class = "serving.adopt_rejected",
                     model = target.model_id(),
                     owned = ctrl.owns_child(),
                     force_probe,

@@ -59,7 +59,7 @@ pub(super) fn say_anomaly(name: &str, pid: u32, rss_bytes: u64, total_bytes: u64
         Ok(handle) => {
             handle.spawn(async move { crate::modules::grid::say_in_org_room(&line).await });
         }
-        Err(_) => crate::probe!(
+        Err(_) => continuum_base::probe!(
             class = "memory.pressure.anomaly_not_said",
             process = %name,
             "no async runtime on the monitor thread — the anomaly stays in the probe only"

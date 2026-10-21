@@ -225,9 +225,9 @@ where
     // queued behind a wedged bringup was indistinguishable from one that never
     // asked — gate_wait with no matching gate_held IS the "parked on the mutex"
     // receipt.
-    crate::probe!(class = "eval.lane.acquire", step = "gate_wait", key = %key, "cold-spawn gate: waiting");
+    continuum_base::probe!(class = "eval.lane.acquire", step = "gate_wait", key = %key, "cold-spawn gate: waiting");
     let _gate = EVAL_LANE_SPAWN_GATE.lock().await;
-    crate::probe!(class = "eval.lane.acquire", step = "gate_held", key = %key, "cold-spawn gate: held");
+    continuum_base::probe!(class = "eval.lane.acquire", step = "gate_held", key = %key, "cold-spawn gate: held");
     // Re-check under the gate — a racer for the same key may have spawned it while we
     // waited, in which case we share theirs and skip a redundant cold-load.
     if let Some(existing) = lookup_warm_eval_lane(key) {
@@ -508,7 +508,7 @@ pub(super) async fn await_eval_lane_memory_headroom(footprint: Option<u64>) -> R
                 // real cause was a lane that could never fit sent a reader looking at the
                 // pressure monitor for 3 minutes (M5, 2026-08-04) while the answer was in
                 // `e` the whole time. Whatever we are waiting OUT is the thing to name.
-                crate::probe!(
+                continuum_base::probe!(
                     class = "eval.lane.pressure_defer",
                     level = ?crate::system_resources::MemoryPressureMonitor::current_level(),
                     refusal = %e,

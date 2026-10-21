@@ -168,7 +168,7 @@ impl ResumeOrMintProvider {
                     self.returning.push_back(intent.clone());
                 }
                 Some(_) => {}
-                None => crate::probe!(
+                None => continuum_base::probe!(
                     class = "persona.host.return_unknown",
                     agent = %name,
                     "a woken seat this node never resumed — not its to draw"
@@ -190,7 +190,7 @@ impl ResumeOrMintProvider {
                     self.resumed.push(intent);
                 }
                 Some(_) => {} // not drawn yet: already ahead of the cursor
-                None => crate::probe!(
+                None => continuum_base::probe!(
                     class = "persona.host.requeue_unknown",
                     agent = %name,
                     "a rotated-out seat this node never resumed — not its to queue"
@@ -233,7 +233,7 @@ impl PersonaIdentityProvider for ResumeOrMintProvider {
         self.requeue(crate::persona::resting_seat::take_requeued());
         if let Some(intent) = self.returning.pop_front() {
             self.publish_waiting();
-            crate::probe!(
+            continuum_base::probe!(
                 class = "persona.host.returned",
                 agent = %intent.agent_name,
                 "a woken seat is drawn back into the freed slot"
@@ -263,7 +263,7 @@ impl PersonaIdentityProvider for ResumeOrMintProvider {
         if let Some(team) = team_elsewhere {
             if total_yielded < self.min_personas && !self.deferral_said {
                 self.deferral_said = true;
-                crate::probe!(
+                continuum_base::probe!(
                     class = "persona.host.mint_deferred_to_grid",
                     residents_elsewhere = u64::from(team.residents),
                     peers_elsewhere = team.peers as u64,

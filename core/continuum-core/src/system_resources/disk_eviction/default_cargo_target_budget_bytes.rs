@@ -488,7 +488,7 @@ impl CargoTargetPool {
         use std::sync::atomic::Ordering::Relaxed;
         let now = // A clock we cannot read must not manufacture a "fast gap" — 0 makes the
             // first comparison look ancient, which is the quiet side.
-            crate::time::EpochMs::now().millis();
+            continuum_base::time::EpochMs::now().millis();
         let previous = self.last_eviction_ms.swap(now, Relaxed);
         // First eviction of the run has no gap to measure, and a zero clock is not a
         // measurement either.

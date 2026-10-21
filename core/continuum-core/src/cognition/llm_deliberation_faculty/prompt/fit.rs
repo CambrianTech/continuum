@@ -186,7 +186,7 @@ impl LlmDeliberationFaculty {
                 // error carries the real requirement, which is the number the untruncated
                 // demand receipt feeds to `serving_plan` — so a window too small for one
                 // act gets PROVISIONED rather than silently trimmed forever.
-                crate::probe!(
+                continuum_base::probe!(
                     class = "delib.fill.evidence_cannot_fit",
                     persona = %self.persona_name,
                     verdict = evidence_fit.as_str(),
@@ -208,7 +208,7 @@ impl LlmDeliberationFaculty {
                 // Loud, but NOT a refusal — see [`EvidenceFit::TooLargeToCarry`]. The
                 // oversized member yields like any other optional turn and the rest of
                 // the drop proceeds; refusing here is the 836-refusals outage.
-                crate::probe!(
+                continuum_base::probe!(
                     class = "delib.fill.evidence_cannot_fit",
                     persona = %self.persona_name,
                     verdict = evidence_fit.as_str(),

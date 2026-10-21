@@ -37,7 +37,7 @@
 //! Access: `Privileged` — it spends real inference compute and executes
 //! model-generated code through the grader, same tier as `cognition/eval`.
 
-use crate::time::EpochMs;
+use continuum_base::time::EpochMs;
 use async_trait::async_trait;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -871,7 +871,7 @@ pub(crate) fn lesson_tasks(
                 .filter(|r| r.task.test.is_none())
                 .count()
         };
-        crate::probe!(
+        continuum_base::probe!(
             class = "genome.teach.from_experience",
             solver = solver_full.as_str(),
             stream_records = records.len() as u64,

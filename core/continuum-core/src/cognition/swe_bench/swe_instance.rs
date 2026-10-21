@@ -123,7 +123,7 @@ impl SweInstance {
             .into_iter()
             .partition(|id| !is_unsatisfiable_test_id(id));
         if !dropped.is_empty() {
-            crate::probe!(
+            continuum_base::probe!(
                 class = "benchmark.dataset.unsatisfiable_ids",
                 instance = %instance_id,
                 field = %field,
@@ -670,7 +670,7 @@ pub(super) fn persist_verdict(
             .append(true)
             .open(&history)
             .and_then(|mut f| writeln!(f, "{line}"));
-        crate::probe!(
+        continuum_base::probe!(
             class = "benchmark.verdict.downgrade_refused",
             instance = verdict.instance_id.as_str(),
             f2p = format!("{}/{}", verdict.f2p_passed, verdict.f2p_total),

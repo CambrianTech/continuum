@@ -384,7 +384,7 @@ fn live_lane_resident(pid: u32) -> Option<u64> {
         Some(weights) => Some(anon.saturating_add(weights)),
         None => {
             if !WEIGHTS_UNREADABLE_SAID.swap(true, std::sync::atomic::Ordering::Relaxed) {
-                crate::probe!(
+                continuum_base::probe!(
                     class = "serving.credit.weights_unreadable",
                     pid = pid as u64,
                     anon_bytes = anon,

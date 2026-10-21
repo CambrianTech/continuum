@@ -16,7 +16,7 @@
 //!   - Node B: Events.subscribe('sensor:motion') → receives via UDP injection
 //!   - Transparent: application code doesn't know events crossed the network
 
-use crate::time::EpochMs;
+use continuum_base::time::EpochMs;
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;

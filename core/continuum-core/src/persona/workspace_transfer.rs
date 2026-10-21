@@ -615,7 +615,7 @@ async fn sync_admitted(persona: Uuid, persona_name: &str, root: PathBuf, card: U
         | PushOutcome::PushInterrupted { branch, .. } => (branch.as_str(), "", false, false),
         PushOutcome::NotPushable { .. } | PushOutcome::TimedOut => ("", "", false, false),
     };
-    crate::probe!(
+    continuum_base::probe!(
         class = "workspace.push",
         persona = %persona_name,
         card = %card,
@@ -786,7 +786,7 @@ async fn arrive_over(root: &Path, branch: &str, now_ms: u64) -> ArrivalOutcome {
 /// to node. The claim is authoritative and the checkout is convenience: no outcome here
 /// undoes a claim, every outcome is said.
 pub async fn arrive_for(root: PathBuf, branch: String, card: Uuid) -> ArrivalOutcome {
-    let now_ms = crate::time::EpochMs::now().millis(); // pre-1970 reads 0: a pre-epoch clock stamps 0; the ref is still unique per branch per arrival in practice
+    let now_ms = continuum_base::time::EpochMs::now().millis(); // pre-1970 reads 0: a pre-epoch clock stamps 0; the ref is still unique per branch per arrival in practice
     let started = std::time::Instant::now();
     let deadline = tokio::time::Instant::now() + ARRIVE_BOUND;
     let outcome = match crate::code::git_bridge::within(deadline, arrive(&root, &branch, now_ms)).await {
@@ -814,7 +814,7 @@ pub async fn arrive_for(root: PathBuf, branch: String, card: Uuid) -> ArrivalOut
         _ => ("", 0, false), // Other outcomes do not carry a local-preservation receipt.
     };
     let to_node = crate::capacity::gossip::this_process_origin().to_string();
-    crate::probe!(
+    continuum_base::probe!(
         class = "workspace.transfer",
         card = %card,
         branch = %branch,

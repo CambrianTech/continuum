@@ -342,7 +342,7 @@ impl AircRagSource {
         let per_turn_cap = (budget / 8).clamp(48, 256);
         let (units, quarantined) = Self::collapse_work_receipts(digest, working);
         if quarantined > 0 {
-            crate::probe!(
+            continuum_base::probe!(
                 class = "perception.quarantined",
                 lines = quarantined as u64,
                 working = working,
@@ -436,7 +436,7 @@ impl AircRagSource {
         }
         let new_anchor = units.get(start).map(|u| HistoryAnchor { event: digest.elements[u.order_idx].event_id() });
         if anchored.is_some_and(|a| a != start) || (anchored.is_none() && anchor.is_some()) {
-            crate::probe!(
+            continuum_base::probe!(
                 class = "perception.history.anchor_moved",
                 room = %digest.room_id,
                 from_natural = natural as u64,
@@ -780,7 +780,7 @@ impl RagSource for AircRagSource {
                             events.push(Self::hydrated_event(room_id, sender, line));
                             hydrated += 1;
                         }
-                        crate::probe!(
+                        continuum_base::probe!(
                             class = "airc_rag.hydrated",
                             persona = self.persona_id.to_string().as_str(),
                             live = live_in_room,
