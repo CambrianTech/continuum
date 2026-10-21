@@ -474,11 +474,18 @@ impl SavedLedger {
         if file.fingerprint != self.fingerprint {
             return unread("written under another contract");
         }
-        file.keys
-            .into_iter()
-            .filter_map(|(persona, room)| ActivityKey::new(persona, room))
-            .filter(|k| dir.join(page_filename(k)).is_file())
-            .collect()
+        let listed = file.keys.len();
+        let keys: Vec<ActivityKey> = file.keys.into_iter().filter_map(|(persona, room)| ActivityKey::new(persona, room)).collect();
+        if keys.len() < listed {
+            // A key with a nil persona or room names no activity: its page re-prefills once.
+            continuum_base::probe!(
+                class = "inference.kv_page.ledger_keys_dropped",
+                path = %self.path.display(),
+                dropped = (listed - keys.len()) as u64,
+                "confirmed-save ledger entries without an activity were dropped: their pages re-prefill once"
+            );
+        }
+        keys.into_iter().filter(|k| dir.join(page_filename(k)).is_file()).collect()
     }
 }
 
