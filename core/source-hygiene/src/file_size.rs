@@ -53,7 +53,8 @@ pub const READABLE_FILE_LINES: usize = 1_000;
 // benchmark_dispatch were decomposed by responsibility (#5234-#5237).
 // 52,544 after act_observe/mod.rs (2,509 lines) was split by owner into act_observe/tests/*.
 // 45,242 after bin/continuum.rs was split by responsibility into bin/continuum/* (measured here, source-hygiene run).
-const BASELINE_LINES_OVER: usize = 0;
+// 43,733 measured on canary 13ce66b03 + this change: 45,242 - 1,509 (act_observe tests split).
+const BASELINE_LINES_OVER: usize = 43_733;
 
 pub struct FileSize;
 
