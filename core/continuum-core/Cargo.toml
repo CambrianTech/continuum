@@ -53,6 +53,7 @@ serde.workspace = true
 serde_json.workspace = true
 ron = "0.12"     # RON scene descriptions (Bevy-idiomatic on-disk format)
 uuid.workspace = true
+continuum-base = { path = "../continuum-base" }
 # JSON Schema generation from serde types — the runtime param schema every SDK
 # (CLI/web/mobile/RAG-tools) adapts from. Derived automatically by the command
 # base traits; uuid1 so Uuid fields schema-ize as string. See COMMAND-ORGANIZATION.md.
@@ -401,7 +402,7 @@ load-dynamic-ort = ["ort/load-dynamic"]
 #     via `cargo test --features test-fixtures` or `--features test-fixtures`
 #     on the bin target.
 #   - Production: heuristic adapter doesn't exist in the binary at all.
-test-fixtures = []
+test-fixtures = ["continuum-base/test-fixtures"]
 
 # stress-tests: opts in concurrency / multi-thread / load tests that
 # pin substrate invariants under N-task simultaneous load. Each test
@@ -478,6 +479,7 @@ unexpected_cfgs = "allow"
 source-hygiene = { path = "../source-hygiene" }
 tokio-test = "0.4"
 tempfile = "3"                   # Temp directories for code module tests
+continuum-base = { path = "../continuum-base", features = ["test-fixtures"] }
 
 # Enable continuum-client's test-fixtures (the `mock` transport) in TEST builds
 # only — production links the regular dep above without it. Lets tests drive a

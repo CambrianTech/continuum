@@ -2746,6 +2746,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "continuum-base"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "dirs 5.0.1",
+ "tempfile",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
 name = "continuum-bridge-protocol"
 version = "0.1.0"
 dependencies = [
@@ -2844,6 +2855,7 @@ dependencies = [
  "candle-transformers",
  "chrono",
  "continuum-airc-protocol",
+ "continuum-base",
  "continuum-bridge-protocol",
  "continuum-cli-lifecycle",
  "continuum-client",

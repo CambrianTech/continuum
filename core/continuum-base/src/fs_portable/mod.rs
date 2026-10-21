@@ -94,8 +94,8 @@ pub fn durable_publish_new(from: &std::path::Path, to: &std::path::Path) -> io::
 /// it but not yet fenced its directory, or failed while doing so.
 /// `file` must be writable for Windows FlushFileBuffers (File::sync_all).
 pub fn sync_publication(file: &File, path: &std::path::Path) -> io::Result<()> {
-    #[cfg(test)]
-    if tests::FAIL_PUBLICATION_FENCE.with(|fail| fail.get()) {
+    #[cfg(any(test, feature = "test-fixtures"))]
+    if fault_injection::publication_fence_fails() {
         return Err(io::Error::other("injected publication fence failure"));
     }
     file.sync_all()?;
@@ -148,26 +148,13 @@ fn move_write_through(
     Ok(())
 }
 
+#[cfg(any(test, feature = "test-fixtures"))]
+pub mod fault_injection;
+
 #[cfg(test)]
-pub(crate) mod tests {
+mod tests {
     use super::*;
     use std::io::Write;
-
-    thread_local! {
-        pub(crate) static FAIL_PUBLICATION_FENCE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
-    }
-
-    pub(crate) fn with_failed_publication_fence(f: impl FnOnce()) {
-        struct Reset;
-        impl Drop for Reset {
-            fn drop(&mut self) {
-                FAIL_PUBLICATION_FENCE.with(|fail| fail.set(false));
-            }
-        }
-        FAIL_PUBLICATION_FENCE.with(|fail| fail.set(true));
-        let _reset = Reset;
-        f();
-    }
 
     // what this catches: pread semantics on the CURRENT platform — exact
     // fill at an offset, UnexpectedEof (not a partial fill) past the end.
