@@ -68,8 +68,9 @@ impl Default for MlxLoraFineTuner {
 /// documented default location, and a missing interpreter fails loud in
 /// `create_job` rather than silently degrading.)
 fn default_mlx_python() -> PathBuf {
-    let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
-    home.join(".continuum/genome/venv/bin/python3")
+    // No resolvable home: a relative path that fails loud in `create_job`.
+    let home = crate::paths::continuum_home().unwrap_or_else(|_| PathBuf::from("."));
+    home.join("genome/venv/bin/python3")
 }
 
 /// Can this host actually run `mlx_lm.lora`? MLX targets the Apple GPU,
