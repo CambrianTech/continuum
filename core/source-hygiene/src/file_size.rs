@@ -44,8 +44,11 @@ pub const READABLE_FILE_LINES: usize = 1_000;
 // 157,412 after card a00ab1a6 deleted the standing benchmark autopilot (no harness).
 // 156,830 after card 5e3a3e75 deleted three hand copies of paths::continuum_home.
 // 156,825 after card 394017ed folded ensure_slot_pool's inline probes into one typed miss.
+// 154,999 after placement responsibilities split on current canary.
 // 155,781 measured on the merge with canary.
-const BASELINE_LINES_OVER: usize = 148_096;
+// 147,314 measured on the merge with #5227 (6ac1a84c6): 154,999 - (3,138 + 2,730 + 1,817),
+// working_memory, openai_adapter and dream_consolidation split by owner.
+const BASELINE_LINES_OVER: usize = 147_314;
 
 pub struct FileSize;
 

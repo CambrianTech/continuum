@@ -29,6 +29,7 @@ pub mod connection;
 pub mod frame;
 pub mod handlers;
 pub mod node;
+pub mod placement;
 pub mod registry;
 pub mod router;
 pub mod transport;
@@ -418,7 +419,7 @@ impl ServiceModule for GridModule {
                     .and_then(rank_of)
                     .unwrap_or(crate::cognition::serving_plan::footprint::UNMEASURED_RANK_CAP), // JUSTIFIED unwrap_or: an unmeasured local model ranks at the planner's proxy cap, the number the planner itself uses
             };
-            for line in crate::persona::placement_switch::follow_the_fleet(now, peers, local, &rank_of).await {
+            for line in placement::follow_the_fleet(now, peers, local, &rank_of).await {
                 say_in_org_room(&line).await;
             }
         }

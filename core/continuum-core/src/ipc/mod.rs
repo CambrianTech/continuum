@@ -3719,18 +3719,15 @@ pub fn start_server(
             .with_interceptor(Arc::new(crate::runtime::ProvidedCommandInterceptor::new(
                 Arc::clone(&provider_registry),
             )))
-            // Hard ACL gate: cross-grid (airc) + TCP callers — incl. a persona's
-            // command inbound pump — are gated by the grid ACL, capped at
-            // Provisional. A remote room peer may request ai/generate and nothing
-            // privileged; local/substrate callers are unaffected.
+            // Hard ACL gate: authenticated AIRC callers use recorded access policy;
+            // unknown peers keep the existing restricted tier. This is separate from
+            // unauthenticated socket ceilings and verified per-command capability grants.
             //
-            // NOTE: the per-peer trust BRIDGE (GridTrustAuthPolicy::with_trust_source)
-            // is NOT wired here yet — the grid NodeRegistry is keyed by transport
-            // ADDRESS (Tailscale IP / Reticulum hash), not by the airc peer_id the
-            // CallerIdentity carries, so it can't resolve an airc caller's trust
-            // (it would silently no-op). Wiring awaits a real airc-peer → trust
-            // source (the airc↔grid identity unification, task #38). The flat
-            // ceiling (`new()`) is correct and honest until then.
+            // Authenticated AIRC PeerId decisions already come from access_decision.
+            // No registry bridge: discovery's default Blocked is not an explicit
+            // authenticated-peer deny, and address trust must not promote AIRC callers.
+            // grid/nodes exposes both facts separately. Unknown peers keep the existing
+            // Provisional tier; enrollment alone grants no additional permissions.
             .with_policy(Arc::new(crate::routing::GridTrustAuthPolicy::new())),
     );
     runtime
