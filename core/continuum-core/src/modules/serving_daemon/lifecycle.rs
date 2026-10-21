@@ -136,16 +136,6 @@ pub(crate) struct LifecycleGate {
     pub(super) settled: Arc<AtomicBool>,
 }
 
-/// Why an admission may not decide now.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum GateRefusal {
-    /// Serving has not published its first plan on this core: the authority may not
-    /// hold a physical reading yet, so free memory is a boot artefact, not capacity.
-    Unsettled,
-    /// A serving operation (relaunch, placement move, teacher batch) holds the gate:
-    /// free memory now is its window, not capacity.
-    Operation,
-}
 impl GateRefusal {
     pub(crate) fn name(self) -> &'static str {
         match self {
@@ -182,7 +172,7 @@ impl LifecycleGate {
         self.settled.store(true, Ordering::Release);
     }
     /// Take the gate for one admission decision, or say why it cannot decide now.
-    pub(crate) fn hold_for_admission(&self) -> Result<super::AdmissionHold, super::GateRefusal> {
+    pub(crate) fn hold_for_admission(&self) -> Result<AdmissionHold, GateRefusal> {
         if !self.settled.load(Ordering::Acquire) {
             return Err(GateRefusal::Unsettled);
         }
@@ -197,11 +187,6 @@ impl LifecycleGate {
             _operation: operation,
         })
     }
-}
-
-/// The gate, held while one admission reads and leases; dropping it releases the gate.
-pub(crate) struct AdmissionHold {
-    pub(super) _operation: ServingOperation,
 }
 
 /// A forced health check stays owed if its task is cancelled or superseded.
