@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 use super::*;
 use crate::ai::types::ToolCall;
 use crate::cognition::workspace::Decision;
