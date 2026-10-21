@@ -51,7 +51,7 @@ pub const READABLE_FILE_LINES: usize = 1_000;
 // 57,131 after launch_gate, models and benchmark_dispatch were decomposed.
 // 54,053 after start_server, serve_persona_loop_inner, voice_module, launch_gate, models and
 // benchmark_dispatch were decomposed by responsibility (#5234-#5237).
-const BASELINE_LINES_OVER: usize = 54_053;
+const BASELINE_LINES_OVER: usize = 53_942; // 53,942 after generator/templates.rs split by responsibility.
 
 pub struct FileSize;
 
