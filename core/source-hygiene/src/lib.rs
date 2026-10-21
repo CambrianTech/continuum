@@ -230,7 +230,11 @@ pub fn production_half(src: &str) -> String {
             i += 1;
             continue;
         }
-        let end = gated_item_end(&lines, i + 1);
+        // The gated item can begin on the attribute's own line. Keep the slice's
+        // line count intact so blanking still preserves source line numbers.
+        let mut item_lines = lines[i..].to_vec();
+        item_lines[0] = &lines[i]["#[cfg(test)]".len()..];
+        let end = i + gated_item_end(&item_lines, 0);
         out.extend(std::iter::repeat_n("", end + 1 - i));
         gated = true;
         i = end + 1;
@@ -242,6 +246,51 @@ pub fn production_half(src: &str) -> String {
         out.pop();
     }
     out.join("\n")
+}
+
+/// Byte offset after a block comment's closing delimiter, given its body (after `/*`).
+/// Rust block comments nest; punctuation inside every nesting level is trivia.
+fn block_comment_end(bytes: &[u8]) -> Option<usize> {
+    let (mut depth, mut at) = (1usize, 0usize);
+    while at < bytes.len() {
+        if bytes[at..].starts_with(b"/*") {
+            depth += 1;
+            at += 2;
+        } else if bytes[at..].starts_with(b"*/") {
+            depth -= 1;
+            at += 2;
+            if depth == 0 { return Some(at); }
+        } else {
+            at += 1;
+        }
+    }
+    None
+}
+
+/// Skip Rust whitespace and comments. Comments are trivia even
+/// between `const` and `fn`; nested block comments are consumed as one comment.
+fn skip_item_trivia(mut src: &str) -> &str {
+    loop {
+        src = src.trim_start();
+        if let Some(comment) = src.strip_prefix("//") {
+            match comment.find('\n') {
+                Some(end) => src = &comment[end + 1..],
+                None => return "",
+            }
+        } else if let Some(comment) = src.strip_prefix("/*") {
+            let Some(end) = block_comment_end(comment.as_bytes()) else { return "" };
+            src = &comment[end..];
+        } else {
+            break;
+        }
+    }
+    src
+}
+
+fn significant_word(src: &str) -> (Option<&str>, &str) {
+    let src = skip_item_trivia(src);
+    let end = src.bytes().take_while(|b| b.is_ascii_alphanumeric() || *b == b'_').count();
+    if end == 0 { (None, src) } else { (Some(&src[..end]), &src[end..]) }
 }
 
 /// Index of the last line of the item starting at or after `from` (attributes, blank
@@ -260,9 +309,36 @@ fn gated_item_end(lines: &[&str], from: usize) -> usize {
         return last;
     };
     let text = lines[head..].join("\n");
+    // Initializer blocks can be followed by operators, method calls, or more blocks.
+    // A static/const ends at its outer semicolon, never at an initializer's `}`.
+    let (mut keyword, mut rest) = significant_word(&text);
+    if keyword == Some("pub") {
+        rest = skip_item_trivia(rest);
+        if let Some(restricted) = rest.strip_prefix('(') {
+            rest = restricted;
+            loop {
+                rest = skip_item_trivia(rest);
+                match rest.chars().next() {
+                    Some(')') => {
+                        rest = &rest[1..];
+                        break;
+                    }
+                    Some(ch) => rest = &rest[ch.len_utf8()..],
+                    None => return last,
+                }
+            }
+        }
+        (keyword, rest) = significant_word(rest);
+    }
+    let semicolon_terminated = match keyword {
+        Some("static") => true,
+        Some("const") => !matches!(significant_word(rest).0, Some("fn" | "unsafe" | "extern")),
+        _ => false,
+    };
     let b = text.as_bytes();
     let ident = |at: usize| b[at].is_ascii_alphanumeric() || b[at] == b'_';
     let (mut depth, mut line, mut i, mut opened) = (0usize, head, 0usize, false);
+    let (mut parentheses, mut brackets) = (0usize, 0usize);
     while i < b.len() {
         match b[i] {
             b'\n' => line += 1,
@@ -272,12 +348,10 @@ fn gated_item_end(lines: &[&str], from: usize) -> usize {
                 }
             }
             b'/' if b.get(i + 1) == Some(&b'*') => {
-                i += 2;
-                while i + 1 < b.len() && !(b[i] == b'*' && b[i + 1] == b'/') {
-                    line += usize::from(b[i] == b'\n');
-                    i += 1;
-                }
-                i += 1;
+                let start = i + 2;
+                let Some(length) = block_comment_end(&b[start..]) else { return last };
+                line += b[start..start + length].iter().filter(|&&c| c == b'\n').count();
+                i = start + length - 1;
             }
             // A raw string, r"…" / r#"…"# / br#"…"#: no escapes, ends at `"` + the same hashes.
             b'r' if (i == 0 || !ident(i - 1)) || (b[i - 1] == b'b' && (i < 2 || !ident(i - 2))) => {
@@ -322,13 +396,17 @@ fn gated_item_end(lines: &[&str], from: usize) -> usize {
             }
             b'}' => {
                 depth = depth.saturating_sub(1);
-                // `};` / `});` closes the item on this line too; the `;` arm takes it.
-                let rest = text[i + 1..].split('\n').next().unwrap_or(""); // unwrap_or: split always yields one piece
-                if depth == 0 && opened && !rest.contains(';') {
+                if depth == 0 && parentheses == 0 && brackets == 0
+                    && opened && !semicolon_terminated
+                {
                     return line;
                 }
             }
-            b';' if depth == 0 => return line,
+            b'(' => parentheses += 1,
+            b')' => parentheses = parentheses.saturating_sub(1),
+            b'[' => brackets += 1,
+            b']' => brackets = brackets.saturating_sub(1),
+            b';' if depth == 0 && parentheses == 0 && brackets == 0 => return line,
             _ => {}
         }
         i += 1;
@@ -717,6 +795,55 @@ mod tests {
         assert_eq!(p.lines().count(), 5, "line numbers stay true");
         let helper = "fn real() {}\n#[cfg(test)]\nfn helper() {\n    q.unwrap();\n}\nfn more() {}\n";
         assert_eq!(production_half(helper), "fn real() {}\n\n\n\n\nfn more() {}");
+        // Regression for #5227: a same-line test item must not consume its successor.
+        let inline = "#[cfg(test)] mod tests {}\nfn real() { x.unwrap(); }\n";
+        assert_eq!(production_half(inline), "\nfn real() { x.unwrap(); }");
+        let inline_decl = "#[cfg(test)] mod tests;\nfn real() { x.unwrap(); }\n";
+        assert_eq!(production_half(inline_decl), "\nfn real() { x.unwrap(); }");
+        // A comment's semicolon cannot make the closed test module swallow production.
+        let commented = "#[cfg(test)]\nmod tests {\n} // diagnostic; not syntax\nfn real() { x.unwrap(); }\n";
+        assert_eq!(production_half(commented), "\n\n\nfn real() { x.unwrap(); }");
+        // Real constructor closing syntax still belongs to the gated static.
+        let constructor = "#[cfg(test)]\nstatic X: LazyLock<()> = LazyLock::new(|| {\n});\nfn real() { x.unwrap(); }\n";
+        assert_eq!(production_half(constructor), "\n\n\nfn real() { x.unwrap(); }");
+        // Regression for the first proposed fix: initializer blocks do not end a static.
+        for initializer in [
+            "{1} + { let y = 2;\n const EXTRA_LIMIT: usize = 9;\n y + EXTRA_LIMIT\n}",
+            "{1usize}.wrapping_add({ let y = 2;\n const EXTRA_LIMIT: usize = 9;\n y + EXTRA_LIMIT\n})",
+            "[ { let y = 2;\n const EXTRA_LIMIT: usize = 9;\n y + EXTRA_LIMIT\n} ][0]",
+        ] {
+            for declaration in [
+                "static X", "const X", "pub(in crate::owner) const X",
+                "pub\nconst X", "pub /* comment */ (crate) const X",
+                "pub // visibility\n(in crate::owner) static X",
+            ] {
+                let raw = format!("#[cfg(test)]\n{declaration}: usize = {initializer};\nfn real() {{ x.unwrap(); }}\n");
+                let projected = production_half(&raw);
+                assert!(!projected.contains("EXTRA_LIMIT"), "{projected}");
+                assert_eq!(projected.lines().last(), Some("fn real() { x.unwrap(); }"));
+                assert_eq!(projected.lines().count(), raw.lines().count(), "line positions");
+            }
+        }
+        // Const functions still end with their body, even when a comment has punctuation.
+        let konst_fn = "#[cfg(test)]\nconst fn helper() -> usize { 1 } // ;\nfn real() { x.unwrap(); }\n";
+        assert_eq!(production_half(konst_fn), "\n\nfn real() { x.unwrap(); }");
+        // Regression for proposed revision 4: nested comment delimiters are never code.
+        let nested = "#[cfg(test)]\nfn helper() { /* outer /* inner */ ( [ { ;\n tail ) ] } */ }\nfn production() { x.unwrap(); }\n";
+        assert_eq!(production_half(nested), "\n\n\nfn production() { x.unwrap(); }");
+        let open_delimiter = "#[cfg(test)]\nfn helper() { /* outer /* inner */ ( */ }\nfn production() { x.unwrap(); }\n";
+        assert_eq!(production_half(open_delimiter), "\n\nfn production() { x.unwrap(); }");
+
+        // Regression for proposed revision 2: comments are whitespace between keywords.
+        for trivia in ["/* explanation */", "// explanation\n", "/* outer /* nested */ tail */"] {
+            let raw = format!("#[cfg(test)]\nconst {trivia} fn helper() -> usize {{ 1 }}\nfn production() {{ x.unwrap(); }}\n");
+            let projected = production_half(&raw);
+            assert_eq!(projected.lines().last(), Some("fn production() { x.unwrap(); }"));
+            assert!(!projected.contains("helper"));
+            assert_eq!(projected.lines().count(), raw.lines().count());
+        }
+
+
+
     }
 
     /// What this catches: the production/test split silently swallowing the whole
