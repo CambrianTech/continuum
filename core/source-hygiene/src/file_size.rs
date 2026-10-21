@@ -52,7 +52,8 @@ pub const READABLE_FILE_LINES: usize = 1_000;
 // 54,053 after start_server, serve_persona_loop_inner, voice_module, launch_gate, models and
 // benchmark_dispatch were decomposed by responsibility (#5234-#5237).
 // 52,544 after act_observe/mod.rs (2,509 lines) was split by owner into act_observe/tests/*.
-const BASELINE_LINES_OVER: usize = 52_544;
+// 45,242 after bin/continuum.rs was split by responsibility into bin/continuum/* (measured here, source-hygiene run).
+const BASELINE_LINES_OVER: usize = 0;
 
 pub struct FileSize;
 
