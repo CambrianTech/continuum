@@ -37,9 +37,9 @@ impl FineTuningAdapter for EngineLoraFineTuner {
             ));
         }
         let targets = gguf_targets(&lora.target_modules).map_err(FineTuningError::InvalidRequest)?;
-        let LaneLease { choice, hold: lane_hold } =
+        let LaneLease { choice, hold: lane_hold, still_bound } =
             self.lane.acquire(&request.base_model).await.map_err(FineTuningError::InvalidRequest)?;
-        let LaneChoice { url: lane, window: served_window, engine, build } = choice;
+        let LaneChoice { url: lane, window: served_window, engine, build, memory } = choice;
         let train_dir = self
             .train_dir
             .clone()
@@ -131,7 +131,7 @@ impl FineTuningAdapter for EngineLoraFineTuner {
         // fits the governed VRAM now; a chunk never measured calibrates. Before this, the
         // engine took 512 for every job and a plain-walk footprint stood in for the exact
         // walk's (the 5090, 2026-10-10: 3418 MiB leased, 12.6 GB needed, refused in 8 s).
-        let governed_free = self.vram_free_for(&format!("genome-train:{id}"));
+        let governed_free = self.free_for(&format!("genome-train:{id}"), memory);
         let mut walk_reason = "the host memory monitor had not read the host, so no exact-walk budget could be set".to_owned();
         let mut family = Shape {
             model: request.base_model.clone(),
@@ -379,7 +379,7 @@ impl FineTuningAdapter for EngineLoraFineTuner {
                 };
                 let bytes = match measured {
                     Some(bytes) => bytes,
-                    None => daemon.available_for(&consumer, crate::resources::ResourceKind::Vram),
+                    None => daemon.available_for(&consumer, memory),
                 };
                 continuum_base::probe!(
                     class = "training.job.planned",
@@ -397,9 +397,10 @@ impl FineTuningAdapter for EngineLoraFineTuner {
                 let gate = crate::modules::serving_daemon::LifecycleGate::global()
                     .ok_or_else(|| failure("engine training requires the serving lifecycle gate"))?;
                 // THE RUN BINDS TO ITS ENGINE INSIDE THE ADMISSION HOLD (SHARED-RESIDENT-LIFECYCLE.md
-                // step 1): the lane chosen above must still be the live engine (the same pid and
-                // start time), or a relaunch replaced it while this job waited and admission is
-                // refused; then the binding is recorded before any relaunch can take the gate.
+                // step 1): the lane chosen above must still be the one its source chose (the same
+                // incarnation, endpoint and base: `LaneLease::still_bound`), or it went away or was
+                // replaced while this job waited and admission is refused; then the binding is
+                // recorded before any relaunch can take the gate.
                 let store = residency_store
                     .clone()
                     .ok_or_else(|| failure("engine training requires a home for its engine binding"))?;
@@ -419,20 +420,17 @@ impl FineTuningAdapter for EngineLoraFineTuner {
                 let bind_job_dir = spec.job_dir.clone();
                 let bind = move |granted: u64| -> Result<(), String> {
                     bind_work.reserved_bytes = granted;
-                    let now = crate::inference::lane_registry::live_lane()
-                        .and_then(|rec| incarnation_of(&rec))
-                        .ok_or("no live engine at admission: the lane went away while this job waited")?;
-                    if now != chosen {
-                        let error = format!(
-                            "the lane was replaced while this job waited (pid {} started {} is now pid {} started {}); not training on a different engine",
-                            chosen.pid, chosen.started_s, now.pid, now.started_s
-                        );
-                        // Nothing ran: the examples go back to her bucket and the next dispatch
-                        // plans against the new lane (card 0b8de4da).
-                        if let Err(e) = write_returnable(&bind_job_dir, &Returnable::LaneReplaced { error: error.clone() }) {
-                            continuum_base::probe!(class = "training.job.returnable_unrecorded", error = %e, "the replaced lane could not be recorded; the examples wait for a manual return");
+                    match still_bound() {
+                        Ok(()) => {}
+                        Err(Unbound::Gone(error)) => return Err(error),
+                        Err(Unbound::Replaced(error)) => {
+                            // Nothing ran: the examples go back to her bucket and the next
+                            // dispatch plans against the new lane (card 0b8de4da).
+                            if let Err(e) = write_returnable(&bind_job_dir, &Returnable::LaneReplaced { error: error.clone() }) {
+                                continuum_base::probe!(class = "training.job.returnable_unrecorded", error = %e, "the replaced lane could not be recorded; the examples wait for a manual return");
+                            }
+                            return Err(error);
                         }
-                        return Err(error);
                     }
                     crate::inference::engine_residency::record(&bind_store, bind_work)
                 };
@@ -440,6 +438,7 @@ impl FineTuningAdapter for EngineLoraFineTuner {
                     daemon.clone(),
                     &gate,
                     &consumer,
+                    memory,
                     need,
                     |available| progress.waiting_for_capacity(bytes, available),
                     bind,

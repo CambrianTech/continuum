@@ -108,6 +108,24 @@ pub(super) trait LaneSource: Send + Sync {
 pub(super) struct LaneLease {
     pub(super) choice: LaneChoice,
     pub(super) hold: Option<Box<dyn std::any::Any + Send + Sync>>,
+    /// Whether the lane chosen is still the one at `choice.url`, run inside the admission hold
+    /// before the run binds to it. Each source checks its own lane's identity (incarnation,
+    /// endpoint, base): a pid alone is not an identity, and a lane stood up for the run is
+    /// never the node's live lane, so a re-read of that record cannot answer for it.
+    pub(super) still_bound: Box<dyn Fn() -> Result<(), Unbound> + Send + Sync>,
+}
+
+/// Why a chosen lane no longer holds the run: it is gone, or something else answers there.
+#[derive(Debug)]
+pub(super) enum Unbound {
+    Gone(String),
+    /// A different engine took its place; nothing ran, so her examples go back (card 0b8de4da).
+    Replaced(String),
+}
+
+/// The pool the resident lane's bytes live in, which is what a run on its weights leases.
+pub(super) fn resident_memory() -> crate::resources::ResourceKind {
+    crate::inference::llama_server::main_lane_placement().pool_kind()
 }
 
 /// The live lane serving the base on this node: training on the resident weights.
@@ -123,8 +141,33 @@ impl LaneSource for ResidentLane {
         let choice = live_lane_for(base).ok_or_else(|| {
             format!("no live lane serves {base} on this node: in-engine training runs on the resident weights")
         })?;
-        Ok(LaneLease { choice, hold: None })
+        let (base, chosen, url) = (base.to_owned(), choice.engine, choice.url.clone());
+        Ok(LaneLease { choice, hold: None, still_bound: Box::new(move || resident_still_bound(&base, chosen, &url)) })
     }
+}
+
+/// The resident lane is still the one chosen: the same engine incarnation, at the same
+/// endpoint, serving the same base.
+fn resident_still_bound(
+    base: &str,
+    chosen: Option<crate::inference::engine_residency::EngineIncarnation>,
+    url: &str,
+) -> Result<(), Unbound> {
+    let gone = || Unbound::Gone("no live engine at admission: the lane went away while this job waited".into());
+    let rec = crate::inference::lane_registry::live_lane().ok_or_else(gone)?;
+    let now = incarnation_of(&rec).ok_or_else(gone)?;
+    let same_base = crate::model_registry::artifacts::names_the_same_base(&rec.model, base);
+    if chosen == Some(now) && rec.root_url() == url && same_base {
+        return Ok(());
+    }
+    let was = chosen.map_or_else(|| "an unidentified engine".to_owned(), |c| format!("pid {} started {}", c.pid, c.started_s));
+    Err(Unbound::Replaced(format!(
+        "the lane was replaced while this job waited ({was} at {url} serving {base} is now pid {} started {} at {} serving {}); not training on a different engine",
+        now.pid,
+        now.started_s,
+        rec.root_url(),
+        rec.model
+    )))
 }
 
 /// A test's lane: any `Fn(base) -> Option<LaneChoice>`, held by nothing.
@@ -137,7 +180,7 @@ impl<F: Fn(&str) -> Option<LaneChoice> + Send + Sync> LaneSource for F {
 
     async fn acquire(&self, base: &str) -> Result<LaneLease, String> {
         let choice = self(base).ok_or_else(|| format!("the test lane serves no {base}"))?;
-        Ok(LaneLease { choice, hold: None })
+        Ok(LaneLease { choice, hold: None, still_bound: Box::new(|| Ok(())) })
     }
 }
 
@@ -154,6 +197,17 @@ pub(super) struct LaneChoice {
     /// so a measurement is never read as evidence about another engine (card de9e1342). `None`
     /// on a pre-slot install and in tests.
     pub(super) build: Option<String>,
+    /// The governed pool its bytes live in (`Vram` for a GPU-placed lane, `Ram` for a
+    /// CPU-placed one): what a run in it leases and fits its chunk against.
+    pub(super) memory: crate::resources::ResourceKind,
+}
+
+/// A test's lane at `url` with a `window`: no engine, no build, on the card.
+#[cfg(test)]
+impl LaneChoice {
+    pub(super) fn at(url: String, window: u32) -> Self {
+        Self { url, window, engine: None, build: None, memory: crate::resources::ResourceKind::Vram }
+    }
 }
 
 /// A lane record's incarnation. A record from before `started_s` names the live process by
@@ -173,6 +227,7 @@ pub(super) fn live_lane_for(base: &str) -> Option<LaneChoice> {
         window: rec.context_window,
         engine: incarnation_of(&rec),
         build: rec.engine_bin.as_deref().and_then(crate::inference::engine_slots::stamp_of_bin),
+        memory: resident_memory(),
     })
 }
 
@@ -254,11 +309,11 @@ impl EngineLoraFineTuner {
         t
     }
 
-    /// The VRAM a job may fit a chunk into now: the governor's figure for this consumer, or
-    /// what an ungoverned (test) host declares.
-    pub(super) fn vram_free_for(&self, consumer: &str) -> u64 {
+    /// The memory a job may fit a chunk into now, in its lane's pool: the governor's figure
+    /// for this consumer, or what an ungoverned (test) host declares.
+    pub(super) fn free_for(&self, consumer: &str, memory: crate::resources::ResourceKind) -> u64 {
         match self.admission {
-            Admission::Governed => governed_training_free(consumer),
+            Admission::Governed => governed_training_free(consumer, memory),
             #[cfg(test)]
             Admission::Ungoverned { vram_free } => vram_free,
         }
@@ -270,7 +325,7 @@ impl EngineLoraFineTuner {
             jobs: NativeJobs::new(PROVIDER_ID),
             http: reqwest::Client::new(),
             // a lane launched at 256 per slot: the window every existing test asserts
-            lane: Box::new(move |_: &str| Some(LaneChoice { url: lane_url.clone(), window: 256, engine: None, build: None })),
+            lane: Box::new(move |_: &str| Some(LaneChoice::at(lane_url.clone(), 256))),
             train_dir: Some(train_dir),
             footprints: Footprints::at(footprints),
             admission: Admission::Ungoverned { vram_free: u64::MAX },

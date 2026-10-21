@@ -689,7 +689,7 @@ pub use budget::{
 use budget::{lane_admission_decision, pin_fit_decision};
 mod holds;
 pub use holds::{
-    pool_kind_for, serving_held_steady, serving_ludicrous_active, serving_pool_kind,
+    serving_held_steady, serving_ludicrous_active, serving_pool_kind,
     ServingLudicrousHold, ServingSteadyHold,
 };
 

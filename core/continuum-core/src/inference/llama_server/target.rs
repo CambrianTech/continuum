@@ -105,6 +105,19 @@ pub enum LanePlacement {
     Cpu,
 }
 
+impl LanePlacement {
+    /// The pool this placement's bytes live in, which is the governed row that admits them:
+    /// a CPU-placed lane (`--n-gpu-layers 0`) keeps weights AND KV in system RAM, so it is
+    /// sized against `Ram`, never against a card holding none of it (card 7c72c0f0: nine
+    /// citizens planned against a 5.7 GB Vram row on a box with 34.4 GB of RAM in use).
+    pub fn pool_kind(self) -> crate::resources::ResourceKind {
+        match self {
+            Self::Cpu => crate::resources::ResourceKind::Ram,
+            Self::Gpu => crate::resources::ResourceKind::Vram,
+        }
+    }
+}
+
 
 /// Where the host's serving plan places MAIN lanes. `CONTINUUM_SERVING_PLACEMENT=cpu` in
 /// config.env (the layer the installer writes — #3729's Intel-Mac arm builds the server

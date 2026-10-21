@@ -500,12 +500,12 @@ mod tests {
         let planned = daemon.available_for("trainer", ResourceKind::Vram);
         assert_eq!(planned, 1024 * mib, "test: everything is free when the run plans");
         // serving grows into the memory after the plan
-        let _serving = wait_for_training_memory(daemon.clone(), &gate, "serving", 768 * mib, |_| {})
+        let _serving = wait_for_training_memory(daemon.clone(), &gate, "serving", crate::resources::ResourceKind::Vram, 768 * mib, |_| {})
             .await
             .unwrap();
         let bound = Arc::new(std::sync::Mutex::new(None));
         let saw = bound.clone();
-        let admitted = wait_for_training_memory_bound(daemon.clone(), &gate, "trainer", TrainingNeed::Calibrate { at_least: None }, |_| {}, move |granted| {
+        let admitted = wait_for_training_memory_bound(daemon.clone(), &gate, "trainer", crate::resources::ResourceKind::Vram, TrainingNeed::Calibrate { at_least: None }, |_| {}, move |granted| {
             *saw.lock().unwrap() = Some(granted);
             Ok(())
         })
@@ -518,11 +518,11 @@ mod tests {
         // smallest budget was granted, posted as memory_budget_mib=0 and refused unreturnably.
         // With less than 1 MiB free, a calibration admission waits instead of granting it.
         drop(admitted);
-        let _rest = wait_for_training_memory(daemon.clone(), &gate, "serving-2", 256 * mib - 512 * 1024, |_| {})
+        let _rest = wait_for_training_memory(daemon.clone(), &gate, "serving-2", crate::resources::ResourceKind::Vram, 256 * mib - 512 * 1024, |_| {})
             .await
             .unwrap();
         assert!(
-            wait_for_training_memory_bound(daemon.clone(), &gate, "trainer", TrainingNeed::Calibrate { at_least: None }, |_| {}, |_| Ok(()))
+            wait_for_training_memory_bound(daemon.clone(), &gate, "trainer", crate::resources::ResourceKind::Vram, TrainingNeed::Calibrate { at_least: None }, |_| {}, |_| Ok(()))
                 .now_or_never()
                 .is_none(),
             "512 KiB free: the calibration waits, it is not granted"
@@ -530,7 +530,7 @@ mod tests {
         // and a family that once measured a whole run waits for at least that much (Cormac on #4949)
         drop(_rest);
         assert!(
-            wait_for_training_memory_bound(daemon.clone(), &gate, "trainer", TrainingNeed::Calibrate { at_least: Some(300 * mib) }, |_| {}, |_| Ok(()))
+            wait_for_training_memory_bound(daemon.clone(), &gate, "trainer", crate::resources::ResourceKind::Vram, TrainingNeed::Calibrate { at_least: Some(300 * mib) }, |_| {}, |_| Ok(()))
                 .now_or_never()
                 .is_none(),
             "256 MiB free under a 300 MiB measured floor: it waits"
@@ -552,13 +552,14 @@ mod tests {
             DaemonConfig::default(),
         );
         let gate = crate::modules::serving_daemon::LifecycleGate::unowned(true);
-        let held = wait_for_training_memory(daemon.clone(), &gate, "serving", 1024, |_| {})
+        let held = wait_for_training_memory(daemon.clone(), &gate, "serving", crate::resources::ResourceKind::Vram, 1024, |_| {})
             .await
             .unwrap();
         let mut waiting = Box::pin(wait_for_training_memory(
             daemon.clone(),
             &gate,
             "trainer",
+            crate::resources::ResourceKind::Vram,
             512,
             |_| {},
         ));
@@ -657,6 +658,7 @@ mod tests {
             daemon.clone(),
             &gate,
             "trainer",
+            crate::resources::ResourceKind::Vram,
             512,
             |_| {},
         ));
@@ -672,6 +674,7 @@ mod tests {
             daemon.clone(),
             &gate,
             "trainer",
+            crate::resources::ResourceKind::Vram,
             512,
             |_| {},
         ));

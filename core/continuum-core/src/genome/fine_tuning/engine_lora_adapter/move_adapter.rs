@@ -88,7 +88,7 @@ impl EngineLoraFineTuner {
                 continue;
             }
             let consumer = if work.consumer.is_empty() { format!("genome-train:{}", work.job) } else { work.consumer.clone() };
-            match daemon.acquire_guarded(&crate::forge::training_admission::request(&consumer, work.reserved_bytes)) {
+            match daemon.acquire_guarded(&crate::forge::training_admission::request(&consumer, resident_memory(), work.reserved_bytes)) {
                 Ok(guard) => {
                     if let Ok(mut leases) = self.resident_leases.lock() {
                         leases.insert(work.job, guard);

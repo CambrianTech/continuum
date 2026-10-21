@@ -1,11 +1,12 @@
 use super::*;
 
-/// What the trainer is governed to have free for `consumer`: the governor's VRAM budget net of
-/// every reservation. ONE reader, for the plan here and for the trigger deciding whether a
-/// capacity-parked job may re-plan (card de9e1342), so the two can never disagree.
-pub(crate) fn governed_training_free(consumer: &str) -> u64 {
+/// What the trainer is governed to have free for `consumer` in `memory` (its lane's pool): the
+/// governor's budget net of every reservation. ONE reader, for the plan here and for the
+/// trigger deciding whether a capacity-parked job may re-plan (card de9e1342), so the two can
+/// never disagree.
+pub(crate) fn governed_training_free(consumer: &str, memory: crate::resources::ResourceKind) -> u64 {
     crate::resources::ResourceDaemon::global()
-        .map_or(0, |d| d.available_for(consumer, crate::resources::ResourceKind::Vram)) // map_or: a governed host whose governor is gone has nothing free to lease (the governed branch refuses below)
+        .map_or(0, |d| d.available_for(consumer, memory)) // map_or: a governed host whose governor is gone has nothing free to lease (the governed branch refuses below)
 }
 
 pub const PROVIDER_ID: &str = "engine-local";
