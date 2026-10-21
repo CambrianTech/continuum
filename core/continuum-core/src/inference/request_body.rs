@@ -579,7 +579,7 @@ pub(crate) fn build_base_body(
             class = "inference.request.uncapped",
             purpose = request.purpose.as_deref().unwrap_or("none"), // unwrap_or: an unnamed caller is reported as such
             model = %model,
-            "a request with no max_tokens: bounded only by the lane's one-window --n-predict"
+            "a request with no max_tokens: bounded only by the lane's one-window --n-predict default"
         );
     }
 
