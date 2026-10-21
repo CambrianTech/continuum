@@ -2835,6 +2835,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "continuum-context"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
+]
+
+[[package]]
 name = "continuum-core"
 version = "0.1.0"
 dependencies = [

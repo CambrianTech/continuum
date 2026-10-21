@@ -18,6 +18,7 @@ members = [
     "core/continuum-cli-lifecycle",
     "core/continuum-tool-protocol",
     "core/continuum-base",
+    "core/continuum-context",
     "core/continuum-core",
     "core/expert-pager-policy",
     "core/source-hygiene",
