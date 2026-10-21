@@ -136,16 +136,16 @@ fn ambient_permit_bounds_concurrency_and_releases_on_drop() {
     // OUR OWN gate — no process-global, so no lock and no order dependence.
     let gate = LaneAdmission::new();
     // PREMISE CHANGE 2026-08-17: the pool used to be a bare `AMBIENT_TURN_CONCURRENCY
-    // = 1`; it is now the live `nondirected_budget()` (lanes − 1, floored at 1), the
-    // same budget the per-call lane reservation uses. Pin a real multi-lane machine so
+    // = 1`; it is now the live `nondirected_budget()` (every lane, since no lane is held
+    // back for directed calls), the same budget the per-call lane admission uses. Pin a real multi-lane machine so
     // the burst has something to bound — at the old hardcoded 1 this test could not
     // distinguish "correctly bounded" from "throttled below the hardware", which is
     // exactly how the starvation ceiling stayed invisible.
     gate.set_served_lane_count(4);
     let budget = gate.nondirected_budget();
     assert_eq!(
-        budget, 3,
-        "4 served lanes → 3 non-directed, 1 reserved directed"
+        budget, 4,
+        "4 served lanes → 4 non-directed: no lane is held back idle"
     );
     // A simultaneous-wake burst: several ambient turns try to claim a slot at once.
     // Exactly `budget` win; the rest get None and must yield.
@@ -246,22 +246,17 @@ fn consecutive_reports_measure_windows_not_running_totals() {
 // budget floors at 1 and it stays byte-identical. This is the half of the change that
 // could silently hurt the smallest supported hardware, so it gets its own row.
 #[test]
-fn a_one_lane_box_keeps_exactly_one_ambient_slot() {
-    for lanes in [1usize, 2] {
+fn the_non_directed_budget_is_every_lane_and_a_one_lane_box_keeps_one_slot() {
+    for lanes in [1usize, 2, 4] {
         let gate = LaneAdmission::new();
         gate.set_served_lane_count(lanes);
-        assert_eq!(
-            gate.nondirected_budget(),
-            1,
-            "{lanes}-lane box floors the non-directed budget at 1"
-        );
-        let held = gate
-            .try_hold_ambient_turn()
-            .expect("the one slot is grantable");
+        assert_eq!(gate.nondirected_budget(), lanes, "{lanes} lanes, all serve work");
+        let held: Vec<_> = (0..lanes)
+            .map(|_| gate.try_hold_ambient_turn().expect("a slot per lane"))
+            .collect();
         assert!(
             gate.try_hold_ambient_turn().is_none(),
-            "a {lanes}-lane box admits exactly ONE ambient turn — unchanged from the \
-             pre-2026-08-17 hardcoded bound"
+            "a {lanes}-lane box admits exactly {lanes} ambient turns"
         );
         drop(held);
     }
@@ -289,60 +284,63 @@ fn the_ambient_pool_grows_when_serving_publishes_more_lanes() {
         .expect("growing to 4 lanes must open a second ambient slot");
     let third = gate
         .try_hold_ambient_turn()
-        .expect("…and a third (budget = lanes - 1)");
+        .expect("…and a third");
+    let fourth = gate
+        .try_hold_ambient_turn()
+        .expect("…and a fourth (budget = every lane)");
     assert!(
         gate.try_hold_ambient_turn().is_none(),
-        "still bounded at lanes-1 — growth must not remove the directed reservation"
+        "still bounded at the served lane count"
     );
-    drop((first, second, third));
+    drop((first, second, third, fourth));
 }
 
-// what this catches (#139 lane starvation): a directed (addressed) turn must never
-// queue behind non-directed model calls. Non-directed callers are capped at
-// (MAX_LANES-1) lanes, so a directed caller always finds a reserved lane — this is
-// the fix for the glass-boxed 8-minute directed-turn wait behind an idle self-tick
-// + one long ambient turn on the two decode lanes. This is the only test that
-// touches the process-global serving-lane semaphores, so it starts all-free.
+// what this catches (#139 lane starvation, without the idle reserve): a directed
+// (addressed) turn never queues behind non-directed work, and no lane is held back for
+// it. Work fills EVERY lane; a directed arrival takes the next lane freed, ahead of work
+// that queued before it. The M5 (canary, 2026-10-20) idled its reserved lane in 24 of 30
+// samples while four minds queued behind the other.
 #[tokio::test]
-async fn directed_turn_always_finds_a_reserved_lane() {
-    let gate: &'static LaneAdmission = Box::leak(Box::new(LaneAdmission::new()));
+async fn work_fills_every_lane_and_a_directed_turn_takes_the_next_one_freed() {
     use std::time::Duration;
-    let budget = gate.nondirected_budget();
+    let gate: &'static LaneAdmission = Box::leak(Box::new(LaneAdmission::new()));
+    gate.set_served_lane_count(2);
+    let first = gate.acquire_serving_lane(None, LanePriority::Work).await;
+    let second = tokio::time::timeout(
+        Duration::from_millis(250),
+        gate.acquire_serving_lane(None, LanePriority::Work),
+    )
+    .await
+    .expect("work takes the second lane: nothing is held back");
+    let queued_work = tokio::spawn(async move { gate.acquire_serving_lane(None, LanePriority::Work).await });
+    let counted = tokio::time::timeout(Duration::from_secs(5), async {
+        while gate.work_waiting() != 1 {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await;
+    assert!(counted.is_ok(), "the third work call waits, counted");
+    let directed = tokio::spawn(async move { gate.acquire_serving_lane(None, LanePriority::Directed).await });
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert!(!directed.is_finished(), "every lane is busy: the directed call waits for one");
 
-    // Fill the ENTIRE non-directed budget (all lanes idle/ambient work may hold).
-    let mut nondirected = Vec::new();
-    for _ in 0..budget {
-        nondirected.push(gate.acquire_serving_lane(None, LanePriority::Ambient, None).await);
-    }
+    drop(first);
+    let directed = tokio::time::timeout(Duration::from_millis(500), directed)
+        .await
+        .expect("the directed call takes the freed lane")
+        .expect("join");
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert!(
+        !queued_work.is_finished(),
+        "the work call that queued first still waits: the freed lane went to the directed call"
+    );
 
-    // On a machine with a lane to reserve (MAX_LANES >= 2), a directed call still
-    // acquires immediately — it is not blocked by the saturated non-directed budget.
-    if gate.lane_count() > 1 {
-        let directed = tokio::time::timeout(
-            Duration::from_millis(250),
-            gate.acquire_serving_lane(None, LanePriority::Directed, None),
-        )
-        .await;
-        assert!(
-            directed.is_ok(),
-            "a directed turn must get a reserved lane, never queue behind non-directed work"
-        );
-
-        // And a FURTHER non-directed call must now WAIT (its budget is full) — it
-        // times out rather than stealing the lane the directed turn is using.
-        let extra_nondirected = tokio::time::timeout(
-            Duration::from_millis(150),
-            gate.acquire_serving_lane(None, LanePriority::Ambient, None),
-        )
-        .await;
-        assert!(
-            extra_nondirected.is_err(),
-            "non-directed work over its (MAX_LANES-1) budget must wait, not preempt"
-        );
-        drop(directed);
-    }
-
-    drop(nondirected); // release (nothing else can observe this gate anyway)
+    drop(second);
+    let work = tokio::time::timeout(Duration::from_millis(500), queued_work)
+        .await
+        .expect("work takes the next freed lane")
+        .expect("join");
+    drop((directed, work));
 }
 
 // what this catches: boot-created pools must shrink when the first real plan
@@ -397,8 +395,8 @@ fn held_shrink_debt_reconciles_to_the_latest_plan() {
     gate.set_served_lane_count(3); // repeated stable plan is idempotent
     assert_eq!(serving.available_permits(), 3);
     assert_eq!(gate.serving_installed.load(Ordering::Acquire), 3);
-    assert_eq!(nondirected.available_permits(), 2);
-    let ambient: Vec<_> = (0..2)
+    assert_eq!(nondirected.available_permits(), 3);
+    let ambient: Vec<_> = (0..3)
         .map(|_| gate.try_hold_ambient_turn().expect("latest ambient budget"))
         .collect();
     assert!(gate.try_hold_ambient_turn().is_none());
@@ -547,9 +545,9 @@ fn a_mind_with_no_turn_for_fifteen_minutes_is_starving_and_a_recent_one_is_not()
 async fn a_cancelled_work_wait_is_uncounted_and_ambient_turns_flow_again() {
     use std::time::Duration;
     let gate: &'static LaneAdmission = Box::leak(Box::new(LaneAdmission::new()));
-    gate.set_served_lane_count(2); // non-directed budget = 1
-    let held = gate.acquire_serving_lane(None, LanePriority::Ambient, None).await;
-    let work = tokio::spawn(async move { gate.acquire_serving_lane(None, LanePriority::Work, None).await });
+    gate.set_served_lane_count(1); // non-directed budget = 1
+    let held = gate.acquire_serving_lane(None, LanePriority::Ambient).await;
+    let work = tokio::spawn(async move { gate.acquire_serving_lane(None, LanePriority::Work).await });
     // Deterministic (Cormac's note on #4083): wait until the task is COUNTED, under a
     // bound, instead of a fixed sleep a loaded runner can outlast.
     let counted = tokio::time::timeout(Duration::from_secs(5), async {
@@ -569,7 +567,7 @@ async fn a_cancelled_work_wait_is_uncounted_and_ambient_turns_flow_again() {
     drop(held);
     let ambient = tokio::time::timeout(
         Duration::from_millis(1500),
-        gate.acquire_serving_lane(None, LanePriority::Ambient, None),
+        gate.acquire_serving_lane(None, LanePriority::Ambient),
     )
     .await;
     assert!(
@@ -588,10 +586,10 @@ async fn a_cancelled_work_wait_is_uncounted_and_ambient_turns_flow_again() {
 async fn a_held_card_takes_the_lane_before_a_musing_turn() {
     use std::time::Duration;
     let gate: &'static LaneAdmission = Box::leak(Box::new(LaneAdmission::new()));
-    gate.set_served_lane_count(2); // non-directed budget = 1
-    let held = gate.acquire_serving_lane(None, LanePriority::Ambient, None).await;
+    gate.set_served_lane_count(1); // non-directed budget = 1
+    let held = gate.acquire_serving_lane(None, LanePriority::Ambient).await;
 
-    let work = tokio::spawn(async move { gate.acquire_serving_lane(None, LanePriority::Work, None).await });
+    let work = tokio::spawn(async move { gate.acquire_serving_lane(None, LanePriority::Work).await });
     tokio::time::sleep(Duration::from_millis(50)).await;
     assert_eq!(
         gate.work_waiting(),
@@ -599,7 +597,7 @@ async fn a_held_card_takes_the_lane_before_a_musing_turn() {
         "the work caller is counted while it waits"
     );
     let ambient =
-        tokio::spawn(async move { gate.acquire_serving_lane(None, LanePriority::Ambient, None).await });
+        tokio::spawn(async move { gate.acquire_serving_lane(None, LanePriority::Ambient).await });
     tokio::time::sleep(Duration::from_millis(50)).await;
     assert!(!ambient.is_finished(), "ambient parks while work waits");
 
@@ -736,24 +734,6 @@ fn the_queues_estimate_is_a_floor_under_her_own_measured_turn_never_a_ceiling() 
         Some(Duration::from_secs(424)),
     );
     assert!(act > bound, "the act must outlast the lane wait it contains");
-}
-
-// what this catches (the M5, 2026-09-20; Cormac's design word): the reserve is a WAIT
-// guarantee in seconds. A work call is lent the reserved lane only when its occupancy
-// is known and fits the directed budget and nothing directed is pending; an unknown
-// occupancy, a pending directed line, or an occupancy past the budget lends nothing.
-// (The loan itself is a try-acquire on a FREE physical lane — never a park; that lives
-// in `acquire_serving_lane`, where a parked loan would put a directed arrival behind
-// the whole occupancy.)
-#[test]
-fn the_reserved_lane_is_lent_only_to_bounded_work_while_nothing_directed_is_pending() {
-    use std::time::Duration;
-    let budget = Duration::from_secs(60);
-    assert!(reserve_lendable(Some(Duration::from_secs(40)), false, budget));
-    assert!(!reserve_lendable(Some(Duration::from_secs(40)), true, budget), "a pending directed line re-arms the reserve");
-    assert!(!reserve_lendable(Some(Duration::from_secs(154)), false, budget), "a 154 s turn (the M5 tonight) may not take the reserve");
-    assert!(!reserve_lendable(None, false, budget), "unknown occupancy is not a number");
-    assert!(reserve_lendable(Some(budget), false, budget), "exactly the budget fits");
 }
 
 // what this catches: the health line's directed-wait numbers are nearest-rank

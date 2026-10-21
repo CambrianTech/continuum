@@ -358,23 +358,6 @@ pub fn lane_wait_bound(
             .clamp(LANE_WAIT_FLOOR, LANE_WAIT_CEILING),
     )
 }
-/// PURE: may a WORK call be lent the lane reserved for directed calls? Only while no
-/// directed line is pending for any citizen here, and only when the call's expected
-/// occupancy — prefill of its uncached prompt at the measured prefill rate plus its
-/// decode at the measured decode rate — fits inside the directed wait budget, so the
-/// most a directed arrival can wait is that bound. Unknown occupancy lends nothing.
-///
-/// Measured 2026-09-20 on the M5 (2 lanes): the reserve of lanes−1 left ONE non-directed
-/// lane for four minds at 3–6 min a turn — 11 grants an hour with a lane idle for a
-/// mention that came once all night. The reserve stays a guarantee; it is now stated in
-/// the seconds a directed call may wait, not in lanes.
-pub fn reserve_lendable(
-    expected: Option<std::time::Duration>,
-    directed_pending: bool,
-    budget: std::time::Duration,
-) -> bool {
-    !directed_pending && expected.is_some_and(|e| e <= budget)
-}
 /// A bounded ring of wait samples (ms), newest kept, read as (p50, count) so an empty ring
 /// is UNMEASURED — never "0 ms". One shape for every queue a node measures about itself.
 pub struct WaitRing(std::sync::Mutex<std::collections::VecDeque<u64>>);
@@ -481,14 +464,13 @@ pub fn shared_model_saturated() -> bool {
 // lanes sat permanently idle while every citizen but one yielded on a pool of 1.
 //
 // Why lowering the bound is still safe — the directed-turn guarantee never came from THIS
-// permit. It comes from the per-call reservation (`acquire_serving_lane`), which caps
-// non-directed calls at lanes−1 so a directed call always finds a lane. That is the layer
-// that owns lane priority, and it is untouched. This permit's own job (#171) is anti-
-// STAMPEDE: bound the fan-out when N peers wake on the same beat and all read inflight=0.
-// A bound of lanes−1 does that job exactly as well as a bound of 1 — it is still fixed,
-// still acquired non-blockingly, still held across the whole turn — while no longer
-// throttling below the hardware. On a 1- or 2-lane box the budget floors at 1, so weak
-// machines get byte-identical behaviour to before.
+// permit. It comes from the per-call admission (`acquire_serving_lane`), where a directed
+// call is first in line for the next lane freed. That is the layer that owns lane
+// priority. This permit's own job (#171) is anti-STAMPEDE: bound the fan-out when N peers
+// wake on the same beat and all read inflight=0. A bound of the served lane count does
+// that job exactly as well as a bound of 1 — it is still fixed, still acquired
+// non-blockingly, still held across the whole turn — while no longer throttling below the
+// hardware. (2026-10-21: the budget is every lane; no lane is held back idle.)
 
 /// Ambient turns that YIELDED because the pool was full, since process start.
 ///

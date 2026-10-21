@@ -295,10 +295,13 @@ impl LaneAdmission {
         }
     }
 
-    /// Lanes a non-directed (ambient / idle) call may occupy: all but one, floored at 1 so a
-    /// single-lane machine still lets idle work run rather than starving it forever.
+    /// Lanes a non-directed (work / ambient) call may occupy: every lane. A lane held back
+    /// for directed turns sat idle most of the time on the M5 (canary, 2026-10-20: slot 1
+    /// busy in 6 of 30 samples; 3 directed grants against 39 work grants in 10 minutes)
+    /// while minds queued behind the other lane. Directed priority holds no lane: see
+    /// [`LaneAdmission::acquire_serving_lane`].
     pub(super) fn nondirected_budget(&self) -> usize {
-        self.lane_count().saturating_sub(1).max(1)
+        self.lane_count()
     }
 
     /// See [`set_served_lane_count`].
@@ -319,17 +322,13 @@ impl LaneAdmission {
             resize_semaphore_to(sem, &self.serving_installed, lanes);
         }
         if let Some(sem) = self.nondirected.get() {
-            resize_semaphore_to(
-                sem,
-                &self.nondirected_installed,
-                lanes.saturating_sub(1).max(1),
-            );
+            resize_semaphore_to(sem, &self.nondirected_installed, lanes);
         }
         // The ambient-turn pool rides the SAME budget, so it grows on the same signal.
         // Missing this is how a pool installed at the boot floor would stay there for the
         // process's life while serving grew underneath it.
         if let Some(sem) = self.ambient.get() {
-            resize_semaphore_to(sem, &self.ambient_installed, lanes.saturating_sub(1).max(1));
+            resize_semaphore_to(sem, &self.ambient_installed, lanes);
         }
         let after = (
             lanes,
@@ -400,73 +399,26 @@ impl LaneAdmission {
         &'static self,
         persona: Option<uuid::Uuid>,
         priority: LanePriority,
-        expected_occupancy: Option<std::time::Duration>,
     ) -> ServingLanePermit {
         let queued_at = std::time::Instant::now();
         let directed = priority.is_directed();
-        // Non-directed reserves within the (lanes-1) budget FIRST, so the physical-lane
-        // acquire below can never let non-directed work starve a directed caller —
-        // EXCEPT a work call whose occupancy is bounded inside the directed wait budget
-        // while nothing directed is pending: it may be LENT the reserved lane, because the
-        // guarantee is the wait, not the lane (`reserve_lendable`). THE LOAN NEVER PARKS
-        // (Cormac's condition on #4250): it is a try-acquire on a physical lane that is
-        // free RIGHT NOW — a lent call that had to wait on the FIFO physical semaphore
-        // would put a later directed arrival behind its whole occupancy (2× the budget
-        // with one parked, 3× with two). No free lane = no loan; she takes the ordinary
-        // Work path and waits for the non-directed budget like before. The loan ends
-        // when the permit drops; a directed line pending at the next acquire re-arms.
-        let (nondirected, lent_lane) = match priority {
-            LanePriority::Directed => (None, None),
-            LanePriority::Work => {
-                let sem = self.nondirected_lanes().clone();
-                match self.try_acquire_resized(&sem, &self.nondirected_installed, LaneBudget::NonDirected) {
-                    Some(p) => (Some(p), None),
-                    None => {
-                        let reserve_exists = self.nondirected_budget() < self.lane_count();
-                        let budget = crate::inference::prefill_rate::INTERACTIVE_TTFT;
-                        let lendable = reserve_exists
-                            && reserve_lendable(
-                                expected_occupancy,
-                                crate::cognition::directed_pending::any_pending(),
-                                budget,
-                            );
-                        let lent = if lendable {
-                            self.try_acquire_resized(
-                                self.serving_lanes(),
-                                &self.serving_installed,
-                                LaneBudget::Physical,
-                            )
-                        } else {
-                            None
-                        };
-                        match lent {
-                            Some(lane) => {
-                                crate::probe!(
-                                    class = "admission.lane.reserve_lent_to_work",
-                                    expected_ms = expected_occupancy.map(|d| d.as_millis() as u64).unwrap_or(0), // unwrap_or: lendable implies Some; 0 cannot occur
-                                    budget_ms = budget.as_millis() as u64,
-                                    "a free reserved lane is lent to a bounded work call, never parked for — a directed arrival waits at most the call's occupancy"
-                                );
-                                (None, Some(lane))
-                            }
-                            None => (Some(self.acquire_nondirected_as_work().await), None),
-                        }
-                    }
-                }
-            }
-            LanePriority::Ambient => (Some(self.acquire_nondirected_as_ambient().await), None),
+        // Work and ambient calls take the non-directed budget first, then a physical lane.
+        // A directed call takes a physical lane directly AND, when one is free, a
+        // non-directed permit beside it: while it holds the lane, that budget is one short,
+        // so no work call can be queued on the physical lanes behind it. Every lane serves
+        // work when nothing directed is in flight; nothing is held back idle.
+        let nondirected = match priority {
+            LanePriority::Directed => self.try_acquire_resized(
+                self.nondirected_lanes(),
+                &self.nondirected_installed,
+                LaneBudget::NonDirected,
+            ),
+            LanePriority::Work => Some(self.acquire_nondirected_as_work().await),
+            LanePriority::Ambient => Some(self.acquire_nondirected_as_ambient().await),
         };
-        let lane = match lent_lane {
-            Some(lane) => lane,
-            None => {
-                self.acquire_resized(
-                    self.serving_lanes(),
-                    &self.serving_installed,
-                    LaneBudget::Physical,
-                )
-                .await
-            }
-        };
+        let lane = self
+            .acquire_resized(self.serving_lanes(), &self.serving_installed, LaneBudget::Physical)
+            .await;
         crate::probe!(
             class = "admission.lane.granted",
             persona = ?persona,
@@ -574,25 +526,16 @@ impl Default for LaneAdmission {
     }
 }
 
-/// Acquire a serving lane for a model call, priced by priority (#139). `directed`
-/// callers take from the full lane pool; non-directed callers first claim the
-/// (MAX_LANES-1) non-directed budget, guaranteeing a directed caller always finds a free
-/// physical lane. Awaits only under genuine contention; the returned permit releases
-/// every lane on drop.
 /// How many physical serving-lane permits are free RIGHT NOW — a gauge for the
 /// gate probes, so a starved waiter names the count instead of implying it.
 pub fn serving_lane_permits_available() -> usize {
     LANES.serving_lanes().available_permits()
 }
 
-/// `expected_occupancy`: the call's own bound on how long it will hold the lane (prefill
-/// of the uncached prompt + decode, at this box's measured rates), or `None` = unknown. Only
-/// a WORK call uses it — the reserved lane may be lent to it inside the directed wait
-/// budget (`reserve_lendable`). Directed and ambient callers pass `None`.
-pub async fn acquire_serving_lane(
-    persona: Option<uuid::Uuid>,
-    priority: LanePriority,
-    expected_occupancy: Option<std::time::Duration>,
-) -> ServingLanePermit {
-    LANES.acquire_serving_lane(persona, priority, expected_occupancy).await
+/// Acquire a serving lane for a model call, priced by priority (#139). Every lane serves
+/// work and ambient calls; a directed call is first in line for the next lane freed (see
+/// [`LaneAdmission::acquire_serving_lane`]). Awaits only under genuine contention; the
+/// returned permit releases everything it holds on drop.
+pub async fn acquire_serving_lane(persona: Option<uuid::Uuid>, priority: LanePriority) -> ServingLanePermit {
+    LANES.acquire_serving_lane(persona, priority).await
 }

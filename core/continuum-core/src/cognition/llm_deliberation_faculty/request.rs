@@ -271,7 +271,6 @@ impl LlmDeliberationFaculty {
                     lane = crate::cognition::resource_admission::acquire_serving_lane(
                         Some(self.persona_id),
                         crate::cognition::resource_admission::LanePriority::Directed,
-                        None,
                     ) => Some(lane),
                     _ = tokio::time::sleep(lane_bound) => None,
                 }
@@ -286,14 +285,8 @@ impl LlmDeliberationFaculty {
                 } else {
                     crate::cognition::resource_admission::LanePriority::Ambient
                 };
-                // A work call states its own bound on the lane (`expected_occupancy`), so the
-                // reserved lane may be lent to it inside the directed wait budget.
-                let expected = match priority {
-                    crate::cognition::resource_admission::LanePriority::Work => expected_turn,
-                    _ => None,
-                };
                 tokio::select! {
-                    lane = crate::cognition::resource_admission::acquire_serving_lane(Some(self.persona_id), priority, expected) => Some(lane),
+                    lane = crate::cognition::resource_admission::acquire_serving_lane(Some(self.persona_id), priority) => Some(lane),
                     _ = tokio::time::sleep(lane_bound) => None,
                     _ = crate::cognition::directed_pending::wait(self.persona_id) => {
                         crate::probe!(
