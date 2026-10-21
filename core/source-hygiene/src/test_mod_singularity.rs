@@ -25,7 +25,8 @@ use super::{SourceFile, SourceRule, Violation};
 /// the guard.
 #[cfg(test)]
 // 15 after #5228: the multi-mod files' suites moved into one test file each, as nested themes.
-const BASELINE_EXCESS_TEST_MODS: usize = 14; // lowered by generator/templates tests split
+// 13 after the working_memory split moved its suites into one test file.
+const BASELINE_EXCESS_TEST_MODS: usize = 13;
 
 /// 1-indexed lines of `#[cfg(test)]` attributes that gate a `mod`.
 fn test_mod_lines(file: &SourceFile) -> Vec<usize> {

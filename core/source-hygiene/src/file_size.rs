@@ -53,7 +53,9 @@ pub const READABLE_FILE_LINES: usize = 1_000;
 // benchmark_dispatch were decomposed by responsibility (#5234-#5237).
 // 45,242 after bin/continuum.rs was split by responsibility into bin/continuum/* (measured here, source-hygiene run).
 // 45,131 measured on canary 13ce66b03 + this change: 45,242 - 111 (generator/templates split).
-const BASELINE_LINES_OVER: usize = 45_131;
+// 36,308 after llama-server responsibility split, direct source census.
+// 364 after the split merge-train (#5229-#5233, #5240, #5244): the only Rust file past 1,000 lines is the vendored inference/vendored/quantized_llama.rs (1,364).
+const BASELINE_LINES_OVER: usize = 364;
 
 pub struct FileSize;
 
