@@ -29,7 +29,7 @@ pub(super) fn derived_prompt_cache_mib(
     physical_bytes: u64,
     available_bytes: u64,
     memory_mode: Option<crate::gpu::monitor::MemoryMode>,
-) -> PromptCacheGrant {
+) -> super::PromptCacheGrant {
     // LIVE citizens only. The WorkingSetRegistry persists every persona that
     // EVER recorded demand — measured 2026-08-28, first live fire: citizens=332
     // (weeks of rotated identities), a fictional want that only the
