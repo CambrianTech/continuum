@@ -35,11 +35,11 @@ pub(super) enum SettleOutcome {
 
 /// One round: a card set tracked from open (Working) to all-cards-terminal (Done).
 /// Identity is the room's uuid — a round is its room's activity.
-struct BenchRound {
+pub(super) struct BenchRound {
     pub(super) round_id: Uuid,
     pub(super) benchmark: String,
     /// The room's airc NAME (joins are by name).
-    run_room_name: String,
+    pub(super) run_room_name: String,
     /// Card uuid → the terminal state it settled with (`None` = still working).
     pub(super) cards: HashMap<Uuid, Option<String>>,
     pub(super) stage: RoundStage,
@@ -62,7 +62,7 @@ pub struct CardActivity {
 }
 
 impl BenchRound {
-    fn new(round_id: Uuid, benchmark: &str, card_ids: &[Uuid]) -> Self {
+    pub(super) fn new(round_id: Uuid, benchmark: &str, card_ids: &[Uuid]) -> Self {
         Self {
             round_id,
             benchmark: benchmark.to_string(),
@@ -75,12 +75,12 @@ impl BenchRound {
     }
 
     /// Cards not yet settled.
-    fn remaining(&self) -> usize {
+    pub(super) fn remaining(&self) -> usize {
         self.cards.values().filter(|s| s.is_none()).count()
     }
 
     /// Total cards in the round.
-    fn dispatched(&self) -> usize {
+    pub(super) fn dispatched(&self) -> usize {
         self.cards.len()
     }
 
@@ -125,7 +125,7 @@ impl BenchRound {
 /// in-flight rounds.
 static ROUNDS: LazyLock<Mutex<HashMap<Uuid, BenchRound>>> = LazyLock::new(|| Mutex::new(HashMap::new()));
 
-fn rounds() -> std::sync::MutexGuard<'static, HashMap<Uuid, BenchRound>> {
+pub(super) fn rounds() -> std::sync::MutexGuard<'static, HashMap<Uuid, BenchRound>> {
     ROUNDS.lock().unwrap_or_else(|p| p.into_inner()) // poisoned lock = read the last state; every touch is a short pure mutation
 }
 
