@@ -56,7 +56,7 @@ pub(super) struct Collapsed {
     pub total: usize,
 }
 
-#[derive(Default)]
+#[derive(Debug, Default)]
 pub(super) struct ActionLog {
     /// Ascending by `seq`.
     records: VecDeque<ActionRecord>,
