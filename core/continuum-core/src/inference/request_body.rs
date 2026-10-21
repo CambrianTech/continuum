@@ -16,7 +16,7 @@ use crate::model_registry::Capability;
 /// ignore entirely), this drives the template's own `enable_thinking` branch so it
 /// emits an empty `<think></think>` and the model goes straight to content. Inserting
 /// at the body's top level (not inside an existing kwargs map) is correct for the
-/// llama.cpp/unsloth servers we target; idempotent — overwrites its own prior value.
+/// llama.cpp servers we target; idempotent — overwrites its own prior value.
 /// Harmless where unsupported: cloud providers ignore unknown body fields and a
 /// template without `enable_thinking` ignores the kwarg.
 pub(crate) fn apply_enable_thinking_false(body: &mut Value) {
@@ -539,7 +539,7 @@ pub(crate) fn build_base_body(
     );
 
     // JsonInPrompt tool offering: for gateways/models that ignore the OpenAI
-    // `tools` param (unsloth+GGUF), describe the tools IN the prompt and ask
+    // `tools` param (a local GGUF), describe the tools IN the prompt and ask
     // for a strict JSON call. Appended as a system message; the matching parse
     // happens on the response below. Native providers skip this (tool_prompt →
     // None) and use the `tools` param instead.
@@ -562,7 +562,7 @@ pub(crate) fn build_base_body(
     });
 
     // max_tokens — the MODEL owns its generation length, enforced server-side
-    // by unsloth / llama.cpp / the cloud provider. We forward a ceiling ONLY
+    // by llama.cpp / the cloud provider. We forward a ceiling ONLY
     // when the caller set one explicitly; `None` → omit the field so the model
     // runs to its own stop token or context limit. We never invent a default
     // here: the old `.unwrap_or(2048)` was a second clamp duplicating a limit

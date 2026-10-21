@@ -1,11 +1,9 @@
 //! llama_server.rs — Rust owns the llama-server process.
 //!
-//! This is the unsloth-Studio replacement for LOCAL serving control. Where
-//! `unsloth_control` drove unsloth-Studio's management API (`/api/inference/load`
-//! etc.) over HTTP, llama.cpp's `llama-server` has NO such management surface — it
+//! This is LOCAL serving control. llama.cpp's `llama-server` has NO management API — it
 //! serves exactly ONE model passed at launch and exposes only `/v1/*`, `/props`,
 //! and `/health`. So "switch model" is not an API call; it is a process relaunch.
-//! The clean consequence: the core OWNS the C++ launch. No second Python Studio
+//! The clean consequence: the core OWNS the C++ launch. No second server
 //! racing us for the GPU, no dual-server confusion — one supervised child, one
 //! source of truth for "what is being served right now."
 //!

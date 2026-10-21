@@ -220,10 +220,10 @@
 
     /// What this catches: the managed-dir invariant Joel set — the native
     /// trainer interpreter resolves under `~/.continuum/genome/venv`, NEVER
-    /// the legacy `~/.unsloth/...` venv. Read-only (only asserts when
+    /// a venv outside it. Read-only (only asserts when
     /// MLX_PYTHON is unset, so it never races env-mutating tests).
     #[test]
-    fn mlx_python_defaults_to_managed_venv_not_unsloth() {
+    fn mlx_python_defaults_to_managed_venv() {
         if std::env::var("MLX_PYTHON").is_ok() {
             return; // operator override in effect; nothing to assert
         }
@@ -232,10 +232,6 @@
         assert!(
             s.contains(".continuum/genome/venv"),
             "managed venv path, got {s}"
-        );
-        assert!(
-            !s.contains(".unsloth"),
-            "must not reference the legacy unsloth venv, got {s}"
         );
     }
 
@@ -356,7 +352,7 @@
     // (checkpoint named in body, base + outtype threaded) to the forge custodian —
     // this is the SUPPLY contract for the genome page-in (the gene cognition/eval
     // pages in). The pre-Pass-2 bug POSTed a checkpoint-less body to the WRONG
-    // (unsloth) endpoint; a regression here = the gene is never produced loadably
+    //  endpoint; a regression here = the gene is never produced loadably
     // and every LIFT is unmeasurable.
     #[tokio::test]
     async fn forge_export_gguf_lora_sends_stateless_contract_c_request() {
@@ -366,17 +362,14 @@
             checkpoint: "/ckpt".into(),
             save_directory: "/out".into(),
             format: "gguf-lora".into(),
-            quantization: "Q4_K_M".into(),
             // CANONICAL id (what the manifest/eval key on); the custodian must
             // receive the RESOLVED hf_base instead — the trinity split.
             base_model_id: Some("continuum-ai/qwen2.5-0.5b-instruct-GGUF".into()),
             outtype: "f16".into(),
-            max_seq_length: 2048,
-            load_in_4bit: true,
         };
         let path = tmp_manifest("stateless");
         let _ = std::fs::remove_file(&path);
-        run_export_gguf_lora(&cust, &p, "unsloth/Qwen2.5-0.5B-Instruct", &path)
+        run_export_gguf_lora(&cust, &p, "Qwen/Qwen2.5-0.5B-Instruct", &path)
             .await
             .unwrap();
         let reqs = cust.exports.lock().unwrap();
@@ -387,7 +380,7 @@
         );
         assert_eq!(reqs[0].save_directory, "/out");
         // The custodian gets the SAFETENSORS hf_base, not the canonical GGUF id.
-        assert_eq!(reqs[0].base_model_id, "unsloth/Qwen2.5-0.5B-Instruct");
+        assert_eq!(reqs[0].base_model_id, "Qwen/Qwen2.5-0.5B-Instruct");
         assert_eq!(reqs[0].outtype, "f16");
     }
 
@@ -402,17 +395,14 @@
             checkpoint: "/ckpt".into(),
             save_directory: "/out".into(),
             format: "gguf-lora".into(),
-            quantization: "Q4_K_M".into(),
             base_model_id: None,
             outtype: "f16".into(),
-            max_seq_length: 2048,
-            load_in_4bit: true,
         };
         // hf_base is irrelevant here — the None base_model_id fails loud first.
         let err = run_export_gguf_lora(
             &cust,
             &p,
-            "unsloth/Qwen2.5-0.5B-Instruct",
+            "Qwen/Qwen2.5-0.5B-Instruct",
             &tmp_manifest("nobase"),
         )
         .await
@@ -426,7 +416,7 @@
     }
 
     // what this catches: a custodian whose gguf-lora export fails is surfaced
-    // LOUDLY (no silent no-op) — the same fail-loud contract as the unsloth path.
+    // LOUDLY (no silent no-op) — the fail-loud export contract.
     #[tokio::test]
     async fn forge_export_gguf_lora_fails_loud_when_custodian_fails() {
         let cust = RecordingForgeCustodian::default(); // succeed=false
@@ -435,16 +425,13 @@
             checkpoint: "/ckpt".into(),
             save_directory: "/out".into(),
             format: "gguf-lora".into(),
-            quantization: "Q4_K_M".into(),
             base_model_id: Some("b".into()),
             outtype: "f16".into(),
-            max_seq_length: 2048,
-            load_in_4bit: true,
         };
         let err = run_export_gguf_lora(
             &cust,
             &p,
-            "unsloth/Qwen2.5-0.5B-Instruct",
+            "Qwen/Qwen2.5-0.5B-Instruct",
             &tmp_manifest("custfail"),
         )
         .await
@@ -466,18 +453,15 @@
             checkpoint: "/ckpts/asha-code".into(),
             save_directory: "/genes".into(),
             format: "gguf-lora".into(),
-            quantization: "Q4_K_M".into(),
             base_model_id: Some("continuum-ai/qwen3.5-4b-code-forged-GGUF".into()),
             outtype: "f16".into(),
-            max_seq_length: 2048,
-            load_in_4bit: true,
         };
         let path = tmp_manifest("registers");
         let _ = std::fs::remove_file(&path);
 
         // hf_base (safetensors) goes to the custodian; the manifest is keyed on the
         // CANONICAL p.base_model_id below — the split this test guards.
-        run_export_gguf_lora(&cust, &p, "unsloth/Qwen2.5-0.5B-Instruct", &path)
+        run_export_gguf_lora(&cust, &p, "Qwen/Qwen2.5-0.5B-Instruct", &path)
             .await
             .unwrap();
 

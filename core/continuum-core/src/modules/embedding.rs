@@ -10,7 +10,7 @@
 //! single source of truth every embedding caller scores against.
 //!
 //! NOTE (task #40): embedding *generation* is async + adapter-routed
-//! (unsloth / llama-server `/v1/embeddings` via the `AIProviderAdapter`, see
+//! (llama-server `/v1/embeddings` via the `AIProviderAdapter`, see
 //! [`crate::cognition::embedding`]). The old in-process fastembed/ONNX model
 //! cache, `generate_embedding{,s_batch}`, the `embedding/generate` +
 //! `embedding/model/*` handlers, the embedding pool, and the GPU guards were
@@ -52,7 +52,7 @@ use wide::f32x8;
 /// [`DEFAULT_SERVING_WAIT`](crate::inference::llama_server::DEFAULT_SERVING_WAIT);
 /// reading the snapshot never hangs (a `watch` borrow, not an HTTP probe), so there
 /// is no per-module timeout to maintain — the old 5s guard existed only because an
-/// unsloth gateway could hold `/v1/models` open, a hazard the snapshot removes.
+/// local llama-server could hold `/v1/models` open, a hazard the snapshot removes.
 pub async fn build_adapter_embedder(
 ) -> Result<Arc<dyn crate::cognition::embedding::EmbeddingProvider>, String> {
     // `initialize` is an `AIProviderAdapter` trait method — bring the trait into

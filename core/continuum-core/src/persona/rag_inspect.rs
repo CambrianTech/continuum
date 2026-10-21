@@ -536,7 +536,7 @@ async fn run_inference_probe(
         provider: None,
         temperature: None,
         // The MODEL owns its generation length — the adapter forwards no
-        // ceiling when None (unsloth/llama.cpp run to the model's own stop
+        // ceiling when None (llama.cpp run to the model's own stop
         // token). The old 512 "conservative fallback" was exactly the
         // LCD-tier clamp this comment warned against: it truncated qwen3.5
         // mid-`<think>` → empty reply. Capable models self-pace; we never

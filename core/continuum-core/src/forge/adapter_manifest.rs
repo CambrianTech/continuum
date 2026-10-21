@@ -3,7 +3,7 @@
 //!
 //! Why a manifest and not a directory scan: a gene's PEFT `adapter_config.json`
 //! records `base_model_name_or_path` as the HuggingFace base name (e.g.
-//! `unsloth/Qwen3.5-4B`), NOT the continuum registry id the serving daemon
+//! `Qwen/Qwen3.5-4B`), NOT the continuum registry id the serving daemon
 //! actually serves (`continuum-ai/qwen3.5-4b-code-forged-GGUF`). The two never
 //! string-match, so the gene→served-model association cannot be GUESSED from the
 //! bytes on disk — guessing it (then loading a mismatched `--lora`) would crash

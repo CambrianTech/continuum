@@ -145,16 +145,13 @@ async function main(): Promise<void> {
     console.log('💵 Step 11: Cost comparison (DeepSeek vs competitors)...');
     const deepseekCost = cost;
     const openaiCost = cost * 27; // 27x more expensive
-    const unslothCost = 0; // Free (electricity only)
 
     console.log(`   DeepSeek API:  $${deepseekCost.toFixed(6)} (5 examples)`);
     console.log(`   OpenAI API:    $${openaiCost.toFixed(6)} (5 examples) - 27x more!`);
-    console.log(`   Unsloth Local: $${unslothCost.toFixed(6)} (free - electricity only)`);
     console.log();
     console.log(`   For 1000 examples:`);
     console.log(`   DeepSeek:  $${(deepseekCost * 200).toFixed(4)}`);
     console.log(`   OpenAI:    $${(openaiCost * 200).toFixed(4)}`);
-    console.log(`   Unsloth:   $0.00 (but requires GPU)\n`);
 
     // Success summary
     console.log('✅ DeepSeekLoRAAdapter Standalone Test: PASSED');

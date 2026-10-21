@@ -469,7 +469,7 @@ Open source → Developers try it → Some contribute back → Platform improves
 | **Genome** | ✅ Done | Genome manager, Paging architecture, Training pipeline |
 | **Infrastructure** | ✅ Done | Rust workers (Logger, Archive), Governance system |
 | **Optimization** | 🚧 In Progress | Additional Rust workers, Worker-to-worker IPC |
-| **Evolution** | 📋 Planned | UnslothLoRA, Multi-backend fine-tuning, P2P genome sharing |
+| **Evolution** | 📋 Planned | Multi-backend fine-tuning, P2P genome sharing |
 
 ---
 

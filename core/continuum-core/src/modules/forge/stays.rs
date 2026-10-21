@@ -1,8 +1,7 @@
 use super::*;
 
 /// `forge/export` for the `gguf-lora` outcome — served by the continuum forge
-/// CUSTODIAN over Contract C ([`crate::forge::protocol`]), NOT unsloth (which
-/// cannot produce a GGUF LoRA — the whole reason the custodian binary exists).
+/// CUSTODIAN over Contract C ([`crate::forge::protocol`]).
 ///
 /// This is the corrected supply path for the genome page-in: it serializes the
 /// STATELESS [`GgufLoraRequest`](crate::forge::protocol::GgufLoraRequest)

@@ -204,7 +204,7 @@ pub enum ToolProtocol {
 /// the adapter — that is the whole point of this struct (#55). The adapter
 /// reads these; it does not decide them (same contract as
 /// [`MultiPartyChatStrategy`]). One source of truth for "what does this
-/// endpoint do," lifted out of the four `id == "unsloth"` / `id == "openai"`
+/// endpoint do," lifted out of the per-id
 /// branches that used to live in `OpenAICompatibleAdapter`.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProviderCapabilities {
@@ -214,9 +214,8 @@ pub struct ProviderCapabilities {
     /// Suppress the model's chain-of-thought by default. Some local
     /// reasoning GGUFs ramble/loop in their thinking (latency + the
     /// runaway-leak failure mode) yet answer correctly without it; cloud
-    /// reasoning models manage their own and leave this `false`. An
-    /// operator can still force thinking back on per-run (the adapter's
-    /// `UNSLOTH_THINKING=on` escape hatch). Default: `false` (keep thinking).
+    /// reasoning models manage their own and leave this `false`.
+    /// Default: `false` (keep thinking).
     #[serde(default)]
     pub suppress_thinking: bool,
     // NOTE: embedding + image-generation are NOT here. They're capability
@@ -505,7 +504,7 @@ pub struct Model {
     /// bridge from the canonical id to the HF cache and the training/convert
     /// lanes can't locate base weights. Absent for cloud models (they expose
     /// no local trainable form) and for serving-only local rows.
-    /// Example: "unsloth/Qwen2.5-0.5B-Instruct".
+    /// Example: "Qwen/Qwen2.5-0.5B-Instruct".
     #[serde(default)]
     pub hf_source: Option<String>,
     /// Resolved local filesystem path to the GGUF. Populated at registry

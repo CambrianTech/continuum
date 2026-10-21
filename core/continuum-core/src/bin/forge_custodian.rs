@@ -1,6 +1,6 @@
 //! `forge-custodian` — the continuum-owned forge custodian sidecar.
 //!
-//! This process implements the ONE capability unsloth-studio lacks: exporting a
+//! This process implements the capability the serving engine lacks: exporting a
 //! trained LoRA as a **GGUF LoRA adapter** — the pageable gene `llama-server
 //! --lora` loads and the genome pages in/out (memory
 //! `model-endpoint-fabric-adapter-router`, slice 1 supply side).
@@ -49,7 +49,7 @@
 //!   FORGE_MAX_CONCURRENT        — concurrent conversion slots (default 1)
 //!   FORGE_CONVERT_TIMEOUT_SECS  — per-conversion wall-clock deadline (default 1800)
 //!   FORGE_LLAMA_CPP_DIR         — dir holding `convert_lora_to_gguf.py`
-//!                                 (default `~/.unsloth/llama.cpp`)
+//!                                 (default `core/vendor/llama.cpp`, our fork)
 //!   FORGE_PYTHON                — python interpreter with the converter's deps
 //!                                 (default `python3`)
 
@@ -553,8 +553,7 @@ fn resolve_hf_base_dir(model_id: &str) -> Result<PathBuf, String> {
 ///
 /// Default is the llama.cpp WE vendor (`core/vendor/llama.cpp` — our fork),
 /// resolved from the crate dir; the custodian is a training-time tool that runs
-/// where the source tree exists. We do NOT borrow `~/.unsloth` anymore (unsloth
-/// is excised; the convert script is ours, in the submodule). `FORGE_LLAMA_CPP_DIR`
+/// where the source tree exists (the convert script is in the submodule). `FORGE_LLAMA_CPP_DIR`
 /// overrides for deployments that stage the script elsewhere.
 fn llama_cpp_converter() -> Result<PathBuf, String> {
     let dir = config_env::read("FORGE_LLAMA_CPP_DIR").unwrap_or_else(|| {
@@ -588,7 +587,7 @@ mod tests {
         let cfg = json!({
             "fine_tune_type": "lora",
             "lora_parameters": { "rank": 8, "dropout": 0.0, "scale": 20.0 },
-            "model": "unsloth/Qwen2.5-0.5B-Instruct"
+            "model": "Qwen/Qwen2.5-0.5B-Instruct"
         });
         let (rank, alpha) = parse_mlx_lora_params(&cfg).unwrap();
         assert_eq!(rank, 8);

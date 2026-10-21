@@ -2,7 +2,7 @@
 //!
 //! This is the Rust-native replacement for `src/mcp-server.ts` (871 lines of
 //! Node + `@modelcontextprotocol/sdk`). The command path stays headless: an MCP
-//! client (unsloth Studio, Claude Code) speaks JSON-RPC, and this handler turns
+//! client (Claude Code) speaks JSON-RPC, and this handler turns
 //! each call into a continuum command dispatch — no Node, no TS in the loop.
 //!
 //! ## Strongly typed protocol
@@ -40,7 +40,7 @@ use serde_json::Value;
 use super::mcp::MCPTool;
 
 /// The MCP protocol revision this server advertises. Bump as the spec moves;
-/// `2024-11-05` is the broadly-supported baseline (Claude Code, unsloth, etc.).
+/// `2024-11-05` is the broadly-supported baseline (Claude Code, etc.).
 const MCP_PROTOCOL_VERSION: &str = "2024-11-05";
 
 /// JSON-RPC error codes used by the handler (subset of the spec).
@@ -437,8 +437,8 @@ mod tests {
     }
 
     // what this catches: the initialize handshake returns the protocol version +
-    // tools capability + serverInfo — the typed shape an MCP client (unsloth/
-    // Claude Code) requires before it will list/call tools.
+    // tools capability + serverInfo — the typed shape an MCP client (Claude
+    // Code) requires before it will list/call tools.
     #[tokio::test]
     async fn initialize_returns_capabilities_and_server_info() {
         let s = server(MockDispatch::new());

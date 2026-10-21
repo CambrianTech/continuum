@@ -1,8 +1,7 @@
 //! MLX → PEFT LoRA conversion — the byte-exact transpose kernel of the genome
 //! page-in bridge.
 //!
-//! Apple's `mlx_lm.lora` trainer (the Mac LoRA path, see memory
-//! `unsloth-mlx-train-broken-on-mac`) writes an `adapters.safetensors` in MLX's
+//! Apple's `mlx_lm.lora` trainer (the Mac LoRA path) writes an `adapters.safetensors` in MLX's
 //! own key/shape convention. Every downstream consumer of a LoRA adapter
 //! (`convert_lora_to_gguf.py`, PEFT, the genome page-in) speaks the HuggingFace
 //! PEFT convention. The translation between them is a DETERMINISTIC key-rename +
@@ -250,7 +249,7 @@ pub struct ConvertEnv {
     /// Vendored llama.cpp checkout — must contain `convert_lora_to_gguf.py`
     /// and the `gguf-py` package.
     pub llama_cpp_dir: PathBuf,
-    /// Interpreter that can `import transformers` (the unsloth/mlx env on Mac).
+    /// Interpreter that can `import transformers` (the managed mlx venv).
     pub python: PathBuf,
     /// Dir with the base model's HF `config.json` (only the config is read; the
     /// weights are not needed). This binds the adapter to the architecture it
@@ -474,13 +473,13 @@ mod tests {
         let out = tmp.join("peft");
 
         let conv =
-            mlx_adapters_to_peft(&mlx, &out, "unsloth/Qwen2.5-0.5B-Instruct", 2, 40).unwrap();
+            mlx_adapters_to_peft(&mlx, &out, "Qwen/Qwen2.5-0.5B-Instruct", 2, 40).unwrap();
 
         assert_eq!(conv.rank, 2, "rank derived from shapes");
         assert_eq!(conv.tensor_count, 2);
         assert_eq!(conv.target_modules, vec!["q_proj".to_string()]);
         let config_bytes = std::fs::read(out.join("adapter_config.json")).unwrap();
-        let config = PeftLoraConfig::parse(&config_bytes, "unsloth/Qwen2.5-0.5B-Instruct").unwrap();
+        let config = PeftLoraConfig::parse(&config_bytes, "Qwen/Qwen2.5-0.5B-Instruct").unwrap();
         assert_eq!(inspect_peft_adapter(&out, &config).unwrap(), conv);
         assert!(PeftLoraConfig::parse(&config_bytes, "different/base").is_err());
 
@@ -512,7 +511,7 @@ mod tests {
         assert_eq!(cfg["lora_alpha"], 40);
         assert_eq!(
             cfg["base_model_name_or_path"],
-            "unsloth/Qwen2.5-0.5B-Instruct"
+            "Qwen/Qwen2.5-0.5B-Instruct"
         );
         assert_eq!(cfg["target_modules"], serde_json::json!(["q_proj"]));
 
@@ -549,11 +548,11 @@ mod tests {
         let cfg = tmp.join("adapter_config.json");
         std::fs::write(
             &cfg,
-            r#"{"model":"unsloth/Qwen3.5-4B","lora_parameters":{"rank":8,"scale":20.0}}"#,
+            r#"{"model":"Qwen/Qwen3.5-4B","lora_parameters":{"rank":8,"scale":20.0}}"#,
         )
         .unwrap();
         let (base, rank, alpha) = read_mlx_lora_hparams(&cfg).unwrap();
-        assert_eq!(base, "unsloth/Qwen3.5-4B");
+        assert_eq!(base, "Qwen/Qwen3.5-4B");
         assert_eq!(rank, 8);
         assert_eq!(alpha, 160, "alpha = rank * scale = 8 * 20");
         let _ = std::fs::remove_dir_all(&tmp);
@@ -591,7 +590,7 @@ mod tests {
         safetensors::tensor::serialize_to_file(views, None, &mlx).unwrap();
         let out = tmp.join("peft");
 
-        let conv = mlx_adapters_to_peft(&mlx, &out, "unsloth/Qwen3.5-4B", 2, 160).unwrap();
+        let conv = mlx_adapters_to_peft(&mlx, &out, "Qwen/Qwen3.5-4B", 2, 160).unwrap();
         assert_eq!(conv.target_modules, vec!["in_proj_a".to_string()]);
 
         let data = std::fs::read(&conv.adapter_path).unwrap();
@@ -626,7 +625,7 @@ mod tests {
         let env = ConvertEnv {
             llama_cpp_dir: PathBuf::from(repo).join("../vendor/llama.cpp"),
             // The convert interpreter is a dir WE manage (`~/.continuum/genome/venv`),
-            // NOT the legacy unsloth studio venv — same managed venv the native
+            // the same managed venv the native
             // mlx_lm.lora train resolves to (modules/forge.rs::resolve_mlx_python).
             // Override via CONTINUUM_CONVERT_PYTHON for an alternate transformers-
             // capable interpreter.

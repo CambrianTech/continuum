@@ -32,7 +32,7 @@
 //!
 //! ## Pairs with the thinking toggle
 //!
-//! When thinking is suppressed (`ThinkingMode::Suppress`, the unsloth-gateway
+//! When thinking is suppressed (`ThinkingMode::Suppress`, the local llama-server
 //! default), `reasoning` is `None` → nothing is recorded → the faculty abstains. So
 //! working memory SELF-ACTIVATES only where thinking is enabled — "reason when it
 //! helps, remember what you reasoned." No config flag needed.

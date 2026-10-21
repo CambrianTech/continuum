@@ -309,7 +309,7 @@ const response = await aiProviderDaemon.generateText({
 **How to Create LoRA-Adapted Models:**
 ```bash
 # 1. Train LoRA adapter (outside of Continuum)
-# Use Unsloth, Axolotl, or other LoRA training tools
+# Use Axolotl or other LoRA training tools
 
 # 2. Convert to GGUF format (if needed)
 python convert-lora-to-gguf.py

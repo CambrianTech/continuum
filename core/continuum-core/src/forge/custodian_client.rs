@@ -1,18 +1,10 @@
 //! `forge::custodian_client` — the core-side HTTP client for the forge custodian,
 //! speaking [`forge::protocol`](super::protocol) verbatim.
 //!
-//! This is the de-`unsloth` replacement for the gguf-lora export path that used
-//! to live in `inference/unsloth_forge.rs::UnslothForgeHttp::package`. That path
-//! had two bugs Contract C exists to kill:
-//! 1. **Wrong endpoint.** It POSTed gguf-lora to `unsloth_base_url()` — the
-//!    unsloth host, which CANNOT produce a GGUF LoRA (the whole reason the
-//!    continuum custodian binary exists). This client targets the custodian's
-//!    own address ([`protocol::DEFAULT_CUSTODIAN_ADDR`], override
-//!    `FORGE_CUSTODIAN_ADDR`).
-//! 2. **Wrong wire shape.** It ran a stateful `load-checkpoint` first, then sent
-//!    a body WITHOUT `checkpoint` and WITH `push_to_hub`/`repo_id` the custodian
-//!    never reads — the stateless [`protocol::GgufLoraRequest`] rejects it. This
-//!    client sends exactly the contract type: stateless, checkpoint-in-body.
+//! The gguf-lora export path. It targets the custodian's own address
+//! ([`protocol::DEFAULT_CUSTODIAN_ADDR`], override `FORGE_CUSTODIAN_ADDR`) and
+//! sends exactly the contract type: the stateless [`protocol::GgufLoraRequest`],
+//! checkpoint-in-body, no prior `load-checkpoint` call.
 //!
 //! ## Transport-agnostic by design (grid-readiness)
 //! The capability is the [`ForgeCustodian`] trait; [`ForgeCustodianHttp`] is the
@@ -109,8 +101,7 @@ pub fn custodian_base_url() -> String {
 }
 
 /// Real `reqwest` impl over the custodian's local HTTP surface. No auth — the
-/// custodian binds loopback by default and carries no API key (unlike the
-/// retired unsloth client).
+/// custodian binds loopback by default and carries no API key.
 pub struct ForgeCustodianHttp {
     base_url: String,
     client: reqwest::Client,

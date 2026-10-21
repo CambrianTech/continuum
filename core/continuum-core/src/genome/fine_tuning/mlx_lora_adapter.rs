@@ -25,8 +25,8 @@ use crate::runtime;
 pub const PROVIDER_ID: &str = "mlx-local";
 
 /// Config key (config.env, the single owner) for the python interpreter
-/// that can `import mlx_lm`. Defaults to the unsloth-studio env that
-/// ships `mlx_lm` on this class of machine; override per host.
+/// that can `import mlx_lm`. Defaults to the venv Continuum manages under
+/// `~/.continuum/genome/venv`; override per host.
 const MLX_PYTHON_KEY: &str = "MLX_PYTHON";
 
 /// Apple-Silicon `mlx_lm.lora` trainer. Holds a concurrent table of
@@ -38,8 +38,8 @@ pub struct MlxLoraFineTuner {
 
 impl MlxLoraFineTuner {
     /// Construct with the python interpreter resolved from config.env
-    /// (`MLX_PYTHON`), falling back to the unsloth-studio env that
-    /// ships `mlx_lm` on this machine class.
+    /// (`MLX_PYTHON`), falling back to the managed venv under
+    /// `~/.continuum/genome/venv`.
     pub fn new() -> Self {
         let python = continuum_base::config_env::read(MLX_PYTHON_KEY)
             .map(PathBuf::from)
@@ -63,14 +63,13 @@ impl Default for MlxLoraFineTuner {
     }
 }
 
-/// Default python: the unsloth-studio venv that ships `mlx_lm` on this
-/// machine class. Honestly a host-specific default; `MLX_PYTHON`
-/// overrides it. (Not a fallback in the forbidden sense — it's the
+/// Default python: the venv Continuum manages under `~/.continuum/genome/venv`
+/// (the same one `forge/train` uses); `MLX_PYTHON` overrides it. (Not a fallback in the forbidden sense — it's the
 /// documented default location, and a missing interpreter fails loud in
 /// `create_job` rather than silently degrading.)
 fn default_mlx_python() -> PathBuf {
     let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
-    home.join(".unsloth/studio/unsloth_studio/bin/python3")
+    home.join(".continuum/genome/venv/bin/python3")
 }
 
 /// Can this host actually run `mlx_lm.lora`? MLX targets the Apple GPU,

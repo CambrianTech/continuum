@@ -24,7 +24,7 @@ pub(super) const DEFAULT_PORT: u16 = 58057;
 /// ([`crate::model_registry::catalog`]). A placeholder only: the adapter is
 /// repointed at the serving daemon's live snapshot `base_url` (== [`serving_v1_url`])
 /// at registration. Mirrors [`DEFAULT_PORT`]; operator override is
-/// `LLAMA_SERVER_BASE_URL`. Owned HERE — never the dead Unsloth `:8888` gateway.
+/// `LLAMA_SERVER_BASE_URL`. Owned HERE.
 pub const DEFAULT_BASE_URL: &str = "http://127.0.0.1:58057/v1";
 
 

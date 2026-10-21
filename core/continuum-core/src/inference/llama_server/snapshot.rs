@@ -398,8 +398,7 @@ pub const DEFAULT_SERVING_WAIT: Duration = Duration::from_secs(READY_TIMEOUT.as_
 /// fronts — `llama-server` (llama.cpp's `/v1` server, proven live on :58057).
 /// ONE source of truth for the id string: the catalog entry, the registration
 /// path, the default generate route, and every `from_registry(...)` caller all
-/// reference this const so the id is named in exactly one place. (Formerly the
-/// scattered `"unsloth"` string; freed of behavior by #55, renamed here.)
+/// reference this const so the id is named in exactly one place.
 pub const PROVIDER_ID: &str = "llama-server";
 
 

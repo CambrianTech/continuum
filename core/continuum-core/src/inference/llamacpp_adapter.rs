@@ -701,7 +701,7 @@ impl AIProviderAdapter for LlamaCppAdapter {
             // TODO: if this in-process backend serves a reasoning model (qwen3 etc.)
             // it would emit inline `<think>` in `text` too — apply
             // `crate::ai::openai_adapter::extract_reasoning` here to separate it.
-            // Not Asha's path today (she routes through the unsloth/openai adapter).
+            // Not Asha's path today (she routes through the openai adapter).
             reasoning: None,
             routing: None,
             error: None,

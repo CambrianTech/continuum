@@ -425,7 +425,7 @@ pub enum ServiceGroup {
     /// Per-node hardware governance (GPU, resource + pressure brokers).
     ResourceGov,
     /// The inference engine (llm/provider/embedding/vision/models/search/
-    /// tool-parsing). Increasingly external (unsloth) behind the AIProviderAdapter.
+    /// tool-parsing). Increasingly external  behind the AIProviderAdapter.
     Inference,
     /// The organism's brain — cognition/channel/allocator/agent/memory/rag +
     /// the persona-host modules.

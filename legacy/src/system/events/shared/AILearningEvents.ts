@@ -57,7 +57,7 @@ export interface AITrainingStartedEventData extends AILearningEventData {
   /** Domain being trained (e.g., 'conversational', 'code', 'teaching') */
   domain: string;
 
-  /** Training provider (e.g., 'unsloth', 'deepseek', 'openai') */
+  /** Training provider (e.g., 'deepseek', 'openai') */
   provider: string;
 
   /** Number of training examples */

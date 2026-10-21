@@ -659,8 +659,7 @@ impl EmbeddingProvider for NeuralEmbeddingProvider {
 // ─── Live recall embedder resolution ───────────────────────────────────────────
 /// The grid's canonical retrieval embedding model + its dimensionality. One
 /// embedding SPACE across the grid keeps vectors comparable everywhere
-/// ([[embeddings-are-per-content-computed-once-shared]]). Overridable via
-/// `UNSLOTH_EMBED_MODEL` for a grid that serves a different embed model.
+/// ([[embeddings-are-per-content-computed-once-shared]]).
 pub const CANONICAL_EMBED_MODEL: &str = "qwen3-embedding-0.6b";
 
 /// Qwen3-Embedding-0.6B vector dimensionality (advisory metadata; the real

@@ -96,7 +96,7 @@ impl OpenAICompatibleAdapter {
     }
 
     /// Override the default model id (the one a `request.model: None` resolves to).
-    /// Used at persona upstart to bind the adapter to the model unsloth ACTUALLY
+    /// Used at persona upstart to bind the adapter to the model the engine ACTUALLY
     /// serves (discovered via `/v1/models`), instead of the the Rust catalog (catalog.rs) default
     /// — which can drift from what's loaded. Called post-construction, before init.
     pub fn with_default_model(mut self, model: String) -> Self {
