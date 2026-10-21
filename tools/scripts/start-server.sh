@@ -309,9 +309,7 @@ fi
 # are no rooms, so citizens have nothing to be resident IN and benchmarks are fed
 # into a system that is not running.
 #
-# Two failure states, distinguished because their fixes differ (the same
-# distinction `benchmark/dispatch` now draws between unregistered and
-# not-resident):
+# Two failure states, distinguished because their fixes differ:
 #   - airc BINARY ABSENT → nothing to enumerate, adopt or spawn. Warn and carry
 #     on; a box without airc installed is a different problem from a broken one,
 #     and refusing to boot would strand CI and fresh clones.

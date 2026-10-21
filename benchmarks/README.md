@@ -63,22 +63,24 @@ weakness (and off-grid: unmanageable by our daemons).
 
 ## Run OUR models — Rust `benchmark/*` commands (on-grid, persona-callable)
 
-The benchmark catalog + runner are Rust (`core/continuum-core/src/commands/benchmark.rs`),
-mirroring the model catalog. `benchmark/run` is a thin wrapper over `cognition/eval` — one
-grader, never reimplemented.
+The benchmark catalog + adapter are Rust (`core/continuum-core/src/commands/benchmark.rs`),
+mirroring the model catalog. A benchmark is an ADAPTER: it imports task + oracle as card
+rows and the activity's room is the runner; there is no `benchmark/run`/`round`/`dispatch`
+runner any more (see
+[BENCHMARKS-ARE-ADAPTERS-NOT-A-RUNNER](../docs/architecture/BENCHMARKS-ARE-ADAPTERS-NOT-A-RUNNER.md)).
 
 ```bash
 continuum benchmark/list                                                 # the catalog (name, grader, tasks, runnable)
-continuum benchmark/round --benchmark humaneval-rs --persona <id> --limit 40   # run a GYM on a persona (resume-able)
+continuum benchmark/import --suite humaneval-rs --limit 40               # preview the cards (task + oracle, no side effects)
+continuum activity/spawn --name hard-rs-40 --recipe benchmark/round \
+  --params='{"suite":"hard-rs","repo":"owner/name","limit":40}'          # a round: cards posted into its own room
 ```
 
-**Running a SWE-bench round?** SWE is NOT a gym — `benchmark/round`/`benchmark/run` refuse it.
-It goes through the kanban adapter `benchmark/dispatch`, and there is a step-by-step,
-failure-mode-annotated runbook: **[`swe/RUNBOOK.md`](swe/RUNBOOK.md)** (the readiness check,
-the exact `benchmark/dispatch --instances` command, how to read a verdict, and the residency /
-airc / zombie-round gotchas that cost a full session on 2026-08-25). Gym-format benchmarks
-(Terminal-Bench, DS-1000, …) replicate via `continuum benchmark/round --benchmark <gym>.jsonl
---persona <id>` — see each result row's `Replication:` note.
+**Running a SWE-bench round?** The same recipe, with a SWE suite: see the step-by-step,
+failure-mode-annotated runbook **[`swe/RUNBOOK.md`](swe/RUNBOOK.md)** (the readiness check,
+how to read a verdict, and the residency / airc gotchas). Gym-format benchmarks
+(Terminal-Bench, DS-1000, …) are the same adapter shape — see each result row's
+`Replication:` note.
 
 Add a respected collection (SWE-bench, LiveCodeBench, MBPP, …) = one `BenchmarkSpec` row in
 `benchmark.rs`. Big datasets pull + cache like a model (follow-up: `benchmark/pull`); the
