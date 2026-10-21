@@ -309,7 +309,7 @@ impl PrivateTeacherLane {
         if crate::cognition::single_purpose_lane::refuse_lane_under_memory_pressure(Some(footprint)).is_err() {
             return Ok(None);
         }
-        let lease = match daemon.acquire_guarded(&crate::cognition::single_purpose_lane::lane_request(footprint)) {
+        let lease = match daemon.acquire_guarded(&crate::cognition::single_purpose_lane::lane_request(EVAL_LANE_TERMS, footprint)) {
             Ok(lease) => lease,
             Err(crate::resources::LeaseError::InsufficientCapacity { .. }) => return Ok(None),
             Err(error) => {
