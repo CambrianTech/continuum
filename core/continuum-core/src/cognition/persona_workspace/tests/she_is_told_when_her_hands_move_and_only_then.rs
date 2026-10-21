@@ -130,9 +130,14 @@ use super::*;
         let other = ClaimId::from_uuid(Uuid::new_v4());
         assert!(claim_has_ended(context, Some(&row(Some(her), Some(other), Some(u64::MAX), CardState::Claimed)), me));
         assert!(claim_has_ended(context, Some(&row(Some(PeerId::new()), Some(other), Some(u64::MAX), CardState::Claimed)), me));
-        // The card moved on, even under her own claim id: ended.
-        for state in [CardState::Review, CardState::Merged, CardState::Closed] {
+        // Terminal, even under her own claim id: ended.
+        for state in [CardState::Merged, CardState::Closed] {
             assert!(claim_has_ended(context, Some(&row(Some(her), Some(mine), Some(u64::MAX), state)), me), "{state:?}");
+        }
+        // Review and Blocked keep her claim (a send-back returns the card to InProgress under the
+        // SAME claim): not an end, or her first submission would lock her out (Codex on #5247).
+        for state in [CardState::Review, CardState::Blocked] {
+            assert!(!claim_has_ended(context, Some(&row(Some(her), Some(mine), Some(u64::MAX), state)), me), "{state:?}");
         }
     }
 

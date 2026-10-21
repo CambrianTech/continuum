@@ -637,11 +637,14 @@ pub(crate) async fn end_card_turn(card: &CardHands, acts: usize) {
 /// turns and waiting out admitted ones, then releases its engine and shells. A claim she
 /// still holds keeps its hands.
 /// PURE: has the claim behind `context` ENDED, by the card's own row? Closed hands never
-/// reopen (`code::hands`), so only an end may close them: the card moved on (a state a claim
-/// can't hold), the claim was released (the board clears `claim_id`), or the card's claim is
-/// now a different one (re-claimed, or another holder's). A lease that LAPSED keeps the same
-/// claim id and is renewed by her next heartbeat, so it is not an end, and neither is a row
-/// the board couldn't give. Closing on mere absence from her active claims locked Kimi out of
+/// reopen (`code::hands`), so only an end may close them: the card is TERMINAL (Merged,
+/// Closed), the claim was released (the board clears `claim_id`), or the card's claim is now
+/// a different one (re-claimed, or another holder's). Not an end: a lease that LAPSED (same
+/// claim id, renewed by her next heartbeat); Review or Blocked, which keep the claim (airc
+/// `apply_card_state_changed` changes state and renews the lease, `claim_id` untouched), so a
+/// send-back returns the card to InProgress under the SAME claim (Codex on #5247: reusing
+/// `refused_by_claim`, which counts Review, would lock a resident out after her first
+/// submission); and a row the board couldn't give. Closing on mere absence from her active claims locked Kimi out of
 /// 0c69aa07 for hours (2026-10-21: `persona.work.hands_closing` on the 5090 every turn while
 /// the board showed her claim live).
 pub(crate) fn claim_has_ended(
@@ -650,7 +653,7 @@ pub(crate) fn claim_has_ended(
     her: uuid::Uuid,
 ) -> bool {
     let Some(card) = card else { return false };
-    if crate::persona::card_holder::refused_by_claim(card.state) {
+    if matches!(card.state, airc_work::model::CardState::Merged | airc_work::model::CardState::Closed) {
         return true;
     }
     match card.claim_id {
