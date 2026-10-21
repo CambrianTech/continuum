@@ -133,6 +133,22 @@ adapter is a small, separately ownable module. The adapters are the parallel wor
 1. **Offline**: a replay over synthetic streams shaped like the table above. Prefix
    shared between consecutive requests at or above 90% within an epoch, a turnover only
    on fill, and every source still reachable (a pointer reopens to its body).
+   **Result, 2026-10-21** (`continuum-context/examples/replay.rs`, run over the M5's real
+   captures from 69b63f7df, 13:34-17:11Z, instead of synthetic streams). Units are
+   characters. Pointers are modelled as each item's first line, and the start allocation
+   as a priority fill to half the window. Mean prefill per act:
+
+   | Resident | As sent | Through the view | Each request matching the one before |
+   |---|---|---|---|
+   | Aiko (75ece751, 34 requests) | 70,296 | 27,815 | 74% |
+   | Aris (8044b75b, 34 requests) | 51,505 | 15,998 | 89% |
+   | 2f50b223 (19 requests) | 65,961 | 31,730 | 63% |
+
+   The 90% bar is **not met**, and the replay says why. What remains each act is mostly
+   new content, which no layout avoids: the newest result (~12k chars), her new thoughts
+   (1-6k), new recall (~2k). Turnovers, each a full re-prefill, are the rest. The design
+   holds: it cuts prefill 2-3x. The bar was set on a share that includes unavoidable new
+   content, so gate 2 is judged on engine reuse and seconds, not on this share.
 2. **One mind on the M5**, against today's receipts (canary 69b63f7df, 13:34-14:28Z: 8 acts
    and 0-1 writes per resident-hour, about 160 s per act, 29% engine reuse). Bar: engine
    reuse at or above 80%, prefill under 15 s per act, and more acts and writes per hour.
