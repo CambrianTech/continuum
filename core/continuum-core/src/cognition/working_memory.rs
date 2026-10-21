@@ -143,6 +143,22 @@ impl std::fmt::Display for ResultAttribution<'_> {
     }
 }
 
+impl<'a> ResultAttribution<'a> {
+    fn of(record: &'a action_log::ActionRecord) -> Self {
+        Self {
+            seq: record.seq,
+            room: record.room,
+            operation: Some(&record.operation),
+            spill_handle: record.handle.as_deref(),
+        }
+    }
+}
+
+/// The line a collapsed result leaves: what it was, and the handle that reopens it.
+fn collapsed_pointer(record: &action_log::ActionRecord) -> String {
+    format!("[result {}{} — collapsed]", ResultAttribution::of(record), workspace_label(record.scope.as_deref()))
+}
+
 /// Recognize ONLY the standalone pointer representation emitted by this owner.
 /// Diagnostic replay uses this to refuse removal of source bodies or native protocol.
 pub(super) fn is_collapsed_result_pointer(text: &str) -> bool {
@@ -274,46 +290,13 @@ pub struct WorkingMemory {
     /// per session are naturally modest (a persona issues dozens of distinct calls,
     /// not millions), so it is left unbounded within the per-spawn lifetime.
     action_fp_counts: Mutex<HashMap<String, usize>>,
-    /// The PROPRIOCEPTION RECEIPT ARCHIVE — receipts-ONLY, head lines only (#414 option b).
-    ///
-    /// `entries` above is a SHARED ring: thoughts, facts, settlements and receipts all
-    /// compete for the same `capacity` slots, and receipts are the RARE kind, so they age
-    /// out while the act counter climbs. Measured 2026-08-14: Asha had executed 2,863
-    /// acts and her window rendered ONE (`+2862 earlier steps aged out`) — and with her
-    /// history invisible she concluded she had nothing to contribute (the withdrawal
-    /// loop's deprivation mechanism). Tool-origin engrams hold the durable copy but are
-    /// deliberately gated OUT of semantic recall (#166), so there was NO persona-facing
-    /// path back to her own acts.
-    ///
-    /// This ring is that path: every receipt's `[action #n]` FIRST LINE, in order,
-    /// bounded by CHARS ([`ContextBudget::receipt_archive_chars`] — window-derived,
-    /// never a bare count) instead of sharing the chatty ring's entry slots. The
-    /// steps-taken ledger renders from here, so act history survives conversation.
-    /// Persisted in [`VolatileSnapshot`] like the ring itself
-    /// ([[act-results-need-a-recency-channel-not-semantic-recall]]).
-    /// Each head carries the room the act was FOR (`None` for legacy/unscoped
-    /// receipts) so the steps ledger can render this-room acts first — scope
-    /// is the activity boundary (CAUSAL-MEMORY-GRAPH.md slice B).
-    receipt_heads: Mutex<VecDeque<(Option<Uuid>, String)>>,
-    /// Recent act RESULT TAILS `(seq, room, tail)` — the feedback channel the
-    /// `last_action` slot cannot be. That slot keeps only the LATEST result and
-    /// any act overwrites it; the pinned block is settlement-gated. So a finding
-    /// survived exactly until the next trivial act or spoken turn (2026-08-16:
-    /// Anwen's compile error was overwritten by a `list_files` one act later —
-    /// her next three turns wandered discovery tools and she re-ran the same
-    /// unfixed code). Char-bounded by the window-derived
-    /// [`ContextBudget::recent_results_chars`] share. Each result is held WHOLE:
-    /// a tail of a code read is broken code (2026-10-12). What no longer fits
-    /// collapses to a pointer at settlement.
-    recent_results: Mutex<VecDeque<(u64, Option<Uuid>, String, String, Option<String>)>>,
-    /// Root attribution outlives the bounded entry trail; keyed by the receipt sequence.
-    result_scopes: Mutex<BTreeMap<u64, String>>,
-    /// One-line pointers for results EVICTED from the channel above — collapse,
-    /// never delete (2026-08-24): "[result #N (verb, Nk chars) — evicted; …]".
-    /// Bounded ring; when IT overflows, the oldest pointer drops silently (a
-    /// pointer to a pointer buys nothing). Rendered as one byte-append-only-ish
-    /// message ahead of the recent-results banner.
-    evicted_pointers: Mutex<VecDeque<(String, String)>>,
+    /// Her actions, one record each ([`action_log`]): the ledger line every act leaves
+    /// (#414: act history must survive the chatty `entries` ring, measured 2026-08-14 when
+    /// Asha's 2,863 acts rendered as one), the whole result while it fits her window's
+    /// share (2026-08-16: Anwen's compile error vanished one act later; 2026-10-12: a tail
+    /// of a code read is broken code), and the handle that reopens it once collapsed
+    /// (2026-08-24: collapse, never delete). One record per act, so one act has one key.
+    actions: Mutex<action_log::ActionLog>,
     /// Each retained receipt's DEPENDENCIES: the per-call results its saved text shows as
     /// pointers, keyed by the receipt ([`receipt_key`]). They belong to the receipt, not to the
     /// entry that carried its acts: while the receipt is in the ring or collapsed to a pointer,
@@ -457,6 +440,11 @@ pub struct VolatileSnapshot {
     /// (honest "unscoped", never a guessed room).
     #[serde(default)]
     pub receipt_head_rooms: Vec<Option<Uuid>>,
+    /// Action sequence numbers parallel to `receipt_heads`, index-aligned: what keys each
+    /// line to its act. Empty on snapshots written before it; restore then reads the `#n`
+    /// this owner wrote at the head of each line.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub receipt_head_seqs: Vec<u64>,
     /// Recent act result TAILS `(seq, room, tail)` — the cross-turn feedback
     /// channel (2026-08-16). Defaulted so pre-field snapshots deserialize;
     /// restore then starts the buffer fresh.
@@ -478,6 +466,10 @@ pub struct VolatileSnapshot {
     /// lost its only handle on restart). Empty on snapshots written before this field.
     #[serde(default)]
     pub evicted_pointers: Vec<(String, String)>,
+    /// Action sequence numbers parallel to `evicted_pointers`, index-aligned; empty on
+    /// snapshots written before it (restore then reads each pointer's `#n`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub evicted_pointer_seqs: Vec<u64>,
     /// Each retained receipt's per-call dependencies ([`WorkingMemory`]'s `receipt_children`),
     /// so a restart keeps what a restored receipt points at reachable. Empty on snapshots
     /// written before this field.
@@ -505,6 +497,66 @@ impl VolatileSnapshot {
         pin
     }
 
+    /// Her actions as records. The snapshot keeps the wire shape older builds read (a ring,
+    /// an archive, a pointer index) so a rollback still restores her; this is the one place
+    /// that shape is read back into records. A line or pointer from before the seq columns
+    /// is keyed by the `#n` this owner wrote at its head; one that has none is dropped and
+    /// counted.
+    pub(crate) fn action_records(&self) -> Vec<action_log::ActionRecord> {
+        let mut records: BTreeMap<u64, action_log::ActionRecord> = BTreeMap::new();
+        let mut unkeyed = 0usize;
+        for (seq, room, result, operation, handle) in &self.recent_results {
+            records.insert(*seq, action_log::ActionRecord {
+                seq: *seq,
+                room: *room,
+                scope: self.result_scopes.get(seq).cloned(),
+                operation: operation.clone(),
+                head: format!("[action #{seq}] {operation}"),
+                result: Some(result.clone()),
+                handle: handle.clone(),
+            });
+        }
+        let mut rooms = self.receipt_head_rooms.iter();
+        let mut seqs = self.receipt_head_seqs.iter();
+        for head in &self.receipt_heads {
+            let room = rooms.next().copied().flatten();
+            let Some(seq) = seqs.next().copied().or_else(|| written_seq(head, "[action #")) else {
+                unkeyed += 1;
+                continue;
+            };
+            let record = records.entry(seq).or_insert_with(|| action_log::ActionRecord {
+                seq, room, scope: None, operation: "unrecorded".into(), head: String::new(), result: None, handle: None,
+            });
+            record.head = head.clone();
+        }
+        let mut seqs = self.evicted_pointer_seqs.iter();
+        for (pointer, handle) in &self.evicted_pointers {
+            let Some(seq) = seqs.next().copied().or_else(|| written_seq(pointer, "[result #")) else {
+                unkeyed += 1;
+                continue;
+            };
+            let record = records.entry(seq).or_insert_with(|| action_log::ActionRecord {
+                seq, room: None, scope: None, operation: "unrecorded".into(), head: pointer.clone(), result: None, handle: None,
+            });
+            record.handle.get_or_insert_with(|| handle.clone());
+        }
+        if unkeyed > 0 {
+            continuum_base::probe!(
+                class = "wm.actions.unkeyed_on_restore",
+                unkeyed = %unkeyed,
+                "checkpoint lines without an action number were dropped on restore"
+            );
+        }
+        records.into_values().collect()
+    }
+
+    /// Every saved result this checkpoint still reaches; the persisted twin of what working
+    /// memory publishes live, through the same log and the same rule.
+    pub(crate) fn reachable_handles(&self) -> HashSet<String> {
+        let log = action_log::ActionLog::from_records(self.action_records(), usize::MAX);
+        reachable_handles(log.receipt_keys(), &self.receipt_children, &self.open_views)
+    }
+
     fn unsaved_receipts(&self) -> Vec<u64> {
         self.recent_results.iter().filter(|(.., handle)| handle.is_none()).map(|(seq, ..)| *seq).collect()
     }
@@ -519,6 +571,13 @@ impl VolatileSnapshot {
             }
         }
     }
+}
+
+/// The `#n` this owner wrote right after `prefix` at the head of a line.
+fn written_seq(line: &str, prefix: &str) -> Option<u64> {
+    let digits = line.strip_prefix(prefix)?;
+    let end = digits.find(|c: char| !c.is_ascii_digit()).unwrap_or(digits.len());
+    digits[..end].parse().ok()
 }
 
 /// "; workspace <dir>" for a result recorded under a root; empty for one recorded before.
@@ -541,21 +600,15 @@ fn receipt_key(seq: u64, handle: Option<&str>) -> String {
 /// collapsed pointer's, and the per-call results each of those receipts points at. The one
 /// owner of that set: working memory publishes it live, and eviction reads the same set from
 /// the persisted checkpoint (`persona_workspace::persisted_result_handles`).
-pub(crate) fn reachable_handles<'a>(
-    recent_results: impl IntoIterator<Item = &'a (u64, Option<Uuid>, String, String, Option<String>)>,
-    evicted_pointers: impl IntoIterator<Item = &'a (String, String)>,
+pub(crate) fn reachable_handles(
+    receipts: HashSet<String>,
     receipt_children: &BTreeMap<String, Vec<String>>,
     open_views: &[super::open_views::OpenView],
 ) -> HashSet<String> {
-    let mut roots: Vec<String> = recent_results
-        .into_iter()
-        .map(|(seq, _, _, _, handle)| receipt_key(*seq, handle.as_deref()))
-        .collect();
-    roots.extend(evicted_pointers.into_iter().map(|(_, handle)| handle.clone()));
     let mut reachable: HashSet<String> = HashSet::new();
     // An open view names the saved whole it pages: that handle must still resolve.
     reachable.extend(super::open_views::view_handles(open_views).map(str::to_owned));
-    for root in roots {
+    for root in receipts {
         if let Some(children) = receipt_children.get(&root) {
             reachable.extend(children.iter().cloned());
         }
@@ -600,6 +653,7 @@ pub struct WmEntry {
 }
 
 
+mod action_log;
 mod continuity;
 mod faculty;
 mod ledger;

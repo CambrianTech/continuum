@@ -300,10 +300,12 @@ fn volatile_snapshot_round_trips_and_renders_the_interruption() {
         acting_card: None,
         receipt_heads: Vec::new(),
         receipt_head_rooms: Vec::new(), // pre-archive snapshot: ledger's counter-only arm covers it
+        receipt_head_seqs: Vec::new(),
         recent_results: Vec::new(),
         result_scopes: Default::default(),
         handoff: None,
         evicted_pointers: Vec::new(),
+        evicted_pointer_seqs: Vec::new(),
         receipt_children: Default::default(),
         open_views: Vec::new(),
     });

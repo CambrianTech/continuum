@@ -63,10 +63,7 @@ impl WorkingMemory {
             next_action_seq: AtomicU64::new(1),
             action_fps: Mutex::new(VecDeque::new()),
             action_fp_counts: Mutex::new(HashMap::new()),
-            receipt_heads: Mutex::new(VecDeque::new()),
-            recent_results: Mutex::new(VecDeque::new()),
-            result_scopes: Mutex::new(BTreeMap::new()),
-            evicted_pointers: Mutex::new(VecDeque::new()),
+            actions: Mutex::new(Default::default()),
             receipt_children: Mutex::new(BTreeMap::new()),
             active_from_seq: AtomicU64::new(0),
             open_views: Mutex::new(Default::default()),
@@ -314,15 +311,23 @@ impl WorkingMemory {
             if !children.is_empty() {
                 self.receipt_children.lock().insert(receipt_key(seq, handle.as_deref()), children);
             }
-            let mut rr = self.recent_results.lock();
-            // The ring owns receipt publication, scope pruning and snapshots.
-            // Publish attribution and the active slot together so a concurrent
-            // publisher cannot prune a not-yet-visible receipt into legacy scope.
-            if let Some(scope) = &scope {
-                self.result_scopes.lock().insert(seq, scope.clone());
-            }
+            // The record and the active slot publish together, so a concurrent publisher
+            // cannot prune a not-yet-visible receipt.
+            let budget = self.budget();
+            let mut actions = self.actions.lock();
             *self.last_action.lock() = Some((seq, a.to_string()));
-            rr.push_back((seq, room, tail, label, handle));
+            actions.push(
+                action_log::ActionRecord {
+                    seq,
+                    room,
+                    scope: scope.clone(),
+                    operation: label,
+                    head: archive_head(seq, a, &acts, budget.trail_head_chars()),
+                    result: Some(tail),
+                    handle,
+                },
+                budget.receipt_archive_chars(),
+            );
         }
         // The ring's share is enforced HERE, at every receipt, with hysteresis: nothing
         // moves until the share is exceeded, then the oldest collapse to pointers down to
@@ -340,31 +345,6 @@ impl WorkingMemory {
         // trail's KV-cache prefix byte-stable across a settle-act.
         let head: String = a.chars().take(self.budget().trail_head_chars()).collect();
         let text = format!("[action #{seq}] {head}");
-        // Receipts-own archive (#414): every act's head line, kept beyond the shared
-        // ring's lifetime so the steps ledger can show act HISTORY, not just the last
-        // few conversation beats. Char-bounded by the window-derived archive share.
-        //
-        // COMPACT head from the TYPED channel when we have it (CAUSAL-MEMORY-GRAPH.md
-        // slice B): `name(args)` per call, never the receipt's first line — that line
-        // drags the full `because <reasoning>` clause (~250 chars), which starved a
-        // 1,808-act citizen down to 1-2 visible acts (measured live 2026-08-15). The
-        // reasoning is not lost: it lives in the act's engram content, reachable
-        // through the CausedBy edge. Legacy text callers (no typed acts) keep the
-        // first-line head unchanged.
-        let archive_head = if acts.is_empty() {
-            text.lines().next().unwrap_or_default().to_string()
-        } else {
-            let calls: Vec<String> = acts
-                .iter()
-                .map(|o| {
-                    let args = o.call.input.to_string();
-                    let args: String = args.chars().take(48).collect();
-                    format!("{}({args})", o.call.name)
-                })
-                .collect();
-            format!("[action #{seq}] {}", calls.join("; "))
-        };
-        self.push_receipt_head(room, archive_head);
         let mut e = self.entries.lock();
         // Transfer provenance before bounded entry eviction. Match this scope,
         // activity. Consume it once; mismatched IDs remain an explicit protocol
@@ -390,21 +370,6 @@ impl WorkingMemory {
         self.publish_live_handles();
     }
 
-    /// Append one receipt head line to the proprioception archive and evict oldest-first
-    /// down to the window-derived char share. One body for the live write and the
-    /// snapshot restore, so both obey the same bound.
-    pub(super) fn push_receipt_head(&self, room: Option<Uuid>, head_line: String) {
-        let cap = self.budget().receipt_archive_chars();
-        let mut heads = self.receipt_heads.lock();
-        heads.push_back((room, head_line));
-        let mut total: usize = heads.iter().map(|(_, h)| h.chars().count() + 1).sum();
-        while total > cap && heads.len() > 1 {
-            if let Some((_, evicted)) = heads.pop_front() {
-                total -= evicted.chars().count() + 1;
-            }
-        }
-    }
-
     /// The proprioception receipt archive, oldest → newest: every act's `[action #n]`
     /// head line that still fits the archive share. The steps-taken ledger renders its
     /// newest tail from here — the persona-facing path back to her own act history that
@@ -415,7 +380,8 @@ impl WorkingMemory {
     }
 
     pub fn receipt_archive(&self) -> Vec<(Option<Uuid>, String)> {
-        self.receipt_heads.lock().iter().cloned().collect()
+        let archive_chars = self.budget().receipt_archive_chars();
+        self.actions.lock().archive(archive_chars).into_iter().map(|record| (record.room, record.head.clone())).collect()
     }
 
     /// The TYPED acts still in the recency window, oldest → newest — the parallel
@@ -448,4 +414,26 @@ impl WorkingMemory {
             .find_map(|e| e.acts.last().cloned())
     }
 
+}
+
+/// An act's ledger line, `[action #n] ...`. COMPACT from the TYPED channel when there is one
+/// (CAUSAL-MEMORY-GRAPH.md slice B): `name(args)` per call, never the receipt's first line,
+/// which drags the full `because <reasoning>` clause (~250 chars) and starved a 1,808-act
+/// citizen down to 1-2 visible acts (measured live 2026-08-15). The reasoning lives in the
+/// act's engram, reachable through the CausedBy edge. A legacy text receipt (no typed acts)
+/// keeps its first line, cut to the trail head's share.
+fn archive_head(seq: u64, result: &str, acts: &[Observation], trail_head_chars: usize) -> String {
+    if acts.is_empty() {
+        let head: String = result.lines().next().unwrap_or_default().chars().take(trail_head_chars).collect();
+        return format!("[action #{seq}] {head}");
+    }
+    let calls: Vec<String> = acts
+        .iter()
+        .map(|o| {
+            let args = o.call.input.to_string();
+            let args: String = args.chars().take(48).collect();
+            format!("{}({args})", o.call.name)
+        })
+        .collect();
+    format!("[action #{seq}] {}", calls.join("; "))
 }
