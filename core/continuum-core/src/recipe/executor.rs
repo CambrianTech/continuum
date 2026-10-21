@@ -196,13 +196,13 @@ impl PipelineExecutor {
                 }
                 Some(last) => {
                     let invocation = last.id;
-                    crate::probe!(class = "recipe.run.unrecorded_after_dispatch", recipe = %run.purpose, invocation = %invocation, error = %error, "a record write failed after a dispatch — the run waits for recovery");
+                    continuum_base::probe!(class = "recipe.run.unrecorded_after_dispatch", recipe = %run.purpose, invocation = %invocation, error = %error, "a record write failed after a dispatch — the run waits for recovery");
                     run.phase = RunPhase::RecoveryRequired {
                         invocation,
                         reason: format!("the run's record could not be written after this invocation was sent ({error}); its durable state is unknown"),
                     };
                     if let Err(again) = self.persist(run).await {
-                        crate::probe!(class = "recipe.run.recovery_unrecorded", recipe = %run.purpose, error = %again, "the RecoveryRequired phase could not be written either; the next boot finds the row Running and exposes it");
+                        continuum_base::probe!(class = "recipe.run.recovery_unrecorded", recipe = %run.purpose, error = %again, "the RecoveryRequired phase could not be written either; the next boot finds the row Running and exposes it");
                     }
                     Ok(())
                 }
@@ -232,7 +232,7 @@ impl PipelineExecutor {
                     match condition::evaluate(cond, &state) {
                         Ok(true) => {}
                         Ok(false) => {
-                            crate::probe!(class = "recipe.step.skipped", recipe = %name, step = idx as u64, command = %step.command, condition = %cond, "condition falsy — step skipped");
+                            continuum_base::probe!(class = "recipe.step.skipped", recipe = %name, step = idx as u64, command = %step.command, condition = %cond, "condition falsy — step skipped");
                             run.trace.push(format!("[{idx}] {} SKIP ({cond})", step.command));
                             run.steps_skipped += 1;
                             run.cursor = RunCursor { step: run.cursor.step + 1, item: None };
@@ -245,7 +245,7 @@ impl PipelineExecutor {
                 // THE APPROVAL BOUNDARY (S3): a step that needs a human holds the run
                 // before it resolves its arguments; nothing at or after it runs.
                 if let Some(who) = step.approval {
-                    crate::probe!(class = "recipe.step.held", recipe = %name, step = idx as u64, command = %step.command, approval = %who, "step needs approval — the run holds here; nothing after it runs");
+                    continuum_base::probe!(class = "recipe.step.held", recipe = %name, step = idx as u64, command = %step.command, approval = %who, "step needs approval — the run holds here; nothing after it runs");
                     run.trace.push(format!("[{idx}] {} HELD (approval: {who})", step.command));
                     run.phase = RunPhase::Held { step: idx as u32 };
                     return self.persist(run).await;
@@ -299,7 +299,7 @@ impl PipelineExecutor {
                         Settled::Committed(_) => run.steps_run += 1,
                         Settled::Refused(e) => match step.on_error {
                             OnError::Skip => {
-                                crate::probe!(class = "recipe.step.item_skipped", recipe = %name, step = idx as u64, item = i as u64, command = %step.command, error = %e, "item refused before dispatch — skipped per on_error");
+                                continuum_base::probe!(class = "recipe.step.item_skipped", recipe = %name, step = idx as u64, item = i as u64, command = %step.command, error = %e, "item refused before dispatch — skipped per on_error");
                                 run.steps_skipped += 1;
                             }
                             OnError::Fail => {
@@ -336,7 +336,7 @@ impl PipelineExecutor {
             };
             match self.invoke(run, idx, None, step, params).await? {
                 Settled::Committed(value) => {
-                    crate::probe!(class = "recipe.step.ok", recipe = %name, step = idx as u64, command = %step.command, "step completed");
+                    continuum_base::probe!(class = "recipe.step.ok", recipe = %name, step = idx as u64, command = %step.command, "step completed");
                     run.trace.push(format!("[{idx}] {} OK", step.command));
                     run.steps_run += 1;
                     if let Some(out) = &step.output_to {
@@ -357,7 +357,7 @@ impl PipelineExecutor {
             }
             self.complete_step(run, idx, step, &state).await?;
         }
-        crate::probe!(class = "recipe.run.done", recipe = %name, steps_run = run.steps_run as u64, steps_skipped = run.steps_skipped as u64, "pipeline complete");
+        continuum_base::probe!(class = "recipe.run.done", recipe = %name, steps_run = run.steps_run as u64, steps_skipped = run.steps_skipped as u64, "pipeline complete");
         self.finish(run, RunPhase::Completed).await
     }
 
@@ -379,7 +379,7 @@ impl PipelineExecutor {
         self.persist(run).await?;
         let Some(patch) = run.pending_saves.clone() else { return Ok(()) };
         let Some(sink) = &self.state_sink else {
-            crate::probe!(class = "recipe.step.save_unsunk", recipe = %run.purpose, step = idx as u64, command = %step.command, saves = %step.saves.join(","), "step asks to save bindings but this run has no activity bundle (bare recipe/run?)");
+            continuum_base::probe!(class = "recipe.step.save_unsunk", recipe = %run.purpose, step = idx as u64, command = %step.command, saves = %step.saves.join(","), "step asks to save bindings but this run has no activity bundle (bare recipe/run?)");
             run.pending_saves = None;
             return self.persist(run).await;
         };
@@ -389,7 +389,7 @@ impl PipelineExecutor {
                 self.persist(run).await
             }
             Err(e) => {
-                crate::probe!(class = "recipe.step.save_failed", recipe = %run.purpose, step = idx as u64, command = %step.command, error = %e, "activity bundle save failed — the step's result stands; the patch stays pending on the run");
+                continuum_base::probe!(class = "recipe.step.save_failed", recipe = %run.purpose, step = idx as u64, command = %step.command, error = %e, "activity bundle save failed — the step's result stands; the patch stays pending on the run");
                 Ok(())
             }
         }
@@ -404,7 +404,7 @@ impl PipelineExecutor {
                 Some(v) => {
                     patch.insert(key.clone(), v.clone());
                 }
-                None => crate::probe!(class = "recipe.step.save_unbound", recipe = %name, step = idx as u64, command = %step.command, binding = %key, "saves names a binding nothing bound — skipped"),
+                None => continuum_base::probe!(class = "recipe.step.save_unbound", recipe = %name, step = idx as u64, command = %step.command, binding = %key, "saves names a binding nothing bound — skipped"),
             }
         }
         (!patch.is_empty()).then_some(patch)
@@ -459,12 +459,12 @@ impl PipelineExecutor {
                 run.invocations[slot].state = InvocationState::NotCommitted { error: failure.message.clone() };
                 if attempt < step.retry_count {
                     attempt += 1;
-                    crate::probe!(class = "recipe.step.retry", recipe = %run.purpose, step = idx as u64, command = %step.command, attempt = attempt as u64, error = %failure.message, "refused before dispatch — retrying per its declared retry_count");
+                    continuum_base::probe!(class = "recipe.step.retry", recipe = %run.purpose, step = idx as u64, command = %step.command, attempt = attempt as u64, error = %failure.message, "refused before dispatch — retrying per its declared retry_count");
                     continue;
                 }
                 return Ok(Settled::Refused(failure.message));
             }
-            crate::probe!(class = "recipe.step.uncertain", recipe = %run.purpose, step = idx as u64, command = %step.command, invocation = %id, error = %failure.message, "the outcome is unknown — the run stops for recovery rather than repeat it");
+            continuum_base::probe!(class = "recipe.step.uncertain", recipe = %run.purpose, step = idx as u64, command = %step.command, invocation = %id, error = %failure.message, "the outcome is unknown — the run stops for recovery rather than repeat it");
             run.trace.push(format!("[{idx}] {} UNCERTAIN {}", step.command, failure.message));
             run.invocations[slot].state = InvocationState::Uncertain { error: failure.message.clone() };
             run.phase = RunPhase::RecoveryRequired { invocation: id, reason: failure.message };
@@ -474,7 +474,7 @@ impl PipelineExecutor {
     }
 
     async fn fail(&self, run: &mut RecipeRunRecord, error: String) -> Result<(), String> {
-        crate::probe!(class = "recipe.step.failed", recipe = %run.purpose, error = %error, "run failed");
+        continuum_base::probe!(class = "recipe.step.failed", recipe = %run.purpose, error = %error, "run failed");
         run.trace.push(format!("FAILED {error}"));
         self.finish(run, RunPhase::Failed { error }).await
     }

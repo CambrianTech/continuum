@@ -196,7 +196,7 @@ pub(super) async fn deploy_consume_pass() -> Result<PassEnd, String> {
     // checking out a new tip under it dooms its build (card 634f644d). Only a dead owner's
     // claim is swept (by `reboot` itself).
     let gate = continuum_root()
-        .map(|root| continuum_cli_lifecycle::deploy_claim::in_flight(&root, continuum_core::time::EpochMs::now().millis()))
+        .map(|root| continuum_cli_lifecycle::deploy_claim::in_flight(&root, continuum_base::time::EpochMs::now().millis()))
         .ok(); // no root = no claim file = nothing in flight
     if let Some(continuum_cli_lifecycle::deploy_claim::DeployGate::Abandoned { pid, age_ms, .. }) = gate
         .as_ref()
@@ -487,7 +487,7 @@ pub(super) async fn ci_core_for(repo: &Path, candidates: &[String], request_path
                 // it before the install).
                 if let Ok(root) = continuum_root() {
                     let pid = std::process::id() as i32;
-                    let now = continuum_core::time::EpochMs::now().millis();
+                    let now = continuum_base::time::EpochMs::now().millis();
                     let _ = continuum_cli_lifecycle::deploy_claim::renew(&root, pid, now, true);
                     if let Err(e) = continuum_cli_lifecycle::deploy_claim::mark_waiting(&root, pid, now) {
                         deploy_note(&format!(

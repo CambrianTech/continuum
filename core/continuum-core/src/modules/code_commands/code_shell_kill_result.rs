@@ -343,7 +343,7 @@ impl ActionCommand for CodeReleaseHands {
         if released {
             self.state.finish_release(&who);
         }
-        crate::probe!(
+        continuum_base::probe!(
             class = "code.hands.released",
             caller = key.caller.as_str(),
             context = %context.id(),
@@ -497,7 +497,7 @@ impl ActionCommand for CodeCreateWorkspace {
                 // pre-fix and passes post-fix through her exact edit semantics.
                 // PYTHONPATH precedes the venv's .pth entries, so her tree wins.
                 shell.set_env("PYTHONPATH".to_string(), p.workspace_root.clone());
-                crate::probe!(
+                continuum_base::probe!(
                     class = "code.workspace.path_prepend",
                     caller = who.as_str(),
                     prepend = prepend.as_str(),

@@ -24,7 +24,7 @@ impl TrainingTriggerState {
             // pending too). With no measured rate, the bucket's own threshold calibrates.
             let batch = match budget_split(batch, &key.base_model) {
                 (taken, Some(rest)) => {
-                    crate::probe!(
+                    continuum_base::probe!(
                         class = "training.trigger.batch_budgeted",
                         persona = %key.persona_id,
                         trait_kind = %key.trait_kind,
@@ -147,7 +147,7 @@ impl TrainingTriggerState {
                 if !wait.wakes(free, engine.as_deref()) {
                     return Ok(DispatchResult::Empty);
                 }
-                crate::probe!(
+                continuum_base::probe!(
                     class = "training.dispatch.capacity_woke",
                     dispatch = %id,
                     window = u64::from(wait.window),
@@ -262,7 +262,7 @@ impl TrainingTriggerState {
         self.active_dispatches.remove(key);
         let returned = (*active.batch).clone();
         self.buckets.insert(key.clone(), returned);
-        crate::probe!(
+        continuum_base::probe!(
             class = "training.trigger.held",
             persona = %key.persona_id,
             trait_kind = %key.trait_kind,
@@ -381,7 +381,7 @@ impl TrainingTriggerState {
                 })
                 .await?;
             if let DispatchResult::Failed { kind, error } = result {
-                crate::probe!(class = "training.recovery.pending", persona = %report_key.persona_id,
+                continuum_base::probe!(class = "training.recovery.pending", persona = %report_key.persona_id,
                     trait_kind = %report_key.trait_kind, kind, error = %error,
                     "accepted training remains owned by the durable trigger");
             }

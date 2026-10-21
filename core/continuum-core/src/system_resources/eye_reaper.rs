@@ -172,7 +172,7 @@ pub fn reap(timeout: Duration) -> Result<Reapable, PsFailed> {
         }
     }
     if !found.is_empty() {
-        crate::probe!(
+        continuum_base::probe!(
             class = "perception.eye.reaped",
             browsers = found.browsers.len(),
             eye_nodes = found.eye_nodes.len(),

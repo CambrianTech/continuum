@@ -72,7 +72,7 @@ pub async fn spawn_activity_room(
                     Some(room.channel)
                 }
                 Err(source) => {
-                    crate::probe!(
+                    continuum_base::probe!(
                         class = "activity.base_unresolved",
                         recipe = %recipe,
                         base = %base,
@@ -171,7 +171,7 @@ pub async fn spawn_activity_room(
                         recipe: recipe.to_string(),
                         driver: child_driver,
                         suite: child_suite,
-                        spawned_at_ms: crate::time::EpochMs::now().millis(), // pre-1970 reads 0: a pre-epoch clock stamps 0 — the record still names the room
+                        spawned_at_ms: continuum_base::time::EpochMs::now().millis(), // pre-1970 reads 0: a pre-epoch clock stamps 0 — the record still names the room
                     };
                     match serde_json::to_string(&record) {
                         Ok(body) => match airc
@@ -183,14 +183,14 @@ pub async fn spawn_activity_room(
                             )
                             .await
                         {
-                            Ok(_) => crate::probe!(
+                            Ok(_) => continuum_base::probe!(
                                 class = "activity.child_announced",
                                 room = %name,
                                 parent = %parent_room.name,
                                 recipe = %recipe,
                                 "the spawned activity is on its parent's wall — any node reading the parent can seat its residents"
                             ),
-                            Err(source) => crate::probe!(
+                            Err(source) => continuum_base::probe!(
                                 class = "activity.child_announce_failed",
                                 room = %name,
                                 parent = %parent_room.name,
@@ -203,7 +203,7 @@ pub async fn spawn_activity_room(
                         }
                     }
                 }
-                None => crate::probe!(
+                None => continuum_base::probe!(
                     class = "activity.child_announce_failed",
                     room = %name,
                     parent = %parent_id.as_uuid(),
@@ -265,7 +265,7 @@ pub async fn spawn_activity_room(
                                 }
                                 Err(_) => {}
                             }
-                            crate::probe!(
+                            continuum_base::probe!(
                                 class = "activity.birth_failed_archived",
                                 room = %room.channel,
                                 error = %e,
@@ -288,7 +288,7 @@ pub async fn spawn_activity_room(
                     })
                 }
                 None => {
-                    crate::probe!(
+                    continuum_base::probe!(
                         class = "activity.pipeline.unrun",
                         room = %name,
                         recipe = %recipe,

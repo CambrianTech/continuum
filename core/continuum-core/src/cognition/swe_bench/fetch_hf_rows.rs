@@ -335,7 +335,7 @@ pub(crate) async fn run_env(
     match out.ended {
         crate::inference::lane_process::Ended::Exited(status) => Ok(std::process::Output { status, stdout: out.stdout.bytes, stderr: out.stderr.bytes }),
         crate::inference::lane_process::Ended::TimedOut { unconfirmed } => {
-            crate::probe!(
+            continuum_base::probe!(
                 class = "benchmark.subprocess.ceiling",
                 program = %program,
                 ceiling_s = SUBPROCESS_CEILING.as_secs(),
@@ -642,7 +642,7 @@ pub(super) fn era_checkout_fixups(instance: &SweInstance, repo_dir: &Path) {
 ";
     let patched = src.replacen(anchor, replacement, 1);
     if std::fs::write(&cp, patched).is_ok() {
-        crate::probe!(
+        continuum_base::probe!(
             class = "benchmark.env.checkout_fixup",
             instance = %instance.instance_id,
             fixup = "cloudpickle-py38-codetype",

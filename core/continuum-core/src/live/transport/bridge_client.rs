@@ -6,7 +6,7 @@
 //! Bidirectional: sends commands (request/response), receives pushed events
 //! (audio frames from human participants for VAD/STT processing).
 
-use crate::time::EpochMs;
+use continuum_base::time::EpochMs;
 use continuum_bridge_protocol::{BridgeCommand, BridgeEvent, BridgeResponse};
 use std::collections::{HashMap, VecDeque};
 use std::io::{Read, Write};

@@ -39,7 +39,7 @@ impl ServingSteadyHold {
     pub fn acquire(holder: impl Into<String>) -> Self {
         let holder = holder.into();
         let holds = SERVING_STEADY_HOLDS.fetch_add(1, Ordering::AcqRel) + 1;
-        crate::probe!(
+        continuum_base::probe!(
             target: "continuum_core::modules::serving_daemon", class = "serving.lane.hold",
             action = "acquired",
             holder = %holder,
@@ -53,7 +53,7 @@ impl ServingSteadyHold {
 impl Drop for ServingSteadyHold {
     fn drop(&mut self) {
         let holds = SERVING_STEADY_HOLDS.fetch_sub(1, Ordering::AcqRel) - 1;
-        crate::probe!(
+        continuum_base::probe!(
             target: "continuum_core::modules::serving_daemon", class = "serving.lane.hold",
             action = "released",
             holder = %self.holder,

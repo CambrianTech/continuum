@@ -152,7 +152,7 @@ impl CompiledSentinel {
 
     /// Classify a single output line. Returns None if the line should be suppressed.
     pub fn classify(&self, text: &str, stream: &str, line_num: u64) -> Option<ClassifiedLine> {
-        let ts = crate::time::EpochMs::now().millis();
+        let ts = continuum_base::time::EpochMs::now().millis();
 
         if self.rules.is_empty() {
             // No sentinel configured — pass everything through as Info

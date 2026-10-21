@@ -103,7 +103,7 @@ fn build_call_manager(
                                 )
                                 .await
                             {
-                                Ok(_) => crate::probe!(
+                                Ok(_) => continuum_base::probe!(
                                     class = "live.call.citizens_populated",
                                     call_id = %call,
                                     participants = n,
@@ -182,7 +182,7 @@ fn build_call_manager(
                         )
                         .await
                     {
-                        Ok(_) => crate::probe!(
+                        Ok(_) => continuum_base::probe!(
                             class = "live.stt.utterance_to_room",
                             room = %room,
                             speaker = %speaker,
@@ -232,7 +232,7 @@ fn spawn_call_server(
     rt_handle: &tokio::runtime::Handle,
     call_manager: &Arc<crate::live::transport::call_server::CallManager>,
 ) {
-    let port = crate::config_env::read("CONTINUUM_CALL_WS")
+    let port = continuum_base::config_env::read("CONTINUUM_CALL_WS")
         .and_then(|s| s.trim().parse::<u16>().ok())
         .unwrap_or(8790);
     let addr = format!("127.0.0.1:{port}");

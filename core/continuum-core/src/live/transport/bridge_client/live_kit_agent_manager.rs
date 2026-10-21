@@ -116,7 +116,7 @@ impl LiveKitAgentManager {
             None,
         )?;
         self.out_channels.lock().unwrap().insert(key, channel);
-        crate::probe!(
+        continuum_base::probe!(
             class = "media.pump.channel_open",
             module = "livekit-bridge",
             channel = channel as u64,
@@ -147,7 +147,7 @@ impl LiveKitAgentManager {
                 // 30 fps blinded the ledger — see pump_tally.rs).
                 let summary = self.enqueue_tally.lock().unwrap().record(frame_bytes as u64, 0); // unwrap: tally mutex holds three counters; a poisoned lock here means a panic mid-record, and dropping the probe row is the honest outcome
                 if let Some(s) = summary {
-                    crate::probe!(
+                    continuum_base::probe!(
                         class = "media.pump.enqueue",
                         module = "livekit-bridge",
                         kind = kind,
@@ -164,7 +164,7 @@ impl LiveKitAgentManager {
                 // pump dropped 12,327 frames in eight minutes on 2026-09-05 and
                 // the per-frame rows rotated the voice receipt out of the ledger.
                 if let Some(s) = self.drop_tally.lock().unwrap().record(frame_bytes as u64, 0) { // unwrap: three counters behind the lock; a poisoned tally loses one summary row, never a frame
-                    crate::probe!(
+                    continuum_base::probe!(
                         class = "media.pump.drop",
                         module = "livekit-bridge",
                         kind = kind,
@@ -662,7 +662,7 @@ pub(super) fn media_pump_loop(
                 // bridge socket buffer is backing up — the drop counter's
                 // leading indicator.
                 if let Some(s) = tally.record(item.wire_len() as u64, start.elapsed().as_micros() as u64) {
-                    crate::probe!(
+                    continuum_base::probe!(
                         class = "media.pump.write",
                         module = "livekit-bridge",
                         kind = item.kind,

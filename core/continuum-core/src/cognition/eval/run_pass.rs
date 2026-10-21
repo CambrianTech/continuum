@@ -42,7 +42,7 @@ pub(super) async fn run_pass(
         // HERE — grades already streamed stay; the terminal row marks the pause.
         if let Some(rid) = live_eval_run_id() {
             if eval_run_cancelled(&rid) {
-                crate::probe!(
+                continuum_base::probe!(
                     class = "eval.run.cancelled",
                     run_id = %rid,
                     graded = results.len() as u64,
@@ -56,7 +56,7 @@ pub(super) async fn run_pass(
         // latencies — which needs an exact start signal, not an inference from
         // the previous grade's absence (Joel 2026-08-23: a stalled task must be
         // known in minutes, adaptively, "better fix" than a fixed window).
-        crate::probe!(
+        continuum_base::probe!(
             class = "eval.task.started",
             task = %t.id,
             "task drive begins — elapsed-vs-round-median verdicts key on this row"
@@ -405,7 +405,7 @@ pub(super) async fn run_pass(
             settled.decision,
             crate::cognition::workspace::Decision::Pass { .. }
         ) {
-            crate::probe!(
+            continuum_base::probe!(
                 class = "eval.task.declined_redrive",
                 task = %t.id,
                 "directed exam question was DECLINED (settled PASS) — re-driving once with an answer-required nudge"
@@ -489,7 +489,7 @@ pub(super) async fn run_pass(
                     DodVerdict::InfraError(m) => {
                         // The grader itself broke — do NOT re-drive (nothing to fix) and
                         // do NOT score as a miss; mark it infra and leave the loop.
-                        crate::probe!(
+                        continuum_base::probe!(
                             class = "eval.task.dod_infra",
                             task = %t.id,
                             "definition-of-done could not RUN — harness/infra fault, not scored as a model miss"
@@ -515,7 +515,7 @@ pub(super) async fn run_pass(
                 }
                 redrive_round += 1;
                 {
-                    crate::probe!(
+                    continuum_base::probe!(
                         class = "eval.task.red_build_redrive",
                         task = %t.id,
                         round = redrive_round as u64,
@@ -586,7 +586,7 @@ Fix the workspace and finish —                              the grade reads th
             if infra_reason.is_none() {
                 infra_reason = Some(reason.clone());
             }
-            crate::probe!(
+            continuum_base::probe!(
                 class = "eval.task.infra_fault",
                 task = %t.id,
                 cause = %reason,
@@ -700,7 +700,7 @@ Fix the workspace and finish —                              the grade reads th
                     if let Err(e) = copied {
                         tracing::warn!(task = %t.id, error = %e, "graded solution not preserved");
                     } else {
-                        crate::probe!(
+                        continuum_base::probe!(
                             class = "eval.artifact.preserved",
                             task = %t.id,
                             path = %dst.display(),

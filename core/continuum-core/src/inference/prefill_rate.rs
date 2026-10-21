@@ -22,7 +22,7 @@
 //! `ContextBudget::from_window` reads it, so every bound in cognition scales with it —
 //! one owner, no second profile type.
 
-use crate::time::EpochMs;
+use continuum_base::time::EpochMs;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::LazyLock;
@@ -214,7 +214,7 @@ pub fn observe(model: &str, prefill_ms: f64, prefill_tps: f64) {
     }
     let now = EpochMs::now().millis();
     if let Some(why) = crate::inference::decode_knee::own_transient(now) {
-        crate::probe!(
+        continuum_base::probe!(
             class = "serving.prefill_rate.sample_skipped",
             model = model,
             prefill_ms,
@@ -237,7 +237,7 @@ pub fn observe(model: &str, prefill_ms: f64, prefill_tps: f64) {
         _ => false,
     };
     if moved {
-        crate::probe!(
+        continuum_base::probe!(
             class = "serving.prefill_rate.moved",
             model = model,
             prefill_tps = after.unwrap_or(0.0), // unwrap_or: `moved` implies `after` is Some; 0 is unreachable
@@ -261,7 +261,7 @@ pub fn observe_bound(model: &str, prompt_tokens: usize, bound: std::time::Durati
     let tps_upper = prompt_tokens as f64 / secs;
     let now = EpochMs::now().millis();
     if let Some(why) = crate::inference::decode_knee::own_transient(now) {
-        crate::probe!(
+        continuum_base::probe!(
             class = "serving.prefill_rate.sample_skipped",
             model = model,
             prompt_tokens = prompt_tokens as u64,
@@ -275,7 +275,7 @@ pub fn observe_bound(model: &str, prompt_tokens: usize, bound: std::time::Durati
     let p = rates.entry(model.to_string()).or_default();
     let before = p.tps_ema;
     p.observe_at_most(tps_upper, now);
-    crate::probe!(
+    continuum_base::probe!(
         class = "serving.prefill_rate.bounded",
         model = model,
         prompt_tokens = prompt_tokens as u64,

@@ -359,7 +359,7 @@ impl OwnedChild {
             return; // the child's own end walks its tree
         }
         let why = format!("{}: {when}, a process it started still held its {} (holders unidentified, not claimed ended)", self.label, open.join(", "));
-        crate::probe!(class = "process.pipe_held", process = self.label, pipes = ?open, "an owned process exited but a process it started still held its pipes; the hands' release holds");
+        continuum_base::probe!(class = "process.pipe_held", process = self.label, pipes = ?open, "an owned process exited but a process it started still held its pipes; the hands' release holds");
         if let Some(lease) = &self.held {
             lease.keep_unknown(why);
         }
@@ -391,7 +391,7 @@ impl Drop for OwnedChild {
 pub(super) async fn end_owned(mut child: tokio::process::Child, held: Option<std::sync::Arc<crate::code::hands::HandsLease>>, kept: Vec<Kept>, label: &'static str) -> TreeEnd {
     let end = end_tree(&mut child).await;
     if !end.confirmed() {
-        crate::probe!(
+        continuum_base::probe!(
             class = "process.unconfirmed_end",
             process = label,
             survivors = ?end.survivors.iter().map(|who| who.pid).collect::<Vec<_>>(),

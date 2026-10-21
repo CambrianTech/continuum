@@ -111,7 +111,7 @@ pub enum LanePlacement {
 /// with Metal OFF and records the decision here) pins every main lane to the CPU; anything
 /// else is the GPU. A decision, read from config, never a raw env var (concurrency guide).
 pub fn main_lane_placement() -> LanePlacement {
-    placement_from_config(crate::config_env::read("CONTINUUM_SERVING_PLACEMENT").as_deref())
+    placement_from_config(continuum_base::config_env::read("CONTINUUM_SERVING_PLACEMENT").as_deref())
 }
 
 

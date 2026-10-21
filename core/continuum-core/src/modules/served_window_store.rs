@@ -87,7 +87,7 @@ pub fn load_from(path: &Path) -> Option<StoredServedWindow> {
         Ok(b) => b,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return None,
         Err(e) => {
-            crate::probe!(
+            continuum_base::probe!(
                 class = "serving.window.store_unreadable",
                 path = %path.display(),
                 error = %e,
@@ -99,7 +99,7 @@ pub fn load_from(path: &Path) -> Option<StoredServedWindow> {
     match serde_json::from_slice::<StoredServedWindow>(&bytes) {
         Ok(s) if s.per_slot_window > 0 => Some(s),
         _ => {
-            crate::probe!(
+            continuum_base::probe!(
                 class = "serving.window.store_corrupt",
                 path = %path.display(),
                 "served-window store corrupt — discarded; planning fresh"
@@ -137,7 +137,7 @@ fn save_candidate_to(path: &Path, geometry: ServedGeometry) {
         lanes: 0, // This launch has no successful observation yet.
         typical_prompt_tokens: 0,
         observed_prompt_tokens: None,
-        set_at_ms: crate::time::EpochMs::now().millis(),
+        set_at_ms: continuum_base::time::EpochMs::now().millis(),
         candidate: None,
     });
     let candidate = geometry;
@@ -170,7 +170,7 @@ fn observe_to(path: &Path, geometry: &ServedGeometry, tokens: u32) {
     stored.lanes = geometry.lanes;
     stored.typical_prompt_tokens = tokens;
     stored.observed_prompt_tokens = Some(tokens);
-    stored.set_at_ms = crate::time::EpochMs::now().millis();
+    stored.set_at_ms = continuum_base::time::EpochMs::now().millis();
     write_record(path, &stored);
 }
 fn write_record(path: &Path, stored: &StoredServedWindow) {
@@ -182,7 +182,7 @@ fn write_record(path: &Path, stored: &StoredServedWindow) {
         let _ = std::fs::create_dir_all(parent);
     }
     match serde_json::to_vec_pretty(&stored).map(|b| std::fs::write(path, b)) {
-        Ok(Ok(())) => crate::probe!(
+        Ok(Ok(())) => continuum_base::probe!(
             class = "serving.window.stored",
             model = model_id,
             per_slot_window = per_slot_window as u64,
@@ -190,7 +190,7 @@ fn write_record(path: &Path, stored: &StoredServedWindow) {
             typical_prompt_tokens = typical_prompt_tokens as u64,
             "serving geometry recorded — observed cache preference, not a future capacity constraint"
         ),
-        _ => crate::probe!(
+        _ => continuum_base::probe!(
             class = "serving.window.store_failed",
             path = %path.display(),
             "could not write the served-window store — the next boot re-derives the window"

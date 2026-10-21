@@ -14,7 +14,7 @@ pub(super) static DEVICE_VRAM_TOTAL: AtomicU64 = AtomicU64::new(0);
 /// plan, so the very first tick already has a real number to stand on.
 pub fn seed_device_vram_prior(total_bytes: u64) {
     DEVICE_VRAM_TOTAL.store(total_bytes, Ordering::Relaxed);
-    crate::probe!(
+    continuum_base::probe!(
         target: "continuum_core::modules::serving_daemon", class = "serving.vram_ceiling_prior.seeded",
         total_bytes = total_bytes,
         gib = format!("{:.2}", total_bytes as f64 / 1024.0 / 1024.0 / 1024.0).as_str(),
@@ -222,7 +222,7 @@ pub(super) fn governed_vram_ceiling_or_report(
         .find(|k| k.kind == kind)
     {
         if row.capacity_bytes == 0 {
-            crate::probe!(
+            continuum_base::probe!(
                 target: "continuum_core::modules::serving_daemon", class = "serving.vram_capacity_absent",
                 site = site,
                 kind = kind.label(),
@@ -266,7 +266,7 @@ pub(super) fn governed_vram_ceiling_or_report(
     // is the steady state and would drown the stream (#399). A prior in use is exactly
     // the condition an operator needs to see, so it always speaks.
     if reading.provenance != crate::resources::Provenance::Measured {
-        crate::probe!(
+        continuum_base::probe!(
             target: "continuum_core::modules::serving_daemon", class = "serving.vram_ceiling_prior",
             site = site,
             bytes = reading.bytes,
@@ -354,7 +354,7 @@ impl ServingDaemonModule {
         if !self.engine_device_credit.record_discrete(pid, bytes) {
             return; // a steady engine: same reading, no probe (it allocates its buffers at launch)
         }
-        crate::probe!(
+        continuum_base::probe!(
             target: "continuum_core::modules::serving_daemon", class = "serving.credit.engine_device",
             pid = pid.map_or(0, u64::from),
             device_bytes = bytes.unwrap_or(0), // unwrap_or: probe label; `read` says whether a reading exists

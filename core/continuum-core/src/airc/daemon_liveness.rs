@@ -104,7 +104,7 @@ pub fn spawn() {
             };
             if answering {
                 if let Some(since) = absent_since.take() {
-                    crate::probe!(
+                    continuum_base::probe!(
                         class = "airc.daemon.back",
                         absent_s = since.elapsed().as_secs(),
                         revived_by_us = revived_by_us,
@@ -120,7 +120,7 @@ pub fn spawn() {
             absent_periods = absent_periods.saturating_add(1);
             if absent_since.is_none() {
                 absent_since = Some(Instant::now());
-                crate::probe!(
+                continuum_base::probe!(
                     class = "airc.daemon.absent",
                     grace_s = (PERIOD * GRACE_PERIODS).as_secs(),
                     "no daemon answers on the machine socket — reviving after the grace window"
@@ -159,7 +159,7 @@ pub fn spawn() {
                             // does nothing to a running job. A route that is not idempotent
                             // must not be added here (Cormac on #4672).
                             failed_attempts = failed_attempts.saturating_add(1);
-                            crate::probe!(
+                            continuum_base::probe!(
                                 class = "airc.daemon.revive_issued",
                                 attempt = attempt,
                                 route = %route,
@@ -175,7 +175,7 @@ pub fn spawn() {
                         }
                         Spawned::BinaryAbsent | Spawned::NoHome | Spawned::Failed(_) => {
                             failed_attempts = failed_attempts.saturating_add(1);
-                            crate::probe!(
+                            continuum_base::probe!(
                                 class = "airc.daemon.revive_failed",
                                 attempt = attempt,
                                 reason = format!("{outcome:?}"),

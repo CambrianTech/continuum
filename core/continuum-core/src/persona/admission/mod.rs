@@ -62,7 +62,7 @@ pub mod recipes;
 
 pub use recipes::HeuristicIsMemorable;
 
-use crate::time::EpochMs;
+use continuum_base::time::EpochMs;
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 use uuid::Uuid;

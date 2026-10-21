@@ -120,7 +120,7 @@ pub(super) fn ephemeral_admission_refusal(
     resident: &[crate::inference::lane_registry::LaneRecord],
 ) -> Option<String> {
     let Some(authority) = LANE_ADMISSION.get() else {
-        crate::probe!(target: "continuum_core::inference::llama_server", class = "serving.lane.admission_unwired",
+        continuum_base::probe!(target: "continuum_core::inference::llama_server", class = "serving.lane.admission_unwired",
             model = target.model_id(),
             resident_ephemeral = resident.len(),
             "no device-budget authority is installed — admitting this engine WITHOUT a \
@@ -206,7 +206,7 @@ impl EphemeralServingLane {
         let permit = EPHEMERAL_SPAWN_GATE.lock().await;
         let resident = reconcile_ephemeral_census();
         if let Some(reason) = ephemeral_admission_refusal(target, &resident) {
-            crate::probe!(target: "continuum_core::inference::llama_server", class = "serving.lane.admission_refused",
+            continuum_base::probe!(target: "continuum_core::inference::llama_server", class = "serving.lane.admission_refused",
                 model = target.model_id(),
                 resident_ephemeral = resident.len(),
                 reason = reason.as_str(),

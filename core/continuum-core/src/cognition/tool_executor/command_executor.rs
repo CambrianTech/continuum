@@ -361,7 +361,7 @@ pub(crate) fn persona_tool_error(attempted: &str, raw: String) -> String {
         // (card b579a9c7). Name the slip and put her own arguments back in front of
         // her, the way the nameless-args sentinel does.
         if let Some(slip) = crate::cognition::tool_dialect::not_a_verb(attempted, !suggestions.is_empty()) {
-            crate::probe!(
+            continuum_base::probe!(
                 class = "tool.name.not_a_verb",
                 slip = ?slip,
                 attempted = %attempted,
@@ -550,7 +550,7 @@ impl ToolExecutor for CommandToolExecutor {
                 // One seam names the FIELD and what belongs in it, and never dispatches.
                 let outcome: Result<Value, _> = match manual_blanks_in(&call.input) {
                     blanks if !blanks.is_empty() => {
-                        crate::probe!(
+                        continuum_base::probe!(
                             class = "tool.call.manual_blank",
                             persona = %ctx.persona_name,
                             command = %command,
@@ -613,7 +613,7 @@ impl ToolExecutor for CommandToolExecutor {
                     let (verdict, dispatch_handle) =
                         crate::sdk_codegen::project_result(&canonical, &value);
                     if verdict == ActVerdict::Undecodable {
-                        crate::probe!(
+                        continuum_base::probe!(
                             class = "tool.call.outcome_undecodable",
                             persona = %ctx.persona_name,
                             command = %canonical,
@@ -688,7 +688,7 @@ impl ToolExecutor for CommandToolExecutor {
                     // substrate reporting a turn's shape, counted on their own path. Probed
                     // here they read as walls (Kimi's 05:17Z think-only turn did).
                     if !attempted.starts_with("tools/<") {
-                        crate::probe!(
+                        continuum_base::probe!(
                             class = "persona.act.refused",
                             persona = %ctx.persona_id,
                             command = attempted,

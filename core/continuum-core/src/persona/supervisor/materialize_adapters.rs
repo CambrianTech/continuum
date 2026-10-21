@@ -120,7 +120,7 @@ pub async fn materialize_adapters(
         if let Some(remote) = remote_window {
             match remote {
                 Some(window) => {
-                    crate::probe!(
+                    continuum_base::probe!(
                         class = "persona.upstart.window",
                         persona = %profile.persona_name,
                         persona_id = %profile.persona_id,
@@ -139,7 +139,7 @@ pub async fn materialize_adapters(
                     // minimum every other bound derives from; never a number of our own.
                     let floor = crate::cognition::serving_plan::BOOTSTRAP_WORKING_SET
                         .min(profile.context_length);
-                    crate::probe!(
+                    continuum_base::probe!(
                         class = "persona.upstart.window",
                         persona = %profile.persona_name,
                         persona_id = %profile.persona_id,
@@ -160,7 +160,7 @@ pub async fn materialize_adapters(
             // snapshot never clobbers the provisional window with 0.
             if snap.ready && snap.served_context_window > 0 {
                 if snap.served_context_window != profile.context_length {
-                    crate::probe!(
+                    continuum_base::probe!(
                         class = "persona.upstart.window",
                         persona = %profile.persona_name,
                         persona_id = %profile.persona_id,

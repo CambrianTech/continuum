@@ -45,7 +45,7 @@ use crate::resources::{LeaseBoard, ResourceDaemon, ResourceKind};
 use crate::runtime::message_bus::MessageBus;
 use crate::runtime::{CommandResult, ModuleConfig, ModuleContext, ModulePriority, ServiceModule};
 use crate::system_resources::SystemResourceMonitor;
-use crate::time::EpochMs;
+use continuum_base::time::EpochMs;
 use async_trait::async_trait;
 use serde_json::Value;
 use std::any::Any;
@@ -496,7 +496,7 @@ impl ServingDaemonModule {
         let stored_pin = pin_store.load();
         let honoured = match stored_pin {
             None => {
-                crate::probe!(
+                continuum_base::probe!(
                     class = "serving.pin.none_stored",
                     "no stored serving pin — the planner chooses"
                 );
@@ -508,7 +508,7 @@ impl ServingDaemonModule {
                     .get(&pin.model_id)
                     .is_some_and(|entry| entry.status.availability == Availability::Ready);
                 if servable {
-                    crate::probe!(
+                    continuum_base::probe!(
                         class = "serving.pin.restored",
                         model_id = %pin.model_id,
                         set_at_ms = pin.set_at_ms,
@@ -516,7 +516,7 @@ impl ServingDaemonModule {
                     );
                     Some(pin.model_id)
                 } else {
-                    crate::probe!(
+                    continuum_base::probe!(
                         class = "serving.pin.unservable_ignored",
                         model_id = %pin.model_id,
                         set_at_ms = pin.set_at_ms,
@@ -604,7 +604,7 @@ impl ServingDaemonModule {
                 crate::capacity::host_cache_lease::StickyLease::new(HOST_CACHE_LEASE_BAND_DIVISOR),
             ),
             // Read ONCE here (single config entry point, no per-tick I/O). Off by default.
-            measure_force_expert_budget_bytes: crate::config_env::read(
+            measure_force_expert_budget_bytes: continuum_base::config_env::read(
                 "K3_MEASURE_FORCE_EXPERT_BUDGET_BYTES",
             )
             .and_then(|s| s.trim().parse::<u64>().ok()),

@@ -149,7 +149,7 @@ impl DeferredFaculty {
                 // already skipped above). If a nil somehow arrives, skip the tick and
                 // say so: this lane degrades, it never panics (concurrency guide).
                 let Ok(room) = crate::identity::ActivityRoom::from_uuid(input.room_id) else {
-                    crate::probe!(
+                    continuum_base::probe!(
                         class = "cognition.deferred.roomless_input_skipped",
                         "deferred faculty received a nil-room input — tick skipped (#425)",
                     );
@@ -236,7 +236,7 @@ impl Faculty for DeferredFaculty {
                     contribution: c.clone(),
                 }));
             }
-            crate::probe!(
+            continuum_base::probe!(
                 class = "deferred.serve",
                 faculty = %self.id.as_str(),
                 mode = "sync-directed",
@@ -266,7 +266,7 @@ impl Faculty for DeferredFaculty {
                         && found.activity_room_id == ws.activity_room_id =>
                 {
                     let served = Some(reproject_to_now(found, ws));
-                    crate::probe!(
+                    continuum_base::probe!(
                         class = "deferred.serve",
                         faculty = %self.id.as_str(),
                         mode = "last-good",
@@ -276,7 +276,7 @@ impl Faculty for DeferredFaculty {
                     return served;
                 }
                 Some(_) => {
-                    crate::probe!(
+                    continuum_base::probe!(
                         class = "deferred.serve",
                         faculty = %self.id.as_str(),
                         mode = "other-room-withheld",
@@ -307,7 +307,7 @@ impl Faculty for DeferredFaculty {
                 contribution: c.clone(),
             }));
         }
-        crate::probe!(
+        continuum_base::probe!(
             class = "deferred.serve",
             faculty = %self.id.as_str(),
             mode = "cold-start-sync",

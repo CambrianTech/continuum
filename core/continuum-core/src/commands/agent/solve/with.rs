@@ -92,7 +92,7 @@ pub(super) async fn advance_round_after_non_settling(run_id: &str) {
         .or_else(|| reg.any_live_citizen())
         .map(|rt| rt.airc().clone())
     else {
-        crate::probe!(
+        continuum_base::probe!(
             class = "bench.round.advance_blocked",
             card_id = %next.card,
             "the next card is due after a non-settling run, but no live citizen can \
@@ -100,7 +100,7 @@ pub(super) async fn advance_round_after_non_settling(run_id: &str) {
         );
         return;
     };
-    crate::probe!(
+    continuum_base::probe!(
         class = "bench.round.advanced",
         finished = %card,
         next_card = %next.card,
@@ -151,7 +151,7 @@ pub(super) async fn close_claim_card_if_graded(run_id: &str) {
     let no_patch = decision == CardCloseDecision::NoPatch;
     let cache_repoint_failed = decision == CardCloseDecision::CacheRepointFailed;
     if no_patch {
-        crate::probe!(
+        continuum_base::probe!(
             class = "benchmark.card.close_skipped",
             run_id = %run_id,
             reason = "no_patch",
@@ -161,7 +161,7 @@ pub(super) async fn close_claim_card_if_graded(run_id: &str) {
         return;
     }
     if cache_repoint_failed {
-        crate::probe!(
+        continuum_base::probe!(
             class = "benchmark.card.close_skipped",
             run_id = %run_id,
             reason = "cache_repoint_failed",
@@ -174,7 +174,7 @@ pub(super) async fn close_claim_card_if_graded(run_id: &str) {
         return;
     }
     if !verdict_is_real && !env_absent {
-        crate::probe!(
+        continuum_base::probe!(
             class = "benchmark.card.close_skipped",
             run_id = %run_id,
             "no verdict on disk at all (infra died before grading) — this run does \
@@ -204,7 +204,7 @@ pub(super) async fn close_claim_card_if_graded(run_id: &str) {
         // killed at the dispatch seam instead: dispatch skips instances whose
         // env failed THIS boot's prewarm, so a still-broken card idles quietly
         // and a healed one re-fires with zero operator action.
-        crate::probe!(
+        continuum_base::probe!(
             class = "benchmark.card.close_skipped",
             run_id = %run_id,
             reason = "env_absent",
@@ -236,7 +236,7 @@ pub(super) async fn close_claim_card_if_graded(run_id: &str) {
         .or_else(|| reg.any_live_citizen())
         .map(|rt| rt.airc().clone());
     let Some(airc) = airc else {
-        crate::probe!(
+        continuum_base::probe!(
             class = "benchmark.card.close_skipped",
             run_id = %run_id,
             "no live citizen to author the close — the lapse sweeper will close it"
@@ -245,7 +245,7 @@ pub(super) async fn close_claim_card_if_graded(run_id: &str) {
     };
     let card_id = airc_work::WorkCardId::from_uuid(card_uuid);
     let Some(room) = crate::modules::work::room_holding_card(&airc, card_id).await else {
-        crate::probe!(
+        continuum_base::probe!(
             class = "benchmark.card.close_skipped",
             run_id = %run_id,
             "no subscribed room's board holds the card — cannot place the close"
@@ -262,13 +262,13 @@ pub(super) async fn close_claim_card_if_graded(run_id: &str) {
         )
         .await
     {
-        Ok(_) => crate::probe!(
+        Ok(_) => continuum_base::probe!(
             class = "benchmark.card.closed_by_harness",
             run_id = %run_id,
             card_id = %card_uuid,
             "final verdict on disk — harness closed the card; the round settles on              this event (last card → Done)"
         ),
-        Err(e) => crate::probe!(
+        Err(e) => continuum_base::probe!(
             class = "benchmark.card.close_skipped",
             run_id = %run_id,
             error = %e.to_string(),

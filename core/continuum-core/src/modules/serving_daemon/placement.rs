@@ -116,7 +116,7 @@ impl ServingDaemonModule {
         // Glass-box the K3 residency decision (Joel: the K3 path is observability-first).
         // Every load-bearing quantity a breakpoint would want: what fit, out of how many, on
         // what budget, and whether it moves the served process this tick.
-        crate::probe!(
+        continuum_base::probe!(
             target: "continuum_core::modules::serving_daemon", class = "serving.k3_placement",
             model = model.id.as_str(),
             budget_bytes = budget,
@@ -186,7 +186,7 @@ impl ServingDaemonModule {
         let plan = crate::capacity::device_fit::plan_device_fit(&inputs, |usable| {
             crate::model_registry::artifacts::resolve_device_fit_override(&model_id, usable)
         });
-        crate::probe!(
+        continuum_base::probe!(
             target: "continuum_core::modules::serving_daemon", class = "serving.device_fit",
             model = model.id.as_str(),
             resident_bytes,

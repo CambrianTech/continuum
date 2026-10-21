@@ -104,7 +104,7 @@ pub(super) const DECODE_SMOKE_TIMEOUT: Duration = Duration::from_secs(75);
 /// substrate *thresholds*, which stay `const`. The value carries no `/v1`; we
 /// append `/v1` and `/health` as needed so there is one source of truth.
 pub fn serving_root() -> String {
-    if let Some(raw) = crate::config_env::read("LLAMA_SERVER_BASE_URL") {
+    if let Some(raw) = continuum_base::config_env::read("LLAMA_SERVER_BASE_URL") {
         let trimmed = raw.trim().trim_end_matches('/');
         // Accept a configured `.../v1` and normalize back to the root so callers
         // get a single canonical form regardless of how the operator wrote it.

@@ -50,7 +50,7 @@ pub(crate) fn emit_eval_phase(phase: &str, detail: &str) {
             }),
         );
     }
-    crate::probe!(
+    continuum_base::probe!(
         class = "eval.phase",
         phase = phase,
         detail = detail,
@@ -135,7 +135,7 @@ pub(super) fn dod_output_is_infra(exit_code: Option<i32>, out: &str) -> bool {
 }
 
 pub(super) async fn run_dod(root: Option<&std::path::Path>, cmd: &str) -> DodVerdict {
-    let bash = match crate::shell_portable::locate_bash() {
+    let bash = match continuum_base::shell_portable::locate_bash() {
         Ok(bash) => bash,
         Err(why) => {
             return DodVerdict::InfraError(format!(
@@ -186,7 +186,7 @@ pub(crate) async fn run_held_out(root: Option<&std::path::Path>, t: &EvalTask, v
         (_, visible) => return visible,
     };
     let held = run_dod(root, cmd).await;
-    crate::probe!(
+    continuum_base::probe!(
         class = "eval.task.held_out",
         task = %t.id,
         passed = held.passed(),
@@ -591,7 +591,7 @@ pub(super) fn hang_backstop_outcome(
     room: crate::identity::ActivityRoom,
     window: std::time::Duration,
 ) -> crate::cognition::act_observe::SettleOutcome {
-    crate::probe!(
+    continuum_base::probe!(
         class = "eval.task.hang_backstop",
         task = %task_id,
         backstop_s = window.as_secs(),
@@ -674,7 +674,7 @@ pub(super) fn report_task_graded(
         .ok()
         .and_then(|g| g.as_ref().and_then(|m| m.run_id.clone()))
         .unwrap_or_default(); // sync/handleless run: empty = "no round", honest for a probe field
-    crate::probe!(
+    continuum_base::probe!(
         class = "eval.task",
         task = task_id,
         run_id = %run_id,

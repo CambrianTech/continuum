@@ -116,7 +116,7 @@ impl LlmDeliberationFaculty {
             (engine_cached_tokens as usize).min(view.history_tokens),
             std::sync::atomic::Ordering::Relaxed,
         );
-        crate::probe!(
+        continuum_base::probe!(
             class = "delib.prompt.density",
             persona = %self.persona_name,
             estimated_prompt_tokens = view.estimated_prompt_tokens,
@@ -257,7 +257,7 @@ impl LlmDeliberationFaculty {
         let grounding_budget = after_reserves.saturating_sub(required_payload);
         let payload_overflow = required_payload.saturating_sub(after_reserves);
         if payload_overflow > 0 {
-            crate::probe!(
+            continuum_base::probe!(
                 class = "delib.payload.over_window",
                 persona = %self.persona_name,
                 required_payload,
@@ -292,7 +292,7 @@ impl LlmDeliberationFaculty {
         let mut grounding = match GroundingPlan::within_budget(ws, grounding_budget) {
             Fitted::Whole(plan) => plan,
             Fitted::Reduced { plan, wanted } => {
-                crate::probe!(
+                continuum_base::probe!(
                     class = "delib.grounding.shed",
                     persona = %self.persona_name,
                     wanted_tokens = wanted,
@@ -430,7 +430,7 @@ impl LlmDeliberationFaculty {
             .saturating_add(plan.unallocated)
             .min(reply_runaway)
             .max(1) as usize;
-        crate::probe!(
+        continuum_base::probe!(
             class = "delib.window.flex",
             persona = %self.persona_name,
             context_window,
@@ -461,7 +461,7 @@ impl LlmDeliberationFaculty {
         let fill_budget = required_tokens.saturating_add(latency_fill_cap);
         if window_msg_budget > fill_budget {
             let shed = all_messages.shed_preview(latency_fill_cap);
-            crate::probe!(
+            continuum_base::probe!(
                 class = "delib.fill.latency_capped",
                 persona = %self.persona_name,
                 window_budget = window_msg_budget,
@@ -532,7 +532,7 @@ impl LlmDeliberationFaculty {
                 ws.now_ms.unwrap_or(0), // JUSTIFIED unwrap_or: unstamped cycle still measures honestly (registry keeps peaks, not a time series)
             );
         }
-        crate::probe!(
+        continuum_base::probe!(
             class = "delib.turn.demand",
             persona = %self.persona_name,
             demand_tokens,
@@ -559,7 +559,7 @@ impl LlmDeliberationFaculty {
         // direction included, and before this there was no line to read it from.
         if capacity_error.is_none() && fitted.receipt.dropped_messages > 0 {
             let r = fitted.receipt;
-            crate::probe!(
+            continuum_base::probe!(
                 class = if r.emptied() { "delib.fill.history_emptied" } else { "delib.fill.history_dropped" },
                 persona = %self.persona_name,
                 context_window,
@@ -616,7 +616,7 @@ impl LlmDeliberationFaculty {
                 // distinguishable, from the ledger alone, between "every turn was
                 // starved", "every turn emptied to the framing", and "this seam was
                 // never reached". One row per unheld turn, with the reason.
-                None => crate::probe!(
+                None => continuum_base::probe!(
                     class = "persona.need.unheld",
                     persona = %self.persona_name,
                     sent_tokens,

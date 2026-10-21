@@ -755,7 +755,7 @@ pub fn spawn_node_presence_emitter(
                 if let Some(reg) = crate::airc::inbound_attach::AttachRegistry::try_global() {
                     reg.ensure_attached(airc_core::RoomId::from_uuid(id));
                 }
-                crate::probe!(
+                continuum_base::probe!(
                     class = "presence.room.adopted",
                     room_id = %id,
                     room = %name,

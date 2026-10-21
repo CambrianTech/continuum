@@ -274,8 +274,8 @@ pub(super) async fn prepare_ci_core(repo: &Path, tip: &str, platform: &str, down
     }
     // Extracted beside the archive: `tar_on` runs from its directory, so Git for Windows'
     // GNU tar never reads the drive letter as a host (Fable on #4834).
-    let members = continuum_core::shell_portable::tar_on(&archive, "-tzf")?.output().map_err(|e| format!("listing archive: {e}"))?;
-    let details = continuum_core::shell_portable::tar_on(&archive, "-tvzf")?.output().map_err(|e| format!("listing archive types: {e}"))?;
+    let members = continuum_base::shell_portable::tar_on(&archive, "-tzf")?.output().map_err(|e| format!("listing archive: {e}"))?;
+    let details = continuum_base::shell_portable::tar_on(&archive, "-tvzf")?.output().map_err(|e| format!("listing archive types: {e}"))?;
     if !members.status.success() || !details.status.success() { return Err("Cannot inspect published archive before extraction".into()); }
     continuum_cli_lifecycle::prebuilt_artifact::archive_members_verdict(&String::from_utf8_lossy(&members.stdout), &String::from_utf8_lossy(&details.stdout), platform)?;
     let expanded = archive_expanded_bytes(&String::from_utf8_lossy(&details.stdout))?;
@@ -288,7 +288,7 @@ pub(super) async fn prepare_ci_core(repo: &Path, tip: &str, platform: &str, down
         }
         error => error,
     })?;
-    let status = continuum_core::shell_portable::tar_on(&archive, "-xzf")?
+    let status = continuum_base::shell_portable::tar_on(&archive, "-xzf")?
         .status()
         .map_err(|e| format!("tar: {e}"))?;
     if !status.success() {
@@ -387,7 +387,7 @@ pub(super) fn tip_age_secs(repo: &Path, tip: &str) -> u64 {
         .ok()
         .and_then(|s| s.trim().parse::<u64>().ok());
     // A clock before 1970 reads as the epoch, so every tip is "new" and the consumer waits.
-    let now = continuum_core::time::EpochMs::now().secs();
+    let now = continuum_base::time::EpochMs::now().secs();
     committed.map(|c| now.saturating_sub(c)).unwrap_or(0) // unwrap_or: an unreadable commit time waits, it does not compile early
 }
 

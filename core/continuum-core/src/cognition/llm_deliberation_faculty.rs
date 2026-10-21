@@ -600,7 +600,7 @@ impl LlmDeliberationFaculty {
         let expected = self.expected_occupancy();
         let bound = crate::inference::turn_bound::from_expectation(expected);
         if let (Some(expected), Some(bound)) = (expected, bound) {
-            crate::probe!(
+            continuum_base::probe!(
                 class = "delib.turn.bound",
                 persona = %self.persona_name,
                 expected_secs = expected.as_secs(),
@@ -778,7 +778,7 @@ fn append_wire_capture(dir: &std::path::Path, persona_id: Uuid, persona_name: &s
         return;
     }
     let row = serde_json::json!({
-        "ts_ms": crate::time::EpochMs::now().millis(),
+        "ts_ms": continuum_base::time::EpochMs::now().millis(),
         "persona": persona_name,
         "messages": request
             .messages

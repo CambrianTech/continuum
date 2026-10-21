@@ -471,14 +471,14 @@ impl InPlaceRun for EngineRun {
             if settled {
                 let released = tokio::task::spawn_blocking(move || crate::inference::engine_residency::release(&path, &bound)).await;
                 if !matches!(released, Ok(Ok(_))) {
-                    crate::probe!(
+                    continuum_base::probe!(
                         class = "training.residency.release_failed",
                         job = %job,
                         "a settled run's engine binding could not be released; serving stays held on it until it can be"
                     );
                 }
             } else {
-                crate::probe!(
+                continuum_base::probe!(
                     class = "training.residency.kept_uncertain",
                     job = %job,
                     pid = bound.engine.pid as u64,
@@ -491,11 +491,11 @@ impl InPlaceRun for EngineRun {
         // the re-attach path that does not exist yet (see training_hold_store).
         if let Some(store) = store {
             let released = tokio::task::spawn_blocking(move || {
-                super::super::training_hold_store::release_job(&store, job, crate::time::EpochMs::now().millis())
+                super::super::training_hold_store::release_job(&store, job, continuum_base::time::EpochMs::now().millis())
             })
             .await;
             if !matches!(released, Ok(Ok(_))) {
-                crate::probe!(
+                continuum_base::probe!(
                     class = "training.hold.release_failed",
                     job = %job,
                     "a finished job's persisted pauses could not be released; they expire on their TTL"
@@ -540,7 +540,7 @@ impl EngineRun {
                 Err(e) => {
                     let status = self.status().await.ok();
                     match after_lost_post(status.as_ref(), |s| self.ours(s)) {
-                        LostPost::Watch => crate::probe!(
+                        LostPost::Watch => continuum_base::probe!(
                             class = "training.job.post_reconciled",
                             job = %self.job,
                             error = %e,
@@ -604,7 +604,7 @@ impl EngineRun {
                     if let Some(store) = &self.hold_store {
                         // Holds are created and expire in wall time, which a core restart keeps. A pre-1970
                         // clock reads 0 here: every hold reads as live, never as expired early.
-                        let now = crate::time::EpochMs::now().millis();
+                        let now = continuum_base::time::EpochMs::now().millis();
                         match super::super::training_hold_store::live_on(store, self.job, now).await {
                             Ok(persisted) => reasons.extend(persisted.into_iter().map(|h| h.reason)),
                             // unreadable intent holds: a paused job is never resumed on a guess
@@ -616,7 +616,7 @@ impl EngineRun {
                     // asked (a resume request clears pause_requested before the worker wakes)
                     let now_paused = s.paused;
                     if now_paused != was_paused {
-                        crate::probe!(
+                        continuum_base::probe!(
                             class = if now_paused { "training.run.paused" } else { "training.run.resumed" },
                             out = self.out.as_str(),
                             holds = reasons.join(",").as_str(),
@@ -635,7 +635,7 @@ impl EngineRun {
                     // never read as a zero share, and an old engine is told apart from a probe
                     // that never fired.
                     match (s.windows, s.windows_while_busy, s.yielded_ms) {
-                        (Some(windows), Some(busy), Some(yielded)) => crate::probe!(
+                        (Some(windows), Some(busy), Some(yielded)) => continuum_base::probe!(
                             class = "training.run.share",
                             out = self.out.as_str(),
                             reported = true,
@@ -649,7 +649,7 @@ impl EngineRun {
                             decode_tps_in_window = s.decode_tps_in_window.unwrap_or(-1.0), // -1 = not measured, never a 0 that reads as her stopping
                             "the in-engine run finished: how many windows it took beside busy serving, how long it yielded, and what it cost her decoding against the bound"
                         ),
-                        _ => crate::probe!(
+                        _ => continuum_base::probe!(
                             class = "training.run.share",
                             out = self.out.as_str(),
                             reported = false,
@@ -672,7 +672,7 @@ impl EngineRun {
                         // The job's examples belong back in her bucket so the next dispatch can
                         // step down; the trigger reads this to decide (card 2dfce676).
                         if let Err(e) = write_returnable(&self.job_dir, &Returnable::EngineRefused(Refusal { window: ran_window, chunk: ran_chunk, graph_bytes: grown, error: why.to_string() })) {
-                            crate::probe!(
+                            continuum_base::probe!(
                                 class = "training.job.refusal_unrecorded",
                                 job = %self.job,
                                 error = %e,
@@ -687,7 +687,7 @@ impl EngineRun {
                             .await
                             .unwrap_or_else(|e| Err(std::io::Error::other(e.to_string())));
                         match recorded {
-                            Ok(()) => crate::probe!(
+                            Ok(()) => continuum_base::probe!(
                                 class = "training.job.footprint_from_refusal",
                                 job = %self.job,
                                 window = ran_window as u64,
@@ -696,7 +696,7 @@ impl EngineRun {
                                 graph_bytes = grown,
                                 "the engine refused this shape's graph; its measured size is filed so the next dispatch chooses a smaller chunk"
                             ),
-                            Err(e) => crate::probe!(
+                            Err(e) => continuum_base::probe!(
                                 class = "training.job.footprint_unrecorded",
                                 job = %self.job,
                                 error = %e,

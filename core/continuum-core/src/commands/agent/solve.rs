@@ -14,7 +14,7 @@
 //! (`fork_eval_cycle_with_adapter` → `drive_to_settle`), minus the grader — the external harness
 //! grades. One drive, two consumers (eval scores; agent/solve emits a patch).
 
-use crate::time::EpochMs;
+use continuum_base::time::EpochMs;
 use crate::cognition::learning_policy::LearningPolicy;
 use async_trait::async_trait;
 use schemars::JsonSchema;

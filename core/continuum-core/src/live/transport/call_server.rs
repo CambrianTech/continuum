@@ -3,7 +3,7 @@
 //! Handles live audio/video calls over WebSocket.
 //! Each call has multiple participants, audio is mixed with mix-minus.
 
-use crate::audio_constants::AUDIO_SAMPLE_RATE;
+use continuum_base::audio_constants::AUDIO_SAMPLE_RATE;
 use crate::live::audio::capabilities::ModelCapabilityRegistry;
 use crate::live::audio::mixer::{AudioMixer, ParticipantStream};
 use crate::live::audio::router::{AudioRouter, RoutedParticipant};

@@ -9,7 +9,7 @@
 //! dual-write (data + airc) composition lives in one place. Assembled by
 //! [`command_objects`](super::command_objects).
 
-use crate::time::EpochMs;
+use continuum_base::time::EpochMs;
 use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
@@ -134,7 +134,7 @@ crate::action_command! {
                         crate::persona::airc_citizen::room_name_by_id(p.room_id).await
                     {
                         if rt.airc().subscribe_room(&name).await.is_ok() {
-                            crate::probe!(
+                            continuum_base::probe!(
                                 class = "chat.send.join_on_send",
                                 room = %p.room_id,
                                 room_name = %name,

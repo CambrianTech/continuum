@@ -341,7 +341,7 @@ pub(crate) async fn grade_swe(p: SweGradeParams) -> Result<SweGradeResult, Comma
             let copies = owners_of(&instance.instance_id);
             match grade_target(&copies) {
                 GradeTarget::One(path) => {
-                    crate::probe!(
+                    continuum_base::probe!(
                         class = "benchmark.grade.workspace_resolved",
                         instance = %instance.instance_id,
                         staged_copies = copies.len(),
@@ -483,7 +483,7 @@ pub(crate) async fn grade_swe(p: SweGradeParams) -> Result<SweGradeResult, Comma
         Err(_) => Some("verdict_not_persisted"),
     };
     match recorded {
-        Ok(Some(path)) => crate::probe!(
+        Ok(Some(path)) => continuum_base::probe!(
             class = "benchmark.verdict.recorded",
             instance = %verdict.instance_id,
             resolved = verdict.resolved,
@@ -510,7 +510,7 @@ pub(crate) async fn grade_swe(p: SweGradeParams) -> Result<SweGradeResult, Comma
     }
     if let Some(reason) = board_close_skipped {
         if !p.gold.unwrap_or(false) {
-            crate::probe!(
+            continuum_base::probe!(
                 class = "benchmark.verdict.board_close_skipped",
                 instance = verdict.instance_id.as_str(),
                 reason,

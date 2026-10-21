@@ -225,7 +225,7 @@ impl TokenSet {
         if self.expires_at == 0 {
             return false;
         }
-        let now = crate::time::EpochMs::now().secs();
+        let now = continuum_base::time::EpochMs::now().secs();
         now >= self.expires_at.saturating_sub(60)
     }
 }
@@ -267,7 +267,7 @@ impl ExternalWebviewAuthService {
 
     /// Register built-in providers whose `CLIENT_ID` secrets are present in config.env.
     pub async fn load_defaults(&self) {
-        use crate::secrets::get_secret;
+        use continuum_base::secrets::get_secret;
 
         if let Some(id) = get_secret("GITHUB_CLIENT_ID") {
             self.register_provider(OAuthClientConfig {
@@ -537,7 +537,7 @@ impl ExternalWebviewAuthService {
     /// Called during `initialize()`. The `secrets` module uses `OnceLock` so it reads
     /// the file once at startup — tokens written in a previous session are available here.
     pub fn load_persisted_tokens(&self) {
-        use crate::secrets::get_secret;
+        use continuum_base::secrets::get_secret;
 
         for provider_id in ["github", "huggingface", "google"] {
             let prefix = provider_id.to_uppercase();
@@ -766,7 +766,7 @@ fn build_auth_url(config: &OAuthClientConfig, code_challenge: &str, state: &str)
 
 fn parse_token_response(resp: &Value) -> TokenSet {
     let expires_at = resp["expires_in"].as_u64().map(|secs| {
-        let now = crate::time::EpochMs::now().secs();
+        let now = continuum_base::time::EpochMs::now().secs();
         now + secs
     });
 

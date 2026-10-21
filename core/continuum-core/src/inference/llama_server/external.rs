@@ -2,13 +2,13 @@
 use super::*;
 /// The operator-pinned EXTERNAL OpenAI-compatible serving endpoint ROOT
 /// (`http://host:port`, no `/v1`), if `LLAMA_SERVER_BASE_URL` is set in the
-/// config (read via [`crate::config_env::read`] — the `~/.continuum/config.env`
+/// config (read via [`continuum_base::config_env::read`] — the `~/.continuum/config.env`
 /// FILE, not a process env var). When set, this node does not own a local GPU
 /// serving lane; persona hosting adopts the pinned endpoint. `serving_root()`
 /// already resolves to this same value — this predicate just answers "is one
 /// pinned", the seam the hosting path branches on.
 pub fn external_serving_pin() -> Option<String> {
-    let raw = crate::config_env::read("LLAMA_SERVER_BASE_URL")?;
+    let raw = continuum_base::config_env::read("LLAMA_SERVER_BASE_URL")?;
     let trimmed = raw.trim().trim_end_matches('/');
     let root = trimmed.strip_suffix("/v1").unwrap_or(trimmed);
     (!root.is_empty()).then(|| root.to_string())
@@ -98,7 +98,7 @@ pub async fn probe_external_serving(timeout: Duration) -> Option<ServingSnapshot
     // Reachability gate (see `external_health_ok` for why not a generation probe
     // against a deliberately-pinned, possibly-very-slow endpoint).
     if !external_health_ok(&root, &client).await {
-        crate::probe!(target: "continuum_core::inference::llama_server", class = "serving.external_probe",
+        continuum_base::probe!(target: "continuum_core::inference::llama_server", class = "serving.external_probe",
             endpoint = root.as_str(),
             "pinned external serving endpoint is unreachable (/health) — \
              not adopting; will retry on the next serving edge",
@@ -114,7 +114,7 @@ pub async fn probe_external_serving(timeout: Duration) -> Option<ServingSnapshot
     {
         Ok(w) if w > 0 => w,
         _ => {
-            crate::probe!(target: "continuum_core::inference::llama_server", class = "serving.external_probe",
+            continuum_base::probe!(target: "continuum_core::inference::llama_server", class = "serving.external_probe",
                 endpoint = root.as_str(),
                 "pinned external endpoint decodes but `/props` did not report an n_ctx window — \
                  refusing to adopt with a guessed window",
@@ -127,7 +127,7 @@ pub async fn probe_external_serving(timeout: Duration) -> Option<ServingSnapshot
         .await
         .unwrap_or_else(|| "external-serving-lane".to_string());
 
-    crate::probe!(target: "continuum_core::inference::llama_server", class = "serving.external_adopt",
+    continuum_base::probe!(target: "continuum_core::inference::llama_server", class = "serving.external_adopt",
         endpoint = root.as_str(),
         model = active_model.as_str(),
         window = served_context_window,

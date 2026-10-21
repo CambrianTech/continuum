@@ -23,7 +23,7 @@ impl EngineGeneration {
             let state = endpoint.state.lock();
             if state.generation.as_ref().is_some_and(|g| g.id == self.id) {
                 state.ready.send_replace(false);
-                crate::probe!(
+                continuum_base::probe!(
                     class = "inference.kv_engine.exited",
                     generation = %self.id,
                     "owned engine exit observed; endpoint admissions remain closed"
@@ -40,7 +40,7 @@ impl EndpointSlots {
         let mut state = self.state.lock();
         state.paging_uncertain = true;
         state.ready.send_replace(false);
-        crate::probe!(
+        continuum_base::probe!(
             class = "inference.kv_page.uncertain",
             "paging completion unverified; endpoint requires verified engine replacement"
         );
@@ -105,7 +105,7 @@ impl EndpointSlots {
                     return Err("serving endpoint closed while a turn waited for readiness".into())
                 }
                 Err(_) => {
-                    crate::probe!(
+                    continuum_base::probe!(
                         class = "inference.admission.refused_after_hold",
                         held_ms = held.elapsed().as_millis() as u64,
                         reopened,
@@ -120,7 +120,7 @@ impl EndpointSlots {
             match self.admit().await {
                 Ok(admission) => {
                     if waited {
-                        crate::probe!(
+                        continuum_base::probe!(
                             class = "inference.admission.held",
                             held_ms = held.elapsed().as_millis() as u64,
                             reopened,
@@ -438,7 +438,7 @@ impl EndpointTransition {
         // when nothing was carried.
         if let (Some(dir), Some(fingerprint)) = (contract.page_dir.as_ref(), contract.fingerprint()) {
             let loaded = pool.attach_ledger(SavedLedger::in_dir(dir, fingerprint), !carried);
-            crate::probe!(
+            continuum_base::probe!(
                 class = "inference.kv_page.ledger_attached",
                 endpoint = root,
                 carried = carried,
@@ -451,7 +451,7 @@ impl EndpointTransition {
         state.pool_generation = Some(generation.id);
         state.contract = Some(contract);
         state.ready.send_replace(true);
-        crate::probe!(
+        continuum_base::probe!(
             class = "inference.kv_engine.ready",
             endpoint = root,
             generation = %generation.id,
@@ -535,7 +535,7 @@ impl SlotDirectory {
             return false; // a response from an old incarnation cannot authorize its successor
         }
         if !matches!(state.page_admission, Some(Ok(_))) {
-            crate::probe!(class = "inference.kv_page.capability",
+            continuum_base::probe!(class = "inference.kv_page.capability",
                 governed = matches!(&admission, Ok(Some(_))),
                 refused = admission.is_err(),
                 "page-write negotiation; legacy and remote ownership remain unactivated");

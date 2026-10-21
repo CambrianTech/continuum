@@ -8,7 +8,7 @@ impl AgentSolve {
         // 8-char short ids, so accept the id a caller was shown — a clean UUID passes
         // straight through, a short/mistyped form expands against the live persona registry
         // (the ONE shared id_resolve primitive), instead of failing "is not a UUID".
-        let persona_uuid = crate::id_resolve::resolve(
+        let persona_uuid = continuum_base::id_resolve::resolve(
             p.persona_id.as_str().trim(),
             &crate::persona::card::ids(),
             "persona",
@@ -39,7 +39,7 @@ impl AgentSolve {
         // a Connection-refused death mid-generation. `.ok()` because the semaphore is never
         // closed; binding to `_solve_permit` keeps the permit alive across the drive.
         let _solve_permit = solve_admission().acquire().await.ok();
-        crate::probe!(
+        continuum_base::probe!(
             class = "benchmark.solve.phase",
             run_id = %run_id.as_deref().unwrap_or("-"), // unwrap_or: probe label only, "-" marks an unnamed run
             phase = "admission.acquired",
@@ -85,7 +85,7 @@ impl AgentSolve {
             crate::persona::airc_runtime_registry::PersonaAircRuntimeRegistry::try_global().map(
                 |reg| {
                     let lease = reg.lease_measured_work_excluding(&participants);
-                    crate::probe!(
+                    continuum_base::probe!(
                         class = "benchmark.solve.phase",
                         run_id = %run_id.as_deref().unwrap_or("-"), // unwrap_or: probe label only, "-" marks an unnamed run
                         phase = "lease_measured_work",
@@ -111,7 +111,7 @@ impl AgentSolve {
             .await;
             match outcome {
                 crate::inference::llama_server::SnapshotSettle::Resettled { lanes, window } => {
-                    crate::probe!(
+                    continuum_base::probe!(
                         class = "benchmark.solve.phase",
                         run_id = %run_id.as_deref().unwrap_or("-"), // unwrap_or: probe label only, "-" marks an unnamed run
                         phase = "serving_resettled",
@@ -124,7 +124,7 @@ impl AgentSolve {
                     );
                 }
                 crate::inference::llama_server::SnapshotSettle::Unchanged => {
-                    crate::probe!(
+                    continuum_base::probe!(
                         class = "benchmark.solve.phase",
                         run_id = %run_id.as_deref().unwrap_or("-"), // unwrap_or: probe label only, "-" marks an unnamed run
                         phase = "serving_unchanged",
@@ -136,7 +136,7 @@ impl AgentSolve {
                 }
             }
         }
-        crate::probe!(
+        continuum_base::probe!(
             class = "benchmark.solve.phase",
             run_id = %run_id.as_deref().unwrap_or("-"), // unwrap_or: probe label only, "-" marks an unnamed run
             phase = "lane_acquire.start",
@@ -152,7 +152,7 @@ impl AgentSolve {
         {
             Ok(lane) => lane?,
             Err(_) => {
-                crate::probe!(
+                continuum_base::probe!(
                     class = "benchmark.solve.phase",
                     run_id = %run_id.as_deref().unwrap_or("-"), // unwrap_or: probe label only, "-" marks an unnamed run
                     phase = "lane_acquire.timeout",
@@ -169,7 +169,7 @@ impl AgentSolve {
                 )));
             }
         };
-        crate::probe!(
+        continuum_base::probe!(
             class = "benchmark.solve.phase",
             run_id = %run_id.as_deref().unwrap_or("-"), // unwrap_or: probe label only, "-" marks an unnamed run
             phase = "lane_acquire.done",
@@ -201,7 +201,7 @@ impl AgentSolve {
                 p.task.trim()
             ),
         ));
-        crate::probe!(
+        continuum_base::probe!(
             class = "benchmark.solve.phase",
             run_id = %run_id.as_deref().unwrap_or("-"), // unwrap_or: probe label only, "-" marks an unnamed run
             phase = "fork.start",
@@ -248,7 +248,7 @@ impl AgentSolve {
         //     lifted out BEFORE the cycle is consumed, and every exit path below returns her
         //     to her own workspace. Without that, #312: after a flask solve, Anwen's LIVE
         //     self was still running `code/read(src/flask/app.py)` in her room hours later.
-        crate::probe!(
+        continuum_base::probe!(
             class = "benchmark.solve.phase",
             run_id = %run_id.as_deref().unwrap_or("-"), // unwrap_or: probe label only, "-" marks an unnamed run
             phase = "fork.done",
@@ -262,7 +262,7 @@ impl AgentSolve {
             p.scored.unwrap_or(false),
         )
         .await?;
-        crate::probe!(
+        continuum_base::probe!(
             class = "benchmark.solve.phase",
             run_id = %run_id.as_deref().unwrap_or("-"), // unwrap_or: probe label only, "-" marks an unnamed run
             phase = "hands.rooted",
@@ -356,7 +356,7 @@ impl AgentSolve {
                         None => None,
                     };
                     let room = spawned.unwrap_or_else(crate::identity::ActivityRoom::mint); // spawn failed → LAST-RESORT id-only mint, probed above
-                    crate::probe!(
+                    continuum_base::probe!(
                         class = "agent.solve.room_minted",
                         run_id = %p.run_id.clone().unwrap_or_default(), // display-only field in a probe line, never routed
                         persona_id = %p.persona_id,
@@ -475,7 +475,7 @@ impl AgentSolve {
                         .map(|s| s.to_string_lossy().to_string())
                 })
                 .flatten();
-            crate::probe!(
+            continuum_base::probe!(
                 class = "benchmark.solve.phase",
                 run_id = %run_id.as_deref().unwrap_or("-"), // unwrap_or: probe label only, "-" marks an unnamed run
                 phase = "drive.start",
@@ -521,7 +521,7 @@ impl AgentSolve {
                                     // "never pulsed", which DENIES a renewal — the conservative
                                     // direction, and the same state as no stamp at all. A wall
                                     // clock behind the epoch must not hand out lease extensions.
-                                    crate::time::EpochMs::now().millis(),
+                                    continuum_base::time::EpochMs::now().millis(),
                             );
                             // Best-effort by construction: a failed pulse must never
                             // disturb the work it is only reporting on.
@@ -572,7 +572,7 @@ impl AgentSolve {
                 && settled.acts + 1 < max_acts
             {
                 let remaining = max_acts - settled.acts;
-                crate::probe!(
+                continuum_base::probe!(
                     class = "benchmark.empty_diff_redrive",
                     run_id = %run_id.as_deref().unwrap_or("-"), // unwrap_or: probe label only, "-" marks an unnamed run
                     acts_used = settled.acts,
@@ -625,7 +625,7 @@ impl AgentSolve {
                 };
                 if p.prev_failed_patch_sha.as_deref() == Some(sha.as_str()) {
                     let remaining = max_acts - settled.acts;
-                    crate::probe!(
+                    continuum_base::probe!(
                         class = "benchmark.identical_diff_redrive",
                         run_id = %run_id.as_deref().unwrap_or("-"), // unwrap_or: probe label only, "-" marks an unnamed run
                         patch_sha256 = %sha,
@@ -688,7 +688,7 @@ impl AgentSolve {
                 }
                 let tests = mapped_test_files(&workspace, &files_changed);
                 if tests.is_empty() {
-                    crate::probe!(
+                    continuum_base::probe!(
                         class = "benchmark.verifier.no_mapping",
                         run_id = %run_id.as_deref().unwrap_or("-"), // unwrap_or: probe label only, "-" marks an unnamed run
                         files = %files_changed.join(","),
@@ -717,7 +717,7 @@ impl AgentSolve {
                 .await
                 {
                     Ok(out) if out.status.success() => {
-                        crate::probe!(
+                        continuum_base::probe!(
                             class = "benchmark.verifier.green",
                             run_id = %run_id.as_deref().unwrap_or("-"), // unwrap_or: probe label only, "-" marks an unnamed run
                             tests = %tests.join(","),
@@ -742,7 +742,7 @@ impl AgentSolve {
                             .chars()
                             .rev()
                             .collect();
-                        crate::probe!(
+                        continuum_base::probe!(
                             class = "benchmark.verifier.fail",
                             run_id = %run_id.as_deref().unwrap_or("-"), // unwrap_or: probe label only, "-" marks an unnamed run
                             tests = %tests.join(","),
@@ -776,7 +776,7 @@ impl AgentSolve {
                         .await;
                     }
                     Err(e) => {
-                        crate::probe!(
+                        continuum_base::probe!(
                             class = "benchmark.verifier.error",
                             run_id = %run_id.as_deref().unwrap_or("-"), // unwrap_or: probe label only, "-" marks an unnamed run
                             error = %e,

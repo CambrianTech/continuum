@@ -4,7 +4,7 @@
 //! transport, trust, replay, and live delivery; Continuum subscribes through
 //! typed IPC and republishes valid EventBridge envelopes into MessageBus.
 
-use crate::time::EpochMs;
+use continuum_base::time::EpochMs;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -66,7 +66,7 @@ impl AttachRegistry {
             .unwrap_or_else(|e| e.into_inner())
             .insert(room);
         if fresh {
-            crate::probe!(
+            continuum_base::probe!(
                 class = "airc.attach.room_bridged",
                 room = %room.as_uuid(),
                 "daemon attach spawned for an adopted room — its transcript now reaches the projection bus"
@@ -339,7 +339,7 @@ pub async fn publish_transcript_event(
     // cheap: one classification, one lock per resident, no await.
     let fed = crate::persona::perception_feed::feed(event, EpochMs::now().millis());
     if fed > 0 {
-        crate::probe!(
+        continuum_base::probe!(
             class = "mind.feed.event",
             room = %event.room_id.as_uuid(),
             from = %event.peer_id.as_uuid(),
@@ -371,7 +371,7 @@ pub async fn publish_transcript_event(
                 // the room. This is the seam a client's live read surface
                 // (positron ChatViewState) is fed from — probe it so the turn
                 // stream is glass-box (did the say traverse daemon→attach→bus?).
-                crate::probe!(
+                continuum_base::probe!(
                     class = "airc.chat.projected",
                     sender_id = %event.peer_id.as_uuid(),
                     room_id = %event.room_id.as_uuid(),
@@ -420,7 +420,7 @@ pub async fn publish_transcript_event(
         let is_new =
             crate::capacity::gossip::global_ledger().hear(event.peer_id.as_uuid(), offer.clone(), now_ms);
         if is_new {
-            crate::probe!(
+            continuum_base::probe!(
                 class = "grid.capacity.heard",
                 from_peer = %event.peer_id.as_uuid(),
                 free_gb = (offer.gpu_free_bytes_live / 1_000_000_000),
@@ -429,7 +429,7 @@ pub async fn publish_transcript_event(
             );
         }
     } else if let Some((name, payload)) = chat_posted_from_envelope(&envelope, event) {
-        crate::probe!(
+        continuum_base::probe!(
             class = "airc.chat.projected",
             sender_id = %payload["senderId"],
             room_id = %event.room_id.as_uuid(),

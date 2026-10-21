@@ -27,7 +27,7 @@
 //! terminal or cancel acknowledgment or on verified death. A dropped controller future, a
 //! lost HTTP connection or a timeout releases nothing.
 
-use crate::time::EpochMs;
+use continuum_base::time::EpochMs;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -279,7 +279,7 @@ fn on_released(work: &ResidentWork) {
     super::lane_footprint::residency_changed();
     LAST_RELEASE_MS.store(EpochMs::now().millis(), std::sync::atomic::Ordering::Relaxed);
     let retired = super::lane_footprint::retire_if_sampled_since(&work.base_model, work.created_ms);
-    crate::probe!(
+    continuum_base::probe!(
         class = "serving.residency.released",
         job = %work.job,
         base = work.base_model.as_str(),
@@ -388,7 +388,7 @@ pub fn occupancy_with(path: &Path, port: u16, probe: &dyn Fn(u32) -> ProcessProb
         }
         for w in &dead {
             on_released(w);
-            crate::probe!(
+            continuum_base::probe!(
                 class = "serving.residency.released_on_death",
                 job = %w.job,
                 pid = w.engine.pid as u64,

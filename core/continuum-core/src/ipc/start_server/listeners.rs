@@ -18,7 +18,7 @@ pub(super) fn bind_unix_listener(
     // `#[cfg(unix)]` sits on the BIND, not on the probe before it: an attribute
     // gates exactly one statement, and gating the probe left the Unix bind
     // compiling on Windows (the windows-msvc check caught it on the rebase).
-    crate::probe!(
+    continuum_base::probe!(
         class = "boot.phase",
         phase = "post_init_to_bind",
         ms = phase_started.elapsed().as_millis() as u64,
@@ -26,7 +26,7 @@ pub(super) fn bind_unix_listener(
     );
     let bind_started = std::time::Instant::now();
     let listener = UnixListener::bind(socket_path)?;
-    crate::probe!(
+    continuum_base::probe!(
         class = "boot.phase",
         phase = "bind",
         ms = bind_started.elapsed().as_millis() as u64,
@@ -58,7 +58,7 @@ pub(super) fn announce_ipc_ready(socket_path: &str) {
     // The watch supersedes the previous oneshot parameter — any number
     // of late or eager subscribers can attach via `subscribe_ready()`.
     let _ = ipc_ready_tx().send(true);
-    crate::probe!(
+    continuum_base::probe!(
         class = "ready.observed",
         module = "ipc-server",
         socket = socket_path

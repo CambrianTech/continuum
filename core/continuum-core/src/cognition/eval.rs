@@ -26,7 +26,7 @@
 //! [`cognition/trace`]: super::introspect_commands::CognitionTrace
 //! [`cognition/prompt`]: super::introspect_commands::CognitionPrompt
 
-use crate::time::EpochMs;
+use continuum_base::time::EpochMs;
 use crate::cognition::learning_policy::LearningPolicy;
 use async_trait::async_trait;
 use schemars::JsonSchema;

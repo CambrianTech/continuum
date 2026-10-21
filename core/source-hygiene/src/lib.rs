@@ -160,6 +160,28 @@ fn audited_crate_root() -> PathBuf {
 /// rule ends up scanning a directory that does not exist and reporting zero.
 const AUDITED_CRATE: &str = "continuum-core";
 
+/// Crates split out of `continuum-core` (card a31492cb). A split must never move code out
+/// of the gates' sight, so their files are audited too, with the crate name as a path
+/// prefix (`continuum-base/time/mod.rs`): totals stay continuous across a cut and every
+/// per-path rule stays unambiguous.
+const SPLIT_CRATES: &[&str] = &["continuum-base"];
+
+/// Every file the per-file and crate-wide rules audit: `continuum-core/src` with paths
+/// relative to it, then each split crate's `src` with its name prefixed. A listed crate
+/// whose `src` is missing fails loudly rather than auditing nothing.
+pub fn audited_files() -> Vec<SourceFile> {
+    let mut files = collect_files(&crate_src_root());
+    let Some(core_dir) = audited_crate_root().parent().map(Path::to_path_buf) else {
+        panic!("{AUDITED_CRATE} has no parent directory: the split crates cannot be found");
+    };
+    for name in SPLIT_CRATES {
+        let src = core_dir.join(name).join("src");
+        assert!(src.is_dir(), "split crate {name} has no src at {}: the gates would audit nothing", src.display());
+        files.extend(collect_files(&src).into_iter().map(|f| SourceFile { rel: format!("{name}/{}", f.rel), ..f }));
+    }
+    files
+}
+
 /// The repository root, found by ANCHOR rather than by counting directories up.
 ///
 /// Every caller here used to say `../..` or `ancestors().nth(2)`, which was correct
@@ -503,7 +525,7 @@ pub fn assert_baseline_is_current(name: &str, count: usize, baseline: usize) {
 
 /// Walk this crate's `src/` once and apply every per-file rule to every `.rs` file.
 pub fn scan(rules: &[&dyn SourceRule]) -> Vec<Violation> {
-    let files = collect_files(&crate_src_root());
+    let files = audited_files();
     let mut out = Vec::new();
     for file in &files {
         for rule in rules {
@@ -534,7 +556,7 @@ pub trait CrateRule {
 /// Apply crate-wide rules. Reads this crate once for violations and the workspace once
 /// for references.
 pub fn scan_crate(rules: &[&dyn CrateRule]) -> Vec<Violation> {
-    let files = collect_files(&crate_src_root());
+    let files = audited_files();
     // The reference corpus is RAW file text — production AND test halves.
     //
     // This asymmetry against `files` (production-only, the violation source) is

@@ -45,7 +45,7 @@
 //! we never hold it across an await — each tick phase drops the guard before any
 //! `.await`. Holding a sync lock across await is the bug this shape avoids.
 
-use crate::time::EpochMs;
+use continuum_base::time::EpochMs;
 use std::collections::HashMap;
 use std::sync::{Arc, Weak};
 use std::time::Duration;
@@ -523,7 +523,7 @@ impl ResourceDaemon {
                 // untracked residency is one event, not one-per-second. The board
                 // (published every tick below) stays the live source of truth.
                 if drift_should_report(drift, &mut last[idx]) {
-                    crate::probe!(
+                    continuum_base::probe!(
                         class = "resource_drift",
                         kind = k.kind.label(),
                         measured_bytes = k.measured_bytes,

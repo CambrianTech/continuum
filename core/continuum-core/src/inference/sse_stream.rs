@@ -438,7 +438,7 @@ pub(crate) async fn consume_sse_stream(
                 // wait and, if not, how the failure is recorded.
                 let class = lane_class(idle, request.model.as_deref());
                 if local_lane && waits_on(class, stream_opened.elapsed()) {
-                    crate::probe!(
+                    continuum_base::probe!(
                         class = "inference.stream.busy_not_dead",
                         provider = cfg.name.as_str(),
                         stalled = "no_bytes",
@@ -474,7 +474,7 @@ pub(crate) async fn consume_sse_stream(
                         // Every count gets a row: 2026-09-05 four of these relaunched
                         // a lane (12 citizens re-prefilled cold) with nothing naming
                         // which generation or why (absence-read-as-a-value class).
-                        crate::probe!(
+                        continuum_base::probe!(
                             class = "inference.decode.failed",
                             kind = "started_then_stopped",
                             name = %cfg.name,
@@ -493,7 +493,7 @@ pub(crate) async fn consume_sse_stream(
                         use crate::inference::llama_server::NeverStartedClass;
                         match class {
                             NeverStartedClass::WedgeEvidence => {
-                                crate::probe!(
+                                continuum_base::probe!(
                                     class = "inference.decode.failed",
                                     kind = "never_started_wedge_evidence",
                                     name = %cfg.name,
@@ -507,7 +507,7 @@ pub(crate) async fn consume_sse_stream(
                                 // The capacity shortfall stays LOUD on its own channel
                                 // (#234 QoS reads this) — it just stops masquerading as
                                 // lane death.
-                                crate::probe!(
+                                continuum_base::probe!(
                                     class = "inference.queue_starved",
                                     provider = cfg.name.as_str(),
                                     waited_s = idle.as_secs(),
@@ -543,7 +543,7 @@ pub(crate) async fn consume_sse_stream(
                 // BUSY IS NOT DEAD (card 115f9a14): our counters stalled because the batch
                 // served another slot; the lane is working, so the bound is a checkpoint,
                 // with no failure probe and no relaunch strike.
-                crate::probe!(
+                continuum_base::probe!(
                     class = "inference.stream.busy_not_dead",
                     provider = cfg.name.as_str(),
                     stalled = "progress",
@@ -589,7 +589,7 @@ pub(crate) async fn consume_sse_stream(
                 };
                 match class {
                     NeverStartedClass::WedgeEvidence => {
-                        crate::probe!(
+                        continuum_base::probe!(
                             class = "inference.decode.failed",
                             kind = "keepalive_masked_no_progress",
                             name = %cfg.name,
@@ -605,7 +605,7 @@ pub(crate) async fn consume_sse_stream(
                         crate::inference::llama_server::note_real_decode_failure();
                     }
                     NeverStartedClass::Starved => {
-                        crate::probe!(
+                        continuum_base::probe!(
                             class = "inference.queue_starved",
                             provider = cfg.name.as_str(),
                             waited_s = idle.as_secs(),
@@ -636,7 +636,7 @@ pub(crate) async fn consume_sse_stream(
         };
         let bytes = chunk.map_err(|e| {
             if local_lane {
-                crate::probe!(
+                continuum_base::probe!(
                     class = "inference.decode.failed",
                     kind = "stream_read_error",
                     name = %cfg.name,
@@ -709,7 +709,7 @@ pub(crate) async fn consume_sse_stream(
                         && elapsed > live_budget
                     {
                         prefill_rescued = true;
-                        crate::probe!(
+                        continuum_base::probe!(
                             class = "inference.prefill.rescued",
                             provider = cfg.name.as_str(),
                             elapsed_s = elapsed.as_secs(),
@@ -746,7 +746,7 @@ pub(crate) async fn consume_sse_stream(
                         let queued_ms = first_frame.duration_since(stream_opened).as_millis() as u64;
                         let ingest_ms = (first_frame.elapsed().as_millis().max(1)) as u64;
                         let fresh = p.total.saturating_sub(p.cache);
-                        crate::probe!(
+                        continuum_base::probe!(
                             class = "inference.prefill.complete",
                             provider = cfg.name.as_str(),
                             persona = probe_persona.as_str(),

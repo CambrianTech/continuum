@@ -390,7 +390,7 @@ pub async fn handle_node_status(
         "jobs": jobs,
         "queue": queue,
         "nodeId": hostname,
-        "timestamp": crate::time::EpochMs::now().rfc3339(),
+        "timestamp": continuum_base::time::EpochMs::now().rfc3339(),
     })))
 }
 
@@ -426,7 +426,7 @@ pub async fn handle_job_submit(
 
     let job_id = format!(
         "job-{}-{:06x}",
-        crate::time::EpochMs::now().millis(),
+        continuum_base::time::EpochMs::now().millis(),
         rand::random::<u32>() & 0xFFFFFF
     );
 
@@ -496,7 +496,7 @@ pub async fn handle_job_submit(
         "logPath": log_path.to_string_lossy(),
         "state": if pid > 0 { "running" } else { "queued" },
         "priority": priority,
-        "startedAt": crate::time::EpochMs::now().rfc3339(),
+        "startedAt": continuum_base::time::EpochMs::now().rfc3339(),
         "alloyName": alloy_name,
     });
     std::fs::write(
@@ -510,7 +510,7 @@ pub async fn handle_job_submit(
         "jobId": job_id,
         "position": 0,
         "nodeId": gethostname(),
-        "estimatedStart": crate::time::EpochMs::now().rfc3339(),
+        "estimatedStart": continuum_base::time::EpochMs::now().rfc3339(),
     })))
 }
 

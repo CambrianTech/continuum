@@ -133,7 +133,7 @@ pub(super) fn quiesce_gate(opts: &ServeOptions, wake: &Wake) -> LoopStep {
             // Her own wake under the lease is skipped like a beat; it is not lost:
             // a due continuation or a loud room re-yields on her next mind check.
             Wake::Tick | Wake::Mind { .. } | Wake::Idle => return LoopStep::Continue,
-            Wake::Msg(_) | Wake::Retry(_) => crate::probe!(
+            Wake::Msg(_) | Wake::Retry(_) => continuum_base::probe!(
                 class = "persona.quiesced.directed_served",
                 "quiesced citizen serving an inbound turn — leases suspend wandering, never reachability"
             ),

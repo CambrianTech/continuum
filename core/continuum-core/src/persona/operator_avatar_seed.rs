@@ -29,18 +29,18 @@ pub fn spawn_seed_default_avatar(peer_id: Uuid) {
     tokio::spawn(async move {
         let outcome = seed_default_avatar(peer_id).await;
         match outcome {
-            SeedOutcome::Present => crate::probe!(
+            SeedOutcome::Present => continuum_base::probe!(
                 class = "operator.avatar.present",
                 peer_id = %peer_id,
                 "the human already has a profile picture — left as chosen"
             ),
-            SeedOutcome::Seeded { source } => crate::probe!(
+            SeedOutcome::Seeded { source } => continuum_base::probe!(
                 class = "operator.avatar.seeded",
                 peer_id = %peer_id,
                 source = source,
                 "the human's default profile picture is their OS account picture"
             ),
-            SeedOutcome::NotFound { reason } => crate::probe!(
+            SeedOutcome::NotFound { reason } => continuum_base::probe!(
                 class = "operator.avatar.not_found",
                 peer_id = %peer_id,
                 reason = reason,

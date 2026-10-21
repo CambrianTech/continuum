@@ -148,7 +148,7 @@ impl VoiceModule {
 
         let sample_count = samples.len();
         let duration_ms =
-            (sample_count as u64 * 1000) / crate::audio_constants::AUDIO_SAMPLE_RATE as u64;
+            (sample_count as u64 * 1000) / continuum_base::audio_constants::AUDIO_SAMPLE_RATE as u64;
 
         self.state
             .livekit_manager

@@ -31,7 +31,7 @@ pub(super) fn build_model_catalog_and_resource_daemon(
     let model_catalog = Arc::new(crate::model_registry::live::ModelCatalog::from_registry(
         crate::model_registry::global(),
     ));
-    crate::probe!(
+    continuum_base::probe!(
         class = "boot.stretch",
         stretch = "serving_span",
         step = "model_catalog",
@@ -74,7 +74,7 @@ pub(super) fn build_model_catalog_and_resource_daemon(
         // contention looks like.
         let t_gpu = std::time::Instant::now();
         let detected_monitor = crate::gpu::monitor::detect();
-        crate::probe!(
+        continuum_base::probe!(
             class = "boot.stretch",
             stretch = "serving_span",
             step = "gpu_monitor_detect",

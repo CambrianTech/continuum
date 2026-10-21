@@ -58,7 +58,7 @@ impl LlmDeliberationFaculty {
                 || effective.saturating_sub(loaded.context_window) > deadband;
             if !adopt {
                 if effective != loaded.context_window {
-                    crate::probe!(
+                    continuum_base::probe!(
                         class = "delib.window.held",
                         binding = loaded.context_window,
                         served = effective,
@@ -123,7 +123,7 @@ impl LlmDeliberationFaculty {
                 return Some(Contribution::deliberation_fault(error.clone()));
             }
             if let Some(error) = view.capacity_error {
-                crate::probe!(
+                continuum_base::probe!(
                     class = "delib.prompt.capacity",
                     persona = %self.persona_name,
                     required_tokens = error.required_tokens,
@@ -225,7 +225,7 @@ impl LlmDeliberationFaculty {
                     // did not get — reported apart because one field used to carry the full
                     // registry's cost beside a count of her hands, and reconciling the two
                     // gave a nonsense tokens-per-tool.
-                    crate::probe!(
+                    continuum_base::probe!(
                         class = "delib.tool_surface.withheld",
                         persona = %self.persona_name,
                         offered = self.hands_specs.len() as u64,
@@ -315,7 +315,7 @@ impl LlmDeliberationFaculty {
                         calibration,
                         available: fit_window,
                     })));
-                    crate::probe!(
+                    continuum_base::probe!(
                         class = "delib.prompt.refit",
                         persona = %self.persona_name,
                         requested_tokens = requested,
@@ -414,7 +414,7 @@ impl LlmDeliberationFaculty {
                 allowance,
             );
             if let super::super::super::working_set::EmissionStop::ThinkBudgetHit { allowance } = stop {
-                crate::probe!(
+                continuum_base::probe!(
                     class = "delib.emission.think_budget_hit",
                     persona = %self.persona_name,
                     reasoning_tokens,
@@ -423,7 +423,7 @@ impl LlmDeliberationFaculty {
                 );
             }
             if stop == super::super::super::working_set::EmissionStop::CutMidThought {
-                crate::probe!(
+                continuum_base::probe!(
                     class = "delib.emission.cut_mid_thought",
                     persona = %self.persona_name,
                     output_tokens = resp.usage.output_tokens,
@@ -469,7 +469,7 @@ impl LlmDeliberationFaculty {
                 use std::fmt::Write as _;
                 let _ = write!(map, "{label}:{end},");
             }
-            crate::probe!(
+            continuum_base::probe!(
                 class = "delib.segment.attribution",
                 persona = %self.persona_name,
                 cached_tokens = cached as u64,
@@ -599,7 +599,7 @@ impl LlmDeliberationFaculty {
                 gen_await_ms,
                 "empty completion surfaced as a FAULT (not a silent Pass)"
             );
-            crate::probe!(
+            continuum_base::probe!(
                 class = "delib.empty_completion",
                 persona = %self.persona_name,
                 reasoning_chars = reasoning_tokens,
@@ -624,7 +624,7 @@ impl LlmDeliberationFaculty {
             && resp.tool_calls.as_ref().is_none_or(|c| c.is_empty())
             && !resp.text.trim().is_empty()
         {
-            crate::probe!(
+            continuum_base::probe!(
                 class = "delib.truncated_not_an_answer",
                 persona = %self.persona_name,
                 text_chars = resp.text.len(),
@@ -754,7 +754,7 @@ impl LlmDeliberationFaculty {
                     && !self.tools.is_empty()
                     && resp.reasoning.as_deref().is_some_and(|r| !r.trim().is_empty())
                 {
-                    crate::probe!(
+                    continuum_base::probe!(
                         class = "persona.act.thought_cut",
                         persona = %self.persona_name,
                         reasoning_len = resp.reasoning.as_deref().map_or(0, str::len),
@@ -775,7 +775,7 @@ impl LlmDeliberationFaculty {
                             .last()
                     {
                         crate::cognition::tool_dialect::normalize_call(&mut call);
-                        crate::probe!(
+                        continuum_base::probe!(
                             class = "persona.act.reasoning_lift",
                             persona = %self.persona_name,
                             tool = %call.name,
@@ -799,7 +799,7 @@ impl LlmDeliberationFaculty {
                     // never a model sniff. Bounded by `max_acts`; an identical repeat
                     // short-circuits via `all_calls_already_satisfied`.
                     if !reasoning.trim().is_empty() {
-                        crate::probe!(
+                        continuum_base::probe!(
                             class = "persona.act.think_only",
                             persona = %self.persona_name,
                             reasoning_len = reasoning.len(),

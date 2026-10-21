@@ -258,7 +258,7 @@ pub(super) async fn ensure_test_extra(
     )
     .await;
     let ok = matches!(&outcome, Ok(o) if o.status.success());
-    crate::probe!(
+    continuum_base::probe!(
         class = "swe.env.test_extra",
         extra = %extra,
         installed = ok,

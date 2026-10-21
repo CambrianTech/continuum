@@ -65,7 +65,7 @@ pub(super) async fn run_persona_host(
             crate::persona::grid_roster_memory::team_elsewhere_at(
                 &home,
                 crate::persona::operator_peer::operator_airc().map(|a| a.peer_id().as_uuid()),
-                crate::time::EpochMs::now().millis(),
+                continuum_base::time::EpochMs::now().millis(),
             )
         })
     });
@@ -111,7 +111,7 @@ pub(super) async fn run_persona_host(
     // the concurrency for diagnosis; a probe does. This pins whether the reconciler is
     // even alive after a reboot-with-adopted-lane, how many passes it makes, and what
     // it saw each pass — the exact seam three indirect hypotheses could not resolve.
-    crate::probe!(
+    continuum_base::probe!(
         class = "persona.host.reconciler_started",
         population = provider.identities_available(),
         "hosting reconciler task alive — entering the plan-edge loop"
@@ -160,7 +160,7 @@ pub(super) async fn run_persona_host(
             None => true,
         };
         if pass_row_due {
-            crate::probe!(
+            continuum_base::probe!(
                         class = "persona.host.reconciler_pass",
                         pass = pass,
                         plan_ready = plan_ready,
@@ -199,7 +199,7 @@ pub(super) async fn run_persona_host(
                 None => true,
             };
             if ready_row_due {
-                crate::probe!(
+                continuum_base::probe!(
                             class = "persona.host.await_ready",
                             pass = pass,
                             decode_ready = decode_ready,
@@ -224,7 +224,7 @@ pub(super) async fn run_persona_host(
                     // failed attempt leaves its cursor at the end. Nothing was hosted
                     // (booted is false), so start the draw over.
                     provider.rewind();
-                    crate::probe!(
+                    continuum_base::probe!(
                                 class = "persona.host.provider_rewound",
                                 attempt,
                                 population = provider.identities_available(),
@@ -341,10 +341,10 @@ fn pull_first_boot_model_if_no_local_gguf(tool_executor: &Arc<crate::runtime::Co
     let none_local = crate::model_registry::catalog::models()
         .iter()
         .all(|m| crate::model_registry::artifacts::resolve_gguf_for_model(m).is_none());
-    let opted_out = crate::config_env::read("CONTINUUM_NO_AUTO_PULL").is_some_and(|v| v == "1");
+    let opted_out = continuum_base::config_env::read("CONTINUUM_NO_AUTO_PULL").is_some_and(|v| v == "1");
     if none_local && !opted_out {
         const FIRST_BOOT_MODEL: &str = "continuum-ai/qwen3.5-4b-code-forged-GGUF";
-        crate::probe!(
+        continuum_base::probe!(
                     class = "boot.first_model_pull",
                     model = FIRST_BOOT_MODEL,
                     "fresh install: no local GGUF anywhere — boot pulls the first-boot                      default so citizens are never mute on a stranger's machine"

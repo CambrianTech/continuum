@@ -15,7 +15,7 @@ pub(super) static LAST_TURN_MS: std::sync::LazyLock<
 > = std::sync::LazyLock::new(|| parking_lot::Mutex::new(std::collections::HashMap::new()));
 
 pub(super) static BOOT_MS: std::sync::LazyLock<u64> = std::sync::LazyLock::new(|| {
-    crate::time::EpochMs::now().millis() // pre-1970 reads 0: a pre-epoch clock reads as boot at 0 — every mind then counts as starving at most once
+    continuum_base::time::EpochMs::now().millis() // pre-1970 reads 0: a pre-epoch clock reads as boot at 0 — every mind then counts as starving at most once
 });
 
 /// Stamp that `persona` started a turn now (any kind).

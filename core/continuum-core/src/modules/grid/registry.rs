@@ -3,7 +3,7 @@
 //! Persisted to .continuum/grid/known_nodes.json.
 //! Updated by discovery, manual pairing, and periodic health checks.
 
-use crate::time::EpochMs;
+use continuum_base::time::EpochMs;
 use super::node::{DiscoveredNode, GridNode, TransportAddress, TrustLevel};
 use crate::identity::PeerId;
 use dashmap::DashMap;

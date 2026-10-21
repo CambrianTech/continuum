@@ -174,7 +174,7 @@ pub(super) fn synthesize_stub_artifact(
     recipe: &ForgeRecipe,
     hardware_node: Option<&str>,
 ) -> Result<ForgeArtifact, String> {
-    let now_ms = crate::time::EpochMs::read().map_err(|e| format!("system time before epoch: {e}"))?.millis();
+    let now_ms = continuum_base::time::EpochMs::read().map_err(|e| format!("system time before epoch: {e}"))?.millis();
 
     // Derive an identifiable stub hash from the recipe id (first 16 hex
     // chars). Real Phase 5 hash will be sha256 of the populated alloy

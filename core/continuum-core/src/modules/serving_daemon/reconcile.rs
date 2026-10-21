@@ -37,7 +37,7 @@ impl ServingDaemonModule {
             return;
         }
         self.plan_none_said_ms.store(now, Ordering::Release);
-        crate::probe!(
+        continuum_base::probe!(
             target: "continuum_core::modules::serving_daemon", class = "serving.plan.none_with_live_lane",
             ticks,
             lane_pid = lane_pid as u64,
@@ -62,7 +62,7 @@ impl ServingDaemonModule {
         let step_kind = ReconcileStep::from_u8(self.reconcile_step.load(Ordering::Acquire));
         let step = step_kind.name();
         if reconcile_wedged_at(step_kind, age) {
-            crate::probe!(
+            continuum_base::probe!(
                 target: "continuum_core::modules::serving_daemon", class = "serving.reconcile.wedged",
                 skipped,
                 step,
@@ -73,7 +73,7 @@ impl ServingDaemonModule {
                  this step's await before touching the engine"
             );
         } else {
-            crate::probe!(
+            continuum_base::probe!(
                 target: "continuum_core::modules::serving_daemon", class = "serving.reconcile.busy",
                 skipped,
                 step,
@@ -185,7 +185,7 @@ impl ServingDaemonModule {
                         Err("no live lane record or home to record the interruption in".to_string())
                     }
                 };
-                crate::probe!(
+                continuum_base::probe!(
                     target: "continuum_core::modules::serving_daemon", class = "serving.reconcile.resident_engine_replaced",
                     occupancy = %format!("{occupancy:?}"),
                     told = %format!("{told:?}"),
@@ -205,7 +205,7 @@ impl ServingDaemonModule {
                 // one row a minute while held, not one a tick
                 if now.saturating_sub(LAST_HELD.load(Ordering::Relaxed)) >= 60_000 {
                     LAST_HELD.store(now, Ordering::Relaxed);
-                    crate::probe!(
+                    continuum_base::probe!(
                         target: "continuum_core::modules::serving_daemon", class = "serving.reconcile.held_for_resident_work",
                         occupancy = %format!("{occupancy:?}"),
                         plan_model = planned.plan.as_ref().map(|p| p.base_model.model_id.as_str()).unwrap_or("<none>"), // unwrap_or: probe label for an empty plan
@@ -299,7 +299,7 @@ impl ServingDaemonModule {
                 })
                 .collect(),
             Err(e) => {
-                crate::probe!(
+                continuum_base::probe!(
                     target: "continuum_core::modules::serving_daemon", class = "serving.adapters",
                     desired = desired.as_str(),
                     error = e.as_str(),
@@ -380,7 +380,7 @@ impl ServingDaemonModule {
                     self.rehome_cooldown
                         .store(REHOME_COOLDOWN_TICKS, Ordering::Relaxed);
                     self.reset_rehome_streak();
-                    crate::probe!(
+                    continuum_base::probe!(
                         target: "continuum_core::modules::serving_daemon", class = "serving.reconcile.window",
                         decision = "ready-settling",
                         live_window = live.served_context_window,
@@ -428,7 +428,7 @@ impl ServingDaemonModule {
                         // A settled geometry is lanes the hour served: fold it into the
                         // health window's maximum (the lane-bound rest stands on that).
                         crate::modules::citizen_health::note_lanes(live.lanes as u64);
-                        crate::probe!(
+                        continuum_base::probe!(
                             target: "continuum_core::modules::serving_daemon", class = "serving.geometry.settled",
                             model,
                             per_slot_window = live.served_context_window as u64,
@@ -492,7 +492,7 @@ impl ServingDaemonModule {
                 let swap_prev = self.last_swap_used.swap(swap_now, Ordering::Relaxed);
                 if grow_refused_while_paging(live_space, plan_space, swap_prev, swap_now) {
                     self.reset_rehome_streak();
-                    crate::probe!(
+                    continuum_base::probe!(
                         target: "continuum_core::modules::serving_daemon", class = "serving.reconcile.window",
                         decision = "refused_while_paging",
                         swap_prev_mb = swap_prev >> 20,
@@ -613,7 +613,7 @@ impl ServingDaemonModule {
                         0
                     };
                     if declined && decline_should_log(decline_ticks) {
-                        crate::probe!(
+                        continuum_base::probe!(
                             target: "continuum_core::modules::serving_daemon", class = "serving.reconcile.window",
                             decision = "declined",
                             live_window = live.served_context_window,
@@ -652,7 +652,7 @@ impl ServingDaemonModule {
                     && !hold_overridden_by_shortfall(live_space, gain)
                     && held_ticks < REHOME_HOLD_DEFER_TICKS
                 {
-                    crate::probe!(
+                    continuum_base::probe!(
                         target: "continuum_core::modules::serving_daemon", class = "serving.reconcile.window",
                         decision = "declined",
                         live_window = live.served_context_window,
@@ -679,7 +679,7 @@ impl ServingDaemonModule {
                 // lane's whole decision history, not half of it.
                 if serving_held_steady() {
                     self.rehome_held_ticks.store(0, Ordering::Relaxed);
-                    crate::probe!(
+                    continuum_base::probe!(
                         target: "continuum_core::modules::serving_daemon", class = "serving.reconcile.window",
                         decision = "re-homing_over_hold",
                         live_window = live.served_context_window,
@@ -693,7 +693,7 @@ impl ServingDaemonModule {
                         "a steady hold delays a re-home, never denies it — re-homing over the hold; the held work retries its flickered act",
                     );
                 }
-                crate::probe!(
+                continuum_base::probe!(
                     target: "continuum_core::modules::serving_daemon", class = "serving.reconcile.window",
                     decision = "re-homing",
                     live_window = live.served_context_window,
@@ -750,7 +750,7 @@ impl ServingDaemonModule {
             );
             match verdict {
                 ModelChangeGate::Defer { streak } => {
-                    crate::probe!(
+                    continuum_base::probe!(
                         target: "continuum_core::modules::serving_daemon", class = "serving.reconcile.model",
                         decision = "deferred",
                         live_model = live.active_model.as_deref().unwrap_or("<none>"),
@@ -764,7 +764,7 @@ impl ServingDaemonModule {
                     return None;
                 }
                 ModelChangeGate::Commit { streak } => {
-                    crate::probe!(
+                    continuum_base::probe!(
                         target: "continuum_core::modules::serving_daemon", class = "serving.reconcile.model",
                         decision = "swapping",
                         live_model = live.active_model.as_deref().unwrap_or("<none>"),

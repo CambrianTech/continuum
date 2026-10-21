@@ -488,7 +488,7 @@ impl LlmDeliberationFaculty {
         let head: String = lines[..lines.len() - take].concat();
         let head_msg = ChatMessage::text("user", head);
         let tail_msg = ChatMessage::text("user", tail);
-        crate::probe!(
+        continuum_base::probe!(
             class = "delib.action_result.demoted",
             persona = %self.persona_name,
             window = window,
@@ -525,7 +525,7 @@ impl LlmDeliberationFaculty {
         demoted.reverse();
         if !demoted.is_empty() {
             let demoted_tokens = Self::messages_cost(&demoted);
-            crate::probe!(
+            continuum_base::probe!(
                 class = "delib.room_updates.demoted",
                 persona = %self.persona_name,
                 window = window,

@@ -29,7 +29,7 @@ pub fn present_names(room: Uuid) -> Vec<String> {
                 },
             },
         };
-    crate::probe!(
+    continuum_base::probe!(
         class = "cognition.identity_claim.roster",
         room = %room,
         outcome = outcome,

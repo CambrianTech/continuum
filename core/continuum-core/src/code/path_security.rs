@@ -335,7 +335,7 @@ pub fn clean_path_arg(raw: &str) -> CleanedPathArg {
         }
     }
     if !stripped.is_empty() {
-        crate::probe!(
+        continuum_base::probe!(
             class = "code.path_arg.cleaned",
             raw = %raw,
             path = %s,

@@ -45,7 +45,7 @@ pub(crate) async fn root_acting_workspace(
     if let Some(body) = cycle.acting() {
         body.working_memory.set_scope(Some(root.to_string()));
     }
-    crate::probe!(
+    continuum_base::probe!(
         class = "workspace.rooted",
         persona = %hands.persona_name,
         root = %root,
@@ -83,7 +83,7 @@ pub(crate) async fn end_acting_context(
             Ok(lease) => {
                 crate::persona::workspace_transfer::sync_after_act_for(std::sync::Arc::new(lease), hands.persona_id, &hands.persona_name, root, card).await;
             }
-            Err(why) => crate::probe!(
+            Err(why) => continuum_base::probe!(
                 class = "workspace.sync_refused",
                 persona = %hands.persona_name,
                 card = %card,
@@ -170,7 +170,7 @@ pub(crate) async fn close_acting_context(hands: &ActingHands) -> Result<(), Cont
     }
     note_acting_root_in(hands.persona_id, hands.context, None);
     hands.working_memory.set_scope(None);
-    crate::probe!(
+    continuum_base::probe!(
         class = "workspace.context_closed",
         persona = %hands.persona_name,
         context = %context.id(),
@@ -272,7 +272,7 @@ impl PersonaWorkspaceRegistry {
 
         // 1. Full UUID (race-safe passthrough) or short-id prefix against the
         //    forkable set — the shared id normalization primitive.
-        if let Ok(id) = crate::id_resolve::resolve(id_or_name, &ids, "persona") {
+        if let Ok(id) = continuum_base::id_resolve::resolve(id_or_name, &ids, "persona") {
             return Ok(PeerId::from_uuid(id));
         }
 
@@ -432,7 +432,7 @@ impl PersonaWorkspaceRegistry {
         let save_one = |id: Uuid, memory: Arc<WorkingMemory>| {
             let started = std::time::Instant::now();
             let result = save_volatile(id, reason, staged_deadline, &memory);
-            crate::probe!(
+            continuum_base::probe!(
                 class = "persona.volatile.checkpoint",
                 persona_id = %id,
                 outcome = if result.is_ok() { "ok" } else { "error" },
@@ -493,7 +493,7 @@ impl PersonaWorkspaceRegistry {
                         })
                         .collect()
                 });
-                crate::probe!(
+                continuum_base::probe!(
                     class = "persona.volatile.seam",
                     residents = count,
                     failed = results.iter().filter(|(_, r)| r.is_err()).count(),

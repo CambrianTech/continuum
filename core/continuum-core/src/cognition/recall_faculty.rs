@@ -34,7 +34,7 @@
 //! when that lands: the backend behind `contribute` gets smarter, the brain is
 //! unchanged.
 
-use crate::time::EpochMs;
+use continuum_base::time::EpochMs;
 use std::sync::Arc;
 
 use async_trait::async_trait;

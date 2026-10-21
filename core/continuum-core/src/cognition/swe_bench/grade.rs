@@ -77,7 +77,7 @@ pub async fn grade(instance: &SweInstance, model_patch: Option<&str>) -> SweVerd
         PristineGate::Holds { pristine_green } => {
             verdict.gate_ok = true;
             if !pristine_green.is_empty() {
-                crate::probe!(
+                continuum_base::probe!(
                     class = "benchmark.grade.pristine_green",
                     instance = instance.instance_id.as_str(),
                     already = %format!("{pristine_green:?}"),

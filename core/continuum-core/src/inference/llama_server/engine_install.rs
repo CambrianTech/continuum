@@ -34,7 +34,7 @@ pub(crate) fn engine_override() -> Option<String> {
     std::env::var("LLAMA_SERVER_BIN")
         .ok()
         .filter(|value| !value.trim().is_empty())
-        .or_else(|| crate::config_env::read("LLAMA_SERVER_BIN"))
+        .or_else(|| continuum_base::config_env::read("LLAMA_SERVER_BIN"))
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
 }
@@ -51,14 +51,14 @@ pub(super) fn roll_back_engine_after_failed_launch(error: &LlamaServerError) -> 
     let Ok(home) = crate::paths::continuum_home() else {
         return false; // no home: no slots to roll between
     };
-    let now_ms = crate::time::EpochMs::now().millis(); // pre-1970 reads 0: a clock before the epoch reads as age 0, which keeps a live claim blocking
+    let now_ms = continuum_base::time::EpochMs::now().millis(); // pre-1970 reads 0: a clock before the epoch reads as age 0, which keeps a live claim blocking
     if continuum_cli_lifecycle::deploy_claim::in_flight(&home, now_ms).blocks() {
         return false;
     }
     let failure_class = if matches!(error, LlamaServerError::Spawn(_)) { "spawn failed" } else { "readiness failed" };
     match crate::inference::engine_slots::root(&home).and_then(|root| crate::inference::engine_slots::rollback_after_failed_launch_reason(&root, failure_class)) {
         Ok(Some((failed, restored))) => {
-            crate::probe!(target: "continuum_core::inference::llama_server", class = "serving.engine.rolled_back",
+            continuum_base::probe!(target: "continuum_core::inference::llama_server", class = "serving.engine.rolled_back",
                 failed = failed,
                 restored = restored,
                 error = error.to_string().as_str(),
@@ -69,7 +69,7 @@ pub(super) fn roll_back_engine_after_failed_launch(error: &LlamaServerError) -> 
         }
         Ok(None) => false,
         Err(reason) => {
-            crate::probe!(target: "continuum_core::inference::llama_server", class = "serving.engine.rollback_refused",
+            continuum_base::probe!(target: "continuum_core::inference::llama_server", class = "serving.engine.rollback_refused",
                 reason = reason.as_str(),
                 error = error.to_string().as_str(),
                 "a launch from the current engine slot failed and no intact previous engine can be restored"
@@ -91,13 +91,13 @@ pub(super) fn mark_engine_proven(program: Option<String>) {
     let root = match crate::inference::engine_slots::root(&home) {
         Ok(root) => root,
         Err(reason) => {
-            crate::probe!(target: "continuum_core::inference::llama_server", class = "serving.engine.verify_mark_failed", reason = reason.as_str(), "payload location unavailable; engine proof was not written");
+            continuum_base::probe!(target: "continuum_core::inference::llama_server", class = "serving.engine.verify_mark_failed", reason = reason.as_str(), "payload location unavailable; engine proof was not written");
             return;
         }
     };
     if let Some(slot) = crate::inference::engine_slots::slot_of(&root, Path::new(&program)) {
         if let Err(reason) = crate::inference::engine_slots::mark_verified(&root, slot) {
-            crate::probe!(target: "continuum_core::inference::llama_server", class = "serving.engine.verify_mark_failed",
+            continuum_base::probe!(target: "continuum_core::inference::llama_server", class = "serving.engine.verify_mark_failed",
                 slot = slot,
                 reason = reason.as_str(),
                 "an engine came up ready but its proof could not be written: a later failure of it may be rolled back"

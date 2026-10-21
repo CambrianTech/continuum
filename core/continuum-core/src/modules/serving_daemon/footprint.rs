@@ -30,7 +30,7 @@ impl ServingDaemonModule {
         let occupancy = self.engine_occupancy();
         let settling = crate::inference::engine_residency::released_within(now, crate::inference::lane_footprint::SAMPLE_EVERY_MS);
         if occupancy.holds() || settling {
-            crate::probe!(
+            continuum_base::probe!(
                 class = "serving.footprint.unmeasured",
                 leg = if occupancy.holds() { "resident_work" } else { "resident_work_settling" },
                 occupancy = %format!("{occupancy:?}"),
@@ -92,7 +92,7 @@ impl ServingDaemonModule {
                 // engine that answered WITHOUT `memory_breakdown` (one predating it) is measured
                 // by the delta; a breakdown or geometry that is present but unusable is no reading.
                 let Some(props) = engine_props().await else {
-                    crate::probe!(
+                    continuum_base::probe!(
                         class = "serving.footprint.unmeasured",
                         leg = "engine_unanswered",
                         model = %active,
@@ -104,7 +104,7 @@ impl ServingDaemonModule {
                 use crate::inference::weight_residency::EngineContextReading;
                 match (EngineContextReading::of(&props), delta) {
                     (EngineContextReading::Invalid, _) => {
-                        crate::probe!(
+                        continuum_base::probe!(
                             class = "serving.footprint.unmeasured",
                             leg = "engine_breakdown_invalid",
                             model = %active,
@@ -114,7 +114,7 @@ impl ServingDaemonModule {
                         return;
                     }
                     (EngineContextReading::Read(ctx), _) => {
-                        crate::probe!(
+                        continuum_base::probe!(
                             class = "serving.footprint.device_residual",
                             model = %active,
                             engine_context_bytes = ctx.context_bytes,
@@ -129,7 +129,7 @@ impl ServingDaemonModule {
                     }
                     (EngineContextReading::Absent, Some(delta)) => ("device_delta", Some(delta), None),
                     (EngineContextReading::Absent, None) => {
-                        crate::probe!(
+                        continuum_base::probe!(
                             class = "serving.footprint.device_delta_unread",
                             baseline_bytes = baseline,
                             now_bytes = now,
@@ -149,7 +149,7 @@ impl ServingDaemonModule {
             // re-home path, reproduced on the deploy path. An absence stays an absence:
             // no `observe`, no record written, the previous record stands.
             Some(_) if live.host_prompt_cache_mib == 0 => {
-                crate::probe!(
+                continuum_base::probe!(
                     class = "serving.footprint.unmeasured",
                     leg = "unknown_grant",
                     model = %active,
@@ -175,7 +175,7 @@ impl ServingDaemonModule {
             // reading replaces the estimate — the node climbs out without a hand on a file.
             Some(_) if !crate::inference::lane_footprint::window_measurable(live.served_context_window) => {
                 let retired = crate::inference::lane_footprint::retire(&active);
-                crate::probe!(
+                continuum_base::probe!(
                     class = "serving.footprint.unmeasured",
                     leg = "starved_window",
                     model = %active,
@@ -224,7 +224,7 @@ impl ServingDaemonModule {
                 let measured =
                     crate::inference::lane_footprint::observe(token, &active, lanes, window, allocated_tokens, anon, compute_floor, host_cache_bytes);
                 let Ok(measured) = measured else {
-                    crate::probe!(
+                    continuum_base::probe!(
                         class = "serving.footprint.unmeasured",
                         leg = "residency_changed",
                         model = %active,
@@ -235,7 +235,7 @@ impl ServingDaemonModule {
                     );
                     return;
                 };
-                crate::probe!(
+                continuum_base::probe!(
                     class = "serving.footprint.measured",
                     model = %active,
                     pid = pid as u64,
@@ -258,7 +258,7 @@ impl ServingDaemonModule {
             None => "could_not_look",
         };
         if outcome == "could_not_look" {
-            crate::probe!(
+            continuum_base::probe!(
                 class = "serving.footprint.measured",
                 model = %active,
                 pid = pid as u64,

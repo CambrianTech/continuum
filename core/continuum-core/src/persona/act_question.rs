@@ -31,7 +31,7 @@
 //!   the decision and its inputs whether or not a work turn follows. A gate whose
 //!   refusal is invisible is a gate nobody can debug.
 
-use crate::time::EpochMs;
+use continuum_base::time::EpochMs;
 use crate::persona::service_loop::{PersonaConversation, LIVE_MAX_ACTS};
 use crate::persona::supervisor::HostedPersona;
 
@@ -73,7 +73,7 @@ pub(crate) async fn ask_the_act_question(
     let Some(cycle) =
         crate::cognition::persona_workspace::global().get(&ctx.identity.peer_id.as_uuid())
     else {
-        crate::probe!(
+        continuum_base::probe!(
             class = "persona.work.gate",
             persona = %ctx.identity.agent_name,
             decision = "no_cycle",
@@ -140,7 +140,7 @@ pub(crate) async fn ask_the_act_question(
             let held: Vec<&airc_lib::WorkCard> = crate::persona::work_focus::focus_actionable_card(claims.iter())
                 .into_iter()
                 .collect();
-            crate::probe!(
+            continuum_base::probe!(
                 class = "persona.work.gate",
                 persona = %ctx.identity.agent_name,
                 directed = directed,
@@ -204,7 +204,7 @@ pub(crate) async fn ask_the_act_question(
                             Vec::new()
                         }
                     };
-                    crate::probe!(
+                    continuum_base::probe!(
                         class = "persona.work.last_state",
                         persona = %ctx.identity.agent_name,
                         thoughts = last_state.len() as u64,
@@ -232,7 +232,7 @@ pub(crate) async fn ask_the_act_question(
                         .unwrap_or(0); // unwrap_or: no page = no acts counted; the gate stays open, never closes on absence
                     if acts_without_write >= crate::persona::work_burst::WRITE_OR_RELEASE_AFTER_ACTS
                     {
-                        crate::probe!(
+                        continuum_base::probe!(
                             class = "persona.work.write_or_release_gate",
                             persona = %ctx.identity.agent_name,
                             acts_without_write,
@@ -356,7 +356,7 @@ pub(crate) async fn ask_the_act_question(
                         body.working_memory.pin_expandable_fact("ledger", &reference, detail);
                     }
                     if let Some(ws) = &card_root {
-                        crate::probe!(
+                        continuum_base::probe!(
                             class = "persona.work.hands_rooted",
                             persona = %ctx.identity.agent_name,
                             workspace = %ws.display(),
@@ -388,7 +388,7 @@ pub(crate) async fn ask_the_act_question(
                     let mut genome_back =
                         crate::genome::gene_trial::GenomeRestore::snapshot(std::sync::Arc::clone(&cycle));
                     if let Some(genes) = crate::genome::gene_trial::live_genes(persona_uuid) {
-                        crate::probe!(
+                        continuum_base::probe!(
                             class = "persona.genome.card_genes",
                             persona = %ctx.identity.agent_name,
                             card = %card_uuid.map(|c| c.to_string()).unwrap_or_default(), // probe field: "" = no card
@@ -434,7 +434,7 @@ pub(crate) async fn ask_the_act_question(
                     let turn_act_count = work.acts;
                     let (work_step, _, _) =
                         crate::cognition::act_observe::SettleStep::from_settled(work);
-                    crate::probe!(
+                    continuum_base::probe!(
                         class = "training.hook.work_turn",
                         persona = %ctx.identity.agent_name,
                         acts = turn_act_count as u64,
@@ -445,7 +445,7 @@ pub(crate) async fn ask_the_act_question(
                         crate::cognition::act_observe::SettleStep::Spoke(text) => {
                             // She worked and has something to report —
                             // that report earned its send.
-                            crate::probe!(
+                            continuum_base::probe!(
                                 class = "persona.turn.work",
                                 persona = %ctx.identity.agent_name,
                                 lamport = lamport,
@@ -503,7 +503,7 @@ pub(crate) async fn ask_the_act_question(
                                         .advance_card_to(card_id, airc_work::CardState::Closed)
                                         .await
                                     {
-                                        Ok(()) => crate::probe!(
+                                        Ok(()) => continuum_base::probe!(
                                             class = "work.settle.deterministic",
                                             persona = %ctx.identity.agent_name,
                                             lamport = lamport,
@@ -513,7 +513,7 @@ pub(crate) async fn ask_the_act_question(
                                              reasoned 'done' — the owning recipe's outcome \
                                              fires now, no sweep, no tool-call dependency"
                                         ),
-                                        Err(e) => crate::probe!(
+                                        Err(e) => continuum_base::probe!(
                                             class = "work.settle.error",
                                             persona = %ctx.identity.agent_name,
                                             card_id = %id,
@@ -523,7 +523,7 @@ pub(crate) async fn ask_the_act_question(
                                         ),
                                     }
                                 }
-                                ConcludeAction::Ambiguous => crate::probe!(
+                                ConcludeAction::Ambiguous => continuum_base::probe!(
                                     class = "work.settle.ambiguous",
                                     persona = %ctx.identity.agent_name,
                                     lamport = lamport,
@@ -531,7 +531,7 @@ pub(crate) async fn ask_the_act_question(
                                     "reasoned 'done' with multiple held cards — cannot \
                                      tell which; leaving all held for an explicit close"
                                 ),
-                                ConcludeAction::Blocked => crate::probe!(
+                                ConcludeAction::Blocked => continuum_base::probe!(
                                     class = "work.blocker",
                                     persona = %ctx.identity.agent_name,
                                     lamport = lamport,
@@ -539,14 +539,14 @@ pub(crate) async fn ask_the_act_question(
                                     "held-work turn passed BLOCKED — card stays hers; a \
                                      candidate substrate-gap report, not a completion"
                                 ),
-                                ConcludeAction::Nothing => crate::probe!(
+                                ConcludeAction::Nothing => continuum_base::probe!(
                                     class = "work.pass.nothing",
                                     persona = %ctx.identity.agent_name,
                                     lamport = lamport,
                                     "held-work turn passed with nothing to contribute — a \
                                      substrate-gap signal ([[failures-are-substrate]])"
                                 ),
-                                ConcludeAction::Hold => crate::probe!(
+                                ConcludeAction::Hold => continuum_base::probe!(
                                     class = "persona.turn.work",
                                     persona = %ctx.identity.agent_name,
                                     lamport = lamport,
@@ -560,7 +560,7 @@ pub(crate) async fn ask_the_act_question(
                             // Acted (results already in her working
                             // memory) or an inference failure — either
                             // way the receipt says which.
-                            crate::probe!(
+                            continuum_base::probe!(
                                 class = "persona.turn.work",
                                 persona = %ctx.identity.agent_name,
                                 lamport = lamport,

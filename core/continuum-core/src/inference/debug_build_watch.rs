@@ -40,7 +40,7 @@ impl LineWatch for DebugBuildWatch {
         }
         self.seen = true;
         self.flag.0.store(true, Ordering::Relaxed);
-        crate::probe!(
+        continuum_base::probe!(
             class = "serving.debug_build_detected",
             line = %line.trim(),
             "the spawned server named itself a DEBUG build on its own stderr"

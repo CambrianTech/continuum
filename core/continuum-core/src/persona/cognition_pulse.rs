@@ -214,7 +214,7 @@ pub fn renewal_earned(idle: Option<u64>, ttl_ms: u64) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::time::EpochMs;
+    use continuum_base::time::EpochMs;
 
     // what this catches (card 7524aa5b): a citizen reading as running after her loop
     // exited (Kimi, 2026-09-28: fifty minutes of "ready" beacons from a dead loop). The guard

@@ -148,7 +148,7 @@ pub(super) fn derived_prompt_cache_mib(
             Some(value) => value,
             None => &tracing::field::Empty,
         };
-        crate::probe!(
+        continuum_base::probe!(
             target: "continuum_core::modules::serving_daemon", class = "serving.prompt_cache.derived",
             model = model_id,
             reason = decision.reason,

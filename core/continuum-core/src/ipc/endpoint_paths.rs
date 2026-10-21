@@ -59,7 +59,7 @@ fn installed_core_socket() -> Option<String> {
     match receipt_socket_in(&home) {
         Ok(socket) => socket,
         Err(why) => {
-            crate::probe!(
+            continuum_base::probe!(
                 class = "ipc.endpoint.receipt_unreadable",
                 home = %home.display(),
                 why = %why,

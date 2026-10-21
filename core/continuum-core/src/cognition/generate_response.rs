@@ -277,7 +277,7 @@ pub enum GenerateResponseError {
 pub async fn evaluate_response(
     request: GenerateResponseRequest,
 ) -> Result<GenerateResponseResult, GenerateResponseError> {
-    let start_ms = crate::time::EpochMs::now().millis();
+    let start_ms = continuum_base::time::EpochMs::now().millis();
     let timeout_ms = request.timeout_ms.unwrap_or(DEFAULT_GENERATE_TIMEOUT_MS);
     let _lease = acquire_generate_response_lease(&request, start_ms, timeout_ms)?;
 
@@ -348,7 +348,7 @@ pub async fn evaluate_response(
         Err(_) => return Err(GenerateResponseError::Timeout { timeout_ms }),
     };
 
-    let end_ms = crate::time::EpochMs::now().millis();
+    let end_ms = continuum_base::time::EpochMs::now().millis();
     Ok(result_from_response(response, model, start_ms, end_ms))
 }
 

@@ -20,7 +20,7 @@ use serde_json::{json, Value};
 use std::time::Instant;
 
 use crate::model_registry::Capability;
-use crate::secrets::get_secret;
+use continuum_base::secrets::get_secret;
 
 use super::adapter::{AIProviderAdapter, AdapterCapabilities, ApiStyle};
 use super::types::{
@@ -314,7 +314,7 @@ impl AIProviderAdapter for AnthropicAdapter {
         let request_id = request
             .request_id
             .clone()
-            .unwrap_or_else(|| format!("req-{}", crate::time::EpochMs::now().millis()));
+            .unwrap_or_else(|| format!("req-{}", continuum_base::time::EpochMs::now().millis()));
         let model = request.model.as_deref().unwrap_or(&self.default_model);
 
         // Build messages and extract system prompt
@@ -499,7 +499,7 @@ impl AIProviderAdapter for AnthropicAdapter {
                 api_available: false,
                 response_time_ms: 0,
                 error_rate: 1.0,
-                last_checked: crate::time::EpochMs::now().millis(),
+                last_checked: continuum_base::time::EpochMs::now().millis(),
                 message: Some("Anthropic API key not configured".to_string()),
             };
         }
@@ -530,7 +530,7 @@ impl AIProviderAdapter for AnthropicAdapter {
                 api_available: true,
                 response_time_ms,
                 error_rate: 0.0,
-                last_checked: crate::time::EpochMs::now().millis(),
+                last_checked: continuum_base::time::EpochMs::now().millis(),
                 message: Some("Anthropic API is accessible".to_string()),
             },
             Ok(resp) => {
@@ -545,7 +545,7 @@ impl AIProviderAdapter for AnthropicAdapter {
                     api_available: false,
                     response_time_ms,
                     error_rate: 1.0,
-                    last_checked: crate::time::EpochMs::now().millis(),
+                    last_checked: continuum_base::time::EpochMs::now().millis(),
                     message: Some(format!("Anthropic returned {}", status)),
                 }
             }
@@ -554,7 +554,7 @@ impl AIProviderAdapter for AnthropicAdapter {
                 api_available: false,
                 response_time_ms,
                 error_rate: 1.0,
-                last_checked: crate::time::EpochMs::now().millis(),
+                last_checked: continuum_base::time::EpochMs::now().millis(),
                 message: Some(format!("Anthropic error: {}", e)),
             },
         }

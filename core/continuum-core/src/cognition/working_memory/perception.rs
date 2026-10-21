@@ -408,7 +408,7 @@ impl WorkingMemory {
         drop(rr);
         self.publish_live_handles();
         if total > cap {
-            crate::probe!(
+            continuum_base::probe!(
                 class = "wm.results.unsaved_over_share",
                 total = %total,
                 cap = %cap,

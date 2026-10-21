@@ -145,7 +145,7 @@ pub(super) async fn resync_to_now(
         let perceived_only = before - qualifying.len();
         if perceived_only > 0 {
             outcome.turns_skipped += perceived_only;
-            crate::probe!(
+            continuum_base::probe!(
                 class = "persona.wake.agent_lines_perceived_only",
                 persona_id = %self_id,
                 lines = perceived_only as u64,
@@ -169,7 +169,7 @@ pub(super) async fn resync_to_now(
     };
     if coalesced > 0 {
         outcome.turns_skipped += coalesced;
-        crate::probe!(
+        continuum_base::probe!(
             class = "persona.wake.coalesced",
             persona_id = %self_id,
             coalesced = coalesced,
@@ -223,7 +223,7 @@ pub(super) async fn defer_loop_filler(
                 );
             }
         }
-        crate::probe!(
+        continuum_base::probe!(
             class = "persona.turn.deferred_loop_filler",
             persona = %ctx.identity.agent_name,
             lamport = msg.lamport,

@@ -208,7 +208,7 @@ impl Default for AudioBufferPool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::audio_constants::AUDIO_SAMPLE_RATE;
+    use continuum_base::audio_constants::AUDIO_SAMPLE_RATE;
 
     #[test]
     fn test_store_and_retrieve() {

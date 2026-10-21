@@ -498,7 +498,7 @@ impl TrainingTriggerState {
         let all = match trials.load() {
             Ok(all) => all,
             Err(error) => {
-                crate::probe!(
+                continuum_base::probe!(
                     class = "training.trigger.trial_file_unreadable",
                     persona = %key.persona_id,
                     trait_kind = %key.trait_kind,
@@ -508,7 +508,7 @@ impl TrainingTriggerState {
                 return Err(());
             }
         };
-        let now_ms = crate::time::EpochMs::now().millis(); // pre-epoch clock: every landed gene reads as settling, the conservative side
+        let now_ms = continuum_base::time::EpochMs::now().millis(); // pre-epoch clock: every landed gene reads as settling, the conservative side
         Ok(all
             .iter()
             .find(|t| t.persona_id == key.persona_id && t.alias == key.trait_kind && t.base_model_id == key.base_model && t.is_settling(now_ms))

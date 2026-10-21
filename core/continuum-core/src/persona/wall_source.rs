@@ -197,7 +197,7 @@ impl WallReader for airc_lib::Airc {
             // its half.
             Some(id) => {
                 let channel = airc_core::RoomId::from_uuid(id);
-                crate::probe!(
+                continuum_base::probe!(
                     class = "wall.read.phase",
                     room = %id,
                     phase = "resolve_room",
@@ -212,7 +212,7 @@ impl WallReader for airc_lib::Airc {
                     )));
                 };
                 let resolve_ms = resolve_started.elapsed().as_millis() as u64;
-                crate::probe!(
+                continuum_base::probe!(
                     class = "wall.read.phase",
                     room = %id,
                     phase = "project_wall",
@@ -222,7 +222,7 @@ impl WallReader for airc_lib::Airc {
                 );
                 let project_started = std::time::Instant::now();
                 let posts = airc_lib::Airc::wall_posts_in(self, &resolved, None).await?;
-                crate::probe!(
+                continuum_base::probe!(
                     class = "wall.read.phase",
                     room = %id,
                     phase = "complete",
@@ -479,7 +479,7 @@ impl RagSource for WallSource {
         // not fall back to the bound room, or an exam sees another room's wall.
         let effective_room = match ctx.airc_room.as_ref().map(|r| r.as_uuid()) {
             Some(turn) if turn.is_nil() => {
-                crate::probe!(
+                continuum_base::probe!(
                     class = "rag.room_gate.abstain",
                     source = SOURCE_ID,
                     bound_room = ?self.room_id,
@@ -517,7 +517,7 @@ impl RagSource for WallSource {
         // exists and EXPLAIN shows SEARCH, not SCAN). It is a hang in the wall path
         // specifically, which is why this source now takes the bound-room branch
         // above rather than `Airc::wall_posts` and its `current_room()` resolution.
-        crate::probe!(
+        continuum_base::probe!(
             class = "wall.read.phase",
             persona = %self.persona_id,
             phase = "enter",
@@ -535,7 +535,7 @@ impl RagSource for WallSource {
                 return empty(ResolutionPreference::Placeholder);
             }
         };
-        crate::probe!(
+        continuum_base::probe!(
             class = "wall.read.phase",
             persona = %self.persona_id,
             phase = "exit",
@@ -606,7 +606,7 @@ impl RagSource for WallSource {
             None => serde_json::Value::Null,
         };
         if stamped != here {
-            crate::probe!(
+            continuum_base::probe!(
                 class = "rag.continuation.room_mismatch",
                 source = SOURCE_ID,
                 persona_id = %ctx.persona_id,

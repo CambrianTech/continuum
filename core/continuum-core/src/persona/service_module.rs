@@ -41,7 +41,7 @@
 //! See [docs/grid/L0-PERSONA-COGNITION-E2E-PLAN.md] for the full
 //! sequencing.
 
-use crate::time::EpochMs;
+use continuum_base::time::EpochMs;
 use std::any::Any;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};

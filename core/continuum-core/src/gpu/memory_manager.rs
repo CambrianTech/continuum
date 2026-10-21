@@ -866,7 +866,7 @@ fn detect_cuda() -> Option<(u64, String)> {
         ],
         GPU_PROBE_TIMEOUT,
     );
-    crate::probe!(
+    continuum_base::probe!(
         class = "boot.gpu_detect",
         backend = "cuda",
         outcome = probed.outcome(),
@@ -909,7 +909,7 @@ fn detect_vulkan() -> Option<(u64, String)> {
     // is unwell this is the SECOND unbounded wait in a row on the boot thread.
     let probed =
         crate::system_resources::bounded_command::probe("vulkaninfo", &["--summary"], GPU_PROBE_TIMEOUT);
-    crate::probe!(
+    continuum_base::probe!(
         class = "boot.gpu_detect",
         backend = "vulkan",
         outcome = probed.outcome(),

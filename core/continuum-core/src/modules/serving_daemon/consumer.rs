@@ -210,7 +210,7 @@ impl ServingDaemonModule {
                 self.subscribe_serving(),
             ),
         );
-        crate::probe!(
+        continuum_base::probe!(
             target: "continuum_core::modules::serving_daemon", class = "resources.footprint.wired",
             holder = "vision",
             source = "CatalogFootprintSource::vision",

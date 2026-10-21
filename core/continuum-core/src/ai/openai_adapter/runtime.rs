@@ -404,7 +404,7 @@ impl OpenAICompatibleAdapter {
                 }
             },
         }};
-        crate::probe!(
+        continuum_base::probe!(
             class = "inference.kv_page.ledger_adopted",
             adopted = adoption.is_ok(),
             loaded = adoption.unwrap_or(0) as u64, // probe field: 0 when nothing was adopted, `why` names the reason

@@ -15,7 +15,7 @@
 //! Place in: models/moonshine/tiny/ or models/moonshine/base/
 
 use super::{STTError, SpeechToText, TranscriptResult, TranscriptSegment};
-use crate::audio_constants::AUDIO_SAMPLE_RATE;
+use continuum_base::audio_constants::AUDIO_SAMPLE_RATE;
 use crate::live::audio::reloadable::ReloadableModel;
 use crate::{clog_info, clog_warn};
 use async_trait::async_trait;

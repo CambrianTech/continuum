@@ -128,7 +128,7 @@ impl ActionCommand for RoomMembers {
             .await
             .map_err(|e| CommandError::Internal(format!("roster read failed: {e}")))?;
 
-        let now_ms = crate::time::EpochMs::now().millis();
+        let now_ms = continuum_base::time::EpochMs::now().millis();
 
         let members: Vec<RoomMemberView> = cards
             .into_iter()

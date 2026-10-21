@@ -133,7 +133,7 @@ impl RagContext {
 pub fn room_scope_allows(bound: Option<uuid::Uuid>, ctx: &RagContext, source_id: &str) -> bool {
     match (bound, ctx.airc_room.as_ref()) {
         (Some(b), Some(t)) if t.as_uuid() != b => {
-            crate::probe!(
+            continuum_base::probe!(
                 class = "rag.room_gate.abstain",
                 source = %source_id,
                 bound_room = %b,

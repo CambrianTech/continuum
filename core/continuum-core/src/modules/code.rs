@@ -114,7 +114,7 @@ impl CodeState {
             .flat_map(|(_, ids)| ids.iter())
             .filter_map(|id| uuid::Uuid::parse_str(id).ok())
             .collect();
-        let id = crate::id_resolve::resolve_handle(handle, &ids, "shell execution")
+        let id = continuum_base::id_resolve::resolve_handle(handle, &ids, "shell execution")
             .map_err(ExecutionLookup::Unresolved)?
             .to_string();
         let holder = sessions

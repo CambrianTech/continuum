@@ -81,7 +81,7 @@ pub(super) fn servable_candidates(
     // is none. A refusal list of one line per model beats an hour of elimination.
     if kept.is_empty() && !refused.is_empty() {
         for r in &refused {
-            crate::probe!(
+            continuum_base::probe!(
                 target: "continuum_core::modules::serving_daemon", class = "serving.plan.candidate_refused",
                 model_id = %r.model_id,
                 reason = r.reason,
@@ -131,7 +131,7 @@ pub fn candidates_from_snapshot(snapshot: &CatalogSnapshot) -> Vec<ModelFootprin
                 // Once per model per process: the plan recomputes every few seconds
                 // and this fired per pass per mute row (228 rows / 12 min on the M5,
                 // 2026-09-07) — a fact about a catalog row, not about the pass.
-                crate::probe!(
+                continuum_base::probe!(
                     target: "continuum_core::modules::serving_daemon", class = "serving.plan.candidate_cannot_speak",
                     model_id = %live.model.id,
                     "a Ready model with no text generation is not a base-model candidate (named once)"

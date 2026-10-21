@@ -134,7 +134,7 @@
         }
         fn open_trial(&self, state: crate::genome::gene_trial::TrialState) -> crate::genome::gene_trial::GeneTrial {
             let trials = self.trials();
-            let t = trials.open(self.persona, &self.request.trait_kind, &self.gene_path, &self.request.base_model, crate::time::EpochMs::now().millis()).unwrap();
+            let t = trials.open(self.persona, &self.request.trait_kind, &self.gene_path, &self.request.base_model, continuum_base::time::EpochMs::now().millis()).unwrap();
             if state != crate::genome::gene_trial::TrialState::Trial {
                 let mut all = trials.load().unwrap();
                 all[0].state = state;
@@ -224,7 +224,7 @@
         let w = decision_world().await;
         let activity = uuid::Uuid::new_v4();
         let mine = uuid::Uuid::new_v4();
-        let now = crate::time::EpochMs::now().millis();
+        let now = continuum_base::time::EpochMs::now().millis();
         let mind = tempfile::tempdir().unwrap();
         let (mut region, _strip) = PerceptionRegion::boot(airc_core::PeerId::from_uuid(w.persona), mind.path(), 1_000, now);
         region.join(activity, "career-wrangler");

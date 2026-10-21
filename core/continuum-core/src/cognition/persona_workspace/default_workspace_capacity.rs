@@ -232,7 +232,7 @@ pub(super) fn give_fork_its_own_hands(cfg: &mut PersonaBrainConfig, persona_id: 
         None => {
             cfg.tool_executor = None;
             cfg.grounding_sources.retain(|g| !g.requires_hands);
-            crate::probe!(
+            continuum_base::probe!(
                 class = "workspace.fork_without_hands",
                 persona = %persona_id,
                 "these hands can't open a context of their own, so the fork runs without hands rather than borrowing hers"
@@ -341,7 +341,7 @@ pub(super) fn assemble_workspace_cycle(
             // mis-filed into a room she may never have spoken in. See
             // OwnSpeechPersisted — hydrate_speech_rings re-seeds with rooms.
             OwnSpeechPersisted::Legacy(flat) => {
-                crate::probe!(
+                continuum_base::probe!(
                     class = "persona.volatile.own_speech_legacy_dropped",
                     persona = %cfg.persona_name,
                     dropped = flat.len(),
@@ -350,7 +350,7 @@ pub(super) fn assemble_workspace_cycle(
                 );
             }
         }
-        crate::probe!(
+        continuum_base::probe!(
             class = "persona.volatile.restored",
             persona = %cfg.persona_name,
             entries = n,

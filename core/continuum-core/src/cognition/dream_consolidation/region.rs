@@ -316,7 +316,7 @@ impl DreamConsolidationRegion {
                 return false;
             }
             if receipts.pending.len() >= REVIEW_BOUNDARY_CAPACITY {
-                crate::probe!(class = "dream.review_boundary_deferred", persona = %persona,
+                continuum_base::probe!(class = "dream.review_boundary_deferred", persona = %persona,
                     acceptance = %acceptance, "receipt scheduling cache full; durable acceptance remains retryable");
                 return false;
             }
@@ -324,7 +324,7 @@ impl DreamConsolidationRegion {
         };
         if inserted {
             self.review_boundary_wake.send_replace(());
-            crate::probe!(class = "dream.review_boundary_pending", persona = %persona,
+            continuum_base::probe!(class = "dream.review_boundary_pending", persona = %persona,
                 acceptance = %acceptance, "accepted review queued at the existing consolidation owner");
         }
         inserted

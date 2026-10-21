@@ -36,7 +36,7 @@ impl ActionCommand for WorkClaim {
                 if let Some((instance, reason)) =
                     crate::persona::card_holder::standing_refusal_for_card(&card.title)
                 {
-                    crate::probe!(
+                    continuum_base::probe!(
                         class = "work.claim.refused_ungradeable",
                         card_id = %card_id.as_uuid(),
                         instance = %instance,
@@ -163,7 +163,7 @@ impl ActionCommand for WorkClaim {
                         airc.select_work_claim(card_id, claim_id).await
                             .map_err(|e| CommandError::Denied(e.to_string()))?;
                     }
-                    crate::probe!(
+                    continuum_base::probe!(
                         class = "work.claim",
                         card_id = %card_id.as_uuid(),
                         claimer = %caller_short,
@@ -235,7 +235,7 @@ impl ActionCommand for WorkClaim {
                     };
                     // A claim stages the claimer's workspace and nothing more: the
                     // work is hers to do in her own loop; no runner starts it for her.
-                    crate::probe!(
+                    continuum_base::probe!(
                         class = "work.claim.held",
                         card_id = %short8(card_id.as_uuid()),
                         claimer = %short8(claimer_peer.as_uuid()),
@@ -243,7 +243,7 @@ impl ActionCommand for WorkClaim {
                         "claim staged — the card is hers to work in her own loop; nothing detached fires"
                     );
                 }
-                None => crate::probe!(
+                None => continuum_base::probe!(
                     class = "work.claim.unplaceable_card",
                     card_id = %short8(card_id.as_uuid()),
                     claimer = %short8(claimer_peer.as_uuid()),

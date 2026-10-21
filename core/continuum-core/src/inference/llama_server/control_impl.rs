@@ -218,7 +218,7 @@ impl LlamaServerControl for LlamaServerProcess {
             SmokeVerdict::ThinkStarved => {
                 self.smoke_proven_thinking
                     .store(true, std::sync::atomic::Ordering::Relaxed);
-                crate::probe!(target: "continuum_core::inference::llama_server", class = "serving.smoke.think_retry",
+                continuum_base::probe!(target: "continuum_core::inference::llama_server", class = "serving.smoke.think_retry",
                     quick_tokens = tok,
                     reasoning_len = rlen as u64,
                     retry_budget = THINKING_SMOKE_BUDGET,
@@ -368,7 +368,7 @@ impl LlamaServerControl for LlamaServerProcess {
         } else {
             None
         };
-        crate::probe!(target: "continuum_core::inference::llama_server", class = "serving.lane.idled",
+        continuum_base::probe!(target: "continuum_core::inference::llama_server", class = "serving.lane.idled",
             port,
             killed_own_child = had_own_child, // Legacy field: signal requested, not proof of exit.
             reclaim = reclaimed.as_deref().unwrap_or("owned child or non-live lane"), // unwrap_or: None labels the deliberate absence of canonical reclaim, not observed process exit

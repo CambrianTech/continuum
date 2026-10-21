@@ -56,7 +56,7 @@ pub(crate) async fn follow_the_allocation(now_ms: u64) -> Vec<String> {
         // gate, asked BEFORE the reservation so a deferral never burns a grant. A better
         // seat is still there next tick; her unpushed work is not recoverable.
         if let Some(blocked) = crate::persona::workspace_transfer::move_blocker_bounded(mind).await {
-            crate::probe!(
+            continuum_base::probe!(
                 class = "placement.move.deferred_unpushed",
                 persona = %sw.persona_name(),
                 peer = %seat.node,
@@ -74,7 +74,7 @@ pub(crate) async fn follow_the_allocation(now_ms: u64) -> Vec<String> {
             }
             sw.come_home_for_good(now_ms);
             crate::modules::citizen_health::note_move(true);
-            crate::probe!(
+            continuum_base::probe!(
                 class = "placement.move.opportunity",
                 persona = %sw.persona_name(),
                 from = %from,
@@ -100,7 +100,7 @@ pub(crate) async fn follow_the_allocation(now_ms: u64) -> Vec<String> {
         match asked {
             Ok(g) if g.granted => {}
             Ok(g) => {
-                crate::probe!(
+                continuum_base::probe!(
                     class = "placement.move.opportunity_refused",
                     persona = %sw.persona_name(),
                     to = %seat.node,
@@ -111,7 +111,7 @@ pub(crate) async fn follow_the_allocation(now_ms: u64) -> Vec<String> {
                 continue;
             }
             Err(e) => {
-                crate::probe!(
+                continuum_base::probe!(
                     class = "placement.move.opportunity_refused",
                     persona = %sw.persona_name(),
                     to = %seat.node,
@@ -124,7 +124,7 @@ pub(crate) async fn follow_the_allocation(now_ms: u64) -> Vec<String> {
         match sw.go_remote(seat.node, &target_plan.model_id, now_ms) {
             Ok(()) => {
                 crate::modules::citizen_health::note_move(true);
-                crate::probe!(
+                continuum_base::probe!(
                     class = "placement.move.opportunity",
                     persona = %sw.persona_name(),
                     from = %from,
@@ -141,7 +141,7 @@ pub(crate) async fn follow_the_allocation(now_ms: u64) -> Vec<String> {
                     sw.persona_name(), seat.node, why.as_str(), target_plan.model_id, target_plan.lanes, target_plan.window / 1000
                 ));
             }
-            Err(e) => crate::probe!(
+            Err(e) => continuum_base::probe!(
                 class = "persona.placement.offload_failed",
                 persona = %sw.persona_name(),
                 peer = %seat.node,

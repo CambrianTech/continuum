@@ -279,7 +279,7 @@ pub(super) async fn seed_state_samples_with(
         match &*seeding {
             Some((reading, read)) if reading == dir => read.clone(),
             Some((reading, _)) => {
-                crate::probe!(
+                continuum_base::probe!(
                     class = "inference.kv_page.seed_busy",
                     dir = %dir.display(),
                     reading = %reading.display(),
@@ -295,7 +295,7 @@ pub(super) async fn seed_state_samples_with(
         }
     };
     if let Guarded::TimedOut = guarded(crate::system_resources::disk_pressure::REPORTER_TIMEOUT, reading).await {
-        crate::probe!(
+        continuum_base::probe!(
             class = "inference.kv_page.seed_pending",
             dir = %dir.display(),
             "the saved pages are still being read; this sizing uses the estimate, the next one the pages",
@@ -322,7 +322,7 @@ pub(super) fn spawn_state_read(
             .and_then(|states| states)
         {
             Ok(states) => seed_dir_in(&mut RECENT_STATE_BYTES.lock(), &dir, states),
-            Err(error) => crate::probe!(
+            Err(error) => continuum_base::probe!(
                 class = "inference.kv_page.seed_failed",
                 dir = %dir.display(),
                 error = %error,
@@ -426,7 +426,7 @@ pub fn trim_page_store_after_save(just_saved: &str) {
     let (removed, freed, kept) =
         trim_page_store(&dir, just_saved, KV_PAGE_STORE_MAX_BYTES, KV_PAGE_MIN_AGE_MS);
     if removed > 0 {
-        crate::probe!(
+        continuum_base::probe!(
             class = "inference.kv_page.store_trimmed",
             dir = %dir.display(),
             removed = removed as u64,
@@ -523,7 +523,7 @@ pub fn trim_page_store(
     let pages = match pages_in(dir) {
         Ok(pages) => pages,
         Err(error) => {
-            crate::probe!(
+            continuum_base::probe!(
                 class = "inference.kv_page.store_unreadable",
                 dir = %dir.display(),
                 error = %error,

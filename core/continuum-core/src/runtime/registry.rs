@@ -99,7 +99,7 @@ impl ModuleRegistry {
                 .map(|t| now.duration_since(t).as_millis() as u64)
                 .unwrap_or(0); // unwrap_or: no predecessor = nothing to attribute, 0 by definition
             *last = Some(now);
-            crate::probe!(
+            continuum_base::probe!(
                 class = "boot.construct",
                 module = %name,
                 since_prev_ms = since_prev_ms,

@@ -53,7 +53,7 @@ pub(super) fn serve_windows_tcp_connections(
     // `#[cfg(unix)]`-gated with the Unix bind (the windows-msvc fix on #3714),
     // so on Windows the stretch after load_state — where BigMama's boot spent
     // 108 unattributed seconds and used to die — had no row at all (2026-09-05).
-    crate::probe!(
+    continuum_base::probe!(
         class = "boot.phase",
         phase = "post_init_to_bind",
         ms = phase_started.elapsed().as_millis() as u64,
@@ -61,7 +61,7 @@ pub(super) fn serve_windows_tcp_connections(
     );
     let bind_started = std::time::Instant::now();
     let listener = TcpListener::bind(&bind_addr)?;
-    crate::probe!(
+    continuum_base::probe!(
         class = "boot.phase",
         phase = "bind",
         ms = bind_started.elapsed().as_millis() as u64,

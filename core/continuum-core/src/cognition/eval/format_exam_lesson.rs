@@ -112,7 +112,7 @@ impl LessonSink {
             Ok(crate::persona::engram::AdmissionDecision::Admit { .. })
         ) {
             self.admitted.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            crate::probe!(
+            continuum_base::probe!(
                 class = "eval.lesson.streamed",
                 task = %task.id,
                 ok = result.ok,

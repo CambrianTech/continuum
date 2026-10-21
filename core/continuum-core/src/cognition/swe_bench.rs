@@ -34,7 +34,7 @@
 //! 3. **Era.** Both the dependency graph AND the interpreter have one. 2014 code does
 //!    `from collections import Mapping`, deleted in 3.10; no pin rescues that.
 
-use crate::time::EpochMs;
+use continuum_base::time::EpochMs;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 

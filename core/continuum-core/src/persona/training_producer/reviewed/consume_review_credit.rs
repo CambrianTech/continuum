@@ -86,7 +86,7 @@ pub(super) async fn consume_review_credit<T: Transport>(
             // This path ALREADY named its state (`IneligibleEvidence`), so it was
             // never silent the way the other caller was — but it could not say WHY.
             // Now it can, from the same named reason.
-            crate::probe!(
+            continuum_base::probe!(
                 class = "training.credit.reviewed_ineligible",
                 persona = %persona_name,
                 card = %row.card_id,

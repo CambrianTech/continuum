@@ -132,7 +132,7 @@ impl ActionCommand for WorkSubmit {
             && p.base_sha.is_some()
             && p.instance.is_some();
         if matches!(&p.artifact, Some(a) if is_placeholder_hash(&a.hash)) {
-            crate::probe!(
+            continuum_base::probe!(
                 class = "work.submit.placeholder_artifact",
                 card = %card_uuid,
                 "artifact.hash was a placeholder (zeros / a manual blank) — deriving the real one from her checkout"
@@ -160,7 +160,7 @@ impl ActionCommand for WorkSubmit {
             let d = derive_submission(&checkout, card_uuid, p.instance.clone(), p.base_sha.clone(), Some(&card.repo)).await?;
             (d.instance, d.base_sha, d.artifact)
         };
-        crate::probe!(
+        continuum_base::probe!(
             class = "work.submit.shaped",
             card = %card_uuid,
             instance = %instance,
@@ -226,7 +226,7 @@ impl ActionCommand for WorkSubmit {
             base_sha,
             artifact,
             publisher: airc.peer_id(),
-            submitted_at_ms: crate::time::EpochMs::now().millis(),
+            submitted_at_ms: continuum_base::time::EpochMs::now().millis(),
         };
         candidate
             .validate_for_card(card)
@@ -563,7 +563,7 @@ impl ActionCommand for WorkReview {
             }
         };
         let review_id = p.review_id.unwrap_or_else(Uuid::new_v4); // unwrap_or: minted here when she named none — the id is ours to give
-        crate::probe!(
+        continuum_base::probe!(
             class = "work.review.shaped",
             review_card = %short8(review_uuid),
             card = %card_id,

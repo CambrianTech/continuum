@@ -40,7 +40,7 @@ pub(super) async fn ensure_engine_kv_support_recorded(bin: &str, mut command: to
     if let Some(v) = support {
         crate::cognition::kv_cache_plan::record_engine_quantized_kv_support(v);
     }
-    crate::probe!(target: "continuum_core::inference::llama_server", class = "serving.kv_cache.engine_support",
+    continuum_base::probe!(target: "continuum_core::inference::llama_server", class = "serving.kv_cache.engine_support",
         bin = bin,
         outcome = outcome,
         answered = support.is_some(),

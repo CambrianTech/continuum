@@ -51,7 +51,7 @@
 //!   one because the channel-tick rendezvous makes the branch
 //!   unnecessary.
 
-use crate::time::EpochMs;
+use continuum_base::time::EpochMs;
 use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};

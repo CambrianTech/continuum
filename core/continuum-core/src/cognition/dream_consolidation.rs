@@ -148,7 +148,7 @@ fn semantic_engram(fact: &DistilledFact) -> Engram {
             parent_engram_id: fact.source_ids.first().copied().unwrap_or_else(Uuid::nil), // JUSTIFIED: a fact with no recorded sources has no parent; nil is the engram model's no-parent id.
         },
         recall_keys: fact.tags.clone(),
-        admitted_at_ms: crate::time::EpochMs::now().millis(),
+        admitted_at_ms: continuum_base::time::EpochMs::now().millis(),
         trust_state_at_admission: TrustState::SelfTrust,
         admission_trace_id: None,
     }

@@ -29,7 +29,7 @@
             owner,
             claim_provenance: None,
             claim_id: claimed.then(|| airc_work::ClaimId::from_uuid(uuid::Uuid::new_v4())),
-            claim_expires_at_ms: claimed.then(|| crate::time::EpochMs::now().millis() + 60_000),
+            claim_expires_at_ms: claimed.then(|| continuum_base::time::EpochMs::now().millis() + 60_000),
             last_heartbeat_at_ms: None,
             pull_request: None,
             created_by: airc_core::PeerId::new(),
@@ -298,7 +298,7 @@
             CardState::Claimed,
             Some(airc_core::PeerId::from_uuid(me)),
         );
-        held.claim_expires_at_ms = Some(crate::time::EpochMs::now().millis() + 60_000);
+        held.claim_expires_at_ms = Some(continuum_base::time::EpochMs::now().millis() + 60_000);
         let open_a = card("Claimable one", CardState::Open, None);
         let open_b = card("Claimable two", CardState::Open, None);
 
@@ -390,7 +390,7 @@
     async fn a_peers_card_names_the_peer_live_and_lapsed_never_bare_hex() {
         let asha = airc_core::PeerId::new();
         let mut live = card("Wire the projector", CardState::InProgress, Some(asha));
-        live.claim_expires_at_ms = Some(crate::time::EpochMs::now().millis() + 60_000);
+        live.claim_expires_at_ms = Some(continuum_base::time::EpochMs::now().millis() + 60_000);
         let mut lapsed = card("Windows blocker #1", CardState::Claimed, Some(asha));
         lapsed.claim_expires_at_ms = Some(1_000_000); // 1970-adjacent — long expired
 

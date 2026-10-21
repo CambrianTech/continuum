@@ -186,7 +186,7 @@ impl Runtime {
             .filter(|m| !m.config().event_subscriptions.is_empty())
             .map(|m| m.config().name)
             .collect();
-        crate::probe!(
+        continuum_base::probe!(
             class = "runtime.event_graph",
             modules = edges.len() as u64,
             declared_producers = edges.iter().filter(|e| !e.emits.is_empty()).count() as u64,
@@ -221,7 +221,7 @@ impl Runtime {
                 let started = std::time::Instant::now();
                 let attempt =
                     tokio::time::timeout(PER_MODULE_INIT_DEADLINE, module.initialize(&ctx)).await;
-                crate::probe!(
+                continuum_base::probe!(
                     class = "boot.module_init",
                     module = %name,
                     outcome = match &attempt { Ok(Ok(_)) => "ok", Ok(Err(_)) => "error", Err(_) => "timeout" },
@@ -297,23 +297,23 @@ impl Runtime {
         // Already-ready fast path — borrow_and_update marks the value
         // as seen so the subsequent `changed()` only fires on a NEW change.
         if *rx.borrow_and_update() {
-            crate::probe!(
+            continuum_base::probe!(
                 class = "ready.observed",
                 module = module_name,
                 fast_path = true
             );
             return Ok(());
         }
-        crate::probe!(class = "ready.awaiting", module = module_name);
+        continuum_base::probe!(class = "ready.awaiting", module = module_name);
         loop {
             if rx.changed().await.is_err() {
                 let err =
                     format!("module '{module_name}' ready watch closed before publishing ready");
-                crate::probe!(class = "ready.watch_closed", module = module_name);
+                continuum_base::probe!(class = "ready.watch_closed", module = module_name);
                 return Err(err);
             }
             if *rx.borrow_and_update() {
-                crate::probe!(class = "ready.observed", module = module_name);
+                continuum_base::probe!(class = "ready.observed", module = module_name);
                 return Ok(());
             }
         }
@@ -348,7 +348,7 @@ impl Runtime {
                         "Starting tick loop for '{}' (interval: {:?})",
                         module_name, initial_interval
                     );
-                    crate::probe!(
+                    continuum_base::probe!(
                         class = "tick.spawn",
                         module = module_name,
                         interval_ms = initial_interval.as_millis() as u64
@@ -371,7 +371,7 @@ impl Runtime {
                                 "Tick loop for '{}' aborted with panic in runner: {:?}",
                                 module_name, panic
                             );
-                            crate::probe!(
+                            continuum_base::probe!(
                                 class = "tick.aborted",
                                 module = module_name,
                                 reason = "runner_panic"
@@ -663,7 +663,7 @@ impl Runtime {
                     Ok(Err(_)) => "error",
                     Err(_) => "timeout",
                 };
-                crate::probe!(
+                continuum_base::probe!(
                     class = "boot.load_state",
                     module = %name,
                     outcome = outcome,

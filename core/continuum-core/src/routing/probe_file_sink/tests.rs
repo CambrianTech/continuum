@@ -54,8 +54,8 @@
             .with(sink);
 
         tracing::subscriber::with_default(subscriber, || {
-            crate::probe!(class = "persona.render.exit", persona = "Paige", "rendered");
-            crate::probe!(class = "cognition.analyze.cache_hit", model_used = "test");
+            continuum_base::probe!(class = "persona.render.exit", persona = "Paige", "rendered");
+            continuum_base::probe!(class = "cognition.analyze.cache_hit", model_used = "test");
         });
 
         let lines = read_jsonl(&path);
@@ -92,10 +92,10 @@
             .with(sink);
 
         tracing::subscriber::with_default(subscriber, || {
-            crate::probe!(class = "persona.turn.spoke", "kept");
-            crate::probe!(class = "persona.response.render.prompt", "kept");
-            crate::probe!(class = "personality.something", "dropped");
-            crate::probe!(class = "cognition.analyze.parse", "dropped");
+            continuum_base::probe!(class = "persona.turn.spoke", "kept");
+            continuum_base::probe!(class = "persona.response.render.prompt", "kept");
+            continuum_base::probe!(class = "personality.something", "dropped");
+            continuum_base::probe!(class = "cognition.analyze.parse", "dropped");
         });
 
         let lines = read_jsonl(&path);
@@ -129,9 +129,9 @@
             .with(sink);
 
         tracing::subscriber::with_default(subscriber, || {
-            crate::probe!(class = "persona.turn.spoke", "kept");
-            crate::probe!(class = "cognition.analyze.parse", "kept");
-            crate::probe!(class = "timing", "kept");
+            continuum_base::probe!(class = "persona.turn.spoke", "kept");
+            continuum_base::probe!(class = "cognition.analyze.parse", "kept");
+            continuum_base::probe!(class = "timing", "kept");
         });
 
         let lines = read_jsonl(&path);
@@ -157,11 +157,11 @@
             .with(sink);
 
         tracing::subscriber::with_default(subscriber, || {
-            crate::probe!(class = "cognition.analyze.parse", "kept exact");
-            crate::probe!(class = "cognition.analyze.cache_hit", "dropped");
-            crate::probe!(class = "persona.turn.spoke", "kept prefix");
-            crate::probe!(class = "persona.turn.start", "kept prefix");
-            crate::probe!(class = "persona.response.enter", "dropped");
+            continuum_base::probe!(class = "cognition.analyze.parse", "kept exact");
+            continuum_base::probe!(class = "cognition.analyze.cache_hit", "dropped");
+            continuum_base::probe!(class = "persona.turn.spoke", "kept prefix");
+            continuum_base::probe!(class = "persona.turn.start", "kept prefix");
+            continuum_base::probe!(class = "persona.response.enter", "dropped");
         });
 
         let lines = read_jsonl(&path);
@@ -218,9 +218,9 @@
             .with(sink);
 
         tracing::subscriber::with_default(subscriber, || {
-            crate::probe!(class = "persona.render.exit", "kept");
-            crate::probe!(class = "cognition.analyze.cache_hit", "dropped");
-            crate::probe!(class = "persona.render.exit", "also kept");
+            continuum_base::probe!(class = "persona.render.exit", "kept");
+            continuum_base::probe!(class = "cognition.analyze.cache_hit", "dropped");
+            continuum_base::probe!(class = "persona.render.exit", "also kept");
         });
 
         let lines = read_jsonl(&path);
@@ -244,7 +244,7 @@
 
         tracing::subscriber::with_default(subscriber, || {
             tracing::info!("this is a normal log line, not a probe");
-            crate::probe!(class = "persona.render.exit", "this IS a probe");
+            continuum_base::probe!(class = "persona.render.exit", "this IS a probe");
         });
 
         let lines = read_jsonl(&path);
@@ -270,7 +270,7 @@
         tracing::subscriber::with_default(subscriber, || {
             let span = tracing::info_span!("cmd", uri = "airc:///cognition/respond");
             let _enter = span.enter();
-            crate::probe!(class = "persona.render.exit", "inside dispatch");
+            continuum_base::probe!(class = "persona.render.exit", "inside dispatch");
         });
 
         let lines = read_jsonl(&path);
@@ -298,7 +298,7 @@
         tracing::subscriber::with_default(subscriber, || {
             // Scope so the span is fully dropped (closes) before
             // we read the file.
-            let _result: i32 = crate::time_sync!("test_phase", 21 * 2);
+            let _result: i32 = continuum_base::time_sync!("test_phase", 21 * 2);
         });
 
         let lines = read_jsonl(&path);
@@ -334,7 +334,7 @@
 
         tracing::subscriber::with_default(subscriber, || {
             let _result: i32 =
-                runtime.block_on(async { crate::time_probe!("async_test_phase", produces()) });
+                runtime.block_on(async { continuum_base::time_probe!("async_test_phase", produces()) });
         });
 
         let lines = read_jsonl(&path);
@@ -407,7 +407,7 @@
             .with(sink);
 
         tracing::subscriber::with_default(subscriber, || {
-            let _result: i32 = crate::time_sync!("composition_phase", 21 * 2);
+            let _result: i32 = continuum_base::time_sync!("composition_phase", 21 * 2);
         });
 
         // Router side
@@ -463,8 +463,8 @@
             .with(sink);
 
         tracing::subscriber::with_default(subscriber, || {
-            let _kept: i32 = crate::time_sync!("dropped_phase", 1);
-            crate::probe!(class = "persona.render.exit", "kept");
+            let _kept: i32 = continuum_base::time_sync!("dropped_phase", 1);
+            continuum_base::probe!(class = "persona.render.exit", "kept");
         });
 
         let lines = read_jsonl(&path);
@@ -491,7 +491,7 @@
 
         let subscriber = tracing_subscriber::registry().with(sink);
         tracing::subscriber::with_default(subscriber, || {
-            crate::probe!(class = "rolling.test", "hello rolling");
+            continuum_base::probe!(class = "rolling.test", "hello rolling");
         });
 
         // Find the rolled file. tracing_appender names the file

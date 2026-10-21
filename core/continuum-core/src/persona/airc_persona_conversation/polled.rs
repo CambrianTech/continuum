@@ -37,7 +37,7 @@ pub(super) struct MindFeed {
 impl MindFeed {
     pub(super) fn boot(persona: Uuid) -> Option<Self> {
         let Some(dir) = crate::persona::perception_feed::mind_dir(persona) else {
-            crate::probe!(
+            continuum_base::probe!(
                 class = "mind.feed.unbooted",
                 persona = %persona,
                 "no persistent home: her perception region cannot load her durable state"
@@ -306,7 +306,7 @@ pub(super) async fn catch_up_from_store(
         }
     }
     if let Some((room, floor_ms, newest_ms, count, peer, head, was_seen)) = sample {
-        crate::probe!(
+        continuum_base::probe!(
             class = "persona.inbound.catch_up_page_sample",
             room = %room,
             floor_ms = floor_ms,
@@ -322,7 +322,7 @@ pub(super) async fn catch_up_from_store(
     // WHICH ROOMS SHE PAGES, and which come back empty — the run room missing
     // from this list (or listed and empty) is the difference between "the store
     // catch-up works" and "she cannot hear the room she is working in".
-    crate::probe!(
+    continuum_base::probe!(
         class = "persona.inbound.catch_up_rooms",
         rooms = %room_list,
         empty = %empty.join(","),
@@ -330,7 +330,7 @@ pub(super) async fn catch_up_from_store(
         "the rooms this tick paged, and the ones whose page held no conversation"
     );
     if failed > 0 {
-        crate::probe!(
+        continuum_base::probe!(
             class = "persona.inbound.catch_up_page_failed",
             failed = failed as u64,
             paged = paged as u64,
@@ -472,7 +472,7 @@ impl AircPersonaConversation {
             .and_then(|r| r.get(persona))
             .map(|rt| rt.agent_name().to_string())
         else {
-            crate::probe!(
+            continuum_base::probe!(
                 class = "mind.feed.unbooted",
                 persona = %persona,
                 "her runtime is not registered: no name to detect mentions with; the region waits for the next membership read"
@@ -540,7 +540,7 @@ impl AircPersonaConversation {
             }
         } else {
             self.stop_stream();
-            crate::probe!(
+            continuum_base::probe!(
                 class = "persona.inbound.no_rooms",
                 persona = %self.own_peer_id,
                 "no subscribed rooms — perception waits for a membership change"
@@ -655,7 +655,7 @@ impl AircPersonaConversation {
                             }
                         }
                         None => {
-                            crate::probe!(
+                            continuum_base::probe!(
                                 class = "persona.inbound.pump_ended",
                                 persona = %persona,
                                 "the daemon stream ended under the pump — re-opening it"
@@ -675,7 +675,7 @@ impl AircPersonaConversation {
                     _ = tokio::time::sleep_until(next_catch_up) => {
                         next_catch_up = tokio::time::Instant::now() + CATCH_UP_EVERY;
                         let (paged, admitted) = catch_up_from_store(&*runtime, &seen, &tx).await;
-                        crate::probe!(
+                        continuum_base::probe!(
                             class = "persona.inbound.catch_up_tick",
                             persona = %persona,
                             rooms_paged = paged as u64,
@@ -686,7 +686,7 @@ impl AircPersonaConversation {
                             return; // inbox gone
                         }
                         if live_stream_missed(live_since_tick, admitted, first_tick) {
-                            crate::probe!(
+                            continuum_base::probe!(
                                 class = "persona.inbound.stream_dead",
                                 persona = %persona,
                                 admitted = admitted as u64,

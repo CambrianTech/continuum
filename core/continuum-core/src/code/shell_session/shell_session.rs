@@ -144,7 +144,7 @@ impl ShellSession {
             .ok_or_else(|| "shell session environment requires a UTF-8 Cargo target; refusing to alter its native path".to_string())?.to_owned();
 
         let execution_id = Uuid::new_v4().to_string();
-        let now_ms = crate::time::EpochMs::now().millis();
+        let now_ms = continuum_base::time::EpochMs::now().millis();
 
         let notify = Arc::new(Notify::new());
         let state = Arc::new(Mutex::new(ExecutionState {
@@ -189,7 +189,7 @@ impl ShellSession {
                     if let Ok(mut state) = state.lock() {
                         state.status = ShellExecutionStatus::Failed;
                         state.stderr_lines.push(format!("Cargo cache ownership: {error}"));
-                        state.finished_at = Some(crate::time::EpochMs::now().millis());
+                        state.finished_at = Some(continuum_base::time::EpochMs::now().millis());
                         state.process_ended = true; // admission refused before any child existed
                         state.output_notify.notify_one();
                     }
@@ -201,7 +201,7 @@ impl ShellSession {
                     state.status = ShellExecutionStatus::Failed;
                     state.stderr_lines.push("Shell has no process custody admission".into());
                     state.process_ended = true;
-                    state.finished_at = Some(crate::time::EpochMs::now().millis());
+                    state.finished_at = Some(continuum_base::time::EpochMs::now().millis());
                     state.output_notify.notify_one();
                 }
                 return;
@@ -223,7 +223,7 @@ impl ShellSession {
                 if let Ok(mut state) = state.lock() {
                     state.status = ShellExecutionStatus::Failed;
                     state.stderr_lines.push(format!("Shell process admission: {error}"));
-                    state.finished_at = Some(crate::time::EpochMs::now().millis());
+                    state.finished_at = Some(continuum_base::time::EpochMs::now().millis());
                     state.process_ended = true;
                     state.output_notify.notify_one();
                 }
@@ -379,7 +379,7 @@ impl ShellSession {
                 Uuid::parse_str(id).map_err(|e| format!("invalid stored execution handle: {e}"))
             })
             .collect::<Result<_, _>>()?;
-        let id = crate::id_resolve::resolve_handle(execution_id, &candidates, "shell execution")?;
+        let id = continuum_base::id_resolve::resolve_handle(execution_id, &candidates, "shell execution")?;
         self.executions.get(&id.to_string()).cloned()
             .ok_or_else(|| format!("No execution '{execution_id}' in this shell session"))
     }
@@ -430,7 +430,7 @@ impl ShellSession {
 
         // Signal kill — the tokio task will detect this and kill the child
         state.status = ShellExecutionStatus::Killed;
-        state.finished_at = Some(crate::time::EpochMs::now().millis());
+        state.finished_at = Some(continuum_base::time::EpochMs::now().millis());
 
         // The execution's own task, which owns the child, sees the flag at its next poll and
         // kills the shell and everything it started. No second kill by stored pid.
@@ -510,7 +510,7 @@ impl ShellSession {
             if let Ok(mut state) = state_arc.lock() {
                 if state.status == ShellExecutionStatus::Running {
                     state.status = ShellExecutionStatus::Killed;
-                    state.finished_at = Some(crate::time::EpochMs::now().millis());
+                    state.finished_at = Some(continuum_base::time::EpochMs::now().millis());
                 }
             }
         }

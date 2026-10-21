@@ -472,7 +472,7 @@ pub(super) async fn share_live_serving_lane_from_snapshot(
         Ok(Ok(())) => {}
         Ok(Err(_)) => return None,
         Err(_) => {
-            crate::probe!(
+            continuum_base::probe!(
                 class = "eval.lane.acquire",
                 step = "share_check_timeout",
                 model = %base.id,
@@ -489,7 +489,7 @@ pub(super) async fn share_live_serving_lane_from_snapshot(
             base.id
         ),
     );
-    crate::probe!(
+    continuum_base::probe!(
         class = "eval.lane.shared",
         model = %base.id,
         base_url = %snap.base_url,
@@ -620,7 +620,7 @@ pub(super) fn provision_ephemeral_eval_root(tag: &str) -> Result<std::path::Path
             String::from_utf8_lossy(&out.stderr).trim()
         ));
     }
-    crate::probe!(
+    continuum_base::probe!(
         class = "eval.workspace.provisioned",
         root = root.display().to_string().as_str(),
         "exam world provisioned — CoW clone of the shared checkout, removed when the run ends"

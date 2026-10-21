@@ -331,7 +331,7 @@ pub(super) fn append_ring_anchor_if_starved(
     let room_recent = crate::cognition::deliberation_budget::recent_room_speech(room);
     let run = ring_echo_run(&own, &room_recent);
     if run >= PATTERN_FIRES_BEFORE_ANCHOR {
-        crate::probe!(
+        continuum_base::probe!(
             class = "persona.pattern.ring_anchor",
             peer = %peer,
             room = %room,
@@ -355,7 +355,7 @@ pub(super) fn push_work_board_anchor(
 ) {
     let anchor = work_board_anchor(deliveries);
     if anchor.is_empty() {
-        crate::probe!(
+        continuum_base::probe!(
             class = "persona.pattern.anchor_silent",
             "board source did not deliver this turn — anchor withheld rather than asserting \
              an empty board she cannot verify (2026-08-06 six-turn loop)",

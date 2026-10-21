@@ -26,7 +26,7 @@ pub(super) async fn rest_seats(chosen: Vec<(uuid::Uuid, MindHour)>, cause: RestC
                 // Not paged out for cause: no resting record, which would keep her out of
                 // the draw. She goes to the back of the draw order and comes round in turn.
                 crate::persona::resting_seat::requeue(&agent_name);
-                crate::probe!(
+                continuum_base::probe!(
                     class = "persona.rotation.rested",
                     persona = %agent_name,
                     persona_id = %persona,
@@ -54,7 +54,7 @@ pub(super) async fn rest_seats(chosen: Vec<(uuid::Uuid, MindHour)>, cause: RestC
         });
         match cause {
             RestCause::Rotation => {} // handled above: no resting record
-            RestCause::Mindless => crate::probe!(
+            RestCause::Mindless => continuum_base::probe!(
                 class = "persona.mindless.paged_out",
                 persona = %agent_name,
                 persona_id = %persona,
@@ -95,7 +95,7 @@ impl CitizenHealthModule {
                 Some((id, hour.unwrap_or_else(|| MindHour { agent_name: rt.agent_name().to_string(), ..MindHour::default() }))) // unwrap_or_else: no row this hour = no verdict, act, write or grant: the truth
             })
             .collect();
-        let now_ms = crate::time::EpochMs::now().millis();
+        let now_ms = continuum_base::time::EpochMs::now().millis();
         let candidates = rotation_candidates(
             dormant_waiting,
             freed_this_pass,
@@ -210,7 +210,7 @@ impl ServiceModule for CitizenHealthModule {
         let after_mindless = CitizenHealth { resident: h.resident.saturating_sub(paged_out.len() as u64), ..h.clone() };
         // THE SLOW CLIP: a dormant mind waits, so one quiet resident yields her seat.
         let rotated = self.rotate_one(&remaining, paged_out.len(), &after_mindless).await;
-        crate::probe!(
+        continuum_base::probe!(
             class = "citizen.health.hour",
             resident = h.resident,
             // `from->to` while the serving lane runs an older engine than the installed

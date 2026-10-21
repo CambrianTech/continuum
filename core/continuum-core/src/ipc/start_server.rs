@@ -136,7 +136,7 @@ pub fn start_server(
         let mut last = std::time::Instant::now();
         move |step: &'static str, next: &'static str| {
             let now = std::time::Instant::now();
-            crate::probe!(
+            continuum_base::probe!(
                 class = "boot.stretch",
                 stretch = "persona_host_setup",
                 step = step,

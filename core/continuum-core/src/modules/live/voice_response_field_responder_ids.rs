@@ -149,7 +149,7 @@ pub(super) async fn perception_ingest_drain(
 
         // Fan out: each viewer's PerceptionBuffer coalesces the frame + fires a gated
         // async warm; compute-once/share-many means one describe across all viewers.
-        crate::probe!(
+        continuum_base::probe!(
             class = "live.perception.admitted",
             call_id = frame.call_id.as_str(),
             speaker = frame.speaker_id.as_str(),

@@ -28,7 +28,7 @@ pub(super) async fn run_shell_command(
     // execution goes through a shell. Observed live: two citizens cycling
     // through read-and-search all evening and never reaching execution. That
     // reads as an inert persona; it was a severed limb.
-    let bash = match crate::shell_portable::locate_bash() {
+    let bash = match continuum_base::shell_portable::locate_bash() {
         Ok(bash) => bash,
         Err(why) => {
             // Fail with the REASON, not with a spawn error from inside a child
@@ -37,7 +37,7 @@ pub(super) async fn run_shell_command(
                 s.status = ShellExecutionStatus::Failed;
                 s.stderr_lines.push(format!("no usable shell: {why}"));
                 s.process_ended = true; // no child was spawned
-                s.finished_at = Some(crate::time::EpochMs::now().millis());
+                s.finished_at = Some(continuum_base::time::EpochMs::now().millis());
                 s.output_notify.notify_one();
             }
             return;
@@ -156,7 +156,7 @@ pub(super) async fn run_shell_command(
             if let Ok(mut s) = state.lock() {
                 s.status = ShellExecutionStatus::Failed;
                 s.stderr_lines.push(format!("Failed to spawn bash: {e}"));
-                s.finished_at = Some(crate::time::EpochMs::now().millis());
+                s.finished_at = Some(continuum_base::time::EpochMs::now().millis());
                 s.process_ended = true; // nothing started, so nothing is left running
                 s.output_notify.notify_one();
             }
@@ -248,7 +248,7 @@ pub(super) async fn run_shell_command(
                         if s.status == ShellExecutionStatus::Running {
                             s.status = ShellExecutionStatus::TimedOut;
                             s.stderr_lines.push(format!("Timed out after {timeout}ms"));
-                            s.finished_at = Some(crate::time::EpochMs::now().millis());
+                            s.finished_at = Some(continuum_base::time::EpochMs::now().millis());
                             s.output_notify.notify_one();
                         }
                     }
@@ -322,7 +322,7 @@ pub(super) async fn run_shell_command(
                 } else {
                     ShellExecutionStatus::Failed
                 };
-                s.finished_at = Some(crate::time::EpochMs::now().millis());
+                s.finished_at = Some(continuum_base::time::EpochMs::now().millis());
                 // Wake any blocked watch() calls to deliver final status
                 s.output_notify.notify_one();
                 // PUSHED COMPLETION (2026-08-24): a handed-back execution's

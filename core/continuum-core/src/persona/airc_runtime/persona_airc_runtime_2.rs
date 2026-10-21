@@ -604,7 +604,7 @@ pub(crate) async fn scoped_board_owned_by(
         {
             Ok(board) => board,
             Err(error) => {
-                crate::probe!(
+                continuum_base::probe!(
                     class = "persona.claim.board_room_unreadable",
                     room = %room.channel,
                     error = %error,
@@ -640,7 +640,7 @@ pub(crate) async fn scoped_board_owned_by(
                 }
             }
             Err(error) => {
-                crate::probe!(
+                continuum_base::probe!(
                     class = "persona.claim.board_room_unreadable",
                     room = %followed.room.channel,
                     error = %error,

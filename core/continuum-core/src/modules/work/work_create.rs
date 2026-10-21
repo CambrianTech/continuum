@@ -246,7 +246,7 @@ impl ActionCommand for WorkState {
                 },
             )
             .await?;
-            crate::probe!(
+            continuum_base::probe!(
                 class = "work.state.held_through_claim",
                 card_id = %card_id.as_uuid(),
                 state = state_str(&state),
@@ -351,8 +351,8 @@ pub(crate) fn checkout_change(root: &std::path::Path) -> ChangeVerdict {
     let staged_ts = std::fs::metadata(root.join(".git"))
         .and_then(|m| m.modified())
         .ok()
-        .and_then(|t| crate::time::EpochMs::of(t).ok())
-        .map(crate::time::EpochMs::secs);
+        .and_then(|t| continuum_base::time::EpochMs::of(t).ok())
+        .map(continuum_base::time::EpochMs::secs);
     change_verdict(porcelain, head_ts, staged_ts)
 }
 
@@ -405,7 +405,7 @@ pub(crate) async fn advance_card_state_effective(
         if let Some(root) = actor.and_then(crate::cognition::persona_workspace::acting_root_of) {
             match checkout_change(&root) {
                 ChangeVerdict::NoChange => {
-                    crate::probe!(
+                    continuum_base::probe!(
                         class = "work.review.refused_no_write",
                         card = %short8(card_id.as_uuid()),
                         persona = %actor.map(|a| a.to_string()).unwrap_or_default(),  // unwrap_or: probe label; actor is Some on this branch
@@ -422,7 +422,7 @@ pub(crate) async fn advance_card_state_effective(
                     ));
                 }
                 ChangeVerdict::Changed => {}
-                ChangeVerdict::CouldNotLook(reason) => crate::probe!(
+                ChangeVerdict::CouldNotLook(reason) => continuum_base::probe!(
                     class = "work.review.write_check_unknown",
                     card = %short8(card_id.as_uuid()),
                     root = %root.display(),
@@ -449,7 +449,7 @@ pub(crate) async fn advance_card_state_effective(
             if passed {
                 if let Some(parent_gate) = super::review_gate::room_review(airc, parent_id).await {
                     if parent_gate.outstanding() {
-                        crate::probe!(
+                        continuum_base::probe!(
                             class = "work.review.awaiting_more",
                             parent = %short8(parent),
                             passed = parent_gate.passed as u64,
@@ -471,7 +471,7 @@ pub(crate) async fn advance_card_state_effective(
                         if parent_card.state != CardState::Review {
                             raw_advance(airc, parent_id, CardState::Review, via).await?;
                         }
-                        crate::probe!(
+                        continuum_base::probe!(
                             class = "work.review.passed_awaiting_merge",
                             review = %short8(card_id.as_uuid()),
                             parent = %short8(parent),
@@ -487,7 +487,7 @@ pub(crate) async fn advance_card_state_effective(
             } else {
                 CardState::InProgress
             };
-            crate::probe!(
+            continuum_base::probe!(
                 class = "work.review.verdict",
                 review = %short8(card_id.as_uuid()),
                 parent = %short8(parent),
@@ -504,14 +504,14 @@ pub(crate) async fn advance_card_state_effective(
     if finishing && via != VIA_VERDICT && gated {
         raw_advance(airc, card_id, CardState::Review, via).await?;
         match open_review_card(airc, card_id).await {
-            Ok(review) => crate::probe!(
+            Ok(review) => continuum_base::probe!(
                 class = "work.review.opened",
                 parent = %short8(card_id.as_uuid()),
                 review = %short8(review.as_uuid()),
                 "owner's done became review — a sibling review card is on the deck for a \
                  non-owner; only the reviewer's done closes this card"
             ),
-            Err(e) => crate::probe!(
+            Err(e) => continuum_base::probe!(
                 class = "work.review.open_failed",
                 parent = %short8(card_id.as_uuid()),
                 error = %e,

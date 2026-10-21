@@ -32,7 +32,7 @@ impl ServingDaemonModule {
         // tick's page seed reads too), each step that moved it reported here.
         let window = self.launch_window(&desired, served_ctx, lanes);
         if window.floored != window.sticky {
-            crate::probe!(
+            continuum_base::probe!(
                 target: "continuum_core::modules::serving_daemon", class = "serving.reconcile.window",
                 decision = "wedge-heal-floor",
                 live_window = 0u32,
@@ -44,7 +44,7 @@ impl ServingDaemonModule {
             );
         }
         if window.served != window.floored {
-            crate::probe!(
+            continuum_base::probe!(
                 target: "continuum_core::modules::serving_daemon", class = "serving.reconcile.window",
                 decision = "kept-window-exceeds-physical-fit",
                 kept_window = window.floored,
@@ -67,7 +67,7 @@ impl ServingDaemonModule {
             return None;
         }
         let Some(model) = resolved else {
-            crate::probe!(
+            continuum_base::probe!(
                 target: "continuum_core::modules::serving_daemon", class = "serving.reconcile",
                 desired = desired.as_str(),
                 "plan named a model the registry can't resolve — publishing degraded snapshot",
@@ -238,7 +238,7 @@ impl ServingDaemonModule {
             // re-homed at tick 3). A lane just launched is not evidence against itself.
             if matches!(outcome, EnsureOutcome::Spawned { .. }) {
                 rehome_cooldown.store(REHOME_COOLDOWN_TICKS, Ordering::Relaxed);
-                crate::probe!(
+                continuum_base::probe!(
                     target: "continuum_core::modules::serving_daemon", class = "serving.reconcile.window",
                     decision = "spawn-settling",
                     plan_lanes = target.lanes,
@@ -264,7 +264,7 @@ impl ServingDaemonModule {
                     match server.served_context_window().await {
                         Ok(n) => n,
                         Err(e) => {
-                            crate::probe!(
+                            continuum_base::probe!(
                                 target: "continuum_core::modules::serving_daemon", class = "serving.reconcile",
                                 desired = desired.as_str(),
                                 error = %e,
@@ -293,7 +293,7 @@ impl ServingDaemonModule {
                     match server.served_lanes().await {
                         Ok(n) => published_lanes(Some(n), target.lanes),
                         Err(e) => {
-                            crate::probe!(
+                            continuum_base::probe!(
                                 target: "continuum_core::modules::serving_daemon", class = "serving.reconcile",
                                 desired = desired.as_str(),
                                 error = %e,
@@ -370,7 +370,7 @@ impl ServingDaemonModule {
                 let previous = say_on_change(&mut *LAST_DIVERGENCE.lock(), state);
                 if let Some(previous) = previous {
                     match speaking {
-                        Some((_, held, wanted, one_conversation)) => crate::probe!(
+                        Some((_, held, wanted, one_conversation)) => continuum_base::probe!(
                             target: "continuum_core::modules::serving_daemon", class = "serving.prompt_cache.divergence",
                             model = target.model_id(),
                             held_mib = held as u64,
@@ -386,7 +386,7 @@ impl ServingDaemonModule {
                              `below_one_conversation`: true means the grant cannot retain a \
                              single prefix and reuse is structurally impossible, not merely poor"
                         ),
-                        None => crate::probe!(
+                        None => continuum_base::probe!(
                             target: "continuum_core::modules::serving_daemon", class = "serving.prompt_cache.divergence_closed",
                             model = target.model_id(),
                             held_mib = launched_cache_mib as u64,
@@ -425,7 +425,7 @@ impl ServingDaemonModule {
                     let props = match server.multimodal_support().await {
                         Ok(p) => p,
                         Err(e) => {
-                            crate::probe!(
+                            continuum_base::probe!(
                                 target: "continuum_core::modules::serving_daemon", class = "serving.vision.props_unreadable",
                                 desired = desired.as_str(),
                                 error = %e,
@@ -457,7 +457,7 @@ impl ServingDaemonModule {
                     ) {
                         Ok(ready) => ready,
                         Err(why) => {
-                            crate::probe!(
+                            continuum_base::probe!(
                                 target: "continuum_core::modules::serving_daemon", class = "serving.vision.not_ready",
                                 desired = desired.as_str(),
                                 why = why.as_str(),
@@ -484,7 +484,7 @@ impl ServingDaemonModule {
                         // memory is exactly the window they are missing. Drop it (RAII kills
                         // the child, RAM freed, the next plan grows the lane); it respawns on
                         // the first plan whose headroom is measured against a lane that holds.
-                        crate::probe!(
+                        continuum_base::probe!(
                             target: "continuum_core::modules::serving_daemon", class = "serving.vision.sidecar_yields_to_persona_floor",
                             served_window = served_window as u64,
                             persona_floor = persona_floor.unwrap_or(0) as u64, // unwrap_or: guarded by is_some_and
@@ -500,7 +500,7 @@ impl ServingDaemonModule {
                         let candidate = sidecar_candidate;
                         match &candidate {
                             Err(skipped) => {
-                                crate::probe!(
+                                continuum_base::probe!(
                                     target: "continuum_core::modules::serving_daemon", class = "serving.vision.sidecar_no_candidate",
                                     skipped = skipped.join("; ").as_str(),
                                     "text-only mind and no on-disk VL row — personas \
@@ -534,7 +534,7 @@ impl ServingDaemonModule {
                                 );
                                 let free =
                                     sidecar_admissible_bytes(live_free, planned_headroom, physical);
-                                crate::probe!(
+                                continuum_base::probe!(
                                     target: "continuum_core::modules::serving_daemon", class = "serving.vision.sidecar_headroom",
                                     live_free,
                                     live_free_after_floor = live_free.saturating_sub(host_os_floor_bytes(physical)),
@@ -551,7 +551,7 @@ impl ServingDaemonModule {
                                         } else {
                                             match sidecar::ensure_sidecar(&mut slot, cand).await {
                                                 Ok(lane) => {
-                                                    crate::probe!(
+                                                    continuum_base::probe!(
                                                         target: "continuum_core::modules::serving_daemon", class = "serving.vision.sidecar_up",
                                                         model = lane.model_id.as_str(),
                                                         base_url = lane.base_url.as_str(),
@@ -560,7 +560,7 @@ impl ServingDaemonModule {
                                                     Some(lane)
                                                 }
                                                 Err(why) => {
-                                                    crate::probe!(
+                                                    continuum_base::probe!(
                                                         target: "continuum_core::modules::serving_daemon", class = "serving.vision.sidecar_failed",
                                                         model = cand.model.id.as_str(),
                                                         why = why.as_str(),
@@ -576,7 +576,7 @@ impl ServingDaemonModule {
                                         need_bytes,
                                         free_bytes,
                                     } => {
-                                        crate::probe!(
+                                        continuum_base::probe!(
                                             target: "continuum_core::modules::serving_daemon", class = "serving.vision.sidecar_no_budget",
                                             model = cand.model.id.as_str(),
                                             need_bytes,
@@ -607,7 +607,7 @@ impl ServingDaemonModule {
                 launched_cache_mib,
                 vision,
             );
-            crate::probe!(
+            continuum_base::probe!(
                 target: "continuum_core::modules::serving_daemon", class = "serving.reconcile",
                 desired = desired.as_str(),
                 ready = snapshot.ready,

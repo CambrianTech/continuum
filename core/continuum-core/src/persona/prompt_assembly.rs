@@ -424,7 +424,7 @@ pub fn assemble(input: &PromptAssemblyInput) -> AssembledPrompt {
     // grows quadratically with prompt length. Operators filter on
     // `class == "persona.prompt.assemble"` to see the composition
     // shape per turn.
-    crate::probe!(
+    continuum_base::probe!(
         class = "persona.prompt.assemble",
         persona = %input.persona_name,
         system_message_len = system_prompt.len(),

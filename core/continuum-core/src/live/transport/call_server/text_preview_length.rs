@@ -134,7 +134,7 @@ pub struct AudioConfig {
 
 impl Default for AudioConfig {
     fn default() -> Self {
-        use crate::audio_constants::{
+        use continuum_base::audio_constants::{
             AUDIO_CHANNEL_CAPACITY, AUDIO_FRAME_DURATION_MS, AUDIO_FRAME_SIZE, AUDIO_SAMPLE_RATE,
         };
         // Sample rate and frame size from audio constants (single source of truth)

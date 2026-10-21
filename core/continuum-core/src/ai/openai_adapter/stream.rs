@@ -20,7 +20,7 @@ impl OpenAICompatibleAdapter {
         let request_id = request
             .request_id
             .clone()
-            .unwrap_or_else(|| format!("req-{}", crate::time::EpochMs::now().millis()));
+            .unwrap_or_else(|| format!("req-{}", continuum_base::time::EpochMs::now().millis()));
         let raw_model = request
             .model
             .as_deref()
@@ -173,7 +173,7 @@ impl OpenAICompatibleAdapter {
                 crate::inference::measured_hold::current().as_ref(),
                 hold_caller,
             ) {
-                crate::probe!(
+                continuum_base::probe!(
                     class = "inference.hold.backoff",
                     traffic = %class.as_str(),
                     purpose = %request.purpose.as_deref().unwrap_or("-"),
@@ -242,7 +242,7 @@ impl OpenAICompatibleAdapter {
             // GLASS BOX (KV-reuse 0% hunt 2026-08-26): the whole cache-reuse win
             // rides on placement. Report class + room so a cached:0 streak names
             // WHICH activity thrashed — or which class strayed off scratch.
-            crate::probe!(
+            continuum_base::probe!(
                 class = "inference.slot_pin.decision",
                 persona = request.persona_id.as_deref(),
                 room = request.room_id.as_deref(),
@@ -343,7 +343,7 @@ impl OpenAICompatibleAdapter {
         // backend can't page LoRA or a requested adapter isn't loaded. `None` only
         // when nothing is loaded (omit the field, no probe penalty for non-LoRA).
         let active = request.active_adapters.as_deref().unwrap_or(&[]);
-        crate::probe!(
+        continuum_base::probe!(
             class = "inference.request.lora_resolve",
             adapters = active.len() as u64,
             "resolving genome adapters against the lane catalog"
@@ -353,7 +353,7 @@ impl OpenAICompatibleAdapter {
                 obj.insert("lora".to_string(), json!(entries));
             }
         }
-        crate::probe!(
+        continuum_base::probe!(
             class = "inference.request.lora_resolved",
             "genome adapters resolved — shaping the rest of the request"
         );
@@ -406,7 +406,7 @@ impl OpenAICompatibleAdapter {
                 format!("{:x}", sha2::Sha256::digest(url.as_bytes()))
             }).collect();
         if !wire_image_hashes.is_empty() {
-            crate::probe!(
+            continuum_base::probe!(
                 class = "inference.prompt.media_wire",
                 request_id = %request_id,
                 model = model,
@@ -543,7 +543,7 @@ impl OpenAICompatibleAdapter {
             // The output cap ended it on a HEALTHY lane — the allowance owns this, not
             // the backend. Surfaced so it is never silent, never charged to the lane.
             crate::inference::llama_server::RealDecodeOutcome::CappedBeforeOutput => {
-                crate::probe!(
+                continuum_base::probe!(
                     class = "inference.lane.capped_before_output",
                     model = resp_model.as_deref().unwrap_or("<unknown>"), // Missing model stays explicitly unknown in telemetry; no control decision uses this label.
                     response_time_ms,
@@ -584,7 +584,7 @@ impl OpenAICompatibleAdapter {
                 // empty turn can never smear the local record.
                 // [[the-measurement-already-exists-and-nothing-consumes-it]]
                 crate::inference::llama_server::note_real_decode_failure();
-                crate::probe!(
+                continuum_base::probe!(
                     class = "inference.lane.delivered_nothing",
                     model = resp_model.as_deref().unwrap_or("<unknown>"), // Missing model stays explicitly unknown in telemetry; no control decision uses this label.
                     response_time_ms,
@@ -622,7 +622,7 @@ impl OpenAICompatibleAdapter {
                     let input: Value = match serde_json::from_str(&t.arguments) {
                         Ok(v) => v,
                         Err(e) => {
-                            crate::probe!(
+                            continuum_base::probe!(
                                 class = "ai.tool_call.unparseable_args",
                                 tool = t.name.as_str(),
                                 error = e.to_string().as_str(),
@@ -754,7 +754,7 @@ impl OpenAICompatibleAdapter {
                 // restores were warm (card 356ce732).
                 if admission.restored() {
                     if let Some(t) = &timing {
-                        crate::probe!(
+                        continuum_base::probe!(
                             class = "inference.restored_turn",
                             cached = t.cached_tokens,
                             prompt = t.prefill_tokens,

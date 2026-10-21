@@ -444,7 +444,7 @@ async fn submit_batch_inner(state: &Arc<TrainingTriggerState>, p: SubmitParams, 
         if let Some(held_by) = state.held_for(&key).filter(|_| !replay) {
             let pending = state.buckets.get(&key).map(|b| b.examples.len()).unwrap_or(0); // unwrap_or: no bucket yet = nothing pending
             if pending >= crate::modules::training_trigger::MAX_HELD_EXAMPLES {
-                crate::probe!(
+                continuum_base::probe!(
                     class = "training.trigger.held_full",
                     persona = %key.persona_id,
                     trait_kind = %key.trait_kind,

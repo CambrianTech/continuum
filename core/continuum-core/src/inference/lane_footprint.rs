@@ -23,7 +23,7 @@
 //! so it only ever corrects the estimate upward. The same shape as the decode knee:
 //! a measured fact over a catalog guess, one probe when it moves.
 
-use crate::time::EpochMs;
+use continuum_base::time::EpochMs;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::LazyLock;

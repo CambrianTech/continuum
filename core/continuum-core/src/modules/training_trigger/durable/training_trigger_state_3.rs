@@ -113,7 +113,7 @@ impl TrainingTriggerState {
                         evidence: evidence.clone(),
                         reason: reason.clone(),
                         resolved_by,
-                        decided_at_ms: crate::time::EpochMs::now().millis(), // a clock before 1970 stamps 0: the receipt still names its decision and evidence
+                        decided_at_ms: continuum_base::time::EpochMs::now().millis(), // a clock before 1970 stamps 0: the receipt still names its decision and evidence
                     });
                     "retried by operator decision, outcome unconfirmed"
                 } else {
@@ -150,7 +150,7 @@ impl TrainingTriggerState {
                         journal_cursor: active.journal_cursor,
                     }),
                 );
-                crate::probe!(
+                continuum_base::probe!(
                     class = "training.trigger.dispatch_resolved",
                     persona = %key.persona_id,
                     trait_kind = %key.trait_kind,
@@ -221,7 +221,7 @@ impl TrainingTriggerState {
                 self.finish_dispatch(key, &active, handle, provider)
                     .await
                     .map_err(|e| ("PersistenceFailed", e))?;
-                crate::probe!(
+                continuum_base::probe!(
                     class = "training.trigger.dispatch_resolved",
                     persona = %key.persona_id,
                     trait_kind = %key.trait_kind,
@@ -383,7 +383,7 @@ impl TrainingTriggerState {
             examples,
             reason: reason.clone(),
             retired_by,
-            retired_at_ms: crate::time::EpochMs::now().millis(), // a clock before 1970 stamps 0: the receipt still names its rows and reason
+            retired_at_ms: continuum_base::time::EpochMs::now().millis(), // a clock before 1970 stamps 0: the receipt still names its rows and reason
         };
         store
             .retirements
@@ -405,7 +405,7 @@ impl TrainingTriggerState {
         report.retirement_ids.push(retirement_id);
         // The cache is rebuilt from the rows, never edited in place.
         self.restore_pending_bucket(key).await?;
-        crate::probe!(
+        continuum_base::probe!(
             class = "training.trigger.retired",
             persona = %key.persona_id,
             trait_kind = %key.trait_kind,

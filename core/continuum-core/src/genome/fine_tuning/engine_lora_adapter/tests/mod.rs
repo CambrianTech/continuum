@@ -1,7 +1,7 @@
 #![cfg(test)]
 
     use super::*;
-    use crate::time::EpochMs;
+    use continuum_base::time::EpochMs;
     use crate::genome::fine_tuning::{LoRAHyperparams, ScheduleParams, TrainingDataset, TrainingSource};
 
     // what this catches (Cormac's chain test on #4946, card 3cef97ef; job 97e081e2): the WHOLE

@@ -134,7 +134,7 @@ impl ActionCommand for BenchmarkDispatch {
                     .find(|(n, _)| n.eq_ignore_ascii_case(name))
                     .map(|(_, id)| crate::identity::PeerId::from_uuid(*id));
                 if hit.is_none() {
-                    crate::probe!(
+                    continuum_base::probe!(
                         class = "benchmark.team.mate_not_resident",
                         mate = %name,
                         "named teammate not resident — team shrinks, dispatch proceeds"
@@ -194,7 +194,7 @@ impl ActionCommand for BenchmarkDispatch {
         // To add work to a run that already exists, dispatch again: the round tracker
         // converges duplicates (`skipped_already_on_board`, `pruned_duplicates`) rather
         // than needing a caller to aim at a board by hand.
-        let room_name = default_run_room_name(spec.name, crate::time::EpochMs::now().secs());
+        let room_name = default_run_room_name(spec.name, continuum_base::time::EpochMs::now().secs());
         // The room binds to the SHIPPED benchmark recipe's declared purpose,
         // resolved from its constant — never a re-typed string. The old literal
         // here was "benchmark" while the recipe declares "benchmark/hard-rs",
@@ -257,7 +257,7 @@ impl ActionCommand for BenchmarkDispatch {
             )
             .await
             .map_err(|e| CommandError::Internal(format!("doctrine publish: {e}")))?;
-            crate::probe!(
+            continuum_base::probe!(
                 class = "bench.round.doctrine_published",
                 room = %room.room_id.as_uuid(),
                 chars = doctrine.len() as u64,
@@ -415,7 +415,7 @@ impl ActionCommand for BenchmarkDispatch {
                 RoundReadiness::Ready { lanes } => lanes,
                 RoundReadiness::Blocked(reason) => {
                     let why = reason.explain();
-                    crate::probe!(
+                    continuum_base::probe!(
                         class = "bench.round.staging_blocked",
                         benchmark = spec.name,
                         forced = p.force.unwrap_or(false),
@@ -496,7 +496,7 @@ impl ActionCommand for BenchmarkDispatch {
                     .is_some_and(|v| v.resolved)
                 {
                     skipped_already_resolved += 1;
-                    crate::probe!(
+                    continuum_base::probe!(
                         class = "bench.round.already_resolved",
                         instance = %instance.instance_id,
                         "a citizen's card already resolved this instance — it stays in the round's sample and its score, and is not offered as work again"
@@ -863,7 +863,7 @@ impl ActionCommand for BenchmarkDispatch {
         let mut pruned_duplicates = 0u32;
         let mut contended_tasks = 0u32;
         if p.prune.unwrap_or(false) {
-            let now_ms = crate::time::EpochMs::now().millis();
+            let now_ms = continuum_base::time::EpochMs::now().millis();
             for key in planned_keys.iter() {
                 let Some(group) = live_by_task.get(key.as_str()) else {
                     continue;

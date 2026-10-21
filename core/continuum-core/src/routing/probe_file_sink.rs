@@ -367,7 +367,7 @@ where
             fields: visitor.fields,
         };
 
-        let captured_at_ms = crate::time::EpochMs::now().millis();
+        let captured_at_ms = continuum_base::time::EpochMs::now().millis();
 
         self.write_one(captured_at_ms, &probe_event);
     }
@@ -415,7 +415,7 @@ where
             return;
         }
 
-        let captured_at_ms = crate::time::EpochMs::now().millis();
+        let captured_at_ms = continuum_base::time::EpochMs::now().millis();
 
         self.write_one(captured_at_ms, &probe_event);
     }

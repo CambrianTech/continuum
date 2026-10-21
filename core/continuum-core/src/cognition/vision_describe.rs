@@ -217,7 +217,7 @@ fn candidate_servable(m: &crate::model_registry::types::Model) -> Result<(), Str
         // The retiring in-process path is OPT-IN ONLY (CONTINUUM_LOCAL_LLAMA=1,
         // see AIProviderModule) — without the opt-in no adapter registers for
         // these rows, so they are never servable candidates.
-        if crate::config_env::read("CONTINUUM_LOCAL_LLAMA").as_deref() != Some("1") {
+        if continuum_base::config_env::read("CONTINUUM_LOCAL_LLAMA").as_deref() != Some("1") {
             return Err("in-process llama.cpp is not opted in (CONTINUUM_LOCAL_LLAMA=1)".into());
         }
         if crate::model_registry::artifacts::resolve_gguf_for_model(m).is_none() {
@@ -233,7 +233,7 @@ fn candidate_servable(m: &crate::model_registry::types::Model) -> Result<(), Str
     // boot never picks a cloud vision model whose `select()` would refuse.
     match provider.api_key_env.as_deref() {
         None => Ok(()),
-        Some(env_key) if crate::secrets::get_secret(env_key).is_some() => Ok(()),
+        Some(env_key) if continuum_base::secrets::get_secret(env_key).is_some() => Ok(()),
         Some(env_key) => Err(format!("no {env_key} secret — provider not registered")),
     }
 }

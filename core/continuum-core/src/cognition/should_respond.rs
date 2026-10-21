@@ -5,7 +5,7 @@
 //! around slot coordination and logging; Rust owns the cognition decision
 //! contract, prompt construction, model call, and response parsing.
 
-use crate::time::EpochMs;
+use continuum_base::time::EpochMs;
 use crate::ai::adapter::InferenceDevice;
 use crate::ai::types::ResponseFormat;
 use crate::ai::{ChatMessage, MessageContent, TextGenerationRequest, TextGenerationResponse};

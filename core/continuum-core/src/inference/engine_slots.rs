@@ -288,7 +288,7 @@ pub fn rollback_after_failed_launch_reason(root: &Path, reason: &str) -> Result<
         match attempts::failed_selection(root, back) {
             Ok(true) => return Ok(None),
             Ok(false) => {}
-            Err(reason) => crate::probe!(class = "serving.engine.attempt_receipt_failed", reason = reason.as_str(),
+            Err(reason) => continuum_base::probe!(class = "serving.engine.attempt_receipt_failed", reason = reason.as_str(),
                 "fallback attempt disposition is unreadable; retain ordinary restoration authority"),
         }
     }
@@ -296,7 +296,7 @@ pub fn rollback_after_failed_launch_reason(root: &Path, reason: &str) -> Result<
     // evidence, while restoration of the intact fallback remains available.
     if let Some(back) = previous_slot(root) {
         if let Err(reason) = attempts::failed(root, failed, back, reason) {
-            crate::probe!(class = "serving.engine.attempt_receipt_failed", reason = reason.as_str(),
+            continuum_base::probe!(class = "serving.engine.attempt_receipt_failed", reason = reason.as_str(),
                 "failed attempt could not be persisted; restoring the intact fallback");
         }
     }
@@ -505,7 +505,7 @@ fn promote_with_retry(root: &Path, slot: &str, want_stamp: &str, retry: Option<&
 pub fn mark_verified(root: &Path, slot: &str) -> Result<(), String> {
     let slot = known(slot)?;
     if let Err(reason) = attempts::ready(root, slot) {
-        crate::probe!(class = "serving.engine.attempt_receipt_failed", reason = reason.as_str(),
+        continuum_base::probe!(class = "serving.engine.attempt_receipt_failed", reason = reason.as_str(),
             "engine is ready but prior attempt bookkeeping could not be reconciled");
     }
     let path = root.join(slot).join(VERIFIED_FILE);

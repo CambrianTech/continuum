@@ -308,15 +308,15 @@
 
     // what this catches: work/claim id resolution (#161) still rescues the exact
     // live corruptions after the prefix/near-miss logic moved to the shared
-    // crate::id_resolve primitive (#164). Regression pin for the CARD side: the two
+    // continuum_base::id_resolve primitive (#164). Regression pin for the CARD side: the two
     // glass-boxed 2026-07-13 corruptions (9-char first group; a 33-hex variant)
     // classify as a prefix on the intact leading-8 short id, and a bare 8-char short
     // id (what the board shows) does too — so resolve_card_id will expand them
     // against the live board. The pure primitive's full contract is tested in
-    // crate::id_resolve; this proves the card verb delegates to it correctly.
+    // continuum_base::id_resolve; this proves the card verb delegates to it correctly.
     #[test]
     pub(super) fn card_ids_rescue_mistyped_forms_via_shared_id_resolve() {
-        use crate::id_resolve::{normalize, IdMatch};
+        use continuum_base::id_resolve::{normalize, IdMatch};
         assert!(matches!(
             normalize("d7cfe47e-8e39-41f5-bb2a-4e5d36e558e1"),
             IdMatch::Full(_)

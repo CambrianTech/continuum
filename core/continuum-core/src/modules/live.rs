@@ -12,7 +12,7 @@
 //!
 //! Priority: Realtime — voice operations are time-critical.
 
-use crate::time::EpochMs;
+use continuum_base::time::EpochMs;
 use crate::live::audio::buffer::AudioBufferPool;
 use crate::live::audio::resource_lifecycle::AudioResourceLifecycle;
 use crate::live::session::voice_service::VoiceService;

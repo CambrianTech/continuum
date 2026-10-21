@@ -99,7 +99,7 @@ pub(super) async fn serve_persona_loop_inner(
             continue;
         }
         if let Wake::Mind { why, room } = &wake {
-            crate::probe!(
+            continuum_base::probe!(
                 class = "persona.turn.mind_wake",
                 persona = %ctx.identity.agent_name,
                 why = *why,
@@ -125,7 +125,7 @@ pub(super) async fn serve_persona_loop_inner(
         // `continue` at the end of the tick arm included. A manual decrement would have to
         // be repeated at each of them, and would be missed at the next one added.
         let Some(_turn) = crate::cognition::turn_ingress::admit() else {
-            crate::probe!(
+            continuum_base::probe!(
                 class = "persona.ingress.closed",
                 persona = ctx.identity.peer_id.as_uuid().to_string(),
                 "turn ingress closed for shutdown — this citizen takes no further turns and leaves her loop"

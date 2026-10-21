@@ -75,7 +75,7 @@ impl EngineLoraFineTuner {
         let bound = match crate::inference::engine_residency::all(store) {
             Ok(bound) => bound,
             Err(error) => {
-                crate::probe!(
+                continuum_base::probe!(
                     class = "training.reattach.store_unreadable",
                     error = %error,
                     "engine bindings cannot be read at boot: ownership is unknown, so serving stays off every engine it guards"
@@ -93,14 +93,14 @@ impl EngineLoraFineTuner {
                     if let Ok(mut leases) = self.resident_leases.lock() {
                         leases.insert(work.job, guard);
                     }
-                    crate::probe!(
+                    continuum_base::probe!(
                         class = "training.reattach.lease_reclaimed",
                         job = %work.job,
                         bytes = work.reserved_bytes,
                         "a run bound to a live engine by a previous core: its lease is re-taken before anything can admit"
                     );
                 }
-                Err(error) => crate::probe!(
+                Err(error) => continuum_base::probe!(
                     class = "training.reattach.lease_refused",
                     job = %work.job,
                     bytes = work.reserved_bytes,
@@ -149,7 +149,7 @@ impl EngineLoraFineTuner {
                 if let Ok(mut leases) = self.resident_leases.lock() {
                     leases.remove(&job);
                 }
-                crate::probe!(
+                continuum_base::probe!(
                     class = "training.reattach.engine_gone",
                     job = %job,
                     released = matches!(released, Ok(Ok(true))),
@@ -159,7 +159,7 @@ impl EngineLoraFineTuner {
                 Ok(ReattachOutcome::EngineGone { reason })
             }
             Disposition::Uncertain(reason) => {
-                crate::probe!(
+                continuum_base::probe!(
                     class = "training.reattach.uncertain",
                     job = %job,
                     pid = work.engine.pid as u64,
@@ -174,7 +174,7 @@ impl EngineLoraFineTuner {
                 };
                 let lease = self.resident_leases.lock().ok().and_then(|mut leases| leases.remove(&job));
                 if lease.is_none() {
-                    crate::probe!(
+                    continuum_base::probe!(
                         class = "training.reattach.unleased",
                         job = %job,
                         "re-attached without a reclaimed lease: the run's memory is in use but not on the board"
@@ -203,7 +203,7 @@ impl EngineLoraFineTuner {
                 let handle = self.jobs.prepare(job, move |_progress| async move {
                     Ok(PreparedJob { execution: Execution::InPlace(Box::new(run)), finish })
                 });
-                crate::probe!(
+                continuum_base::probe!(
                     class = "training.reattach.attached",
                     job = %job,
                     "a run a previous core started is still this job's in its engine: watched again under the same id, never POSTed again"

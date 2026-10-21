@@ -123,7 +123,7 @@ pub(super) fn note_leased_in_peak(peak: usize) -> usize {
     LAST_LEASED_IN_PEAK.store(peak.min(u32::MAX as usize) as u32, Ordering::Relaxed);
     let mut ring = LEASED_IN_PEAKS.lock().unwrap_or_else(|e| e.into_inner()); // unwrap_or_else: a poisoned ring reads its last state, same policy as every ledger lock here
     let floor = ring
-        .observe(crate::time::EpochMs::now().millis(), peak as u64)
+        .observe(continuum_base::time::EpochMs::now().millis(), peak as u64)
         .min;
     sustained_leased_in(ring.len(), floor as usize)
 }
@@ -206,7 +206,7 @@ impl ServingDaemonModule {
                 static SAID: parking_lot::Mutex<Option<String>> = parking_lot::Mutex::new(None);
                 let mut said = SAID.lock();
                 if said.as_deref() != Some(measured.as_str()) {
-                    crate::probe!(
+                    continuum_base::probe!(
                         target: "continuum_core::modules::serving_daemon", class = "serving.decode_knee.fallback",
                         remembered = model_for_knee.as_deref().unwrap_or("<none>"), // unwrap_or: nothing remembered is a name too
                         measured = measured.as_str(),
@@ -252,7 +252,7 @@ impl ServingDaemonModule {
             std::sync::atomic::AtomicU64::new(u64::MAX);
         let shape = ((lanes as u64) << 32) | clamped as u64;
         if LAST_CLAMP.swap(shape, std::sync::atomic::Ordering::Relaxed) != shape {
-            crate::probe!(
+            continuum_base::probe!(
                 target: "continuum_core::modules::serving_daemon", class = "serving.decode_knee.clamped",
                 model = %model_for_knee.as_deref().unwrap_or_default(), // unwrap_or_default: no model anywhere = no knee = the roster's own count, still worth one row
                 roster_lanes = lanes as u64,

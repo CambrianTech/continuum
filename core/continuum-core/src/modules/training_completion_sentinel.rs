@@ -161,7 +161,7 @@ impl TrainingCompletionSentinel {
                 None => (artifact.metrics.final_loss, "training"),
             };
             if !loss.is_some_and(f64::is_finite) {
-                crate::probe!(
+                continuum_base::probe!(
                     class = "genome.trial.refused",
                     persona = %job.persona_id,
                     gene = job.trait_kind.as_str(),
@@ -203,13 +203,13 @@ impl TrainingCompletionSentinel {
                     &job.trait_kind,
                     std::path::Path::new(&path_str),
                     &job.base_model,
-                    crate::time::EpochMs::now().millis(),
+                    continuum_base::time::EpochMs::now().millis(),
                 )
             });
             let trial = match adopted {
                 Ok(t) => t,
                 Err(refusal) => {
-                    crate::probe!(
+                    continuum_base::probe!(
                         class = "genome.trial.refused",
                         persona = %job.persona_id,
                         gene = job.trait_kind.as_str(),
@@ -219,7 +219,7 @@ impl TrainingCompletionSentinel {
                     return;
                 }
             };
-            crate::probe!(
+            continuum_base::probe!(
                 class = "genome.trial.opened",
                 persona = %job.persona_id,
                 gene = job.trait_kind.as_str(),

@@ -165,7 +165,7 @@ pub(super) async fn install_core(check: bool) -> Result<supervisor_install::ArmR
     // built from this install must track this clone, not the dir it was compiled in. Read
     // mode records nothing; a converged write records the same value it already reads.
     if !check {
-        let recorded = continuum_core::config_env::read(continuum_core::runtime::tracked_checkout::TRACK_REPO_DIR_KEY);
+        let recorded = continuum_base::config_env::read(continuum_core::runtime::tracked_checkout::TRACK_REPO_DIR_KEY);
         if recorded.as_deref() != Some(&*repo.to_string_lossy()) {
             continuum_core::runtime::tracked_checkout::record(&repo)?;
             println!("  core: recorded {} as the tracked checkout (config.env)", repo.display());

@@ -163,7 +163,7 @@ impl MessageBus {
         }
         if self.seen_names.len() >= SEEN_NAMES_CAP {
             if self.seen_names.insert(String::from("\u{0}cap"), ()).is_none() {
-                crate::probe!(
+                continuum_base::probe!(
                     class = "runtime.event_graph.names_capped",
                     cap = SEEN_NAMES_CAP as u64,
                     "the bus stopped recording new event names at its cap — names embedding ids \
@@ -178,7 +178,7 @@ impl MessageBus {
                 .read()
                 .map(|d| is_declared(&d, event_name))
                 .unwrap_or(false); // JUSTIFIED unwrap_or: a poisoned declaration list reads as undeclared, which names the event rather than hiding it
-            crate::probe!(
+            continuum_base::probe!(
                 class = "runtime.event_graph.published",
                 name = %event_name,
                 declared,

@@ -32,7 +32,7 @@ pub(super) fn prepare_socket_and_load_model_registry(
     // condition we can recover from.
     let registry_started = std::time::Instant::now();
     let registry_init = crate::model_registry::init_global();
-    crate::probe!(
+    continuum_base::probe!(
         class = "boot.registry_init",
         outcome = if registry_init.is_ok() { "ok" } else { "error" },
         ms = registry_started.elapsed().as_millis() as u64,

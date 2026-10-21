@@ -193,7 +193,7 @@ impl ServingDaemonModule {
         if real_fails >= HEALTH_FAILS_TO_RELAUNCH as u64 {
             crate::inference::llama_server::reset_real_decode_failures();
             self.health_fails.store(0, Ordering::Relaxed);
-            crate::probe!(
+            continuum_base::probe!(
                 target: "continuum_core::modules::serving_daemon", class = "serving.health",
                 ok = false,
                 via = "real_turn_failures",
@@ -228,7 +228,7 @@ impl ServingDaemonModule {
             if since <= probe_window_ms {
                 *self.frozen_slots.lock() = None;
                 self.health_fails.store(0, Ordering::Relaxed);
-                crate::probe!(
+                continuum_base::probe!(
                     target: "continuum_core::modules::serving_daemon", class = "serving.health",
                     ok = true,
                     via = "real_work",
@@ -300,7 +300,7 @@ impl ServingDaemonModule {
                                 false
                             };
                             if frozen {
-                                crate::probe!(target: "continuum_core::modules::serving_daemon", class = "serving.health", ok = false, via = "frozen_processing_slot",
+                                continuum_base::probe!(target: "continuum_core::modules::serving_daemon", class = "serving.health", ok = false, via = "frozen_processing_slot",
                                     unchanged_ms = FROZEN_ENGINE_MS,
                                     "same engine and processing task progress remained unchanged across the observation interval");
                                 Self::declare_lane_wedged(&force_relaunch, &serving_tx, bus.as_ref(), "frozen: unchanged processing task progress across the observation interval");
@@ -333,7 +333,7 @@ impl ServingDaemonModule {
             .flatten();
         if let Some(pool) = live_pool.as_ref() {
             if pool.smoke_would_overwrite_a_resident() {
-                crate::probe!(
+                continuum_base::probe!(
                     target: "continuum_core::modules::serving_daemon", class = "serving.health",
                     via = "skipped_resident_slot",
                     "no scratch slot and a resident is seated: the smoke probe would overwrite her KV and \
@@ -383,7 +383,7 @@ impl ServingDaemonModule {
                 Some(pool) => match pool.acquire_slot(0).await {
                     Ok(permit) if !pool.smoke_would_overwrite_a_resident() => Some(permit),
                     Ok(_) => {
-                        crate::probe!(
+                        continuum_base::probe!(
                             target: "continuum_core::modules::serving_daemon", class = "serving.health",
                             via = "skipped_resident_slot",
                             under_permit = true,
@@ -393,7 +393,7 @@ impl ServingDaemonModule {
                         return;
                     }
                     Err(e) => {
-                        crate::probe!(target: "continuum_core::modules::serving_daemon", class = "serving.health", via = "skipped_no_permit", error = %e, "the slot permit could not be taken; no probe this tick");
+                        continuum_base::probe!(target: "continuum_core::modules::serving_daemon", class = "serving.health", via = "skipped_no_permit", error = %e, "the slot permit could not be taken; no probe this tick");
                         health_probing.store(false, Ordering::Release);
                         return;
                     }
@@ -427,7 +427,7 @@ impl ServingDaemonModule {
                 crate::inference::llama_server::SmokeMissVerdict::AliveViaSlotProgress
             ) {
                 health_fails.store(0, Ordering::Relaxed);
-                crate::probe!(
+                continuum_base::probe!(
                     target: "continuum_core::modules::serving_daemon", class = "serving.health",
                     ok = true,
                     via = "slot_progress",
@@ -453,7 +453,7 @@ impl ServingDaemonModule {
                 inflight,
                 window,
             );
-            crate::probe!(
+            continuum_base::probe!(
                 target: "continuum_core::modules::serving_daemon", class = "serving.health",
                 ok = false,
                 consecutive = n as u64,
@@ -516,7 +516,7 @@ impl ServingDaemonModule {
         let flipped = ServingSnapshot::degraded(reason.to_string());
         Self::emit_serving(bus, &flipped);
         let _ = serving_tx.send_replace(flipped);
-        crate::probe!(
+        continuum_base::probe!(
             target: "continuum_core::modules::serving_daemon", class = "serving.health",
             action = "relaunch",
             reason = reason,

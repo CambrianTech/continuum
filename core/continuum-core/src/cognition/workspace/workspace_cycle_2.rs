@@ -48,7 +48,7 @@ impl WorkspaceCycle {
 
         ws.activity_room_id = activity_room_id;
         if activity_room_id != ws.room_id {
-            crate::probe!(
+            continuum_base::probe!(
                 class = "act.activity.resolved",
                 activity = %activity_room_id,
                 wake_room = %ws.room_id,
@@ -92,7 +92,7 @@ impl WorkspaceCycle {
                     {
                         Ok(bid) => bid,
                         Err(_) => {
-                            crate::probe!(
+                            continuum_base::probe!(
                                 class = "faculty.deadline.exceeded",
                                 faculty = ?id,
                                 budget_ms = PERCEPTION_DEADLINE.as_millis() as u64,
@@ -105,7 +105,7 @@ impl WorkspaceCycle {
                 }
             }))
             .await;
-        crate::probe!(
+        continuum_base::probe!(
             class = "workspace.perception.done",
             faculties = perception_timed.len() as u64,
             "perception barrier cleared — arbitration next, then deliberation"
@@ -155,7 +155,7 @@ impl WorkspaceCycle {
         // prompt. The silver-harbor failure (recall surfaced at z=5.5σ, [recall]
         // absent from the prompt) was unattributable because BOTH seams were
         // dark (#130).
-        crate::probe!(
+        continuum_base::probe!(
             class = "workspace.attention.focus",
             capacity = self.capacity,
             // The situation that drove this focus — the stat that makes context
@@ -259,7 +259,7 @@ impl WorkspaceCycle {
                 .map(|t| (format!("{:?}", t.faculty), (t.elapsed_us / 1000) as u64))
                 .unwrap_or_else(|| ("none".to_string(), 0)); // unwrap_or_else: an EMPTY timings vec means no faculty ran, so "none"/0 is the honest reading of a tick that measured nothing — it is not a slowest faculty rendered as fast, and `faculties = 0` alongside it says so
             let total_ms: u64 = (timings.iter().map(|t| t.elapsed_us).sum::<u128>() / 1000) as u64;
-            crate::probe!(
+            continuum_base::probe!(
                 class = "cognition.faculty.slowest",
                 room = %ws.room_id,
                 slowest_faculty = %slowest.0,

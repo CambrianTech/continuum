@@ -373,7 +373,7 @@ pub(super) const EMBEDDING_CACHE_FLUSH_SECS: u64 = 60;
 /// flush is a warn, never fatal. Call once at boot, inside the tokio runtime.
 pub fn spawn_embedding_cache_persistence(cache: Arc<EmbeddingCache>, path: std::path::PathBuf) {
     match cache.load_from(&path) {
-        Ok(n) => crate::probe!(
+        Ok(n) => continuum_base::probe!(
             class = "embedding.cache.loaded",
             vectors = n,
             "warmed embedding cache from durable snapshot — no re-embed for cached content"
@@ -393,7 +393,7 @@ pub fn spawn_embedding_cache_persistence(cache: Arc<EmbeddingCache>, path: std::
             let path = path.clone();
             let result = tokio::task::spawn_blocking(move || cache.snapshot_to(&path)).await;
             match result {
-                Ok(Ok(n)) => crate::probe!(
+                Ok(Ok(n)) => continuum_base::probe!(
                     class = "embedding.cache.flushed",
                     vectors = n,
                     "snapshotted embedding cache to durable store"
@@ -604,7 +604,7 @@ impl EmbeddingProvider for NeuralEmbeddingProvider {
                 // looking identical to a genuinely-irrelevant memory. The caller still
                 // degrades (doesn't panic — faculties degrade, never panic), but the
                 // failure is named and observable, not absorbed.
-                crate::probe!(
+                continuum_base::probe!(
                     class = "embedding.neural.failed",
                     model = %self.model_slug,
                     error = %e,
@@ -626,7 +626,7 @@ impl EmbeddingProvider for NeuralEmbeddingProvider {
             match self.adapter.create_embedding(request).await {
                 Ok(resp) if resp.embeddings.len() == chunk.len() => out.extend(resp.embeddings),
                 Ok(resp) => {
-                    crate::probe!(
+                    continuum_base::probe!(
                         class = "embedding.neural.failed",
                         model = %self.model_slug,
                         error = %format!("asked for {} embeddings, got {}", chunk.len(), resp.embeddings.len()),
@@ -635,7 +635,7 @@ impl EmbeddingProvider for NeuralEmbeddingProvider {
                     out.extend(std::iter::repeat_with(Vec::new).take(chunk.len()));
                 }
                 Err(e) => {
-                    crate::probe!(
+                    continuum_base::probe!(
                         class = "embedding.neural.failed",
                         model = %self.model_slug,
                         error = %e,

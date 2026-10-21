@@ -87,7 +87,7 @@ pub fn sweep_stale_page_generations(current: &Path, protect: &[PathBuf]) -> usiz
             }
             let removed = std::fs::remove_dir_all(&stale).is_ok();
             swept += usize::from(removed);
-            crate::probe!(target: "continuum_core::inference::llama_server", class = "inference.kv_page.generation_swept",
+            continuum_base::probe!(target: "continuum_core::inference::llama_server", class = "inference.kv_page.generation_swept",
                 dir = %stale.display(),
                 removed,
                 protected = protected_names.len() as u64,
@@ -316,7 +316,7 @@ pub(super) fn sweep_stale_page_generations_guarded_in(current: &Path, registry_d
     let mut guard = PAGE_DIR_GUARD.lock();
     guard.collect_exited();
     if guard.has_unknown_retiring_dir() {
-        crate::probe!(target: "continuum_core::inference::llama_server", class = "inference.kv_page.sweep_skipped",
+        continuum_base::probe!(target: "continuum_core::inference::llama_server", class = "inference.kv_page.sweep_skipped",
             reason = "owned child exit unproven and page directory unknown",
             retiring_children = guard.retiring.len(),
             "stale-generation sweep skipped until owned child exit is observed"
@@ -326,7 +326,7 @@ pub(super) fn sweep_stale_page_generations_guarded_in(current: &Path, registry_d
     let records = match crate::inference::lane_registry::records_checked_in(registry_dir) {
         Ok(r) => r,
         Err(e) => {
-            crate::probe!(target: "continuum_core::inference::llama_server", class = "inference.kv_page.sweep_skipped",
+            continuum_base::probe!(target: "continuum_core::inference::llama_server", class = "inference.kv_page.sweep_skipped",
                 reason = "lane registry unreadable",
                 error = e.to_string().as_str(),
                 "stale-generation sweep skipped — the live-lane inventory could not be established"

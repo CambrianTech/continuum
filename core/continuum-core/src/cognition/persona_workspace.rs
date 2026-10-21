@@ -12,7 +12,7 @@
 //! supplies the per-tick world-state (the consolidated burst), the persona
 //! supplies the unified memory + identity + faculties.
 
-use crate::time::EpochMs;
+use continuum_base::time::EpochMs;
 use std::collections::HashMap;
 use std::sync::{Arc, OnceLock};
 

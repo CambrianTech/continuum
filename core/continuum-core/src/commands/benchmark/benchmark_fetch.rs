@@ -211,7 +211,7 @@ impl ActionCommand for BenchmarkFetch {
         let page_bytes = ROWS_PER_PAGE * EST_BYTES_PER_ROW;
         let plan = crate::cognition::measurement_staging::plan_against_governor(estimated, page_bytes);
         if let Some(why) = plan.explain_refusal() {
-            crate::probe!(
+            continuum_base::probe!(
                 class = "benchmark.staging.refused",
                 benchmark = spec.name,
                 estimated_bytes = estimated,
@@ -226,7 +226,7 @@ impl ActionCommand for BenchmarkFetch {
         // peer to make room for bytes staging is never going to hold.
         staging.hold(plan.peak_bytes());
         let streaming = matches!(plan, crate::cognition::measurement_staging::StagingPlan::Streamed { .. });
-        crate::probe!(
+        continuum_base::probe!(
             class = "benchmark.staging.plan",
             benchmark = spec.name,
             streaming = streaming,
@@ -288,7 +288,7 @@ impl ActionCommand for BenchmarkFetch {
         staging.drop_all();
 
         let denominator_matches = row_count as u32 == spec.tasks;
-        crate::probe!(
+        continuum_base::probe!(
             class = "benchmark.suite.staged",
             benchmark = spec.name,
             dataset = dataset,

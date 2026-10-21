@@ -32,7 +32,7 @@ pub(crate) async fn dispatch_staged_swe_solve(
     let _hands = match HandsLease::try_take(claimer.as_uuid()) {
         Some(lease) => lease,
         None => {
-            crate::probe!(
+            continuum_base::probe!(
                 class = "work.solve.hands_busy",
                 card_id = %card_id.as_uuid(),
                 claimer = %claimer,
@@ -52,7 +52,7 @@ pub(crate) async fn dispatch_staged_swe_solve(
         let subs = match airc.subscription_set().await {
             Ok(s) => s,
             Err(e) => {
-                crate::probe!(
+                continuum_base::probe!(
                     class = "benchmark.dispatch",
                     card_id = %card_id.as_uuid(),
                     claimer = %claimer,
@@ -70,7 +70,7 @@ pub(crate) async fn dispatch_staged_swe_solve(
         found
     };
     let Some(run_room) = run_room else {
-        crate::probe!(
+        continuum_base::probe!(
             class = "benchmark.dispatch",
             card_id = %card_id.as_uuid(),
             claimer = %claimer,
@@ -80,7 +80,7 @@ pub(crate) async fn dispatch_staged_swe_solve(
         return;
     };
     let Ok(board) = airc.work_board_in(&run_room).await else {
-        crate::probe!(
+        continuum_base::probe!(
             class = "benchmark.dispatch",
             card_id = %card_id.as_uuid(),
             claimer = %claimer,
@@ -90,7 +90,7 @@ pub(crate) async fn dispatch_staged_swe_solve(
     };
     let board = board.snapshot();
     let Some(card) = board.cards.iter().find(|c| c.card_id == card_id) else {
-        crate::probe!(
+        continuum_base::probe!(
             class = "benchmark.dispatch",
             card_id = %card_id.as_uuid(),
             claimer = %claimer,
@@ -116,7 +116,7 @@ pub(crate) async fn dispatch_staged_swe_solve(
     ) {
         crate::persona::staged_workspace::CardWorkspace::One { instance, path } => {
             if env_gate(&instance) {
-                crate::probe!(
+                continuum_base::probe!(
                     class = "benchmark.dispatch",
                     card_id = %card_id.as_uuid(),
                     instance = %instance,
@@ -130,7 +130,7 @@ pub(crate) async fn dispatch_staged_swe_solve(
         }
         // No staged checkout for her matching this card — an ordinary (non-SWE) claim.
         crate::persona::staged_workspace::CardWorkspace::None => {
-            crate::probe!(
+            continuum_base::probe!(
                 class = "benchmark.dispatch",
                 card_id = %card_id.as_uuid(),
                 claimer = %claimer,
@@ -139,7 +139,7 @@ pub(crate) async fn dispatch_staged_swe_solve(
             return;
         }
         crate::persona::staged_workspace::CardWorkspace::Ambiguous { candidates } => {
-            crate::probe!(
+            continuum_base::probe!(
                 class = "benchmark.dispatch",
                 card_id = %card_id.as_uuid(),
                 claimer = %claimer,
@@ -197,7 +197,7 @@ pub(crate) async fn dispatch_staged_swe_solve(
         .into_iter()
         .find(|(id, _)| id == &run_id)
     {
-        crate::probe!(
+        continuum_base::probe!(
             class = "benchmark.dispatch",
             card_id = %card_id.as_uuid(),
             claimer = %claimer,
@@ -223,7 +223,7 @@ pub(crate) async fn dispatch_staged_swe_solve(
             .and_then(|s| s.active_model)
             .unwrap_or_default(); // no recorded activity yet = first dispatch of this card; mint path follows
     if model.is_empty() {
-        crate::probe!(
+        continuum_base::probe!(
             class = "benchmark.dispatch",
             card_id = %card_id.as_uuid(),
             claimer = %claimer,
@@ -245,7 +245,7 @@ pub(crate) async fn dispatch_staged_swe_solve(
     // real activity room, child of the run room, and record it.
     let solve_room = match crate::cognition::bench_round::card_activity(card_id.as_uuid()) {
         Some(mut act) => {
-            crate::probe!(
+            continuum_base::probe!(
                 class = "work.solve.room_rejoined",
                 card_id = %short8(card_id.as_uuid()),
                 claimer = %short8(claimer.as_uuid()),
@@ -300,7 +300,7 @@ pub(crate) async fn dispatch_staged_swe_solve(
                     // card ghost-settled. Until airc grows subscribe-without-
                     // focus (#290), the mint restores the pointer itself.
                     if let Err(e) = spawner.join(&run_room.name).await {
-                        crate::probe!(
+                        continuum_base::probe!(
                             class = "work.solve.room_mint_failed",
                             card_id = %short8(card_id.as_uuid()),
                             error = %e.to_string(),
@@ -317,7 +317,7 @@ pub(crate) async fn dispatch_staged_swe_solve(
                         card_id.as_uuid(),
                         act.clone(),
                     ); // clone: probe below still reads the local
-                    crate::probe!(
+                    continuum_base::probe!(
                         class = "work.solve.room_minted",
                         card_id = %short8(card_id.as_uuid()),
                         claimer = %short8(claimer.as_uuid()),
@@ -331,7 +331,7 @@ pub(crate) async fn dispatch_staged_swe_solve(
                     // A mint failure must not strand the work invisible: fall back
                     // to the run room (a real activity, just coarser-grained) and
                     // say so. The next re-fire retries the mint.
-                    crate::probe!(
+                    continuum_base::probe!(
                         class = "work.solve.room_mint_failed",
                         card_id = %short8(card_id.as_uuid()),
                         claimer = %short8(claimer.as_uuid()),
@@ -358,7 +358,7 @@ pub(crate) async fn dispatch_staged_swe_solve(
                 crate::persona::airc_runtime_registry::PersonaAircRuntimeRegistry::try_global()
                     .and_then(|reg| reg.get(mate.as_uuid()))
             else {
-                crate::probe!(
+                continuum_base::probe!(
                     class = "work.team.join_skipped",
                     card_id = %short8(card_id.as_uuid()),
                     mate = %short8(mate.as_uuid()),
@@ -371,7 +371,7 @@ pub(crate) async fn dispatch_staged_swe_solve(
                 continue;
             }
             if let Err(e) = rt.join_room(&team_room_name).await {
-                crate::probe!(
+                continuum_base::probe!(
                     class = "work.team.join_failed",
                     card_id = %short8(card_id.as_uuid()),
                     mate = %short8(mate.as_uuid()),
@@ -401,7 +401,7 @@ pub(crate) async fn dispatch_staged_swe_solve(
                         .and_then(|reg| reg.any_live_citizen_other_than(Some(mate.as_uuid())))
                 });
             let Some(voice_rt) = voice_rt else {
-                crate::probe!(
+                continuum_base::probe!(
                     class = "work.team.charge_unvoiced",
                     card_id = %short8(card_id.as_uuid()),
                     mate = %short8(mate.as_uuid()),
@@ -413,7 +413,7 @@ pub(crate) async fn dispatch_staged_swe_solve(
             // Membership is what makes the room deliverable for the voice too
             // (idempotent; same rule as the kickoff's voice-join).
             if let Err(e) = voice_rt.join_room(&team_room_name).await {
-                crate::probe!(
+                continuum_base::probe!(
                     class = "work.team.voice_join_failed",
                     card_id = %short8(card_id.as_uuid()),
                     mate = %short8(mate.as_uuid()),
@@ -442,14 +442,14 @@ pub(crate) async fn dispatch_staged_swe_solve(
             )
             .await
             {
-                Ok(_) => crate::probe!(
+                Ok(_) => continuum_base::probe!(
                     class = "work.team.joined",
                     card_id = %short8(card_id.as_uuid()),
                     mate = %short8(mate.as_uuid()),
                     room = %solve_room,
                     "teammate joined the solve room and holds the review charge"
                 ),
-                Err(e) => crate::probe!(
+                Err(e) => continuum_base::probe!(
                     class = "work.team.invite_failed",
                     card_id = %short8(card_id.as_uuid()),
                     mate = %short8(mate.as_uuid()),
@@ -518,7 +518,7 @@ pub(crate) async fn dispatch_staged_swe_solve(
         .run(ctx, params)
         .await
     {
-        Ok(ack) => crate::probe!(
+        Ok(ack) => continuum_base::probe!(
             class = "benchmark.dispatch",
             card_id = %card_id.as_uuid(),
             claimer = %claimer,
@@ -526,7 +526,7 @@ pub(crate) async fn dispatch_staged_swe_solve(
             run_id = %ack.run_id.unwrap_or_default(),
             "claim dispatched a detached work session"
         ),
-        Err(e) => crate::probe!(
+        Err(e) => continuum_base::probe!(
             class = "benchmark.dispatch",
             card_id = %card_id.as_uuid(),
             claimer = %claimer,

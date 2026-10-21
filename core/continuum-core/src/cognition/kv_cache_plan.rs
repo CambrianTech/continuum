@@ -388,7 +388,7 @@ static HOST_BACKEND: OnceLock<ServingBackend> = OnceLock::new();
 pub fn record_host_backend(platform: &str) {
     let backend = ServingBackend::from_platform(platform);
     let _ = HOST_BACKEND.set(backend);
-    crate::probe!(
+    continuum_base::probe!(
         class = "serving.kv_cache.backend",
         platform = platform,
         backend = backend.label(),
@@ -419,7 +419,7 @@ fn host_backend(placement_cfg: Option<&str>) -> ServingBackend {
 /// assignment wins — the same `source` semantics every other reader gets), so this is
 /// no more I/O than the single `config_env::read` it replaced.
 pub fn resolve() -> KvCachePlan {
-    let cfg = crate::config_env::read_all();
+    let cfg = continuum_base::config_env::read_all();
     resolve_from(
         host_backend(pick(&cfg, "CONTINUUM_SERVING_PLACEMENT")),
         engine_quantized_kv_support(),
@@ -429,7 +429,7 @@ pub fn resolve() -> KvCachePlan {
 }
 
 /// One key out of an already-parsed `config.env`, last assignment winning — the same
-/// shell `source` semantics [`crate::config_env::read`] gives a single-key read.
+/// shell `source` semantics [`continuum_base::config_env::read`] gives a single-key read.
 fn pick<'a>(cfg: &'a [(String, String)], key: &str) -> Option<&'a str> {
     cfg.iter()
         .rev()

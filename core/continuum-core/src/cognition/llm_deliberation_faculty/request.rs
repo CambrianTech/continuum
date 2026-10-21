@@ -156,7 +156,7 @@ impl LlmDeliberationFaculty {
         // today that diagnosis ran on the BID capture, which is not the wire,
         // and misled twice. Off (unset) = zero cost, zero IO — the Noop default
         // every capture sink owes the hot path.
-        if let Some(dir) = crate::config_env::read("SERVING_WIRE_CAPTURE_DIR") {
+        if let Some(dir) = continuum_base::config_env::read("SERVING_WIRE_CAPTURE_DIR") {
             append_wire_capture(std::path::Path::new(&dir), self.persona_id, &self.persona_name, ws.room_id, &request);
         }
         // MEASURED-HOLD DEFER, ABOVE the admission gates (2026-08-29). The adapter's
@@ -167,7 +167,7 @@ impl LlmDeliberationFaculty {
         // the hold. Priority inversion; the solve's tick 2 waited forever on a
         // permit a deferred dream held. Defer FIRST, holding nothing; the adapter
         // seam stays as the backstop for entry paths that skip these gates.
-        crate::probe!(
+        continuum_base::probe!(
             class = "delib.defer.entered",
             persona = %self.persona_name,
             directed = ws.directed_at_self(),
@@ -183,7 +183,7 @@ impl LlmDeliberationFaculty {
             )
             .await;
         }
-        crate::probe!(
+        continuum_base::probe!(
             class = "delib.defer.passed",
             persona = %self.persona_name,
             "past the pre-gate defer — admission gates next"
@@ -238,7 +238,7 @@ impl LlmDeliberationFaculty {
             let turn_bound = crate::inference::turn_bound::from_expectation(expected_turn);
             let (lane_bound, lane_bound_source) =
                 crate::inference::turn_bound::effective_bound_with_source(lane_bound, turn_bound);
-            crate::probe!(
+            continuum_base::probe!(
                 class = "delib.gate.lane_wait",
                 persona = %self.persona_name,
                 directed = ws.directed_at_self(),
@@ -296,7 +296,7 @@ impl LlmDeliberationFaculty {
                     lane = crate::cognition::resource_admission::acquire_serving_lane(Some(self.persona_id), priority, expected) => Some(lane),
                     _ = tokio::time::sleep(lane_bound) => None,
                     _ = crate::cognition::directed_pending::wait(self.persona_id) => {
-                        crate::probe!(
+                        continuum_base::probe!(
                             class = "delib.gate.yielded_to_directed",
                             persona = %self.persona_name,
                             "parked self-work lane wait yielded: a directed line is pending"
@@ -318,7 +318,7 @@ impl LlmDeliberationFaculty {
             // generation was dispatched, so it is a WAIT, not an act, and her act
             // budget survives it intact.
             let Some(_lane) = lane_or_starved else {
-                crate::probe!(
+                continuum_base::probe!(
                     class = "persona.act.lane_starved",
                     persona = %self.persona_name,
                     directed = ws.directed_at_self(),
@@ -374,10 +374,10 @@ impl LlmDeliberationFaculty {
             // generation is her thinking this instant, the strongest witness there is.
             crate::persona::cognition_pulse::touch(
                 self.persona_id,
-                crate::time::EpochMs::now().millis(), // pre-1970 reads 0: a pre-1970 clock stamps 0, which DENIES renewal — the conservative direction, same as no stamp
+                continuum_base::time::EpochMs::now().millis(), // pre-1970 reads 0: a pre-1970 clock stamps 0, which DENIES renewal — the conservative direction, same as no stamp
             );
             crate::ipc::vitals_emitter::record_reasoning(self.persona_id);
-            crate::probe!(
+            continuum_base::probe!(
                 class = "delib.gate.lane_acquired",
                 persona = %self.persona_name,
                 "lane admission granted — prefill slot next"
@@ -388,7 +388,7 @@ impl LlmDeliberationFaculty {
             // for the 2026-07-16 compute-buffer OOM. Same fit rule the capacity sim proves;
             // no pressure → target == lanes → this never waits. Released with the block.
             let _prefill = crate::cognition::prefill_throttle::acquire_prefill_slot().await;
-            crate::probe!(
+            continuum_base::probe!(
                 class = "delib.gate.prefill_acquired",
                 persona = %self.persona_name,
                 "prefill slot granted — issuing the model call"
@@ -489,7 +489,7 @@ impl LlmDeliberationFaculty {
             .and_then(|reg| reg.need_of(self.persona_id));
         let derived = output_allowance(kind, rate.tps, need, allowance);
         let max_tokens = derived.allowance;
-        crate::probe!(
+        continuum_base::probe!(
             class = "delib.turn.output_allowance",
             persona = %self.persona_name,
             kind = kind.label(),

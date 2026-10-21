@@ -21,7 +21,7 @@ pub(super) async fn try_neural_embedder(
     // (the assumed-zero floor is the bug that let saturated chatter surface on
     // 11/11 unrelated coding tasks, 2026-07-10).
     let (mean, std) = neural.calibrate().await;
-    crate::probe!(
+    continuum_base::probe!(
         class = "recall.embedder.calibrated",
         model = %model,
         null_mean = mean,
@@ -44,7 +44,7 @@ pub(super) async fn try_neural_embedder(
             crate::resources::ResourceKind::Vram,
             EMBED_LANE_VRAM_BYTES,
         );
-        crate::probe!(
+        continuum_base::probe!(
             class = "embed.vram.reserved",
             consumer = EMBED_LANE_CONSUMER_ID,
             bytes = EMBED_LANE_VRAM_BYTES,
@@ -144,7 +144,7 @@ pub async fn resolve_recall_embedder(
     // The embedding-SPACE identity (cache key). Defaults to the canonical grid
     // embedder; an operator standardizing on a different embed model overrides it
     // so in-process and gateway vectors stay in one comparable space.
-    let model = crate::config_env::read("UNSLOTH_EMBED_MODEL")
+    let model = continuum_base::config_env::read("UNSLOTH_EMBED_MODEL")
         .filter(|m| !m.trim().is_empty())
         .unwrap_or_else(|| CANONICAL_EMBED_MODEL.to_string());
 
@@ -152,7 +152,7 @@ pub async fn resolve_recall_embedder(
     //    the chat model, so changing Asha's brain never disturbs recall. ONE
     //    shared instance process-wide — see [`Rung1State`].
     if let Some((provider, gguf_id)) = shared_in_process_embedder(&model).await {
-        crate::probe!(
+        continuum_base::probe!(
             class = "recall.embedder.resolved",
             kind = "neural",
             source = "in-process-llamacpp",
@@ -170,7 +170,7 @@ pub async fn resolve_recall_embedder(
         .has(crate::model_registry::Capability::Embedding)
     {
         if let Some(provider) = try_neural_embedder(adapter, &model).await {
-            crate::probe!(
+            continuum_base::probe!(
                 class = "recall.embedder.resolved",
                 kind = "neural",
                 source = "chat-adapter-embeddings",
@@ -183,7 +183,7 @@ pub async fn resolve_recall_embedder(
 
     // 3. Floor: lexical word-overlap. Legitimate for a box with no embed model,
     //    but LOUD — a degraded semantic recall must be diagnosable, not silent.
-    crate::probe!(
+    continuum_base::probe!(
         class = "recall.embedder.resolved",
         kind = "lexical",
         source = "fallback",
@@ -203,12 +203,12 @@ pub async fn resolve_recall_embedder(
 /// chat-adapter `/v1/embeddings` rung (rung 2) that only a persona's own adapter
 /// can provide. Always returns a usable embedder — never errors, never panics.
 pub async fn resolve_recall_embedder_local() -> Arc<dyn EmbeddingProvider> {
-    let model = crate::config_env::read("UNSLOTH_EMBED_MODEL")
+    let model = continuum_base::config_env::read("UNSLOTH_EMBED_MODEL")
         .filter(|m| !m.trim().is_empty())
         .unwrap_or_else(|| CANONICAL_EMBED_MODEL.to_string());
 
     if let Some((provider, gguf_id)) = shared_in_process_embedder(&model).await {
-        crate::probe!(
+        continuum_base::probe!(
             class = "recall.embedder.resolved",
             kind = "neural",
             source = "in-process-llamacpp-global",
@@ -219,7 +219,7 @@ pub async fn resolve_recall_embedder_local() -> Arc<dyn EmbeddingProvider> {
         return provider;
     }
 
-    crate::probe!(
+    continuum_base::probe!(
         class = "recall.embedder.resolved",
         kind = "lexical",
         source = "fallback-global",

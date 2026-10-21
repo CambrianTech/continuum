@@ -338,7 +338,7 @@ impl TurnCreditCapture {
     ) -> Option<Self> {
         let credit = credit.filter(|credit| credit.is_card_linked())?;
         let Some(executor) = EXECUTOR.cloned() else {
-            crate::probe!(
+            continuum_base::probe!(
                 class = "training.credit.stage_unavailable",
                 persona = %persona_id,
                 card = %credit.card_id,
@@ -440,7 +440,7 @@ impl TurnCreditCapture {
             Ok(_) => {
                 self.superseded.clear();
                 crate::modules::citizen_health::note_credit_staged();
-                crate::probe!(
+                continuum_base::probe!(
                     class = "training.credit.staged",
                     persona = %self.persona_name,
                     card = %self.credit.card_id,
@@ -454,7 +454,7 @@ impl TurnCreditCapture {
                 true
             }
             Err(error) => {
-                crate::probe!(
+                continuum_base::probe!(
                     class = "training.credit.stage_failed",
                     persona = %self.persona_name,
                     card = %self.credit.card_id,
@@ -570,7 +570,7 @@ pub fn produce_with_id(
     // path below), a lesson another citizen deliberately taught, or a curated/teacher
     // corpus. The whole recorded turn as the example is card ad107e18.
     let Some(credit) = credit.filter(|c| c.is_card_linked()) else {
-        crate::probe!(
+        continuum_base::probe!(
             class = "training.example.unverified",
             persona = %persona_name,
             prompt_chars = prompt.len() as u64,
@@ -624,7 +624,7 @@ pub fn produce_with_id(
         )
         .await
         {
-            Ok(submission_id) => crate::probe!(
+            Ok(submission_id) => continuum_base::probe!(
                 class = "training.credit.staged",
                 replaced_partial = replaces.is_some(),
                 persona = %persona_name,
@@ -636,7 +636,7 @@ pub fn produce_with_id(
             // Best-effort: a staging failure must
             // never touch the turn that already happened. NAMED, not swallowed
             // — a turn that failed to stage is credit that silently vanished.
-            Err(e) => crate::probe!(
+            Err(e) => continuum_base::probe!(
                 class = "training.credit.stage_failed",
                 persona = %persona_name,
                 card = %credit.card_id,

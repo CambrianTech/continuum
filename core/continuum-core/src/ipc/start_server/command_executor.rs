@@ -156,14 +156,14 @@ pub(super) fn release_executor_dependents(
                     )
                     .await
                     {
-                        crate::probe!(
+                        continuum_base::probe!(
                             class = "node.command_pump.boot_failed",
                             error = %e.to_string(),
                             "the node cannot answer cross-grid commands this boot — minds seated here by its beacon will time out until it can"
                         );
                     }
                 }
-                Err(e) => crate::probe!(
+                Err(e) => continuum_base::probe!(
                     class = "node.command_pump.boot_failed",
                     error = %e.to_string(),
                     "no continuum home for the node pump's state — the node cannot answer cross-grid commands this boot"
