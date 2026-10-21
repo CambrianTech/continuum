@@ -1,10 +1,10 @@
 #![cfg(test)]
 
 use super::*;
-use crate::ai::types::ToolCall;
 use crate::cognition::workspace::WorkspaceCycle;
-use uuid::Uuid;
 use crate::cognition::workspace::SalienceArbiter;
+use crate::ai::types::ToolCall;
+use uuid::Uuid;
 use std::sync::Arc;
 use std::sync::Mutex;
 

@@ -1,6 +1,22 @@
 #![cfg(test)]
 
 use super::*;
+use crate::cognition::workspace::Decision;
+use crate::cognition::workspace::Situation;
+use crate::cognition::workspace::TurnFraming;
+use crate::cognition::workspace::WorkspaceCycle;
+use crate::cognition::workspace::Contribution;
+use crate::cognition::workspace::Faculty;
+use crate::cognition::workspace::FacultyId;
+use crate::cognition::workspace::SalienceArbiter;
+use crate::cognition::workspace::Workspace;
+use crate::ai::types::ToolCall;
+use uuid::Uuid;
+use async_trait::async_trait;
+use std::sync::Arc;
+use std::sync::Mutex;
+use crate::cognition::working_memory::WorkingMemory;
+use crate::cognition::working_memory::WorkingMemoryFaculty;
 
 
 /// what this catches: the no-deliverable nudge going back to ONE-SHOT. The first version
