@@ -177,6 +177,12 @@ use super::*;
     #[tokio::test]
     pub(super) async fn the_lived_copy_is_shed_by_the_substrate_not_by_her_identity() {
         use crate::ai::types::{TextGenerationRequest, TextGenerationResponse};
+        // Her store resolves through the process home (`@persona:<name>` under $HOME). Without
+        // its own pinned home this test raced the home-mutating fixtures: ensure-schema and the
+        // batch resolved to two different databases ("no such table: staged_credit", card
+        // d4909786, on #5239 and #5244), and it wrote into the REAL ~/.continuum/personas/kimi.
+        let home = tempfile::tempdir().expect("tempdir");
+        let _home = HomeGuard::set(home.path()).await;
         let executor = data_runtime();
         let persona = Uuid::new_v4();
         let name = "kimi";
