@@ -621,6 +621,9 @@ pub struct AgentHandle {
     pub audio_track_sid: String,
 }
 
+// =============================================================================
+// Reader thread — receives responses + pushed events from bridge
+// =============================================================================
 /// Media-plane pump: drain the bounded queue onto the shared socket writer.
 /// Runs on its own thread so a slow/stalled bridge back-pressures into DROPPED
 /// frames (counted at enqueue) instead of blocking speak turns or the Bevy

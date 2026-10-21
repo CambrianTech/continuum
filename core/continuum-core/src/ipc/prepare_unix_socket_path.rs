@@ -66,6 +66,9 @@ pub fn global_room_substrates() -> std::sync::Arc<continuum_positron::scoping::P
         .clone()
 }
 
+// ============================================================================
+// IPC Server State
+// ============================================================================
 /// The socket path's ONE routing decision: a command string that names a PEER or a
 /// ROOM (`airc://<peer>[@node]/<path>`, `airc://#room/<path>`) is dispatched by the
 /// CommandExecutor, which owns the URI grammar and the remote transport; anything
@@ -150,6 +153,9 @@ impl ServerState {
     }
 }
 
+// ============================================================================
+// Handle Result - supports JSON and binary responses
+// ============================================================================
 /// Result from handling an IPC request.
 /// Binary variant allows raw PCM audio to bypass base64 encoding entirely.
 pub(super) enum HandleResult {
@@ -188,6 +194,9 @@ pub(super) enum Outbound {
     },
 }
 
+// ============================================================================
+// Connection Handler - Length-Prefixed Binary Framing
+// ============================================================================
 /// Send a length-prefixed JSON response frame.
 /// Frame format: [4 bytes u32 BE length][JSON payload bytes]
 pub(super) fn send_json_frame<S: Write>(stream: &mut S, response: &Response) -> std::io::Result<()> {
@@ -593,6 +602,9 @@ pub(super) fn handle_client<S: IpcStream>(
     Ok(())
 }
 
+// ============================================================================
+// Server Main Loop
+// ============================================================================
 /// Ready-edge watch for the IPC server — flips `false → true` exactly
 /// once when the Unix socket is bound + chmod'd. Any consumer can
 /// `subscribe_ready()` to get a `watch::Receiver<bool>` and await the

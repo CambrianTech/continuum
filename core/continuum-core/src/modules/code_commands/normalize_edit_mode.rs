@@ -137,6 +137,7 @@ impl ActionCommand for CodeEdit {
     }
 }
 
+// ─────────────────────────── code/list ───────────────────────────
 /// List a directory (flat, non-recursive).
 pub struct CodeList {
     pub state: Arc<CodeState>,
@@ -277,6 +278,7 @@ pub(super) fn list_result_from_glob(pattern: &str, glob: GlobResult) -> ListResu
     }
 }
 
+// ─────────────────────────── code/exists ─────────────────────────
 /// Check whether a path exists and what kind of entry it is.
 pub struct CodeExists {
     pub state: Arc<CodeState>,
@@ -304,6 +306,7 @@ impl ActionCommand for CodeExists {
     }
 }
 
+// ─────────────────────────── code/glob ───────────────────────────
 /// Find files by glob pattern.
 pub struct CodeGlob {
     pub state: Arc<CodeState>,
@@ -335,6 +338,7 @@ impl ActionCommand for CodeGlob {
     }
 }
 
+// ─────────────────────────── code/tree ───────────────────────────
 /// Print a recursive directory tree.
 pub struct CodeTree {
     pub state: Arc<CodeState>,
@@ -380,6 +384,7 @@ impl ActionCommand for CodeTree {
     }
 }
 
+// ─────────────────────────── code/search ─────────────────────────
 /// Heuristic: does this string look like a FILE GLOB (a path pattern) rather than a
 /// grep term/regex? Conservative — requires a `*`/`?` AND a path-glob shape (`/`, `**`,
 /// or a leading `*.ext`) AND no whitespace — so a genuine content regex like `foo.*bar`
@@ -538,6 +543,7 @@ impl ActionCommand for CodeSearch {
     }
 }
 
+// ─────────────────────────── code/shell ──────────────────────────
 /// Run a command in a fresh shell process using the caller's workspace (the agentic
 /// primitive — build, test, git, training, a daemon). `Privileged` → the Trusted
 /// tier: a local persona or trusted node may run it; a remote `Provisional` peer
@@ -662,6 +668,7 @@ impl ActionCommand for CodeShell {
     }
 }
 
+// ─────────────────────────── code/shell-poll ─────────────────────
 /// Poll a running (or finished) shell execution by its handle — the read half of
 /// the handle-based long-running contract.
 pub struct CodeShellPoll {
@@ -719,6 +726,7 @@ pub(super) fn execution_lookup_error(e: crate::modules::code::ExecutionLookup) -
     }
 }
 
+// ─────────────────────────── code/shell-kill ─────────────────────
 /// Terminate a running shell execution by its handle.
 pub struct CodeShellKill {
     pub state: Arc<CodeState>,

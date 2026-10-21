@@ -696,6 +696,7 @@ pub async fn handle_job_queue(
     })))
 }
 
+// ── Remote delegation helper ────────────────────────────────────────────
 /// Check if a nodeId refers to the local machine.
 pub(super) fn is_local_node(state: &Arc<GridState>, node_id: &str) -> bool {
     if node_id.is_empty() || node_id == "local" {

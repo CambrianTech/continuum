@@ -2,6 +2,7 @@
 
     use super::*;
 
+    // ─── Anthropic XML ──────────────────────────────────────────
     #[test]
     pub(super) fn anthropic_basic() {
         let text = r#"I'll search for that.
@@ -46,6 +47,7 @@ Then:
         assert_eq!(matches[0].parameters.get("proposalId").unwrap(), "abc-123");
     }
 
+    // ─── Function-style ─────────────────────────────────────────
     #[test]
     pub(super) fn function_style_json() {
         let text = r#"<function=adapter_search> {"query": "embedding module"} </function>"#;
@@ -112,6 +114,7 @@ Then:
         assert_eq!(matches[0].parameters.get("operation").unwrap(), "log");
     }
 
+    // ─── Bare JSON ──────────────────────────────────────────────
     #[test]
     pub(super) fn bare_basic() {
         let text = r#"code/search {"query": "memory clustering", "path": "./src/"}"#;
@@ -171,6 +174,7 @@ Then:
         assert_eq!(matches[0].tool_name, "code/read");
     }
 
+    // ─── JSON Object ────────────────────────────────────────────
     #[test]
     pub(super) fn json_object_basic() {
         let text = r#"I'll check that. {"name": "code_tree", "parameters": {"path": "."}}"#;
@@ -213,6 +217,7 @@ Then:
         );
     }
 
+    // ─── Markdown backtick ──────────────────────────────────────
     #[test]
     pub(super) fn markdown_basic() {
         let text = "`tool: collaboration/dm` `participants=helper`";
@@ -245,6 +250,7 @@ Then:
         assert_eq!(matches[1].tool_name, "code/write");
     }
 
+    // ─── Old-style XML ──────────────────────────────────────────
     #[test]
     pub(super) fn old_style_basic() {
         let text = r#"<tool name="code/search"><pattern>hello</pattern><path>./src</path></tool>"#;
@@ -266,6 +272,7 @@ Then:
         assert_eq!(matches[0].parameters.get("filePath").unwrap(), "test.ts");
     }
 
+    // ─── parse_all_formats ──────────────────────────────────────
     #[test]
     pub(super) fn all_formats_mixed() {
         let text = r#"
@@ -286,6 +293,7 @@ Then also:
         assert_eq!(matches.len(), 0);
     }
 
+    // ─── Helpers ────────────────────────────────────────────────
     #[test]
     pub(super) fn xml_params_extraction() {
         let block = "<name>Operator</name><age>30</age>";
@@ -315,6 +323,7 @@ Then also:
         assert!(parse_json_params("").is_empty());
     }
 
+    // ─── Unsanitize ─────────────────────────────────────────────
     #[test]
     pub(super) fn unsanitize_simple() {
         assert_eq!(unsanitize_tool_name("code_tree"), "code/tree");
@@ -348,6 +357,7 @@ Then also:
         assert_eq!(unsanitize_tool_name("foobar_baz"), "foobar_baz");
     }
 
+    // ─── Array-style ─────────────────────────────────────────────
     #[test]
     pub(super) fn array_style_basic() {
         let text = r#"["code/search", {"pattern": "test"}]"#;
@@ -389,6 +399,7 @@ Then also:
         assert_eq!(matches[0].tool_name, "code/search");
     }
 
+    // ─── Curly-shorthand ────────────────────────────────────────
     #[test]
     pub(super) fn curly_shorthand_basic() {
         let text = r#"{"code_tree": {"path": "."}}"#;
@@ -439,6 +450,7 @@ Then also:
         assert_eq!(matches.len(), 0);
     }
 
+    // ─── Full parse_all_formats with sanitized names ────────────
     #[test]
     pub(super) fn all_formats_catches_groq_output() {
         // Real Groq Llama output: sanitized tool name + JSON + stray </function>
@@ -485,6 +497,7 @@ Then also:
         assert_eq!(curly_match.unwrap().tool_name, "collaboration/wall/write");
     }
 
+    // ─── Colon shorthand (QAT local model format) ──────────────────
     #[test]
     pub(super) fn colon_shorthand_simple_read() {
         // code/read: {filePath: "app.py"}
@@ -567,6 +580,7 @@ Then also:
         assert_eq!(matches.len(), 0);
     }
 
+    // ─── Bare-value variant (degraded model output) ─────────────────
     #[test]
     pub(super) fn colon_bare_read() {
         let text = "code/read: hello.py";
@@ -665,6 +679,11 @@ Then also:
         assert_eq!(params.get("path").unwrap(), "./src");
     }
 
+    // ═══════════════════════════════════════════════════════════════
+    // Model-family parsers
+    // ═══════════════════════════════════════════════════════════════
+
+    // ─── DeepSeek ──────────────────────────────────────────────────
     #[test]
     pub(super) fn deepseek_single_tool() {
         let text = "Let me search for that.\n\u{FF1C}\u{FF5C}tool\u{2581}calls\u{2581}begin\u{FF5C}\u{FF1E}\n{\"name\": \"code_search\", \"arguments\": {\"pattern\": \"memory clustering\"}}\n\u{FF1C}\u{FF5C}tool\u{2581}calls\u{2581}end\u{FF5C}\u{FF1E}\nDone.";
@@ -719,6 +738,7 @@ Then also:
         assert_eq!(matches.len(), 0);
     }
 
+    // ─── Llama ──────────────────────────────────────────────────────
     #[test]
     pub(super) fn llama_basic() {
         let text =
@@ -764,6 +784,7 @@ Then also:
         assert_eq!(matches.len(), 0);
     }
 
+    // ─── Mistral ────────────────────────────────────────────────────
     #[test]
     pub(super) fn mistral_basic() {
         let text =

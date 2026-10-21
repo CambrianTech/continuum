@@ -46,6 +46,7 @@ pub(super) async fn release_live_claim_on_reopen(airc: &Arc<Airc>, card_id: Work
     }
 }
 
+// ─────────────────────────── work/note ──────────────────────────
 /// Write the held card's evidence ledger — the saved state of the thought.
 pub struct WorkNote {
     pub registry: PersonaAircRuntimeRegistry,
@@ -162,6 +163,7 @@ impl ActionCommand for WorkNote {
     }
 }
 
+// ─────────────────────────── work/heartbeat ──────────────────────
 /// Extend this persona's claim lease on a card during long work.
 pub struct WorkHeartbeat {
     pub registry: PersonaAircRuntimeRegistry,
@@ -227,6 +229,16 @@ impl ActionCommand for WorkHeartbeat {
     }
 }
 
+// ─────────────────────────── work/list + work/get ─────────────────
+//
+// The READ half the board proved it needed live (#309, 2026-08-03): the
+// surface was claim/create/release/state/heartbeat — write-only. Card
+// content reached personas ONLY through the perception-side projection,
+// so a persona that missed the render (or wanted to re-verify a spec)
+// had no tool to fetch it. "I don't have access to the work card" was
+// LITERALLY TRUE: the claimant of the bakery card could not re-read its
+// own requirements, and the card sat at five plans / zero files. Every
+// write-only surface eventually proves it needs its read half.
 /// Inverse of [`parse_state`] — the wire spelling of a card state.
 pub(crate) fn state_str(s: &CardState) -> &'static str {
     match s {
@@ -619,6 +631,13 @@ impl ActionCommand for WorkList {
     }
 }
 
+// ───────────────────────── work/similar · work/duplicates ─────────────────────────
+//
+// The board's "which of these is the same card" question, answered in the ONE
+// embedding space. Measured 2026-09-16: 118 open cards, astropy-12907 open EIGHT
+// times, sympy-24152 five — and no surface could show it, so the triage never
+// started. Both compose the text-level primitives (`embedding/similar` /
+// `embedding/groups`); the only board-specific part is what text stands for a card.
 /// What a card SAYS, for similarity: its title plus the head of its body. The title
 /// alone catches instance duplicates (the bench cards' titles are identical); the
 /// body head catches engineering cards that name the same defect in different words.

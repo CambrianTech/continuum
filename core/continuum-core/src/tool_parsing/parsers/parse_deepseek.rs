@@ -51,6 +51,13 @@ pub(super) fn parse_deepseek(text: &str) -> Vec<RawToolMatch> {
     results
 }
 
+// ─── Llama ─────────────────────────────────────────────────────────
+//
+// Llama 3.1+ uses `<|python_tag|>` prefix followed by JSON:
+//   <|python_tag|>{"name": "code_search", "arguments": {"pattern": "test"}}
+//
+// Also handles the function-call wrapper format:
+//   <|python_tag|>{"type": "function", "function": {"name": "...", "arguments": {...}}}
 pub(super) static RE_LLAMA_BLOCK: Lazy<Regex> =
     Lazy::new(|| Regex::new(r"(?s)<\|python_tag\|>\s*(.+?)(?:<\|eot_id\|>|\z)").unwrap());
 
@@ -158,6 +165,10 @@ pub(super) fn extract_arguments_field(
     }
 }
 
+// ─── Mistral ───────────────────────────────────────────────────────
+//
+// Mistral/Mixtral uses `[TOOL_CALLS]` prefix followed by JSON array:
+//   [TOOL_CALLS] [{"name": "code_search", "arguments": {"pattern": "test"}}]
 pub(super) static RE_MISTRAL_BLOCK: Lazy<Regex> =
     Lazy::new(|| Regex::new(r"(?s)\[TOOL_CALLS\]\s*(\[.+?\])").unwrap());
 
@@ -191,6 +202,12 @@ pub(super) fn parse_mistral(text: &str) -> Vec<RawToolMatch> {
     results
 }
 
+// ─── Hermes ────────────────────────────────────────────────────────
+//
+// Hermes-tuned (Nous Research) uses `<tool_call>` tags with JSON body:
+//   <tool_call>
+//   {"name": "code_search", "arguments": {"pattern": "test"}}
+//   </tool_call>
 pub(super) static RE_HERMES_BLOCK: Lazy<Regex> =
     Lazy::new(|| Regex::new(r"(?s)<tool_call>\s*(.*?)\s*</tool_call>").unwrap());
 
@@ -220,6 +237,13 @@ pub(super) fn parse_hermes(text: &str) -> Vec<RawToolMatch> {
     results
 }
 
+// ─── Qwen ──────────────────────────────────────────────────────────
+//
+// Qwen/Qwen3-Coder uses same `<tool_call>` tags as Hermes, but with a
+// key quirk: `arguments` is sometimes a double-encoded JSON STRING:
+//   <tool_call>
+//   {"name": "code_search", "arguments": "{\"pattern\": \"test\"}"}
+//   </tool_call>
 pub(super) fn parse_qwen(text: &str) -> Vec<RawToolMatch> {
     // Same regex as Hermes — the difference is in argument handling
     let mut results = Vec::new();
@@ -248,6 +272,10 @@ pub(super) fn parse_qwen(text: &str) -> Vec<RawToolMatch> {
     results
 }
 
+// ─── Truncation Recovery ───────────────────────────────────────────
+//
+// When LLM responses are truncated mid-output (max tokens hit), attempt
+// to recover partial tool calls by closing unclosed tags/braces.
 /// Attempt to recover tool calls from truncated text.
 /// Tries to close unclosed XML tags and JSON braces before parsing.
 pub fn parse_with_truncation_recovery(text: &str, family: ModelFamily) -> Vec<RawToolMatch> {

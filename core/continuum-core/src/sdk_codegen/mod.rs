@@ -274,5 +274,12 @@ macro_rules! action_command {
 mod is;
 pub use is::*;
 
+// No demo/fixture commands: the generator is validated against the REAL
+// registered commands (declared via CommandSpec at their own sites, e.g. the
+// inference module), whose Params/Result are real ts-rs types carrying the
+// production `#[ts(export_to = "../../../protocol/typescript/...")]` escape form.
+// (The adversarial review caught that earlier demo fixtures — with no export_to —
+// hid the export-path resolution bug; validating on real types is the fix.)
+
 #[cfg(test)]
 mod tests;

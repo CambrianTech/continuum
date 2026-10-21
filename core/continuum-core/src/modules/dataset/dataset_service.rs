@@ -640,6 +640,9 @@ impl ServiceModule for DatasetModule {
     }
 }
 
+// ============================================================================
+// Helper functions
+// ============================================================================
 pub(super) fn find_column(headers: &csv::StringRecord, name: &str) -> Result<usize, String> {
     headers.iter().position(|h| h == name).ok_or_else(|| {
         format!(

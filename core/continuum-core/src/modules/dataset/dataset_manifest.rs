@@ -63,6 +63,12 @@ pub struct DatasetListResult {
     pub root: String,
 }
 
+// ============================================================================
+// Command params — the typed input contracts for the `dataset/*` verbs.
+// They live here with the service so the service methods take them directly;
+// the command files under `commands/dataset/` capture the `DatasetService` and
+// declare these as their `params:`.
+// ============================================================================
 pub(super) fn default_split_ratio() -> f64 {
     0.8
 }
@@ -268,6 +274,9 @@ pub struct DatasetInfoParams {
     pub output_dir: Option<String>,
 }
 
+// ============================================================================
+// DatasetService — the dataset domain logic the typed commands capture.
+// ============================================================================
 /// Owns the datasets root and the import/convert/query logic. Heavy CSV/JSONL
 /// processing happens here (off the main thread). The `dataset/*` commands hold
 /// an `Arc<DatasetService>` and are thin wrappers over these methods.

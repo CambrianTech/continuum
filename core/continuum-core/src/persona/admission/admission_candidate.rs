@@ -39,6 +39,9 @@ pub struct AdmissionCandidate {
     pub content_hash: String,
 }
 
+//=============================================================================
+// CONFIG: gate-level thresholds + policy
+//=============================================================================
 /// Admission gate configuration — thresholds the structural gate
 /// enforces and defaults the recipe pipeline can consult.
 ///
@@ -86,6 +89,9 @@ impl AdmissionConfig {
     }
 }
 
+//=============================================================================
+// CONTEXT: per-call state + injected lookups
+//=============================================================================
 /// Lookup trait for content-hash dedup. Implementors back this with whatever
 /// engram store they use (in-memory map for tests, ORM-backed for prod).
 pub trait SeenContentLookup: Send + Sync {
@@ -146,6 +152,9 @@ impl<'a> AdmissionContext<'a> {
     }
 }
 
+//=============================================================================
+// RECIPE: the IsMemorable trait
+//=============================================================================
 /// Persona-specific policy: given a candidate that has passed structural
 /// prereqs (envelope verification, trust threshold, replay check), decide
 /// whether to admit it, drop it, or quarantine it.
@@ -175,6 +184,9 @@ pub trait IsMemorable: Send + Sync {
     ) -> Result<AdmissionDecision, AdmissionError>;
 }
 
+//=============================================================================
+// GATE: orchestrator
+//=============================================================================
 /// Admission gate orchestrator. Stateless (zero-sized struct); namespace
 /// holder for the `admit()` associated function. Use as `AdmissionGate::admit(...)`.
 pub struct AdmissionGate;
@@ -288,6 +300,9 @@ impl AdmissionGate {
     }
 }
 
+//=============================================================================
+// HELPERS
+//=============================================================================
 /// Synthesize an `Engram` from a candidate + context. Caller (the recipe)
 /// uses this when emitting `Admit` so id/timestamp/trust-snapshot wiring
 /// stays consistent across recipes. Public so custom recipes can use it.

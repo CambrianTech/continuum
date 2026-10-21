@@ -312,6 +312,7 @@ pub(super) fn parse_state(s: &str) -> Result<CardState, CommandError> {
     }
 }
 
+// ─────────────────────────── work/claim ──────────────────────────
 /// The room whose board holds `card_id` — the ONE place that answers *which
 /// activity does this card belong to*.
 ///

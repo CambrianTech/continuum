@@ -467,6 +467,10 @@ impl ToolCallFormat for NarratedBareArgsFormat {
     }
 }
 
+// Mentioning a tool in prose is not an invocation. In particular, first-person
+// framing elsewhere in a visual description must never turn a backticked color,
+// file path, or tool reference into a zero-argument action. Explicit envelopes,
+// tagged calls, and call expressions above remain the invocation boundary.
 /// The LAST backticked slash-token in the narration — the tool name a bare-args
 /// fence belongs to. Slash required so `` `ai` `` (a filter value) never reads as
 /// a tool; whitespace and absurd length rejected so backticked prose stays inert.

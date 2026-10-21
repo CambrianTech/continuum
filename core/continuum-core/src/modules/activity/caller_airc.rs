@@ -17,6 +17,7 @@ pub(super) fn caller_airc(
     crate::modules::work::persona_airc(registry, ctx, "activity verbs")
 }
 
+// ─────────────────────────── activity/spawn ───────────────────────────
 /// Instantiate a recipe as a new room.
 pub struct ActivitySpawn {
     pub registry: PersonaAircRuntimeRegistry,
@@ -181,6 +182,7 @@ impl ActionCommand for ActivitySpawn {
     }
 }
 
+// ─────────────────────────── activity/invite ───────────────────────────
 /// Bring named citizens into a room, so a freshly spawned activity has its
 /// people in one verb.
 pub(crate) struct ActivityInvite {
@@ -253,6 +255,7 @@ impl ActionCommand for ActivityInvite {
     }
 }
 
+// ─────────────────────────── activity/recipes ───────────────────────────
 /// List the live recipe catalogue — what `activity/spawn` can build.
 pub struct ActivityRecipes;
 

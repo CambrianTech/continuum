@@ -465,6 +465,10 @@ pub(crate) fn resolve_identity(roster: &[RosterSlotView], id: Uuid) -> ResolvedS
     }
 }
 
+// `roster_slots_from` is gone: `AircPresenceUpdate.roster` IS already
+// `Vec<RosterSlotView>`, so the old slot→slot copy was an identity map on a
+// duplicated type. Consumers that need the roster (chat / wall / kanban) take
+// `update.roster` directly — one slot type, no conversion.
 /// Accumulates airc room events into the renderer-shaped
 /// [`ChatViewState`] and writes each transition to the [`Substrate`].
 ///

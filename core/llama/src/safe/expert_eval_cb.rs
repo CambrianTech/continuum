@@ -342,6 +342,7 @@ impl<'m> Drop for Context<'m> {
     }
 }
 
+// ─── Batch ───────────────────────────────────────────────────────────────
 /// A batch of tokens to feed into `Context::decode`.
 ///
 /// Two construction modes:
@@ -465,6 +466,7 @@ impl Drop for Batch {
     }
 }
 
+// ─── Sampler ─────────────────────────────────────────────────────────────
 /// A sampler pipeline. Build with `Sampler::chain()` and chain methods, or
 /// use `Sampler::greedy()` for deterministic argmax.
 pub struct Sampler {

@@ -452,6 +452,8 @@ pub fn known_benchmarks() -> &'static [BenchmarkSpec] {
     ]
 }
 
+// ---- benchmark/list ------------------------------------------------------------------------
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize, TS, JsonSchema)]
 #[ts(
     export,
@@ -519,6 +521,13 @@ impl ActionCommand for BenchmarkList {
 
 crate::register_stateless_command!(BenchmarkList);
 
+// ---- benchmark/record (the evidence ledger, #123) -----------------------
+//
+// Every comparative claim we ever publish must decompose into ledger ROWS a stranger
+// can re-run: one row = one (model × harness-arm × benchmark) result CARRYING its own
+// replication command. The matrix is a PROJECTION of those rows — never hand-authored
+// (the same recipe→artifact doctrine as the forge alloy). "Undeniable" = the row says
+// exactly how to reproduce the cell; "viral" = anyone can render the table themselves.
 /// The one benchmark results ledger (`~/.continuum/benchmarks/ledger.jsonl`).
 pub(super) fn benchmark_ledger_path() -> std::path::PathBuf {
     let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());

@@ -17,6 +17,7 @@ use super::*;
         assert_eq!(matches.len(), 0);
     }
 
+    // ─── Hermes ─────────────────────────────────────────────────────
     #[test]
     pub(super) fn hermes_basic() {
         let text = "<tool_call>\n{\"name\": \"code_search\", \"arguments\": {\"pattern\": \"test\"}}\n</tool_call>";
@@ -44,6 +45,7 @@ use super::*;
         assert_eq!(matches[0].tool_name, "code/tree");
     }
 
+    // ─── Qwen ───────────────────────────────────────────────────────
     #[test]
     pub(super) fn qwen_basic() {
         let text = "<tool_call>\n{\"name\": \"code_search\", \"arguments\": {\"pattern\": \"test\"}}\n</tool_call>";
@@ -71,6 +73,7 @@ use super::*;
         assert_eq!(matches[1].parameters.get("content").unwrap(), "hello");
     }
 
+    // ─── Model Family Priority ──────────────────────────────────────
     #[test]
     pub(super) fn model_family_deepseek_prioritized() {
         let text = "\u{FF1C}\u{FF5C}tool\u{2581}calls\u{2581}begin\u{FF5C}\u{FF1E}\n{\"name\": \"code_search\", \"arguments\": {\"pattern\": \"test\"}}\n\u{FF1C}\u{FF5C}tool\u{2581}calls\u{2581}end\u{FF5C}\u{FF1E}";
@@ -96,6 +99,7 @@ use super::*;
         assert_eq!(matches[0].format, "anthropic-style");
     }
 
+    // ─── Truncation Recovery ────────────────────────────────────────
     #[test]
     pub(super) fn truncation_recovery_tool_call() {
         let text =

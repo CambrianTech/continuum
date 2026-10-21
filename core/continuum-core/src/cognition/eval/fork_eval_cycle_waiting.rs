@@ -444,6 +444,20 @@ pub(super) async fn perception_grade(
     (grade.passed, grade.summary)
 }
 
+// ── Live eval progress (#123/#141, Joel: "widgets and others like yourself should
+// subscribe to these events, current totals, by command, and also display the
+// process — things like this take forever so you really need to provide feedback").
+//
+// ONE source of truth (each graded task), THREE surfaces:
+//  1. watch snapshot — the substrate-canonical live surface; `cognition/eval-status`
+//     with no run_id returns it (poll, works for agents/scripts today);
+//  2. `eval:progress` bus event — widgets / positron (#141) / persona observers
+//     subscribe (published via the global bus, same set_global precedent as the
+//     persona registry);
+//  3. `eval.task` probe — the greppable log pulse.
+//
+// ONE progress row is correct by construction: the eval-preemption lease serializes
+// evals on the GPU, so at most one pass is grading at any instant.
 #[derive(Debug, Clone, Serialize, TS, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
 #[ts(

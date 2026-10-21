@@ -1,5 +1,14 @@
 use super::*;
 
+// ───────────────────────── benchmark/dispatch ─────────────────────
+//
+// #346 (Joel, 2026-08-07): benchmarks delivered as WORK CARDS — measured for
+// what citizens DO through the ordinary kanban loop, not what a harness drives
+// them through. The empirical trigger: the live board's cards are substrate
+// diagnosis narratives (cross-grid network debugging) a coding citizen cannot
+// act on — Anwen held one, accurately reported "no progress", and paid 15,816
+// prefill tokens to conclude it. Coders code when the board contains coding
+// work sized to them; THIS is the verb that puts it there.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]
 #[ts(
     export,

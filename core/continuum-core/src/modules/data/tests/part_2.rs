@@ -129,6 +129,21 @@ use super::*;
         );
     }
 
+    // ====================================================================
+    // HandleRef migration tests for data/query-open/next/close
+    // ====================================================================
+    //
+    // The cursor surface migrated from a hand-rolled string queryId to
+    // typed HandleRef minted via CommandResponse::with_handle. These
+    // tests cover the migration's hard edges:
+    //   - both wire shapes (envelope handle + legacy queryId) resolve
+    //   - cross-module/cross-resource handles fail loud with named
+    //     owner/type values, not silent misroutes
+    //   - stale handles surface a typed "handle not found" error that
+    //     names the cursor + suggests likely causes
+    //   - the legacy field stays additive — old TS consumers see the
+    //     same JSON shape they parse today, plus a new top-level
+    //     `handle` field they can ignore
     /// Helper: stand up a fresh DataModule + a temp SQLite + the schema
     /// + N rows. Used by every cursor test below — keeps the cursor
     /// tests focused on the handle behavior, not on row setup.

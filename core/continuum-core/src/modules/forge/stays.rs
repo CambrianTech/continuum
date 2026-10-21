@@ -209,6 +209,18 @@ pub(super) async fn run_health(
     Ok(CommandResult::Json(json))
 }
 
+//=============================================================================
+// forge/decide — "assemble the best self, or train" (the product-thesis decision)
+//
+// The request has been scored against the trust-scoped market: each candidate
+// (an existing model / LoRA genome) has a measured `score` from `vdd/score`, and
+// the current self has a `baseline`. THIS decides, deterministically: adopt the
+// best candidate that clears the adopt margin (assemble — zero training), else
+// the market came up short → TRAIN a fresh layer to fill the gap. Pure — the
+// candidates' scores come from elsewhere; this is the decision the whole
+// "ask anything → assemble best self, or train" loop turns on.
+// See docs/genome/SELF-EVOLVING-GENOME.md + memory ask-anything-assemble-best-self-or-train.
+//=============================================================================
 /// One scored candidate from the (trust-scoped) market search: a model or LoRA
 /// genome, with its measured eval `score` (from `vdd/score`).
 #[derive(Debug, Clone, Deserialize)]

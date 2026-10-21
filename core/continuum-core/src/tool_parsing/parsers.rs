@@ -20,6 +20,9 @@ use once_cell::sync::Lazy;
 use regex::Regex;
 use std::collections::HashMap;
 
+// ═══════════════════════════════════════════════════════════════════════
+// Model-family parsers — prioritized by model_family hint
+// ═══════════════════════════════════════════════════════════════════════
 use crate::tool_parsing::types::ModelFamily;
 
 mod raw_tool_match;

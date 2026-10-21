@@ -1,5 +1,8 @@
 use super::*;
 
+// ============================================================================
+// Background Command Execution
+// ============================================================================
 /// Run a shell command asynchronously, streaming output into shared state.
 ///
 /// This function runs in a tokio task. It:
@@ -393,6 +396,9 @@ pub(super) async fn poll_kill_flag(state: Arc<Mutex<ExecutionState>>) {
     }
 }
 
+// ============================================================================
+// Tests
+// ============================================================================
 /// Does this environment variable NAME look like it carries a credential?
 ///
 /// Matched on the NAME only — a value is never inspected, so this can never log

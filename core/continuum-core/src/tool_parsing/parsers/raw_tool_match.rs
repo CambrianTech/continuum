@@ -25,6 +25,7 @@ pub fn parse_all_formats(text: &str) -> Vec<RawToolMatch> {
     results
 }
 
+// ─── Anthropic XML ──────────────────────────────────────────────────
 pub(super) static RE_ANTHROPIC: Lazy<Regex> =
     Lazy::new(|| Regex::new(r"(?s)<tool_use>(.*?)</tool_use>").unwrap());
 
@@ -62,6 +63,7 @@ pub(super) fn parse_anthropic(text: &str) -> Vec<RawToolMatch> {
         .collect()
 }
 
+// ─── Function-style ─────────────────────────────────────────────────
 // Match both proper XML and Groq's variant format:
 //   <function=name>{"param": "value"}</function>   — standard
 //   function=name>{"param": "value"}               — Groq variant (no < prefix, no closing tag)
@@ -88,6 +90,7 @@ pub(super) fn parse_function_style(text: &str) -> Vec<RawToolMatch> {
         .collect()
 }
 
+// ─── Bare JSON ──────────────────────────────────────────────────────
 // Slash-based prefixes (canonical tool names: code/tree, data/list, etc.)
 pub(super) const TOOL_PREFIXES_SLASH: &[&str] = &[
     "code/",
@@ -221,6 +224,7 @@ pub(super) fn parse_bare(text: &str) -> Vec<RawToolMatch> {
         .collect()
 }
 
+// ─── JSON Object ───────────────────────────────────────────────────
 // Matches tool calls in JSON object format (two variants):
 //   {"name": "code_tree", "parameters": {"path": "."}}
 //   {"type": "function", "name": "code_git", "parameters": {"operation": "status"}}
@@ -249,6 +253,9 @@ pub(super) fn parse_json_object(text: &str) -> Vec<RawToolMatch> {
         .collect()
 }
 
+// ─── Array-style ───────────────────────────────────────────────────
+// Matches: ["code/search", {"pattern": "test"}]
+//          ["collaboration_chat_send", {"room": "general", "message": "hello"}]
 pub(super) static RE_ARRAY_STYLE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(r#"\[\s*"([^"]+)"\s*,\s*(\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\})\s*\]"#).unwrap()
 });
@@ -284,6 +291,9 @@ pub(super) fn parse_array_style(text: &str) -> Vec<RawToolMatch> {
         .collect()
 }
 
+// ─── Curly-brace shorthand ─────────────────────────────────────────
+// Matches: {collaboration_wall_write: {"append": true, "content": "hello"}}
+//          {code_tree: {"path": "."}}
 pub(super) fn parse_curly_shorthand(text: &str) -> Vec<RawToolMatch> {
     // Find JSON objects via serde, check if single-key with tool-like name
     // Use regex to find candidate { ... } blocks first, then validate with serde
@@ -335,6 +345,7 @@ pub(super) fn parse_curly_shorthand(text: &str) -> Vec<RawToolMatch> {
         .collect()
 }
 
+// ─── Markdown backtick ──────────────────────────────────────────────
 pub(super) static RE_MD_TOOL: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?i)`tool:\s*([^`]+)`").unwrap());
 
 pub(super) static RE_MD_PARAM: Lazy<Regex> = Lazy::new(|| Regex::new(r"`([^`=]+)=([^`]*)`").unwrap());
@@ -404,6 +415,7 @@ pub(super) fn parse_markdown_match(text: &str) -> Option<(String, HashMap<String
     Some((name, params))
 }
 
+// ─── Old-style XML ──────────────────────────────────────────────────
 pub(super) static RE_OLD_STYLE: Lazy<Regex> =
     Lazy::new(|| Regex::new(r#"(?s)<tool\s+name="([^"]+)">(.*?)</tool>"#).unwrap());
 
@@ -426,6 +438,19 @@ pub(super) fn parse_old_style(text: &str) -> Vec<RawToolMatch> {
         .collect()
 }
 
+// ─── Colon shorthand ─────────────────────────────────────────────────
+//
+// QAT-trained local models (14B Q5_K_S) generate tool calls in a natural
+// colon-separated format instead of `<tool_use>` XML. Patterns:
+//
+// JSON params:  `code/read: {filePath: "path/to/file"}`
+// Write+block:  `code/write: {filePath: "app.py",\n```python\ncontent\n````
+// Bare value:   `code/write: hello.py\n```python\ncontent\n\`\`\``
+// Bare simple:  `code/shell/execute: ls -la`
+//
+// Unquoted JSON keys (e.g. `filePath: "value"`) are handled in parse_colon_params.
+// For `code/write`, content embedded in a trailing markdown code block is extracted.
+// Incomplete code blocks (truncated responses) are handled via open-block fallback.
 // Tool name prefix set for colon-shorthand (matches known tool namespaces).
 pub(super) static COLON_TOOL_PREFIX_RE: &str = r"(?:code|data|collaboration|ai|voice|search|workspace|file|interface|genome|adapter|persona|runtime|session|user|logs|media)/[\w/]+";
 
@@ -631,6 +656,7 @@ pub(super) fn parse_colon_params(s: &str) -> HashMap<String, String> {
     params
 }
 
+// ─── Helpers ────────────────────────────────────────────────────────
 /// Regex to find opening XML tags: `<tagName>`
 pub(super) static RE_XML_OPEN: Lazy<Regex> = Lazy::new(|| Regex::new(r"<(\w+)>").unwrap());
 
@@ -707,6 +733,18 @@ pub fn parse_with_model_family(text: &str, family: ModelFamily) -> Vec<RawToolMa
     parse_all_formats(text)
 }
 
+// ─── DeepSeek ──────────────────────────────────────────────────────
+//
+// DeepSeek v3/R1/Coder uses Unicode fullwidth delimiters:
+//   ＜｜tool▁calls▁begin｜＞
+//   {"name": "code_search", "arguments": {"pattern": "test"}}
+//   ＜｜tool▁calls▁end｜＞
+//
+// Characters:
+//   ＜ = U+FF1C (fullwidth less-than)
+//   ＞ = U+FF1E (fullwidth greater-than)
+//   ｜ = U+FF5C (fullwidth vertical line)
+//   ▁ = U+2581 (lower one eighth block, used as word separator)
 pub(super) static RE_DEEPSEEK_BLOCK: Lazy<Regex> = Lazy::new(|| {
     Regex::new(r"(?s)\u{FF1C}\u{FF5C}tool\u{2581}calls\u{2581}begin\u{FF5C}\u{FF1E}(.*?)\u{FF1C}\u{FF5C}tool\u{2581}calls\u{2581}end\u{FF5C}\u{FF1E}")
         .unwrap()

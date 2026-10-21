@@ -312,6 +312,9 @@ pub(crate) fn scan_run_cards(
     Ok(RunScan { cards, matched })
 }
 
+// ---------------------------------------------------------------------------
+// benchmark/rounds — the ROUND lifecycle, askable (#371)
+// ---------------------------------------------------------------------------
 /// No parameters. Rounds in flight are few (usually one) and each is a handful of
 /// fields, so paging and filtering would be ceremony over a list you always want whole.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, TS, JsonSchema)]
@@ -493,6 +496,9 @@ pub(crate) fn card_run_facts(card: &BenchRunCard) -> crate::cognition::bench_rou
     }
 }
 
+// ---------------------------------------------------------------------------
+// benchmark/fetch — stage a catalogued suite so it can actually be run (#370)
+// ---------------------------------------------------------------------------
 /// Where a catalogued suite's rows actually live, and whether anything in this tree can read
 /// them. Four states, because the four have four different fixes and collapsing any two of
 /// them produces a refusal the operator has to go do archaeology on.

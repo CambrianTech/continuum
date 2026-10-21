@@ -230,6 +230,9 @@ pub(super) fn empty_allocation(
     }
 }
 
+//=============================================================================
+// TEST STUB SOURCE — proves the trait shape compiles + composes
+//=============================================================================
 /// Stub source for tests. Holds a Vec of pre-built RagItems and
 /// delivers as many as fit. Demonstrates the interior-mutability
 /// pattern (Mutex<usize> cursor) without dragging in real engram

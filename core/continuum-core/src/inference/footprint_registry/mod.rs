@@ -51,5 +51,12 @@ use uuid::Uuid;
 mod footprint_lease_mirror;
 pub use footprint_lease_mirror::*;
 
+// ─── Tests — registry behavior + singleton ─────────────────────────────
+//
+// Type-shape tests (key distinctness, constructor field ownership) live
+// in types::tests. Cost heuristic invariants live in costs::tests. The
+// tests below exercise registry BEHAVIOR — adds, removes, queries,
+// eviction planning, sanity check, snapshot, singleton identity.
+
 #[cfg(test)]
 mod tests;

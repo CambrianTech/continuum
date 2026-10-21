@@ -35,6 +35,10 @@ pub(super) const DMR_DOWN_WARN_THRESHOLD_TICKS: u64 = 6;
 // catches up, and grounds for far longer than that before her first turn.
 pub(super) const GATEWAY_FAST_PATH_WAIT: Duration = Duration::ZERO;
 
+// (GATEWAY_REACTIVE_CAP retired with the one-shot watcher: the persistent
+// gateway-sync task, card ed3661c4, follows the serving snapshot for the life
+// of the process — there is no wait to cap; a wedged serving plan stays the
+// serving daemon's loud failure to own.)
 /// One DMR endpoint discovered by `probe_dmr`. The base_url is None for
 /// localhost — the adapter's default constructor already points at
 /// `localhost:12434`. A `Some(url)` means the in-container variant

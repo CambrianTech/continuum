@@ -61,6 +61,7 @@ impl WorkCreate {
     }
 }
 
+// ─────────────────────────── work/release ────────────────────────
 /// Release this persona's claim on a card.
 pub struct WorkRelease {
     pub registry: PersonaAircRuntimeRegistry,
@@ -152,6 +153,7 @@ impl ActionCommand for WorkRelease {
     }
 }
 
+// ─────────────────────────── work/state ──────────────────────────
 /// Move a card through its lifecycle (open→in_progress→review→closed, etc).
 pub struct WorkState {
     pub registry: PersonaAircRuntimeRegistry,

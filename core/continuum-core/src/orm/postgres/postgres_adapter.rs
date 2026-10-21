@@ -1,5 +1,6 @@
 use super::*;
 
+// ─── Async Trait Implementation ──────────────────────────────────────────────
 #[async_trait]
 impl StorageAdapter for PostgresAdapter {
     fn name(&self) -> &'static str {

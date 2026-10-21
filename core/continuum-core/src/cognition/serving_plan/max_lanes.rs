@@ -40,6 +40,36 @@ use super::*;
 /// acceptance gate. [[verify-real-device-numbers-not-a-clamp-premise]] [[capacity-fabric-live-never-block-sim-as-gym]]
 pub const MAX_LANES: u32 = 8;
 
+// ⚠️ 2026-07-17 REVERTED 4 → 2. Raising to 4 (warm slot per persona) was OOM-SAFE
+// (the window-scaled fit shrank -c to fit) but STARVED CONTEXT: splitting the budget 4
+// ways dropped the per-slot window to ~6k, and a live persona's assembled prompt is ~9k
+// (identity + tools + workspace-map + recall + memory), so every persona got
+// budget-truncated to fit — the "120k clamped to 3k → all models suck" regression, plus
+// a 145s decode loop on the starved/confused context. Warmth is worthless if the mind
+// can't see. The 4-lane premise was wrong: personas are NOT all concurrently active, so
+// lanes should follow real concurrent DEMAND (usually 1–2), not the resident count —
+// 2 lanes at ~19.8k each beats 4 warm lanes at 6k. Cross-turn clobber (the reason for the
+// raise) is the lesser evil vs a starved window; solve it with idle-warmth/duty-cycling,
+// NOT by cutting everyone's context. [[no-hardcoded-context-numbers-derive-from-the-live-window]]
+//
+// ✅ 2026-08-09 RAISED 2 → 8 (#266). The 2026-07-17 revert diagnosed the failure correctly
+// (a starved per-slot window) but fixed it in the WRONG place: it clamped the lane CEILING,
+// when the real defect was that the lane-COUNT gate below sheds against `MIN_SERVE_CTX`
+// (2048, the "runnable at all" floor) — far below the ~9k a live turn needs — so a raised
+// ceiling let 4 slots @ 6k through. That is now fixed at the true seam: the shed in
+// `plan_serving` requires each slot to clear `BOOTSTRAP_WORKING_SET` (16384 ≈ a full
+// assembled turn + generation headroom), the SAME "one full turn" figure the demand cap
+// uses. With that usable-window floor as the binding constraint, a slot per resident persona
+// is safe BY CONSTRUCTION — the plan only grows lanes toward the resident population while
+// each still gets a full turn, and sheds (surfacing `grid_overflow_lanes` + a probe) the
+// moment the floor would be breached, never below it. The 2026-07-17 "solve clobber with
+// duty-cycling, not lanes" stance was itself the bug this leaves on the table: cross-turn
+// KV clobber IS #266's whole latency story (measured: 96.3% of persona compute is prefill;
+// two of four citizens at 0.0% cache reuse across 10 turns — the LRU eviction of a warm
+// slot the resident count outnumbered). Giving each resident mind its own slot is what
+// keeps its prefilled prefix warm. This constant is once again a pure SANITY backstop
+// (pathological roster + llama.cpp `--parallel` practicality); the binding constraint is
+// the window floor, exactly as the earlier doc always claimed it should be.
 /// Cold-start DEMAND ceiling for the served window — the "B-now" half of the
 /// demand-derived cap (M5 + BigMama, 2026-07-26). Sizing a lane's window to fill
 /// the memory budget instead of to real demand is the cross-node serving-quality

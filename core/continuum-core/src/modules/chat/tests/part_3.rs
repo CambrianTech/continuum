@@ -1,6 +1,7 @@
 #![cfg(test)]
 use super::*;
 
+    // ── #265: ring hydration from the durable transcript ─────────────
     #[tokio::test]
     pub(super) async fn hydrate_speech_rings_seeds_room_and_own_rings_from_durable_store() {
         // what this catches: reboot wipes the in-process speech rings, so the

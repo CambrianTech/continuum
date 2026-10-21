@@ -652,6 +652,16 @@ impl DataState {
 
 }
 
+// ── SDK contract: data/list (sdk_codegen) ──────────────────────────
+//
+// The Rust-rooted contract for `data/list` — the persona/UI-facing collection
+// read. Per the single-source principle the TYPE leads and the handler conforms:
+// `data/list` is, by contract, "collection (+ optional filter/ordering/paging)
+// → items + accurate total". The typed command in `commands/data/list.rs` drives
+// [`DataState::list`], which honors exactly this shape. There is deliberately NO
+// `db_path` here: a persona reading rooms or messages must never reason about a
+// database handle — the shared "main" store is the default, and power callers
+// target a specific store via the optional `handle`.
 /// Sort direction for a `data/list` ordering clause.
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ts_rs::TS, schemars::JsonSchema,

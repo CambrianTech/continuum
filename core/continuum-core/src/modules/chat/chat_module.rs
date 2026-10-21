@@ -118,6 +118,7 @@ impl ServiceModule for ChatModule {
     }
 }
 
+// ── helpers ──────────────────────────────────────────────────────────
 /// Extract a single field from the first record in a data-module
 /// `data/query` response. The data module returns
 /// `{ success, data: [{ id, data: {...} }] }`, where each entry's

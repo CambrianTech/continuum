@@ -57,6 +57,12 @@ use std::path::Path;
 use std::sync::Arc;
 use uuid::Uuid;
 
+// ============================================================================
+// Request/Response Protocol + Memory Diagnostics
+// ============================================================================
+// Split out of this file 2026-05-18 — see ipc/protocol.rs (InboxMessageRequest,
+// Response) and ipc/diagnostics.rs (per-command RSS tracking). Re-exported
+// here so existing call sites resolve unchanged.
 pub mod diagnostics;
 
 pub mod endpoint_paths;
@@ -106,6 +112,9 @@ use diagnostics::{current_rss_mb, dump_memory_report, log_command_rss_delta};
 pub use protocol::InboxMessageRequest;
 
 use protocol::Response;
+
+// See modules/health.rs, cognition.rs, channel.rs, voice.rs, code.rs, memory.rs,
+// models.rs, data.rs, logger.rs, search.rs, embedding.rs, rag.rs for command handlers.
 
 mod prepare_unix_socket_path;
 pub use prepare_unix_socket_path::*;

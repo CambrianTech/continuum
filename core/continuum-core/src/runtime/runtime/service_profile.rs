@@ -29,6 +29,9 @@ pub fn all_known_modules() -> Vec<&'static str> {
     MODULES.iter().map(|spec| spec.name).collect()
 }
 
+// MODULES is the substrate's ONE source of truth — `required_modules`
+// and `all_known_modules` both derive from it. No parallel list to
+// drift against.
 /// The runtime the SIGNAL handlers shut down. Installed once at wiring (after
 /// modules register), read by main.rs's SIGTERM/SIGINT arms. Until 2026-09-02
 /// those arms killed sentinels, slept a flat 2s, and `_exit`ed — the graceful

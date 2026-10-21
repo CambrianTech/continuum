@@ -86,6 +86,9 @@ pub(super) const REPORTER_TIMEOUT: Duration = Duration::from_millis(100);
 /// misbehaving reporter from cascading into the monitor.
 pub(super) const QUARANTINE_AFTER: u32 = 3;
 
+// =============================================================================
+// Global Memory Gate — subsystems check before expensive allocations
+// =============================================================================
 /// Global atomic gate: true when pressure >= Critical for 3+ consecutive polls.
 /// Any subsystem can check this before allocating large buffers.
 pub(super) static MEMORY_GATE_CLOSED: std::sync::atomic::AtomicBool =
@@ -93,7 +96,7 @@ pub(super) static MEMORY_GATE_CLOSED: std::sync::atomic::AtomicBool =
 
 /// Global atomic pressure level — updated every 2s by the monitor loop.
 /// Any subsystem can read this lock-free to make graduated decisions.
-pub(super) static CURRENT_PRESSURE_LEVEL: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
+pub(super) static CURRENT_PRESSURE_LEVEL: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);  // 0=Normal
 
 /// Global atomic free-physical-memory reading (bytes), updated every 2s by the
 /// monitor loop from `sysinfo::available_memory()` — the honest "how much can I
@@ -160,6 +163,9 @@ pub(super) fn open_memory_gate() {
     MEMORY_GATE_CLOSED.store(false, std::sync::atomic::Ordering::Relaxed);
 }
 
+// =============================================================================
+// Pressure Levels
+// =============================================================================
 /// Memory pressure severity. Each level implies all lower levels.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, TS)]
 #[ts(
@@ -279,6 +285,9 @@ impl std::fmt::Display for PressureLevel {
     }
 }
 
+// =============================================================================
+// Per-Module Memory Report
+// =============================================================================
 /// A single module's self-reported memory usage.
 #[derive(Debug, Clone, Serialize, TS)]
 #[ts(
@@ -297,6 +306,9 @@ pub struct ModuleMemoryReport {
     pub can_shed: bool,
 }
 
+// =============================================================================
+// Memory Budget (RAG-budgeter-style flexbox allocation)
+// =============================================================================
 /// Priority levels for system RAM consumers — mirrors GpuPriority for consistency.
 ///
 /// Higher priority = higher pressure gate = harder to evict.
@@ -428,6 +440,9 @@ pub struct MemoryBudgetSnapshot {
     pub timestamp_ms: u64,
 }
 
+// =============================================================================
+// Pressure Snapshot
+// =============================================================================
 /// Complete memory pressure snapshot — published via watch channel.
 #[derive(Debug, Clone, Serialize, TS)]
 #[ts(
@@ -480,6 +495,9 @@ impl Default for PressureSnapshot {
     }
 }
 
+// =============================================================================
+// Memory Reporter Trait
+// =============================================================================
 /// Trait for modules that can report their memory usage and respond to pressure.
 ///
 /// Implementations MUST be fast (< 100ms) and MUST NOT block.
@@ -523,6 +541,9 @@ pub trait MemoryReporter: Send + Sync {
     }
 }
 
+// =============================================================================
+// Monitor
+// =============================================================================
 /// Reporter entry with fault tracking.
 pub(super) struct ReporterEntry {
     pub(super) reporter: Arc<dyn MemoryReporter>,

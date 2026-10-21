@@ -656,6 +656,7 @@ impl EmbeddingProvider for NeuralEmbeddingProvider {
     }
 }
 
+// ─── Live recall embedder resolution ───────────────────────────────────────────
 /// The grid's canonical retrieval embedding model + its dimensionality. One
 /// embedding SPACE across the grid keeps vectors comparable everywhere
 /// ([[embeddings-are-per-content-computed-once-shared]]). Overridable via

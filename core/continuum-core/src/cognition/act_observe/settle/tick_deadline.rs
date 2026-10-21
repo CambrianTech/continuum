@@ -81,6 +81,8 @@ pub(super) fn act_probe_client() -> &'static reqwest::Client {
     CLIENT.get_or_init(reqwest::Client::new)
 }
 
+// The working-memory trail-head bound lives in `working_memory.rs` now (its home — WM owns
+// its own truncation). Still used here for the settlement answer-head.
 /// Drive the mind to SETTLEMENT: tick → if `Act`, run it + fold the observation
 /// into the next perception → re-tick → until it `Speak`s/`Pass`es or the
 /// external `max_acts` budget is spent.

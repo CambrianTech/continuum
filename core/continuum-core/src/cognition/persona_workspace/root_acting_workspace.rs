@@ -694,6 +694,11 @@ pub fn global() -> Arc<PersonaWorkspaceRegistry> {
         .clone()
 }
 
+// ── MEMENTO FIX (#138): volatile-tier persistence across deploy reboots ──
+// "They wake up blank like Memento — an engineering failure; the flywheel
+// falls apart" (Joel 2026-07-12; nine reboots that day = nine blank wakes).
+// The persisted file is the SAME serialization grid-sync will ship — one
+// format, one seam ([[persona-mind-persists-across-shutdowns]]).
 /// On-disk shape: the working-memory snapshot plus the own-speech ring (the
 /// ring is process-global in `deliberation_budget`, so it dies with the
 /// process unless carried here — the repetition detectors were re-blinded by

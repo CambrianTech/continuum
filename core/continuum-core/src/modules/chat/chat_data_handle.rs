@@ -635,6 +635,13 @@ pub fn spawn_persist_listener(
     });
 }
 
+// ── time helpers ─────────────────────────────────────────────────────
+//
+// Wall-clock reads centralized here so chat's handlers stay free of
+// `SystemTime` calls scattered through their bodies. Both use the same
+// epoch instant so a stored timestamp and an airc envelope's
+// `createdAtMs` from the same `send()` call agree by construction
+// (rather than risking a tiny skew between two separate reads).
 pub(super) fn now_iso(unix_ms: u64) -> String {
     // The TS ChatMessageEntity carries `timestamp` as an ISO-8601
     // string (matches how the TS impl writes it via

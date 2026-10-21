@@ -137,6 +137,7 @@ impl Default for SqliteAdapter {
     }
 }
 
+// ─── Synchronous Database Operations ─────────────────────────────────────────
 /// The SQL column type a declared field gets: THE mapping, for table creation and for
 /// column evolution alike. NUMERIC affinity preserves the storage class (an inserted
 /// integer reads back as integer, a float as float); REAL coerced every value to REAL and

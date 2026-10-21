@@ -383,6 +383,7 @@ use super::*;
         assert_eq!(state.engram_count(), 1, "admit MUST add to engram store");
     }
 
+    // ── Persistence wire-up tests (#168) ──────────────────────────
     /// What this catches: admit observes through the persistence
     /// sink. The RecordingSink buffers each admission so the test
     /// can assert it landed.

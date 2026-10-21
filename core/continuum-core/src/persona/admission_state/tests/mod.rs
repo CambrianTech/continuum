@@ -151,6 +151,19 @@
         assert_send_sync::<AdmissionState>();
     }
 
+    // ── Quarantine side-effect rule (claude-tab-2 review nit on #1155) ──
+    //
+    // v1 has no quarantine store, so a Quarantined engram is dropped on
+    // the floor. Recording its content_hash → engram_id in the dedup
+    // store would leave a dangling pointer (future Duplicate drops would
+    // surface an existing_engram_id that can't be looked up). The right
+    // behaviour: ONLY record event_id (replay protection still applies),
+    // never record content_hash on Quarantine.
+    //
+    // These tests construct synthetic AdmissionDecision values + call
+    // `record_side_effects` directly so they don't need a custom recipe
+    // — the heuristic recipe shipped here doesn't naturally emit
+    // Quarantine, but the rule is about the side-effect helper itself.
     pub(super) fn synthetic_engram_with_chat_origin(content: &str) -> Engram {
         Engram {
             context_id: None,
@@ -271,6 +284,7 @@
         );
     }
 
+    // ── Recall surface (#1121 PR-5) ──────────────────────────────────────
     /// Helper: admit N synthetic human messages with distinct content,
     /// returning the engram ids in admission order.
     pub(super) fn admit_n_distinct(state: &AdmissionState, contents: &[&str]) -> Vec<Uuid> {

@@ -404,6 +404,7 @@ impl Default for PostgresAdapter {
     }
 }
 
+// ─── SQL Helpers ──────────────────────────────────────────────────────────────
 /// Convert a serde_json Value to a boxed ToSql, coercing types to match
 /// the target PostgreSQL column type. This avoids tokio-postgres type mismatches.
 ///

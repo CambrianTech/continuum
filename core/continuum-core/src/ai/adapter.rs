@@ -30,5 +30,10 @@ pub use inference_device::*;
 mod adapter_selection_error;
 pub use adapter_selection_error::*;
 
+// ArcAdapterShim + register_arc were deleted in task #162's Box→Arc
+// migration. The registry stores Arc natively; callers pass
+// `Arc::new(adapter)` directly to `register`. The shim was a
+// transitional wrapper; the elegant intentional architecture is the
+// Arc-native registry above.
 #[cfg(test)]
 mod tests;

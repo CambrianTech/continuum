@@ -147,6 +147,9 @@ pub fn room_scope_allows(bound: Option<uuid::Uuid>, ctx: &RagContext, source_id:
     }
 }
 
+//=============================================================================
+// CORE TYPES
+//=============================================================================
 /// One source's budget claim. Sent INTO the allocator as input.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct RagSourceBudget {
@@ -325,6 +328,9 @@ pub struct BudgetAllocation {
     pub warnings: Vec<String>,
 }
 
+//=============================================================================
+// SOURCE-OWNED DELIVERY (the no-clipping mechanism)
+//=============================================================================
 /// What "resolution" of content the allocator wants from a source.
 /// The source delivers at the resolution that fits its budget;
 /// compression is a substrate-side fallback, never a clip.
@@ -416,6 +422,9 @@ pub struct RagDelivery {
     pub resolution_used: ResolutionPreference,
 }
 
+//=============================================================================
+// SOURCE TRAIT
+//=============================================================================
 /// Which room a source describes when task and conversation are distinct.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RagRoomScope {
@@ -528,6 +537,9 @@ pub trait RagSource: Send + Sync {
     ) -> Option<RagDelivery>;
 }
 
+//=============================================================================
+// ADAPTER TRAIT — POLYMORPHISM RAIL
+//=============================================================================
 /// The allocation strategy. Ship one heuristic impl
 /// (`FlexboxRagBudgetAdapter`); future learnable adapters
 /// (`LearnedRagBudgetAdapter` reading telemetry from
@@ -554,6 +566,9 @@ pub trait RagBudgetAdapter: Send + Sync {
     ) -> BudgetAllocation;
 }
 
+//=============================================================================
+// FLEXBOX ADAPTER — THE FIRST CONCRETE IMPL
+//=============================================================================
 /// CSS-flexbox-inspired allocation. Algorithm (anti-clipping):
 ///
 /// 1. Reserve system + completion off the top

@@ -213,6 +213,24 @@ pub(super) fn synthesize_stub_artifact(
     Ok(artifact)
 }
 
+//=============================================================================
+// forge/train + forge/export — DELEGATED to the model CUSTODIAN (#32).
+//
+// The foundry's byte work — engine selection (MLX on Apple Silicon / Unsloth-CUDA
+// on NVIDIA), the train/valid split, fuse → convert → quantize, and the output
+// BYTES — belongs to the custodian (unsloth studio), not the organism. continuum
+// holds POLICY (`forge/decide`) and HANDLES (a job id, a save dir); it never
+// spawns `mlx_lm.lora`/`mlx_lm.fuse`/llama.cpp nor writes under
+// `~/.continuum/forge`. We delegate over the custodian's HTTP forge surface
+// (`inference::unsloth_forge`), exactly as model load/unload delegates via
+// `inference::unsloth_control`. This DELETES the ~675 lines of subprocess +
+// byte-write trespass that were the GGUF-gibberish + adapter no-op bug class.
+// Closes the coordination↔learning flywheel: a persona's room work becomes a
+// dataset (`dataset/from-turns`) → custodian fine-tunes a LoRA genome → it pages
+// into the genome. See memory model-endpoint-fabric-adapter-router,
+// unsloth-universal-model-gateway, compute-lease-boundary,
+// coordination-learning-flywheel.
+//=============================================================================
 /// Inputs for `forge/train`. The dataset is the JSONL `dataset/from-turns`
 /// emits; the base model + LoRA geometry come from a `ForgeRecipe` (or directly).
 /// `dry_run` resolves the custodian request body and returns it WITHOUT kicking a
@@ -608,6 +626,16 @@ pub(super) fn run_train_native_mlx(
     })))
 }
 
+//=============================================================================
+// forge/export — the package stage, DELEGATED to the custodian.
+//
+// Turns a trained checkpoint into the PAGEABLE genome layer — the unit the grid
+// exchanges. The custodian loads the checkpoint into its exporter, then packages
+// it (`lora` = the adapter as-is; `gguf` = fuse → convert → quantize, which the
+// custodian owns — this is why continuum must NOT hand-run convert_lora_to_gguf).
+// The grid card (content-addressed hash + catalog emit) is the next slice.
+// See memory lora-layers-as-p2p-exchanged-genome.
+//=============================================================================
 /// Inputs for `forge/export`. `checkpoint` is the custodian-owned trained run
 /// dir (a `forge/train` output under `~/.unsloth/studio/outputs`);
 /// `save_directory` is where the custodian writes the packaged artifact

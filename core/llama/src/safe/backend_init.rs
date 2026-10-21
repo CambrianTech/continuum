@@ -630,6 +630,7 @@ impl Drop for Model {
     }
 }
 
+// ─── LoRA adapter ────────────────────────────────────────────────────────
 /// A LoRA adapter loaded against a model. Can be hot-swapped on a context
 /// without rebuilding the context — this is the primitive genome paging uses.
 ///
@@ -650,6 +651,7 @@ impl Drop for LoraAdapter {
     }
 }
 
+// ─── Context ─────────────────────────────────────────────────────────────
 /// Flash-attention selection for the context.
 ///
 /// `Auto` (the default) lets the runtime decide per-backend — on Metal +
@@ -689,6 +691,14 @@ impl KvCacheType {
     }
 }
 
+// ─── MoE expert-selection observability (the OBSERVE half of the expert-affinity predictor) ───
+//
+// A ggml eval-callback taps the `ffn_moe_topk` node — llama.cpp's per-token, per-layer
+// expert selection (argsort-top-k of expert indices, I32 `[n_expert_used, n_tokens]`,
+// tagged `cb(selected_experts, "ffn_moe_topk", il)` in llama-graph.cpp). This is the
+// "measured beats predicted" PGO signal: which experts ACTUALLY fire, live. core/llama
+// stays generic — it emits `(layer, selected experts)` to a caller-provided
+// `ExpertObserver`; the residency + prediction brain lives in continuum-core.
 /// Sink for live MoE expert selections. `observe` is called from INSIDE the compute
 /// callback for every `ffn_moe_topk` node, so it MUST be cheap + non-blocking (tally into
 /// an atomic map — never lock, never do I/O). `Send + Sync` because the callback can run

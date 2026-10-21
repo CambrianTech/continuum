@@ -33,6 +33,9 @@ use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 use tokio::sync::{Mutex, Semaphore};
 
+// ============================================================================
+// Vector Search Types and Cache
+// ============================================================================
 mod adapters;
 
 mod mutations;

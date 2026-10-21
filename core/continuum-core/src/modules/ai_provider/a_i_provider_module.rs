@@ -187,6 +187,9 @@ impl ServiceModule for AIProviderModule {
     }
 }
 
+// ============================================================================
+// STANDALONE GENERATE FUNCTION (for internal use by other modules)
+// ============================================================================
 /// Generate text using the best available provider
 /// This is a convenience function for internal use (e.g., AgentModule)
 pub async fn generate_text(

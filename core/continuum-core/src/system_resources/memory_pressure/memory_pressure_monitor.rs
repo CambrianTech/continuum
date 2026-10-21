@@ -593,6 +593,9 @@ impl Daemon for MemoryPressureMonitor {
     }
 }
 
+// =============================================================================
+// PressureBroker integration — MemoryPressureMonitor as a signal-only pool
+// =============================================================================
 /// Plug `MemoryPressureMonitor` into `PressureBroker` as a `ResourcePool`.
 /// **Signal source**, not a holder of evictable bytes —
 /// `evict_at_least` returns 0 because the monitor doesn't own any RAM

@@ -20,6 +20,20 @@ use crate::sdk_codegen::{AccessLevel, ActionCommand, CommandError, Ctx};
 
 pub(crate) mod credit_recovery;
 
+// ---------------------------------------------------------------------------------------
+// SWE-bench: the repo-test grader on the command surface.
+//
+// `swe-bench-lite` and `swe-bench-verified` have been catalog rows since this file was
+// written, with `Grader::Python` documented as "catalogued; grader lands with the python
+// collections". This is that grader — and it lands in Rust, because a benchmark is substrate
+// ([[benchmark-infra-is-substrate-commands-handles-events-never-bash]]). The Python scripts
+// it replaces produced numbers nobody could trust: eight runs scored against a clone left at
+// HEAD, gold mis-scored on three instances by an id-shape assumption, and a poll loop that
+// could not tell a dead dispatch from a working one.
+//
+// The instance's own pytest suite still runs — that is the SUBJECT under test, exactly as
+// `rustc` is for `humaneval-rs`. We write no Python.
+// ---------------------------------------------------------------------------------------
 use crate::cognition::swe_bench::{self, SweVerdict};
 
 mod grader;

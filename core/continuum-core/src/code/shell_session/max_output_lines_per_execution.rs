@@ -11,6 +11,9 @@ pub(super) const MAX_HISTORY_ENTRIES: usize = 500;
 /// keep their existing streaming limits; this is not a process memory ceiling.
 pub(super) const MAX_COMPLETED_OUTPUT_BYTES: usize = 8 * 1024 * 1024;
 
+// ============================================================================
+// Execution State (shared between tokio task and IPC handler)
+// ============================================================================
 /// Mutable state for a running or completed execution.
 ///
 /// Written by the background tokio task (stdout/stderr lines, status).
@@ -109,6 +112,9 @@ impl std::fmt::Debug for ExecutionState {
     }
 }
 
+// ============================================================================
+// Compiled Sentinel — pre-compiled regex rules for output classification
+// ============================================================================
 /// Pre-compiled sentinel rules for efficient per-line classification.
 ///
 /// Regex patterns are compiled once when `set_sentinel()` is called,
@@ -186,6 +192,9 @@ impl CompiledSentinel {
     }
 }
 
+// ============================================================================
+// Shell Session
+// ============================================================================
 /// Shell execution state bound to a workspace.
 ///
 /// Retains explicitly configured cwd/env across command executions; changes made

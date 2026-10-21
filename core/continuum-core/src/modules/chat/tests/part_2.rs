@@ -1,6 +1,7 @@
 #![cfg(test)]
 use super::*;
 
+    // ── Partial failure: data ok + airc fail ─────────────────────────
     #[tokio::test]
     pub(super) async fn send_with_airc_failure_returns_warning_and_null_event_id() {
         let chat = chat_with_stubs(vec![
@@ -44,6 +45,7 @@ use super::*;
         );
     }
 
+    // ── Hard failure: data fail ──────────────────────────────────────
     #[tokio::test]
     pub(super) async fn send_with_data_executor_failure_propagates_as_err_and_skips_airc() {
         // Track whether airc was called — it must NOT be when data
@@ -124,6 +126,7 @@ use super::*;
         );
     }
 
+    // ── Ordering invariant: data called BEFORE airc ──────────────────
     #[tokio::test]
     pub(super) async fn send_calls_data_before_airc() {
         // Pin the call order via shared timestamp markers. The
@@ -159,6 +162,7 @@ use super::*;
         );
     }
 
+    // ── Wire contract: what chat sends to data ───────────────────────
     #[tokio::test]
     pub(super) async fn send_writes_chat_messages_collection_with_canonical_entity_shape() {
         // The data write must match the TS `ChatMessageEntity` shape
@@ -231,6 +235,7 @@ use super::*;
         );
     }
 
+    // ── Wire contract: what chat sends to airc ───────────────────────
     #[tokio::test]
     pub(super) async fn send_envelope_matches_airc_publish_wire_shape() {
         // Pin the envelope shape chat hands to airc/realtime-publish.
@@ -306,6 +311,10 @@ use super::*;
         );
     }
 
+    // The `chat/send` typed-object path (module `commands()` contribution,
+    // shared-slot invocation, legacy fail-loud) is proven alongside `chat/poll`
+    // in the "typed object registry path" block above — both verbs share the
+    // same `command_objects` family and the same `handle_command` fail-loud arm.
     // ════════════════════════════════════════════════════════════════
     // Multi-persona concurrency stress tests — gated behind the
     // `stress-tests` cargo feature so default `cargo test` doesn't

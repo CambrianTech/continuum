@@ -164,6 +164,7 @@ pub(super) fn do_cleanup(conn: &Connection) -> Result<(), String> {
         .map_err(|e| format!("Cleanup failed: {}", e))
 }
 
+// ─── Helper Functions ────────────────────────────────────────────────────────
 pub(super) fn value_to_sql_boxed(value: &Value) -> Box<dyn rusqlite::ToSql> {
     match value {
         Value::Null => Box::new(Option::<String>::None),

@@ -46,6 +46,9 @@ impl InMemorySeenEvents {
     }
 }
 
+//=============================================================================
+// EVAL-ISOLATION CHECKPOINT
+//=============================================================================
 /// An opaque snapshot of a persona's entire in-memory admission state — the
 /// engram store, the recall-metadata sidecar, and both the dedup + replay
 /// oracles. Produced by [`AdmissionState::checkpoint`] and consumed by
@@ -68,6 +71,9 @@ pub struct AdmissionCheckpoint {
     pub(super) seen_events: HashMap<String, u64>,
 }
 
+//=============================================================================
+// ADMISSION STATE
+//=============================================================================
 /// Per-persona admission bundle. Holds the runner + in-memory oracles +
 /// admitted-engram store. One per persona, lazy-initialized on first
 /// admission attempt or eagerly in `PersonaCognition::with_budget()`.

@@ -365,6 +365,7 @@ impl ActionCommand for WorkGet {
     }
 }
 
+// ─────────────────── one registry: descriptors + objects ─────────────────
 crate::register_command!(WorkList);
 
 crate::register_command!(WorkGet);

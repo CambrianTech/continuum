@@ -537,6 +537,7 @@ pub(crate) async fn dispatch_staged_swe_solve(
     }
 }
 
+// ─────────────────────────── work/create ─────────────────────────
 /// Create a new work card on the shared board.
 pub struct WorkCreate {
     pub registry: PersonaAircRuntimeRegistry,

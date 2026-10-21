@@ -74,6 +74,13 @@ pub struct AdapterInfo {
     pub capabilities: crate::orm::adapter::AdapterCapabilities,
 }
 
+// ============================================================================
+// vector/* typed outputs
+//
+// The vector handlers once returned ad-hoc `json!` blobs. As typed commands
+// they carry real result structs — so the persona surface, codegen, and `uu`
+// all see the shape, and a caller can deserialize without guessing field names.
+// ============================================================================
 /// A single hit from `vector/search` — a record id with its cosine `score`
 /// and the `distance` (`1 - score`). `data` is the full record, populated only
 /// when the caller passed `includeData`.

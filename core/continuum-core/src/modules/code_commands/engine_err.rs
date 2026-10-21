@@ -518,6 +518,7 @@ pub(crate) fn confinement_of(ctx: &Ctx, workspace: &std::path::Path) -> Option<c
 /// drive it with `code/shell-poll` / `code/shell-kill`. The model can override.
 pub(super) const DEFAULT_SHELL_WAIT_MS: u64 = 30_000;
 
+// ─────────────────────────── code/read ───────────────────────────
 /// Read a file (optionally a line range).
 pub struct CodeRead {
     pub state: Arc<CodeState>,
@@ -556,6 +557,7 @@ impl ActionCommand for CodeRead {
     }
 }
 
+// ─────────────────────────── code/write ──────────────────────────
 /// Create or overwrite a file with new content.
 pub struct CodeWrite {
     pub state: Arc<CodeState>,
@@ -616,6 +618,7 @@ impl ActionCommand for CodeWrite {
     }
 }
 
+// ─────────────────────────── code/edit ───────────────────────────
 /// Edit an existing file (line-range / search-replace / insert / append).
 pub struct CodeEdit {
     pub state: Arc<CodeState>,

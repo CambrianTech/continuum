@@ -3,6 +3,15 @@
     use super::*;
     use crate::runtime::ModuleRegistry;
     use uuid::Uuid;
+    // ════════════════════════════════════════════════════════════════
+    // chat/send: dual-write composition stress tests
+    // ════════════════════════════════════════════════════════════════
+    //
+    // The chat module's first multi-cross-module-call handler:
+    // chat → data (persist) then chat → airc (publish). Each test
+    // pins one cell of the (data ok/fail × airc ok/fail) matrix,
+    // plus the wire-contract invariants the dual-write design
+    // promised.
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Mutex;
 
@@ -92,6 +101,7 @@
         }
     }
 
+    // ── config + dispatch ────────────────────────────────────────────
     // what this catches: #140/#177 — the durable-transcript writer. A projected
     // chat:posted line (a persona's spoken reply — the shape that was an
     // airc+positron-only ghost, invisible to chat/poll, LIGHTHOUSE diagnosis
@@ -250,6 +260,9 @@
         );
     }
 
+    // ── Unmigrated stubs still name the follow-up PR ─────────────────
+    //
+    // chat/send migrated in this PR; analyze + export still on TS.
     #[tokio::test]
     pub(super) async fn unmigrated_commands_fail_loud_and_name_followup() {
         let chat = chat_with_stubs(vec![]);
@@ -274,6 +287,7 @@
         }
     }
 
+    // ── chat/poll: empty-result path ──────────────────────────────────
     #[tokio::test]
     pub(super) async fn poll_returns_empty_result_when_data_module_returns_no_messages() {
         let chat = chat_with_stubs(vec![Arc::new(StubDataModule::query_only(
@@ -307,6 +321,7 @@
         );
     }
 
+    // ── chat/poll: latest-N path (no anchor) ──────────────────────────
     #[tokio::test]
     pub(super) async fn poll_without_anchor_queries_data_desc_and_returns_chronological() {
         let chat = chat_with_stubs(vec![Arc::new(StubDataModule::query_only(|params| {
@@ -341,6 +356,7 @@
         assert_eq!(result.messages[1]["timestamp"], "2026-05-30T15:00:00Z");
     }
 
+    // ── chat/poll: room filter applied ────────────────────────────────
     #[tokio::test]
     pub(super) async fn poll_with_room_id_passes_filter_to_data_module() {
         let room_id = Uuid::new_v4();
@@ -358,6 +374,7 @@
         .expect("room-filtered poll must succeed");
     }
 
+    // ── chat/poll: after_message_id path ──────────────────────────────
     #[tokio::test]
     pub(super) async fn poll_with_anchor_looks_up_timestamp_then_filters_gt() {
         let anchor_id = Uuid::new_v4();
@@ -403,6 +420,7 @@
         assert_eq!(result.after_message_id, Some(anchor_id));
     }
 
+    // ── chat/poll: before_message_id path (the scroll-back cursor) ────
     // what this catches: the endless-scroll page — `beforeMessageId` must
     // resolve the anchor's timestamp, filter `$lt` (strictly OLDER), and
     // query DESC (the page immediately preceding the anchor, not the
@@ -472,6 +490,7 @@
         assert!(err.contains("mutually exclusive"), "got: {err}");
     }
 
+    // ── chat/poll: missing anchor fails loud ──────────────────────────
     #[tokio::test]
     pub(super) async fn poll_with_anchor_returns_err_when_anchor_missing() {
         let anchor_id = Uuid::new_v4();
@@ -497,6 +516,14 @@
         );
     }
 
+    // ── chat/poll + chat/send: the typed object registry path ─────────
+    //
+    // These commands now route via `route_object` as typed
+    // `ActionCommand`s (`crate::commands::chat`), NOT the legacy
+    // `handle_command` envelope. The tests below prove the module
+    // contributes exactly those two objects, that invoking one reaches
+    // the shared executor slot and runs the canonical `ChatModule::poll`
+    // body, and that the retired legacy arms fail loud.
     #[test]
     pub(super) fn commands_contributes_poll_and_send_objects() {
         // what this catches: a regression that drops a command from the
@@ -660,6 +687,7 @@
         })
     }
 
+    // ── Happy path: both succeed ─────────────────────────────────────
     #[tokio::test]
     pub(super) async fn send_happy_path_returns_message_id_and_event_id() {
         let chat = chat_with_stubs(vec![

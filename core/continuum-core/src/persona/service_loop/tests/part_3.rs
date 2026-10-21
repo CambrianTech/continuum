@@ -1,6 +1,20 @@
 #![cfg(test)]
 use super::*;
 
+    // Bespoke `StubConversation` / `CannedAdapter` / `EmptyReader` /
+    // `fake_hosted` / `fake_hosted_with_delay` deleted per
+    // [[test-fixtures-are-system-primitives]]. The substrate's
+    // ubiquitous primitives now power every test below:
+    //   * `ScriptedConversation` for the `PersonaConversation` impl
+    //     (with `.with_events`, `.with_high_water`,
+    //     `.with_prime_failure`, `.require_prime_before_next_message`)
+    //   * `HeuristicInferenceAdapter` for the adapter (with
+    //     `.with_delay_ms` for the honest-latency test)
+    //   * `StubAircCitizen` for the AircTranscriptReader — citizens
+    //     are also transcript readers via the trait's supertrait
+    //     bound, so it doubles as the empty-transcript reader
+    //   * `hosted_with_adapter` is the local-helper-of-helpers
+    //     wrapping HostedPersona — small, no impls
     pub(super) fn hosted_with_adapter(
         persona_peer_id: Uuid,
         adapter: Arc<dyn AIProviderAdapter>,

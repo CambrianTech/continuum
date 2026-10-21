@@ -310,6 +310,7 @@ pub async fn spawn_activity_room(
     }
 }
 
+// ─────────────────────────── standing ───────────────────────────
 /// The standing of ONE room the caller named — never "whatever room the
 /// scope's pointer happens to be on".
 ///
@@ -360,6 +361,7 @@ pub struct StandingResult {
     pub post_id: String,
 }
 
+// ─────────────────────────── activity/archive ───────────────────────────
 /// Mark the current room concluded — or reopen it.
 pub struct ActivityArchive {
     pub registry: PersonaAircRuntimeRegistry,
@@ -422,6 +424,7 @@ impl ActionCommand for ActivityArchive {
     }
 }
 
+// ─────────────────────────── activity/protect ───────────────────────────
 /// Make the current room refuse deletion — or release that.
 pub struct ActivityProtect {
     pub registry: PersonaAircRuntimeRegistry,
@@ -477,6 +480,16 @@ impl ActionCommand for ActivityProtect {
     }
 }
 
+// Descriptors for the three verbs above. Their CONSTRUCTORS come from
+// `ActivityModule::commands()` (they hold the airc registry, so they are not
+// `Default`-constructible and cannot use `register_stateless_command!`); the
+// descriptor is type-only, so it is declared here at the same site the command is.
+// Both halves are required — a constructor without a descriptor routes but is
+// INVISIBLE to `commands/list`, the persona tool surface, the ACL and codegen, which
+// is exactly how `activity/spawn` — the verb that mints every room, benchmark rooms
+// included — became undiscoverable while the catalog promised "Listed == callable".
+// `ModuleRegistry::register` now refuses to boot on the omission.
+// ─────────────────────────── activity/state ───────────────────────────
 /// Read an activity's saved bundle — the state its recipe and its tracker saved on
 /// the room (card c9ddb911). The same pipe a resuming node reads; a human or a
 /// citizen standing in the room sees exactly what a resume would restore.
@@ -566,6 +579,7 @@ crate::register_command!(ActivityArchive);
 
 crate::register_command!(ActivityProtect);
 
+// ─────────────────────────── module ───────────────────────────
 /// Hosts the `activity/*` verbs.
 pub struct ActivityModule {
     pub(super) registry: PersonaAircRuntimeRegistry,

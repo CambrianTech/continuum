@@ -415,6 +415,15 @@ impl Default for FootprintRegistry {
     }
 }
 
+// ─── Global singleton ──────────────────────────────────────────────────
+//
+// One process-wide registry so every allocation site (model loader, KV
+// allocator, LoRA paging, render pipeline) reports through the same
+// surface. Mirrors `model_registry::singleton` but uses lazy `get_or_init`
+// instead of an explicit `init_global` because `FootprintRegistry::new()`
+// can't fail (no I/O, no parsing — empty DashMap). That removes the
+// "did someone wire init?" footgun: any caller can read or write at any
+// time without pre-boot ceremony.
 pub(super) static GLOBAL: OnceLock<FootprintRegistry> = OnceLock::new();
 
 /// The process-wide registry. Lazy-initialized on first call. Safe to

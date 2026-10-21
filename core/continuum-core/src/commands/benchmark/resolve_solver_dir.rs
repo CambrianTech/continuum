@@ -489,6 +489,9 @@ pub(super) mod swe_setup_tests {
     }
 }
 
+// ---------------------------------------------------------------------------
+// benchmark/runs — the RunProjection (exam-room surface, slice 2)
+// ---------------------------------------------------------------------------
 /// How long a non-terminal run may go without ANY artifact activity before the
 /// projection flags it `stalled`. Matches the harness cadence expectation (a
 /// healthy Devstral act lands every ~4-6 min; 20 min of silence is 3-4 missed

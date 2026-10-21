@@ -26,6 +26,7 @@ impl ActionCommand for CodeShellKill {
     }
 }
 
+// ─────────────────────────── code/delete ─────────────────────────
 /// Delete a file from the workspace (tracked in the change history, undoable).
 pub struct CodeDelete {
     pub state: Arc<CodeState>,
@@ -56,6 +57,7 @@ impl ActionCommand for CodeDelete {
     }
 }
 
+// ─────────────────────────── code/diff ───────────────────────────
 /// Preview the unified diff an edit WOULD produce, without applying it.
 pub struct CodeDiff {
     pub state: Arc<CodeState>,
@@ -89,6 +91,7 @@ impl ActionCommand for CodeDiff {
     }
 }
 
+// ─────────────────────────── code/undo ───────────────────────────
 /// Undo a tracked change: a specific change by id, or the last N changes.
 pub struct CodeUndo {
     pub state: Arc<CodeState>,
@@ -142,6 +145,7 @@ impl ActionCommand for CodeUndo {
     }
 }
 
+// ─────────────────────────── code/history ────────────────────────
 /// The change history for one file, or the whole workspace.
 pub struct CodeHistory {
     pub state: Arc<CodeState>,
@@ -181,6 +185,7 @@ impl ActionCommand for CodeHistory {
     }
 }
 
+// ─────────────────── code/release-hands ───────────────────
 /// End the caller's current acting context: kill anything its shells still run, wait each
 /// one out, and only once every one is confirmed gone drop its workspace engine and shells.
 /// What a fork's hands do when the fork is over (an eval or a solve), so its context leaves
@@ -351,6 +356,7 @@ impl ActionCommand for CodeReleaseHands {
     }
 }
 
+// ─────────────────── code/create-workspace ───────────────────
 /// Establish (or re-root) the caller's workspace sandbox at a specific path.
 pub struct CodeCreateWorkspace {
     pub state: Arc<CodeState>,
@@ -509,6 +515,7 @@ impl ActionCommand for CodeCreateWorkspace {
     }
 }
 
+// ─────────────── the shell's own verdict (card f6c50a49) ────────────────
 /// Project a shell execution's OWN declared status into the executor's verdict.
 ///
 /// No key scanning and no guessing: `ShellExecutionStatus` is already the typed
@@ -564,6 +571,7 @@ impl crate::sdk_codegen::ProjectsOutcome for CodeShellPoll {
     }
 }
 
+// ─────────────────── one registry: descriptors + objects ─────────────────
 // Static descriptors → the ONE `command_registry()` the persona surface + grid
 // ACL + codegen read. Each is an `AiSafe` `ActionCommand`, so it auto-appears in
 // `authorized_tool_specs(Provisional)` with its real schema + description.

@@ -1,5 +1,9 @@
 use super::*;
 
+// Migration command params now live with their typed ActionCommands in
+// commands/migration/*. The `migration/*` output structs (MigrationProgress,
+// MigrationVerification on the engine; MigrationCutover, MigrationRollback below)
+// are the wire contracts.
 impl DataState {
     /// In-process command dispatch — the legacy `match` over `data/*`,
     /// `adapter/*`, `vector/*`, `migration/*`. The [`DataModule`] shell's

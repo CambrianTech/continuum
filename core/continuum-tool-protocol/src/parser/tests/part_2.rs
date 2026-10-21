@@ -293,6 +293,9 @@ use super::*;
         assert!(!narrates_stage_direction("just prose, no brackets"));
     }
 
+    // ── CliFlagFormat (idioms 9+10) + FencedCallFormat (idiom 8) — the
+    // 2026-07-12 afternoon corpus: all three personas converged on CLI-flag
+    // calls and none lifted (task #153 metadata carries each verbatim). ──
     // what this catches: Atlas's bare-line CLI-flag write (idiom 9). The
     // dominant live idiom must lift with both `--key "v"` and `--key="v"`.
     #[test]

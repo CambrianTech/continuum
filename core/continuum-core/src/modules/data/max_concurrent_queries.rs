@@ -72,6 +72,9 @@ pub(super) fn require_public_collection(collection: &str) -> Result<(), String> 
     Ok(())
 }
 
+// ============================================================================
+// Paginated Query State
+// ============================================================================
 /// Paginated query state - server-side cursor management
 /// Advantage over TypeScript: no IPC per page, just in-memory state
 #[derive(Debug)]
@@ -487,6 +490,9 @@ impl ServiceModule for DataModule {
     }
 }
 
+// Command param structs for the remaining legacy arms (still dbPath-shaped).
+// The migrated CRUD commands (data/create|read|update|delete) carry their own
+// clean `handle`-based params in `commands/data/*.rs`.
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(super) struct QueryParams {
@@ -523,6 +529,14 @@ pub(super) struct QueryWithJoinParams {
     pub(super) select: Option<Vec<String>>,
 }
 
+// Vector command params (collection/search/index/backfill/stats) moved to their
+// typed command files under `commands/vector/*.rs`; the DataState methods they
+// call take plain args (handle, collection, …). The `default_k`/`default_true`/
+// `default_batch_size` serde helpers moved with them.
+
+// ============================================================================
+// Paginated Query Params
+// ============================================================================
 pub(super) fn default_page_size() -> usize {
     100
 }

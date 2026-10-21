@@ -345,6 +345,7 @@ use super::*;
         assert!(plan_serving(&host, &[], &ServingDemand::new(MAX_LANES, None)).is_none());
     }
 
+    // ── hysteresis (plan_serving_stable) ──────────────────────────────────
     // small chat (rank 1, ~1GB) vs big coder (rank 3, ~9.7GB) — the pair that
     // exercises switch-up/down decisions.
     pub(super) fn pair() -> Vec<ModelFootprint> {

@@ -1,5 +1,6 @@
 use super::*;
 
+// ── Helper functions for job management ─────────────────────────────────
 /// `system_profiler`'s VRAM string ("1536 MB", "8 GB") in MEGABYTES.
 ///
 /// READS the unit rather than assuming it. The previous code took the leading

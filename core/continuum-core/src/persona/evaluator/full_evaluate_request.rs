@@ -120,6 +120,9 @@ pub struct GateDetails {
     pub echo_chamber_ai_count: Option<u32>,
 }
 
+// =============================================================================
+// UNIFIED EVALUATOR
+// =============================================================================
 /// Evaluate a message: collect social signals, apply only hard safety gates.
 ///
 /// PHILOSOPHY: The LLM is the intelligence. Rust collects signals at microsecond
@@ -366,6 +369,9 @@ pub fn full_evaluate(
     }
 }
 
+// =============================================================================
+// BURST-AWARE EVALUATOR (task #248 PR C — demand-pull cognition path)
+// =============================================================================
 /// Result of evaluating a burst — analyzed at the cognition layer
 /// ONCE per channel-tick (the demand-pull doctrine in production form).
 ///

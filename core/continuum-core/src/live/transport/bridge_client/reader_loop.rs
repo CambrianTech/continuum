@@ -390,6 +390,9 @@ pub(super) fn handle_bridge_event(
     }
 }
 
+// =============================================================================
+// RMS calculation for mouth weight animation
+// =============================================================================
 #[cfg(feature = "avatar-3d")]
 pub(super) fn calculate_rms_weights(samples: &[i16], sample_rate: u32, window_ms: u32) -> Vec<f32> {
     let window_size = (sample_rate as usize * window_ms as usize) / 1000;
