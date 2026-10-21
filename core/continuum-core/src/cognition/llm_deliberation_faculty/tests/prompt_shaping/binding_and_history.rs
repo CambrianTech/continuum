@@ -15,19 +15,6 @@ use super::*;
 // consequence, and her own last move is the LAST thing to go.
 #[test]
 fn a_binding_fill_budget_keeps_her_own_last_move_and_its_result() {
-    // card e370a673: a degraded serving snapshot must not erase the
-    // captured request model's measured fill allowance on a retry.
-    use crate::inference::prefill_rate::{MeasuredRate, RateSource};
-    let measured = MeasuredRate { tps: Some(28.4), source: RateSource::Fresh };
-    let (cap, retained) = LlmDeliberationFaculty::latency_fill_cap("bound-model", |model| {
-        assert_eq!(model, "bound-model", "look up the request binding, not current serving readiness");
-        measured
-    });
-    assert_eq!(retained, measured);
-    assert_eq!(cap, (PREFILL_TARGET_SECONDS as f64 * 28.4).floor() as usize);
-    // An absent request model is unrepresentable: the key is always the model the
-    // request carries (`ModelBinding::requested_model`), so no other model's rate
-    // can be borrowed (card b406e901).
     let adapter: Arc<dyn AIProviderAdapter> = Arc::new(HeuristicInferenceAdapter::new());
     let faculty = LlmDeliberationFaculty::new(Uuid::new_v4(), "T", "You are T.", adapter);
     let mut history: Vec<ChatMessage> = (0..40)

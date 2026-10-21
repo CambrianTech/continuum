@@ -5,10 +5,14 @@
 //! and prefills only what is new (replayed on the M5's captures, 2026-10-21: mean prefill
 //! per act 70,296 -> 27,815 chars for Aiko, 51,505 -> 15,998 for Aris; continuum-context
 //! `examples/replay.rs`). When the epoch outgrows what the window grants her history, it
-//! turns over: the one flexbox grants each source a budget between its pointers and its
-//! whole, the view keeps each source's newest items whole and collapses the older ones,
-//! and the new epoch starts no larger than this node prefills in its latency target. That
-//! is the only place anything collapses; nothing is cut in the middle of an epoch.
+//! turns over ([`LlmDeliberationFaculty::fit_view`]): the one flexbox grants each source a
+//! budget between its pointers and its whole, and the view keeps each source's newest items
+//! whole and collapses the older ones. That is the only place anything collapses; nothing is
+//! cut in the middle of an epoch.
+//!
+//! The prompt assembly calls two things: [`LlmDeliberationFaculty::place_view`] to lead the
+//! history with the view, and [`LlmDeliberationFaculty::fit_view`] once the window's
+//! allocation has granted the history its budget.
 
 use continuum_context::source::Source;
 use continuum_context::view::{Claim, View};
@@ -18,11 +22,67 @@ use crate::cognition::context_streams::actions::Actions;
 use crate::cognition::context_streams::thoughts::Thoughts;
 use crate::cognition::context_streams::ContextMessage;
 
+/// Where her view sits in this act's history: its leading `len` messages, and whether this
+/// act started it.
+#[derive(Clone, Copy, Debug)]
+pub(in super::super) struct ViewPlacement {
+    len: usize,
+    started: bool,
+}
+
 impl LlmDeliberationFaculty {
+    /// Lead `prompt.history` with her view, advanced by this act. What follows it (standing
+    /// grounding, facts, the clock) is this act's fresh tail.
+    pub(in super::super) fn place_view(&self, prompt: &mut PromptMessages) -> ViewPlacement {
+        let (messages, started) = self.advance_view(&prompt.streams);
+        let len = messages.len();
+        prompt.history.splice(0..0, messages);
+        prompt.grounding_at = len;
+        ViewPlacement { len, started }
+    }
+
+    /// Keep her view within `history_budget`, the window's grant to her history. When it
+    /// outgrows the grant, or a view just started (a start or a restart) takes over half of
+    /// it, a new epoch starts at half of what the grant leaves the view: her reads stay whole
+    /// until her window is actually full, and the other half is room to grow by appends.
+    ///
+    /// Measured on the M5, 2026-10-21: sized to the 30 s latency target, Aiko's epoch started
+    /// at 6,956 of 86,233 tokens and collapsed 40 items (18:20Z), the starvation the view
+    /// exists to end; rendered whole on a restart, one view was a 100,940-token cold prefill
+    /// of 10+ minutes (19:30Z). The replay's half-window start halved its turnovers
+    /// (continuum-context `examples/replay.rs`).
+    pub(in super::super) fn fit_view(&self, prompt: &mut PromptMessages, view: ViewPlacement, history_budget: usize) {
+        let history_tokens = Self::messages_cost(&prompt.history);
+        let over = history_tokens > history_budget;
+        let oversized_start = view.started && history_tokens > history_budget / 2;
+        if view.len == 0 || !(over || oversized_start) {
+            return;
+        }
+        let shown = &prompt.history[..view.len];
+        let view_tokens = Self::messages_cost(shown);
+        let view_chars: usize = shown.iter().map(|m| m.content_text().chars().count()).sum();
+        let start_tokens = history_budget.saturating_sub(history_tokens.saturating_sub(view_tokens)) / 2;
+        // Tokens to the view's characters at the density this view just measured.
+        let budget_chars = start_tokens.saturating_mul(view_chars) / view_tokens.max(1);
+        let started = self.turn_over_view(&prompt.streams, budget_chars);
+        prompt.grounding_at = started.len();
+        prompt.history.splice(0..view.len, started);
+        continuum_base::probe!(
+            class = "delib.view.sized",
+            persona = %self.persona_name,
+            history_budget,
+            history_tokens,
+            view_tokens,
+            start_tokens,
+            restart = view.started,
+            "her view started a new epoch at half of what the grant leaves it"
+        );
+    }
+
     /// Append this act's changes to her view and return its messages, and whether this act
     /// started the view (the first act after a start or a restart renders it whole, for the
     /// caller to size).
-    pub(in super::super) fn advance_view(&self, streams: &Streams) -> (Vec<ChatMessage>, bool) {
+    fn advance_view(&self, streams: &Streams) -> (Vec<ChatMessage>, bool) {
         let memory = self.working_memory.as_deref();
         let actions = memory.map(|memory| Actions { memory });
         let thoughts = memory.map(|memory| Thoughts { memory });
@@ -58,7 +118,7 @@ impl LlmDeliberationFaculty {
 
     /// Start a new epoch of her view within `budget_chars`, the flexbox granting each
     /// source its share by priority.
-    pub(in super::super) fn turn_over_view(&self, streams: &Streams, budget_chars: usize) -> Vec<ChatMessage> {
+    fn turn_over_view(&self, streams: &Streams, budget_chars: usize) -> Vec<ChatMessage> {
         let memory = self.working_memory.as_deref();
         let actions = memory.map(|memory| Actions { memory });
         let thoughts = memory.map(|memory| Thoughts { memory });

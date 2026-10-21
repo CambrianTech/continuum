@@ -1,45 +1,6 @@
 use super::*;
 
-/// The act-latency target the CONVERSATION fill budgets against — how long a turn's
-/// history prefill is allowed to take. From the act-latency law: human expectations set
-/// the bar; a turn that spends minutes re-reading history before thinking is disqualified
-/// regardless of how smart the answer is. Window HEADROOM above this is reserve, not
-/// default fill.
-///
-/// This is the LATENCY INTENT and nothing else — the half of the cap that is a product
-/// decision. The other half, tokens-per-second, is MEASURED on this node
-/// ([`crate::inference::prefill_rate::latency_fill_cap`]); it used to be a companion
-/// constant of 500 t/s, and `30 × 500` made the fill a flat 15,000 tokens on every box in
-/// the fleet. Measured on the M5 the night that was found (`inference.prefill.complete`):
-/// `ingest_tok_per_s` of 70, 90 and 92, and the IntelMac at ~25 — so the constant was
-/// 5–20× optimistic, the "30 second" target was really ~187 s, and the clip took 27% of a
-/// 67,072-token lane away from Aiko while failing its own stated purpose on every machine.
-// context-budget-exempt: a TIME target, not a token budget — the token cap is time x THIS node's MEASURED prefill rate (`prefill_rate::latency_fill_cap`)
-pub(in super::super) const PREFILL_TARGET_SECONDS: usize = 30;
-
 impl LlmDeliberationFaculty {
-    /// The conversation fill this turn may cost, and the rate it was derived from.
-    ///
-    /// `PREFILL_TARGET_SECONDS` is the latency INTENT; the tokens it buys are THIS
-    /// node's, read through the same ladder the decode side landed (#4283) — fresh, else
-    /// stale, else the box's most conservative measured rate, and only with nothing ever
-    /// measured a named floor ([`crate::inference::prefill_rate::latency_fill_cap`]).
-    /// Use the captured request binding: a degraded serving snapshot may temporarily
-    /// clear active_model while this same model still owns the pending turn.
-    pub(in super::super) fn latency_fill_cap(
-        model: &str,
-        rate_for: impl FnOnce(&str) -> crate::inference::prefill_rate::MeasuredRate,
-    ) -> (usize, crate::inference::prefill_rate::MeasuredRate) {
-        // `model` is the one the request carries (`ModelBinding::requested_model`), never
-        // absent: an unbound spawn binding keyed nothing and fell to the unmeasured floor
-        // (card b406e901; Fable on #5130).
-        let rate = rate_for(model);
-        (
-            crate::inference::prefill_rate::latency_fill_cap(PREFILL_TARGET_SECONDS, rate),
-            rate,
-        )
-    }
-
     /// The EXACT prompt this faculty sends the model this tick — the system
     /// prompt (identity + assembled RAG context + how-to-participate + silence
     /// affordance) and the user burst. Exposed so what the LLM sees is trivially
@@ -60,7 +21,7 @@ impl LlmDeliberationFaculty {
         // model come from the same atomic snapshot (no torn read across a re-home).
         let binding = self.binding.load();
         let (window, calibration) = self.prompt_fit(&binding);
-        self.prompt_view_with_feedback(ws, window, calibration, binding.requested_model())
+        self.prompt_view_with_feedback(ws, window, calibration)
     }
 
     pub(in super::super) fn prompt_fit(&self, binding: &ModelBinding) -> (u32, PromptCalibration) {
@@ -74,7 +35,7 @@ impl LlmDeliberationFaculty {
     /// Fixture view against an explicit window, without a prior provider observation.
     #[cfg(test)]
     pub(in super::super) fn prompt_view_within(&self, ws: &Workspace, context_window: u32) -> DeliberationPromptView {
-        self.prompt_view_with_feedback(ws, context_window, PromptCalibration::default(), self.binding.load().requested_model())
+        self.prompt_view_with_feedback(ws, context_window, PromptCalibration::default())
     }
 
     /// Every reply carries the engine's own count of the prompt it was sent: retain that
@@ -121,9 +82,8 @@ impl LlmDeliberationFaculty {
         ws: &Workspace,
         context_window: u32,
         calibration: PromptCalibration,
-        model: &str,
     ) -> DeliberationPromptView {
-        self.prompt_view_with_visual_feedback(ws, context_window, calibration, None, model)
+        self.prompt_view_with_visual_feedback(ws, context_window, calibration, None)
     }
 
     pub(in super::super) fn prompt_view_with_visual_feedback(
@@ -132,7 +92,6 @@ impl LlmDeliberationFaculty {
         context_window: u32,
         calibration: PromptCalibration,
         visual: Option<&ActiveVisualFeedback>,
-        model: &str,
     ) -> DeliberationPromptView {
         // THE REPLY'S CLAIM ([`reply_claim`]): what she is expected to write, at the
         // priority this turn gives it. It competes in the window's one allocation below;
@@ -216,10 +175,7 @@ impl LlmDeliberationFaculty {
         );
         // Her view leads the history: this act appends to it, and everything after it (the
         // standing grounding, facts, the clock) is this act's fresh tail.
-        let (view_messages, view_started) = self.advance_view(&all_messages.streams);
-        let mut view_len = view_messages.len();
-        all_messages.history.splice(0..0, view_messages);
-        all_messages.grounding_at = view_len;
+        let view = self.place_view(&mut all_messages);
 
         // Price the untruncated trailing sources separately: messages_unfitted
         // leaves them borrowed until the same plan has reserved their exact units.
@@ -338,19 +294,6 @@ impl LlmDeliberationFaculty {
         // turn that cut Benchy's first write mid-call (2026-10-18 02:10Z). Now it trades
         // against history and grounding by priority and never takes from required input.
         //
-        // LATENCY-BUDGETED FILL (act-latency law + compression ladder): a bigger served
-        // window is only a gift if its content earns the prefill time. When the honest
-        // kv-rate fix grew slots to ~134k, the demand-derived budgets happily filled them
-        // — prompts ballooned 19-24k → 24-43k in an afternoon and five concurrent 35k
-        // prefills serialized acts to 339-888s (measured 2026-09-01, the worst of the day,
-        // WITH the best hit rates). So history's claim is capped by a time target — and
-        // the tokens that target buys are THIS node's, never a constant's:
-        // `PREFILL_TARGET_SECONDS × the measured prefill rate`
-        // (`prefill_rate::latency_fill_cap`, the #4283 ladder: fresh → stale → the box's
-        // most conservative curve → a named floor).
-        let (derived_fill_cap, fill_rate) = Self::latency_fill_cap(
-            model, crate::inference::prefill_rate::measured_rate_for,
-        );
         // Her own last move and its result are history's FLOOR, ahead of every optional
         // claim, the reply's desire included: clipping them costs a WHOLE EXTRA TURN when she
         // re-issues the act. `fit_messages` refuses to evict them; this floor is what makes
@@ -456,47 +399,9 @@ impl LlmDeliberationFaculty {
             required_tokens
                 .saturating_add(calibration.prompt_budget(plan.granted(FLEX_HISTORY) as usize)),
         );
-        // TURNOVER, the only rewrite of her view: when it outgrows what the window grants her
-        // history, a new epoch starts, collapsed once by the flexbox, at half of what the
-        // grant leaves it. Within the epoch it then grows by appends alone.
-        let history_budget = msg_budget.saturating_sub(required_tokens);
-        let history_tokens = Self::messages_cost(&all_messages.history);
-        // A view's first act sizes it the same way: rendered whole it can be most of the window,
-        // one cold prefill of 100,940 tokens on the M5 (2026-10-21 19:30Z, a 112k slot), paid
-        // again by every restart and every slot it is restored into.
-        let over = history_tokens > history_budget;
-        let oversized_start = view_started && history_tokens > history_budget / 2;
-        if (over || oversized_start) && view_len > 0 {
-            let view_tokens = Self::messages_cost(&all_messages.history[..view_len]);
-            let view_chars: usize =
-                all_messages.history[..view_len].iter().map(|m| m.content_text().chars().count()).sum();
-            // Half of what the grant leaves her view: her reads stay whole until her window
-            // is actually full (the M5, 2026-10-21 18:20Z: sized to the 30 s latency target,
-            // Aiko's first epoch started at 6,956 of 86,233 tokens and collapsed 40 items,
-            // the starvation this view exists to end), and the other half is room to grow
-            // by appends before the next turnover (the replay's half-window start halved its
-            // turnovers, examples/replay.rs).
-            let start_tokens = history_budget.saturating_sub(history_tokens.saturating_sub(view_tokens)) / 2;
-            // Tokens to the view's characters at the density this view just measured.
-            let budget_chars = start_tokens.saturating_mul(view_chars) / view_tokens.max(1);
-            let started = self.turn_over_view(&all_messages.streams, budget_chars);
-            all_messages.history.splice(0..view_len, started.iter().cloned());
-            view_len = started.len();
-            all_messages.grounding_at = view_len;
-            continuum_base::probe!(
-                class = "delib.view.sized",
-                persona = %self.persona_name,
-                history_budget,
-                history_tokens,
-                view_tokens,
-                start_tokens,
-                derived_fill_cap,
-                rate_source = fill_rate.source.label(),
-                measured_prefill_tps = fill_rate.tps.unwrap_or(0.0), // unwrap_or: 0.0 on the receipt means NO rate — rate_source says "none" and the floor governed
-                "her view outgrew its grant and started a new epoch at half of what the grant \
-                 leaves it; the latency target and rate ride along as the epoch's re-prefill cost"
-            );
-        }
+        // Her view within what the window grants her history (`epoch.rs`): the only place it
+        // is ever collapsed.
+        self.fit_view(&mut all_messages, view, msg_budget.saturating_sub(required_tokens));
 
         // WHAT THIS TURN WOULD HAVE COST WITH NO BUDGET — recorded before either
         // fitting step throws the evidence away, and deliberately free to exceed
@@ -748,23 +653,6 @@ impl LlmDeliberationFaculty {
             .collect()
     }
 
-    /// Build the role-attributed conversation thread from the workspace's
-    /// structured turns, fitted to `budget_tokens`. The persona's OWN posts become
-    /// `assistant` messages (her own voice — no name prefix, matching the
-    /// "do NOT prefix your message with your name" instruction); peers' posts become
-    /// `user` messages prefixed `{author}: ` so several speakers stay legible inside
-    /// one merged user turn. Consecutive same-role turns merge into a single message
-    /// (the chat-template shape models expect). Under budget pressure the OLDEST
-    /// turns drop first. This is the payoff of the structured-turns refactor: the
-    /// model sees WHO said WHAT with its own past messages attributed to `assistant`,
-    /// so it neither bleeds identity nor replays the transcript (the echo-loop root
-    /// cause — PERSONA-COGNITION-PIPELINE §7.5).
-    #[cfg(test)]
-    pub(in super::super) fn messages_within(&self, ws: &Workspace, budget_tokens: usize) -> Vec<ChatMessage> {
-        self.fit_messages(self.messages_unfitted(ws, None), budget_tokens)
-            .expect("test workspace must fit its complete current stimulus and action result")
-            .messages
-    }
 
     /// The conversation as it stands BEFORE any budget is applied — every turn, every
     /// perception fact, every trailing proprioception block, in final render order.

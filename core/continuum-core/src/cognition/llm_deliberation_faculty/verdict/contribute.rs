@@ -110,7 +110,7 @@ impl LlmDeliberationFaculty {
         let mut rejected_measured_tokens = None;
         let mut request_template: Option<TextGenerationRequest> = None;
         let mut view = self.prompt_view_with_visual_feedback(
-            ws, fit_window, calibration, visual.as_ref(), binding.requested_model(),
+            ws, fit_window, calibration, visual.as_ref(),
         );
         let mut gen_await_ms = 0u64;
         // The allowance the request actually carried (set where it is built, read at the seam).
