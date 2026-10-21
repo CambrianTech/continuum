@@ -318,7 +318,6 @@ mod loose_id_guard {
         LooseId { file: "ai/types.rs", field: "user_id", why: "pending: ours, but nothing on this path RESOLVES yet. Typing it as an identity today would assert something the code does not do — #164/#396" },
         LooseId { file: "airc/realtime.rs", field: "user_id", why: "pending: ours, but nothing on this path RESOLVES yet. Typing it as an identity today would assert something the code does not do — #164/#396" },
         LooseId { file: "cognition/eval/sweep_orphan_eval_roots.rs", field: "room_id", why: "pending: ours, but nothing on this path RESOLVES yet. Typing it as an identity today would assert something the code does not do — #164/#396" },
-        LooseId { file: "cognition/resolution_compute.rs", field: "persona_id", why: "pending: ours, but nothing on this path RESOLVES yet. Typing it as an identity today would assert something the code does not do — #164/#396" },
         LooseId { file: "logging/client.rs", field: "session_id", why: "external: log-envelope correlation fields, written as text to a JSONL sink another tool reads" },
         LooseId { file: "logging/client.rs", field: "user_id", why: "external: log-envelope correlation fields, written as text to a JSONL sink another tool reads" },
         LooseId { file: "modules/dataset/dataset_manifest.rs", field: "room_id", why: "pending: ours, but nothing on this path RESOLVES yet. Typing it as an identity today would assert something the code does not do — #164/#396" },

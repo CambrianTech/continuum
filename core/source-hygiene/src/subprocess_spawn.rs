@@ -45,7 +45,7 @@ pub const ANSWERED_BY_A_LIBRARY: &[(&str, &str)] = &[
 // 127 -> 132, not new debt: production_half now blanks only the #[cfg(test)]-gated item, so
 // production code BELOW a mid-file test mod or gated helper is scanned (measured on canary
 // a85454889 + this change, 2026-10-20).
-pub const BASELINE_SPAWN_SITES: usize = 132;
+pub const BASELINE_SPAWN_SITES: usize = 127;
 
 /// Per-program baselines for [`ANSWERED_BY_A_LIBRARY`] on the same day. May only fall.
 pub const BASELINE_BY_PROGRAM: &[(&str, usize)] = &[

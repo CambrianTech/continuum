@@ -110,7 +110,6 @@ pub mod audience;
 pub mod replay;
 pub mod room_roster;
 pub mod resolution;
-pub mod resolution_compute;
 pub mod resource_admission;
 pub mod response_orchestrator;
 pub mod response_validator;

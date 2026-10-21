@@ -75,7 +75,7 @@ const SHAPES: &[&str] = &[
 // 246 -> 251, not new debt: production_half now blanks only the #[cfg(test)]-gated item, so
 // production code BELOW a mid-file test mod or gated helper is scanned (measured on canary
 // a85454889 + this change, 2026-10-20).
-const BASELINE_UNJUSTIFIED: usize = 251;
+const BASELINE_UNJUSTIFIED: usize = 242;
 
 pub struct BoundarySerialization;
 
