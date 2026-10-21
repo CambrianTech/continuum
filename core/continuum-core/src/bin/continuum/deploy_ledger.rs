@@ -258,7 +258,7 @@ impl ConsumeLedger {
 
     /// Persist, or remove the file when nothing is left to remember.
     pub(super) fn save(&self, path: &Path) -> Result<(), String> {
-        if self.failures.is_empty() && self.resource_deferrals.is_empty() {
+        if *self == Self::default() {
             match std::fs::remove_file(path) {
                 Ok(()) => Ok(()),
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),

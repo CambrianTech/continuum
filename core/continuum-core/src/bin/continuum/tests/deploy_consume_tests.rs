@@ -2,6 +2,39 @@
 use super::*;
 use serde_json::json;
 
+// Health must read evidence saved by the consumer, including receipts with no
+// failed attempts or resource deferrals. Handwritten JSON misses save's cleanup.
+#[test]
+fn consumer_save_preserves_selection_and_refusal_for_health() -> Result<(), Box<dyn std::error::Error>> {
+    use continuum_cli_lifecycle::deploy_health::{self, DeployHealth, DeploySelection, RefusalKind};
+    let root = tempfile::tempdir()?;
+    let state = root.path().join("state");
+    std::fs::create_dir(&state)?;
+    std::fs::write(state.join("deploy-request.json"), serde_json::to_vec(&json!({
+        "tip_sha": "abcdef1234567", "requested_ms": 1
+    }))?)?;
+    let path = state.join("deploy-consume-attempts.json");
+    let mut ledger = super::ConsumeLedger::default();
+    ledger.record_refusal("abcdef1234567", "abcdef1234567", RefusalKind::CheckoutDirty, "owner edits");
+    ledger.save(&path)?;
+    assert_eq!(super::ConsumeLedger::read(&path)?, ledger);
+    assert!(matches!(deploy_health::read(root.path(), "123456789abcd"),
+        DeployHealth::Blocked { refusal } if refusal.kind == RefusalKind::CheckoutDirty));
+
+    let ledger = super::ConsumeLedger {
+        selection: Some(DeploySelection { request: "abcdef1234567".into(), build: "7654321abcdef".into() }),
+        ..Default::default()
+    };
+    ledger.save(&path)?;
+    assert_eq!(super::ConsumeLedger::read(&path)?, ledger);
+    assert!(matches!(deploy_health::read(root.path(), "123456789abcd"), DeployHealth::Pending { .. }));
+    assert!(matches!(deploy_health::read(root.path(), "7654321abcdef"), DeployHealth::Running));
+
+    super::ConsumeLedger::default().save(&path)?;
+    assert!(!path.exists(), "only a wholly empty ledger is retired");
+    Ok(())
+}
+
 // what this catches (card 82af11f5, 2026-09-19): the Windows deploy consumer's
 // verdict vocabulary — no request = nothing owed; the tip already running (short
 // sha as a prefix, git's 7-char floor) = the tracker retires it, never a reboot;
