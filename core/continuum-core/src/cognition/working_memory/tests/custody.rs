@@ -179,7 +179,7 @@ fn a_receipt_s_per_call_results_stay_reachable_as_long_as_the_receipt() {
     assert!(live(&receipt) && children.iter().all(|c| live(c)), "the pointer holds the receipt and its children");
 
     let snapshot = wm.snapshot();
-    let checkpointed = reachable_handles(&snapshot.recent_results, &snapshot.evicted_pointers, &snapshot.receipt_children, &snapshot.open_views);
+    let checkpointed = snapshot.reachable_handles();
     assert!(children.iter().all(|c| checkpointed.contains(c)), "the checkpoint names each child");
     // Through the checkpoint's own encoding, not just in memory.
     let written = serde_json::to_string(&snapshot).expect("test: encode");
