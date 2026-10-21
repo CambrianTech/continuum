@@ -1,5 +1,109 @@
 use super::*;
 
+// ───────────────────────── work/similar · work/duplicates ─────────────────────────
+//
+// The board's "which of these is the same card" question, answered in the ONE
+// embedding space. Measured 2026-09-16: 118 open cards, astropy-12907 open EIGHT
+// times, sympy-24152 five — and no surface could show it, so the triage never
+// started. Both compose the text-level primitives (`embedding/similar` /
+// `embedding/groups`); the only board-specific part is what text stands for a card.
+/// What a card SAYS, for similarity: its title plus the head of its body. The title
+/// alone catches instance duplicates (the bench cards' titles are identical); the
+/// body head catches engineering cards that name the same defect in different words.
+pub(super) fn card_text(c: &WorkCard) -> String {
+    const BODY_HEAD: usize = 400;
+    match c.body.as_deref().map(str::trim).filter(|b| !b.is_empty()) {
+        Some(body) => {
+            let head: String = body.chars().take(BODY_HEAD).collect();
+            format!("{}\n{}", c.title, head)
+        }
+        None => c.title.clone(),
+    }
+}
+
+pub(super) fn card_candidates(
+    cards: &[WorkCard],
+    states: &[CardState],
+) -> Vec<crate::commands::embedding::similar::SimilarCandidate> {
+    cards
+        .iter()
+        .filter(|c| states.is_empty() || states.contains(&c.state))
+        .map(|c| crate::commands::embedding::similar::SimilarCandidate {
+            id: short8(c.card_id.as_uuid()),
+            text: card_text(c),
+        })
+        .collect()
+}
+
+pub(super) fn parse_states(states: &[String]) -> Result<Vec<CardState>, CommandError> {
+    states.iter().map(|s| parse_state(s)).collect()
+}
+
+pub(super) fn default_similar_k() -> usize {
+    10
+}
+
+pub(super) fn default_open_states() -> Vec<String> {
+    vec!["open".to_string()]
+}
+
+#[derive(Debug, Clone, Deserialize, TS, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../../../protocol/typescript/work/WorkSimilarParams.ts")]
+pub struct WorkSimilarParams {
+    /// Room whose board to read (name or id); default: this room.
+    #[serde(default)]
+    #[ts(optional)]
+    pub room: Option<String>,
+    /// A card to find the likes of (short id or UUID). Its own text is the query and
+    /// it is excluded from the hits. Give this OR `text`.
+    #[serde(default)]
+    pub card_id: Option<String>,
+    /// Free text to find the nearest cards to — a new idea before you file it, a
+    /// symptom before you go looking. Give this OR `card_id`.
+    #[serde(default)]
+    pub text: Option<String>,
+    /// How many hits (default 10).
+    #[serde(default = "default_similar_k")]
+    pub k: usize,
+    /// Which columns to search (default `["open"]`). Empty = every card.
+    #[serde(default = "default_open_states")]
+    pub states: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, TS, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../../../protocol/typescript/work/WorkSimilarHit.ts")]
+pub struct WorkSimilarHit {
+    pub id: String,
+    pub title: String,
+    pub state: String,
+    pub similarity: f32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub z: Option<f32>,
+    pub significant: bool,
+}
+
+#[derive(Debug, Clone, Serialize, TS, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../../../protocol/typescript/work/WorkSimilarResult.ts")]
+pub struct WorkSimilarResult {
+    /// What was compared against: the card's id, or `text`.
+    pub query: String,
+    /// How many cards were scored (after the state filter).
+    pub searched: usize,
+    pub space: String,
+    pub gate: String,
+    pub hits: Vec<WorkSimilarHit>,
+}
+
+pub struct WorkSimilar {
+    pub registry: PersonaAircRuntimeRegistry,
+    pub embedder: Arc<dyn crate::cognition::embedding::EmbeddingProvider>,
+}
+
+
 #[async_trait]
 impl ActionCommand for WorkSimilar {
     const NAME: &'static str = "work/similar";
