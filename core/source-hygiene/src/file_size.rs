@@ -53,7 +53,9 @@ pub const READABLE_FILE_LINES: usize = 1_000;
 // benchmark_dispatch were decomposed by responsibility (#5234-#5237).
 // 154,482 measured after splitting cognition/resource_admission.rs by owner.
 // 153,700 measured on the merge with #5227 (6ac1a84c6): 154,999 - (2,299 - 1,000).
-const BASELINE_LINES_OVER: usize = 0;
+// 143,321 after llm_deliberation_faculty.rs (12,678 lines) was split by owner into llm_deliberation_faculty/ (#5232).
+// 41,076 on #5228 + #5230 + #5232 merged: 54,053 - 1,299 - 11,678.
+const BASELINE_LINES_OVER: usize = 41_076;
 
 pub struct FileSize;
 
