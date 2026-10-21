@@ -30,7 +30,7 @@ pub(super) async fn spawn_gene_eval_lane(gene: &EvalGene) -> Result<EvalLane, Co
 
     // Size THIS lane, then gate on real free RAM — refuse cleanly if it wouldn't fit
     // (a jetsam SIGKILL otherwise), before paying the cold-load.
-    await_eval_lane_memory_headroom(eval_lane_footprint(&base)).await?;
+    crate::inference::lane_memory::await_lane_memory_headroom(crate::inference::lane_memory::lane_footprint(&base)).await?;
 
     // 3. Host-fit PHYSICAL window (`-c`) for the throwaway lane, derived from the
     //    live serving budget (see `plan_eval_lane_ctx`). One lane: a single
@@ -212,7 +212,7 @@ pub(super) async fn build_base_eval_lane_inner(base_id: &str) -> Result<EvalLane
     }
     // Size THIS lane, then gate on real free RAM — refuse cleanly if it wouldn't fit
     // (a jetsam SIGKILL otherwise), before paying the cold-load.
-    await_eval_lane_memory_headroom(eval_lane_footprint(&base)).await?;
+    crate::inference::lane_memory::await_lane_memory_headroom(crate::inference::lane_memory::lane_footprint(&base)).await?;
     let lane_ctx = plan_eval_lane_ctx(&base);
     let (placement_evidence, vram_lease) =
         decide_eval_lane_placement(&base, lane_ctx, &format!("eval-lane base:{base_id}"));
@@ -300,13 +300,13 @@ impl PrivateTeacherLane {
                 "private local borrower requires a local model".into(),
             ));
         }
-        let footprint = eval_lane_footprint(base).ok_or_else(|| {
+        let footprint = crate::inference::lane_memory::lane_footprint(base).ok_or_else(|| {
             CommandError::Internal("private teacher requires a known model footprint".into())
         })?;
         // Same pressure/RAM veto as ordinary eval, but return the capacity refusal
         // to the owner so it can negotiate an explicit window rather than waiting
         // for incumbent memory that cannot free until that negotiation occurs.
-        if refuse_eval_lane_under_memory_pressure(Some(footprint)).is_err() {
+        if crate::inference::lane_memory::refuse_lane_under_memory_pressure(Some(footprint)).is_err() {
             return Ok(None);
         }
         let lease = match daemon.acquire_guarded(&eval_lane_request(footprint)) {
@@ -402,7 +402,7 @@ impl PrivateTeacherLane {
 /// asked for `unsloth/Devstral-Small-2507-GGUF` — the exact model the live lane was
 /// already serving, 27.2 GB resident, answering on its port. This path tried to
 /// cold-load a SECOND copy: ~17.9 GB + 2 GiB headroom against 15.0 GB free on a 64 GB
-/// box. It can never fit, so `await_eval_lane_memory_headroom` deferred every 5 s for
+/// box. It can never fit, so `crate::inference::lane_memory::await_lane_memory_headroom` deferred every 5 s for
 /// its full 180 s window and then failed loud. The harness wrote a zero-byte diff and
 /// the benchmark reported RESOLVED=0 — a number that measured a harness which never
 /// started, not a model that could not solve. Duplicating resident weights is not a
