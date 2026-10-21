@@ -156,10 +156,10 @@ jobs:
         run: |
           set -o pipefail
           for test in \
-            tests::prebuilt_reboot_options_are_explicit_and_strict \
-            tests::prebuilt_reboot_launch_retains_candidate_socket_and_cwd \
-            tests::service_reboot_rejects_stale_action_and_artifact_before_teardown \
-            tests::the_deploy_consumer_deploys_only_a_clean_checkout_toward_a_tip_not_running; do
+            tests::reboot_tests::prebuilt_reboot_options_are_explicit_and_strict \
+            tests::reboot_tests::prebuilt_reboot_launch_retains_candidate_socket_and_cwd \
+            tests::reboot_tests::service_reboot_rejects_stale_action_and_artifact_before_teardown \
+            tests::deploy_consume_tests::the_deploy_consumer_deploys_only_a_clean_checkout_toward_a_tip_not_running; do
             cargo test -p continuum-core --bin continuum --profile dev-fast "$test" -- --exact 2>&1 | tee cli-handoff.log
             if ! grep -q 'test result: ok. 1 passed;' cli-handoff.log; then
               echo "::error::The exact CLI handoff regression did not execute: $test"
@@ -349,7 +349,7 @@ jobs:
         if: needs.changes.outputs.rust != 'false'
         run: |
           foreach ($test in @(
-            'tests::legacy_core_requires_explicit_recovery_before_reboot_teardown'
+            'tests::reboot_tests::legacy_core_requires_explicit_recovery_before_reboot_teardown'
           )) {
             $output = & cargo test -p continuum-core --bin continuum --profile dev-fast --no-default-features --features livekit-webrtc,test-fixtures $test -- --exact 2>&1
             $result = $LASTEXITCODE
