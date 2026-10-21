@@ -287,7 +287,7 @@ pub struct ServingDaemonModule {
     /// held across an await. The pager inside owns the live-hit observer + the gate seed; each
     /// reconcile ticks it to decide the served expert-layer placement.
     moe_serving:
-        std::sync::Mutex<Option<(String, crate::capacity::moe_serving::MoeServingContext)>>,
+        std::sync::Mutex<Option<(String, Option<crate::capacity::moe_serving::MoeServingContext>)>>,
     /// Sticky publisher state for the governed host-cache lease (#287 slice 2) — the
     /// never-thrash layer between the per-tick raw derivation
     /// ([`host_cache_lease_bytes`](crate::capacity::host_cache_lease::host_cache_lease_bytes))
