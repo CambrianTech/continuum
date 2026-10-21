@@ -58,7 +58,10 @@ pub fn ring_of(module: &str) -> Option<u8> {
 // the unit changed from files to lines (2026-10-20); 253 was the same coupling counted per file.
 // 673 after the resource_admission split: NOT a decoupling. Its test names ServedGeometry through
 // metrics.rs's import instead of spelling crate::modules:: on a second line; the dependency is unchanged.
-const BASELINE_UPWARD_IMPORTS: usize = 673;
+// 673 after the openai_adapter split: a rustdoc link to crate::cognition::embedding became prose;
+// no code coupling changed.
+// 672 with both splits merged: the two causes above are independent.
+const BASELINE_UPWARD_IMPORTS: usize = 672;
 
 /// The top-level module of a scanned file: the first path component under `src/`.
 fn module_of(file: &SourceFile) -> Option<&str> {

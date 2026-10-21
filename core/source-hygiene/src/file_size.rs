@@ -55,7 +55,11 @@ pub const READABLE_FILE_LINES: usize = 1_000;
 // 153,700 measured on the merge with #5227 (6ac1a84c6): 154,999 - (2,299 - 1,000).
 // 143,321 after llm_deliberation_faculty.rs (12,678 lines) was split by owner into llm_deliberation_faculty/ (#5232).
 // 41,076 on #5228 + #5230 + #5232 merged: 54,053 - 1,299 - 11,678.
-const BASELINE_LINES_OVER: usize = 41_076;
+// 155,781 measured on the merge with canary.
+// 147,314 measured on the merge with #5227 (6ac1a84c6): 154,999 - (3,138 + 2,730 + 1,817),
+// working_memory, openai_adapter and dream_consolidation split by owner.
+// 33,391 with #5231 merged too: 41,076 - 7,685.
+const BASELINE_LINES_OVER: usize = 33_391;
 
 pub struct FileSize;
 

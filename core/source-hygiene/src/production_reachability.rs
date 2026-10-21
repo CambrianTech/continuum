@@ -90,7 +90,9 @@ const CONSTRUCTOR_SHAPES: &[&str] = &[
 // own former file; the split put each constructor call in a sibling chunk, which this
 // file-based rule reads as outside use. Card 7660e70f owns wiring or deleting them.
 #[cfg(test)]
-const BASELINE_UNWIRED: usize = 57;
+// 60 after dream_consolidation split: NOT new wiring. SemanticDistiller was always built by
+// distiller_for in its own file; that construction now sits in a sibling file (passes.rs).
+const BASELINE_UNWIRED: usize = 56;
 
 pub struct ProductionReachability;
 
