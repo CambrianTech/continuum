@@ -192,6 +192,8 @@ impl WorkingMemory {
                 let attribution = ResultAttribution::of(record);
                 let workspace = workspace_label(record.scope.as_deref());
                 let pointer = match (&record.handle, &record.head) {
+                    // An older build's pointer, as it was written (its operation lives there).
+                    (Some(_), _) if record.written_pointer.is_some() => record.written_pointer.clone().into_iter().collect(),
                     (Some(_), _) => format!("[result {attribution}{workspace} — collapsed; query tool/output to expand]"),
                     (None, Some(head)) => head.clone(),
                     // Unsaved and off the ledger: what it was, which never collapses anyway.
