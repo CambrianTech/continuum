@@ -1,6 +1,4 @@
 use super::*;
-    }
-}
 
 // ---------------------------------------------------------------------------
 // benchmark/fetch — stage a catalogued suite so it can actually be run (#370)
