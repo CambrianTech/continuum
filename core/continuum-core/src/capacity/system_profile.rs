@@ -179,7 +179,7 @@ impl SystemProfile {
         let drives = detect_drives();
         let perf_cores = hw_profile.cpu_cores.max(1);
 
-        Self::from_parts(hardware, capacity, drives, perf_cores, crate::config_env::vram_headroom())
+        Self::from_parts(hardware, capacity, drives, perf_cores, continuum_base::config_env::vram_headroom())
     }
 }
 
