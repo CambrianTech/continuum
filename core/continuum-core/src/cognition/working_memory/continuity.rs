@@ -150,7 +150,7 @@ impl WorkingMemory {
                 actions.archive(archive_chars).into_iter().map(|r| (r.seq, r.room, r.head.clone())).collect();
             let recent_results: Vec<(u64, Option<Uuid>, String, String, Option<String>)> = actions
                 .retained()
-                .map(|r| (r.seq, r.room, r.result.clone().unwrap_or_default(), r.operation.clone(), r.handle.clone()))
+                .filter_map(|r| r.result.clone().map(|result| (r.seq, r.room, result, r.operation.clone(), r.handle.clone())))
                 .collect();
             let result_scopes: BTreeMap<u64, String> = actions
                 .retained()

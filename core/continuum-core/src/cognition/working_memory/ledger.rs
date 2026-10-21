@@ -424,7 +424,7 @@ impl WorkingMemory {
 /// keeps its first line, cut to the trail head's share.
 fn archive_head(seq: u64, result: &str, acts: &[Observation], trail_head_chars: usize) -> String {
     if acts.is_empty() {
-        let head: String = result.lines().next().unwrap_or_default().chars().take(trail_head_chars).collect();
+        let head: String = result.lines().take(1).flat_map(str::chars).take(trail_head_chars).collect();
         return format!("[action #{seq}] {head}");
     }
     let calls: Vec<String> = acts

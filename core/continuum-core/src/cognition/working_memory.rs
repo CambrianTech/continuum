@@ -575,9 +575,8 @@ impl VolatileSnapshot {
 
 /// The `#n` this owner wrote right after `prefix` at the head of a line.
 fn written_seq(line: &str, prefix: &str) -> Option<u64> {
-    let digits = line.strip_prefix(prefix)?;
-    let end = digits.find(|c: char| !c.is_ascii_digit()).unwrap_or(digits.len());
-    digits[..end].parse().ok()
+    let digits: String = line.strip_prefix(prefix)?.chars().take_while(char::is_ascii_digit).collect();
+    digits.parse().ok()
 }
 
 /// "; workspace <dir>" for a result recorded under a root; empty for one recorded before.

@@ -209,11 +209,12 @@ impl WorkingMemory {
         // A count fold ("newest 16 as messages, the rest as index lines", 2026-10-16) rotated
         // the head on EVERY act, which on a KV that cannot shift re-prefilled everything
         // after it; the chars cap with hysteresis rotates once per burst.
-        out.extend(actions.retained().filter(eligible).map(|record| {
+        out.extend(actions.retained().filter(eligible).filter_map(|record| {
+            let result = record.result.as_deref()?;
             let attribution = ResultAttribution::of(record);
             let workspace = workspace_label(record.scope.as_deref());
             let pointer = record.handle.as_ref().map(|_| format!("[result {attribution}{workspace} — collapsed; query tool/output to expand]"));
-            (format!("[result {attribution}{workspace}] {}", record.result.as_deref().unwrap_or_default()), pointer)
+            Some((format!("[result {attribution}{workspace}] {result}"), pointer))
         }));
         // Collapsed-results index LAST — it CHANGES on every collapse, and message order is
         // MONOTONE IN STABILITY: the banner + surviving entries ahead of it stay a
