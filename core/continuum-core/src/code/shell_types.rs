@@ -42,6 +42,13 @@ pub struct ShellExecuteResponse {
     /// Exit code (only present when execution completed).
     #[ts(optional)]
     pub exit_code: Option<i32>,
+    /// What to do next, for a command still running: its result arrives on its own when it
+    /// finishes, and progress reads with `code/shell-poll`. Absent once finished. A bare
+    /// `status: running` left a resident reaching for `nohup ... &` to background a build
+    /// the shell had already backgrounded (Aris, the M5, 2026-10-21).
+    #[ts(optional)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next: Option<String>,
 }
 
 /// Response from `code/shell-poll`.

@@ -290,6 +290,7 @@ impl ShellSession {
                         stdout: Some(s.stdout_lines.join("\n")),
                         stderr: Some(s.stderr_lines.join("\n")),
                         exit_code: s.exit_code,
+                        next: None,
                     });
                 }
                 s.output_notify.clone()
@@ -345,6 +346,7 @@ impl ShellSession {
                         stdout: Some(s.stdout_lines.join("\n")),
                         stderr: Some(s.stderr_lines.join("\n")),
                         exit_code: s.exit_code,
+                        next: None,
                     });
                 }
             }
