@@ -1,6 +1,6 @@
 //! RAG Sources
 //!
-//! Each source implements the RagSource trait for parallel loading
+//! Each source implements the RagSource trait; the engine loads them in order
 
 mod conversation;
 mod identity;
@@ -23,11 +23,11 @@ pub trait RagSource: Send + Sync {
     fn is_applicable(&self, options: &RagOptions) -> bool;
 
     /// Load content from this source
-    /// This is called in parallel with other sources via rayon
+    /// Called once per build, in registration order (`RagEngine::build_context`)
     fn load(&self, options: &RagOptions, allocated_budget: usize) -> RagSection;
 }
 
-/// Mock source for testing parallel loading
+/// Mock source for testing source loading: sleeps `delay_ms`, yields `tokens`
 #[cfg(test)]
 pub struct MockSource {
     name: String,

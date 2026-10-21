@@ -142,9 +142,9 @@ fastest persona on our hardware (Joel). Brainstorm, and add your ideas, in
     her normal work is never scored, never passed through a grader, never dispatched by an autopilot;
   - grading exists only on the learning side: evaluating a gene or a lesson, an academy section she
     entered, a rare benchmark someone deliberately chose;
-  - no standing rounds or auto-resumed rounds (`benchmark/standing` stays off; a round nobody chose is
+  - no standing rounds or auto-resumed rounds (the standing autopilot is deleted; a round nobody chose is
     paused), no prompt telling her ordinary work is "graded", no harness of any kind;
-  - check `continuum benchmark/standing` and `benchmark/rounds` first when residents seem busy on
+  - check `continuum benchmark/rounds` first when residents seem busy on
     work nobody gave them (IntelMac 10-19: standing on since 10-02, 28 rounds auto-resumed).
 - **No step on the path without architectural purity** (Joel, 10-19): every change leaves its area more modular, with concerns separated, by owner, and the verbs as functions in their own subtree, so compile and runtime speed improve with it. A feature that adds a special case or a parallel path moves the path backward, however fast it makes one number.
 - **Plumbing once, then short blocks** (Joel, from his real-time CV/ML engines): the CBAR substrate is a graphics pipeline. It has fixed stages, buffers owned once and passed by handle, double-buffered snapshots, the core submitting work and the engine doing it, and no idle polling or spinning; independent tool work and learning run concurrently with inference. Features are short functional blocks wired by events; the optimizations live in the substrate, once, so every block gets them.
