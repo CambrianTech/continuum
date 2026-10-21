@@ -127,6 +127,21 @@
         assert_eq!(store.get(&shape), Some(3 * gib), "and a graph-only row never replaces a whole-run one, larger or not");
     }
 
+    // what this catches (Codex on #5261): with no continuum home the store used to resolve to a
+    // cwd-relative engine-footprints.json and write it into whatever directory the core ran
+    // from. An unrecorded store has no file: a record succeeds and keeps nothing, so every
+    // shape re-measures (a calibration run), and no path exists to write to.
+    #[test]
+    fn an_unrecorded_store_keeps_nothing_and_has_no_file() {
+        let store = Footprints::unrecorded();
+        let shape = Shape { model: "m".into(), window: 1536, rank: 8, targets: "attn_q".into(), depth: None, exact: true, chunk: 256, recompute: true };
+        store.record_with(&shape, 3 * 1024 * 1024 * 1024, true, Uuid::nil()).expect("test: an unrecorded record is not an error");
+        assert_eq!(store.get(&shape), None, "nothing was kept: the shape calibrates again");
+        assert!(store.read_all().is_empty());
+        assert!(store.path.is_none(), "no file to write, cwd-relative or otherwise");
+        assert!(store.for_engine(Some("b1".into())).path.is_none(), "an engine view of it stays unrecorded");
+    }
+
     // what this catches (the 5090, 2026-10-11): footprints filed from graph_mib alone, while the
     // training context's K/V for the whole window (allocated outside the graph's budget) sat
     // outside the lease. A run's footprint is its graph AND its context (fork #52); an engine
