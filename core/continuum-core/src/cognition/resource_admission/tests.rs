@@ -341,6 +341,46 @@ async fn work_fills_every_lane_and_a_directed_turn_takes_the_next_one_freed() {
     drop((directed, work));
 }
 
+// what this catches: Cormac's counterexample on #5243. With a directed call holding a
+// lane WITHOUT a work permit, a freed work permit let a queued work call line up on the
+// physical lanes ahead of a second directed arrival. The physical queue must be
+// directed-only: the freed lane goes to the second directed call, never the work call.
+#[tokio::test]
+async fn a_second_directed_call_is_never_queued_behind_work_under_saturation() {
+    use std::time::Duration;
+    let gate: &'static LaneAdmission = Box::leak(Box::new(LaneAdmission::new()));
+    gate.set_served_lane_count(2);
+    let d1 = gate.acquire_serving_lane(None, LanePriority::Directed).await;
+    let w1 = gate.acquire_serving_lane(None, LanePriority::Work).await;
+    // W2 holds the second work permit and waits for a physical lane.
+    let w2 = tokio::spawn(async move { gate.acquire_serving_lane(None, LanePriority::Work).await });
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert!(!w2.is_finished(), "both lanes busy: W2 waits");
+    let d2 = tokio::spawn(async move { gate.acquire_serving_lane(None, LanePriority::Directed).await });
+    let counted = tokio::time::timeout(Duration::from_secs(5), async {
+        while gate.directed_waiting() != 1 {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await;
+    assert!(counted.is_ok(), "D2 is counted while it waits");
+
+    drop(w1);
+    let d2 = tokio::time::timeout(Duration::from_millis(500), d2)
+        .await
+        .expect("the lane W1 freed goes to the waiting directed call")
+        .expect("join");
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert!(!w2.is_finished(), "W2 stood aside for D2; it still waits");
+
+    drop(d1);
+    let w2 = tokio::time::timeout(Duration::from_millis(1500), w2)
+        .await
+        .expect("with no directed call waiting, W2 takes the next freed lane")
+        .expect("join");
+    drop((d2, w2));
+}
+
 // what this catches: boot-created pools must shrink when the first real plan
 // serves one lane, including the ambient and non-directed reservations.
 #[test]

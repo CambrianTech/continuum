@@ -73,13 +73,14 @@ pub async fn hold_ambient_turn_for(
 // here, priced by priority:
 //   - non-directed (work, ambient, idle self-tick) → the non-directed budget (every lane)
 //                first, then a physical lane.
-//   - directed → a physical lane directly, plus a non-directed permit when one is free,
-//                so while it runs no work call queues on the physical lanes ahead of the
-//                next directed arrival. It is first in line for the next lane freed.
+//   - directed → queues on the physical lanes directly; non-directed callers take a
+//                physical lane only while no directed call waits, so the physical queue
+//                is directed-only and every lane freed goes to a directed call first.
 // No lane is held back: the reserve this replaced idled 24 of 30 samples on the M5
 // (canary, 2026-10-20) while four minds queued behind the other lane. Its price is
-// measured, not assumed: a directed call can wait for one act in flight to finish
-// (`directed_lane_wait_ms`, the health line's directed wait p50 / p90).
+// measured, not assumed: a directed call arriving with every lane busy waits for the
+// first act in flight to finish (`directed_lane_wait_ms`, the health line's directed wait
+// p50 / p90).
 // [[conversational-latency-is-a-misdirection-budget]] [[never-thrash-sticky-hysteresis-on-every-lane]]
 
 /// The LIVE `--parallel` slot count of the running serving target, published by the
@@ -121,7 +122,11 @@ pub struct LaneAdmission {
     /// non-zero an AMBIENT caller (a mind with no card in hand) does not enter the
     /// queue — work first (2026-09-15, [`LanePriority`]).
     pub(super) work_waiting: AtomicUsize,
-    /// Fires on every permit release so a parked ambient caller re-checks.
+    /// Directed callers waiting for a physical lane right now. While it is non-zero no
+    /// non-directed caller takes a physical lane: the physical queue holds directed calls
+    /// only, so every lane freed goes to a waiting directed call first.
+    pub(super) directed_waiting: AtomicUsize,
+    /// Fires on every permit release so a parked ambient or work caller re-checks.
     pub(super) released: tokio::sync::Notify,
 }
 
@@ -283,6 +288,7 @@ impl LaneAdmission {
             ambient: std::sync::OnceLock::new(),
             ambient_installed: AtomicUsize::new(0),
             work_waiting: AtomicUsize::new(0),
+            directed_waiting: AtomicUsize::new(0),
             released: tokio::sync::Notify::const_new(),
         }
     }
@@ -403,23 +409,30 @@ impl LaneAdmission {
     ) -> ServingLanePermit {
         let queued_at = std::time::Instant::now();
         let directed = priority.is_directed();
-        // Work and ambient calls take the non-directed budget first, then a physical lane.
-        // A directed call takes a physical lane directly AND, when one is free, a
-        // non-directed permit beside it: while it holds the lane, that budget is one short,
-        // so no work call can be queued on the physical lanes behind it. Every lane serves
-        // work when nothing directed is in flight; nothing is held back idle.
-        let nondirected = match priority {
-            LanePriority::Directed => self.try_acquire_resized(
-                self.nondirected_lanes(),
-                &self.nondirected_installed,
-                LaneBudget::NonDirected,
-            ),
-            LanePriority::Work => Some(self.acquire_nondirected_as_work().await),
-            LanePriority::Ambient => Some(self.acquire_nondirected_as_ambient().await),
+        // Strict directed priority with no lane held back. Only directed calls ever queue
+        // on the physical lanes; a work or ambient call first takes the non-directed budget
+        // (every lane), then takes a physical lane only while no directed call is waiting
+        // (`acquire_physical_behind_directed`). Every lane freed therefore goes to a
+        // waiting directed call first, however many arrive (Cormac on #5243: with a
+        // directed call holding a lane, a freed work permit must not let work line up
+        // ahead of the next directed arrival).
+        let (nondirected, lane) = match priority {
+            LanePriority::Directed => {
+                let _counted = CountedWait::enter(&self.directed_waiting);
+                let lane = self
+                    .acquire_resized(self.serving_lanes(), &self.serving_installed, LaneBudget::Physical)
+                    .await;
+                (None, lane)
+            }
+            LanePriority::Work => {
+                let budget = self.acquire_nondirected_as_work().await;
+                (Some(budget), self.acquire_physical_behind_directed().await)
+            }
+            LanePriority::Ambient => {
+                let budget = self.acquire_nondirected_as_ambient().await;
+                (Some(budget), self.acquire_physical_behind_directed().await)
+            }
         };
-        let lane = self
-            .acquire_resized(self.serving_lanes(), &self.serving_installed, LaneBudget::Physical)
-            .await;
         crate::probe!(
             class = "admission.lane.granted",
             persona = ?persona,
@@ -430,7 +443,7 @@ impl LaneAdmission {
             "serving-lane permit granted"
         );
         ServingLanePermit {
-            _lane: lane,
+            _lane: Some(lane),
             _nondirected: nondirected,
             _inflight: InflightModelCall::enter(),
             granted_at: std::time::Instant::now(),
@@ -461,7 +474,7 @@ impl LaneAdmission {
         // by-hand `fetch_sub` after the await never ran, so `work_waiting` read 1 for
         // the rest of the process and every ambient caller parked forever on a pool
         // that was empty. Cancellation is a normal exit here; the guard makes it one.
-        let _counted = WorkWaiting::enter(&self.work_waiting);
+        let _counted = CountedWait::enter(&self.work_waiting);
         self.acquire_resized(&sem, &self.nondirected_installed, LaneBudget::NonDirected)
             .await
     }
@@ -497,25 +510,53 @@ impl LaneAdmission {
         }
     }
 
+    /// A physical lane for a non-directed caller that already holds its budget: taken only
+    /// while no directed call is waiting, so it never stands in the physical queue ahead
+    /// of one. Parks on the release signal otherwise (a 1 s tick guards a missed wake),
+    /// the same shape as an ambient caller standing aside for work.
+    async fn acquire_physical_behind_directed(&self) -> tokio::sync::OwnedSemaphorePermit {
+        loop {
+            let released = self.released.notified();
+            tokio::pin!(released);
+            released.as_mut().enable();
+            if self.directed_waiting.load(Ordering::Acquire) == 0 {
+                if let Some(lane) = self.try_acquire_resized(
+                    self.serving_lanes(),
+                    &self.serving_installed,
+                    LaneBudget::Physical,
+                ) {
+                    return lane;
+                }
+            }
+            let _ = tokio::time::timeout(std::time::Duration::from_secs(1), released).await;
+        }
+    }
+
+    /// Directed callers waiting for a lane right now — a gauge for the gate probes.
+    pub fn directed_waiting(&self) -> usize {
+        self.directed_waiting.load(Ordering::Acquire)
+    }
+
     /// Held-work callers queued right now — a gauge for the gate probes.
     pub fn work_waiting(&self) -> usize {
         self.work_waiting.load(Ordering::Acquire)
     }
 }
 
-/// RAII count of a held-work caller waiting for the non-directed budget: incremented
-/// on entry, decremented on drop — so a wait that is cancelled mid-await (the only way
-/// a parked future ever leaves without a permit) is uncounted the instant it goes.
-pub(super) struct WorkWaiting<'a>(&'a AtomicUsize);
+/// RAII count of a caller waiting at a priority boundary (work for the non-directed
+/// budget, directed for a physical lane): incremented on entry, decremented on drop — so
+/// a wait that is cancelled mid-await (the only way a parked future ever leaves without a
+/// permit) is uncounted the instant it goes.
+pub(super) struct CountedWait<'a>(&'a AtomicUsize);
 
-impl<'a> WorkWaiting<'a> {
+impl<'a> CountedWait<'a> {
     pub(super) fn enter(counter: &'a AtomicUsize) -> Self {
         counter.fetch_add(1, Ordering::AcqRel);
         Self(counter)
     }
 }
 
-impl Drop for WorkWaiting<'_> {
+impl Drop for CountedWait<'_> {
     fn drop(&mut self) {
         self.0.fetch_sub(1, Ordering::AcqRel);
     }

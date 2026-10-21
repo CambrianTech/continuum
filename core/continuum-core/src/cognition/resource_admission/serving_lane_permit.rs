@@ -8,7 +8,8 @@ use super::{note_lane_held_ms, InflightModelCall, LanePriority};
 /// exactly the lane-consuming window (queue + prefill + decode) and nothing downstream.
 #[derive(Debug)]
 pub struct ServingLanePermit {
-    pub(super) _lane: tokio::sync::OwnedSemaphorePermit,
+    /// `Option` only so `drop` can return it BEFORE waking parked callers.
+    pub(super) _lane: Option<tokio::sync::OwnedSemaphorePermit>,
     pub(super) _nondirected: Option<tokio::sync::OwnedSemaphorePermit>,
     pub(super) _inflight: InflightModelCall,
     /// Ledger tag for grant/release probes (2026-08-29 leak hunt) — permits
@@ -36,8 +37,11 @@ impl Drop for ServingLanePermit {
             held_ms = held_ms,
             "serving-lane permit released"
         );
-        // Permits drop AFTER this body (field order), so wake on the next poll: the
-        // parked caller's try_acquire runs after the semaphore permit has returned.
+        // Return the permits BEFORE waking parked callers. Fields would otherwise drop
+        // after this body, and on a multi-threaded runtime a woken caller can poll in
+        // that gap, find no lane, re-park and miss this wake (a 1 s stall).
+        drop(self._lane.take());
+        drop(self._nondirected.take());
         self.released.notify_waiters();
     }
 }
