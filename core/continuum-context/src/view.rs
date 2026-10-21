@@ -33,6 +33,14 @@ pub struct GrantMismatch {
     pub grants: usize,
 }
 
+impl std::fmt::Display for GrantMismatch {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "the allocator granted {} sources' budgets for {} claims", self.grants, self.claims)
+    }
+}
+
+impl std::error::Error for GrantMismatch {}
+
 /// What one act appended to the view.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Advance {
