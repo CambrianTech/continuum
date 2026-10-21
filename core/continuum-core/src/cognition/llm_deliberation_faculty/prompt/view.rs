@@ -457,18 +457,21 @@ impl LlmDeliberationFaculty {
                 .saturating_add(calibration.prompt_budget(plan.granted(FLEX_HISTORY) as usize)),
         );
         // TURNOVER, the only rewrite of her view: when it outgrows what the window grants her
-        // history, a new epoch starts, collapsed once by the flexbox, no larger than this
-        // node prefills in its latency target (`PREFILL_TARGET_SECONDS` at the measured
-        // rate) and within the grant. Within the epoch it then grows by appends alone.
+        // history, a new epoch starts, collapsed once by the flexbox, at half of what the
+        // grant leaves it. Within the epoch it then grows by appends alone.
         let history_budget = msg_budget.saturating_sub(required_tokens);
         let history_tokens = Self::messages_cost(&all_messages.history);
         if history_tokens > history_budget && view_len > 0 {
             let view_tokens = Self::messages_cost(&all_messages.history[..view_len]);
             let view_chars: usize =
                 all_messages.history[..view_len].iter().map(|m| m.content_text().chars().count()).sum();
-            let start_tokens = history_budget
-                .saturating_sub(history_tokens.saturating_sub(view_tokens))
-                .min(derived_fill_cap);
+            // Half of what the grant leaves her view: her reads stay whole until her window
+            // is actually full (the M5, 2026-10-21 18:20Z: sized to the 30 s latency target,
+            // Aiko's first epoch started at 6,956 of 86,233 tokens and collapsed 40 items,
+            // the starvation this view exists to end), and the other half is room to grow
+            // by appends before the next turnover (the replay's half-window start halved its
+            // turnovers, examples/replay.rs).
+            let start_tokens = history_budget.saturating_sub(history_tokens.saturating_sub(view_tokens)) / 2;
             // Tokens to the view's characters at the density this view just measured.
             let budget_chars = start_tokens.saturating_mul(view_chars) / view_tokens.max(1);
             let started = self.turn_over_view(&all_messages.streams, budget_chars);
@@ -485,8 +488,8 @@ impl LlmDeliberationFaculty {
                 derived_fill_cap,
                 rate_source = fill_rate.source.label(),
                 measured_prefill_tps = fill_rate.tps.unwrap_or(0.0), // unwrap_or: 0.0 on the receipt means NO rate — rate_source says "none" and the floor governed
-                "her view outgrew its grant and started a new epoch, sized to the latency \
-                 target at this node's measured prefill rate"
+                "her view outgrew its grant and started a new epoch at half of what the grant \
+                 leaves it; the latency target and rate ride along as the epoch's re-prefill cost"
             );
         }
 
