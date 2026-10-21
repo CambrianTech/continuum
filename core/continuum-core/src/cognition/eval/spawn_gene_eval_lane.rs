@@ -30,7 +30,7 @@ pub(super) async fn spawn_gene_eval_lane(gene: &EvalGene) -> Result<EvalLane, Co
 
     // Size THIS lane, then gate on real free RAM — refuse cleanly if it wouldn't fit
     // (a jetsam SIGKILL otherwise), before paying the cold-load.
-    crate::cognition::single_purpose_lane::await_lane_memory_headroom(crate::cognition::single_purpose_lane::lane_footprint(&base)).await?;
+    crate::cognition::single_purpose_lane::await_lane_memory_headroom(crate::cognition::single_purpose_lane::lane_footprint(&base)).await.map_err(CommandError::Internal)?;
 
     // 3. Host-fit PHYSICAL window (`-c`) for the throwaway lane, derived from the
     //    live serving budget (see `crate::cognition::single_purpose_lane::plan_lane_ctx`). One lane: a single
@@ -212,7 +212,7 @@ pub(super) async fn build_base_eval_lane_inner(base_id: &str) -> Result<EvalLane
     }
     // Size THIS lane, then gate on real free RAM — refuse cleanly if it wouldn't fit
     // (a jetsam SIGKILL otherwise), before paying the cold-load.
-    crate::cognition::single_purpose_lane::await_lane_memory_headroom(crate::cognition::single_purpose_lane::lane_footprint(&base)).await?;
+    crate::cognition::single_purpose_lane::await_lane_memory_headroom(crate::cognition::single_purpose_lane::lane_footprint(&base)).await.map_err(CommandError::Internal)?;
     let lane_ctx = crate::cognition::single_purpose_lane::plan_lane_ctx(&base);
     let (placement_evidence, vram_lease) =
         crate::cognition::single_purpose_lane::decide_lane_placement(&base, lane_ctx, &format!("eval-lane base:{base_id}"), EVAL_LANE_TERMS);

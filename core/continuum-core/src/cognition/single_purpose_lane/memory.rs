@@ -1,8 +1,6 @@
 //! Whether a single-purpose lane fits in this host's memory before it is stood up: the
 //! system pressure gate, then a hard free-RAM veto sized from the base's weights.
 
-use crate::sdk_codegen::CommandError;
-
 /// Refuse to stand up a single-purpose lane (a gene eval, a CPU training lane) while the MACHINE is already drowning.
 ///
 /// The VRAM ledger (#56/G1) accounts what the governor GRANTED — but on unified
@@ -17,7 +15,7 @@ use crate::sdk_codegen::CommandError;
 /// silent degrade: the detached ledger carries this exact string, and the harness
 /// retries when pressure clears. Live serving is untouched — it has its own
 /// shedding machinery; this gates only the deferrable measurement load.
-pub(crate) fn refuse_lane_under_memory_pressure(footprint: Option<u64>) -> Result<(), CommandError> {
+pub(crate) fn refuse_lane_under_memory_pressure(footprint: Option<u64>) -> Result<(), String> {
     lane_memory_veto(
         crate::system_resources::MemoryPressureMonitor::current_level(),
         crate::system_resources::is_memory_gate_closed(),
@@ -62,16 +60,16 @@ pub(crate) fn lane_ram_veto(
     available: Option<u64>,
     footprint: Option<u64>,
     headroom: u64,
-) -> Result<(), CommandError> {
+) -> Result<(), String> {
     if let (Some(avail), Some(fp)) = (available, footprint) {
         let need = fp.saturating_add(headroom);
         if avail < need {
-            return Err(CommandError::Internal(format!(
+            return Err(format!(
                 "refusing to stand up a single-purpose lane: only {avail} B free physical memory, but this \
                  lane needs ~{fp} B (+{headroom} B headroom = {need} B) — standing it up would be \
                  OOM-killed by the OS. A single-purpose lane is deferrable load; free memory (e.g. unload a \
                  resident model) and retry."
-            )));
+            ));
         }
     }
     Ok(())
@@ -91,7 +89,7 @@ pub(crate) const LANE_PRESSURE_WAIT: std::time::Duration = std::time::Duration::
 /// solve/eval there is no operator watching to retry, so the system honors its
 /// own advice for one bounded window. Never a silent wait: each deferred tick
 /// probes, so a stall is visible in the trace, not a mystery hang.
-pub(crate) async fn await_lane_memory_headroom(footprint: Option<u64>) -> Result<(), CommandError> {
+pub(crate) async fn await_lane_memory_headroom(footprint: Option<u64>) -> Result<(), String> {
     let deadline = tokio::time::Instant::now() + LANE_PRESSURE_WAIT;
     loop {
         let verdict = refuse_lane_under_memory_pressure(footprint);
@@ -127,14 +125,14 @@ pub(crate) async fn await_lane_memory_headroom(footprint: Option<u64>) -> Result
 pub(crate) fn lane_memory_veto(
     level: crate::system_resources::PressureLevel,
     gate_closed: bool,
-) -> Result<(), CommandError> {
+) -> Result<(), String> {
     use crate::system_resources::PressureLevel;
     if level >= PressureLevel::High || gate_closed {
-        return Err(CommandError::Internal(format!(
+        return Err(format!(
             "refusing to stand up a single-purpose lane under system memory pressure \
              (level={level:?}, sustained_gate_closed={gate_closed}) — a single-purpose \
              lane is deferrable load; retry when pressure clears"
-        )));
+        ));
     }
     Ok(())
 }
