@@ -394,7 +394,7 @@
         let condition = ResourceDeferral { condition: ResourceCondition::VolumeCapacity, path: "/artifact-cache".into(), projected_bytes: 579, reason: "measured capacity refusal".into() };
         let mut source = DeferredSource { pending: Some(("older".into(), condition.clone())), fetches: Default::default() };
         for _ in 0..3 {
-            assert!(matches!(recheck_resource_deferral(&mut source.pending, Err(PublishedCoreError::ResourceDeferred(condition.clone()))), Some(MissingArtifact::Wait(_))));
+            assert!(matches!(recheck_resource_deferral(&mut source.pending, Err(PublishedCoreError::ResourceDeferred(condition.clone()))), Some(MissingArtifact::AdmissionWait(_))));
             assert!(matches!(select_published_core(&["older".into()], &source).await, Some((_, Err(PublishedCoreError::ResourceDeferred(_))))));
         }
         assert_eq!(source.fetches.load(std::sync::atomic::Ordering::SeqCst), 0);
@@ -406,7 +406,7 @@
         for kind in [ResourceCondition::UnmeasuredFilesystem, ResourceCondition::OperationalUncertainty] {
             let mut blocked = condition.clone(); blocked.condition = kind;
             source.pending = Some(("older".into(), blocked.clone()));
-            assert!(matches!(recheck_resource_deferral(&mut source.pending, Ok(())), Some(MissingArtifact::Wait(_))));
+            assert!(matches!(recheck_resource_deferral(&mut source.pending, Ok(())), Some(MissingArtifact::AdmissionWait(_))));
             assert_eq!(source.pending.as_ref().unwrap().1, blocked);
             assert!(matches!(select_published_core(&["older".into()], &source).await, Some((_, Err(PublishedCoreError::ResourceDeferred(_))))));
         }
