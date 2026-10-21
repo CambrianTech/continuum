@@ -228,7 +228,7 @@
         if std::env::var("MLX_PYTHON").is_ok() {
             return Ok(()); // operator override in effect; nothing to assert
         }
-        let p = resolve_mlx_python();
+        let p = resolve_mlx_python()?;
         let s = p.display().to_string();
         assert_eq!(
             p,

@@ -414,12 +414,13 @@ pub(super) fn mlx_engine_selected(engine: Option<&str>) -> Result<bool, String> 
 /// `MLX_PYTHON` for a custom env. Existence + mlx_lm import are enforced loud by
 /// [`run_mlx_train`]; provision the managed venv once with
 /// `python3 -m venv ~/.continuum/genome/venv && ~/.continuum/genome/venv/bin/pip install mlx-lm`.
-pub(super) fn resolve_mlx_python() -> PathBuf {
+pub(super) fn resolve_mlx_python() -> Result<PathBuf, String> {
     if let Ok(p) = std::env::var("MLX_PYTHON") {
-        return PathBuf::from(p);
+        return Ok(PathBuf::from(p));
     }
-    // No home: a relative path that `run_mlx_train`'s existence check refuses loud.
-    crate::paths::ContinuumLayout::home_or_unrooted().genome_venv_python()
+    crate::paths::ContinuumLayout::home()
+        .map(|layout| layout.genome_venv_python())
+        .map_err(|e| format!("no managed MLX venv: MLX_PYTHON is unset and the continuum home is unresolved ({e})"))
 }
 
 /// The on-disk root where native mlx runs write forged adapters
@@ -604,7 +605,7 @@ pub(super) fn run_train_native_mlx(
     }
 
     let env = MlxTrainEnv {
-        python: resolve_mlx_python(),
+        python: resolve_mlx_python()?,
     };
     // FIRE-AND-EMIT: spawn the (blocking) mlx_lm.lora run as a tracked job on a
     // blocking thread; return the handle NOW. Lifecycle (training → completed/

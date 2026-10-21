@@ -137,12 +137,13 @@ impl FineTuningAdapter for MlxLoraFineTuner {
         // the 12GB 4-bit conversion coexists. A deliberate, LOGGED preference
         // for a local trainable artifact. Without one, admission refuses an
         // unsized HF id before either tokenizer or trainer can launch.
-        let train_base = {
-            let q4 = crate::paths::ContinuumLayout::home_or_unrooted()
-                .genome_models()
-                .join("mlx-q4")
-                .join(train_base.replace('/', "_"));
-            if q4.join("config.json").exists() {
+        // No continuum home holds no local conversion: train against the id as given.
+        let local_q4 = crate::paths::ContinuumLayout::home()
+            .ok()
+            .map(|layout| layout.genome_models().join("mlx-q4").join(train_base.replace('/', "_")))
+            .filter(|q4| q4.join("config.json").exists());
+        let train_base = match local_q4 {
+            Some(q4) => {
                 continuum_base::probe!(
                     class = "genome.train.base",
                     base = %train_base,
@@ -150,9 +151,8 @@ impl FineTuningAdapter for MlxLoraFineTuner {
                     "training against the local 4-bit MLX conversion (fits beside the living lane)"
                 );
                 q4.to_string_lossy().into_owned()
-            } else {
-                train_base
             }
+            None => train_base,
         };
         if request.dataset.examples.is_empty() {
             return Err(FineTuningError::InvalidRequest(

@@ -21,14 +21,6 @@ impl ContinuumLayout {
         super::continuum_home().map(Self::at)
     }
 
-    /// The home's layout, or with no home at all, the layout rooted at the empty path: every
-    /// directory it names is then relative, so a caller's existence check refuses it loud.
-    /// For lookups of something that may simply be absent (an installed tool, a cache); a
-    /// writer that must persist resolves [`Self::home`] and fails instead.
-    pub fn home_or_unrooted() -> Self {
-        Self::home().unwrap_or_else(|_| Self::at(PathBuf::new())) // no home: an unrooted layout, refused by the caller's existence check
-    }
-
     /// The same layout under another root: a configured storage tier, or a test's temp dir.
     pub fn at(root: impl Into<PathBuf>) -> Self {
         Self { root: root.into() }
