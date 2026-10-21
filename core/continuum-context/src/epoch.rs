@@ -18,8 +18,10 @@ pub trait Block: Clone + PartialEq {
 }
 
 impl Block for String {
+    /// Characters, the same unit every block counts in (bytes would weigh a non-ASCII
+    /// block heavier than its twin and skew the one allocation).
     fn chars(&self) -> usize {
-        self.len()
+        self.as_str().chars().count()
     }
 }
 
