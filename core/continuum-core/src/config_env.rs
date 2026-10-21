@@ -261,11 +261,16 @@ mod tests {
     use super::*;
 
     fn tmp_config() -> PathBuf {
-        // Unique per test via thread id + a counter — no Date/rand needed.
-        use std::sync::atomic::{AtomicU64, Ordering};
-        static N: AtomicU64 = AtomicU64::new(0);
-        let n = N.fetch_add(1, Ordering::Relaxed);
-        std::env::temp_dir().join(format!("continuum-config-env-test-{n}/config.env"))
+        // A fresh, empty directory per call (card 4c820b46). A per-process counter restarted
+        // at 0 in every test run, so a config.env an earlier run left at
+        // `continuum-config-env-test-0/` was read back and "a missing file" was not missing.
+        // `keep()`: the path outlives this call; the OS temp sweep owns the leftovers.
+        tempfile::Builder::new()
+            .prefix("continuum-config-env-test-")
+            .tempdir()
+            .expect("temp dir is creatable") // expect: test-only, the OS temp dir is writable
+            .keep()
+            .join("config.env")
     }
 
     /// What this catches: the file has to reach a CHILD PROCESS, not just answer one key. A core
