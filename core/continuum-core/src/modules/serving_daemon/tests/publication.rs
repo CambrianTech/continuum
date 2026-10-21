@@ -217,7 +217,7 @@ async fn publish_plan_drives_the_watch() {
     assert!(rx.borrow().is_none(), "starts unpublished");
     // A measured demand, as every live node has (the seat's leased-in sample ring is
     // process-global across tests; a requirement it carries needs a ceiling above it).
-    daemon.working_set.record(uuid::Uuid::new_v4(), 200_000, 1);
+    daemon.working_set.record_in_memory(uuid::Uuid::new_v4(), 200_000, 1);
 
     let budget = HostBudget {
         usable_bytes: 45 * GB,
@@ -285,12 +285,12 @@ async fn a_plan_below_one_coding_turn_is_not_published_and_the_previous_stands()
     // a 65k lane in `a_jittering_gain_never_accumulates_into_a_re_home` (CI, 2026-09-20).
     let resident = uuid::Uuid::new_v4();
     for i in 0..8 {
-        daemon.working_set.record_sent(resident, 56_057, 1 + i);
+        daemon.working_set.record_sent_in_memory(resident, 56_057, 1 + i);
     }
     // …and a measured demand ceiling above it (the assembled context a turn wanted),
     // as every live node has — without it the demand cap is the bootstrap prior and no
     // plan can hold a 56k requirement, which is a harness artifact, not a law.
-    daemon.working_set.record(uuid::Uuid::new_v4(), 200_000, 1);
+    daemon.working_set.record_in_memory(uuid::Uuid::new_v4(), 200_000, 1);
     // A roomy budget: a real window is published.
     daemon.publish_plan(
         HostBudget {
@@ -363,7 +363,7 @@ async fn a_plan_below_one_coding_turn_is_not_published_and_the_previous_stands()
     );
     cold.working_set = crate::cognition::working_set::WorkingSetRegistry::new();
     cold.set_leased_in_sent_source(Arc::new(Vec::new));
-    cold.working_set.record(uuid::Uuid::new_v4(), 200_000, 1);
+    cold.working_set.record_in_memory(uuid::Uuid::new_v4(), 200_000, 1);
     let rx_cold = cold.subscribe();
     let small = vec![footprint_from_parts("coder-1.5b", GB, 32_768, true, None).unwrap()];
     cold.publish_plan(
@@ -463,6 +463,7 @@ pub(super) fn test_pin_store() -> crate::modules::serving_pin_store::ServingPinS
 // would otherwise serve launches nothing; once the binding is released it proceeds.
 #[tokio::test]
 async fn an_engine_bound_to_live_work_is_never_replaced_under_it() {
+    let _home = crate::test_env::HomeGuard::preserve().await; // reads the process home a guarded fixture may be swapping (card cb3221a5)
     use crate::inference::engine_residency::{
         record, release, store_path, EngineIncarnation, ResidentWork,
     };

@@ -224,20 +224,30 @@ impl OpenAICompatibleAdapter {
             .await
             .map_err(crate::ai::inference_error::InferenceError::Unavailable)?;
             let scratch = adm.scratch_slot();
-            let placement: Option<u32> = match class {
-                crate::inference::slots::SlotClass::Turn => adm.slot(),
-                _ => {
-                    // Non-Turn: the scratch slot when this server reserved one. When
-                    // it did not (≤2 slots), stay unpinned AND drop cache_prompt so
-                    // the call cannot PERSIST a stolen cache into a citizen slot.
-                    if scratch.is_none() {
-                        if let Some(obj) = body.as_object_mut() {
-                            obj.insert("cache_prompt".to_string(), json!(false));
-                        }
-                    }
-                    adm.slot().or(scratch)
+            // Only a Turn that names its activity owns a slot. A Turn with no (persona, room)
+            // key (a nil-room eval forked onto her live lane, or a caller that dropped its
+            // room) used to go out UNPINNED with cache_prompt on whenever the pool had a
+            // scratch slot, so the server placed it by similarity and could overwrite a
+            // resident's KV (card f3ba3b56, item 4). It is placed like every other
+            // unattributed request: the scratch slot, or on a pool without one, a slot its
+            // admission borrowed (the resident saved and detached first) with the cache off.
+            let keyed_turn = matches!(class, crate::inference::slots::SlotClass::Turn) && turn_key.is_some();
+            if matches!(class, crate::inference::slots::SlotClass::Turn) && !keyed_turn {
+                continuum_base::probe!(
+                    class = "inference.turn.keyless",
+                    persona = request.persona_id.as_deref(),
+                    room = request.room_id.as_deref(),
+                    purpose = request.purpose.as_deref().unwrap_or("none"), // unwrap_or: an unset purpose is itself the fact to see
+                    "a Turn named no (persona, room) activity: it runs on the scratch slot, or, with none, on a slot its admission borrowed after saving that resident, never persisting a cache there"
+                );
+            }
+            let decided = crate::inference::slots::placement(keyed_turn, adm.slot(), scratch);
+            if !decided.cache_prompt {
+                if let Some(obj) = body.as_object_mut() {
+                    obj.insert("cache_prompt".to_string(), json!(false));
                 }
-            };
+            }
+            let placement = decided.slot;
             _admission = Some(adm);
             // GLASS BOX (KV-reuse 0% hunt 2026-08-26): the whole cache-reuse win
             // rides on placement. Report class + room so a cached:0 streak names
@@ -259,8 +269,8 @@ impl OpenAICompatibleAdapter {
                 if let Some(obj) = body.as_object_mut() {
                     obj.insert("id_slot".to_string(), json!(slot));
                 }
-                if let (crate::inference::slots::SlotClass::Turn, Some(persona)) = (
-                    class,
+                if let (true, Some(persona)) = (
+                    keyed_turn,
                     request.persona_id.as_deref().and_then(|p| uuid::Uuid::parse_str(p).ok()),
                 ) {
                     _in_flight = Some(crate::inference::llama_server::InFlightSlotGuard::register(persona, root, slot));

@@ -525,6 +525,7 @@ mod tests {
     /// parallel-safe.
     #[test]
     fn from_env_reads_documented_env_vars() {
+        let _env = crate::test_env::HomeGuard::preserve_blocking(); // mutates CONTINUUM_PROBE_DIR/CLASSES, which the other env test also mutates (card cb3221a5)
         let prev_file = std::env::var(ENV_PROBE_DIR).ok();
         let prev_classes = std::env::var(ENV_PROBE_CLASSES).ok();
 
