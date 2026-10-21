@@ -48,15 +48,16 @@ impl SourceFile {
             .join("\n")
     }
 
-    /// The production code, comments dropped: nothing from the first file-scope
-    /// `#[cfg(test)]` on, and nothing at all in a test file.
+    /// The production code, comments dropped, nothing at all in a test file. Only the
+    /// `#[cfg(test)]`-gated items are removed, by source-hygiene's projection: production
+    /// BELOW a mid-file test mod is still production (Codex on #5228; cutting at the first
+    /// `#[cfg(test)]` hid it from the lived-turn caller guard).
     pub(crate) fn production(&self) -> String {
         if self.is_test_file() {
             return String::new();
         }
-        self.text
+        source_hygiene::production_half(&self.text)
             .lines()
-            .take_while(|l| !l.starts_with("#[cfg(test)]"))
             .map(code_only)
             .collect::<Vec<_>>()
             .join("\n")
@@ -88,14 +89,11 @@ impl SourceFile {
     }
 }
 
-/// One line with its `//` content dropped, so prose can neither stand in for code
-/// nor trip a guard. Crude on purpose: a `//` inside a string literal can only HIDE
-/// code from a guard, never invent it.
+/// One line with its `//` comment dropped, so prose can neither stand in for code
+/// nor trip a guard. Source-hygiene's splitter, which knows string literals: one
+/// comment rule for the ratchets and these guards.
 pub(crate) fn code_only(line: &str) -> &str {
-    match line.find("//") {
-        Some(i) => &line[..i],
-        None => line,
-    }
+    source_hygiene::split_code_and_comment(line).0
 }
 
 /// Every `.rs` file under this crate's `src/`.
@@ -164,6 +162,20 @@ mod tests {
 
     // what this catches: a walk that silently finds nothing, which would make every
     // guard built on it vacuously green.
+    // what this catches: Codex's P2 on #5228. A mid-file test mod (or a gated helper)
+    // ended "production" at its first `#[cfg(test)]`, so a second lived-turn caller below
+    // it would pass the exactly-one-caller guard unseen.
+    #[test]
+    fn production_below_a_mid_file_test_mod_is_still_production() {
+        let f = file(
+            "a/d.rs",
+            "fn above() {}\n#[cfg(test)]\nmod tests { fn t() { gated(); } }\nfn below() { record(); }\n",
+        );
+        let prod = f.production();
+        assert!(prod.contains("fn below() { record(); }"), "production below the test mod: {prod:?}");
+        assert!(!prod.contains("gated()"), "the gated item is not production: {prod:?}");
+    }
+
     #[test]
     fn the_walk_sees_the_crate() {
         let files = crate_sources();
