@@ -514,16 +514,6 @@ const RECALL_DENOM: usize = 10;
         }
     }
 
-    /// The steps-taken LEDGER's rendered share — how much of the receipt archive the
-    /// perception fact re-injects per turn. One trail-head-equivalent (`1/64`): head
-    /// lines only, newest first to fit, so the ledger shows a citizen her recent act
-    /// HISTORY without re-creating the double-payment the #324 dedup removed. Render
-    /// bound, not storage: unknown window keeps the honest no-bound (the deliberation
-    /// guard trims downstream), same contract as [`Self::trail_head_chars`].
-    pub fn steps_ledger_chars(&self) -> usize {
-        self.fraction(TRAIL_HEAD_DENOM)
-    }
-
     /// The RECENT-RESULTS share: the last few acts' results kept WHOLE across subsequent acts
     /// and turn boundaries, newest first, with the older ones collapsed to pointers at
     /// settlement. The `last_action` slot keeps only the LATEST result and any act overwrites

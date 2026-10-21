@@ -60,11 +60,22 @@ impl PromptFeedback {
     }
 }
 
+#[derive(Default)]
+/// This act's state of the sources her context view is fed by, besides her working memory
+/// (her actions and thoughts are read from it directly).
+pub(in super::super) struct Streams {
+    pub(in super::super) conversation: crate::cognition::context_streams::conversation::Conversation,
+    pub(in super::super) blocks: Vec<crate::cognition::context_streams::blocks::Grounding>,
+}
+
 /// Prompt roles are provider-facing; these slots retain the substrate's meaning
 /// until fitting is complete. They confer no authority on a message's author.
 pub(in super::super) struct PromptMessages {
     pub(in super::super) input_identity: [u8; 32],
     pub(in super::super) history: Vec<ChatMessage>,
+    /// The sources of her context view; their messages lead `history` once the view has
+    /// advanced (`LlmDeliberationFaculty::view_messages`).
+    pub(in super::super) streams: Streams,
     /// Source-owned compact alternatives, indexed into history; never inferred from prose.
     pub(in super::super) result_pointers: Vec<(usize, ChatMessage)>,
     /// Kept before the append-only result ring even when older history yields.
@@ -76,9 +87,6 @@ pub(in super::super) struct PromptMessages {
     /// Public action text retains assistant provenance and required-input pricing.
     pub(in super::super) action_statement: Option<ChatMessage>,
     pub(in super::super) room_updates: Vec<ChatMessage>,
-    /// The steps ledger, which changes on every act: it rides after the room updates and
-    /// before the pinned result, so nothing stable sits behind it (card 5b09111e).
-    pub(in super::super) ledger: Option<ChatMessage>,
     /// Substrate notices cannot disappear with the optional thought bid. Their
     /// existing store owns retention; oversized payloads use the explicit fit refusal.
     pub(in super::super) notices: Vec<ChatMessage>,
@@ -302,7 +310,6 @@ impl PromptMessages {
         self.stimulus
             .iter()
             .chain(self.room_updates.iter())
-            .chain(self.ledger.iter())
             .chain(self.notices.iter())
             .chain(self.action_statement.iter())
             .chain(self.latest_result.iter())

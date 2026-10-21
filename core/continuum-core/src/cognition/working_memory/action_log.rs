@@ -76,6 +76,11 @@ impl ActionLog {
         self.records.binary_search_by_key(&seq, |record| record.seq).ok().map(|index| &self.records[index])
     }
 
+    /// Every record, oldest first.
+    pub fn records(&self) -> impl Iterator<Item = &ActionRecord> {
+        self.records.iter()
+    }
+
     /// Results retained whole, oldest first.
     pub fn retained(&self) -> impl Iterator<Item = &ActionRecord> {
         self.records.iter().filter(|record| record.result.is_some())

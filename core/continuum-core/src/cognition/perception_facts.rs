@@ -62,9 +62,9 @@ pub struct FactContext<'a> {
 }
 
 /// One structural fact about the persona's present. `render` returns the
-/// fact text when it applies this tick, `None` when it has nothing to say —
-/// EXCEPT facts whose zero-case is itself load-bearing (the steps ledger),
-/// which render their explicit empty form instead of going silent.
+/// fact text when it applies this tick, `None` when it has nothing to say.
+/// (Her acts are not a fact: they are her action stream, which also says
+/// when nothing has executed, `context_streams::actions`.)
 pub trait PerceptionFact: Send + Sync {
     /// Stable identifier — the probe key and the `FactPolicy` toggle key.
     fn id(&self) -> &'static str;
@@ -74,7 +74,7 @@ pub trait PerceptionFact: Send + Sync {
 
 /// Placement is provenance supplied by the source, never inferred from prose.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum FactPlacement { History, Ledger, Notice }
+pub enum FactPlacement { History, Notice }
 
 pub struct RenderedFact {
     pub placement: FactPlacement,
@@ -222,202 +222,8 @@ impl PerceptionFact for ContextBounds {
     }
 }
 
-/// The steps-taken ledger (#151; Joel's console model): ground truth as a
-/// PLACE in perception rendered from TYPED `WmKind::Receipt` entries —
-/// nothing to misparse (the string-derived [actions] fact survived three
-/// suppression layers in one afternoon: placeholder mentions, facts wearing
-/// receipt numbers, recalled-history receipts). The zero-case is explicit —
-/// an honest void left implicit becomes a confabulation shelter (Anwen
-/// parked fabricated receipts in the disclosed blind spot within minutes).
-struct StepsLedger;
-
-/// When the ledger cannot show every step, its oldest shown step is rounded UP to a
-/// multiple of this, so its head moves once per this many acts instead of every act; in
-/// between it only grows at its tail (card 5b09111e: the head slid one action per act).
-// derived-or-floor: a floor — large enough that most acts leave the head alone, small enough that at most 7 steps hide behind the fold line.
-pub(crate) const LEDGER_HEAD_STEP: u64 = 8;
-
-/// The action number a ledger line names (`[action #1828] ...`).
-fn action_number(line: &str) -> Option<u64> {
-    line.strip_prefix("[action #")?.split(']').next()?.parse().ok()
-}
-
-/// PURE: when the fit could not hold every in-scope step (`truncated`), drop the oldest
-/// shown lines until the first names a multiple of [`LEDGER_HEAD_STEP`]. Never drops more
-/// than half of what the budget allowed (a tight ledger keeps its steps and slides, rather
-/// than showing one), and leaves a list with unnumbered lines as it is.
-fn align_head<'a>(fit: Vec<&'a str>, truncated: bool) -> Vec<&'a str> {
-    if !truncated || fit.len() < 2 {
-        return fit;
-    }
-    let Some(first) = fit.first().and_then(|l| action_number(l)) else {
-        return fit;
-    };
-    let boundary = first.div_ceil(LEDGER_HEAD_STEP) * LEDGER_HEAD_STEP;
-    let Some(keep_from) = fit.iter().position(|l| action_number(l).is_some_and(|n| n >= boundary)) else {
-        return fit; // no shown step reaches the boundary: batching would hide them all
-    };
-    if keep_from * 2 > fit.len() {
-        return fit;
-    }
-    fit[keep_from..].to_vec()
-}
-
-impl PerceptionFact for StepsLedger {
-    fn placement(&self) -> FactPlacement { FactPlacement::Ledger }
-    fn id(&self) -> &'static str {
-        "steps_ledger"
-    }
-
-    fn render(&self, cx: &FactContext) -> Option<String> {
-        let wm = cx.working_memory?;
-        // HEAD LINE ONLY (#324/#211 dedup): a receipt's full text — args AND the
-        // result body — already renders once, in the working-memory TRAILING
-        // channel nearest generation. This ledger's job is the session'S ACT
-        // HISTORY as a fact ("what has actually executed"), so it lists each
-        // step's head line (`[action #n] name(args)`) and nothing more.
-        //
-        // Rendered from the receipts-ONLY archive, never the shared ring (#414
-        // option b). The ring evicts by entry count and receipts are its RARE
-        // kind, so filtering it here starved a 2,863-act citizen down to ONE
-        // visible act — and with her history invisible she concluded she had
-        // nothing to contribute (the withdrawal loop's deprivation mechanism,
-        // measured 2026-08-14). The archive keeps every act's head line inside
-        // a window-derived char share; the ledger shows its newest tail that
-        // fits the ledger's own share, so history depth scales with the lane.
-        let archive = wm.receipt_archive();
-        let render_budget = wm.budget().steps_ledger_chars();
-        // SCOPE-FIRST (slice B): the room is the activity boundary, so the
-        // ledger's budget goes to THIS room's acts; acts PROVEN elsewhere fold
-        // into one honest count below. UNSCOPED heads (pre-upgrade snapshots,
-        // roomless paths) render in the local list: filing a citizen's own
-        // history as "other rooms" on the upgrade boundary would repeat the
-        // exact deprivation this arc exists to kill — only a head that names a
-        // DIFFERENT room is excluded, because that exclusion we can prove.
-        let mut elsewhere = 0usize;
-        let mut fit: Vec<&str> = Vec::new();
-        let mut used = 0usize;
-        for (head_room, line) in archive.iter().rev() {
-            let in_scope = match (cx.room_id, head_room) {
-                (None, _) => true,       // no scope to partition by — render all
-                (Some(_), None) => true, // unscoped head — never hidden
-                (Some(r), Some(h)) => *h == r,
-            };
-            if !in_scope {
-                elsewhere += 1;
-                continue;
-            }
-            let cost = line.chars().count() + 1;
-            if !fit.is_empty() && used + cost > render_budget {
-                break;
-            }
-            used += cost;
-            fit.push(line.as_str());
-        }
-        fit.reverse();
-        // Batch the head (card 5b09111e): when the budget cut older steps off, round the
-        // oldest shown step up to a multiple of LEDGER_HEAD_STEP, so the head moves once
-        // per LEDGER_HEAD_STEP acts. The fold line below counts what the rounding hid.
-        let in_scope_total = archive.len().saturating_sub(elsewhere);
-        let truncated = fit.len() < in_scope_total;
-        let fit = align_head(fit, truncated);
-        // The act counter keeps counting past what the archive holds (and
-        // survives reboots that predate the archive). Three states, each
-        // honest (glass-boxed 2026-07-13: the old zero-case would have DENIED
-        // a citizen's own acts, the inverse of the confabulation shelter):
-        //   heads render      → list them (+ how many are beyond reach)
-        //   none, count == 0  → the explicit nothing-has-executed void
-        //   none, count  > 0  → acts happened; details are gone — say so
-        let taken = wm.actions_taken();
-        // GLASS BOX (Joel 2026-08-15: "you'll have to glass box this… we need to
-        // really understand the rag as it evolves"): the ledger's full accounting
-        // on every render, so archive starvation / scope partition / eviction
-        // pressure are diagnosable from the probe stream — today's diagnosis
-        // needed capture-scraping precisely because these numbers were invisible.
-        continuum_base::probe!(
-            class = "perception.steps_ledger",
-            room = %cx.room_id.map(|r| r.to_string()).unwrap_or_else(|| "unscoped".into()),
-            // WHOSE ledger, and WHICH working-memory instance. Without these two,
-            // 2026-08-21's diagnosis of a split-brain (two cycles serving one
-            // persona's turns — a veteran at taken=3389 and a newborn at taken=0
-            // rendering "nothing has executed" mid-claim) required correlating
-            // anonymous rows by counter arithmetic. A ledger row that cannot say
-            // whose ledger it is cannot witness a duplicate.
-            wm_instance = wm.instance_id(),
-            // The instance id alone could not convict a duplicate (2026-08-22:
-            // three wm ids in one ROOM read as a split-brain until it turned out
-            // to be three personas legitimately sharing the round room). The
-            // duplicate-cycle signature is two instance ids under ONE persona.
-            persona = %cx.persona_id.map(|p| p.to_string()).unwrap_or_else(|| "unscoped".into()),
-            shown = fit.len(),
-            elsewhere = elsewhere,
-            taken = taken,
-            archive_len = archive.len(),
-            budget_chars = render_budget,
-            "steps ledger accounting for this render"
-        );
-        Some(if fit.is_empty() {
-            if taken == 0 {
-                "[steps taken this session]\n(nothing has executed yet — anything described as already run, created, tested, committed, or merged does not exist, whether in the messages you can see or before them; running a tool is what makes it real)".to_string()
-            } else if elsewhere > 0 {
-                // Scoped ledger, nothing local: her acts are real but happened
-                // in OTHER rooms. Saying "nothing has executed" here would deny
-                // her own work (the inverse confabulation-shelter); saying
-                // "aged out" would misname where it went. Say what is true.
-                format!(
-                    "[steps taken this session]\n(no acts in this room yet this session; {elsewhere} act{} in other rooms — each room's ledger tracks its own activity)",
-                    if elsewhere == 1 { "" } else { "s" }
-                )
-            } else {
-                // NO RECALL PROMISE HERE. This line used to end "recall can
-                // retrieve them" — provably false: every act becomes an
-                // `EngramOrigin::Tool` engram (act_observe/apply.rs), and
-                // `recall_candidates` carries an EXECUTING assertion that a
-                // Tool-origin receipt is NEVER in the semantic recall pool
-                // (admission_state.rs) — through the only production caller the
-                // persona's recall has (recall_faculty.rs). So it told her to
-                // reach for what the substrate had put out of reach: a lying
-                // receipt of the #151/#357 class, in the fact whose whole job is
-                // ground truth. State the loss plainly instead; an honest gap she
-                // can plan around beats a door that isn't there (#414). This arm
-                // is now the PRE-ARCHIVE remnant: it renders only when the
-                // counter survived a snapshot written before the archive existed.
-                format!(
-                    "[steps taken this session]\n({taken} step{} executed earlier this session — you did that work; the details aged out of working memory and cannot be retrieved, so re-check the workspace or the board rather than trusting memory of them. Nothing NEW has executed since.)",
-                    if taken == 1 { "" } else { "s" }
-                )
-            }
-        } else {
-            // Split the not-shown count honestly: acts archived under OTHER
-            // rooms vs acts genuinely gone (evicted/pre-archive). Lumping both
-            // into "earlier steps" would misname other-room work as lost.
-            let aged = taken
-                .saturating_sub(fit.len() as u64)
-                .saturating_sub(elsewhere as u64);
-            // ONE stable title: scoping shows in the fold line below, never by
-            // renaming the section (a shifting header breaks every consumer
-            // that anchors on it — including her own learned reading of it).
-            let mut ledger = format!("[steps taken this session]\n{}", fit.join("\n"));
-            if elsewhere > 0 {
-                ledger.push_str(&format!(
-                    "\n(+{elsewhere} act{} in other rooms this session)",
-                    if elsewhere == 1 { "" } else { "s" }
-                ));
-            }
-            if aged > 0 {
-                ledger.push_str(&format!(
-                    "\n(+{aged} earlier step{} before what this ledger shows)",
-                    if aged == 1 { "" } else { "s" }
-                ));
-            }
-            ledger
-        })
-    }
-}
-
 /// The canonical registry, in RENDER ORDER (matches the pre-registry inline
-/// order: loop awareness first, then bounds, then the ledger — the ledger
-/// last so it sits newest-adjacent to the moment of reply).
+/// order: loop awareness first, then bounds, then her views and notices).
 fn standard_facts() -> Vec<Box<dyn PerceptionFact>> {
     vec![
         Box::new(OwnRepetition),
@@ -428,7 +234,6 @@ fn standard_facts() -> Vec<Box<dyn PerceptionFact>> {
         Box::new(OpenViews),
         Box::new(MemoryNoticeDetails),
         Box::new(MemoryNotices),
-        Box::new(StepsLedger),
     ]
 }
 
@@ -472,28 +277,6 @@ mod tests {
         super::render_facts(cx, policy).into_iter().map(|fact| fact.text).collect()
     }
 
-
-    // what this catches: the ledger's head sliding one action per act (card 5b09111e: the
-    // M5's KV reuse fell to 0% behind it). When the budget truncates, the head rounds up to
-    // a multiple of LEDGER_HEAD_STEP, so consecutive acts keep the same head and only the
-    // tail grows; a ledger that shows every step is left alone.
-    #[test]
-    fn a_truncated_ledger_moves_its_head_in_batches() {
-        let lines = |from: u64, to: u64| -> Vec<String> { (from..=to).map(|n| format!("[action #{n}] code/read")).collect() };
-        // a 20-line budget, cut off at its head on three consecutive acts
-        let a = lines(1827, 1846);
-        let b = lines(1828, 1847);
-        let heads = |v: &Vec<String>| align_head(v.iter().map(String::as_str).collect(), true)[0].to_string();
-        assert_eq!(heads(&a), "[action #1832] code/read");
-        assert_eq!(heads(&b), "[action #1832] code/read", "the next act keeps the same head");
-        let c = lines(1833, 1852);
-        assert_eq!(heads(&c), "[action #1840] code/read", "the head jumps to the next multiple");
-        let all: Vec<&str> = a.iter().map(String::as_str).collect();
-        assert_eq!(align_head(all.clone(), false), all, "a ledger that fits is untouched");
-        let tight = lines(1827, 1830);
-        let tight: Vec<&str> = tight.iter().map(String::as_str).collect();
-        assert_eq!(align_head(tight.clone(), true), tight, "never more than half hidden: a tight ledger slides");
-    }
 
     fn turn(author: &str, content: &str, is_self: bool) -> BurstTurn {
         BurstTurn::attributed(is_self, author, content, None)
@@ -548,118 +331,5 @@ mod tests {
         policy.disable("context_bounds");
         assert!(render_facts(&cx, &policy).is_empty());
         assert_eq!(render_facts(&cx, &FactPolicy::default()).len(), 1);
-    }
-
-    // what this catches: the steps ledger's THREE honest states. Zero acts →
-    // the explicit nothing-has-executed void (confabulation-shelter
-    // hardening). Receipts visible → listed. Receipts AGED OUT of the
-    // chatty capacity-bounded ring while the session act counter says acts
-    // happened → the ledger must say "details aged out", never deny her own
-    // real history (glass-boxed 2026-07-13: Asha's window held 3 silence
-    // Facts and zero Receipts minutes after real searches ran).
-    #[test]
-    fn steps_ledger_is_honest_in_all_three_states() {
-        let wm = Arc::new(WorkingMemory::new(2));
-        let turns: Vec<BurstTurn> = Vec::new();
-        let own: Vec<String> = Vec::new();
-        let cx = FactContext {
-            turns: &turns,
-            own_speech: &own,
-            room_speech: &[],
-            working_memory: Some(&wm),
-            room_id: None,
-            persona_id: None,
-        };
-        let ledger = |facts: &[String]| {
-            facts
-                .iter()
-                .find(|f| f.starts_with("[steps taken this session]"))
-                .expect("ledger always renders when WM exists")
-                .clone()
-        };
-
-        // State 1: no acts ever → explicit void.
-        let l = ledger(&render_facts(&cx, &FactPolicy::default()));
-        assert!(l.contains("nothing has executed yet"));
-
-        // State 2: a receipt in the window → listed, no void text.
-        wm.record_receipt("I ran code/shell(ls) Result: ok");
-        let l = ledger(&render_facts(&cx, &FactPolicy::default()));
-        assert!(l.contains("code/shell(ls)"));
-        assert!(!l.contains("nothing has executed yet"));
-
-        // State 3: chatty facts flood the tiny ring until the receipt's ring
-        // ENTRY ages out — and the ledger still lists it, because it renders
-        // from the receipts-only archive, not the shared ring. This is the
-        // #414 fix itself: the deprivation that starved a 2,863-act citizen
-        // down to one visible act was exactly "ring churn hides receipts".
-        // what this catches: the ledger regressing to a shared-ring filter,
-        // which would make act history vanish under conversation again.
-        wm.record_fact("chose silence — said nothing to the room");
-        wm.record_fact("chose silence — said nothing to the room (again)");
-        assert!(
-            !wm.has_receipt(),
-            "precondition: the ring entry must have aged out for this state"
-        );
-        let l = ledger(&render_facts(&cx, &FactPolicy::default()));
-        assert!(
-            l.contains("code/shell(ls)"),
-            "the archive must keep her act visible through ring churn: {l}"
-        );
-        assert!(
-            !l.contains("nothing has executed yet"),
-            "denied her real act: {l}"
-        );
-
-        // State 4: the pre-archive remnant — a counter restored from a
-        // snapshot written before the archive existed (taken > 0, no heads).
-        // The honest-loss arm covers it, and must never again promise that
-        // recall can retrieve the lost receipts. It is FALSE by construction —
-        // acts become `EngramOrigin::Tool` engrams and `recall_candidates`
-        // carries an executing assertion that a Tool-origin receipt is NEVER in
-        // the semantic recall pool, through the persona's only production recall
-        // caller. The old wording sent her after a door that does not exist
-        // (#414); this pins the honest form so a future edit can't restore it.
-        let pre_archive = Arc::new(WorkingMemory::new(2));
-        pre_archive.restore(crate::cognition::working_memory::VolatileSnapshot {
-            pending_emissions: Vec::new(),
-            entries: Vec::new(),
-            action_statements: Vec::new(),
-            last_action: None,
-            action_fps: Vec::new(),
-            next_action_seq: 4, // 3 acts happened in the old life
-            saved_at_ms: 0,
-            interrupted_dispatches: Vec::new(),
-            acting_card: None,
-            build_sha: String::new(),
-            receipt_heads: Vec::new(),
-            receipt_head_rooms: Vec::new(), // written before the archive existed
-            receipt_head_seqs: Vec::new(),
-            recent_results: Vec::new(),
-            result_scopes: Default::default(),
-            handoff: None,
-            evicted_pointers: Vec::new(),
-            evicted_pointer_seqs: Vec::new(),
-            receipt_children: Default::default(),
-            open_views: Vec::new(),
-        });
-        let cx2 = FactContext {
-            turns: &turns,
-            own_speech: &own,
-            room_speech: &[],
-            working_memory: Some(&pre_archive),
-            room_id: None,
-            persona_id: None,
-        };
-        let l = ledger(&render_facts(&cx2, &FactPolicy::default()));
-        assert!(
-            !l.contains("nothing has executed yet"),
-            "denied her real acts: {l}"
-        );
-        assert!(l.contains("3 steps executed earlier"), "{l}");
-        assert!(
-            !l.to_lowercase().contains("recall can retrieve"),
-            "the ledger must not promise a retrieval path the substrate does not have: {l}"
-        );
     }
 }

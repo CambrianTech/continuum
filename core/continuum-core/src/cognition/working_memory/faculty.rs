@@ -16,6 +16,35 @@ fn render_trail(recent: &[String]) -> String {
     out
 }
 
+/// Background commands she sent away (sentinels, compiles, debuggers), streaming their
+/// status back by handle: what is outstanding and what just finished, so she can pass a
+/// handle to a follow-up command. `None` when nothing was dispatched.
+pub(crate) fn render_dispatched(dispatched: &[(Uuid, String, String, DispatchStatus)]) -> Option<String> {
+    if dispatched.is_empty() {
+        return None;
+    }
+    let lines = dispatched
+        .iter()
+        .map(|(h, label, latest, status)| {
+            let hs = h.to_string();
+            let short = hs.get(..8).unwrap_or(hs.as_str());
+            let tag = match status {
+                DispatchStatus::Running => "running",
+                DispatchStatus::Done => "done",
+                DispatchStatus::Failed => "failed",
+            };
+            let tail = if latest.is_empty() {
+                String::new()
+            } else {
+                format!(": {latest}")
+            };
+            format!("- #{short} {label} [{tag}]{tail}")
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    Some(format!("Commands you dispatched (background, by handle):\n{lines}"))
+}
+
 /// Perception-tier faculty that bids the persona's recent reasoning into the
 /// workspace — so the deliberator can resume its own train of thought rather than
 /// re-deriving it cold each turn. Abstains when there's nothing recorded (first
@@ -170,30 +199,7 @@ impl Faculty for WorkingMemoryFaculty {
         // streaming their status back by handle. The mind sees what's outstanding and what
         // just finished, and can pass a handle to a follow-up command (cancel/query). Fresh
         // each event, so it trails the stable prefix like the full-result block.
-        if !dispatched.is_empty() {
-            let lines = dispatched
-                .iter()
-                .map(|(h, label, latest, status)| {
-                    let hs = h.to_string();
-                    let short = hs.get(..8).unwrap_or(hs.as_str());
-                    let tag = match status {
-                        DispatchStatus::Running => "running",
-                        DispatchStatus::Done => "done",
-                        DispatchStatus::Failed => "failed",
-                    };
-                    let tail = if latest.is_empty() {
-                        String::new()
-                    } else {
-                        format!(": {latest}")
-                    };
-                    format!("- #{short} {label} [{tag}]{tail}")
-                })
-                .collect::<Vec<_>>()
-                .join("\n");
-            sections.push(format!(
-                "Commands you dispatched (background, by handle):\n{lines}"
-            ));
-        }
+        sections.extend(render_dispatched(&dispatched));
         Some(
             Contribution::context(
                 Self::faculty_id(),

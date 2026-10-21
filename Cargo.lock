@@ -2867,6 +2867,7 @@ dependencies = [
  "continuum-bridge-protocol",
  "continuum-cli-lifecycle",
  "continuum-client",
+ "continuum-context",
  "continuum-orm-derive",
  "continuum-positron",
  "continuum-tool-protocol",

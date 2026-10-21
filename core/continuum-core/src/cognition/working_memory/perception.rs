@@ -176,6 +176,35 @@ impl WorkingMemory {
         self.open_views.lock().render(scope.as_deref())
     }
 
+    /// Every act she has a record of, oldest first, each in both renderings her context view
+    /// chooses between: `(seq, full, pointer)`. Full is the whole result while retained,
+    /// else what its pointer says; the pointer names the handle that reopens it, or is the
+    /// ledger line when nothing was saved. The act still in flight is not among them (it
+    /// rides whole as the newest message of the turn); the flag says whether there is one.
+    pub(crate) fn action_renderings(&self) -> (Vec<(u64, String, String)>, bool) {
+        let active = self.in_flight_action_seq();
+        let actions = self.actions.lock();
+        let in_flight = active.is_some_and(|seq| actions.get(seq).is_some());
+        let renderings = actions
+            .records()
+            .filter(|record| Some(record.seq) != active)
+            .map(|record| {
+                let attribution = ResultAttribution::of(record);
+                let workspace = workspace_label(record.scope.as_deref());
+                let pointer = match record.handle {
+                    Some(_) => format!("[result {attribution}{workspace} — collapsed; query tool/output to expand]"),
+                    None => record.head.clone(),
+                };
+                let full = match record.result.as_deref() {
+                    Some(result) => format!("[result {attribution}{workspace}] {result}"),
+                    None => pointer.clone(),
+                };
+                (record.seq, full, pointer)
+            })
+            .collect();
+        (renderings, in_flight)
+    }
+
     pub fn recent_results_messages(&self) -> Vec<String> {
         self.recent_results_with_pointers().into_iter().map(|(body, _)| body).collect()
     }

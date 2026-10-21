@@ -341,33 +341,11 @@ async fn pinned_act_result_reaches_the_prompt_even_with_an_empty_broadcast() {
     wm.record_receipt_typed(&[], &inventory, Some(ws.activity_room_id), custody);
     wm.record_native_action_statement("", ws.activity_room_id, &native_calls);
     wm.record_receipt_typed(&batch, "next native batch", Some(ws.activity_room_id), crate::ai::types::ResultCustody::Unsaved);
+    // Her view carries the inventory whole while the window holds it; nothing collapses at
+    // fit time any more (her view collapses at an epoch start, `prompt/epoch.rs`).
     let roomy = faculty.messages_unfitted(&ws, None);
     let full_cost = roomy.required_tokens() + LlmDeliberationFaculty::messages_cost(&roomy.history);
-    let (index, pointer) = roomy.result_pointers.iter().find(|(_, message)| message.content_text().contains(&handle)).unwrap();
-    let savings = LlmDeliberationFaculty::message_cost(&roomy.history[*index])
-        - LlmDeliberationFaculty::message_cost(pointer);
-    assert!(savings > 0);
-    let expected_pointer = pointer.content_text();
-    let tight_budget = full_cost - savings;
-    let tight = faculty.fit_messages(roomy, tight_budget).unwrap();
-    assert!(LlmDeliberationFaculty::messages_cost(&tight.messages) <= tight_budget);
-    assert!(tight.messages.iter().any(|m| m.content_text() == expected_pointer));
-    // The action ledger legitimately keeps the title/head. It is the
-    // complete historical body, not its provenance, that must collapse.
-    assert!(!tight.messages.iter().any(|m| m.content_text().contains(inventory.trim())));
-    assert!(tight.messages.iter().any(|m| m.content_text().contains("inventory-13010")));
-    let tight_wire = crate::inference::request_body::wire_messages(&tight.messages, None, true, false, "llama-server");
-    let call_at = tight_wire.iter().position(|m| m["tool_calls"][0]["id"] == "capture").unwrap();
-    for (i, observation) in batch.iter().enumerate() {
-        assert_eq!(tight_wire[call_at + 1 + i]["tool_call_id"], observation.call.id);
-    }
-    let saved = crate::cognition::tool_executor::spill::resolve(persona, &handle).unwrap();
-    assert_eq!(std::fs::read_to_string(saved).unwrap(), inventory);
-    // Sticky (ring_collapse): a later roomy fit keeps the pointer until forgotten.
-    let sticky = faculty.fit_messages(faculty.messages_unfitted(&ws, None), full_cost).unwrap();
-    assert!(sticky.messages.iter().any(|m| m.content_text() == expected_pointer));
-    faculty.collapsed_results.lock().forget();
-    let roomy = faculty.fit_messages(faculty.messages_unfitted(&ws, None), full_cost).unwrap();
+    let roomy = faculty.fit_messages(roomy, full_cost).unwrap();
     assert!(roomy.messages.iter().any(|m| m.content_text().contains(inventory.trim())));
     // Exact-refusal correction reuses saved alternatives and keeps the
     // entire required native batch, without re-reading working memory.

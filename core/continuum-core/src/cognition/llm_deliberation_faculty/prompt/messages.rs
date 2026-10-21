@@ -45,12 +45,12 @@ impl LlmDeliberationFaculty {
             field(&mut input, update.room_id.as_bytes());
             field(&mut input, update.text.as_bytes());
         }
-        // Coalesce consecutive same-role turns in chronological order. Content
-        // similarity cannot establish event identity: "tests passed" and "tests
-        // failed" can be near-identical, and a later identical statement can
-        // report another change of state. Preserve that history for the citizen;
-        // the existing fitter bounds it and perception facts describe repetition.
-        let mut groups: Vec<(&'static str, Vec<String>)> = Vec::new();
+        // Every turn is its own item of her view, keyed by when it occurred and who spoke,
+        // so a new turn appends one message and the turns before it stay a reused prefix.
+        // Content similarity cannot establish event identity: "tests passed" and "tests
+        // failed" can be near-identical, and a later identical statement can report
+        // another change of state; perception facts describe repetition.
+        let mut turns: Vec<crate::cognition::context_streams::conversation::Turn> = Vec::new();
         // Preserve the newest external SPEECH as activity context, even when an
         // own receipt or perception fact follows it. This says what was heard,
         // never what the citizen must obey. Keep the typed boundary before
@@ -62,7 +62,6 @@ impl LlmDeliberationFaculty {
             .iter()
             .rposition(|turn| !turn.is_self && turn.voice == TurnVoice::Speech);
         let mut stimulus = None;
-        let mut after_stimulus = false;
         // Every display name in the window (peers + self) — the participant set
         // vocative geometry matches against so a message that names its addressee
         // renders `Asha (to Anwen): …` / `(to you)`. Glass-boxed 2026-07-10: a
@@ -99,19 +98,17 @@ impl LlmDeliberationFaculty {
                 // The event time and addressed author are required provenance too.
                 field(&mut input, line.as_bytes());
                 stimulus = Some(ChatMessage::text(role, line));
-                after_stimulus = true;
                 continue;
             }
-            match groups.last_mut() {
-                Some((r, lines)) if *r == role && !after_stimulus => lines.push(line),
-                _ => groups.push((role, vec![line])),
-            }
-            after_stimulus = false;
+            let key = match turn.occurred_at_ms {
+                Some(ms) => format!("{ms}/{}", turn.author),
+                // An opaque stimulus has no time: its position among the turns is its identity.
+                None => format!("#{index}"),
+            };
+            turns.push(crate::cognition::context_streams::conversation::Turn { key, role, line });
         }
-        let mut messages: Vec<ChatMessage> = groups
-            .into_iter()
-            .map(|(role, lines)| ChatMessage::text(role, lines.join("\n")))
-            .collect();
+        // What follows the view in this act's prompt: facts, the clock, demoted payloads.
+        let mut messages: Vec<ChatMessage> = Vec::new();
 
         // PERCEPTION FACTS (docs/architecture/PERCEPTION-FACTS.md slice 2b):
         // own-repetition (#134), peer-echo (#152), [context] bounds (#152),
@@ -145,7 +142,6 @@ impl LlmDeliberationFaculty {
             room_id: Some(ws.activity_room_id),
             persona_id: Some(self.persona_id),
         };
-        let mut ledger = Vec::new();
         let mut facts = perceived;
         let mut notices = Vec::new();
         for fact in super::super::super::perception_facts::render_facts(
@@ -155,7 +151,6 @@ impl LlmDeliberationFaculty {
             use super::super::super::perception_facts::FactPlacement;
             match fact.placement {
                 FactPlacement::History => facts.push(fact.text),
-                FactPlacement::Ledger => ledger.push(fact.text),
                 FactPlacement::Notice => notices.push(ChatMessage::text("user", fact.text)),
             }
         }
@@ -217,60 +212,28 @@ impl LlmDeliberationFaculty {
         // Split by churn class: non-WM grounding (semi-stable) → append-only ring →
         // the trail (churniest standing block) → facts/ask/pin. One rule, monotone
         // in stability, same law as the system-side phases.
-        let render_trailing = |messages: &mut Vec<ChatMessage>, wm_trail: bool| {
-            // Canonical wire order (churn class, then name) — the same rule the standing
-            // grounding and the system's stable tier follow, so two trailing sources can
-            // never swap places between acts (`deliberation_prompt::stable_prefix_order`).
-            let mut pieces: Vec<&Contribution> = ws
-                .broadcast
-                .iter()
-                .filter(|c| c.decision.is_none() && c.trailing && !c.standing_grounding)
-                .filter(|c| {
-                    (c.faculty.as_str() == crate::cognition::working_memory::WM_FACULTY_ID)
-                        == wm_trail
-                })
-                .collect();
-            pieces.sort_by(|a, b| {
-                deliberation_prompt::stable_prefix_order(a.faculty.as_str(), b.faculty.as_str())
-            });
-            for c in pieces {
-                if !c.content.trim().is_empty() {
-                    // Same `[faculty]` banner the system block gives its sections —
-                    // grounding that moved here for KV reuse (volatile-content
-                    // sources, 2026-08-23) must stay as legible as it was in the
-                    // system prefix. One sized allocation, no intermediate format!.
-                    let mut body =
-                        String::with_capacity(c.faculty.as_str().len() + c.content.len() + 4);
-                    body.push('[');
-                    body.push_str(c.faculty.as_str());
-                    body.push_str("]\n");
-                    body.push_str(&c.content);
-                    messages.push(ChatMessage::text("user", body));
-                }
-            }
-        };
-        // THE RING BEFORE THE GROUNDING (the M5, 2026-10-18): the order below was grounding
-        // → ring, on the premise that grounding is the more stable. Measured, it is not: the
-        // grounding at the head of the messages carries recall (Turn churn) and the kanban
-        // (Claims churn), and every turn's `delib.segment.attribution` broke there — engine
-        // reuse stopped at 8-11.5k tokens of 50-64k-token prompts, re-prefilling the ~30k-token
-        // ring behind it at ~100 tokens/s. The ring is append-only (a new result lands at its
-        // end; collapse is a rare burst under the window), so it leads; the grounding follows
-        // in churn order, and a grounding change now re-prefills only what is behind it.
-        let mut result_pointers = Vec::new();
-        if let Some(wm) = &self.working_memory {
-            // The append-only results ring — its appends land at the growth
-            // frontier of the stable region, displacing nothing.
-            for (block, pointer) in wm.recent_results_with_pointers() {
-                if let Some(pointer) = pointer {
-                    result_pointers.push((messages.len(), ChatMessage::text("user", pointer)));
-                }
-                messages.push(ChatMessage::text("user", block));
-            }
-        }
-        let grounding_at = messages.len();
-        render_trailing(&mut messages, false);
-        render_trailing(&mut messages, true);
+        // Standing grounding that rides the conversation (the workspace map, the board, the
+        // wall, the roster) as sources of her view, one block each, in the canonical wire
+        // order (churn class, then name) so two blocks never swap places between acts
+        // (`deliberation_prompt::stable_prefix_order`). Her working-memory bid is not one of
+        // them: its thoughts and her actions are their own streams.
+        let mut pieces: Vec<&Contribution> = ws
+            .broadcast
+            .iter()
+            .filter(|c| c.decision.is_none() && c.trailing && !c.standing_grounding)
+            .filter(|c| c.faculty.as_str() != crate::cognition::working_memory::WM_FACULTY_ID)
+            .filter(|c| !c.content.trim().is_empty())
+            .collect();
+        pieces.sort_by(|a, b| deliberation_prompt::stable_prefix_order(a.faculty.as_str(), b.faculty.as_str()));
+        let blocks: Vec<crate::cognition::context_streams::blocks::Grounding> = pieces
+            .into_iter()
+            .map(|c| crate::cognition::context_streams::blocks::Grounding {
+                faculty: c.faculty.as_str().to_owned(),
+                text: c.content.clone(),
+            })
+            .collect();
+        let result_pointers = Vec::new();
+        let grounding_at = 0;
 
         // Facts flicker per act — they render after every append-only block,
         // immediately before the ask (parrot-fix order preserved).
@@ -388,6 +351,10 @@ impl LlmDeliberationFaculty {
         PromptMessages {
             input_identity: input.finalize().into(),
             history: messages,
+            streams: super::types::Streams {
+                conversation: crate::cognition::context_streams::conversation::Conversation { turns },
+                blocks,
+            },
             result_pointers,
             grounding_tokens: 0,
             grounding_at,
@@ -396,7 +363,6 @@ impl LlmDeliberationFaculty {
             action_statement,
             room_updates,
             notices,
-            ledger: ledger.into_iter().next().map(|text| ChatMessage::text("user", text)),
         }
     }
 

@@ -40,13 +40,6 @@ impl LlmDeliberationFaculty {
         )
     }
 
-    /// How much conversation a turn may carry: the NEW prefill the latency target buys at
-    /// this node's rate (never less than the evidence of her own last move), on top of the
-    /// prefix her slot already holds from her last answered prompt, which costs no prefill.
-    pub(in super::super) fn history_fill_cap(derived_new: usize, last_move_evidence: usize, cached_history: usize) -> usize {
-        derived_new.max(last_move_evidence).saturating_add(cached_history)
-    }
-
     /// The EXACT prompt this faculty sends the model this tick — the system
     /// prompt (identity + assembled RAG context + how-to-participate + silence
     /// affordance) and the user burst. Exposed so what the LLM sees is trivially
@@ -111,16 +104,13 @@ impl LlmDeliberationFaculty {
             calibration,
             available,
         })));
-        // What the engine measured as reused is the only prefix credited as free next turn.
-        self.cached_prefix_tokens.store(
-            (engine_cached_tokens as usize).min(view.history_tokens),
-            std::sync::atomic::Ordering::Relaxed,
-        );
         continuum_base::probe!(
             class = "delib.prompt.density",
             persona = %self.persona_name,
             estimated_prompt_tokens = view.estimated_prompt_tokens,
             engine_prompt_tokens,
+            // What the engine reused of it: her view's measure of success.
+            engine_cached_tokens,
             "the engine's count of this prompt, retained as the next prompt's density"
         );
     }
@@ -224,6 +214,12 @@ impl LlmDeliberationFaculty {
             (!trailing_framing.is_empty()).then_some(trailing_framing.as_str()),
             visual,
         );
+        // Her view leads the history: this act appends to it, and everything after it (the
+        // standing grounding, facts, the clock) is this act's fresh tail.
+        let view_messages = self.advance_view(&all_messages.streams);
+        let mut view_len = view_messages.len();
+        all_messages.history.splice(0..0, view_messages);
+        all_messages.grounding_at = view_len;
 
         // Price the untruncated trailing sources separately: messages_unfitted
         // leaves them borrowed until the same plan has reserved their exact units.
@@ -355,16 +351,11 @@ impl LlmDeliberationFaculty {
         let (derived_fill_cap, fill_rate) = Self::latency_fill_cap(
             model, crate::inference::prefill_rate::measured_rate_for,
         );
-        // A LATENCY BUDGET MAY NOT BUY ITSELF A REPEATED ACT. The cap exists to bound
-        // time-to-first-token; clipping away her own last move and its result costs a
-        // WHOLE EXTRA TURN when she re-issues it, so history's FLOOR is what that evidence
-        // costs — ahead of every optional claim, the reply's desire included. `fit_messages`
-        // then refuses to evict it; this floor is what makes that refusal satisfiable.
+        // Her own last move and its result are history's FLOOR, ahead of every optional
+        // claim, the reply's desire included: clipping them costs a WHOLE EXTRA TURN when she
+        // re-issues the act. `fit_messages` refuses to evict them; this floor is what makes
+        // that refusal satisfiable.
         let evidence = all_messages.recent_move_evidence();
-        // The latency target bounds NEW prefill; what the engine reported it reused on her
-        // last answered prompt rides free (see `cached_prefix_tokens`).
-        let cached_history = self.cached_prefix_tokens.load(std::sync::atomic::Ordering::Relaxed);
-        let latency_fill_cap = Self::history_fill_cap(derived_fill_cap, evidence.tokens, cached_history);
         let required_tokens = all_messages.required_tokens();
         let optional_history = all_messages.tokens().saturating_sub(required_tokens);
         // A quiet self-tick (no required input) still sends her newest whole message.
@@ -417,7 +408,9 @@ impl LlmDeliberationFaculty {
                 priority: 5,
                 floor_tokens: history_floor,
                 min_tokens: history_floor,
-                max_tokens: claim(latency_fill_cap.min(optional_history)).max(history_floor),
+                // All of it: within an epoch her view only appends, and the engine reuses
+                // what it already holds. The latency target sizes an epoch's START instead.
+                max_tokens: claim(optional_history).max(history_floor),
                 required: false,
             },
             reply,
@@ -458,48 +451,44 @@ impl LlmDeliberationFaculty {
             .saturating_sub(selected.tokens)
             .saturating_sub(framing_tokens);
         let window_msg_budget = after_framing.saturating_sub(ctx_floor);
-        let fill_budget = required_tokens.saturating_add(latency_fill_cap);
-        if window_msg_budget > fill_budget {
-            let shed = all_messages.shed_preview(latency_fill_cap);
-            continuum_base::probe!(
-                class = "delib.fill.latency_capped",
-                persona = %self.persona_name,
-                window_budget = window_msg_budget,
-                cap = latency_fill_cap,
-                // A clip is never again invisible: the rate that produced it and where
-                // that rate came from ride the same row. `rate_source="none"` means the
-                // named floor governed and nothing was measured on this box.
-                rate_source = fill_rate.source.label(),
-                measured_prefill_tps = fill_rate.tps.unwrap_or(0.0), // unwrap_or: 0.0 on the receipt means NO rate — rate_source says "none" and the floor governed
-                target_seconds = PREFILL_TARGET_SECONDS,
-                derived_cap = derived_fill_cap,
-                cached_history,
-                // WHAT THE CLIP COSTS HER, in kind and amount — so "she repeated
-                // herself" is traceable to "we cut the evidence she had already done
-                // it" without anyone opening a capture file. At-least figures: the real
-                // drop rounds up to a quantum.
-                shed_messages = shed.messages,
-                shed_tokens = shed.tokens,
-                shed_own_moves = shed.own_moves,
-                shed_move_results = shed.results,
-                // …and what it is structurally forbidden to cost her.
-                kept_recent_move_messages = evidence.messages,
-                kept_recent_move_tokens = evidence.tokens,
-                // 0 messages = her last move is further back than the scan bound and is
-                // NOT protected; `truncated` = only a suffix of a longer chain is. The
-                // protection's limits ride its own receipt.
-                kept_recent_move_truncated = evidence.truncated,
-                "conversation fill capped by the act-latency target at THIS node's \
-                 measured prefill rate — window headroom is reserve for content that \
-                 earns its prefill, never default fill; her own last move and its \
-                 result are held out of the drop",
-            );
-        }
         // History gets its grant; the required input is never part of the trade.
         let msg_budget = window_msg_budget.min(
             required_tokens
                 .saturating_add(calibration.prompt_budget(plan.granted(FLEX_HISTORY) as usize)),
         );
+        // TURNOVER, the only rewrite of her view: when it outgrows what the window grants her
+        // history, a new epoch starts, collapsed once by the flexbox, no larger than this
+        // node prefills in its latency target (`PREFILL_TARGET_SECONDS` at the measured
+        // rate) and within the grant. Within the epoch it then grows by appends alone.
+        let history_budget = msg_budget.saturating_sub(required_tokens);
+        let history_tokens = Self::messages_cost(&all_messages.history);
+        if history_tokens > history_budget && view_len > 0 {
+            let view_tokens = Self::messages_cost(&all_messages.history[..view_len]);
+            let view_chars: usize =
+                all_messages.history[..view_len].iter().map(|m| m.content_text().chars().count()).sum();
+            let start_tokens = history_budget
+                .saturating_sub(history_tokens.saturating_sub(view_tokens))
+                .min(derived_fill_cap);
+            // Tokens to the view's characters at the density this view just measured.
+            let budget_chars = start_tokens.saturating_mul(view_chars) / view_tokens.max(1);
+            let started = self.turn_over_view(&all_messages.streams, budget_chars);
+            all_messages.history.splice(0..view_len, started.iter().cloned());
+            view_len = started.len();
+            all_messages.grounding_at = view_len;
+            continuum_base::probe!(
+                class = "delib.view.sized",
+                persona = %self.persona_name,
+                history_budget,
+                history_tokens,
+                view_tokens,
+                start_tokens,
+                derived_fill_cap,
+                rate_source = fill_rate.source.label(),
+                measured_prefill_tps = fill_rate.tps.unwrap_or(0.0), // unwrap_or: 0.0 on the receipt means NO rate — rate_source says "none" and the floor governed
+                "her view outgrew its grant and started a new epoch, sized to the latency \
+                 target at this node's measured prefill rate"
+            );
+        }
 
         // WHAT THIS TURN WOULD HAVE COST WITH NO BUDGET — recorded before either
         // fitting step throws the evidence away, and deliberately free to exceed
@@ -779,6 +768,10 @@ impl LlmDeliberationFaculty {
     /// unanswerable — which is precisely why the served window had to be sized by a
     /// constant instead of by demand. [`super::super::super::working_set`] measures this.
     pub(in super::super) fn messages_unfitted(&self, ws: &Workspace, trailing_framing: Option<&str>) -> PromptMessages {
-        self.messages_with_visual_feedback(ws, trailing_framing, None)
+        let mut prompt = self.messages_with_visual_feedback(ws, trailing_framing, None);
+        let whole = self.whole_view(&prompt.streams);
+        prompt.grounding_at = whole.len();
+        prompt.history.splice(0..0, whole);
+        prompt
     }
 }
