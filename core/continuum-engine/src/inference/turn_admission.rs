@@ -31,6 +31,21 @@ use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use crate::inference::llama_server::EngineProbe;
 use crate::inference::slots::{ActivityKey, KvSlotPool, SlotPermit, SlotPin};
 
+/// How this turn's KV reached its slot: the evidence the restore economy is judged by
+/// (`inference.restored_turn`). A restore the engine refused is a fast-path MISS, recorded
+/// as one, never folded into "nothing to restore" (card f3ba3b56).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PageIn {
+    /// No page was due: the activity prefills by design (its first turn, or no pool).
+    None,
+    /// Its KV was already resident in the leased slot.
+    Resident,
+    /// Restored from its saved page.
+    Restored,
+    /// A restore was due and the engine refused it, so the turn re-prefills in full.
+    RestoreRejected,
+}
+
 /// What a turn holds for the whole generation. Dropping it releases the concurrency
 /// permit and the slot pin (RAII). An incomplete call also invalidates local KV
 /// attribution; dropping this guard is not an acknowledgement of backend stop.
@@ -46,7 +61,7 @@ pub struct TurnAdmission {
     /// it after the pin is gone (see `Drop`), so a turn waiting for a slot wakes.
     released: Option<Arc<tokio::sync::Notify>>,
     page_confirmed: bool,
-    restored: bool,
+    page_in: PageIn,
     saved_evictee: bool,
     paging_in_flight: bool,
     /// Released after the pin so the next permit holder can lease the free slot.
@@ -70,10 +85,9 @@ impl TurnAdmission {
         self.scratch
     }
 
-    /// Whether this turn's KV was restored from a page before it generated — the
-    /// evidence the restore economy is judged by (`inference.restored_turn`).
-    pub(crate) fn restored(&self) -> bool {
-        self.restored
+    /// How this turn's KV reached its slot ([`PageIn`]).
+    pub(crate) fn page_in(&self) -> PageIn {
+        self.page_in
     }
 
     async fn page_action(
@@ -188,7 +202,7 @@ pub(crate) async fn warm_ahead(
             room = %key.room,
             slot = slot as u64,
             saved_evictee = admission.saved_evictee,
-            restored = admission.restored,
+            restored = admission.page_in == PageIn::Restored,
             confirmed = admission.page_confirmed,
             ms = started.elapsed().as_millis() as u64,
             "warm-ahead completed through turn paging admission",
@@ -232,7 +246,7 @@ async fn admit(
         _slot_permit: None,
         released: None,
         page_confirmed: false,
-        restored: false,
+        page_in: PageIn::None,
         saved_evictee: false,
         paging_in_flight: false,
         _permit: Some(_permit),
@@ -314,6 +328,9 @@ async fn admit(
             admission._endpoint.check_ready()?;
             let pg = pool.plan_paging(slot, k);
             admission.page_confirmed = pg.already_resident;
+            if pg.already_resident {
+                admission.page_in = PageIn::Resident;
+            }
             admission.uncommitted = Some((Arc::clone(pool), k, pg.slot));
 
             // 3. The context switch onto a now-free slot: page the evictee out,
@@ -332,12 +349,29 @@ async fn admit(
                 }
             }
             if pg.restore {
-                admission.restored = admission
+                let restored = admission
                     .page_action(client, root, pg.slot, &k, "restore")
                     .await?;
-                admission.page_confirmed = admission.restored;
-                if !admission.restored {
+                admission.page_confirmed = restored;
+                admission.page_in = if restored {
+                    PageIn::Restored
+                } else {
+                    PageIn::RestoreRejected
+                };
+                if !restored {
                     pool.note_page_lost(&k);
+                    // Reported HERE, at the decision, so a refused restore counts even when
+                    // the turn is then cancelled, fails, or reports no timing (Astra on #5190).
+                    // The same class and outcome the deploy self-check reads; the completion
+                    // probe reports only restores that happened, so nothing counts twice.
+                    continuum_base::probe!(
+                        class = "inference.restored_turn",
+                        persona = %k.persona,
+                        room = %k.room,
+                        slot = pg.slot as u64,
+                        outcome = "restore_rejected",
+                        "the engine refused this turn's KV restore: it re-prefills in full"
+                    );
                 }
             }
             // Price basis for the eviction policy (B5): this activity's current
@@ -434,7 +468,7 @@ pub async fn admit_transient(
         _slot_permit: None,
         released: None,
         page_confirmed: false,
-        restored: false,
+        page_in: PageIn::None,
         saved_evictee: false,
         paging_in_flight: false,
         _permit: None,

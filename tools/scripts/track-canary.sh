@@ -186,34 +186,54 @@ self_check() {
   # while restores were warm (card 356ce732). warm = a restored turn reused its
   # prefix; cold = two or more restored turns and none reused (the real 09-04 class,
   # which holds); no evidence inside the window passes with a note — an absence is
-  # never a failure.
-  local since_ms waited_r=0
+  # never a failure. A refused restore (`outcome=restore_rejected`, emitted at the
+  # decision) counts against it like a cold one (card f3ba3b56).
+  # 4. Resident prefixes lost (`inference.resident_prefix_lost`): a slot that never paged
+  # out yet came back with nothing reused (a purge or an overwrite) — counted from the
+  # same scan, reported on its own line, and a failure when lost prefixes outnumber the
+  # warm restores (card f3ba3b56).
+  # 5. Refused ledger adoptions (`inference.kv_page.ledger_adopted adopted=false`): a kept
+  # engine's saved pages are restorable only through its ledger, so a refusal means every
+  # resident re-prefills. Reported with its reasons, never a failure on its own: a ledger
+  # another engine incarnation wrote is a legitimate refusal after a relaunch (f3ba3b56 item 6).
+  local since_ms waited_r=0 scan warm_n=0 lost_n=0 refused_why="-"
   since_ms="$(python3 -c 'import time; print(int(time.time()*1000))')"
   verdict="no-evidence"
   while [ "$waited_r" -lt "${RESTORE_WAIT:-900}" ]; do
-    verdict="$(python3 - "$since_ms" <<'PYEOF' 2>/dev/null || echo no-evidence
+    scan="$(python3 - "$since_ms" <<'PYEOF' 2>/dev/null || echo no-evidence 0 0 -
 import json, os, glob, sys
-since = int(sys.argv[1]); warm = cold = 0
+since = int(sys.argv[1]); warm = cold = lost = 0; refused = {}
 for p in glob.glob(os.path.expanduser("~/.continuum/probes/continuum-probes.jsonl*")):
     try:
         for line in open(p, errors="ignore"):
-            if "inference.restored_turn" not in line:
+            if not any(c in line for c in ("inference.restored_turn", "inference.resident_prefix_lost", "inference.kv_page.ledger_adopted")):
                 continue
             try:
                 d = json.loads(line)
             except Exception:
                 continue
-            if d.get("class") != "inference.restored_turn" or d.get("captured_at_ms", 0) < since:
+            if d.get("captured_at_ms", 0) < since:
                 continue
-            if (d.get("fields") or {}).get("outcome") == "warm":
+            fields = d.get("fields") or {}
+            if d.get("class") == "inference.kv_page.ledger_adopted":
+                why = str(fields.get("why", "?"))
+                if str(fields.get("adopted")).lower() == "false" and why != "pool_already_installed":
+                    refused[why] = refused.get(why, 0) + 1
+            elif d.get("class") == "inference.resident_prefix_lost":
+                lost += 1
+            elif d.get("class") != "inference.restored_turn":
+                continue
+            elif fields.get("outcome") == "warm":
                 warm += 1
             else:
                 cold += 1
     except OSError:
         pass
-print("warm" if warm else ("cold" if cold >= 2 else "no-evidence"))
+print("warm" if warm else ("cold" if cold >= 2 else "no-evidence"), warm, lost,
+      ",".join(f"{k}x{v}" for k, v in sorted(refused.items())) or "-")
 PYEOF
 )"
+    read -r verdict warm_n lost_n refused_why <<<"$scan"
     [ "$verdict" = "no-evidence" ] || break
     sleep 30; waited_r=$((waited_r+30))
   done
@@ -222,6 +242,14 @@ PYEOF
     cold) say "SELF-CHECK FAIL: restored turns reused nothing — a restored slot is cold (the 09-04 / 09-14 class)"; ok=0 ;;
     *) say "self-check: no restored turn within ${RESTORE_WAIT:-900}s — restore economy not yet exercised; not a failure, watch inference.restored_turn" ;;
   esac
+  if [ "${lost_n:-0}" -gt "${warm_n:-0}" ]; then
+    say "SELF-CHECK FAIL: $lost_n resident prefixes lost vs $warm_n warm restores since the deploy (inference.resident_prefix_lost: a slot purged or overwritten while it was hers)"; ok=0
+  elif [ "${lost_n:-0}" -gt 0 ]; then
+    say "self-check: $lost_n resident prefix(es) lost since the deploy (fewer than $warm_n warm restores); watch inference.resident_prefix_lost"
+  fi
+  if [ "${refused_why:--}" != "-" ]; then
+    say "self-check: KV page ledger adoption refused since the deploy ($refused_why): a kept engine's saved pages are not restorable, residents re-prefill; watch inference.kv_page.ledger_adopted"
+  fi
   if [ "$ok" = "1" ]; then
     say "self-check PASSED on ${tip:0:9}"
     continuum chat/send --roomId "$(project_room)" --text "deploy self-check PASSED on ${tip:0:9}: build verified, $residents resident, KV restores $verdict" >/dev/null 2>&1 </dev/null || true
