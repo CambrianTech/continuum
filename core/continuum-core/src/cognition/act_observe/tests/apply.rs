@@ -1,11 +1,11 @@
 #![cfg(test)]
 
 use super::*;
-use crate::ai::types::ToolCall;
 use crate::cognition::workspace::Situation;
 use crate::cognition::workspace::TurnFraming;
 use crate::cognition::workspace::WorkspaceCycle;
-use uuid::Uuid;
+use crate::cognition::workspace::ActingBody;
+use crate::cognition::workspace::SalienceArbiter;
 use crate::cognition::tool_executor::CallVerdict;
 use crate::cognition::tool_executor::NativeBatchOutcome;
 use crate::cognition::tool_executor::ParsedToolBatch;
@@ -13,8 +13,8 @@ use crate::cognition::tool_executor::ToolError;
 use crate::cognition::tool_executor::ToolExecutionContext;
 use crate::cognition::tool_executor::ToolExecutor;
 use crate::cognition::tool_executor::ToolOutcome;
-use crate::cognition::workspace::ActingBody;
-use crate::cognition::workspace::SalienceArbiter;
+use crate::ai::types::ToolCall;
+use uuid::Uuid;
 use async_trait::async_trait;
 use std::sync::Arc;
 use std::sync::Mutex;
