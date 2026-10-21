@@ -127,19 +127,17 @@ impl LaneSource for ResidentLane {
     }
 }
 
-/// A test's lane: one fixed choice for every base, held by nothing.
-#[cfg(test)]
-pub(super) struct FixedLane(pub(super) LaneChoice);
-
+/// A test's lane: any `Fn(base) -> Option<LaneChoice>`, held by nothing.
 #[cfg(test)]
 #[async_trait]
-impl LaneSource for FixedLane {
-    fn serves(&self, _base: &str) -> bool {
-        true
+impl<F: Fn(&str) -> Option<LaneChoice> + Send + Sync> LaneSource for F {
+    fn serves(&self, base: &str) -> bool {
+        self(base).is_some()
     }
 
-    async fn acquire(&self, _base: &str) -> Result<LaneLease, String> {
-        Ok(LaneLease { choice: self.0.clone(), hold: None })
+    async fn acquire(&self, base: &str) -> Result<LaneLease, String> {
+        let choice = self(base).ok_or_else(|| format!("the test lane serves no {base}"))?;
+        Ok(LaneLease { choice, hold: None })
     }
 }
 
@@ -270,7 +268,7 @@ impl EngineLoraFineTuner {
             jobs: NativeJobs::new(PROVIDER_ID),
             http: reqwest::Client::new(),
             // a lane launched at 256 per slot: the window every existing test asserts
-            lane: Box::new(FixedLane(LaneChoice { url: lane_url, window: 256, engine: None, build: None })),
+            lane: Box::new(move |_: &str| Some(LaneChoice { url: lane_url.clone(), window: 256, engine: None, build: None })),
             train_dir: Some(train_dir),
             footprints: Footprints::at(footprints),
             admission: Admission::Ungoverned { vram_free: u64::MAX },

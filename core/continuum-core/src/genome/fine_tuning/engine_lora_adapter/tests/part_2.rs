@@ -370,6 +370,7 @@ use super::*;
             job,
             hold_store: None,
             residency: Some((store.clone(), work)),
+            _lane_hold: None,
             _lease: None,
         };
         let finish = finish_run(job, spec, tuner.footprints.clone(), last);
