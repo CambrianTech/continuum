@@ -632,10 +632,6 @@ pub(crate) async fn end_card_turn(card: &CardHands, acts: usize) {
     crate::modules::card_carry::request();
 }
 
-/// Close the hands of every card claim she no longer holds: their claims ended (released,
-/// merged, lapsed, re-acquired as a new claim). Each closes in the background, refusing new
-/// turns and waiting out admitted ones, then releases its engine and shells. A claim she
-/// still holds keeps its hands.
 /// PURE: has the claim behind `context` ENDED, by the card's own row? Closed hands never
 /// reopen (`code::hands`), so only an end may close them: the card is TERMINAL (Merged,
 /// Closed), the claim was released (the board clears `claim_id`), or the card's claim is now
@@ -662,6 +658,11 @@ pub(crate) fn claim_has_ended(
     }
 }
 
+/// Close the hands of every card claim whose claim ENDED ([`claim_has_ended`], read from
+/// each card's own row): released, terminal, or re-acquired as a new claim. A claim missing
+/// from her active claims is only a candidate; a lapsed lease or an unreadable row keeps its
+/// hands. Each close runs in the background, refusing new turns and waiting out admitted
+/// ones, then releases its engine and shells.
 pub(super) async fn close_ended_claims(
     live: &ActingHands,
     held: &[crate::code::hands::HandsContext],
