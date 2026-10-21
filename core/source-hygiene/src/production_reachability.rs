@@ -91,7 +91,7 @@ const CONSTRUCTOR_SHAPES: &[&str] = &[
 // file-based rule reads as outside use. Card 7660e70f owns wiring or deleting them.
 #[cfg(test)]
 // 56 after the dream_consolidation split: NOT new wiring. SemanticDistiller was always built in its own file; that construction now sits in a sibling (passes.rs).
-const BASELINE_UNWIRED: usize = 56;
+const BASELINE_UNWIRED: usize = 54;
 
 pub struct ProductionReachability;
 

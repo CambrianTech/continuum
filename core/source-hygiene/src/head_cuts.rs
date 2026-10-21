@@ -135,7 +135,7 @@ mod tests {
     // 179 -> 188, not new debt: production_half now blanks only the #[cfg(test)]-gated item, so
     // production code BELOW a mid-file test mod or gated helper is scanned (measured on canary
     // a85454889 + this change, 2026-10-20).
-    const BASELINE_HEAD_CUTS: usize = 187; // 188 -> 187: the loop built its trigger InboxMessage (with a `peer-` id cut) twice; now once
+    const BASELINE_HEAD_CUTS: usize = 186; // 188 -> 187: the loop built its trigger InboxMessage (with a `peer-` id cut) twice; now once
 
     /// What this catches: a new cut on a prompt path that keeps the head of text or
     /// shrinks it by a literal, the shape that hides her newest message or result.

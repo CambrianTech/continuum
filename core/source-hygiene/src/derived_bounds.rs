@@ -313,7 +313,7 @@ mod tests {
     // 159 -> 164, not new debt: production_half now blanks only the #[cfg(test)]-gated item, so
     // production code BELOW a mid-file test mod or gated helper is scanned (measured on canary
     // a85454889 + this change, 2026-10-20).
-    const BASELINE_UNDERIVED_BOUNDS: usize = 164;
+    const BASELINE_UNDERIVED_BOUNDS: usize = 160;
 
     /// What this catches: a new bound landing on a live path as a constant, with nothing
     /// measured behind it and no line saying why a constant is right there.
