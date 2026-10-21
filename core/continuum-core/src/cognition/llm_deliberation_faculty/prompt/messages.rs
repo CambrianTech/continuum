@@ -230,10 +230,17 @@ impl LlmDeliberationFaculty {
         let blocks: Vec<crate::cognition::context_streams::blocks::Grounding> = pieces
             .into_iter()
             .map(|c| {
-                // Rendered by the owner of a block's body, so it reads exactly as it did.
-                let mut text = String::new();
-                GroundingPiece::whole(c).append_body(&mut text);
-                crate::cognition::context_streams::blocks::Grounding { faculty: c.faculty.as_str().to_owned(), text }
+                // Rendered by the owner of a block's body, so it reads exactly as it did:
+                // whole, and for a standing source also at its truthful minimum, what the
+                // flexbox collapses it to when the window is short.
+                let render = |piece: GroundingPiece| {
+                    let mut text = String::new();
+                    piece.append_body(&mut text);
+                    text
+                };
+                let text = render(GroundingPiece::whole(c));
+                let minimum = if c.standing_grounding { render(GroundingPiece::minimum(c)) } else { text.clone() };
+                crate::cognition::context_streams::blocks::Grounding { faculty: c.faculty.as_str().to_owned(), text, minimum }
             })
             .collect();
         let result_pointers = Vec::new();
@@ -291,8 +298,7 @@ impl LlmDeliberationFaculty {
                         // Preserve producer-owned whole-or-pointer payloads, never expand
                         // spill handles or reconstruct native protocol from receipt prose.
                         if let crate::ai::types::MessageContent::Parts(parts) = &mut results.content {
-                            parts.push(crate::ai::types::ContentPart::Text { text: wm.full_result_message(seq, "") });
-
+                            parts.push(crate::ai::types::ContentPart::Text { text: wm.result_label(seq) });
                         }
                         // This entire required group survives fitting or faults together.
                         (vec![calls, results], None)

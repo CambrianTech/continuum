@@ -42,41 +42,42 @@ impl LlmDeliberationFaculty {
     }
 
     /// Keep her view within `history_budget`, the window's grant to her history. When it
-    /// outgrows the grant, or a view just started (a start or a restart) takes over half of
-    /// it, a new epoch starts at half of what the grant leaves the view: her reads stay whole
-    /// until her window is actually full, and the other half is room to grow by appends.
+    /// outgrows the grant, a new epoch starts at half of what the grant leaves the view: her
+    /// reads stay whole until her window is actually full, and the other half is room to grow
+    /// by appends. A view that fits its grant is sent whole, even right after a restart:
+    /// halving a fresh view collapsed short conversations that fit (a few-turn thread lost its
+    /// turns to pointers), so a restart's one cold prefill is paid instead, and the fix for
+    /// that cost is a view that survives the restart, not a smaller one.
     ///
     /// Measured on the M5, 2026-10-21: sized to the 30 s latency target, Aiko's epoch started
     /// at 6,956 of 86,233 tokens and collapsed 40 items (18:20Z), the starvation the view
-    /// exists to end; rendered whole on a restart, one view was a 100,940-token cold prefill
-    /// of 10+ minutes (19:30Z). The replay's half-window start halved its turnovers
-    /// (continuum-context `examples/replay.rs`).
+    /// exists to end. The replay's half-window start halved its turnovers (continuum-context
+    /// `examples/replay.rs`).
     pub(in super::super) fn fit_view(&self, prompt: &mut PromptMessages, view: ViewPlacement, history_budget: usize) {
         let history_tokens = Self::messages_cost(&prompt.history);
-        let over = history_tokens > history_budget;
-        let oversized_start = view.started && history_tokens > history_budget / 2;
-        if view.len == 0 || !(over || oversized_start) {
-            return;
+        let mut len = view.len;
+        if len > 0 && history_tokens > history_budget {
+            let shown = &prompt.history[..len];
+            let view_tokens = Self::messages_cost(shown);
+            let view_chars: usize = shown.iter().map(|m| m.content_text().chars().count()).sum();
+            let start_tokens = history_budget.saturating_sub(history_tokens.saturating_sub(view_tokens)) / 2;
+            // Tokens to the view's characters at the density this view just measured.
+            let budget_chars = start_tokens.saturating_mul(view_chars) / view_tokens.max(1);
+            let started = self.turn_over_view(&prompt.streams, budget_chars);
+            len = started.len();
+            prompt.history.splice(0..view.len, started);
+            continuum_base::probe!(
+                class = "delib.view.sized",
+                persona = %self.persona_name,
+                history_budget,
+                history_tokens,
+                view_tokens,
+                start_tokens,
+                restart = view.started,
+                "her view started a new epoch at half of what the grant leaves it"
+            );
         }
-        let shown = &prompt.history[..view.len];
-        let view_tokens = Self::messages_cost(shown);
-        let view_chars: usize = shown.iter().map(|m| m.content_text().chars().count()).sum();
-        let start_tokens = history_budget.saturating_sub(history_tokens.saturating_sub(view_tokens)) / 2;
-        // Tokens to the view's characters at the density this view just measured.
-        let budget_chars = start_tokens.saturating_mul(view_chars) / view_tokens.max(1);
-        let started = self.turn_over_view(&prompt.streams, budget_chars);
-        prompt.grounding_at = started.len();
-        prompt.history.splice(0..view.len, started);
-        continuum_base::probe!(
-            class = "delib.view.sized",
-            persona = %self.persona_name,
-            history_budget,
-            history_tokens,
-            view_tokens,
-            start_tokens,
-            restart = view.started,
-            "her view started a new epoch at half of what the grant leaves it"
-        );
+        prompt.grounding_at = len;
     }
 
     /// Append this act's changes to her view and return its messages, and whether this act

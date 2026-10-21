@@ -50,7 +50,7 @@ impl Source<String> for Captured {
 fn item(key: String, text: String) -> Item<String> {
     let pointer: String = text.lines().next().unwrap_or_default().chars().take(185).collect();
     let pointer = if pointer.len() < text.len() { pointer } else { text.clone() };
-    Item { key, pointer, full: text }
+    Item { key, pointer: Some(pointer), full: text }
 }
 
 /// The one allocation at an epoch start, modelled: every source gets its floor, then the

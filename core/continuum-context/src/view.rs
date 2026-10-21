@@ -72,12 +72,16 @@ fn key(source: &str, item: &str) -> SourceId {
 /// The items a `grant` of characters keeps in full: the newest run whose upgrade from
 /// pointer to full fits what the grant leaves above the floor. The run stops at the first
 /// item that does not fit, so what she reads is older items collapsed, newer ones whole.
+fn pointer_chars<T: Block>(item: &Item<T>) -> usize {
+    item.pointer.as_ref().map_or(0, Block::chars) // map_or: an item that leaves when collapsed costs nothing
+}
+
 fn kept_in_full<T: Block>(items: &[Item<T>], grant: usize) -> usize {
-    let floor: usize = items.iter().map(|item| item.pointer.chars()).sum();
+    let floor: usize = items.iter().map(pointer_chars).sum();
     let mut spare = grant.saturating_sub(floor);
     let mut kept = 0;
     for item in items.iter().rev() {
-        let upgrade = item.full.chars().saturating_sub(item.pointer.chars());
+        let upgrade = item.full.chars().saturating_sub(pointer_chars(item));
         if upgrade > spare {
             break;
         }
@@ -123,7 +127,7 @@ impl<T: Block> View<T> {
             .map(|(source, items)| Claim {
                 source: source.name().to_owned(),
                 priority: source.priority(),
-                pointer_chars: items.iter().map(|item| item.pointer.chars()).sum(),
+                pointer_chars: items.iter().map(pointer_chars).sum(),
                 full_chars: items.iter().map(|item| item.full.chars()).sum(),
             })
             .collect();
@@ -138,7 +142,9 @@ impl<T: Block> View<T> {
                 let id = key(source.name(), &item.key);
                 if index < pointers {
                     view.collapsed.insert(id.clone());
-                    view.epoch.observe(id, item.pointer);
+                    if let Some(pointer) = item.pointer {
+                        view.epoch.observe(id, pointer);
+                    }
                 } else {
                     view.epoch.observe(id, item.full);
                 }
@@ -162,9 +168,11 @@ impl<T: Block> View<T> {
         for source in sources {
             for item in source.items() {
                 let id = key(source.name(), &item.key);
-                let text = if self.collapsed.contains(&id) { item.pointer } else { item.full };
-                let chars = text.chars();
-                count(self.epoch.observe(id, text), chars);
+                let text = if self.collapsed.contains(&id) { item.pointer } else { Some(item.full) };
+                if let Some(text) = text {
+                    let chars = text.chars();
+                    count(self.epoch.observe(id, text), chars);
+                }
             }
             for item in source.retired() {
                 let chars = item.full.chars();

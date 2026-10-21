@@ -34,14 +34,14 @@ impl Source<String> for Fake {
             .map(|(key, text)| Item {
                 key: key.clone(),
                 full: text.clone(),
-                pointer: format!("[{key}: {} chars, reopen by key]", text.len()),
+                pointer: Some(format!("[{key}: {} chars, reopen by key]", text.len())),
             })
             .collect()
     }
     fn retired(&self) -> Vec<Item<String>> {
         self.retired
             .iter()
-            .map(|(key, text)| Item { key: key.clone(), full: text.clone(), pointer: text.clone() })
+            .map(|(key, text)| Item { key: key.clone(), full: text.clone(), pointer: Some(text.clone()) })
             .collect()
     }
 }
@@ -112,8 +112,9 @@ fn a_grant_keeps_the_newest_items_in_full() {
     for act in 1..=3 {
         actions.push(&format!("#{act}"), &"r".repeat(1_000));
     }
-    let floor: usize = actions.items().iter().map(|item| item.pointer.len()).sum();
-    let grant = floor + 2 * (1_000 - actions.items()[0].pointer.len());
+    let pointer = |item: &Item<String>| item.pointer.as_ref().map_or(0, String::len);
+    let floor: usize = actions.items().iter().map(pointer).sum();
+    let grant = floor + 2 * (1_000 - pointer(&actions.items()[0]));
     let (view, start) = View::start(vec![], &[&actions], |_| vec![grant]).unwrap();
     assert_eq!(start.collapsed, 1);
     assert!(rendered(&view).starts_with("[#1:"), "the oldest collapsed, the newest two whole");
@@ -161,4 +162,29 @@ fn appended_per_act_is_the_median_act_of_the_epoch() {
         view.advance(&[&actions]);
     }
     assert_eq!(view.appended_per_act(), Some(120));
+}
+
+// what this catches: a collapsed item with nothing to leave behind still costing the view (a
+// short conversation turn whose one-line pointer weighs what the turn does), or rendering an
+// empty message.
+#[test]
+fn an_item_without_a_pointer_leaves_the_view_when_collapsed() {
+    struct Turns(Vec<&'static str>);
+    impl Source<String> for Turns {
+        fn name(&self) -> &str {
+            "conversation"
+        }
+        fn priority(&self) -> u8 {
+            1
+        }
+        fn items(&self) -> Vec<Item<String>> {
+            self.0.iter().map(|t| Item { key: (*t).to_owned(), full: (*t).to_owned(), pointer: None }).collect()
+        }
+    }
+    let mut turns = Turns(vec!["one", "two", "three"]);
+    let (mut view, start) = View::start(vec![], &[&turns], |_| vec!["three".len()]).unwrap();
+    assert_eq!((start.collapsed, rendered(&view)), (2, "three".to_owned()));
+    turns.0.push("four");
+    view.advance(&[&turns]);
+    assert_eq!(rendered(&view), "three\nfour", "a new turn arrives whole; the collapsed stay gone");
 }

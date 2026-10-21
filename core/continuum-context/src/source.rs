@@ -15,8 +15,10 @@ pub struct Item<T> {
     pub key: String,
     /// The item itself.
     pub full: T,
-    /// What it is and how to reopen it: what the item costs once collapsed.
-    pub pointer: T,
+    /// What it is and how to reopen it: what the item costs once collapsed. `None` when the
+    /// item leaves the view entirely once collapsed (a conversation turn whose room history
+    /// holds it, where a one-line pointer would cost about what the turn does).
+    pub pointer: Option<T>,
 }
 
 /// A source of a mind's context.

@@ -1,6 +1,7 @@
 //! Her conversation: one item per turn, keyed by when it occurred and who spoke, rendered
 //! the way the prompt assembly renders a turn. A turn that leaves the room's window stays
-//! in her view until the next epoch start.
+//! in her view until the next epoch start. Collapsed at a start, an older turn leaves the view;
+//! the room's history keeps it (`chat/history` rereads it).
 
 use continuum_context::source::{Item, Source};
 
@@ -27,12 +28,15 @@ impl Source<ContextMessage> for Conversation {
     }
 
     fn items(&self) -> Vec<Item<ContextMessage>> {
-        // A turn has no handle to reopen it by, so it has no pointer: it is kept whole.
         self.turns
             .iter()
-            .map(|turn| {
-                let message = ContextMessage { role: turn.role, text: turn.line.clone() };
-                Item { key: turn.key.clone(), full: message.clone(), pointer: message }
+            .map(|turn| Item {
+                key: turn.key.clone(),
+                full: ContextMessage { role: turn.role, text: turn.line.clone() },
+                // Collapsed, a turn leaves her view: the room's history holds it, and the
+                // `[context]` fact says how many turns the room offered. A one-line pointer would
+                // weigh about what a short turn does, saving nothing.
+                pointer: None,
             })
             .collect()
     }

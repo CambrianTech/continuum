@@ -811,11 +811,11 @@ fn trailing_proprioception_renders_in_the_tail_not_the_system_prefix() {
         )
         .session_stable(),
     );
-    // Act #1: one working-memory trace, marked TRAILING (as the working-memory
-    // faculty now bids it).
+    // Act #1: one trace, marked TRAILING. (Not the working-memory faculty's own id: her
+    // thoughts reach the prompt from working memory itself, as a source of her view.)
     ws.broadcast.push(
         Contribution::context(
-            FacultyId::Custom("working-memory".to_string()),
+            FacultyId::Custom("scratchpad".to_string()),
             "Your recent thinking (working memory):\n- I wrote login.html first",
             0.7,
             "wm",
@@ -851,7 +851,7 @@ fn trailing_proprioception_renders_in_the_tail_not_the_system_prefix() {
     ws.broadcast.pop();
     ws.broadcast.push(
         Contribution::context(
-            FacultyId::Custom("working-memory".to_string()),
+            FacultyId::Custom("scratchpad".to_string()),
             "Your recent thinking (working memory):\n- I wrote login.html first\n- Then I read it back to verify",
             0.7,
             "wm",

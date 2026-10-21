@@ -123,6 +123,24 @@ impl WorkingMemory {
         format!("Full result of your most recent action ({attribution}):\n{full}")
     }
 
+    /// The provenance of the act whose native results the turn carries: `[result #n; room …;
+    /// operation …; output handle …]`, the label every result of hers wears in her view.
+    /// A label, not a header: rendered as "Full result of your most recent action (…):"
+    /// with nothing after it, it read as someone asking her to present her results, and
+    /// Aris answered it ("The user is asking me to present the complete results of my most
+    /// recent action", "#1642 is already inline above", the M5, 2026-10-21).
+    pub(crate) fn result_label(&self, seq: u64) -> String {
+        let actions = self.actions.lock();
+        let recorded = actions.get(seq);
+        let attribution = ResultAttribution {
+            seq,
+            room: recorded.and_then(|record| record.room),
+            operation: recorded.map(|record| record.operation.as_str()),
+            spill_handle: recorded.and_then(|record| record.handle.as_deref()),
+        };
+        format!("[result {attribution}]")
+    }
+
     /// The FULL result of the just-executed act, ready to render as a **pinned**
     /// trailing prompt block — the run-18057-f1 fix.
     ///

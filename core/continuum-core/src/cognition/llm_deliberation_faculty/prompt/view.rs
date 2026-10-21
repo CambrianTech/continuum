@@ -303,7 +303,15 @@ impl LlmDeliberationFaculty {
         } else {
             0
         };
-        let history_floor = evidence.tokens.max(quiet_minimum).min(optional_history);
+        // The standing blocks' truthful minimums ride her view now, so they are history's floor
+        // too, as they were the grounding claim's: nothing optional may starve them.
+        let standing_floor: usize = ws
+            .broadcast
+            .iter()
+            .filter(|c| c.decision.is_none() && c.fault.is_none() && c.trailing && c.standing_grounding)
+            .map(|c| GroundingPiece::minimum(c).tokens)
+            .sum();
+        let history_floor = evidence.tokens.max(quiet_minimum).saturating_add(standing_floor).min(optional_history);
         let claim = |tokens: usize| calibration.charge(tokens).min(u32::MAX as usize) as u32;
         let fixed_cost = claim(framing_tokens.saturating_add(selected.tokens));
         let required_cost = claim(required_tokens);

@@ -9,7 +9,11 @@ use super::{priority, ContextMessage};
 
 pub(crate) struct Grounding {
     pub faculty: String,
+    /// The whole block.
     pub text: String,
+    /// What it guarantees when the window is short: a long list's first units with a line
+    /// naming what is omitted; an atomic block whole (then the same as `text`).
+    pub minimum: String,
 }
 
 impl Source<ContextMessage> for Grounding {
@@ -22,9 +26,10 @@ impl Source<ContextMessage> for Grounding {
     }
 
     fn items(&self) -> Vec<Item<ContextMessage>> {
-        // Whole, always: a block is what she works from now (her board, her checkout), and
-        // it has no handle to reopen it by, so it never collapses.
+        // A block is what she works from now (her board, her checkout) with no handle to
+        // reopen it by, so collapsed it is still its truthful minimum, never a one-liner.
         let full = ContextMessage::user(format!("[{}]\n{}", self.faculty, self.text));
-        vec![Item { key: "block".to_owned(), pointer: full.clone(), full }]
+        let pointer = ContextMessage::user(format!("[{}]\n{}", self.faculty, self.minimum));
+        vec![Item { key: "block".to_owned(), full, pointer: Some(pointer) }]
     }
 }

@@ -40,19 +40,19 @@ impl Source<ContextMessage> for Thoughts<'_> {
         let banner = ContextMessage::user(
             "My own recent thoughts (working memory, my interior state, not a message from anyone):".to_owned(),
         );
-        let mut items = vec![Item { key: "banner".to_owned(), full: banner.clone(), pointer: banner }];
+        let mut items = vec![Item { key: "banner".to_owned(), full: banner.clone(), pointer: Some(banner) }];
         items.extend(thoughts.into_iter().map(|text| {
             // Keyed by what it says: a thought, once recorded, does not change.
             Item {
                 key: text.clone(),
                 full: ContextMessage::user(format!("- {}", collapse_thought(&text, head))),
-                pointer: ContextMessage::user(format!("- {}", collapse_thought(&text, POINTER_KEEP))),
+                pointer: Some(ContextMessage::user(format!("- {}", collapse_thought(&text, POINTER_KEEP)))),
             }
         }));
         // Fresh each event, newest last; one item, so a status change appends one line set.
         items.extend(dispatched.map(|text| {
             let message = ContextMessage::user(text);
-            Item { key: "dispatched".to_owned(), full: message.clone(), pointer: message }
+            Item { key: "dispatched".to_owned(), full: message.clone(), pointer: Some(message) }
         }));
         items
     }
