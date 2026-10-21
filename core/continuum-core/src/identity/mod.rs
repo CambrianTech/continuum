@@ -252,12 +252,14 @@ mod loose_id_guard {
 
     const LOOSE_IDS: &[LooseId] = &[
         LooseId { file: "code/file_engine.rs", field: "persona_id", why: "pending: ours, but nothing on this path RESOLVES yet. Typing it as an identity today would assert something the code does not do — #164/#396" },
-        LooseId { file: "code/shell_session.rs", field: "persona_id", why: "pending: ours, but nothing on this path RESOLVES yet. Typing it as an identity today would assert something the code does not do — #164/#396" },
+        LooseId { file: "code/shell_session/max_output_lines_per_execution.rs", field: "persona_id", why: "pending: ours, but nothing on this path RESOLVES yet. Typing it as an identity today would assert something the code does not do — #164/#396" },
         LooseId { file: "code/shell_types.rs", field: "persona_id", why: "pending: ours, but nothing on this path RESOLVES yet. Typing it as an identity today would assert something the code does not do — #164/#396" },
         LooseId { file: "code/shell_types.rs", field: "session_id", why: "pending: ours, but nothing on this path RESOLVES yet. Typing it as an identity today would assert something the code does not do — #164/#396" },
         LooseId { file: "code/types.rs", field: "author_id", why: "pending: ours, but nothing on this path RESOLVES yet. Typing it as an identity today would assert something the code does not do — #164/#396" },
-        LooseId { file: "cognition/bench_round.rs", field: "card_id", why: "external: RoundCardSnapshot is a ts-rs wire row (RoundSnapshot.round_id precedent, same file) — the uuid stringifies at the TS boundary for the board/CLI; the tracker's own maps stay typed Uuid" },
-        LooseId { file: "cognition/eval.rs", field: "persona_id", why: "pending: ours, but nothing on this path RESOLVES yet. Typing it as an identity today would assert something the code does not do — #164/#396" },
+        LooseId { file: "cognition/bench_round/round_card_snapshot.rs", field: "card_id", why: "external: RoundCardSnapshot is a ts-rs wire row (RoundSnapshot.round_id precedent, same file) — the uuid stringifies at the TS boundary for the board/CLI; the tracker's own maps stay typed Uuid" },
+        LooseId { file: "cognition/eval/eval_task_result.rs", field: "persona_id", why: "pending: ours, but nothing on this path RESOLVES yet. Typing it as an identity today would assert something the code does not do — #164/#396" },
+        LooseId { file: "cognition/eval/fork_eval_cycle_waiting.rs", field: "persona_id", why: "pending: ours, but nothing on this path RESOLVES yet. Typing it as an identity today would assert something the code does not do — #164/#396" },
+        LooseId { file: "cognition/eval/format_exam_lesson.rs", field: "persona_id", why: "pending: ours, but nothing on this path RESOLVES yet. Typing it as an identity today would assert something the code does not do — #164/#396" },
         LooseId { file: "cognition/generate_response.rs", field: "persona_id", why: "pending: ours, but nothing on this path RESOLVES yet. Typing it as an identity today would assert something the code does not do — #164/#396" },
         LooseId { file: "cognition/generate_response.rs", field: "room_id", why: "pending: ours, but nothing on this path RESOLVES yet. Typing it as an identity today would assert something the code does not do — #164/#396" },
         LooseId { file: "cognition/replay.rs", field: "room_id", why: "pending: ours, but nothing on this path RESOLVES yet. Typing it as an identity today would assert something the code does not do — #164/#396" },
@@ -275,9 +277,10 @@ mod loose_id_guard {
         LooseId { file: "ipc/stream_rail.rs", field: "sender_id", why: "pending: airc wire id, arrives as text from the daemon. Types when the airc-side ids do — #396" },
         LooseId { file: "live/audio/mixer.rs", field: "user_id", why: "external: LiveKit participant/room identity — the media server owns this string on the wire" },
         LooseId { file: "live/audio/router.rs", field: "user_id", why: "external: LiveKit participant/room identity — the media server owns this string on the wire" },
-        LooseId { file: "live/transport/bridge_client.rs", field: "user_id", why: "external: LiveKit participant/room identity — the media server owns this string on the wire" },
-        LooseId { file: "live/transport/call_server.rs", field: "persona_id", why: "external: LiveKit participant/room identity — the media server owns this string on the wire" },
-        LooseId { file: "live/transport/call_server.rs", field: "user_id", why: "external: LiveKit participant/room identity — the media server owns this string on the wire" },
+        LooseId { file: "live/transport/bridge_client/live_kit_agent_manager.rs", field: "user_id", why: "external: LiveKit participant/room identity — the media server owns this string on the wire" },
+        LooseId { file: "live/transport/call_server/text_preview_length.rs", field: "persona_id", why: "external: LiveKit participant/room identity — the media server owns this string on the wire" },
+        LooseId { file: "live/transport/call_server/call_manager_2.rs", field: "user_id", why: "external: LiveKit participant/room identity — the media server owns this string on the wire" },
+        LooseId { file: "live/transport/call_server/text_preview_length.rs", field: "user_id", why: "external: LiveKit participant/room identity — the media server owns this string on the wire" },
         LooseId { file: "live/transport/media.rs", field: "room_id", why: "external: LiveKit participant/room identity — the media server owns this string on the wire" },
         LooseId { file: "live/transport/media.rs", field: "user_id", why: "external: LiveKit participant/room identity — the media server owns this string on the wire" },
         LooseId { file: "live/types.rs", field: "persona_id", why: "external: LiveKit participant/room identity — the media server owns this string on the wire" },
@@ -290,8 +293,15 @@ mod loose_id_guard {
         LooseId { file: "modules/rag.rs", field: "room_id", why: "pending: ours, but nothing on this path RESOLVES yet. Typing it as an identity today would assert something the code does not do — #164/#396" },
         LooseId { file: "modules/room.rs", field: "room_id", why: "pending: ours, but nothing on this path RESOLVES yet. Typing it as an identity today would assert something the code does not do — #164/#396" },
         LooseId { file: "modules/sentinel/escalation.rs", field: "persona_id", why: "pending: ours, but nothing on this path RESOLVES yet. Typing it as an identity today would assert something the code does not do — #164/#396" },
-        LooseId { file: "modules/work.rs", field: "card_id", why: "pending: airc work-card id. Needs a CardRef/CardId split with airc's own resolver — #164" },
-        LooseId { file: "modules/work/submission.rs", field: "card_id", why: "pending: the SAME airc work-card handle modules/work.rs carries, blocked on the same CardRef/CardId split with airc's own resolver — #164. The wire value is what the BOARD PRINTED (8 hex chars), and typing it `Uuid` is what caused #4357: serde refused the handle before any handler could name the problem or the form it wanted. Both handlers resolve it to a typed `WorkCardId` in their first lines, via `id_resolve::resolve_handle` against a room-scoped candidate set, and every output stays typed" },
+        LooseId { file: "modules/work/dispatch_staged_swe_solve.rs", field: "card_id", why: "pending: airc work-card id. Needs a CardRef/CardId split with airc's own resolver — #164" },
+        LooseId { file: "modules/work/release_live_claim_on_reopen.rs", field: "card_id", why: "pending: airc work-card id. Needs a CardRef/CardId split with airc's own resolver — #164" },
+        LooseId { file: "modules/work/work_card_state_changed.rs", field: "card_id", why: "pending: airc work-card id. Needs a CardRef/CardId split with airc's own resolver — #164" },
+        LooseId { file: "modules/work/work_create.rs", field: "card_id", why: "pending: airc work-card id. Needs a CardRef/CardId split with airc's own resolver — #164" },
+        LooseId { file: "modules/work/work_similar.rs", field: "card_id", why: "pending: airc work-card id. Needs a CardRef/CardId split with airc's own resolver — #164" },
+        LooseId { file: "modules/work/submission/latest_submission.rs", field: "card_id", why: "pending: airc work-card id. Needs a CardRef/CardId split with airc's own resolver — #164" },
+        LooseId { file: "modules/work/submission/next_after_submission.rs", field: "card_id", why: "pending: airc work-card id. Needs a CardRef/CardId split with airc's own resolver — #164" },
+        LooseId { file: "modules/work/submission/latest_submission.rs", field: "card_id", why: "pending: the SAME airc work-card handle modules/work.rs carries, blocked on the same CardRef/CardId split with airc's own resolver — #164. The wire value is what the BOARD PRINTED (8 hex chars), and typing it `Uuid` is what caused #4357: serde refused the handle before any handler could name the problem or the form it wanted. Both handlers resolve it to a typed `WorkCardId` in their first lines, via `id_resolve::resolve_handle` against a room-scoped candidate set, and every output stays typed" },
+        LooseId { file: "modules/work/submission/next_after_submission.rs", field: "card_id", why: "pending: the SAME airc work-card handle modules/work.rs carries, blocked on the same CardRef/CardId split with airc's own resolver — #164. The wire value is what the BOARD PRINTED (8 hex chars), and typing it `Uuid` is what caused #4357: serde refused the handle before any handler could name the problem or the form it wanted. Both handlers resolve it to a typed `WorkCardId` in their first lines, via `id_resolve::resolve_handle` against a room-scoped candidate set, and every output stays typed" },
         LooseId { file: "persona/airc_admission.rs", field: "message_id", why: "pending: airc wire id, arrives as text from the daemon. Types when the airc-side ids do — #396" },
         LooseId { file: "persona/airc_admission.rs", field: "room_id", why: "pending: airc wire id, arrives as text from the daemon. Types when the airc-side ids do — #396" },
         LooseId { file: "persona/airc_admission.rs", field: "sender_id", why: "pending: airc wire id, arrives as text from the daemon. Types when the airc-side ids do — #396" },
@@ -309,37 +319,18 @@ mod loose_id_guard {
         LooseId { file: "ai/types.rs", field: "room_id", why: "pending: ours, but nothing on this path RESOLVES yet. Typing it as an identity today would assert something the code does not do — #164/#396" },
         LooseId { file: "ai/types.rs", field: "user_id", why: "pending: ours, but nothing on this path RESOLVES yet. Typing it as an identity today would assert something the code does not do — #164/#396" },
         LooseId { file: "airc/realtime.rs", field: "user_id", why: "pending: ours, but nothing on this path RESOLVES yet. Typing it as an identity today would assert something the code does not do — #164/#396" },
-        LooseId { file: "cognition/eval.rs", field: "room_id", why: "pending: ours, but nothing on this path RESOLVES yet. Typing it as an identity today would assert something the code does not do — #164/#396" },
+        LooseId { file: "cognition/eval/sweep_orphan_eval_roots.rs", field: "room_id", why: "pending: ours, but nothing on this path RESOLVES yet. Typing it as an identity today would assert something the code does not do — #164/#396" },
         LooseId { file: "cognition/resolution_compute.rs", field: "persona_id", why: "pending: ours, but nothing on this path RESOLVES yet. Typing it as an identity today would assert something the code does not do — #164/#396" },
         LooseId { file: "logging/client.rs", field: "session_id", why: "external: log-envelope correlation fields, written as text to a JSONL sink another tool reads" },
         LooseId { file: "logging/client.rs", field: "user_id", why: "external: log-envelope correlation fields, written as text to a JSONL sink another tool reads" },
-        LooseId { file: "modules/dataset.rs", field: "room_id", why: "pending: ours, but nothing on this path RESOLVES yet. Typing it as an identity today would assert something the code does not do — #164/#396" },
+        LooseId { file: "modules/dataset/dataset_manifest.rs", field: "room_id", why: "pending: ours, but nothing on this path RESOLVES yet. Typing it as an identity today would assert something the code does not do — #164/#396" },
         LooseId { file: "modules/sentinel/types.rs", field: "persona_id", why: "pending: ours, but nothing on this path RESOLVES yet. Typing it as an identity today would assert something the code does not do — #164/#396" },
-        LooseId { file: "persona/service_loop.rs", field: "room_id", why: "pending: ours, but nothing on this path RESOLVES yet. Typing it as an identity today would assert something the code does not do — #164/#396" },
-        LooseId { file: "persona/service_loop.rs", field: "sender_id", why: "pending: ours, but nothing on this path RESOLVES yet. Typing it as an identity today would assert something the code does not do — #164/#396" },
+        LooseId { file: "persona/service_loop/burst_fingerprint.rs", field: "room_id", why: "pending: ours, but nothing on this path RESOLVES yet. Typing it as an identity today would assert something the code does not do — #164/#396" },
+        LooseId { file: "persona/service_loop/burst_fingerprint.rs", field: "sender_id", why: "pending: ours, but nothing on this path RESOLVES yet. Typing it as an identity today would assert something the code does not do — #164/#396" },
     ];
 
     fn rs_files() -> Vec<(String, String)> {
-        fn walk(dir: &std::path::Path, root: &std::path::Path, out: &mut Vec<(String, String)>) {
-            let Ok(entries) = std::fs::read_dir(dir) else {
-                return;
-            };
-            for entry in entries.flatten() {
-                let path = entry.path();
-                if path.is_dir() {
-                    walk(&path, root, out);
-                } else if path.extension().is_some_and(|e| e == "rs") {
-                    if let Ok(text) = std::fs::read_to_string(&path) {
-                        let rel = path.strip_prefix(root).unwrap_or(&path);
-                        out.push((rel.to_string_lossy().replace('\\', "/"), text));
-                    }
-                }
-            }
-        }
-        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
-        let mut out = Vec::new();
-        walk(&root, &root, &mut out);
-        out
+        crate::test_env::source_tree::crate_sources().into_iter().map(|f| (f.rel, f.text)).collect()
     }
 
     /// `  pub persona_id: String,` / `  room_id: Option<String>,` — field decls only.
@@ -352,7 +343,13 @@ mod loose_id_guard {
                 None => raw,
             };
             let line = line.trim();
-            let line = line.strip_prefix("pub ").unwrap_or(line);
+            // any visibility (`pub`, `pub(crate)`, `pub(super)`, `pub(in ..)`): a split that
+            // widened a field must not hide it from this guard
+            let line = match line.strip_prefix("pub") {
+                Some(rest) if rest.starts_with(' ') => rest.trim_start(),
+                Some(rest) if rest.starts_with('(') => rest.find(')').map_or(line, |end| rest[end + 1..].trim_start()),
+                _ => line,
+            };
             for name in ID_NAMES {
                 let with_colon = format!("{name}:");
                 if let Some(rest) = line.strip_prefix(&with_colon) {
@@ -422,7 +419,13 @@ mod loose_id_guard {
             // trimmed line be `name: String,`, which a quoted literal never is.
             let line = blank_string_literals(line);
             let line = line.trim();
-            let line = line.strip_prefix("pub ").unwrap_or(line);
+            // any visibility (`pub`, `pub(crate)`, `pub(super)`, `pub(in ..)`): a split that
+            // widened a field must not hide it from this guard
+            let line = match line.strip_prefix("pub") {
+                Some(rest) if rest.starts_with(' ') => rest.trim_start(),
+                Some(rest) if rest.starts_with('(') => rest.find(')').map_or(line, |end| rest[end + 1..].trim_start()),
+                _ => line,
+            };
             for name in ID_NAMES {
                 let mut from = 0;
                 while let Some(rel) = line[from..].find(name) {

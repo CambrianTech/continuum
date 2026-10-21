@@ -799,7 +799,6 @@ mod tests {
     fn no_new_hardcoded_context_or_prompt_size_constant_anywhere_in_the_crate() {
         // Crate-wide, not just cognition/: the 4096/2048 adapter floor (#46's own surface) sat
         // outside cognition and would not have been caught by a cognition-only scan.
-        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
         let named = |n: &str| {
             // Categorically not size bounds, so they don't need to spend an exemption line:
             // a duration (`*_MS`), an identifier (`*_ID`), or a vocabulary offset (`*_OFFSET`).
@@ -811,98 +810,88 @@ mod tests {
                 .any(|k| n.contains(k))
         };
         let mut offenders = Vec::new();
-        let mut stack = vec![dir];
-        while let Some(d) = stack.pop() {
-            let Ok(entries) = std::fs::read_dir(&d) else {
+        for file in crate::test_env::source_tree::crate_sources() {
+            // Vendored upstream code (candle/llama ports) is not ours to restyle; its
+            // constants are the upstream model's own defaults.
+            if file.rel.split('/').any(|c| c == "vendored") {
                 continue;
-            };
-            for e in entries.flatten() {
-                let path = e.path();
-                if path.is_dir() {
-                    // Vendored upstream code (candle/llama ports) is not ours to restyle; its
-                    // constants are the upstream model's own defaults.
-                    if !path.ends_with("vendored") {
-                        stack.push(path);
+            }
+            // This module IS the sanctioned home for the calibration; its doc table
+            // quotes the very constants it replaced.
+            if file.path.file_name().is_some_and(|f| f == "context_budget.rs") {
+                continue;
+            }
+            let (path, src) = (&file.path, &file.text);
+            let lines: Vec<&str> = src.lines().collect();
+            for (i, line) in lines.iter().enumerate() {
+                let t = line.trim_start();
+                // Declared non-bound: the marker appears anywhere in the contiguous
+                // comment block directly above (a reason worth writing often needs two
+                // lines, and a doc comment may sit between it and the const).
+                let exempt = lines[..i]
+                    .iter()
+                    .rev()
+                    .take_while(|l| {
+                        let t = l.trim_start();
+                        t.starts_with("//") || t.is_empty()
+                    })
+                    .any(|l| l.contains("context-budget-exempt:"));
+                if exempt {
+                    continue;
+                }
+                // Any visibility, `pub(in crate::path)` included: a split by owner widens
+                // a moved constant to that form, and a fixed prefix list lost it.
+                let unscoped = match t.strip_prefix("pub") {
+                    Some(after) if after.starts_with('(') => {
+                        after.split_once(')').map_or(t, |(_, rest)| rest.trim_start())
                     }
-                    continue;
-                }
-                if path.extension().is_none_or(|x| x != "rs") {
-                    continue;
-                }
-                // This module IS the sanctioned home for the calibration; its doc table
-                // quotes the very constants it replaced.
-                if path.file_name().is_some_and(|f| f == "context_budget.rs") {
-                    continue;
-                }
-                let Ok(src) = std::fs::read_to_string(&path) else {
+                    Some(after) => after.trim_start(),
+                    None => t,
+                };
+                let Some(rest) = unscoped.strip_prefix("const ") else {
                     continue;
                 };
-                let lines: Vec<&str> = src.lines().collect();
-                for (i, line) in lines.iter().enumerate() {
-                    let t = line.trim_start();
-                    // Declared non-bound: the marker appears anywhere in the contiguous
-                    // comment block directly above (a reason worth writing often needs two
-                    // lines, and a doc comment may sit between it and the const).
-                    let exempt = lines[..i]
-                        .iter()
-                        .rev()
-                        .take_while(|l| {
-                            let t = l.trim_start();
-                            t.starts_with("//") || t.is_empty()
-                        })
-                        .any(|l| l.contains("context-budget-exempt:"));
-                    if exempt {
-                        continue;
-                    }
-                    let Some(rest) = t.strip_prefix("const ").or_else(|| {
-                        t.strip_prefix("pub const ")
-                            .or_else(|| t.strip_prefix("pub(super) const "))
-                            .or_else(|| t.strip_prefix("pub(crate) const "))
-                    }) else {
-                        continue;
-                    };
-                    let Some((name, tail)) = rest.split_once(':') else {
-                        continue;
-                    };
-                    if !named(name.trim()) {
-                        continue;
-                    }
-                    let Some((ty, value)) = tail.split_once('=') else {
-                        continue;
-                    };
-                    // Only sizes and RATIOS. A &str / bool / Duration named "...CONTEXT..." is
-                    // not a bound.
-                    //
-                    // The float types are here because of a hole this test had for its whole
-                    // life, found 2026-08-20 the first time anyone wrote a window-relative
-                    // constant that wasn't a token COUNT: `WINDOW_COMPARABILITY_FACTOR: f64 =
-                    // 2.0` (#2339, mine). Name matched, value was a bare literal, and it
-                    // sailed through — because the type list stopped at the integers. A guard
-                    // against invented numbers that a `f64` annotation defeats teaches exactly
-                    // one lesson: type your magic number as a float. A ratio over the window is
-                    // as much a fresh guess as a count of its tokens, and is caught the same way.
-                    if !["u32", "usize", "u64", "i32", "i64", "f32", "f64"].contains(&ty.trim()) {
-                        continue;
-                    }
-                    // A bare literal is the defect — decimal or float, since both are equally
-                    // guessed. An expression built from another named bound (`MIN_SERVE_CTX * 8`)
-                    // is a derivation, not a fresh guess.
-                    let v = value.trim().trim_end_matches(';').trim();
-                    let bare_literal = !v.is_empty()
-                        && v.chars().all(|c| c.is_ascii_digit() || c == '_' || c == '.')
-                        // `.` only as a decimal point: `1.5` yes, `A.b` / `1..2` no.
-                        && v.matches('.').count() <= 1
-                        && v.starts_with(|c: char| c.is_ascii_digit());
-                    if bare_literal {
-                        offenders.push(format!(
-                            "{}:{} — const {}: {} = {}",
-                            path.file_name().unwrap_or_default().to_string_lossy(),
-                            i + 1,
-                            name.trim(),
-                            ty.trim(),
-                            v
-                        ));
-                    }
+                let Some((name, tail)) = rest.split_once(':') else {
+                    continue;
+                };
+                if !named(name.trim()) {
+                    continue;
+                }
+                let Some((ty, value)) = tail.split_once('=') else {
+                    continue;
+                };
+                // Only sizes and RATIOS. A &str / bool / Duration named "...CONTEXT..." is
+                // not a bound.
+                //
+                // The float types are here because of a hole this test had for its whole
+                // life, found 2026-08-20 the first time anyone wrote a window-relative
+                // constant that wasn't a token COUNT: `WINDOW_COMPARABILITY_FACTOR: f64 =
+                // 2.0` (#2339, mine). Name matched, value was a bare literal, and it
+                // sailed through — because the type list stopped at the integers. A guard
+                // against invented numbers that a `f64` annotation defeats teaches exactly
+                // one lesson: type your magic number as a float. A ratio over the window is
+                // as much a fresh guess as a count of its tokens, and is caught the same way.
+                if !["u32", "usize", "u64", "i32", "i64", "f32", "f64"].contains(&ty.trim()) {
+                    continue;
+                }
+                // A bare literal is the defect — decimal or float, since both are equally
+                // guessed. An expression built from another named bound (`MIN_SERVE_CTX * 8`)
+                // is a derivation, not a fresh guess.
+                let v = value.trim().trim_end_matches(';').trim();
+                let bare_literal = !v.is_empty()
+                    && v.chars().all(|c| c.is_ascii_digit() || c == '_' || c == '.')
+                    // `.` only as a decimal point: `1.5` yes, `A.b` / `1..2` no.
+                    && v.matches('.').count() <= 1
+                    && v.starts_with(|c: char| c.is_ascii_digit());
+                if bare_literal {
+                    offenders.push(format!(
+                        "{}:{} — const {}: {} = {}",
+                        path.file_name().unwrap_or_default().to_string_lossy(),
+                        i + 1,
+                        name.trim(),
+                        ty.trim(),
+                        v
+                    ));
                 }
             }
         }

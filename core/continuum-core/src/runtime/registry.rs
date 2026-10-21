@@ -749,41 +749,6 @@ mod tests {
         // check is what forced the entry's removal in the same change.
     ];
 
-    fn crate_src_files() -> Vec<(std::path::PathBuf, String)> {
-        fn walk(dir: &std::path::Path, out: &mut Vec<(std::path::PathBuf, String)>) {
-            let Ok(entries) = std::fs::read_dir(dir) else {
-                return;
-            };
-            for entry in entries.flatten() {
-                let path = entry.path();
-                if path.is_dir() {
-                    walk(&path, out);
-                } else if path.extension().is_some_and(|e| e == "rs") {
-                    if let Ok(text) = std::fs::read_to_string(&path) {
-                        out.push((path, text));
-                    }
-                }
-            }
-        }
-        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
-        let mut out = Vec::new();
-        walk(&root, &mut out);
-        out
-    }
-
-    /// Drop `//`-prefixed content so a doc comment can never stand in for
-    /// real wiring. Crude on purpose — a `//` inside a string literal only
-    /// ever costs us a false "wired" reading, never a false alarm.
-    fn code_only(src: &str) -> String {
-        src.lines()
-            .map(|line| match line.find("//") {
-                Some(idx) => &line[..idx],
-                None => line,
-            })
-            .collect::<Vec<_>>()
-            .join("\n")
-    }
-
     fn mentions_ident(haystack: &str, ident: &str) -> bool {
         let bytes = haystack.as_bytes();
         haystack.match_indices(ident).any(|(idx, _)| {
@@ -807,7 +772,7 @@ mod tests {
     // (ProbeStreamModule) and #325 (GeneratorModule, which shipped
     // unregistered and was found only by live dispatch).
     fn every_service_module_is_registered_or_declares_why_not() {
-        let files = crate_src_files();
+        let files = crate::test_env::source_tree::crate_sources();
         assert!(
             files.len() > 100,
             "source scan found only {} files — the walk is broken, and a \
@@ -815,9 +780,12 @@ mod tests {
             files.len()
         );
 
+        // Keyed by the OWNING file: a test module moved to a sibling `tests.rs` is
+        // still its owner's own file, never a reference from outside it. Comments are
+        // dropped so a doc line can never stand in for real wiring.
         let code: Vec<(std::path::PathBuf, String)> = files
             .iter()
-            .map(|(p, t)| (p.clone(), code_only(t)))
+            .map(|f| (f.owner(), f.code()))
             .collect();
 
         // (module name, defining file) for every `impl ServiceModule for X`.

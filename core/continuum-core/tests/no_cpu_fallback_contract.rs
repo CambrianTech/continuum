@@ -25,7 +25,7 @@
 //!   https://github.com/CambrianTech/continuum/issues/1262#issuecomment-4461757997
 //!   https://github.com/CambrianTech/continuum/issues/1280#issuecomment-4462181316
 
-const LLAMACPP_BACKEND_SOURCE: &str = include_str!("../src/inference/backends/llamacpp.rs");
+const LLAMACPP_BACKEND_SOURCE: &str = include_str!("../src/inference/backends/llamacpp/validate_embedding_model.rs");
 
 const ORT_PROVIDERS_SOURCE: &str = include_str!("../src/inference/ort_providers.rs");
 

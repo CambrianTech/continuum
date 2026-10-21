@@ -45,7 +45,13 @@ pub const READABLE_FILE_LINES: usize = 1_000;
 // 156,830 after card 5e3a3e75 deleted three hand copies of paths::continuum_home.
 // 156,825 after card 394017ed folded ensure_slot_pool's inline probes into one typed miss.
 // 154,999 after placement responsibilities split on current canary.
-const BASELINE_LINES_OVER: usize = 154_999;
+// 136,485 after #5224 moved 69 oversized files' test modules into sibling tests.rs files.
+// 133,731 after #5225 split eight files just over 1,000 lines by owner.
+// 57,268 after #5228 split the 59 remaining oversized files into child modules.
+// 57,131 after launch_gate, models and benchmark_dispatch were decomposed.
+// 54,053 after start_server, serve_persona_loop_inner, voice_module, launch_gate, models and
+// benchmark_dispatch were decomposed by responsibility (#5234-#5237).
+const BASELINE_LINES_OVER: usize = 54_053;
 
 pub struct FileSize;
 
