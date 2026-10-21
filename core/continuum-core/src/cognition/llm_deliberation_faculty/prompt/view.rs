@@ -216,7 +216,7 @@ impl LlmDeliberationFaculty {
         );
         // Her view leads the history: this act appends to it, and everything after it (the
         // standing grounding, facts, the clock) is this act's fresh tail.
-        let view_messages = self.advance_view(&all_messages.streams);
+        let (view_messages, view_started) = self.advance_view(&all_messages.streams);
         let mut view_len = view_messages.len();
         all_messages.history.splice(0..0, view_messages);
         all_messages.grounding_at = view_len;
@@ -461,7 +461,12 @@ impl LlmDeliberationFaculty {
         // grant leaves it. Within the epoch it then grows by appends alone.
         let history_budget = msg_budget.saturating_sub(required_tokens);
         let history_tokens = Self::messages_cost(&all_messages.history);
-        if history_tokens > history_budget && view_len > 0 {
+        // A view's first act sizes it the same way: rendered whole it can be most of the window,
+        // one cold prefill of 100,940 tokens on the M5 (2026-10-21 19:30Z, a 112k slot), paid
+        // again by every restart and every slot it is restored into.
+        let over = history_tokens > history_budget;
+        let oversized_start = view_started && history_tokens > history_budget / 2;
+        if (over || oversized_start) && view_len > 0 {
             let view_tokens = Self::messages_cost(&all_messages.history[..view_len]);
             let view_chars: usize =
                 all_messages.history[..view_len].iter().map(|m| m.content_text().chars().count()).sum();

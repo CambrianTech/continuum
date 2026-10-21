@@ -19,14 +19,16 @@ use crate::cognition::context_streams::thoughts::Thoughts;
 use crate::cognition::context_streams::ContextMessage;
 
 impl LlmDeliberationFaculty {
-    /// Append this act's changes to her view (the first act starts it whole) and return its
-    /// messages.
-    pub(in super::super) fn advance_view(&self, streams: &Streams) -> Vec<ChatMessage> {
+    /// Append this act's changes to her view and return its messages, and whether this act
+    /// started the view (the first act after a start or a restart renders it whole, for the
+    /// caller to size).
+    pub(in super::super) fn advance_view(&self, streams: &Streams) -> (Vec<ChatMessage>, bool) {
         let memory = self.working_memory.as_deref();
         let actions = memory.map(|memory| Actions { memory });
         let thoughts = memory.map(|memory| Thoughts { memory });
         let sources = Self::view_sources(streams, actions.as_ref(), thoughts.as_ref());
         let mut held = self.context_view.lock();
+        let started = held.is_none();
         if let Some(view) = held.as_mut() {
             let advance = view.advance(&sources);
             continuum_base::probe!(
@@ -51,7 +53,7 @@ impl LlmDeliberationFaculty {
                 ),
             }
         }
-        Self::render(held.as_ref())
+        (Self::render(held.as_ref()), started)
     }
 
     /// Start a new epoch of her view within `budget_chars`, the flexbox granting each
