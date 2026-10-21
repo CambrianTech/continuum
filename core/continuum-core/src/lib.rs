@@ -83,5 +83,5 @@ pub use persona::{
 // Easy logging macros - auto-route to proper log files based on module_path!()
 // Usage: clog_info!("Session started"); clog_warn!("Warning"); etc.
 pub use ipc::start_server;
-pub use logging::{extract_component, module_path_to_category, LogLevel};
+pub use logging::{extract_component, module_path_to_category};
 pub use rag::{LlmMessage, MessageRole, RagContext, RagEngine, RagOptions};
