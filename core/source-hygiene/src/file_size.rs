@@ -51,7 +51,9 @@ pub const READABLE_FILE_LINES: usize = 1_000;
 // 57,131 after launch_gate, models and benchmark_dispatch were decomposed.
 // 54,053 after start_server, serve_persona_loop_inner, voice_module, launch_gate, models and
 // benchmark_dispatch were decomposed by responsibility (#5234-#5237).
-const BASELINE_LINES_OVER: usize = 54_053;
+// 154,482 measured after splitting cognition/resource_admission.rs by owner.
+// 153,700 measured on the merge with #5227 (6ac1a84c6): 154,999 - (2,299 - 1,000).
+const BASELINE_LINES_OVER: usize = 0;
 
 pub struct FileSize;
 
