@@ -38,6 +38,8 @@ use ts_rs::TS;
 use uuid::Uuid;
 
 use crate::modules::grid::node::TrustLevel;
+mod projection;
+pub use projection::LocalInboundAircAuthorization;
 
 /// The default capability rank at which a citizen gets the full working surface. The scale is
 /// the Artificial Analysis Intelligence Index the serving planner already ranks models by
@@ -229,9 +231,24 @@ mod tests {
             decided_ms: 1,
         });
         assert_eq!(policy.citizen_trust(peer, false, Some(12), None), TrustLevel::Trusted, "a decision wins, even for a stranger");
+        // The fleet projection explains the same pure decision without reading live state.
+        for level in [TrustLevel::Blocked, TrustLevel::Provisional, TrustLevel::Trusted, TrustLevel::Owner] {
+            policy.decisions[0].level = level;
+            assert_eq!(policy.local_inbound_airc_authorization(Some(peer)),
+                LocalInboundAircAuthorization::Recorded {
+                    effective_level: policy.citizen_trust(peer, false, None, None),
+                    decision: policy.decisions[0].clone(),
+                });
+        }
+        policy.decisions.clear();
+        assert_eq!(policy.local_inbound_airc_authorization(Some(peer)),
+            LocalInboundAircAuthorization::Unrecorded { effective_level: policy.citizen_trust(peer, false, None, None) });
+        assert_eq!(policy.local_inbound_airc_authorization(None), LocalInboundAircAuthorization::Uncorrelated);
         // an unreadable policy restricts everyone and never silently drops a recorded block
         let broken = AccessPolicy { unreadable: true, ..policy };
         assert_eq!(broken.citizen_trust(peer, true, Some(42), None), TrustLevel::Provisional);
+        assert_eq!(broken.local_inbound_airc_authorization(Some(peer)),
+            LocalInboundAircAuthorization::PolicyUnreadable { effective_level: broken.citizen_trust(peer, false, None, None) });
     }
 
     // what this catches: card 429a3883. A resident on a weak model is not crippled: she

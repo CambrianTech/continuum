@@ -21,7 +21,13 @@ const OWNER: &str = "paths/";
 /// fall.** Nine of them hold saved state or live-process records (roster hold, resting
 /// seats, lane pid/registry, presence, avatars, fitness ledger, floor models): moving
 /// those needs an explicit migration at the path owner, not a respelling (card 7df698b1).
-pub const BASELINE_HAND_BUILT_HOMES: usize = 72;
+// Raised, not new debt: the shared production split cut at the first #[cfg(test)] anywhere,
+// so indented test helpers hid production code from this scan; at column zero it sees
+// them (2026-10-20). 72 -> 79.
+// 79 -> 103, not new debt: production_half now blanks only the #[cfg(test)]-gated item, so
+// production code BELOW a mid-file test mod or gated helper is scanned (measured on canary
+// a85454889 + this change, 2026-10-20).
+pub const BASELINE_HAND_BUILT_HOMES: usize = 103;
 
 pub struct ContinuumHomeResolvedOnce;
 
