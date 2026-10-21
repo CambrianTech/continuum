@@ -28,25 +28,26 @@ impl Source<String> for Fake {
     fn priority(&self) -> u8 {
         self.priority
     }
-    fn items(&self, resolution: Resolution) -> Vec<Item<String>> {
+    fn items(&self) -> Vec<Item<String>> {
         self.items
             .iter()
             .map(|(key, text)| Item {
                 key: key.clone(),
-                text: match resolution {
-                    Resolution::Full => text.clone(),
-                    Resolution::Pointer => format!("[{key}: {} chars, reopen by key]", text.len()),
-                },
+                full: text.clone(),
+                pointer: format!("[{key}: {} chars, reopen by key]", text.len()),
             })
             .collect()
     }
     fn retired(&self) -> Vec<Item<String>> {
-        self.retired.iter().map(|(key, text)| Item { key: key.clone(), text: text.clone() }).collect()
+        self.retired
+            .iter()
+            .map(|(key, text)| Item { key: key.clone(), full: text.clone(), pointer: text.clone() })
+            .collect()
     }
 }
 
-fn all_full(claims: &[Claim]) -> Vec<Resolution> {
-    vec![Resolution::Full; claims.len()]
+fn all_full(claims: &[Claim]) -> Vec<usize> {
+    claims.iter().map(|claim| claim.full_chars).collect()
 }
 
 fn rendered(view: &View<String>) -> String {
@@ -87,20 +88,36 @@ fn an_act_appends_only_the_items_that_changed() {
     assert_eq!(view.advance(&[&views]), Advance::default(), "nothing changed, nothing appended");
 }
 
-// what this catches: a source collapsed to pointers at the start whose old items come back
-// in full on the next act (rendered at a different resolution, so "changed"), the
-// collapse-then-uncollapse churn the sticky ring collapse was patched for.
+// what this catches: a collapsed item that comes back in full on the next act (rendered
+// differently, so "changed"), the collapse-then-uncollapse churn the sticky ring collapse
+// was patched for; and her next act's result being born collapsed because its source was.
 #[test]
-fn a_collapsed_source_stays_collapsed_for_its_epoch() {
+fn a_collapsed_item_stays_collapsed_and_a_new_one_arrives_in_full() {
     let mut actions = Fake::new("actions", 1);
     actions.push("#1", &"x".repeat(9_000));
-    let (mut view, start) = View::start(vec![], &[&actions], |claims| vec![Resolution::Pointer; claims.len()]).unwrap();
-    assert_eq!(start.collapsed, ["actions"]);
+    let (mut view, start) = View::start(vec![], &[&actions], |claims| vec![0; claims.len()]).unwrap();
+    assert_eq!(start.collapsed, 1);
     let at_start = view.chars();
     actions.push("#2", "short");
     let advance = view.advance(&[&actions]);
-    assert_eq!(advance.items, 1, "only the new result was appended, at the granted resolution");
+    assert_eq!(advance, Advance { items: 1, chars: "short".len() }, "only the new result, in full");
     assert!(view.chars() - at_start < 100, "the old result did not come back in full");
+}
+
+// what this catches: a grant spent on the oldest items (she reads stale results in full and
+// her latest ones as pointers), or a grant overspent past what the allocator gave.
+#[test]
+fn a_grant_keeps_the_newest_items_in_full() {
+    let mut actions = Fake::new("actions", 1);
+    for act in 1..=3 {
+        actions.push(&format!("#{act}"), &"r".repeat(1_000));
+    }
+    let floor: usize = actions.items().iter().map(|item| item.pointer.len()).sum();
+    let grant = floor + 2 * (1_000 - actions.items()[0].pointer.len());
+    let (view, start) = View::start(vec![], &[&actions], |_| vec![grant]).unwrap();
+    assert_eq!(start.collapsed, 1);
+    assert!(rendered(&view).starts_with("[#1:"), "the oldest collapsed, the newest two whole");
+    assert!(view.chars() <= grant);
 }
 
 // what this catches: an allocator that answers for fewer sources than it was asked about,
@@ -109,7 +126,7 @@ fn a_collapsed_source_stays_collapsed_for_its_epoch() {
 fn a_grant_for_the_wrong_number_of_sources_is_refused() {
     let a = Fake::new("a", 1);
     let b = Fake::new("b", 1);
-    let refused = View::start(vec![], &[&a, &b], |_| vec![Resolution::Full]).err();
+    let refused = View::start(vec![], &[&a, &b], |_| vec![usize::MAX]).err();
     assert_eq!(refused, Some(GrantMismatch { claims: 2, grants: 1 }));
 }
 
