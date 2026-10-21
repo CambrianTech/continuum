@@ -37,7 +37,7 @@ use airc_lib::AircError;
 use async_trait::async_trait;
 
 use crate::persona::rag_budget::{
-    ContinuationCursor, RagContext, RagDelivery, RagItem, RagSource, ResolutionPreference,
+    RagContext, RagDelivery, RagItem, RagSource, ResolutionPreference,
 };
 
 /// Source identifier — the service-loop projection routes this delivery
@@ -353,7 +353,6 @@ impl RagSource for RoomDoctrineSource {
             source_id: SOURCE_ID.to_string(),
             items: Vec::new(),
             tokens_used: 0,
-            continuation: None,
             resolution_used: res,
         };
 
@@ -437,21 +436,11 @@ impl RagSource for RoomDoctrineSource {
             }],
             tokens_used: tokens,
             // One current contract per room; no pagination.
-            continuation: None,
             resolution_used: resolution,
         }
     }
 
-    async fn deliver_continuation(
-        &self,
-        _ctx: &RagContext,
-        _cursor: ContinuationCursor,
-        _budget: u32,
-    ) -> Option<RagDelivery> {
-        // Doctrine is a single current snapshot; any cursor is stale.
-        None
     }
-}
 
 #[cfg(test)]
 mod tests {
@@ -700,7 +689,7 @@ mod tests {
         assert_eq!(delivery.items.len(), 1);
         assert!(delivery.items[0].content.contains("Respond sparingly"));
         assert_eq!(delivery.items[0].metadata["version"], "v1abc");
-        assert!(delivery.continuation.is_none());
+        assert!(!delivery.truncated);
     }
 
     // what this catches: a room with NO published doctrine renders no

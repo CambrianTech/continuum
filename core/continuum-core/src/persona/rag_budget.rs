@@ -416,39 +416,6 @@ pub enum ResolutionPreference {
     Placeholder,
 }
 
-/// Continuation cursor — a persona-scoped handle to "where this
-/// source left off." Per Joel's "we know who is who, have to use
-/// handles as we do" framing, this is shaped like the substrate's
-/// existing Handle pattern (cell-processor-command-runtime memory):
-/// every cursor carries its persona scope, its source scope, and
-/// an opaque source-specific resume payload.
-///
-/// The persona_id guarantees the cursor can't be accidentally
-/// applied to a different citizen's recall state. The source_id
-/// guarantees the cursor can only resume the source that produced
-/// it. The opaque field is the source's private resume state —
-/// could be a row offset, an embedding-similarity threshold, a
-/// merkle hash of what was already delivered, anything the source
-/// needs to pick up where it left off.
-///
-/// Future substrate-side extensions may add: turn_id (which
-/// cognition turn produced this), room_id (which activity scope),
-/// budget_used (so the resume can decide whether more is now
-/// affordable). All extensions go on this struct, NOT inside
-/// `opaque` — keep substrate concerns substrate-visible.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ContinuationCursor {
-    /// Persona this cursor belongs to. Sources MUST validate that
-    /// `deliver_continuation` is being called for the same persona
-    /// that produced the cursor — substrate-side identity check.
-    pub persona_id: uuid::Uuid,
-    /// Source that produced the cursor. Sources MUST refuse to
-    /// resume cursors from a different source_id.
-    pub source_id: String,
-    /// Source-private resume state. Allocator does not inspect.
-    pub opaque: serde_json::Value,
-}
-
 /// One delivered item — already a complete atomic unit by the
 /// source's definition.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -475,13 +442,16 @@ pub struct RagDelivery {
     pub items: Vec<RagItem>,
     /// Actual tokens consumed across all items.
     pub tokens_used: u32,
-    /// Some(cursor) → the source has more than it delivered. The remainder
-    /// reaches the reader as a HANDLE: the workspace marks the block
-    /// `source_truncated` and its notice names the source's `expand_command`
-    /// (whole-or-handle). No production allocator resumes a cursor today
-    /// (card e049aa82). None → the source delivered everything it had, or
-    /// doesn't support pagination.
-    pub continuation: Option<ContinuationCursor>,
+    /// True when this delivery is a PREFIX of what the source had —
+    /// content held back because it didn't fit `budget`. Nothing
+    /// resumes from here: every compose re-derives fresh, and the way
+    /// to see the rest is the source's `expand_command` verb. Two
+    /// readers: the cache layer (refetch when a later budget could
+    /// afford more — `cached_source`) and rag/inspect (tells a citizen
+    /// there is more). Ruling a (0e0bbf21): the old
+    /// `Option<ContinuationCursor>` resume mechanism is deleted — its
+    /// positional offset into a re-computed list could skip one row.
+    pub truncated: bool,
     /// What resolution the source actually used. May differ from
     /// the requested resolution if the source's content can't fit
     /// at the requested resolution.
@@ -592,16 +562,6 @@ pub trait RagSource: Send + Sync {
         resolution: ResolutionPreference,
     ) -> RagDelivery;
 
-    /// Resume delivery from a prior cursor. Returns None if the
-    /// cursor is stale, the source doesn't support pagination, the
-    /// cursor was issued for a different persona / source, or the
-    /// source has no more content.
-    async fn deliver_continuation(
-        &self,
-        ctx: &RagContext,
-        cursor: ContinuationCursor,
-        budget: u32,
-    ) -> Option<RagDelivery>;
 }
 
 //=============================================================================
@@ -996,15 +956,15 @@ fn empty_allocation(
 //=============================================================================
 
 /// Stub source for tests. Holds a Vec of pre-built RagItems and
-/// delivers as many as fit. Demonstrates the interior-mutability
-/// pattern (Mutex<usize> cursor) without dragging in real engram
-/// store dependencies. Also demonstrates persona-scoped handles —
-/// cursors carry the persona_id this source was constructed for.
+/// delivers as many as fit, setting `truncated` when more remain.
+/// Every call re-derives fresh from the start — ruling a: no cursor,
+/// no positional resume; the way to see the rest is a bigger budget
+/// or the source's `expand_command`. Still demonstrates persona
+/// scoping without dragging in real engram store dependencies.
 pub struct StubRagSource {
     source_id: &'static str,
     persona_id: uuid::Uuid,
     items: Vec<RagItem>,
-    cursor: std::sync::Mutex<usize>,
 }
 
 impl StubRagSource {
@@ -1013,7 +973,6 @@ impl StubRagSource {
             source_id,
             persona_id,
             items,
-            cursor: std::sync::Mutex::new(0),
         }
     }
 }
@@ -1050,68 +1009,28 @@ impl RagSource for StubRagSource {
                 source_id: self.source_id.to_string(),
                 items: Vec::new(),
                 tokens_used: 0,
-                continuation: None,
+                truncated: false,
                 resolution_used: ResolutionPreference::Placeholder,
             };
         }
 
         let mut taken = Vec::new();
         let mut used: u32 = 0;
-        let start = *self.cursor.lock().unwrap();
-        let mut end = start;
-        for item in &self.items[start..] {
+        for item in &self.items {
             if used.saturating_add(item.tokens) > budget {
                 break;
             }
             used += item.tokens;
             taken.push(item.clone());
-            end += 1;
         }
-        let continuation = if end < self.items.len() {
-            Some(ContinuationCursor {
-                persona_id: self.persona_id,
-                source_id: self.source_id.to_string(),
-                opaque: serde_json::json!({ "next": end }),
-            })
-        } else {
-            None
-        };
-        // Update cursor so subsequent deliver() calls resume — this
-        // is the state-maintenance pattern Joel asked about.
-        *self.cursor.lock().unwrap() = end;
+        let truncated = taken.len() < self.items.len();
         RagDelivery {
             source_id: self.source_id.to_string(),
             items: taken,
             tokens_used: used,
-            continuation,
+            truncated,
             resolution_used: ResolutionPreference::Raw,
         }
-    }
-
-    async fn deliver_continuation(
-        &self,
-        ctx: &RagContext,
-        cursor: ContinuationCursor,
-        budget: u32,
-    ) -> Option<RagDelivery> {
-        // Defense-in-depth identity checks: refuse cursors not
-        // scoped to this persona / this source, and refuse calls
-        // from a context for a different persona.
-        if ctx.persona_id != self.persona_id {
-            return None;
-        }
-        if cursor.persona_id != self.persona_id {
-            return None;
-        }
-        if cursor.source_id != self.source_id {
-            return None;
-        }
-        let next: usize = cursor.opaque.get("next")?.as_u64()? as usize;
-        if next >= self.items.len() {
-            return None;
-        }
-        *self.cursor.lock().unwrap() = next;
-        Some(self.deliver(ctx, budget, ResolutionPreference::Raw).await)
     }
 }
 
@@ -1356,12 +1275,15 @@ mod tests {
         // a (10) + b (20) = 30 fits, c (100) doesn't.
         assert_eq!(delivery.items.len(), 2);
         assert_eq!(delivery.tokens_used, 30);
-        assert!(delivery.continuation.is_some());
-        assert_eq!(delivery.continuation.unwrap().persona_id, persona());
+        assert!(delivery.truncated);
     }
 
     #[tokio::test]
-    async fn stub_source_continuation_resumes() {
+    async fn stub_source_rederives_fresh_each_call() {
+        // Ruling a: no cursor, no positional resume — every deliver()
+        // re-derives from the start of the item list. A truncated
+        // delivery is not a promise to continue; it says the budget was
+        // too small (or point the reader at expand_command).
         let source = StubRagSource::new(
             "stub",
             persona(),
@@ -1369,29 +1291,18 @@ mod tests {
         );
         let first = source.deliver(&ctx(), 20, ResolutionPreference::Raw).await;
         assert_eq!(first.items.len(), 2);
-        let cursor = first.continuation.unwrap();
-        let second = source
-            .deliver_continuation(&ctx(), cursor, 100)
-            .await
-            .unwrap();
-        assert_eq!(second.items.len(), 2);
-        assert!(second.continuation.is_none());
-    }
+        assert!(first.truncated);
 
-    #[tokio::test]
-    async fn stub_source_returns_none_when_exhausted() {
-        let source = StubRagSource::new("stub", persona(), vec![item("a", 10)]);
-        let first = source.deliver(&ctx(), 100, ResolutionPreference::Raw).await;
-        assert_eq!(first.items.len(), 1);
-        assert!(first.continuation.is_none());
+        // A second call at the same budget starts over — it does not
+        // resume past what was already delivered.
+        let again = source.deliver(&ctx(), 20, ResolutionPreference::Raw).await;
+        assert_eq!(again.items.len(), 2);
+        assert!(again.truncated);
 
-        let stale = ContinuationCursor {
-            persona_id: persona(),
-            source_id: "stub".to_string(),
-            opaque: serde_json::json!({ "next": 99 }),
-        };
-        let exhausted = source.deliver_continuation(&ctx(), stale, 100).await;
-        assert!(exhausted.is_none());
+        // A bigger budget sees the rest from the top.
+        let full = source.deliver(&ctx(), 100, ResolutionPreference::Raw).await;
+        assert_eq!(full.items.len(), 4);
+        assert!(!full.truncated);
     }
 
     #[tokio::test]
@@ -1402,48 +1313,9 @@ mod tests {
         let delivery = source.deliver(&ctx(), 100, ResolutionPreference::Raw).await;
         assert_eq!(delivery.items.len(), 0);
         assert_eq!(delivery.tokens_used, 0);
-        // Continuation set because the item still exists, just didn't
-        // fit at this budget.
-        assert!(delivery.continuation.is_some());
-    }
-
-    #[tokio::test]
-    async fn stub_source_refuses_cross_persona_cursor() {
-        // Joel's substrate-side identity check: cursors from another
-        // citizen MUST be refused. "We know who is who, have to use
-        // handles" — handles enforce persona scoping.
-        let pax = uuid::Uuid::parse_str("00000000-0000-0000-0000-000000000abc").unwrap();
-        let maya = uuid::Uuid::parse_str("00000000-0000-0000-0000-000000000def").unwrap();
-        let pax_ctx = RagContext::for_persona(pax, 1_000_000);
-        let maya_ctx = RagContext::for_persona(maya, 1_000_000);
-
-        let pax_source = StubRagSource::new("stub", pax, vec![item("a", 10), item("b", 10)]);
-        let pax_first = pax_source
-            .deliver(&pax_ctx, 15, ResolutionPreference::Raw)
-            .await;
-        let pax_cursor = pax_first.continuation.unwrap();
-        assert_eq!(pax_cursor.persona_id, pax);
-
-        // Maya's source must refuse Pax's cursor — both because the
-        // cursor's persona_id doesn't match Maya's binding AND because
-        // the source verifies its own persona_id against ctx.persona_id.
-        let maya_source = StubRagSource::new("stub", maya, vec![item("x", 10), item("y", 10)]);
-        let cross = maya_source
-            .deliver_continuation(&maya_ctx, pax_cursor, 100)
-            .await;
-        assert!(cross.is_none(), "cross-persona cursor must be refused");
-    }
-
-    #[tokio::test]
-    async fn stub_source_refuses_wrong_source_id_cursor() {
-        let source = StubRagSource::new("conversation", persona(), vec![item("a", 10)]);
-        let alien_cursor = ContinuationCursor {
-            persona_id: persona(),
-            source_id: "memories".to_string(),
-            opaque: serde_json::json!({ "next": 0 }),
-        };
-        let cross = source.deliver_continuation(&ctx(), alien_cursor, 100).await;
-        assert!(cross.is_none(), "wrong-source cursor must be refused");
+        // truncated set because the item still exists, just didn't
+        // fit at this budget — ruling a: that's all the signal there is.
+        assert!(delivery.truncated);
     }
 
     #[tokio::test]

@@ -58,7 +58,7 @@ use continuum_positron::RosterSlotView;
 
 use crate::ipc::positron_source::roster_slot_from_member;
 use crate::persona::rag_budget::{
-    ContinuationCursor, RagContext, RagDelivery, RagItem, RagSource, ResolutionPreference,
+    RagContext, RagDelivery, RagItem, RagSource, ResolutionPreference,
 };
 
 /// Both roster adapters share the existing task-124 allowance (256 at 16k).
@@ -359,7 +359,6 @@ impl RagSource for RoomRosterSource {
                 source_id: SOURCE_ID.to_string(),
                 items: Vec::new(),
                 tokens_used: 0,
-                continuation: None,
                 resolution_used: ResolutionPreference::Placeholder,
             };
         }
@@ -382,7 +381,6 @@ impl RagSource for RoomRosterSource {
                     source_id: SOURCE_ID.to_string(),
                     items: Vec::new(),
                     tokens_used: 0,
-                    continuation: None,
                     resolution_used: ResolutionPreference::Placeholder,
                 };
             }
@@ -409,7 +407,6 @@ impl RagSource for RoomRosterSource {
                     source_id: SOURCE_ID.to_string(),
                     items: Vec::new(),
                     tokens_used: 0,
-                    continuation: None,
                     resolution_used: ResolutionPreference::Placeholder,
                 };
             }
@@ -484,22 +481,11 @@ impl RagSource for RoomRosterSource {
             items,
             tokens_used,
             // Presence is always-current and small; no pagination.
-            continuation: None,
             resolution_used: resolution,
         }
     }
 
-    async fn deliver_continuation(
-        &self,
-        _ctx: &RagContext,
-        _cursor: ContinuationCursor,
-        _budget: u32,
-    ) -> Option<RagDelivery> {
-        // Roster does not paginate — it's a small, always-current
-        // snapshot. Any cursor is stale by construction.
-        None
     }
-}
 
 #[cfg(test)]
 mod tests {
@@ -654,7 +640,7 @@ mod tests {
         // that contract: the bare name must be present and match the
         // transcript sender name, not the formatted line.
         assert_eq!(delivery.items[1].metadata["display_name"], "win-claude");
-        assert!(delivery.continuation.is_none());
+        assert!(!delivery.truncated);
     }
 
     // what this catches: THE convergence guarantee — the persona grounding now

@@ -2815,7 +2815,6 @@ impl CognitionEval {
                     metadata: serde_json::json!({ "peer_id": "peer", "occurred_at_ms": EVAL_EPOCH_MS }),
                 }],
                 tokens_used: 0,
-                continuation: None,
                 resolution_used: crate::persona::rag_budget::ResolutionPreference::Raw,
             };
             let mut warm = false;
@@ -4963,7 +4962,6 @@ async fn run_pass(
                 }),
             }],
             tokens_used: 0,
-            continuation: None,
             resolution_used: crate::persona::rag_budget::ResolutionPreference::Raw,
         };
         // own_peer/agent_name attribute the persona's OWN past posts; a single-task
@@ -5159,7 +5157,6 @@ async fn run_pass(
                     metadata: serde_json::json!({ "peer_id": "peer", "occurred_at_ms": EVAL_EPOCH_MS }),
                 }],
                 tokens_used: 0,
-                continuation: None,
                 resolution_used: crate::persona::rag_budget::ResolutionPreference::Raw,
             };
             let nudge_burst = crate::cognition::workspace::Burst::from_turns(
@@ -5280,7 +5277,6 @@ Fix the workspace and finish —                              the grade reads th
                         metadata: serde_json::json!({ "peer_id": "peer", "occurred_at_ms": EVAL_EPOCH_MS }),
                     }],
                     tokens_used: 0,
-                    continuation: None,
                     resolution_used: crate::persona::rag_budget::ResolutionPreference::Raw,
                 };
                 let red_burst = crate::cognition::workspace::Burst::from_turns(
@@ -5509,7 +5505,6 @@ async fn eval_settle(
             metadata: serde_json::json!({ "peer_id": "peer", "occurred_at_ms": EVAL_EPOCH_MS }),
         }],
         tokens_used: 0,
-        continuation: None,
         resolution_used: crate::persona::rag_budget::ResolutionPreference::Raw,
     };
     let burst = crate::cognition::workspace::Burst::from_turns(

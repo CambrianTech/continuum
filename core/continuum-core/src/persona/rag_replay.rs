@@ -44,7 +44,7 @@ use std::sync::Mutex;
 use async_trait::async_trait;
 
 use crate::persona::rag_budget::{
-    ContinuationCursor, RagContext, RagDelivery, RagSource, RagSourceBudget, ResolutionPreference,
+    RagContext, RagDelivery, RagSource, RagSourceBudget, ResolutionPreference,
 };
 use crate::persona::rag_capture::RagCaptureEvent;
 
@@ -200,7 +200,6 @@ impl RagSource for ReplayRagSource {
                 source_id: self.source_id.to_string(),
                 items: Vec::new(),
                 tokens_used: 0,
-                continuation: None,
                 resolution_used: ResolutionPreference::Placeholder,
             };
         }
@@ -210,30 +209,12 @@ impl RagSource for ReplayRagSource {
                 source_id: self.source_id.to_string(),
                 items: Vec::new(),
                 tokens_used: 0,
-                continuation: None,
                 resolution_used: ResolutionPreference::Placeholder,
             },
         }
     }
 
-    async fn deliver_continuation(
-        &self,
-        ctx: &RagContext,
-        cursor: ContinuationCursor,
-        _budget: u32,
-    ) -> Option<RagDelivery> {
-        if ctx.persona_id != self.persona_id {
-            return None;
-        }
-        if cursor.persona_id != self.persona_id {
-            return None;
-        }
-        if cursor.source_id != self.source_id {
-            return None;
-        }
-        self.continuations.lock().unwrap().pop_front()
     }
-}
 
 //=============================================================================
 // JSONL READER — load captured events back from a file
@@ -311,7 +292,6 @@ mod tests {
             source_id: source_id.to_string(),
             items,
             tokens_used,
-            continuation: None,
             resolution_used: ResolutionPreference::Raw,
         }
     }

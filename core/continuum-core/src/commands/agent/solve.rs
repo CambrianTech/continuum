@@ -1919,7 +1919,6 @@ impl AgentSolve {
                     }),
                 }],
                 tokens_used: 0,
-                continuation: None,
                 resolution_used: crate::persona::rag_budget::ResolutionPreference::Raw,
             };
             let burst = crate::cognition::workspace::Burst::from_turns(
@@ -2516,7 +2515,6 @@ async fn redrive_with_fact(
             }),
         }],
         tokens_used: 0,
-        continuation: None,
         resolution_used: crate::persona::rag_budget::ResolutionPreference::Raw,
     };
     let reburst = crate::cognition::workspace::Burst::from_turns(

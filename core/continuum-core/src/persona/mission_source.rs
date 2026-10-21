@@ -27,7 +27,7 @@ use uuid::Uuid;
 
 use crate::cognition::token_budget::estimate_prompt_tokens;
 use crate::persona::rag_budget::{
-    ContinuationCursor, RagContext, RagDelivery, RagItem, RagSource, ResolutionPreference,
+    RagContext, RagDelivery, RagItem, RagSource, ResolutionPreference,
 };
 
 /// Source identifier — renders as the `[mission]` grounding block via the
@@ -78,7 +78,6 @@ impl RagSource for MissionSource {
             source_id: SOURCE_ID.to_string(),
             items: Vec::new(),
             tokens_used: 0,
-            continuation: None,
             resolution_used: ResolutionPreference::Raw,
         };
         // Persona-scoped like the sibling sources (defense in depth).
@@ -93,20 +92,11 @@ impl RagSource for MissionSource {
                 metadata: serde_json::json!({}),
             }],
             tokens_used: self.tokens,
-            continuation: None,
             resolution_used: ResolutionPreference::Raw,
         }
     }
 
-    async fn deliver_continuation(
-        &self,
-        _ctx: &RagContext,
-        _cursor: ContinuationCursor,
-        _budget: u32,
-    ) -> Option<RagDelivery> {
-        None
     }
-}
 
 #[cfg(test)]
 mod tests {

@@ -60,7 +60,7 @@ use airc_work::BoardSnapshot;
 use async_trait::async_trait;
 use serde_json::json;
 
-use crate::persona::rag_budget::{ContinuationCursor, RagContext, RagDelivery, RagItem, RagSource, ResolutionPreference};
+use crate::persona::rag_budget::{RagContext, RagDelivery, RagItem, RagSource, ResolutionPreference};
 
 /// Source identifier — the deliberation faculty renders this delivery under a
 /// `[room-kanban]` header (generic `[<source_id>]` projection). Distinct from
@@ -297,7 +297,6 @@ impl RoomBoardSource {
             source_id: SOURCE_ID.to_string(),
             items: Vec::new(),
             tokens_used: 0,
-            continuation: None,
             resolution_used: ResolutionPreference::Placeholder,
         }
     }
@@ -431,18 +430,7 @@ impl RagSource for RoomBoardSource {
             .await
     }
 
-    async fn deliver_continuation(
-        &self,
-        _ctx: &RagContext,
-        _cursor: ContinuationCursor,
-        _budget: u32,
-    ) -> Option<RagDelivery> {
-        // Atomic units (one card each), truncate-not-paginate — same as the
-        // active-work source. A board that overflows one budget truncates with
-        // a logged count; there is no continuation cursor to resume.
-        None
     }
-}
 
 impl RoomBoardSource {
     // The caller observes workspace custody; eligibility and rendering use the
@@ -853,7 +841,6 @@ impl RoomBoardSource {
             source_id: SOURCE_ID.to_string(),
             items,
             tokens_used,
-            continuation: None,
             resolution_used: resolution,
         }
     }
@@ -1141,7 +1128,7 @@ mod tests {
         assert!(cards[1].content.contains("unclaimed"));
         // serde, not Debug — one canonical wire form for the enum (see the json! above).
         assert_eq!(cards[1].metadata["state"], "open");
-        assert!(delivery.continuation.is_none());
+        assert!(!delivery.truncated);
     }
 
     // what this catches: the board's two facts getting SEVERED by a prefix-take.
@@ -1340,7 +1327,7 @@ mod tests {
             .await;
         assert!(delivery.items.is_empty());
         assert_eq!(delivery.tokens_used, 0);
-        assert!(delivery.continuation.is_none());
+        assert!(!delivery.truncated);
     }
 
     // what this catches: a read failure degrades to empty, never panics —
@@ -1613,7 +1600,7 @@ mod tests {
             delivery.tokens_used
         );
         assert!(delivery.items.len() < 50, "truncated below the full board");
-        assert!(delivery.continuation.is_none());
+        assert!(!delivery.truncated);
     }
 
     // what this catches: the exam-bleed regression (glass-boxed live 2026-07-10,

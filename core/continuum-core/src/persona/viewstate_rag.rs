@@ -93,7 +93,7 @@ use serde::de::DeserializeOwned;
 use continuum_positron::Substrate;
 
 use super::rag_budget::{
-    room_scope_allows, ContinuationCursor, RagContext, RagDelivery, RagItem, RagSource,
+    room_scope_allows, RagContext, RagDelivery, RagItem, RagSource,
     ResolutionPreference,
 };
 
@@ -353,7 +353,7 @@ impl<V: RagRenderable> ViewStateRagSource<V> {
     /// apply A's offset to B's roster and silently skip its first N people — the
     /// same class of harm the per-room fix exists to end.
     ///
-    /// It cannot ride `ContinuationCursor`'s typed fields (those are persona +
+    /// It cannot ride the `truncated` flag (those are persona +
     /// source by contract), so it rides `opaque`, which the trait defines as
     /// source-private resume state.
     fn cursor_room(ctx: &RagContext) -> serde_json::Value {

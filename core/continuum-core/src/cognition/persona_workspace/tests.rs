@@ -1250,19 +1250,10 @@
                 source_id: "classify-stub".to_string(),
                 items: Vec::new(),
                 tokens_used: 0,
-                continuation: None,
                 resolution_used: resolution,
             }
         }
-        async fn deliver_continuation(
-            &self,
-            _ctx: &crate::persona::rag_budget::RagContext,
-            _cursor: crate::persona::rag_budget::ContinuationCursor,
-            _budget: u32,
-        ) -> Option<crate::persona::rag_budget::RagDelivery> {
-            None
-        }
-    }
+            }
 
     // what this catches: deferrability is ORTHOGONAL to salience, and the SAFE
     // DEFAULT is synchronous. framing() is ColdStartCritical — a fresh grounding
@@ -1345,19 +1336,10 @@
                         metadata: serde_json::Value::Null,
                     }],
                     tokens_used: 12,
-                    continuation: None,
                     resolution_used: resolution,
                 }
             }
-            async fn deliver_continuation(
-                &self,
-                _ctx: &crate::persona::rag_budget::RagContext,
-                _cursor: crate::persona::rag_budget::ContinuationCursor,
-                _budget: u32,
-            ) -> Option<crate::persona::rag_budget::RagDelivery> {
-                None
-            }
-        }
+                    }
         let mut cfg = cfg_for(persona);
         cfg.grounding_sources = vec![
             GroundingSource::framing(Arc::new(HandsMap)).requires_hands(),
@@ -1518,19 +1500,10 @@
                     metadata: serde_json::Value::Null,
                 }],
                 tokens_used: 12,
-                continuation: None,
                 resolution_used: resolution,
             }
         }
-        async fn deliver_continuation(
-            &self,
-            _ctx: &crate::persona::rag_budget::RagContext,
-            _cursor: crate::persona::rag_budget::ContinuationCursor,
-            _budget: u32,
-        ) -> Option<crate::persona::rag_budget::RagDelivery> {
-            None
-        }
-    }
+            }
 
     // what this catches: that deferring grounding takes the slow source OFF the
     // perception barrier — the structural claim, proven by control flow instead of

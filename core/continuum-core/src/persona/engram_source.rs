@@ -15,9 +15,9 @@
 //!
 //! Per the no-clipping doctrine
 //! ([[docs/architecture/EVERY-MODEL-INCLUDED-VIA-L1-BUDGET.md]]):
-//! atomic unit = one engram. Engrams that don't fit are returned
-//! via the continuation cursor for a later turn or operator-driven
-//! resume. Mid-engram truncation is structurally impossible.
+//! atomic unit = one engram. Engrams that don't fit are dropped and
+//! the delivery is flagged `truncated` (ruling a: no continuation
+//! cursor, no resume). Mid-engram truncation is structurally impossible.
 //!
 //! Per [[substrate-is-a-good-citizen-on-the-host]]: the metadata
 //! field on every emitted `RagItem` carries provenance — engram_id,
@@ -52,7 +52,7 @@ use async_trait::async_trait;
 use crate::persona::admission_state::AdmissionState;
 use crate::persona::engram::Engram;
 use crate::persona::rag_budget::{
-    ContinuationCursor, RagContext, RagDelivery, RagItem, RagSource, ResolutionPreference,
+    RagContext, RagDelivery, RagItem, RagSource, ResolutionPreference,
 };
 
 /// 24 hours in ms — the normalization window for the recency
@@ -60,8 +60,7 @@ use crate::persona::rag_budget::{
 /// component. Tunable via future `MemoryParameterAdapter`.
 const RECENCY_WINDOW_MS: u64 = 24 * 60 * 60 * 1000;
 
-/// Source identifier — referenced by budget presets, telemetry,
-/// continuation cursor scope check.
+/// Source identifier — referenced by budget presets, telemetry.
 pub(crate) const SOURCE_ID: &str = "engrams";
 
 /// Token estimate — the ONE canonical chars/4 estimator (`cognition::token_budget`),
@@ -146,9 +145,10 @@ impl EngramSource {
 
     /// Pack ranked engrams into RagItems within budget starting from
     /// the given rank offset. Returns (items, tokens_used,
-    /// next_rank_or_done). next_rank is `scored.len()` if the
-    /// source delivered everything; otherwise it's the index of the
-    /// first engram that didn't fit (cursor for resume).
+    /// next_rank_or_done). next_rank is `scored.len()` if the source
+    /// delivered everything; otherwise it's the index of the first
+    /// engram that didn't fit — which drives the delivery's
+    /// `truncated` flag (ruling a: no resume cursor).
     fn pack_from_rank(
         &self,
         scored: &[(f32, Engram)],
@@ -190,20 +190,12 @@ impl EngramSource {
         scored_len: usize,
         resolution: ResolutionPreference,
     ) -> RagDelivery {
-        let continuation = if next_rank < scored_len {
-            Some(ContinuationCursor {
-                persona_id: self.persona_id,
-                source_id: SOURCE_ID.to_string(),
-                opaque: serde_json::json!({ "next_rank": next_rank }),
-            })
-        } else {
-            None
-        };
+        let truncated = next_rank < scored_len;
         RagDelivery {
             source_id: SOURCE_ID.to_string(),
             items,
             tokens_used,
-            continuation,
+            truncated,
             resolution_used: resolution,
         }
     }
@@ -238,7 +230,7 @@ impl RagSource for EngramSource {
                 source_id: SOURCE_ID.to_string(),
                 items: Vec::new(),
                 tokens_used: 0,
-                continuation: None,
+                truncated: false,
                 resolution_used: ResolutionPreference::Placeholder,
             };
         }
@@ -248,38 +240,7 @@ impl RagSource for EngramSource {
         self.build_delivery(items, tokens_used, next_rank, scored_len, resolution)
     }
 
-    async fn deliver_continuation(
-        &self,
-        ctx: &RagContext,
-        cursor: ContinuationCursor,
-        budget: u32,
-    ) -> Option<RagDelivery> {
-        if ctx.persona_id != self.persona_id {
-            return None;
-        }
-        if cursor.persona_id != self.persona_id {
-            return None;
-        }
-        if cursor.source_id != SOURCE_ID {
-            return None;
-        }
-        let next_rank: usize = cursor.opaque.get("next_rank")?.as_u64()? as usize;
-        let scored = self.rank_engrams(ctx.now_ms);
-        if next_rank >= scored.len() {
-            return None;
-        }
-        let scored_len = scored.len();
-        let (items, tokens_used, new_next_rank) =
-            self.pack_from_rank(&scored, next_rank, budget, ResolutionPreference::Raw);
-        Some(self.build_delivery(
-            items,
-            tokens_used,
-            new_next_rank,
-            scored_len,
-            ResolutionPreference::Raw,
-        ))
     }
-}
 
 #[cfg(test)]
 mod tests {
@@ -362,7 +323,7 @@ mod tests {
             .await;
         assert!(delivery.items.is_empty());
         assert_eq!(delivery.tokens_used, 0);
-        assert!(delivery.continuation.is_none());
+        assert!(!delivery.truncated);
     }
 
     #[tokio::test]
@@ -378,7 +339,7 @@ mod tests {
             .await;
         assert_eq!(delivery.items.len(), 1);
         assert!(delivery.tokens_used > 0);
-        assert!(delivery.continuation.is_none());
+        assert!(!delivery.truncated);
         // Metadata carries the engram id.
         assert!(delivery.items[0].metadata.get("engram_id").is_some());
     }
@@ -399,7 +360,7 @@ mod tests {
             .await;
         assert_eq!(delivery.items.len(), 0);
         assert_eq!(delivery.tokens_used, 0);
-        assert!(delivery.continuation.is_some());
+        assert!(delivery.truncated);
     }
 
     #[tokio::test]
@@ -434,38 +395,21 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn continuation_resumes_from_next_rank() {
+    async fn tight_budget_truncates() {
         let (persona, state) = fixture(4, 1_000_000_000);
         let source = EngramSource::new(persona, state);
-        // Budget tight enough to force continuation — each engram body
-        // is ~6 tokens, so budget 12 fits 2 of 4 and forces a cursor.
-        let first = source
+        // Budget tight enough to leave engrams undelivered — each engram body
+        // is ~6 tokens, so budget 12 fits about 2 of 4 and must flag the
+        // delivery truncated (ruling a: no resume; the rest is dropped).
+        let delivery = source
             .deliver(
                 &ctx_for(persona, 1_000_000_000),
                 12,
                 ResolutionPreference::Raw,
             )
             .await;
-        assert!(!first.items.is_empty());
-        let cursor = first.continuation.expect("expected continuation");
-        // Resume with large budget — should get the rest.
-        let second = source
-            .deliver_continuation(&ctx_for(persona, 1_000_000_000), cursor, 10_000)
-            .await
-            .expect("continuation should yield");
-        // Total items across both calls = all 4 engrams.
-        assert_eq!(first.items.len() + second.items.len(), 4);
-        // No duplicate engram ids across the two calls.
-        let mut seen_ids = std::collections::HashSet::new();
-        for item in first.items.iter().chain(second.items.iter()) {
-            let id = item
-                .metadata
-                .get("engram_id")
-                .and_then(|v| v.as_str())
-                .unwrap()
-                .to_string();
-            assert!(seen_ids.insert(id), "duplicate engram across calls");
-        }
+        assert!(!delivery.items.is_empty());
+        assert!(delivery.truncated);
     }
 
     #[tokio::test]
@@ -482,37 +426,6 @@ mod tests {
             .await;
         assert!(delivery.items.is_empty());
         assert_eq!(delivery.resolution_used, ResolutionPreference::Placeholder);
-    }
-
-    #[tokio::test]
-    async fn cross_persona_cursor_refused() {
-        let (persona, state) = fixture(3, 1_000_000_000);
-        let source = EngramSource::new(persona, state);
-        let other = Uuid::parse_str("00000000-0000-0000-0000-000000000bbb").unwrap();
-        let alien_cursor = ContinuationCursor {
-            persona_id: other,
-            source_id: SOURCE_ID.to_string(),
-            opaque: serde_json::json!({ "next_rank": 0 }),
-        };
-        let result = source
-            .deliver_continuation(&ctx_for(persona, 1_000_000_000), alien_cursor, 1_000)
-            .await;
-        assert!(result.is_none());
-    }
-
-    #[tokio::test]
-    async fn wrong_source_id_cursor_refused() {
-        let (persona, state) = fixture(3, 1_000_000_000);
-        let source = EngramSource::new(persona, state);
-        let alien = ContinuationCursor {
-            persona_id: persona,
-            source_id: "memories".to_string(),
-            opaque: serde_json::json!({ "next_rank": 0 }),
-        };
-        let result = source
-            .deliver_continuation(&ctx_for(persona, 1_000_000_000), alien, 1_000)
-            .await;
-        assert!(result.is_none());
     }
 
     #[test]

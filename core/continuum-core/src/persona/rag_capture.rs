@@ -20,8 +20,8 @@
 //! - `JsonlRagCaptureSink` — file-based JSON-line writer. One JSON
 //!   object per line; replay reader groups by turn_id.
 //! - `RecordingRagSource<S>` — decorator wrapping any `RagSource`,
-//!   intercepts `deliver` and `deliver_continuation`, records the
-//!   call + result via the sink, returns the delivery unchanged.
+//!   intercepts `deliver`, records the call + result via the sink,
+//!   returns the delivery unchanged.
 //!   Drop-in around production sources.
 //!
 //! ### What's deferred
@@ -61,7 +61,7 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
 use crate::persona::rag_budget::{
-    BudgetAllocation, ContinuationCursor, RagContext, RagDelivery, RagSource, RagSourceBudget,
+    BudgetAllocation, RagContext, RagDelivery, RagSource, RagSourceBudget,
     ReservedTokens, ResolutionPreference,
 };
 
@@ -97,7 +97,7 @@ pub enum RagCaptureEvent {
         allocation: BudgetAllocation,
     },
     /// A source delivered. Emitted by `RecordingRagSource` decorator
-    /// automatically after every `deliver` or `deliver_continuation`.
+    /// automatically after every `deliver`.
     SourceDelivered {
         captured_at_ms: u64,
         persona_id: uuid::Uuid,
@@ -105,9 +105,6 @@ pub enum RagCaptureEvent {
         source_id: String,
         budget_requested: u32,
         resolution_requested: ResolutionPreference,
-        /// Some when the call was deliver_continuation; carries the
-        /// cursor that resumed.
-        cursor: Option<ContinuationCursor>,
         delivery: RagDelivery,
     },
     /// Caller signals the end of a turn. Optional — replay can
@@ -320,32 +317,7 @@ impl<S: RagSource + 'static> RagSource for RecordingRagSource<S> {
         delivery
     }
 
-    async fn deliver_continuation(
-        &self,
-        ctx: &RagContext,
-        cursor: ContinuationCursor,
-        budget: u32,
-    ) -> Option<RagDelivery> {
-        let cursor_for_event = cursor.clone();
-        let delivery = self.inner.deliver_continuation(ctx, cursor, budget).await?;
-        let event = RagCaptureEvent::SourceDelivered {
-            captured_at_ms: ctx.now_ms,
-            persona_id: ctx.persona_id,
-            turn_id: ctx.turn_id,
-            source_id: self.inner.source_id().to_string(),
-            budget_requested: budget,
-            resolution_requested: ResolutionPreference::Raw,
-            cursor: Some(cursor_for_event),
-            delivery: delivery.clone(),
-        };
-        if turn_is_private(ctx) {
-            crate::persona::mind_room::note_withheld(ctx.persona_id, "rag_capture");
-        } else {
-            self.sink.record(event);
-        }
-        Some(delivery)
     }
-}
 
 //=============================================================================
 // IN-MEMORY SINK — for tests + golden-trace harness scaffolding
@@ -397,7 +369,7 @@ impl RagCaptureSink for InMemoryRagCaptureSink {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::persona::rag_budget::{ContinuationCursor, RagDelivery, RagItem, StubRagSource};
+    use crate::persona::rag_budget::{RagDelivery, RagItem, StubRagSource};
     use tempfile::TempDir;
     use uuid::Uuid;
 
@@ -629,7 +601,6 @@ mod tests {
                 source_id: "stub".to_string(),
                 items: vec![item("hi", 2)],
                 tokens_used: 2,
-                continuation: None,
                 resolution_used: ResolutionPreference::Compressed,
             },
         };
