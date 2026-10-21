@@ -575,7 +575,7 @@ pub(crate) fn build_base_body(
     } else {
         // The lane's `--n-predict` bounds it to one window (card 912e606d); name the
         // caller, whose cap is still owed: a window of decode holds a lane for minutes.
-        crate::probe!(
+        continuum_base::probe!(
             class = "inference.request.uncapped",
             purpose = request.purpose.as_deref().unwrap_or("none"), // unwrap_or: an unnamed caller is reported as such
             model = %model,
