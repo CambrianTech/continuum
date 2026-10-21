@@ -1,6 +1,8 @@
 //! Shared fixtures for the act_observe tests: stand-in executors, faculties and
 //! bodies. Scenario files sit beside this one and pull these in via `use super::*;`.
 
+#![cfg(test)]
+
 mod apply;
 mod chain;
 mod credit;
