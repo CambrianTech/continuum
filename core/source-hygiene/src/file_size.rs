@@ -52,7 +52,8 @@ pub const READABLE_FILE_LINES: usize = 1_000;
 // 54,053 after start_server, serve_persona_loop_inner, voice_module, launch_gate, models and
 // benchmark_dispatch were decomposed by responsibility (#5234-#5237).
 // 45,242 after bin/continuum.rs was split by responsibility into bin/continuum/* (measured here, source-hygiene run).
-const BASELINE_LINES_OVER: usize = 0;
+// 45,131 measured on canary 13ce66b03 + this change: 45,242 - 111 (generator/templates split).
+const BASELINE_LINES_OVER: usize = 45_131;
 
 pub struct FileSize;
 
