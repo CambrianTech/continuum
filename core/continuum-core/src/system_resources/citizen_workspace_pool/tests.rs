@@ -282,6 +282,22 @@
         assert!(!target.exists(), "gone from `target`, where every build looks");
     }
 
+    // what this catches: the flaky "kept" on canary 9c2e7b8d8 (CI run 39444285785). A pass that
+    // releases cargo's lock only by closing its descriptor leaves the flock held while any
+    // process forked during the hold still shares the description, so the next pass reads an
+    // idle tree as a live build. The dup stands in for that forked child, deterministically.
+    #[cfg(unix)]
+    #[test]
+    fn a_released_lock_is_free_even_while_a_forked_child_still_shares_it() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let target = cargo_target(tmp.path());
+        let held: HeldCargoLocks = hold_cargo_locks(&target).expect("idle: every lock taken");
+        let inherited: Vec<std::fs::File> = held.0.iter().map(|f| f.try_clone().expect("dup")).collect();
+        drop(held);
+        let next = std::fs::OpenOptions::new().read(true).write(true).open(target.join("debug/.cargo-lock")).expect("open");
+        assert!(next.try_lock().is_ok(), "released, though {} inherited descriptor(s) remain open", inherited.len());
+    }
+
     // what this catches: the fail-open half of Codex's block. A lock walk that cannot read part
     // of the tree must refuse, not return "no locks" and allow the delete.
     #[cfg(unix)]
