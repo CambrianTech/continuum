@@ -43,6 +43,8 @@ mod kv_slot_pool;
 pub use kv_slot_pool::*;
 mod engine_generation;
 pub use engine_generation::*;
+mod placement;
+pub use placement::*;
 
 #[cfg(test)]
 mod tests;
