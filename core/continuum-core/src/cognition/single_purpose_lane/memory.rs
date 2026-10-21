@@ -1,7 +1,5 @@
-//! Whether a single-purpose engine lane (a gene eval, a training lane) fits in this host's
-//! memory before it is stood up: the system pressure gate, then a hard free-RAM veto sized
-//! from the base's weights. One owner, lifted out of `cognition::eval` (card c42c4b3b) so the
-//! CPU training lane asks the same question the eval lane does instead of a copy of it.
+//! Whether a single-purpose lane fits in this host's memory before it is stood up: the
+//! system pressure gate, then a hard free-RAM veto sized from the base's weights.
 
 use crate::sdk_codegen::CommandError;
 
@@ -125,7 +123,7 @@ pub(crate) async fn await_lane_memory_headroom(footprint: Option<u64>) -> Result
 
 /// The pure veto decision — split from the static reads so it's unit-testable
 /// without mutating process-global pressure state (same split rationale as
-/// [`acquire_eval_lane_slot`]).
+/// [`super::acquire_lane_slot`]).
 pub(crate) fn lane_memory_veto(
     level: crate::system_resources::PressureLevel,
     gate_closed: bool,

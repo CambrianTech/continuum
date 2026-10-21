@@ -33,7 +33,6 @@ pub mod airc_remote;
 pub mod backends;
 pub mod batching_probe;
 pub mod child_log;
-pub mod lane_memory;
 pub mod backend_receipt;
 pub(crate) mod engine_install;
 mod launch_inputs;
