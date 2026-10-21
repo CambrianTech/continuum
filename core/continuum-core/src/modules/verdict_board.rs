@@ -112,7 +112,7 @@ pub async fn follow(verdict: &SweVerdict) {
 /// duplicate in another round. Idempotent: a card the board already moved is not on
 /// the list; one that cannot be moved is probed and retried next pass. Measured
 /// 2026-09-14: django-12663 resolved 18 h earlier, its parent in review, the round
-/// 7/8 forever, the standing autopilot skipping every tick.
+/// 7/8 forever.
 pub async fn reconcile_verdicted() -> FollowTally {
     let pending = crate::cognition::bench_round::unsettled_cards_with(|instance| {
         crate::cognition::swe_bench::read_verdict(instance)
