@@ -280,18 +280,19 @@ pub fn parse_engine_kv_support(help: &str) -> Option<bool> {
     Some(values.contains(Q8_0) && lower.contains("--flash-attn"))
 }
 
-/// The engine's own answer, recorded once per process by the launcher.
-static ENGINE_QUANTIZED_KV: OnceLock<bool> = OnceLock::new();
+/// The engine's own answer, recorded by the launcher each time it asks a binary.
+static ENGINE_QUANTIZED_KV: parking_lot::RwLock<Option<bool>> = parking_lot::RwLock::new(None);
 
-/// Record what the serving binary advertised. First write wins; later calls are no-ops
-/// (the binary does not change under a running core — a swap is a reboot).
-pub fn record_engine_quantized_kv_support(supported: bool) {
-    let _ = ENGINE_QUANTIZED_KV.set(supported);
+/// Record what the serving binary advertised, `None` when it did not answer. The latest ask
+/// wins: an engine promote changes the binary under a running core (engine slots, card
+/// 2c5d0ec0), so the previous binary's answer must not outlive it (f3ba3b56 item 11).
+pub fn record_engine_quantized_kv_support(supported: Option<bool>) {
+    *ENGINE_QUANTIZED_KV.write() = supported;
 }
 
 /// The engine's advertisement, or `None` when it has not been probed / did not answer.
 pub fn engine_quantized_kv_support() -> Option<bool> {
-    ENGINE_QUANTIZED_KV.get().copied()
+    *ENGINE_QUANTIZED_KV.read()
 }
 
 /// THE DECISION — pure. Given the backend and whatever the engine advertised, what does

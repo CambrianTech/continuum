@@ -417,7 +417,8 @@ pub enum Resolved {
     /// The pre-slot owned install (`<bin>/llama-server`), today's Macs until their first slot
     /// install.
     Legacy(PathBuf),
-    /// Nothing owned: the caller's bare PATH lookup, which fails loud at spawn.
+    /// Nothing owned: the caller's bare PATH lookup. It fails loud at spawn only when PATH holds
+    /// nothing; a stock build found there runs, so the launch says so ([`note_unowned_launch`]).
     Path,
 }
 
@@ -698,6 +699,17 @@ fn write_pointer(root: &Path, file: &str, slot: &str) -> Result<(), String> {
     let tmp = root.join(format!("{file}.tmp"));
     std::fs::write(&tmp, format!("{slot}\n")).map_err(|e| format!("{}: {e}", tmp.display()))?;
     std::fs::rename(&tmp, root.join(file)).map_err(|e| format!("{}: {e}", root.join(file).display()))
+}
+
+/// A launch about to run a bare `llama-server` from PATH that no operator chose: nothing owned
+/// resolved, so the engine is whatever PATH holds, possibly a stock build without the fork's
+/// routes (slot save-size, /train, MTP), and paging and training degrade with no cause named
+/// (card 6080a28f, f3ba3b56 item 13). An absolute path is an owned slot or install.
+pub(crate) fn note_unowned_launch(bin: &str, operator_chose: bool) {
+    if !operator_chose && !Path::new(bin).is_absolute() {
+        continuum_base::probe!(class = "serving.engine.unslotted", bin = bin,
+            "no owned engine slot or install: this launch runs `llama-server` from PATH, which may lack the fork's routes (slot save-size, /train, MTP); install the owned engine with install-llama-server.sh");
+    }
 }
 
 #[cfg(test)]
