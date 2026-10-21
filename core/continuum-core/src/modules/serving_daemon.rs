@@ -651,11 +651,27 @@ pub use intent::{PinFit, PinFitChecker, ServingIntent, ServingIntentSnapshot};
 mod lifecycle;
 #[cfg(test)]
 use lifecycle::reconcile_wedged;
+pub(crate) use lifecycle::LifecycleGate;
 use lifecycle::{
     reconcile_wedged_at, ForcedProbe, ReconcileStep, ServingOperation, PLAN_NONE_LIVE_LANE_TICKS,
     RECONCILE_BUSY_SAY_EVERY, RECONCILE_WEDGE_BOUND,
 };
-pub(crate) use lifecycle::{AdmissionHold, GateRefusal, LifecycleGate};
+
+/// Why an admission may not decide now.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum GateRefusal {
+    /// Serving has not published its first plan on this core: the authority may not
+    /// hold a physical reading yet, so free memory is a boot artefact, not capacity.
+    Unsettled,
+    /// A serving operation (relaunch, placement move, teacher batch) holds the gate:
+    /// free memory now is its window, not capacity.
+    Operation,
+}
+/// The gate, held while one admission reads and leases; dropping it releases the gate.
+pub(crate) struct AdmissionHold {
+    _operation: ServingOperation,
+}
+
 mod demand;
 #[cfg(test)]
 use demand::LaneDemandState;
@@ -692,7 +708,15 @@ use consumer::serving_footprint_fn;
 mod prompt_cache;
 #[cfg(test)]
 use prompt_cache::prompt_cache_decision;
-pub(crate) use prompt_cache::PromptCacheGrant;
+/// What the sizing decided, for the ONE caller that builds a [`ServingTarget`]: the grant
+/// to hand the engine, and the ONE-CONVERSATION floor to judge a RUNNING engine by. Both
+/// come from the same `PromptCacheDecision`, so the spawn question ("how big should this
+/// cache be?") and the running-engine question ("is the grant it still holds big enough?")
+/// can never be answered from two different derivations.
+pub(crate) struct PromptCacheGrant {
+    pub(crate) mib: u32,
+    pub(crate) one_conversation_mib: u32,
+}
 pub use prompt_cache::{
     active_cache_states, admitted_lanes, rotating_minds, rotation_window_ms, with_measured_state,
 };

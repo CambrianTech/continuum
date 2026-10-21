@@ -29,7 +29,7 @@ pub(super) fn derived_prompt_cache_mib(
     physical_bytes: u64,
     available_bytes: u64,
     memory_mode: Option<crate::gpu::monitor::MemoryMode>,
-) -> super::PromptCacheGrant {
+) -> PromptCacheGrant {
     // LIVE citizens only. The WorkingSetRegistry persists every persona that
     // EVER recorded demand — measured 2026-08-28, first live fire: citizens=332
     // (weeks of rotated identities), a fictional want that only the
@@ -195,16 +195,6 @@ pub(super) fn say_on_change<T: PartialEq>(
     } else {
         Some(std::mem::replace(last, now))
     }
-}
-
-/// What the sizing decided, for the ONE caller that builds a [`ServingTarget`]: the grant
-/// to hand the engine, and the ONE-CONVERSATION floor to judge a RUNNING engine by. Both
-/// come from the same `PromptCacheDecision`, so the spawn question ("how big should this
-/// cache be?") and the running-engine question ("is the grant it still holds big enough?")
-/// can never be answered from two different derivations.
-pub(crate) struct PromptCacheGrant {
-    pub(crate) mib: u32,
-    pub(crate) one_conversation_mib: u32,
 }
 
 /// Diagnostic record of the existing sizing law. This deliberately does not
