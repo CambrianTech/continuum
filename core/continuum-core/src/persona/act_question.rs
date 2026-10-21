@@ -52,8 +52,7 @@ const WORK_GATE_PAGE_ROWS: usize = 400;
 /// so a caller (the self-tick) can skip a redundant musing cycle when the
 /// heartbeat already advanced her claimed card. `false` when there was no cycle,
 /// no citizen, or no held work.
-/// A card is in her hands when it is Claimed, InProgress, or Open under her live claim
-/// (`work_focus::actionable`) — the ONE predicate the work
+/// A card is in her hands when it is Claimed or InProgress — the ONE predicate the work
 /// gate, and the service loop's ambient-permit bypass, both key on (a card she has
 /// claimed but not yet started is held: beginning must not be the precondition for
 /// beginning).

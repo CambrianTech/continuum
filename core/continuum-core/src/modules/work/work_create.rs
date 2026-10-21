@@ -654,14 +654,10 @@ pub(super) async fn raw_advance(
             .await;
     }
     attempt.map_err(|e| e.to_string())?;
-    // A REOPEN MEANS NOBODY HOLDS IT. The column moved to Open but the claim ledger
-    // kept the holder's lease alive: her roster row still listed the card, her
-    // work turns kept acting on it, and the deck offered a card with a live claim
-    // to everyone else (2026-09-12, three coders on a paused round for 2.5 h).
-    // The reopen releases the claim through the same verb the holder would use.
+    // A REOPEN MEANS NOBODY HOLDS IT, and airc's projection owns that: a transition to
+    // Open ends the claim (airc #1598, card 12afbb2f). The round tracker's settled mark
+    // is ours to clear, or the deck never offers the card again.
     if state == CardState::Open {
-        release_live_claim_on_reopen(airc, card_id, via).await;
-        // ...and the round tracker's settled mark, or the deck never offers it again.
         crate::cognition::bench_round::reopen_card(card_id.as_uuid());
     }
     // The CARD's room, never `current_room()` — boards are per-room and the grade
