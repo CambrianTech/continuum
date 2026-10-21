@@ -84,7 +84,7 @@ impl FakeServer {
 
 #[async_trait]
 impl LlamaServerControl for FakeServer {
-    pub(super) fn paging_recovery_required(&self) -> bool {
+    fn paging_recovery_required(&self) -> bool {
         self.paging_endpoint
             .as_ref()
             .is_some_and(|endpoint| endpoint.paging_recovery_required())
@@ -562,6 +562,7 @@ mod demand;
 mod health;
 mod prompt_cache;
 mod publication;
+use publication::test_pin_store;
 mod reconciliation;
 mod rehome;
 mod teacher;

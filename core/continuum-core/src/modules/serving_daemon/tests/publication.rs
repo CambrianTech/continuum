@@ -450,7 +450,7 @@ async fn contributes_the_full_serving_surface() {
 /// A pin store under a tempdir the process owns for its lifetime: a test daemon
 /// must never read the machine's real pin (it would plan under whatever the box
 /// last pinned) nor write it (2026-09-16: `cargo test` re-pinned every dev box).
-fn test_pin_store() -> crate::modules::serving_pin_store::ServingPinStore {
+pub(super) fn test_pin_store() -> crate::modules::serving_pin_store::ServingPinStore {
     static DIR: std::sync::LazyLock<tempfile::TempDir> =
         std::sync::LazyLock::new(|| tempfile::tempdir().expect("tempdir"));
     crate::modules::serving_pin_store::ServingPinStore::under_home(DIR.path())
