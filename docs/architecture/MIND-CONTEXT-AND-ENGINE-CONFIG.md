@@ -55,7 +55,91 @@ between renders. Any source that changes moves the prefix and the warm KV is los
 existing docs already asked for a deterministic head (KV-CACHE-ECONOMY §3.1) and declared
 slot affinity (§3.2); both were built, and the render kept finding new ways to move.
 
-### The design (Codex's correction 1, adopted whole)
+### Revision, 2026-10-21: sources are streams, not snapshots
+
+The first build (#5210, six deploys on 10-20) wired the `Epoch` below and never beat canary
+live. The `Epoch` was right; what fed it was not. Every source still rendered a whole
+snapshot each act, so a source that changed at all was appended as a whole new version.
+The epoch overflowed within a few acts, and each turnover re-prefilled everything (live
+reuse 0.37). A time bound on live epochs then made it worse (0 turns in 42 min).
+
+Measured on the M5 on 10-21 (canary 69b63f7df), from the prompt captures of Aiko
+(43 consecutive requests) and Aris (42):
+
+| Source | Median chars | Changed between requests | What it really is |
+|---|---|---|---|
+| results ring | 18-37k | 38-39 of 41-42 | one new result per act: an append-only log |
+| steps taken this session | 2.3k | 38 of 41-42 | one new action per act: the same log |
+| working memory | 4.4-4.9k | 39-40 of 41-42 | a rolling window over the same log, plus thoughts |
+| notices | 3.0-3.5k | 36-41 of 41-42 | newly posted notices: append-only |
+| open views | 16-17k | 2-16 of 41-42 | per-file read ranges: grows by ranges |
+| wall, board, workspace map, active work, recall, roster | ~12k together | 0-3 of 41-42 | stable |
+
+Only 4-8% of each request matched the previous one up to its first changed byte, because
+the ring sits first and grows at its end, ahead of everything else. A prefill of 80 s and
+a decode of 74 s made each act about 160 s, so the M5's residents managed 8 acts and
+1 write an hour.
+
+Two facts decide the design:
+
+1. **Every volatile source is an append-only stream rendered as a snapshot.** Asked for
+   "what is new since my cursor", each one produces a small delta, and the view grows
+   only at its end.
+2. **Her actions are rendered three times**: the ring, "steps taken" and working memory.
+   That's one fact with three renderers, and it gets one owner.
+
+### The design
+
+- **A source is a stream.** `fn since(&self, cursor) -> (Vec<Event>, Cursor)` yields what
+  happened after the cursor, and `fn snapshot(&self, Resolution) -> Event` renders its
+  current state at a requested resolution (full, or collapsed to a re-openable pointer)
+  for an epoch start. A source that cannot say "what is new" (the clock, the ask of this
+  act) is not in the epoch: it rides the fresh tail, after the epoch, every act.
+- **The epoch is the log.** Head (identity, policy, tool schemas), then each source's
+  snapshot in a fixed order, stable first, then every delta in arrival order. A
+  superseding delta ("view X now covers lines 1-400") is appended; nothing earlier is
+  rewritten.
+- **One action log** owns her acts and their results. The ring, "steps taken" and the
+  action half of working memory become one stream. Working memory keeps only what is not
+  an act: her thoughts and beliefs.
+- **One flexbox decides the epoch start, and nothing else cuts.** At turnover every
+  source is a participant with a priority, a floor (its pointer resolution) and a want
+  (its full resolution). `flex_allocate` grants each a resolution so the start leaves
+  room for growth, measured as the median tokens appended per act times the acts the
+  epoch should live. Collapse happens there, in place and at the start; mid-epoch nothing
+  is cut, shed or capped. The act-latency fill cap and sticky ring collapse are deleted.
+  The latency target becomes the turnover rule instead: turn over when the fresh-prefill
+  cost of the next act would exceed it, which by construction is rare.
+- **Turnover is the only re-prefill.** It triggers on window fill (with the growth
+  reserve), revocation or a stale prerequisite, never on a timer. Its receipt names the
+  trigger and the tokens re-prefilled.
+
+### Modules (divide and conquer)
+
+| Module | Owns | Depends on |
+|---|---|---|
+| `continuum-context` crate: `epoch` | head plus append-only events (exists, 238 lines, tested) | nothing |
+| `continuum-context`: `stream` | the `Stream` trait, cursors, `Resolution` | nothing |
+| `continuum-context`: `view` | one mind's epoch, its streams, turnover; renders head, events, then the fresh tail | `epoch`, `stream`, `flex` |
+| `continuum-context`: `flex` | the one allocator (`flex_allocate` moves here from `persona::rag_budget`) | nothing |
+| `cognition/context_streams/*` (core) | one adapter per source: action log, open views, notices, board, wall, map, recall, roster, room messages | the source's existing owner |
+| `llm_deliberation_faculty/prompt/view.rs` | asks the view for messages; deletes its own fill, cap and collapse logic | `view` |
+
+The crate is pure: no tokio, no I/O, so its tests run in seconds on any machine, and each
+adapter is a small, separately ownable module. The adapters are the parallel work.
+
+### Gates, in order
+
+1. **Offline**: a replay over synthetic streams shaped like the table above. Prefix
+   shared between consecutive requests at or above 90% within an epoch, a turnover only
+   on fill, and every source still reachable (a pointer reopens to its body).
+2. **One mind on the M5**, against today's receipts (canary 69b63f7df, 13:34-14:28Z: 8 acts
+   and 0-1 writes per resident-hour, about 160 s per act, 29% engine reuse). Bar: engine
+   reuse at or above 80%, prefill under 15 s per act, and more acts and writes per hour.
+3. Then every resident, then the other nodes. A regression on any receipt is a rollback,
+   not a patch on top.
+
+### The original design (Codex's correction 1; its principles stand, revised above)
 
 - **History is append-only.** Perception, tool results and her own acts are events with
   source, version and supersession references.
@@ -119,6 +203,9 @@ phone context cap, fixed turnover interval or universal minimum residency count.
 
 Sticky ring collapse, the churn meter's ordering, per-workspace ring filtering and its
 labels as a stability device, and the block-ordering code whose only job is stability.
+Added by the 2026-10-21 revision: the act-latency fill cap (`delib.fill.latency_capped`,
+`history_fill_cap`) and its front-drop of history, and the two duplicate renderings of her
+actions ("steps taken this session" and the action half of working memory).
 
 ## Fault 2: engine configuration is decided in five places
 
