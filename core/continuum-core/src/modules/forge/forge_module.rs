@@ -419,8 +419,7 @@ pub(super) fn resolve_mlx_python() -> PathBuf {
         return PathBuf::from(p);
     }
     // No home: a relative path that `run_mlx_train`'s existence check refuses loud.
-    let home = crate::paths::continuum_home().unwrap_or_default();
-    home.join("genome/venv/bin/python3")
+    crate::paths::ContinuumLayout::home_or_unrooted().genome_venv_python()
 }
 
 /// The on-disk root where native mlx runs write forged adapters
@@ -513,8 +512,8 @@ pub(super) fn run_train_native_mlx(
                     p.dataset_path
                 ));
             }
-            let out = crate::paths::continuum_home()?
-                .join("datasets")
+            let out = crate::modules::dataset::default_datasets_root()
+                .map_err(|e| e.to_string())?
                 .join(format!("{}-mlx", p.adapter_name));
             // ONE packaging path (DatasetService::split_and_write → train/eval),
             // then materialize valid.jsonl mlx_lm wants from the eval split.

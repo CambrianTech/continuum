@@ -440,12 +440,12 @@ pub fn device_fit_cache_dir(model_id: &str) -> Option<PathBuf> {
 
 fn local_model_roots() -> Vec<PathBuf> {
     // The home's model dir, then the configured storage tier's when it is elsewhere.
-    let roots = [
-        crate::paths::continuum_home().ok(),
-        crate::paths::configured_storage_root(),
+    let layouts = [
+        crate::paths::ContinuumLayout::home().ok(),
+        crate::paths::configured_storage_root().map(crate::paths::ContinuumLayout::at),
     ];
     let mut out: Vec<PathBuf> = Vec::new();
-    for models in roots.into_iter().flatten().map(|root| root.join("genome").join("models")) {
+    for models in layouts.into_iter().flatten().map(|layout| layout.genome_models()) {
         if !out.contains(&models) {
             out.push(models);
         }

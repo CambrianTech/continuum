@@ -24,6 +24,8 @@ pub mod docker;
 pub mod cargo;
 pub mod artifacts;
 pub mod native;
+mod layout;
+pub use layout::ContinuumLayout;
 
 /// Configured storage tier, without inventing a machine-specific destination.
 /// Writers still resolve its physical volume and perform capacity admission.

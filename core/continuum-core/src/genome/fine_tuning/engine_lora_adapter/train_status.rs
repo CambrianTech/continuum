@@ -170,9 +170,8 @@ impl Default for EngineLoraFineTuner {
 
 impl EngineLoraFineTuner {
     pub fn new() -> Self {
-        let footprints = crate::paths::continuum_home()
-            .unwrap_or_default() // Without a home the relative path re-measures (a calibration run) — never a guessed footprint.
-            .join("genome/engine-footprints.json");
+        // Without a home the relative path re-measures (a calibration run) — never a guessed footprint.
+        let footprints = crate::paths::ContinuumLayout::home_or_unrooted().genome().join("engine-footprints.json");
         Self {
             jobs: NativeJobs::new(PROVIDER_ID),
             http: reqwest::Client::new(),
