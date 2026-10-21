@@ -53,7 +53,8 @@ pub const READABLE_FILE_LINES: usize = 1_000;
 // benchmark_dispatch were decomposed by responsibility (#5234-#5237).
 // 45,242 after bin/continuum.rs was split by responsibility into bin/continuum/* (measured here, source-hygiene run).
 // 45,131 measured on canary 13ce66b03 + this change: 45,242 - 111 (generator/templates split).
-const BASELINE_LINES_OVER: usize = 45_131;
+// 37,446 on canary 8e2644260 + these splits: 45,131 - 7,685 (working_memory, openai_adapter, dream_consolidation).
+const BASELINE_LINES_OVER: usize = 37_446;
 
 pub struct FileSize;
 
