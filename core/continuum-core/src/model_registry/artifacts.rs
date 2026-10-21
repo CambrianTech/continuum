@@ -229,15 +229,39 @@ pub fn gguf_has_embedded_mtp(gguf: &Path) -> bool {
         }
         Some(false)
     }
-    scan(gguf).unwrap_or(false)
+    match scan(gguf) {
+        Some(found) => found,
+        None => {
+            // An unreadable or malformed header is not "no embedded head": name it.
+            continuum_base::probe!(
+                class = "serving.mtp.embedded_scan_failed",
+                path = %gguf.display(),
+                "the GGUF header could not be scanned for embedded MTP heads: serving without a draft"
+            );
+            false
+        }
+    }
 }
 
 /// Find an MTP draft-head GGUF sitting in `dir` — an `mtp-*.gguf` sibling of the
 /// model's GGUF. When several quants of the head are present, newest-mtime wins
 /// (same tie-break as main-model candidate selection).
 fn find_mtp_draft_beside(dir: &Path) -> Option<PathBuf> {
-    let candidates: Vec<PathBuf> = fs::read_dir(dir)
-        .ok()?
+    let entries = match fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(error) => {
+            // A directory we cannot list is not "no draft shipped": speculative decode is
+            // lost either way, but only this one is a defect (card eaeead64).
+            continuum_base::probe!(
+                class = "serving.mtp.draft_lookup_failed",
+                dir = %dir.display(),
+                error = %error,
+                "the model's directory could not be listed for an MTP draft head: serving without one"
+            );
+            return None;
+        }
+    };
+    let candidates: Vec<PathBuf> = entries
         .flatten()
         .filter_map(|entry| {
             let path = entry.path();

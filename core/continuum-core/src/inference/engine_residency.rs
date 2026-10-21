@@ -342,11 +342,20 @@ pub fn interrupt(path: &Path, port: u16, reason: &str) -> Result<Vec<Uuid>, Stri
 
 /// Why serving replaced this job's engine under it, if it did.
 pub fn interruption_of(path: &Path, job: Uuid) -> Option<String> {
-    read(path)
-        .ok()?
-        .into_iter()
-        .find(|w| w.job == job)
-        .and_then(|w| w.interrupted)
+    let all = match read(path) {
+        Ok(all) => all,
+        Err(error) => {
+            // Unreadable is not "never interrupted": say which, as `occupancy_with` does.
+            continuum_base::probe!(
+                class = "inference.engine_residency.unread",
+                job = %job,
+                error = %error,
+                "the residency list is unreadable: whether serving replaced this job's engine is unknown"
+            );
+            return None;
+        }
+    };
+    all.into_iter().find(|w| w.job == job).and_then(|w| w.interrupted)
 }
 
 /// What serving may do to the engine on `port` right now.
