@@ -449,7 +449,7 @@ pub(super) fn eval_lane_footprint(base: &crate::model_registry::Model) -> Option
 /// live persona lane's in-flight buffers, and page-cache churn all need slack, and a
 /// lane placed at the exact edge is the one jetsam picks. If a bigger cushion is ever
 /// wanted it belongs here, one named constant, not scattered magic.
-pub(super) const EVAL_LANE_RAM_HEADROOM_BYTES: u64 = 2 * 1024 * 1024 * 1024;  // 2 GiB
+pub(super) const EVAL_LANE_RAM_HEADROOM_BYTES: u64 = 2 * 1024 * 1024 * 1024; // 2 GiB
 
 /// Whether a lane of `footprint` bytes fits in `available` free physical memory with
 /// `headroom` to spare. Pure so the load-bearing "would this OOM the machine" decision

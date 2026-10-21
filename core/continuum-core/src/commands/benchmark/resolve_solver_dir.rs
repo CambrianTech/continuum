@@ -64,6 +64,18 @@ pub(crate) fn resolve_solver_dir(
     }
 }
 
+// ───────────────────────── benchmark/swe-setup ─────────────────────────
+//
+// The dispatch-side bridge for PROJECT-BASED benchmarks (Joel, 2026-08-07: "I
+// bet you can get working swe … running soon"). swe-grade already closes the
+// grading leg for a citizen's tree (`workspace` param: her diff, graded in a
+// fresh clone — launder-proof). What was missing is the setup leg: a SWE card
+// is not a prompt, it is a BROKEN REPO. This verb stages one instance into a
+// citizen's workspace — clone at base_commit via the same `clone_at` the
+// grader trusts — and returns a card-ready body. Held-out material (gold
+// patch, test_patch, FAIL_TO_PASS/PASS_TO_PASS) never enters the card: the
+// citizen sees exactly what the SWE-bench protocol allows, the issue text.
+
 #[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
 #[ts(
     export,

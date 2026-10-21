@@ -96,7 +96,7 @@ pub(super) static MEMORY_GATE_CLOSED: std::sync::atomic::AtomicBool =
 
 /// Global atomic pressure level — updated every 2s by the monitor loop.
 /// Any subsystem can read this lock-free to make graduated decisions.
-pub(super) static CURRENT_PRESSURE_LEVEL: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);  // 0=Normal
+pub(super) static CURRENT_PRESSURE_LEVEL: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0); // 0=Normal
 
 /// Global atomic free-physical-memory reading (bytes), updated every 2s by the
 /// monitor loop from `sysinfo::available_memory()` — the honest "how much can I
