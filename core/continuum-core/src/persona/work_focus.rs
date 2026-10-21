@@ -16,8 +16,19 @@ pub fn focus_card<'a>(held: impl IntoIterator<Item = &'a WorkCard>) -> Option<&'
 
 /// Work eligible to execute, from the already ownership/lease-filtered claim set.
 /// Review retains a claim but is not a new implementation turn.
+///
+/// OPEN counts too: an Open card in this set carries HER live claim (the set is the holder
+/// projection, `card_holder::claimable_hold`: "an Open card with a live claim is still
+/// held"), e.g. a card sent back to the Open column without its claim released. Leaving
+/// Open out made the act gate disagree with that projection: Atlas and 4c9bb8d9 renewed
+/// live claims on SWE cards the board showed Open (069c2797, 243e590b, the M5, 2026-10-21)
+/// while `persona.work.gate` said `no_held_work` every turn, so they held work they could
+/// never act on (card 12afbb2f).
 pub fn actionable(card: &WorkCard) -> bool {
-    matches!(card.state, airc_work::CardState::Claimed | airc_work::CardState::InProgress)
+    matches!(
+        card.state,
+        airc_work::CardState::Claimed | airc_work::CardState::InProgress | airc_work::CardState::Open
+    )
 }
 
 /// Selection for scheduling new implementation work.
@@ -182,6 +193,23 @@ mod tests {
             .with_claims(vec![review.clone()])
             .with_board(project_room, vec![review]);
         assert_eq!(focus_room(&citizen).await.expect("board readable"), Some(project_room));
+    }
+
+    // what this catches: card 12afbb2f. A card in her held set whose column says Open (sent
+    // back without its claim released) is hers to work: the act gate and the hands focus must
+    // pick it, as the holder projection already does. Blocked, Review and terminal cards
+    // never schedule work.
+    #[test]
+    fn an_open_card_she_holds_is_actionable_work() {
+        let mut held = [card(Some(10), 10)];
+        held[0].state = airc_work::CardState::Open;
+        assert!(actionable(&held[0]));
+        assert_eq!(focus_actionable_card(held.iter()).map(|c| c.card_id), Some(held[0].card_id));
+        assert_eq!(focus_workspace_card(held.iter()).map(|c| c.card_id), Some(held[0].card_id));
+        for state in [airc_work::CardState::Blocked, airc_work::CardState::Review, airc_work::CardState::Merged, airc_work::CardState::Closed] {
+            held[0].state = state;
+            assert!(!actionable(&held[0]), "{state:?}");
+        }
     }
 
     // what this catches: the focus drifting to the OLDER card (e.g. by board
