@@ -40,6 +40,7 @@
     // The operator is never confined. The decision is the caller's identity, never a params field.
     #[test]
     fn a_resident_reaches_the_host_but_its_credentials_and_an_outside_peer_is_confined() {
+        let _home = crate::test_env::HomeGuard::preserve_blocking(); // reads the process home a guarded fixture may be swapping (card cb3221a5)
         let ws = tempfile::tempdir().expect("test: ws");
         assert!(confinement_of(&Ctx::default(), ws.path()).is_none(), "the operator");
         let resident = Ctx {
