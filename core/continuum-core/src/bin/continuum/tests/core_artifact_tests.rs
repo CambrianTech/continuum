@@ -1,3 +1,4 @@
+#![cfg(test)]
 use super::*;
 
 // what this catches: the direct-exec launch path losing the manifest's

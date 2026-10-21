@@ -1,3 +1,4 @@
+#![cfg(test)]
 //! Tests for the `continuum` binary, grouped by the responsibility they cover.
 
 use super::*;

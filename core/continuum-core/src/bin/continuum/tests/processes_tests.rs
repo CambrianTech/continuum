@@ -1,3 +1,4 @@
+#![cfg(test)]
 use super::*;
 
 fn ptable(pairs: &[(i32, i32)]) -> std::collections::HashMap<i32, i32> {

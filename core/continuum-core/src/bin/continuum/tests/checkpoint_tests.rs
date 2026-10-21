@@ -1,3 +1,4 @@
+#![cfg(test)]
 use super::*;
 
 // What this catches (card 9f160b78): missing/truncated process evidence and

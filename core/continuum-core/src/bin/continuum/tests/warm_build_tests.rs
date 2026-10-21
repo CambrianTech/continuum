@@ -1,3 +1,4 @@
+#![cfg(test)]
 use super::*;
 
 // what this catches: a warm build at normal priority beside a serving core, the

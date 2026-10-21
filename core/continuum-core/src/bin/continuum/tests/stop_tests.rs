@@ -1,3 +1,4 @@
+#![cfg(test)]
 use super::*;
 
 // what this catches (M5, 2026-09-26): the start/reboot receipt promised "the web build
