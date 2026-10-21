@@ -78,11 +78,12 @@ pub enum FineTuningError {
 /// job to a trainer the host can't execute (Apple's `mlx_lm` on a Linux
 /// box, a CUDA trainer on a Mac).
 ///
-/// This is an **enum matched against boolean device flags** — never a
-/// parse of `HardwareProfile::platform` (that field is a free-form
-/// human label; routing decisions read `has_metal` / `has_cuda` /
-/// `has_vulkan`, never the string). One rich struct describes the host;
-/// this enum states the adapter's demand. Adding "the same for CUDA or
+/// This is an **enum matched against the host's probed profile**: CUDA and
+/// Vulkan read the `has_cuda` / `has_vulkan` flags, and Apple Silicon asks
+/// the shared hardware classifier (governor's `classify_silicon`, which
+/// reads `has_metal` plus the architecture in `HardwareProfile::platform`).
+/// No adapter parses the profile itself. One rich struct describes the
+/// host; this enum states the adapter's demand. Adding "the same for CUDA or
 /// other varieties" is a new variant + a new adapter — the coordinator
 /// never changes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -100,8 +101,9 @@ pub enum TrainerHardware {
 }
 
 impl TrainerHardware {
-    /// Can `host` actually run this trainer? Deterministic match on the
-    /// host's device flags — no string parsing.
+    /// Can `host` actually run this trainer? Deterministic: the device
+    /// flags, or the shared classifier for Apple Silicon — never a parse
+    /// of its own.
     pub fn satisfied_by(&self, host: &HardwareProfile) -> bool {
         match self {
             TrainerHardware::Any => true,
@@ -118,7 +120,7 @@ impl TrainerHardware {
 
     /// True when this names a specific host accelerator (not `Any`).
     /// The coordinator ranks a host-native accelerator trainer above
-    /// the accelerator-agnostic ones, so on a Mac the Metal trainer
+    /// the accelerator-agnostic ones, so on Apple Silicon the MLX trainer
     /// beats the generic Candle trainer.
     pub fn is_specific_accelerator(&self) -> bool {
         !matches!(self, TrainerHardware::Any)

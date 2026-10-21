@@ -98,7 +98,9 @@ impl FineTuningAdapter for MlxLoraFineTuner {
             // MLX-loadable; create_job validates it's non-empty.
             supported_base_model_prefixes: vec![],
             // Apple's MLX path — the coordinator routes here only on a
-            // host whose probed HardwareProfile reports a Metal device.
+            // host the shared hardware classifier (governor's
+            // `classify_silicon`) names Apple Silicon; an Intel Mac's
+            // Metal GPU does not qualify.
             requires: TrainerHardware::AppleSilicon,
             trains_on_resident_weights: false,
         }
