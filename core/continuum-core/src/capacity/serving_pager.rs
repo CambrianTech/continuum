@@ -241,8 +241,6 @@ impl ServingExpertPager {
 mod tests {
     use super::*;
     use crate::capacity::expert_reconcile::expert_page_ref;
-    use crate::capacity::DeviceCapacity;
-    use crate::governor::types::{HardwareClass, PowerSource, TargetSilicon, ThermalClass};
     use llama::ExpertObserver;
 
     const GB: u64 = 1024 * 1024 * 1024;
@@ -256,25 +254,7 @@ mod tests {
     // serving budget fits a small number of experts, forcing the hot set to be a SUBSET —
     // which is the whole point of residency.
     fn small_budget_profile() -> SystemProfile {
-        SystemProfile::from_parts(
-            HardwareClass {
-                silicon: TargetSilicon::NvidiaCuda,
-                silicon_model: "test".into(),
-                vram_mb: 32 * 1024,
-                system_ram_mb: 128 * 1024,
-                power_source: PowerSource::Plugged,
-                thermal_class: ThermalClass::Workstation,
-                battery_pct: None,
-                thermal_headroom_pct: None,
-            },
-            DeviceCapacity {
-                gpu_total_bytes: 32 * GB,
-                gpu_free_bytes_live: 30 * GB,
-                system_ram_free_bytes: 100 * GB,
-            },
-            vec![],
-            24,
-        )
+        crate::capacity::profile_fixtures::discrete_fixture(32, 30, vec![])
     }
 
     // what this catches: the observer→driver wiring — the Arc the driver hands out is the

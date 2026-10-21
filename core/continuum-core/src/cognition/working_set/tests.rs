@@ -107,7 +107,7 @@
     fn the_typical_prompt_includes_the_prompts_a_seat_serves_for_other_nodes() {
         let reg = WorkingSetRegistry::new();
         let local = Uuid::new_v4();
-        reg.record_sent(local, 64_000, 1);
+        reg.record_sent_in_memory(local, 64_000, 1);
         // what this catches (the 5090, 2026-09-20): a sample taken at a window that
         // trimmed the turn is the window echoed back, never demand — the seat's typical
         // prompt read 828 under a 2048 window while every real prompt was 56k, and the
@@ -144,7 +144,7 @@
     #[test]
     fn demand_far_above_the_current_window_is_recorded_not_clamped() {
         let reg = WorkingSetRegistry::new();
-        reg.record(p(1), 47_000, 1_000);
+        reg.record_in_memory(p(1), 47_000, 1_000);
         assert_eq!(reg.ceiling(), Some(47_000));
         assert_eq!(reg.demand_of(p(1)).map(|d| d.peak_tokens), Some(47_000));
     }
@@ -155,8 +155,8 @@
     #[test]
     fn a_later_smaller_turn_never_lowers_the_peak() {
         let reg = WorkingSetRegistry::new();
-        reg.record(p(1), 40_000, 1_000);
-        reg.record(p(1), 900, 2_000);
+        reg.record_in_memory(p(1), 40_000, 1_000);
+        reg.record_in_memory(p(1), 900, 2_000);
         let d = reg.demand_of(p(1)).expect("observed");
         assert_eq!(d.peak_tokens, 40_000, "peak is the high-water mark");
         assert_eq!(d.last_tokens, 900, "…and the latest is kept alongside it");
@@ -170,9 +170,9 @@
     #[test]
     fn the_ceiling_is_the_busiest_minds_demand_not_an_average() {
         let reg = WorkingSetRegistry::new();
-        reg.record(p(1), 6_000, 1_000);
-        reg.record(p(2), 31_000, 1_000);
-        reg.record(p(3), 4_000, 1_000);
+        reg.record_in_memory(p(1), 6_000, 1_000);
+        reg.record_in_memory(p(2), 31_000, 1_000);
+        reg.record_in_memory(p(3), 4_000, 1_000);
         assert_eq!(reg.ceiling(), Some(31_000));
     }
 
@@ -408,8 +408,8 @@
         let reg = WorkingSetRegistry::new();
         let benchy = Uuid::new_v4();
         let aiko = Uuid::new_v4();
-        reg.record_sent(benchy, 110_396, 0);
-        reg.record_sent(aiko, 24_226, 0);
+        reg.record_sent_in_memory(benchy, 110_396, 0);
+        reg.record_sent_in_memory(aiko, 24_226, 0);
 
         assert_eq!(reg.sent_median_of(&[aiko]), Some(24_226), "her own demand is hers");
         let population = reg.sent_median_of(&[benchy, aiko]).expect("two residents");

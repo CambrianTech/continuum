@@ -1,13 +1,19 @@
 #![cfg(test)]
     use super::*;
 
+    /// A spawner on a host whose operator holds nobody out and rests nobody: the seat
+    /// arithmetic under test, never the hold the machine running the suite carries.
+    fn unheld(hw: HwCapabilityTier, tier: HwTierCategory) -> PersonaSpawnerModule {
+        PersonaSpawnerModule::new(hw, tier).with_operator_roster(OperatorRoster::default)
+    }
+
     // what this catches (#430): the roster is DATA. with_citizens drives the
     // plan; an EMPTY authored roster (headless serving node) legitimately
     // plans nobody, and the slice-14 guard hosts only the FIRST of a
     // multi-role roster (loud error, never a silent flip on boot 2).
     #[test]
     fn recipe_citizens_drive_the_plan() {
-        let base = || PersonaSpawnerModule::new(HwCapabilityTier::CpuOnly, HwTierCategory::Compat);
+        let base = || unheld(HwCapabilityTier::CpuOnly, HwTierCategory::Compat);
         assert!(base().with_citizens(vec![]).plan().is_empty());
 
         let coder = base().with_citizens(vec![RoleId::Coder]).plan();
@@ -33,7 +39,7 @@
     #[test]
     fn set_population_resizes_the_plan() {
         let mut spawner =
-            PersonaSpawnerModule::new(HwCapabilityTier::CpuOnly, HwTierCategory::Compat);
+            unheld(HwCapabilityTier::CpuOnly, HwTierCategory::Compat);
         assert_eq!(spawner.plan().len(), 1);
         spawner.set_population(3);
         assert_eq!(spawner.plan().len(), 3);
@@ -76,7 +82,8 @@
             reason: "test".to_string(),
             exclusive: true,
         };
-        let intents = draw_intents(&mut provider, &plan, Some(hold), 0).await.expect("draw");
+        let operator = OperatorRoster { hold: Some(hold), resting: Vec::new() };
+        let intents = draw_intents(&mut provider, &plan, &operator, 0).await.expect("draw");
         let names: Vec<&str> = intents.iter().map(|i| i.agent_name.as_str()).collect();
         assert_eq!(names, vec!["Alpha", "Delta", "Foxtrot"]);
     }
@@ -89,7 +96,7 @@
     #[test]
     fn the_missing_plan_is_the_seats_not_yet_filled() {
         let per = crate::modules::citizen_health::MINDS_PER_LANE_STARVED_ABOVE as usize;
-        let mut spawner = PersonaSpawnerModule::new(HwCapabilityTier::CpuOnly, HwTierCategory::Compat);
+        let mut spawner = unheld(HwCapabilityTier::CpuOnly, HwTierCategory::Compat);
         spawner.set_population(12);
         spawner.serving_base_model = Some("some/model".to_string());
         spawner.serving_lanes = 5;
@@ -111,7 +118,7 @@
     fn a_published_allocation_owns_this_nodes_seat_count_and_the_population_still_bounds_it() {
         use crate::cognition::grid_allocation::GridRoster;
         let per = crate::modules::citizen_health::MINDS_PER_LANE_STARVED_ABOVE as usize;
-        let mut spawner = PersonaSpawnerModule::new(HwCapabilityTier::CpuOnly, HwTierCategory::Compat);
+        let mut spawner = unheld(HwCapabilityTier::CpuOnly, HwTierCategory::Compat);
         spawner.set_population(12);
         spawner.serving_base_model = Some("some/model".to_string());
         spawner.serving_lanes = 2;
@@ -129,11 +136,11 @@
     #[test]
     fn the_roster_is_the_population_bounded_by_the_warm_slots() {
         let per = crate::modules::citizen_health::MINDS_PER_LANE_STARVED_ABOVE as usize;
-        let mut spawner = PersonaSpawnerModule::new(HwCapabilityTier::CpuOnly, HwTierCategory::Compat);
+        let mut spawner = unheld(HwCapabilityTier::CpuOnly, HwTierCategory::Compat);
         spawner.set_population(12);
         assert_eq!(spawner.seats(), 12, "no plan and no remembered lanes: nothing is known, the population stands");
         // A cold boot with a remembered geometry is bounded by it before any live plan.
-        let remembered = PersonaSpawnerModule::new(HwCapabilityTier::CpuOnly, HwTierCategory::Compat)
+        let remembered = unheld(HwCapabilityTier::CpuOnly, HwTierCategory::Compat)
             .with_population(12)
             .with_remembered_lanes(Some(2));
         assert_eq!(remembered.seats(), 12.min(2 * per), "the boot draw is bounded by the last settled lanes");
@@ -151,7 +158,7 @@
     #[test]
     fn a_plan_that_stops_fitting_the_gpu_releases_the_stale_lane_cap() {
         let per = crate::modules::citizen_health::MINDS_PER_LANE_STARVED_ABOVE as usize;
-        let mut spawner = PersonaSpawnerModule::new(HwCapabilityTier::CpuOnly, HwTierCategory::Compat);
+        let mut spawner = unheld(HwCapabilityTier::CpuOnly, HwTierCategory::Compat);
         spawner.set_population(6);
         spawner.serving_base_model = Some("some/model".to_string());
         spawner.serving_lanes = 2;
@@ -236,7 +243,7 @@
     /// pure-function paths agree.
     #[test]
     fn module_plan_matches_free_function() {
-        let module = PersonaSpawnerModule::new(
+        let module = unheld(
             HwCapabilityTier::MacIntelMetalDiscrete,
             HwTierCategory::Compat,
         );
@@ -277,7 +284,7 @@
             }
         }
 
-        let module = PersonaSpawnerModule::new(
+        let module = unheld(
             HwCapabilityTier::MacIntelMetalDiscrete,
             HwTierCategory::Compat,
         );
@@ -362,6 +369,29 @@
         assert_eq!(seats_under(2, Some(&hold)), 2, "a hold never grows the population");
         assert_eq!(seats_under(12, None), 12, "no hold: the population stands");
         assert_eq!(seats_under(0, None), 0, "zero is deliberate — the grid holds the roster, this node offers lanes");
+        // The module reads the hold and the resting seats from its injected source:
+        // three allowed, one resting → two seats, on any machine.
+        fn three_held_one_resting() -> OperatorRoster {
+            OperatorRoster {
+                hold: Some(crate::persona::roster_hold::RosterHold {
+                    only: ["Alpha", "Bravo", "Charlie"].iter().map(|s| s.to_string()).collect(),
+                    until_ms: u64::MAX,
+                    reason: "test".to_string(),
+                    exclusive: true,
+                }),
+                resting: vec![crate::persona::resting_seat::RestingSeat {
+                    agent_name: "Charlie".to_string(),
+                    persona_id: uuid::Uuid::nil(),
+                    reason: "test".to_string(),
+                    since_ms: 0,
+                    build: String::new(),
+                }],
+            }
+        }
+        let held = PersonaSpawnerModule::new(HwCapabilityTier::CpuOnly, HwTierCategory::Compat)
+            .with_population(12)
+            .with_operator_roster(three_held_one_resting);
+        assert_eq!(held.seats(), 2, "the injected hold bounds the seats, the resting seat comes off");
     }
 
     // what this catches (2026-09-13): a plan larger than the provider's identities turning
@@ -387,17 +417,17 @@
         }
         let mut provider = Yield(["Alpha", "Bravo"].into_iter().collect());
         let plan: Vec<DesiredRole> = (0..5).map(|_| DesiredRole { role: RoleId::Helper, model_id: "m".to_string(), lanes: 1, served_context_window: 4096 }).collect();
-        let intents = draw_intents(&mut provider, &plan, None, 0).await.expect("a shortfall is not an error");
+        let intents = draw_intents(&mut provider, &plan, &OperatorRoster::default(), 0).await.expect("a shortfall is not an error");
         let names: Vec<&str> = intents.iter().map(|i| i.agent_name.as_str()).collect();
         assert_eq!(names, vec!["Alpha", "Bravo"], "two identities seat two of five planned seats");
         let mut empty = Yield(std::collections::VecDeque::new());
-        assert!(draw_intents(&mut empty, &plan, None, 0).await.is_err(), "NO identity at all is still the honest failure");
+        assert!(draw_intents(&mut empty, &plan, &OperatorRoster::default(), 0).await.is_err(), "NO identity at all is still the honest failure");
         // IntelMac 2026-09-21 13:00:49Z: the SAME empty provider on a TOP-UP pass — six
         // residents live, the plan wants two more — is a partial roster of zero, never a
         // boot failure the host would answer by draining the six.
         let mut empty = Yield(std::collections::VecDeque::new());
         let top_up: Vec<DesiredRole> = plan[..2].to_vec();
-        let drawn = draw_intents(&mut empty, &top_up, None, 6).await.expect("a top-up that draws nothing is a partial roster");
+        let drawn = draw_intents(&mut empty, &top_up, &OperatorRoster::default(), 6).await.expect("a top-up that draws nothing is a partial roster");
         assert!(drawn.is_empty(), "nothing to seat, nothing failed");
     }
 
