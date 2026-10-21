@@ -22,12 +22,22 @@ use crate::cognition::context_streams::actions::Actions;
 use crate::cognition::context_streams::thoughts::Thoughts;
 use crate::cognition::context_streams::ContextMessage;
 
+/// The prefix of a view source's claim id in the window's one allocation.
+const VIEW_CLAIM: &str = "view/";
+
 /// Where her view sits in this act's history: its leading `len` messages, and whether this
 /// act started it.
 #[derive(Clone, Copy, Debug)]
 pub(in super::super) struct ViewPlacement {
     len: usize,
     started: bool,
+}
+
+impl ViewPlacement {
+    /// How many leading messages of the history are her view.
+    pub(in super::super) fn len(&self) -> usize {
+        self.len
+    }
 }
 
 impl LlmDeliberationFaculty {
@@ -41,43 +51,91 @@ impl LlmDeliberationFaculty {
         ViewPlacement { len, started }
     }
 
-    /// Keep her view within `history_budget`, the window's grant to her history. When it
-    /// outgrows the grant, a new epoch starts at half of what the grant leaves the view: her
-    /// reads stay whole until her window is actually full, and the other half is room to grow
-    /// by appends. A view that fits its grant is sent whole, even right after a restart:
-    /// halving a fresh view collapsed short conversations that fit (a few-turn thread lost its
-    /// turns to pointers), so a restart's one cold prefill is paid instead, and the fix for
-    /// that cost is a view that survives the restart, not a smaller one.
+    /// Her view's sources as claims in the window's one allocation, each `view/<source>`,
+    /// priced in the unit the final fit charges ([`Self::message_cost`], template overhead
+    /// included): floor = the source collapsed, want = the source whole, at the source's
+    /// priority. There is no separate history claim for the view, so the allocation that
+    /// weighs her reply also decides, once, how much of her context she reads.
+    pub(in super::super) fn view_claims(&self, streams: &Streams) -> Vec<crate::persona::rag_budget::RagSourceBudget> {
+        let memory = self.working_memory.as_deref();
+        let actions = memory.map(|memory| Actions { memory });
+        let thoughts = memory.map(|memory| Thoughts { memory });
+        Self::view_sources(streams, actions.as_ref(), thoughts.as_ref())
+            .into_iter()
+            .map(|source| {
+                let items = source.items();
+                let cost = |message: &ContextMessage| Self::message_cost(&message.to_chat());
+                let floor: usize = items.iter().map(|item| item.pointer.as_ref().map_or(0, cost)).sum(); // map_or: an item that leaves when collapsed costs nothing
+                let want: usize = items.iter().map(|item| cost(&item.full)).sum();
+                crate::persona::rag_budget::RagSourceBudget {
+                    source_id: format!("{VIEW_CLAIM}{}", source.name()),
+                    priority: source.priority(),
+                    floor_tokens: Self::clamp_u32(floor),
+                    min_tokens: Self::clamp_u32(floor),
+                    max_tokens: Self::clamp_u32(want),
+                    required: false,
+                }
+            })
+            .collect()
+    }
+
+    /// Keep her view within what the window's one allocation granted its sources. While the
+    /// epoch fits those grants it only appends. When it outgrows them a new epoch starts: a
+    /// source granted all it wants whole, a source the allocation cut at half its grant, so
+    /// her reads stay whole until her window is actually full and a cut source has room to
+    /// grow by appends.
     ///
     /// Measured on the M5, 2026-10-21: sized to the 30 s latency target, Aiko's epoch started
     /// at 6,956 of 86,233 tokens and collapsed 40 items (18:20Z), the starvation the view
     /// exists to end. The replay's half-window start halved its turnovers (continuum-context
     /// `examples/replay.rs`).
-    pub(in super::super) fn fit_view(&self, prompt: &mut PromptMessages, view: ViewPlacement, history_budget: usize) {
-        let history_tokens = Self::messages_cost(&prompt.history);
-        let mut len = view.len;
-        if len > 0 && history_tokens > history_budget {
-            let shown = &prompt.history[..len];
-            let view_tokens = Self::messages_cost(shown);
-            let view_chars: usize = shown.iter().map(|m| m.content_text().chars().count()).sum();
-            let start_tokens = history_budget.saturating_sub(history_tokens.saturating_sub(view_tokens)) / 2;
-            // Tokens to the view's characters at the density this view just measured.
-            let budget_chars = start_tokens.saturating_mul(view_chars) / view_tokens.max(1);
-            let started = self.turn_over_view(&prompt.streams, budget_chars);
-            len = started.len();
-            prompt.history.splice(0..view.len, started);
-            continuum_base::probe!(
-                class = "delib.view.sized",
-                persona = %self.persona_name,
-                history_budget,
-                history_tokens,
-                view_tokens,
-                start_tokens,
-                restart = view.started,
-                "her view started a new epoch at half of what the grant leaves it"
-            );
+    pub(in super::super) fn fit_view(
+        &self,
+        prompt: &mut PromptMessages,
+        view: ViewPlacement,
+        plan: &crate::persona::rag_budget::FlexAllocation,
+    ) {
+        if view.len == 0 {
+            return;
         }
-        prompt.grounding_at = len;
+        let view_tokens = Self::messages_cost(&prompt.history[..view.len]);
+        let grant = |source: &str| plan.allocations.iter().find(|a| a.source_id == format!("{VIEW_CLAIM}{source}"));
+        let granted: usize = plan
+            .allocations
+            .iter()
+            .filter(|a| a.source_id.starts_with(VIEW_CLAIM))
+            .map(|a| a.allocated_tokens as usize)
+            .sum();
+        if view_tokens <= granted {
+            return;
+        }
+        // A source granted all it wants starts whole; one the allocation cut starts at half
+        // its grant (its characters in proportion), the other half room to grow by appends.
+        let allocate = |claims: &[Claim]| -> Vec<usize> {
+            claims
+                .iter()
+                .map(|claim| match grant(&claim.source) {
+                    Some(a) if a.allocated_tokens >= a.requested_max => claim.full_chars,
+                    Some(a) => {
+                        let chars_per_token = claim.full_chars as f64 / f64::from(a.requested_max.max(1));
+                        (f64::from(a.allocated_tokens) * chars_per_token / 2.0) as usize
+                    }
+                    None => 0,
+                })
+                .collect()
+        };
+        let started = self.turn_over_view_with(&prompt.streams, allocate);
+        prompt.grounding_at = started.len();
+        prompt.history.splice(0..view.len, started);
+        continuum_base::probe!(
+            class = "delib.view.sized",
+            persona = %self.persona_name,
+            view_tokens,
+            granted,
+            restart = view.started,
+            "her view outgrew what the window granted its sources and started a new epoch: a \
+             source granted all it wants whole, a cut one at half its grant"
+        );
     }
 
     /// Append this act's changes to her view and return its messages, and whether this act
@@ -119,26 +177,11 @@ impl LlmDeliberationFaculty {
 
     /// Start a new epoch of her view within `budget_chars`, the flexbox granting each
     /// source its share by priority.
-    fn turn_over_view(&self, streams: &Streams, budget_chars: usize) -> Vec<ChatMessage> {
+    fn turn_over_view_with(&self, streams: &Streams, allocate: impl FnOnce(&[Claim]) -> Vec<usize>) -> Vec<ChatMessage> {
         let memory = self.working_memory.as_deref();
         let actions = memory.map(|memory| Actions { memory });
         let thoughts = memory.map(|memory| Thoughts { memory });
         let sources = Self::view_sources(streams, actions.as_ref(), thoughts.as_ref());
-        let allocate = |claims: &[Claim]| -> Vec<usize> {
-            let budgets: Vec<crate::persona::rag_budget::RagSourceBudget> = claims
-                .iter()
-                .map(|claim| crate::persona::rag_budget::RagSourceBudget {
-                    source_id: claim.source.clone(),
-                    priority: claim.priority,
-                    floor_tokens: Self::clamp_u32(claim.pointer_chars),
-                    min_tokens: Self::clamp_u32(claim.pointer_chars),
-                    max_tokens: Self::clamp_u32(claim.full_chars),
-                    required: false,
-                })
-                .collect();
-            let plan = crate::persona::rag_budget::flex_allocate(Self::clamp_u32(budget_chars), &budgets);
-            claims.iter().map(|claim| plan.granted(&claim.source) as usize).collect()
-        };
         let mut held = self.context_view.lock();
         let started = if let Some(view) = held.as_mut() {
             view.turn_over(Vec::new(), &sources, allocate)
@@ -158,7 +201,6 @@ impl LlmDeliberationFaculty {
                 epoch = start.epoch,
                 start_chars = start.chars,
                 collapsed_items = start.collapsed,
-                budget_chars,
                 "her view started a new epoch: the one re-prefill an epoch costs, collapsed \
                  by the flexbox at its start"
             ),

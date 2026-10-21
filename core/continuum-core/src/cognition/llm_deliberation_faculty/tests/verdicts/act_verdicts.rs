@@ -495,12 +495,14 @@ fn her_action_stream_reaches_the_prompt() {
     let after = texts(&faculty.prompt_view(&ws));
     assert!(after.iter().any(|t| t.starts_with("[result #1") && t.contains("I ran code/list")), "{after:?}");
     assert!(!after.iter().any(|t| t.starts_with("[result") && t.contains("[unfulfilled]")), "facts are never acts");
-    // Her view is a timeline: the void said before her first act stays where it was said,
-    // superseded by what came after it, never edited away mid-epoch.
-    let void = after.iter().position(|t| t.contains("nothing has executed yet"));
+    // Her view is a timeline: within an epoch the void said before her first act stays where
+    // it was said, superseded by what came after it; a turnover renders only what is true now.
+    // Either way it never stands after her act unanswered.
     let act = after.iter().position(|t| t.starts_with("[result #1"));
-    assert!(void < act, "{after:?}");
-    assert!(after.iter().any(|t| t == "(that was before my first act; my acts follow)"), "{after:?}");
+    if let Some(void) = after.iter().position(|t| t.contains("nothing has executed yet")) {
+        assert!(Some(void) < act, "{after:?}");
+        assert!(after.iter().any(|t| t == "(that was before my first act; my acts follow)"), "{after:?}");
+    }
 }
 
 #[tokio::test]

@@ -40,14 +40,14 @@ impl Block for ContextMessage {
     }
 }
 
-/// Weights at an epoch start: the board and the turn's own grounding keep detail longest,
-/// then her conversation and thoughts, then her results; what she can reopen by handle
-/// collapses first.
+/// Each source's weight in the window's one allocation (`flex_allocate`, the same scale as
+/// its other claims: required input 10, the reply up to 8). The blocks she works from keep
+/// the grounding claim's 6; her conversation, thoughts and results share history's 5.
 pub(crate) mod priority {
-    pub const GROUNDING: u8 = 5;
-    pub const CONVERSATION: u8 = 4;
-    pub const THOUGHTS: u8 = 4;
-    pub const ACTIONS: u8 = 3;
+    pub const GROUNDING: u8 = 6;
+    pub const CONVERSATION: u8 = 5;
+    pub const THOUGHTS: u8 = 5;
+    pub const ACTIONS: u8 = 5;
 }
 
 #[cfg(test)]

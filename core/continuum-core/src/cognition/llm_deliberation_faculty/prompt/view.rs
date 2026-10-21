@@ -296,22 +296,20 @@ impl LlmDeliberationFaculty {
         // that refusal satisfiable.
         let evidence = all_messages.recent_move_evidence();
         let required_tokens = all_messages.required_tokens();
-        let optional_history = all_messages.tokens().saturating_sub(required_tokens);
+        // Her view's sources claim for themselves below; the history claim is this act's
+        // fresh optional tail (facts, the clock, demoted payloads).
+        let view_tokens = Self::messages_cost(&all_messages.history[..view.len()]);
+        let optional_history = all_messages
+            .tokens()
+            .saturating_sub(required_tokens)
+            .saturating_sub(view_tokens);
         // A quiet self-tick (no required input) still sends her newest whole message.
         let quiet_minimum = if required_tokens == 0 {
             all_messages.history.last().map_or(0, Self::message_cost) // map_or: no history = nothing to keep
         } else {
             0
         };
-        // The standing blocks' truthful minimums ride her view now, so they are history's floor
-        // too, as they were the grounding claim's: nothing optional may starve them.
-        let standing_floor: usize = ws
-            .broadcast
-            .iter()
-            .filter(|c| c.decision.is_none() && c.fault.is_none() && c.trailing && c.standing_grounding)
-            .map(|c| GroundingPiece::minimum(c).tokens)
-            .sum();
-        let history_floor = evidence.tokens.max(quiet_minimum).saturating_add(standing_floor).min(optional_history);
+        let history_floor = evidence.tokens.max(quiet_minimum).min(optional_history);
         let claim = |tokens: usize| calibration.charge(tokens).min(u32::MAX as usize) as u32;
         let fixed_cost = claim(framing_tokens.saturating_add(selected.tokens));
         let required_cost = claim(required_tokens);
@@ -331,7 +329,7 @@ impl LlmDeliberationFaculty {
         };
         let grounding_floor = claim(ctx_floor);
         let history_floor = claim(history_floor);
-        let claims = [
+        let mut claims = vec![
             fixed_claim(FLEX_FRAMING, fixed_cost),
             fixed_claim(FLEX_REQUIRED, required_cost),
             crate::persona::rag_budget::RagSourceBudget {
@@ -355,13 +353,19 @@ impl LlmDeliberationFaculty {
                 priority: 5,
                 floor_tokens: history_floor,
                 min_tokens: history_floor,
-                // All of it: within an epoch her view only appends, and the engine reuses
-                // what it already holds. The latency target sizes an epoch's START instead.
                 max_tokens: claim(optional_history).max(history_floor),
                 required: false,
             },
             reply,
         ];
+        // Her view's sources, each its own claim (`epoch.rs`): the blocks she works from at
+        // the grounding claim's weight, her conversation, thoughts and results at history's.
+        claims.extend(self.view_claims(&all_messages.streams).into_iter().map(|mut source| {
+            source.floor_tokens = claim(source.floor_tokens as usize);
+            source.min_tokens = source.floor_tokens;
+            source.max_tokens = claim(source.max_tokens as usize).max(source.floor_tokens);
+            source
+        }));
         let plan = crate::persona::rag_budget::flex_allocate(context_window, &claims);
         let budget_floor = super::super::super::window_allocator::turn_need(&claims).saturating_sub(claims[4].floor_tokens).saturating_add(reply_need);
         // Whatever no claim took is hers to write with, up to the runaway bound.
@@ -398,14 +402,19 @@ impl LlmDeliberationFaculty {
             .saturating_sub(selected.tokens)
             .saturating_sub(framing_tokens);
         let window_msg_budget = after_framing.saturating_sub(ctx_floor);
-        // History gets its grant; the required input is never part of the trade.
-        let msg_budget = window_msg_budget.min(
-            required_tokens
-                .saturating_add(calibration.prompt_budget(plan.granted(FLEX_HISTORY) as usize)),
-        );
-        // Her view within what the window grants her history (`epoch.rs`): the only place it
-        // is ever collapsed.
-        self.fit_view(&mut all_messages, view, msg_budget.saturating_sub(required_tokens));
+        // History and her view get their grants; the required input is never part of the trade.
+        let view_granted: u32 = plan
+            .allocations
+            .iter()
+            .filter(|a| claims.iter().skip(5).any(|c| c.source_id == a.source_id))
+            .map(|a| a.allocated_tokens)
+            .sum();
+        let msg_budget = window_msg_budget.min(required_tokens.saturating_add(
+            calibration.prompt_budget(plan.granted(FLEX_HISTORY).saturating_add(view_granted) as usize),
+        ));
+        // Her view within what the allocation granted its sources (`epoch.rs`): the only place
+        // it is ever collapsed.
+        self.fit_view(&mut all_messages, view, &plan);
 
         // WHAT THIS TURN WOULD HAVE COST WITH NO BUDGET — recorded before either
         // fitting step throws the evidence away, and deliberately free to exceed

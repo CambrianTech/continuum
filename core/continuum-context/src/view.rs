@@ -91,6 +91,22 @@ fn kept_in_full<T: Block>(items: &[Item<T>], grant: usize) -> usize {
     kept
 }
 
+fn claim<T: Block>(source: &dyn Source<T>, items: &[Item<T>]) -> Claim {
+    Claim {
+        source: source.name().to_owned(),
+        priority: source.priority(),
+        pointer_chars: items.iter().map(pointer_chars).sum(),
+        full_chars: items.iter().map(|item| item.full.chars()).sum(),
+    }
+}
+
+/// What each source would claim at an epoch start, without starting one: the caller's one
+/// allocation weighs these beside its own claims and hands its grants back to
+/// [`View::start`] / [`View::turn_over`].
+pub fn claims<T: Block>(sources: &[&dyn Source<T>]) -> Vec<Claim> {
+    sources.iter().map(|source| claim(*source, &source.items())).collect()
+}
+
 impl<T: Block> View<T> {
     /// The first epoch. `allocate` answers each claim with a character grant.
     pub fn start(
@@ -121,16 +137,7 @@ impl<T: Block> View<T> {
         allocate: impl FnOnce(&[Claim]) -> Vec<usize>,
     ) -> Result<(Self, Start), GrantMismatch> {
         let offered: Vec<Vec<Item<T>>> = sources.iter().map(|source| source.items()).collect();
-        let claims: Vec<Claim> = sources
-            .iter()
-            .zip(&offered)
-            .map(|(source, items)| Claim {
-                source: source.name().to_owned(),
-                priority: source.priority(),
-                pointer_chars: items.iter().map(pointer_chars).sum(),
-                full_chars: items.iter().map(|item| item.full.chars()).sum(),
-            })
-            .collect();
+        let claims: Vec<Claim> = sources.iter().zip(&offered).map(|(source, items)| claim(*source, items)).collect();
         let grants = allocate(&claims);
         if grants.len() != claims.len() {
             return Err(GrantMismatch { claims: claims.len(), grants: grants.len() });
