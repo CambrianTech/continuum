@@ -410,8 +410,16 @@ impl ServiceModule for DeployTrackerModule {
             Err(e) => (None, Some(e), Checks::Unknown),
         };
         // a live owner excludes a new deploy even past its claim's expiry (card 634f644d)
-        let build_in_flight =
-            continuum_cli_lifecycle::deploy_claim::in_flight(&self.root, now).excludes_deploy();
+        let deploy_gate = continuum_cli_lifecycle::deploy_claim::in_flight(&self.root, now);
+        let build_in_flight = deploy_gate.excludes_deploy();
+        let custody_reason = match &deploy_gate {
+            continuum_cli_lifecycle::deploy_claim::DeployGate::Waiting { kind, .. } => match kind {
+                Some(continuum_cli_lifecycle::deploy_claim::WaitKind::Publication) => "waiting_publication",
+                Some(continuum_cli_lifecycle::deploy_claim::WaitKind::Admission) => "blocked_admission",
+                None => "waiting_reason_unknown",
+            },
+            _ => "build_in_flight",
+        };
         let tip_build_key = match &tip_sha {
             Some(tip) => self.source.build_key(tip).await,
             None => None,
@@ -598,10 +606,10 @@ impl ServiceModule for DeployTrackerModule {
                 }
                 continuum_base::probe!(
                     class = "deploy.track.decision",
-                    verdict = "build_in_flight",
+                    verdict = custody_reason,
                     deployable_tip = deployable_tip.as_deref().unwrap_or(""), // "" = not deployable yet
                     running = running_sha(),
-                    "deploy not taken this tick — a build is in flight"
+                    "deploy not taken this tick — an existing consumer holds custody"
                 );
             }
             DeployVerdict::Held { reason, stale } => {

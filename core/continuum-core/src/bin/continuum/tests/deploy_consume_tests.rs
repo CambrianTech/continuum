@@ -105,7 +105,7 @@ fn the_deploy_consumer_deploys_only_a_clean_checkout_toward_a_tip_not_running() 
     restarted.save(&path).unwrap();
     assert_eq!(super::ConsumeLedger::read(&path).unwrap().resource_deferrals.get("published-build"), Some(&condition), "another build landing and a new process preserve the condition");
     let mut pending = Some(("published-build".into(), condition.clone()));
-    assert!(matches!(continuum_cli_lifecycle::prebuilt_artifact::recheck_resource_deferral(&mut pending, Ok(())), Some(continuum_cli_lifecycle::prebuilt_artifact::MissingArtifact::Wait(_))));
+    assert!(matches!(continuum_cli_lifecycle::prebuilt_artifact::recheck_resource_deferral(&mut pending, Ok(())), Some(continuum_cli_lifecycle::prebuilt_artifact::MissingArtifact::AdmissionWait(_))));
     assert_eq!(pending.as_ref().map(|(_, value)| value), Some(&condition), "a volume-only success cannot clear quota uncertainty");
     let lease = super::ConsumeLedger::take_lease(&path).unwrap();
     assert!(super::ConsumeLedger::take_lease(&path).is_err(), "a concurrent consumer/retry cannot own the ledger");

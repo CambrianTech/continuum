@@ -1,6 +1,7 @@
 //! `deploy-consume`: the deploy consumer, its log and per-pass flow.
 
 use super::*;
+use continuum_cli_lifecycle::deploy_health::RefusalKind;
 
 /// The consumer's log — the only place its output can land, since the scheduled task
 /// has no stdout. Set once by `deploy-consume`; read by the warm build to redirect
@@ -211,8 +212,21 @@ pub(super) async fn deploy_consume_pass() -> Result<PassEnd, String> {
     let build_in_flight = gate.as_ref().is_some_and(|g| g.excludes_deploy());
     let attempts_path = consume_attempts_path()?;
     let mut ledger = ConsumeLedger::read(&attempts_path)?;
+    if running.as_deref().is_some_and(|sha| ledger.refusal.as_ref().is_some_and(|r| r.resolved_by(sha))) {
+        ledger.refusal = None;
+        ledger.save(&attempts_path)?;
+    }
     // The tip's build key, read from the same checkout the tracker fetched into.
     let tip_build_key = tip.as_deref().and_then(|t| build_key_in(&repo, t));
+    if let (Some(request), Some(build)) = (tip.as_ref(), tip_build_key.as_ref()) {
+        let selection = continuum_cli_lifecycle::deploy_health::DeploySelection {
+            request: request.clone(), build: build.clone(),
+        };
+        if ledger.selection.as_ref() != Some(&selection) {
+            ledger.selection = Some(selection);
+            ledger.save(&attempts_path)?;
+        }
+    }
     // Give-up is judged on the TIP's own build only: an older core that would not land
     // here is skipped below, never charged to the request.
     let prior_failures = tip
@@ -227,6 +241,20 @@ pub(super) async fn deploy_consume_pass() -> Result<PassEnd, String> {
         build_in_flight,
         prior_failures,
     );
+    if let Some(request) = tip.as_deref() {
+        let refusal = match &verdict {
+            ConsumeVerdict::RefuseDirty => Some((RefusalKind::CheckoutDirty,
+                "tracked checkout has uncommitted work; consumer preserves it".to_string())),
+            ConsumeVerdict::GaveUp => Some((RefusalKind::AttemptsExhausted,
+                format!("requested build exhausted {prior_failures} attempts"))),
+            _ => None,
+        };
+        if let Some((kind, reason)) = refusal {
+            let build = match tip_build_key.as_deref() { Some(key) => key, None => request };
+            ledger.record_refusal(request, build, kind, &reason);
+            ledger.save(&attempts_path)?;
+        }
+    }
     deploy_note(&format!(
         "deploy-consume: request={} running={} dirty={dirty} in_flight={build_in_flight} prior_failures={prior_failures} → {verdict:?}",
         tip.as_deref().unwrap_or("none"), // unwrap_or: display only — "none" is the honest word for no request
@@ -376,13 +404,22 @@ pub(super) async fn deploy_consume_pass() -> Result<PassEnd, String> {
                     let request = if deployed == tip { String::new() } else { format!(" (request {tip})") };
                     deploy_note(&format!("✓ deploy-consume: {deployed} handed off{request}"));
                 }
-                Ok(PassEnd::ResourceBlocked(why)) => deploy_note(&format!("deploy resource custody refused: {why}; no build failure charged")),
+                Ok(PassEnd::ResourceBlocked(why)) => {
+                    let build = match selected.as_deref().or(tip_build_key.as_deref()) {
+                        Some(build) => build,
+                        None => &tip, // No artifact selected: evidence belongs to the request itself.
+                    };
+                    ledger.record_refusal(&tip, build, RefusalKind::ResourceAdmission, why);
+                    ledger.save(&attempts_path)?;
+                    deploy_note(&format!("deploy resource custody refused: {why}; no build failure charged"));
+                }
                 Ok(PassEnd::Superseded(_)) => {} // not this tip's failure; the outer loop follows the new request
                 Err(why) => {
                     // Charged to the build this pass tried: the tip's, or the older published
                     // core it fell back to. A failure before any build was chosen is the tip's.
                     let tip_build = tip_build_key.clone().unwrap_or_else(|| tip.clone()); // unwrap_or_else: no build key means the tip names its own core
                     let (tried, failures) = ledger.charge_failure(selected.as_deref(), &tip_build);
+                    ledger.record_refusal(&tip, &tried, RefusalKind::HandoffFailed, why);
                     ledger.save(&attempts_path)?;
                     deploy_note(&format!(
                         "deploy-consume: attempt {failures} of {CONSUME_MAX_ATTEMPTS} for build {tried} (request {tip}) failed: {why}"
@@ -451,17 +488,22 @@ pub(super) async fn ci_core_for(repo: &Path, candidates: &[String], request_path
                             };
                             let why = format!("published build {key} awaits resource admission: {}; condition_sha256={digest}; explicit retry: continuum deploy-consume --retry-resource {key} {digest}", deferred.reason);
                             let explicit_retry = deferred.condition != continuum_cli_lifecycle::prebuilt_artifact::ResourceCondition::VolumeCapacity;
+                            // A capacity refusal can stay inside this polling loop indefinitely.
+                            // Persist its health evidence here, before the outer pass gets a result;
+                            // otherwise a live waiting claim hides a blocked installation.
+                            ledger.record_refusal(requested_tip, &key,
+                                continuum_cli_lifecycle::deploy_health::RefusalKind::ResourceAdmission, &why);
                             if ledger.resource_deferrals.get(&key) != Some(&deferred) {
                                 ledger.resource_deferrals.insert(key, deferred);
-                                if let Err(why) = ledger.save(ledger_path) { return CiCore::ResourceBlocked(why); }
                             }
+                            if let Err(why) = ledger.save(ledger_path) { return CiCore::ResourceBlocked(why); }
                             if explicit_retry {
                                 // Release consumer custody so the explicit compare-and-clear
                                 // command can acquire it. A later automatic pass reads the
                                 // same durable condition and still cannot fetch this build.
                                 return CiCore::ResourceBlocked(why);
                             }
-                            MissingArtifact::Wait(why)
+                            MissingArtifact::AdmissionWait(why)
                         }
                         Err(PublishedCoreError::CapabilityDeferred(why) | PublishedCoreError::OperationalBlocked(why)) => return CiCore::ResourceBlocked(why),
                         Err(PublishedCoreError::Artifact(why)) if key == newest.as_str() => MissingArtifact::Refuse(format!(
@@ -476,10 +518,14 @@ pub(super) async fn ci_core_for(repo: &Path, candidates: &[String], request_path
                 }
             }
         };
+        let wait_kind = match &missing {
+            MissingArtifact::AdmissionWait(_) => continuum_cli_lifecycle::deploy_claim::WaitKind::Admission,
+            _ => continuum_cli_lifecycle::deploy_claim::WaitKind::Publication,
+        };
         match missing {
-            MissingArtifact::Wait(why) => {
+            MissingArtifact::Wait(why) | MissingArtifact::AdmissionWait(why) => {
                 deploy_note(&format!("deploy-consume: {why}"));
-                // Waiting on CI is this deploy's progress. The claim's renewer judges progress
+                // Waiting on publication or admission preserves this deploy's custody. The renewer judges progress
                 // by CPU, and a wait has none, so without this the claim would read Stalled
                 // after an hour; still excluding, but naming a healthy wait as a hang.
                 // The wait marker says it is only a wait: nothing builds beside the core and
@@ -489,7 +535,7 @@ pub(super) async fn ci_core_for(repo: &Path, candidates: &[String], request_path
                     let pid = std::process::id() as i32;
                     let now = continuum_base::time::EpochMs::now().millis();
                     let _ = continuum_cli_lifecycle::deploy_claim::renew(&root, pid, now, true);
-                    if let Err(e) = continuum_cli_lifecycle::deploy_claim::mark_waiting(&root, pid, now) {
+                    if let Err(e) = continuum_cli_lifecycle::deploy_claim::mark_waiting_for(&root, pid, now, wait_kind) {
                         deploy_note(&format!(
                             "deploy-consume: could not mark the wait ({e}); the claim keeps blocking as a build would"
                         ));

@@ -143,6 +143,10 @@ pub(super) fn consume_attempts_path() -> Result<PathBuf, String> {
 /// build that failed, so its failures cannot be attributed: it reads as none.
 #[derive(Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub(super) struct ConsumeLedger {
+    #[serde(default)]
+    pub(super) selection: Option<continuum_cli_lifecycle::deploy_health::DeploySelection>,
+    #[serde(default)]
+    pub(super) refusal: Option<continuum_cli_lifecycle::deploy_health::DeployRefusal>,
     #[serde(default, rename = "failures_by_build")]
     pub(super) failures: std::collections::BTreeMap<String, u32>,
     #[serde(default)]
@@ -150,6 +154,13 @@ pub(super) struct ConsumeLedger {
 }
 
 impl ConsumeLedger {
+    pub(super) fn record_refusal(&mut self, request: &str, build: &str,
+        kind: continuum_cli_lifecycle::deploy_health::RefusalKind, reason: &str) {
+        self.refusal = Some(continuum_cli_lifecycle::deploy_health::DeployRefusal::observe(
+            self.refusal.as_ref(), request, build, kind, reason,
+            continuum_base::time::EpochMs::now().millis(),
+        ));
+    }
     /// The existing consumer owns its ledger for the command's lifetime. The OS
     /// releases this nonblocking lease on crash; cooperating retries cannot race
     /// its writer. Older binaries require the explicit rollout/quiescence guard.
