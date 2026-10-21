@@ -124,7 +124,13 @@ impl SourceRule for DocTheft {
                                 break; // first same-name item decides either way
                             }
                             Some(_) => break, // another item intervenes; chain broken
-                            None => {}        // anonymous item (closure etc.); keep walking
+                            None => {
+                                // Nameless shape (`use`, a closure, …): not a candidate of
+                                // any name — skip past it and keep walking. The first version
+                                // fell through here without advancing k and spun forever on
+                                // any late import; that hang WAS the ">300s scan" (f5b4a217).
+                                k += 1;
+                            }
                         }
                     } else {
                         break; // non-item code between the block and any candidate
@@ -214,8 +220,13 @@ mod tests {
     /// RATCHET — see the module header for why a wall would be enforcement theatre.
     #[test]
     fn ratchet_doc_theft() {
+        let t = std::time::Instant::now();
         let violations = scan(&[&DocTheft]);
-        eprintln!("doc-theft: {} violation(s) (baseline {BASELINE})", violations.len());
+        eprintln!(
+            "doc-theft: {} violation(s) in {:.1}s (baseline {BASELINE})",
+            violations.len(),
+            t.elapsed().as_secs_f64()
+        );
         for v in &violations {
             eprintln!("  {}:{}", v.file, v.line);
         }
@@ -311,6 +322,16 @@ fn path_arg(x: u32) -> u32 { x }
 fn security() {}";
         assert_eq!(rule.check(&mk(no_ticks)).len(), 0, "no backtick means no candidate");
 
+
+        // A nameless item (`use`) between thief and target must be skipped, not hung
+        // on: the first version of this rule spun forever on any late import (that hang
+        // WAS f5b4a217's ">300s scan").
+        let use_between = "\
+/// The `security` surface for seat grants.
+fn path_arg(x: u32) -> u32 { x }
+use crate::late_import;
+fn security() {}";
+        assert_eq!(rule.check(&mk(use_between)).len(), 1, "nameless item must be skipped, not fatal");
         // The thief line is reported at the item under the block (1-indexed).
         let v = rule.check(&mk(incident_a));
         assert_eq!(v[0].line, 2, "violation points at the inserted fn");
