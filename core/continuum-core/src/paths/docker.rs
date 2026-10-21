@@ -78,6 +78,7 @@ mod tests {
     #[test]
     #[cfg(target_os = "macos")]
     fn macos_with_home_resolves_to_docker_raw() {
+        let _home = crate::test_env::HomeGuard::preserve_blocking(); // reads the process home a guarded fixture may be swapping (card cb3221a5)
         if std::env::var("HOME")
             .map(|h| !h.is_empty())
             .unwrap_or(false)
