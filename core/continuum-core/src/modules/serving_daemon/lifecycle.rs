@@ -182,7 +182,7 @@ impl LifecycleGate {
         self.settled.store(true, Ordering::Release);
     }
     /// Take the gate for one admission decision, or say why it cannot decide now.
-    pub(crate) fn hold_for_admission(&self) -> Result<AdmissionHold, GateRefusal> {
+    pub(crate) fn hold_for_admission(&self) -> Result<super::AdmissionHold, super::GateRefusal> {
         if !self.settled.load(Ordering::Acquire) {
             return Err(GateRefusal::Unsettled);
         }
