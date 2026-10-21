@@ -105,16 +105,14 @@ pub(super) fn derived_prompt_cache_mib(
         .collect();
     let active =
         rotating_minds(&seen, EpochMs::now().millis(), rotation_window_ms(&seen)).max(warm_floor);
-    let demands = with_measured_state(
-        active_cache_states(&population, served_ctx, active),
-        fp.map(|f| f.kv_per_token),
-        // the served model's own page dir: the same key the spawn writes its pages under
-        crate::inference::slots::measured_state_bytes(
-            &crate::inference::llama_server::kv_page_dir(model_id, served_ctx),
-        ),
+    // the served model's own page dir: the same key the spawn writes its pages under
+    let measured_state = crate::inference::slots::measured_state_bytes(
+        &crate::inference::llama_server::kv_page_dir(model_id, served_ctx),
     );
+    let estimated = active_cache_states(&population, served_ctx, active);
+    let demands = with_measured_state(estimated.clone(), fp.map(|f| f.kv_per_token), measured_state);
     let serve_host_bytes = serve_host_bytes(fp, served_ctx, lanes, memory_mode);
-    let decision = prompt_cache_decision(
+    let mut decision = prompt_cache_decision(
         fp,
         &demands,
         planned.len(),
@@ -124,6 +122,7 @@ pub(super) fn derived_prompt_cache_mib(
         serve_host_bytes,
         available_bytes,
     );
+    decision.reason = sized_by(&estimated, &demands, decision.reason);
     // Deduplicate the decision, not just its MiB: a different model or a prior
     // becoming measured can yield the same limit and still needs a receipt.
     static LAST_SPOKEN: parking_lot::Mutex<Option<(String, PromptCacheDecision)>> =
@@ -168,7 +167,7 @@ pub(super) fn derived_prompt_cache_mib(
             affordable_bytes = ?decision.affordable_bytes,
             serve_host_bytes = decision.serve_host_bytes,
             available_bytes = decision.available_bytes,
-            serialized_state_bytes = "unobserved",
+            serialized_state_bytes = ?measured_state,
             "prompt-cache sizing decision, not engine readback; KV estimate excludes draft state and checkpoints"
         );
     }
@@ -448,4 +447,32 @@ pub(super) fn prompt_cache_decision(
             crate::inference::lane_args::host_prompt_cache_mib(demands, fp.kv_per_token, afford);
     }
     decision
+}
+
+/// PURE: the reason a sizing reports. A measured saved state that raised any demand above
+/// its KV estimate made it a measured sizing; the estimate's reason would read the same both
+/// ways, and a fresh core's first sizing could not be told from the defect card 37eb1925
+/// fixed (Kimi's node, 8eaed76f3: one_conversation 4,816 MiB from a 5,050,734,260-byte page,
+/// under reason resident_demand_kv_estimate). Every other reason (a prior, no demand) stands.
+fn sized_by(estimated: &[u32], demands: &[u32], reason: &'static str) -> &'static str {
+    if reason == "resident_demand_kv_estimate" && demands != estimated {
+        "resident_demand_measured_state"
+    } else {
+        reason
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{sized_by, with_measured_state};
+
+    // what this catches (card 37eb1925, Kimi's node 8eaed76f3): a sizing raised by a measured
+    // saved state reported the estimate's reason, so the probe could not show the fix working.
+    #[test]
+    fn a_measured_state_sizing_says_so_and_a_prior_is_never_relabeled() {
+        let raised = with_measured_state(vec![1_000, 2_000], Some(32_768), Some(5_050_734_260));
+        assert_eq!(sized_by(&[1_000, 2_000], &raised, "resident_demand_kv_estimate"), "resident_demand_measured_state");
+        assert_eq!(sized_by(&[1_000, 2_000], &[1_000, 2_000], "resident_demand_kv_estimate"), "resident_demand_kv_estimate", "no measured state, no claim");
+        assert_eq!(sized_by(&[], &raised, "prior_missing_footprint"), "prior_missing_footprint", "a prior is never relabeled");
+    }
 }
