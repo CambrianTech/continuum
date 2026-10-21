@@ -153,17 +153,6 @@ impl EvidenceFit {
     }
 }
 
-/// What a binding fill budget costs her, in KIND and amount. A clip that takes her own
-/// last moves away has to say so on its own receipt: "she repeated herself" must be
-/// traceable to "we cut the evidence she had already done it" without reading a capture.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub(in super::super) struct ShedPreview {
-    pub(in super::super) messages: usize,
-    pub(in super::super) tokens: usize,
-    pub(in super::super) own_moves: usize,
-    pub(in super::super) results: usize,
-}
-
 impl RecentMove {
     /// Can this unit be held out of a drop against `history_budget`? See [`EvidenceFit`]
     /// — a `CannotFit` is declared and named, never a silent fallback.
@@ -250,38 +239,6 @@ impl PromptMessages {
                 .max()
                 .unwrap_or(0), // unwrap_or: the span is non-empty by construction here; 0 is unreachable
         }
-    }
-
-    /// What a `history_budget`-sized fill sheds, in kind and amount — oldest first, whole
-    /// messages, the same ORDER the evictor drops in.
-    ///
-    /// AT LEAST this much: the real drop rounds up to a quantum and may advance past a
-    /// broken cluster opener, so this under-reports rather than over-reports. It is a
-    /// receipt, not a second evictor — the decision stays in one place
-    /// ([`LlmDeliberationFaculty::fit_messages`]).
-    pub(in super::super) fn shed_preview(&self, history_budget: usize) -> ShedPreview {
-        let mut out = ShedPreview::default();
-        let total: usize = self
-            .history
-            .iter()
-            .map(LlmDeliberationFaculty::message_cost)
-            .sum();
-        let mut must_drop = total.saturating_sub(history_budget);
-        for message in &self.history {
-            if must_drop == 0 {
-                break;
-            }
-            let cost = LlmDeliberationFaculty::message_cost(message);
-            must_drop = must_drop.saturating_sub(cost);
-            out.messages += 1;
-            out.tokens += cost;
-            if LlmDeliberationFaculty::is_move_result(message) {
-                out.results += 1;
-            } else if LlmDeliberationFaculty::is_own_move(message) {
-                out.own_moves += 1;
-            }
-        }
-        out
     }
 
     /// Native active batches must preserve exact one-to-one correlation. Legacy
@@ -404,9 +361,6 @@ pub struct DeliberationPromptView {
     /// took, under its runaway bound) — charged against the window here, and carried
     /// verbatim as the wire request's `max_tokens`.
     pub completion_reserve: u32,
-    /// The conversation tokens this prompt carries beyond its required input: once the
-    /// engine answers it, the cached prefix the next turn's latency cap rides free.
-    pub(in super::super) history_tokens: usize,
     pub capacity_error: Option<PromptCapacityError>,
     pub protocol_error: Option<String>,
     /// The role-attributed conversation thread sent to the model — the persona's

@@ -712,7 +712,6 @@ impl LlmDeliberationFaculty {
             input_identity,
             estimated_prompt_tokens,
             completion_reserve: completion_reserve as u32,
-            history_tokens: used_msg_tokens.saturating_sub(required_tokens),
             capacity_error,
             protocol_error,
             messages,
@@ -767,6 +766,7 @@ impl LlmDeliberationFaculty {
     /// it has run the question "how much did this turn actually want?" is
     /// unanswerable — which is precisely why the served window had to be sized by a
     /// constant instead of by demand. [`super::super::super::working_set`] measures this.
+    #[cfg(test)]
     pub(in super::super) fn messages_unfitted(&self, ws: &Workspace, trailing_framing: Option<&str>) -> PromptMessages {
         let mut prompt = self.messages_with_visual_feedback(ws, trailing_framing, None);
         let whole = self.whole_view(&prompt.streams);

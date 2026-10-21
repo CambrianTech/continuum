@@ -352,7 +352,7 @@ async fn pinned_act_result_reaches_the_prompt_even_with_an_empty_broadcast() {
     let estimate = LlmDeliberationFaculty::messages_cost(&roomy.messages);
     let snapshot = DeliberationPromptView {
         refit: roomy.refit, system: String::new(), input_identity: [0; 32],
-        estimated_prompt_tokens: estimate, completion_reserve: 0, history_tokens: 0,
+        estimated_prompt_tokens: estimate, completion_reserve: 0,
         capacity_error: None, protocol_error: None, segments: Vec::new(),
         messages: roomy.messages,
     };

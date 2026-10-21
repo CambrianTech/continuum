@@ -111,6 +111,7 @@ impl LlmDeliberationFaculty {
 
     /// Every source whole, outside her view's state: what this turn's history would cost with
     /// no epoch and no collapse, the demand the serving plan sizes her window from.
+    #[cfg(test)]
     pub(in super::super) fn whole_view(&self, streams: &Streams) -> Vec<ChatMessage> {
         let memory = self.working_memory.as_deref();
         let actions = memory.map(|memory| Actions { memory });
