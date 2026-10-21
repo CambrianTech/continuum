@@ -240,11 +240,9 @@ fn consecutive_reports_measure_windows_not_running_totals() {
     );
 }
 
-// what this catches: the WEAK-BOX floor of the same change. Deriving the ambient pool
-// from lanes−1 must not regress a 1- or 2-lane machine below the behaviour it had
-// under the old hardcoded 1 — a single-lane host has nothing to reserve, so its
-// budget floors at 1 and it stays byte-identical. This is the half of the change that
-// could silently hurt the smallest supported hardware, so it gets its own row.
+// what this catches: the ambient pool is the served lane count, never below 1 — a
+// single-lane host keeps exactly the one slot it had under the old hardcoded 1, and a
+// wider box is not throttled below its hardware (no lane is held back idle).
 #[test]
 fn the_non_directed_budget_is_every_lane_and_a_one_lane_box_keeps_one_slot() {
     for lanes in [1usize, 2, 4] {
@@ -469,10 +467,11 @@ async fn queued_acquirers_retire_shrink_debt_before_granting() {
 async fn cancelled_work_waiter_clears_its_priority_reservation() {
     let gate = LaneAdmission::new();
     gate.set_served_lane_count(2);
+    // Fill the whole non-directed budget (every lane) so the work caller has to wait.
     let held = gate
         .nondirected_lanes()
         .clone()
-        .try_acquire_owned()
+        .try_acquire_many_owned(2)
         .unwrap();
     let mut waiting = Box::pin(gate.acquire_nondirected_as_work());
     assert!(futures::poll!(waiting.as_mut()).is_pending());

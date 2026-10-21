@@ -278,7 +278,7 @@ pub fn note_local_lane_wait_ms(ms: u64) {
 pub fn local_lane_wait_p50_ms() -> (u64, u32) {
     LOCAL_LANE_WAIT_MS.p50()
 }
-/// What a DIRECTED call waited for its lane here — the unit the reserved lane's guarantee
+/// What a DIRECTED call waited for its lane here — the unit directed priority's guarantee
 /// is stated in (Cormac, 2026-09-20: "the reserve is a WAIT guarantee for a directed call,
 /// not a lane count"). Fed at the faculty's lane gate for priority turns; read by the
 /// hourly health line as p50 / p90 so a reader sees what a human waited, not how many

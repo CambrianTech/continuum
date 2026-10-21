@@ -414,7 +414,7 @@ pub struct CitizenHealth {
     /// once and ran on three.
     pub lanes_sustained: u64,
     /// What a DIRECTED call waited for its lane this window, p50 / p90 ms, and how many
-    /// waited — the reserved lane's guarantee in its own unit (Cormac, 2026-09-20). 0 waits
+    /// waited — directed priority's guarantee in its own unit (Cormac, 2026-09-20). 0 waits
     /// = nothing directed arrived, which is not a zero wait.
     pub directed_wait_p50_ms: u64,
     pub directed_wait_p90_ms: u64,

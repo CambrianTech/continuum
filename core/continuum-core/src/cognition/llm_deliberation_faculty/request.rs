@@ -143,9 +143,9 @@ impl LlmDeliberationFaculty {
         // #139 serving-lane admission, priced by priority. Acquire a decode lane for the
         // model-call window ONLY (queue+prefill+decode); the RAII permit also carries the
         // in-flight gauge marker (so the self-tick saturation read stays accurate) and, for
-        // NON-directed calls, a slot in the (MAX_LANES-1) non-directed budget — reserving
-        // at least one lane for a directed (addressed) turn so it never queues behind idle
-        // musing or a long ambient turn. Directed calls take from the full pool. Scoped to a
+        // NON-directed calls, a slot in the non-directed budget (every lane). A directed
+        // (addressed) turn is first in line for the next lane freed, so it never queues
+        // behind idle musing or a long ambient turn, and no lane is held back idle for it. Scoped to a
         // block so every lane releases the instant generation returns — downstream
         // capture/parse/act hold nothing. [[conversational-latency-is-a-misdirection-budget]]
         // WIRE CAPTURE (2026-08-24, the churn hunt's missing instrument): when

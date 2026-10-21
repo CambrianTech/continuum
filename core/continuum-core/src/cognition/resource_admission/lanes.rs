@@ -71,14 +71,15 @@ pub async fn hold_ambient_turn_for(
 // Neither the gauge nor the turn-level permit can fix this — the reservation must live
 // at the LANE the model call actually consumes. So every model call acquires a lane
 // here, priced by priority:
-//   - directed → acquires from the FULL pool (MAX_LANES). Waits only if MAX_LANES other
-//                directed calls already hold every lane (all lanes serving live work).
-//   - non-directed (ambient + idle self-tick) → additionally bounded to (MAX_LANES-1),
-//                so at least ONE lane is always reserved for a directed call.
-// No deadlock: directed never touches the non-directed cap, and non-directed holds at
-// most MAX_LANES-1 physical lanes, so a directed acquire always finds a free lane unless
-// every lane already serves directed. On a single-lane machine there is nothing to
-// reserve, so the non-directed budget floors at 1 (no starvation, no false guarantee).
+//   - non-directed (work, ambient, idle self-tick) → the non-directed budget (every lane)
+//                first, then a physical lane.
+//   - directed → a physical lane directly, plus a non-directed permit when one is free,
+//                so while it runs no work call queues on the physical lanes ahead of the
+//                next directed arrival. It is first in line for the next lane freed.
+// No lane is held back: the reserve this replaced idled 24 of 30 samples on the M5
+// (canary, 2026-10-20) while four minds queued behind the other lane. Its price is
+// measured, not assumed: a directed call can wait for one act in flight to finish
+// (`directed_lane_wait_ms`, the health line's directed wait p50 / p90).
 // [[conversational-latency-is-a-misdirection-budget]] [[never-thrash-sticky-hysteresis-on-every-lane]]
 
 /// The LIVE `--parallel` slot count of the running serving target, published by the

@@ -285,7 +285,7 @@ pub(super) async fn run_self_cycle(
         return false;
     }
     // Only the MUSING tail below is ambient inference: it pays for an ambient permit
-    // (lanes-1 pool, keeps the GPU for live speakers and held work). Nothing above
+    // (a pool of the served lanes; live speakers and held work go first). Nothing above
     // needed one.
     let Some(_ambient_permit) = crate::cognition::resource_admission::hold_ambient_turn_for(
         ctx.identity.peer_id.as_uuid(),

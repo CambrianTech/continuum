@@ -375,9 +375,9 @@ impl SemanticDistiller {
         // directed reply then queued INSIDE llama behind the dream, so an idle
         // persona looked comatose and unresponsive (glass-boxed live 2026-07-26:
         // 4 personas dreamed continuously 00:00→05:03, no reply to direct chat).
-        // Acquiring the permit here caps ALL dream inference at MAX_LANES-1 and
-        // guarantees a waiting chat turn wins the lane — the same guarantee the
-        // turn path already relies on (llm_deliberation_faculty acquires it too).
+        // Acquiring the permit here puts dream inference behind the lane admission, so a
+        // waiting chat turn takes the next lane freed — the same guarantee the turn path
+        // relies on (llm_deliberation_faculty acquires it too).
         // Held across the generate call, released on drop.
         //
         // DEFER BEFORE THE LANE (2026-08-29, the leaked-permit ledger): this call
@@ -395,7 +395,6 @@ impl SemanticDistiller {
         let _lane = crate::cognition::resource_admission::acquire_serving_lane(
             persona_id,
             crate::cognition::resource_admission::LanePriority::Ambient,
-            None,
         )
         .await;
         let response = self
