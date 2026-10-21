@@ -153,40 +153,6 @@ pub fn current() -> ActivitySnapshot {
     *gate().tx.borrow()
 }
 
-/// Park until the organism is BORED. Returns immediately if it already is.
-pub async fn wait_for_boredom() {
-    if !GATE_LIVE.load(Ordering::Acquire) {
-        return; // gate not running: permissive — the hold-defer seams still guard
-    }
-    let mut rx = subscribe();
-    loop {
-        if rx.borrow().state == ActivityState::Bored {
-            return;
-        }
-        if rx.changed().await.is_err() {
-            return; // publisher gone (shutdown) — never wedge a consumer
-        }
-    }
-}
-
-/// Park until the organism is ACTIVE — the cancellation arm for background
-/// work: `select!` your dream against this, and treat losing as a clean
-/// discard (paged out, re-dreamable).
-pub async fn wait_for_activity() {
-    if !GATE_LIVE.load(Ordering::Acquire) {
-        std::future::pending::<()>().await; // gate not running: never spuriously cancel work
-    }
-    let mut rx = subscribe();
-    loop {
-        if rx.borrow().state == ActivityState::Active {
-            return;
-        }
-        if rx.changed().await.is_err() {
-            std::future::pending::<()>().await; // shutdown: never spuriously cancel
-        }
-    }
-}
-
 /// Spawn the gate's owning task (call once at boot, inside the runtime). The
 /// RTOS shape: own task, interval, cheap reads, publish ON CHANGE with a probe.
 pub fn spawn_activity_gate() {

@@ -67,7 +67,6 @@ pub mod search;
 pub mod serving;
 pub mod system;
 pub mod tool;
-pub mod tool_parsing;
 pub mod training_trigger;
 pub mod vdd;
 pub mod vector;

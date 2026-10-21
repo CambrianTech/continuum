@@ -97,9 +97,6 @@ impl std::ops::Deref for RagContext {
 }
 
 impl RagContext {
-    pub fn from_substrate(substrate: SubstrateContext) -> Self {
-        Self { substrate }
-    }
     pub fn for_persona(persona_id: uuid::Uuid, now_ms: u64) -> Self {
         Self {
             substrate: SubstrateContext::for_persona(persona_id, now_ms),

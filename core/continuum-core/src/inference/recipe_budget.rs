@@ -115,24 +115,6 @@ impl PersonaContextBudget {
         }
     }
 
-    /// Override the min (base requirement). Used when a specific
-    /// persona-task pairing needs more headroom than the task default
-    /// (e.g., a memory-NPC that always needs 16K even idle).
-    pub fn with_min_tokens(mut self, n: u32) -> Self {
-        self.min_tokens = n;
-        // min can't exceed max — auto-bump max if caller raised the floor.
-        if self.min_tokens > self.max_tokens {
-            self.max_tokens = self.min_tokens;
-        }
-        self
-    }
-
-    /// Override the max. Used when a recipe author knows this persona
-    /// will scale beyond the task default.
-    pub fn with_max_tokens(mut self, n: u32) -> Self {
-        self.max_tokens = n.max(self.min_tokens);
-        self
-    }
 }
 
 /// A recipe's worth of persona budgets. The adapter reads this to
@@ -255,36 +237,6 @@ mod tests {
         assert_eq!(b.task, TaskKind::Chat);
         assert_eq!(b.min_tokens, TaskKind::Chat.default_seed_tokens());
         assert_eq!(b.max_tokens, TaskKind::Chat.default_max_tokens());
-    }
-
-    /// What this catches: with_min_tokens silently allowing min > max,
-    /// which would break invariants (paging policy asserts min<=max).
-    /// Builder must auto-bump max when min is raised above it.
-    ///
-    /// Validated 2026-04-21: removed the auto-bump, test fails with
-    /// max still = task default (smaller than new min); reverted.
-    #[test]
-    fn with_min_tokens_auto_bumps_max_to_preserve_invariant() {
-        // Chat default: seed=8K, max=16K. Force min=64K — max should bump.
-        let b = PersonaContextBudget::for_task("Big", TaskKind::Chat).with_min_tokens(64 * 1024);
-        assert_eq!(b.min_tokens, 64 * 1024);
-        assert!(b.max_tokens >= b.min_tokens, "max must always >= min");
-        assert_eq!(b.max_tokens, 64 * 1024);
-    }
-
-    /// What this catches: with_max_tokens silently allowing max < min,
-    /// which is the inverse-invariant violation. Builder must clamp
-    /// max to at least min.
-    ///
-    /// Validated 2026-04-21: changed `n.max(self.min_tokens)` to plain
-    /// `n`, test fails because max ends up = 1024 (below default min);
-    /// reverted.
-    #[test]
-    fn with_max_tokens_clamps_to_at_least_min() {
-        let b =
-            PersonaContextBudget::for_task("Clamp", TaskKind::CodingLarge).with_max_tokens(1024); // way below CodingLarge's 128K seed
-        assert!(b.max_tokens >= b.min_tokens, "max must always >= min");
-        assert_eq!(b.max_tokens, b.min_tokens);
     }
 
     /// What this catches: sum_of_seed_tokens off-by-one or wrong field

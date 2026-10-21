@@ -378,11 +378,6 @@ impl SystemResourceMonitor {
         }
     }
 
-    /// CPU pressure (0.0 - 1.0). Cached value.
-    pub fn cpu_pressure(&self) -> f32 {
-        self.inner.lock().map(|i| i.cpu.global_usage).unwrap_or(0.0)
-    }
-
     /// Memory pressure (0.0 - 1.0). Cached value.
     pub fn memory_pressure(&self) -> f32 {
         self.inner.lock().map(|i| i.memory.pressure).unwrap_or(0.0)
@@ -510,17 +505,6 @@ mod tests {
         assert!(
             !procs.top_by_cpu.is_empty() || !procs.top_by_memory.is_empty(),
             "Should find at least one process"
-        );
-    }
-
-    #[test]
-    fn test_cpu_pressure_range() {
-        let monitor = SystemResourceMonitor::new();
-        let pressure = monitor.cpu_pressure();
-        assert!(
-            pressure >= 0.0 && pressure <= 1.0,
-            "CPU pressure should be 0.0-1.0, got {}",
-            pressure
         );
     }
 

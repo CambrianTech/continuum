@@ -78,10 +78,6 @@ impl ModuleLogger {
         self.write("DEBUG", msg);
     }
 
-    pub fn debug_fmt(&self, args: fmt::Arguments<'_>) {
-        self.write_fmt("DEBUG", args);
-    }
-
     pub fn info(&self, msg: &str) {
         self.write("INFO", msg);
     }
@@ -100,10 +96,6 @@ impl ModuleLogger {
 
     pub fn error(&self, msg: &str) {
         self.write("ERROR", msg);
-    }
-
-    pub fn error_fmt(&self, args: fmt::Arguments<'_>) {
-        self.write_fmt("ERROR", args);
     }
 
     /// Structured timing log for performance analysis

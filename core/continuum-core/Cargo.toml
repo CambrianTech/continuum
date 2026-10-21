@@ -345,12 +345,11 @@ avatar-3d = ["dep:bevy", "dep:wgpu", "dep:wgpu-hal"]
 # intel-mkl-src even with default-features = false, which broke packaging the Windows CLI
 # (#4665, BIGGIEDESK). Enable it explicitly to get the adapter.
 pocket-tts = ["dep:pocket-tts"]
-# Legacy TypeScript-SDK generator (sdk_codegen::emit). OFF by default: nothing
-# live consumes its output (the new client SDKs are independent), so it's pure
-# CI/compile cost + a tempting-but-wrong extension point. The HEADLESS command
-# framework (registry, dispatch, descriptors, AccessLevel) is always compiled;
-# only the .ts emitter + its tests are gated here. Regenerate the TS SDK with
-# `cargo test --features ts-codegen` on the (rare) occasions it's needed.
+# TypeScript-SDK generator (sdk_codegen::emit). OFF by default (no compile cost in
+# ordinary builds). Its output is LIVE: sdk/typescript/generated/{CommandMap,CommandApi}.ts
+# and wire/** are imported by sdk/typescript/Commands.ts, which apps/tui, eye-node, desktop
+# and web depend on. Regenerate after a command changes:
+# `cargo test -p continuum-core --features ts-codegen generates_live_typescript_sdk`.
 ts-codegen = []
 metal = ["candle-core/metal", "candle-nn/metal", "candle-transformers/metal", "llama/metal", "ort/coreml"]
 cuda = ["candle-core/cuda", "candle-nn/cuda", "candle-transformers/cuda", "llama/cuda", "ort/cuda"]

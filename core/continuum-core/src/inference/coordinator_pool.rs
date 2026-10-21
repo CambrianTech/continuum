@@ -71,14 +71,6 @@ impl CoordinatorResourcePool {
         }
     }
 
-    /// Override the tier name (useful when a process hosts multiple
-    /// coordinators — e.g. one per persona group — and dashboards
-    /// need to distinguish them).
-    pub fn with_tier_name(mut self, name: impl Into<String>) -> Self {
-        self.tier_name = name.into();
-        self
-    }
-
     /// Inject a deterministic clock for tests. Production paths use
     /// the default wall-clock.
     pub fn with_clock<F: Fn() -> u64 + Send + Sync + 'static>(mut self, clock: F) -> Self {
@@ -190,13 +182,6 @@ mod tests {
         let c = build_coordinator();
         let pool = CoordinatorResourcePool::new(c);
         assert_eq!(pool.tier_name(), TIER_NAME);
-    }
-
-    #[test]
-    fn tier_name_override_takes_effect() {
-        let c = build_coordinator();
-        let pool = CoordinatorResourcePool::new(c).with_tier_name("inference-paige");
-        assert_eq!(pool.tier_name(), "inference-paige");
     }
 
     #[test]

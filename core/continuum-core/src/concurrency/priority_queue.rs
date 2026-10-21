@@ -74,10 +74,6 @@ impl<T: Prioritized + Ord> ConcurrentPriorityQueue<T> {
         self.dequeue_rx.recv().await
     }
 
-    /// Wait for work signal
-    pub async fn wait_for_work(&self) {
-        self.signal.notified().await;
-    }
 }
 
 /// Wrapper to make any type with priority() work with BinaryHeap

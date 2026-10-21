@@ -272,16 +272,6 @@ impl AircRagSource {
         ((budget / Self::MIN_TOKENS_PER_TURN) as usize).clamp(recipe_floor, 256)
     }
 
-    /// Override (or disable) the durable-history top-up — tests inject a stub;
-    /// `None` turns hydration off entirely.
-    pub fn with_history(
-        mut self,
-        history: Option<Arc<dyn crate::persona::durable_history::DurableRoomHistory>>,
-    ) -> Self {
-        self.history = history;
-        self
-    }
-
     /// Synthesize a grounding-only `TranscriptEvent` from a durable transcript
     /// line. Lamport 0 puts it strictly BEFORE any live event after the split
     /// sort (which is stable, so hydrated lines keep their chronological input

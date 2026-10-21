@@ -99,7 +99,6 @@ pub mod recall_metadata;
 pub mod recorder;
 pub mod salience;
 pub mod redaction;
-pub mod resource_forecast;
 pub mod response;
 pub mod resume_or_mint_provider;
 pub mod resting_seat;

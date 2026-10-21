@@ -18,11 +18,6 @@ pub(super) static BOOT_MS: std::sync::LazyLock<u64> = std::sync::LazyLock::new(|
     continuum_base::time::EpochMs::now().millis() // pre-1970 reads 0: a pre-epoch clock reads as boot at 0 — every mind then counts as starving at most once
 });
 
-/// Stamp that `persona` started a turn now (any kind).
-pub fn note_turn_started(persona: uuid::Uuid, now_ms: u64) {
-    LAST_TURN_MS.lock().insert(persona, now_ms);
-}
-
 /// When `persona` last started a turn this boot; `None` = no turn since boot. The
 /// dormant order (card 10bba591) reads this: the mind whose last turn is oldest is the
 /// first the grid's slack owes a clip.

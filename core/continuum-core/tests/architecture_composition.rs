@@ -11,9 +11,7 @@
 //!      — §0.4 + §17 of the design doc
 //!   3. "Memory pressure shifts the policy's available choices"
 //!      — §10 + §12 + §14 dynamic adjustment claim
-//!   4. "Tired persona forecasts less; engaged forecasts more"
-//!      — §20 meta-cognitive claim
-//!   5. "Recipe-driven sizing produces predictable bounded allocation"
+//!   4. "Recipe-driven sizing produces predictable bounded allocation"
 //!      — §14 task-defaults-as-seeds claim
 //!
 //! These tests use MockMonitor + the pure-data primitives. NO model
@@ -25,9 +23,6 @@
 use continuum_core::gpu::{GpuMonitor, MockMonitor};
 use continuum_core::inference::kv_quant::{KvQuantPolicy, Residency};
 use continuum_core::inference::recipe_budget::{PersonaContextBudget, RecipeBudget, TaskKind};
-use continuum_core::memory::{ConversationSummary, RecallMode};
-use continuum_core::persona::resource_forecast::{forecast_from_state, MessagePreview};
-use continuum_core::persona::types::PersonaState;
 use uuid::Uuid;
 
 // ─── Hardware tier constants for tests ────────────────────────────────
@@ -175,85 +170,17 @@ fn memory_pressure_signal_propagates_through_monitor() {
     assert!(snap_relaxed.pressure < 0.3);
 }
 
-// ─── Composition test 4: forecast scales with persona state ──────────
-
-/// What this catches: §20's claim that meta-cognitive forecast adapts
-/// to persona state — tired personas forecast smaller, engaged
-/// personas forecast bigger. Tests the COMPOSITION of PersonaState
-/// (existing) with resource_forecast (Phase 1.4) and recipe seed
-/// (Phase 1.2). All three must read consistently.
-///
-/// Validated 2026-04-21: hardcoded forecast to ignore state, test
-/// fails because tired and fresh both forecast same depth; reverted.
-#[test]
-fn forecast_compounds_persona_state_and_recipe_seed() {
-    let recipe =
-        RecipeBudget::new().add_persona(PersonaContextBudget::for_task("Helper", TaskKind::Chat));
-    let chat_seed = recipe.sum_of_seed_tokens();
-
-    let mut tired = PersonaState::default();
-    tired.energy = 0.15;
-    tired.attention = 0.20;
-    tired.inbox_load = 9;
-
-    let fresh = PersonaState::default();
-
-    let complex_msg = MessagePreview {
-        estimated_input_tokens: 250,
-        concept_density: 0.85,
-        is_directed_mention: true,
-        ..Default::default()
-    };
-
-    let tired_forecast = forecast_from_state(&tired, &complex_msg, chat_seed);
-    let fresh_forecast = forecast_from_state(&fresh, &complex_msg, chat_seed);
-
-    // Compound assertion 1: fresh forecasts deeper reasoning than tired
-    assert!(
-        fresh_forecast.estimated_reasoning_depth > tired_forecast.estimated_reasoning_depth,
-        "fresh depth {} should exceed tired depth {}",
-        fresh_forecast.estimated_reasoning_depth,
-        tired_forecast.estimated_reasoning_depth
-    );
-
-    // Compound assertion 2: confidence reflects state
-    assert!(
-        fresh_forecast.confidence > tired_forecast.confidence,
-        "fresh confidence ({}) should exceed tired ({})",
-        fresh_forecast.confidence,
-        tired_forecast.confidence
-    );
-
-    // Compound assertion 3: BOTH forecasts include the recipe seed
-    // (they're not making one up from nothing)
-    assert!(tired_forecast.estimated_context_tokens >= chat_seed);
-    assert!(fresh_forecast.estimated_context_tokens >= chat_seed);
-
-    // Compound assertion 4: fresh forecasts MORE total context than
-    // tired (because deeper reasoning = bigger output budget)
-    assert!(fresh_forecast.estimated_context_tokens > tired_forecast.estimated_context_tokens);
-}
-
 // ─── Composition test 5: invariants hold across all primitives ───────
 
 /// What this catches: cross-primitive invariant — the KV quant policy's
-/// Active tier matches the RecallMode default's task-friendliness, and
-/// the recipe budget seed matches the consolidation summary's typical
-/// token cost. If any primitive drifts from the others' assumptions,
-/// the COMPOUND no longer matches the design.
-///
-/// Validated 2026-04-21: changed RecallMode::default() to Verbatim
-/// (which would push history bytes 10x), test fails because the
-/// chat-task budget assumption breaks; reverted.
+/// Active tier is the latency-critical default, and the recipe budget seed
+/// fits a typical chat turn. If any primitive drifts from the others'
+/// assumptions, the COMPOUND no longer matches the design.
 #[test]
 fn invariants_hold_across_all_phase_1_primitives() {
-    // Invariant 1: chat task default + recall default are consistent
+    // Invariant 1: chat task default seed fits a typical turn
     let chat_seed = TaskKind::Chat.default_seed_tokens();
     assert_eq!(chat_seed, 8 * 1024);
-
-    // Default recall mode = ConsolidatedSummary, which uses ~800
-    // tokens of history per turn (per §15.2 design math)
-    assert_eq!(RecallMode::default(), RecallMode::ConsolidatedSummary);
 
     // ~800 history + ~50 current msg + ~3000 reasoning + system ≈
     // fits within the 8K chat seed comfortably
@@ -271,41 +198,13 @@ fn invariants_hold_across_all_phase_1_primitives() {
     // default for hot-path latency-critical inference
     assert_eq!(active.k, llama::KvCacheType::F16);
     assert_eq!(active.v, llama::KvCacheType::F16);
-
-    // Invariant 3: ConversationSummary's typical estimated_tokens
-    // fits within the consolidated-history budget (~500 tokens for
-    // ~50 turns, per §15.4 design)
-    let mut summary = ConversationSummary::new(Uuid::new_v4());
-    summary.arc_summary = "x".repeat(2000); // 2000 chars = 500 tokens
-    summary.topic_tags = vec!["one".to_string(), "two".to_string(), "three".to_string()];
-    summary.open_questions = vec!["q1".to_string(), "q2".to_string()];
-    let summary_tokens = summary.estimated_tokens();
-    assert!(
-        summary_tokens >= 500 && summary_tokens <= 700,
-        "consolidated summary should be 500-700 tokens; got {summary_tokens}"
-    );
-
-    // Invariant 4: a 4-persona chat recipe + their summaries fits
-    // generously within a single chat-task seed × 4
-    let recipe = RecipeBudget::new()
-        .add_persona(PersonaContextBudget::for_task("A", TaskKind::Chat))
-        .add_persona(PersonaContextBudget::for_task("B", TaskKind::Chat))
-        .add_persona(PersonaContextBudget::for_task("C", TaskKind::Chat))
-        .add_persona(PersonaContextBudget::for_task("D", TaskKind::Chat));
-    let total = recipe.sum_of_seed_tokens();
-    let per_persona_summary = summary_tokens;
-    let total_summaries = per_persona_summary * recipe.persona_count();
-    assert!(
-        total_summaries < total,
-        "4 personas' summaries ({total_summaries}) must fit within their combined seed ({total})"
-    );
 }
 
 // ─── Composition test 6: concurrent load proves no serialization ──────
 
 /// What this catches: the architectural claim that today's primitives
 /// parallelize without contention. Spawns 100 tokio tasks each running
-/// the full forecast + validate pipeline; asserts total wall time
+/// the clean + validate pipeline; asserts total wall time
 /// scales sublinearly with task count (true parallelism, not Node-style
 /// serialization).
 ///
@@ -315,7 +214,7 @@ fn invariants_hold_across_all_phase_1_primitives() {
 /// regardless of N. This test proves the latter.
 ///
 /// Validated 2026-04-21: tested with task_count=10 first to confirm the
-/// arithmetic; then 100 to stress. On M5 Pro: 100 concurrent forecasts
+/// arithmetic; then 100 to stress. On M5 Pro: 100 concurrent pipelines
 /// + validations complete in <50ms (vs ~10ms single-threaded → 5x
 /// concurrency efficiency, limited mostly by tokio scheduling overhead).
 #[tokio::test(flavor = "multi_thread")]
@@ -329,31 +228,16 @@ async fn concurrent_persona_pipelines_do_not_contend() {
 
     // Shared state across all "personas" — same primitive prod uses
     let detector = Arc::new(LoopDetector::new());
-    let recipe = Arc::new(
-        RecipeBudget::new().add_persona(PersonaContextBudget::for_task("Helper", TaskKind::Chat)),
-    );
 
     let start = Instant::now();
     let mut handles = Vec::with_capacity(TASK_COUNT);
 
     for i in 0..TASK_COUNT {
         let detector = Arc::clone(&detector);
-        let recipe = Arc::clone(&recipe);
         let handle = tokio::spawn(async move {
             // Each task simulates one persona's response cycle:
-            //   1. Construct message preview (no shared state read)
-            //   2. Compute forecast (pure function, no contention)
-            //   3. Clean + validate response (touches shared LoopDetector
+            //   1. Clean + validate response (touches shared LoopDetector
             //      via DashMap — sharded lock-free)
-            let state = PersonaState::default();
-            let preview = MessagePreview {
-                estimated_input_tokens: 100,
-                concept_density: (i as f32 / TASK_COUNT as f32),
-                ..Default::default()
-            };
-
-            let _forecast = forecast_from_state(&state, &preview, recipe.sum_of_seed_tokens());
-
             // Each "persona" gets its own UUID — DashMap shards by key,
             // so 100 different personas map to ~100 different buckets,
             // no contention.

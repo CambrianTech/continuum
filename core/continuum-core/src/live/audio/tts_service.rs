@@ -70,11 +70,6 @@ pub fn is_ready() -> bool {
     tts::is_initialized()
 }
 
-/// Get available voices
-pub fn get_voices() -> Vec<crate::live::audio::tts::VoiceInfo> {
-    tts::available_voices()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

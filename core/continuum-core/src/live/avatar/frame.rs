@@ -56,22 +56,6 @@ impl ResolutionTier {
         (1_000_000_000.0 / self.fps()) as u64
     }
 
-    /// Select tier from browser tile width in CSS pixels.
-    pub fn from_tile_width(px: u32) -> Self {
-        if px < 120 {
-            Self::Tiny
-        } else if px < 300 {
-            Self::Small
-        } else if px < 500 {
-            Self::Medium
-        } else if px < 800 {
-            Self::Large
-        } else if px < 1200 {
-            Self::HD
-        } else {
-            Self::FullHD
-        }
-    }
 }
 
 /// Raw RGBA frame extracted from the renderer.
@@ -136,28 +120,6 @@ mod tests {
         assert!((ResolutionTier::Large.fps() - 30.0).abs() < 0.01);
         assert!((ResolutionTier::HD.fps() - 30.0).abs() < 0.01);
         assert!((ResolutionTier::FullHD.fps() - 30.0).abs() < 0.01);
-    }
-
-    #[test]
-    fn test_resolution_tier_from_tile_width() {
-        assert_eq!(ResolutionTier::from_tile_width(50), ResolutionTier::Tiny);
-        assert_eq!(ResolutionTier::from_tile_width(119), ResolutionTier::Tiny);
-        assert_eq!(ResolutionTier::from_tile_width(120), ResolutionTier::Small);
-        assert_eq!(ResolutionTier::from_tile_width(299), ResolutionTier::Small);
-        assert_eq!(ResolutionTier::from_tile_width(300), ResolutionTier::Medium);
-        assert_eq!(ResolutionTier::from_tile_width(499), ResolutionTier::Medium);
-        assert_eq!(ResolutionTier::from_tile_width(500), ResolutionTier::Large);
-        assert_eq!(ResolutionTier::from_tile_width(799), ResolutionTier::Large);
-        assert_eq!(ResolutionTier::from_tile_width(800), ResolutionTier::HD);
-        assert_eq!(ResolutionTier::from_tile_width(1199), ResolutionTier::HD);
-        assert_eq!(
-            ResolutionTier::from_tile_width(1200),
-            ResolutionTier::FullHD
-        );
-        assert_eq!(
-            ResolutionTier::from_tile_width(1920),
-            ResolutionTier::FullHD
-        );
     }
 
     #[test]

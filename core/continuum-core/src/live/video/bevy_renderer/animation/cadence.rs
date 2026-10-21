@@ -53,7 +53,7 @@ pub(in crate::live::video::bevy_renderer) fn govern_idle_cadence(
             continue;
         }
         active += 1;
-        if speech_clips.clips.contains_key(slot) {
+        if speech_clips.clips.contains(slot) {
             speaking += 1;
         }
     }
@@ -84,7 +84,7 @@ pub(in crate::live::video::bevy_renderer) fn manage_render_cadence(
             None => continue,
         };
 
-        let is_speaking = speech_clips.clips.contains_key(slot);
+        let is_speaking = speech_clips.clips.contains(slot);
         let should_render = is_speaking || (frame % cadence == (*slot as u32 % cadence));
 
         if let Ok(mut camera) = cameras.get_mut(cam_entity) {

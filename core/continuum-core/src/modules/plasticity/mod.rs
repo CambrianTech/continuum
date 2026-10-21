@@ -25,8 +25,6 @@ pub mod quantizer;
 pub mod scoring;
 pub mod topology;
 pub mod types;
-#[cfg(test)]
-mod validation;
 
 use crate::runtime::{CommandResult, ModuleConfig, ModuleContext, ModulePriority, ServiceModule};
 use async_trait::async_trait;

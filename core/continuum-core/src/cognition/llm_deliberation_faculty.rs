@@ -382,11 +382,6 @@ impl LlmDeliberationFaculty {
         self
     }
 
-    pub fn with_temperature(mut self, temperature: f32) -> Self {
-        self.temperature = temperature;
-        self
-    }
-
     /// Authorize a tool set — the persona can now ACT, not just speak. The full
     /// set is NOT dumped into the prompt; it feeds the compact catalog the persona
     /// browses, and the model loads any one tool's schema on demand via

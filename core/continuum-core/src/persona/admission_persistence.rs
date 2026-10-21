@@ -330,11 +330,6 @@ impl RecordingSink {
         self.metadata_updates.lock().unwrap().clone()
     }
 
-    /// Engrams whose content was re-saved via `observe_content_update`
-    /// (redaction rewrote them). Lets a test assert the durable-rewrite fired.
-    pub fn content_updates_seen(&self) -> Vec<Engram> {
-        self.content_updates.lock().unwrap().clone()
-    }
 }
 
 impl Default for RecordingSink {

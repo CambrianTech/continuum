@@ -210,20 +210,6 @@ pub enum GenomeFormat {
     },
 }
 
-/// Package a trained checkpoint into a genome artifact — the ONE export surface.
-/// `checkpoint`/`save_directory` are custodian-owned handles; the organism never
-/// touches the bytes. `push_to_hub`/`repo_id` ride the genome-market publish path.
-#[derive(Debug, Clone)]
-pub struct PackageRequest {
-    pub checkpoint: String,
-    pub save_directory: String,
-    pub format: GenomeFormat,
-    pub max_seq_length: u32,
-    pub load_in_4bit: bool,
-    pub push_to_hub: bool,
-    pub repo_id: Option<String>,
-}
-
 /// The LoRA catalog a custodian owns. `outputs_dir` is the byte-custody root —
 /// the proof the trained bytes live custodian-side.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

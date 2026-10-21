@@ -301,13 +301,6 @@ impl ChannelQueue {
         self.items.first()
     }
 
-    /// Look at the highest-priority item as a trait-object reference
-    /// (no Arc handle). Cheap accessor for callers that only need to
-    /// read item state.
-    pub fn peek_ref(&self) -> Option<&dyn QueueItemBehavior> {
-        self.items.first().map(|i| i.as_ref())
-    }
-
     /// Get the priority of the highest-priority item (for state gating check)
     pub fn peek_priority(&self) -> f32 {
         let now = EpochMs::now().millis();

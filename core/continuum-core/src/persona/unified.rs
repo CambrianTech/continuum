@@ -507,7 +507,7 @@ mod tests {
     use crate::persona::engram::{ChatMessageRef, Engram, EngramKind, EngramOrigin, TrustState};
     use crate::persona::rag_budget::{RagContext, RagSource, ResolutionPreference};
     use crate::persona::rag_capture::{
-        InMemoryRagCaptureSink, NoopRagCaptureSink, RagCaptureEvent, RagCaptureSink,
+        InMemoryRagCaptureSink, RagCaptureEvent, RagCaptureSink,
     };
 
     #[test]
@@ -667,14 +667,6 @@ mod tests {
         // test just verifies no panic + the call path is exercised.
         // Confirm the field type satisfies the trait.
         let _: &Arc<dyn RagCaptureSink> = &pc.capture_sink;
-    }
-
-    /// Suppress unused import warning for the explicit Noop type when
-    /// the rest of the tests don't reference it directly. Keeps the
-    /// import alive for visibility checking + future tests.
-    #[allow(dead_code)]
-    fn _noop_alive() -> NoopRagCaptureSink {
-        NoopRagCaptureSink
     }
 
     // ---- Slice A (task #148): brain composes via FlexboxRagBudgetAdapter

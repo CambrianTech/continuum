@@ -60,8 +60,6 @@ const SOLVE_TIMEOUT: Duration = Duration::from_secs(300);
 /// serve ≥64K (for a 32K-native GGUF: `--ctx-size 65536 --rope-scaling yarn
 /// --yarn-orig-ctx 32768`). Surfaced here so the runner sizes the lane correctly.
 // context-budget-exempt: the OPPONENT model's own stated requirement, not a bound on ours — a gate that refuses to score Hermes below what it needs, so it can only ever raise the served window
-pub const HERMES_MIN_SERVED_CONTEXT: u32 = 64_000;
-
 /// Resolve a caller's optional endpoint to a concrete location — the "works with a
 /// default location" contract. `Some(url)` passes through (trailing slash trimmed);
 /// `None` falls back to [`DEFAULT_ENDPOINT`].

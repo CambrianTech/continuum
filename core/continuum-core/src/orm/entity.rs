@@ -184,16 +184,6 @@ impl OrmEntityRegistry {
         map.get(collection).cloned()
     }
 
-    /// All registered collection names. Useful for diagnostics and the
-    /// `data/list-collections` path.
-    pub fn collection_names(&self) -> Vec<String> {
-        let map = self
-            .schemas
-            .read()
-            .expect("OrmEntityRegistry lock poisoned");
-        map.keys().cloned().collect()
-    }
-
     /// Test-only reset of the global singleton. NOT for production use
     /// — registry is write-once at boot by design. Most tests should
     /// construct fresh `OrmEntityRegistry::new()` instances instead of
@@ -532,17 +522,6 @@ mod tests {
             err,
             RegistrationError::SchemaConflict { ref collection } if collection == "beta_test_collection"
         ));
-    }
-
-    /// collection_names returns every registered collection.
-    #[test]
-    fn collection_names_lists_all() {
-        let registry = OrmEntityRegistry::new();
-        registry.register::<Alpha>().expect("register Alpha");
-        registry.register::<Beta>().expect("register Beta");
-        let mut names = registry.collection_names();
-        names.sort();
-        assert_eq!(names, vec!["alpha_test_collection", "beta_test_collection"]);
     }
 
     /// BaseEntity wire type fields match `base_entity_fields()`

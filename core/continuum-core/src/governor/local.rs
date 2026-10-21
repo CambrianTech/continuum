@@ -173,16 +173,6 @@ impl LocalSubstrateGovernor {
         }
     }
 
-    /// Override the cascade thresholds (PR-3d wires the policy-file
-    /// hot-reload path; for PR-3c2 callers can set manually for tests).
-    pub fn set_thresholds(&self, thresholds: CascadeThresholds) {
-        let mut state = self
-            .snapshot_state
-            .lock()
-            .expect("LocalSubstrateGovernor snapshot mutex poisoned");
-        state.thresholds = thresholds;
-    }
-
     /// Current cascade step. Diagnostic — tests + telemetry consumers
     /// can introspect without going through snapshot().
     pub fn current_cascade_step(&self) -> u8 {

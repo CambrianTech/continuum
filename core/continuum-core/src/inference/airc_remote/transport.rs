@@ -207,15 +207,6 @@ impl LocalAdapterTransport {
         })
     }
 
-    pub fn with_peer_id(
-        adapter: Arc<dyn AIProviderAdapter>,
-        peer_id: impl Into<String>,
-    ) -> Arc<Self> {
-        Arc::new(Self {
-            adapter,
-            fake_peer_id: peer_id.into(),
-        })
-    }
 }
 
 #[async_trait]

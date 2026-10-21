@@ -83,44 +83,6 @@ pub fn scan_shards(dir: &Path, ext: &str) -> ArtifactShards {
     }
 }
 
-/// Find a VERIFIED structural twin of `nvme_artifact` under any of `cold_roots` (the
-/// Cold-drive artifact roots). Returns the cold twin's dir when found — the signal that
-/// the NVMe copy is a safe-to-drop duplicate. `None` = no verified twin → the governor
-/// must NOT drop the NVMe copy (migrate the bytes instead, or keep it).
-///
-/// A cold root is scanned one level deep for a subdir whose shards structurally twin the
-/// NVMe artifact (the model's own dir name may differ across drives, so match on shard
-/// identity, not the dir name).
-pub fn find_cold_twin(
-    nvme_artifact: &ArtifactShards,
-    cold_roots: &[PathBuf],
-    ext: &str,
-) -> Option<PathBuf> {
-    if nvme_artifact.shards.is_empty() {
-        return None;
-    }
-    for root in cold_roots {
-        // the root itself might hold the shards…
-        let here = scan_shards(root, ext);
-        if is_structural_twin(nvme_artifact, &here) {
-            return Some(root.clone());
-        }
-        // …or one of its immediate subdirs (Steam-library-style per-model dirs).
-        if let Ok(entries) = std::fs::read_dir(root) {
-            for sub in entries.flatten() {
-                let p = sub.path();
-                if p.is_dir() {
-                    let cand = scan_shards(&p, ext);
-                    if is_structural_twin(nvme_artifact, &cand) {
-                        return Some(p);
-                    }
-                }
-            }
-        }
-    }
-    None
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

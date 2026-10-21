@@ -10,7 +10,7 @@ use bevy::asset::Handle;
 use bevy::gltf::Gltf;
 use bevy::prelude::*;
 use crossbeam_channel::{Receiver, Sender};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use crate::gpu::memory_manager::GpuAllocationGuard;
@@ -21,7 +21,7 @@ use crate::live::avatar::RgbaFrame;
 pub use crate::live::video::avatar_types::{Emotion, Gesture};
 
 // Re-export scene types used by animation and skeleton modules.
-pub(super) use super::scene::{AvatarBones, MorphTargetLayout, SlotRegistry};
+pub(super) use super::scene::SlotRegistry;
 
 // =============================================================================
 // Public Types (used by external modules)
@@ -362,41 +362,6 @@ pub(super) struct PendingLoadEntry<T: bevy::asset::Asset> {
 // Animation State Resources (per-slot HashMaps)
 // =============================================================================
 
-/// Per-slot morph target layout discovered at scene load time.
-#[derive(Resource, Default)]
-pub(super) struct SlotMorphTargets {
-    pub layouts: HashMap<u8, MorphTargetLayout>,
-}
-
-/// Per-slot blink animation state.
-#[derive(Resource, Default)]
-pub(super) struct BlinkState {
-    pub slots: HashMap<u8, SlotBlinkState>,
-}
-
-pub(super) struct SlotBlinkState {
-    pub next_blink_time: f32,
-    pub blink_frames_remaining: u8,
-}
-
-/// Per-slot bone registry — tracks discovered skeleton bones for animation.
-#[derive(Resource, Default)]
-pub(super) struct BoneRegistry {
-    pub slots: HashMap<u8, AvatarBones>,
-}
-
-/// Per-slot idle gesture animation state.
-#[derive(Resource, Default)]
-pub(super) struct IdleGestureState {
-    pub slots: HashMap<u8, SlotGestureState>,
-}
-
-pub(super) struct SlotGestureState {
-    pub phase: f32,
-    pub head_turn_current: f32,
-    pub head_turn_target: f32,
-}
-
 /// Per-slot render target dimensions.
 #[derive(Resource)]
 pub(crate) struct SlotDimensions {
@@ -413,97 +378,12 @@ impl Default for SlotDimensions {
     }
 }
 
-/// An active speech clip playing on Bevy's timeline.
-pub(super) struct ActiveClip {
-    pub mouth_weights: Vec<f32>,
-    pub interval_ms: u32,
-    pub duration_ms: u64,
-    pub start_time: f32,
-}
-
 /// All active speech animations, keyed by slot.
 #[derive(Resource, Default)]
 pub(super) struct ActiveSpeechClips {
-    pub clips: HashMap<u8, ActiveClip>,
+    pub clips: HashSet<u8>,
     pub clips_started: u32,
-    pub clips_auto_stopped: u32,
     pub clips_interrupted: u32,
-}
-
-/// Legacy per-slot mouth weights (for SetMouthWeight individual command).
-#[derive(Resource, Default)]
-pub(super) struct LegacyMouthWeights {
-    pub weights: HashMap<u8, f32>,
-}
-
-/// Per-slot emotional expression state with smooth transitions and auto-decay.
-#[derive(Resource, Default)]
-pub(super) struct EmotionState {
-    pub slots: HashMap<u8, SlotEmotionState>,
-}
-
-pub(super) struct SlotEmotionState {
-    pub current: Emotion,
-    pub current_weight: f32,
-    pub target: Emotion,
-    pub target_weight: f32,
-    pub transition_rate: f32,
-    pub decay_timer: f32,
-}
-
-impl Default for SlotEmotionState {
-    fn default() -> Self {
-        Self {
-            current: Emotion::Neutral,
-            current_weight: 0.0,
-            target: Emotion::Neutral,
-            target_weight: 0.0,
-            transition_rate: 3.0,
-            decay_timer: 0.0,
-        }
-    }
-}
-
-/// Auto-decay duration for emotions.
-pub(super) const EMOTION_DECAY_SECS: f32 = 5.0;
-/// Speech attenuation for expression weight.
-pub(super) const SPEECH_ATTENUATION: f32 = 0.3;
-
-/// Per-slot body gesture state with attack/sustain/release phases.
-#[derive(Resource, Default)]
-pub(super) struct ActiveGestures {
-    pub slots: HashMap<u8, SlotGestureAnimState>,
-}
-
-/// Phase of a gesture animation's lifecycle.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub(super) enum GesturePhase {
-    Attack,
-    Sustain,
-    Release,
-}
-
-pub(super) struct SlotGestureAnimState {
-    pub gesture: Gesture,
-    pub phase: GesturePhase,
-    pub duration_secs: f32,
-    pub elapsed: f32,
-    pub weight: f32,
-}
-
-/// Duration of attack/release phases for gesture easing (seconds).
-pub(super) const GESTURE_EASE_SECS: f32 = 0.3;
-
-/// Per-slot cognitive animation state.
-#[derive(Resource, Default)]
-pub(super) struct CognitiveAnimState {
-    pub slots: HashMap<u8, SlotCognitiveState>,
-}
-
-pub(super) struct SlotCognitiveState {
-    pub state: crate::live::session::cognitive_animation::CognitiveState,
-    pub config: crate::live::session::cognitive_animation::CognitiveAnimationConfig,
-    pub time_since_reroll: f32,
 }
 
 // =============================================================================
@@ -546,7 +426,3 @@ pub(super) struct GpuGuards {
 #[derive(Resource)]
 pub(super) struct SharedMemoryStats(pub Arc<BevyMemoryStats>);
 
-/// Cached set of currently-speaking slot IDs — computed once per frame,
-/// consumed by multiple animation systems (speaking, expression, idle gestures, eye gaze, cognitive).
-#[derive(Resource, Default)]
-pub(super) struct SpeakingSlots(pub std::collections::HashSet<u8>);

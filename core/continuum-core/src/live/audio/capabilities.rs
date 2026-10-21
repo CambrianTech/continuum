@@ -178,23 +178,6 @@ impl ModelCapabilityRegistry {
         self.capabilities.insert(model_id, capabilities);
     }
 
-    /// List all audio-native models
-    pub fn list_audio_native(&self) -> Vec<&str> {
-        self.capabilities
-            .iter()
-            .filter(|(_, caps)| caps.is_audio_native())
-            .map(|(id, _)| id.as_str())
-            .collect()
-    }
-
-    /// List all models that can hear audio (input)
-    pub fn list_audio_input(&self) -> Vec<&str> {
-        self.capabilities
-            .iter()
-            .filter(|(_, caps)| caps.audio_input)
-            .map(|(id, _)| id.as_str())
-            .collect()
-    }
 }
 
 impl Default for ModelCapabilityRegistry {

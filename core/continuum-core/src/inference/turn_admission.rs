@@ -468,11 +468,6 @@ static KV_PAGE_SWITCH_MS: crate::cognition::resource_admission::WaitRing =
 /// first switch on a box is judged by (the UMA case lands in ~0.1 s; the floor is 100×).
 const KV_PAGE_WEDGE_FLOOR: std::time::Duration = std::time::Duration::from_secs(10);
 
-/// (p50 ms, p90 ms, count) of this node's completed page switches. (0, 0, 0) = unmeasured.
-pub fn kv_page_switch_ms() -> (u64, u64, u32) {
-    KV_PAGE_SWITCH_MS.p50_p90()
-}
-
 /// The interval at which a slow page switch asks whether the engine is still alive: the
 /// floor, raised to three times this node's measured p90. Past it a switch is only a
 /// WEDGE if the engine also stops answering `/health`. Pure.

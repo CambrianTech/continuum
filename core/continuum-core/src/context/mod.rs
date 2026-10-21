@@ -117,29 +117,6 @@ pub trait Context: Send + Sync + 'static {
     fn airc(&self) -> &Arc<dyn AircCitizen>;
 }
 
-/// Substrate utility: emit a structured log line scoped to a
-/// specific actor. The first proven `&dyn Context` consumer —
-/// validates the trait is load-bearing, not theoretical, per the
-/// CLAUDE.md outlier-validation pattern.
-///
-/// Why this lives in `context/`: every substrate-wide concern that
-/// needs an actor's identity ("who did this") routes through
-/// `&dyn Context`. Logging is the first such concern; capture
-/// scoping, ORM-tenancy, and rate-limit attribution will follow in
-/// the same shape (each adding a method on `Context` or a free
-/// function alongside this one).
-pub fn log_actor_action(ctx: &dyn Context, action: &str) {
-    let id = ctx.identity();
-    let id = id.as_ref();
-    tracing::info!(
-        actor.id = %id.id,
-        actor.kind = ?id.kind,
-        actor.name = %id.agent_name,
-        action = %action,
-        "actor action"
-    );
-}
-
 // ─── Test fixture: StubContext ──────────────────────────────────────────
 
 /// A `Context` implementor for tests — holds an `Identity` + a
@@ -222,26 +199,4 @@ mod tests {
         assert_eq!(ctx.airc().peer_id(), peer_id);
     }
 
-    /// `log_actor_action` accepts any `&dyn Context` — validates the
-    /// trait works through dynamic dispatch, which is the substrate-
-    /// wide shape every consumer will adopt. No assertion on the log
-    /// output itself (tracing setup is outside this slice); the
-    /// proof is "it compiles + runs."
-    #[test]
-    fn log_actor_action_takes_any_context() {
-        let peer_id = Uuid::new_v4();
-        let ctx = StubContext::new(
-            Identity {
-                id: peer_id,
-                kind: IdentityKind::Jtag,
-                agent_name: "jtag-test-invocation".to_string(),
-                home_path: "/tmp/jtag/airc".to_string(),
-                default_room: Uuid::new_v4(),
-                source: IdentitySource::FreshlyMinted,
-                agent_provider: None,
-            },
-            Arc::new(StubAircCitizen::new(peer_id)),
-        );
-        log_actor_action(&ctx, "test-action");
-    }
 }

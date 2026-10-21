@@ -247,19 +247,9 @@ impl MediaSession {
         id
     }
 
-    /// Remove a track
-    pub fn remove_track(&mut self, id: TrackId) -> Option<MediaTrack> {
-        self.tracks.remove(&id)
-    }
-
     /// Get a track by ID
     pub fn track(&self, id: TrackId) -> Option<&MediaTrack> {
         self.tracks.get(&id)
-    }
-
-    /// Get a mutable track by ID
-    pub fn track_mut(&mut self, id: TrackId) -> Option<&mut MediaTrack> {
-        self.tracks.get_mut(&id)
     }
 
     /// Get all audio tracks
@@ -322,19 +312,9 @@ impl MediaRoom {
         self.sessions.insert(session.handle, session);
     }
 
-    /// Remove a participant session
-    pub fn remove_session(&mut self, handle: &Handle) -> Option<MediaSession> {
-        self.sessions.remove(handle)
-    }
-
     /// Get a session
     pub fn session(&self, handle: &Handle) -> Option<&MediaSession> {
         self.sessions.get(handle)
-    }
-
-    /// Get a mutable session
-    pub fn session_mut(&mut self, handle: &Handle) -> Option<&mut MediaSession> {
-        self.sessions.get_mut(handle)
     }
 
     /// All sessions
@@ -483,24 +463,6 @@ mod tests {
         let ids = room.user_ids();
         assert!(ids.contains(&"u1"));
         assert!(ids.contains(&"u2"));
-    }
-
-    #[test]
-    fn test_room_remove_session() {
-        let mut room = MediaRoom::new("room1".into());
-        let h1 = test_handle();
-
-        room.add_session(MediaSession::with_audio(
-            h1,
-            "u1".into(),
-            "Alice".into(),
-            false,
-        ));
-        assert_eq!(room.participant_count(), 1);
-
-        let removed = room.remove_session(&h1);
-        assert!(removed.is_some());
-        assert_eq!(room.participant_count(), 0);
     }
 
     #[test]

@@ -172,11 +172,6 @@ impl SharedCompute {
         self.cache.clear();
     }
 
-    /// Number of scopes in the cache.
-    pub fn scope_count(&self) -> usize {
-        self.cache.len()
-    }
-
     /// Number of cached values in a scope.
     pub fn key_count(&self, scope: &str) -> usize {
         self.cache.get(scope).map(|m| m.len()).unwrap_or(0)
