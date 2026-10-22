@@ -96,28 +96,40 @@ speaks OpenAI) gets our engine's speed through the Serving seam, and continual l
 Dreaming seam, with no special case. That driver is also the outlier-B test of our own interfaces: if
 someone else's agent loop learns through the same seams our residents use, the seams are right. Drivers learn from all of their user's work and GitHub history (`docs/architecture/REPO-GENOME-AND-COURSES.md` §17).
 
-**Order of work, now** (updated 10-19 ~19:30Z; divide and conquer: work down YOUR lines, never stop at a
-wait, a wait means start your next line; update this table when a line lands or changes):
+**Order of work, now** (updated 10-22 ~13Z, Joel: "same plan, just the order to get it done". THE PATH
+is serial: each line's gate is the next line's precondition, so work the lowest open line first. The
+PARALLEL TRACKS never block the path; take one when the path line you own is waiting on a review or a
+build. Update this table when a line lands or changes.)
+
+**The path:**
 
 | # | Line | Owner | State / next action | Done when |
 |---|---|---|---|---|
-| 0 | Remove the benchmark harness from the mind (Joel: "cancerous tumor ... turning everyone into a harness"): ~16k lines of runner (benchmark.rs, swe_bench.rs, agent/solve, verdict sweep, standing) + benchmark concepts in 75 cognition/persona files; benchmarks become adapters into activities (BENCHMARKS-ARE-ADAPTERS-NOT-A-RUNNER.md) | Fable (map, plan), Codex (adapter boundary), Cormac (review) | removal map running read-only; then crate-sized PRs, each deleting more than it adds | no benchmark concept in cognition/ or persona/; no runner; a benchmark is a recipe the room runs |
-| 1 | The build loop: split the monolith BY THE PLACEMENT MAP (MODULE-ARCHITECTURE.md §9.2: each major module runs on any node); never compile on the serving node, use every grid machine | Fable (cuts), Codex (crate graph, parallel cut order) | #5194 continuum-base + gates cover split crates (CI); #5195 deletes 13,275 dead lines (CI); next: parallel cuts by several agents, own worktrees and target dirs | edit-to-checked < 2 min |
-| 2 | A mind's context as an epoch (reuse 48% -> 90%+) | Fable + Codex | continuum-context slices 1-2 pushed (replay: 92-95% reuse, ~3x less fresh); next: wire the faculty's render path into Epoch | live reuse >= 80% |
-| 3 | `EngineConfig` and KV capacity (#5188), incl. unrecorded backend -> f16/no-FA/half budget (Cormac's item 10) | Fable | resolve-then-adopt owner in inference/planning | no queue wait; warm-ahead runs |
-| 4 | Engine flags | Fable | DONE e678bb30c: prefill 105 -> 175-206 tok/s; decode drop under builds is line 1's | receipts on 9b9f3b59 |
-| 5 | Core CPU: cosine owner (#5189), revisioned vector corpus + BLAS + cascade, rayon spin | Codex | #5189: drop the two re-exports, then the corpus | idle-core sample near zero |
-| 6 | Every fast-path miss loud | Cormac | #5190: count resident_prefix_lost; #5191: probe wording; then the rest of the 24 | each miss class has a fixture |
-| 7 | Duplicates to one owner: 73 hand-built ~/.continuum paths (correctness), token estimators | Cormac (paths), Fable (tokens) | claim and migrate | rg finds one owner each |
-| 8 | No SQL outside the ORM (epoch watermark, card bbc5b0b6) | OPEN: claim it | migrate to an ORM entity | no rusqlite outside orm/ |
-| 9 | One logging system (clog_* into tracing, card b22ed589) | OPEN: claim it | then the macros move to continuum-base | no write_log_direct outside the layer |
-| 10 | Host-dependent tests (RAM, seats, timing; card c4d84be3) | OPEN: claim it | inject measured inputs via fixtures | same result on every host |
-| 11 | MTP draft KV at ~5.1k tokens | Cormac | size draft ctx from the slot | no draft decode failure |
-| 12 | The PR queue (68 open; ledger on card 397250f5) | everyone: your slice | review within a day, verdict at the exact head; run hygiene on the merged tree before merging | queue < 15 |
-| 13 | Prefill during tool calls; the instant voice | Fable, Codex | after lines 2-3 | submit-to-first-token |
-| 14 | Learned policies on our own receipts; residents review docs PRs; Atlas silent; Aiko gaps | open / residents | after the validators | each beats its constant offline |
-| 15 | Distributable modules: headless default (`default = []`; avatar-3d and livekit enabled per node by deploy profile), grid trust (every node reads `blocked` on 10-19), checks dispatched to idle grid nodes | Fable (default + profiles), Codex (trust), peers on the 5090/IntelMac (take checks) | profiles first, then flip the default with a before/after check time | a node joins by capability; an AWS box builds the core with no renderer |
-| 16 | Be the addendum: a Hermes driver on our seams. (a) Serving: Hermes on our engine vs Hermes on a stock server, same model and tasks, speed before/after; (b) Learning: once the acceptance test passes (a reviewed correction on unseen tasks, retained after restart, vs the base without the gene), Hermes sessions become perception and its corrections become genes. Drivers reach seams, not machines, so this is cross-grid by placement; and the agents developing continuum (Claude Code, Codex) are drivers too: our own dev sessions become the Matrix Dojo curriculum and we are the seams' first heavy users (Joel: "a good way to develop our own system") | OPEN: claim it after the queue clears | (a) first, needs no learning claim | Hermes users get our speed, then learning, by pointing at continuum |
+| 1 | Land the integration: the view stack (#5254, #5255), harness removal step 2 (#5211), 13k lines of dead code (#5195), ratchets judged against the base (#5267), no SQL outside the ORM (#5205), one token estimator in continuum-base | Fable; Cormac reviews | #5273 at 58f53a6c2 carries Cormac's six fixes; local: 8,541 tests pass, every ratchet holds or falls; awaiting his re-review | merged; canary deploys it |
+| 2 | Decode is never starved by another slot's prefill (card 843fb46d) | Cormac (Fable if free) | measured 10-22 on e27703e87: 4.6 tok/s decode while the other slot ran an 81k cold prefill; lane hold p50 1,374 s, so the 600 s lane-wait ceiling cancels the rest | decode during a concurrent prefill measured against solo decode, same build, both receipts |
+| 3 | A restart keeps each mind's KV: slots saved on stop and restored on start (Cormac's short-saves finding) | Cormac | a restart re-prefills ~81k tokens per resident at ~100 tok/s, ~25-30 min to warm four | the first act after a restart is mostly cached |
+| 4 | Residents at pace (goal 2) | Fable (M5), BigMama (5090) | warm prefill already 94% cached (Benchy 78.5k of 82.8k, 50 s); decode is the rest | median act <60 s at four residents; >=40 tool calls/h; a resident PR merged per day |
+| 5 | Proof 1: Hermes on our engine beats Hermes on a stock server (was line 16a) | OPEN: claim it | same model, tasks and machine, both arms | tasks solved and wall-clock per task at equal correctness, both receipts |
+| 6 | Benchmarks as an activity, steps 3-4 (BENCHMARKS-ARE-ADAPTERS-NOT-A-RUNNER.md): the last round-state readers onto the board, then the academy adapter | Fable (map), Codex (adapter boundary) | the adapter commands are live (benchmark/import, fetch, swe-setup, swe-grade, coursework/import) | a benchmark someone chooses runs as a recipe in a room; its acts are room turns |
+| 7 | Proof 3: a team of residents takes on an imported benchmark | Fable + residents | after 4 and 6 | the team's score vs one agent vs stock Hermes on the same split |
+| 8 | Learning (goal 8): a reviewed correction applied on unseen tasks, retained after restart, vs the same base without the gene; first on residents' own work, then from the benchmark team's corrections | Cormac, BigMama | | both receipts |
+| 9 | Proof 2: Hermes learns through our seams (was line 16b): its sessions become perception, its corrections genes | OPEN: after 8 | | the goal-8 test passes for a Hermes driver |
+
+**Parallel tracks** (never block the path):
+
+| Track | Owner | State / next action | Done when |
+|---|---|---|---|
+| Crates by the placement map: peel the kernel out of the dependency cycle (MICROKERNEL-DECOMPOSITION.md, "Why no cut has landed"), then cut continuum-kernel, engine, mind | Fable (cuts), Codex (crate graph) | 36 of 50 core modules in one cycle (module_cycles ratchet); first peel (HardwareProfile) in #5273; next: paging, test_env to a dev crate, then runtime's Session and Commands | ring 0 leaves the cycle; continuum-kernel checks alone in seconds |
+| `EngineConfig` and KV capacity (#5188) | Fable + Codex | design doc open | no queue wait; warm-ahead runs |
+| Core CPU: cosine owner (#5189), vector corpus + BLAS, rayon spin | Codex | | idle-core sample near zero |
+| Every fast-path miss loud (#5190, #5191, the rest of 24) | Cormac | | each miss class has a fixture |
+| Duplicates to one owner: hand-built ~/.continuum paths | Cormac | hand_built_homes 92 -> 87 in #5273 | rg finds one owner |
+| Lock poisoning: one policy per lock owner (card 34587cc7) | Fable | refused at 113 sites in #5172; fail-loud restored | no into_inner; a named error or parking_lot per owner |
+| Host-dependent tests (card c4d84be3); hands_isolation order-dependence (#5182) | OPEN: claim it | | same result on every host and order |
+| MTP draft KV at ~5.1k tokens | Cormac | | no draft decode failure |
+| Distributable modules: headless default, per-node deploy profiles, grid trust | Fable, Codex | | an AWS box builds the core with no renderer |
+| Prefill during tool calls; the instant voice | Fable, Codex | after path line 4 | submit-to-first-token |
+| The PR queue (ledger card 397250f5) | everyone | | queue < 15 |
 
 **Goal 11 workstreams** (10-19; each card carries its receipts). Obsess over making this the
 fastest persona on our hardware (Joel). Brainstorm, and add your ideas, in
