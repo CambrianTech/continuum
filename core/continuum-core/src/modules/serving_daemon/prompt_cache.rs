@@ -61,7 +61,7 @@ pub(super) fn derived_prompt_cache_mib(
             .unwrap_or_default();
     let planned: Vec<uuid::Uuid> =
         crate::persona::seed::persona_ids_with_seeds_in(&crate::context::citizens_kind_dir(
-            &crate::modules::persona_instance_manager::resolve_continuum_root(),
+            &crate::paths::continuum_root(),
             crate::identity::IdentityKind::Persona,
         ));
     let resident: std::collections::HashSet<uuid::Uuid> = live

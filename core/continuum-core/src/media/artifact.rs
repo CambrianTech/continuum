@@ -42,7 +42,7 @@ pub(crate) fn read_text_blob(reference: &MediaRef) -> Result<String, String> {
 }
 
 pub(crate) fn store_path() -> std::path::PathBuf {
-    crate::modules::persona_instance_manager::resolve_continuum_root()
+    crate::paths::continuum_root()
         .join("media")
         .join("blobs")
 }

@@ -32,7 +32,7 @@
 
 use std::collections::HashMap;
 
-use crate::inference::planning::throughput_lease::{ThroughputLease, ThroughputLeaseRevocationPolicy};
+use crate::resources::throughput_lease::{ThroughputLease, ThroughputLeaseRevocationPolicy};
 use crate::paging::broker::PressureTier;
 
 /// Disruption rank of revoking `lease` at `now_ms` — lower is revoked
@@ -148,7 +148,7 @@ pub fn select_leases_to_revoke(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::inference::planning::adaptive_throughput::{ResourceClass, TargetSilicon};
+    use crate::resources::throughput_class::{ResourceClass, TargetSilicon};
 
     fn lease(
         lease_id: &str,

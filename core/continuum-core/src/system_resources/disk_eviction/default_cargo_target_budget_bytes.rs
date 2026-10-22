@@ -327,7 +327,7 @@ pub struct CargoTargetPool {
     pub(super) budget_bytes: u64,
     pub(super) active_artifacts: Arc<ActiveArtifactSet>,
     /// Read the owning volume's already-published sample; never probe here.
-    pub(super) volume_sample: fn(&Path) -> Option<crate::capacity::system_profile::DriveInfo>,
+    pub(super) volume_sample: fn(&Path) -> Option<crate::system_resources::drives::DriveInfo>,
     pub(super) citizen_quiescence: fn(&Path) -> Result<(), String>,
     /// The last decline reason (as a discriminant) and how many times it has
     /// repeated unchanged — so a persistent condition is reported once and then
@@ -386,11 +386,11 @@ impl CargoTargetPool {
         }
     }
 
-    pub(super) fn budget_for_volume(&self, volume: Option<&crate::capacity::system_profile::DriveInfo>) -> u64 {
+    pub(super) fn budget_for_volume(&self, volume: Option<&crate::system_resources::drives::DriveInfo>) -> u64 {
         volume.map(|volume| cargo_target_budget_bytes(volume.total_bytes)).unwrap_or(self.budget_bytes)
     }
 
-    pub(super) fn pressure_for_volume(&self, volume: Option<&crate::capacity::system_profile::DriveInfo>) -> f64 {
+    pub(super) fn pressure_for_volume(&self, volume: Option<&crate::system_resources::drives::DriveInfo>) -> f64 {
         let own = self.tracked.bytes() as f64 / self.budget_for_volume(volume).max(1) as f64;
         let volume = volume.filter(|volume| volume.total_bytes > 0)
             .map(|volume| volume.total_bytes.saturating_sub(volume.available_bytes) as f64 / volume.total_bytes as f64)

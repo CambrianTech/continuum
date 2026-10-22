@@ -241,7 +241,7 @@
         // Cormac's 5058 P2: the actual bounded preparation path must refuse
         // sensitive roots before mkdir, even when lexically hidden behind '..'.
         let home = tempfile::tempdir().unwrap();
-        let policy = crate::code::confinement::Confinement::for_caller(
+        let policy = crate::system_resources::confinement::Confinement::for_caller(
             home.path(),
             &home.path().join(".continuum"),
             "",

@@ -1,6 +1,7 @@
 // Only the Windows paths below reach the parent's items (parse_tasklist_image_name).
 #[cfg(windows)]
 use super::*;
+use crate::system_resources::disk_reporters::Kept;
 
 
 /// `SIGKILL` the pid. Best-effort: a race where it already exited is fine.
@@ -303,9 +304,6 @@ pub(super) struct OwnedChild {
     pub(super) kept: Vec<Kept>,
     pub(super) label: &'static str,
 }
-
-/// A value an owned child keeps until its tree has ended (see [`holding`]).
-pub type Kept = std::sync::Arc<dyn std::any::Any + Send + Sync>;
 
 tokio::task_local! {
     /// What every owned child started on this task keeps until its tree has ended.

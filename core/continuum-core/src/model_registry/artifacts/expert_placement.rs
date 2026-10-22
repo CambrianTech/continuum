@@ -406,10 +406,10 @@ pub fn freeze(root: &Path, custody: &dyn ContainerMigrationCustody) -> Result<u6
     }
     let cold = std::fs::canonicalize(storage).map_err(|e| e.to_string())?;
     let root = crate::paths::cargo::physical_root(root)?;
-    let drives = crate::capacity::system_profile::detect_drives();
-    let source_drive = crate::capacity::system_profile::drive_holding(&drives, &root)
+    let drives = crate::system_resources::drives::detect_drives();
+    let source_drive = crate::system_resources::drives::drive_holding(&drives, &root)
         .ok_or("source volume unavailable")?;
-    let cold_drive = crate::capacity::system_profile::drive_holding(&drives, &cold)
+    let cold_drive = crate::system_resources::drives::drive_holding(&drives, &cold)
         .ok_or("cold volume unavailable")?;
     if source_drive.mount == cold_drive.mount {
         return Err("cold placement would not relieve the source volume".into());
@@ -422,8 +422,8 @@ pub fn freeze(root: &Path, custody: &dyn ContainerMigrationCustody) -> Result<u6
             // Closure hashing can be lengthy. Admission must sample the actual
             // destination at the write boundary, not reuse its pre-hash free
             // bytes. This remains admission rather than a reservation.
-            let current = crate::capacity::system_profile::detect_drives();
-            let observed = crate::capacity::system_profile::drive_holding(&current, &cold)
+            let current = crate::system_resources::drives::detect_drives();
+            let observed = crate::system_resources::drives::drive_holding(&current, &cold)
                 .ok_or("cold volume disappeared before copy")?;
             if observed.mount != cold_drive.mount {
                 return Err("cold volume changed before copy".into());

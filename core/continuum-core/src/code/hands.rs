@@ -35,7 +35,7 @@ struct Gate {
     /// What that work's callers held for it ([`crate::inference::lane_process::holding`], a
     /// checkout's sync lock): kept while anything lingers, released when a re-check finds
     /// nothing left (Codex reviewer on #5037).
-    kept: Vec<crate::inference::lane_process::Kept>,
+    kept: Vec<crate::system_resources::disk_reporters::Kept>,
 }
 
 /// What admitted work started and couldn't confirm ended when it ended it (a `gh` and its
@@ -116,7 +116,7 @@ impl HandsLease {
     /// Keep what an unconfirmed end's caller held for it ([`crate::inference::lane_process::holding`])
     /// with what lingers, so an exclusion over a tree nobody confirmed ended stays held until a
     /// re-check finds nothing left ([`retain_processes`]), never only until the end's task returns.
-    pub fn keep_held(&self, kept: &[crate::inference::lane_process::Kept]) {
+    pub fn keep_held(&self, kept: &[crate::system_resources::disk_reporters::Kept]) {
         let mut g = self.cell.0.lock().unwrap_or_else(|e| e.into_inner()); // unwrap_or_else: a poisoned gate still records
         g.kept.extend(kept.iter().cloned());
     }

@@ -624,7 +624,7 @@ impl PersonaWorkspaceRegistry {
         context_window: u32,
     ) -> usize {
         self.re_home_all_at(
-            &crate::modules::persona_instance_manager::resolve_continuum_root(),
+            &crate::paths::continuum_root(),
             adapter,
             model,
             context_window,

@@ -213,8 +213,8 @@ fn prepare_configured<'a>(
             if crate::paths::cargo::volume_id(&cold)? != cold_volume {
                 return Err("cold volume changed".into());
             }
-            let drives = crate::capacity::system_profile::detect_drives();
-            let drive = crate::capacity::system_profile::drive_holding(&drives, &cold)
+            let drives = crate::system_resources::drives::detect_drives();
+            let drive = crate::system_resources::drives::drive_holding(&drives, &cold)
                 .ok_or("cold volume unavailable")?;
             crate::paging::pool::ensure_projected_disk_capacity(
                 "expert-containers",

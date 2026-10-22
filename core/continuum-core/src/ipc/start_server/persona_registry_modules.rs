@@ -34,7 +34,7 @@ pub(super) fn register_persona_registry_modules(
             );
         }
     }
-    let continuum_root = crate::modules::persona_instance_manager::resolve_continuum_root();
+    let continuum_root = crate::paths::continuum_root();
     let daemon_socket_for_rag_inspect = daemon_socket.clone();
     let registry = crate::persona::PersonaAircRuntimeRegistry::new();
     // Publish the live roster process-globally so host-independent callers — the
@@ -197,7 +197,7 @@ pub(super) fn register_persona_registry_modules(
     // persona's own last generations, which is what an inspector reads).
     let rag_inspect_resolver = std::sync::Arc::new(
         crate::modules::persona_rag_inspect_filesystem::FilesystemPersonaResolver::new(
-            crate::modules::persona_instance_manager::resolve_continuum_root(),
+            crate::paths::continuum_root(),
             daemon_socket_for_rag_inspect,
         ),
     );

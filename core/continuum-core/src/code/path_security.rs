@@ -34,13 +34,13 @@ pub enum ReadScope {
     /// this node's resident (`deny` = her confinement's [`host_denials`]: every credential
     /// path and every other citizen's directory, Joel 2026-10-18 "keep creds off-limits").
     ///
-    /// [`host_denials`]: super::confinement::Confinement::host_denials
+    /// [`host_denials`]: crate::system_resources::confinement::Confinement::host_denials
     Host { deny: Vec<PathBuf> },
     /// Also any absolute path inside the caller's confinement (card d598c806): a citizen
     /// whose trust admits `code/shell` reads what her shell can read — her workspace,
     /// her citizen directory, the toolchains, the temp dir — and nothing the kernel
     /// would have refused her child. ONE policy for the shell and the file verbs.
-    Confined(super::confinement::AllowList),
+    Confined(crate::system_resources::confinement::AllowList),
 }
 
 /// Errors that can occur during path validation.
@@ -353,7 +353,7 @@ pub fn clean_path_arg(raw: &str) -> CleanedPathArg {
 /// Whether a host-scope caller is refused `path` (canonical): inside a denial root, or a
 /// scope's signing key wherever it sits.
 fn host_denied(deny: &[PathBuf], path: &Path) -> bool {
-    deny.iter().any(|d| path.starts_with(d)) || super::confinement::is_scoped_credential(path)
+    deny.iter().any(|d| path.starts_with(d)) || crate::system_resources::confinement::is_scoped_credential(path)
 }
 
 impl PathSecurity {

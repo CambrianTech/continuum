@@ -32,8 +32,8 @@ use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 use uuid::Uuid;
 
-use crate::inference::planning::throughput_lease::{ThroughputLease, ThroughputLeaseRegistry, ThroughputLeaseRevocationPolicy};
-use crate::inference::planning::adaptive_throughput::{ResourceClass, TargetSilicon};
+use crate::resources::throughput_lease::{ThroughputLease, ThroughputLeaseRegistry, ThroughputLeaseRevocationPolicy};
+use crate::resources::throughput_class::{ResourceClass, TargetSilicon};
 
 /// How long a granted slot stays reserved for a mind that has not arrived yet. The
 /// placement cadence bound: a spiller that could not bind within one move cooldown is

@@ -19,7 +19,7 @@
 //!
 //! Lane sits at the intersection of pre-shipped primitives:
 //!
-//! - [`crate::inference::planning::throughput_lease::ThroughputLease`] — the
+//! - [`crate::resources::throughput_lease::ThroughputLease`] — the
 //!   slot primitive, including the revocation policy (Pinned /
 //!   Graceful / Hard) that the pressure broker honors.
 //! - [`crate::inference::recipe_budget::TaskKind`] — the canonical
@@ -50,7 +50,7 @@ use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 use uuid::Uuid;
 
-use crate::inference::planning::throughput_lease::{ThroughputLease, ThroughputLeaseRevocationPolicy};
+use crate::resources::throughput_lease::{ThroughputLease, ThroughputLeaseRevocationPolicy};
 use crate::identity::PeerId;
 use crate::inference::recipe_budget::TaskKind;
 
@@ -220,7 +220,7 @@ impl Lane {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::inference::planning::adaptive_throughput::{ResourceClass, TargetSilicon};
+    use crate::resources::throughput_class::{ResourceClass, TargetSilicon};
 
     fn persona() -> PeerId {
         PeerId::from_uuid(Uuid::from_u128(0xAAAA))

@@ -1,7 +1,7 @@
 //! The byte-residency ledger — pure accounting for who holds what right now.
 //!
 //! [`ResourceLeaseLedger`] is the byte-axis sibling of this module's
-//! [`ThroughputLeaseRegistry`](crate::inference::planning::throughput_lease::ThroughputLeaseRegistry): same
+//! [`ThroughputLeaseRegistry`](crate::resources::throughput_lease::ThroughputLeaseRegistry): same
 //! acquire/renew/release/expire lifecycle, but it tracks **bytes of physical
 //! capacity** (VRAM/RAM/disk) a subsystem holds rather than concurrency slots a
 //! transient job occupies. Its one job that the throughput registry cannot do:

@@ -6,7 +6,6 @@
 
 pub mod adaptive_throughput;
 pub mod service_rate;
-pub mod throughput_lease;
 pub mod training_plan;
 
 /// Bare-minimum served window for a model to be runnable at ALL — a hardware

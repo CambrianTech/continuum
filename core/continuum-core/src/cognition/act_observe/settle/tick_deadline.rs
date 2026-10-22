@@ -270,7 +270,7 @@ pub(super) async fn drive_with_input(
     }
     if let Some(body) = cycle.acting() {
         crate::cognition::experience::record_lived_turn(
-            &crate::modules::persona_instance_manager::resolve_continuum_root(),
+            &crate::paths::continuum_root(),
             crate::identity::PeerId::from_uuid(body.persona_id),
             &settled,
         );

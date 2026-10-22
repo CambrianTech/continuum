@@ -534,7 +534,7 @@ pub fn spawn(
     // second, harder surface at `activity/spawn`, whose validation reads the
     // SAME directory and returns the parse error naming the file.
     let overlay_dir = RecipeExperienceSource::overlay_dir(
-        &crate::modules::persona_instance_manager::resolve_continuum_root(),
+        &crate::paths::continuum_root(),
     );
     let experience_source = match RecipeExperienceSource::builtins_with_overlay(
         purpose.clone(),

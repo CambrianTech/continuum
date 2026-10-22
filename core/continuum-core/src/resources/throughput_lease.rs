@@ -11,7 +11,7 @@
 //! PressureBroker to prefer expired or revocable leases before touching
 //! pinned work.
 
-use super::adaptive_throughput::{ResourceClass, TargetSilicon};
+use super::throughput_class::{ResourceClass, TargetSilicon};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use ts_rs::TS;

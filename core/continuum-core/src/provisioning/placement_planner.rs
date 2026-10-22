@@ -193,7 +193,8 @@ pub fn grid_has_fit(snapshot: &GridSnapshot, footprint: &ModelFootprint) -> bool
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::capacity::{DeviceCapacity, DriveInfo, DriveRole};
+    use crate::capacity::DeviceCapacity;
+    use crate::system_resources::drives::{DriveInfo, DriveRole};
 
     const GB: u64 = 1024 * 1024 * 1024;
 

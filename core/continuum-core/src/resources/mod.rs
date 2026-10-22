@@ -179,6 +179,8 @@ pub mod lease;
 pub mod ledger;
 pub mod mode_policy;
 pub mod placement;
+pub mod throughput_class;
+pub mod throughput_lease;
 
 pub use broker::{
     ResourceAdmissionReport, ResourceBroker, ResourceBrokerConfig, ResourceDemand,

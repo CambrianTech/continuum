@@ -31,7 +31,7 @@ impl ResourcePool for CargoTargetPool {
         let root = self.tracked.path().to_path_buf();
         let citizen_custody = self.tracked.eviction_custody();
         let _hands = if let Some(peer) = *citizen_custody {
-            let Some(hands) = HandsLease::try_take(peer) else {
+            let Some(hands) = PersonaHandsLease::try_take(peer) else {
                 return self.declined(DeclinedEviction::CitizenBusy("hands are in use".into()));
             };
             let home = match crate::paths::continuum_home() {

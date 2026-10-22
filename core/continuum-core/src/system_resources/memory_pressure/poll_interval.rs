@@ -30,6 +30,18 @@ pub(super) fn anomaly_line_due(last_said: Option<std::time::Instant>, now: std::
 pub(super) static ANOMALY_SAID: std::sync::LazyLock<std::sync::Mutex<std::collections::HashMap<String, std::time::Instant>>> =
     std::sync::LazyLock::new(Default::default);
 
+/// How the monitor reaches the org room. The room belongs to the grid module, which is above
+/// this kernel, so the grid registers its voice at boot (the way owners register what they
+/// hold with the disk reporters) instead of the monitor naming the grid.
+pub type OrgRoomVoice = fn(String) -> futures::future::BoxFuture<'static, ()>;
+
+static ORG_ROOM_VOICE: std::sync::OnceLock<OrgRoomVoice> = std::sync::OnceLock::new();
+
+/// Register the org-room voice. First registration wins: one voice per process.
+pub fn register_org_room_voice(voice: OrgRoomVoice) {
+    let _ = ORG_ROOM_VOICE.set(voice); // set: a second registration is the same voice, ignored
+}
+
 /// SAY THE ANOMALY WHERE A PERSON OR A PEER WILL SEE IT. `memory.pressure.anomaly` was
 /// written after fseventsd held 26.6 GB (2026-09-08) and NOTHING read it: the probe file
 /// rotates within the hour, so fseventsd grew to 14 GB again on 2026-09-24 and the only
@@ -55,9 +67,17 @@ pub(super) fn say_anomaly(name: &str, pid: u32, rss_bytes: u64, total_bytes: u64
         gb(rss_bytes),
         gb(total_bytes),
     );
+    let Some(voice) = ORG_ROOM_VOICE.get() else {
+        continuum_base::probe!(
+            class = "memory.pressure.anomaly_not_said",
+            process = %name,
+            "no org-room voice registered — the anomaly stays in the probe only"
+        );
+        return;
+    };
     match tokio::runtime::Handle::try_current() {
         Ok(handle) => {
-            handle.spawn(async move { crate::modules::grid::say_in_org_room(&line).await });
+            handle.spawn(voice(line));
         }
         Err(_) => continuum_base::probe!(
             class = "memory.pressure.anomaly_not_said",

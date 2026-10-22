@@ -95,7 +95,7 @@ static CURRENT_DISK_LEVEL: std::sync::atomic::AtomicU8 = std::sync::atomic::Atom
 /// The last published snapshot, for the command surface (`system/resources`). A
 /// brief `RwLock` written once per 30 s poll and read on demand — never across an
 /// await.
-static CURRENT_DISK_SNAPSHOT: parking_lot::RwLock<Option<(DiskPressureSnapshot, Vec<crate::capacity::system_profile::DriveInfo>)>> =
+static CURRENT_DISK_SNAPSHOT: parking_lot::RwLock<Option<(DiskPressureSnapshot, Vec<crate::system_resources::drives::DriveInfo>)>> =
     parking_lot::RwLock::new(None);
 
 /// Check if the disk gate is closed (critical pressure sustained).
@@ -358,7 +358,7 @@ const QUARANTINE_AFTER: u32 = 3;
 pub(crate) const REPORTER_TIMEOUT: Duration = Duration::from_millis(100);
 
 /// THE VOLUME WE MEASURE IS THE ONE THAT HOLDS THE SUBSTRATE'S HOME — resolved
-/// through the drive adapter ([`crate::capacity::system_profile::drive_holding`]),
+/// through the drive adapter ([`crate::system_resources::drives::drive_holding`]),
 /// never named. Until 2026-09-18 this file held `const ROOT_MOUNT = "/"` and
 /// matched every mount point against it by string equality. On Windows no mount is
 /// `/` (`C:\`), so the lookup found nothing, read `(0, 0)`, computed pressure 0.0,
@@ -405,10 +405,10 @@ struct VolumeReading {
 /// Normal, which is the lie #4185 was written to end and then re-committed in its
 /// own no-match arm (2026-09-19).
 fn volume_reading(
-    drives: &[crate::capacity::system_profile::DriveInfo],
+    drives: &[crate::system_resources::drives::DriveInfo],
     home: &std::path::Path,
 ) -> VolumeReading {
-    if let Some(d) = crate::capacity::system_profile::drive_holding(drives, home)
+    if let Some(d) = crate::system_resources::drives::drive_holding(drives, home)
         .filter(|d| d.total_bytes > 0)
     {
         return VolumeReading {
@@ -496,10 +496,10 @@ impl DiskPressureMonitor {
     }
 
     /// Same mount sample as the monitor snapshot; no caller starts another probe.
-    pub fn volume_for(path: &std::path::Path) -> Option<crate::capacity::system_profile::DriveInfo> {
+    pub fn volume_for(path: &std::path::Path) -> Option<crate::system_resources::drives::DriveInfo> {
         let current = CURRENT_DISK_SNAPSHOT.read();
         let (_, drives) = current.as_ref()?;
-        crate::capacity::system_profile::drive_holding(drives, path).cloned()
+        crate::system_resources::drives::drive_holding(drives, path).cloned()
     }
     /// Lock-free current level. Updated every poll.
     pub fn current_level() -> DiskPressureLevel {
@@ -591,15 +591,15 @@ impl DiskPressureMonitor {
             // cheap once warmed. The lock is uncontended (only this task locks
             // it), so even a momentarily slow stat can't stall a reader.
             st.disks.refresh(true);
-            let home = crate::modules::persona_instance_manager::resolve_continuum_root();
-            let drives: Vec<crate::capacity::system_profile::DriveInfo> = st
+            let home = crate::paths::continuum_root();
+            let drives: Vec<crate::system_resources::drives::DriveInfo> = st
                 .disks
                 .iter()
-                .map(|d| crate::capacity::system_profile::DriveInfo {
+                .map(|d| crate::system_resources::drives::DriveInfo {
                     mount: d.mount_point().to_path_buf(),
                     total_bytes: d.total_space(),
                     available_bytes: d.available_space(),
-                    role: crate::capacity::system_profile::DriveRole::System,
+                    role: crate::system_resources::drives::DriveRole::System,
                 })
                 .collect();
             let reading = volume_reading(&drives, &home);

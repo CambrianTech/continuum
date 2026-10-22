@@ -196,6 +196,11 @@ impl TrackedDir {
 /// writer selects another Cargo root. Boot consumers, durable replay and later
 /// writers all use the same TrackedDir instances and scanner.
 mod registry;
+/// A value an owned child process keeps until its tree has ended (see
+/// `inference::lane_process::holding`): the cargo-target lease is one. Defined here because
+/// `CargoAdmission::kept` hands it out and this kernel module cannot name the engine.
+pub type Kept = std::sync::Arc<dyn std::any::Any + Send + Sync>;
+
 pub use registry::{admit_cargo_target, bind_cargo_owners, register_cargo_target, restore_cargo_roots};
 pub(crate) use registry::resolve_existing_storage_path;
 pub(crate) use registry::citizen_has_cargo_owner;

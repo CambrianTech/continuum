@@ -61,7 +61,7 @@ pub mod profile_fixtures;
 pub mod trace_tail;
 pub mod vq_decode;
 
-pub use system_profile::{DriveInfo, DriveRole, SystemProfile};
+pub use system_profile::SystemProfile;
 
 /// A LIVE reading of one device's usable compute, external consumers already subtracted.
 /// NOT a boot classification — re-taken continuously. `gpu_free_bytes_live` is the

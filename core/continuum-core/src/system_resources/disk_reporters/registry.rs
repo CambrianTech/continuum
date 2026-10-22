@@ -75,8 +75,8 @@ type Resolution =
 enum PathWork {
     Resolve,
     ResolveExisting,
-    Validate(crate::code::confinement::Confinement),
-    Prepare(crate::code::confinement::Confinement),
+    Validate(crate::system_resources::confinement::Confinement),
+    Prepare(crate::system_resources::confinement::Confinement),
     Observe,
     Empty,
 }
@@ -94,14 +94,14 @@ struct DurableRoots {
 /// The registry's writer hold starts before durable admission and is retained by
 /// the existing child-process authority until termination is confirmed.
 pub struct CargoAdmission {
-    grant: Option<crate::code::confinement::CargoTargetGrant>,
+    grant: Option<crate::system_resources::confinement::CargoTargetGrant>,
     lease: Arc<RootLease>,
 }
 impl CargoAdmission {
-    pub fn grant(&self) -> Option<&crate::code::confinement::CargoTargetGrant> {
+    pub fn grant(&self) -> Option<&crate::system_resources::confinement::CargoTargetGrant> {
         self.grant.as_ref()
     }
-    pub fn kept(&self) -> crate::inference::lane_process::Kept {
+    pub fn kept(&self) -> super::Kept {
         self.lease.clone()
     }
 }
@@ -457,7 +457,7 @@ impl Registry {
         let observation = self.path_work(path, PathWork::Observe).await?;
         let mut durable = self.1.lock().await;
         let records = durable.as_mut().ok_or("disk root ownership has not restored yet")?;
-        let _hands = crate::modules::work::HandsLease::try_take(peer)
+        let _hands = crate::system_resources::hands_lease::PersonaHandsLease::try_take(peer)
             .ok_or("citizen hands are busy; Cargo observation deferred")?;
         // Binding is conservative even if persistence fails: an already exposed
         // generic pool must stop using generic custody before the durable write.
@@ -608,12 +608,12 @@ pub(crate) async fn resolve_existing_storage_path(path: &Path) -> Result<std::pa
 pub async fn admit_cargo_target(
     path: &Path,
     cwd: &Path,
-    confinement: Option<&crate::code::confinement::Confinement>,
+    confinement: Option<&crate::system_resources::confinement::Confinement>,
 ) -> Result<CargoAdmission, String> {
     let registry = writer_registry()?;
     let policy = match confinement {
         Some(policy) => policy.clone(),
-        None => crate::code::confinement::Confinement::for_caller(
+        None => crate::system_resources::confinement::Confinement::for_caller(
             &dirs::home_dir()
                 .ok_or_else(|| "Cargo target validation requires the native home".to_string())?,
             &crate::paths::continuum_home()?,
@@ -633,7 +633,7 @@ pub async fn admit_cargo_target(
             .path_work_within(path, PathWork::Prepare(policy.clone()), ADMISSION_BOUND)
             .await?;
         return Ok(CargoAdmission {
-            grant: Some(crate::code::confinement::CargoTargetGrant::admitted(
+            grant: Some(crate::system_resources::confinement::CargoTargetGrant::admitted(
                 prepared.path,
                 policy,
             )),

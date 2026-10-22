@@ -261,34 +261,3 @@ impl ActionCommand for WorkClaim {
         })
     }
 }
-
-/// One-per-persona hands lease: a workspace reclaim takes the resident's hands so no
-/// two reclaims (or a reclaim and anything else that takes them) work one tree at once.
-/// RAII: dropping the lease (any exit path, panics included) frees the persona.
-pub(crate) struct HandsLease(pub(super) uuid::Uuid);
-
-pub(super) fn busy_hands() -> &'static std::sync::Mutex<std::collections::HashSet<uuid::Uuid>> {
-    static BUSY: std::sync::OnceLock<std::sync::Mutex<std::collections::HashSet<uuid::Uuid>>> =
-        std::sync::OnceLock::new();
-    BUSY.get_or_init(Default::default)
-}
-
-impl HandsLease {
-    /// Take this persona's hands, or `None` while another holder has them.
-    pub(crate) fn try_take(persona: uuid::Uuid) -> Option<Self> {
-        let mut g = busy_hands().lock().expect("busy-hands lock never poisoned"); // expect: guards a HashSet op only
-        if g.insert(persona) {
-            Some(Self(persona))
-        } else {
-            None
-        }
-    }
-}
-
-impl Drop for HandsLease {
-    fn drop(&mut self) {
-        if let Ok(mut g) = busy_hands().lock() {
-            g.remove(&self.0);
-        }
-    }
-}

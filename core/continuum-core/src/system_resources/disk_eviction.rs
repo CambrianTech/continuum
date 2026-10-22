@@ -30,7 +30,7 @@
 //!    Generic deps/build and top-level installer inputs remain retained and reported. Custom profiles
 //!    and target-triple subtrees are not inferred from arbitrary directory names.
 
-use crate::modules::work::HandsLease;
+use crate::system_resources::hands_lease::PersonaHandsLease;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};

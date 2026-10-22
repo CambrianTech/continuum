@@ -1,5 +1,6 @@
 #![cfg(test)]
     use super::*;
+    use crate::system_resources::disk_reporters::Kept;
 
     // what this catches (e92f227c): captured background commands allocating or
     // inheriting a console. The observation is made by the actual native child.

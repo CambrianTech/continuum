@@ -489,7 +489,7 @@ pub(super) async fn ensure_shell(state: &CodeState, ctx: &Ctx) -> Result<String,
 /// credential paths and other citizens' directories (Joel 2026-10-18: "keep creds
 /// off-limits"): she quotes tool output into rooms, and a room reaches every enrolled
 /// peer. Her shell also never inherits the core's secrets (`strip_secret_env`).
-pub(crate) fn confinement_of(ctx: &Ctx, workspace: &std::path::Path) -> Option<crate::code::confinement::Confinement> {
+pub(crate) fn confinement_of(ctx: &Ctx, workspace: &std::path::Path) -> Option<crate::system_resources::confinement::Confinement> {
     let resident = ctx.caller.as_ref().is_some_and(|c| c.source == crate::routing::auth_policy::CallerSource::LocalPersona);
     let trust = crate::modules::grid::trust_policy::caller_trust(ctx.caller.as_ref());
     if !resident && trust == crate::modules::grid::node::TrustLevel::Owner {
@@ -497,7 +497,7 @@ pub(crate) fn confinement_of(ctx: &Ctx, workspace: &std::path::Path) -> Option<c
     }
     let home = crate::paths::home_dir()?;
     let continuum_root = crate::paths::continuum_home().ok()?;
-    let confinement = crate::code::confinement::Confinement::for_caller(&home, &continuum_root, &caller_id(ctx), workspace);
+    let confinement = crate::system_resources::confinement::Confinement::for_caller(&home, &continuum_root, &caller_id(ctx), workspace);
     Some(if resident { confinement.reaching_host() } else { confinement })
 }
 
