@@ -37,7 +37,6 @@ pub mod floor_fetch;
 pub mod bevy_consumer;
 pub mod card_carry;
 pub mod card_staging;
-pub mod repo_registry;
 pub mod channel;
 pub mod chat;
 pub mod code;

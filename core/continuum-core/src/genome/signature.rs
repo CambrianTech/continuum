@@ -5,7 +5,7 @@
 //! the SAME embedding space engram recall uses — gene recall and memory recall
 //! are one problem, so this module reuses the one embedding lane
 //! ([`crate::cognition::embedding`]) and the one clustering kernel
-//! ([`crate::modules::embedding::detect_clusters`]), never a parallel space.
+//! ([`crate::cognition::embedding::vector_math::detect_clusters`]), never a parallel space.
 //!
 //! # Where signatures come from and where they live
 //!
@@ -147,7 +147,7 @@ impl GeneSignature {
         normalize(&mut centroid);
 
         // Subspaces: the shared clustering kernel, largest themes first.
-        let mut clusters = crate::modules::embedding::detect_clusters(
+        let mut clusters = crate::cognition::embedding::vector_math::detect_clusters(
             &embeddings,
             SUBSPACE_MIN_SIMILARITY,
             SUBSPACE_MIN_CLUSTER_SIZE,

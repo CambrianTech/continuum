@@ -46,7 +46,6 @@ use crate::code::types::{
     DirEntry, ExistsResult, FsEntryKind, GlobResult, ListResult, ReadResult, SearchMatch,
     SearchResult, TreeResult, WriteResult,
 };
-use crate::code::git_bridge::{run_git, run_git_with_env};
 use crate::code::hands::HandsKey;
 use crate::code::{search, tree, EditMode, FileEngine, PathSecurity, ShellSession};
 use crate::sdk_codegen::{AccessLevel, ActionCommand, CommandError, Ctx, DynCommand, ToolVerdict};
@@ -64,6 +63,9 @@ macro_rules! engine {
             .ok_or_else(|| CommandError::Internal("workspace vanished after provisioning".into()))?
     }};
 }
+
+use crate::code::citizen_layer::*;
+use crate::code::hands::ReleaseHandsResult;
 
 mod engine_err;
 pub use engine_err::*;

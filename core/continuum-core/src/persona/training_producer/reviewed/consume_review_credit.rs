@@ -223,7 +223,7 @@ pub async fn read_one<T: Transport, E: OrmEntity + DeserializeOwned>(
             }),
         )
         .await?;
-    let mut result: crate::modules::data::DataListResult = serde_json::from_value(value)?; // Decode the data/list command envelope once at the storage boundary.
+    let mut result: crate::orm::list_result::DataListResult = serde_json::from_value(value)?; // Decode the data/list command envelope once at the storage boundary.
     if result.total > 1 || result.items.len() != result.total as usize {
         return Err(ClientError::Transport(
             "incomplete or nonunique credit lookup".into(),
@@ -475,7 +475,7 @@ pub async fn bind_submission_generation<T: Transport>(
     // The child index exists precisely for this join. Loading every lived turn
     // on the card can materialize tens of MiB before finding a single request.
     // Never bind from a partial result, or trust the index instead of the parent.
-    let result: crate::modules::data::DataListResult =
+    let result: crate::orm::list_result::DataListResult =
         serde_json::from_value(value).map_err(ClientError::from)?; // Decode the data/list storage command response envelope.
     if result.items.len() != result.total as usize {
         return Err(ClientError::Transport("incomplete generation credit lookup".into()).into());
@@ -640,7 +640,7 @@ pub(super) async fn read_reservations<T: Transport>(
             }),
         )
         .await?;
-    let result: crate::modules::data::DataListResult = serde_json::from_value(value)?; // Decode the indexed data/list response at the storage boundary.
+    let result: crate::orm::list_result::DataListResult = serde_json::from_value(value)?; // Decode the indexed data/list response at the storage boundary.
     if result.items.len() != result.total as usize {
         return Err(ClientError::Transport(
             "incomplete generation reservation lookup".into(),

@@ -8,14 +8,14 @@
 //! embedding call and the recall call happen outside and hand their results in.
 //!
 //! The same clustering kernel recall and gene signatures use
-//! (`modules::embedding::detect_clusters`), never a parallel space.
+//! (`cognition::embedding::vector_math::detect_clusters`), never a parallel space.
 
 use std::path::{Path, PathBuf};
 
 use uuid::Uuid;
 
 use crate::genome::signature::SignatureStore;
-use crate::modules::embedding::detect_clusters;
+use crate::cognition::embedding::vector_math::detect_clusters;
 
 /// A gene's identity, as the two places a gene can live spell it: an adapter PATH on
 /// this node (what the manifest, the serving daemon and the signature store key by),

@@ -106,7 +106,7 @@ pub(crate) async fn close_acting_context(hands: &ActingHands) -> Result<(), Cont
     let releasing = crate::routing::CallerIdentity::local_persona(crate::identity::PeerId::from_uuid(hands.persona_id))
         .in_hands(context)
         .releasing_hands();
-    let release: crate::modules::code_commands::ReleaseHandsResult = match core
+    let release: crate::code::hands::ReleaseHandsResult = match core
         .execute_with_caller("code/release-hands", serde_json::json!({}), Some(releasing))
         .await
     {

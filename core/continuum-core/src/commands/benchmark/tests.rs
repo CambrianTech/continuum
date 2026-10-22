@@ -1,5 +1,6 @@
 #![cfg(test)]
     use super::*;
+    use crate::recipe::benchmark_catalog::Grader;
 
     // what this catches: #370. Every catalogued suite carried a real `source_url` and exactly
     // ONE of them could be pulled, because the only fetcher was fused to the SWE row shape.

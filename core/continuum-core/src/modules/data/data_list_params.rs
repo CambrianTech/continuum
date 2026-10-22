@@ -45,20 +45,6 @@ pub struct DataListParams {
     pub handle: Option<String>,
 }
 
-/// Result of `data/list` — the matching records + an accurate total.
-#[derive(Debug, Clone, Serialize, Deserialize, ts_rs::TS, schemars::JsonSchema)]
-#[ts(
-    export,
-    export_to = "../../../protocol/typescript/data/DataListResult.ts"
-)]
-pub struct DataListResult {
-    /// The matching records (each carries id, collection, data, metadata).
-    #[ts(type = "Array<unknown>")]
-    pub items: Vec<serde_json::Value>,
-    /// Total records matching the filter (SQL COUNT — independent of `limit`).
-    pub total: u32,
-}
-
 /// Output of `adapter/info` — the storage adapter's identity plus its full
 /// capability surface for a given handle. Subsumes the old `adapter/capabilities`
 /// (capabilities are a field here, not a parallel command).

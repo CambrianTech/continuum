@@ -78,7 +78,7 @@ use super::*;
             )
             .await
             .unwrap();
-        let links: crate::modules::data::DataListResult = serde_json::from_value(links).unwrap();
+        let links: crate::orm::list_result::DataListResult = serde_json::from_value(links).unwrap();
         assert_eq!(links.total, 1);
         let link: crate::orm::types::DataRecord =
             serde_json::from_value(links.items[0].clone()).unwrap();

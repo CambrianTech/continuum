@@ -95,7 +95,7 @@ pub async fn stage_for_card(home: &Path, claimer: Uuid, card: &airc_lib::WorkCar
     // staged as Ordinary and her hands stayed on the resident checkout, so a citizen who
     // pulled a card for another project (career-wrangler, 2026-09-28) had git, the PR
     // verbs and the build all pointed at continuum while she worked someone else's repo.
-    let clone = match crate::modules::repo_registry::path_for(&repo) {
+    let clone = match crate::code::repo_registry::path_for(&repo) {
         Some(clone) => clone,
         None => match ensure_managed_clone(home, &repo).await {
             Ok(clone) => clone,
@@ -269,7 +269,7 @@ async fn ensure_managed_clone(home: &Path, repo: &str) -> Result<PathBuf, CloneE
     let target = repo.managed_path(home);
     // Two citizens claiming cards of the same new repo at once must not clone twice.
     let _one_clone_at_a_time = CLONING.lock().await;
-    if let Some(existing) = crate::modules::repo_registry::path_for(&key) {
+    if let Some(existing) = crate::code::repo_registry::path_for(&key) {
         return Ok(existing);
     }
     if !target.join(".git").is_dir() {
@@ -288,7 +288,7 @@ async fn ensure_managed_clone(home: &Path, repo: &str) -> Result<PathBuf, CloneE
         }
         cloned?;
     }
-    crate::modules::repo_registry::record(&key, &target);
+    crate::code::repo_registry::record(&key, &target);
     continuum_base::probe!(
         class = "work.claim.repo_cloned",
         repo = %key,

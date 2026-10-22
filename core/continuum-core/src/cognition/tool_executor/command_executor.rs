@@ -103,7 +103,7 @@ impl Drop for ContextRelease {
                     .execute_with_caller("code/release-hands", serde_json::json!({}), Some(identity.releasing_hands()))
                     .await
                     .and_then(|r| match r {
-                        crate::runtime::CommandResult::Json(v) => serde_json::from_value::<crate::modules::code_commands::ReleaseHandsResult>(v)
+                        crate::runtime::CommandResult::Json(v) => serde_json::from_value::<crate::code::hands::ReleaseHandsResult>(v)
                             .map_err(|e| format!("the release's result isn't its own shape: {e}")),
                         _ => Err("the release answered in a shape other than its own JSON".to_string()),
                     });
