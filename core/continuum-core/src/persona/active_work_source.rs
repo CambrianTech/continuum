@@ -53,7 +53,7 @@ pub trait AircWorkReader: Send + Sync {
 /// Token estimate — the ONE canonical chars/4 estimator (`cognition::token_budget`),
 /// so every grounding layer's number is in the same unit the replay ledger reports.
 /// (Was a private byte-length copy that drifted — converged.)
-use crate::ai::token_estimate::estimate_prompt_tokens as estimate_tokens;
+use continuum_base::token_estimate::estimate_prompt_tokens as estimate_tokens;
 
 /// Persona-bound source reading the persona's own claimed work.
 pub struct ActiveWorkSource {

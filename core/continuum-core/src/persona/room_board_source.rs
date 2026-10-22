@@ -87,7 +87,7 @@ const MAX_RENDERED_CARDS: usize = 12;
 /// Token estimate — the ONE canonical chars/4 estimator
 /// (`cognition::token_budget`), shared by every RAG source so the replay
 /// ledger's numbers match.
-use crate::ai::token_estimate::estimate_prompt_tokens as estimate_tokens;
+use continuum_base::token_estimate::estimate_prompt_tokens as estimate_tokens;
 
 /// Reads the CURRENT ROOM's complete work board from airc. Production rides
 /// `airc_lib::Airc::work_board_complete` (the WHOLE board, not the recent

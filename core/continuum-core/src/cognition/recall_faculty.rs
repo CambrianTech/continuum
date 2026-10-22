@@ -125,7 +125,7 @@ const MIN_RECALL_TOKENS: usize = 256;
 /// model-visible), at the ~4-chars-per-token rule of thumb. Used only to keep
 /// recall within its window budget — an estimate, not a tokenizer.
 fn estimate_recall_tokens(content: &str) -> usize {
-    crate::ai::token_estimate::estimate_prompt_tokens(content) as usize + 6
+    continuum_base::token_estimate::estimate_prompt_tokens(content) as usize + 6
 }
 
 /// When relevance re-ranking is active, over-fetch this many × the surface limit

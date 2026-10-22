@@ -308,7 +308,7 @@ impl OpenAICompatibleAdapter {
                                         let len = m
                                             .get("content")
                                             .and_then(|c| c.as_str())
-                                            .map(|c| crate::ai::token_estimate::estimate_prompt_tokens(c) as usize)
+                                            .map(|c| continuum_base::token_estimate::estimate_prompt_tokens(c) as usize)
                                             .unwrap_or(0); // unwrap_or: a message with no string content contributes 0 tokens to a total we are only explaining
                                         (role, len)
                                     })

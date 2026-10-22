@@ -52,7 +52,8 @@ const FETCH_LIMIT: usize = 100;
 /// Token estimate — the ONE canonical chars/4 estimator (`cognition::token_budget`),
 /// shared by every RAG source so the replay ledger's numbers match. (Was a private
 /// copy — converged.)
-use crate::{ai::token_estimate::estimate_prompt_tokens as estimate_tokens, cognition::token_budget::head_to_tokens};
+use continuum_base::token_estimate::estimate_prompt_tokens as estimate_tokens;
+use crate::cognition::token_budget::head_to_tokens;
 
 /// Abstract reader over airc transcript events. Production impl rides on
 /// `airc_lib::Airc`; tests use a stub that returns canned events without a daemon.

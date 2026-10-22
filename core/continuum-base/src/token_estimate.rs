@@ -1,6 +1,6 @@
-//! The one prompt-token estimate. Lives in the engine ring so `ai` adapters and the
-//! mind's RAG/budget layers price content in the SAME unit; `cognition::token_budget`
-//! re-exports it as its documented home.
+//! The one prompt-token estimate. Lives in the floor crate so every layer (the `ai` adapters,
+//! the mind's RAG and budget layers) prices content in the SAME unit without importing a layer
+//! above it; `rag` reaching `ai` for it put `rag` in the core's dependency cycle.
 
 /// Estimate the prompt-token cost of a piece of content. Char-based (handles
 /// multibyte text correctly), `/4` for the standard ~4-chars-per-token heuristic,

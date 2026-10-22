@@ -6,7 +6,7 @@
 //! Input: PromptAssemblyInput (persona identity, RAG context, shared analysis angle)
 //! Output: AssembledPrompt (system message + conversation history, ready for ai/generate)
 
-use crate::ai::token_estimate::estimate_prompt_tokens;
+use continuum_base::token_estimate::estimate_prompt_tokens;
 use crate::model_registry::types::MultiPartyChatStrategy;
 use serde::{Deserialize, Serialize};
 use std::fmt::Write as _;

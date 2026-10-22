@@ -52,7 +52,7 @@ use async_trait::async_trait;
 use sha2::{Digest, Sha256};
 
 use crate::ai::adapter::{AIProviderAdapter, AdapterCapabilities, ApiStyle, InferenceDevice};
-use crate::ai::token_estimate::estimate_prompt_tokens;
+use continuum_base::token_estimate::estimate_prompt_tokens;
 use crate::ai::types::{
     ChatMessage, ContentPart, CostPer1kTokens, FinishReason, HealthState, HealthStatus,
     MessageContent, ModelInfo, TextGenerationRequest, TextGenerationResponse, UsageMetrics,
