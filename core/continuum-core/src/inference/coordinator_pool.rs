@@ -120,9 +120,8 @@ mod tests {
     use super::*;
     use crate::ai::adapter::AIProviderAdapter;
     use crate::ai::heuristic_adapter::HeuristicInferenceAdapter;
-    use crate::inference::planning::adaptive_throughput::{
-        ResourceClass, TargetSilicon, ThroughputLaneBudget,
-    };
+    use crate::resources::throughput_class::{ResourceClass, TargetSilicon};
+    use crate::inference::planning::adaptive_throughput::ThroughputLaneBudget;
     use crate::identity::PeerId;
     use crate::inference::coordinator::{CoordinatorConfig, OpenLaneRequest};
     use crate::inference::footprint_registry::FootprintRegistry;

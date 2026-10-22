@@ -330,7 +330,7 @@ async fn run_python(
 /// operator's), plus the name the spawn probe carries. One value threaded through both
 /// interpreters so a snippet is confined exactly as her shell is (card d598c806).
 pub(crate) struct Hands {
-    confinement: Option<crate::code::confinement::Confinement>,
+    confinement: Option<crate::system_resources::confinement::Confinement>,
     who: String,
 }
 
@@ -348,7 +348,7 @@ impl Hands {
     }
 
     fn command(&self, program: &std::path::Path, args: &[std::ffi::OsString], cwd: Option<&std::path::Path>) -> tokio::process::Command {
-        crate::code::confinement::command_for(self.confinement.as_ref(), &self.who, program, args, cwd, None)
+        crate::system_resources::confinement::command_for(self.confinement.as_ref(), &self.who, program, args, cwd, None)
     }
 }
 

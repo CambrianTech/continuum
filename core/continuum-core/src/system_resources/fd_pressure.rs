@@ -3,7 +3,7 @@
 //! 2026-09-12: `process.open_fds.high` fired and nothing followed. The gauge is
 //! [`fd_gauge`](super::fd_gauge); this is the actor. It sits on the broker as the
 //! `process-fds` tier beside `sys-memory` and `disk-root`, and when the broker
-//! turns to it, it restarts the airc daemon this core spawned — the one action
+//! turns to it, it runs its relief (airc's daemon restart, supplied at boot) on the daemon this core spawned — the one action
 //! measured that night to bring a poisoned client/daemon pair back to a flat
 //! count — then names the outcome. Once per cooldown: a relief that fires every
 //! tick is a new storm.
@@ -34,41 +34,6 @@ pub trait FdRelief: Send + Sync {
     fn relieve(&self) -> ReliefOutcome;
 }
 
-/// Restart the airc daemon through airc's own lifecycle when it offers a transient
-/// restart; the freed count is measured, not assumed.
-pub struct DaemonRestartRelief;
-
-impl FdRelief for DaemonRestartRelief {
-    fn relieve(&self) -> ReliefOutcome {
-        let before = open_fds().unwrap_or(0); // unwrap_or: an unreadable table reads as 0 freed, never as a gain
-        match crate::airc::daemon_supervisor::restart_through_airc() {
-            crate::airc::daemon_supervisor::Restart::Restarted => {
-                std::thread::sleep(std::time::Duration::from_secs(1));
-                let after = open_fds().unwrap_or(before); // unwrap_or: unreadable after = nothing freed
-                let freed = before.saturating_sub(after) as u64;
-                continuum_base::probe!(
-                    class = "process.fds.owner_acted",
-                    action = "daemon_restart",
-                    before,
-                    after,
-                    freed,
-                    "descriptor pressure: the airc daemon was restarted through airc's own stop and start"
-                );
-                ReliefOutcome { action: "daemon_restart", freed }
-            }
-            crate::airc::daemon_supervisor::Restart::Failed(e) => {
-                continuum_base::probe!(
-                    class = "process.fds.owner_exhausted",
-                    reason = %e,
-                    open = before,
-                    "descriptor pressure: the daemon restart did not come back"
-                );
-                ReliefOutcome { action: "daemon_restart_failed", freed: 0 }
-            }
-        }
-    }
-}
-
 pub struct FdPressurePool {
     relief: Box<dyn FdRelief>,
     capacity: u64,
@@ -77,9 +42,11 @@ pub struct FdPressurePool {
 }
 
 impl FdPressurePool {
-    /// The production pool: the soft limit (or the default budget) and the daemon restart.
-    pub fn with_daemon_relief() -> Self {
-        Self::new(Box::new(DaemonRestartRelief), fd_soft_limit().unwrap_or(DEFAULT_FD_BUDGET), RELIEF_COOLDOWN_MS) // unwrap_or: unlimited/unreadable = the measured practical ceiling
+    /// The production pool: the soft limit (or the default budget) and the owner's relief
+    /// (airc supplies the daemon restart, [`crate::airc::fd_relief::DaemonRestartRelief`];
+    /// the kernel only names the contract, so it does not reach up into airc).
+    pub fn with_relief(relief: Box<dyn FdRelief>) -> Self {
+        Self::new(relief, fd_soft_limit().unwrap_or(DEFAULT_FD_BUDGET), RELIEF_COOLDOWN_MS) // unwrap_or: unlimited/unreadable = the measured practical ceiling
     }
 
     pub fn new(relief: Box<dyn FdRelief>, capacity: u64, cooldown_ms: u64) -> Self {

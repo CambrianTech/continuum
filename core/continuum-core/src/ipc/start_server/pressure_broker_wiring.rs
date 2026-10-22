@@ -25,8 +25,15 @@ pub(super) fn register_pressure_broker(
     // this core spawned when the broker turns to it (2026-09-12: the gauge fired,
     // nothing followed, a human ran lsof).
     pressure_broker.broker().register(Arc::new(
-        crate::system_resources::fd_pressure::FdPressurePool::with_daemon_relief(),
+        crate::system_resources::fd_pressure::FdPressurePool::with_relief(Box::new(
+            crate::airc::fd_relief::DaemonRestartRelief,
+        )),
     ));
+    // The memory monitor says an unkillable anomaly in the org room; the room is the grid's,
+    // so the grid hands its voice to the kernel here.
+    crate::system_resources::memory_pressure::register_org_room_voice(|line| {
+        Box::pin(async move { crate::modules::grid::say_in_org_room(&line).await })
+    });
     runtime.register(pressure_broker);
     // InferenceCoordinatorModule — stands up the multi-persona-one-model
     // lane coordinator. Registered before the broker block below so its
@@ -129,7 +136,7 @@ pub(super) fn register_pressure_broker(
         // delete). No cold drive ⇒ the pool refuses loudly — models are
         // re-fetch-hours, not derived artifacts.
         if let Some(models_dir) = crate::system_resources::tracked_dir("genome-models") {
-            use crate::capacity::system_profile::{detect_drives, DriveRole};
+            use crate::system_resources::drives::{detect_drives, DriveRole};
             let drives = detect_drives();
             // The volume holding the hot tier: longest mount-point prefix.
             let volume_total = drives

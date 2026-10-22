@@ -2,14 +2,14 @@
     // Broker fixtures own their volume input as well as their temp files. The
     // constructor budget is only a fallback: a concurrently published monitor
     // sample must not turn a custody test into a test of the runner's free disk.
-    fn critical_fixture_volume(path: &Path) -> Option<crate::capacity::system_profile::DriveInfo> {
-        use crate::capacity::system_profile::{DriveInfo, DriveRole};
+    fn critical_fixture_volume(path: &Path) -> Option<crate::system_resources::drives::DriveInfo> {
+        use crate::system_resources::drives::{DriveInfo, DriveRole};
         Some(DriveInfo { mount: path.into(), total_bytes: 100_000, available_bytes: 0, role: DriveRole::System })
     }
 
     #[test]
     fn cache_pressure_follows_its_own_mount_instead_of_the_home_mount() {
-        use crate::capacity::system_profile::{DriveInfo, DriveRole, drive_holding};
+        use crate::system_resources::drives::{DriveInfo, DriveRole, drive_holding};
         let home = tempfile::tempdir().unwrap();
         let other = tempfile::tempdir().unwrap();
         let drives = [
@@ -238,7 +238,7 @@
         assert_eq!(*in_flight, None);
         drop(in_flight);
         pool.tracked.bind_citizen(peer).unwrap();
-        let hands = HandsLease::try_take(peer).unwrap();
+        let hands = PersonaHandsLease::try_take(peer).unwrap();
         assert_eq!(pool.evict_at_least(u64::MAX), 0, "resident hands keep all derived rungs");
         assert_eq!(pool.last_decline.load(std::sync::atomic::Ordering::Relaxed),
             DeclinedEviction::CitizenBusy(String::new()).discriminant());

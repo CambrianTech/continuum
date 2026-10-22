@@ -6,7 +6,7 @@
 //! sit in their own readable file. All types re-exported at the parent
 //! path; external callers see no API change.
 
-use crate::inference::planning::adaptive_throughput::TargetSilicon;
+use crate::resources::throughput_class::TargetSilicon;
 use crate::model_registry::types::{Arch, Capability};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;

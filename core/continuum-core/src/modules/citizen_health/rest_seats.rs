@@ -239,7 +239,7 @@ impl ServiceModule for CitizenHealthModule {
         );
         let mut said = line(&h, &v);
         said.push_str(&continuum_cli_lifecycle::deploy_health::read(
-            &crate::modules::persona_instance_manager::resolve_continuum_root(),
+            &crate::paths::continuum_root(),
             env!("CONTINUUM_BUILD_GIT_SHA"),
         ).line(EpochMs::now().millis()));
         if !paged_out.is_empty() {
@@ -286,7 +286,7 @@ impl ServiceModule for CitizenHealthModule {
                 };
                 let v = verdict(&h);
                 let deploy = continuum_cli_lifecycle::deploy_health::read(
-                    &crate::modules::persona_instance_manager::resolve_continuum_root(),
+                    &crate::paths::continuum_root(),
                     env!("CONTINUUM_BUILD_GIT_SHA"),
                 );
                 CommandResult::json(&serde_json::json!({

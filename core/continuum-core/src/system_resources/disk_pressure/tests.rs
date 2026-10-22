@@ -18,7 +18,7 @@
     // else a typed Unknown — never a zero that reads as room.
     #[test]
     fn a_monitor_that_cannot_see_says_unknown_never_normal() {
-        use crate::capacity::system_profile::{DriveInfo, DriveRole};
+        use crate::system_resources::drives::{DriveInfo, DriveRole};
         let drive = |mount: &str, total: u64, avail: u64| DriveInfo {
             mount: std::path::PathBuf::from(mount),
             total_bytes: total,

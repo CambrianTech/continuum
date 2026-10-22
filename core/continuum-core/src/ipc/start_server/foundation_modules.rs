@@ -41,7 +41,7 @@ pub(super) fn register_foundation_modules(
     // file and reason; the boot never refuses over one bad file.
     runtime.register(Arc::new(
         crate::modules::ext_commands::ExtCommandsModule::new(
-            &crate::modules::persona_instance_manager::resolve_continuum_root(),
+            &crate::paths::continuum_root(),
         ),
     ));
     runtime.register(Arc::new(crate::modules::nav::NavModule::new()));

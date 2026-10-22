@@ -57,7 +57,7 @@
 //! - **The node is quiescent:** no cargo or rustc anywhere on the host, no deploy and no
 //!   citizen turn in flight, checked before the pass and again before each take. A snapshot,
 //!   not a proof (see [`node_quiescence`]).
-//! - **No solve is live:** the reclaim holds the citizen's hands (`work::HandsLease`) for the
+//! - **No solve is live:** the reclaim holds the citizen's hands (`hands_lease::PersonaHandsLease`) for the
 //!   whole transaction, so a staged solve cannot start inside a tree being removed.
 //! - **The roster is readable** (unreadable = nothing, as for whole workspaces).
 //! - **Untouched for [`DORMANT_AFTER_MS`]:** policy.
@@ -342,7 +342,7 @@ impl CitizenWorkspacePool {
                 continue;
             }
             // her hands for the whole transaction: no staged solve starts inside this tree
-            let Some(_hands) = crate::modules::work::HandsLease::try_take(r.peer_id) else {
+            let Some(_hands) = crate::system_resources::hands_lease::PersonaHandsLease::try_take(r.peer_id) else {
                 out.push(ResidueOutcome::of(&r, idle_days, Err("solve_live".into())));
                 continue;
             };
@@ -808,7 +808,7 @@ impl ResourcePool for CitizenWorkspacePool {
         let mut freed = 0u64;
         let mut archived_total = 0usize;
         for ws in &drop {
-            let Some(_hands) = crate::modules::work::HandsLease::try_take(ws.peer_id) else {
+            let Some(_hands) = crate::system_resources::hands_lease::PersonaHandsLease::try_take(ws.peer_id) else {
                 continue;
             };
             // Discovery publishes child ownership under these same hands. A

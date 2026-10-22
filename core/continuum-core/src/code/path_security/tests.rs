@@ -124,7 +124,7 @@
     // an ENOENT), while a relative traversal never widens.
     #[test]
     fn confined_scope_reads_her_roots_and_refuses_the_operators_by_name() {
-        use crate::code::confinement::AllowList;
+        use crate::system_resources::confinement::AllowList;
         let (_dir, security) = setup_workspace();
         let hers = tempfile::tempdir().unwrap();
         let theirs = tempfile::tempdir().unwrap();

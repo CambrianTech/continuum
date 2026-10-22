@@ -16,9 +16,9 @@ pub(super) async fn run_shell_command(
     cwd: &Path,
     env: &HashMap<String, String>,
     timeout_ms: Option<u64>,
-    confinement: Option<&super::super::confinement::Confinement>,
+    confinement: Option<&crate::system_resources::confinement::Confinement>,
     who: &str,
-    cargo_grant: Option<&super::super::confinement::CargoTargetGrant>,
+    cargo_grant: Option<&crate::system_resources::confinement::CargoTargetGrant>,
 ) {
     // Resolve a REAL POSIX shell. `TokioCommand::new("bash")` finds
     // C:\Windows\System32\bash.exe on Windows — the WSL launcher, not a shell —
@@ -98,7 +98,7 @@ pub(super) async fn run_shell_command(
 
     // A citizen's child is confined to her roots at the kernel (card d598c806:
     // eleven citizens ran `find /` as the operator); the operator's is not.
-    let mut cmd = super::super::confinement::command_for(
+    let mut cmd = crate::system_resources::confinement::command_for(
         confinement,
         who,
         &shell_bin,

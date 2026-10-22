@@ -662,18 +662,10 @@ impl ServiceModule for PersonaInstanceManagerModule {
     }
 }
 
-/// Resolve `~/.continuum/` (or `$CONTINUUM_ROOT` if set) for the
-/// substrate root. Matches the resolution in
-/// [`crate::modules::logger::LoggerModule::new`] — single source of
-/// truth would be nice but inline duplication is cheaper than a new
-/// crate-wide helper for two callers. If both are still around when
-/// a third caller appears, extract.
+/// DELETE ME: the one remaining caller is `sdk_codegen/ext.rs`, whose owner is mid-change; it
+/// moves to [`crate::paths::continuum_root`] (the owner of this resolution) and this goes.
 pub fn resolve_continuum_root() -> PathBuf {
-    if let Ok(root) = std::env::var("CONTINUUM_ROOT") {
-        return PathBuf::from(root);
-    }
-    let home = dirs::home_dir().expect("HOME directory is required to resolve CONTINUUM_ROOT"); // JUSTIFIED: no HOME means no persistent state at all: boot-fatal by design; 20+ callers need the infallible PathBuf
-    home.join(".continuum")
+    crate::paths::continuum_root()
 }
 
 /// The authored bio for a role — the role_template `bio_template` verbatim
@@ -716,14 +708,6 @@ mod tests {
         let cfg = module.config();
         assert_eq!(cfg.name, "persona_instance_manager");
         assert_eq!(cfg.command_prefixes, &["persona/instances/"]);
-    }
-
-    #[test]
-    fn resolve_continuum_root_respects_env_var() {
-        std::env::set_var("CONTINUUM_ROOT", "/tmp/test-root-12345");
-        let root = resolve_continuum_root();
-        assert_eq!(root, PathBuf::from("/tmp/test-root-12345"));
-        std::env::remove_var("CONTINUUM_ROOT");
     }
 
     // what this catches: list + get are migrated to the typed registry (#62), so

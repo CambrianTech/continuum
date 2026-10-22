@@ -63,7 +63,7 @@ pub struct ExecutionState {
 pub(super) struct ShellCargoCustody {
     pub(super) state: Arc<Mutex<ExecutionState>>,
     pub(super) admission: Arc<super::super::hands::HandsLease>,
-    pub(super) kept: crate::inference::lane_process::Kept,
+    pub(super) kept: crate::system_resources::disk_reporters::Kept,
     pub(super) completed: bool,
 }
 
@@ -225,5 +225,5 @@ pub struct ShellSession {
     /// What this session's children may touch (card d598c806). `None` = the
     /// operator's own hands, unconfined; a citizen's session is confined by the
     /// workspace authority before her first command.
-    pub(super) confinement: Option<super::super::confinement::Confinement>,
+    pub(super) confinement: Option<crate::system_resources::confinement::Confinement>,
 }

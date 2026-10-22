@@ -25,7 +25,7 @@ pub async fn spawn_activity_room(
     let recipe_def = resolve_recipe(
         recipe,
         &crate::experience::source::RecipeExperienceSource::overlay_dir(
-            &crate::modules::persona_instance_manager::resolve_continuum_root(),
+            &crate::paths::continuum_root(),
         ),
     )?;
     // THE SCHEMA GATE: a pipeline is checked against the command registry's own

@@ -138,7 +138,7 @@ pub(super) fn release_executor_dependents(
     // identity ceremony does disk + daemon I/O, and boot must not block on it.
     if let Some(sock) = operator_peer_socket {
         let exec = Arc::clone(executor);
-        let root = crate::modules::persona_instance_manager::resolve_continuum_root();
+        let root = crate::paths::continuum_root();
         rt_handle.spawn(async move {
             crate::persona::operator_peer::ensure_operator_peer(&root, sock.clone(), exec.clone())
                 .await;

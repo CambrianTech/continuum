@@ -39,7 +39,7 @@ architecture; everything else is a consequence.
 
 | ring | name | modules | what it may know |
 |---|---|---|---|
-| 0 | **kernel** | `time`, `identity`, `fs_portable`, `paths`, `concurrency`, `paging`, `logging`, `orm`, `system_resources`, `runtime`, `governor`, `capacity`, `resources`, `gpu` | the machine: clocks, ids, files, memory, disk, GPU, pressure, the bus, the `ServiceModule` contract. Nothing about models, minds, rooms or commands. |
+| 0 | **kernel** | `time`, `identity`, `fs_portable`, `paths`, `concurrency`, `paging`, `logging`, `orm`, `system_resources`, `runtime`, `governor`, `resources`, `gpu` | the machine: clocks, ids, files, memory, disk, GPU, pressure, the bus, the `ServiceModule` contract. Nothing about models, minds, rooms or commands. |
 | 1 | **engine** | `inference`, `inference_capability`, `model_registry`, `ai`, `live`, `media`, `sensory`, `tool_parsing` | serving: lanes, slots, pages, rates, adapters, the realtime media plane. Knows the kernel. Nothing about minds, rooms or commands. |
 | 2 | **mind** | `cognition`, `persona`, `genome`, `memory`, `rag`, `perception`, `experience`, `recipe`, `context`, `vdd` | the citizen: deliberation, working memory, genome, recall, activities. Knows the engine and the kernel. Nothing about sockets, CLI verbs or the module registry. |
 | 3 | **surface** | `commands`, `ipc`, `routing`, `sdk_codegen`, `airc`, `http`, `modules`, `interface`, `contracts`, `events`, `forge`, `provisioning`, `comms`, `ffi`, `bin` | how the outside reaches in: commands, the socket, airc, the registry of service modules, the binaries. Knows everything below. |
@@ -105,12 +105,12 @@ test, canary `9871a02c0`). `clog_*`/`log_*` are crate-root macros, not modules; 
 | `identity` | nothing in code (its one `cognition` reference is a doc link) | already out of the cycle: ready for `continuum-base` |
 | `paths`, `gpu`, `concurrency` | `test_env` only (and log macros) | `test_env` to a dev crate |
 | `governor` | `inference_capability::types::HardwareProfile` (2) | fact owned too high: `HardwareProfile` is a machine fact, ring 0 |
-| `paging` | `inference::planning::{throughput_lease, adaptive_throughput}` (2) | fact owned too high: the lease types move down |
+| `paging` | none left: `ResourceClass`, `TargetSilicon` and the lease types moved to `resources/` (fable/peel-kernel-facts) | done |
 | `logging` | `modules::logger::log_sink_ready` (12) | fact owned too high: the sink's readiness is the logger's own state |
 | `orm` | `modules::entity_schemas`, `modules::data::DataModule`, `persona` (3) | verb owned too high: entity registration becomes a trait the ORM owns, modules implement |
-| `resources` | consumer ids from `modules`/`cognition` (3), `inference::planning::throughput_lease` (5) | ids are registered by their owners at boot; the lease is the `paging` fix above |
-| `system_resources` | `code::confinement::*`, `modules::work::HandsLease`, `cognition`, `airc`, `ipc` (38) | inversion: owners register the directories and leases they hold (the `TrackedDir` registry already exists for eviction); disk pressure never imports a workspace |
-| `capacity` | `inference_capability::gguf_keys`, `hw_probe`, `modules::serving_daemon`, `genome::blob` (21) | a module in the wrong ring: it reads GGUFs and probes hardware, so it is ring 1 (engine) |
+| `resources` | consumer ids from `modules`/`cognition` (3 in tests only); the lease types are now its own (`resources::throughput_lease`) | done for production lines |
+| `system_resources` | none left (fable/peel-kernel-facts): confinement, `PersonaHandsLease`, drives and `Kept` moved in; the fd relief (airc) and the org-room voice (grid) are registered at boot | done |
+| `capacity` | re-ringed to ENGINE in `layer_discipline` (it reads GGUFs and probes hardware); the drive facts it held moved to `system_resources::drives` | done |
 | `runtime` | `routing::CallerIdentity` (22), `sdk_codegen::{DynCommand, WireShape, command_registry}` (15+), `routing` transport and `AuthPolicy`, `persona::PersonaAircRuntimeRegistry::new`, `persona::cognition_pulse::CommandWork`, `modules::grid::commands` (97 in all) | verbs owned too high: **Session** (`CallerIdentity`, `AuthPolicy`) and **Commands** (the dynamic command registry) are two of the kernel's six primitives (`MODULE-ARCHITECTURE.md` § 4), filed in `routing` and `sdk_codegen`; they move down. The persona registry and the pulse's work type are injected at boot instead of named |
 
 **What each peel moves, and when the cycle count moves.** A crate may hold cycles among its

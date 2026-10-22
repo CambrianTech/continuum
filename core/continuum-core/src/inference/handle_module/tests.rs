@@ -53,9 +53,8 @@ fn module_with_heuristic() -> InferenceHandleModule {
 /// to exercise the shared-registry fallback in `open`. `module_with_
 /// coordinator` layers a local heuristic registration on top.
 fn bare_coordinator_module() -> InferenceHandleModule {
-    use crate::inference::planning::adaptive_throughput::{
-        ResourceClass, TargetSilicon, ThroughputLaneBudget,
-    };
+    use crate::resources::throughput_class::{ResourceClass, TargetSilicon};
+    use crate::inference::planning::adaptive_throughput::ThroughputLaneBudget;
     use crate::inference::coordinator::{CoordinatorConfig, InferenceCoordinator};
     use crate::inference::footprint_registry::FootprintRegistry;
     let footprint = Arc::new(FootprintRegistry::new());

@@ -48,11 +48,9 @@ use uuid::Uuid;
 
 use crate::ai::adapter::AIProviderAdapter;
 use crate::ai::types::ActiveAdapterRequest;
-use crate::inference::planning::adaptive_throughput::{
-    plan_adaptive_throughput, AdaptiveThroughputRequest, ResourceClass, TargetSilicon,
-    ThroughputJob, ThroughputLaneBudget,
-};
-use crate::inference::planning::throughput_lease::ThroughputLease;
+use crate::resources::throughput_class::{ResourceClass, TargetSilicon};
+use crate::inference::planning::adaptive_throughput::{plan_adaptive_throughput, AdaptiveThroughputRequest, ThroughputJob, ThroughputLaneBudget};
+use crate::resources::throughput_lease::ThroughputLease;
 use crate::governor::classify_hardware;
 use crate::governor::types::TargetSilicon as GovernorSilicon;
 use crate::identity::PeerId;

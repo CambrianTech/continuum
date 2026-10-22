@@ -41,7 +41,6 @@ pub mod submission;
 mod work_card_state_changed;
 pub use work_card_state_changed::*;
 mod work_claim;
-pub use work_claim::*;
 mod work_create_command;
 pub use work_create_command::*;
 mod work_create;

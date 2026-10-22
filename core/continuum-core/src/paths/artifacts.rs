@@ -34,7 +34,7 @@ fn resolve_root(storage: Option<PathBuf>, home: &Path) -> Result<PathBuf, String
 /// when the measured allowance is exhausted. Other writers are not reserved out.
 pub struct WriteAdmission {
     path: PathBuf,
-    drive: crate::capacity::system_profile::DriveInfo,
+    drive: crate::system_resources::drives::DriveInfo,
     written: u64,
 }
 
@@ -49,8 +49,8 @@ impl WriteAdmission {
                 }
             }
             let physical = super::cargo::physical_root(&observed)?;
-            let drives = crate::capacity::system_profile::detect_drives();
-            crate::capacity::system_profile::drive_holding(&drives, &physical).cloned()
+            let drives = crate::system_resources::drives::detect_drives();
+            crate::system_resources::drives::drive_holding(&drives, &physical).cloned()
                 .ok_or_else(|| format!("artifact volume is unavailable for {}", physical.display()))
         }).await.map_err(|error| deferred(&path, 0, format!("artifact volume observation failed: {error}")))?;
         let drive = result.map_err(|reason| deferred(&path, 0, reason))?;
@@ -144,15 +144,15 @@ fn classify_write_failure(
 fn check_on_drives(
     path: &Path,
     projected_bytes: u64,
-    drives: &[crate::capacity::system_profile::DriveInfo],
+    drives: &[crate::system_resources::drives::DriveInfo],
 ) -> Result<(), String> {
-    let drive = crate::capacity::system_profile::drive_holding(drives, path)
+    let drive = crate::system_resources::drives::drive_holding(drives, path)
         .ok_or_else(|| format!("artifact volume is unavailable for {}", path.display()))?;
     check_volume(drive, projected_bytes)
 }
 
 fn check_volume(
-    drive: &crate::capacity::system_profile::DriveInfo,
+    drive: &crate::system_resources::drives::DriveInfo,
     projected_bytes: u64,
 ) -> Result<(), String> {
     crate::paging::pool::ensure_projected_disk_capacity(
@@ -167,7 +167,7 @@ fn check_volume(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::capacity::system_profile::{DriveInfo, DriveRole};
+    use crate::system_resources::drives::{DriveInfo, DriveRole};
 
     // Published b475 repeatedly filled the home drive although configured storage
     // was available. Check placement and admission on the selected volume, including

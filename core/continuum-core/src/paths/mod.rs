@@ -65,6 +65,20 @@ pub fn continuum_home() -> Result<std::path::PathBuf, String> {
         .ok_or_else(|| "no home dir".to_string())
 }
 
+/// Resolve `~/.continuum/` (or `$CONTINUUM_ROOT` if set) for the
+/// substrate root. Matches the resolution in
+/// [`crate::modules::logger::LoggerModule::new`] — single source of
+/// truth would be nice but inline duplication is cheaper than a new
+/// crate-wide helper for two callers. If both are still around when
+/// a third caller appears, extract.
+pub fn continuum_root() -> std::path::PathBuf {
+    if let Ok(root) = std::env::var("CONTINUUM_ROOT") {
+        return std::path::PathBuf::from(root);
+    }
+    let home = dirs::home_dir().expect("HOME directory is required to resolve CONTINUUM_ROOT"); // JUSTIFIED: no HOME means no persistent state at all: boot-fatal by design; 20+ callers need the infallible PathBuf
+    home.join(".continuum")
+}
+
 /// A TEST BINARY NEVER WRITES THE OPERATOR'S RECORDS (2026-09-20, the M5): a local
 /// `cargo test` run of the serving daemon settled its harness lane and `save`d the
 /// fixture's "coder-14b" into ~/.continuum/state/served-window.json; the next boot
@@ -209,6 +223,14 @@ impl Drop for NativeHomeOverride {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn continuum_root_respects_env_var() {
+        std::env::set_var("CONTINUUM_ROOT", "/tmp/test-root-12345");
+        let root = continuum_root();
+        assert_eq!(root, std::path::PathBuf::from("/tmp/test-root-12345"));
+        std::env::remove_var("CONTINUUM_ROOT");
+    }
 
     // what this catches (2026-09-20): a test binary resolving the OPERATOR's home — a
     // harness lane's settle wrote a fixture model into the M5's served-window record and
