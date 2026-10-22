@@ -20,7 +20,7 @@
 //! - `JsonlRagCaptureSink` — file-based JSON-line writer. One JSON
 //!   object per line; replay reader groups by turn_id.
 //! - `RecordingRagSource<S>` — decorator wrapping any `RagSource`,
-//!   intercepts `deliver` and `deliver_continuation`, records the
+//!   intercepts `deliver`, records the
 //!   call + result via the sink, returns the delivery unchanged.
 //!   Drop-in around production sources.
 //!
@@ -61,7 +61,7 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
 use crate::persona::rag_budget::{
-    BudgetAllocation, ContinuationCursor, RagContext, RagDelivery, RagSource, RagSourceBudget,
+    BudgetAllocation, RagContext, RagDelivery, RagSource, RagSourceBudget,
     ReservedTokens, ResolutionPreference,
 };
 
@@ -97,7 +97,7 @@ pub enum RagCaptureEvent {
         allocation: BudgetAllocation,
     },
     /// A source delivered. Emitted by `RecordingRagSource` decorator
-    /// automatically after every `deliver` or `deliver_continuation`.
+    /// automatically after every `deliver`.
     SourceDelivered {
         captured_at_ms: u64,
         persona_id: uuid::Uuid,
@@ -105,9 +105,6 @@ pub enum RagCaptureEvent {
         source_id: String,
         budget_requested: u32,
         resolution_requested: ResolutionPreference,
-        /// Some when the call was deliver_continuation; carries the
-        /// cursor that resumed.
-        cursor: Option<ContinuationCursor>,
         delivery: RagDelivery,
     },
     /// Caller signals the end of a turn. Optional — replay can
@@ -245,8 +242,7 @@ impl RagCaptureSink for JsonlRagCaptureSink {
 // RECORDING DECORATOR — wraps any RagSource
 //=============================================================================
 
-/// Drop-in wrapper around any `RagSource`. Intercepts `deliver` and
-/// `deliver_continuation`, records the call + result to the sink,
+/// Drop-in wrapper around any `RagSource`. Intercepts `deliver`, records the call + result to the sink,
 /// returns the delivery unchanged. Production callers wrap their
 /// sources at construction:
 ///
@@ -309,7 +305,6 @@ impl<S: RagSource + 'static> RagSource for RecordingRagSource<S> {
             source_id: self.inner.source_id().to_string(),
             budget_requested: budget,
             resolution_requested: resolution,
-            cursor: None,
             delivery: delivery.clone(),
         };
         if turn_is_private(ctx) {
@@ -320,31 +315,6 @@ impl<S: RagSource + 'static> RagSource for RecordingRagSource<S> {
         delivery
     }
 
-    async fn deliver_continuation(
-        &self,
-        ctx: &RagContext,
-        cursor: ContinuationCursor,
-        budget: u32,
-    ) -> Option<RagDelivery> {
-        let cursor_for_event = cursor.clone();
-        let delivery = self.inner.deliver_continuation(ctx, cursor, budget).await?;
-        let event = RagCaptureEvent::SourceDelivered {
-            captured_at_ms: ctx.now_ms,
-            persona_id: ctx.persona_id,
-            turn_id: ctx.turn_id,
-            source_id: self.inner.source_id().to_string(),
-            budget_requested: budget,
-            resolution_requested: ResolutionPreference::Raw,
-            cursor: Some(cursor_for_event),
-            delivery: delivery.clone(),
-        };
-        if turn_is_private(ctx) {
-            crate::persona::mind_room::note_withheld(ctx.persona_id, "rag_capture");
-        } else {
-            self.sink.record(event);
-        }
-        Some(delivery)
-    }
 }
 
 //=============================================================================
@@ -397,7 +367,7 @@ impl RagCaptureSink for InMemoryRagCaptureSink {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::persona::rag_budget::{ContinuationCursor, RagDelivery, RagItem, StubRagSource};
+    use crate::persona::rag_budget::{ RagDelivery, RagItem, StubRagSource};
     use tempfile::TempDir;
     use uuid::Uuid;
 
@@ -544,14 +514,12 @@ mod tests {
                 source_id,
                 budget_requested,
                 resolution_requested,
-                cursor,
                 delivery,
                 ..
             } => {
                 assert_eq!(source_id, "stub");
                 assert_eq!(*budget_requested, 100);
                 assert_eq!(*resolution_requested, ResolutionPreference::Raw);
-                assert!(cursor.is_none());
                 assert_eq!(delivery.items.len(), 1);
             }
             other => panic!("expected SourceDelivered, got {other:?}"),
@@ -559,7 +527,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn recording_decorator_records_continuation_with_cursor() {
+    async fn recording_decorator_records_truncated_delivery() {
         let inner = StubRagSource::new(
             "stub",
             persona(),
@@ -568,25 +536,14 @@ mod tests {
         let sink = Arc::new(InMemoryRagCaptureSink::new());
         let sink_dyn: Arc<dyn RagCaptureSink> = sink.clone();
         let recorder = RecordingRagSource::new(inner, sink_dyn);
-        // First call doesn't consume everything.
+        // Budget tight enough that the stub truncates (one of three fits).
         let first = recorder.deliver(&ctx(), 5, ResolutionPreference::Raw).await;
-        let cursor = first.continuation.expect("expected continuation");
-        sink.clear();
-        // Continuation call should be recorded with the cursor.
-        recorder
-            .deliver_continuation(&ctx(), cursor.clone(), 100)
-            .await
-            .expect("continuation should yield");
+        assert!(first.truncated, "stub has more than fit");
         let events = sink.events();
         assert_eq!(events.len(), 1);
         match &events[0] {
-            RagCaptureEvent::SourceDelivered {
-                cursor: recorded_cursor,
-                ..
-            } => {
-                let recorded = recorded_cursor.as_ref().expect("recorded cursor");
-                assert_eq!(recorded.source_id, cursor.source_id);
-                assert_eq!(recorded.persona_id, cursor.persona_id);
+            RagCaptureEvent::SourceDelivered { delivery, .. } => {
+                assert!(delivery.truncated, "truncation must reach the capture record");
             }
             other => panic!("expected SourceDelivered, got {other:?}"),
         }
@@ -620,16 +577,11 @@ mod tests {
             source_id: "stub".to_string(),
             budget_requested: 100,
             resolution_requested: ResolutionPreference::Compressed,
-            cursor: Some(ContinuationCursor {
-                persona_id: persona(),
-                source_id: "stub".to_string(),
-                opaque: serde_json::json!({ "next": 3 }),
-            }),
             delivery: RagDelivery {
                 source_id: "stub".to_string(),
                 items: vec![item("hi", 2)],
                 tokens_used: 2,
-                continuation: None,
+                truncated: false,
                 resolution_used: ResolutionPreference::Compressed,
             },
         };

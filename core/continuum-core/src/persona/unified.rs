@@ -461,14 +461,6 @@ impl RagSource for ArcRagSource {
     ) -> RagDelivery {
         self.0.deliver(ctx, budget, resolution).await
     }
-    async fn deliver_continuation(
-        &self,
-        ctx: &RagContext,
-        cursor: crate::persona::rag_budget::ContinuationCursor,
-        budget: u32,
-    ) -> Option<RagDelivery> {
-        self.0.deliver_continuation(ctx, cursor, budget).await
-    }
 }
 
 #[cfg(test)]
@@ -643,7 +635,7 @@ mod tests {
     //      over engram + airc, not via inspect_persona_rag's ad-hoc seam.
 
     use crate::persona::inference_profile::PersonaInferenceProfile;
-    use crate::persona::rag_budget::{AllocationState, ContinuationCursor, RagDelivery, RagItem};
+    use crate::persona::rag_budget::{AllocationState, RagDelivery, RagItem};
     use async_trait::async_trait;
 
     /// Test source that returns a fixed budget-aware payload — proves
@@ -699,17 +691,9 @@ mod tests {
                 source_id: self.id.to_string(),
                 items,
                 tokens_used,
-                continuation: None,
+                truncated: false,
                 resolution_used: ResolutionPreference::Raw,
             }
-        }
-        async fn deliver_continuation(
-            &self,
-            _ctx: &RagContext,
-            _cursor: ContinuationCursor,
-            _budget: u32,
-        ) -> Option<RagDelivery> {
-            None
         }
     }
 

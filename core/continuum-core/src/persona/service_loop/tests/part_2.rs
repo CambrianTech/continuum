@@ -19,7 +19,7 @@
                 source_id: source_id.to_string(),
                 items,
                 tokens_used: 0,
-                continuation: None,
+                truncated: false,
                 resolution_used: ResolutionPreference::Raw,
             }
         }

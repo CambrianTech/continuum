@@ -467,7 +467,7 @@
             source_id: source_id.to_string(),
             items,
             tokens_used: 0,
-            continuation: None,
+            truncated: false,
             resolution_used: ResolutionPreference::Raw,
         };
         // The ENUM, not a spelling. If the wire form ever changes, this fixture changes
@@ -538,7 +538,7 @@
                 metadata: serde_json::json!({ "peer_id": "peer-2" }),
             }],
             tokens_used: 0,
-            continuation: None,
+            truncated: false,
             resolution_used: crate::persona::rag_budget::ResolutionPreference::Raw,
         };
         let turns = build_workspace_turns(&[delivery], "peer-1", "Asha", None);
@@ -573,7 +573,7 @@
                 },
             ],
             tokens_used: 0,
-            continuation: None,
+            truncated: false,
             resolution_used: crate::persona::rag_budget::ResolutionPreference::Raw,
         };
         let turns = build_workspace_turns(&[work], "peer-1", "Asha", None);
@@ -612,7 +612,7 @@
                 source_id: source_id.to_string(),
                 items,
                 tokens_used: 0,
-                continuation: None,
+                truncated: false,
                 resolution_used: ResolutionPreference::Raw,
             }
         }

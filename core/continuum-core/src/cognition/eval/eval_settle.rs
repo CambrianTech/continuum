@@ -19,7 +19,7 @@ pub(super) async fn eval_settle(
             metadata: serde_json::json!({ "peer_id": "peer", "occurred_at_ms": EVAL_EPOCH_MS }),
         }],
         tokens_used: 0,
-        continuation: None,
+        truncated: false,
         resolution_used: crate::persona::rag_budget::ResolutionPreference::Raw,
     };
     let burst = crate::cognition::workspace::Burst::from_turns(

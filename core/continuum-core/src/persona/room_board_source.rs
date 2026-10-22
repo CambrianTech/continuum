@@ -60,7 +60,7 @@ use airc_work::BoardSnapshot;
 use async_trait::async_trait;
 use serde_json::json;
 
-use crate::persona::rag_budget::{ContinuationCursor, RagContext, RagDelivery, RagItem, RagSource, ResolutionPreference};
+use crate::persona::rag_budget::{ RagContext, RagDelivery, RagItem, RagSource, ResolutionPreference};
 
 /// Source identifier — the deliberation faculty renders this delivery under a
 /// `[room-kanban]` header (generic `[<source_id>]` projection). Distinct from
@@ -297,7 +297,7 @@ impl RoomBoardSource {
             source_id: SOURCE_ID.to_string(),
             items: Vec::new(),
             tokens_used: 0,
-            continuation: None,
+            truncated: false,
             resolution_used: ResolutionPreference::Placeholder,
         }
     }
@@ -431,17 +431,6 @@ impl RagSource for RoomBoardSource {
             .await
     }
 
-    async fn deliver_continuation(
-        &self,
-        _ctx: &RagContext,
-        _cursor: ContinuationCursor,
-        _budget: u32,
-    ) -> Option<RagDelivery> {
-        // Atomic units (one card each), truncate-not-paginate — same as the
-        // active-work source. A board that overflows one budget truncates with
-        // a logged count; there is no continuation cursor to resume.
-        None
-    }
 }
 
 impl RoomBoardSource {
@@ -853,7 +842,7 @@ impl RoomBoardSource {
             source_id: SOURCE_ID.to_string(),
             items,
             tokens_used,
-            continuation: None,
+            truncated: false,
             resolution_used: resolution,
         }
     }

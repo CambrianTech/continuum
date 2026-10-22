@@ -531,17 +531,9 @@ use super::*;
                 source_id: "classify-stub".to_string(),
                 items: Vec::new(),
                 tokens_used: 0,
-                continuation: None,
+                truncated: false,
                 resolution_used: resolution,
             }
-        }
-        async fn deliver_continuation(
-            &self,
-            _ctx: &crate::persona::rag_budget::RagContext,
-            _cursor: crate::persona::rag_budget::ContinuationCursor,
-            _budget: u32,
-        ) -> Option<crate::persona::rag_budget::RagDelivery> {
-            None
         }
     }
 
@@ -626,17 +618,9 @@ use super::*;
                         metadata: serde_json::Value::Null,
                     }],
                     tokens_used: 12,
-                    continuation: None,
+                    truncated: false,
                     resolution_used: resolution,
                 }
-            }
-            async fn deliver_continuation(
-                &self,
-                _ctx: &crate::persona::rag_budget::RagContext,
-                _cursor: crate::persona::rag_budget::ContinuationCursor,
-                _budget: u32,
-            ) -> Option<crate::persona::rag_budget::RagDelivery> {
-                None
             }
         }
         let mut cfg = cfg_for(persona);

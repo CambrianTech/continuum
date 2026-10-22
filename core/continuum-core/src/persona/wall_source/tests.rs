@@ -282,65 +282,6 @@
         );
     }
 
-    /// what this catches: a continuation resumed in the WRONG room. A cursor is an
-    /// offset into ONE room's wall. While this source read a room fixed at
-    /// construction that was safe by accident — every cursor indexed the same list.
-    /// Resolving the turn's room makes an A-issued cursor resumable in B, where
-    /// `next_index` would silently skip B's first N posts. Same defect and same fix
-    /// as the `--to` cursor in airc #1398.
-    #[tokio::test]
-    async fn a_wall_continuation_minted_in_one_room_is_refused_in_another() {
-        let reader = Arc::new(StubReader::new(vec![
-            post("plan", "first post, long enough to need a second page"),
-            post("rules", "second post"),
-            post("rules", "third post"),
-        ]));
-        // safe: literals, valid UUIDs.
-        let bound = Uuid::parse_str("00000000-0000-0000-0000-0000000000cc").unwrap();
-        let room_a = Uuid::parse_str("00000000-0000-0000-0000-00000000000a").unwrap();
-        let room_b = Uuid::parse_str("00000000-0000-0000-0000-00000000000b").unwrap();
-        let source = WallSource::new(persona(), reader).for_room(bound);
-
-        // A tight budget in room A yields a cursor with posts left over.
-        let first = source
-            .deliver(
-                &RagContext::for_persona_in_room(persona(), 1_000_000, room_a),
-                12,
-                ResolutionPreference::Raw,
-            )
-            .await;
-        let cursor = first
-            .continuation
-            .expect("a partial delivery must offer a cursor");
-        assert_eq!(
-            cursor.opaque["room"], serde_json::json!(room_a.to_string()),
-            "the cursor must carry the room it indexes"
-        );
-
-        assert!(
-            source
-                .deliver_continuation(
-                    &RagContext::for_persona_in_room(persona(), 1_000_000, room_b),
-                    cursor.clone(),
-                    1_000,
-                )
-                .await
-                .is_none(),
-            "a cursor from room A must not resume in room B"
-        );
-        assert!(
-            source
-                .deliver_continuation(
-                    &RagContext::for_persona_in_room(persona(), 1_000_000, room_a),
-                    cursor,
-                    1_000,
-                )
-                .await
-                .is_some(),
-            "and the SAME room must still resume — a guard that refuses everything              is not a guard"
-        );
-    }
-
     // what this catches: pinned wall posts surface as a delivery the brain
     // renders into the [room-board] grounding block — the shared-layer
     // grounding that lets a persona read the room's plan/instructions.
@@ -360,7 +301,7 @@
             .contains("Ship the wall grounding"));
         assert!(delivery.items[0].content.contains("[plan]"));
         assert_eq!(delivery.items[1].metadata["category"], "rules");
-        assert!(delivery.continuation.is_none());
+        assert!(!delivery.truncated);
     }
 
     // what this catches: a room with NO pinned posts renders no block
@@ -374,7 +315,7 @@
             .await;
         assert!(delivery.items.is_empty());
         assert_eq!(delivery.tokens_used, 0);
-        assert!(delivery.continuation.is_none());
+        assert!(!delivery.truncated);
     }
 
     // what this catches: a read failure degrades to empty, never panics —
@@ -437,11 +378,11 @@
         assert_eq!(delivery.resolution_used, ResolutionPreference::Placeholder);
     }
 
-    // what this catches: a board too large for one budget packs whole posts,
-    // hands back a continuation cursor, and the continuation resumes from
-    // exactly where the first delivery stopped — no post lost, none doubled.
+    // what this catches: a board too large for one budget packs whole posts and
+    // stamps `truncated` — nothing resumes from here (ruling a); the rest becomes
+    // visible when a bigger budget re-derives fresh, or via the expand_command verb.
     #[tokio::test]
-    async fn overflow_paginates_via_continuation() {
+    async fn overflow_truncates_and_a_bigger_budget_sees_the_rest() {
         // Each rendered post ("[c]\n" + 200 chars) ~= 51 tokens; budget 60
         // admits exactly one whole post per call.
         let body = "y".repeat(200);
@@ -455,19 +396,16 @@
         let first = source.deliver(&ctx(), 60, ResolutionPreference::Raw).await;
         assert_eq!(first.items.len(), 1, "one whole post fits in budget 60");
         assert_eq!(first.items[0].metadata["category"], "a");
-        let cursor = first.continuation.expect("more posts remain → cursor");
-        assert_eq!(cursor.opaque["next_index"], 1);
-
-        let second = source
-            .deliver_continuation(&ctx(), cursor, 60)
-            .await
-            .expect("continuation resumes");
-        assert_eq!(second.items.len(), 1);
-        assert_eq!(second.items[0].metadata["category"], "b");
-        assert_eq!(
-            second.continuation.expect("still one more").opaque["next_index"],
-            2
+        assert!(
+            first.truncated,
+            "two posts remain beyond the budget → truncated must be stamped"
         );
+
+        // No cursor to resume: a fresh call under a bigger budget re-derives and
+        // admits all three — that is how the rest is seen now.
+        let full = source.deliver(&ctx(), 400, ResolutionPreference::Raw).await;
+        assert_eq!(full.items.len(), 3);
+        assert!(!full.truncated);
     }
 
     // what this catches: an oversized FIRST post is truncated and NEVER
@@ -501,31 +439,3 @@
         }
     }
 
-    // what this catches: a continuation cursor minted by another source (or
-    // another persona) is refused — the substrate identity guard on
-    // ContinuationCursor, so a stale/foreign cursor can't resume our wall.
-    #[tokio::test]
-    async fn continuation_refuses_foreign_cursor() {
-        let reader = Arc::new(StubReader::new(vec![post("a", "x"), post("b", "y")]));
-        let source = WallSource::new(persona(), reader);
-
-        let wrong_source = ContinuationCursor {
-            persona_id: persona(),
-            source_id: "some-other-source".to_string(),
-            opaque: serde_json::json!({ "next_index": 0 }),
-        };
-        assert!(source
-            .deliver_continuation(&ctx(), wrong_source, 1_000)
-            .await
-            .is_none());
-
-        let wrong_persona = ContinuationCursor {
-            persona_id: Uuid::parse_str("00000000-0000-0000-0000-000000000bbb").unwrap(),
-            source_id: SOURCE_ID.to_string(),
-            opaque: serde_json::json!({ "next_index": 0 }),
-        };
-        assert!(source
-            .deliver_continuation(&ctx(), wrong_persona, 1_000)
-            .await
-            .is_none());
-    }

@@ -47,8 +47,8 @@
 //!   sources.
 //! - Atomic unit = ONE pinned post. Unlike the doctrine (a single current
 //!   contract) the wall is a BOARD of many posts, so this source packs
-//!   whole posts greedily within budget and hands back a continuation
-//!   cursor for the overflow.
+//!   whole posts greedily within budget and stamps `truncated` when posts
+//!   remain beyond it (ruling a: nothing resumes — see expand_command).
 
 use std::sync::Arc;
 
@@ -57,7 +57,7 @@ use airc_lib::AircError;
 use async_trait::async_trait;
 
 use crate::persona::rag_budget::{
-    ContinuationCursor, RagContext, RagDelivery, RagItem, RagSource, ResolutionPreference,
+     RagContext, RagDelivery, RagItem, RagSource, ResolutionPreference,
 };
 
 /// Source identifier -- the deliberation faculty renders this delivery under a
@@ -376,8 +376,9 @@ impl WallSource {
             } else if items.is_empty() {
                 // Nothing packed yet and this post overflows alone →
                 // truncate its body to fill the budget, then stop. A
-                // truncated post fills what remains; the rest is the
-                // continuation's.
+                // truncated post fills what remains; the delivery stamps
+                // `truncated` so the caller sees it was cut (ruling a:
+                // nothing resumes from here).
                 if let Some(truncated) = Self::fit_post(&posts[i], budget) {
                     let item = Self::item(&posts[i], truncated);
                     used += item.tokens;
@@ -386,7 +387,8 @@ impl WallSource {
                 i += 1;
                 break;
             } else {
-                // Already packed whole posts; leave the rest for the cursor.
+                // Already packed whole posts; stop — the rest stays out of
+                // budget and the delivery stamps `truncated`.
                 break;
             }
         }
@@ -394,35 +396,23 @@ impl WallSource {
         (items, used, next)
     }
 
-    /// Wrap a packed slice into a delivery, minting a continuation cursor
-    /// when `next` posts remain. The cursor's opaque carries the resume
-    /// index AND the room it indexes; persona_id + source_id are the substrate
-    /// identity guards.
-    ///
-    /// `room` is the EFFECTIVE room of the delivery that minted this cursor —
-    /// an index without its room is only meaningful while the source reads one
-    /// room forever, which is the assumption #3883 removed.
+    /// Wrap a packed slice into a delivery, stamping `truncated` when `next`
+    /// posts remain beyond the budget. Nothing resumes from here (ruling a):
+    /// the positional cursor and its room-binding went out with
+    /// deliver_continuation — the way to see the rest is this source's
+    /// expand_command verb (`persona/wall/list`).
     fn delivery(
         &self,
         items: Vec<RagItem>,
         used: u32,
         next: Option<usize>,
         resolution: ResolutionPreference,
-        room: Option<uuid::Uuid>,
     ) -> RagDelivery {
-        let continuation = next.map(|idx| ContinuationCursor {
-            persona_id: self.persona_id,
-            source_id: SOURCE_ID.to_string(),
-            opaque: serde_json::json!({
-                "next_index": idx,
-                "room": room.map(|r| r.to_string()),
-            }),
-        });
         RagDelivery {
             source_id: SOURCE_ID.to_string(),
             items,
             tokens_used: used,
-            continuation,
+            truncated: next.is_some(),
             resolution_used: resolution,
         }
     }
@@ -457,7 +447,7 @@ impl RagSource for WallSource {
             source_id: SOURCE_ID.to_string(),
             items: Vec::new(),
             tokens_used: 0,
-            continuation: None,
+            truncated: false,
             resolution_used: res,
         };
 
@@ -570,71 +560,9 @@ impl RagSource for WallSource {
             "wall_posts: deliver"
         );
 
-        self.delivery(items, used, next, resolution, effective_room)
+        self.delivery(items, used, next, resolution)
     }
 
-    async fn deliver_continuation(
-        &self,
-        ctx: &RagContext,
-        cursor: ContinuationCursor,
-        budget: u32,
-    ) -> Option<RagDelivery> {
-        // Substrate identity guards — refuse a cursor from another persona
-        // or another source (per the ContinuationCursor contract).
-        if cursor.persona_id != self.persona_id || cursor.source_id != SOURCE_ID {
-            return None;
-        }
-        if ctx.persona_id != self.persona_id {
-            return None;
-        }
-        // A cursor is an offset into ONE room's wall. While this source read a room
-        // fixed at construction that was safe by accident — every cursor indexed the
-        // same list. Resolving the turn's room (above) makes a cursor minted in room
-        // A resumable in room B, where `next_index` would silently skip B's first N
-        // posts. Same defect, same fix, as the `--to` cursor in airc #1398: stamp the
-        // room and refuse a mismatch. An ABSENT stamp counts as a mismatch unless the
-        // turn is equally roomless — dropping one continuation costs a few posts,
-        // resuming into the wrong wall drops content and says nothing.
-        let stamped = cursor.opaque.get("room").cloned().unwrap_or(serde_json::Value::Null); // the default IS the answer: no stamp means a pre-#3883 cursor, and Null mismatches every roomed turn — the refusal we want
-        let effective_room = match ctx.airc_room.as_ref().map(|r| r.as_uuid()) {
-            Some(turn) if turn.is_nil() => return None,
-            Some(turn) => Some(turn),
-            None => self.room_id,
-        };
-        let here = match effective_room {
-            Some(r) => serde_json::Value::String(r.to_string()),
-            None => serde_json::Value::Null,
-        };
-        if stamped != here {
-            continuum_base::probe!(
-                class = "rag.continuation.room_mismatch",
-                source = SOURCE_ID,
-                persona_id = %ctx.persona_id,
-                cursor_room = %stamped,
-                turn_room = %here,
-                "refused to resume a wall continuation minted for a different room —                  the offset indexes another room's posts"
-            );
-            return None;
-        }
-        let start = cursor.opaque.get("next_index").and_then(|v| v.as_u64())? as usize;
-
-        // Re-read the wall: the projection is cheap (a transcript window) and
-        // re-reading keeps the cursor honest against a wall edited between
-        // turns, rather than caching a snapshot that can drift.
-        let posts = ledgers_for_context(
-            crate::experience::wall_records::current_wall_records(self.reader.wall_posts(effective_room).await.ok()?),
-            self.reader.card_labels(effective_room).await.as_ref(),
-        );
-        if start >= posts.len() {
-            return None;
-        }
-
-        let (items, used, next) = Self::pack(&posts, start, budget);
-        if items.is_empty() {
-            return None;
-        }
-        Some(self.delivery(items, used, next, ResolutionPreference::Raw, effective_room))
-    }
 }
 
 #[cfg(test)]

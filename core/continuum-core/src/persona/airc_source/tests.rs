@@ -565,7 +565,7 @@
             .await;
         assert_eq!(delivery.items.len(), 2, "two newest fit budget 4");
         assert!(
-            delivery.continuation.is_none(),
+            !delivery.truncated,
             "digest model has no continuation cursor"
         );
     }

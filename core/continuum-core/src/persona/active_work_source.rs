@@ -22,7 +22,7 @@ use async_trait::async_trait;
 use serde_json::json;
 
 use crate::persona::rag_budget::{
-    ContinuationCursor, RagContext, RagDelivery, RagItem, RagSource, ResolutionPreference,
+     RagContext, RagDelivery, RagItem, RagSource, ResolutionPreference,
 };
 
 /// Source identifier — used by budget presets, telemetry, and the projection that
@@ -122,7 +122,7 @@ impl ActiveWorkSource {
             source_id: SOURCE_ID.to_string(),
             items: Vec::new(),
             tokens_used: 0,
-            continuation: None,
+            truncated: false,
             resolution_used: ResolutionPreference::Placeholder,
         }
     }
@@ -288,20 +288,11 @@ impl RagSource for ActiveWorkSource {
             source_id: SOURCE_ID.to_string(),
             items,
             tokens_used,
-            continuation: None,
+            truncated: false,
             resolution_used: resolution,
         }
     }
 
-    async fn deliver_continuation(
-        &self,
-        _ctx: &RagContext,
-        _cursor: ContinuationCursor,
-        _budget: u32,
-    ) -> Option<RagDelivery> {
-        // Atomic units (one card each), no pagination — same as the roster.
-        None
-    }
 }
 
 /// True when an [active-work] contribution's rendered content names a card this

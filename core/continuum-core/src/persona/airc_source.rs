@@ -38,7 +38,7 @@ use crate::cognition::channel_substrate::{
     global_channel_digest_buffer, global_channel_digest_builder,
 };
 use crate::persona::rag_budget::{
-    ContinuationCursor, RagContext, RagDelivery, RagItem, RagSource, ResolutionPreference,
+     RagContext, RagDelivery, RagItem, RagSource, ResolutionPreference,
 };
 use crate::runtime::ready_buffer::ReadyBuffer;
 
@@ -633,7 +633,7 @@ impl AircRagSource {
             source_id: SOURCE_ID.to_string(),
             items: Vec::new(),
             tokens_used: 0,
-            continuation: None,
+            truncated: false,
             resolution_used: resolution,
         }
     }
@@ -887,22 +887,11 @@ impl RagSource for AircRagSource {
             tokens_used,
             // The digest IS the window. More history = a command (scrollback/search),
             // not a budget continuation cursor.
-            continuation: None,
+            truncated: false,
             resolution_used: resolution,
         }
     }
 
-    async fn deliver_continuation(
-        &self,
-        _ctx: &RagContext,
-        _cursor: ContinuationCursor,
-        _budget: u32,
-    ) -> Option<RagDelivery> {
-        // No continuation in the digest model — the consolidated window is the unit.
-        // Reaching further back is an explicit scrollback/search command, not a
-        // budget-allocator cursor.
-        None
-    }
 }
 
 #[cfg(test)]
