@@ -42,6 +42,13 @@ pub trait DispatchScope: Send + Sync {
     /// The command completed successfully.
     fn succeeded(&self) {}
 
+    /// Whether this scope admitted the caller's hands context. A call bound to hands that no
+    /// entered scope admits is refused (fail closed, card 5e7498d4): hands admission is a
+    /// safety boundary, and an empty hook list must never let such a call through unadmitted.
+    fn admits_hands(&self) -> bool {
+        false
+    }
+
     /// Run the command inside this scope (a task-local, a lease the command's children
     /// inherit). The default runs it as it is.
     fn wrap<'a>(self: Arc<Self>, work: DispatchFuture<'a>) -> DispatchFuture<'a> {
@@ -72,7 +79,34 @@ pub(crate) fn enter_all(caller: Option<&CallerIdentity>) -> Result<Vec<Arc<dyn D
             scopes.push(scope);
         }
     }
+    let bound = caller.filter(|c| !c.releases_hands).and_then(|c| c.hands);
+    if let Some(context) = bound {
+        if !scopes.iter().any(|scope| scope.admits_hands()) {
+            return Err(format!(
+                "hands context {} has no admission installed in this process: refused, never run unadmitted",
+                context.id()
+            ));
+        }
+    }
     Ok(scopes)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // what this catches (Cormac on #5278, card 5e7498d4): a call bound to a caller's hands
+    // dispatched with no hands admission because nothing installed one (an empty hook list),
+    // fail-open on a safety boundary. It is refused; a call with no hands still passes.
+    #[test]
+    fn a_hands_bound_call_with_no_admission_installed_is_refused() {
+        let peer = crate::identity::PeerId::from_uuid(uuid::Uuid::from_u128(7));
+        let bound = CallerIdentity::airc(peer).in_hands(crate::identity::hands_context::HandsContext::fresh());
+        let refused = enter_all(Some(&bound)).err().unwrap_or_default();
+        assert!(refused.contains("no admission installed"), "{refused}");
+        assert!(enter_all(Some(&CallerIdentity::airc(peer))).is_ok(), "a call with no hands is not this gate's concern");
+        assert!(enter_all(None).is_ok());
+    }
 }
 
 /// Run `work` inside every scope, the first installed outermost.

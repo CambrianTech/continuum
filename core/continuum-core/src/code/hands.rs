@@ -283,6 +283,10 @@ pub struct HandsAdmission;
 struct Admitted(std::sync::Arc<HandsLease>);
 
 impl crate::runtime::dispatch_hook::DispatchScope for Admitted {
+    fn admits_hands(&self) -> bool {
+        true
+    }
+
     fn wrap<'a>(
         self: std::sync::Arc<Self>,
         work: crate::runtime::dispatch_hook::DispatchFuture<'a>,
