@@ -191,7 +191,7 @@ impl OrmEpochWatermark {
             .await
             .map_err(WatermarkError::LegacyImport)?
         {
-            crate::probe!(
+            continuum_base::probe!(
                 class = "grant.watermark.migrated",
                 rows = rows,
                 path = %path.display(),
