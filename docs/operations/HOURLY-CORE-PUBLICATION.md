@@ -38,6 +38,6 @@ active publication and GitHub's newest pending run, without cancellation starvat
 Verified prerequisite (2026-10-22): the repository default branch was `canary`.
 Dry-run 39838376645's two jobs succeeded and its receipt reported full SHA
 `b1a2b451b3a7dded517a3c54009335a7a78b13f6`, `dryRun: true`, `dispatched: false`.
-Confirm the current run conclusion before enabling the variable; preserve any active
+The run subsequently reached completed/success. Preserve any active
 publication across the switch. If scheduler recovery is needed, manual publication
 remains available while a reviewed rollback restores push publication.
