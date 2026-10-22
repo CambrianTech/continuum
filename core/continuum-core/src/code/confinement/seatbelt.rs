@@ -15,15 +15,36 @@ use super::{Confinement, Enforcement};
 /// same pair.
 const SEATBELT_OPS: [&str; 2] = ["file-read*", "file-write*"];
 
+/// The device files a shell writes to on nearly every command (`> /dev/null`, the tty,
+/// `/dev/fd/N` behind `/dev/stderr`, dyld's dtrace helper), granted as writes after the
+/// host-wide write deny. Measured with the real `sandbox-exec` on IntelMac (macOS 15.7.7,
+/// 2026-10-15, card 0e941074): without them `echo hi > /dev/null` is "Operation not
+/// permitted"; with them `git`, `xcrun`, `cc` (compile and run in the workspace), Python's
+/// `tempfile.mkstemp` and `mktemp -d` all pass, while writes to `/Users/Shared`,
+/// `/usr/local` and `/Volumes` are refused. `literal` is the exact file, `subpath` its tree.
+const SEATBELT_WRITABLE_DEVICES: [(&str, &str); 5] = [
+    ("literal", "/dev/null"),
+    ("literal", "/dev/zero"),
+    ("literal", "/dev/tty"),
+    ("literal", "/dev/dtracehelper"),
+    ("subpath", "/dev/fd"),
+];
+
 /// Render the seatbelt profile (macOS `sandbox-exec -p`) for an allow-list. Within an
 /// operation, rules are evaluated last-match-wins, so the order is: allow the host, deny
-/// the home, grant every root, deny the carve-outs last. The carve-outs are already
+/// WRITES host-wide (outside the home only her write roots are writable, as landlock
+/// enforces; `(allow default)` alone left `/Users/Shared` and `/usr/local` writable, card
+/// 0e941074), re-grant the devices a shell writes to, deny the home, grant every root,
+/// deny the carve-outs last. The carve-outs are already
 /// absent from the granted roots ([`carve`]); writing them again is the belt to that
 /// brace. Nothing is ever granted beneath a deny, so order never cuts against a root of
 /// hers (Cormac on #4882: a first draft denied `~/.airc` and re-granted only her citizen
 /// dir after it, refusing her own card worktree under `~/.airc/worktrees`).
 pub fn seatbelt_profile(home: &Path, list: &AllowList) -> String {
-    let mut out = String::from("(version 1)\n(allow default)\n");
+    let mut out = String::from("(version 1)\n(allow default)\n(deny file-write* (subpath \"/\"))\n");
+    for (filter, device) in SEATBELT_WRITABLE_DEVICES {
+        out.push_str(&format!("(allow file-write* ({filter} \"{device}\"))\n"));
+    }
     let rule = |out: &mut String, verdict: &str, ops: &[&str], root: &Path| {
         for op in ops {
             out.push_str(&format!("({verdict} {op} (subpath \"{}\"))\n", sbpl_string(root)));

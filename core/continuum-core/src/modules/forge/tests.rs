@@ -219,20 +219,22 @@
     }
 
     /// What this catches: the managed-dir invariant Joel set — the native
-    /// trainer interpreter resolves under `~/.continuum/genome/venv`, NEVER
-    /// a venv outside it. Read-only (only asserts when
-    /// MLX_PYTHON is unset, so it never races env-mutating tests).
+    /// trainer interpreter resolves under the continuum home's `genome/venv`
+    /// (one owner: `paths::continuum_home`), NEVER a venv outside it. Read-only (only
+    /// asserts when MLX_PYTHON is unset, so it never races env-mutating tests).
     #[test]
-    fn mlx_python_defaults_to_managed_venv() {
+    fn mlx_python_defaults_to_managed_venv() -> Result<(), String> {
         if std::env::var("MLX_PYTHON").is_ok() {
-            return; // operator override in effect; nothing to assert
+            return Ok(()); // operator override in effect; nothing to assert
         }
-        let p = resolve_mlx_python();
+        let p = resolve_mlx_python()?;
         let s = p.display().to_string();
-        assert!(
-            s.contains(".continuum/genome/venv"),
+        assert_eq!(
+            p,
+            crate::paths::continuum_home()?.join("genome/venv/bin/python3"),
             "managed venv path, got {s}"
         );
+        Ok(())
     }
 
     /// What this catches: the native dry_run RESOLVES the full MlxTrainSpec

@@ -742,7 +742,7 @@ impl AIProviderAdapter for LlamaCppAdapter {
         }
         let start = Instant::now();
 
-        // ── Governed GPU admission (mirrors cognition/eval.rs::acquire_eval_lane_slot) ──
+        // ── Governed GPU admission (mirrors cognition::single_purpose_lane::acquire_lane_slot) ──
         // The embedding forward pass allocates a bounded Metal context (a 2048-token
         // embedding context: ~1.2 GiB compute buffer — quadratic in n_ubatch=2048 —
         // plus ~224 MiB KV). UNGOVERNED, it grabbed that context behind the governor's

@@ -69,6 +69,29 @@ continuum stop       # stop the detached core (process-group SIGTERM)
 - `start-server.sh` is the **implementation detail**: pure-Rust `cargo run` with per-platform features (Darwin arm64 → `metal,accelerate`; Intel Mac → cpu-only; Linux/Windows → detected), airc context auto-discovered, builds core + mcp + continuum. **No Node.**
 - `npm start` (root and `src/`) just calls `start-server.sh` — kept only as muscle-memory alias; it is not a Node orchestrator.
 
+### Node profile: calls and avatars are what a node hosts
+
+The crate builds **headless by default** (`default = []`): no LiveKit, no Bevy/wgpu. A plain
+`cargo check`/`cargo test` compiles neither. What a node hosts beyond the headless core is its
+**profile**, one line in `~/.continuum/config.env`:
+
+```bash
+CONTINUUM_NODE_FEATURES=livekit-webrtc,avatar-3d   # calls + 3D avatars (the M5, the 5090)
+CONTINUUM_NODE_FEATURES=livekit-webrtc             # calls, no Bevy (the IntelMac)
+# absent or empty                                   # headless (an AWS node, a fresh install)
+```
+
+ONE function resolves it, together with the platform GPU set:
+`tools/scripts/lib/core-features.sh` `select_core_features`. Every deploy path calls it:
+`start-server.sh` (`continuum start` / `reboot`), the deploy consumer judging a published
+core (`continuum.rs` `local_core_features`), the Windows developer install
+(`win-modules.ps1` `Mod-BuildCore`, through `resolve_node_features`) and CI's published
+binaries (`core-binaries.yml`, which builds each platform with `published_node_features`).
+A word outside `livekit-webrtc avatar-3d` refuses the build, naming it; no profile builds
+headless and the build says so. A published core carries its platform's published profile;
+a node hosting a subset of it (headless included) takes that core, and a node hosting more
+builds its own. After editing the line, `continuum reboot` builds with it.
+
 **Forbidden:** a second start script; reintroducing `parallel-start.sh` (quarantined in `legacy/node-startup/`); any start step that blocks on a flaky external (model download, scene-gen) — those are separate, optional, and must degrade, never gate the core coming up.
 
 **Graceful degrade is mandatory.** A missing optional dependency (ONNX/ORT dylib, engine embeddings, STT model, Tailscale) logs a WARN and the core still serves. The live boot already demonstrates this (engine `/v1/embeddings` unavailable → lexical fallback; ORT missing → isolated). A missing *optional* must never abort startup. (`#26`: faculties degrade, never panic.)

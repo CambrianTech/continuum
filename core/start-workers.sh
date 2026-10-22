@@ -196,21 +196,19 @@ fi
 
 # Build Rust workers — let cargo handle incremental compilation (it's smart enough)
 SCRIPT_DIR="$(dirname "$0")"
-FEATURES_SCRIPT="$PROJECT_DIR/scripts/shared/cargo-features.sh"
-
-if [ -f "$FEATURES_SCRIPT" ]; then
-  # shellcheck source=../scripts/shared/cargo-features.sh
-  source "$FEATURES_SCRIPT"
-else
-  CARGO_GPU_FEATURES=""
-fi
+# The deploy build's features have ONE owner: the platform GPU set plus this node's profile
+# (calls, 3D avatars). The script this used to source moved to tools/scripts/shared/ and its
+# old path silently built with no features at all.
+# shellcheck source=../tools/scripts/lib/core-features.sh
+source "$PROJECT_DIR/tools/scripts/lib/core-features.sh"
+select_core_features
 
 # Skip build if --skip-build flag passed (caller already built)
 if [[ " $* " == *" --skip-build "* ]]; then
   echo -e "${GREEN}✅ Rust build skipped (--skip-build)${NC}"
 else
-  echo -e "${YELLOW}🔨 Building Rust workers (cargo incremental) ${CARGO_GPU_FEATURES:-[cpu-only]}...${NC}"
-  (cd "$SCRIPT_DIR" && cargo build --release --quiet $CARGO_GPU_FEATURES)
+  echo -e "${YELLOW}🔨 Building Rust workers (cargo incremental) ${CONTINUUM_FEATURES:-[headless, no GPU features]}...${NC}"
+  (cd "$SCRIPT_DIR" && cargo build --release --quiet $CONTINUUM_FEATURES)
   echo -e "${GREEN}✅ Rust build complete${NC}"
 fi
 

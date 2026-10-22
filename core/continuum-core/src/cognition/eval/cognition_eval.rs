@@ -214,7 +214,7 @@ impl CognitionEval {
         // GPU-first placement evidence for the gene's measurement lane — surfaced on
         // the result so the harness shows which device the A/B was scored on. None in
         // single-pass mode (that forks onto her LIVE lane, which is already GPU).
-        let mut placement_evidence: Option<PlacementEvidence> = None;
+        let mut placement_evidence: Option<crate::cognition::single_purpose_lane::PlacementEvidence> = None;
         let cycle = match (&p.gene, p.base_model_id.as_deref()) {
             // A gene names its own forged base → ephemeral lane + the gene as `--lora`.
             (Some(gene), _) => {

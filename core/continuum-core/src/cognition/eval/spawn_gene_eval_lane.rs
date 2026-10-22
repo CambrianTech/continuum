@@ -30,17 +30,17 @@ pub(super) async fn spawn_gene_eval_lane(gene: &EvalGene) -> Result<EvalLane, Co
 
     // Size THIS lane, then gate on real free RAM — refuse cleanly if it wouldn't fit
     // (a jetsam SIGKILL otherwise), before paying the cold-load.
-    await_eval_lane_memory_headroom(eval_lane_footprint(&base)).await?;
+    crate::cognition::single_purpose_lane::await_lane_memory_headroom(crate::cognition::single_purpose_lane::lane_footprint(&base)).await.map_err(CommandError::Internal)?;
 
     // 3. Host-fit PHYSICAL window (`-c`) for the throwaway lane, derived from the
-    //    live serving budget (see `plan_eval_lane_ctx`). One lane: a single
+    //    live serving budget (see `crate::cognition::single_purpose_lane::plan_lane_ctx`). One lane: a single
     //    measurement stream, no batching. This sizes the lane's launch `-c` + its
     //    placement; the fork's COGNITION window is read back from the lane's real
     //    `/props` after spawn (below), the same served-truth pin the supervisor
     //    applies to the living persona — so a measurement copy budgets against
     //    exactly what its lane serves, never this planned value
     //    ([[dreaming-mind-eval-must-match-live-cognition]], task #50).
-    let lane_ctx = plan_eval_lane_ctx(&base);
+    let lane_ctx = crate::cognition::single_purpose_lane::plan_lane_ctx(&base);
 
     // 3b. GPU-FIRST placement (Joel: fill GPU lanes first, ~100% utilization; CPU is
     //     spillover of last resort, never the default for a coexisting lane). Probe
@@ -49,7 +49,7 @@ pub(super) async fn spawn_gene_eval_lane(gene: &EvalGene) -> Result<EvalLane, Co
     //     chosen device + headroom ride out on the result so a CPU spill is VISIBLE in
     //     the harness, not a silent slow path.
     let (placement_evidence, vram_lease) =
-        decide_eval_lane_placement(&base, lane_ctx, &format!("eval-lane gene:{}", gene.name));
+        crate::cognition::single_purpose_lane::decide_lane_placement(&base, lane_ctx, &format!("eval-lane gene:{}", gene.name), EVAL_LANE_TERMS);
 
     // 4. Bring the lane up: forged base + the gene loaded via `--lora` (loadable;
     //    the per-request `lora` field decides per turn whether it actually pages in,
@@ -212,10 +212,10 @@ pub(super) async fn build_base_eval_lane_inner(base_id: &str) -> Result<EvalLane
     }
     // Size THIS lane, then gate on real free RAM — refuse cleanly if it wouldn't fit
     // (a jetsam SIGKILL otherwise), before paying the cold-load.
-    await_eval_lane_memory_headroom(eval_lane_footprint(&base)).await?;
-    let lane_ctx = plan_eval_lane_ctx(&base);
+    crate::cognition::single_purpose_lane::await_lane_memory_headroom(crate::cognition::single_purpose_lane::lane_footprint(&base)).await.map_err(CommandError::Internal)?;
+    let lane_ctx = crate::cognition::single_purpose_lane::plan_lane_ctx(&base);
     let (placement_evidence, vram_lease) =
-        decide_eval_lane_placement(&base, lane_ctx, &format!("eval-lane base:{base_id}"));
+        crate::cognition::single_purpose_lane::decide_lane_placement(&base, lane_ctx, &format!("eval-lane base:{base_id}"), EVAL_LANE_TERMS);
     let target = ServingTarget {
         // Single-purpose lane: no citizen population to derive from — the
         // declared cold-start prior is the honest value (restore-economy 1.b).
@@ -300,16 +300,16 @@ impl PrivateTeacherLane {
                 "private local borrower requires a local model".into(),
             ));
         }
-        let footprint = eval_lane_footprint(base).ok_or_else(|| {
+        let footprint = crate::cognition::single_purpose_lane::lane_footprint(base).ok_or_else(|| {
             CommandError::Internal("private teacher requires a known model footprint".into())
         })?;
         // Same pressure/RAM veto as ordinary eval, but return the capacity refusal
         // to the owner so it can negotiate an explicit window rather than waiting
         // for incumbent memory that cannot free until that negotiation occurs.
-        if refuse_eval_lane_under_memory_pressure(Some(footprint)).is_err() {
+        if crate::cognition::single_purpose_lane::refuse_lane_under_memory_pressure(Some(footprint)).is_err() {
             return Ok(None);
         }
-        let lease = match daemon.acquire_guarded(&eval_lane_request(footprint)) {
+        let lease = match daemon.acquire_guarded(&crate::cognition::single_purpose_lane::lane_request(EVAL_LANE_TERMS, footprint)) {
             Ok(lease) => lease,
             Err(crate::resources::LeaseError::InsufficientCapacity { .. }) => return Ok(None),
             Err(error) => {
@@ -321,7 +321,7 @@ impl PrivateTeacherLane {
         let placement = crate::inference::llama_server::LanePlacement::Gpu;
         let target = ServingTarget {
             host_prompt_cache_mib: crate::inference::lane_args::CACHE_RAM_MIB,
-            context_window: plan_eval_lane_ctx(base),
+            context_window: crate::cognition::single_purpose_lane::plan_lane_ctx(base),
             model: base.clone(),
             lanes: 1,
             adapters: vec![],
@@ -402,7 +402,7 @@ impl PrivateTeacherLane {
 /// asked for `unsloth/Devstral-Small-2507-GGUF` — the exact model the live lane was
 /// already serving, 27.2 GB resident, answering on its port. This path tried to
 /// cold-load a SECOND copy: ~17.9 GB + 2 GiB headroom against 15.0 GB free on a 64 GB
-/// box. It can never fit, so `await_eval_lane_memory_headroom` deferred every 5 s for
+/// box. It can never fit, so `crate::cognition::single_purpose_lane::await_lane_memory_headroom` deferred every 5 s for
 /// its full 180 s window and then failed loud. The harness wrote a zero-byte diff and
 /// the benchmark reported RESOLVED=0 — a number that measured a harness which never
 /// started, not a model that could not solve. Duplicating resident weights is not a
@@ -505,7 +505,7 @@ pub(super) async fn share_live_serving_lane_from_snapshot(
         // The live lane's own `/props` truth, the same authority the living persona
         // budgets against (task #50) — never a recomputed plan value.
         served_ctx: snap.served_context_window,
-        placement: PlacementEvidence {
+        placement: crate::cognition::single_purpose_lane::PlacementEvidence {
             placement: crate::inference::llama_server::LanePlacement::Cpu,
             device: "shared:live-serving-lane".to_string(),
             reason: format!(
@@ -569,7 +569,7 @@ pub(super) async fn build_external_eval_lane_inner(
         // `LanePlacement` drives llama-server spawn flags, which never apply here;
         // `Cpu` carries the honest zero-VRAM-contention semantics, and the device
         // string names the real host.
-        placement: PlacementEvidence {
+        placement: crate::cognition::single_purpose_lane::PlacementEvidence {
             placement: crate::inference::llama_server::LanePlacement::Cpu,
             device: format!("external:{}", base.provider),
             reason: format!(

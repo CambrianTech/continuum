@@ -350,7 +350,7 @@ pub(crate) fn derive_train_footprint_bytes(
 }
 
 /// Ask the ONE resource authority for a training job's VRAM/UMA slot (#56/G2), the
-/// forge sibling of the eval lane's `acquire_eval_lane_slot`. A `mlx_lm.lora` job
+/// forge sibling of the single-purpose lane's `acquire_lane_slot`. A `mlx_lm.lora` job
 /// loads the FULL base into unified memory — on a UMA box that is VRAM contention
 /// with the live persona lanes, and it used to launch with ZERO governor check
 /// (invisible pressure that could OOM a live video-chat mid-forge). Now it leases:

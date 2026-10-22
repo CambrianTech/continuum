@@ -158,7 +158,7 @@ impl FineTuningAdapter for OpenAIFineTuningAdapter {
             // Cloud HTTP trainer — runs from any host regardless of
             // local accelerator.
             requires: TrainerHardware::Any,
-            trains_on_resident_weights: false,
+            place: crate::genome::fine_tuning::adapter::TrainingPlace::Cloud,
         }
     }
 

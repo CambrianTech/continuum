@@ -130,7 +130,18 @@ pub async fn ensure_model_serving_if_current<C: LlamaServerControl + ?Sized>(
                         );
                         true
                     }
-                    Ok(GenomeInPlace::Unsupported) => false,
+                    Ok(GenomeInPlace::Unsupported) => {
+                        // The costliest fall-through this function has (every turn in flight
+                        // killed, every slot re-prefilled), so it is named like its siblings:
+                        // an engine without the in-place routes, or a gene with no staged name.
+                        continuum_base::probe!(target: "continuum_core::inference::llama_server", class = "serving.genome.in_place_unsupported",
+                            model = target.model_id(),
+                            from = active.len() as u64,
+                            to = desired.len() as u64,
+                            "the gene set changed and this engine cannot take it in place: relaunching onto the target set"
+                        );
+                        false
+                    }
                     Err(e) => {
                         continuum_base::probe!(target: "continuum_core::inference::llama_server", class = "serving.genome.in_place_failed",
                             model = target.model_id(),

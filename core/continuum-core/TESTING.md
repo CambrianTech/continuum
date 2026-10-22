@@ -12,8 +12,10 @@
 npm run test:rust -- tick_db_handle --lib
 ```
 
-The wrapper sources `scripts/shared/cargo-features.sh` to apply the
-right GPU feature flags for the current platform automatically.
+The wrapper sources `tools/scripts/shared/cargo-features.sh` to apply the
+right GPU feature flags for the current platform automatically. The crate is
+headless by default: add `--features livekit-webrtc,avatar-3d` to test the call
+and 3D-avatar paths.
 
 ## Why a wrapper?
 

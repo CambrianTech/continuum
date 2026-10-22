@@ -579,7 +579,7 @@ pub struct DatasetModule {
 /// With no home at all it fails loud (Cormac on #4496): a dataset written under a temp dir
 /// is a dataset the next boot cannot find.
 pub fn default_datasets_root() -> Result<PathBuf, crate::sdk_codegen::CommandError> {
-    Ok(crate::paths::continuum_home()?.join("datasets"))
+    Ok(crate::paths::ContinuumLayout::home()?.datasets())
 }
 
 impl Default for DatasetModule {

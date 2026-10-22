@@ -238,6 +238,10 @@ impl ServiceModule for CitizenHealthModule {
             "the hour's citizen health — the substrate's own read"
         );
         let mut said = line(&h, &v);
+        said.push_str(&continuum_cli_lifecycle::deploy_health::read(
+            &crate::modules::persona_instance_manager::resolve_continuum_root(),
+            env!("CONTINUUM_BUILD_GIT_SHA"),
+        ).line(EpochMs::now().millis()));
         if !paged_out.is_empty() {
             said.push_str(&format!(" · mindless {} paged out ({})", paged_out.len(), paged_out.join(", ")));
         }
@@ -281,6 +285,10 @@ impl ServiceModule for CitizenHealthModule {
                     oldest_dormant_turn_age_ms: oldest_dormant_turn_age_ms(),
                 };
                 let v = verdict(&h);
+                let deploy = continuum_cli_lifecycle::deploy_health::read(
+                    &crate::modules::persona_instance_manager::resolve_continuum_root(),
+                    env!("CONTINUUM_BUILD_GIT_SHA"),
+                );
                 CommandResult::json(&serde_json::json!({
                     // BOTH NUMBERS, because the gap between them is the diagnosis and a
                     // machine reader must not be left with the one the verdict did NOT use.
@@ -299,7 +307,8 @@ impl ServiceModule for CitizenHealthModule {
                     "prefix_reuse_pct": prefix_reuse_pct(&h),
                     "moves_opportunity": h.moves_opportunity, "moves_failure": h.moves_failure,
                     "oldest_dormant_turn_age_ms": h.oldest_dormant_turn_age_ms,
-                    "verdict": v.as_str(), "line": line(&h, &v),
+                    "verdict": v.as_str(), "line": format!("{}{}", line(&h, &v), deploy.line(EpochMs::now().millis())),
+                    "deploy": deploy,
                     "note": "counters since the last hourly tick (not reset by this read)"
                 }))
             }
