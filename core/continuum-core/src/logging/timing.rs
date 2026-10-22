@@ -1,4 +1,3 @@
-use super::LogLevel;
 /// Performance timing utilities for continuum-core
 ///
 /// User requirement: "we are gonna time the shit out of it"
@@ -81,23 +80,15 @@ impl Drop for TimingGuard {
             )
         };
 
-        // Log via logger worker
-        if let Some(logger) = super::LOGGER.get() {
-            let level = if elapsed_ms > 500 {
-                LogLevel::Warn // Slow operation
-            } else if elapsed_ms > 100 {
-                LogLevel::Info
-            } else {
-                LogLevel::Debug
-            };
-
-            let args = serde_json::json!({
-                "elapsed_us": elapsed_us,
-                "elapsed_ms": elapsed_ms,
-                "operation": self.operation
-            });
-
-            logger.log(&self.category, level, "performance", &message, Some(args));
+        // The same clog event every log_* macro emits, so ClogLayer routes the timing to
+        // its category file. This used to log only through the legacy FFI logger, which the
+        // native server never initialized, so every timing here was silently dropped.
+        if elapsed_ms > 500 {
+            crate::log_warn!(&self.category, "performance", "{message}"); // slow operation
+        } else if elapsed_ms > 100 {
+            crate::log_info!(&self.category, "performance", "{message}");
+        } else {
+            crate::log_debug!(&self.category, "performance", "{message}");
         }
     }
 }
