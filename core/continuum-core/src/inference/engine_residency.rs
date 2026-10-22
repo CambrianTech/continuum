@@ -200,6 +200,24 @@ pub struct ResidentWork {
     /// inside the admission hold. `None`: a record from before the field, never re-attached.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub job_spec: Option<crate::genome::fine_tuning::engine_lora_adapter::EngineRunSpec>,
+    /// The governed pool `reserved_bytes` was leased in, recorded at bind: what a successor
+    /// core re-takes for a surviving run, never what the next launch's configuration would
+    /// choose (Codex on #5264: a placement change across a restart would charge the wrong
+    /// pool for a run still using the other one). Read through [`Self::bound_memory`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub memory: Option<crate::resources::ResourceKind>,
+}
+
+impl ResidentWork {
+    /// The pool this work's reservation lives in. A record without one was written by a
+    /// build whose training admission leased `Vram` unconditionally, so `Vram` is what that
+    /// run was granted: the record's own history, not a guess at its placement.
+    pub fn bound_memory(&self) -> crate::resources::ResourceKind {
+        match self.memory {
+            Some(kind) => kind,
+            None => crate::resources::ResourceKind::Vram,
+        }
+    }
 }
 
 /// The store's file under a continuum home.
@@ -439,6 +457,7 @@ mod tests {
             reserved_bytes: 1 << 30,
             interrupted: None,
             job_spec: None,
+            memory: None,
         }
     }
 

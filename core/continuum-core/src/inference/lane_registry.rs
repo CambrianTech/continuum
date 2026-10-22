@@ -107,9 +107,19 @@ pub struct LaneRecord {
     /// recorded before this field existed, which never match a live process.
     #[serde(default)]
     pub started_s: u64,
+    /// Where this lane was launched to keep its bytes (`--n-gpu-layers 0` or the GPU), so
+    /// the pool its work leases is the one it actually uses, never the next launch's
+    /// configuration (Codex on #5264). `None` for lanes recorded before this field existed.
+    #[serde(default)]
+    pub placement: Option<crate::inference::llama_server::LanePlacement>,
 }
 
 impl LaneRecord {
+    /// The governed pool this lane's bytes live in, when its placement was recorded.
+    pub fn memory(&self) -> Option<crate::resources::ResourceKind> {
+        self.placement.map(crate::inference::llama_server::LanePlacement::pool_kind)
+    }
+
     /// The lane's root url, the one spelling every in-process client addresses it by (the
     /// training run posts `/train` under it).
     pub fn root_url(&self) -> String {
@@ -477,6 +487,7 @@ mod tests {
             page_dir: None,
             engine_bin: None,
             started_s: 0,
+            placement: None,
         };
         record_in(dir.path(), &good).expect("write");
         assert_eq!(records_checked_in(dir.path()).expect("clean registry").len(), 1);
@@ -510,6 +521,7 @@ mod tests {
             page_dir: None,
             engine_bin: None,
             started_s: 0,
+            placement: None,
         }
     }
 
@@ -759,6 +771,7 @@ mod tests {
                         page_dir: None,
                         engine_bin: None,
                         started_s: 0,
+                        placement: None,
                     },
                 )
                 .expect("record");
@@ -803,6 +816,7 @@ mod tests {
                     page_dir: None,
                     engine_bin: None,
                     started_s: 0,
+                    placement: None,
                 },
             )
             .expect("record");

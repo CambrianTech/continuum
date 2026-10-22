@@ -363,6 +363,7 @@ impl LlamaServerProcess {
                 engine_bin: Some(PathBuf::from(&prepared.engine_program)),
                 // the OS start time with the pid names this exact process (residency step 1)
                 started_s: crate::inference::engine_residency::process_start_s(pid).unwrap_or(0), // unwrap_or: 0 never matches a live process, so an unreadable start time holds nothing
+                placement: Some(target.placement),
             };
             // Record + release under the page-dir guard (one critical section); a
             // failed write keeps the reservation for the lane's lifetime.
