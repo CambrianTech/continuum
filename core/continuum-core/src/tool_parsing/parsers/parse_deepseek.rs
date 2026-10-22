@@ -59,13 +59,15 @@ pub(super) fn parse_deepseek(text: &str) -> Vec<RawToolMatch> {
 // Also handles the function-call wrapper format:
 //   <|python_tag|>{"type": "function", "function": {"name": "...", "arguments": {...}}}
 pub(super) static RE_LLAMA_BLOCK: Lazy<Regex> =
-    Lazy::new(|| Regex::new(r"(?s)<\|python_tag\|>\s*(.+?)(?:<\|eot_id\|>|\z)").unwrap());
+    Lazy::new(|| static_regex(r"(?s)<\|python_tag\|>\s*(.+?)(?:<\|eot_id\|>|\z)"));
 
 pub(super) fn parse_llama(text: &str) -> Vec<RawToolMatch> {
     let mut results = Vec::new();
 
     for cap in RE_LLAMA_BLOCK.captures_iter(text) {
-        let full_match = cap.get(0).unwrap();
+        let Some(full_match) = cap.get(0) else {
+            continue;
+        };
         let body = cap.get(1).map(|m| m.as_str().trim()).unwrap_or("");
 
         // Try parsing the body as JSON
@@ -170,13 +172,15 @@ pub(super) fn extract_arguments_field(
 // Mistral/Mixtral uses `[TOOL_CALLS]` prefix followed by JSON array:
 //   [TOOL_CALLS] [{"name": "code_search", "arguments": {"pattern": "test"}}]
 pub(super) static RE_MISTRAL_BLOCK: Lazy<Regex> =
-    Lazy::new(|| Regex::new(r"(?s)\[TOOL_CALLS\]\s*(\[.+?\])").unwrap());
+    Lazy::new(|| static_regex(r"(?s)\[TOOL_CALLS\]\s*(\[.+?\])"));
 
 pub(super) fn parse_mistral(text: &str) -> Vec<RawToolMatch> {
     let mut results = Vec::new();
 
     for cap in RE_MISTRAL_BLOCK.captures_iter(text) {
-        let full_match = cap.get(0).unwrap();
+        let Some(full_match) = cap.get(0) else {
+            continue;
+        };
         let arr_str = cap.get(1).map(|m| m.as_str().trim()).unwrap_or("");
 
         if let Ok(serde_json::Value::Array(arr)) =
@@ -209,13 +213,15 @@ pub(super) fn parse_mistral(text: &str) -> Vec<RawToolMatch> {
 //   {"name": "code_search", "arguments": {"pattern": "test"}}
 //   </tool_call>
 pub(super) static RE_HERMES_BLOCK: Lazy<Regex> =
-    Lazy::new(|| Regex::new(r"(?s)<tool_call>\s*(.*?)\s*</tool_call>").unwrap());
+    Lazy::new(|| static_regex(r"(?s)<tool_call>\s*(.*?)\s*</tool_call>"));
 
 pub(super) fn parse_hermes(text: &str) -> Vec<RawToolMatch> {
     let mut results = Vec::new();
 
     for cap in RE_HERMES_BLOCK.captures_iter(text) {
-        let full_match = cap.get(0).unwrap();
+        let Some(full_match) = cap.get(0) else {
+            continue;
+        };
         let body = cap.get(1).map(|m| m.as_str().trim()).unwrap_or("");
 
         if let Ok(val) = serde_json::from_str::<serde_json::Value>(body) {
@@ -249,7 +255,9 @@ pub(super) fn parse_qwen(text: &str) -> Vec<RawToolMatch> {
     let mut results = Vec::new();
 
     for cap in RE_HERMES_BLOCK.captures_iter(text) {
-        let full_match = cap.get(0).unwrap();
+        let Some(full_match) = cap.get(0) else {
+            continue;
+        };
         let body = cap.get(1).map(|m| m.as_str().trim()).unwrap_or("");
 
         if let Ok(val) = serde_json::from_str::<serde_json::Value>(body) {

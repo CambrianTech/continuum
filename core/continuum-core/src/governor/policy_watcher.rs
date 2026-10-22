@@ -55,7 +55,7 @@ impl PolicyDirectoryWatcher {
     pub fn last_error(&self) -> Option<String> {
         self.last_error
             .lock()
-            .expect("PolicyDirectoryWatcher last_error mutex poisoned")
+            .unwrap()
             .clone()
     }
 
@@ -67,7 +67,7 @@ impl PolicyDirectoryWatcher {
         let mut guard = self
             .last_error
             .lock()
-            .expect("PolicyDirectoryWatcher last_error mutex poisoned");
+            .unwrap();
         *guard = None;
     }
 }
@@ -101,7 +101,7 @@ pub fn watch_policy_directory(
             tracing::error!(target: "continuum_core::governor::policy_watcher", %message);
             let mut guard = callback_last_error
                 .lock()
-                .expect("PolicyDirectoryWatcher last_error mutex poisoned");
+                .unwrap();
             *guard = Some(message);
         }
     })

@@ -182,13 +182,13 @@ pub fn mlx_adapters_to_peft(
         converted.push((peft_key, vec![cols, rows], dtype, transposed));
     }
 
-    if converted.is_empty() {
+    // `derived_rank` is set by the first converted tensor, so None means none were found.
+    let Some(rank) = derived_rank else {
         return Err(format!(
             "no LoRA tensors found in {} — not an MLX adapter?",
             mlx_safetensors.display()
         ));
-    }
-    let rank = derived_rank.expect("non-empty converted set always sets the rank");
+    };
     if rank != expected_rank {
         return Err(format!(
             "rank mismatch: tensors imply r={rank} but the recipe declared r={expected_rank}"
@@ -225,10 +225,9 @@ pub fn mlx_adapters_to_peft(
         "base_model_name_or_path": base_model_name,
     });
     let config_path = out_dir.join("adapter_config.json");
-    std::fs::write(
-        &config_path,
-        serde_json::to_string_pretty(&config).expect("static json never fails to serialize"),
-    )
+    let config_json = serde_json::to_string_pretty(&config)
+        .map_err(|e| format!("serialize adapter_config.json: {e}"))?;
+    std::fs::write(&config_path, config_json)
     .map_err(|e| format!("write {}: {e}", config_path.display()))?;
 
     Ok(PeftConversion {

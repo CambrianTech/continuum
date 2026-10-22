@@ -370,16 +370,21 @@ impl CallManager {
     /// Start a test video source for a call using the VideoSource trait.
     /// Generates SMPTE color bar frames at ~10fps to prove video streaming works.
     /// The source gets its own Handle (acts as a virtual participant for video only).
-    /// Returns a shutdown sender — drop it or send () to stop the generator.
+    /// Returns a shutdown sender — drop it or send () to stop the generator — or `None`
+    /// when the call lock was busy and the source was not started.
     ///
     /// Accepts the Call Arc directly to avoid deadlocks when called from
     /// get_or_create_call() which already holds the calls write lock.
-    pub(super) fn start_test_video_source_for(call: &Arc<RwLock<Call>>, call_id: &str) -> mpsc::Sender<()> {
-        let video_tx = {
-            let call_guard = call
-                .try_read()
-                .expect("Call should be available (just created)");
-            call_guard.video_tx.clone()
+    pub(super) fn start_test_video_source_for(call: &Arc<RwLock<Call>>, call_id: &str) -> Option<mpsc::Sender<()>> {
+        let video_tx = match call.try_read() {
+            Ok(call_guard) => call_guard.video_tx.clone(),
+            Err(_) => {
+                clog_warn!(
+                    "Test video source for call {} skipped: call lock busy right after creation",
+                    call_id
+                );
+                return None;
+            }
         };
 
         let source_handle = Handle::new();
@@ -387,7 +392,7 @@ impl CallManager {
 
         clog_info!("Starting {} for call {}", source.name(), call_id);
 
-        source.start(video_tx, source_handle)
+        Some(source.start(video_tx, source_handle))
     }
 
     /// Add a video source to a call. The source starts producing frames immediately.

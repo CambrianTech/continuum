@@ -426,7 +426,7 @@ pub fn spawn_renderer_loop(
     let renderer = Arc::new(std::sync::Mutex::new(renderer));
     let identity_for_thread = identity.clone();
 
-    std::thread::Builder::new()
+    let spawned = std::thread::Builder::new()
         .name(format!(
             "avatar-renderer-{}",
             &identity[..8.min(identity.len())]
@@ -459,8 +459,23 @@ pub fn spawn_renderer_loop(
                 "🎨 Render loop exited for '{}'",
                 &identity_for_thread[..8.min(identity_for_thread.len())]
             );
-        })
-        .expect("Failed to spawn avatar renderer thread");
+        });
+    if let Err(e) = spawned {
+        // Thread spawn can fail under OS resource exhaustion: give the slot and
+        // the active-renderer entry back so the pool does not leak, and report
+        // "no renderer" the same way a failed `create_renderer` does.
+        clog_error!(
+            "🎨 Failed to spawn render thread for '{}': {}",
+            &identity[..8.min(identity.len())],
+            e
+        );
+        release_slot(bevy_slot);
+        active_renderers()
+            .lock()
+            .unwrap()
+            .remove(&identity);
+        return None;
+    }
 
     Some((rx, interval_nanos))
 }

@@ -26,6 +26,17 @@ pub mod correction;
 pub mod parsers;
 pub mod types;
 
+use regex::Regex;
+
+/// Compile one of this module's constant parser patterns.
+///
+/// Every call site passes a literal (or a `format!` of literals) that is exercised by the
+/// parser tests, so a failure here is an edit-time authoring bug caught on the first test
+/// run, not a runtime condition. One helper means one stated reason instead of ~25 copies.
+pub(crate) fn static_regex(pattern: &str) -> Regex {
+    Regex::new(pattern).expect("constant tool-parsing regex must compile") // JUSTIFIED: constant pattern, covered by the parser tests
+}
+
 pub use codec::ToolNameCodec;
 pub use types::*;
 

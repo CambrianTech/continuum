@@ -341,10 +341,6 @@ pub fn plan_grid_placement(nodes: &[GridNode], demand: &LaneDemand) -> GridPlace
         .map(|n| (n, plan_placement(n.capacity, &n.resident, demand)))
         .collect();
 
-    if evals.is_empty() {
-        return GridPlacement::NoNodeReachable;
-    }
-
     evals.sort_by(|(na, pa), (nb, pb)| {
         placement_rank(pa)
             .cmp(&placement_rank(pb))
@@ -352,7 +348,9 @@ pub fn plan_grid_placement(nodes: &[GridNode], demand: &LaneDemand) -> GridPlace
             .then_with(|| nb.free().cmp(&na.free())) // most free first
     });
 
-    let (node, placement) = evals.into_iter().next().expect("non-empty checked above");
+    let Some((node, placement)) = evals.into_iter().next() else {
+        return GridPlacement::NoNodeReachable;
+    };
     GridPlacement::Place {
         node_id: node.node_id.clone(),
         placement,

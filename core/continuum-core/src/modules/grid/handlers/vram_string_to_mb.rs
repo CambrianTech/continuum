@@ -519,12 +519,11 @@ pub async fn handle_setup_check(state: &Arc<GridState>) -> Result<CommandResult,
 
     // ── Check 5: Grid transport status ───────────────────────
     for t in &state.transports {
-        let addr = t.local_address();
-        if addr.is_some() {
+        if let Some(addr) = t.local_address() {
             checks.push(json!({
                 "check": format!("transport_{}", t.name()),
                 "status": "pass",
-                "detail": format!("{} listening at {}", t.name(), addr.unwrap().display_address()),
+                "detail": format!("{} listening at {}", t.name(), addr.display_address()),
             }));
         } else {
             checks.push(json!({

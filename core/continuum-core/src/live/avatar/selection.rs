@@ -231,12 +231,11 @@ pub fn select_avatar_for_agent(identity: &str, voice: Option<&str>) -> &'static 
     for &idx in allocation.values() {
         *usage_count.entry(idx).or_insert(0) += 1;
     }
-    if !matching.is_empty() {
-        let picked = matching
-            .iter()
-            .copied()
-            .min_by_key(|i| usage_count.get(i).copied().unwrap_or(0))
-            .unwrap();
+    if let Some(picked) = matching
+        .iter()
+        .copied()
+        .min_by_key(|i| usage_count.get(i).copied().unwrap_or(0))
+    {
         clog_info!(
             "🎭 Avatar for '{}': gender={:?} → model='{}' (shared, same-gender)",
             &identity[..8.min(identity.len())],
@@ -489,12 +488,11 @@ pub fn select_dynamic_avatar(identity: &str, voice: Option<&str>) -> &'static Dy
     for &idx in allocation.values() {
         *usage_count.entry(idx).or_insert(0) += 1;
     }
-    if !matching.is_empty() {
-        let picked = matching
-            .iter()
-            .copied()
-            .min_by_key(|i| usage_count.get(i).copied().unwrap_or(0))
-            .unwrap();
+    if let Some(picked) = matching
+        .iter()
+        .copied()
+        .min_by_key(|i| usage_count.get(i).copied().unwrap_or(0))
+    {
         clog_info!(
             "🎭 Avatar for '{}': gender={:?} → '{}' / {} (shared, same-gender)",
             &identity[..8.min(identity.len())],

@@ -159,7 +159,10 @@ pub(super) async fn perception_ingest_drain(
             viewers = viewers.len() as u64,
             "bridge receipt to perception fan-out (not remote capture latency)"
         );
-        ingest.as_ref().expect("ingest built above").fan_out(
+        let Some(frame_ingest) = ingest.as_ref() else {
+            continue; // describer is built above; absent only before the executor is installed
+        };
+        frame_ingest.fan_out(
             &frame.speaker_id,
             &viewers,
             frame.jpeg,

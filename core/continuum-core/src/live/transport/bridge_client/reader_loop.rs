@@ -25,7 +25,7 @@ pub(super) fn reader_loop(mut stream: UnixStream, pending: Arc<Mutex<HashMap<u64
         data.extend_from_slice(&buf[..n]);
 
         while data.len() >= 4 {
-            let frame_len = u32::from_le_bytes(data[0..4].try_into().unwrap()) as usize;
+            let frame_len = u32::from_le_bytes([data[0], data[1], data[2], data[3]]) as usize;
             if data.len() < 4 + frame_len {
                 break;
             }

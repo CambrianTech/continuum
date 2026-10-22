@@ -47,10 +47,7 @@ fn init_global_with(
     // Race: two threads may hit here simultaneously. OnceLock::set
     // returns Err on the loser thread; we discard its registry and
     // return the winner's.
-    match GLOBAL.set(reg) {
-        Ok(()) => Ok(GLOBAL.get().expect("GLOBAL just set")),
-        Err(_lost) => Ok(GLOBAL.get().expect("GLOBAL already set by race winner")),
-    }
+    Ok(GLOBAL.get_or_init(|| reg))
 }
 
 /// Read the global registry. Panics if `init_global` was never called —

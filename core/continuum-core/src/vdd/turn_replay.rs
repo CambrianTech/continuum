@@ -128,10 +128,10 @@ impl LiveTurnReplayWriter {
     /// Production default — writes under `~/.continuum/vdd`.
     /// Matches `ArtifactWriter::continuum_default()` so both
     /// writers share the same artifact root.
-    pub fn continuum_default() -> Self {
-        let home =
-            dirs::home_dir().expect("home directory must exist for VDD turn-replay artifacts");
-        Self::new(home.join(".continuum").join("vdd"))
+    pub fn continuum_default() -> Result<Self, String> {
+        let home = dirs::home_dir()
+            .ok_or_else(|| "no home directory: cannot place VDD turn-replay artifacts".to_string())?;
+        Ok(Self::new(home.join(".continuum").join("vdd")))
     }
 
     /// Write a fixture to its on-disk path. `turn_id` is the

@@ -35,7 +35,8 @@ use std::any::Any;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::{OnceCell, RwLock};
+use std::sync::OnceLock;
+use tokio::sync::RwLock;
 
 mod dmr_provider_id;
 pub use dmr_provider_id::*;

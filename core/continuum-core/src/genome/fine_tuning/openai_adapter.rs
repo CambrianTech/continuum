@@ -53,12 +53,12 @@ impl OpenAIFineTuningAdapter {
     /// Construct with a freshly-built reqwest client. The client is
     /// shared across all calls on this adapter; HTTP keep-alive does
     /// the connection pooling.
-    pub fn new() -> Self {
+    pub fn new() -> Result<Self, String> {
         let client = reqwest::Client::builder()
             .timeout(Duration::from_secs(120))
             .build()
-            .expect("reqwest::Client::build with valid defaults cannot fail");
-        Self { client }
+            .map_err(|e| format!("OpenAI fine-tuning HTTP client failed to build: {e}"))?;
+        Ok(Self { client })
     }
 
     /// Look up the API key lazily on each call rather than caching
@@ -134,12 +134,6 @@ impl OpenAIFineTuningAdapter {
             FineTuningError::MalformedResponse(format!("upload response not JSON: {e}"))
         })?;
         Ok(parsed.id)
-    }
-}
-
-impl Default for OpenAIFineTuningAdapter {
-    fn default() -> Self {
-        Self::new()
     }
 }
 
@@ -478,7 +472,7 @@ mod tests {
     // wrong handle is a bug the trait surfaces.
     #[tokio::test]
     async fn poll_with_wrong_provider_id_returns_unknown_handle() {
-        let adapter = OpenAIFineTuningAdapter::new();
+        let adapter = OpenAIFineTuningAdapter::new().expect("client builds");
         let bad_handle = JobHandle {
             provider_id: "mistral".into(),
             provider_job_id: "job-xyz".into(),
@@ -494,7 +488,7 @@ mod tests {
     // service them.
     #[test]
     fn capabilities_match_openai_provider_id_and_gpt_prefix() {
-        let caps = OpenAIFineTuningAdapter::new().capabilities();
+        let caps = OpenAIFineTuningAdapter::new().expect("client builds").capabilities();
         assert_eq!(caps.provider_id, "openai");
         assert!(caps.supports_lora);
         assert!(caps.supports_validation);

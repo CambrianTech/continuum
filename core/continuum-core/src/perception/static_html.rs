@@ -45,9 +45,9 @@ pub fn observe_html(html: &str, url: Option<String>) -> ObserveResult {
     let doc = scraper::Html::parse_document(html);
     let root = doc.root_element();
     let structure = element_to_probe(root);
-    let title = doc
-        .select(&scraper::Selector::parse("title").unwrap())
-        .next()
+    let title = root
+        .descendent_elements()
+        .find(|e| e.value().name() == "title")
         .map(|t| collapse_ws(&t.text().collect::<String>()))
         .filter(|s| !s.is_empty());
     ObserveResult {

@@ -17,6 +17,7 @@
 //! automatically unsanitized back to canonical form.
 
 use once_cell::sync::Lazy;
+use super::static_regex;
 use regex::Regex;
 use std::collections::HashMap;
 

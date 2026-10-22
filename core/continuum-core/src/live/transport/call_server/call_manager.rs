@@ -74,8 +74,7 @@ impl CallManager {
                 .map(|v| v.trim() == "1" || v.trim().eq_ignore_ascii_case("true"))
                 .unwrap_or(false)
             {
-                let shutdown_tx = Self::start_test_video_source_for(&call, call_id);
-                {
+                if let Some(shutdown_tx) = Self::start_test_video_source_for(&call, call_id) {
                     let mut shutdowns = self.video_source_shutdowns.write().await;
                     shutdowns
                         .entry(call_id.to_string())

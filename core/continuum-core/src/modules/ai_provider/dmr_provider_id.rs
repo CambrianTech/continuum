@@ -64,7 +64,7 @@ pub fn global_registry() -> Arc<RwLock<AdapterRegistry>> {
 /// AIProviderModule - ServiceModule implementation for AI inference
 pub struct AIProviderModule {
     pub(super) registry: Arc<RwLock<AdapterRegistry>>,
-    pub(super) log: OnceCell<Arc<ModuleLogger>>,
+    pub(super) log: OnceLock<Arc<ModuleLogger>>,
     /// GPU memory manager — passed to CandleAdapter for VRAM allocation tracking.
     pub(super) gpu_manager: Option<Arc<crate::gpu::memory_manager::GpuMemoryManager>>,
     /// DMR watchdog state — counts consecutive down-probe ticks so we can
@@ -117,7 +117,7 @@ impl AIProviderModule {
     pub fn new() -> Self {
         Self {
             registry: GLOBAL_REGISTRY.clone(),
-            log: OnceCell::new(),
+            log: OnceLock::new(),
             gpu_manager: None,
             dmr_consecutive_down_ticks: Arc::new(AtomicU64::new(0)),
             executor: LateBound::new("ai-provider::executor"),
@@ -130,7 +130,7 @@ impl AIProviderModule {
     ) -> Self {
         Self {
             registry: GLOBAL_REGISTRY.clone(),
-            log: OnceCell::new(),
+            log: OnceLock::new(),
             gpu_manager: Some(gpu_manager),
             dmr_consecutive_down_ticks: Arc::new(AtomicU64::new(0)),
             executor: LateBound::new("ai-provider::executor"),
@@ -149,7 +149,7 @@ impl AIProviderModule {
     /// tick.
     pub(super) fn probe_dmr() -> Option<DmrEndpoint> {
         let localhost_ok = std::net::TcpStream::connect_timeout(
-            &"127.0.0.1:12434".parse().unwrap(),
+            &std::net::SocketAddr::from(([127, 0, 0, 1], 12434)),
             Duration::from_secs(1),
         )
         .is_ok();

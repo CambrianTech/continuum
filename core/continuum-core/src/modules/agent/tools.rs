@@ -4,9 +4,9 @@ use super::*;
 
 /// Static regexes for tool call parsing (compiled once)
 static TOOL_BLOCK_RE: std::sync::LazyLock<regex::Regex> =
-    std::sync::LazyLock::new(|| regex::Regex::new(r"```tool\s*\n?([\s\S]*?)```").unwrap());
+    std::sync::LazyLock::new(|| regex::Regex::new(r"```tool\s*\n?([\s\S]*?)```").unwrap()); // JUSTIFIED: constant literal pattern; invalid only by edit, caught by parse tests
 static INLINE_TOOL_RE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
-    regex::Regex::new(r#"\{"name":\s*"(\w+)",\s*"arguments":\s*(\{[^}]+\})\}"#).unwrap()
+    regex::Regex::new(r#"\{"name":\s*"(\w+)",\s*"arguments":\s*(\{[^}]+\})\}"#).unwrap() // JUSTIFIED: constant literal pattern; invalid only by edit, caught by parse tests
 });
 
 /// Parse tool calls from LLM response

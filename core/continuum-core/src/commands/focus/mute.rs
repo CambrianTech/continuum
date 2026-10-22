@@ -124,7 +124,7 @@ impl ActionCommand for FocusMute {
         let handle = focus::registry().handle(persona_id);
         let mut state = handle
             .lock()
-            .expect("focus mutex poisoned by a prior panic");
+            .unwrap();
 
         if p.unmute {
             state.unmute(lane);

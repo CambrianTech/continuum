@@ -403,8 +403,12 @@ fn run_with_deadline(mut cmd: Command, timeout: Duration) -> Result<std::process
 
     // Drain the pipes concurrently — a converter that writes more than a pipe
     // buffer would otherwise block forever on write while we wait on exit.
-    let mut child_stdout = child.stdout.take().expect("stdout piped");
-    let mut child_stderr = child.stderr.take().expect("stderr piped");
+    let (Some(mut child_stdout), Some(mut child_stderr)) =
+        (child.stdout.take(), child.stderr.take())
+    else {
+        let _ = child.kill();
+        return Err("child stdout/stderr were not piped".to_string());
+    };
     let out_h = std::thread::spawn(move || {
         let mut b = Vec::new();
         let _ = child_stdout.read_to_end(&mut b);

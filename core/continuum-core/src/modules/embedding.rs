@@ -110,17 +110,17 @@ pub async fn build_adapter_embedder(
 fn simd_dot_and_target_norm(query: &[f32], target: &[f32]) -> (f32, f32) {
     let mut dot = f32x8::ZERO;
     let mut nt = f32x8::ZERO;
-    let mut cq = query.chunks_exact(8);
-    let mut ct = target.chunks_exact(8);
-    for (qq, qt) in cq.by_ref().zip(ct.by_ref()) {
-        let vq = f32x8::new(qq.try_into().unwrap());
-        let vt = f32x8::new(qt.try_into().unwrap());
+    let (cq, rq) = query.as_chunks::<8>();
+    let (ct, rt) = target.as_chunks::<8>();
+    for (qq, qt) in cq.iter().zip(ct.iter()) {
+        let vq = f32x8::new(*qq);
+        let vt = f32x8::new(*qt);
         dot = vq.mul_add(vt, dot);
         nt = vt.mul_add(vt, nt);
     }
     let mut d = dot.reduce_add();
     let mut st = nt.reduce_add();
-    for (x, y) in cq.remainder().iter().zip(ct.remainder().iter()) {
+    for (x, y) in rq.iter().zip(rt.iter()) {
         d += x * y;
         st += y * y;
     }
@@ -131,13 +131,13 @@ fn simd_dot_and_target_norm(query: &[f32], target: &[f32]) -> (f32, f32) {
 #[inline]
 fn simd_l2_norm(v: &[f32]) -> f32 {
     let mut acc = f32x8::ZERO;
-    let mut c = v.chunks_exact(8);
-    for q in c.by_ref() {
-        let x = f32x8::new(q.try_into().unwrap());
+    let (c, rem) = v.as_chunks::<8>();
+    for q in c {
+        let x = f32x8::new(*q);
         acc = x.mul_add(x, acc);
     }
     let mut s = acc.reduce_add();
-    for x in c.remainder() {
+    for x in rem {
         s += x * x;
     }
     s.sqrt()

@@ -155,7 +155,7 @@ impl BevyAvatarSystem {
         let memory_stats = Arc::new(BevyMemoryStats::new());
         let stats_for_bevy = memory_stats.clone();
 
-        std::thread::Builder::new()
+        if let Err(e) = std::thread::Builder::new()
             .name("bevy-avatar-renderer".into())
             .spawn(move || {
                 let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -178,7 +178,10 @@ impl BevyAvatarSystem {
                     crate::runtime::logger("bevy").error(&format!("BEVY THREAD CRASHED: {}", msg));
                 }
             })
-            .expect("Failed to spawn Bevy avatar renderer thread");
+        {
+            // `ready` stays false; the wait below reports the renderer as not ready.
+            crate::runtime::logger("bevy").error(&format!("failed to spawn Bevy renderer thread: {e}"));
+        }
 
         for _ in 0..50 {
             if ready.load(std::sync::atomic::Ordering::Acquire) {

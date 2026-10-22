@@ -146,7 +146,7 @@ impl VideoFrameCapture {
         }
 
         if participants.len() == 1 {
-            return Some(participants.into_iter().next().unwrap());
+            return participants.into_iter().next();
         }
 
         // Compose grid on blocking thread (CPU-bound image manipulation)

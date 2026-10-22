@@ -31,7 +31,7 @@ fn total_ram_gb() -> u64 {
     {
         let mut size: u64 = 0;
         let mut len = std::mem::size_of::<u64>();
-        let key = std::ffi::CString::new("hw.memsize").unwrap();
+        let key = c"hw.memsize";
         unsafe {
             libc::sysctlbyname(
                 key.as_ptr(),

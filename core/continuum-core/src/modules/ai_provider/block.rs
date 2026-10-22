@@ -90,11 +90,11 @@ impl AIProviderModule {
         });
     }
 
-    /// Get logger (panics if called before initialize)
+    /// Module logger: the context-scoped one once `initialize` ran, the
+    /// process-wide component logger if something logs before that.
     pub(super) fn log(&self) -> &ModuleLogger {
         self.log
-            .get()
-            .expect("AIProviderModule not initialized")
+            .get_or_init(|| crate::runtime::logger("ai_provider"))
             .as_ref()
     }
 
@@ -558,7 +558,7 @@ impl AIProviderModule {
         // parity (re-register when it appears, deregister when it dies)
         // follows once the lifecycle is governed.
         let ds4_up = std::net::TcpStream::connect_timeout(
-            &"127.0.0.1:8901".parse().unwrap(),
+            &std::net::SocketAddr::from(([127, 0, 0, 1], 8901)),
             Duration::from_secs(1),
         )
         .is_ok();
