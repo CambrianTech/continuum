@@ -775,9 +775,7 @@ impl GenomeTeach {
         let split_ratio = p.split_ratio.unwrap_or(0.8);
         let root = match p.output_dir {
             Some(d) => std::path::PathBuf::from(d),
-            None => crate::paths::continuum_home()
-                .map_err(|e| CommandError::Internal(format!("cannot resolve the datasets root: {e}")))?
-                .join("datasets"),
+            None => crate::modules::dataset::default_datasets_root()?,
         };
         let dataset_dir = match candidate.as_ref() {
             Some(preparation) => preparation.dataset_dir()?,
