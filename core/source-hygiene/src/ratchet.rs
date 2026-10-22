@@ -9,8 +9,9 @@
 //!
 //! Now each ratchet counts, and [`hold`] judges the count against the base tree's count for the
 //! same name, measured by the same binary (the PR's own rules, run over both trees). A count may
-//! only stay or fall. `tools/scripts/source-hygiene-ratchets.sh` runs both measurements, in CI
-//! and locally; a plain `cargo test -p source-hygiene` reports counts without judging them.
+//! only stay or fall. `cargo run -p source-hygiene --bin ratchets -- origin/canary` runs both
+//! measurements, in CI and locally; a plain `cargo test -p source-hygiene` reports counts
+//! without judging them.
 //!
 //! - `SOURCE_HYGIENE_RECORD=<file>`: record every count as `name count` (both runs).
 //! - `SOURCE_HYGIENE_BASE=<file>`: judge every count against the recorded base (the head run).
@@ -31,7 +32,7 @@ pub fn hold(name: &str, count: usize, advice: impl FnOnce() -> String) {
         record(&path, name, count);
     }
     let Ok(path) = std::env::var(BASE) else {
-        eprintln!("{name}: {count} (unjudged: tools/scripts/source-hygiene-ratchets.sh compares with the base)");
+        eprintln!("{name}: {count} (unjudged: `cargo run -p source-hygiene --bin ratchets -- origin/canary` compares with the base)");
         return;
     };
     let base = read_base(&path);
