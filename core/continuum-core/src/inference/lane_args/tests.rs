@@ -164,6 +164,16 @@
         assert_eq!(inv(2, 2 * 73_216).value_of("--checkpoint-min-step"), Some("2288"));
     }
 
+    // what this catches (card 912e606d, the MacBookPro 2026-10-21): a lane launched without
+    // `--n-predict` lets a request with no max_tokens decode forever (n_predict -1 plus
+    // context shift), holding its lane; the uncapped default is one per-lane window.
+    #[test]
+    fn an_uncapped_request_defaults_to_one_lane_window() {
+        assert_eq!(inv(2, 2 * 32_768).value_of("--n-predict"), Some("32768"));
+        assert_eq!(inv(1, 32_768).value_of("--n-predict"), Some("32768"));
+        assert_eq!(inv(5, 5 * 138_240).value_of("--n-predict"), Some("138240"));
+    }
+
     #[test]
     fn slot_save_path_is_part_of_the_unconditional_spine() {
         let i = inv(4, 65_536);
@@ -304,11 +314,6 @@
             ..LaneOptions::default()
         });
         assert!(!cpu_serve.has("--no-repack"), "{:?}", cpu_serve.args);
-        // A probe that constrains an assembled GPU training lane to CPU owes it too, once.
-        let mut constrained = on;
-        constrained.constrain_to_cpu();
-        constrained.constrain_to_cpu();
-        assert_eq!(constrained.args.iter().filter(|a| *a == "--no-repack").count(), 1);
     }
 
     // what this catches: GPU offload left to the backend's default. Metal defaults to
@@ -325,16 +330,26 @@
             ..LaneOptions::default()
         });
         assert_eq!(cpu.value_of("--n-gpu-layers"), Some("0"));
-        // A hung backend probe constrains the already assembled GPU invocation.
-        // Preserve its last-wins ordering in the receipt as well as the command.
-        let original = gpu.args.clone();
-        let mut constrained = gpu;
-        constrained.constrain_to_cpu();
-        assert_eq!(&constrained.args[..original.len()], &original);
-        assert_eq!(
-            &constrained.args[original.len()..],
-            &["--n-gpu-layers", "0"]
-        );
+        assert_eq!(gpu.args.iter().filter(|a| *a == "--n-gpu-layers").count(), 1, "one placement, never a later override");
+        // The MTP draft is placed the same way, never left to the engine's `auto` fit.
+        let draft = std::path::Path::new("/m/mtp-x.gguf");
+        let gpu_draft = inv(2, 8192).with_options(&LaneOptions { mtp_draft: Some(draft), ..LaneOptions::default() });
+        assert_eq!(gpu_draft.value_of("--spec-draft-ngl"), Some(ALL_GPU_LAYERS));
+        let cpu_draft = inv(2, 8192).with_options(&LaneOptions { mtp_draft: Some(draft), cpu_only: true, ..LaneOptions::default() });
+        assert_eq!(cpu_draft.value_of("--spec-draft-ngl"), Some("0"));
+    }
+
+    // what this catches: a Metal lane launched without the GPU matrix units (opt-in in our
+    // engine build), which ran the M5's prefill at about half speed.
+    #[test]
+    fn a_metal_lane_asks_for_the_matrix_units_and_an_operator_value_wins() {
+        let mut lane = LaneInvocation::default();
+        lane.use_metal_matrix_units(false);
+        assert!(lane.envs.iter().any(|(k, v)| k == "GGML_METAL_TENSOR_ENABLE" && v == "1"));
+        let mut operator = LaneInvocation::default();
+        operator.use_metal_matrix_units(true);
+        assert!(operator.envs.is_empty());
+        assert_eq!(operator.inherited_env_keys, ["GGML_METAL_TENSOR_ENABLE"]);
     }
 
     // what this catches: THE 2026-08-20 SPAWN FAILURE, as a test instead of an outage.
@@ -474,3 +489,4 @@
             .with_options(&LaneOptions { max_ubatch: Some(1 << 20), ..Default::default() });
         assert_eq!(j.value_of("--ubatch-size"), Some("2048"));
     }
+

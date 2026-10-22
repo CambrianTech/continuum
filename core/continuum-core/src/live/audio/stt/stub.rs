@@ -4,7 +4,7 @@
 //! No actual speech recognition - just returns dummy text based on audio length.
 
 use super::{STTError, SpeechToText, TranscriptResult, TranscriptSegment};
-use crate::audio_constants::AUDIO_SAMPLE_RATE;
+use continuum_base::audio_constants::AUDIO_SAMPLE_RATE;
 use crate::{clog_debug, clog_info};
 use async_trait::async_trait;
 use std::sync::atomic::{AtomicBool, Ordering};

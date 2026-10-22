@@ -182,7 +182,7 @@ pub fn refused_on_this_box(title: &str) -> bool {
 /// pull skipped requests-1766 correctly, then Atlas claimed it by id from a message
 /// turn and spent her next hour on it; a refusal that lives in one caller is not a rule).
 pub fn standing_refusal_for_card(title: &str) -> Option<(String, String)> {
-    let Some((_, instance)) = crate::commands::benchmark::parse_card_title(title) else {
+    let Some((_, instance)) = crate::cognition::bench_title::parse_card_title(title) else {
         return None;
     };
     let reason = crate::cognition::swe_verdict_sweep::standing_env_refusal(&instance)?;
@@ -190,7 +190,7 @@ pub fn standing_refusal_for_card(title: &str) -> Option<(String, String)> {
         std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashSet::new()));
     // Poisoned or contended: the probe is the only thing at stake, never the decision.
     if PROBED.lock().is_ok_and(|mut seen| seen.insert(instance.clone())) {
-        crate::probe!(
+        continuum_base::probe!(
             class = "bench.round.pull_skipped_ungradeable",
             instance = %instance,
             reason = %reason,
@@ -215,7 +215,8 @@ pub fn claimable_now(card: &WorkCard, now_ms: u64) -> bool {
 }
 
 // Board renderers and claim selection must agree even when column and lease
-// differ: an Open card with a live claim is still held.
+// differ: a live claim holds the card whatever its column says. (Open can no longer
+// carry one: airc ends the claim on a transition to Open, #1598, card 12afbb2f.)
 fn claimable_hold(hold: Hold, state: airc_work::model::CardState) -> bool {
     if refused_by_claim(state) {
         return false;
@@ -328,7 +329,7 @@ impl CardHolder {
         // like any engineer, always"). No advice about whether to take it.
         let quiet = self
             .quiet_for_ms
-            .map(|ms| format!(", silent {}", crate::time::age::Age::from_millis(ms).span()))
+            .map(|ms| format!(", silent {}", continuum_base::time::age::Age::from_millis(ms).span()))
             .unwrap_or_default();
         let owner = match self.hold {
             Hold::Unclaimed => "unclaimed".to_string(),

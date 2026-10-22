@@ -156,7 +156,7 @@ impl ActionCommand for BenchmarkVerify {
         // The verdict also rides the event stream, not only this caller's result:
         // the academy widgets (and any citizen's perception) watch events, and a
         // verify that only answered the invoker would be invisible to the room.
-        crate::probe!(
+        continuum_base::probe!(
             class = "benchmark.verify",
             ok = %ok,
             stale_gyms = %gyms.iter().filter(|g| g.state == "stale").count(),

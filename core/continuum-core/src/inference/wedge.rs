@@ -138,7 +138,7 @@ impl LineWatch for WedgeWatch {
         }
         self.latched = true;
         self.flag.raise();
-        crate::probe!(
+        continuum_base::probe!(
             class = "serving.wedge",
             progress = progress as f64,
             sightings = self.sightings as u64,

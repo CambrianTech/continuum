@@ -53,7 +53,7 @@
 //! product, the recording is observability. Failures log a warning
 //! and the turn returns its real result.
 
-use crate::time::EpochMs;
+use continuum_base::time::EpochMs;
 use crate::cognition::tool_executor::types::MediaItemLite;
 use crate::persona::response::{PersonaResponse, RespondInput};
 use crate::persona::trace::CognitionTrace;

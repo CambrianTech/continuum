@@ -85,26 +85,29 @@ pub struct RemoteLaneAdapterFactory {
 /// resident onto a newly served local model must skip her, or the binding this
 /// factory built lasts only until the next serving edge (M5 2026-09-06 21:1xZ: Kira
 /// and Mathis were bound to the 5090 at 21:06:44 and generated on local Ornith at
-/// 21:10 after the lane came up). Reads the durable override; unreadable = not remote,
-/// loudly — a re-home never guesses a citizen off-box.
-pub(crate) fn is_remote_bound(continuum_root: &std::path::Path, persona_name: &str) -> bool {
+/// 21:10 after the lane came up). An unreadable override is an error: callers must
+/// preserve the current binding rather than infer that local reassignment is safe.
+pub(crate) fn is_remote_bound(
+    continuum_root: &std::path::Path,
+    persona_name: &str,
+) -> Result<bool, crate::persona::model_override::PersonaModelOverrideError> {
     let airc_dir = crate::context::citizen_home_path(
         continuum_root,
         crate::identity::IdentityKind::Persona,
         None,
         persona_name,
     );
-    let Some(root) = airc_dir.parent() else {
-        return false;
-    };
-    let home = PersonaHome::from_root(root.to_path_buf());
-    match PersonaModelOverride::load(&home) {
-        Ok(over) => over.map(|o| o.is_remote()).unwrap_or(false), // unwrap_or: no override = local, by definition
-        Err(e) => {
-            tracing::warn!(persona = %persona_name, error = %e, "model override unreadable during re-home — treating as local");
-            false
+    let root = airc_dir.parent().ok_or_else(|| {
+        crate::persona::model_override::PersonaModelOverrideError::Io {
+            path: airc_dir.clone(),
+            source: std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "persona home has no parent",
+            ),
         }
-    }
+    })?;
+    let home = PersonaHome::from_root(root.to_path_buf());
+    Ok(PersonaModelOverride::load(&home)?.is_some_and(|o| o.is_remote()))
 }
 
 impl RemoteLaneAdapterFactory {
@@ -208,7 +211,7 @@ impl PersonaAdapterFactory for RemoteLaneAdapterFactory {
         // assignment to honour: retire it and bear her at home.
         if crate::persona::self_peer::is_this_node(peer) {
             let cleared = PersonaModelOverride::clear(&home).map_err(|e| e.to_string());
-            crate::probe!(
+            continuum_base::probe!(
                 class = "persona.placement.seat_retired",
                 persona = %profile.persona_name,
                 peer = %peer,
@@ -244,14 +247,14 @@ impl PersonaAdapterFactory for RemoteLaneAdapterFactory {
             }
             let updated = learned_over.clone().with_context_window(window);
             match updated.write(&learned_home) {
-                Ok(()) => crate::probe!(
+                Ok(()) => continuum_base::probe!(
                     class = "remote_lane.window_learned",
                     persona = %learned_name,
                     window = window,
                     was = ?learned_over.remote_context_window,
                     "the responder serves a different window than her override recorded — record updated; takes effect at her next re-host"
                 ),
-                Err(e) => crate::probe!(
+                Err(e) => continuum_base::probe!(
                     class = "remote_lane.window_learn_failed",
                     persona = %learned_name,
                     window = window,
@@ -266,7 +269,7 @@ impl PersonaAdapterFactory for RemoteLaneAdapterFactory {
             .with_persona(profile.persona_name.clone())
             .with_window_sink(window_sink);
 
-        crate::probe!(
+        continuum_base::probe!(
             class = "persona.adapter.remote_lane",
             persona = %profile.persona_name,
             persona_id = %profile.persona_id,
@@ -502,7 +505,10 @@ mod tests {
         );
         let home = PersonaHome::from_root(home_root.parent().expect("parent").to_path_buf());
         std::fs::create_dir_all(home_root.parent().expect("parent")).expect("mkdir");
-        assert!(!is_remote_bound(root.path(), "Kira"), "no override = local");
+        assert!(
+            matches!(is_remote_bound(root.path(), "Kira"), Ok(false)),
+            "no override = local"
+        );
         PersonaModelOverride::new_remote(
             "ggml-org/Qwen3.8-27B-GGUF".to_string(),
             Some("operator".to_string()),
@@ -511,10 +517,22 @@ mod tests {
         )
         .write(&home)
         .expect("write override");
-        assert!(is_remote_bound(root.path(), "Kira"), "a remote override reads remote");
+        assert!(
+            matches!(is_remote_bound(root.path(), "Kira"), Ok(true)),
+            "a remote override reads remote"
+        );
         PersonaModelOverride::new("local/model".to_string(), Some("operator".to_string()), 2)
             .write(&home)
             .expect("write local");
-        assert!(!is_remote_bound(root.path(), "Kira"), "a local override reads local");
+        assert!(
+            matches!(is_remote_bound(root.path(), "Kira"), Ok(false)),
+            "a local override reads local"
+        );
+        // A damaged assignment must never authorize substitution of a local model.
+        std::fs::write(home.model_override_json(), b"{").expect("damage override");
+        assert!(matches!(
+            is_remote_bound(root.path(), "Kira"),
+            Err(crate::persona::model_override::PersonaModelOverrideError::Malformed { .. })
+        ));
     }
 }

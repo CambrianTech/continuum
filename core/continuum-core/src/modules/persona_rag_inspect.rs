@@ -431,7 +431,7 @@ pub(crate) async fn inspect_persona(
         )
     })?;
 
-    let now_ms = params.now_ms.unwrap_or_else(|| crate::time::EpochMs::now().millis());
+    let now_ms = params.now_ms.unwrap_or_else(|| continuum_base::time::EpochMs::now().millis());
     let mut request =
         RagInspectionRequest::defaults_for(resolution.persona_id, params.persona.clone(), now_ms);
     if let Some(cw) = params.context_window {

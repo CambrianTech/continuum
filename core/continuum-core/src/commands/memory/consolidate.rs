@@ -223,7 +223,7 @@ crate::action_command! {
 
         // #164: accept the short-form persona id rosters display, not just a full UUID —
         // the same id_resolve primitive persona/* and work/* already use.
-        let persona_uuid = crate::id_resolve::resolve(
+        let persona_uuid = continuum_base::id_resolve::resolve(
             p.persona_id.as_str(),
             &crate::persona::card::ids(),
             "persona",

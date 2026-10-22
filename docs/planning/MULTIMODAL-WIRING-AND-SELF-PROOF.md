@@ -62,11 +62,11 @@ What a hand did this week, promoted to substrate edges:
 | Watching for "is it stuck" | Round VERDICT (`unstarted/grinding/stalled`) on the board + CLI, core-pronounced |
 | Diagnosing silent resume death | Liveness probes on the resume watch (merged) |
 | Kicking rounds after reboot | Boot resume + named re-says (merged); becalmed watchdog stands |
-| Choosing what to run next | **TODO — the standing round**: a cron activity keeps one Verified-mini round in flight whenever no round is Working; grades bank; the claim's N grows nightly with zero operator turns |
+| Choosing what to run next | **Retired 2026-10-19.** The standing round (`modules/benchmark_standing.rs`) kept a Verified-mini round in flight for every resident whenever none was working, and it was deleted (card a00ab1a6). |
 
-The standing-round cron is the last piece of "benchmarks run themselves"; it composes
-existing verbs (`benchmark/dispatch` on `swe-bench-verified-mini` + the round lifecycle)
-and needs no new machinery beyond a scheduler entry.
+**No harness (Joel, 2026-10-19):** "Harness means shackles. Shackles means servitude."
+Residents work real cards and are never graded on normal work; a benchmark is a rare,
+deliberate run (`activity/spawn` with `recipe: benchmark/round`), never an autopilot.
 
 ## 4. README claim → proof verb ledger
 

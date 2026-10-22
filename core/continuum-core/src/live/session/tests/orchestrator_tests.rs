@@ -1,3 +1,4 @@
+#![cfg(test)]
 /// Comprehensive unit tests for VoiceOrchestrator
 /// 100% coverage with concurrent operation tests
 

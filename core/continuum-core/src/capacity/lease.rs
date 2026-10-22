@@ -142,7 +142,7 @@ pub fn decide_render_lane(leasability: Leasability) -> LaneDecision {
         gpu_free_bytes_live: free,
         system_ram_free_bytes: 0,
     };
-    let now_ms = crate::time::EpochMs::now().millis();
+    let now_ms = continuum_base::time::EpochMs::now().millis();
     let snapshot = super::gossip::global_ledger().snapshot(uuid::Uuid::nil(), local, now_ms);
     let req = LeaseRequest {
         consumer: "persona-render".into(),

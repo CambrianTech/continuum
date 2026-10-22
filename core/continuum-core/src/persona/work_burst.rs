@@ -3,7 +3,7 @@
 //! self-cycle speaks from. Pure text builders — no I/O, fully testable — carved
 //! out of `service_loop` 2026-09-05.
 
-use crate::time::EpochMs;
+use continuum_base::time::EpochMs;
 use uuid::Uuid;
 
 /// Diagnostic interval for an advisory progress checkpoint. This never grants an

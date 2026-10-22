@@ -178,7 +178,7 @@ fn recompute(peers_root: &Path, batch: Batch, reason: &'static str) {
             }
         }
     }
-    crate::probe!(
+    continuum_base::probe!(
         class = "bench.workspace_artifacts.recomputed",
         reason = reason,
         instances = dirs.len(),

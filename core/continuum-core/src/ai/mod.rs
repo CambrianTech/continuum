@@ -40,6 +40,7 @@ pub mod inference_error;
 pub mod json_in_prompt_tools;
 pub mod openai_adapter;
 pub mod openai_endpoints;
+pub(crate) mod slot_discovery;
 pub mod registry_bridge;
 pub mod stream_sinks;
 pub mod types;

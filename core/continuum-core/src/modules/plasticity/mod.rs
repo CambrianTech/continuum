@@ -142,7 +142,7 @@ pub(crate) fn build_topology(
         head_dim,
         parameter_reduction,
         precision_profile,
-        created_at: crate::time::EpochMs::now().rfc3339(),
+        created_at: continuum_base::time::EpochMs::now().rfc3339(),
     }
 }
 

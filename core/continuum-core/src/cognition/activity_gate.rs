@@ -29,7 +29,7 @@
 //! clean discard — dreams are the cheapest resident in the paging economy:
 //! re-dreamable, evicted first, never contended.
 
-use crate::time::EpochMs;
+use continuum_base::time::EpochMs;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{LazyLock, OnceLock};
 use std::time::Duration;
@@ -225,7 +225,7 @@ pub fn spawn_activity_gate() {
             );
             if next != prev {
                 state_since = now;
-                crate::probe!(
+                continuum_base::probe!(
                     class = "activity.gate.state",
                     state = ?next,
                     was = ?prev,

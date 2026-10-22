@@ -244,7 +244,7 @@ impl RoomDoctrineSource {
             return false;
         }
         drop(guard);
-        crate::probe!(
+        continuum_base::probe!(
             class = "rag.doctrine.outcome",
             source = SOURCE_ID,
             persona_id = %self.persona_id,
@@ -371,7 +371,7 @@ impl RagSource for RoomDoctrineSource {
         // exam-bleed pin).
         let effective_room = match ctx.airc_room.as_ref().map(|r| r.as_uuid()) {
             Some(t) if t.is_nil() => {
-                crate::probe!(
+                continuum_base::probe!(
                     class = "rag.room_gate.abstain",
                     source = SOURCE_ID,
                     bound_room = ?self.room_id,

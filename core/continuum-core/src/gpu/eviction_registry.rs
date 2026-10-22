@@ -12,7 +12,7 @@
 //! Lower priority × older = higher score = evict first.
 //! Realtime entries have infinite weight → score = 0 → never evictable.
 
-use crate::time::EpochMs;
+use continuum_base::time::EpochMs;
 use std::collections::HashMap;
 use std::sync::Mutex;
 

@@ -64,7 +64,7 @@ pub fn register(
         .lock()
         .unwrap_or_else(|p| p.into_inner())
         .insert(persona, Resident { peer, identity, region, wake_tx, events_tx });
-    crate::probe!(class = "mind.feed.registered", persona = %persona, "her perception region is on the one feed");
+    continuum_base::probe!(class = "mind.feed.registered", persona = %persona, "her perception region is on the one feed");
 }
 
 /// Her membership changed (she joined or left a room): the region learns it and
@@ -197,7 +197,7 @@ pub fn feed(event: &Arc<TranscriptEvent>, now_ms: u64) -> usize {
         if let Some(tx) = &resident.events_tx {
             if !matches!(fed, Fed::NotPerception(_)) {
                 if let Err(mpsc::error::TrySendError::Full(_)) = tx.try_send(Arc::clone(event)) {
-                    crate::probe!(
+                    continuum_base::probe!(
                         class = "mind.feed.event_dropped",
                         persona = %persona,
                         "her admission channel is full; the one truth still holds the event for her next page"
@@ -208,7 +208,7 @@ pub fn feed(event: &Arc<TranscriptEvent>, now_ms: u64) -> usize {
         if let Some(wake) = wake {
             match resident.wake_tx.try_send(wake) {
                 Ok(()) => {}
-                Err(mpsc::error::TrySendError::Full(_)) => crate::probe!(
+                Err(mpsc::error::TrySendError::Full(_)) => continuum_base::probe!(
                     class = "mind.feed.wake_dropped",
                     persona = %persona,
                     "her wake channel is full; salience persists and re-raises on the next event"

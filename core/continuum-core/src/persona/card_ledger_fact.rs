@@ -15,7 +15,7 @@ pub async fn ledger_fact_for(peer: uuid::Uuid, held: &[&airc_lib::WorkCard]) -> 
     // The card whose ledger matters: a review card reads its parent's, else the first work
     // card held (WIP = 1 makes that the card).
     let target = held.iter().find_map(|c| {
-        crate::commands::benchmark::parse_review_title(&c.title)
+        crate::cognition::bench_title::parse_review_title(&c.title)
             .and_then(|_| crate::cognition::bench_round::review_parent(c.card_id.as_uuid()))
     });
     let (card, room) = match target {
@@ -38,7 +38,7 @@ pub async fn ledger_fact_for(peer: uuid::Uuid, held: &[&airc_lib::WorkCard]) -> 
         Ok(Some(l)) => (render_reference_for_turn(&l, peer), Some(render_for_turn(&l, peer))),
         Ok(None) => (render_absent(), None),
         Err(e) => {
-            crate::probe!(
+            continuum_base::probe!(
                 class = "card.ledger.unreadable_wall",
                 card = %card,
                 error = %e,

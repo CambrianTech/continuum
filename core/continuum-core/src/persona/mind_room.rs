@@ -36,7 +36,7 @@ pub fn is_private_room(persona: Uuid, room: Uuid) -> bool {
 
 /// The one probe a gated sink emits: THAT a private turn skipped it, never WHAT the turn said.
 pub fn note_withheld(persona: Uuid, sink: &'static str) {
-    crate::probe!(
+    continuum_base::probe!(
         class = "mind.private.withheld",
         persona = %persona,
         sink = sink,
@@ -82,7 +82,7 @@ pub fn sealed_continuation(persona: Uuid) -> Option<crate::persona::attention::C
     let store = match runtime.airc().mind_store() {
         Ok(store) => store,
         Err(e) => {
-            crate::probe!(class = "mind.private.store_unopened", persona = %persona, error = %e.to_string(), "her mind store did not open at boot; no private continuation restored");
+            continuum_base::probe!(class = "mind.private.store_unopened", persona = %persona, error = %e.to_string(), "her mind store did not open at boot; no private continuation restored");
             return None;
         }
     };
@@ -93,7 +93,7 @@ pub fn sealed_continuation(persona: Uuid) -> Option<crate::persona::attention::C
     match store.get(id).map_err(|e| e.to_string()).and_then(|t| serde_json::from_str(&t).map_err(|e| e.to_string())) { // disk boundary: read back from her sealed mind store
         Ok(c) => Some(c),
         Err(e) => {
-            crate::probe!(class = "mind.private.continuation_unreadable", persona = %persona, error = %e, "her sealed continuation did not read back; not restored");
+            continuum_base::probe!(class = "mind.private.continuation_unreadable", persona = %persona, error = %e, "her sealed continuation did not read back; not restored");
             None
         }
     }

@@ -79,13 +79,13 @@ pub fn checkout_path_for(peer: &Uuid, card: &airc_lib::WorkCard) -> Option<PathB
     // A benchmark REVIEW card's work is in the OWNER's checkout (the fix under review
     // lives there), so the reviewer's hands stand in it. One rule for every turn (card
     // fc9e9fd7: the held-work turn kept its own copy of this resolver).
-    if let Some(instance) = crate::commands::benchmark::parse_review_title(&card.title) {
+    if let Some(instance) = crate::cognition::bench_title::parse_review_title(&card.title) {
         let copies = crate::persona::staged_workspace::owners_of(&instance);
         if let Some(copy) = copies.iter().find(|c| c.has_work).or_else(|| copies.first()) {
             return Some(copy.path.clone());
         }
     }
-    if let Some((bench, _)) = crate::commands::benchmark::parse_card_title(&card.title) {
+    if let Some((bench, _)) = crate::cognition::bench_title::parse_card_title(&card.title) {
         let spec = crate::commands::benchmark::known_benchmarks().iter().find(|s| s.name == bench)?;
         return if spec.swe_dataset().is_some() {
             crate::persona::staged_workspace::workspace_for_held_cards(peer, std::iter::once(card.title.as_str()))
@@ -135,7 +135,7 @@ pub fn is_card_branch(branch: &str) -> bool {
 /// there. A repo this node never checked out is cloned into a managed checkout first
 /// ([`ensure_managed_clone`]); a clone that fails is `Failed { stage: "clone" }`.
 pub async fn stage_for_card(home: &Path, claimer: Uuid, card: &airc_lib::WorkCard) -> Staging {
-    if crate::commands::benchmark::parse_card_title(&card.title).is_some() {
+    if crate::cognition::bench_title::parse_card_title(&card.title).is_some() {
         return stage_for_claimer(home, claimer, &card.title).await;
     }
     let repo = card.repo.to_string();
@@ -169,7 +169,7 @@ pub async fn stage_for_card(home: &Path, claimer: Uuid, card: &airc_lib::WorkCar
             Ok(clone) => clone,
             Err(error) => {
                 let error = error.to_string();
-                crate::probe!(
+                continuum_base::probe!(
                     class = "work.claim.repo_clone_failed",
                     claimer = %claimer,
                     repo = %repo,
@@ -205,56 +205,29 @@ pub async fn stage_for_card(home: &Path, claimer: Uuid, card: &airc_lib::WorkCar
             // A held linked worktree replaced by a card clone (airc #1582): said once, with
             // where the old tree went, so a resident's moved checkout is never a mystery.
             if let airc_lib::work_worktree::WorktreeOutcome::Migrated { path, retired } = &outcome {
-                crate::probe!(class = "card.checkout.migrated", card = %spec_card, path = %path.display(), retired = %retired.display(), "linked card worktree replaced by a card clone; old tree kept aside");
+                continuum_base::probe!(class = "card.checkout.migrated", card = %spec_card, path = %path.display(), retired = %retired.display(), "linked card worktree replaced by a card clone; old tree kept aside");
             }
             outcome.path().to_path_buf()
         })
     })
     .await
     .unwrap_or_else(|e| Err(format!("worktree task panicked: {e}"))); // unwrap_or_else: a panicked blocking task is a staging failure, never a crash
-    // A fresh worktree has EMPTY submodule paths (core/vendor/llama.cpp): a build
-    // there dies in cmake and a symlink workaround breaks git status (IntelMac +
-    // M5, three times, 2026-09-05). Initialise them here, bounded, with a named
-    // outcome — a worktree whose vendor is empty is not Ready.
+
+    // Submodules are initialised by airc's ensure_card_clone (bounded, borrowing each one's
+    // objects from its own mirror, airc #1591) on every clone it creates or migrates; a
+    // failure there arrives here as stage "worktree". A second pass here was one owner too
+    // many, and its tokio timeout abandoned the git child instead of killing it (card 84d3bcd8).
     let staged = match outcome {
         Ok(path) => {
-            let path_for_init = path.clone();
-            let init = tokio::time::timeout(
-                std::time::Duration::from_secs(600),
-                tokio::task::spawn_blocking(move || {
-                    std::process::Command::new("git")
-                        .args(["-C", &path_for_init.to_string_lossy(), "submodule", "update", "--init", "--recursive"])
-                        .output()
-                        .map_err(|e| e.to_string())
-                        .and_then(|o| {
-                            if o.status.success() {
-                                Ok(())
-                            } else {
-                                Err(String::from_utf8_lossy(&o.stderr).trim().to_string())
-                            }
-                        })
-                }),
-            )
-            .await;
-            match init {
-                Ok(Ok(Ok(()))) => {
-                    // A branch cut here from the clone's HEAD: if another node already
-                    // pushed this card's branch, her work is there — fetch it and stand
-                    // at its tip before her first turn (card 73eefbbb).
-                    crate::persona::workspace_transfer::arrive_for(path.clone(), branch.clone(), card.card_id.as_uuid()).await;
-                    Staging::Ready { path }
-                }
-                Ok(Ok(Err(error))) => Staging::Failed { stage: "submodules", error },
-                Ok(Err(join)) => Staging::Failed { stage: "submodules", error: format!("init task panicked: {join}") },
-                Err(_) => Staging::Failed {
-                    stage: "submodules",
-                    error: "git submodule update --init --recursive did not finish within 600 s".to_string(),
-                },
-            }
+            // A branch cut here from the clone's HEAD: if another node already
+            // pushed this card's branch, her work is there — fetch it and stand
+            // at its tip before her first turn (card 73eefbbb).
+            crate::persona::workspace_transfer::arrive_for(path.clone(), branch.clone(), card.card_id.as_uuid()).await;
+            Staging::Ready { path }
         }
         Err(error) => Staging::Failed { stage: "worktree", error },
     };
-    crate::probe!(
+    continuum_base::probe!(
         class = "work.claim.staged",
         claimer = %claimer,
         bench = "repo",
@@ -307,7 +280,7 @@ pub async fn restage_held_linked_checkout(peer: Uuid, card: &airc_lib::WorkCard)
         Ok(home) => {
             stage_for_card(&home, peer, card).await;
         }
-        Err(error) => crate::probe!(
+        Err(error) => continuum_base::probe!(
             class = "persona.work.restage_skipped",
             peer = %peer,
             card = %card.card_id.as_uuid(),
@@ -427,7 +400,7 @@ async fn ensure_managed_clone(home: &Path, repo: &str) -> Result<PathBuf, CloneE
         cloned?;
     }
     crate::modules::repo_registry::record(&key, &target);
-    crate::probe!(
+    continuum_base::probe!(
         class = "work.claim.repo_cloned",
         repo = %key,
         path = %target.display(),
@@ -442,7 +415,7 @@ pub(crate) fn gym_workspace(home: &Path, peer: Uuid) -> PathBuf {
 }
 
 pub async fn stage_for_claimer(home: &Path, claimer: Uuid, title: &str) -> Staging {
-    let Some((bench, task)) = crate::commands::benchmark::parse_card_title(title) else {
+    let Some((bench, task)) = crate::cognition::bench_title::parse_card_title(title) else {
         return Staging::Ordinary;
     };
     let workspace = gym_workspace(home, claimer);
@@ -459,7 +432,7 @@ pub async fn stage_for_claimer(home: &Path, claimer: Uuid, title: &str) -> Stagi
         Step::Shell(shell) => stage_shell(&workspace, &shell).await,
         Step::Swe(instance) => stage_swe(&workspace, &instance).await,
     };
-    crate::probe!(
+    continuum_base::probe!(
         class = "work.claim.staged",
         claimer = %claimer,
         bench = %bench,
@@ -554,13 +527,13 @@ async fn stage_swe(workspace: &Path, instance: &crate::cognition::swe_bench::Swe
         let verdict_ms = std::fs::metadata(swe_bench::verdict_path(&instance.instance_id))
             .ok()
             .and_then(|m| m.modified().ok())
-            .and_then(|t| crate::time::EpochMs::of(t).ok())
-            .map(crate::time::EpochMs::millis);
+            .and_then(|t| continuum_base::time::EpochMs::of(t).ok())
+            .map(continuum_base::time::EpochMs::millis);
         let work_ms = crate::persona::staged_workspace::work_mtime_of(&dir);
         let resolved = swe_bench::read_verdict(&instance.instance_id).map(|v| v.resolved);
         let verdict = verdict_ms.zip(resolved);
         if restages_pristine(verdict, work_ms) {
-            crate::probe!(
+            continuum_base::probe!(
                 class = "benchmark.staging.reset_after_verdict",
                 instance = %instance.instance_id,
                 verdict_ms = verdict_ms.unwrap_or(0),
@@ -587,7 +560,7 @@ async fn stage_swe(workspace: &Path, instance: &crate::cognition::swe_bench::Swe
         match swe_bench::ensure_env(&inst, &dir).await {
             Ok(_) => {
                 crate::modules::work::env_broken_this_boot().remove(&inst.instance_id);
-                crate::probe!(
+                continuum_base::probe!(
                     class = "benchmark.env.prewarmed",
                     instance = %inst.instance_id,
                     "env ready behind the claim"
@@ -595,7 +568,7 @@ async fn stage_swe(workspace: &Path, instance: &crate::cognition::swe_bench::Swe
             }
             Err(e) => {
                 crate::modules::work::env_broken_this_boot().insert(inst.instance_id.clone());
-                crate::probe!(
+                continuum_base::probe!(
                     class = "benchmark.env.prewarm_failed",
                     instance = %inst.instance_id,
                     stage = "env",
@@ -609,7 +582,7 @@ async fn stage_swe(workspace: &Path, instance: &crate::cognition::swe_bench::Swe
 }
 
 fn failed(claimer: Uuid, title: &str, stage: &'static str, error: String) -> Staging {
-    crate::probe!(
+    continuum_base::probe!(
         class = "work.claim.stage_failed",
         claimer = %claimer,
         title = %title,

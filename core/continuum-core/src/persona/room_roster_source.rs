@@ -370,7 +370,7 @@ impl RagSource for RoomRosterSource {
         // does NOT fall back (the exam-bleed pin).
         let effective_room = match ctx.airc_room.as_ref().map(|r| r.as_uuid()) {
             Some(t) if t.is_nil() => {
-                crate::probe!(
+                continuum_base::probe!(
                     class = "rag.room_gate.abstain",
                     source = SOURCE_ID,
                     bound_room = ?self.room_id,

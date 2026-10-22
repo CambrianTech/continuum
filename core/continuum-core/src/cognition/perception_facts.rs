@@ -334,7 +334,7 @@ impl PerceptionFact for StepsLedger {
         // on every render, so archive starvation / scope partition / eviction
         // pressure are diagnosable from the probe stream — today's diagnosis
         // needed capture-scraping precisely because these numbers were invisible.
-        crate::probe!(
+        continuum_base::probe!(
             class = "perception.steps_ledger",
             room = %cx.room_id.map(|r| r.to_string()).unwrap_or_else(|| "unscoped".into()),
             // WHOSE ledger, and WHICH working-memory instance. Without these two,
@@ -440,7 +440,7 @@ pub fn render_facts(cx: &FactContext, policy: &FactPolicy) -> Vec<RenderedFact> 
     let mut rendered = Vec::new();
     for fact in standard_facts() {
         if !policy.enabled(fact.id()) {
-            crate::probe!(
+            continuum_base::probe!(
                 class = "perception.fact",
                 id = fact.id(),
                 fired = false,
@@ -450,7 +450,7 @@ pub fn render_facts(cx: &FactContext, policy: &FactPolicy) -> Vec<RenderedFact> 
             continue;
         }
         let out = fact.render(cx);
-        crate::probe!(
+        continuum_base::probe!(
             class = "perception.fact",
             id = fact.id(),
             fired = out.is_some(),
@@ -638,7 +638,6 @@ mod tests {
             result_scopes: Default::default(),
             handoff: None,
             evicted_pointers: Vec::new(),
-            evicted_pointer_scopes: Vec::new(),
             receipt_children: Default::default(),
             open_views: Vec::new(),
         });

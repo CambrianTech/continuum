@@ -496,7 +496,7 @@ mod tests {
     // birth path seeds a new `$room` field, validation must learn it in the same PR.
     #[test]
     fn room_fields_match_what_the_birth_path_seeds() {
-        let src = include_str!("../modules/activity.rs");
+        let src = include_str!("../modules/activity/spawn_activity_room.rs");
         let seed_site = src.find("\"room\".to_string(),").expect("the $room seed site exists");
         let window = &src[seed_site..seed_site + 400];
         for f in ROOM_FIELDS {

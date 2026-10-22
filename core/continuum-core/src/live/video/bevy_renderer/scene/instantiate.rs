@@ -274,7 +274,7 @@ impl SceneWalk<'_, '_, '_> {
                 #[cfg(not(unix))]
                 let aliased = std::fs::copy(&model_path, &glb_path).map(|_| ());
                 if let Err(error) = aliased {
-                    crate::probe!(
+                    continuum_base::probe!(
                         class = "avatar.model.alias_failed",
                         model = %model_path,
                         alias = %glb_path,

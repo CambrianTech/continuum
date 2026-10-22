@@ -28,7 +28,8 @@ use uuid::Uuid;
 use super::submit::{return_request, ReturnScope, SubmitOutcome};
 use crate::genome::fine_tuning::TrainingJobBoard;
 use crate::genome::fine_tuning::engine_lora_adapter::read_partition;
-use crate::modules::training_trigger::{genome_root, job_dir_under, read_job_request, TrainingTriggerState};
+use crate::genome::fine_tuning::job_dir::{genome_root, job_dir_under, read_job_request};
+use crate::modules::training_trigger::TrainingTriggerState;
 use crate::sdk_codegen::CommandError;
 
 /// `genome/training-trigger/return` input.
@@ -192,7 +193,7 @@ pub(crate) async fn return_parked_remainder(
     request.dataset.examples = parked.iter().map(|&i| request.dataset.examples[i].clone()).collect();
     let outcome = return_request(state, request, id, ReturnScope::Parked(&parked)).await?;
     if outcome.success {
-        let receipt = RemainderReceipt { job: id, parked, at_ms: crate::time::EpochMs::now().millis() };
+        let receipt = RemainderReceipt { job: id, parked, at_ms: continuum_base::time::EpochMs::now().millis() };
         write_receipt(&dir, &receipt).map_err(|e| {
             CommandError::Internal(format!(
                 "job {id}: its remainder is in her bucket, but its receipt could not be written ({e}); the next pass replays it by identity"

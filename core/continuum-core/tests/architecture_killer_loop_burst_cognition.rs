@@ -85,8 +85,8 @@ fn make_chat(room: Uuid, sender: &str, content: &str) -> Arc<dyn QueueItemBehavi
         sender_name: sender.into(),
         sender_type: SenderType::Human,
         mentions: false,
-        timestamp: continuum_core::time::EpochMs::now().millis(),
-        enqueued_at: continuum_core::time::EpochMs::now().millis(),
+        timestamp: continuum_base::time::EpochMs::now().millis(),
+        enqueued_at: continuum_base::time::EpochMs::now().millis(),
         priority: 0.5,
         consolidated_context: Vec::new(),
         media: Vec::new(),
@@ -147,7 +147,7 @@ impl PersonaHarness {
             &self.sleep_state,
             &self.engine,
             &self.message_cache,
-            continuum_core::time::EpochMs::now().millis(),
+            continuum_base::time::EpochMs::now().millis(),
         )
     }
 

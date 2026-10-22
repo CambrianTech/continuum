@@ -287,6 +287,6 @@ mod tests {
         // (`probe_router::tests::time_sync_span_close_fans_out_timing_event`)
         // is the integration-shaped proof. This test is a
         // compile-time pin that the macro shape exists.
-        let _: i32 = crate::time_sync!("test", 42);
+        let _: i32 = continuum_base::time_sync!("test", 42);
     }
 }

@@ -16,7 +16,7 @@
 //! decision half of "navigate away without going numb" — she owns where her attention
 //! turns; the substrate still guarantees perception of a direct address.
 
-use crate::time::EpochMs;
+use continuum_base::time::EpochMs;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;

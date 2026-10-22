@@ -99,7 +99,7 @@ impl VoiceActivityDetection for RmsThresholdVAD {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::audio_constants::AUDIO_FRAME_SIZE;
+    use continuum_base::audio_constants::AUDIO_FRAME_SIZE;
 
     #[test]
     fn test_rms_silence() {

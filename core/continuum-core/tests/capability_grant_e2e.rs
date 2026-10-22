@@ -114,11 +114,11 @@ async fn owner_signed_grant_lets_grantee_run_a_tier_denied_command() {
     // + the owner's mesh + the owner's signature, all from the owner handle).
     let grant_b64 = issue_grant(
         owner,
-        continuum_core::time::EpochMs::now().millis(),
+        continuum_base::time::EpochMs::now().millis(),
         IssueGrantParams {
             grantee: PeerId(grantee_id),
             capabilities: vec!["compute/echo".to_string()],
-            expires_at_ms: Some(continuum_core::time::EpochMs::now().millis() + 3_600_000),
+            expires_at_ms: Some(continuum_base::time::EpochMs::now().millis() + 3_600_000),
             epoch: 1,
         },
     )

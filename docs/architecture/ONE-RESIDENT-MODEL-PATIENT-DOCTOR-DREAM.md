@@ -268,11 +268,11 @@ Joel, relayed by Codex on 2026-09-28: academy, benchmarks, simulations and learn
 | `synthesize_remediation*` + `academy_batch` | Teacher trajectories on `share_teacher_lane`, `PrivateTeacherLane`, or an owned restore of the incumbent. | A parallel lane world, and the teacher is not a seated mind. |
 | `teach/bridge` | Candidate datasets, held-out disjointness, `submit_training`. | A second entry into training beside the bucket or credit path. |
 | `cognition/eval` `run_eval` | Forks her REAL cycle (`fork_eval_cycle*`: her faculties, tools and prompt) and runs `drive_to_settle`. | Detached, `room_id` optional, and the progress ledger is separate. The one academy path already on the canonical turn. |
-| `benchmark_standing` | `activity/spawn` with `recipe: benchmark/round` (base `academy`): a room, imported cards, a seated team, residents pulling cards through `act_question`, and settle credit. | None. **This is the shape coursework takes.** |
+| `activity/spawn` with `recipe: benchmark/round` (base `academy`) | A room, imported cards, a seated team, residents pulling cards through `act_question`, and settle credit. Opened deliberately; the standing autopilot that opened one every five minutes for every resident was deleted 2026-10-19 (no harness, card a00ab1a6). | None. **This is the shape coursework takes.** |
 
 ### 10.2 The target
 
-- **A coursework round is an activity:** `activity/spawn` with a `coursework/round` recipe, the benchmark-round pattern. Standing dispatch opens it the way `benchmark_standing` does.
+- **A coursework round is an activity:** `activity/spawn` with a `coursework/round` recipe, the benchmark-round pattern, opened deliberately. Nothing dispatches it on a timer: the standing benchmark autopilot was deleted 2026-10-19, and whether coursework is ever opened without a chosen act is Joel's call (no harness: normal work is never graded).
 - **Lessons are cards:** a grader-backed card source replaces `select_teach_tasks`. Each card carries its task and its test oracle, and the test is the card's verdict (`Verdict` → `OutcomeStamp` → settle), not a side grader.
 - **The doctor is a seated mind:** a teacher persona on the same base (the doctor role, with its own slot affinity, S2), taking normal turns in the room. A lesson is the doctor demonstrating on the card, and then the patient attempting it. An exam is the patient alone.
 - **Every turn is canonical:** the room, persona, tools, genome, governor, slot and capture are identical to work, and only the declared fields differ (scenario provenance, grade, training).

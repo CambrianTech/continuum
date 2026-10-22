@@ -102,33 +102,6 @@ pub async fn build_adapter_embedder(
 // opt-level — unlike auto-vectorization, which silently reverts to scalar in
 // debug and is fragile to refactors.
 
-/// Dot product + both squared L2 norms in a single pass. Caller guarantees
-/// `a.len() == b.len()`.
-#[inline]
-fn simd_dot_and_norms(a: &[f32], b: &[f32]) -> (f32, f32, f32) {
-    let mut dot = f32x8::ZERO;
-    let mut na = f32x8::ZERO;
-    let mut nb = f32x8::ZERO;
-    let mut ca = a.chunks_exact(8);
-    let mut cb = b.chunks_exact(8);
-    for (qa, qb) in ca.by_ref().zip(cb.by_ref()) {
-        let va = f32x8::new(qa.try_into().unwrap());
-        let vb = f32x8::new(qb.try_into().unwrap());
-        dot = va.mul_add(vb, dot);
-        na = va.mul_add(va, na);
-        nb = vb.mul_add(vb, nb);
-    }
-    let mut d = dot.reduce_add();
-    let mut sa = na.reduce_add();
-    let mut sb = nb.reduce_add();
-    for (x, y) in ca.remainder().iter().zip(cb.remainder().iter()) {
-        d += x * y;
-        sa += x * x;
-        sb += y * y;
-    }
-    (d, sa, sb)
-}
-
 /// Dot product + the TARGET's squared L2 norm only. The batch caller hoists the
 /// query norm (computed once, reused across all targets — per the reuse
 /// doctrine), so this does 2 FMAs per lane instead of 3. Caller guarantees
@@ -170,22 +143,7 @@ fn simd_l2_norm(v: &[f32]) -> f32 {
     s.sqrt()
 }
 
-/// Cosine similarity between two embedding vectors.
-/// Returns value in [-1, 1] where 1 = identical, 0 = orthogonal, -1 = opposite.
-/// SIMD-vectorized via `wide::f32x8` (see kernel note above).
-#[inline]
-pub fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
-    if a.len() != b.len() || a.is_empty() {
-        return 0.0;
-    }
-    let (dot, norm_a, norm_b) = simd_dot_and_norms(a, b);
-    let denom = norm_a.sqrt() * norm_b.sqrt();
-    if denom == 0.0 {
-        0.0
-    } else {
-        dot / denom
-    }
-}
+use crate::cognition::embedding::cosine_similarity;
 
 /// Compute pairwise cosine similarity matrix in parallel.
 /// Returns flattened lower-triangular matrix (excluding diagonal) as Vec<f32>.

@@ -29,12 +29,13 @@ pub mod connection;
 pub mod frame;
 pub mod handlers;
 pub mod node;
+pub mod placement;
 pub mod registry;
 pub mod router;
 pub mod transport;
 pub mod transports;
 
-use crate::time::EpochMs;
+use continuum_base::time::EpochMs;
 use crate::runtime::{CommandResult, CommandSchema, ModuleConfig, ModuleContext, ModulePriority, ServiceModule};
 use audit::AuditLog;
 use dashmap::DashMap;
@@ -156,6 +157,7 @@ impl GridState {
         params: &serde_json::Value,
     ) -> Result<Option<crate::runtime::CommandResult>, String> {
         match self.router.route(command, params, &self.registry) {
+            RouteDecision::Refused(reason) => Err(reason.to_string()),
             RouteDecision::Local => Ok(None),
             RouteDecision::Remote { node, reason } => {
                 tracing::debug!(
@@ -178,7 +180,7 @@ impl ServiceModule for GridModule {
         ModuleConfig {
             name: "grid",
             priority: ModulePriority::Normal,
-            command_prefixes: &["grid/"],
+            command_prefixes: &[commands::PREFIX],
             event_subscriptions: &[],
             needs_dedicated_thread: false,
             max_concurrency: 0,
@@ -417,12 +419,12 @@ impl ServiceModule for GridModule {
                     .and_then(rank_of)
                     .unwrap_or(crate::cognition::serving_plan::footprint::UNMEASURED_RANK_CAP), // JUSTIFIED unwrap_or: an unmeasured local model ranks at the planner's proxy cap, the number the planner itself uses
             };
-            for line in crate::persona::placement_switch::follow_the_fleet(now, peers, local, &rank_of).await {
+            for line in placement::follow_the_fleet(now, peers, local, &rank_of).await {
                 say_in_org_room(&line).await;
             }
         }
         for t in transitions {
-            crate::probe!(
+            continuum_base::probe!(
                 class = "fleet.node.transition",
                 node = %t.node,
                 change = t.kind.as_str(),
@@ -452,7 +454,7 @@ impl ServiceModule for GridModule {
                 .registry
                 .ensure_peer_node(crate::identity::PeerId::from_uuid(peer_uuid), vram_mb)
             {
-                crate::probe!(
+                continuum_base::probe!(
                     class = "grid.peer.autocorrelated",
                     peer = %peer_uuid,
                     vram_mb = vram_mb,
@@ -576,7 +578,7 @@ pub(crate) async fn say_in_org_room(line: &str) {
     // org room is now the tracked checkout's fact (`persona::org_room`), one resolver
     // shared with the operator peer's project-tree subscription.
     let Some(airc) = crate::persona::operator_peer::operator_airc() else {
-        crate::probe!(
+        continuum_base::probe!(
             class = "fleet.node.line_not_posted",
             leg = "no_operator_airc",
             "the line could not be said in the org room — no operator airc runtime yet"
@@ -586,7 +588,7 @@ pub(crate) async fn say_in_org_room(line: &str) {
     let org = match crate::persona::org_room::org_channel() {
         Ok(org) => org,
         Err(absence) => {
-            crate::probe!(
+            continuum_base::probe!(
                 class = "fleet.node.line_not_posted",
                 leg = "no_org_room",
                 why = %absence,
@@ -598,7 +600,7 @@ pub(crate) async fn say_in_org_room(line: &str) {
     let set = match airc.subscription_set().await {
         Ok(set) => set,
         Err(e) => {
-            crate::probe!(
+            continuum_base::probe!(
                 class = "fleet.node.line_not_posted",
                 leg = "subscriptions_unreadable",
                 org = %org.as_str(),
@@ -609,7 +611,7 @@ pub(crate) async fn say_in_org_room(line: &str) {
         }
     };
     let Some(room) = set.all().map(|sub| sub.as_room()).find(|r| r.name == org.as_str()) else {
-        crate::probe!(
+        continuum_base::probe!(
             class = "fleet.node.line_not_posted",
             leg = "not_subscribed",
             org = %org.as_str(),
@@ -618,7 +620,7 @@ pub(crate) async fn say_in_org_room(line: &str) {
         return;
     };
     if let Err(e) = crate::persona::airc_citizen::publish_text_in_room(&airc, room.channel.as_uuid(), line).await {
-        crate::probe!(
+        continuum_base::probe!(
             class = "fleet.node.line_not_posted",
             leg = "publish",
             org = %org.as_str(),

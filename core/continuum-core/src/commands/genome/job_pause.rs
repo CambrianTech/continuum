@@ -8,7 +8,7 @@
 //! `/train/pause` with no hold is steered back by design. A paused run KEEPS its allocation,
 //! so a pause reduces compute demand and never relieves memory.
 
-use crate::time::EpochMs;
+use continuum_base::time::EpochMs;
 use std::sync::Arc;
 
 use schemars::JsonSchema;

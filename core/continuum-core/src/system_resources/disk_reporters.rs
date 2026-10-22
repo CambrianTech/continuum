@@ -691,7 +691,7 @@ impl Daemon for DiskUsageScanner {
                         }
                     }
                     dir.record_walk(walk, took, self.started.elapsed().as_millis() as u64);
-                    crate::probe!(
+                    continuum_base::probe!(
                         class = "disk.scan.walk",
                         class_name = dir.name,
                         bytes = walk.bytes,
@@ -704,7 +704,7 @@ impl Daemon for DiskUsageScanner {
                 // A walk that panicked measured nothing: the last value stands, never
                 // a false zero, and it is retried on the next tick.
                 Err(e) => {
-                    crate::probe!(
+                    continuum_base::probe!(
                         class = "disk.scan.walk_failed",
                         class_name = dir.name,
                         walk_ms = took.as_millis() as u64,
