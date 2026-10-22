@@ -110,9 +110,9 @@ pub(super) fn reader_loop(mut stream: UnixStream, pending: Arc<Mutex<HashMap<u64
 
             // Try as BridgeResponse first (has request_id)
             if let Ok(response) = serde_json::from_slice::<BridgeResponse>(json_bytes) {
-                let mut map = pending.lock().unwrap_or_else(std::sync::PoisonError::into_inner); // unwrap_or: poisoned lock still holds the last consistent state
+                let mut map = pending.lock().unwrap();
                 if let Some(req) = map.remove(&response.request_id) {
-                    let mut resp = req.response.lock().unwrap_or_else(std::sync::PoisonError::into_inner); // unwrap_or: poisoned lock still holds the last consistent state
+                    let mut resp = req.response.lock().unwrap();
                     *resp = Some(response);
                     req.signal.notify_one();
                 }

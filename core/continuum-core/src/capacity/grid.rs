@@ -258,7 +258,7 @@ impl<P: GridPlacementPolicy> StickyPlacementPolicy<P> {
 
 impl<P: GridPlacementPolicy> GridPlacementPolicy for StickyPlacementPolicy<P> {
     fn place(&self, grid: &GridSnapshot, req: &LeaseRequest) -> Placement {
-        let mut cached = self.cached.lock().unwrap_or_else(std::sync::PoisonError::into_inner); // unwrap_or: poisoned lock still holds the last cached placement
+        let mut cached = self.cached.lock().expect("sim-only lock");
         cached
             .get_or_insert_with(|| self.inner.place(grid, req))
             .clone()

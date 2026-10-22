@@ -122,7 +122,7 @@ impl llama::ExpertObserver for LiveExpertObserver {
             return;
         }
         let rows = per_token_experts(layer, experts, n_expert_used);
-        let mut prev = self.prev.lock().unwrap_or_else(std::sync::PoisonError::into_inner); // unwrap_or: poisoned lock still holds the last consistent state
+        let mut prev = self.prev.lock().unwrap();
         if let Some((prev_layer, prev_rows)) = prev.as_ref() {
             if layer > *prev_layer {
                 for (prev_row, curr_row) in prev_rows.iter().zip(rows.iter()) {

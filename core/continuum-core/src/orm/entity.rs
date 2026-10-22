@@ -160,7 +160,7 @@ impl OrmEntityRegistry {
         let mut map = self
             .schemas
             .write()
-            .unwrap_or_else(std::sync::PoisonError::into_inner); // unwrap_or: poisoned lock still holds the last consistent state
+            .unwrap();
         match map.get(&collection) {
             Some(existing) if schemas_equivalent(existing, &schema) => Ok(()),
             Some(_) => Err(RegistrationError::SchemaConflict {
@@ -180,7 +180,7 @@ impl OrmEntityRegistry {
         let map = self
             .schemas
             .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner); // unwrap_or: poisoned lock still holds the last consistent state
+            .unwrap();
         map.get(collection).cloned()
     }
 
@@ -190,7 +190,7 @@ impl OrmEntityRegistry {
         let map = self
             .schemas
             .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner); // unwrap_or: poisoned lock still holds the last consistent state
+            .unwrap();
         map.keys().cloned().collect()
     }
 

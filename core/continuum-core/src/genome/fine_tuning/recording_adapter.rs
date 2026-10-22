@@ -103,7 +103,7 @@ impl RecordingFineTuningAdapter {
 
     /// Helper: number of jobs captured so far.
     pub fn captured_job_count(&self) -> usize {
-        self.captures.lock().unwrap_or_else(std::sync::PoisonError::into_inner).len() // unwrap_or: poisoned lock still holds the last consistent state
+        self.captures.lock().unwrap().len()
     }
 
     /// Helper: total examples across every captured job. Tests
@@ -112,7 +112,7 @@ impl RecordingFineTuningAdapter {
     pub fn captured_example_count(&self) -> usize {
         self.captures
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) // unwrap_or: poisoned lock still holds the captured jobs
+            .unwrap()
             .iter()
             .map(|req| req.dataset.examples.len())
             .sum()
@@ -145,7 +145,7 @@ impl FineTuningAdapter for RecordingFineTuningAdapter {
     }
 
     async fn create_job(&self, request: TrainingJobRequest) -> Result<JobHandle, FineTuningError> {
-        self.captures.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push(request.clone()); // unwrap_or: poisoned lock still holds the last consistent state
+        self.captures.lock().unwrap().push(request.clone());
         Ok(JobHandle {
             provider_id: RECORDING_PROVIDER_ID.to_string(),
             provider_job_id: format!("recording-{}", Uuid::new_v4()),

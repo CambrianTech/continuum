@@ -382,14 +382,14 @@ fn bridges() -> &'static std::sync::RwLock<Vec<Option<Arc<IoSurfacePair>>>> {
 }
 
 fn register_bridge(slot: u8, pair: Arc<IoSurfacePair>) {
-    let mut guard = bridges().write().unwrap_or_else(std::sync::PoisonError::into_inner); // unwrap_or: poisoned lock still holds the last consistent state
+    let mut guard = bridges().write().unwrap();
     if let Some(entry) = guard.get_mut(slot as usize) {
         *entry = Some(pair);
     }
 }
 
 fn unregister_bridge(slot: u8) {
-    let mut guard = bridges().write().unwrap_or_else(std::sync::PoisonError::into_inner); // unwrap_or: poisoned lock still holds the last consistent state
+    let mut guard = bridges().write().unwrap();
     if let Some(entry) = guard.get_mut(slot as usize) {
         if entry.take().is_some() {
             clog_info!("📹 GPU bridge unregistered for slot {}", slot);

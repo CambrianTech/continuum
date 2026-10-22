@@ -64,7 +64,7 @@ impl StorageAdapter for SqliteAdapter {
         let pressure = self.last_pressure_check.clone();
         let types = self.declared_types(&collection);
         tokio::task::spawn_blocking(move || {
-            let conn = conn.lock().unwrap_or_else(std::sync::PoisonError::into_inner); // unwrap_or: poisoned lock still holds the last consistent state
+            let conn = conn.lock().unwrap();
             apply_memory_pressure(&conn, &pressure);
             do_read(&conn, &collection, &id, types.as_deref())
         })
@@ -81,7 +81,7 @@ impl StorageAdapter for SqliteAdapter {
             let table = naming::to_table_name(&query.collection);
             let types = self.declared_types(&query.collection);
             let ensure_result = tokio::task::spawn_blocking(move || {
-                let conn = writer.lock().unwrap_or_else(std::sync::PoisonError::into_inner); // unwrap_or: poisoned lock still holds the last consistent state
+                let conn = writer.lock().unwrap();
                 ensure_table_exists(&conn, &table, &dummy)?;
                 evolve_table_schema(&conn, &table, &dummy, types.as_deref());
                 Ok::<(), String>(())
@@ -101,7 +101,7 @@ impl StorageAdapter for SqliteAdapter {
         let collection_name = query.collection.clone();
         let types = self.declared_types(&query.collection);
         tokio::task::spawn_blocking(move || {
-            let conn = conn.lock().unwrap_or_else(std::sync::PoisonError::into_inner); // unwrap_or: poisoned lock still holds the last consistent state
+            let conn = conn.lock().unwrap();
             apply_memory_pressure(&conn, &pressure);
             let start = std::time::Instant::now();
             let result = do_query(&conn, query, types.as_deref());
@@ -129,7 +129,7 @@ impl StorageAdapter for SqliteAdapter {
         };
         let pressure = self.last_pressure_check.clone();
         tokio::task::spawn_blocking(move || {
-            let conn = conn.lock().unwrap_or_else(std::sync::PoisonError::into_inner); // unwrap_or: poisoned lock still holds the last consistent state
+            let conn = conn.lock().unwrap();
             apply_memory_pressure(&conn, &pressure);
             do_count(&conn, query)
         })
@@ -143,7 +143,7 @@ impl StorageAdapter for SqliteAdapter {
             Err(e) => return StorageResult::err(e),
         };
         tokio::task::spawn_blocking(move || {
-            let conn = conn.lock().unwrap_or_else(std::sync::PoisonError::into_inner); // unwrap_or: poisoned lock still holds the last consistent state
+            let conn = conn.lock().unwrap();
             do_list_collections(&conn)
         })
         .await
@@ -180,7 +180,7 @@ impl StorageAdapter for SqliteAdapter {
         let pressure = self.last_pressure_check.clone();
         let types = self.declared_types(&record.collection);
         tokio::task::spawn_blocking(move || {
-            let conn = conn.lock().unwrap_or_else(std::sync::PoisonError::into_inner); // unwrap_or: poisoned lock still holds the last consistent state
+            let conn = conn.lock().unwrap();
             apply_memory_pressure(&conn, &pressure);
             do_create(&conn, record, types.as_deref())
         })
@@ -204,7 +204,7 @@ impl StorageAdapter for SqliteAdapter {
         let pressure = self.last_pressure_check.clone();
         let types = self.declared_types(&collection);
         tokio::task::spawn_blocking(move || {
-            let conn = conn.lock().unwrap_or_else(std::sync::PoisonError::into_inner); // unwrap_or: poisoned lock still holds the last consistent state
+            let conn = conn.lock().unwrap();
             apply_memory_pressure(&conn, &pressure);
             do_update(&conn, &collection, &id, data, increment_version, types.as_deref())
         })
@@ -220,7 +220,7 @@ impl StorageAdapter for SqliteAdapter {
         let collection = collection.to_string();
         let id = id.clone();
         tokio::task::spawn_blocking(move || {
-            let conn = conn.lock().unwrap_or_else(std::sync::PoisonError::into_inner); // unwrap_or: poisoned lock still holds the last consistent state
+            let conn = conn.lock().unwrap();
             do_delete(&conn, &collection, &id)
         })
         .await
@@ -239,7 +239,7 @@ impl StorageAdapter for SqliteAdapter {
         let pressure = self.last_pressure_check.clone();
         let declared = self.declared.read().map(|d| d.clone()).unwrap_or_default(); // unwrap_or: a poisoned lock reads as "nothing declared" — the legacy sniff, never a refused batch
         tokio::task::spawn_blocking(move || {
-            let conn = conn.lock().unwrap_or_else(std::sync::PoisonError::into_inner); // unwrap_or: poisoned lock still holds the last consistent state
+            let conn = conn.lock().unwrap();
             apply_memory_pressure(&conn, &pressure);
             do_batch(&conn, operations, &declared)
         })
@@ -259,7 +259,7 @@ impl StorageAdapter for SqliteAdapter {
             declared.insert(schema.collection.clone(), Arc::new(types));
         }
         tokio::task::spawn_blocking(move || {
-            let conn = conn.lock().unwrap_or_else(std::sync::PoisonError::into_inner); // unwrap_or: poisoned lock still holds the last consistent state
+            let conn = conn.lock().unwrap();
             do_ensure_schema(&conn, schema)
         })
         .await
@@ -273,7 +273,7 @@ impl StorageAdapter for SqliteAdapter {
         };
         let collection = collection.to_string();
         tokio::task::spawn_blocking(move || {
-            let conn = conn.lock().unwrap_or_else(std::sync::PoisonError::into_inner); // unwrap_or: poisoned lock still holds the last consistent state
+            let conn = conn.lock().unwrap();
             do_truncate(&conn, &collection)
         })
         .await
@@ -286,7 +286,7 @@ impl StorageAdapter for SqliteAdapter {
             Err(e) => return StorageResult::err(e),
         };
         tokio::task::spawn_blocking(move || {
-            let conn = conn.lock().unwrap_or_else(std::sync::PoisonError::into_inner); // unwrap_or: poisoned lock still holds the last consistent state
+            let conn = conn.lock().unwrap();
             do_clear_all(&conn)
         })
         .await
@@ -296,7 +296,7 @@ impl StorageAdapter for SqliteAdapter {
     async fn cleanup(&self) -> Result<(), String> {
         let conn = self.get_writer()?;
         tokio::task::spawn_blocking(move || {
-            let conn = conn.lock().unwrap_or_else(std::sync::PoisonError::into_inner); // unwrap_or: poisoned lock still holds the last consistent state
+            let conn = conn.lock().unwrap();
             do_cleanup(&conn)
         })
         .await

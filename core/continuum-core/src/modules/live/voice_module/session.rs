@@ -52,7 +52,7 @@ impl VoiceModule {
         // agent batches, causing the reconnect churn cycle (agents connect → old
         // ones get evicted by LiveKit → new ones reconnect → repeat).
         {
-            let mut sessions = self.state.active_sessions.lock().unwrap_or_else(std::sync::PoisonError::into_inner); // unwrap_or: poisoned lock still holds the last consistent state
+            let mut sessions = self.state.active_sessions.lock().unwrap();
             if !sessions.insert(call_id.to_string()) {
                 log_info!(
                     "module",
@@ -224,7 +224,7 @@ impl VoiceModule {
         // and drop any legacy aliases pointing at the ended call — a rejoin
         // records fresh ones.
         {
-            let mut sessions = self.state.active_sessions.lock().unwrap_or_else(std::sync::PoisonError::into_inner); // unwrap_or: poisoned lock still holds the last consistent state
+            let mut sessions = self.state.active_sessions.lock().unwrap();
             sessions.remove(&call_id);
         }
         {

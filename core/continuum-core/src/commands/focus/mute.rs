@@ -124,7 +124,7 @@ impl ActionCommand for FocusMute {
         let handle = focus::registry().handle(persona_id);
         let mut state = handle
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner); // unwrap_or: poisoned lock still holds the last consistent state
+            .unwrap();
 
         if p.unmute {
             state.unmute(lane);

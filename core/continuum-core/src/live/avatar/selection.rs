@@ -139,7 +139,7 @@ pub fn register_persona_gender(identity: &str, name: &str) {
             identity,
             gender
         );
-        let mut guard = PERSONA_GENDER.lock().unwrap_or_else(std::sync::PoisonError::into_inner); // unwrap_or: poisoned lock still holds the last consistent state
+        let mut guard = PERSONA_GENDER.lock().unwrap();
         guard
             .get_or_insert_with(HashMap::new)
             .insert(identity.to_string(), gender);
@@ -165,7 +165,7 @@ pub fn registered_gender(identity: &str) -> Option<AvatarGender> {
     // (2) Remote/live participant name-anchor.
     PERSONA_GENDER
         .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner) // unwrap_or: poisoned lock still holds the last consistent state
+        .unwrap()
         .as_ref()
         .and_then(|m| m.get(identity).copied())
 }
@@ -182,7 +182,7 @@ pub fn registered_gender(identity: &str) -> Option<AvatarGender> {
 /// Gender coherence is prioritized: avatar gender must match voice gender.
 /// The identity hash is the SEED for gender; personas can override via preferences later.
 pub fn select_avatar_for_agent(identity: &str, voice: Option<&str>) -> &'static AvatarModel {
-    let mut guard = AVATAR_ALLOCATION.lock().unwrap_or_else(std::sync::PoisonError::into_inner); // unwrap_or: poisoned lock still holds the last consistent state
+    let mut guard = AVATAR_ALLOCATION.lock().unwrap();
     let allocation = guard.get_or_insert_with(HashMap::new);
 
     // Already allocated — return the same model (stable)
@@ -438,7 +438,7 @@ pub fn select_dynamic_avatar(identity: &str, voice: Option<&str>) -> &'static Dy
         return &leaked.all()[0];
     }
 
-    let mut guard = DYNAMIC_ALLOCATION.lock().unwrap_or_else(std::sync::PoisonError::into_inner); // unwrap_or: poisoned lock still holds the last consistent state
+    let mut guard = DYNAMIC_ALLOCATION.lock().unwrap();
     let allocation = guard.get_or_insert_with(HashMap::new);
 
     // Already allocated — return the same model (stable)

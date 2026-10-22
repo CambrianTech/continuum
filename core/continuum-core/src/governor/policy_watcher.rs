@@ -55,7 +55,7 @@ impl PolicyDirectoryWatcher {
     pub fn last_error(&self) -> Option<String> {
         self.last_error
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) // unwrap_or: poisoned lock still holds the last consistent state
+            .unwrap()
             .clone()
     }
 
@@ -67,7 +67,7 @@ impl PolicyDirectoryWatcher {
         let mut guard = self
             .last_error
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner); // unwrap_or: poisoned lock still holds the last consistent state
+            .unwrap();
         *guard = None;
     }
 }
@@ -101,7 +101,7 @@ pub fn watch_policy_directory(
             tracing::error!(target: "continuum_core::governor::policy_watcher", %message);
             let mut guard = callback_last_error
                 .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner); // unwrap_or: poisoned lock still holds the last consistent state
+                .unwrap();
             *guard = Some(message);
         }
     })

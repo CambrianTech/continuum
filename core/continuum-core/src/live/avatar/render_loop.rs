@@ -37,7 +37,7 @@ fn slot_pool() -> &'static std::sync::Mutex<VecDeque<u8>> {
 
 /// Allocate a render slot from the pool. Returns None if all slots are in use.
 fn allocate_slot() -> Option<u8> {
-    let mut pool = slot_pool().lock().unwrap_or_else(std::sync::PoisonError::into_inner); // unwrap_or: poisoned lock still holds the last consistent state
+    let mut pool = slot_pool().lock().unwrap();
     let slot = pool.pop_front();
     if let Some(s) = slot {
         clog_info!("🎨 Allocated render slot {} ({} remaining)", s, pool.len());
@@ -51,7 +51,7 @@ fn release_slot(slot: u8) {
     if let Some(bevy) = crate::live::video::bevy_renderer::try_get() {
         bevy.unload_model(slot);
     }
-    let mut pool = slot_pool().lock().unwrap_or_else(std::sync::PoisonError::into_inner); // unwrap_or: poisoned lock still holds the last consistent state
+    let mut pool = slot_pool().lock().unwrap();
     pool.push_back(slot);
     clog_info!(
         "🎨 Released render slot {} ({} available)",
@@ -65,7 +65,7 @@ fn release_slot(slot: u8) {
 /// tasks (video loops that didn't exit cleanly) are reclaimed.
 pub fn reset_slot_pool() {
     let max = crate::live::video::bevy_renderer::MAX_AVATAR_SLOTS;
-    let mut pool = slot_pool().lock().unwrap_or_else(std::sync::PoisonError::into_inner); // unwrap_or: poisoned lock still holds the last consistent state
+    let mut pool = slot_pool().lock().unwrap();
     let before = pool.len();
     pool.clear();
     pool.extend(0..max);
@@ -382,7 +382,7 @@ pub fn spawn_renderer_loop(
 
     // Identity dedup: if this identity already has a render loop, reuse it
     {
-        let active = active_renderers().lock().unwrap_or_else(std::sync::PoisonError::into_inner); // unwrap_or: poisoned lock still holds the last consistent state
+        let active = active_renderers().lock().unwrap();
         if let Some(existing) = active.get(&identity) {
             clog_info!(
                 "🎨 Reusing existing render loop for '{}' (identity dedup)",
@@ -413,7 +413,7 @@ pub fn spawn_renderer_loop(
 
     // Register in active renderers BEFORE spawning the thread
     {
-        let mut active = active_renderers().lock().unwrap_or_else(std::sync::PoisonError::into_inner); // unwrap_or: poisoned lock still holds the last consistent state
+        let mut active = active_renderers().lock().unwrap();
         active.insert(
             identity.clone(),
             ActiveRenderer {
@@ -432,7 +432,7 @@ pub fn spawn_renderer_loop(
             &identity[..8.min(identity.len())]
         ))
         .spawn(move || {
-            let mut renderer = renderer.lock().unwrap_or_else(std::sync::PoisonError::into_inner); // unwrap_or: poisoned lock still holds the last consistent state
+            let mut renderer = renderer.lock().unwrap();
             loop {
                 let frame = renderer.render_frame();
                 match tx.try_send(frame) {
@@ -452,7 +452,7 @@ pub fn spawn_renderer_loop(
             release_slot(bevy_slot);
             // Remove from active renderers
             {
-                let mut active = active_renderers().lock().unwrap_or_else(std::sync::PoisonError::into_inner); // unwrap_or: poisoned lock still holds the last consistent state
+                let mut active = active_renderers().lock().unwrap();
                 active.remove(&identity_for_thread);
             }
             clog_info!(
@@ -472,7 +472,7 @@ pub fn spawn_renderer_loop(
         release_slot(bevy_slot);
         active_renderers()
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) // unwrap_or: poisoned lock still holds the last consistent state
+            .unwrap()
             .remove(&identity);
         return None;
     }

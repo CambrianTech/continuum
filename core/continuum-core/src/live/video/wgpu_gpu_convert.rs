@@ -186,7 +186,7 @@ fn dispatch_compute(
 ) {
     // Drain pending registrations from global bridge
     {
-        let mut bridge = WGPU_BRIDGE.lock().unwrap_or_else(std::sync::PoisonError::into_inner); // unwrap_or: poisoned lock still holds the last consistent state
+        let mut bridge = WGPU_BRIDGE.lock().unwrap();
         state.pending_setup.append(&mut bridge.pending);
     }
 
@@ -516,7 +516,7 @@ pub fn register_slot(
     width: u32,
     height: u32,
 ) {
-    let mut bridge = WGPU_BRIDGE.lock().unwrap_or_else(std::sync::PoisonError::into_inner); // unwrap_or: poisoned lock still holds the last consistent state
+    let mut bridge = WGPU_BRIDGE.lock().unwrap();
     bridge
         .pending
         .push((slot_id, render_target, frame_tx, width, height));
@@ -531,12 +531,12 @@ pub fn register_slot(
 
 /// Check if a slot has a wgpu GPU bridge active.
 pub fn has_bridge(slot_id: u8) -> bool {
-    WGPU_BRIDGE.lock().unwrap_or_else(std::sync::PoisonError::into_inner).active_slots.contains(&slot_id) // unwrap_or: poisoned lock still holds the last consistent state
+    WGPU_BRIDGE.lock().unwrap().active_slots.contains(&slot_id)
 }
 
 /// Unregister a slot.
 pub fn unregister_slot(slot_id: u8) {
-    WGPU_BRIDGE.lock().unwrap_or_else(std::sync::PoisonError::into_inner).active_slots.remove(&slot_id); // unwrap_or: poisoned lock still holds the last consistent state
+    WGPU_BRIDGE.lock().unwrap().active_slots.remove(&slot_id);
 }
 
 // =============================================================================
