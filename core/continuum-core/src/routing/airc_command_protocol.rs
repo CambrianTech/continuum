@@ -107,3 +107,8 @@ mod tests {
         assert_eq!(req.path, "notification/send");
     }
 }
+
+/// Chunk kind for prefill progress — `{processed,total,cached}` as JSON text. Emitted
+/// BEFORE any token exists so a requester's liveness clock has something to reset on
+/// during the long silence a 40 KB prompt buys.
+pub const STREAM_KIND_PREFILL: &str = "inference.prefill";

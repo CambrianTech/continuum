@@ -122,7 +122,7 @@ fn forward_stream_chunk(
     if !text.is_empty() {
         let chunk = match kind.as_str() {
             airc_lib::STREAM_KIND_TEXT_REASONING => Some(GenerationChunk::Reasoning(text.to_string())),
-            crate::routing::command_handler::STREAM_KIND_PREFILL => serde_json::from_str::<serde_json::Value>(text)
+            crate::routing::STREAM_KIND_PREFILL => serde_json::from_str::<serde_json::Value>(text)
                 .ok()
                 .map(|v| GenerationChunk::Prefill {
                     processed: v["processed"].as_u64().unwrap_or(0), // unwrap_or: a malformed progress frame reads as no progress, never as a token

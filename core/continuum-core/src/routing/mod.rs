@@ -32,7 +32,6 @@ pub mod airc_event_transport;
 pub mod airc_transport;
 pub mod auth_policy;
 pub mod capped_appender;
-pub mod command_handler;
 pub mod command_uri;
 pub mod environment;
 pub mod epoch_watermark;
@@ -54,7 +53,7 @@ pub mod verdict;
 pub use airc_command_protocol::{
     AircCommandRequest, AircCommandResponse, COMMAND_REQUEST_BODY_HINT, COMMAND_RESPONSE_BODY_HINT,
     HEADER_COMMAND_ENV, HEADER_COMMAND_KIND, HEADER_COMMAND_PATH, HEADER_COMMAND_STATUS,
-    HEADER_CONTINUUM_BODY_HINT,
+    HEADER_CONTINUUM_BODY_HINT, STREAM_KIND_PREFILL,
 };
 pub use airc_event_adapters::{
     EventPublishAdapter, EventSubscribeAdapter, EventUnsubscribeAdapter, PUBLISH_ADAPTER_NAME,
@@ -81,7 +80,6 @@ pub use auth_policy::{
     defer_path_prefix, deny_path_prefix, AllowAllPolicy, AuthPolicy, CallerIdentity, CallerSource,
     ClosurePolicy,
 };
-pub use command_handler::{CommandRequestHandler, ParsedEnvelope, HANDLER_NAME};
 pub use command_uri::{CommandUri, NodeId, PeerRef, UriParseError};
 pub use environment::{EnvironmentId, WellKnownEnv};
 pub use grid_trust_policy::{caller_trust, GridTrustAuthPolicy, PeerTrustSource};

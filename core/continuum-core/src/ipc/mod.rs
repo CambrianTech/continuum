@@ -62,6 +62,7 @@ use uuid::Uuid;
 // Split out of this file 2026-05-18 — see ipc/protocol.rs (InboxMessageRequest,
 // Response) and ipc/diagnostics.rs (per-command RSS tracking). Re-exported
 // here so existing call sites resolve unchanged.
+pub mod command_ingress;
 pub mod diagnostics;
 
 pub mod endpoint_paths;

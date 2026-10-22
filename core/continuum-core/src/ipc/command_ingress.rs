@@ -75,8 +75,8 @@ use base64::{engine::general_purpose::STANDARD, Engine};
 use tracing::{debug, warn};
 use uuid::Uuid;
 
-use super::grid_capability::{GrantAuthOutcome, GrantAuthorizer};
-use super::{AircCommandRequest, AircCommandResponse, CallerIdentity, CommandUri, COMMAND_REQUEST_BODY_HINT, COMMAND_RESPONSE_BODY_HINT, HEADER_COMMAND_STATUS, HEADER_CONTINUUM_BODY_HINT};
+use crate::routing::grid_capability::{GrantAuthOutcome, GrantAuthorizer};
+use crate::routing::{AircCommandRequest, AircCommandResponse, CallerIdentity, CommandUri, COMMAND_REQUEST_BODY_HINT, COMMAND_RESPONSE_BODY_HINT, HEADER_COMMAND_STATUS, HEADER_CONTINUUM_BODY_HINT};
 use crate::runtime::{CommandExecutor, CommandResult};
 
 /// Stable adapter name. Registered in the airc adapter registry so
@@ -664,10 +664,6 @@ const STREAMED_GENERATE_PATH: &str = "ai/generate";
 /// persona turn uses into a room; one frame per token would be 35 frames/s on a 27B.
 const STREAM_FLUSH_EVERY: std::time::Duration = std::time::Duration::from_millis(250);
 
-/// Chunk kind for prefill progress — `{processed,total,cached}` as JSON text. Emitted
-/// BEFORE any token exists so a requester's liveness clock has something to reset on
-/// during the long silence a 40 KB prompt buys.
-pub const STREAM_KIND_PREFILL: &str = "inference.prefill";
 
 /// Publishes one generation's chunks into the request's room under its stream id.
 struct StreamPublisher {
@@ -747,7 +743,7 @@ impl StreamPublisher {
                     );
                 }
                 if let Some(p) = prefill.take() {
-                    published += self.publish(seq, STREAM_KIND_PREFILL, p, false).await as u64;
+                    published += self.publish(seq, crate::routing::STREAM_KIND_PREFILL, p, false).await as u64;
                     seq += 1;
                 }
                 if !reasoning.is_empty() {

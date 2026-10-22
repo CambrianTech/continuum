@@ -39,7 +39,8 @@ use tokio_tungstenite::tungstenite::Message;
 
 use crate::identity::PeerId;
 use crate::ipc::positron_dispatch::ExecutorDispatch;
-use crate::routing::{CallerIdentity, CommandRequestHandler};
+use crate::ipc::command_ingress::CommandRequestHandler;
+use crate::routing::CallerIdentity;
 use crate::runtime::CommandExecutor;
 
 /// Extract the connecting citizen's id from the WS connect URL query — the

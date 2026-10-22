@@ -84,7 +84,7 @@ use uuid::Uuid;
 
 use crate::routing::epoch_watermark::{OrmEpochWatermark, WatermarkError};
 use crate::routing::grid_capability::GrantAuthorizer;
-use crate::routing::CommandRequestHandler;
+use crate::ipc::command_ingress::CommandRequestHandler;
 use crate::runtime::command_executor::CommandExecutor;
 
 /// Why constructing a persona's [`GrantAuthorizer`] failed at boot. Distinct from
