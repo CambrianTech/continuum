@@ -776,3 +776,31 @@ use super::*;
         assert!(matches!(still_bound_to(Some(relaunched), "qwen/base", chosen, &url), Err(Unbound::Replaced(_))), "another incarnation");
         assert!(matches!(still_bound_to(None, "qwen/base", chosen, &url), Err(Unbound::Gone(_))), "no lane");
     }
+
+    // what this catches (Codex on #5264): training priced in the pool the CURRENT configuration
+    // names for a lane that was launched under another. A lane's own recorded placement decides
+    // its pool; a lane recorded before placements were is not offered at all, whatever the
+    // configuration says now.
+    #[test]
+    fn a_lane_is_priced_in_its_recorded_placement_and_an_unrecorded_one_is_not_offered() {
+        use crate::inference::lane_registry::{LaneRecord, LaneRole};
+        use crate::inference::llama_server::LanePlacement;
+        use crate::resources::ResourceKind;
+        let rec = |placement: Option<LanePlacement>| LaneRecord {
+            pid: 4242,
+            port: 8090,
+            role: LaneRole::Live,
+            model: "qwen/base".into(),
+            context_window: 8192,
+            lanes: 2,
+            page_dir: None,
+            engine_bin: None,
+            started_s: 1_700_000_000,
+            placement,
+        };
+        let pool = |placement| lane_choice(rec(placement), "qwen/base").map(|choice| choice.memory);
+        assert_eq!(pool(Some(LanePlacement::Gpu)), Some(ResourceKind::Vram));
+        assert_eq!(pool(Some(LanePlacement::Cpu)), Some(ResourceKind::Ram));
+        assert_eq!(pool(None), None, "an unrecorded placement is refused, never read from configuration");
+        assert!(lane_choice(rec(Some(LanePlacement::Gpu)), "other/base").is_none(), "another base");
+    }

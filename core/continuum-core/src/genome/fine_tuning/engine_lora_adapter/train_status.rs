@@ -123,24 +123,6 @@ pub(super) enum Unbound {
     Replaced(String),
 }
 
-/// The pool a lane's bytes live in: its recorded placement. A lane recorded before
-/// placements were (an older build launched it) has only the configuration it was launched
-/// under, which is the configuration now unless it changed since; the probe names every such
-/// read, and the lane's next launch records its placement.
-fn lane_memory(rec: &crate::inference::lane_registry::LaneRecord) -> crate::resources::ResourceKind {
-    match rec.memory() {
-        Some(kind) => kind,
-        None => {
-            continuum_base::probe!(
-                class = "training.lane.placement_unrecorded",
-                port = rec.port as u64,
-                "a lane launched before placements were recorded: its pool is read from the current configuration until it relaunches"
-            );
-            crate::inference::llama_server::main_lane_placement().pool_kind()
-        }
-    }
-}
-
 /// The live lane serving the base on this node: training on the resident weights.
 pub(super) struct ResidentLane;
 
@@ -239,13 +221,31 @@ pub(super) fn incarnation_of(rec: &crate::inference::lane_registry::LaneRecord) 
 }
 
 pub(super) fn live_lane_for(base: &str) -> Option<LaneChoice> {
-    let rec = crate::inference::lane_registry::live_lane()?;
-    crate::model_registry::artifacts::names_the_same_base(&rec.model, base).then(|| LaneChoice {
+    lane_choice(crate::inference::lane_registry::live_lane()?, base)
+}
+
+/// The lane `rec` names as a place to train `base`, priced in the pool its recorded placement
+/// keeps its bytes in. A lane recorded before placements were (an older build launched it)
+/// is not offered: its pool is unknown, and the current configuration is the NEXT launch's
+/// truth, not this process's (Codex on #5264). It is offered again from its next launch.
+pub(super) fn lane_choice(rec: crate::inference::lane_registry::LaneRecord, base: &str) -> Option<LaneChoice> {
+    if !crate::model_registry::artifacts::names_the_same_base(&rec.model, base) {
+        return None;
+    }
+    let Some(memory) = rec.memory() else {
+        continuum_base::probe!(
+            class = "training.lane.placement_unrecorded",
+            port = rec.port as u64,
+            "a lane launched before placements were recorded: not offered for training until it relaunches"
+        );
+        return None;
+    };
+    Some(LaneChoice {
         url: rec.root_url(),
         window: rec.context_window,
         engine: incarnation_of(&rec),
         build: rec.engine_bin.as_deref().and_then(crate::inference::engine_slots::stamp_of_bin),
-        memory: lane_memory(&rec),
+        memory,
     })
 }
 
