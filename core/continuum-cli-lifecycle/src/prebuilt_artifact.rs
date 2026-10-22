@@ -399,6 +399,9 @@ pub struct ResourceDeferral {
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum PublishedCoreError {
     Artifact(String),
+    /// Publication or CI authorization is not established yet. Recheck inside the
+    /// existing consumer; returning would spend an actuation before any install.
+    SourcePending(String),
     CapabilityDeferred(String),
     OperationalBlocked(String),
     ResourceDeferred(ResourceDeferral),
@@ -412,7 +415,7 @@ impl From<&str> for PublishedCoreError {
 impl std::fmt::Display for PublishedCoreError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Artifact(reason) | Self::CapabilityDeferred(reason) | Self::OperationalBlocked(reason) => f.write_str(reason),
+            Self::Artifact(reason) | Self::SourcePending(reason) | Self::CapabilityDeferred(reason) | Self::OperationalBlocked(reason) => f.write_str(reason),
             Self::ResourceDeferred(deferred) => write!(f, "resource admission deferred at {} for {} bytes: {}", deferred.path.display(), deferred.projected_bytes, deferred.reason),
         }
     }
@@ -439,7 +442,7 @@ pub fn recheck_resource_deferral(
             Some(MissingArtifact::AdmissionWait(why))
         }
         Err(PublishedCoreError::Artifact(reason)) => Some(MissingArtifact::Refuse(reason)),
-        Err(PublishedCoreError::CapabilityDeferred(reason) | PublishedCoreError::OperationalBlocked(reason)) => Some(MissingArtifact::AdmissionWait(reason)),
+        Err(PublishedCoreError::SourcePending(reason) | PublishedCoreError::CapabilityDeferred(reason) | PublishedCoreError::OperationalBlocked(reason)) => Some(MissingArtifact::AdmissionWait(reason)),
     }
 }
 
@@ -458,17 +461,31 @@ pub async fn select_published_core<S: PublishedCoreSource>(candidates: &[String]
     -> Option<(String, Result<Option<S::Artifact>, PublishedCoreError>)>
 {
     use crate::deploy_tracker::Checks;
+    let mut blocked = None;
     for key in candidates {
-        if source.published(key).await != Ok(true) { continue; }
-        let checks = source.checks(key).await.unwrap_or(Checks::Unknown); // unreadable CI is never authorization
-        if matches!(checks, Checks::Green) {
-            if let Some(deferred) = source.deferred(key) {
-                return Some((key.clone(), Err(PublishedCoreError::ResourceDeferred(deferred))));
+        match source.published(key).await {
+            Ok(false) => continue,
+            Err(why) => {
+                blocked.get_or_insert_with(|| (key.clone(), format!("cannot determine publication for {key}: {why}")));
+                continue;
             }
-            return Some((key.clone(), source.fetch(key).await));
+            Ok(true) => {}
         }
+        let why = match source.checks(key).await {
+            Ok(Checks::Green) => {
+                if let Some(deferred) = source.deferred(key) {
+                    return Some((key.clone(), Err(PublishedCoreError::ResourceDeferred(deferred))));
+                }
+                return Some((key.clone(), source.fetch(key).await));
+            }
+            Ok(checks) => format!("published build {key} is not authorized: {checks:?}"),
+            Err(why) => format!("cannot read CI authorization for published build {key}: {why}"),
+        };
+        blocked.get_or_insert_with(|| (key.clone(), why));
     }
-    None
+    // Keep looking for an older authorized candidate, but never turn an unreadable
+    // source or a known published build into an expired publication deadline.
+    blocked.map(|(key, why)| (key, Err(PublishedCoreError::SourcePending(why))))
 }
 
 /// What the consumer does when its tip has no artifact yet.

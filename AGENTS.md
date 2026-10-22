@@ -28,6 +28,22 @@ Rules, in force now:
    back to canary at once. No "clean hours", no stacked fixes.
 4. No new unwrap, fallback or head clip: the ratchets fail the build; clean crates get compiler denies.
 
+**Development maintenance is authorized (Joel, 2026-10-22).** Development is distinct from
+production installs. Preserving identity, data, jobs and unfinished work does not require
+keeping every development binary running. When a runtime consumes resources needed to repair
+the product, coordinate with its machine/deployment owner, gracefully stop the relevant runtime
+and its automatic restart owner, verify serving is down, build and test, then restart through
+the supported lifecycle and verify the running revision and behavior. Ordinary authorized
+development maintenance does not require another human approval.
+
+Use common sense: broken personas are a reason to repair the system, not a reason to preserve
+broken uptime while the team waits. The rule is no competing build beside active serving,
+not CI-only development or a permanent ban on building on that machine. Choose a coordinated
+serving-down local build, an available non-serving executor, or CI according to what gets the
+fix proven promptly. Do not impose production continuity requirements on development by default.
+Protect unrelated users and owner work; retain durable state and a recovery path. Review and
+validation still apply. A refusal must identify a concrete condition and a usable recovery or
+execution path; repeated polling and manual retry suppression are not a completed repair.
 Phases, in order; each owner works its area in parallel:
 - **0 Stabilize.** Nodes run plain canary; features in a large file wait for its split.
 - **1 Split every file over 1,000 lines** by owner (pure moves, test counts unchanged, one PR per
@@ -102,7 +118,7 @@ wait, a wait means start your next line; update this table when a line lands or 
 | # | Line | Owner | State / next action | Done when |
 |---|---|---|---|---|
 | 0 | Remove the benchmark harness from the mind (Joel: "cancerous tumor ... turning everyone into a harness"): ~16k lines of runner (benchmark.rs, swe_bench.rs, agent/solve, verdict sweep, standing) + benchmark concepts in 75 cognition/persona files; benchmarks become adapters into activities (BENCHMARKS-ARE-ADAPTERS-NOT-A-RUNNER.md) | Fable (map, plan), Codex (adapter boundary), Cormac (review) | removal map running read-only; then crate-sized PRs, each deleting more than it adds | no benchmark concept in cognition/ or persona/; no runner; a benchmark is a recipe the room runs |
-| 1 | The build loop: split the monolith BY THE PLACEMENT MAP (MODULE-ARCHITECTURE.md §9.2: each major module runs on any node); never compile on the serving node, use every grid machine | Fable (cuts), Codex (crate graph, parallel cut order) | #5194 continuum-base + gates cover split crates (CI); #5195 deletes 13,275 dead lines (CI); next: parallel cuts by several agents, own worktrees and target dirs | edit-to-checked < 2 min |
+| 1 | The build loop: split the monolith BY THE PLACEMENT MAP (MODULE-ARCHITECTURE.md §9.2: each major module runs on any node); build with serving down or on an available non-serving executor/CI, use every grid machine | Fable (cuts), Codex (crate graph, parallel cut order) | #5194 continuum-base + gates cover split crates (CI); #5195 deletes 13,275 dead lines (CI); next: parallel cuts by several agents, own worktrees and target dirs | edit-to-checked < 2 min |
 | 2 | A mind's context as an epoch (reuse 48% -> 90%+) | Fable + Codex | continuum-context slices 1-2 pushed (replay: 92-95% reuse, ~3x less fresh); next: wire the faculty's render path into Epoch | live reuse >= 80% |
 | 3 | `EngineConfig` and KV capacity (#5188), incl. unrecorded backend -> f16/no-FA/half budget (Cormac's item 10) | Fable | resolve-then-adopt owner in inference/planning | no queue wait; warm-ahead runs |
 | 4 | Engine flags | Fable | DONE e678bb30c: prefill 105 -> 175-206 tok/s; decode drop under builds is line 1's | receipts on 9b9f3b59 |

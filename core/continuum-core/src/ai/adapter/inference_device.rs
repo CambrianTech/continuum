@@ -365,6 +365,14 @@ pub enum GenerationChunk {
     },
 }
 
+/// Capacity owner for one concrete generation target. This is not `is_local`:
+/// an HTTP adapter can reach either our shared engine or an independent endpoint.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GenerationAdmissionOwner {
+    SharedLocal,
+    Adapter,
+}
+
 /// The universal AI provider adapter trait
 ///
 /// All AI providers implement this trait. The AIProviderModule calls
@@ -376,6 +384,21 @@ pub trait AIProviderAdapter: Send + Sync {
 
     /// Get adapter human-readable name
     fn name(&self) -> &str;
+
+    /// Resolve a mutable routing adapter to one concrete call target before admission.
+    /// Static adapters return None: the caller retains its existing Arc. A switch
+    /// returns the concrete handle that must also dispatch this call; a later
+    /// placement change takes effect on the next call and reacquires admission.
+    fn generation_target(&self) -> Option<Arc<dyn AIProviderAdapter>> {
+        None
+    }
+
+    /// Admission for the concrete target, independent of API protocol or model name.
+    /// Remote, dedicated and in-process adapters own their own capacity. Only the
+    /// shared local serving endpoint participates in the node's lane/prefill gates.
+    fn generation_admission(&self) -> GenerationAdmissionOwner {
+        GenerationAdmissionOwner::Adapter
+    }
 
     /// Get adapter capabilities.
     ///
