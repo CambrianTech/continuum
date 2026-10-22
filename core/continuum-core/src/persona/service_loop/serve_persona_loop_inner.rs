@@ -243,7 +243,7 @@ pub(super) async fn serve_persona_loop_inner(
         // error, the spoke tail) drops it, which ends the turn on the admission ledger
         // — the in-flight mark the placement switch honours (a move lands between
         // turns only) and the measured turn shape it derives her cooldown from.
-        let _turn_in_flight = crate::cognition::resource_admission::begin_turn(
+        let _turn_in_flight = crate::cognition::turn_ledger::begin_turn(
             ctx.identity.peer_id.as_uuid(),
             EpochMs::now().millis(),
         );

@@ -125,14 +125,14 @@ impl ServingDaemonModule {
         );
         // Remembered geometry is a cache preference, never capacity or demand.
         // The current roster, knee and admission budget decide lanes and width.
-        let remembered = crate::modules::served_window_store::load_geometry()
+        let remembered = crate::inference::served_window_store::load_geometry()
             .filter(|g| candidates.iter().any(|c| c.model_id == g.model_id));
         let seat_model = incumbent
             .as_deref()
             .or(remembered.as_ref().map(|g| g.model_id.as_str()));
         let demand = self
             .serving_demand()
-            .with_sticky_window(seat_model.and_then(crate::modules::served_window_store::load_for));
+            .with_sticky_window(seat_model.and_then(crate::inference::served_window_store::load_for));
         // THE INCUMBENT'S OWN BYTES ARE CREDITED BACK EXACTLY ONCE. `budget` is the
         // ledger's replace-myself budget: serving's own measured footprint added back,
         // capped at the device. Once serving has REPORTED that footprint (steady state,
@@ -220,7 +220,7 @@ impl ServingDaemonModule {
                 // Typed per-mind allocation already enforces its own requirements.
                 // Only legacy plans need this additional historical floor.
                 let requirement = demand.publication_prompt_floor(&plan);
-                if !crate::cognition::serving_plan::persona_lane_holds(
+                if !crate::inference::planning::serving_plan::persona_lane_holds(
                     plan.served_context_window,
                     requirement,
                 ) {
@@ -322,7 +322,7 @@ impl ServingDaemonModule {
                         // PHYSICAL budget at the geometry it is running. Adopt, or say why not.
                         if self.plan_tx.borrow().plan.is_none() {
                             if let Some(inc) = incumbent.as_deref() {
-                                let geometry = crate::modules::served_window_store::load_geometry()
+                                let geometry = crate::inference::served_window_store::load_geometry()
                                     .filter(|g| g.model_id == inc)
                                     .and_then(|g| g.cache_geometry());
                                 match incumbent_adoption_plan(
@@ -538,7 +538,7 @@ impl ServingDaemonModule {
                             warm_slots = plan.lanes,
                             without_warm_slot = demand.lanes - plan.lanes as u32,
                             per_slot_floor =
-                                crate::cognition::serving_plan::BOOTSTRAP_WORKING_SET,
+                                crate::inference::planning::serving_plan::BOOTSTRAP_WORKING_SET,
                             "adopted plan cannot warmly host all resident personas at the \
                              full-turn window floor — unslotted minds re-prefill cold every \
                              turn until tiered off or grid-placed (#266)",
@@ -556,7 +556,7 @@ impl ServingDaemonModule {
                     let live = self.serving_tx.borrow();
                     admitted_lanes(live.ready, live.lanes, plan.lanes as u32)
                 };
-                crate::cognition::resource_admission::set_served_lane_count(admitted as usize);
+                crate::inference::resource_admission::set_served_lane_count(admitted as usize);
                 // And the prefill throttle's demand facts (#56): the served model's per-spike
                 // transient compute buffer + the lane count. Published HERE, next to the lane
                 // count, so both gates read the one plan — no second path.
@@ -579,7 +579,7 @@ impl ServingDaemonModule {
                     );
                 }
                 let spike = spike_of_served.unwrap_or(0);
-                crate::cognition::prefill_throttle::publish_serving(spike, plan.lanes as usize);
+                crate::inference::prefill_throttle::publish_serving(spike, plan.lanes as usize);
                 // send_replace keeps the latest even with no live receivers yet.
                 self.publish_plan_snapshot(intent_revision, Some(plan));
             }

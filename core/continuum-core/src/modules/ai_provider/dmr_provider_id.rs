@@ -87,7 +87,7 @@ pub struct AIProviderModule {
 /// an unknown budget must not become an invented ceiling.
 pub(super) fn kv_safe_context(model: &crate::model_registry::Model) -> u32 {
     let trained = model.context_window;
-    let Some(fp) = crate::cognition::serving_plan::footprint::footprint_for(model) else {
+    let Some(fp) = crate::inference::planning::serving_plan::footprint::footprint_for(model) else {
         return trained;
     };
     if fp.kv_per_token == 0 {

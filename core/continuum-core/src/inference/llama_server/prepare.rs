@@ -160,7 +160,7 @@ impl LlamaServerProcess {
         // named in the receipt. (The CPU arm decides f16 pending a MEASUREMENT of the
         // dequant cost against that box's ~25 tok/s prefill — see the module header;
         // the override is how that number gets made.)
-        let kv_plan = crate::cognition::kv_cache_plan::resolve();
+        let kv_plan = crate::inference::kv_cache_plan::resolve();
         let kv_cache_type = kv_plan.launcher_cache_type().map(|s| s.to_string());
         let flash_attn = kv_plan.flash_attn;
         // THE RECEIPT. The chosen type, WHERE it came from, the backend it was decided
@@ -170,8 +170,8 @@ impl LlamaServerProcess {
         // `apply_kv_quantization`), which reads the same resolved divisor this launch
         // flags with: if these two ever disagreed, the box would over- or under-commit
         // its whole budget by 2×.
-        let engine_advertised = crate::cognition::kv_cache_plan::engine_quantized_kv_support();
-        let planned_kv_per_token = crate::cognition::serving_plan::footprint::footprint_for(&target.model)
+        let engine_advertised = crate::inference::kv_cache_plan::engine_quantized_kv_support();
+        let planned_kv_per_token = crate::inference::planning::serving_plan::footprint::footprint_for(&target.model)
             .map(|fp| fp.kv_per_token)
             .unwrap_or(0); // 0 = no footprint resolvable for this row; `answered` carries the absence
         continuum_base::probe!(target: "continuum_core::inference::llama_server", class = "serving.kv_cache.decided",

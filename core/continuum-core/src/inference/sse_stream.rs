@@ -94,7 +94,7 @@ pub(crate) fn warn_if_decode_collapsed(model_id: &str, decode_tokens: u32, measu
     // planner's lane clamp is derived from it (`inference::decode_knee`).
     crate::inference::decode_knee::observe(
         model_id,
-        crate::cognition::resource_admission::inflight_model_calls() as u32,
+        crate::inference::resource_admission::inflight_model_calls() as u32,
         measured_tps,
         expected,
     );
@@ -122,7 +122,7 @@ pub(crate) fn warn_if_decode_collapsed(model_id: &str, decode_tokens: u32, measu
         // Reuses the existing gauge (`resource_admission::inflight_model_calls`,
         // "lane-queue + prefill + decode") rather than counting again — the
         // concurrency sibling of the window axis on `ThroughputBaseline`.
-        let inflight = crate::cognition::resource_admission::inflight_model_calls();
+        let inflight = crate::inference::resource_admission::inflight_model_calls();
         tracing::warn!(
             probe_class = "serving.throughput.degraded",
             model = model_id,
@@ -269,7 +269,7 @@ pub(crate) struct StreamOutcome {
 /// without an act bound above it (a probe, an eval) still ends. Every hold is bounded.
 // derived-or-floor: a ceiling — the act bound's own 3x ceiling (card 6f3218ed); it only ENDS a wait.
 const STARVED_WAIT_CEILING: std::time::Duration =
-    std::time::Duration::from_secs(crate::cognition::act_observe::TICK_DEADLINE.as_secs() * 3);
+    std::time::Duration::from_secs(crate::inference::turn_bound::TICK_DEADLINE.as_secs() * 3);
 
 /// Whether a stream that has been silent (or stalled) for `idle` sits on a lane that did real
 /// work, prefill or decode, for ANYONE within that window, and has been open less than the

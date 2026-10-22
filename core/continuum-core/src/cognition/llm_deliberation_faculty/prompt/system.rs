@@ -53,7 +53,7 @@ impl LlmDeliberationFaculty {
             .broadcast
             .iter()
             .filter(|c| c.decision.is_none() && c.trailing)
-            .map(|c| est_tokens(&c.content))
+            .map(|c| estimate_guard_tokens(&c.content))
             .sum();
         let affordable_tokens = super::super::super::tool_surface::over_affordable_receipt(
             &self.persona_name, surface_reason, tool_tokens, framing_tokens, context_window,

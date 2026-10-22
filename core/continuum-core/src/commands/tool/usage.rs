@@ -10,7 +10,7 @@
 //! also the training signal (which model reached wrong → drill it) and works for
 //! a first-class citizen (Claude Code over MCP) checking its own fumbles.
 //!
-//! Reads the in-memory tally ([`crate::cognition::tool_usage`]) which resets each
+//! Reads the in-memory tally ([`crate::ai::tool_usage`]) which resets each
 //! deploy — so after you add aliases and reboot, this reflects the NEW surface,
 //! never last session's ghosts. Zero-ceremony STATELESS command.
 
@@ -18,7 +18,7 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
-use crate::cognition::tool_usage::{snapshot, Stat};
+use crate::ai::tool_usage::{snapshot, Stat};
 use crate::commands::help::did_you_mean;
 use crate::sdk_codegen::{command_registry, AccessLevel, ActionCommand, CommandError, Ctx};
 

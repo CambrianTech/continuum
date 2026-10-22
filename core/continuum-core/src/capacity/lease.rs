@@ -127,7 +127,7 @@ pub fn decide_lane(
 /// lane owns peer identity); nil only weakens self-exclusion from the heard
 /// set, and we do not currently hear our own offers.
 pub fn decide_render_lane(leasability: Leasability) -> LaneDecision {
-    let spike = crate::cognition::prefill_throttle::published_spike_bytes();
+    let spike = crate::inference::prefill_throttle::published_spike_bytes();
     let free = crate::resources::ResourceDaemon::global()
         .and_then(|d| {
             d.board()

@@ -34,7 +34,8 @@ use sha2::{Digest, Sha256};
 use std::collections::BTreeSet;
 use uuid::Uuid;
 
-use super::deliberation_budget::{est_tokens, turn_message_line_addressed, GUARD_CHARS_PER_TOKEN};
+use super::deliberation_budget::turn_message_line_addressed;
+use continuum_base::token_estimate::{estimate_guard_tokens, GUARD_CHARS_PER_TOKEN};
 use super::deliberation_parse::decision_from_response;
 use super::deliberation_prompt;
 use super::persona_tools;
@@ -460,7 +461,7 @@ impl LlmDeliberationFaculty {
     /// tracks reality for free. (#124 — de-hardcode the dynamic system.)
     fn framing_floor_tokens(&self) -> u32 {
         let bare = self.compose_system("", &std::collections::BTreeSet::new(), false, false, None);
-        est_tokens(&bare) as u32
+        estimate_guard_tokens(&bare) as u32
     }
 
     /// What an UNMEASURED mind's reply wants ([`reply_claim`]'s max): a reply-sized

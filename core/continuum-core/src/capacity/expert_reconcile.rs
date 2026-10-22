@@ -205,7 +205,7 @@ pub struct PagerStepOutcome {
 /// Pure + deterministic: no I/O, no clock, no serving-daemon coupling — the serving tick
 /// owns the side effects (calling this, then relaunching when `relaunch_needed`). That
 /// keeps the pager's DECISION logic testable in isolation from the serving control loop it
-/// runs inside (the same split as [`plan_serving`](crate::cognition::serving_plan) vs the
+/// runs inside (the same split as [`plan_serving`](crate::inference::planning::serving_plan) vs the
 /// serving_daemon reconcile). Empty activation / unsized experts flow through the planner's
 /// safe cold-start (all-warm) + the reconcile empty-hot guard — never evict-to-zero.
 #[allow(clippy::too_many_arguments)]

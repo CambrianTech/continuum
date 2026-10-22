@@ -58,41 +58,6 @@ use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-/// Requested capacity drives growth; only an owned, completed engine call
-/// establishes observed service. A refusal cannot be interpreted as a success.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum PromptSample {
-    Served { endpoint: String, tokens: u32, geometry: crate::modules::served_window_store::ServedGeometry },
-    Requested(u32),
-}
-
-impl PromptSample {
-    pub fn requested(&self) -> Option<u32> {
-        match self {
-            Self::Requested(tokens) if *tokens > 0 => Some(*tokens),
-            _ => None,
-        }
-    }
-
-    pub fn served(&self, endpoint: &str, model: Option<&str>) -> Option<u32> {
-        match self {
-            Self::Served { endpoint: sampled_endpoint, geometry, tokens }
-                if *tokens > 0 && sampled_endpoint == endpoint && model == Some(geometry.model_id.as_str()) => Some(*tokens),
-            _ => None,
-        }
-    }
-
-    /// Exact generation cohort: a later binding never certifies an older sample.
-    pub fn geometry_median(samples: &[Self], endpoint: &str, geometry: &crate::modules::served_window_store::ServedGeometry) -> Option<u32> {
-        let mut observed: Vec<u32> = samples.iter().filter_map(|sample| match sample {
-            Self::Served { geometry: g, .. } if g == geometry => sample.served(endpoint, Some(&geometry.model_id)),
-            _ => None,
-        }).collect();
-        observed.sort_unstable();
-        observed.get(observed.len() / 2).copied()
-    }
-}
-
 /// The process's registry handle — the ONE place a spawning mind and the serving
 /// daemon on the same core meet.
 ///
@@ -571,7 +536,7 @@ impl WorkingSetRegistry {
     }
     /// Growth demand over the residents' peaks PLUS `extra` requested samples —
     /// including refused prompts from minds hosted on other nodes
-    /// ([`crate::cognition::resource_admission::leased_in_sent_samples`]). ONE median for
+    /// ([`crate::inference::resource_admission::leased_in_sent_samples`]). ONE median for
     /// the seat's whole demand pool: a seat that plans lanes for leased-in minds must size
     /// those lanes to the prompts they actually send, not to one local resident's. Zeros
     /// are not samples on either side.
@@ -924,6 +889,31 @@ impl WorkingSetRegistry {
     pub fn observed_personas(&self) -> usize {
         self.observed.len()
     }
+}
+
+/// Each mind's requirement, from the untrimmed demand her turns assemble with the
+/// standard headroom — the ONE derivation, shared by the serving daemon (sizing this
+/// seat's lanes) and the grid allocator daemon (sizing the grid's roles). A mind with
+/// no turn yet is `Unknown`, never a number.
+pub fn requirements_for(
+    personas: &[Uuid],
+    working_set: &WorkingSetRegistry,
+) -> Vec<crate::inference::planning::window_allocator::LaneRequirement> {
+    personas
+        .iter()
+        .map(|p| {
+            let demand = working_set.demand_of(*p);
+            let wish = demand
+                .as_ref()
+                .map(requirement_tokens)
+                .unwrap_or(0); // JUSTIFIED unwrap_or: a mind with no turn yet is Unknown to the allocator (0 = no measurement, never a number)
+            let need = demand
+                .as_ref()
+                .and_then(need_tokens)
+                .unwrap_or(0); // JUSTIFIED unwrap_or: no held turn measured = no floor beyond the target (0 = no measurement)
+            crate::inference::planning::window_allocator::LaneRequirement::from_demand(*p, wish, crate::inference::planning::serving_plan::SENT_HEADROOM).with_need(need)
+        })
+        .collect()
 }
 
 #[cfg(test)]

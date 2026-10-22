@@ -26,7 +26,7 @@
 //! (un)load. No daemon restart, ever — a suppressed model re-loads by un-pinning,
 //! not by rebooting the substrate.
 
-use crate::cognition::serving_plan::ServingPlan;
+use crate::inference::planning::serving_plan::ServingPlan;
 use crate::modules::serving_daemon::ServingIntent;
 use std::sync::Arc;
 

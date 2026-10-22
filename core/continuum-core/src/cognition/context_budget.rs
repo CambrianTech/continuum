@@ -56,7 +56,7 @@
 //! window must never become an invented one; that is precisely how a guess turns into a
 //! clamp that outlives the guess.
 
-use super::deliberation_budget::GUARD_CHARS_PER_TOKEN;
+use continuum_base::token_estimate::GUARD_CHARS_PER_TOKEN;
 
 /// Per-step size of the rolling trail: `1/64` of the window (the calibrated trail-head
 /// fraction from the table above). Named so the COUNT below cannot drift from the SIZE.

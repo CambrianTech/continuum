@@ -29,9 +29,9 @@ impl LlmDeliberationFaculty {
         // the adaptive-surface seam): our canonical `code_read` to converge a model
         // onto our namespace, or its trained reflex `read_file` to meet its tuning.
         // Either way calls map back to canonical commands on return (ONE section:
-        // [`crate::cognition::tool_dialect`]). [[joel-boundary-design-values]]
+        // [`crate::ai::tool_dialect`]). [[joel-boundary-design-values]]
         let style =
-            crate::cognition::tool_dialect::offer_style_for(Some(self.binding.load().requested_model()));
+            crate::ai::tool_dialect::offer_style_for(Some(self.binding.load().requested_model()));
         // The native surface is the DERIVED, bounded agentic core — every command that
         // declares `native: true` at its own site (~a dozen tools), projected once by
         // `native_tool_specs()`. It is offered in FULL, always, in the model's wire dialect.
@@ -61,7 +61,7 @@ impl LlmDeliberationFaculty {
         // what fits, never who is capable: an 8k window spending its whole share on tools
         // leaves her newest line nowhere to go (card dec1a7ff's survival check).
         let to_wire = |specs: Vec<NativeToolSpec>| -> Vec<NativeToolSpec> {
-            specs.into_iter().map(|s| crate::cognition::tool_dialect::to_wire_spec_with(s, style)).collect()
+            specs.into_iter().map(|s| crate::ai::tool_dialect::to_wire_spec_with(s, style)).collect()
         };
         let full_hands = to_wire(hands_surface(&raw));
         let share = super::super::context_budget::ContextBudget::from_window(self.binding.load().context_window).tool_surface_tokens();
@@ -73,13 +73,13 @@ impl LlmDeliberationFaculty {
         self.review_hands_specs = self.hands_specs.clone();
         self.review_hands_specs.extend(to_wire(
             raw.iter()
-                .filter(|s| crate::cognition::tool_dialect::reviewer_hand(&s.name))
+                .filter(|s| crate::ai::tool_dialect::reviewer_hand(&s.name))
                 .cloned()
                 .collect(),
         ));
         self.native_specs = raw
             .into_iter()
-            .map(|s| crate::cognition::tool_dialect::to_wire_spec_with(s, style))
+            .map(|s| crate::ai::tool_dialect::to_wire_spec_with(s, style))
             .collect();
         self.tool_surface_tokens = Self::tool_surface_tokens_of(&self.native_specs);
         self.hands_surface_tokens = Self::tool_surface_tokens_of(&self.hands_specs);
@@ -229,7 +229,7 @@ impl LlmDeliberationFaculty {
             .iter()
             .map(|spec| {
                 let serialized = serde_json::to_string(spec).unwrap_or_default();
-                est_tokens(&serialized) + PER_TOOL_TEMPLATE_MARGIN_TOKENS
+                estimate_guard_tokens(&serialized) + PER_TOOL_TEMPLATE_MARGIN_TOKENS
             })
             .sum()
     }

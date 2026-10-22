@@ -10,7 +10,7 @@ use super::*;
 /// handful of entries however long the thread.
 pub(in super::super) fn segment_map(system: &str, messages: &[ChatMessage]) -> Vec<(&'static str, u32)> {
     let mut runs: Vec<(&'static str, u32)> = Vec::with_capacity(8);
-    let mut cum = est_tokens(system);
+    let mut cum = estimate_guard_tokens(system);
     runs.push(("system", cum as u32));
     for m in messages {
         let body = m.content_text();
@@ -26,7 +26,7 @@ pub(in super::super) fn segment_map(system: &str, messages: &[ChatMessage]) -> V
         } else {
             "history"
         };
-        cum += est_tokens(&body) + LlmDeliberationFaculty::PER_MESSAGE_TEMPLATE_TOKENS;
+        cum += estimate_guard_tokens(&body) + LlmDeliberationFaculty::PER_MESSAGE_TEMPLATE_TOKENS;
         match runs.last_mut() {
             Some((l, end)) if *l == label => *end = cum as u32,
             _ => runs.push((label, cum as u32)),

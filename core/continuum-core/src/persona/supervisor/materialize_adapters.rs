@@ -137,7 +137,7 @@ pub async fn materialize_adapters(
                     // budgeted costs context; over-budgeted costs every answer.
                     // The planner's own full-turn window floor — the one substrate-owned
                     // minimum every other bound derives from; never a number of our own.
-                    let floor = crate::cognition::serving_plan::BOOTSTRAP_WORKING_SET
+                    let floor = crate::inference::planning::serving_plan::BOOTSTRAP_WORKING_SET
                         .min(profile.context_length);
                     continuum_base::probe!(
                         class = "persona.upstart.window",

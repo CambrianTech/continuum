@@ -10,7 +10,7 @@ use serde::Serialize;
 use tokio::sync::watch;
 use ts_rs::TS;
 
-use crate::cognition::serving_plan::ServingPlan;
+use crate::inference::planning::serving_plan::ServingPlan;
 
 /// Params for `serving/plan` — none (the current plan is returned).
 #[derive(Debug, Clone, Default, Serialize, serde::Deserialize, TS, schemars::JsonSchema)]
@@ -91,7 +91,7 @@ mod tests {
     #[tokio::test]
     async fn returns_the_published_plan() {
         let plan = ServingPlan {
-            base_model: crate::cognition::serving_plan::ModelFootprint {
+            base_model: crate::inference::planning::serving_plan::ModelFootprint {
                 model_id: "qwen3-coder".into(),
                 weights_bytes: 0,
                 kv_per_token: 0,
@@ -100,7 +100,7 @@ mod tests {
                 fixed_per_lane_bytes: 0,
             },
             served_context_window: 32_768,
-            lanes_bound: crate::cognition::serving_plan::LanesBound::Demand,
+            lanes_bound: crate::inference::planning::serving_plan::LanesBound::Demand,
             lanes: 2,
             grid_overflow_lanes: 0,
             resident_models: 1,

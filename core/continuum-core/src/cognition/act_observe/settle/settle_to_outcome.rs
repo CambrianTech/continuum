@@ -476,7 +476,7 @@ pub(super) async fn settle_to_outcome(
                     room_id = %room_id,
                     act = acts,
                     waited_secs = act_secs as u64,
-                    lanes_available = crate::cognition::resource_admission::serving_lane_permits_available() as u64,
+                    lanes_available = crate::inference::resource_admission::serving_lane_permits_available() as u64,
                     model_ms = act_model_ms,
                     generations = act_generations as u64,
                     "this iteration never reached the model — she waited and produced nothing; it is NOT counted as an act"

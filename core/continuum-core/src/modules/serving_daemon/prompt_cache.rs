@@ -23,7 +23,7 @@ use super::*;
 /// The diagnostic record preserves these facts; it does not fix the sizing law.
 pub(super) fn derived_prompt_cache_mib(
     model_id: &str,
-    fp: Option<&crate::cognition::serving_plan::ModelFootprint>,
+    fp: Option<&crate::inference::planning::serving_plan::ModelFootprint>,
     served_ctx: u32,
     lanes: u32,
     physical_bytes: u64,
@@ -338,7 +338,7 @@ pub fn active_cache_states(population: &[(u32, u32)], served_ctx: u32, active: u
 /// the one that cost 5 minutes a turn. That third state no longer produces an empty
 /// `demands` at all, because the caller now sizes from the resume set.
 pub(super) fn prompt_cache_decision(
-    fp: Option<&crate::cognition::serving_plan::ModelFootprint>,
+    fp: Option<&crate::inference::planning::serving_plan::ModelFootprint>,
     demands: &[u32],
     planned: usize,
     served_ctx: u32,
@@ -440,7 +440,7 @@ pub(super) fn prompt_cache_decision(
         // planner's window no longer does (the mode's fraction and the board's live
         // subtraction are its headroom — `CACHE_GRANT_HEADROOM`).
         let afford =
-            (afford as f64 * (1.0 - crate::cognition::serving_plan::CACHE_GRANT_HEADROOM)) as u64;
+            (afford as f64 * (1.0 - crate::inference::planning::serving_plan::CACHE_GRANT_HEADROOM)) as u64;
         decision.reason = "resident_demand_kv_estimate";
         decision.affordable_bytes = Some(afford);
         decision.desired_mib =

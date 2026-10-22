@@ -26,7 +26,7 @@ impl LlmDeliberationFaculty {
     pub(in super::super) fn framing_cost(system: &str) -> usize {
         // System is a message too; the template also opens the assistant's
         // generation turn. Charge both wrappers using the same format allowance.
-        est_tokens(system) + 2 * Self::PER_MESSAGE_TEMPLATE_TOKENS
+        estimate_guard_tokens(system) + 2 * Self::PER_MESSAGE_TEMPLATE_TOKENS
     }
 
     /// How many MESSAGES a cluster walk may cross — how far the front may advance past a
@@ -63,7 +63,7 @@ impl LlmDeliberationFaculty {
         // Text-only lower bound, calibrated by the provider's measured prompt
         // count. Never count base64 characters as image tokens. Native images
         // require the finalized-body image quote before local generation.
-        let tokens = super::super::super::token_budget::estimate_message_content_tokens(&message.content, est_tokens);
+        let tokens = super::super::super::token_budget::estimate_message_content_tokens(&message.content, estimate_guard_tokens);
         tokens + Self::PER_MESSAGE_TEMPLATE_TOKENS
     }
 

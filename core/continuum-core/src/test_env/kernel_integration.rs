@@ -577,7 +577,7 @@ mod outcome_projection {
     /// would leave the defect fully alive for exactly the calls that hit it most.
     #[test]
     fn the_lookup_is_by_canonical_name_so_aliases_resolve() {
-        use crate::cognition::tool_dialect::resolve_wire_name;
+        use crate::ai::tool_dialect::resolve_wire_name;
         assert_eq!(resolve_wire_name("bash"), "code/shell");
         assert_eq!(resolve_wire_name("code_run"), "code/run");
         let failed = crate::commands::code::run::CodeRunResult {

@@ -85,7 +85,7 @@ This is the most important section. The fabric is ~80% composition. Reinventing 
 | Per-request adapter passthrough | `TextGenerationRequest.active_adapters` reaches `generate_text` | `ai/types.rs:259`, `inference/handle_store.rs:294` |
 | Grid peer table + addressing | `NodeRegistry` (address-keyed), `GridRouter` (`RouteDecision::{Local,Remote}`) | `modules/grid/registry.rs`, `modules/grid/router.rs` |
 | Per-peer trust gate (remote capped at Trusted, Blocked denied) | `GridTrustAuthPolicy` + `PeerTrustSource` | `routing/grid_trust_policy.rs` |
-| Serving plan (which base, how many lanes, residency) | `plan_serving()` + `ServingDaemonModule` (5s tick) | `cognition/serving_plan.rs`, `modules/serving_daemon.rs` |
+| Serving plan (which base, how many lanes, residency) | `plan_serving()` + `ServingDaemonModule` (5s tick) | `inference/planning/serving_plan.rs`, `modules/serving_daemon.rs` |
 | Hardware policy (DVFS) | `SubstrateGovernor` | `runtime/substrate_governor.rs` |
 | RTOS monitor template | `MemoryPressureMonitor` (own task + interval + watch + quarantine) | `system_resources/memory_pressure.rs` |
 

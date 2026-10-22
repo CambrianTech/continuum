@@ -11,7 +11,7 @@
     // the plan says so with fits_on_gpu=false instead of planning a 2k lane.
     #[test]
     pub(super) fn with_requirements_the_plan_is_the_allocators_never_a_starved_lane() {
-        use crate::cognition::window_allocator::LaneRequirement;
+        use crate::inference::planning::window_allocator::LaneRequirement;
         const GB: u64 = 1 << 30;
         let qwen = ModelFootprint {
             model_id: "qwen-27b".into(),

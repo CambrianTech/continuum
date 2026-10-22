@@ -18,7 +18,7 @@ pub(crate) enum PromptCount {
 impl PromptCount {
     pub(crate) fn check(self, available: u32, provider: &str, caller: &str) -> Result<(), InferenceError> {
         if let Some(tokens) = prompt_alone_overflows_served(self.tokens(), available) {
-            crate::cognition::resource_admission::note_refused_prompt(tokens.min(u32::MAX as usize) as u32);
+            crate::inference::resource_admission::note_refused_prompt(tokens.min(u32::MAX as usize) as u32);
             return Err(self.overflow(available, provider, caller));
         }
         Ok(())
@@ -208,7 +208,7 @@ pub(crate) fn prompt_alone_overflows_served(
 /// its text disappear. This is a text lower bound for media-bearing requests;
 /// encoded image bytes are NOT text tokens and require model-specific pricing.
 pub(crate) fn approx_prompt_tokens(body: &serde_json::Value) -> usize {
-    use crate::cognition::deliberation_budget::est_tokens;
+    use continuum_base::token_estimate::estimate_guard_tokens;
     body.get("messages")
         .and_then(|m| m.as_array())
         .map(|msgs| {
@@ -216,7 +216,7 @@ pub(crate) fn approx_prompt_tokens(body: &serde_json::Value) -> usize {
                 .filter_map(|m| m.get("content"))
                 .map(|content| {
                     if let Some(text) = content.as_str() {
-                        return est_tokens(text);
+                        return estimate_guard_tokens(text);
                     }
                     content.as_array().map(|parts| {
                         // Sum bytes before converting units: splitting a text
@@ -226,7 +226,7 @@ pub(crate) fn approx_prompt_tokens(body: &serde_json::Value) -> usize {
                             .filter_map(|part| part.get("text").and_then(|t| t.as_str()))
                             .map(str::len)
                             .sum::<usize>();
-                        bytes / crate::cognition::deliberation_budget::GUARD_CHARS_PER_TOKEN
+                        bytes / continuum_base::token_estimate::GUARD_CHARS_PER_TOKEN
                     }).unwrap_or(0) // unwrap_or: absent/non-text content has no text cost; media pricing is separate.
                 })
                 .sum::<usize>()

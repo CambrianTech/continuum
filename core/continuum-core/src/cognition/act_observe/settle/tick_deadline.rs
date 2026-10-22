@@ -1,22 +1,5 @@
 use super::*;
 
-/// The FLOOR under one ACT — perceive, deliberate, act, observe — never the ceiling.
-/// A mind with a measured turn raises it (`turn_bound::act_bound_with_source`, card
-/// ebce2ba0); this constant governs alone until she has one, and no derived bound ever
-/// sinks below it.
-///
-/// The detached solve's stall watchdog derives its allowance from this
-/// (`commands::agent::solve::ACT_STALL_ALLOWANCE` = 3x): a run whose ledger has not
-/// advanced for several of these is wedged; one that advances at any pace is not.
-/// KNOWN BOUNDARY, recorded rather than half-fixed: that watchdog reads the CONSTANT, so
-/// once a box's measured turn passes ~19 minutes the derived act bound (4x the
-/// expectation) exceeds the 75-minute stall allowance and a single honest act could read
-/// as a stall. No box in the fleet's measured range is there today (the M5 measures ~7
-/// min a turn), and the attempt ceiling fires long before on one that slow. Making the
-/// watchdog per-persona is a change to `commands/agent/solve.rs`, which has its own
-/// required-read and belongs in its own card.
-pub(crate) const TICK_DEADLINE: std::time::Duration = std::time::Duration::from_secs(25 * 60);
-
 /// How many times an act's deadline may be extended while its generation advances: the
 /// ceiling is `1 + ACT_EXTENSIONS` bounds, so even a moving act cannot hold the lane past
 /// it (a slow clip still reaches every mind, card ef25bf6c).

@@ -40,7 +40,7 @@ use crate::ai::adapter::InferenceDevice;
 use crate::ai::types::ResponseFormat;
 use crate::ai::{ChatMessage, MessageContent, TextGenerationRequest, TextGenerationResponse};
 use crate::resources::throughput_class::{ResourceClass, TargetSilicon};
-use crate::cognition::resource_admission::{ResourceAdmissionError, ResourceAdmissionGate, ResourceAdmissionGuard, ResourceAdmissionPolicy, ResourceAdmissionRequest};
+use crate::inference::resource_admission::{ResourceAdmissionError, ResourceAdmissionGate, ResourceAdmissionGuard, ResourceAdmissionPolicy, ResourceAdmissionRequest};
 use crate::cognition::should_respond::AIDecisionContext;
 use crate::resources::throughput_lease::ThroughputLeaseRevocationPolicy;
 use crate::modules::ai_provider::global_registry;

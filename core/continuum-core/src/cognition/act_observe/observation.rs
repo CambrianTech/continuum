@@ -62,7 +62,7 @@ impl ToolVerb {
     /// Use the executor's resolver so advertised aliases and canonical commands
     /// produce the same feedback about what the persona actually did.
     pub fn classify(name: &str) -> Self {
-        let n = crate::cognition::tool_dialect::resolve_wire_name(name);
+        let n = crate::ai::tool_dialect::resolve_wire_name(name);
         // exact SUBSTRING semantics preserved from the `wrote` bool so it is unchanged.
         if n.contains("write") {
             return ToolVerb::Write;

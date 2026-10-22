@@ -97,7 +97,7 @@ fn a_review_cards_work_turn_carries_the_reviewer_verbs_and_an_ordinary_one_does_
         .native_command_names
         .iter()
         .zip(faculty.native_specs.iter())
-        .filter(|(name, _)| crate::cognition::tool_dialect::reviewer_hand(name))
+        .filter(|(name, _)| crate::ai::tool_dialect::reviewer_hand(name))
         .map(|(_, spec)| spec)
         .collect();
     assert_eq!(reviewer_specs.len(), 2, "work/review and work/submission are her native verbs");
@@ -350,8 +350,8 @@ mod turn_bound;
 async fn remote_admission_bypasses_busy_local_resources_and_home_reacquires() {
     use super::admission::{admit_target, GenerationAdmission};
     use crate::ai::adapter::GenerationAdmissionOwner;
-    use crate::cognition::resource_admission::{LaneAdmission, LanePriority};
-    use crate::cognition::prefill_throttle::PrefillThrottle;
+    use crate::inference::resource_admission::{LaneAdmission, LanePriority};
+    use crate::inference::prefill_throttle::PrefillThrottle;
     use std::future::Future;
     use std::task::{Context, Poll, Waker};
 

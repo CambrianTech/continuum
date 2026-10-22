@@ -11,43 +11,34 @@ pub fn try_hold_ambient_turn() -> Option<tokio::sync::OwnedSemaphorePermit> {
     LANES.try_hold_ambient_turn()
 }
 
-/// The ambient permit for `persona`'s musing tail: a plain try, unless she is starving —
-/// then a bounded wait, so the pool is still the pool but the race is not rigged against
-/// the idle forever. Probe `admission.lane.idle_share` names every granted wait.
-pub async fn hold_ambient_turn_for(
-    persona: uuid::Uuid,
-    now_ms: u64,
-) -> Option<tokio::sync::OwnedSemaphorePermit> {
-    if let Some(p) = LANES.try_hold_ambient_turn() {
-        return Some(p);
-    }
-    let last = LAST_TURN_MS.lock().get(&persona).copied();
-    if !starving_since(last, now_ms, *BOOT_MS) {
-        return None;
-    }
-    let started = std::time::Instant::now();
-    match tokio::time::timeout(
-        std::time::Duration::from_millis(IDLE_SHARE_WAIT_MS),
-        LANES.acquire_resized(
-            &LANES.ambient_semaphore(),
-            &LANES.ambient_installed,
-            LaneBudget::NonDirected,
-        ),
+/// Wait at most `within` for an ambient permit — the bounded wait the mind grants a
+/// starving citizen (`cognition::turn_ledger::hold_ambient_turn_for` decides who is
+/// starving; the pool stays the pool). `None` = the wait ran out.
+pub async fn wait_ambient_turn(within: std::time::Duration) -> Option<tokio::sync::OwnedSemaphorePermit> {
+    tokio::time::timeout(
+        within,
+        LANES.acquire_resized(&LANES.ambient_semaphore(), &LANES.ambient_installed, LaneBudget::NonDirected),
     )
     .await
-    {
-        Ok(permit) => {
-            continuum_base::probe!(
-                class = "admission.lane.idle_share",
-                persona = %persona,
-                waited_ms = started.elapsed().as_millis() as u64,
-                idle_ms = now_ms.saturating_sub(last.unwrap_or(*BOOT_MS)), // JUSTIFIED unwrap_or: no turn yet = idle since boot
-                "a starving idle mind waited for an ambient permit and got one — the minimum share"
-            );
-            Some(permit)
-        }
-        _ => None,
-    }
+    .ok()
+}
+
+/// Whether a directed line is pending for any citizen on this node — the reserved lane's
+/// re-arm signal. Attention is the mind's, so the mind installs the reader at boot; the
+/// lane only asks.
+pub type DirectedPending = fn() -> bool;
+
+static DIRECTED_PENDING: parking_lot::RwLock<Option<DirectedPending>> = parking_lot::RwLock::new(None);
+
+/// Install the one directed-pending reader. A second install replaces the first.
+pub fn install_directed_pending(reader: DirectedPending) {
+    *DIRECTED_PENDING.write() = Some(reader);
+}
+
+/// Pending as the installed reader says; with none installed the answer is UNKNOWN, read as
+/// pending, so the reserve is never lent on a guess (unknown occupancy lends nothing either).
+fn directed_pending() -> bool {
+    (*DIRECTED_PENDING.read()).is_none_or(|reader| reader())
 }
 
 // ── Serving-lane reservation for directed turns (#139) ──────────────────────────
@@ -99,7 +90,7 @@ pub async fn hold_ambient_turn_for(
 /// already learned the lesson once and applied it to the in-flight Gauge, stating the
 /// principle outright: *the race is gone at the SOURCE, not merely serialized*. That cure
 /// reached one of three cases. This applies it to the other two, and to the sibling
-/// [`crate::cognition::prefill_throttle`] the same day.
+/// [`crate::inference::prefill_throttle`] the same day.
 ///
 /// Lazy semaphores capture the latest lane count on first use. If first use precedes
 /// serving, a later publication collects surplus boot permits without interrupting
@@ -290,7 +281,7 @@ impl LaneAdmission {
     /// ceiling as the boot fallback. Floored at 1.
     pub(super) fn lane_count(&self) -> usize {
         match self.served.load(Ordering::Acquire) {
-            0 => (crate::cognition::serving_plan::MAX_LANES as usize).max(1),
+            0 => (crate::inference::planning::serving_plan::MAX_LANES as usize).max(1),
             n => n,
         }
     }
@@ -427,7 +418,7 @@ impl LaneAdmission {
                         let lendable = reserve_exists
                             && reserve_lendable(
                                 expected_occupancy,
-                                crate::cognition::directed_pending::any_pending(),
+                                directed_pending(),
                                 budget,
                             );
                         let lent = if lendable {

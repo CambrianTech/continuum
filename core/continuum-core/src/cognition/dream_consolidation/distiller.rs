@@ -392,9 +392,9 @@ impl SemanticDistiller {
             request.purpose.as_deref(),
         )
         .await;
-        let _lane = crate::cognition::resource_admission::acquire_serving_lane(
+        let _lane = crate::inference::resource_admission::acquire_serving_lane(
             persona_id,
-            crate::cognition::resource_admission::LanePriority::Ambient,
+            crate::inference::resource_admission::LanePriority::Ambient,
             None,
         )
         .await;

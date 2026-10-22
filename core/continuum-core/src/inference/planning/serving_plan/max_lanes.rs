@@ -148,7 +148,7 @@ pub struct ServingDemand {
     /// Concurrent lanes this seat serves for minds hosted on OTHER nodes — the `ai/generate`
     /// a peer sends here when its placement spills a mind onto this seat — measured at the
     /// seat's own admission as the peak per plan tick
-    /// ([`crate::cognition::resource_admission::take_leased_in_peak`]). Added to `lanes` when
+    /// ([`crate::inference::resource_admission::take_leased_in_peak`]). Added to `lanes` when
     /// the plan sizes the slot count: a seat's demand is the minds it SERVES, not only the
     /// minds it HOSTS. Measured 2026-09-18 (card c84d885a): the 5090's 27B seat served the
     /// M5's four coders and IntelMac's eight on ONE slot — lane wait p50 216 s, p90 1,387 s,
@@ -178,7 +178,7 @@ pub struct ServingDemand {
     /// Per-mind lane requirements (see `with_requirements`). Empty = the legacy
     /// median/bootstrap derivation below, kept for callers that have not migrated
     /// (card 2eec3977: to be deleted with them).
-    pub requirements: Vec<crate::cognition::window_allocator::LaneRequirement>,
+    pub requirements: Vec<crate::inference::planning::window_allocator::LaneRequirement>,
 }
 
 /// Headroom over the largest sent prompt: a mind held at a too-small window fills it,
@@ -227,7 +227,7 @@ impl ServingDemand {
     /// What each mind on this seat REQUIRES of a lane (`window_allocator`). When
     /// present, lanes × window come from the allocator over these — the governed
     /// size — and the sent-median / bootstrap path below is not consulted.
-    pub fn with_requirements(mut self, requirements: Vec<crate::cognition::window_allocator::LaneRequirement>) -> Self {
+    pub fn with_requirements(mut self, requirements: Vec<crate::inference::planning::window_allocator::LaneRequirement>) -> Self {
         self.requirements = requirements;
         self
     }

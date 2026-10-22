@@ -9,7 +9,7 @@ use super::*;
 #[test]
 fn a_refused_demotion_with_no_plan_adopts_the_inherited_engine_at_its_geometry() {
     use super::incumbent_adoption_plan;
-    use crate::cognition::serving_plan::{HostBudget, ModelFootprint, ServingDemand};
+    use crate::inference::planning::serving_plan::{HostBudget, ModelFootprint, ServingDemand};
     const GB: u64 = 1_000_000_000;
     let qwen27b = ModelFootprint {
         model_id: "ggml-org/Qwen3.8-27B-GGUF".into(),
@@ -167,7 +167,7 @@ fn pin_swap_down_credits_the_evicted_incumbents_weights() {
 // VRAM is unchanged.
 #[test]
 fn a_unified_plan_never_fills_within_the_eco_band() {
-    use crate::cognition::serving_plan::ModelFootprint;
+    use crate::inference::planning::serving_plan::ModelFootprint;
     use crate::provisioning::model_catalog::{PowerMode, ECO_EXIT_BYTES};
     let live = 40_300_000_000u64; // the M5 at rest: available 13.4 GB + serving 26.9 GB
     let comfort = PowerMode::Comfort.serving_fraction();
@@ -599,7 +599,7 @@ fn a_host_never_sinks_below_what_its_physical_capacity_serves() {
         resident_models: 1,
         fits_on_gpu: true,
         rationale: String::new(),
-        lanes_bound: crate::cognition::serving_plan::LanesBound::Demand,
+        lanes_bound: crate::inference::planning::serving_plan::LanesBound::Demand,
     };
     // The 5090: 32 GB × 0.80 physical. The floor is the 27B — even though the
     // plan that asked was computed over a candidate list the unload had emptied
@@ -675,7 +675,7 @@ fn downshift_gate_classifies_the_transient_lobotomy() {
         resident_models: 1,
         fits_on_gpu: true,
         rationale: String::new(),
-        lanes_bound: crate::cognition::serving_plan::LanesBound::Demand,
+        lanes_bound: crate::inference::planning::serving_plan::LanesBound::Demand,
     };
     let both = vec![devstral.clone(), tiny.clone()];
 

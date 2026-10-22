@@ -88,7 +88,7 @@ impl ServiceModule for ServingDaemonModule {
         // throttle holds at the lane count rather than guessing.
         if let Some(available) = governed_vram_ceiling(&self.resource_daemon) {
             // Probes on CHANGE only, inside the throttle — a steady grant is silence.
-            let _granted = crate::cognition::prefill_throttle::reconcile(available);
+            let _granted = crate::inference::prefill_throttle::reconcile(available);
         }
         // #287: for a ready MoE serve, re-derive the governed host-cache lease from the
         // LIVE working set (KV grows as slots fill) and publish it through the sticky
