@@ -468,3 +468,15 @@ New arrivals remain in the existing conversation inbox and can be perceived duri
 the retry. A completed decision or prior dispatched work does not replay the input;
 ambient input keeps its existing transcript/re-perception policy. This custody is
 local to the running loop, not a claim of durable restart recovery.
+
+### Generation admission ownership (6780e79b)
+
+A deliberation call resolves its placement switch to one concrete adapter before
+admission, and dispatches through that same retained handle. The adapter declares
+whether it consumes the shared local serving endpoint or owns admission itself.
+The HTTP adapter uses the existing published endpoint identity; protocol names and
+`is_local` capability labels do not establish resource ownership. Remote peers and
+dedicated engines admit their own calls. The existing local hold, priority lane,
+and prefill permits remain together and release on cancellation or completion.
+A subsequent fall-home call resolves again and must acquire local admission.
+This does not change remote timeout/backoff or prove improved live throughput.

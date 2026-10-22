@@ -412,6 +412,10 @@ impl AIProviderAdapter for NoSeat {
 
 #[async_trait]
 impl AIProviderAdapter for PlacementSwitch {
+    fn generation_target(&self) -> Option<Arc<dyn AIProviderAdapter>> {
+        Some(self.current())
+    }
+
     fn provider_id(&self) -> &str {
         &self.provider_label
     }
