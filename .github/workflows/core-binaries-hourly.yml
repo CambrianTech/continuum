@@ -1,5 +1,5 @@
-# Phase 1: prepare only. Cron executes this file from the DEFAULT branch, not canary.
-# Keep core-binaries.yml push publication until the activation procedure is verified.
+# Cron executes this file from the repository default branch and dispatches canary.
+# Activation and rollback: docs/operations/HOURLY-CORE-PUBLICATION.md.
 name: core-binaries-hourly
 on:
   schedule:

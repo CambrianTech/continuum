@@ -250,25 +250,18 @@
         assert!(touches_build_inputs(["tools/scripts/lib/core-features.sh"]));
     }
 
-    // what this catches: the Rust list and CI's trigger drifting apart, so a tip the node
-    // treats as a deploy has no artifact (it waits out the budget, then compiles anyway).
+    // Every tip is considered hourly, so no BUILD_INPUTS path filter can omit an artifact.
+    // Urgent repairs still dispatch directly; newer tips must not cancel active publication.
     #[test]
-    fn ci_builds_on_every_build_input() {
-        let workflow = include_str!("../../../../.github/workflows/core-binaries.yml");
-        let push = workflow
-            .split("  push:")
-            .nth(1)
-            .expect("core-binaries.yml has a push trigger");
-        for input in BUILD_INPUTS {
-            let pattern = match input.strip_suffix('/') {
-                Some(dir) => format!("- '{dir}/**'"),
-                None => format!("- '{input}'"),
-            };
-            assert!(
-                push.contains(&pattern),
-                "core-binaries.yml push.paths lacks {pattern}"
-            );
-        }
+    fn ci_considers_every_tip_without_cancelling_publication() {
+        let publisher = include_str!("../../../../.github/workflows/core-binaries.yml");
+        let hourly = include_str!("../../../../.github/workflows/core-binaries-hourly.yml");
+        assert!(publisher.contains("  workflow_dispatch:"));
+        assert!(!publisher.lines().any(|line| line == "  push:"));
+        assert!(publisher.contains("cancel-in-progress: ${{ github.event_name == 'pull_request' }}"));
+        assert!(hourly.contains("cron: '23 * * * *'"));
+        assert!(hourly.contains("ref: canary"));
+        assert!(hourly.contains("CORE_BINARIES_HOURLY_ENABLED == 'true'"));
     }
 
     // what this catches (f4571736): user nodes must never fall back to compiling when
