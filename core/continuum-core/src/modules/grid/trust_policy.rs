@@ -56,8 +56,8 @@ use uuid::Uuid;
 
 use crate::routing::auth_policy::{AuthPolicy, CallerIdentity, CallerSource};
 use crate::routing::{ForbiddenReason, RouteDecision, Verdict};
-use crate::modules::grid::acl::is_command_authorized;
-use crate::modules::grid::node::TrustLevel;
+use crate::routing::command_acl::is_command_authorized;
+use crate::routing::trust_level::TrustLevel;
 
 /// Resolves a signed peer (by airc `peer_id`) to its grid [`TrustLevel`] — the
 /// airc↔grid trust bridge, behind an abstraction so the policy depends on the
@@ -362,7 +362,7 @@ mod tests {
     // Owner-registered peer, and (3) an unknown peer keeps the Provisional default.
     #[test]
     fn per_peer_trust_bridge_blocks_blocked_and_caps_remote_at_trusted() {
-        use crate::modules::grid::node::TrustLevel;
+        use crate::routing::trust_level::TrustLevel;
         use std::collections::HashMap;
 
         struct MockTrust(HashMap<Uuid, TrustLevel>);
@@ -435,7 +435,7 @@ mod tests {
     // caller_trust + is_command_authorized at its dispatch boundary.
     #[test]
     fn tcp_caller_is_remote_not_owner() {
-        use crate::modules::grid::node::TrustLevel;
+        use crate::routing::trust_level::TrustLevel;
         let policy = GridTrustAuthPolicy::new();
         let tcp = CallerIdentity::tcp(crate::identity::PeerId::new());
 
@@ -504,7 +504,7 @@ mod tests {
     // can't be bypassed by also presenting an older grant.
     #[test]
     fn verified_grant_does_not_resurrect_a_blocked_peer() {
-        use crate::modules::grid::node::TrustLevel;
+        use crate::routing::trust_level::TrustLevel;
         use std::collections::HashMap;
 
         struct MockTrust(HashMap<Uuid, TrustLevel>);
@@ -614,7 +614,7 @@ mod tests {
     // wires a bridge to prove the divergence is real and active, not just doc.)
     #[test]
     fn positron_observer_never_rides_the_human_socket_authority_up() {
-        use crate::modules::grid::node::TrustLevel;
+        use crate::routing::trust_level::TrustLevel;
         use std::collections::HashMap;
 
         struct MockTrust(HashMap<Uuid, TrustLevel>);

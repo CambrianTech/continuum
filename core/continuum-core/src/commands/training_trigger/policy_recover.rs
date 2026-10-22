@@ -69,7 +69,7 @@ crate::action_command! {
     params: PolicyRecoverParams,
     output: PolicyRecoverOutcome,
     run(this, ctx, p) => {
-        if crate::modules::grid::trust_policy::caller_trust(ctx.caller.as_ref()) != crate::modules::grid::node::TrustLevel::Owner {
+        if crate::modules::grid::trust_policy::caller_trust(ctx.caller.as_ref()) != crate::routing::trust_level::TrustLevel::Owner {
             return Err(CommandError::Denied("policy recovery requires the operator".into()));
         }
         let actor = crate::persona::operator_peer::acting_now(ctx, "genome/training-trigger/policy-recover")?.peer;

@@ -49,7 +49,7 @@ use ts_rs::TS;
 
 use super::adapter_manifest::TrainedAdapter;
 use crate::identity::PeerId;
-use crate::modules::grid::node::TrustLevel;
+use crate::routing::trust_level::TrustLevel;
 
 /// Content-addressed provenance of a gene — the forge-alloy `sha256:…` hash of
 /// the populated artifact (FORGE-ALLOY-SPEC: *what it is, how it was made*). A

@@ -182,7 +182,7 @@ pub async fn materialize_adapters(
         // factory + warmup above already paid the init cost per
         // [[init-once-handle-then-lease-zero-copy-refs]].
         {
-            let registry_arc = crate::modules::ai_provider::global_registry();
+            let registry_arc = crate::ai::global_registry::global_registry();
             let mut registry = registry_arc.write().await;
             registry.register(adapter.clone(), slot_index);
         }
@@ -227,7 +227,7 @@ pub async fn materialize_adapters(
         let roster_source: Arc<dyn crate::persona::rag_budget::RagSource> =
             Arc::new(crate::persona::viewstate_rag::ViewStateRagSource::<
                 continuum_positron::RosterViewState,
-            >::per_room(crate::ipc::global_room_substrates()));
+            >::per_room(crate::persona::room_substrates::global_room_substrates()));
         cognition.set_roster_source(roster_source.clone());
 
 

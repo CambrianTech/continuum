@@ -1,5 +1,7 @@
 #![cfg(test)]
     use super::*;
+    use crate::ai::adapter::AIProviderAdapter;
+    use crate::ai::OpenAICompatibleAdapter;
     use crate::ai::heuristic_adapter::HeuristicInferenceAdapter;
 
     // what this catches: the refusal for an unknown/omitted model must name the

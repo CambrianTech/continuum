@@ -261,7 +261,7 @@ pub(crate) fn build_inputs(f: &GridFacts, book: &mut OfferBook) -> GridInputs {
         roles,
         minds,
         nodes,
-        minds_per_lane: crate::modules::citizen_health::MINDS_PER_LANE_STARVED_ABOVE as u32,
+        minds_per_lane: crate::persona::health_ledger::MINDS_PER_LANE_STARVED_ABOVE as u32,
         holds,
         floors,
     }

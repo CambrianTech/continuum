@@ -37,7 +37,7 @@ pub(super) fn register_cognition_and_memory_modules(
     // daemon plans off — the SAME live universe.
     runtime.register(Arc::new(ModelsModule::new(
         model_catalog,
-        crate::modules::ai_provider::global_registry(),
+        crate::ai::global_registry::global_registry(),
         // The serving daemon's live snapshot — so `models/remove` refuses to
         // delete weights out from under the currently-served lane.
         serving_daemon.subscribe_serving(),

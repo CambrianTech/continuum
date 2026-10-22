@@ -28,8 +28,8 @@
 
 use crate::ai::types::{NativeToolSpec, ToolInputSchema};
 use crate::cognition::tool_embedding::extract_category;
-use crate::modules::grid::acl::is_command_authorized;
-use crate::modules::grid::node::TrustLevel;
+use crate::routing::command_acl::is_command_authorized;
+use crate::routing::trust_level::TrustLevel;
 use crate::sdk_codegen::{AccessLevel, CommandDescriptor};
 use crate::sdk_codegen::ext::command_registry_live;
 use serde_json::json;

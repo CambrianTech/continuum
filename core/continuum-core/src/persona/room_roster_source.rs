@@ -56,7 +56,7 @@ use airc_lib::{AircError, RoomMember};
 use async_trait::async_trait;
 use continuum_positron::RosterSlotView;
 
-use crate::ipc::positron_source::roster_slot_from_member;
+use crate::persona::roster_slot::roster_slot_from_member;
 use crate::persona::rag_budget::{
     ContinuationCursor, RagContext, RagDelivery, RagItem, RagSource, ResolutionPreference,
 };

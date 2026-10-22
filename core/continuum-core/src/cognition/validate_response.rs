@@ -37,7 +37,7 @@ use continuum_base::time::EpochMs;
 use crate::ai::adapter::InferenceDevice;
 use crate::ai::types::ResponseFormat;
 use crate::ai::{ChatMessage, MessageContent, TextGenerationRequest, TextGenerationResponse};
-use crate::modules::ai_provider::global_registry;
+use crate::ai::global_registry::global_registry;
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 

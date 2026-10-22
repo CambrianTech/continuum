@@ -27,7 +27,7 @@ use continuum_base::time::EpochMs;
 use crate::ai::{ChatMessage, MessageContent, TextGenerationRequest};
 use crate::cognition::types::SharedAnalysis;
 use crate::concurrency::{ConcurrencyPolicy, TokioConcurrencyPolicy};
-use crate::modules::ai_provider::{generate_text, global_registry};
+use crate::ai::global_registry::{generate_text, global_registry};
 use dashmap::DashMap;
 use futures::FutureExt;
 use once_cell::sync::Lazy;

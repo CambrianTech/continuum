@@ -80,13 +80,14 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::broadcast::error::RecvError;
 use uuid::Uuid;
 
-use airc_lib::{AgentAvailabilityState, RoomMember};
 use continuum_positron::{
     ActReceiptView, ChatMessageView, ChatViewState, Loadout, Provenance, RosterSlotView,
     RosterViewState, SenderKind, StateBuilder, Substrate,
 };
 
 use crate::experience::{Experience, ExperienceSource, Member, RecipeExperienceSource, Standing};
+use crate::persona::mind_events::{PersonaActUpdate, CHAT_HEARD, PERSONA_ACT};
+use crate::persona::roster_slot::provisional_sender_name;
 use crate::runtime::MessageBus;
 
 mod rather;

@@ -27,6 +27,7 @@
 
 pub mod adapter;
 pub mod anthropic_adapter;
+pub mod global_registry;
 // HeuristicInferenceAdapter is gated behind `cfg(any(test, feature =
 // "test-fixtures"))`. Production binaries built without the feature
 // do not contain it at all — the compiler enforces what the doctrine

@@ -4,7 +4,7 @@
 //! …) reimplemented as [`ActionCommand`]s so they live on the SINGLE command
 //! surface every interface reads — the persona tool surface
 //! ([`authorized_tool_specs`](crate::cognition::persona_tools::authorized_tool_specs)),
-//! the grid ACL ([`ai_safe_commands`](crate::modules::grid::acl)), codegen, and
+//! the grid ACL ([`ai_safe_commands`](crate::routing::command_acl)), codegen, and
 //! runtime dispatch — all from ONE `CommandSpec` declaration per command. No
 //! second list, no parallel allow-table. A command becomes a persona tool simply
 //! by being an `AiSafe` `ActionCommand`; the descriptor flows everywhere.

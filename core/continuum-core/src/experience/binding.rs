@@ -161,7 +161,7 @@ impl RoomRecipeBinding {
 ///
 /// `Ok(None)` — no binding — is not an error. A room made by a bare `airc join`
 /// has no recipe and IS a plain chat room; that is the ordinary case and the
-/// honest default the [`RoomPurposeSource`](crate::ipc::room_purpose) contract
+/// honest default the [`RoomPurposeSource`](crate::experience::room_purpose) contract
 /// requires.
 ///
 /// A present-but-unparseable post IS an error. Defaulting there would silently

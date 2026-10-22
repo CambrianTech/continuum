@@ -151,7 +151,7 @@ async fn messages_handler(
     let spec = parse_model_spec(&req.model);
 
     // Resolve the adapter
-    let registry = crate::modules::ai_provider::global_registry();
+    let registry = crate::ai::global_registry::global_registry();
     let registry_guard = registry.read().await;
 
     // GPU-always contract: route through select() with the requested

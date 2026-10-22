@@ -18,18 +18,13 @@
 //! - ai/providers/list: List available providers
 //! - ai/providers/health: Check provider health
 
-use crate::ai::{
-    adapter::{AIProviderAdapter, InferenceDevice},
-    AdapterRegistry, AnthropicAdapter, OpenAICompatibleAdapter, RoutingInfo, TextGenerationRequest,
-    TextGenerationResponse,
-};
+use crate::ai::{adapter::AIProviderAdapter, AdapterRegistry, AnthropicAdapter, OpenAICompatibleAdapter};
 use crate::runtime::{
     CommandResult, LateBound, ModuleConfig, ModuleContext, ModuleLogger, ModulePriority,
     ServiceModule,
 };
 use continuum_base::secrets::get_secret;
 use async_trait::async_trait;
-use once_cell::sync::Lazy;
 use serde_json::Value;
 use std::any::Any;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -38,11 +33,9 @@ use std::time::Duration;
 use std::sync::OnceLock;
 use tokio::sync::RwLock;
 
+use crate::ai::global_registry::{DMR_PROVIDER_ID, GLOBAL_REGISTRY};
+
 mod dmr_provider_id;
 pub use dmr_provider_id::*;
 mod block;
 mod a_i_provider_module;
-pub use a_i_provider_module::*;
-
-#[cfg(test)]
-mod tests;

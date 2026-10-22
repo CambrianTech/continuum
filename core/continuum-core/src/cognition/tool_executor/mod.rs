@@ -29,6 +29,7 @@
 //!   already laid here — no caller-code changes
 
 pub mod command_executor;
+pub mod result_tap;
 pub mod spill;
 pub mod types;
 

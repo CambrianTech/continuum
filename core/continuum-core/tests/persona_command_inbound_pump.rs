@@ -154,6 +154,10 @@ async fn persona_command_pump_makes_persona_addressable_for_ai_generate() {
     // The runtime's membership epoch: the pump re-opens its stream when it
     // moves and exits only when the sender is DROPPED, so the test holds it.
     let (_membership_tx, membership_rx) = tokio::sync::watch::channel(0u64);
+    // Boot installs the command-ingress responder the pump runs; this process has no boot.
+    continuum_core::persona::command_inbound_pump::install_command_handler(|airc, executor, grants| {
+        continuum_core::ipc::command_ingress::CommandRequestHandler::with_grant_authorizer(airc, executor, grants)
+    });
     let pump = PersonaCommandInboundPump::spawn(
         persona_id,
         Arc::clone(loop_back.peer_a()),

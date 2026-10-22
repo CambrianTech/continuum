@@ -644,7 +644,7 @@ impl PersonaWorkspaceRegistry {
 /// Process-global persona-workspace registry. One per process; persona minds are
 /// assembled into it at spawn (`supervisor::materialize_adapters`) and resolved
 /// from it by the `ai/should-respond` ServiceModule. Same pattern as
-/// `modules::ai_provider::global_registry()` — the shared seam between the spawn
+/// `ai::global_registry::global_registry()` — the shared seam between the spawn
 /// path that builds minds and the command path that runs them.
 pub fn global() -> Arc<PersonaWorkspaceRegistry> {
     static GLOBAL: OnceLock<Arc<PersonaWorkspaceRegistry>> = OnceLock::new();

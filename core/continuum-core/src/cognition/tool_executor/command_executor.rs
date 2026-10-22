@@ -622,9 +622,7 @@ impl ToolExecutor for CommandToolExecutor {
                     }
                     // The human canvas consumes the original capture once; the
                     // persona history consumes a durable reference to those bytes.
-                    crate::ipc::positron_canvas_source::maybe_publish_observation(
-                        &ctx.persona_name, &canonical, &value.to_string(),
-                    );
+                    super::result_tap::tap(&ctx.persona_name, &canonical, &value);
                     let images = match crate::media::artifact::retain_captures(&canonical, &mut value) {
                         Ok(images) => images,
                         Err(error) => {

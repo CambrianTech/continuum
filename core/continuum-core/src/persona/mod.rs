@@ -62,6 +62,7 @@ pub mod evaluator;
 pub mod focus;
 pub mod genome_paging;
 pub mod grounding_invalidation;
+pub mod health_ledger;
 pub mod home;
 pub mod host;
 pub mod hw_tier_descriptor;
@@ -73,6 +74,7 @@ pub mod loop_dedup;
 pub mod media_perception_source;
 pub mod media_policy;
 pub mod message_cache;
+pub mod mind_events;
 pub mod mind_room;
 pub mod mind_state;
 pub mod perception_feed;
@@ -108,7 +110,11 @@ pub mod role_template;
 pub mod room_board_source;
 pub mod room_doctrine_source;
 pub mod identity_card_cache;
+pub mod room_directory;
 pub mod room_roster_source;
+pub mod room_substrates;
+pub mod roster_slot;
+pub mod stream_rail;
 #[cfg(any(test, feature = "test-fixtures"))]
 pub mod scripted_adapter_factory;
 #[cfg(any(test, feature = "test-fixtures"))]

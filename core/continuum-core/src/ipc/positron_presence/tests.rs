@@ -132,7 +132,7 @@
         let kimi = PeerId::new();
         let local = PeerId::new();
         // Sighting 1: Kimi live, named (her card crossed once).
-        let named = crate::ipc::positron_source::roster_slot_from_card(&member(
+        let named = crate::persona::roster_slot::roster_slot_from_card(&member(
             kimi,
             "persona",
             Some("Kimi"),
@@ -141,7 +141,7 @@
         assert!(fold_into_directory(&mut dir, std::slice::from_ref(&named)));
 
         // Her node drops off: live read has only the local member.
-        let live = vec![crate::ipc::positron_source::roster_slot_from_card(&member(
+        let live = vec![crate::persona::roster_slot::roster_slot_from_card(&member(
             local,
             "interactive",
             Some("Operator"),
@@ -164,7 +164,7 @@
 
         // Later sighting WITHOUT a card (provisional label) must not erase her name.
         let unnamed =
-            crate::ipc::positron_source::roster_slot_from_card(&member(kimi, "persona", None));
+            crate::persona::roster_slot::roster_slot_from_card(&member(kimi, "persona", None));
         fold_into_directory(&mut dir, std::slice::from_ref(&unnamed));
         assert_eq!(
             dir[&kimi.as_uuid()].display_name,
@@ -173,7 +173,7 @@
         );
 
         // She reappears live: the ghost is replaced by the live slot.
-        let back = vec![crate::ipc::positron_source::roster_slot_from_card(&member(
+        let back = vec![crate::persona::roster_slot::roster_slot_from_card(&member(
             kimi,
             "persona",
             Some("Kimi"),

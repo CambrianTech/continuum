@@ -51,7 +51,7 @@ impl ActionCommand for BenchmarkCreditRecover {
 
     async fn run(&self, ctx: &Ctx, params: Self::Params) -> Result<Self::Output, CommandError> {
         if crate::modules::grid::trust_policy::caller_trust(ctx.caller.as_ref())
-            != crate::modules::grid::node::TrustLevel::Owner
+            != crate::routing::trust_level::TrustLevel::Owner
         {
             return Err(CommandError::Denied(
                 "legacy grade attestation requires the operator".into(),

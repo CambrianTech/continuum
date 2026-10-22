@@ -148,7 +148,7 @@ impl ActionCommand for PortsList {
     async fn run(&self, ctx: &Ctx, _p: Self::Params) -> Result<Self::Output, CommandError> {
         let leases = self.leases.require().map_err(CommandError::Internal)?;
         let owner = crate::modules::grid::trust_policy::caller_trust(ctx.caller.as_ref())
-            == crate::modules::grid::node::TrustLevel::Owner;
+            == crate::routing::trust_level::TrustLevel::Owner;
         let shown = match (&ctx.caller, owner) {
             (Some(caller), false) => leases.held_by(caller.peer_id),
             _ => leases.all(),

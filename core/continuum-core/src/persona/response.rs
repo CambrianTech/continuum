@@ -743,7 +743,7 @@ async fn run_render(
     //    no opinion on device — the persona's profile + adapter
     //    declare placement. Same fix in cognition/{generate_response,
     //    should_respond, validate_response, tool_embedding}.
-    let registry_arc = crate::modules::ai_provider::global_registry();
+    let registry_arc = crate::ai::global_registry::global_registry();
     let registry = registry_arc.read().await;
     let (_provider_id, adapter) = registry
         .select(Some("local"), Some(&input.model), InferenceDevice::Auto)

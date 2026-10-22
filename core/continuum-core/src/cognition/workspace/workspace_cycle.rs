@@ -52,7 +52,7 @@ impl WorkspaceCycle {
         // The hour's prefix reuse, on the citizen-health line (card c119ace7): the same
         // two numbers, folded once here — the one writer — so the receipt a human reads
         // in the org room carries "prefix reuse NN%" without a probe query.
-        crate::modules::citizen_health::note_generation(m.cached_tokens, m.prefill_tokens);
+        crate::persona::health_ledger::note_generation(m.cached_tokens, m.prefill_tokens);
         continuum_base::probe!(
             class = "serving.kv.reuse",
             turn_cached = m.cached_tokens,

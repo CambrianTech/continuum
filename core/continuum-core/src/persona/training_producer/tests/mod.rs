@@ -19,8 +19,8 @@
     // to Trusted this fails, and the substrate connection can be revisited.
     #[test]
     pub(super) fn the_rejected_mark_needs_the_substrates_authority_not_hers() {
-        use crate::modules::grid::acl::is_command_authorized;
-        use crate::modules::grid::node::TrustLevel;
+        use crate::routing::command_acl::is_command_authorized;
+        use crate::routing::trust_level::TrustLevel;
         assert!(!is_command_authorized("data/update", TrustLevel::Trusted), "her own identity cannot mark the row");
         assert!(is_command_authorized("data/list", TrustLevel::Trusted), "while she can still read her staged rows");
     }

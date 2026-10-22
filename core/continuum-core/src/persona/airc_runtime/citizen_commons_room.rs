@@ -82,14 +82,14 @@ pub enum PersonaAircRuntimeError {
     },
     #[error(
         "failed to install command inbound pump for persona {agent_name:?}: {source} — \
-         the persona's airc handle subscribe failed, so the persona would be \
+         the persona's airc handle subscribe failed or no command handler is installed, so the persona would be \
          silently unaddressable for cross-grid commands. Per [[no-fallbacks-ever]] \
          the substrate refuses to declare the persona ready in this state."
     )]
     CommandPumpInstall {
         agent_name: String,
         #[source]
-        source: AircError,
+        source: crate::persona::command_inbound_pump::PumpSpawnError,
     },
     #[error(
         "failed to build the capability-grant authorizer for persona {agent_name:?}: \

@@ -10,6 +10,8 @@
 //! - AuditLog write and read
 
 #[cfg(test)]
+mod acl;
+
 mod tailscale_transport_integration {
     use crate::modules::grid::frame::{FrameType, GridFrame, GridPayload};
     use crate::modules::grid::node::TransportAddress;
@@ -386,6 +388,7 @@ mod reticulum_transport_integration {
 #[cfg(test)]
 mod registry_integration {
     use crate::modules::grid::node::*;
+    use crate::routing::trust_level::TrustLevel;
     use crate::modules::grid::registry::NodeRegistry;
 
     // what this catches: an org-room line ([memory], [fleet]) that doesn't say whose
@@ -662,6 +665,7 @@ mod audit_integration {
 #[cfg(test)]
 mod router_integration {
     use crate::modules::grid::node::*;
+    use crate::routing::trust_level::TrustLevel;
     use crate::modules::grid::registry::NodeRegistry;
     use crate::modules::grid::router::{GridRouter, RouteDecision};
 
@@ -785,8 +789,8 @@ mod router_integration {
 
 #[cfg(test)]
 mod acl_integration {
-    use crate::modules::grid::acl::is_command_authorized;
-    use crate::modules::grid::node::TrustLevel;
+    use crate::routing::command_acl::is_command_authorized;
+    use crate::routing::trust_level::TrustLevel;
 
     #[test]
     fn test_owner_trust_allows_all_commands() {

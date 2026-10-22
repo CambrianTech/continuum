@@ -98,7 +98,7 @@ async fn ensure_llamacpp_registered() {
         "LlamaCppAdapter health_check failed — GGUF not present? \
          Pull continuum-ai/qwen3.5-4b-code-forged-gguf via DMR first."
     );
-    let registry_arc = continuum_core::modules::ai_provider::global_registry();
+    let registry_arc = continuum_core::ai::global_registry::global_registry();
     let mut reg = registry_arc.write().await;
     reg.register(std::sync::Arc::new(adapter), 0);
     drop(reg);

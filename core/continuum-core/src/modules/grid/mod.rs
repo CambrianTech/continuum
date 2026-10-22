@@ -26,7 +26,6 @@ pub mod access_decision;
 pub mod interceptor;
 pub mod trust_policy;
 pub use trust_policy::{caller_trust, GridTrustAuthPolicy, PeerTrustSource};
-pub mod acl;
 pub mod audit;
 pub mod commands;
 pub mod connection;
@@ -331,7 +330,7 @@ impl ServiceModule for GridModule {
                     if let node::TransportAddress::Tailscale { ip, .. } = addr {
                         // Skip blocked nodes
                         if let Some(existing) = self.state.registry.get(ip) {
-                            if existing.trust_level == node::TrustLevel::Blocked {
+                            if existing.trust_level == crate::routing::trust_level::TrustLevel::Blocked {
                                 continue;
                             }
                         }
@@ -474,7 +473,7 @@ impl ServiceModule for GridModule {
         tokio::spawn(async move {
             let nodes = registry.all_nodes();
             for node in &nodes {
-                if node.trust_level == node::TrustLevel::Blocked {
+                if node.trust_level == crate::routing::trust_level::TrustLevel::Blocked {
                     continue;
                 }
                 for addr in &node.addresses {
@@ -492,7 +491,7 @@ impl ServiceModule for GridModule {
                             _ => {
                                 // Unreachable — only remove auto-discovered (default trust) nodes.
                                 // Owner/Trusted nodes stay but age out of online_nodes().
-                                if node.trust_level == node::TrustLevel::default() {
+                                if node.trust_level == crate::routing::trust_level::TrustLevel::default() {
                                     registry.remove(&node.node_id);
                                     eprintln!(
                                         "[grid] Removed unreachable node {} ({})",

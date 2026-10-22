@@ -15,7 +15,7 @@
     #[tokio::test]
     pub(super) async fn token_forwarder_flushes_during_pause_and_closes_in_order() {
         use crate::ai::adapter::GenerationChunk;
-        use crate::ipc::stream_rail;
+        use crate::persona::stream_rail;
         use std::time::Duration;
 
         async fn next_for_room(
@@ -76,7 +76,7 @@
     #[tokio::test]
     pub(super) async fn a_turn_in_her_mind_room_streams_no_tokens() {
         use crate::ai::adapter::GenerationChunk;
-        use crate::ipc::stream_rail;
+        use crate::persona::stream_rail;
         let her = Uuid::new_v4();
         let mind = crate::persona::mind_room::mind_room_id(her).to_string();
         let mut output = stream_rail::subscribe();

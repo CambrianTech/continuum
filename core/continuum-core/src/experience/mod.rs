@@ -63,14 +63,15 @@
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
-use crate::modules::grid::acl::required_trust;
-use crate::modules::grid::node::TrustLevel;
+use crate::routing::command_acl::required_trust;
+use crate::routing::trust_level::TrustLevel;
 
 pub mod binding;
 pub mod children;
 pub mod spawned_rooms;
 pub mod membership;
 pub mod recipe;
+pub mod room_purpose;
 pub mod source;
 pub mod ledger;
 pub mod activity_state;

@@ -37,7 +37,7 @@ use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 use uuid::Uuid;
 
-use crate::modules::grid::node::TrustLevel;
+use crate::routing::trust_level::TrustLevel;
 mod projection;
 pub use projection::LocalInboundAircAuthorization;
 

@@ -132,7 +132,7 @@ pub enum CallerSource {
     /// handshake (task #29) elevated the human's socket, the AI observing that
     /// human's screen would silently inherit the human's elevated authority —
     /// the textbook confused-deputy escalation. So an observer is stamped with
-    /// its OWN source that resolves to a FIXED [`TrustLevel::Provisional`](crate::modules::grid::node::TrustLevel::Provisional)
+    /// its OWN source that resolves to a FIXED [`TrustLevel::Provisional`](crate::routing::trust_level::TrustLevel::Provisional)
     /// ceiling which NEVER consults the trust bridge (see
     /// [`grid_trust_policy`](crate::routing::grid_trust_policy)). The human's
     /// authority can rise; the AI watching the human cannot ride it up.
@@ -300,7 +300,7 @@ impl CallerIdentity {
     /// through a positron session over an unauthenticated socket. `peer_id` is
     /// the socket's peer (nil today, same as the human's `ws` connection);
     /// `observer_id` names which observer acted (audit). Resolves to a FIXED
-    /// [`Provisional`](crate::modules::grid::node::TrustLevel::Provisional)
+    /// [`Provisional`](crate::routing::trust_level::TrustLevel::Provisional)
     /// ceiling that NEVER rises with socket authentication — the confused-deputy
     /// defense (see [`CallerSource::PositronObserver`]). Only the local positron
     /// dispatch path calls this; a remote peer can't present it.

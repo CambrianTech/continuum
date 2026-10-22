@@ -319,7 +319,7 @@ impl ActionCommand for GenomeRecallReplay {
         // Capture includes the caller's need/context. Verified peers can inspect
         // their own decisions; local substrate/operator retains mechanic access.
         if crate::modules::grid::trust_policy::caller_trust(ctx.caller.as_ref())
-            != crate::modules::grid::node::TrustLevel::Owner
+            != crate::routing::trust_level::TrustLevel::Owner
             && ctx
                 .caller
                 .as_ref()

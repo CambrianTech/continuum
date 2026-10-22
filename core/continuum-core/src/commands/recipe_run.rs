@@ -320,7 +320,7 @@ mod tests {
                 .with_policy(Arc::new(policy)),
         );
         let source = crate::experience::source::RecipeExperienceSource::builtins(
-            crate::ipc::room_purpose::default_source(),
+            crate::experience::room_purpose::default_source(),
         );
         let (adapter, _db) = crate::orm::store::fresh_adapter().await;
         let runs = Arc::new(RecipeRuns::open(adapter).await.expect("open recipe_runs")); // JUSTIFIED: a fresh temp db

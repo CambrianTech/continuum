@@ -197,7 +197,7 @@
         let rooms = std::sync::Arc::new(PerRoomSubstrates::new());
         let mut p = ChatProjection::with_rooms(
             node.clone(),
-            crate::ipc::room_purpose::default_source(),
+            crate::experience::room_purpose::default_source(),
             Some(rooms.clone()),
         );
 

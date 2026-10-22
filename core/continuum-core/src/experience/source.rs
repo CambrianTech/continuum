@@ -9,7 +9,7 @@ use std::sync::Arc;
 
 use uuid::Uuid;
 
-use crate::ipc::room_purpose::{RoomPurposeSource, SharedRoomPurpose};
+use crate::experience::room_purpose::{RoomPurposeSource, SharedRoomPurpose};
 
 use super::recipe::{ExperienceRecipe, RecipeId};
 use super::Experience;
@@ -456,7 +456,7 @@ mod tests {
         // resolved from the recipe files. One registry, two readers: a purpose that
         // spawns a room is the same purpose that runs a pipeline, and an unknown
         // purpose is `None`, never a fabricated recipe.
-        let source = RecipeExperienceSource::builtins(crate::ipc::room_purpose::default_source());
+        let source = RecipeExperienceSource::builtins(crate::experience::room_purpose::default_source());
         let chat = source.recipe_for_purpose("chat").expect("chat ships");
         assert_eq!(chat.purpose, "chat");
         assert!(source.recipe_for_purpose("campaign/never-authored").is_none());
@@ -562,7 +562,7 @@ mod tests {
         assert_eq!(exp.regions.len(), 3);
     }
     use crate::experience::{RegionRole, RegionScope};
-    use crate::modules::grid::node::TrustLevel;
+    use crate::routing::trust_level::TrustLevel;
 
     /// A stub purpose source that reports one fixed purpose for every room — enough
     /// to drive the projection under test without a live room registry.

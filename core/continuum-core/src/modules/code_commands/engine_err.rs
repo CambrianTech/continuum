@@ -25,7 +25,7 @@ pub(super) fn engine_err(e: crate::code::file_engine::FileEngineError) -> Comman
 pub(super) fn read_scope_of(ctx: &Ctx, workspace: &std::path::Path) -> crate::code::path_security::ReadScope {
     use crate::code::path_security::ReadScope;
     let trust = crate::modules::grid::trust_policy::caller_trust(ctx.caller.as_ref());
-    if !crate::modules::grid::acl::is_command_authorized("code/shell", trust) {
+    if !crate::routing::command_acl::is_command_authorized("code/shell", trust) {
         return ReadScope::Sandbox;
     }
     match confinement_of(ctx, workspace) {
@@ -492,7 +492,7 @@ pub(super) async fn ensure_shell(state: &CodeState, ctx: &Ctx) -> Result<String,
 pub(crate) fn confinement_of(ctx: &Ctx, workspace: &std::path::Path) -> Option<crate::system_resources::confinement::Confinement> {
     let resident = ctx.caller.as_ref().is_some_and(|c| c.source == crate::routing::auth_policy::CallerSource::LocalPersona);
     let trust = crate::modules::grid::trust_policy::caller_trust(ctx.caller.as_ref());
-    if !resident && trust == crate::modules::grid::node::TrustLevel::Owner {
+    if !resident && trust == crate::routing::trust_level::TrustLevel::Owner {
         return None;
     }
     let home = crate::paths::home_dir()?;
