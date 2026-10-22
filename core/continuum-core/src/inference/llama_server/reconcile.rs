@@ -74,6 +74,21 @@ pub async fn ensure_model_serving<C: LlamaServerControl + ?Sized>(
 pub async fn ensure_model_serving_if_current<C: LlamaServerControl + ?Sized>(
     ctrl: &C,
     target: &ServingTarget,
+    force_probe: bool,
+    current: &ServingLifecycleCheck<'_>,
+) -> EnsureOutcome {
+    let outcome = serve_or_adopt(ctrl, target, force_probe, current).await;
+    // Every adoption, whichever rail took it (an owned child, a decode-proven orphan, a busy
+    // one), records the lane's placement when its record lacks one (card 22aa3379).
+    if matches!(outcome, EnsureOutcome::AlreadyServing) {
+        ctrl.record_observed_placement().await;
+    }
+    outcome
+}
+
+async fn serve_or_adopt<C: LlamaServerControl + ?Sized>(
+    ctrl: &C,
+    target: &ServingTarget,
     // Force a decode SMOKE-PROBE even on a child we own, bypassing the "trusted
     // thereafter" short-circuit. The serving daemon's liveness heartbeat sets this after
     // it has already seen the live lane fail the decode probe on a slow cadence
