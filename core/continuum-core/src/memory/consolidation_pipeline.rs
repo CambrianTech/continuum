@@ -141,7 +141,6 @@ mod tests {
     use crate::memory::embedding::EmbeddingProvider;
     use crate::memory::raw_adapter::RawMemoryAdapter;
     use async_trait::async_trait;
-    use std::collections::HashMap;
     use std::sync::Arc;
     use uuid::Uuid;
 
@@ -347,10 +346,4 @@ mod tests {
         );
     }
 
-    // silence unused-warning under cfg(test) for an import we want
-    // available but don't reference in every test body.
-    #[allow(dead_code)]
-    fn _unused() {
-        let _: HashMap<String, ()> = HashMap::new();
-    }
 }

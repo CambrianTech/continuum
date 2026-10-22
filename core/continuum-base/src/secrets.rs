@@ -92,10 +92,6 @@ impl Secrets {
         self.get(key).is_some()
     }
 
-    /// Get all available keys (for debugging)
-    pub fn available_keys(&self) -> Vec<&str> {
-        self.secrets.keys().map(|s| s.as_str()).collect()
-    }
 }
 
 fn normalize_env_value(raw: &str) -> String {
@@ -119,11 +115,6 @@ pub fn secrets() -> &'static Secrets {
 /// Get a secret by key
 pub fn get_secret(key: &str) -> Option<&'static str> {
     secrets().get(key)
-}
-
-/// Require a secret (returns error if missing)
-pub fn require_secret(key: &str) -> Result<&'static str, String> {
-    secrets().require(key)
 }
 
 #[cfg(test)]

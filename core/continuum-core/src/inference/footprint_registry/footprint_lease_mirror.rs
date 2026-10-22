@@ -259,14 +259,6 @@ impl FootprintRegistry {
         }
     }
 
-    pub fn reclaimable_leases(&self, now_ms: u64) -> Vec<ThroughputLease> {
-        self.lease_mirrors
-            .iter()
-            .filter(|entry| entry.value().lease.is_reclaimable(now_ms))
-            .map(|entry| entry.value().lease.clone())
-            .collect()
-    }
-
     /// Phase 2 of pressure relief — the pressure-driven sibling of
     /// [`expire_leases`](Self::expire_leases). Revoke throughput leases to
     /// free at least `target_bytes`, honoring each lease's revocation

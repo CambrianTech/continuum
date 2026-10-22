@@ -559,6 +559,3 @@ impl SentinelModule {
         ))
     }
 }
-
-/// Reap dead sentinels older than this from the registry
-pub(super) const REAP_AGE_SECS: u64 = 3600; // 1 hour

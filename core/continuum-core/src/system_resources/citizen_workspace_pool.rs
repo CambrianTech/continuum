@@ -102,11 +102,6 @@ use cargo_target::HeldCargoLocks;
 /// still holding 8 GB.
 pub const DORMANT_AFTER_MS: u64 = 7 * 24 * 60 * 60 * 1000;
 
-/// What the citizens' workspaces may occupy in total before the owner starts dropping the
-/// dormant ones. Sized from the measurement that produced this pool: five resident
-/// citizens at ~8-10 GB each is normal and must never be touched.
-pub const DEFAULT_CITIZENS_BUDGET_BYTES: u64 = 60 * 1024 * 1024 * 1024;
-
 /// One peer's workspace as the decision sees it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PeerWorkspace {

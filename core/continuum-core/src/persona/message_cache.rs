@@ -163,26 +163,6 @@ impl RecentMessageCache {
         }
     }
 
-    /// Get messages since a timestamp for a room (for post-inference adequacy).
-    /// Returns messages from OTHER senders (not the requesting persona).
-    pub fn messages_since(
-        &self,
-        room_id: Uuid,
-        since_ms: u64,
-        exclude_persona_id: Uuid,
-        exclude_message_id: Uuid,
-    ) -> Vec<&CachedMessage> {
-        self.rooms
-            .get(&room_id)
-            .map(|msgs| {
-                msgs.iter()
-                    .rev()
-                    .take_while(|m| m.timestamp_ms > since_ms)
-                    .filter(|m| m.sender_id != exclude_persona_id && m.id != exclude_message_id)
-                    .collect()
-            })
-            .unwrap_or_default()
-    }
 }
 
 impl Default for RecentMessageCache {

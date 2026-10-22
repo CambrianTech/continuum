@@ -15,26 +15,6 @@ pub const AUDIO_FRAME_SIZE: usize = 512;
 /// Frame duration in milliseconds
 pub const AUDIO_FRAME_DURATION_MS: u64 = 32;
 
-/// Playback buffer duration in seconds
-pub const AUDIO_PLAYBACK_BUFFER_SECONDS: u32 = 2;
-
 /// Audio broadcast channel capacity (number of frames)
 pub const AUDIO_CHANNEL_CAPACITY: usize = 2000;
 
-/// Bytes per sample (16-bit PCM = 2 bytes)
-pub const BYTES_PER_SAMPLE: usize = 2;
-
-/// WebSocket call server port
-pub const CALL_SERVER_PORT: u16 = 50053;
-
-/// LiveKit SFU server port (WebRTC signaling, plain WS)
-pub const LIVEKIT_PORT: u16 = 7880;
-
-/// LiveKit TLS proxy port (Caddy terminates TLS, proxies to LIVEKIT_PORT)
-pub const LIVEKIT_TLS_PORT: u16 = 7443;
-
-/// LiveKit API key (dev mode)
-pub const LIVEKIT_DEV_KEY: &str = "devkey";
-
-/// LiveKit API secret (dev mode)
-pub const LIVEKIT_DEV_SECRET: &str = "secret";

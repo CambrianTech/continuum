@@ -169,17 +169,6 @@ impl Outcome {
         self.channels.get(&channel)
     }
 
-    /// Text on `channel`, or `""` when absent — the ergonomic read for judges that treat a
-    /// missing modality the same as an empty one (a diff-grading judge does).
-    pub fn channel_text(&self, channel: Channel) -> &str {
-        self.channel(channel).and_then(|v| v.text()).unwrap_or("")
-    }
-
-    /// Attach `value` to `channel`, replacing anything already there.
-    pub fn with_channel(mut self, channel: Channel, value: ChannelValue) -> Self {
-        self.channels.insert(channel, value);
-        self
-    }
 }
 
 /// One activity's verdict on one task — did it pass, how well, and WHY.
@@ -408,14 +397,4 @@ mod tests {
         assert_eq!(v.reason, "tests failed");
     }
 
-    // what this catches: a channel a judge asks for but the activity never produced reads as
-    // absent — NOT as an empty success. This is what lets gameplay add a modality without
-    // SWE-bench's judge changing, and what stops a judge panicking on a missing one.
-    #[test]
-    fn an_absent_channel_reads_absent_not_empty_success() {
-        let o = Outcome::default().with_channel(Channel::Diff, ChannelValue::Text("x".into()));
-        assert_eq!(o.channel_text(Channel::Diff), "x");
-        assert!(o.channel(Channel::Artifact).is_none());
-        assert_eq!(o.channel_text(Channel::Artifact), "");
-    }
 }

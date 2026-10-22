@@ -254,30 +254,6 @@ impl SubstrateGovernor {
         }
     }
 
-    /// Override the static orientation share policy (R4 / tests). Floors are enforced by
-    /// [`OrientationShares`] itself, so this can't construct a starving policy. With an
-    /// adaptive controller installed this sets the controller's *seed* — call it before
-    /// [`Self::with_adaptive_shares`].
-    pub fn with_shares(mut self, shares: OrientationShares) -> Self {
-        self.shares = shares;
-        self
-    }
-
-    /// Install the R4 adaptive share controller, seeded from the current `shares`. The
-    /// governor then tunes the orientation mix from measured per-class deferral each pass,
-    /// within the spine floors — replacing the static open-loop prior with a closed loop.
-    pub fn with_adaptive_shares(mut self) -> Self {
-        self.controller = Some(Mutex::new(ShareController::new(self.shares)));
-        self
-    }
-
-    /// Set the per-pass slice budget — the scarcity knob (R4 / tests). `Some(n)` engages
-    /// the proportional share once more than `n` pairs are due in a pass.
-    pub fn with_slices_per_pass(mut self, budget: Option<usize>) -> Self {
-        self.slices_per_pass = budget;
-        self
-    }
-
     /// Wire the governor to a live memory-pressure feed (R4 slice 3). The boot path passes
     /// [`MemoryPressureMonitor::subscribe`](crate::system_resources::MemoryPressureMonitor::subscribe);
     /// each pass then sizes the slice budget to the current memory band ([`pressure_budget`])

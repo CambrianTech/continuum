@@ -98,11 +98,6 @@ pub async fn git_diff(workspace_root: &Path, staged: bool) -> Result<String, Str
     run_git(workspace_root, &args).await
 }
 
-/// Get git diff against a specific ref (branch, commit, etc.).
-pub async fn git_diff_ref(workspace_root: &Path, reference: &str) -> Result<String, String> {
-    run_git(workspace_root, &["diff", reference]).await
-}
-
 /// The `owner/name` board key this checkout belongs to, read from `origin`.
 ///
 /// The work board keys cards by repo, and that key is a FACT about the checkout —

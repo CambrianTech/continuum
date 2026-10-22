@@ -45,13 +45,6 @@ pub enum EnvironmentId {
 }
 
 impl EnvironmentId {
-    /// Convenience constructor for the well-known names. Equivalent
-    /// to `Named(name.into())` but spelled to read at call sites
-    /// like the URI it parses from.
-    pub fn well_known(name: WellKnownEnv) -> Self {
-        EnvironmentId::Named(name.as_str().to_string())
-    }
-
     /// Borrow the name string if this is a `Named` env; `None` for
     /// `Wildcard`. Useful when the caller wants to compare without
     /// match-on-variant ceremony.
@@ -205,16 +198,6 @@ mod tests {
         assert_eq!(WellKnownEnv::Vr.as_str(), "vr");
         assert_eq!(WellKnownEnv::Ar.as_str(), "ar");
         assert_eq!(WellKnownEnv::Headless.as_str(), "headless");
-    }
-
-    #[test]
-    fn well_known_to_environment_id_round_trips() {
-        for w in WellKnownEnv::all() {
-            let env = EnvironmentId::well_known(*w);
-            assert_eq!(env.name(), Some(w.as_str()));
-            // Round-trip via Display + From<&str>
-            assert_eq!(EnvironmentId::from(env.to_string().as_str()), env);
-        }
     }
 
     #[test]

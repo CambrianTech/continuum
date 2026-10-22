@@ -456,25 +456,6 @@ impl GgufQuantType {
         }
     }
 
-    /// GGUF block size constraint. Tensor row count must be divisible by this.
-    /// Returns 0 for types with no alignment constraint (F16, F32).
-    pub fn block_alignment(&self) -> usize {
-        match self {
-            Self::Q2K
-            | Self::Q3KS
-            | Self::Q3KM
-            | Self::Q3KL
-            | Self::Q4KS
-            | Self::Q4KM
-            | Self::Q5KS
-            | Self::Q5KM
-            | Self::Q6K => 256,
-            Self::Q8_0 => 32,
-            Self::Iq4Xs => 256,
-            Self::F16 | Self::F32 => 0,
-        }
-    }
-
     /// Estimate bytes for a tensor with this quant type.
     pub fn estimate_bytes(&self, element_count: usize) -> usize {
         (element_count as f64 * self.bits_per_weight() / 8.0).ceil() as usize

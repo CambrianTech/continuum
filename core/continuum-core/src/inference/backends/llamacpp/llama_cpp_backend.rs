@@ -462,16 +462,6 @@ impl LlamaCppBackend {
         Ok(())
     }
 
-    /// Remove a LoRA adapter from the cache.
-    pub fn remove_adapter(&self, id: &str) -> Result<(), String> {
-        let mut guard = self
-            .loras
-            .lock()
-            .map_err(|e| format!("LoRA lock poisoned: {e}"))?;
-        guard.remove(id);
-        Ok(())
-    }
-
     /// Lazily spawn (or get) the scheduler. Single instance per backend —
     /// owns the shared Context and the OS-thread driver loop.
     pub(super) fn scheduler(&self) -> &Scheduler {

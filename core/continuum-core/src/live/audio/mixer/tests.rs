@@ -247,39 +247,6 @@
     }
 
     #[tokio::test]
-    async fn test_mix_minus_all() {
-        let mut mixer = AudioMixer::default_voice();
-
-        let handle_a = Handle::new();
-        let handle_b = Handle::new();
-
-        let mut stream_a = ParticipantStream::new(handle_a, "user-a".into(), "Alice".into());
-        let mut stream_b = ParticipantStream::new(handle_b, "user-b".into(), "Bob".into());
-
-        stream_a.initialize_vad().expect("VAD init failed");
-        stream_b.initialize_vad().expect("VAD init failed");
-
-        stream_a.push_audio(generate_sine_wave(
-            440.0,
-            AUDIO_SAMPLE_RATE,
-            AUDIO_FRAME_SIZE,
-        ));
-        stream_b.push_audio(generate_sine_wave(
-            880.0,
-            AUDIO_SAMPLE_RATE,
-            AUDIO_FRAME_SIZE,
-        ));
-
-        mixer.add_participant(stream_a);
-        mixer.add_participant(stream_b);
-
-        let all_mixes = mixer.mix_minus_all();
-        assert_eq!(all_mixes.len(), 2);
-        assert!(all_mixes.contains_key(&handle_a));
-        assert!(all_mixes.contains_key(&handle_b));
-    }
-
-    #[tokio::test]
     async fn test_pull_all_audio() {
         let mut mixer = AudioMixer::default_voice();
 

@@ -248,17 +248,6 @@ impl RecipeExperienceSource {
         continuum_root.join("recipes")
     }
 
-    /// Every purpose the FULL recipe set declares — embedded floor plus the
-    /// disk overlay under `dir` (#432). This is the validation list
-    /// `activity/spawn` refuses against, and it is the same union
-    /// [`Self::builtins_with_overlay`] builds its registry from, so an
-    /// authored on-disk recipe is spawnable the moment the file exists. A
-    /// malformed overlay recipe is an ERROR naming the file, not a silent
-    /// skip — the author believes it is live.
-    pub fn known_purposes(dir: &std::path::Path) -> Result<Vec<String>, RecipeLoadError> {
-        Ok(Self::known_recipes(dir)?.into_iter().map(|r| r.purpose).collect())
-    }
-
     /// The FULL known recipe set — embedded floor plus the disk overlay, in
     /// registry order (embedded first, overlay after, so later-wins-by-purpose
     /// resolution can be applied by any consumer). `activity/spawn` reads

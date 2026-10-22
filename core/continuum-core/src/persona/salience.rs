@@ -17,8 +17,6 @@
 use airc_core::{MentionTarget, PeerId};
 use uuid::Uuid;
 
-use crate::cognition::channel_element::ChannelElement;
-
 /// How loud a delta is, lowest to highest. `Ord` so the maximum across activities
 /// and the comparison against the dial are plain comparisons.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
@@ -133,15 +131,6 @@ pub struct SpeechLine {
 }
 
 impl SpeechLine {
-    pub fn from_element(element: &ChannelElement, me: PeerId) -> Self {
-        let event = element.event();
-        Self {
-            sender: element.sender_id(),
-            addressed_to_me: matches!(event.target, MentionTarget::Peer(p) if p == me),
-            occurred_at_ms: event.occurred_at_ms,
-        }
-    }
-
     pub fn from_event(event: &airc_core::TranscriptEvent, me: PeerId) -> Self {
         Self {
             sender: event.peer_id.as_uuid(),

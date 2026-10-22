@@ -210,10 +210,6 @@ impl VideoFrame {
         Some(Self { header, data })
     }
 
-    /// Total byte size of the frame data (excluding header)
-    pub fn data_size(&self) -> usize {
-        self.data.len()
-    }
 }
 
 /// Avatar animation state — sent from server to browser for driving avatar rendering.

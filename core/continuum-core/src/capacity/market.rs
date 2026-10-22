@@ -67,14 +67,6 @@ pub fn expected_cost(s: &Specs, rep: &Reputation) -> f64 {
     entry_price(s) as f64 / rep.trust_lower_bound()
 }
 
-/// The final price a customer pays = the supply-side risk-adjusted ask × the DEMAND-side scarcity
-/// multiplier `lambda`. λ is the grid-market-clearing price of the contended seam (BigMama's lane);
-/// this crate proves the supply side with λ = 1.0. Kept as the single named seam so λ drops in without
-/// touching the routing or the convergence invariants.
-pub fn clearing_price(s: &Specs, rep: &Reputation, lambda: f64) -> f64 {
-    expected_cost(s, rep) * lambda
-}
-
 /// The MINT STAKE as an "earn your way in" GRADUATION GATE — my #396 identity lane, the second and
 /// independent defense against CROSS-class churn (the capability filter removes the hiding terrain; this
 /// gate requires proven delivery to enter paid work). It is deliberately NOT a currency bond: the entry

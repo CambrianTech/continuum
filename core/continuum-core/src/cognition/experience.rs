@@ -178,29 +178,6 @@ impl ExperienceRecord {
         }
     }
 
-    /// Capture a lived eval episode in full, at the grading site — BEFORE the lean
-    /// `EvalTaskResult` truncates the answer and drops the trajectory. `ok`/`grade`
-    /// are the grader's verdict; `settled` carries her lived trajectory.
-    pub fn from_eval(task: &EvalTask, settled: &SettleOutcome, ok: bool, grade: &str) -> Self {
-        Self {
-            task: task.clone(),
-            ok,
-            grade: grade.to_string(),
-            answer: settled.spoken.clone().unwrap_or_default(),
-            world_state: settled.world_state.clone(),
-            room_updates: settled
-                .room_updates
-                .iter()
-                .map(|m| m.as_ref().clone())
-                .collect(),
-            acts: settled.acts as u32,
-            source: ExperienceSource::Eval,
-            room: Some(settled.room),
-            teammates: Vec::new(),
-            team_role: None,
-        }
-    }
-
     /// [`Self::from_eval`]'s sibling for the seam where the [`SettleOutcome`] is
     /// already folded away (learn-mode's lesson transfer runs AFTER settlement,
     /// over the summarized per-task results). Same stream, same being; the

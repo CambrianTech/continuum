@@ -261,29 +261,6 @@ impl RecallFaculty {
         }
     }
 
-    /// Inject a focus policy (formula or learned). The junction where "focus
-    /// cleans up the RAG": at a high kernel scalar the recall significance bar
-    /// rises so only exceptional memories intrude.
-    pub fn with_focus_policy(
-        mut self,
-        policy: Arc<dyn crate::cognition::focus_policy::FocusPolicy>,
-    ) -> Self {
-        self.focus_policy = policy;
-        self
-    }
-
-    /// Inject a ranking adapter (a trained reranker, or a tuned statistical one).
-    /// Default (`None`) = [`SignificanceRanker`] at this faculty's
-    /// `relevance_weight` — implementation A, the permanent null model any
-    /// learned ranker must beat on the replay bench before shipping.
-    pub fn with_ranker(
-        mut self,
-        ranker: Arc<dyn crate::cognition::recall_ranker::RecallRanker>,
-    ) -> Self {
-        self.ranker = Some(ranker);
-        self
-    }
-
     /// Override the hard safety ceiling on memories surfaced per tick. The
     /// [`RecallBudget`] still picks the actual count within this — `with_limit`
     /// only lowers the cap (tests / bench).
@@ -311,14 +288,6 @@ impl RecallFaculty {
     /// then surfaces the most relevant memory, not just the most recent.
     pub fn with_embedder(mut self, embedder: Arc<dyn EmbeddingProvider>) -> Self {
         self.embedder = Some(embedder);
-        self
-    }
-
-    /// Set the relevance blend weight (0.0 = pure salience×recency, 1.0 = pure
-    /// cosine relevance to the burst), clamped to `[0,1]`. The replay A/B bench
-    /// sweeps this to find where the salience↔relevance trade-off lands.
-    pub fn with_relevance_weight(mut self, weight: f32) -> Self {
-        self.relevance_weight = weight.clamp(0.0, 1.0);
         self
     }
 

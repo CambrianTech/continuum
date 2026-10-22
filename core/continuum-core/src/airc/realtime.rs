@@ -87,9 +87,6 @@ impl AircRealtimePayloadRef {
         }
     }
 
-    pub fn is_pointer_only(&self) -> bool {
-        self.inline.is_none() && self.artifact_ref.is_some()
-    }
 }
 
 /// Presence states used by chat, avatars, and rooms.

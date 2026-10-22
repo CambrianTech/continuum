@@ -63,7 +63,6 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use super::expert_container::TierSpec;
-use super::expert_ecache::ExpertKey;
 use super::expert_residency::{ranked_experts, ExpertActivationProfile, ExpertId, ResidencyTier};
 
 /// Everything the policy consumes, borrowed — the policy owns no state, so
@@ -117,16 +116,6 @@ pub struct ExpertAssignment {
 }
 
 impl ExpertAssignment {
-    /// The container fetch key this assignment resolves to. `None` if the
-    /// expert coordinates overflow the container's u16 key space — a
-    /// structural mismatch the caller must refuse loudly, never truncate.
-    pub fn fetch_key(&self, e: ExpertId) -> Option<ExpertKey> {
-        Some(ExpertKey {
-            layer: u16::try_from(e.layer).ok()?,
-            expert: u16::try_from(e.expert).ok()?,
-            tier: self.tier,
-        })
-    }
 }
 
 /// The full plan for one tick. `planned_bytes[i]` is what the plan puts into
@@ -560,22 +549,6 @@ mod tests {
             &promo,
         );
         assert_eq!(second, first, "unchanged demand is a fixed point");
-    }
-
-    // what this catches: the fetch-key wire-through — the assignment's tier
-    // IS the ExpertKey tier (one identity, no translation layer), and
-    // out-of-range coordinates refuse loudly (None) rather than truncating
-    // into some other expert's bank slot.
-    #[test]
-    fn fetch_key_carries_the_tier_and_refuses_overflow() {
-        let a = ExpertAssignment {
-            tier: 1,
-            residency: PlannedResidency::Cold,
-            prefetch: false,
-        };
-        let key = a.fetch_key(e(3, 42)).expect("in-range key");
-        assert_eq!((key.layer, key.expert, key.tier), (3, 42, 1));
-        assert!(a.fetch_key(e(0, 70_000)).is_none(), "u16 overflow refuses");
     }
 
     // what this catches: an empty tier ladder (broken manifest — even v1

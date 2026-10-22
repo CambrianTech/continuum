@@ -423,21 +423,6 @@ pub fn get_bridge_pair(slot_id: u8) -> Option<Arc<IoSurfacePair>> {
     None
 }
 
-/// Called from ReadbackComplete observer in bevy_renderer.rs.
-/// Writes RGBA→NV12 directly to the slot's pre-allocated IOSurface.
-/// Returns true if frame was written (caller should skip channel path).
-pub fn try_write_bridge(slot_id: u8, pixel_bytes: &[u8]) -> bool {
-    if let Some(lock) = GPU_BRIDGES.get() {
-        if let Ok(guard) = lock.read() {
-            if let Some(Some(pair)) = guard.get(slot_id as usize) {
-                pair.write_frame(pixel_bytes);
-                return true;
-            }
-        }
-    }
-    false
-}
-
 // =============================================================================
 // GpuBridgePublisher — zero-copy FramePublisher using IOSurface
 // =============================================================================

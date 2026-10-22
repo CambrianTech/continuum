@@ -511,11 +511,6 @@ pub const MODULES: &[ModuleSpec] = &[
     // made `required_modules()` demand a module that no longer registers, which
     // hard-failed boot with "missing [search]" — the same trap as the retired
     // `inference` shell above.)
-    ModuleSpec::new(
-        "tool-parsing",
-        ServiceGroup::Inference,
-        ModuleCategory::Core,
-    ),
     ModuleSpec::new("vision", ServiceGroup::Inference, ModuleCategory::Core),
     ModuleSpec::new("models", ServiceGroup::Inference, ModuleCategory::Core),
     // Cognition — the brain (always-built modules + the persona-host conditionals)

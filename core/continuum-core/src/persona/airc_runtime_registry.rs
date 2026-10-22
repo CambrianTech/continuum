@@ -345,24 +345,6 @@ impl PersonaAircRuntimeRegistry {
         self.inner.get(&persona_id).map(|e| e.quiesced.clone())
     }
 
-    /// Is this persona's autonomic self-tick currently suspended? `false` if she
-    /// isn't online (a despawned persona initiates nothing anyway).
-    pub fn is_quiesced(&self, persona_id: Uuid) -> bool {
-        self.inner
-            .get(&persona_id)
-            .map(|e| e.quiesced.load(Ordering::Relaxed))
-            .unwrap_or(false)
-    }
-
-    /// Suspend / resume ONE persona's autonomic self-tick. No-op if she isn't
-    /// online. Prefer [`quiesce_all`] for measurement — its lease guarantees the
-    /// resume even if the eval panics.
-    pub fn set_quiesced(&self, persona_id: Uuid, quiesced: bool) {
-        if let Some(e) = self.inner.get(&persona_id) {
-            e.quiesced.store(quiesced, Ordering::Relaxed);
-        }
-    }
-
     /// Acquire an exclusive-measurement lease over the WHOLE live fleet: every
     /// online persona's autonomic self-tick suspends now, and RESTORES when the
     /// returned guard drops — including on panic / early-return, because `Drop`

@@ -25,7 +25,6 @@ pub mod consolidation_adapter;
 pub mod consolidation_pipeline;
 pub mod consolidation_threshold;
 pub mod consolidator;
-pub mod conversation_summary;
 pub mod corpus;
 pub mod embedding;
 pub mod raw_adapter;
@@ -42,7 +41,6 @@ pub use consolidation_adapter::{
 pub use consolidation_pipeline::{run_consolidation_pass, to_corpus_memory};
 pub use consolidation_threshold::{AdaptiveConsolidationThreshold, ConsolidationThresholdStats};
 pub use consolidator::{ConsolidationMetrics, Consolidator, ConsolidatorStats};
-pub use conversation_summary::{ConversationSummary, RecallMode};
 pub use corpus::MemoryCorpus;
 pub use embedding::{DeterministicEmbeddingProvider, EmbeddingProvider};
 pub use raw_adapter::RawMemoryAdapter;
@@ -73,9 +71,6 @@ impl std::error::Error for MemoryError {}
 const MAX_MEMORIES_PER_CORPUS: usize = 2000;
 /// Max timeline events per persona corpus before trimming (keep most recent).
 const MAX_EVENTS_PER_CORPUS: usize = 2000;
-/// Stale corpus TTL — evict if not accessed in 30 minutes.
-const CORPUS_STALE_TTL: Duration = Duration::from_secs(30 * 60);
-
 /// What the consciousness cache is keyed BY: a persona and a room, as two fields.
 ///
 /// This was `format!("{persona}:{room}")`, and the packing hid a live defect for as
@@ -471,26 +466,6 @@ impl PersonaMemoryManager {
     }
 
     // ─── Maintenance ──────────────────────────────────────────────────────────
-
-    /// Evict expired cache entries and stale corpora (call periodically).
-    pub fn evict_caches(&self) {
-        self.consciousness_cache.evict_expired();
-
-        // Evict stale corpora not accessed within TTL
-        let now = Instant::now();
-        let stale_personas: Vec<String> = self
-            .corpus_access_times
-            .iter()
-            .filter(|entry| now.duration_since(*entry.value()) > CORPUS_STALE_TTL)
-            .map(|entry| entry.key().clone())
-            .collect();
-
-        for persona_id in &stale_personas {
-            self.corpora.remove(persona_id);
-            self.corpus_access_times.remove(persona_id);
-            eprintln!("🧠 MemoryManager: Evicted stale corpus for {persona_id}");
-        }
-    }
 
     /// Get memory usage stats for debugging.
     pub fn memory_stats(&self) -> Vec<(String, usize, usize, usize)> {

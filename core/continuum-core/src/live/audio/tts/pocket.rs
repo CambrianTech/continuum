@@ -73,12 +73,6 @@ impl PocketTTS {
         Self { voice_dir: None }
     }
 
-    pub fn with_voice_dir(dir: PathBuf) -> Self {
-        Self {
-            voice_dir: Some(dir),
-        }
-    }
-
     /// Standard search directories for reference voice WAV files
     fn voice_search_dirs() -> Vec<PathBuf> {
         let mut dirs = vec![crate::live::audio::model_root::voice_model_path(
@@ -455,13 +449,6 @@ mod tests {
         let dirs = PocketTTS::voice_search_dirs();
         assert!(!dirs.is_empty());
         assert!(dirs[0].ends_with("models/pocket-tts/voices"));
-    }
-
-    #[test]
-    fn test_with_voice_dir() {
-        let dir = PathBuf::from("/tmp/test-voices");
-        let adapter = PocketTTS::with_voice_dir(dir);
-        assert!(adapter.voice_dir.is_some());
     }
 
     /// Integration test — requires model download (~400MB first run)

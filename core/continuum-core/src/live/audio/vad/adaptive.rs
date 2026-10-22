@@ -10,8 +10,7 @@
 //! - User moves from quiet room to noisy environment
 //! - Background noise changes over time
 
-use super::{VADError, VADResult, VoiceActivityDetection};
-use std::collections::VecDeque;
+use super::VoiceActivityDetection;
 use std::time::{Duration, Instant};
 
 /// Noise level estimation
@@ -134,14 +133,6 @@ pub struct AdaptiveVAD<V: VoiceActivityDetection> {
     /// Adaptive configuration
     config: AdaptiveConfig,
 
-    /// Recent silence RMS values (for noise estimation)
-    silence_rms_history: VecDeque<f32>,
-
-    /// Recent detection results (for FP/FN tracking)
-    recent_results: VecDeque<(bool, f32)>, // (is_speech, confidence)
-
-    /// Maximum history size
-    max_history: usize,
 }
 
 impl<V: VoiceActivityDetection> AdaptiveVAD<V> {
@@ -150,9 +141,6 @@ impl<V: VoiceActivityDetection> AdaptiveVAD<V> {
         Self {
             vad,
             config: AdaptiveConfig::default(),
-            silence_rms_history: VecDeque::new(),
-            recent_results: VecDeque::new(),
-            max_history: 100,
         }
     }
 
@@ -161,9 +149,6 @@ impl<V: VoiceActivityDetection> AdaptiveVAD<V> {
         Self {
             vad,
             config,
-            silence_rms_history: VecDeque::new(),
-            recent_results: VecDeque::new(),
-            max_history: 100,
         }
     }
 
@@ -175,74 +160,6 @@ impl<V: VoiceActivityDetection> AdaptiveVAD<V> {
     /// Get estimated noise level
     pub fn noise_level(&self) -> NoiseLevel {
         self.config.noise_level
-    }
-
-    /// Calculate RMS of audio frame
-    fn calculate_rms(samples: &[i16]) -> f32 {
-        if samples.is_empty() {
-            return 0.0;
-        }
-
-        let sum_squares: f64 = samples.iter().map(|&s| (s as f64) * (s as f64)).sum();
-
-        ((sum_squares / samples.len() as f64).sqrt()) as f32
-    }
-
-    /// Process frame and adapt thresholds
-    pub fn detect_adaptive(&mut self, samples: &[i16]) -> Result<VADResult, VADError> {
-        // Get raw VAD result
-        let result = self.vad.detect(samples)?;
-
-        // Track result
-        self.recent_results
-            .push_back((result.is_speech, result.confidence));
-        if self.recent_results.len() > self.max_history {
-            self.recent_results.pop_front();
-        }
-
-        // Update noise estimation if silence
-        if !result.is_speech {
-            let rms = Self::calculate_rms(samples);
-            self.silence_rms_history.push_back(rms);
-            if self.silence_rms_history.len() > self.max_history {
-                self.silence_rms_history.pop_front();
-            }
-
-            // Re-estimate noise level periodically
-            if self.silence_rms_history.len() >= 50 {
-                let noise_samples: Vec<f32> = self.silence_rms_history.iter().copied().collect();
-                let estimated_level = AdaptiveConfig::estimate_noise_level(&noise_samples);
-
-                if estimated_level != self.config.noise_level {
-                    self.config.update_for_noise_level(estimated_level);
-                }
-            }
-        }
-
-        // Apply adaptive threshold
-        let is_speech_adaptive = result.confidence > self.config.silero_threshold;
-
-        Ok(VADResult {
-            is_speech: is_speech_adaptive,
-            confidence: result.confidence,
-        })
-    }
-
-    /// Report user feedback (for improving adaptation)
-    ///
-    /// Call this when user corrects VAD mistakes:
-    /// - false_positive: VAD detected speech but it was noise
-    /// - false_negative: VAD missed speech
-    pub fn report_user_feedback(&mut self, false_positive: bool, false_negative: bool) {
-        if false_positive {
-            // Too many false positives - raise threshold
-            self.config.silero_threshold = (self.config.silero_threshold + 0.02).min(0.6);
-        }
-
-        if false_negative {
-            // Missed speech - lower threshold
-            self.config.silero_threshold = (self.config.silero_threshold - 0.02).max(0.15);
-        }
     }
 
     /// Get current configuration

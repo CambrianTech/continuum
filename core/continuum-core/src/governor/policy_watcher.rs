@@ -59,17 +59,6 @@ impl PolicyDirectoryWatcher {
             .clone()
     }
 
-    pub fn reload_now(&self) -> Result<usize, PolicyDirectoryError> {
-        reload_policy_candidates(&self.governor, &self.policy_dir)
-    }
-
-    pub fn clear_last_error(&self) {
-        let mut guard = self
-            .last_error
-            .lock()
-            .unwrap();
-        *guard = None;
-    }
 }
 
 pub fn watch_policy_directory(
@@ -352,23 +341,6 @@ provenance_trust      = 0.1
         assert_eq!(watcher.policy_dir(), dir.path());
         assert_eq!(watcher.candidate_count(), 1);
         assert_eq!(watcher.last_error(), None);
-    }
-
-    #[test]
-    fn watcher_reload_now_uses_same_strict_loader() {
-        let dir = tempfile::tempdir().expect("tempdir should be creatable");
-        write(dir.path().join("air.toml"), AIR_POLICY);
-        let governor = Arc::new(LocalSubstrateGovernor::new(initial_policy()));
-        let watcher = watch_policy_directory(dir.path(), Arc::clone(&governor))
-            .expect("valid directory should start watcher");
-        write(dir.path().join("nvidia.toml"), NVIDIA_POLICY);
-
-        let count = watcher
-            .reload_now()
-            .expect("manual reload should load both");
-
-        assert_eq!(count, 2);
-        assert_eq!(governor.candidate_count(), 2);
     }
 
     #[test]

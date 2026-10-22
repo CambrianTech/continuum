@@ -202,11 +202,6 @@ pub async fn spawn_node_pump(
     Ok(peer)
 }
 
-/// Whether the node pump TASK is running (liveness is the task, not the handle).
-pub fn node_pump_alive() -> bool {
-    NODE_PUMP.get().is_some_and(|(p, _)| p.is_alive())
-}
-
 static NODE_PUMP: std::sync::OnceLock<(PersonaCommandInboundPump, watch::Sender<u64>)> =
     std::sync::OnceLock::new();
 

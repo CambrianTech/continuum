@@ -197,14 +197,6 @@ impl ChangeGraph {
         self.nodes.is_empty()
     }
 
-    /// List all files that have been modified in this workspace.
-    pub fn modified_files(&self) -> Vec<String> {
-        self.file_index
-            .iter()
-            .map(|entry| entry.key().clone())
-            .collect()
-    }
-
     /// Get the workspace ID this graph belongs to.
     pub fn workspace_id(&self) -> &str {
         &self.workspace_id
@@ -389,19 +381,6 @@ mod tests {
 
         let latest = graph.latest_for_file("src/main.ts").unwrap();
         assert_eq!(latest.id, id2);
-    }
-
-    #[test]
-    fn test_modified_files() {
-        let graph = ChangeGraph::new("test-workspace");
-
-        graph.record(make_node("src/a.ts", "Edit a"));
-        graph.record(make_node("src/b.ts", "Edit b"));
-        graph.record(make_node("src/a.ts", "Edit a again"));
-
-        let mut files = graph.modified_files();
-        files.sort();
-        assert_eq!(files, vec!["src/a.ts", "src/b.ts"]);
     }
 
     #[test]

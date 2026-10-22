@@ -55,8 +55,6 @@
 //! algorithm). The `RagBudgetAdapter` trait + per-profile presets
 //! handle the variability cleanly; the math doesn't care.
 
-use std::sync::Arc;
-
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 

@@ -494,28 +494,6 @@
         );
     }
 
-    /// What this catches: set_thresholds replaces the cascade
-    /// threshold values used by on_pressure_signal. PR-3d's file
-    /// watcher uses this to hot-reload policy.
-    #[test]
-    fn set_thresholds_changes_evaluation_behavior() {
-        use crate::governor::cascade::CascadeThresholds;
-        let g = LocalSubstrateGovernor::new(initial_policy());
-        // Raise the speculation-advance threshold to 0.9 so 0.7 (which
-        // would advance with default 0.5) now Holds.
-        let custom = CascadeThresholds {
-            spec_miss_rate_advance: 0.9,
-            ..CascadeThresholds::default()
-        };
-        g.set_thresholds(custom);
-        g.on_pressure_signal(PressureSignal::SpeculationMissRate { rate: 0.7 });
-        assert_eq!(
-            g.current_cascade_step(),
-            0,
-            "raised threshold means 0.7 no longer advances"
-        );
-    }
-
     // ===== PR-3c4: apply_cascade_step_to_policy wiring + base/active split =====
 
     /// What this catches: cascade Advance derives active policy from

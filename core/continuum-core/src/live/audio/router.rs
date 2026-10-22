@@ -79,10 +79,6 @@ impl RoutedParticipant {
         self.routing.capabilities.needs_tts()
     }
 
-    /// Check if this participant produces native audio
-    pub fn produces_native_audio(&self) -> bool {
-        self.routing.capabilities.audio_output && !self.is_human
-    }
 }
 
 /// Events routed by the AudioRouter
@@ -342,10 +338,6 @@ impl AudioRouter {
             .collect()
     }
 
-    /// Create routing for a model by ID
-    pub fn create_routing(&self, model_id: &str) -> AudioRouting {
-        AudioRouting::for_model(model_id, &self.registry)
-    }
 }
 
 impl Default for AudioRouter {

@@ -136,22 +136,6 @@ impl LlamaCppAdapter {
         })
     }
 
-    /// Override max ubatch size — typically not needed when using
-    /// `for_persona`; kept for legacy call sites and tests that
-    /// construct ad-hoc adapters without a full profile.
-    pub fn with_n_ubatch(mut self, n: u32) -> Self {
-        self.n_ubatch_override = Some(n);
-        self
-    }
-
-    /// Override GPU offload depth. `-1` = all on GPU; `0` = CPU only;
-    /// N = bottom N layers on GPU. As with `with_n_ubatch`, legacy
-    /// path — production code paths go through `for_persona`.
-    pub fn with_n_gpu_layers(mut self, n: i32) -> Self {
-        self.n_gpu_layers_override = Some(n);
-        self
-    }
-
     /// Override the per-sequence context budget. Pass smaller-than-trained
     /// to bound the KV cache allocation (qwen3.5-4b @ 262K = 24GB; @ 16K
     /// = 500MB). Tests should always set this to keep the suite cheap and
@@ -410,13 +394,6 @@ impl LlamaCppAdapter {
         Ok(arc)
     }
 
-    /// The most recent measured decode throughput in tokens/sec.
-    /// Used for the GPU-observability hook — surface this in
-    /// `TextGenerationResponse.routing` so chat can see whether the
-    /// last inference looked GPU-fast or CPU-slow.
-    pub fn last_throughput(&self) -> f64 {
-        *self.last_throughput_tok_s.read()
-    }
 }
 
 impl Default for LlamaCppAdapter {

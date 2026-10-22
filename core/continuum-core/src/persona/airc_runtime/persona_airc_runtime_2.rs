@@ -146,16 +146,6 @@ impl PersonaAircRuntime {
         Ok(())
     }
 
-    /// Whether this runtime currently has the command inbound pump
-    /// installed. `true` after `bootstrap` (always) or after a
-    /// successful `install_command_pump` call. Useful for tests +
-    /// telemetry to confirm the persona is addressable.
-    /// Whether the citizen is addressable for cross-grid commands RIGHT NOW:
-    /// a pump whose task is still running, not merely a handle.
-    pub fn has_command_pump(&self) -> bool {
-        self.command_pump.as_ref().is_some_and(|p| p.is_alive())
-    }
-
     /// The persona's stable continuum identifier.
     pub fn persona_id(&self) -> Uuid {
         self.persona_id
