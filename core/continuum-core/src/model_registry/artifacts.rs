@@ -229,15 +229,39 @@ pub fn gguf_has_embedded_mtp(gguf: &Path) -> bool {
         }
         Some(false)
     }
-    scan(gguf).unwrap_or(false)
+    match scan(gguf) {
+        Some(found) => found,
+        None => {
+            // An unreadable or malformed header is not "no embedded head": name it.
+            continuum_base::probe!(
+                class = "serving.mtp.embedded_scan_failed",
+                path = %gguf.display(),
+                "the GGUF header could not be scanned for embedded MTP heads: serving without a draft"
+            );
+            false
+        }
+    }
 }
 
 /// Find an MTP draft-head GGUF sitting in `dir` — an `mtp-*.gguf` sibling of the
 /// model's GGUF. When several quants of the head are present, newest-mtime wins
 /// (same tie-break as main-model candidate selection).
 fn find_mtp_draft_beside(dir: &Path) -> Option<PathBuf> {
-    let candidates: Vec<PathBuf> = fs::read_dir(dir)
-        .ok()?
+    let entries = match fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(error) => {
+            // A directory we cannot list is not "no draft shipped": speculative decode is
+            // lost either way, but only this one is a defect (card eaeead64).
+            continuum_base::probe!(
+                class = "serving.mtp.draft_lookup_failed",
+                dir = %dir.display(),
+                error = %error,
+                "the model's directory could not be listed for an MTP draft head: serving without one"
+            );
+            return None;
+        }
+    };
+    let candidates: Vec<PathBuf> = entries
         .flatten()
         .filter_map(|entry| {
             let path = entry.path();
@@ -377,7 +401,7 @@ pub fn resolve_device_fit_override(
     model_id: &str,
     usable_bytes: u64,
 ) -> Option<crate::capacity::device_fit::ResidentOverride> {
-    let dir = device_fit_cache_dir(model_id);
+    let dir = device_fit_cache_dir(model_id)?;
     if !dir.is_dir() {
         return None;
     }
@@ -400,7 +424,7 @@ pub fn resolve_device_fit_override(
 /// `<storage_root>/device-fit/<normalized id>/`. A convention (mirrors
 /// [`local_model_roots`]), never a hardcoded operator path. Public because the
 /// division actuator discovers its `*.resident.json` tier manifests here.
-pub fn device_fit_cache_dir(model_id: &str) -> PathBuf {
+pub fn device_fit_cache_dir(model_id: &str) -> Option<PathBuf> {
     let slug: String = model_id
         .chars()
         .map(|c| {
@@ -411,47 +435,29 @@ pub fn device_fit_cache_dir(model_id: &str) -> PathBuf {
             }
         })
         .collect();
-    storage_root().join("device-fit").join(slug)
+    Some(storage_root()?.join("device-fit").join(slug))
 }
 
 fn local_model_roots() -> Vec<PathBuf> {
-    let mut roots = Vec::new();
-    if let Some(home) = home_dir_string() {
-        roots.push(
-            PathBuf::from(&home)
-                .join(".continuum")
-                .join("genome")
-                .join("models"),
-        );
+    // The home's model dir, then the configured storage tier's when it is elsewhere.
+    let layouts = [
+        crate::paths::ContinuumLayout::home().ok(),
+        crate::paths::configured_storage_root().map(crate::paths::ContinuumLayout::at),
+    ];
+    let mut out: Vec<PathBuf> = Vec::new();
+    for models in layouts.into_iter().flatten().map(|layout| layout.genome_models()) {
+        if !out.contains(&models) {
+            out.push(models);
+        }
     }
-    let storage_models = storage_root().join("genome").join("models");
-    if !roots.iter().any(|p| p == &storage_models) {
-        roots.push(storage_models);
-    }
-    roots
+    out
 }
 
-fn storage_root() -> PathBuf {
-    if let Ok(storage) = std::env::var("CONTINUUM_STORAGE_PATH") {
-        if !storage.trim().is_empty() {
-            return PathBuf::from(storage);
-        }
-    }
-    if let Some(home) = home_dir_string() {
-        let config_path = PathBuf::from(&home).join(".continuum").join("config.env");
-        if let Ok(content) = fs::read_to_string(config_path) {
-            for line in content.lines() {
-                if let Some(value) = line.trim().strip_prefix("CONTINUUM_STORAGE_PATH=") {
-                    let value = value.trim();
-                    if !value.is_empty() {
-                        return PathBuf::from(value);
-                    }
-                }
-            }
-        }
-        return PathBuf::from(home).join(".continuum");
-    }
-    PathBuf::from("/tmp").join(".continuum")
+/// Where large derived data lives: the configured storage tier, else the continuum home
+/// (both resolved by `paths`, the one owner). `None` with neither: there is no root to
+/// write to, never a guessed `/tmp`.
+fn storage_root() -> Option<PathBuf> {
+    crate::paths::configured_storage_root().or_else(|| crate::paths::continuum_home().ok())
 }
 
 /// Split a model or directory name into normalized identity tokens: lowercase,

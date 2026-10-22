@@ -42,7 +42,7 @@
 
 use std::sync::Arc;
 
-use super::adapter::{ArcFineTuningAdapter, FineTuningCapabilities};
+use super::adapter::{ArcFineTuningAdapter, FineTuningCapabilities, TrainingPlace};
 use super::registry::FineTuningRegistry;
 use super::types::TrainingJobRequest;
 use crate::inference_capability::{probe_hardware_profile, HardwareProfile};
@@ -212,34 +212,18 @@ impl FineTuningCoordinator {
         true
     }
 
-    /// Rank (lower = preferred). Three tiers:
-    ///   0 — host-native accelerator trainer (Apple `mlx-local` on a
-    ///       Metal host, a CUDA trainer on an NVIDIA host): the fast,
-    ///       owned, on-device path.
-    ///   1 — accelerator-agnostic local-artifact trainer (Candle).
-    ///   2 — everything else (cloud).
-    /// This is what makes "Apple→mlx, NVIDIA→cuda, else→generic/cloud"
-    /// automatic: a new accelerator trainer that advertises its
-    /// `requires` lands in tier 0 on its native host with zero
-    /// coordinator change. Future signals (cost, pressure, reputation)
-    /// slot in as additional tiers or fractional adjustments here.
-    /// THE STATE WALK (ONE-RESIDENT-MODEL §4.6): the trainer on the RESIDENT weights first,
-    /// then a process trainer built for this host's accelerator, then any local trainer,
-    /// then the rest. Before 2026-10-05 the engine trainer declared `requires: Any` (it
-    /// needs no accelerator of its own, the lane holds the weights) and so ranked BELOW
-    /// `cuda-local` on the very machine where the resident engine should win: Kimi's
-    /// first gene (job bcb7316f) went to the separate Python trainer and parked forever
-    /// waiting for 30 GB the serving lane holds.
-    fn rank(&self, caps: &FineTuningCapabilities) -> u8 {
-        if caps.trains_on_resident_weights {
-            0
-        } else if caps.requires.is_specific_accelerator() && caps.requires.satisfied_by(&self.host) {
-            1
-        } else if caps.produces_local_artifact {
-            2
-        } else {
-            3
-        }
+    /// THE STATE WALK (ONE-RESIDENT-MODEL §S3): rank by the trainer's declared
+    /// [`TrainingPlace`] (the resident weights here, a grid peer's lane, a separate copy
+    /// here, the CPU here, a cloud service), then the alphabetical tie-break in `select`.
+    /// Before 2026-10-05 the engine trainer declared `requires: Any` and so ranked BELOW
+    /// `cuda-local` on the very machine where the resident engine should win: Kimi's first
+    /// gene (job bcb7316f) went to the separate Python trainer and parked forever waiting
+    /// for 30 GB the serving lane holds. A place is declared, never inferred from hardware.
+    fn rank(&self, caps: &FineTuningCapabilities) -> (TrainingPlace, bool) {
+        // Within one place a trainer built for THIS host's accelerator goes first (on Apple
+        // Silicon the MLX copy before the generic one), until the separate copies are gone.
+        let native = caps.requires.is_specific_accelerator() && caps.requires.satisfied_by(&self.host);
+        (caps.place, !native)
     }
 }
 
@@ -307,7 +291,7 @@ mod tests {
             // Existing tests exercise base-prefix / locality / lora /
             // validation gates with host-agnostic adapters.
             requires: TrainerHardware::Any,
-            trains_on_resident_weights: false,
+            place: if produces_local_artifact { TrainingPlace::SeparateCopyHere } else { TrainingPlace::Cloud },
         }
     }
 

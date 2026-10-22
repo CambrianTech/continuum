@@ -664,31 +664,31 @@
     fn placement_is_gpu_first_cpu_only_when_full_or_absent() {
         const GB: u64 = 1024 * 1024 * 1024;
         // 64GB box, 14B resident → ~50GB free; 4B base ~3GB footprint → GPU.
-        let (p, why) = choose_lane_placement(Some(50 * GB), Some(3 * GB));
+        let (p, why) = crate::cognition::single_purpose_lane::choose_lane_placement(Some(50 * GB), Some(3 * GB));
         assert_eq!(p, LanePlacement::Gpu, "fits with room to spare: {why}");
         // GPU genuinely full (free below footprint+margin) → CPU spill, and SAID so.
-        let (p, why) = choose_lane_placement(Some(2 * GB), Some(3 * GB));
+        let (p, why) = crate::cognition::single_purpose_lane::choose_lane_placement(Some(2 * GB), Some(3 * GB));
         assert_eq!(p, LanePlacement::Cpu, "no headroom must spill to CPU");
         assert!(
             why.contains("GPU full"),
             "the spill must name the reason: {why}"
         );
         // No GPU monitor on the node → CPU is the only device (honest, not a fallback).
-        let (p, _) = choose_lane_placement(None, Some(3 * GB));
+        let (p, _) = crate::cognition::single_purpose_lane::choose_lane_placement(None, Some(3 * GB));
         assert_eq!(
             p,
             LanePlacement::Cpu,
             "no GPU backend → CPU is the only device"
         );
         // Couldn't size the base → GPU-first optimism, never idle the accelerator.
-        let (p, _) = choose_lane_placement(Some(50 * GB), None);
+        let (p, _) = crate::cognition::single_purpose_lane::choose_lane_placement(Some(50 * GB), None);
         assert_eq!(
             p,
             LanePlacement::Gpu,
             "unknown footprint defaults to GPU-first"
         );
         // Exactly at the margin edge counts as fitting (>= margin).
-        let (p, _) = choose_lane_placement(Some(3 * GB + GPU_PLACEMENT_MARGIN_BYTES), Some(3 * GB));
+        let (p, _) = crate::cognition::single_purpose_lane::choose_lane_placement(Some(3 * GB + crate::cognition::single_purpose_lane::GPU_PLACEMENT_MARGIN_BYTES), Some(3 * GB));
         assert_eq!(
             p,
             LanePlacement::Gpu,
@@ -817,14 +817,14 @@
     #[test]
     fn eval_lane_memory_veto_refuses_at_high_pressure_or_closed_gate() {
         use crate::system_resources::PressureLevel;
-        assert!(eval_lane_memory_veto(PressureLevel::Normal, false).is_ok());
-        assert!(eval_lane_memory_veto(PressureLevel::Warning, false).is_ok());
-        assert!(eval_lane_memory_veto(PressureLevel::High, false).is_err());
-        assert!(eval_lane_memory_veto(PressureLevel::Critical, false).is_err());
+        assert!(crate::cognition::single_purpose_lane::lane_memory_veto(PressureLevel::Normal, false).is_ok());
+        assert!(crate::cognition::single_purpose_lane::lane_memory_veto(PressureLevel::Warning, false).is_ok());
+        assert!(crate::cognition::single_purpose_lane::lane_memory_veto(PressureLevel::High, false).is_err());
+        assert!(crate::cognition::single_purpose_lane::lane_memory_veto(PressureLevel::Critical, false).is_err());
         // Sustained gate closed vetoes even when the instantaneous level looks calm
         // (the gate encodes "we were drowning seconds ago — don't re-load yet").
-        assert!(eval_lane_memory_veto(PressureLevel::Normal, true).is_err());
-        let err = eval_lane_memory_veto(PressureLevel::Critical, false).unwrap_err();
+        assert!(crate::cognition::single_purpose_lane::lane_memory_veto(PressureLevel::Normal, true).is_err());
+        let err = crate::cognition::single_purpose_lane::lane_memory_veto(PressureLevel::Critical, false).unwrap_err();
         assert!(
             err.to_string().contains("memory pressure"),
             "refusal must name the cause for the detached ledger: {err}"
@@ -839,23 +839,23 @@
     // node whose probe is momentarily blind — pressure gate + placement lease backstop).
     #[test]
     fn eval_lane_ram_veto_refuses_only_a_known_oversize_lane() {
-        const H: u64 = EVAL_LANE_RAM_HEADROOM_BYTES;
+        const H: u64 = crate::cognition::single_purpose_lane::LANE_RAM_HEADROOM_BYTES;
         let gb = |n: u64| n * 1024 * 1024 * 1024;
         // 14 GB lane + 2 GB headroom = 16 GB needed; 9.6 GB free → refuse (the exact case).
-        let err = eval_lane_ram_veto(Some(9_600_000_000), Some(gb(14)), H).unwrap_err();
+        let err = crate::cognition::single_purpose_lane::lane_ram_veto(Some(9_600_000_000), Some(gb(14)), H).unwrap_err();
         assert!(
             err.to_string().contains("free physical memory") && err.to_string().contains("OOM"),
             "refusal must name the OOM wall for the detached ledger: {err}"
         );
         // Comfortably fits (50 GB free, 14 GB lane) → pass.
-        assert!(eval_lane_ram_veto(Some(gb(50)), Some(gb(14)), H).is_ok());
+        assert!(crate::cognition::single_purpose_lane::lane_ram_veto(Some(gb(50)), Some(gb(14)), H).is_ok());
         // Exactly footprint+headroom is enough (>= boundary), one byte less is not.
-        assert!(eval_lane_ram_veto(Some(gb(14) + H), Some(gb(14)), H).is_ok());
-        assert!(eval_lane_ram_veto(Some(gb(14) + H - 1), Some(gb(14)), H).is_err());
+        assert!(crate::cognition::single_purpose_lane::lane_ram_veto(Some(gb(14) + H), Some(gb(14)), H).is_ok());
+        assert!(crate::cognition::single_purpose_lane::lane_ram_veto(Some(gb(14) + H - 1), Some(gb(14)), H).is_err());
         // Unknown footprint OR unknown free bytes → never a veto (can't size = don't block).
-        assert!(eval_lane_ram_veto(Some(gb(1)), None, H).is_ok());
-        assert!(eval_lane_ram_veto(None, Some(gb(14)), H).is_ok());
-        assert!(eval_lane_ram_veto(None, None, H).is_ok());
+        assert!(crate::cognition::single_purpose_lane::lane_ram_veto(Some(gb(1)), None, H).is_ok());
+        assert!(crate::cognition::single_purpose_lane::lane_ram_veto(None, Some(gb(14)), H).is_ok());
+        assert!(crate::cognition::single_purpose_lane::lane_ram_veto(None, None, H).is_ok());
     }
 
     // what this catches: the warm-pool key lifecycle — a dead Weak (last handle

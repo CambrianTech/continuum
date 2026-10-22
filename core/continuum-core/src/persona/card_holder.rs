@@ -215,7 +215,8 @@ pub fn claimable_now(card: &WorkCard, now_ms: u64) -> bool {
 }
 
 // Board renderers and claim selection must agree even when column and lease
-// differ: an Open card with a live claim is still held.
+// differ: a live claim holds the card whatever its column says. (Open can no longer
+// carry one: airc ends the claim on a transition to Open, #1598, card 12afbb2f.)
 fn claimable_hold(hold: Hold, state: airc_work::model::CardState) -> bool {
     if refused_by_claim(state) {
         return false;

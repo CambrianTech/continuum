@@ -6,11 +6,11 @@ use super::*;
 /// the 5090's lane while its engine was still b10765-965d38a90, because the deploy consumer
 /// converges the core but not the engine). Unknown — no probe, no answer — is NO: in-engine
 /// training is never worth a lane.
-pub(super) static ENGINE_TRAIN_DIR: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+pub(super) static ENGINE_TRAIN_DIR: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 
 pub fn engine_accepts_train_dir() -> bool {
-    ENGINE_TRAIN_DIR.get().copied().unwrap_or(false) // unwrap_or: unprobed is "does not accept", the only answer that cannot keep a lane from starting
+    ENGINE_TRAIN_DIR.load(std::sync::atomic::Ordering::Relaxed) // unprobed or unanswered is false: the one answer that cannot keep a lane from starting
 }
 
 

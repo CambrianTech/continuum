@@ -163,7 +163,7 @@ pub enum DeployGate {
     /// Clear by every caller — but named so the caller can SAY it swept a stale claim
     /// rather than pretending the file was never there.
     Abandoned { pid: i32, age_ms: u64, why: AbandonReason },
-    /// A live deploy that is WAITING for CI to publish its core (see [`WaitMarker`]). Nothing
+    /// A live deploy waiting for publication or admission (see [`WaitMarker`]). Nothing
     /// is building beside the core and nothing is swapped, so it does not block: a launch now
     /// launches the build that is installed and running, and a decode measured now measures
     /// the lane. It still excludes another deploy, which would check a tree out under it.
@@ -171,6 +171,7 @@ pub enum DeployGate {
         pid: i32,
         age_ms: u64,
         target_sha: String,
+        kind: Option<WaitKind>,
     },
 }
 
@@ -233,6 +234,15 @@ pub struct WaitMarker {
     pub pid: i32,
     /// Epoch-ms of the last wait tick.
     pub stamped_ms: u64,
+    /// Older consumers did not distinguish admission from publication waits.
+    #[serde(default)]
+    pub kind: Option<WaitKind>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum WaitKind {
+    Publication,
+    Admission,
 }
 
 /// How long a wait tick's stamp vouches for the wait: three of the consumer's 60 s ticks. A
@@ -246,7 +256,7 @@ pub fn with_wait(gate: DeployGate, marker: Option<&WaitMarker>, now_ms: u64) -> 
         DeployGate::InProgress { pid, age_ms, target_sha }
             if marker.is_some_and(|m| m.pid == pid && now_ms.saturating_sub(m.stamped_ms) < WAIT_MARKER_FRESH_MS) =>
         {
-            DeployGate::Waiting { pid, age_ms, target_sha }
+            DeployGate::Waiting { pid, age_ms, target_sha, kind: marker.and_then(|m| m.kind) }
         }
         gate => gate,
     }
@@ -322,11 +332,15 @@ pub fn wait_marker_path(root: &Path) -> PathBuf {
 
 /// Stamp the wait marker for `pid` (each wait tick). Write-then-rename, like the claim.
 pub fn mark_waiting(root: &Path, pid: i32, now_ms: u64) -> std::io::Result<()> {
+    mark_waiting_for(root, pid, now_ms, WaitKind::Publication)
+}
+
+pub fn mark_waiting_for(root: &Path, pid: i32, now_ms: u64, kind: WaitKind) -> std::io::Result<()> {
     let path = wait_marker_path(root);
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)?;
     }
-    let body = serde_json::to_string(&WaitMarker { pid, stamped_ms: now_ms }) // disk format: the wait marker file beside the claim
+    let body = serde_json::to_string(&WaitMarker { pid, stamped_ms: now_ms, kind: Some(kind) }) // disk format: the wait marker file beside the claim
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
     let tmp = path.with_extension(format!("waiting.tmp.{pid}"));
     std::fs::write(&tmp, body)?;
@@ -698,7 +712,7 @@ mod tests {
     fn a_deploy_waiting_on_ci_excludes_another_deploy_but_blocks_nothing() {
         let now = 10_000_000u64;
         let live = decide(Some(&claim(4242, 1_000)), true, now);
-        let mark = |pid, stamped_ms| WaitMarker { pid, stamped_ms };
+        let mark = |pid, stamped_ms| WaitMarker { pid, stamped_ms, kind: Some(WaitKind::Publication) };
         let waiting = with_wait(live.clone(), Some(&mark(4242, now - 60_000)), now);
         assert!(matches!(waiting, DeployGate::Waiting { pid: 4242, .. }), "{waiting:?}");
         assert!(!waiting.blocks(), "a wait is not a swap: launches and decode samples go on");
@@ -711,6 +725,25 @@ mod tests {
         assert_eq!(with_wait(DeployGate::Clear, Some(&mark(4242, now)), now), DeployGate::Clear);
         let dead = decide(Some(&claim(4242, 1_000)), false, now);
         assert_eq!(with_wait(dead.clone(), Some(&mark(4242, now)), now), dead);
+    }
+
+    // Admission must remain visible without blocking serving or allowing a second deploy.
+    // Legacy markers cannot be reported as publication evidence they never recorded.
+    #[test]
+    fn admission_and_legacy_waits_preserve_custody_without_inventing_a_reason() -> Result<(), serde_json::Error> {
+        let now = 10_000_000;
+        let live = decide(Some(&claim(4242, 1_000)), true, now);
+        let admission = WaitMarker { pid: 4242, stamped_ms: now, kind: Some(WaitKind::Admission) };
+        let encoded = serde_json::to_string(&admission)?;
+        let decoded: WaitMarker = serde_json::from_str(&encoded)?;
+        let gate = with_wait(live.clone(), Some(&decoded), now);
+        assert!(matches!(gate, DeployGate::Waiting { kind: Some(WaitKind::Admission), .. }));
+        assert!(!gate.blocks() && gate.excludes_deploy());
+        let legacy: WaitMarker = serde_json::from_str(r#"{"pid":4242,"stamped_ms":10000000}"#)?;
+        let gate = with_wait(live, Some(&legacy), now);
+        assert!(matches!(gate, DeployGate::Waiting { kind: None, .. }));
+        assert!(!gate.blocks() && gate.excludes_deploy());
+        Ok(())
     }
 
     // what this catches: the marker's life on disk, as the core reads it. While its own deploy
