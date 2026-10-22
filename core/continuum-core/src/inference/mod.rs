@@ -53,6 +53,7 @@ pub mod engine_residency;
 pub mod llama_server;
 pub mod llamacpp_adapter;
 pub mod measured_hold;
+pub mod page_ref;
 pub mod slots;
 pub mod sse_stream;
 pub mod llm_module;

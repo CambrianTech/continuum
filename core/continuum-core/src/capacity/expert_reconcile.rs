@@ -23,8 +23,8 @@ use std::collections::HashSet;
 use super::expert_pager::plan_expert_residency_budgeted;
 use super::expert_residency::{ExpertActivationProfile, ExpertId, ExpertResidencyPlan};
 use super::SystemProfile;
-use crate::genome::expert_ingest::expert_set_artifact_id;
-use crate::genome::working_set::{PageKind, PageOffset, PageRef};
+use crate::inference_capability::expert_layout::expert_set_artifact_id;
+use crate::inference::page_ref::{PageKind, PageOffset, PageRef};
 
 /// Map an [`ExpertId`] to its genome [`PageRef`]: the per-layer expert-set artifact
 /// (keyed by `(gguf_id, layer)`), with the expert selected by index. THE one place the

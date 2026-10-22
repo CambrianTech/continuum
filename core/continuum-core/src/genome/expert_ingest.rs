@@ -11,28 +11,12 @@
 
 use std::path::Path;
 
-use uuid::Uuid;
-
 use super::blob::{ArtifactBlob, Provenance};
-use super::expert_layout::{locate_layer_sets, ExpertLayoutError};
+use crate::inference_capability::expert_layout::{expert_set_artifact_id, locate_layer_sets, ExpertLayoutError};
 use super::store::TierStore;
 use super::tier::TierError;
-use super::working_set::{ArtifactId, PageKind, PageOffset, PageRef};
+use crate::inference::page_ref::{PageKind, PageOffset, PageRef};
 use candle_core::quantized::gguf_file::Content;
-
-/// Stable namespace for `(gguf_id, layer)` → expert-set `ArtifactId` derivation.
-/// A fixed constant so the same GGUF layer always yields the same artifact id on
-/// any machine (deterministic, content-addressed at model+layer granularity).
-const EXPERT_SET_NAMESPACE: Uuid = Uuid::from_u128(0x6b33_e17e_5ea1_4c0d_9a11_e59e0f7ac001);
-
-/// The deterministic artifact id for one layer's expert set of a given GGUF.
-/// `gguf_id` is the model's own content identity (registry id / blob hash) —
-/// same model + same layer → same id, so re-ingest is idempotent and two nodes
-/// agree on the id without coordination.
-pub fn expert_set_artifact_id(gguf_id: &str, layer: u32) -> ArtifactId {
-    let key = format!("{gguf_id}:{layer}");
-    ArtifactId::new(Uuid::new_v5(&EXPERT_SET_NAMESPACE, key.as_bytes()))
-}
 
 /// What an ingest run registered.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -280,5 +264,28 @@ mod tests {
             IngestError::Layout(ExpertLayoutError::NotMoe)
         ));
         assert!(tier.writes.lock().unwrap().is_empty());
+    }
+
+    // what this catches: the locator (write side, the engine's GGUF reader) and the
+    // resolver (read side, `ArtifactSource::expert_ranges`) drifting apart: feeding a
+    // located layer set into `ArtifactSource::Mapped` must reproduce the exact
+    // stride-slices (moved here from the locator's tests when it moved to the engine).
+    #[test]
+    fn a_located_layer_set_resolves_to_its_exact_stride_slices() {
+        let ct = crate::inference_capability::expert_layout::tests::two_layer_moe();
+        let sets = locate_layer_sets(&ct, "qwen3moe").expect("the fixture is MoE");
+        let s = &sets[0];
+        // Cross-check: build the artifact source and resolve expert 3 — it must
+        // match base + 3*(256/4)=+192, stride 64 in each projection.
+        let src = ArtifactSource::Mapped {
+            path: PathBuf::from("/frozen/k3.gguf"),
+            n_experts: s.n_experts,
+            projections: s.projections.clone(),
+        };
+        assert_eq!(
+            src.expert_ranges(3),
+            Some(vec![(1000 + 192, 64), (1256 + 192, 64), (1512 + 192, 64)])
+        );
+        assert_eq!(src.expert_size_bytes(0), Some(64 * 3));
     }
 }

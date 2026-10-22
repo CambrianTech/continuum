@@ -5,7 +5,7 @@
     use super::*;
     use crate::genome::blob::{ArtifactBlob, Provenance};
     use crate::genome::tier::{EvictionRecord, TierCapacity};
-    use crate::genome::working_set::{ArtifactId, PageKind, PageOffset};
+    use crate::inference::page_ref::{ArtifactId, PageKind, PageOffset};
     use parking_lot::Mutex;
     use std::sync::Arc;
     use uuid::Uuid;

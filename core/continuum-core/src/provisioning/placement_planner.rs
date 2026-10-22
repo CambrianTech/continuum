@@ -127,7 +127,7 @@ pub fn resolve_from_footprint(
 ///
 /// `is_moe` is the caller's GGUF-derived verdict — MoE-ness is a FACT the GGUF
 /// carries (`{arch}.expert_count`), read via
-/// [`locate_layer_sets`](crate::genome::expert_layout::locate_layer_sets) /
+/// [`locate_layer_sets`](crate::inference_capability::expert_layout::locate_layer_sets) /
 /// `gguf_keys::expert_count` at the site that already loads the header — NOT a
 /// hand-authored catalog field (the catalog's "ask the GGUF" discipline). `grid` is
 /// the live [`GridSnapshot`] (`None` on a solo box); the grid verdict is derived from

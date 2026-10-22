@@ -41,7 +41,7 @@ use ts_rs::TS;
 use super::recall::{
     FreshnessTarget, RecallError, RecallScope, RecallScore, ResidencyHint, TaskKind, TrustClass,
 };
-use super::working_set::ArtifactId;
+use crate::inference::page_ref::ArtifactId;
 // Canonical actor id — same `PeerId` for a persona and a federation peer
 // ([[identity-one-canonical-newtype-not-bare-uuid]]).
 use crate::identity::PeerId;
@@ -454,7 +454,7 @@ mod tests {
     //! don't silently break.
     use super::*;
     use crate::genome::recall::AcquireSource;
-    use crate::genome::working_set::ArtifactId;
+    use crate::inference::page_ref::ArtifactId;
     use std::sync::Arc;
     use uuid::Uuid;
 

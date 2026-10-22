@@ -1,7 +1,7 @@
 //! MoE expert layout — locate each layer's stacked expert-set in a GGUF so the
-//! Seam-1 splitter can register it as a file-mapped
-//! [`ArtifactSource::Mapped`](super::blob::ArtifactSource) artifact on the frozen
-//! tier without copying bytes.
+//! Seam-1 splitter (the genome's expert ingest) can register it as a file-mapped
+//! `ArtifactSource::Mapped` artifact on the frozen tier without copying bytes. A GGUF
+//! header fact, so it lives with the engine's GGUF readers; the genome calls down.
 //!
 //! ## One artifact per layer, `PageOffset::Expert{e}` selects the expert
 //!
@@ -12,8 +12,8 @@
 //! `PageOffset::Expert{e}` picks an expert out of it. So this module returns, per
 //! MoE layer, the stacked projection tensors' full `(base, total_len)` — enough
 //! to build `ArtifactBlob::mapped(id, path, n_experts, projections)`. The
-//! per-expert stride-slice (`base + e*(total/n_experts)`) is resolved by
-//! [`ArtifactSource::expert_ranges`], which is the single place that math lives.
+//! per-expert stride-slice (`base + e*(total/n_experts)`) is resolved by the genome's
+//! `ArtifactSource::expert_ranges`, which is the single place that math lives.
 //!
 //! The router weight (`ffn_gate_inp`) is deliberately NOT part of the set — it is
 //! one small tensor consulted for EVERY token's routing and stays resident.
@@ -21,6 +21,20 @@
 use candle_core::quantized::gguf_file::Content;
 
 use crate::inference_capability::gguf_keys;
+
+/// Stable namespace for `(gguf_id, layer)` → expert-set `ArtifactId` derivation.
+/// A fixed constant so the same GGUF layer always yields the same artifact id on
+/// any machine (deterministic, content-addressed at model+layer granularity).
+const EXPERT_SET_NAMESPACE: uuid::Uuid = uuid::Uuid::from_u128(0x6b33_e17e_5ea1_4c0d_9a11_e59e0f7ac001);
+
+/// The deterministic artifact id for one layer's expert set of a given GGUF.
+/// `gguf_id` is the model's own content identity (registry id / blob hash) —
+/// same model + same layer → same id, so re-ingest is idempotent and two nodes
+/// agree on the id without coordination.
+pub fn expert_set_artifact_id(gguf_id: &str, layer: u32) -> crate::inference::page_ref::ArtifactId {
+    let key = format!("{gguf_id}:{layer}");
+    crate::inference::page_ref::ArtifactId::new(uuid::Uuid::new_v5(&EXPERT_SET_NAMESPACE, key.as_bytes()))
+}
 
 /// The stacked expert-projection tensor suffixes, in canonical order. A layer
 /// carries EITHER the split trio (`gate`/`up`/`down`) OR the fused pair
@@ -121,16 +135,14 @@ pub fn locate_layer_sets(
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
-    use crate::genome::blob::ArtifactSource;
     use candle_core::quantized::gguf_file::{Content, TensorInfo, Value, VersionedMagic};
     use candle_core::quantized::GgmlDType;
     use candle_core::Shape;
-    use std::path::PathBuf;
 
     // F32 keeps the byte math trivial (block_size 1, type_size 4).
-    fn f32_info(shape: &[usize], offset: u64) -> TensorInfo {
+    pub(crate) fn f32_info(shape: &[usize], offset: u64) -> TensorInfo {
         TensorInfo {
             ggml_dtype: GgmlDType::F32,
             shape: Shape::from(shape.to_vec()),
@@ -138,7 +150,7 @@ mod tests {
         }
     }
 
-    fn content(md: Vec<(&str, Value)>, tensors: Vec<(&str, TensorInfo)>, data_off: u64) -> Content {
+    pub(crate) fn content(md: Vec<(&str, Value)>, tensors: Vec<(&str, TensorInfo)>, data_off: u64) -> Content {
         Content {
             magic: VersionedMagic::GgufV3,
             metadata: md.into_iter().map(|(k, v)| (k.to_string(), v)).collect(),
@@ -150,13 +162,8 @@ mod tests {
         }
     }
 
-    // what this catches: per-layer projection extraction — the (base, total_len)
-    // of each stacked *_exps tensor, dense layers skipped, and the crucial
-    // cross-check that feeding the result into ArtifactSource::Mapped and calling
-    // expert_ranges reproduces the exact stride-slices. This ties the locator
-    // (write side) to the resolver (read side) so they can't drift apart.
-    #[test]
-    fn locates_layer_sets_and_resolver_agrees() {
+    /// n_experts=4, 2 layers: layer 0 dense, layer 1 MoE (gate/up/down), data at 1000.
+    pub(crate) fn two_layer_moe() -> Content {
         // n_experts=4, 2 layers. Layer 0 dense; layer 1 MoE (gate/up/down).
         // tensor_data_offset=1000. Each [4,2,8] tensor = 64 elems = 256 bytes.
         let md = vec![
@@ -169,7 +176,16 @@ mod tests {
             ("blk.1.ffn_up_exps.weight", f32_info(&[4, 2, 8], 256)),
             ("blk.1.ffn_down_exps.weight", f32_info(&[4, 2, 8], 512)),
         ];
-        let ct = content(md, tensors, 1000);
+        content(md, tensors, 1000)
+    }
+
+    // what this catches: per-layer projection extraction — the (base, total_len)
+    // of each stacked *_exps tensor, dense layers skipped. The cross-check that the
+    // genome's resolver reproduces the stride-slices from this result is in
+    // `genome::expert_ingest` (the seam that joins the two), on the same fixture.
+    #[test]
+    fn locates_each_moe_layers_stacked_projections() {
+        let ct = two_layer_moe();
 
         let sets = locate_layer_sets(&ct, "qwen3moe").unwrap();
         assert_eq!(sets.len(), 1, "only layer 1 is MoE");
@@ -179,19 +195,6 @@ mod tests {
         // projections = (base = data_offset + tensor.offset, total_len = 256).
         assert_eq!(s.projections, vec![(1000, 256), (1256, 256), (1512, 256)]);
         assert_eq!(s.total_bytes(), 768);
-
-        // Cross-check: build the artifact source and resolve expert 3 — it must
-        // match base + 3*(256/4)=+192, stride 64 in each projection.
-        let src = ArtifactSource::Mapped {
-            path: PathBuf::from("/frozen/k3.gguf"),
-            n_experts: s.n_experts,
-            projections: s.projections.clone(),
-        };
-        assert_eq!(
-            src.expert_ranges(3),
-            Some(vec![(1000 + 192, 64), (1256 + 192, 64), (1512 + 192, 64)])
-        );
-        assert_eq!(src.expert_size_bytes(0), Some(64 * 3));
     }
 
     // what this catches: a dense model (no expert_count) is NotMoe — an explicit

@@ -485,7 +485,7 @@ mod tests {
     //! integration tests that exercise the real engine; PR-2's
     //! tests pin the seam.
     use super::*;
-    use crate::genome::working_set::ArtifactId;
+    use crate::inference::page_ref::ArtifactId;
     use crate::identity::PeerId;
     use crate::inference::llm_module::{
         CompositionPlan, GenerationBudget, InferenceRequestId, SamplingParams,

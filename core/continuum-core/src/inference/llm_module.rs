@@ -51,7 +51,7 @@ use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 use uuid::Uuid;
 
-use crate::genome::working_set::{ArtifactId, PageRef};
+use crate::inference::page_ref::{ArtifactId, PageRef};
 use crate::identity::PeerId;
 
 // ─── ID newtype ─────────────────────────────────────────────────
@@ -348,7 +348,7 @@ mod tests {
     //! Pin every wire invariant the type system + serde encoding
     //! guarantee. Same pattern as genome PR-1 + recall PR-1.
     use super::*;
-    use crate::genome::working_set::{PageKind, PageOffset};
+    use crate::inference::page_ref::{PageKind, PageOffset};
 
     fn sample_persona() -> PeerId {
         PeerId::from_uuid(Uuid::from_u128(1))

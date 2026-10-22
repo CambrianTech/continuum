@@ -14,7 +14,8 @@
 //! bytes are freed" loop with no policy logic of its own.
 
 use crate::genome::tier::EvictionPolicy;
-use crate::genome::working_set::{PageOffset, PageRef, ResidentPage};
+use crate::genome::working_set::ResidentPage;
+use crate::inference::page_ref::{PageOffset, PageRef};
 
 /// A total-order sort key for a `PageRef`, used as the final eviction
 /// tiebreak so ties resolve deterministically REGARDLESS of input order.
@@ -107,7 +108,7 @@ pub fn rank_pages_for_eviction(pages: &[ResidentPage], policy: &EvictionPolicy) 
 mod tests {
     use super::*;
     use crate::genome::tier::TierRole;
-    use crate::genome::working_set::{ArtifactId, PageKind, PageOffset, PageRef};
+    use crate::inference::page_ref::{ArtifactId, PageKind, PageOffset, PageRef};
     use uuid::Uuid;
 
     /// Build a resident page with a distinct `PageRef` (keyed off `tag`) and

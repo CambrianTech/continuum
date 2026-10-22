@@ -57,7 +57,7 @@ use super::recall::{AcquireSource, ResidencyHint};
 use super::recall_impl::{CandidateArtifact, CandidateSource};
 use super::recall_source_working_set::NEUTRAL_FACTOR_STUB;
 use super::recall_trait::{ArtifactRef, CapabilityQuery, RecallContext};
-use super::working_set::PageKind;
+use crate::inference::page_ref::PageKind;
 
 /// Zero-state source that resolves `query.must_include` into
 /// candidates. Stateless — every instance is interchangeable;
@@ -139,9 +139,8 @@ mod tests {
     };
     use crate::genome::store::TierStore;
     use crate::genome::tier::{EvictionRecord, TierCapacity, TierError, TierRole};
-    use crate::genome::working_set::{
-        ArtifactId, PageHandle, PageOffset, PageRef, WorkingSetCapacity,
-    };
+    use crate::genome::working_set::{PageHandle, WorkingSetCapacity};
+    use crate::inference::page_ref::{ArtifactId, PageOffset, PageRef};
     use crate::identity::PeerId;
     use parking_lot::Mutex;
     use std::sync::Arc;

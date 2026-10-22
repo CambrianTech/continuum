@@ -38,7 +38,7 @@ use super::expert_reconcile::{expert_pager_step, PagerError, PagerStepOutcome, R
 use super::expert_residency::{plan_layer_residency, ExpertActivationProfile, ExpertId};
 use super::placement::{LayerPlacementOutcome, PlacementRequest};
 use super::system_profile::SystemProfile;
-use crate::genome::working_set::PageRef;
+use crate::inference::page_ref::PageRef;
 
 /// Retention per tick for the hit EWMA. `decayed = decayed * ALPHA + delta_this_tick`. At
 /// 0.9 a stopped expert keeps ~35% weight after 10 idle ticks and ~1% after ~44, so a task

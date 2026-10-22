@@ -750,7 +750,7 @@ mod tests {
     /// [[inference-is-an-adapter-always-in-the-loop]].
     #[tokio::test]
     async fn routes_through_inference_llm_request_command_surface() {
-        use crate::genome::working_set::ArtifactId;
+        use crate::inference::page_ref::ArtifactId;
         use crate::identity::PeerId;
         use crate::inference::llm_module::{
             CompositionPlan, GenerationBudget, InferenceRequest, InferenceRequestId, SamplingParams,
