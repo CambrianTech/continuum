@@ -79,8 +79,9 @@ impl LlmDeliberationFaculty {
             .collect()
     }
 
-    /// Keep her view within what the window's one allocation granted its sources. While the
-    /// epoch fits those grants it only appends. When it outgrows them a new epoch starts: a
+    /// Keep her view within what the window's one allocation granted its sources, plus `room`
+    /// (what no claim took beyond the reply's runaway headroom). While the epoch fits that it
+    /// only appends. When it outgrows them a new epoch starts: a
     /// source granted all it wants whole, a source the allocation cut at half its grant, so
     /// her reads stay whole until her window is actually full and a cut source has room to
     /// grow by appends.
@@ -94,6 +95,7 @@ impl LlmDeliberationFaculty {
         prompt: &mut PromptMessages,
         view: ViewPlacement,
         plan: &crate::persona::rag_budget::FlexAllocation,
+        room: usize,
     ) {
         if view.len == 0 {
             return;
@@ -106,7 +108,10 @@ impl LlmDeliberationFaculty {
             .filter(|a| a.source_id.starts_with(VIEW_CLAIM))
             .map(|a| a.allocated_tokens as usize)
             .sum();
-        if view_tokens <= granted {
+        // The epoch keeps appending into window no claim took: its rendering carries the
+        // versions it superseded, which no claim counts, so measured against its grants alone
+        // it read as over with 74k of the window unallocated (Atlas, the M5, 2026-10-22).
+        if view_tokens <= granted + room {
             return;
         }
         // A source granted all it wants starts whole; one the allocation cut starts at half

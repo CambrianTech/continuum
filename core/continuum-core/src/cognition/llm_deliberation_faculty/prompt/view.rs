@@ -317,6 +317,13 @@ impl LlmDeliberationFaculty {
         // The reply never takes from required content: its floor is what the window leaves
         // after framing, tools and the required input. Its UNCLIPPED floor is her need.
         let reply_need = reply.floor_tokens;
+        // An act's reply wants its whole runaway bound, at its priority above her context's:
+        // what no claim took used to top it up to that bound, and her view, a claim on the
+        // whole window, leaves nothing untaken. Aris's act was cut at the output limit with
+        // 5,316 granted and 0 unallocated (the M5, 2026-10-22 00:14Z), a whole turn lost.
+        if matches!(self.turn_kind(ws), TurnKind::Act) {
+            reply.max_tokens = reply.max_tokens.max(reply_runaway);
+        }
         reply.floor_tokens = reply_need.min(context_window.saturating_sub(fixed_cost.saturating_add(required_cost)));
         reply.min_tokens = reply.floor_tokens;
         let fixed_claim = |id: &str, tokens: u32| crate::persona::rag_budget::RagSourceBudget {
@@ -409,12 +416,16 @@ impl LlmDeliberationFaculty {
             .filter(|a| claims.iter().skip(5).any(|c| c.source_id == a.source_id))
             .map(|a| a.allocated_tokens)
             .sum();
-        let msg_budget = window_msg_budget.min(required_tokens.saturating_add(
-            calibration.prompt_budget(plan.granted(FLEX_HISTORY).saturating_add(view_granted) as usize),
-        ));
+        // What no claim took goes to the reply up to its runaway bound; only the rest is room
+        // her view may grow into by appends (`fit_view`), and the fit's budget holds that same
+        // room, or it would drop what the epoch was allowed to keep.
+        let view_room = plan.unallocated.saturating_sub(reply_runaway.saturating_sub(reply_grant));
+        let msg_budget = window_msg_budget.min(required_tokens.saturating_add(calibration.prompt_budget(
+            plan.granted(FLEX_HISTORY).saturating_add(view_granted).saturating_add(view_room) as usize,
+        )));
         // Her view within what the allocation granted its sources (`epoch.rs`): the only place
         // it is ever collapsed.
-        self.fit_view(&mut all_messages, view, &plan);
+        self.fit_view(&mut all_messages, view, &plan, view_room as usize);
 
         // WHAT THIS TURN WOULD HAVE COST WITH NO BUDGET — recorded before either
         // fitting step throws the evidence away, and deliberately free to exceed
