@@ -8,7 +8,10 @@
 //! refused manifest is probed by file and reason and never refuses the boot.
 
 use crate::runtime::{ModuleConfig, ModulePriority, ServiceModule};
-use crate::sdk_codegen::ext::{install_ext_descriptors, load_manifests, overlay_dir, LoadedCommand};
+pub mod manifest;
+
+use crate::sdk_codegen::ext::install_ext_descriptors;
+use manifest::{load_manifests, overlay_dir, LoadedCommand};
 use crate::sdk_codegen::DynCommand;
 use async_trait::async_trait;
 use std::sync::Arc;

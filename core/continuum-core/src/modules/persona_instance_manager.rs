@@ -662,12 +662,6 @@ impl ServiceModule for PersonaInstanceManagerModule {
     }
 }
 
-/// DELETE ME: the one remaining caller is `sdk_codegen/ext.rs`, whose owner is mid-change; it
-/// moves to [`crate::paths::continuum_root`] (the owner of this resolution) and this goes.
-pub fn resolve_continuum_root() -> PathBuf {
-    crate::paths::continuum_root()
-}
-
 /// The authored bio for a role — the role_template `bio_template` verbatim
 /// (`{name}` substituted by the caller). One source: the same templates the
 /// spawner plans from, so the published airc bio and the role's self-concept

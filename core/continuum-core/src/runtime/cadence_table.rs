@@ -1,5 +1,5 @@
 //! `CadenceTable` — per-`(region, persona)` adaptive cadence for the
-//! [`SubstrateGovernor`](crate::runtime::substrate_governor).
+//! [`SubstrateGovernor`](crate::persona::substrate_governor).
 //!
 //! This is the **within-class causal arbitration** the orientation budget sits on
 //! (docs/architecture/BEING-SOCIETY-GOVERNOR.md, rail R1). The time-allocation law:

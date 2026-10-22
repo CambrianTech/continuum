@@ -102,7 +102,7 @@ impl Runtime {
     /// closed by the single-source-of-truth design.
     pub fn verify_registration(
         &self,
-        discovery: &AircDiscovery,
+        discovery: &dyn MeshPresence,
         mode: BootMode,
     ) -> Result<(), String> {
         let registered: Vec<String> = self.registry.module_names();
@@ -572,7 +572,7 @@ pub const MODULES: &[ModuleSpec] = &[
 /// `(InferenceOnly, *)` so a stray invocation produces a coherent
 /// error message rather than complaining about modules that cannot
 /// be registered.
-pub fn required_modules(discovery: &AircDiscovery, mode: BootMode) -> Vec<&'static str> {
+pub fn required_modules(discovery: &dyn MeshPresence, mode: BootMode) -> Vec<&'static str> {
     // The whole-substrate (monolith) profile — every group. Preserves the exact
     // historical behavior; slim processes call `required_modules_for_profile`.
     required_modules_for_profile(discovery, mode, &ServiceProfile::all())
@@ -588,7 +588,7 @@ pub fn required_modules(discovery: &AircDiscovery, mode: BootMode) -> Vec<&'stat
 /// `ServiceProfile::all()` reproduces the monolith exactly — decomposition is
 /// optional placement, never forced fragmentation.
 pub fn required_modules_for_profile(
-    discovery: &AircDiscovery,
+    discovery: &dyn MeshPresence,
     mode: BootMode,
     profile: &ServiceProfile,
 ) -> Vec<&'static str> {
@@ -704,4 +704,12 @@ impl ServiceProfile {
             .filter(|g| self.groups.contains(g))
             .collect()
     }
+}
+
+/// What the module census needs to know about this node's mesh connection: whether it can
+/// host personas, and a name for the state in boot logs. `airc::AircDiscovery` implements it;
+/// the kernel never names airc.
+pub trait MeshPresence {
+    fn can_host_personas(&self) -> bool;
+    fn kind(&self) -> &'static str;
 }

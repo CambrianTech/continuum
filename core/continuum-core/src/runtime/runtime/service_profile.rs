@@ -254,17 +254,7 @@ impl ShutdownOperation {
                         // door, and a door closed by a handler whose client went away
                         // would leave every citizen refusing work with no stop behind it.
                         if !settle.is_zero() {
-                            let s = crate::cognition::turn_ingress::settle(settle).await;
-                            continuum_base::probe!(
-                                class = "cognition.turns.settled",
-                                in_flight_at_close = s.in_flight_at_close,
-                                cut = s.cut,
-                                bound_ms = s.bound_ms,
-                                bound_source = s.bound_source,
-                                waited_ms = s.waited_ms,
-                                cap_ms = settle.as_millis() as u64,
-                                "the stop let admitted turns finish before saving — `cut` is how many it still tore"
-                            );
+                            crate::runtime::extensions::settle_before_stop(settle).await;
                         }
                         let receipt = rt.shutdown().await;
                         // send_replace, NEVER send: `send` returns Err and DROPS the value

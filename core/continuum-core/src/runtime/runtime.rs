@@ -13,7 +13,6 @@ use super::module_context::ModuleContext;
 use super::registry::ModuleRegistry;
 use super::service_module::{CommandResult, ServiceModule};
 use super::shared_compute::SharedCompute;
-use crate::airc::AircDiscovery;
 use dashmap::DashMap;
 use futures::FutureExt;
 use std::panic::AssertUnwindSafe;

@@ -406,7 +406,7 @@ impl Runtime {
         // tool_dialect section the persona path uses, so every surface accepts the
         // same vocabulary. Idempotent on an already-canonical name — a no-op for the
         // common case. Non-recording (the persona path owns the tool-usage tally).
-        let resolved = crate::cognition::tool_dialect::resolve_wire_name(command);
+        let resolved = crate::runtime::extensions::resolve_command_name(command);
         let command = resolved.as_str();
 
         // Typed path wins: a registered DynCommand object routes DIRECTLY (O(1),
@@ -527,7 +527,7 @@ impl Runtime {
         // Same dialect resolution as the async route (see route_command): a socket
         // client's trained alias / former name / charset-legal form maps to the
         // canonical command before any registry lookup. Idempotent, non-recording.
-        let resolved = crate::cognition::tool_dialect::resolve_wire_name(command);
+        let resolved = crate::runtime::extensions::resolve_command_name(command);
         let command = resolved.as_str();
 
         // Typed path wins (see route_command). Bridge the async object dispatch

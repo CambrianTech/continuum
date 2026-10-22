@@ -27,7 +27,6 @@ use super::module_context::ModuleContext;
 use super::registry::ModuleRegistry;
 use super::service_module::{CommandResult, ServiceModule};
 use super::shared_compute::SharedCompute;
-use crate::vdd::record::{HarnessStatus, StandardVddRecord};
 
 /// THE canned `ServiceModule` (task #155): answers every `canned/*` command from a
 /// script, and counts the dispatches it received. Tests that need "a command that
@@ -204,7 +203,7 @@ impl ModuleHarness {
 
 /// A latency measurement of one command over N runs — the VDD per-module result.
 /// Sorted successful-run latencies + an error count. Offers percentiles and
-/// regression-gate assertions, and converts to a [`StandardVddRecord`] so it
+/// regression-gate assertions, and converts to a `StandardVddRecord` (`vdd::record::StandardVddRecord::from_bench`) so it
 /// plugs into the existing VDD report/replay substrate.
 #[derive(Debug, Clone)]
 pub struct CommandBench {
@@ -265,27 +264,6 @@ impl CommandBench {
             self.max(),
             self.latencies.len()
         );
-    }
-
-    /// Project into a [`StandardVddRecord`] (execution_ms = p50) so the
-    /// measurement persists for cross-run baselining + the `cargo-continuum-vdd`
-    /// report/replay. Status reflects whether all runs succeeded.
-    pub fn to_vdd_record(
-        &self,
-        scenario: impl Into<String>,
-        git_sha: impl Into<String>,
-    ) -> StandardVddRecord {
-        let mut rec = StandardVddRecord::minimal(scenario, self.command.clone(), git_sha);
-        rec.execution_ms = Some(self.p50().as_millis() as u64);
-        rec.error_count = self.errors as u32;
-        rec.responses_expected = self.runs as u32;
-        rec.responses_observed = self.latencies.len() as u32;
-        rec.status = if self.errors == 0 {
-            HarnessStatus::Pass
-        } else {
-            HarnessStatus::Fail
-        };
-        rec
     }
 }
 
@@ -425,9 +403,9 @@ mod tests {
         bench.assert_p95_under(std::time::Duration::from_millis(250));
 
         // Projects into the VDD record substrate for baselining/replay.
-        let rec = bench.to_vdd_record("greeter-hello-bench", "test-sha");
+        let rec = crate::vdd::record::StandardVddRecord::from_bench(&bench, "greeter-hello-bench", "test-sha");
         assert_eq!(rec.command, "greet/hello");
-        assert_eq!(rec.status, HarnessStatus::Pass);
+        assert_eq!(rec.status, crate::vdd::record::HarnessStatus::Pass);
         assert!(rec.execution_ms.is_some(), "p50 recorded as execution_ms");
         assert_eq!(rec.error_count, 0);
     }

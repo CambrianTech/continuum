@@ -124,7 +124,7 @@ pub(super) fn register_persona_registry_modules(
     // region runs under today (the digest runs no inference; the consolidation
     // region is the first InferenceHeavy tenant under this floor).
     runtime.register(Arc::new(
-        crate::runtime::SubstrateGovernor::new(vec![digest_region, dream_region], registry.clone())
+        crate::persona::substrate_governor::SubstrateGovernor::new(vec![digest_region, dream_region], registry.clone())
             .with_pressure_gate(pressure_monitor.subscribe()),
     ));
     let instance_manager = Arc::new(

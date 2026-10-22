@@ -210,7 +210,7 @@ use super::*;
         /// the engine map holds.
         fn core_with_code() -> (Arc<CommandExecutor>, Arc<CodeState>) {
             // Hands admission rides every dispatch as a hook boot installs; so does this core.
-            crate::ipc::install_dispatch_hooks();
+            crate::ipc::install_kernel_extensions();
             let registry = Arc::new(ModuleRegistry::new());
             let state = Arc::new(CodeState::new(
                 Arc::new(DashMap::new()),

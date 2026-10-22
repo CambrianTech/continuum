@@ -108,8 +108,8 @@ use uuid::Uuid;
 
 use crate::persona::PersonaAircRuntimeRegistry;
 use crate::runtime::governor_bus::{publish_persona_scheduled, PersonaScheduled};
-use crate::runtime::message_bus::MessageBus;
-use crate::runtime::registry::ModuleRegistry;
+use crate::runtime::MessageBus;
+use crate::runtime::ModuleRegistry;
 use crate::runtime::{
     apportion, orientation_index, BrainRegion, CadenceHint, CadenceTable, CommandResult,
     ModuleConfig, ModuleContext, ModulePriority, Orientation, OrientationCounts, OrientationShares,

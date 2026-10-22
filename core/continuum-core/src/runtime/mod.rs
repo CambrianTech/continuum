@@ -37,6 +37,7 @@ pub mod command_events;
 pub mod command_executor;
 pub mod command_interceptor;
 pub mod dispatch_hook;
+pub mod extensions;
 pub mod control;
 pub mod event_graph;
 pub mod tracked_checkout;
@@ -63,7 +64,6 @@ pub mod runtime;
 pub mod service_module;
 pub mod share_controller;
 pub mod shared_compute;
-pub mod substrate_governor;
 pub mod params;
 
 pub use boot_mode::{extract_boot_mode, BootMode, BootModeParseError};
@@ -107,14 +107,13 @@ pub use admission_gate::{AdmissionGate, Permit};
 pub use runtime::{
     await_shutdown, begin_shutdown, install_signal_shutdown, run_signal_shutdown,
     signal_runtime, shutdown_receipt, DrainOutcome, ModuleStop,
-    ModuleStopOutcome, Runtime, ShutdownReceipt,
+    MeshPresence, ModuleStopOutcome, Runtime, ShutdownReceipt,
 };
 pub use service_module::{
     CommandResult, CommandSchema, ModuleConfig, ModulePriority, ParamSchema, ServiceModule,
 };
 pub use share_controller::ShareController;
 pub use shared_compute::SharedCompute;
-pub use substrate_governor::{GovernorSnapshot, SubstrateGovernor};
 
 // ============================================================================
 // Global Logger Access
