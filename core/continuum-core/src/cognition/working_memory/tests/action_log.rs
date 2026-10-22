@@ -97,3 +97,22 @@ fn a_checkpoint_keeps_the_shape_the_previous_build_reads() {
     assert_eq!(snap.recent_results.last().map(|(seq, ..)| *seq), Some(5));
     assert_eq!(snap.actions.len(), 5);
 }
+
+// what this catches (card d624a9a1): an act's line cutting an argument mid-value. A cut path
+// reads as a real one, and a small model copies it and loops (IntelMac 2026-10-22: a cut
+// '.../citizens/pe' became three refused reads). Short values render whole, a long or
+// multi-line string becomes an explicit size marker, and no rendered value is a cut prefix of
+// what was sent.
+#[test]
+fn an_acts_arguments_are_whole_or_plainly_elided_never_cut() {
+    let path = "/Users/joel/.continuum/citizens/peers/cf6b4df6-ab13-4fd8-81fb-bcb115215468/workspace/src/ipc/mod.rs";
+    let body = "fn main() {}\n".repeat(200);
+    let args = serde_json::json!({"file_path": path, "content": body, "lines": [1, 40], "nested": {"mode": "append"}});
+    let line = crate::cognition::working_memory::ledger::call_args(&args, path.chars().count());
+    assert!(line.contains(path), "a path within the budget renders whole: {line}");
+    assert!(line.contains(&format!("<{} chars>", body.chars().count())), "a multi-line body is a marker: {line}");
+    assert!(line.contains("[1,40]") && line.contains("\"mode\":\"append\""), "{line}");
+    let tight = crate::cognition::working_memory::ledger::call_args(&args, 10);
+    assert!(tight.contains(&format!("<{} chars>", path.chars().count())), "a path over budget is a marker, not a prefix: {tight}");
+    assert!(!tight.contains("/Users/joel/"), "no prefix of the path survives: {tight}");
+}
