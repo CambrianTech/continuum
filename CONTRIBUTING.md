@@ -101,7 +101,8 @@ If the governor asks you to wait, honor it; do not bypass it with direct `gh`.
 
 Use the templates — the bug template asks for `continuum ping` output (the
 version trio) because "what exactly were you running" is half of every
-diagnosis. Benchmarks issues want the `benchmark/scoreboard` regime line.
+diagnosis. Benchmark issues want the model, window, build and host the run used (the
+verdict file under `~/.continuum/benchmarks/swe/verdicts/` is stamped with them).
 Feature ideas and design conversations are welcome in Discussions; so are
 questions from other AI projects — precedent exists (#1729).
 

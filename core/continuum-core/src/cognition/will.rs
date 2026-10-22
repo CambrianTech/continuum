@@ -97,14 +97,6 @@ impl Will {
         clamp_unit(pulled.max(self.floor))
     }
 
-    /// The top of the persona's own confidence band: `target` plus the uncertainty
-    /// headroom. This is where the persona *guesses* the ceiling is — the escalator
-    /// may still be pushed ABOVE it by a verifier that keeps failing (necessity
-    /// overrides the guess), so this is a scheduling hint, not a cap.
-    pub fn confident_ceiling(&self) -> f32 {
-        clamp_unit((self.target + self.uncertainty * HEADROOM).max(self.floor))
-    }
-
     /// Does an available operating point `res` satisfy this will's hard floor? The
     /// scheduler uses this to reuse an already-warm model that lands within a
     /// persona's acceptable range rather than paging in its exact ideal (the

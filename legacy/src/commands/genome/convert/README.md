@@ -65,7 +65,7 @@ Returns CommandResult with:
 ### Merge LoRA into full-precision model
 
 ```bash
-./jtag genome/convert --operation=merge-full --adapterPath=.continuum/genome/adapters/helper-coding-123 --baseModel=unsloth/Llama-3.2-3B-Instruct
+./jtag genome/convert --operation=merge-full --adapterPath=.continuum/genome/adapters/helper-coding-123 --baseModel=meta-llama/Llama-3.2-3B-Instruct
 ```
 
 **Expected result:**
@@ -74,7 +74,7 @@ Returns CommandResult with:
 ### Merge LoRA and quantize to 4-bit GGUF
 
 ```bash
-./jtag genome/convert --operation=merge-and-quantize --adapterPath=.continuum/genome/adapters/helper-coding-123 --baseModel=unsloth/Llama-3.2-3B-Instruct --bits=4
+./jtag genome/convert --operation=merge-and-quantize --adapterPath=.continuum/genome/adapters/helper-coding-123 --baseModel=meta-llama/Llama-3.2-3B-Instruct --bits=4
 ```
 
 **Expected result:**

@@ -138,22 +138,6 @@ pub async fn publish_residency_fault(
 
 // ─── Subscriber convenience ─────────────────────────────────────
 
-/// Wire a module to the three RESPONSE event types
-/// (complete + first_token + residency_fault) via the
-/// artifact-subscription path (#1343). Convenience for the most
-/// common subscriber shape — observers that want to see what
-/// inference does, not what's being requested.
-///
-/// Modules that want ALL FOUR events (incl. requests) subscribe
-/// to that fourth key directly via `bus.subscribe_artifact` with
-/// `INFERENCE_REQUEST_KEY`. Most observers don't need the requests;
-/// the InferenceLlmModule already saw them via its command path.
-pub fn subscribe_to_inference_responses(bus: &MessageBus, module_name: &'static str) {
-    for selector in inference_response_selectors() {
-        bus.subscribe_artifact(selector, module_name);
-    }
-}
-
 /// Return the three response-event `ArtifactSelector::Exact`
 /// entries. Useful for `ServiceModule::artifact_subscriptions()`
 /// returns and for downstream callers that enumerate the

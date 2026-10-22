@@ -264,8 +264,11 @@ fn dispatch_compute(
     }
 
     // Clone pipeline/layout refs to avoid borrow conflicts
-    let pipeline = state.pipeline.clone().unwrap();
-    let bgl = state.bind_group_layout.clone().unwrap();
+    let (Some(pipeline), Some(bgl)) = (state.pipeline.clone(), state.bind_group_layout.clone())
+    else {
+        clog_warn!("WgpuGpuConvert: compute pipeline missing after lazy init; skipping dispatch");
+        return;
+    };
 
     // Setup pending slots
     let pending: Vec<_> = state.pending_setup.drain(..).collect();

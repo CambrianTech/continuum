@@ -158,7 +158,7 @@ fn sampling_knobs_omit_antiloop_when_request_does_not_carry_them() {
 // unambiguous prompt-alone overflow (a budgeted request that leaves reply headroom
 // is never blocked), and NEVER when the window is unknown (0) so a mid-relaunch
 // snapshot can't wrongly block cognition.
-// what this catches: a well-formed <think>…</think> (unsloth/llama.cpp today) is
+// what this catches: a well-formed <think>…</think> (llama.cpp today) is
 // SEPARATED — reasoning captured, the answer after </think> is the clean text.
 // This is the leak Asha hit: without it the whole think block reached the room.
 #[test]
@@ -385,7 +385,7 @@ fn apply_enable_thinking_false_sets_kwarg_idempotently() {
 
 // what this catches: a single string input serializes as a JSON string (not
 // a 1-element array) and the resolved model is carried through — the request
-// shape unsloth/OpenAI actually expects.
+// shape OpenAI actually expects.
 #[test]
 fn build_body_single_input() {
     let body = build_embedding_body(&EmbeddingInput::Single("hello".into()), "qwen3-embed");

@@ -173,22 +173,12 @@ impl LocalSubstrateGovernor {
         }
     }
 
-    /// Override the cascade thresholds (PR-3d wires the policy-file
-    /// hot-reload path; for PR-3c2 callers can set manually for tests).
-    pub fn set_thresholds(&self, thresholds: CascadeThresholds) {
-        let mut state = self
-            .snapshot_state
-            .lock()
-            .expect("LocalSubstrateGovernor snapshot mutex poisoned");
-        state.thresholds = thresholds;
-    }
-
     /// Current cascade step. Diagnostic — tests + telemetry consumers
     /// can introspect without going through snapshot().
     pub fn current_cascade_step(&self) -> u8 {
         self.snapshot_state
             .lock()
-            .expect("LocalSubstrateGovernor snapshot mutex poisoned")
+            .unwrap()
             .current_step
     }
 
@@ -199,7 +189,7 @@ impl LocalSubstrateGovernor {
         let mut guard = self
             .candidates
             .lock()
-            .expect("LocalSubstrateGovernor candidates mutex poisoned");
+            .unwrap();
         *guard = candidates;
     }
 
@@ -208,7 +198,7 @@ impl LocalSubstrateGovernor {
     pub fn candidate_count(&self) -> usize {
         self.candidates
             .lock()
-            .expect("LocalSubstrateGovernor candidates mutex poisoned")
+            .unwrap()
             .len()
     }
 
@@ -219,7 +209,7 @@ impl LocalSubstrateGovernor {
         let mut state = self
             .snapshot_state
             .lock()
-            .expect("LocalSubstrateGovernor snapshot mutex poisoned");
+            .unwrap();
         state.cascade_transition_count = state.cascade_transition_count.saturating_add(1);
     }
 
@@ -230,7 +220,7 @@ impl LocalSubstrateGovernor {
         let candidates = self
             .candidates
             .lock()
-            .expect("LocalSubstrateGovernor candidates mutex poisoned");
+            .unwrap();
         let selected = select_policy(&candidates, &hw)?;
         let new_policy = crate::governor::into_governor_policy(selected.clone(), hw, continuum_base::time::EpochMs::now().millis());
         drop(candidates);
@@ -243,7 +233,7 @@ impl LocalSubstrateGovernor {
             let mut base = self
                 .base_policy
                 .lock()
-                .expect("LocalSubstrateGovernor base_policy mutex poisoned");
+                .unwrap();
             *base = new_policy.clone();
             base.cascade_step = 0;
         }
@@ -251,7 +241,7 @@ impl LocalSubstrateGovernor {
             let mut state = self
                 .snapshot_state
                 .lock()
-                .expect("LocalSubstrateGovernor snapshot mutex poisoned");
+                .unwrap();
             state.current_step = 0;
             state.last_step_change_ms = continuum_base::time::EpochMs::now().millis();
             state.pending_speculation_retreat = false;
@@ -291,7 +281,7 @@ impl SubstrateGovernor for LocalSubstrateGovernor {
             let mut state = self
                 .snapshot_state
                 .lock()
-                .expect("LocalSubstrateGovernor snapshot mutex poisoned");
+                .unwrap();
 
             // Record the signal in the ring.
             if state.recent_signals.len() >= RECENT_SIGNALS_CAPACITY {
@@ -330,7 +320,7 @@ impl SubstrateGovernor for LocalSubstrateGovernor {
                 let base_clone: GovernorPolicy = self
                     .base_policy
                     .lock()
-                    .expect("LocalSubstrateGovernor base_policy mutex poisoned")
+                    .unwrap()
                     .clone();
 
                 let mut next_policy = apply_cascade_step_to_policy(&base_clone, new_step);
@@ -372,7 +362,7 @@ impl SubstrateGovernor for LocalSubstrateGovernor {
                 let base_clone: GovernorPolicy = self
                     .base_policy
                     .lock()
-                    .expect("LocalSubstrateGovernor base_policy mutex poisoned")
+                    .unwrap()
                     .clone();
                 let mut next_policy = apply_cascade_step_to_policy(&base_clone, state.current_step);
                 next_policy.policy_version =
@@ -395,7 +385,7 @@ impl SubstrateGovernor for LocalSubstrateGovernor {
         let state = self
             .snapshot_state
             .lock()
-            .expect("LocalSubstrateGovernor snapshot mutex poisoned");
+            .unwrap();
         GovernorSnapshot {
             current_policy: (*policy).clone(),
             cascade_transition_count: state.cascade_transition_count,

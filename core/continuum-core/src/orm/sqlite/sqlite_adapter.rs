@@ -227,6 +227,14 @@ impl StorageAdapter for SqliteAdapter {
         .unwrap_or_else(|e| StorageResult::err(format!("spawn_blocking failed: {}", e)))
     }
 
+    async fn upsert_monotonic(&self, record: DataRecord, field: &str) -> StorageResult<bool> {
+        self.upsert_monotonic_on_writer(record, field).await
+    }
+
+    async fn delete_matching(&self, query: StorageQuery) -> StorageResult<usize> {
+        self.delete_matching_on_writer(query).await
+    }
+
     async fn batch(&self, operations: Vec<BatchOperation>) -> StorageResult<Vec<Value>> {
         // Every operation runs on the SINGLE writer connection inside one
         // transaction. Dispatching through `self.create(...)` per operation (as

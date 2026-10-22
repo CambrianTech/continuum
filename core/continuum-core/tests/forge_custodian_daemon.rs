@@ -59,11 +59,14 @@ async fn custodian_daemon_boots_serves_health_and_shuts_down_gracefully() {
     // Throwaway config.env: bind addr + an advertised capacity of 3 slots.
     write_file(
         &home.join(".continuum/config.env"),
-        &format!("FORGE_CUSTODIAN_ADDR={addr}\nFORGE_MAX_CONCURRENT=3\n"),
+        &format!(
+            "FORGE_CUSTODIAN_ADDR={addr}\nFORGE_MAX_CONCURRENT=3\nFORGE_LLAMA_CPP_DIR={}\n",
+            home.join("llama.cpp").display()
+        ),
     );
     // Stub converter so readiness probes true (we never invoke it in this test).
     write_file(
-        &home.join(".unsloth/llama.cpp/convert_lora_to_gguf.py"),
+        &home.join("llama.cpp/convert_lora_to_gguf.py"),
         "# stub for readiness probe\n",
     );
 

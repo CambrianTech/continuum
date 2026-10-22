@@ -172,8 +172,18 @@ pub(super) async fn run_shell_command(
     }
 
     // Take stdout/stderr handles
-    let stdout = child.stdout.take().expect("stdout piped");
-    let stderr = child.stderr.take().expect("stderr piped");
+    let (Some(stdout), Some(stderr)) = (child.stdout.take(), child.stderr.take()) else {
+        let _ = child.start_kill();
+        if let Ok(mut s) = state.lock() {
+            s.status = ShellExecutionStatus::Failed;
+            s.stderr_lines
+                .push("Failed to capture shell output: stdout/stderr pipes unavailable".to_string());
+            s.finished_at = Some(continuum_base::time::EpochMs::now().millis());
+            s.process_ended = true; // the child was told to die and nothing reads it
+            s.output_notify.notify_one();
+        }
+        return;
+    };
 
     // Spawn line readers (notify watchers on each new line)
     let state_out = state.clone();

@@ -27,7 +27,6 @@ use crate::modules::persona_allocator::PersonaAllocatorModule;
 use crate::modules::rag::{RagModule, RagState};
 use crate::modules::sentinel::SentinelModule;
 use crate::modules::system_resources::SystemResourceModule;
-use crate::modules::tool_parsing::ToolParsingModule;
 use crate::modules::vision::VisionModule;
 /// IPC server for continuum-core
 ///
@@ -69,7 +68,6 @@ pub mod endpoint_paths;
 
 pub mod experience_resolver;
 
-pub mod positron_bench_source;
 
 pub mod positron_canvas_source;
 

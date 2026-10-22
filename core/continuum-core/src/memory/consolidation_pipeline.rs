@@ -130,7 +130,7 @@ pub async fn run_consolidation_pass(
 
 fn ms_to_rfc3339(ms: u64) -> String {
     DateTime::from_timestamp_millis(ms as i64)
-        .unwrap_or_else(|| DateTime::from_timestamp_millis(0).unwrap())
+        .unwrap_or(DateTime::UNIX_EPOCH) // unwrap_or: out-of-range timestamps render as the epoch
         .to_rfc3339()
 }
 
@@ -141,7 +141,6 @@ mod tests {
     use crate::memory::embedding::EmbeddingProvider;
     use crate::memory::raw_adapter::RawMemoryAdapter;
     use async_trait::async_trait;
-    use std::collections::HashMap;
     use std::sync::Arc;
     use uuid::Uuid;
 
@@ -347,10 +346,4 @@ mod tests {
         );
     }
 
-    // silence unused-warning under cfg(test) for an import we want
-    // available but don't reference in every test body.
-    #[allow(dead_code)]
-    fn _unused() {
-        let _: HashMap<String, ()> = HashMap::new();
-    }
 }

@@ -1,7 +1,7 @@
 //! `ai/inference/{status,models,load,unload}` — the model-lifecycle command
 //! surface, as thin PROJECTIONS of the canonical serving state.
 //!
-//! ## Single source of truth (post-Unsloth excision)
+//! ## Single source of truth 
 //! These commands never open a private transport. `status`/`models` read the
 //! authoritative [`current_serving`] snapshot (the [`ServingSnapshot`] the
 //! [`crate::modules::serving_daemon::ServingDaemonModule`] publishes on its
@@ -9,8 +9,7 @@
 //! A model SWAP is owned by the serving daemon's `serving/pin` / `serving/unpin`
 //! seam — a single-resident respawn on THIS host — so `load`/`unload` delegate
 //! there rather than mutating a private gateway. ONE model-swap path, one status
-//! source. The dead Unsloth gateway (`http://127.0.0.1:8888`) is fully excised
-//! from this surface ([[fallbacks-are-illegal-fail-loud]]).
+//! source ([[fallbacks-are-illegal-fail-loud]]).
 //!
 //! ## Shape
 //! Stateless [`ActionCommand`]s ([[command-infra-self-routing-schema-adapters]]).
@@ -279,7 +278,7 @@ mod tests {
     // what this catches: status/models are PURE projections of the canonical
     // serving state — they never touch a network gateway, so they resolve even
     // with no serving daemon installed (early boot → honest empty snapshot),
-    // never hang on a dead transport. Regression for the Unsloth :8888 excision.
+    // never hang on a dead transport. Regression for the removed :8888 gateway.
     #[tokio::test]
     async fn status_and_models_project_canonical_state_without_network() {
         let ctx = Ctx::default();

@@ -11,7 +11,7 @@
 
 use super::description::{
     AnimationProfileKind, AssetRef, AvatarPayload, CameraPayload, ColorDesc, EnvironmentPayload,
-    NodePayload, PropPayload, SceneDescription, SceneNode, TransformDesc,
+    NodePayload, SceneDescription, SceneNode, TransformDesc,
     SCENE_DESCRIPTION_VERSION,
 };
 
@@ -70,25 +70,6 @@ impl SceneBuilder {
         self
     }
 
-    /// Add a static prop node (glTF/GLB, no skeleton).
-    pub fn with_prop(
-        mut self,
-        id: impl Into<String>,
-        asset: impl Into<String>,
-        transform: TransformDesc,
-    ) -> Self {
-        self.children.push(
-            SceneNode::leaf(
-                id,
-                NodePayload::Prop(PropPayload {
-                    asset: AssetRef::path(asset),
-                }),
-            )
-            .with_transform(transform),
-        );
-        self
-    }
-
     /// Add the scene environment (backdrop room geometry).
     pub fn with_environment(
         mut self,
@@ -102,13 +83,6 @@ impl SceneBuilder {
                 asset: AssetRef::path(asset),
             }),
         ));
-        self
-    }
-
-    /// Append an already-constructed node (escape hatch for groups/subtrees the
-    /// typed helpers don't cover).
-    pub fn with_node(mut self, node: SceneNode) -> Self {
-        self.children.push(node);
         self
     }
 

@@ -1,6 +1,6 @@
 //! `continuum-mcp` — the headless-Rust MCP server entrypoint.
 //!
-//! An MCP client (unsloth Studio, Claude Code, …) spawns this as a stdio
+//! An MCP client (Claude Code, …) spawns this as a stdio
 //! subprocess; it connects to the running local core over its IPC socket and
 //! exposes continuum's commands as MCP tools. Rust-native replacement for
 //! `src/mcp-server.ts` — no Node in the loop.

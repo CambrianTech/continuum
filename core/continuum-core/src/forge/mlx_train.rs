@@ -2,12 +2,11 @@
 //! (#52, converging with #32). The downstream half of the pipeline already lives
 //! in [`super::lora_convert`] (`mlx_to_gguf_lora`: MLX adapter → PEFT transpose →
 //! GGUF-lora). This module owns the UPSTREAM half: producing that MLX adapter by
-//! running Apple's `mlx_lm.lora` trainer as a Rust-owned subprocess, instead of
-//! delegating the run to the unsloth HTTP custodian (the NVIDIA path).
+//! running Apple's `mlx_lm.lora` trainer as a Rust-owned subprocess.
 //!
 //! ## Why native, why here
 //!
-//! Per [[unsloth-mlx-train-broken-on-mac]] LoRA training works on this Mac via
+//! LoRA training on Apple Silicon runs via
 //! `mlx_lm.lora` (Apple's native MLX trainer), and `forge/train` should route to
 //! it on Apple Silicon. This is the Rust owner of that subprocess: it builds the
 //! argv, writes the LoRA hyperparameter config, validates the IO, spawns, and
@@ -18,7 +17,7 @@
 //! ## The two invariants the genome loop demands ([[genome-loop-trains-on-own-mistakes]])
 //!
 //! 1. **train-base == serve-base.** The previous gene was INERT (lift ≈ 0.0)
-//!    because the LoRA deltas were computed against `unsloth/Qwen3.5-4B` but
+//!    because the LoRA deltas were computed against `Qwen/Qwen3.5-4B` but
 //!    applied to the *forged* served base — different weights, so the deltas
 //!    washed out. The caller MUST pass [`MlxTrainSpec::base_model_dir`] = the HF
 //!    safetensors form of the EXACT model the gateway serves (for the live

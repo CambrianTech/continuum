@@ -1,52 +1,6 @@
 use super::*;
 
-/// The act-latency target the CONVERSATION fill budgets against — how long a turn's
-/// history prefill is allowed to take. From the act-latency law: human expectations set
-/// the bar; a turn that spends minutes re-reading history before thinking is disqualified
-/// regardless of how smart the answer is. Window HEADROOM above this is reserve, not
-/// default fill.
-///
-/// This is the LATENCY INTENT and nothing else — the half of the cap that is a product
-/// decision. The other half, tokens-per-second, is MEASURED on this node
-/// ([`crate::inference::prefill_rate::latency_fill_cap`]); it used to be a companion
-/// constant of 500 t/s, and `30 × 500` made the fill a flat 15,000 tokens on every box in
-/// the fleet. Measured on the M5 the night that was found (`inference.prefill.complete`):
-/// `ingest_tok_per_s` of 70, 90 and 92, and the IntelMac at ~25 — so the constant was
-/// 5–20× optimistic, the "30 second" target was really ~187 s, and the clip took 27% of a
-/// 67,072-token lane away from Aiko while failing its own stated purpose on every machine.
-// context-budget-exempt: a TIME target, not a token budget — the token cap is time x THIS node's MEASURED prefill rate (`prefill_rate::latency_fill_cap`)
-pub(in super::super) const PREFILL_TARGET_SECONDS: usize = 30;
-
 impl LlmDeliberationFaculty {
-    /// The conversation fill this turn may cost, and the rate it was derived from.
-    ///
-    /// `PREFILL_TARGET_SECONDS` is the latency INTENT; the tokens it buys are THIS
-    /// node's, read through the same ladder the decode side landed (#4283) — fresh, else
-    /// stale, else the box's most conservative measured rate, and only with nothing ever
-    /// measured a named floor ([`crate::inference::prefill_rate::latency_fill_cap`]).
-    /// Use the captured request binding: a degraded serving snapshot may temporarily
-    /// clear active_model while this same model still owns the pending turn.
-    pub(in super::super) fn latency_fill_cap(
-        model: &str,
-        rate_for: impl FnOnce(&str) -> crate::inference::prefill_rate::MeasuredRate,
-    ) -> (usize, crate::inference::prefill_rate::MeasuredRate) {
-        // `model` is the one the request carries (`ModelBinding::requested_model`), never
-        // absent: an unbound spawn binding keyed nothing and fell to the unmeasured floor
-        // (card b406e901; Fable on #5130).
-        let rate = rate_for(model);
-        (
-            crate::inference::prefill_rate::latency_fill_cap(PREFILL_TARGET_SECONDS, rate),
-            rate,
-        )
-    }
-
-    /// How much conversation a turn may carry: the NEW prefill the latency target buys at
-    /// this node's rate (never less than the evidence of her own last move), on top of the
-    /// prefix her slot already holds from her last answered prompt, which costs no prefill.
-    pub(in super::super) fn history_fill_cap(derived_new: usize, last_move_evidence: usize, cached_history: usize) -> usize {
-        derived_new.max(last_move_evidence).saturating_add(cached_history)
-    }
-
     /// The EXACT prompt this faculty sends the model this tick — the system
     /// prompt (identity + assembled RAG context + how-to-participate + silence
     /// affordance) and the user burst. Exposed so what the LLM sees is trivially
@@ -67,7 +21,7 @@ impl LlmDeliberationFaculty {
         // model come from the same atomic snapshot (no torn read across a re-home).
         let binding = self.binding.load();
         let (window, calibration) = self.prompt_fit(&binding);
-        self.prompt_view_with_feedback(ws, window, calibration, binding.requested_model())
+        self.prompt_view_with_feedback(ws, window, calibration)
     }
 
     pub(in super::super) fn prompt_fit(&self, binding: &ModelBinding) -> (u32, PromptCalibration) {
@@ -81,7 +35,7 @@ impl LlmDeliberationFaculty {
     /// Fixture view against an explicit window, without a prior provider observation.
     #[cfg(test)]
     pub(in super::super) fn prompt_view_within(&self, ws: &Workspace, context_window: u32) -> DeliberationPromptView {
-        self.prompt_view_with_feedback(ws, context_window, PromptCalibration::default(), self.binding.load().requested_model())
+        self.prompt_view_with_feedback(ws, context_window, PromptCalibration::default())
     }
 
     /// Every reply carries the engine's own count of the prompt it was sent: retain that
@@ -111,16 +65,13 @@ impl LlmDeliberationFaculty {
             calibration,
             available,
         })));
-        // What the engine measured as reused is the only prefix credited as free next turn.
-        self.cached_prefix_tokens.store(
-            (engine_cached_tokens as usize).min(view.history_tokens),
-            std::sync::atomic::Ordering::Relaxed,
-        );
         continuum_base::probe!(
             class = "delib.prompt.density",
             persona = %self.persona_name,
             estimated_prompt_tokens = view.estimated_prompt_tokens,
             engine_prompt_tokens,
+            // What the engine reused of it: her view's measure of success.
+            engine_cached_tokens,
             "the engine's count of this prompt, retained as the next prompt's density"
         );
     }
@@ -131,9 +82,8 @@ impl LlmDeliberationFaculty {
         ws: &Workspace,
         context_window: u32,
         calibration: PromptCalibration,
-        model: &str,
     ) -> DeliberationPromptView {
-        self.prompt_view_with_visual_feedback(ws, context_window, calibration, None, model)
+        self.prompt_view_with_visual_feedback(ws, context_window, calibration, None)
     }
 
     pub(in super::super) fn prompt_view_with_visual_feedback(
@@ -142,7 +92,6 @@ impl LlmDeliberationFaculty {
         context_window: u32,
         calibration: PromptCalibration,
         visual: Option<&ActiveVisualFeedback>,
-        model: &str,
     ) -> DeliberationPromptView {
         // THE REPLY'S CLAIM ([`reply_claim`]): what she is expected to write, at the
         // priority this turn gives it. It competes in the window's one allocation below;
@@ -224,6 +173,9 @@ impl LlmDeliberationFaculty {
             (!trailing_framing.is_empty()).then_some(trailing_framing.as_str()),
             visual,
         );
+        // Her view leads the history: this act appends to it, and everything after it (the
+        // standing grounding, facts, the clock) is this act's fresh tail.
+        let view = self.place_view(&mut all_messages);
 
         // Price the untruncated trailing sources separately: messages_unfitted
         // leaves them borrowed until the same plan has reserved their exact units.
@@ -236,12 +188,8 @@ impl LlmDeliberationFaculty {
         } else {
             calibration
         };
-        let unfitted_message_tokens = all_messages.tokens()
-            + ws.broadcast
-                .iter()
-                .filter(|c| c.decision.is_none() && c.trailing && c.standing_grounding)
-                .map(|c| GroundingPiece::whole(c).tokens)
-                .sum::<usize>();
+        // Her view already carries every block that rides the conversation.
+        let unfitted_message_tokens = all_messages.tokens();
         // KEEP THE OVERFLOW. This used to be one chained `saturating_sub` ending in
         // `- all_messages.required_tokens()`, and the saturation is where the diagnosis
         // died: "over by 31,000" and "exactly at the line" both arrive as `0`, so the one
@@ -342,31 +290,19 @@ impl LlmDeliberationFaculty {
         // turn that cut Benchy's first write mid-call (2026-10-18 02:10Z). Now it trades
         // against history and grounding by priority and never takes from required input.
         //
-        // LATENCY-BUDGETED FILL (act-latency law + compression ladder): a bigger served
-        // window is only a gift if its content earns the prefill time. When the honest
-        // kv-rate fix grew slots to ~134k, the demand-derived budgets happily filled them
-        // — prompts ballooned 19-24k → 24-43k in an afternoon and five concurrent 35k
-        // prefills serialized acts to 339-888s (measured 2026-09-01, the worst of the day,
-        // WITH the best hit rates). So history's claim is capped by a time target — and
-        // the tokens that target buys are THIS node's, never a constant's:
-        // `PREFILL_TARGET_SECONDS × the measured prefill rate`
-        // (`prefill_rate::latency_fill_cap`, the #4283 ladder: fresh → stale → the box's
-        // most conservative curve → a named floor).
-        let (derived_fill_cap, fill_rate) = Self::latency_fill_cap(
-            model, crate::inference::prefill_rate::measured_rate_for,
-        );
-        // A LATENCY BUDGET MAY NOT BUY ITSELF A REPEATED ACT. The cap exists to bound
-        // time-to-first-token; clipping away her own last move and its result costs a
-        // WHOLE EXTRA TURN when she re-issues it, so history's FLOOR is what that evidence
-        // costs — ahead of every optional claim, the reply's desire included. `fit_messages`
-        // then refuses to evict it; this floor is what makes that refusal satisfiable.
+        // Her own last move and its result are history's FLOOR, ahead of every optional
+        // claim, the reply's desire included: clipping them costs a WHOLE EXTRA TURN when she
+        // re-issues the act. `fit_messages` refuses to evict them; this floor is what makes
+        // that refusal satisfiable.
         let evidence = all_messages.recent_move_evidence();
-        // The latency target bounds NEW prefill; what the engine reported it reused on her
-        // last answered prompt rides free (see `cached_prefix_tokens`).
-        let cached_history = self.cached_prefix_tokens.load(std::sync::atomic::Ordering::Relaxed);
-        let latency_fill_cap = Self::history_fill_cap(derived_fill_cap, evidence.tokens, cached_history);
         let required_tokens = all_messages.required_tokens();
-        let optional_history = all_messages.tokens().saturating_sub(required_tokens);
+        // Her view's sources claim for themselves below; the history claim is this act's
+        // fresh optional tail (facts, the clock, demoted payloads).
+        let view_tokens = Self::messages_cost(&all_messages.history[..view.len()]);
+        let optional_history = all_messages
+            .tokens()
+            .saturating_sub(required_tokens)
+            .saturating_sub(view_tokens);
         // A quiet self-tick (no required input) still sends her newest whole message.
         let quiet_minimum = if required_tokens == 0 {
             all_messages.history.last().map_or(0, Self::message_cost) // map_or: no history = nothing to keep
@@ -381,6 +317,13 @@ impl LlmDeliberationFaculty {
         // The reply never takes from required content: its floor is what the window leaves
         // after framing, tools and the required input. Its UNCLIPPED floor is her need.
         let reply_need = reply.floor_tokens;
+        // An act's reply wants its whole runaway bound, at its priority above her context's:
+        // what no claim took used to top it up to that bound, and her view, a claim on the
+        // whole window, leaves nothing untaken. Aris's act was cut at the output limit with
+        // 5,316 granted and 0 unallocated (the M5, 2026-10-22 00:14Z), a whole turn lost.
+        if matches!(self.turn_kind(ws), TurnKind::Act) {
+            reply.max_tokens = reply.max_tokens.max(reply_runaway);
+        }
         reply.floor_tokens = reply_need.min(context_window.saturating_sub(fixed_cost.saturating_add(required_cost)));
         reply.min_tokens = reply.floor_tokens;
         let fixed_claim = |id: &str, tokens: u32| crate::persona::rag_budget::RagSourceBudget {
@@ -393,7 +336,7 @@ impl LlmDeliberationFaculty {
         };
         let grounding_floor = claim(ctx_floor);
         let history_floor = claim(history_floor);
-        let claims = [
+        let mut claims = vec![
             fixed_claim(FLEX_FRAMING, fixed_cost),
             fixed_claim(FLEX_REQUIRED, required_cost),
             crate::persona::rag_budget::RagSourceBudget {
@@ -417,13 +360,21 @@ impl LlmDeliberationFaculty {
                 priority: 5,
                 floor_tokens: history_floor,
                 min_tokens: history_floor,
-                max_tokens: claim(latency_fill_cap.min(optional_history)).max(history_floor),
+                max_tokens: claim(optional_history).max(history_floor),
                 required: false,
             },
             reply,
         ];
+        // Her view's sources, each its own claim (`epoch.rs`): the blocks she works from at
+        // the grounding claim's weight, her conversation, thoughts and results at history's.
+        claims.extend(self.view_claims(&all_messages.streams).into_iter().map(|mut source| {
+            source.floor_tokens = claim(source.floor_tokens as usize);
+            source.min_tokens = source.floor_tokens;
+            source.max_tokens = claim(source.max_tokens as usize).max(source.floor_tokens);
+            source
+        }));
         let plan = crate::persona::rag_budget::flex_allocate(context_window, &claims);
-        let budget_floor = super::super::super::window_allocator::turn_need(&claims).saturating_sub(claims[4].floor_tokens).saturating_add(reply_need);
+        let budget_floor = super::super::super::window_allocator::turn_need(&claims).saturating_sub(claims.iter().find(|c| c.source_id == FLEX_REPLY).map_or(0, |c| c.floor_tokens)).saturating_add(reply_need);
         // Whatever no claim took is hers to write with, up to the runaway bound.
         let reply_grant = plan.granted(FLEX_REPLY);
         let completion_reserve = reply_grant
@@ -458,48 +409,23 @@ impl LlmDeliberationFaculty {
             .saturating_sub(selected.tokens)
             .saturating_sub(framing_tokens);
         let window_msg_budget = after_framing.saturating_sub(ctx_floor);
-        let fill_budget = required_tokens.saturating_add(latency_fill_cap);
-        if window_msg_budget > fill_budget {
-            let shed = all_messages.shed_preview(latency_fill_cap);
-            continuum_base::probe!(
-                class = "delib.fill.latency_capped",
-                persona = %self.persona_name,
-                window_budget = window_msg_budget,
-                cap = latency_fill_cap,
-                // A clip is never again invisible: the rate that produced it and where
-                // that rate came from ride the same row. `rate_source="none"` means the
-                // named floor governed and nothing was measured on this box.
-                rate_source = fill_rate.source.label(),
-                measured_prefill_tps = fill_rate.tps.unwrap_or(0.0), // unwrap_or: 0.0 on the receipt means NO rate — rate_source says "none" and the floor governed
-                target_seconds = PREFILL_TARGET_SECONDS,
-                derived_cap = derived_fill_cap,
-                cached_history,
-                // WHAT THE CLIP COSTS HER, in kind and amount — so "she repeated
-                // herself" is traceable to "we cut the evidence she had already done
-                // it" without anyone opening a capture file. At-least figures: the real
-                // drop rounds up to a quantum.
-                shed_messages = shed.messages,
-                shed_tokens = shed.tokens,
-                shed_own_moves = shed.own_moves,
-                shed_move_results = shed.results,
-                // …and what it is structurally forbidden to cost her.
-                kept_recent_move_messages = evidence.messages,
-                kept_recent_move_tokens = evidence.tokens,
-                // 0 messages = her last move is further back than the scan bound and is
-                // NOT protected; `truncated` = only a suffix of a longer chain is. The
-                // protection's limits ride its own receipt.
-                kept_recent_move_truncated = evidence.truncated,
-                "conversation fill capped by the act-latency target at THIS node's \
-                 measured prefill rate — window headroom is reserve for content that \
-                 earns its prefill, never default fill; her own last move and its \
-                 result are held out of the drop",
-            );
-        }
-        // History gets its grant; the required input is never part of the trade.
-        let msg_budget = window_msg_budget.min(
-            required_tokens
-                .saturating_add(calibration.prompt_budget(plan.granted(FLEX_HISTORY) as usize)),
-        );
+        // History and her view get their grants; the required input is never part of the trade.
+        let view_granted: u32 = plan
+            .allocations
+            .iter()
+            .filter(|a| claims.iter().skip(5).any(|c| c.source_id == a.source_id))
+            .map(|a| a.allocated_tokens)
+            .sum();
+        // What no claim took goes to the reply up to its runaway bound; only the rest is room
+        // her view may grow into by appends (`fit_view`), and the fit's budget holds that same
+        // room, or it would drop what the epoch was allowed to keep.
+        let view_room = plan.unallocated.saturating_sub(reply_runaway.saturating_sub(reply_grant));
+        let msg_budget = window_msg_budget.min(required_tokens.saturating_add(calibration.prompt_budget(
+            plan.granted(FLEX_HISTORY).saturating_add(view_granted).saturating_add(view_room) as usize,
+        )));
+        // Her view within what the allocation granted its sources (`epoch.rs`): the only place
+        // it is ever collapsed.
+        self.fit_view(&mut all_messages, view, &plan, view_room as usize);
 
         // WHAT THIS TURN WOULD HAVE COST WITH NO BUDGET — recorded before either
         // fitting step throws the evidence away, and deliberately free to exceed
@@ -723,7 +649,6 @@ impl LlmDeliberationFaculty {
             input_identity,
             estimated_prompt_tokens,
             completion_reserve: completion_reserve as u32,
-            history_tokens: used_msg_tokens.saturating_sub(required_tokens),
             capacity_error,
             protocol_error,
             messages,
@@ -752,23 +677,6 @@ impl LlmDeliberationFaculty {
             .collect()
     }
 
-    /// Build the role-attributed conversation thread from the workspace's
-    /// structured turns, fitted to `budget_tokens`. The persona's OWN posts become
-    /// `assistant` messages (her own voice — no name prefix, matching the
-    /// "do NOT prefix your message with your name" instruction); peers' posts become
-    /// `user` messages prefixed `{author}: ` so several speakers stay legible inside
-    /// one merged user turn. Consecutive same-role turns merge into a single message
-    /// (the chat-template shape models expect). Under budget pressure the OLDEST
-    /// turns drop first. This is the payoff of the structured-turns refactor: the
-    /// model sees WHO said WHAT with its own past messages attributed to `assistant`,
-    /// so it neither bleeds identity nor replays the transcript (the echo-loop root
-    /// cause — PERSONA-COGNITION-PIPELINE §7.5).
-    #[cfg(test)]
-    pub(in super::super) fn messages_within(&self, ws: &Workspace, budget_tokens: usize) -> Vec<ChatMessage> {
-        self.fit_messages(self.messages_unfitted(ws, None), budget_tokens)
-            .expect("test workspace must fit its complete current stimulus and action result")
-            .messages
-    }
 
     /// The conversation as it stands BEFORE any budget is applied — every turn, every
     /// perception fact, every trailing proprioception block, in final render order.
@@ -778,7 +686,12 @@ impl LlmDeliberationFaculty {
     /// it has run the question "how much did this turn actually want?" is
     /// unanswerable — which is precisely why the served window had to be sized by a
     /// constant instead of by demand. [`super::super::super::working_set`] measures this.
+    #[cfg(test)]
     pub(in super::super) fn messages_unfitted(&self, ws: &Workspace, trailing_framing: Option<&str>) -> PromptMessages {
-        self.messages_with_visual_feedback(ws, trailing_framing, None)
+        let mut prompt = self.messages_with_visual_feedback(ws, trailing_framing, None);
+        let whole = self.whole_view(&prompt.streams);
+        prompt.grounding_at = whole.len();
+        prompt.history.splice(0..0, whole);
+        prompt
     }
 }

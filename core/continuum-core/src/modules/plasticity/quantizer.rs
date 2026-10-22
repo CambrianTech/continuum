@@ -32,41 +32,6 @@ pub struct LayerQuantizationPlan {
     pub bf16_indices: Vec<usize>,
 }
 
-/// Compute quantization plans from a topology.
-pub fn compute_quantization_plans(topology: &HeadTopology) -> Vec<LayerQuantizationPlan> {
-    topology
-        .layers
-        .iter()
-        .map(|layer| {
-            let mut ternary_indices = Vec::new();
-            let mut q2_indices = Vec::new();
-            let mut q4_indices = Vec::new();
-            let mut q8_indices = Vec::new();
-            let mut bf16_indices = Vec::new();
-
-            for (i, precision) in layer.head_precisions.iter().enumerate() {
-                match precision {
-                    HeadPrecision::Removed => {} // Should not appear in retained list
-                    HeadPrecision::Ternary => ternary_indices.push(i),
-                    HeadPrecision::Q2 => q2_indices.push(i),
-                    HeadPrecision::Q4 => q4_indices.push(i),
-                    HeadPrecision::Q8 => q8_indices.push(i),
-                    HeadPrecision::BF16 => bf16_indices.push(i),
-                }
-            }
-
-            LayerQuantizationPlan {
-                layer_index: layer.layer_index,
-                ternary_indices,
-                q2_indices,
-                q4_indices,
-                q8_indices,
-                bf16_indices,
-            }
-        })
-        .collect()
-}
-
 // =============================================================================
 // Ternary quantization (1.58-bit): {-1, 0, +1} with per-block scale factor
 //
@@ -492,51 +457,6 @@ mod tests {
         let (quantized, scale) = quantize_block_q8(&values);
         let restored = dequantize_block_q8(&quantized, scale);
         assert!((values[0] - restored[0]).abs() < 0.01);
-    }
-
-    #[test]
-    fn test_compute_quantization_plans() {
-        let topology = HeadTopology {
-            base_model: "test".to_string(),
-            layers: vec![LayerTopology {
-                layer_index: 0,
-                num_heads: 7,
-                num_kv_heads: 7,
-                retained_head_indices: vec![0, 1, 2, 3, 4, 5, 6],
-                retained_kv_head_indices: vec![0, 1, 2, 3, 4, 5, 6],
-                head_precisions: vec![
-                    HeadPrecision::Ternary,
-                    HeadPrecision::Q2,
-                    HeadPrecision::Q4,
-                    HeadPrecision::Q8,
-                    HeadPrecision::BF16,
-                    HeadPrecision::Q4,
-                    HeadPrecision::Ternary,
-                ],
-                head_scores: vec![0.12, 0.22, 0.35, 0.55, 0.8, 0.4, 0.15],
-            }],
-            original_num_heads: 10,
-            original_num_kv_heads: 10,
-            head_dim: 64,
-            parameter_reduction: 0.3,
-            precision_profile: PrecisionProfile {
-                removed: 3,
-                ternary: 2,
-                q2: 1,
-                q4: 2,
-                q8: 1,
-                bf16: 1,
-            },
-            created_at: "2026-03-16T00:00:00Z".to_string(),
-        };
-
-        let plans = compute_quantization_plans(&topology);
-        assert_eq!(plans.len(), 1);
-        assert_eq!(plans[0].ternary_indices, vec![0, 6]);
-        assert_eq!(plans[0].q2_indices, vec![1]);
-        assert_eq!(plans[0].q4_indices, vec![2, 5]);
-        assert_eq!(plans[0].q8_indices, vec![3]);
-        assert_eq!(plans[0].bf16_indices, vec![4]);
     }
 
     #[test]

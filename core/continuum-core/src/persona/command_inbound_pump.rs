@@ -82,7 +82,7 @@ use tokio::task::JoinHandle;
 use tracing::{debug, warn};
 use uuid::Uuid;
 
-use crate::routing::epoch_watermark::{SqliteEpochWatermark, WatermarkError};
+use crate::routing::epoch_watermark::{OrmEpochWatermark, WatermarkError};
 use crate::routing::grid_capability::GrantAuthorizer;
 use crate::routing::CommandRequestHandler;
 use crate::runtime::command_executor::CommandExecutor;
@@ -110,7 +110,7 @@ pub enum GrantAuthorizerBuildError {
 /// grants visiting peers present. "This node is the owner": the trusted issuer key
 /// is the node's OWN enrolled ed25519 key (it self-signs the grants it hands out),
 /// the expected mesh is the node's own mesh, and the anti-replay watermark is a
-/// DURABLE SQLite store under the persona home (survives restart — the review hard
+/// DURABLE ORM store under the persona home (survives restart — the review hard
 /// gate). Provider≠owner (verifying grants the owner signed on a different box) is
 /// a later generalization needing pinned-issuer-key distribution.
 pub async fn build_grant_authorizer(
@@ -125,7 +125,8 @@ pub async fn build_grant_authorizer(
         .mesh_identity()
         .await
         .map_err(GrantAuthorizerBuildError::Mesh)?;
-    let watermark = SqliteEpochWatermark::open(&home.join("grant_watermark.sqlite"))
+    let watermark = OrmEpochWatermark::open(&home.join("grant_watermark.sqlite"))
+        .await
         .map_err(GrantAuthorizerBuildError::Watermark)?;
     Ok(Arc::new(GrantAuthorizer::with_watermark(
         owner_pubkey,
@@ -199,11 +200,6 @@ pub async fn spawn_node_pump(
         "the node answers cross-grid commands under its own identity — the one its capacity beacon is stamped with"
     );
     Ok(peer)
-}
-
-/// Whether the node pump TASK is running (liveness is the task, not the handle).
-pub fn node_pump_alive() -> bool {
-    NODE_PUMP.get().is_some_and(|(p, _)| p.is_alive())
 }
 
 static NODE_PUMP: std::sync::OnceLock<(PersonaCommandInboundPump, watch::Sender<u64>)> =

@@ -211,7 +211,6 @@ async fn pinned_act_result_reaches_the_prompt_even_with_an_empty_broadcast() {
         8192,
         PromptCalibration::default(),
         Some(&visual),
-        binding.requested_model(),
     );
     assert!(seen.capacity_error.is_none());
     assert_ne!(seen.input_identity, view.input_identity);
@@ -265,7 +264,7 @@ async fn pinned_act_result_reaches_the_prompt_even_with_an_empty_broadcast() {
     legacy_memory.restore(legacy_snapshot);
     let legacy_faculty = LlmDeliberationFaculty::new(persona, "Atlas", "You are Atlas.", Arc::new(HeuristicInferenceAdapter::new()))
         .with_context_window(8192).with_working_memory(legacy_memory);
-    let legacy_view = legacy_faculty.prompt_view_with_visual_feedback(&ws, 8192, PromptCalibration::default(), Some(&visual), binding.requested_model());
+    let legacy_view = legacy_faculty.prompt_view_with_visual_feedback(&ws, 8192, PromptCalibration::default(), Some(&visual));
     assert!(legacy_view.protocol_error.is_none());
     let legacy_wire = crate::inference::request_body::wire_messages(&legacy_view.messages, None, true, false, "llama-server");
     assert!(legacy_wire.iter().all(|m| m.get("tool_calls").is_none()));
@@ -273,7 +272,7 @@ async fn pinned_act_result_reaches_the_prompt_even_with_an_empty_broadcast() {
     let missing = faculty.active_visual_feedback_at(&binding, home.path().join("absent-images"))
         .await.unwrap().unwrap();
     assert!(matches!(&missing.parts[0].1, ContentPart::Text { text } if text.contains("No pixels attached")));
-    let failed = faculty.prompt_view_with_visual_feedback(&ws, 8192, PromptCalibration::default(), Some(&missing), binding.requested_model());
+    let failed = faculty.prompt_view_with_visual_feedback(&ws, 8192, PromptCalibration::default(), Some(&missing));
     assert_ne!(failed.input_identity, seen.input_identity);
     assert!(failed.user_text().contains("capture or inspect the image again"));
     // Preserve a real batch including error and historical skipped receipts.
@@ -341,40 +340,18 @@ async fn pinned_act_result_reaches_the_prompt_even_with_an_empty_broadcast() {
     wm.record_receipt_typed(&[], &inventory, Some(ws.activity_room_id), custody);
     wm.record_native_action_statement("", ws.activity_room_id, &native_calls);
     wm.record_receipt_typed(&batch, "next native batch", Some(ws.activity_room_id), crate::ai::types::ResultCustody::Unsaved);
+    // Her view carries the inventory whole while the window holds it; nothing collapses at
+    // fit time any more (her view collapses at an epoch start, `prompt/epoch.rs`).
     let roomy = faculty.messages_unfitted(&ws, None);
     let full_cost = roomy.required_tokens() + LlmDeliberationFaculty::messages_cost(&roomy.history);
-    let (index, pointer) = roomy.result_pointers.iter().find(|(_, message)| message.content_text().contains(&handle)).unwrap();
-    let savings = LlmDeliberationFaculty::message_cost(&roomy.history[*index])
-        - LlmDeliberationFaculty::message_cost(pointer);
-    assert!(savings > 0);
-    let expected_pointer = pointer.content_text();
-    let tight_budget = full_cost - savings;
-    let tight = faculty.fit_messages(roomy, tight_budget).unwrap();
-    assert!(LlmDeliberationFaculty::messages_cost(&tight.messages) <= tight_budget);
-    assert!(tight.messages.iter().any(|m| m.content_text() == expected_pointer));
-    // The action ledger legitimately keeps the title/head. It is the
-    // complete historical body, not its provenance, that must collapse.
-    assert!(!tight.messages.iter().any(|m| m.content_text().contains(inventory.trim())));
-    assert!(tight.messages.iter().any(|m| m.content_text().contains("inventory-13010")));
-    let tight_wire = crate::inference::request_body::wire_messages(&tight.messages, None, true, false, "llama-server");
-    let call_at = tight_wire.iter().position(|m| m["tool_calls"][0]["id"] == "capture").unwrap();
-    for (i, observation) in batch.iter().enumerate() {
-        assert_eq!(tight_wire[call_at + 1 + i]["tool_call_id"], observation.call.id);
-    }
-    let saved = crate::cognition::tool_executor::spill::resolve(persona, &handle).unwrap();
-    assert_eq!(std::fs::read_to_string(saved).unwrap(), inventory);
-    // Sticky (ring_collapse): a later roomy fit keeps the pointer until forgotten.
-    let sticky = faculty.fit_messages(faculty.messages_unfitted(&ws, None), full_cost).unwrap();
-    assert!(sticky.messages.iter().any(|m| m.content_text() == expected_pointer));
-    faculty.collapsed_results.lock().forget();
-    let roomy = faculty.fit_messages(faculty.messages_unfitted(&ws, None), full_cost).unwrap();
+    let roomy = faculty.fit_messages(roomy, full_cost).unwrap();
     assert!(roomy.messages.iter().any(|m| m.content_text().contains(inventory.trim())));
     // Exact-refusal correction reuses saved alternatives and keeps the
     // entire required native batch, without re-reading working memory.
     let estimate = LlmDeliberationFaculty::messages_cost(&roomy.messages);
     let snapshot = DeliberationPromptView {
         refit: roomy.refit, system: String::new(), input_identity: [0; 32],
-        estimated_prompt_tokens: estimate, completion_reserve: 0, history_tokens: 0,
+        estimated_prompt_tokens: estimate, completion_reserve: 0,
         capacity_error: None, protocol_error: None, segments: Vec::new(),
         messages: roomy.messages,
     };
@@ -393,7 +370,6 @@ async fn pinned_act_result_reaches_the_prompt_even_with_an_empty_broadcast() {
         8192,
         PromptCalibration::default(),
         Some(&visual),
-        binding.requested_model(),
     );
     assert!(scoped
         .messages
@@ -401,7 +377,7 @@ async fn pinned_act_result_reaches_the_prompt_even_with_an_empty_broadcast() {
         .all(|m| !matches!(&m.content, MessageContent::Parts(_))));
     wm.set_scope(Some("native-workspace".into()));
     let returned = faculty.prompt_view_with_visual_feedback(
-        &ws, 8192, PromptCalibration::default(), Some(&visual), binding.requested_model(),
+        &ws, 8192, PromptCalibration::default(), Some(&visual),
     );
     let returned_wire = crate::inference::request_body::wire_messages(&returned.messages, None, true, false, "llama-server");
     let at = returned_wire.iter().position(|m| m["tool_calls"][0]["id"] == "capture").unwrap();

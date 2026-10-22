@@ -77,7 +77,7 @@ pub fn citizen_home_path(
     let kind_dir = kind_slug(kind);
     let mut path = continuum_root.join("citizens").join(kind_dir);
     if matches!(kind, IdentityKind::Agent) {
-        let provider = provider.expect(
+        let provider = provider.expect( // JUSTIFIED: documented caller contract (no invented default); 23 call sites incl. persona/ owned by another branch
             "citizen_home_path: provider is REQUIRED when kind == Agent. \
              Per [[no-fallbacks-ever]] the substrate refuses to invent an \
              agent-provider default. Fix the call site to thread the \

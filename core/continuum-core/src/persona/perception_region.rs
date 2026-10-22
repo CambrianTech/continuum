@@ -239,14 +239,6 @@ impl PerceptionRegion {
         self.recompute(activity, now_ms)
     }
 
-    /// A turn composed this activity's digest (depth); kept by reference for
-    /// the renderer, never built here.
-    pub fn note_digest(&mut self, activity: Uuid, digest: Arc<ChannelDigest>) {
-        if let Some(view) = self.views.get_mut(&activity) {
-            view.digest = Some(digest);
-        }
-    }
-
     /// The activity's board changed above her cursor (bus-fed).
     pub fn observe_board(&mut self, activity: Uuid, changes: Vec<BoardChange>, now_ms: u64) -> Option<Wake> {
         let view = self.views.entry(activity).or_insert_with(|| blank(short8(activity)));

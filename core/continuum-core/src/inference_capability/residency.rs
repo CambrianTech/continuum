@@ -43,7 +43,7 @@
 //! - **No assumed defaults**: every field comes from the inputs; no
 //!   `unwrap_or(4096)` / `unwrap_or("metal")` / etc.
 
-use crate::inference_capability::types::HardwareProfile;
+use crate::system_resources::hardware_profile::HardwareProfile;
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 

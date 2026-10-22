@@ -15,19 +15,6 @@ use super::*;
 // consequence, and her own last move is the LAST thing to go.
 #[test]
 fn a_binding_fill_budget_keeps_her_own_last_move_and_its_result() {
-    // card e370a673: a degraded serving snapshot must not erase the
-    // captured request model's measured fill allowance on a retry.
-    use crate::inference::prefill_rate::{MeasuredRate, RateSource};
-    let measured = MeasuredRate { tps: Some(28.4), source: RateSource::Fresh };
-    let (cap, retained) = LlmDeliberationFaculty::latency_fill_cap("bound-model", |model| {
-        assert_eq!(model, "bound-model", "look up the request binding, not current serving readiness");
-        measured
-    });
-    assert_eq!(retained, measured);
-    assert_eq!(cap, (PREFILL_TARGET_SECONDS as f64 * 28.4).floor() as usize);
-    // An absent request model is unrepresentable: the key is always the model the
-    // request carries (`ModelBinding::requested_model`), so no other model's rate
-    // can be borrowed (card b406e901).
     let adapter: Arc<dyn AIProviderAdapter> = Arc::new(HeuristicInferenceAdapter::new());
     let faculty = LlmDeliberationFaculty::new(Uuid::new_v4(), "T", "You are T.", adapter);
     let mut history: Vec<ChatMessage> = (0..40)
@@ -37,6 +24,7 @@ fn a_binding_fill_budget_keeps_her_own_last_move_and_its_result() {
     history.push(ChatMessage::text("assistant", format!("calling code/write {}", "word ".repeat(40))));
     history.push(ChatMessage::text("user", format!("Full result of code/write {}", "word ".repeat(60))));
     let prompt = || PromptMessages {
+        streams: Default::default(),
         result_pointers: Vec::new(),
         input_identity: [0; 32],
         grounding_tokens: 0,
@@ -44,7 +32,7 @@ fn a_binding_fill_budget_keeps_her_own_last_move_and_its_result() {
         history: history.clone(),
         stimulus: None,
         latest_result: Vec::new(), action_statement: None,
-        room_updates: Vec::new(), ledger: None, notices: Vec::new(),
+        room_updates: Vec::new(), notices: Vec::new(),
     };
 
     // The run that must survive: her act, its result, and the ask that opened them.
@@ -84,16 +72,6 @@ fn a_binding_fill_budget_keeps_her_own_last_move_and_its_result() {
         "protecting her last move must never push the prompt over the window"
     );
 
-    // The clip is LOUD: it says what it cost her, in kind and amount, so "she
-    // repeated herself" is traceable without opening a capture file.
-    let shed = prompt().shed_preview(budget);
-    assert!(shed.messages > 0 && shed.tokens > 0, "a binding clip drops something");
-    assert_eq!(
-        (shed.own_moves, shed.results),
-        (0, 0),
-        "what it sheds is old conversation — never her own move or its result"
-    );
-
     // When the budget cannot hold the act and its result at all, the turn
     // REFUSES rather than forgetting a completed act — see
     // `continuity_insufficient_capacity_refuses_instead_of_dropping_evidence`.
@@ -121,6 +99,7 @@ fn a_binding_fill_budget_keeps_her_own_last_move_and_its_result() {
 fn the_recent_move_protection_states_its_own_limits() {
     let msg = |role: &str, body: &str| ChatMessage::text(role, body.to_string());
     let of = |history: Vec<ChatMessage>| PromptMessages {
+        streams: Default::default(),
         result_pointers: Vec::new(),
         input_identity: [0; 32],
         grounding_tokens: 0,
@@ -128,7 +107,7 @@ fn the_recent_move_protection_states_its_own_limits() {
         history,
         stimulus: None,
         latest_result: Vec::new(), action_statement: None,
-        room_updates: Vec::new(), ledger: None, notices: Vec::new(),
+        room_updates: Vec::new(), notices: Vec::new(),
     };
 
     // A MULTI-TOOL CHAIN LONGER THAN THE SCAN BOUND. Protected as a suffix, and

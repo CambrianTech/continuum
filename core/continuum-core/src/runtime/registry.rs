@@ -295,11 +295,6 @@ impl ModuleRegistry {
         self.modules.iter().map(|e| *e.key()).collect()
     }
 
-    /// List all registered command routes (for debugging/health-check).
-    pub fn list_routes(&self) -> Vec<(&'static str, &'static str)> {
-        self.command_routes.read().clone()
-    }
-
     // ─── Helper methods for RuntimeControl ───────────────────────────────────────
 
     /// Check if a module exists by name.

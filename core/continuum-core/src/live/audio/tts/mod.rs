@@ -303,7 +303,7 @@ impl Default for TTSRegistry {
 // ============================================================================
 
 /// Initialize the global TTS registry with default adapters
-pub fn init_registry() {
+pub fn init_registry() -> Arc<RwLock<TTSRegistry>> {
     let registry = TTS_REGISTRY.get_or_init(|| {
         let mut reg = TTSRegistry::new();
 
@@ -333,17 +333,15 @@ pub fn init_registry() {
         "TTS: Registry initialized with {} adapters",
         registry.read().adapters.len()
     );
+    registry.clone()
 }
 
 /// Get the global registry
 pub fn get_registry() -> Arc<RwLock<TTSRegistry>> {
-    TTS_REGISTRY.get().cloned().unwrap_or_else(|| {
-        init_registry();
-        TTS_REGISTRY
-            .get()
-            .cloned()
-            .expect("TTS_REGISTRY must be set after init_registry()")
-    })
+    match TTS_REGISTRY.get() {
+        Some(registry) => registry.clone(),
+        None => init_registry(),
+    }
 }
 
 /// Check if TTS is initialized (convenience function)

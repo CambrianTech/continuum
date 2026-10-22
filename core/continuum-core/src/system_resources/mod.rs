@@ -14,6 +14,7 @@
 pub mod absence_watch;
 pub mod citizen_workspace_pool;
 pub mod eye_reaper;
+pub mod harness_archive;
 pub mod process_anomaly;
 pub mod bounded_command;
 pub mod concurrency;
@@ -22,6 +23,7 @@ pub mod disk_pressure;
 pub mod fd_gauge;
 pub mod power_assertion;
 pub mod fd_pressure;
+pub mod hardware_profile;
 pub mod disk_reporters;
 pub mod memory_pressure;
 pub mod monitor;

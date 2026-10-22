@@ -52,7 +52,8 @@ const FETCH_LIMIT: usize = 100;
 /// Token estimate — the ONE canonical chars/4 estimator (`cognition::token_budget`),
 /// shared by every RAG source so the replay ledger's numbers match. (Was a private
 /// copy — converged.)
-use crate::cognition::token_budget::{estimate_prompt_tokens as estimate_tokens, head_to_tokens};
+use continuum_base::token_estimate::estimate_prompt_tokens as estimate_tokens;
+use crate::cognition::token_budget::head_to_tokens;
 
 /// Abstract reader over airc transcript events. Production impl rides on
 /// `airc_lib::Airc`; tests use a stub that returns canned events without a daemon.
@@ -270,16 +271,6 @@ impl AircRagSource {
     /// top-up fetch, not what the packer may keep.
     fn grounding_for_budget(budget: u32, recipe_floor: usize) -> usize {
         ((budget / Self::MIN_TOKENS_PER_TURN) as usize).clamp(recipe_floor, 256)
-    }
-
-    /// Override (or disable) the durable-history top-up — tests inject a stub;
-    /// `None` turns hydration off entirely.
-    pub fn with_history(
-        mut self,
-        history: Option<Arc<dyn crate::persona::durable_history::DurableRoomHistory>>,
-    ) -> Self {
-        self.history = history;
-        self
     }
 
     /// Synthesize a grounding-only `TranscriptEvent` from a durable transcript

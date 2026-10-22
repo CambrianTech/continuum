@@ -66,11 +66,12 @@ impl WorkingMemory {
     }
 
     pub fn active_action_full(&self) -> Option<(u64, String)> {
-        let _results = self.recent_results.lock();
+        let actions = self.actions.lock();
         let action = self.last_action.lock().clone()?;
         let active_from = self.active_from_seq.load(Ordering::Relaxed);
         let scope = self.scope.lock().clone();
-        let visible = scope_visible(self.result_scopes.lock().get(&action.0).map(String::as_str), scope.as_deref());
+        let recorded = actions.get(action.0).and_then(|record| record.scope.as_deref());
+        let visible = scope_visible(recorded, scope.as_deref());
         (action.0 >= active_from && visible).then_some(action)
     }
 
@@ -111,15 +112,33 @@ impl WorkingMemory {
     /// caller retains the same raw bytes for request identity; this introduces
     /// no second payload clone, serialization, or inferred current-room label.
     pub(crate) fn full_result_message(&self, seq: u64, full: &str) -> String {
-        let results = self.recent_results.lock();
-        let recorded = results.iter().rev().find(|(id, _, _, _, _)| *id == seq);
+        let actions = self.actions.lock();
+        let recorded = actions.get(seq);
         let attribution = ResultAttribution {
             seq,
-            room: recorded.and_then(|(_, room, _, _, _)| *room),
-            operation: recorded.map(|(_, _, _, operation, _)| operation.as_str()),
-            spill_handle: recorded.and_then(|(_, _, _, _, handle)| handle.as_deref()),
+            room: recorded.and_then(|record| record.room),
+            operation: recorded.map(|record| record.operation.as_str()),
+            spill_handle: recorded.and_then(|record| record.handle.as_deref()),
         };
         format!("Full result of your most recent action ({attribution}):\n{full}")
+    }
+
+    /// The provenance of the act whose native results the turn carries: `[result #n; room …;
+    /// operation …; output handle …]`, the label every result of hers wears in her view.
+    /// A label, not a header: rendered as "Full result of your most recent action (…):"
+    /// with nothing after it, it read as someone asking her to present her results, and
+    /// Aris answered it ("The user is asking me to present the complete results of my most
+    /// recent action", "#1642 is already inline above", the M5, 2026-10-21).
+    pub(crate) fn result_label(&self, seq: u64) -> String {
+        let actions = self.actions.lock();
+        let recorded = actions.get(seq);
+        let attribution = ResultAttribution {
+            seq,
+            room: recorded.and_then(|record| record.room),
+            operation: recorded.map(|record| record.operation.as_str()),
+            spill_handle: recorded.and_then(|record| record.handle.as_deref()),
+        };
+        format!("[result {attribution}]")
     }
 
     /// The FULL result of the just-executed act, ready to render as a **pinned**
@@ -175,6 +194,40 @@ impl WorkingMemory {
         self.open_views.lock().render(scope.as_deref())
     }
 
+    /// Every act she has a record of, oldest first, each in both renderings her context view
+    /// chooses between: `(seq, full, pointer)`. Full is the whole result while retained,
+    /// else what its pointer says; the pointer names the handle that reopens it, or is the
+    /// ledger line when nothing was saved. The act still in flight is not among them (it
+    /// rides whole as the newest message of the turn); the flag says whether there is one.
+    pub(crate) fn action_renderings(&self) -> (Vec<(u64, String, String)>, bool) {
+        let active = self.in_flight_action_seq();
+        let actions = self.actions.lock();
+        let in_flight = active.is_some_and(|seq| actions.get(seq).is_some());
+        let renderings = actions
+            .records()
+            .filter(|record| Some(record.seq) != active)
+            .map(|record| {
+                let attribution = ResultAttribution::of(record);
+                let workspace = workspace_label(record.scope.as_deref());
+                let whole = record.result.as_deref().map(|result| format!("[result {attribution}{workspace}] {result}"));
+                let pointer = match (&record.handle, &whole, &record.head) {
+                    // An older build's pointer, as it was written (its operation lives there).
+                    (Some(_), _, _) if record.written_pointer.is_some() => record.written_pointer.clone().into_iter().collect(),
+                    (Some(_), _, _) => format!("[result {attribution}{workspace} — collapsed; query tool/output to expand]"),
+                    // Retained but never saved: no handle could reopen a collapsed line, so it stays
+                    // whole (goal 7: the full result stays reachable; Cormac on #5255).
+                    (None, Some(whole), _) => whole.clone(),
+                    (None, None, Some(head)) => head.clone(),
+                    // Unsaved and off the ledger: what it was, which never collapses anyway.
+                    (None, None, None) => format!("[action #{}] {}", record.seq, record.operation),
+                };
+                let full = whole.unwrap_or_else(|| pointer.clone());
+                (record.seq, full, pointer)
+            })
+            .collect();
+        (renderings, in_flight)
+    }
+
     pub fn recent_results_messages(&self) -> Vec<String> {
         self.recent_results_with_pointers().into_iter().map(|(body, _)| body).collect()
     }
@@ -189,49 +242,40 @@ impl WorkingMemory {
         // One mind: every result is shown from every workspace, labelled with its own.
         // The in-flight action is excluded by sequence, never by root: one prefix everywhere.
         let active = self.in_flight_action_seq();
-        let rr = self.recent_results.lock();
-        let scopes = self.result_scopes.lock();
-        let eligible = |seq: &u64| Some(*seq) != active;
-        let pointers = self.evicted_pointers.lock();
-        let visible_pointers: Vec<_> = pointers.iter().map(|(pointer, _)| pointer.as_str()).collect();
-        if !rr.iter().any(|(seq, ..)| eligible(seq)) && visible_pointers.is_empty() {
+        let actions = self.actions.lock();
+        let eligible = |record: &&action_log::ActionRecord| Some(record.seq) != active;
+        let visible_pointers: Vec<String> = actions.indexed_pointers().into_iter().map(collapsed_pointer).collect();
+        if !actions.retained().any(|record| eligible(&record)) && visible_pointers.is_empty() {
             return Vec::new();
         }
-        // Banner as its OWN byte-stable message (never an rr entry, so eviction
-        // can never take it — gluing it to entry #1 would delete the ledger's
-        // semantics on the first pop_front).
-        let mut out = Vec::with_capacity(rr.len() + 2);
+        // Banner as its OWN byte-stable message (never a record, so a collapse can never
+        // take it — gluing it to entry #1 would delete the ledger's semantics on the first
+        // collapse).
+        let mut out = Vec::new();
         out.push((
             "Recent results of your own actions (oldest first; #n matches the action ledger):"
                 .to_string(), None,
         ));
-        // Every eligible entry rides as a message of its own: the ring's SIZE is bounded at
+        // Every eligible result rides as a message of its own: the ring's SIZE is bounded at
         // receipt by the window share (`collapse_results_over_cap`), never by a count here.
         // A count fold ("newest 16 as messages, the rest as index lines", 2026-10-16) rotated
         // the head on EVERY act, which on a KV that cannot shift re-prefilled everything
         // after it; the chars cap with hysteresis rotates once per burst.
-        out.extend(rr.iter().filter(|(seq, ..)| eligible(seq)).map(|(seq, room, tail, operation, handle)| {
-            let attribution = ResultAttribution {
-                seq: *seq,
-                room: *room,
-                operation: Some(operation),
-                spill_handle: handle.as_deref(),
-            };
-            let workspace = workspace_label(scopes.get(seq).map(String::as_str));
-            let pointer = handle.as_ref().map(|_| format!("[result {attribution}{workspace} — collapsed; query tool/output to expand]"));
-            (format!("[result {attribution}{workspace}] {tail}"), pointer)
+        out.extend(actions.retained().filter(eligible).filter_map(|record| {
+            let result = record.result.as_deref()?;
+            let attribution = ResultAttribution::of(record);
+            let workspace = workspace_label(record.scope.as_deref());
+            let pointer = record.handle.as_ref().map(|_| format!("[result {attribution}{workspace} — collapsed; query tool/output to expand]"));
+            Some((format!("[result {attribution}{workspace}] {result}"), pointer))
         }));
-        // Collapsed-results index LAST — it CHANGES on every eviction, and
-        // message order is MONOTONE IN STABILITY (the KV law this same night
-        // established): the banner + surviving entries ahead of it stay a
+        // Collapsed-results index LAST — it CHANGES on every collapse, and message order is
+        // MONOTONE IN STABILITY: the banner + surviving entries ahead of it stay a
         // byte-stable prefix; only this one small message re-prefills.
-        {
-            if !visible_pointers.is_empty() {
-                out.push((format!(
-                    "Older results, collapsed to pointers (query to expand):\n{}",
-                    visible_pointers.join("\n")
-                ), None));
-            }
+        if !visible_pointers.is_empty() {
+            out.push((format!(
+                "Older results, collapsed to pointers (query to expand):\n{}",
+                visible_pointers.join("\n")
+            ), None));
         }
         out
     }
@@ -311,25 +355,14 @@ impl WorkingMemory {
     /// collapsed pointers), so disk-pressure eviction never deletes one (card 9197cd01).
     /// The whole set, replaced, so nothing can drift.
     pub(super) fn publish_live_handles(&self) {
-        let rr = self.recent_results.lock();
-        let mut scopes = self.result_scopes.lock();
-        let ptrs = self.evicted_pointers.lock();
+        let receipts = self.actions.lock().receipt_keys();
         let mut children = self.receipt_children.lock();
         // Dependencies live exactly as long as their receipt: drop those of receipts that
-        // left both the ring and the pointer ring.
-        let receipts: HashSet<String> = rr
-            .iter()
-            .map(|(seq, _, _, _, handle)| receipt_key(*seq, handle.as_deref()))
-            .chain(ptrs.iter().map(|(_, handle)| handle.clone()))
-            .collect();
+        // are neither retained nor indexed as a pointer.
         children.retain(|key, _| receipts.contains(key));
-        let latest = self.last_action.lock().as_ref().map(|(seq, _)| *seq);
-        let retained_sequences: HashSet<u64> = rr.iter().map(|(seq, ..)| *seq).collect();
-        scopes.retain(|seq, _|
-            Some(*seq) == latest || retained_sequences.contains(seq));
         let views = self.open_views.lock().saved();
-        let handles = reachable_handles(rr.iter(), ptrs.iter(), &children, &views);
-        drop((rr, scopes, ptrs, children));
+        let handles = reachable_handles(receipts, &children, &views);
+        drop(children);
         crate::cognition::tool_executor::spill::publish_live_handles(self.instance, handles);
     }
 
@@ -368,44 +401,7 @@ impl WorkingMemory {
             return;
         }
         let cap = budget.recent_results_chars();
-        let mut rr = self.recent_results.lock();
-        let mut total: usize = rr.iter().map(|(_, _, t, _, _)| t.chars().count() + 1).sum();
-        if total <= cap {
-            return;
-        }
-        let target = cap / 2;
-        // Oldest first, SAVED entries collapse to pointers until the ring is under target. An
-        // UNSAVED entry (its save failed) never collapses: nothing else holds its bytes, so
-        // custody outranks the share (Astra on #4963). The newest entry always stays.
-        let mut survivors = VecDeque::with_capacity(rr.len());
-        while let Some(entry) = rr.pop_front() {
-            let (eseq, room, evicted, elabel, ehandle) = entry;
-            // The newest result always stays: it is the result of the act she just took.
-            // (`&& survivors.is_empty()` here let it collapse whenever an older unsaved
-            // result had survived — rare at settlement, reachable on every receipt now.)
-            let newest = rr.is_empty();
-            let Some(handle) = ehandle.as_deref().filter(|_| total > target && !newest) else {
-                survivors.push_back((eseq, room, evicted, elabel, ehandle));
-                continue;
-            };
-            total -= evicted.chars().count() + 1;
-            // COLLAPSE, never delete: the evicted result leaves a one-line pointer whose
-            // handle resolves to exactly what she saw.
-            let attribution = ResultAttribution {
-                seq: eseq,
-                room,
-                operation: Some(&elabel),
-                spill_handle: Some(handle),
-            };
-            let workspace = workspace_label(self.result_scopes.lock().get(&eseq).map(String::as_str));
-            let mut ptrs = self.evicted_pointers.lock();
-            ptrs.push_back((format!("[result {attribution}{workspace} — collapsed]"), handle.to_owned()));
-            while ptrs.len() > 12 {
-                ptrs.pop_front();
-            }
-        }
-        *rr = survivors;
-        drop(rr);
+        let total = self.actions.lock().collapse_over(cap).total;
         self.publish_live_handles();
         if total > cap {
             continuum_base::probe!(

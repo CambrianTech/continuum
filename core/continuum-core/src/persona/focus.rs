@@ -133,11 +133,6 @@ impl FocusState {
         self.cursor = Some(lane);
     }
 
-    /// Drop the cursor (back to no single lane in focus).
-    pub fn clear_cursor(&mut self) {
-        self.cursor = None;
-    }
-
     /// Mute `lane` at `level`, optionally as a snooze expiring at `expires_at_ms`.
     /// Replaces any existing mute for the same lane (one mute per lane — re-muting
     /// updates level/duration rather than stacking; [[compression-principle]]).

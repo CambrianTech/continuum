@@ -171,26 +171,6 @@ pub fn affordable_prompt_tokens(tps: f64, floor: u32, served: u32, audience: Aud
 pub const UNMEASURED_FILL_FLOOR_TOKENS: usize =
     crate::cognition::serving_plan::BOOTSTRAP_WORKING_SET as usize;
 
-/// PURE: the conversation fill a turn may cost inside `target_seconds`, at this box's
-/// measured prefill rate.
-///
-/// The rule is `target_seconds × measured tokens-per-second`, and the ONLY chosen number
-/// in it is the target — the latency intent. A rate at any rung of the ladder governs;
-/// with no rung at all the named floor does, and the caller's receipt says which
-/// (`rate_source`).
-///
-/// This exists because the cap it replaces was `PREFILL_TARGET_SECONDS ×
-/// CONSERVATIVE_PREFILL_TOKENS_PER_S` — a constant times a constant, 15,000 tokens on
-/// every machine in the fleet, whose 500 t/s half was 5–20× what any of them actually
-/// prefills.
-pub fn latency_fill_cap(target_seconds: usize, rate: MeasuredRate) -> usize {
-    match rate.tps.filter(|t| t.is_finite() && *t > 0.0) {
-        // `as usize` saturates on overflow in Rust, so an absurd rate cannot wrap the cap.
-        Some(tps) => (tps * target_seconds as f64).floor().max(0.0) as usize,
-        None => UNMEASURED_FILL_FLOOR_TOKENS,
-    }
-}
-
 /// The one ladder, shared with the decode axis — see [`crate::inference::decode_knee::rate_from`].
 pub use crate::inference::decode_knee::rate_from;
 
@@ -379,61 +359,6 @@ mod tests {
         p
     }
 
-    // what this catches: the conversation fill going back to a constant times a constant.
-    //
-    // It was `PREFILL_TARGET_SECONDS (30) × CONSERVATIVE_PREFILL_TOKENS_PER_S (500)` — a
-    // flat 15,000 tokens on every machine. Measured on the M5 the night it was found
-    // (`inference.prefill.complete`): `ingest_tok_per_s` 70, 90 and 92; the IntelMac
-    // prefills at ~25. So the 500 was 5–20× optimistic, the "30 second" target it existed
-    // to protect was really ~187 s, and `delib.fill.latency_capped persona=Aiko
-    // window_budget=56227 cap=15000` took 27% of a 67,072-token lane away from her while
-    // the cap failed its own stated purpose on every box in the fleet.
-    //
-    // A clip is derived or it is a named floor. Derived here means the target buys what
-    // THIS node prefills; the floor is consulted only where nothing was ever measured,
-    // and on a healthy node the derivation is above it — a floor that outranks the
-    // measurement everywhere is the constant wearing a different hat.
-    #[test]
-    fn the_conversation_fill_cap_is_this_nodes_measured_rate_never_two_constants() {
-        let secs = 30;
-        let fresh = |tps: f64| MeasuredRate { tps: Some(tps), source: RateSource::Fresh };
-
-        // MEASURED → DERIVED. The M5's own numbers, and the IntelMac's.
-        assert_eq!(latency_fill_cap(secs, fresh(70.0)), 2_100);
-        assert_eq!(latency_fill_cap(secs, fresh(92.0)), 2_760);
-        assert_eq!(latency_fill_cap(secs, fresh(25.0)), 750, "the IntelMac buys what it can prefill");
-        // …and the frontier is never clipped to the slow tier's number: the same rule
-        // that shrinks the cap on a 25 t/s box grows it past 15,000 on a fast one.
-        assert_eq!(latency_fill_cap(secs, fresh(2_000.0)), 60_000);
-        // A stale or borrowed-from-another-curve rate is still a MEASUREMENT of this box.
-        assert_eq!(
-            latency_fill_cap(secs, MeasuredRate { tps: Some(70.0), source: RateSource::Stale }),
-            2_100
-        );
-
-        // UNMEASURED → THE NAMED FLOOR, and only then.
-        assert_eq!(latency_fill_cap(secs, MeasuredRate::UNKNOWN), UNMEASURED_FILL_FLOOR_TOKENS);
-        assert_eq!(
-            latency_fill_cap(secs, MeasuredRate { tps: Some(f64::NAN), source: RateSource::Fresh }),
-            UNMEASURED_FILL_FLOOR_TOKENS,
-            "a non-finite rate is an absence, never a quantity"
-        );
-        assert_eq!(
-            latency_fill_cap(secs, MeasuredRate { tps: Some(0.0), source: RateSource::Fresh }),
-            UNMEASURED_FILL_FLOOR_TOKENS,
-            "0 t/s is what an untrusted point reads as — not a measurement"
-        );
-
-        // THE FLOOR IS NEVER LARGER THAN THE DERIVED CAP ON A HEALTHY NODE. 636–676 t/s
-        // is what the deleted constant's own doc cited as measured on the M-series
-        // reference box; a floor above that would bind everywhere and the derivation
-        // would be decoration.
-        assert!(
-            latency_fill_cap(secs, fresh(636.0)) > UNMEASURED_FILL_FLOOR_TOKENS,
-            "a healthy node's derived cap must outrank the unmeasured floor"
-        );
-    }
-
     // what this catches: an absence being laundered into a constant one rung too early.
     // The decode side learned this the hard way (#4283): the M5 restarted, every point
     // went untrusted, the rate read 0.0 and the allowance fell to a floor no thinking
@@ -484,18 +409,17 @@ mod tests {
     // prefill lifts it back through the ordinary EMA. It never raises the estimate.
     #[test]
     fn a_tripped_bound_is_a_prefill_measurement_that_can_only_lower_the_rate() {
-        let secs = 30;
         let mut p = trusted(63.0, T);
-        let before = latency_fill_cap(secs, rate_from(&[("m".to_string(), p.clone())].into(), "m", T));
-        assert_eq!(before, 1890, "the stale-but-served cap that admitted the failing prompt");
+        let before = rate_from(&[("m".to_string(), p.clone())].into(), "m", T).tps;
+        assert_eq!(before, Some(63.0), "the stale-but-served rate that sized the failing prompt");
 
         // 1907 tokens sent, no headers in 300 s: the lane prefilled at most ~6.4 t/s.
         p.observe_at_most(1907.0 / 300.0, T + 1);
         assert!(p.tps_ema < 6.4 && p.tps_ema > 6.3, "the rate came down to the bound: {}", p.tps_ema);
         assert_eq!(p.last_ms, T + 1, "a trip refreshes the point — it is this hour's evidence");
         assert!(p.trusted_at(T + 1), "still a rung: the ladder serves the lowered rate");
-        let after = latency_fill_cap(secs, rate_from(&[("m".to_string(), p.clone())].into(), "m", T + 1));
-        assert!(after < before && after <= 1907 * secs / 300, "the next cap is derived from the trip: {after}");
+        let after = rate_from(&[("m".to_string(), p.clone())].into(), "m", T + 1).tps;
+        assert!(after.is_some_and(|tps| tps <= 1907.0 / 300.0), "the next prompt is sized from the trip: {after:?}");
 
         // A bound ABOVE the estimate is not evidence of speed — it changes nothing.
         let held = p.tps_ema;

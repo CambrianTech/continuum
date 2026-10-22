@@ -32,7 +32,9 @@ pub mod head_cuts;
 pub mod file_size;
 pub mod identity_discipline;
 pub mod layer_discipline;
+pub mod module_cycles;
 pub mod production_reachability;
+pub mod ratchet;
 pub mod tenant_neutrality;
 pub mod test_mod_singularity;
 pub mod subprocess_spawn;
@@ -148,6 +150,11 @@ pub fn crate_src_root() -> PathBuf {
 /// `core/continuum-core` — the crate these rules audit, resolved from this crate's
 /// own manifest so the answer never depends on the process's working directory.
 fn audited_crate_root() -> PathBuf {
+    // A ratchet is judged by measuring the base tree with the head's rules
+    // (`ratchet.rs`): `SOURCE_HYGIENE_CORE` names that tree's `core` directory.
+    if let Some(core) = std::env::var_os("SOURCE_HYGIENE_CORE") {
+        return PathBuf::from(core).join(AUDITED_CRATE);
+    }
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent() // core/source-hygiene -> core
         .map(|core| core.join(AUDITED_CRATE))
@@ -195,7 +202,8 @@ pub fn audited_files() -> Vec<SourceFile> {
 /// `None` when no ancestor carries the anchor, which callers turn into a loud failure
 /// rather than a silent empty scan.
 pub fn repo_root() -> Option<PathBuf> {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
+    let start = audited_crate_root();
+    start
         .ancestors()
         .find(|dir| dir.join(WORKSPACE_ANCHOR).is_file() && dir.join("core").is_dir())
         .map(Path::to_path_buf)
@@ -509,18 +517,6 @@ pub fn collect_files(root: &Path) -> Vec<SourceFile> {
     out
 }
 
-/// The second half of every ratchet in this crate (the first, "never rise", is each rule's
-/// own assert with its own advice): when a count FALLS below its baseline, the baseline must
-/// fall with it in the same change. Otherwise the win is slack the next change can spend
-/// unseen (Cormac's #5153 review, 2026-10-18).
-#[cfg(test)]
-pub fn assert_baseline_is_current(name: &str, count: usize, baseline: usize) {
-    assert!(
-        count >= baseline,
-        "{name} fell to {count} (baseline {baseline}). Lower the baseline to {count} in this \
-         change, so the win cannot be given back."
-    );
-}
 
 
 /// Walk this crate's `src/` once and apply every per-file rule to every `.rs` file.

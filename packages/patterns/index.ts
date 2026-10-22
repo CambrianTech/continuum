@@ -49,10 +49,6 @@ export type { ServingContentBody, ServingNodeVM } from './servingContent';
 export { GRID_PURPOSE } from './gridContent';
 export type { GridContentBody, GridNodeVM } from './gridContent';
 
-// The Academy's live BENCHMARK BOARD (`purpose === BENCH_PURPOSE`) — one row
-// per run (operator + citizen-claimed), progress-not-liveness (#374/#329).
-export { BENCH_PURPOSE } from './benchContent';
-export type { BenchContentBody, BenchRoundVM, BenchRoundCardVM, BenchRunVM, BenchRunState, BenchVerdictVM } from './benchContent';
 // The design-bench run room's CANVAS region (`purpose === CANVAS_PURPOSE`) —
 // the persona's RENDERED page live on stage, re-observed on her writes
 // (DESIGN-BENCH-VISUAL-CRAFT.md §5: the walk-in sees the design evolve).
@@ -64,7 +60,7 @@ export type {
   CanvasCheckVM,
   CanvasViewportVM,
 } from './canvasContent';
-// Recipe purpose → render family (benchmark/hard-rs → bench, video-chat → live):
+// Recipe purpose → render family (benchmark/hard-rs → chat, video-chat → live):
 // the ONE resolver between hierarchical recipe purposes and registry families.
 export { contentFamilyOf } from './contentFamily';
 // The SETTINGS activity (operator panel: covenant consent, HF identity, gene registry).
@@ -200,8 +196,8 @@ export interface ContentView<Body = unknown> {
  *  kinds join this union as they land. */
 export interface ContextPanelView {
   readonly listings: readonly ListingView[];
-  /** Activity-scoped widgets for the contextual rail (the bench board on an
-   *  academy room, #329) — heterogeneous like the left rail, dispatched by
+  /** Activity-scoped widgets for the contextual rail (a persona home's engine
+   *  instruments) — heterogeneous like the left rail, dispatched by
    *  `kind` through the same WidgetRegistry. Absent = listings only. */
   readonly widgets?: readonly PanelWidget<unknown>[];
 }
@@ -244,10 +240,6 @@ export const ROSTER_LISTING_ID = 'roster';
  *  member's persona home (same verb as a roster pick). Single-sourced so the
  *  select router and the projection agree without a magic string each. */
 export const HERE_NOW_LISTING_ID = 'room-here-now';
-
-/** The chat-room rail's "who is WORKING now" listing — every cell a DOOR to
- *  that run's solve room (`group: 'room'`, same verb as a run-card click). */
-export const WORKING_NOW_LISTING_ID = 'room-working-now';
 
 /** A metrics `PanelWidget` body — a small, pre-formatted readout the rail draws as a
  *  labelled stat row (+ an optional sparkline). The projection owns the numbers AND

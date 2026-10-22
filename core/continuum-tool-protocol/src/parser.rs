@@ -1,7 +1,7 @@
 //! Prompt-based tool calling (`JsonInPrompt`) — model-agnostic tools for models
 //! whose gateway does NOT implement native OpenAI function-calling.
 //!
-//! PROVEN 2026-06-21: unsloth + the qwen GGUF ignores the `tools`/`tool_choice`
+//! PROVEN 2026-06-21: llama-server + the qwen GGUF ignores the `tools`/`tool_choice`
 //! params (returns `tool_calls: null`, the model just narrates). Many local models
 //! are like this until fine-tuned. So instead of relying on native function
 //! calling, we describe the tools IN THE PROMPT and ask the model to emit a strict

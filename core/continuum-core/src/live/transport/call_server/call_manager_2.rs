@@ -60,21 +60,6 @@ impl CallManager {
         }
     }
 
-    /// Broadcast a CallMessage to all participants in a call (avatar updates, etc.)
-    pub async fn broadcast_message(&self, call_id: &str, msg: CallMessage) {
-        let call = {
-            let calls = self.calls.read().await;
-            calls.get(call_id).cloned()
-        };
-
-        if let Some(call) = call {
-            let call = call.read().await;
-            if call.message_tx.send(msg).is_err() {
-                // No receivers — acceptable, means no WebSocket clients connected
-            }
-        }
-    }
-
     /// Transcribe speech samples and broadcast to all participants
     /// Returns the transcribed text (when non-empty) so the caller can also
     /// deliver it to cognition via the [`TranscriptSink`] — the broadcast here
@@ -343,43 +328,24 @@ impl CallManager {
         Ok(())
     }
 
-    /// Inject audio directly into a call's mixer by handle.
-    /// Used for ambient sources where we already have the handle.
-    pub async fn inject_audio_by_handle(
-        &self,
-        call_id: &str,
-        handle: &Handle,
-        samples: Vec<i16>,
-    ) -> Result<(), String> {
-        let call = {
-            let calls = self.calls.read().await;
-            calls
-                .get(call_id)
-                .cloned()
-                .ok_or_else(|| format!("Call '{call_id}' not found"))?
-        };
-
-        {
-            let mut call = call.write().await;
-            call.mixer.push_audio(handle, samples);
-        }
-
-        Ok(())
-    }
-
     /// Start a test video source for a call using the VideoSource trait.
     /// Generates SMPTE color bar frames at ~10fps to prove video streaming works.
     /// The source gets its own Handle (acts as a virtual participant for video only).
-    /// Returns a shutdown sender — drop it or send () to stop the generator.
+    /// Returns a shutdown sender — drop it or send () to stop the generator — or `None`
+    /// when the call lock was busy and the source was not started.
     ///
     /// Accepts the Call Arc directly to avoid deadlocks when called from
     /// get_or_create_call() which already holds the calls write lock.
-    pub(super) fn start_test_video_source_for(call: &Arc<RwLock<Call>>, call_id: &str) -> mpsc::Sender<()> {
-        let video_tx = {
-            let call_guard = call
-                .try_read()
-                .expect("Call should be available (just created)");
-            call_guard.video_tx.clone()
+    pub(super) fn start_test_video_source_for(call: &Arc<RwLock<Call>>, call_id: &str) -> Option<mpsc::Sender<()>> {
+        let video_tx = match call.try_read() {
+            Ok(call_guard) => call_guard.video_tx.clone(),
+            Err(_) => {
+                clog_warn!(
+                    "Test video source for call {} skipped: call lock busy right after creation",
+                    call_id
+                );
+                return None;
+            }
         };
 
         let source_handle = Handle::new();
@@ -387,63 +353,7 @@ impl CallManager {
 
         clog_info!("Starting {} for call {}", source.name(), call_id);
 
-        source.start(video_tx, source_handle)
-    }
-
-    /// Add a video source to a call. The source starts producing frames immediately.
-    /// Returns the Handle assigned to the source (for mix-minus filtering).
-    pub async fn add_video_source(
-        &self,
-        call_id: &str,
-        source: Box<dyn VideoSource>,
-    ) -> Result<Handle, String> {
-        let call = {
-            let calls = self.calls.read().await;
-            calls
-                .get(call_id)
-                .cloned()
-                .ok_or_else(|| format!("Call '{call_id}' not found"))?
-        };
-
-        let video_tx = {
-            let call = call.read().await;
-            call.video_tx.clone()
-        };
-
-        let handle = Handle::new();
-        let source_name = source.name().to_string();
-        let source_user_id = source.user_id().to_string();
-
-        clog_info!(
-            "Adding video source '{}' (user_id={}) to call {}",
-            source_name,
-            source_user_id,
-            call_id
-        );
-
-        let shutdown_tx = source.start(video_tx, handle);
-
-        {
-            let mut shutdowns = self.video_source_shutdowns.write().await;
-            shutdowns
-                .entry(call_id.to_string())
-                .or_default()
-                .push(shutdown_tx);
-        }
-
-        Ok(handle)
-    }
-
-    /// Remove ALL video sources for a call (cleanup)
-    pub async fn remove_video_sources(&self, call_id: &str) {
-        let mut shutdowns = self.video_source_shutdowns.write().await;
-        if let Some(sources) = shutdowns.remove(call_id) {
-            let count = sources.len();
-            for tx in sources {
-                let _ = tx.send(()).await;
-            }
-            clog_info!("Removed {} video sources from call {}", count, call_id);
-        }
+        Some(source.start(video_tx, source_handle))
     }
 
     /// Get call stats

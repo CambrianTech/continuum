@@ -226,13 +226,6 @@ impl RagSourceFaculty {
         self
     }
 
-    /// Override the resolved salience directly (e.g. a learned signal) — escape
-    /// hatch past the policy default.
-    pub fn with_salience(mut self, salience: f32) -> Self {
-        self.salience = salience.clamp(0.0, 1.0);
-        self
-    }
-
     /// Override the per-tick token budget handed to the source.
     pub fn with_budget(mut self, budget: u32) -> Self {
         self.budget = budget;

@@ -102,7 +102,7 @@ impl ActionCommand for FocusNudge {
         let handle = focus::registry().handle(persona_id);
         let mut state = handle
             .lock()
-            .expect("focus mutex poisoned by a prior panic");
+            .unwrap();
 
         if p.reset {
             state.reset_focus();

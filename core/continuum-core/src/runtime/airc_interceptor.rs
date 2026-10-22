@@ -93,11 +93,6 @@ impl AircInterceptor {
         Self { airc: cell }
     }
 
-    /// The late-bind cell, so the boot flow can spawn the `attach_as` task that
-    /// fills it with the concrete handle.
-    pub fn airc_cell(&self) -> Arc<OnceCell<Arc<Airc>>> {
-        self.airc.clone()
-    }
 }
 
 impl Default for AircInterceptor {

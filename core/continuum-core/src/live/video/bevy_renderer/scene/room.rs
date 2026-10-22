@@ -26,7 +26,7 @@ use bevy::camera::visibility::RenderLayers;
 use bevy::prelude::*;
 use bevy::scene::SceneInstanceReady;
 
-use crate::live::avatar::hash::{deterministic_index, deterministic_pick};
+use crate::live::avatar::hash::deterministic_pick;
 use crate::live::video::bevy_renderer::skeleton;
 
 use super::builder::SceneMarker;
@@ -115,19 +115,6 @@ pub fn scene_model_path(filename: &str) -> std::path::PathBuf {
 /// distribution from avatar and voice selection.
 pub fn select_scene_for_identity(identity: &str) -> &'static SceneEntry {
     deterministic_pick(identity, SCENE_CATALOG, "scene")
-}
-
-/// Select a scene by explicit style preference, falling back to identity hash.
-pub fn select_scene_by_style(identity: &str, preferred: SceneStyle) -> &'static SceneEntry {
-    let matching: Vec<&SceneEntry> = SCENE_CATALOG
-        .iter()
-        .filter(|s| s.style == preferred)
-        .collect();
-    if matching.is_empty() {
-        return select_scene_for_identity(identity);
-    }
-    let idx = deterministic_index(identity, matching.len(), "scene-style");
-    matching[idx]
 }
 
 // =============================================================================
@@ -250,16 +237,4 @@ mod tests {
         assert_eq!(path.to_str().unwrap(), "models/scenes/office.glb");
     }
 
-    #[test]
-    fn test_select_scene_by_style() {
-        let s = select_scene_by_style("test-id", SceneStyle::TechDen);
-        assert_eq!(s.style, SceneStyle::TechDen);
-    }
-
-    #[test]
-    fn test_select_scene_by_style_fallback() {
-        // All styles in catalog exist, but this tests the pattern works
-        let s = select_scene_by_style("test-id", SceneStyle::Office);
-        assert_eq!(s.style, SceneStyle::Office);
-    }
 }

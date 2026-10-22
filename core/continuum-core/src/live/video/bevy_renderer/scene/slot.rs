@@ -113,21 +113,9 @@ impl RenderSlot {
         self.objects_of::<AvatarObject>()
     }
 
-    /// Mutably iterate all avatars in this scene.
-    pub fn avatars_mut(&mut self) -> impl Iterator<Item = (&str, &mut AvatarObject)> {
-        self.objects_of_mut::<AvatarObject>()
-    }
-
     /// Get the primary (first) avatar. For single-avatar slots this is THE avatar.
     pub fn primary_avatar(&self) -> Option<&AvatarObject> {
         self.avatars().next().map(|(_, a)| a)
-    }
-
-    /// Get the primary avatar mutably.
-    pub fn primary_avatar_mut(&mut self) -> Option<&mut AvatarObject> {
-        self.objects
-            .values_mut()
-            .find_map(|obj| obj.as_any_mut().downcast_mut::<AvatarObject>())
     }
 
     /// Get a specific avatar by its object ID.
@@ -154,11 +142,6 @@ impl RenderSlot {
         object: Box<dyn SceneObject>,
     ) -> Option<Box<dyn SceneObject>> {
         self.objects.insert(id, object)
-    }
-
-    /// Remove an object from the scene. Caller must despawn its entity.
-    pub fn remove_object(&mut self, id: &str) -> Option<Box<dyn SceneObject>> {
-        self.objects.remove(id)
     }
 
     /// Tear down the scene — despawning the root recursively cleans everything.
@@ -189,23 +172,4 @@ impl SlotRegistry {
         self.slots.iter().filter(|(_, s)| s.is_active())
     }
 
-    /// Mutable iterate all active slots.
-    pub fn active_slots_mut(&mut self) -> impl Iterator<Item = (&u8, &mut RenderSlot)> {
-        self.slots.iter_mut().filter(|(_, s)| s.is_active())
-    }
-
-    /// Count of slots with loaded models.
-    pub fn loaded_count(&self) -> u8 {
-        self.slots.values().filter(|s| s.is_active()).count() as u8
-    }
-
-    /// Count of currently speaking slots.
-    pub fn speaking_count(&self) -> u8 {
-        self.slots.values().filter(|s| s.is_speaking()).count() as u8
-    }
-
-    /// Total avatar count across all slots.
-    pub fn total_avatars(&self) -> usize {
-        self.slots.values().map(|s| s.avatar_count()).sum()
-    }
 }

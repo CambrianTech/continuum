@@ -61,5 +61,23 @@ jobs:
           save-if: ${{ github.event_name != 'pull_request' }}
           cache-on-failure: true
 
-      - name: cargo test -p source-hygiene
-        run: cargo test -p source-hygiene
+      # Every ratchet is judged against the tree this one is based on, measured by this tree's
+      # rules (src/ratchet.rs): no count is written into the source, so two PRs that each lower
+      # a count no longer conflict. The head run is the full test suite; the base run only
+      # records counts. Replaces the single `cargo test -p source-hygiene` (same tests, plus one
+      # scan of the base tree).
+      - name: ratchets, judged against the base
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            base="origin/${{ github.base_ref }}"
+          else
+            base="${{ github.event.before }}"
+            # A new branch pushes with an all-zero 'before', and a force push can leave it
+            # unreachable: judge against canary then, and say so, rather than erroring.
+            if [ -z "$base" ] || [ "$base" = "0000000000000000000000000000000000000000" ] \
+               || ! git cat-file -e "${base}^{commit}" 2>/dev/null; then
+              echo "::notice::push base '${base}' is absent or unreachable (new branch or force push); judging ratchets against origin/canary"
+              base="origin/canary"
+            fi
+          fi
+          cargo run -q -p source-hygiene --bin ratchets -- "$base"

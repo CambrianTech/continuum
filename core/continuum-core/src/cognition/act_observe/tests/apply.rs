@@ -143,14 +143,11 @@ async fn bound_card_activity_is_shared_by_perception_and_execution() {
     )
     .with_working_memory(wm)
     .prompt_view(&ws);
-    let ledger = prompt
-        .messages
-        .iter()
-        .map(|m| m.content_text())
-        .find(|m| m.starts_with("[steps taken this session]"))
-        .unwrap();
-    assert!(ledger.contains("code/run"), "{ledger}");
-    assert!(!ledger.contains("no acts in this room"), "{ledger}");
+    // Her acts reach her through the action stream (the steps ledger it replaced is gone).
+    let text: String = prompt.messages.iter().map(|m| m.content_text()).collect::<Vec<_>>().join("\n");
+    let actions = text.find("[actions]").map(|at| &text[at..]).expect("test: the action stream is in her view");
+    assert!(actions.contains("code/run"), "{actions}");
+    assert!(!actions.contains("nothing has executed yet"), "{actions}");
     assert_eq!(airc.current_room().await.unwrap().channel, wake.channel);
     let private = crate::persona::mind_room::mind_room_id(persona);
     let private_ws = cycle

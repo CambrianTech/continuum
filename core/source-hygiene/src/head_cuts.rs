@@ -21,7 +21,7 @@
 //!
 //! # A ratchet
 //!
-//! The count may only fall; lower `BASELINE_HEAD_CUTS` when you remove one.
+//! The count may only fall; the ratchet holds the base tree's count.
 
 use super::{split_code_and_comment, SourceFile, SourceRule, Violation};
 
@@ -130,23 +130,15 @@ mod tests {
     use super::*;
     use crate::scan;
 
-    /// Measured on this branch (2026-10-20). Lives in the test mod so the production build
-    /// spends no `never used` warning on a number only a test reads.
-    // 179 -> 188, not new debt: production_half now blanks only the #[cfg(test)]-gated item, so
-    // production code BELOW a mid-file test mod or gated helper is scanned (measured on canary
-    // a85454889 + this change, 2026-10-20).
-    const BASELINE_HEAD_CUTS: usize = 185; // 188 -> 187: the loop built its trigger InboxMessage (with a `peer-` id cut) twice; now once; 187 -> 186: harness removal 1 deleted competitor.rs/resolution_bench.rs; 186 -> 185: the room's 💭 head/tail clip went with her reasoning (card ba1eeda1)
-
     /// What this catches: a new cut on a prompt path that keeps the head of text or
     /// shrinks it by a literal, the shape that hides her newest message or result.
     #[test]
     fn head_cuts_on_prompt_paths_never_increase() {
         let violations = scan(&[&HeadCuts]);
         let count = violations.len();
-        eprintln!("head cuts: {count} (baseline {BASELINE_HEAD_CUTS})");
-        assert!(
-            count <= BASELINE_HEAD_CUTS,
-            "head cuts on prompt paths rose to {count} (baseline {BASELINE_HEAD_CUTS}).\n\
+        crate::ratchet::hold("head_cuts", count, || {
+            format!(
+            "head cuts on prompt paths rose to {count}.\n\
              A cut that keeps the start drops the newest end, and she acts as if time never \
              moved. Shrink through the one budget, oldest first, to a handle she can expand \
              (Contribution::with_parts + grounding_plan, or tool_executor::spill). If this \
@@ -154,8 +146,8 @@ mod tests {
              First {} of {count} (not necessarily new):\n{}",
             count.min(20),
             violations.iter().take(20).map(|v| format!("  {}:{}  {}", v.file, v.line, v.source)).collect::<Vec<_>>().join("\n")
-        );
-        crate::assert_baseline_is_current("BASELINE_HEAD_CUTS", count, BASELINE_HEAD_CUTS);
+            )
+        });
     }
 
     /// What this catches: the predicates that make the rule useful rather than noise. A

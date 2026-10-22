@@ -148,18 +148,15 @@ async function main(): Promise<void> {
     const anthropicCost = cost;
     const deepseekCost = cost / 7; // ~7x cheaper than Anthropic
     const openaiCost = cost * 3.86; // ~3.86x more expensive than Anthropic
-    const unslothCost = 0; // Free (electricity only)
 
     console.log(`   DeepSeek API:   $${deepseekCost.toFixed(6)} (5 examples) - most affordable!`);
     console.log(`   Anthropic API:  $${anthropicCost.toFixed(6)} (5 examples) - balanced pricing`);
     console.log(`   OpenAI API:     $${openaiCost.toFixed(6)} (5 examples) - premium`);
-    console.log(`   Unsloth Local:  $${unslothCost.toFixed(6)} (free - electricity only)`);
     console.log();
     console.log(`   For 1000 examples:`);
     console.log(`   DeepSeek:   $${(deepseekCost * 200).toFixed(4)}`);
     console.log(`   Anthropic:  $${(anthropicCost * 200).toFixed(4)}`);
     console.log(`   OpenAI:     $${(openaiCost * 200).toFixed(4)}`);
-    console.log(`   Unsloth:    $0.00 (but requires GPU)\n`);
 
     // Step 12: Provider comparison matrix
     console.log('📊 Step 12: Provider comparison matrix...');
@@ -169,14 +166,12 @@ async function main(): Promise<void> {
     console.log(`   │ DeepSeek     │ $${(deepseekCost * 200).toFixed(4).padStart(11)} │ No           │ 1000ms/ex/ep │ Available     │`);
     console.log(`   │ Anthropic    │ $${(anthropicCost * 200).toFixed(4).padStart(11)} │ No           │ 900ms/ex/ep  │ Not Yet       │`);
     console.log(`   │ OpenAI       │ $${(openaiCost * 200).toFixed(4).padStart(11)} │ No           │ 800ms/ex/ep  │ Available     │`);
-    console.log('   │ Unsloth      │ $0.0000     │ Yes          │ 25ms/ex/ep   │ Available     │');
     console.log('   └──────────────┴─────────────┴──────────────┴──────────────┴───────────────┘\n');
 
     console.log('   Trade-offs:');
     console.log('   - DeepSeek: Most affordable API option, available now');
     console.log('   - Anthropic: Balanced pricing, great models, but not yet available for fine-tuning');
     console.log('   - OpenAI: Premium pricing, established API, strong documentation');
-    console.log('   - Unsloth: Free and 36x faster, but requires local GPU hardware\n');
 
     // Step 13: Future-proofing notes
     console.log('🔮 Step 13: Future-proofing assessment...');

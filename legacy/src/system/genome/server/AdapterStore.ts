@@ -144,7 +144,7 @@ export class AdapterStore {
    * Normalize a model name to its canonical HuggingFace ID
    *
    * Handles short names ("smollm2:135m"), bare names ("llama3.2"),
-   * and full HuggingFace IDs ("unsloth/Llama-3.2-3B-Instruct").
+   * and full HuggingFace IDs ("meta-llama/Llama-3.2-3B-Instruct").
    * Returns lowercase for consistent comparison.
    */
   static normalizeModelName(modelName: string): string {

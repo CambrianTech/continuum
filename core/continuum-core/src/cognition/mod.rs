@@ -81,6 +81,7 @@ pub mod inference_session;
 pub mod introspect_commands;
 pub mod learning_policy;
 pub mod llm_deliberation_faculty;
+pub(crate) mod context_streams;
 pub(crate) mod tool_surface;
 pub mod model_binding;
 pub mod memory_consolidation_region;
@@ -90,7 +91,6 @@ pub mod open_views;
 pub mod parroted_perception;
 pub mod pass_intent;
 pub mod perception_facts;
-pub mod ring_collapse;
 pub mod persona_tools;
 pub mod persona_workspace;
 /// The handoff record: her state at the seam, written before a stop, read first on wake

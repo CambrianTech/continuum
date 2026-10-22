@@ -1,5 +1,5 @@
 /**
- * Test script to verify UnslothLoRAAdapter integration
+ * Test script to verify LoRA adapter integration
  *
  * Verifies:
  * 1. supportsFineTuning() returns true after bootstrap

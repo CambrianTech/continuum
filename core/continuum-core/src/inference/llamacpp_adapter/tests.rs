@@ -70,19 +70,6 @@ fn for_persona_errors_when_gguf_local_path_missing() {
     }
 }
 
-/// `with_n_ubatch` and `with_n_gpu_layers` setters work for legacy
-/// call sites + tests that build adapters without a full profile.
-/// They're the escape hatch; production paths use `for_persona`.
-#[test]
-fn with_n_ubatch_and_n_gpu_layers_setters() {
-    let adapter =
-        LlamaCppAdapter::with_model_id(PathBuf::from("/tmp/x.gguf"), "model".to_string())
-            .with_n_ubatch(1024)
-            .with_n_gpu_layers(20);
-    assert_eq!(adapter.n_ubatch_override, Some(1024));
-    assert_eq!(adapter.n_gpu_layers_override, Some(20));
-}
-
 fn text_request(response_format: Option<ResponseFormat>) -> TextGenerationRequest {
     TextGenerationRequest {
         messages: vec![ChatMessage {

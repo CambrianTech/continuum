@@ -602,6 +602,7 @@ mod tests {
                 stdout: None,
                 stderr: None,
                 exit_code: None,
+                        next: None,
             };
             let value = serde_json::to_value(&running).expect("serializes");
             let (verdict, handle) = project_result("code/shell", &value);
@@ -629,6 +630,7 @@ mod tests {
                     stdout: None,
                     stderr: Some("boom".into()),
                     exit_code: Some(2),
+                        next: None,
                 })
                 .expect("serializes");
                 assert_eq!(

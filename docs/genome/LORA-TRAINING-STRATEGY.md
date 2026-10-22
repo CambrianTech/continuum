@@ -42,15 +42,14 @@
 
 ### Option 1: Local Training (Best Quality, Free)
 
-**Tools**: MLX (M1/M2/M3 Mac), Unsloth (NVIDIA GPU)
+**Tools**: `mlx_lm.lora` (Apple silicon), in-engine LoRA training on our llama.cpp fork (NVIDIA GPU)
 **Cost**: $0 (hardware already owned)
 **Quality**: Full control, SOTA possible
 **Speed**: Fast (local GPU)
 
-**IMPORTANT UPDATE (2025)**:
-- **Unsloth does NOT support M1/M2/M3 Macs** (requires NVIDIA CUDA)
-- **For Mac users**: Use MLX (Apple's framework) instead
-- **For NVIDIA GPU users**: Unsloth works great (2-5x faster, 70% less VRAM)
+**Tooling**:
+- **Mac users**: `mlx_lm.lora` (Apple's MLX) via a managed venv
+- **NVIDIA GPU users**: in-engine LoRA training on served weights in our llama.cpp fork (`core/vendor/llama.cpp`)
 
 **Requirements**:
 
@@ -72,22 +71,9 @@ python scripts/train-lora-mlx.py \
 ```
 
 **Option 1B: NVIDIA GPU (12GB+ VRAM, e.g., RTX 3060)**
-```bash
-# Install Unsloth (NVIDIA only)
-pip install "unsloth[colab-new] @ git+https://github.com/unslothai/unsloth.git"
 
-# Train with Unsloth (2-5x faster than HuggingFace)
-python scripts/train-lora.py \
-  --base-model "unsloth/llama-3-8b-bnb-4bit" \
-  --dataset "./datasets/wine-expertise-qa.jsonl" \
-  --output "./lora/wine-expertise-v1" \
-  --rank 32 \
-  --alpha 64 \
-  --epochs 3 \
-  --batch-size 4
-
-# Training time: ~2-4 hours for 100k examples
-```
+Training runs in-engine on the served weights of our llama.cpp fork (see
+[ONE-RESIDENT-MODEL-PATIENT-DOCTOR-DREAM](../architecture/ONE-RESIDENT-MODEL-PATIENT-DOCTOR-DREAM.md)); no separate Python training stack is installed.
 
 **Advantages**:
 - ✅ Free (no API costs)
@@ -98,7 +84,7 @@ python scripts/train-lora.py \
 **Disadvantages**:
 - ❌ Requires capable hardware (16GB+ RAM)
 - ❌ Manual setup/maintenance
-- ❌ Different tools for Mac vs NVIDIA (MLX vs Unsloth)
+- ❌ Different tools for Mac vs NVIDIA (MLX vs in-engine)
 
 ---
 
@@ -758,10 +744,10 @@ await Commands.execute('chat/send-message', {
 
 ### Knowledge Layer (Wine Expertise - 100k examples)
 
-**Local Training** (M1 Mac with MLX or RTX 3060 with Unsloth):
+**Local Training** (M1 Mac with MLX or RTX 3060 with in-engine training):
 - Dataset generation: **$300** (Claude) or **$600** (GPT-4) for synthetic expansion
 - Training: **$0** (hardware already owned)
-- Time: 10-20 minutes (M1 with MLX) or 2-4 hours (RTX 3060 with Unsloth)
+- Time: 10-20 minutes (M1 with MLX) or 2-4 hours (RTX 3060 with in-engine training)
 - **Total: $300-$600**
 - Quality: Excellent
 
@@ -791,7 +777,7 @@ await Commands.execute('chat/send-message', {
 ### Hybrid Approach (Recommended)
 
 **Prototype locally → Train production on cloud**:
-- Prototyping: **$0** (local with MLX/Unsloth)
+- Prototyping: **$0** (local with MLX / in-engine)
 - Dataset generation: **$300-$600** (one-time cost)
 - Production training: **$25-$30** (Fireworks AI)
 - **Total: $325-$630 per layer**
@@ -1041,7 +1027,6 @@ export class TogetherAIProvider implements TrainingProvider {
 ## Tools & Resources
 
 **Local Training**:
-- Unsloth: https://github.com/unslothai/unsloth
 - Transformers: https://huggingface.co/transformers
 - PEFT: https://github.com/huggingface/peft
 

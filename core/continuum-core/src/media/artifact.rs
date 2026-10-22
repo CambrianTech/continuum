@@ -112,17 +112,6 @@ fn image_header(bytes: &[u8]) -> Result<(image::ImageFormat, u32, u32), String> 
     Ok((format, width, height))
 }
 
-/// Lift only registered capture-result shapes. Arbitrary shell output containing
-/// a dataUrl is not a screenshot. Failed captures never become visual evidence.
-/// The original field is removed only after durable storage succeeds.
-pub fn retain_capture(
-    command: &str,
-    value: &mut serde_json::Value,
-) -> Result<Option<ImageArtifact>, String> {
-    let directory = store_path().with_file_name("captures");
-    retain_capture_with(command, value, store, &directory)
-}
-
 /// A live look can return several participants. Keep every frame through the
 /// same durable image boundary used by screenshots, before transcript folding.
 pub fn retain_captures(

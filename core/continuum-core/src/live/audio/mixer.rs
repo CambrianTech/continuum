@@ -39,15 +39,6 @@ pub mod test_utils {
             .collect()
     }
 
-    /// Generate a click/impulse
-    pub fn generate_click(num_samples: usize, click_position: usize) -> Vec<i16> {
-        let mut samples = vec![0i16; num_samples];
-        if click_position < num_samples {
-            samples[click_position] = 32767;
-        }
-        samples
-    }
-
 
     /// Detect dominant frequency using zero-crossing rate (simple method)
     pub fn detect_frequency_approx(samples: &[i16], sample_rate: u32) -> f32 {
@@ -378,10 +369,6 @@ impl ParticipantStream {
         }
     }
 
-    /// Check if currently speaking (for UI indicators)
-    pub fn is_currently_speaking(&self) -> bool {
-        self.is_speaking
-    }
 }
 
 /// Result of pushing audio to mixer - includes participant info if transcription ready
@@ -404,14 +391,9 @@ pub struct AudioMixer {
     frame_size: usize,
 
     // === Pre-allocated scratch buffers for the 20ms mix tick ===
-    // These eliminate per-tick HashMap/Vec allocations on the real-time audio path.
-    // At 50Hz tick rate with 5 participants, this saves ~800KB/sec of allocation churn.
-    /// Cached audio frames pulled from participants (reused across ticks)
-    tick_audio_cache: HashMap<Handle, Vec<i16>>,
+    // Eliminates the per-tick Vec allocation on the real-time audio path.
     /// i32 accumulation buffer for mixing (avoids per-target allocation)
     tick_mix_buffer: Vec<i32>,
-    /// Participant handle snapshot for iteration (avoids borrow conflicts)
-    tick_handles: Vec<(Handle, bool)>,
 }
 
 impl AudioMixer {
@@ -421,9 +403,7 @@ impl AudioMixer {
             participants: HashMap::new(),
             sample_rate,
             frame_size,
-            tick_audio_cache: HashMap::new(),
             tick_mix_buffer: vec![0i32; frame_size],
-            tick_handles: Vec::new(),
         }
     }
 
@@ -548,78 +528,6 @@ impl AudioMixer {
         }
 
         Self::clamp_to_i16(&self.tick_mix_buffer)
-    }
-
-    /// Generate mix-minus for all participants
-    /// Returns a map of handle -> mixed audio (what that participant should hear)
-    /// Note: Requires &mut self because AI participants pull from ring buffer
-    ///
-    /// CRITICAL: Pull all audio frames ONCE at the start, then mix from cache.
-    /// Otherwise AI ring buffers get pulled N-1 times per tick (once per other participant),
-    /// causing audio to play at (N-1)x speed!
-    ///
-    /// Ambient sources are NEVER excluded from any mix — everyone hears them,
-    /// including the ambient source's own "participant" entry (which is just a source,
-    /// not a listener). Ambient sources don't get mix output entries since they're
-    /// not listeners.
-    pub fn mix_minus_all(&mut self) -> HashMap<Handle, Vec<i16>> {
-        // STEP 1: Pull audio from ALL participants ONCE into pre-allocated cache.
-        // Uses std::mem::take to avoid borrow conflicts between participants and cache.
-        // The cache HashMap retains its capacity across ticks — no reallocation.
-        let mut audio_cache = std::mem::take(&mut self.tick_audio_cache);
-        audio_cache.clear();
-        for (handle, participant) in &mut self.participants {
-            let audio = participant.get_audio();
-            let entry = audio_cache
-                .entry(*handle)
-                .or_insert_with(|| Vec::with_capacity(self.frame_size));
-            entry.clear();
-            entry.extend_from_slice(audio);
-        }
-
-        // STEP 2: Snapshot participant handles into pre-allocated vec
-        let mut handles = std::mem::take(&mut self.tick_handles);
-        handles.clear();
-        handles.extend(self.participants.iter().map(|(h, p)| (*h, p.is_ambient)));
-
-        // STEP 3: Generate mix-minus for each non-ambient participant using cached audio.
-        // Reuses tick_mix_buffer for i32 accumulation (zeroed per target, not reallocated).
-        let frame_size = self.frame_size;
-        let mix_buffer = &mut self.tick_mix_buffer;
-        let mut result = HashMap::with_capacity(handles.len());
-
-        for (target_handle, target_is_ambient) in &handles {
-            // Ambient sources are not listeners — skip generating output for them
-            if *target_is_ambient {
-                continue;
-            }
-
-            // Zero the pre-allocated mixing buffer
-            for s in mix_buffer.iter_mut() {
-                *s = 0;
-            }
-
-            // Mix all OTHER participants' cached audio
-            for (handle, audio) in &audio_cache {
-                if handle == target_handle {
-                    continue;
-                }
-
-                for (i, &sample) in audio.iter().enumerate() {
-                    if i < frame_size {
-                        mix_buffer[i] += sample as i32;
-                    }
-                }
-            }
-
-            result.insert(*target_handle, Self::clamp_to_i16(mix_buffer));
-        }
-
-        // Return scratch buffers for next tick
-        self.tick_audio_cache = audio_cache;
-        self.tick_handles = handles;
-
-        result
     }
 
     /// Clamp i32 samples to i16 range

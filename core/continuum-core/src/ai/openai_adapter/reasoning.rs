@@ -6,7 +6,7 @@
 ///
 /// 1. A server-provided `reasoning_content` (vLLM-style parsers) — authoritative;
 ///    `content` is already clean.
-/// 2. Inline `<think>…</think>` in `content` (unsloth/llama.cpp today) — the block
+/// 2. Inline `<think>…</think>` in `content` (llama.cpp today) — the block
 ///    is reasoning; everything OUTSIDE it is the answer.
 /// 3. An UNCLOSED `<think>` — the model ran out of tokens mid-thought (the runaway
 ///    loop that leaked into the room): the whole tail is reasoning and there is NO

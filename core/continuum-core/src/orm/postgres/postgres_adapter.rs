@@ -375,6 +375,14 @@ impl StorageAdapter for PostgresAdapter {
         self.delete_on(&client, collection, id).await
     }
 
+    async fn upsert_monotonic(&self, record: DataRecord, field: &str) -> StorageResult<bool> {
+        self.upsert_monotonic_statement(record, field).await
+    }
+
+    async fn delete_matching(&self, query: StorageQuery) -> StorageResult<usize> {
+        self.delete_matching_statement(query).await
+    }
+
     async fn batch(&self, operations: Vec<BatchOperation>) -> StorageResult<Vec<Value>> {
         // ONE checked-out connection for the whole batch. Dispatching through
         // `self.create(...)` per operation (as this did before) takes a DIFFERENT
@@ -608,7 +616,7 @@ impl StorageAdapter for PostgresAdapter {
         for field in &schema.fields {
             if field.indexed {
                 let col_name = naming::to_snake_case(&field.name);
-                let idx_name = format!("idx_{}_{}", table, col_name);
+                let idx_name = format!("idx_{}_{}", naming::to_table_name(&schema.collection), col_name); // an index lives in its table's schema: a qualified table name made `idx_ns.table_col`, a syntax error
                 let idx_sql = format!(
                     "CREATE INDEX IF NOT EXISTS {} ON {} ({})",
                     idx_name, table, col_name

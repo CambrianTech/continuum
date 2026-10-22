@@ -18,7 +18,6 @@ import './theme.css';
 import { ChatWidget, type SendHandler } from './chat/ChatWidget';
 import type { CanvasViewState, ChatState } from '@continuum/chat-view';
 import type {
-  BenchViewState,
   KanbanViewState,
   NavViewState,
   RosterSlotView,
@@ -30,80 +29,6 @@ import type {
 void ChatWidget;
 
 /** A roster member with sensible defaults — override only what a fixture varies. */
-// `?fixture=bench` — the ACADEMY BENCH BOARD in the contextual rail (#329):
-// rows mirroring a REAL round (2026-08-12's 19-instance rerun): a working
-// graded row with a p2p REGRESSION alarm, a working row patch-forming, a
-// queued row (no generations yet), a stalled row, and a resolved row.
-const BENCH_FIXTURE: BenchViewState = {
-  sample_interval_ms: 5000,
-  runs: [
-    {
-      run_id: 'claim-c4a91802', instance: 'sympy__sympy-21055', solver: 'Anon',
-      phase: 'active', stalled: false, attempt: 2, max_attempts: 3, age_secs: 420,
-      acts: 10, patch_bytes: 1295, resolved: false, fail_to_pass: '0/1',
-      pass_to_pass: '31/34', failed_tests: ['test_refine_complex'], 
-    },
-    {
-      run_id: 'claim-92ae38af', instance: 'sympy__sympy-13647', solver: 'Anwen',
-      phase: 'active', stalled: false, attempt: 1, max_attempts: 3, age_secs: 180,
-      acts: 17, patch_bytes: 812, failed_tests: [],
-    },
-    {
-      run_id: 'claim-9d3268b6', instance: 'pytest-dev__pytest-5413', solver: 'Asha',
-      phase: 'active', stalled: false, attempt: 1, max_attempts: 3, age_secs: 12,
-      failed_tests: [],
-    },
-    {
-      run_id: 'claim-c995488a', instance: 'sympy__sympy-24066', solver: 'Anon',
-      phase: 'quiet', stalled: true, attempt: 1, max_attempts: 3, age_secs: 3900,
-      acts: 2, failed_tests: [],
-    },
-    {
-      run_id: 'claim-24152', instance: 'sympy__sympy-24152', solver: 'Anwen',
-      phase: 'resolved', stalled: false, attempt: 1, max_attempts: 3, age_secs: 7200,
-      acts: 9, patch_bytes: 974, resolved: true, fail_to_pass: '1/1',
-      pass_to_pass: '6/6', failed_tests: [],
-    },
-  ],
-  // In-flight ROUNDS (#371) — mirrors the real 2026-08-22 board the hour the
-  // rows landed: the DS-1000 maiden round at done (4/4, the first external
-  // round ever to complete) beside a working SWE round.
-  rounds: [
-    {
-      run_room: '',
-      round_id: '2d6decb3-1beb-5ac7-9ded-ee186c7deb7f', benchmark: 'ds-1000',
-      stage: 'done', dispatched: 4, settled: 4, remaining: 0, driver: 'citizen',
-      verdict: 'done', cards: [],
-    },
-    {
-      run_room: '',
-      round_id: 'bf08832d-c7e2-5bc9-a858-5447c15ccbfe', benchmark: 'swe-bench-lite',
-      stage: 'working', dispatched: 4, settled: 1, remaining: 3, driver: 'citizen',
-      // The 2026-09-01 sensor: two cards grinding, one never started — the
-      // roll-call strip and the verdict chip both exercise here.
-      verdict: 'grinding', idle_secs: 140,
-      cards: [
-        {
-          card_id: '31c00000-0000-0000-0000-000000000001',
-          instance: 'sympy__sympy-24152', assignee: 'Anwen',
-          solve_room_name: 'swe--sympy__sympy-24152--31c00000',
-          state: 'active', acts: 9, patch_bytes: 974, last_act_secs: 140,
-          owner: '',
-          board_state: '',
-        },
-        {
-          card_id: '31c00000-0000-0000-0000-000000000002',
-          instance: 'django__django-11211', assignee: 'Kira',
-          solve_room_name: 'swe--django__django-11211--31c00000',
-          state: 'unstarted',
-          owner: '',
-          board_state: '',
-        },
-      ],
-    },
-  ],
-};
-
 // `?fixture=canvas` — the design-bench CANVAS region's deterministic ground
 // state (DESIGN-BENCH-VISUAL-CRAFT.md §5): a small self-contained pricing-card
 // page as the live-rendered artifact (inline HTML → the sandboxed stage), a
@@ -442,18 +367,6 @@ function main(): void {
     widget.nav = NAV_FIXTURES.rooms;
     widget.sys = SYS_FIXTURE;
   }
-  // `?fixture=bench` — the academy room with the LIVE bench board filling the
-  // contextual rail (#329's render-proof reference input).
-  if (name === 'bench') {
-    const base = FIXTURES.roster;
-    if (base) {
-      widget.state = { ...base, room_name: 'academy', purpose: 'chat' };
-    }
-    widget.nav = NAV_FIXTURES.rooms;
-    widget.sys = SYS_FIXTURE;
-    widget.bench = BENCH_FIXTURE;
-  }
-
   // `?fixture=canvas` — the design-bench CANVAS region center-stage
   // (purpose="canvas"): the persona's page rendered live in the sandboxed
   // stage + the craft scorecard mid-iteration. The face's ground state.

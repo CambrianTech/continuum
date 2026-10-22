@@ -86,41 +86,6 @@ pub fn produce_speech_discipline(
     });
 }
 
-/// Submit ONE received lesson into the live training flywheel — the being-loop going
-/// live for the received axis. Best-effort and non-blocking (mirrors [`produce`]): a
-/// lesson one agent learned becomes another's trained-in capability, gated per-consolidation
-/// by whole-being benchmark lift (the trigger's gym-`evalSet` → the L3 sentinel). Quietly a
-/// no-op before the executor is installed (tests / early boot). `topic` frames the lesson
-/// (its scope); `lesson` is the deliberately-authored knowledge (the completion).
-pub fn produce_received(
-    persona_id: Uuid,
-    persona_name: String,
-    base_model: String,
-    topic: String,
-    lesson: String,
-) {
-    let Some(executor) = EXECUTOR.cloned() else {
-        tracing::debug!(
-            persona = %persona_id,
-            "training_producer: executor not installed yet — skipping received-lesson consolidation"
-        );
-        return;
-    };
-    tokio::spawn(async move {
-        let classifier = CLASSIFIER.get_or_init(DomainClassifier::new);
-        let plan = plan_received(classifier, &topic, &lesson);
-        submit_plan(
-            persona_id,
-            persona_name,
-            base_model,
-            executor,
-            plan,
-            RECEIVED_LESSON_SOURCE,
-        )
-        .await;
-    });
-}
-
 /// Build the wire params for `genome/training-trigger/submit` from a plan — the ONE
 /// payload contract, pure + `pub` so a synchronous caller (`memory/consolidate`
 /// dispatching received lessons on demand) produces byte-identical params to the
@@ -354,7 +319,7 @@ pub(super) async fn stage_credit<T: Transport>(
         completion,
         lived,
         staged_at_ms: continuum_base::time::EpochMs::now().millis(),
-        coursework_set: crate::cognition::bench_round::coursework_set_of(credit.card_id).map(String::from),
+        coursework_set: credit.task.coursework_set().map(String::from),
         task: Some(credit.task.clone()),
         rejected_at_ms: None,
     };

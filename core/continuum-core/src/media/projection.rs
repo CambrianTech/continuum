@@ -75,16 +75,6 @@ pub enum ProjectedMedia {
 }
 
 impl ProjectedMedia {
-    /// Whether this projection carries real pixels the model will natively consume
-    /// (a successful `Full` or `Scaled`). A `Description`/`Handle`/failed cell is not
-    /// a byte attachment.
-    pub fn is_image_bytes(&self) -> bool {
-        match self {
-            ProjectedMedia::Full { .. } => true,
-            ProjectedMedia::Scaled(cell) => cell.as_ref().is_ok(),
-            _ => false,
-        }
-    }
 }
 
 /// Project a media frame for ONE persona: capability gates, resolution selects, the
@@ -323,32 +313,4 @@ mod tests {
         }
     }
 
-    // what this catches: is_image_bytes() distinguishes a real byte attachment (a
-    // successful Full/Scaled) from a description/handle — the render seam uses this to
-    // decide whether an item consumes the one byte-attachment slot.
-    #[tokio::test]
-    async fn is_image_bytes_only_true_for_successful_pixels() {
-        let compute = SharedCompute::new();
-        let frame = MediaFrame::from_bytes(png(20, 20));
-        let full = project_image(
-            &frame,
-            &vision(),
-            MediaResolution::Full,
-            "image/png",
-            &compute,
-            &StubDescriber,
-        )
-        .await;
-        let desc = project_image(
-            &frame,
-            &HashSet::new(),
-            MediaResolution::Full,
-            "image/png",
-            &compute,
-            &StubDescriber,
-        )
-        .await;
-        assert!(full.is_image_bytes());
-        assert!(!desc.is_image_bytes());
-    }
 }

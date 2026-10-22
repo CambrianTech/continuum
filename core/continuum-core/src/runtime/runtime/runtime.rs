@@ -425,7 +425,7 @@ pub enum ServiceGroup {
     /// Per-node hardware governance (GPU, resource + pressure brokers).
     ResourceGov,
     /// The inference engine (llm/provider/embedding/vision/models/search/
-    /// tool-parsing). Increasingly external (unsloth) behind the AIProviderAdapter.
+    /// tool-parsing). Increasingly external  behind the AIProviderAdapter.
     Inference,
     /// The organism's brain — cognition/channel/allocator/agent/memory/rag +
     /// the persona-host modules.
@@ -511,11 +511,6 @@ pub const MODULES: &[ModuleSpec] = &[
     // made `required_modules()` demand a module that no longer registers, which
     // hard-failed boot with "missing [search]" — the same trap as the retired
     // `inference` shell above.)
-    ModuleSpec::new(
-        "tool-parsing",
-        ServiceGroup::Inference,
-        ModuleCategory::Core,
-    ),
     ModuleSpec::new("vision", ServiceGroup::Inference, ModuleCategory::Core),
     ModuleSpec::new("models", ServiceGroup::Inference, ModuleCategory::Core),
     // Cognition — the brain (always-built modules + the persona-host conditionals)

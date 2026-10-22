@@ -22,9 +22,10 @@ impl ArtifactWriter {
         Self { root: root.into() }
     }
 
-    pub fn continuum_default() -> Self {
-        let home = dirs::home_dir().expect("home directory must exist for VDD artifacts");
-        Self::new(home.join(".continuum").join("vdd"))
+    pub fn continuum_default() -> Result<Self, String> {
+        let home = dirs::home_dir()
+            .ok_or_else(|| "no home directory: cannot place VDD artifacts".to_string())?;
+        Ok(Self::new(home.join(".continuum").join("vdd")))
     }
 
     pub fn write(

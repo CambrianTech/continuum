@@ -60,6 +60,16 @@ impl CardTask {
             CardTask::NotATask
         }
     }
+
+    /// The coursework lesson set this card belongs to, read off its own title (the board is
+    /// the saved state; ONE-RESIDENT §10.2: lesson turns are told from real work by data).
+    /// A review card's title names no set, so a review of a lesson reads as real work.
+    pub fn coursework_set(&self) -> Option<crate::cognition::coursework::CourseworkSet> {
+        match self {
+            CardTask::Task(identity) => crate::cognition::coursework::CourseworkSet::parse(&identity.set),
+            CardTask::ReviewOf(_) | CardTask::NotATask => None,
+        }
+    }
 }
 
 /// Write `task` into one example's metadata: the ONE writer of the field.

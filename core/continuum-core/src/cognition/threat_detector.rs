@@ -313,10 +313,6 @@ impl ThreatDetectorRegistry {
         self
     }
 
-    pub fn detector_count(&self) -> usize {
-        self.detectors.len()
-    }
-
     pub fn detect(&self, frame: &ThreatFrame) -> ThreatDetectionReport {
         let mut signals = Vec::new();
         for detector in &self.detectors {

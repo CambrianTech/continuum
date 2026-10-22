@@ -37,7 +37,7 @@ name = "cargo-continuum-vdd"
 path = "src/bin/cargo-continuum-vdd.rs"
 
 # The forge custodian sidecar — the continuum-owned daemon that converts a
-# trained MLX LoRA into a pageable GGUF gene (the one capability unsloth-studio
+# trained MLX LoRA into a pageable GGUF gene (the one capability the serving engine
 # lacked). Declared explicitly (not just autobins-discovered) so it's an
 # intentional, contract-bearing artifact: it serves the `forge::protocol` wire
 # contract a forge daemon will grid-negotiate against.
@@ -54,6 +54,7 @@ serde_json.workspace = true
 ron = "0.12"     # RON scene descriptions (Bevy-idiomatic on-disk format)
 uuid.workspace = true
 continuum-base = { path = "../continuum-base" }
+continuum-context = { path = "../continuum-context" }
 # JSON Schema generation from serde types — the runtime param schema every SDK
 # (CLI/web/mobile/RAG-tools) adapts from. Derived automatically by the command
 # base traits; uuid1 so Uuid fields schema-ize as string. See COMMAND-ORGANIZATION.md.
@@ -180,7 +181,7 @@ rand.workspace = true  # For test audio generation
 ts-rs.workspace = true  # TypeScript type generation
 
 # Memory/Hippocampus — pure compute engine (data from TS ORM via IPC).
-# NOTE: embedding is async + adapter-routed (unsloth /v1/embeddings via the
+# NOTE: embedding is async + adapter-routed (llama-server /v1/embeddings via the
 # AIProviderAdapter, see cognition::embedding) — NOT an in-process ONNX model.
 # The fastembed crate was removed in task #40. `ort` stays for live audio
 # (tts/stt/vad), which is a separate concern (task #41).
@@ -348,12 +349,11 @@ avatar-3d = ["dep:bevy", "dep:wgpu", "dep:wgpu-hal"]
 # intel-mkl-src even with default-features = false, which broke packaging the Windows CLI
 # (#4665, BIGGIEDESK). Enable it explicitly to get the adapter.
 pocket-tts = ["dep:pocket-tts"]
-# Legacy TypeScript-SDK generator (sdk_codegen::emit). OFF by default: nothing
-# live consumes its output (the new client SDKs are independent), so it's pure
-# CI/compile cost + a tempting-but-wrong extension point. The HEADLESS command
-# framework (registry, dispatch, descriptors, AccessLevel) is always compiled;
-# only the .ts emitter + its tests are gated here. Regenerate the TS SDK with
-# `cargo test --features ts-codegen` on the (rare) occasions it's needed.
+# TypeScript-SDK generator (sdk_codegen::emit). OFF by default (no compile cost in
+# ordinary builds). Its output is LIVE: sdk/typescript/generated/{CommandMap,CommandApi}.ts
+# and wire/** are imported by sdk/typescript/Commands.ts, which apps/tui, eye-node, desktop
+# and web depend on. Regenerate after a command changes:
+# `cargo test -p continuum-core --features ts-codegen generates_live_typescript_sdk`.
 ts-codegen = []
 metal = ["candle-core/metal", "candle-nn/metal", "candle-transformers/metal", "llama/metal", "ort/coreml"]
 cuda = ["candle-core/cuda", "candle-nn/cuda", "candle-transformers/cuda", "llama/cuda", "ort/cuda"]

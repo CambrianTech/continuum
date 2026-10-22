@@ -676,7 +676,7 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
         }
     });
 
-    // (Removed the legacy unsloth auto-fuel spawn. Bringing up the served model
+    // (Removed the legacy auto-fuel spawn. Bringing up the served model
     // is the ServingDaemonModule's job now — the ever-present control loop owns
     // model load/reconcile and publishes the ready snapshot (Contract A). A
     // second fire-and-forget loader here was a duplicate owner of that concern;

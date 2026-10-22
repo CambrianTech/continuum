@@ -21,7 +21,7 @@ use async_trait::async_trait;
 use super::rag_budget::{
     ContinuationCursor, RagContext, RagDelivery, RagItem, RagSource, ResolutionPreference,
 };
-use crate::cognition::token_budget::estimate_prompt_tokens as estimate_tokens;
+use continuum_base::token_estimate::estimate_prompt_tokens as estimate_tokens;
 use crate::media::{Percept, PerceptionBuffer};
 use crate::runtime::SharedCompute;
 

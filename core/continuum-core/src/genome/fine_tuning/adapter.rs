@@ -9,7 +9,7 @@ use async_trait::async_trait;
 use std::sync::Arc;
 
 use super::types::{JobHandle, TrainingJobRequest, TrainingStatus};
-use crate::inference_capability::HardwareProfile;
+use crate::system_resources::hardware_profile::HardwareProfile;
 
 // ─── Errors ──────────────────────────────────────────────────────────
 

@@ -66,14 +66,14 @@ impl ServiceModule for ForgeModule {
                 // Native mlx_lm.lora on Apple Silicon — FIRE-AND-EMIT: returns a handle
                 // immediately, `forge.train.*` events flow over airc (no poll). A
                 // non-mlx engine routes to a grid-peer custodian (task #52 follow-up),
-                // NEVER an Unsloth fallback ([[fallbacks-are-illegal-fail-loud]]).
+                // never a fallback ([[fallbacks-are-illegal-fail-loud]]).
                 if mlx_engine_selected(parsed.engine.as_deref())? {
                     run_train_native_mlx(parsed, self.bus())
                 } else {
                     Err(
                         "forge/train: native forge trains via mlx on Apple Silicon; a \
                          non-mlx engine must route to a grid-peer custodian (task #52 \
-                         follow-up) — there is no Unsloth fallback"
+                         follow-up) — there is no fallback"
                             .to_string(),
                     )
                 }
@@ -91,7 +91,7 @@ impl ServiceModule for ForgeModule {
                     .map_err(|e| format!("forge/export: invalid params: {e}"))?;
                 // gguf-lora is served by the continuum forge CUSTODIAN (Contract C),
                 // the only thing that can turn a trained MLX adapter into a pageable
-                // GGUF LoRA. lora/gguf still route to unsloth until #52 completes.
+                // GGUF LoRA.
                 // Different capabilities live on different daemons — so the format
                 // picks the custodian here, at the one dispatch point.
                 if parsed.format == "gguf-lora" {
@@ -120,7 +120,7 @@ impl ServiceModule for ForgeModule {
                     Err(format!(
                         "forge/export: native forge packages the pageable 'gguf-lora' gene \
                          (the unit the grid trades + llama-server pages in); format {:?} is \
-                         not supported natively — no Unsloth fallback",
+                         not supported natively — no fallback",
                         parsed.format
                     ))
                 }
@@ -216,19 +216,12 @@ pub(super) fn synthesize_stub_artifact(
 //=============================================================================
 // forge/train + forge/export — DELEGATED to the model CUSTODIAN (#32).
 //
-// The foundry's byte work — engine selection (MLX on Apple Silicon / Unsloth-CUDA
-// on NVIDIA), the train/valid split, fuse → convert → quantize, and the output
-// BYTES — belongs to the custodian (unsloth studio), not the organism. continuum
-// holds POLICY (`forge/decide`) and HANDLES (a job id, a save dir); it never
-// spawns `mlx_lm.lora`/`mlx_lm.fuse`/llama.cpp nor writes under
-// `~/.continuum/forge`. We delegate over the custodian's HTTP forge surface
-// (`inference::unsloth_forge`), exactly as model load/unload delegates via
-// `inference::unsloth_control`. This DELETES the ~675 lines of subprocess +
-// byte-write trespass that were the GGUF-gibberish + adapter no-op bug class.
-// Closes the coordination↔learning flywheel: a persona's room work becomes a
+// The foundry's byte work — the train/valid split, fuse → convert → quantize,
+// and the output BYTES — belongs to the custodian, not the organism. continuum
+// holds POLICY (`forge/decide`) and HANDLES (a job id, a save dir). Closes the coordination↔learning flywheel: a persona's room work becomes a
 // dataset (`dataset/from-turns`) → custodian fine-tunes a LoRA genome → it pages
 // into the genome. See memory model-endpoint-fabric-adapter-router,
-// unsloth-universal-model-gateway, compute-lease-boundary,
+// compute-lease-boundary,
 // coordination-learning-flywheel.
 //=============================================================================
 /// Inputs for `forge/train`. The dataset is the JSONL `dataset/from-turns`
@@ -243,9 +236,6 @@ pub(super) struct ForgeTrainParams {
     pub(super) dataset_path: String,
     /// Base model to fine-tune (the same id the gateway serves).
     pub(super) base_model: String,
-    /// Dataset format the custodian parses (from-turns emits chat `{messages}`).
-    #[serde(default = "default_format_type")]
-    pub(super) format_type: String,
     /// Training type — "lora" (the genome layer) by default.
     #[serde(default = "default_training_type")]
     pub(super) training_type: String,
@@ -253,26 +243,20 @@ pub(super) struct ForgeTrainParams {
     pub(super) lora_r: u32,
     #[serde(default = "default_lora_alpha")]
     pub(super) lora_alpha: u32,
-    #[serde(default = "default_num_epochs")]
-    pub(super) num_epochs: u32,
     /// The custodian takes the learning rate as a STRING (e.g. "2e-4").
     #[serde(default = "default_learning_rate")]
     pub(super) learning_rate: String,
     #[serde(default = "default_batch_size")]
     pub(super) batch_size: u32,
-    #[serde(default = "default_grad_accum")]
-    pub(super) gradient_accumulation_steps: u32,
     #[serde(default = "default_max_seq_length")]
     pub(super) max_seq_length: u32,
-    #[serde(default = "default_load_in_4bit")]
-    pub(super) load_in_4bit: bool,
     /// Resolve the request + return it WITHOUT kicking a run.
     #[serde(default)]
     pub(super) dry_run: bool,
 
     // --- native MLX path (#52, Apple Silicon) -------------------------------
     // When the engine resolves to "mlx" the foundry owns the train subprocess
-    // (forge::mlx_train) instead of delegating to the unsloth custodian. These
+    // (forge::mlx_train) instead of delegating to a custodian. These
     // carry the bits the native contract needs that the custodian one doesn't.
     /// "mlx" | "custodian". `None` → auto-detect by platform (Apple Silicon →
     /// mlx, else custodian). Explicit value wins — never a silent fallback.
@@ -323,10 +307,6 @@ pub(super) struct ForgeTrainParams {
     pub(super) grad_checkpoint: bool,
 }
 
-pub(super) fn default_format_type() -> String {
-    "chat".to_string()
-}
-
 pub(super) fn default_training_type() -> String {
     "lora".to_string()
 }
@@ -339,10 +319,6 @@ pub(super) fn default_lora_alpha() -> u32 {
     16
 }
 
-pub(super) fn default_num_epochs() -> u32 {
-    1
-}
-
 pub(super) fn default_learning_rate() -> String {
     "2e-4".to_string()
 }
@@ -351,16 +327,8 @@ pub(super) fn default_batch_size() -> u32 {
     1
 }
 
-pub(super) fn default_grad_accum() -> u32 {
-    1
-}
-
 pub(super) fn default_max_seq_length() -> u32 {
     2048
-}
-
-pub(super) fn default_load_in_4bit() -> bool {
-    true
 }
 
 pub(super) fn default_adapter_name() -> String {
@@ -410,7 +378,7 @@ pub(super) fn mlx_engine_selected(engine: Option<&str>) -> Result<bool, String> 
 }
 
 /// Resolve the interpreter that can `import mlx_lm` — a venv WE manage under
-/// `~/.continuum/genome/venv` (NOT the legacy unsloth studio venv). Override via
+/// `~/.continuum/genome/venv`. Override via
 /// `MLX_PYTHON` for a custom env. Existence + mlx_lm import are enforced loud by
 /// [`run_mlx_train`]; provision the managed venv once with
 /// `python3 -m venv ~/.continuum/genome/venv && ~/.continuum/genome/venv/bin/pip install mlx-lm`.
@@ -477,7 +445,7 @@ pub(super) fn read_jsonl(path: &Path) -> Result<Vec<Value>, String> {
 }
 
 /// `forge/train` on Apple Silicon — own the `mlx_lm.lora` subprocess instead of
-/// delegating to the unsloth custodian (#52, converges #32). Resolves the train
+/// delegating to a custodian (#52, converges #32). Resolves the train
 /// base (asserted train-base==serve-base), materializes the `{train,valid}.jsonl`
 /// data dir mlx_lm expects, and runs [`run_mlx_train`] with scale derived from
 /// the LoRA geometry (`alpha/rank`) per [[genome-loop-trains-on-own-mistakes]].
@@ -637,7 +605,7 @@ pub(super) fn run_train_native_mlx(
 // See memory lora-layers-as-p2p-exchanged-genome.
 //=============================================================================
 /// Inputs for `forge/export`. `checkpoint` is the custodian-owned trained run
-/// dir (a `forge/train` output under `~/.unsloth/studio/outputs`);
+/// dir (a `forge/train` output);
 /// `save_directory` is where the custodian writes the packaged artifact
 /// (custodian-owned). Both stay custodian-side — the organism passes handles.
 #[derive(Debug, Deserialize)]
@@ -652,9 +620,6 @@ pub(super) struct ForgeExportParams {
     /// model), or "gguf-lora" (the pageable gene `llama-server --lora` loads).
     #[serde(default = "default_export_format")]
     pub(super) format: String,
-    /// GGUF quantization (only when `format == "gguf"`): Q4_K_M, Q5_K_M, Q8_0, F16.
-    #[serde(default = "default_quantization")]
-    pub(super) quantization: String,
     /// Base model id the GGUF LoRA composes onto — REQUIRED for `format ==
     /// "gguf-lora"` (the converter needs the base architecture). The same id the
     /// gateway serves the base with.
@@ -664,18 +629,10 @@ pub(super) struct ForgeExportParams {
     /// (default) or "q8_0".
     #[serde(default = "default_lora_outtype")]
     pub(super) outtype: String,
-    #[serde(default = "default_max_seq_length")]
-    pub(super) max_seq_length: u32,
-    #[serde(default = "default_load_in_4bit")]
-    pub(super) load_in_4bit: bool,
 }
 
 pub(super) fn default_export_format() -> String {
     "lora".to_string()
-}
-
-pub(super) fn default_quantization() -> String {
-    "Q4_K_M".to_string()
 }
 
 pub(super) fn default_lora_outtype() -> String {

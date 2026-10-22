@@ -126,13 +126,6 @@ impl WorkingMemory {
         // until the whole expression ends, so the second lock waits on ourselves
         // forever. Found as a 100%-reproducible test hang, 2026-08-15 — every
         // snapshot save (i.e. every deploy pause) would have wedged the same way.
-        let (receipt_heads, receipt_head_rooms) = {
-            let archive = self.receipt_heads.lock();
-            (
-                archive.iter().map(|(_, h)| h.clone()).collect(),
-                archive.iter().map(|(r, _)| *r).collect(),
-            )
-        };
         let (entries, action_statements) = {
             let ring = self.entries.lock();
             let mut entries = Vec::new();
@@ -146,14 +139,29 @@ impl WorkingMemory {
             }
             (entries, authored)
         };
-        // Capture each result with its attribution under the same custody locks.
-        // A concurrent collapse must not shift pointer indexes between these reads.
-        let (recent_results, result_scopes, evicted_pointers, last_action) = {
-            let results = self.recent_results.lock();
-            let scopes = self.result_scopes.lock();
-            let pointers = self.evicted_pointers.lock();
-            (results.iter().cloned().collect(), scopes.clone(),
-                pointers.iter().cloned().collect(), self.last_action.lock().clone())
+        // The log, projected into the wire shape older builds read (see
+        // `VolatileSnapshot::action_records`), under one lock so a concurrent collapse
+        // cannot move a record between the projections.
+        let archive_chars = self.budget().receipt_archive_chars();
+        let last_action = self.last_action.lock().clone();
+        let (archive, recent_results, result_scopes, pointers, records) = {
+            let actions = self.actions.lock();
+            let archive: Vec<(Option<Uuid>, String)> =
+                actions.archive(archive_chars).into_iter().map(|(r, head)| (r.room, head.to_owned())).collect();
+            let recent_results: Vec<(u64, Option<Uuid>, String, String, Option<String>)> = actions
+                .retained()
+                .filter_map(|r| r.result.clone().map(|result| (r.seq, r.room, result, r.operation.clone(), r.handle.clone())))
+                .collect();
+            let result_scopes: BTreeMap<u64, String> = actions
+                .retained()
+                .filter_map(|r| r.scope.clone().map(|scope| (r.seq, scope)))
+                .collect();
+            let pointers: Vec<(String, String)> = actions
+                .indexed_pointers()
+                .into_iter()
+                .filter_map(|r| r.handle.clone().map(|handle| (super::collapsed_pointer(r), handle)))
+                .collect();
+            (archive, recent_results, result_scopes, pointers, actions.records().cloned().collect())
         };
         VolatileSnapshot {
             pending_emissions: self.pending_emissions.lock().clone(),
@@ -161,8 +169,8 @@ impl WorkingMemory {
             action_statements,
             last_action,
             action_fps: self.action_fps.lock().iter().cloned().collect(),
-            receipt_heads,
-            receipt_head_rooms,
+            receipt_heads: archive.iter().map(|(_, head)| head.clone()).collect(),
+            receipt_head_rooms: archive.iter().map(|(room, _)| *room).collect(),
             recent_results,
             result_scopes,
             next_action_seq: self.next_action_seq.load(Ordering::Relaxed),
@@ -179,7 +187,9 @@ impl WorkingMemory {
                 .filter(|d| d.status == DispatchStatus::Running)
                 .map(|d| d.label.clone())
                 .collect(),
-            evicted_pointers,
+            evicted_pointers: pointers,
+            actions: records,
+            context_view: self.view.lock().clone(),
             receipt_children: self.receipt_children.lock().clone(),
             open_views: self.open_views.lock().saved(),
         }
@@ -193,7 +203,19 @@ impl WorkingMemory {
     /// labels it recorded as pending. It does not establish when an interruption
     /// happened, whether those operations completed, or what side effects they
     /// produced. The persona decides what to do with that uncertainty.
+    /// Keep her context view as this act left it, for the checkpoint.
+    pub(crate) fn keep_view(&self, view: Option<ContextView>) {
+        *self.view.lock() = view;
+    }
+
+    /// Her context view as a checkpoint restored it, taken once by the act that resumes it.
+    pub(crate) fn take_view(&self) -> Option<ContextView> {
+        self.view.lock().take()
+    }
+
     pub fn restore(&self, mut snap: VolatileSnapshot) {
+        // Read before any field moves out of the snapshot below.
+        let records = snap.action_records();
         // A restored mind keeps only the newest concern evidence its existing
         // WM capacity admits. Older abandoned concerns cannot become eternal peaks.
         let mut pending = Vec::<ConcernEmission>::new();
@@ -229,33 +251,14 @@ impl WorkingMemory {
                 e.pop_front();
             }
         }
-        {
-            // Same re-clamp contract as `entries`: refill through the one bounded push so
-            // a snapshot from a bigger-window life evicts down to THIS life's share.
-            self.receipt_heads.lock().clear();
-            // Zip with the (possibly shorter/absent on legacy snapshots) room
-            // tags; missing tags restore as None — honest "unscoped".
-            let mut rooms = snap.receipt_head_rooms.into_iter();
-            for head in snap.receipt_heads {
-                self.push_receipt_head(rooms.next().flatten(), head);
-            }
-        }
+        // Same re-clamp contract as `entries`: the log bounds itself to THIS life's share, and
+        // the collapse below folds results a bigger-window life held into pointers, never a
+        // silent deletion.
+        *self.actions.lock() =
+            action_log::ActionLog::from_records(records, self.budget().receipt_archive_chars());
         *self.last_action.lock() = snap.last_action;
-        *self.result_scopes.lock() = snap.result_scopes;
-        {
-            // Restore the feedback channel, then bound it by the SAME collapse the live
-            // writer's settlement applies (re-clamp contract): a snapshot from a bigger
-            // window leaves pointers to what no longer fits, never a silent deletion.
-            let mut rr = self.recent_results.lock();
-            rr.clear();
-            rr.extend(snap.recent_results);
-        }
-        {
-            let mut ptrs = self.evicted_pointers.lock();
-            ptrs.clear();
-            ptrs.extend(snap.evicted_pointers);
-        }
         *self.receipt_children.lock() = snap.receipt_children;
+        *self.view.lock() = snap.context_view;
         *self.open_views.lock() = super::super::open_views::OpenViews::from_saved(snap.open_views);
         // Against the REAL window only; an unknown one folds nothing (the rule lives in
         // `collapse_results_over_cap`): a floor here folded results the served window holds,

@@ -6,6 +6,7 @@
 //! Input: PromptAssemblyInput (persona identity, RAG context, shared analysis angle)
 //! Output: AssembledPrompt (system message + conversation history, ready for ai/generate)
 
+use continuum_base::token_estimate::estimate_prompt_tokens;
 use crate::model_registry::types::MultiPartyChatStrategy;
 use serde::{Deserialize, Serialize};
 use std::fmt::Write as _;
@@ -412,9 +413,8 @@ pub fn assemble(input: &PromptAssemblyInput) -> AssembledPrompt {
         }
     };
 
-    // Estimate tokens (~4 chars per token)
-    let system_tokens = system_prompt.len() / 4;
-    let msg_tokens: usize = messages.iter().map(|m| m.content.len() / 4).sum();
+    let system_tokens = estimate_prompt_tokens(&system_prompt) as usize;
+    let msg_tokens: usize = messages.iter().map(|m| estimate_prompt_tokens(&m.content) as usize).sum();
     let estimated_tokens = system_tokens + msg_tokens;
 
     // RTOS probe: prompt-assembly seam. Per docs/architecture/

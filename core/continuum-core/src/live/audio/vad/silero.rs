@@ -112,13 +112,8 @@ impl SileroVAD {
     /// - Float samples normalized to [-1, 1]
     /// - Shape: [batch=1, samples]
     fn preprocess_audio(&self, samples: &[i16]) -> Array2<f32> {
-        let float_samples: Vec<f32> = samples
-            .iter()
-            .map(|&s| s as f32 / 32768.0) // i16 to [-1, 1]
-            .collect();
-
-        Array2::from_shape_vec((1, float_samples.len()), float_samples)
-            .expect("Failed to create audio array")
+        // from_shape_fn builds the [1, n] array directly: no shape/length mismatch to fail.
+        Array2::from_shape_fn((1, samples.len()), |(_, i)| samples[i] as f32 / 32768.0) // i16 to [-1, 1]
     }
 
     /// Run inference on blocking thread

@@ -33,6 +33,8 @@ pub use open_connection::*;
 mod do_ensure_schema;
 use do_ensure_schema::*;
 mod sqlite_adapter;
+mod conditional;
+mod file;
 
 #[cfg(test)]
 mod tests;

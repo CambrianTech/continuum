@@ -54,12 +54,6 @@ pub enum Verdict {
 }
 
 impl Verdict {
-    /// `true` iff this verdict allows immediate execution.
-    /// Convenience accessor for the dispatcher's hot path.
-    pub fn is_allowed(&self) -> bool {
-        matches!(self, Verdict::Allowed)
-    }
-
     /// Short kind label for log lines + audit rows.
     pub fn kind(&self) -> &'static str {
         match self {
@@ -115,37 +109,6 @@ pub enum DeferredReason {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn allowed_verdict_is_allowed() {
-        assert!(Verdict::Allowed.is_allowed());
-        assert_eq!(Verdict::Allowed.kind(), "allowed");
-    }
-
-    #[test]
-    fn forbidden_verdicts_are_not_allowed() {
-        let cases = [
-            ForbiddenReason::UnknownPeer,
-            ForbiddenReason::NoPermissionForUri("airc://maya/cognition/genome/lora-evict".into()),
-            ForbiddenReason::AdmissionDenied("rate limit exceeded".into()),
-            ForbiddenReason::Revoked,
-        ];
-        for reason in cases {
-            let v = Verdict::Forbidden { reason };
-            assert!(!v.is_allowed());
-            assert_eq!(v.kind(), "forbidden");
-        }
-    }
-
-    #[test]
-    fn deferred_verdict_is_not_allowed() {
-        let v = Verdict::Deferred {
-            reason: DeferredReason::AskTargetEnv,
-            prompt_target_env: EnvironmentId::Named("web".into()),
-        };
-        assert!(!v.is_allowed());
-        assert_eq!(v.kind(), "deferred");
-    }
 
     /// `ForbiddenReason::NoPermissionForUri` carries the URI in the
     /// display string — actionable for the operator looking at the

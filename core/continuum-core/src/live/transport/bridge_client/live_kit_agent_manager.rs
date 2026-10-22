@@ -201,10 +201,10 @@ impl LiveKitAgentManager {
         // Build envelope
         let mut envelope =
             serde_json::to_value(&command).map_err(|e| format!("Serialize error: {}", e))?;
-        envelope
-            .as_object_mut()
-            .unwrap()
-            .insert("request_id".to_string(), request_id.into());
+        let Some(fields) = envelope.as_object_mut() else {
+            return Err("Serialize error: bridge command did not serialize to a JSON object".to_string());
+        };
+        fields.insert("request_id".to_string(), request_id.into());
         let json_bytes =
             serde_json::to_vec(&envelope).map_err(|e| format!("Serialize error: {}", e))?;
         let frame = continuum_bridge_protocol::encode_frame(&json_bytes, binary);

@@ -230,9 +230,6 @@ pub enum PersonaSeedError {
 }
 
 impl PersonaSeedError {
-    pub fn is_not_found(&self) -> bool {
-        matches!(self, Self::NotFound { .. })
-    }
 }
 
 /// Read a seed file from the given path. Returns `Ok(seed)` if
@@ -516,14 +513,6 @@ mod tests {
         );
         // And the original birth time is preserved (ensure_seed doesn't reset it).
         assert_eq!(after.created_at_ms(), 1_717_200_000_000);
-    }
-
-    #[tokio::test]
-    async fn read_missing_returns_not_found() {
-        let temp = TempDir::new().unwrap();
-        let path = temp.path().join("nonexistent-seed.json");
-        let err = read_seed(&path).await.unwrap_err();
-        assert!(err.is_not_found(), "expected NotFound, got {err:?}");
     }
 
     // what this catches: ensure_seed writes a missing seed from the live identity

@@ -220,15 +220,6 @@ pub fn feed(event: &Arc<TranscriptEvent>, now_ms: u64) -> usize {
     count
 }
 
-/// Typed outcome for the admit path's board-fact rendering (keeps one mapping).
-pub fn verdict_word(outcome: ObservedVerdict) -> &'static str {
-    match outcome {
-        ObservedVerdict::Passed => "PASSED",
-        ObservedVerdict::Failed => "FAILED",
-        ObservedVerdict::Unknown => "UNKNOWN",
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

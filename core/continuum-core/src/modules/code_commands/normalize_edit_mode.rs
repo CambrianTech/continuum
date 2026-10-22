@@ -590,6 +590,12 @@ pub(super) fn shell_response(s: &crate::code::shell_session::ExecutionState) -> 
         stdout: Some(s.stdout_lines.join("\n")),
         stderr: Some(s.stderr_lines.join("\n")),
         exit_code: s.exit_code,
+        next: (s.status == ShellExecutionStatus::Running).then(|| {
+            format!(
+                "still running: its result is delivered to you when it finishes; read its progress now with code/shell-poll execution_id={}",
+                s.id
+            )
+        }),
     }
 }
 

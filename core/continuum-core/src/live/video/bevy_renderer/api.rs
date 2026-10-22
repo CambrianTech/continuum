@@ -155,7 +155,7 @@ impl BevyAvatarSystem {
         let memory_stats = Arc::new(BevyMemoryStats::new());
         let stats_for_bevy = memory_stats.clone();
 
-        std::thread::Builder::new()
+        if let Err(e) = std::thread::Builder::new()
             .name("bevy-avatar-renderer".into())
             .spawn(move || {
                 let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -178,7 +178,10 @@ impl BevyAvatarSystem {
                     crate::runtime::logger("bevy").error(&format!("BEVY THREAD CRASHED: {}", msg));
                 }
             })
-            .expect("Failed to spawn Bevy avatar renderer thread");
+        {
+            // `ready` stays false; the wait below reports the renderer as not ready.
+            crate::runtime::logger("bevy").error(&format!("failed to spawn Bevy renderer thread: {e}"));
+        }
 
         for _ in 0..50 {
             if ready.load(std::sync::atomic::Ordering::Acquire) {
@@ -269,26 +272,6 @@ impl BevyAvatarSystem {
         }
     }
 
-    pub fn set_speaking_by_identity(&self, identity: &str, speaking: bool) -> bool {
-        let found = self.send_by_identity(identity, |slot| AvatarCommand::SetSpeaking {
-            slot,
-            speaking,
-        });
-        if !found && speaking {
-            clog_warn!(
-                "🎨 set_speaking: identity '{}' not registered (no slot)",
-                &identity[..8.min(identity.len())]
-            );
-        }
-        found
-    }
-
-    pub fn set_mouth_weight(&self, slot: u8, weight: f32) {
-        let _ = self
-            .command_tx
-            .send(AvatarCommand::SetMouthWeight { slot, weight });
-    }
-
     pub fn set_mouth_weight_by_identity(&self, identity: &str, weight: f32) -> bool {
         self.send_by_identity(identity, |slot| AvatarCommand::SetMouthWeight {
             slot,
@@ -296,33 +279,8 @@ impl BevyAvatarSystem {
         })
     }
 
-    pub fn set_mouth_weight_sequence_by_identity(
-        &self,
-        identity: &str,
-        weights: Vec<f32>,
-        interval_ms: u32,
-    ) -> bool {
-        self.send_by_identity(identity, |slot| AvatarCommand::SetMouthWeightSequence {
-            slot,
-            weights,
-            interval_ms,
-        })
-    }
-
     pub fn play_speech_by_identity(&self, identity: &str, clip: SpeechAnimationClip) -> bool {
         self.send_by_identity(identity, |slot| AvatarCommand::PlaySpeech { slot, clip })
-    }
-
-    pub fn stop_speech_by_identity(&self, identity: &str) -> bool {
-        self.send_by_identity(identity, |slot| AvatarCommand::StopSpeech { slot })
-    }
-
-    pub fn resize_slot(&self, slot: u8, width: u32, height: u32) {
-        let _ = self.command_tx.send(AvatarCommand::Resize {
-            slot,
-            width,
-            height,
-        });
     }
 
     pub fn set_emotion_by_identity(
@@ -364,11 +322,4 @@ impl BevyAvatarSystem {
         })
     }
 
-    pub fn resize_by_identity(&self, identity: &str, width: u32, height: u32) -> bool {
-        self.send_by_identity(identity, |slot| AvatarCommand::Resize {
-            slot,
-            width,
-            height,
-        })
-    }
 }

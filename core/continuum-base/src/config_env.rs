@@ -230,15 +230,6 @@ pub fn vram_headroom() -> f64 {
     *V.get_or_init(|| parse_fraction(read("CONTINUUM_VRAM_HEADROOM").as_deref(), DEFAULT_HEADROOM))
 }
 
-/// Headroom fraction for the disk frozen/cold artifact tier: `usable = drive_free ×
-/// this`. Default 0.8 (the 20% doubles as the disk-full safety guard); a foundry
-/// with a dedicated drive sets 1.0. Read once and cached. Override key:
-/// `CONTINUUM_DISK_HEADROOM`.
-pub fn disk_headroom() -> f64 {
-    static D: OnceLock<f64> = OnceLock::new();
-    *D.get_or_init(|| parse_fraction(read("CONTINUUM_DISK_HEADROOM").as_deref(), DEFAULT_HEADROOM))
-}
-
 #[cfg(test)]
 mod tests {
     // what this catches (Fable, #4228 review): a key present in config.env but absent

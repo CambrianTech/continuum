@@ -6,7 +6,7 @@
 > **what models they run** *data and dynamic discovery*, not code.
 
 Companions: [[ask-anything-assemble-best-self-or-train]], [[shop-genome-market]],
-[[room-purpose-is-per-recipe-not-an-enum]], [[unsloth-universal-model-gateway]],
+[[room-purpose-is-per-recipe-not-an-enum]], 
 [INFERENCE-LANES-REALISTIC](../architecture/INFERENCE-LANES-REALISTIC.md),
 [GENOME-FOUNDRY-SENTINEL](../architecture/GENOME-FOUNDRY-SENTINEL.md).
 
@@ -22,10 +22,10 @@ Companions: [[ask-anything-assemble-best-self-or-train]], [[shop-genome-market]]
 | Model catalog | `model_registry/catalog.rs::models()` | static Rust `Vec<Model>` — NOT read from any `/v1/models` |
 | Model resolution | `cognition/model_resolver/` | static filter chain over the static catalog |
 | Persona identity | minted in `modules/persona_instance_manager.rs` (`Uuid::new_v4()` + derived name) + `persona/seed.rs` JSON | no persona-as-data; no `persona/create`; name derived, not authored |
-| Per-persona model | `persona/supervisor.rs::UnslothPersonaAdapterFactory` | **discards `profile.model_id`, sends `model: None`** → every persona shares unsloth's ONE loaded model |
+| Per-persona model | `persona/supervisor.rs::ServedModelPersonaAdapterFactory` | **discards `profile.model_id`, sends `model: None`** → every persona shares the ONE loaded model |
 
 **The sharpest consequence:** there is currently **no per-persona model** — every persona
-runs whatever single model unsloth has loaded. A cooperative team of specialists that
+runs whatever single model the engine has loaded. A cooperative team of specialists that
 all think with the identical model is not yet the system we describe.
 
 ## 2. The thesis (what it should be)
@@ -38,7 +38,7 @@ Per [[ask-anything-assemble-best-self-or-train]]: given a *need*, the system
   high-value problem and the priority. Machines vary wildly (a 53 GB M-series, a
   Windows box with a big discrete GPU, a small laptop, CPU-only). The system must
   detect the host's real capability and pick the **largest/best model that actually
-  fits** from the discovered set (unsloth's `/v1/models` ∪ the trust-scoped genome
+  fits** from the discovered set (llama-server's `/v1/models` ∪ the trust-scoped genome
   market) — never a hardcoded model-per-tier table.
 - **Personas are data — a curated desired list now; generated-on-demand is the ideal
   endgame.** We already know roughly which personas we want to build (Helper, Coder,
@@ -63,12 +63,12 @@ the single-host case first.
    ([[fallbacks-are-illegal-fail-loud]]). A persona with no resolvable model does not
    spawn-on-a-stand-in; it surfaces the gap.
 2. **One place.** A persona is defined in ONE data source (entity/seed), never split
-   across Rust + data. The runnable model set has ONE discovered source (unsloth +
+   across Rust + data. The runnable model set has ONE discovered source (llama-server +
    market); the static catalog degrades to *priors/metadata*, not truth.
 3. **Intentional + visible.** Boot/roster **announces** which personas are live and
    which model each runs (the same `boot_status` discipline that now announces the
    inference path). You always know — no silent "everyone shares one model."
-4. **unsloth is the runtime.** Selection resolves to a concrete model id the gateway
+4. **The engine (llama-server) is the runtime.** Selection resolves to a concrete model id the gateway
    serves (loading via the keystone / genome page-in if needed); the persona adapter
    sends that **explicit** id — which is also what lets N personas run N models on the
    one gateway ([[inference-lanes-realistic]]).
@@ -79,7 +79,7 @@ the single-host case first.
 ## 4. Architecture
 
 **A. Model search/selection** (replaces the static catalog + `model_per_tier`):
-- *Discover:* query the runnable set — unsloth `/v1/models` (live gateway catalog) ∪
+- *Discover:* query the runnable set — llama-server `/v1/models` (live catalog) ∪
   the trust-scoped genome market. The Rust catalog stays only as priors (benchmarks,
   capability tags), never as the authority on what can run.
 - *Select:* given a `PersonaSpec`'s need (specialty/task/fitness target), pick the best
@@ -107,7 +107,7 @@ Reordered to lead with **model-fit** (the priority), single-host first.
 
 1. **Capability detection + model discovery (single host).** Detect the host's real
    capability (VRAM/tier — the boot log already prints `GPU=… VRAM=…`) and discover the
-   runnable set from unsloth's `/v1/models`. Boot announces both. The static
+   runnable set from llama-server's `/v1/models`. Boot announces both. The static
    `catalog.rs` becomes priors. *No selection logic yet — just "what can I run, on what."*
 2. **Fit selection (replace `model_per_tier`).** Given capability + the discovered set,
    select the **largest/best model that fits** for a need; delete the hardcoded
@@ -133,9 +133,9 @@ Reordered to lead with **model-fit** (the priority), single-host first.
 | Roster | `spawner_module.rs::plan_for_tier()` (Rust Vec) | data query over `PersonaSpec`s |
 | Persona def | minted UUID + `seed.rs` JSON | `PersonaSpec` entity (ORM) + `persona/create` |
 | Model per persona | `role_template.rs` `model_per_tier` + adapter `model: None` | spec's model-selection policy → discovered selection → explicit model id |
-| Catalog | `model_registry/catalog.rs` static Vec | unsloth `/v1/models` ∪ genome market; static Vec = priors |
+| Catalog | `model_registry/catalog.rs` static Vec | llama-server `/v1/models` ∪ genome market; static Vec = priors |
 | Selection | `model_resolver` static filter | fitness selection over discovered set + foundry assembly |
 
 The bones exist (PersonaInferenceProfile, the per-row spawner, RoleTemplate ORM, the
-unsloth gateway, the foundry, GridTrustAuthPolicy). The build is **making the roster and
+serving gateway, the foundry, GridTrustAuthPolicy). The build is **making the roster and
 the model a discovered/generated data flow** — slice by slice, each held to §3.

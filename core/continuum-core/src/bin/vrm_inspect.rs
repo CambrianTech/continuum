@@ -14,6 +14,18 @@
 
 use std::collections::HashMap;
 
+/// Little-endian u32 at `off`, or `None` when the file is too short.
+fn le_u32(data: &[u8], off: usize) -> Option<u32> {
+    let bytes = data.get(off..off.checked_add(4)?)?;
+    Some(u32::from_le_bytes(<[u8; 4]>::try_from(bytes).ok()?))
+}
+
+/// Decode a byte run as little-endian f32 values (trailing partial value dropped).
+fn le_f32s(raw: &[u8]) -> Vec<f32> {
+    let (chunks, _) = raw.as_chunks::<4>();
+    chunks.iter().map(|c| f32::from_le_bytes(*c)).collect()
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     if args.len() < 2 {
@@ -44,8 +56,14 @@ fn inspect_model(path: &str) {
         return;
     }
 
-    let json_len = u32::from_le_bytes(data[12..16].try_into().unwrap()) as usize;
-    let json_bytes = &data[20..20 + json_len];
+    let Some(json_len) = le_u32(&data, 12).map(|n| n as usize) else {
+        eprintln!("  ❌ Truncated GLB header");
+        return;
+    };
+    let Some(json_bytes) = data.get(20..20 + json_len) else {
+        eprintln!("  ❌ JSON chunk extends past end of file");
+        return;
+    };
     let root: serde_json::Value = match serde_json::from_slice(json_bytes) {
         Ok(v) => v,
         Err(e) => {
@@ -57,11 +75,7 @@ fn inspect_model(path: &str) {
     // BIN chunk
     let bin_chunk_start = 20 + json_len;
     let bin_len = if bin_chunk_start + 8 <= data.len() {
-        u32::from_le_bytes(
-            data[bin_chunk_start..bin_chunk_start + 4]
-                .try_into()
-                .unwrap(),
-        ) as usize
+        le_u32(&data, bin_chunk_start).map_or(0, |n| n as usize) // unwrap_or: no readable BIN chunk header means an empty binary chunk
     } else {
         0
     };
@@ -558,16 +572,15 @@ fn check_inverse_bind_matrices(root: &serde_json::Value, accessor_idx: usize, bi
     // Print first few IBMs for inspection
     for i in 0..count.min(3) {
         let offset = start + i * mat_size;
-        if offset + mat_size > bin_data.len() {
+        let Some(raw) = bin_data.get(offset..offset + mat_size) else {
             break;
-        }
+        };
+        let floats = le_f32s(raw);
 
         let mut mat = [[0.0f32; 4]; 4];
         for col in 0..4 {
             for row in 0..4 {
-                let byte_off = offset + (col * 4 + row) * 4;
-                mat[col][row] =
-                    f32::from_le_bytes(bin_data[byte_off..byte_off + 4].try_into().unwrap());
+                mat[col][row] = floats[col * 4 + row];
             }
         }
 
@@ -591,14 +604,14 @@ fn check_inverse_bind_matrices(root: &serde_json::Value, accessor_idx: usize, bi
     let mut total_rot = 0;
     for i in 0..count {
         let offset = start + i * mat_size;
-        if offset + mat_size > bin_data.len() {
+        let Some(raw) = bin_data.get(offset..offset + mat_size) else {
             break;
-        }
+        };
+        let floats = le_f32s(raw);
         let mut has_rot = false;
         for col in 0..3 {
             for row in 0..3 {
-                let byte_off = offset + (col * 4 + row) * 4;
-                let val = f32::from_le_bytes(bin_data[byte_off..byte_off + 4].try_into().unwrap());
+                let val = floats[col * 4 + row];
                 let expected = if col == row { 1.0 } else { 0.0 };
                 if (val - expected).abs() > 0.01 {
                     has_rot = true;

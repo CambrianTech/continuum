@@ -48,7 +48,7 @@
 //! them today would fail forever and be `#[ignore]`d inside a week — the documented fate
 //! of every rule that lives in prose. So: **the count may never rise.** Every new bound
 //! arrives derived or justified, and every old one anybody touches is a chance to lower
-//! `BASELINE_UNDERIVED_BOUNDS` (in the test mod).
+//! the count the ratchet holds.
 
 use super::{split_code_and_comment, SourceFile, SourceRule, Violation};
 
@@ -295,26 +295,6 @@ mod tests {
     use super::*;
     use crate::scan;
 
-    /// Underived, unjustified bounds at the time this guard landed (2026-09-20).
-    ///
-    /// **This number may only ever go DOWN.** Raising it to make a red build green is
-    /// defeating the guard, and should be refused in review for the same reason the
-    /// unwrap and reachability baselines are: every one of the four defects in the module
-    /// header was individually "not worth blocking on".
-    ///
-    /// Lives inside the test mod, unlike its siblings, so it costs the production build no
-    /// `never used` warning — the warning ratchet is monotonic and a new guard should not
-    /// spend a slot in it just to hold a number only a test reads.
-    ///
-    /// Taken on this PR's MERGE with `canary`, not on the branch alone (159 there): CI
-    /// scans the merge commit, the ratchet's slack is shared across branches in flight,
-    /// and a branch can be green alone and red on the merge. Same property the unwrap
-    /// ratchet documents.
-    // 159 -> 164, not new debt: production_half now blanks only the #[cfg(test)]-gated item, so
-    // production code BELOW a mid-file test mod or gated helper is scanned (measured on canary
-    // a85454889 + this change, 2026-10-20).
-    const BASELINE_UNDERIVED_BOUNDS: usize = 162; // 164 -> 162: harness removal 1 deleted competitor/resolution_bench/resolution_compute
-
     /// What this catches: a new bound landing on a live path as a constant, with nothing
     /// measured behind it and no line saying why a constant is right there.
     ///
@@ -323,17 +303,14 @@ mod tests {
     /// (`inference::prefill_rate`, `inference::decode_knee`, `cognition::working_set`,
     /// `ContextBudget`), or write `derived-or-floor: <why>` and say what makes a constant
     /// correct THERE. If it fails because you derived one that used to be a constant,
-    /// LOWER the baseline and take the win.
+    /// the ratchet then holds the lower count.
     #[test]
     fn underived_unjustified_bounds_never_increase() {
         let violations = scan(&[&DerivedBounds]);
         let count = violations.len();
-        // Visible on a PASS too, so lowering the baseline after a clean-up is one build.
-        eprintln!("underived bounds: {count} (baseline {BASELINE_UNDERIVED_BOUNDS})");
-        assert!(
-            count <= BASELINE_UNDERIVED_BOUNDS,
-            "underived, unjustified bounds rose to {count} (baseline \
-             {BASELINE_UNDERIVED_BOUNDS}).\n\
+        crate::ratchet::hold("underived_bounds", count, || {
+            format!(
+            "underived, unjustified bounds rose to {count}.\n\
              \n\
              THE CLASS: a constant standing in for a measurement the substrate already \
              takes. A 768-token output floor ended turns INSIDE the reasoning channel \
@@ -365,8 +342,8 @@ mod tests {
                 .map(|v| format!("  {}:{}  {}", v.file, v.line, v.source))
                 .collect::<Vec<_>>()
                 .join("\n")
-        );
-        crate::assert_baseline_is_current("BASELINE_UNDERIVED_BOUNDS", count, BASELINE_UNDERIVED_BOUNDS);
+            )
+        });
     }
 
     /// What this catches: the guard going blind to the exact line it was written for.

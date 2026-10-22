@@ -9,8 +9,8 @@
 //! (Joel, the alpha) starts with this record: one durable wall post in the parent, read
 //! by every node's resume pass.
 //!
-//! The record is small and stable: what the child IS (room, name, recipe, driver, the
-//! run's suite) and when it was spawned. Standing (working / paused / done) is NOT here —
+//! The record is small and stable: what the child IS (room, name, recipe, the run's
+//! suite) and when it was spawned. Standing (working / paused / done) is NOT here —
 //! it lives on the child's own wall (`experience::standing`) and is read after joining,
 //! so a stale parent record can never seat a citizen into a finished round.
 
@@ -26,26 +26,10 @@ pub struct RoomChildRecord {
     /// The child room's NAME — what a remote node joins by.
     pub name: String,
     pub recipe: String,
-    /// The activity's driver when the recipe carries one (`citizen`, `detached_solve`…).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub driver: Option<String>,
     /// The benchmark suite when this is a benchmark round; None for any other activity.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub suite: Option<String>,
     pub spawned_at_ms: u64,
-}
-
-impl RoomChildRecord {
-    /// A benchmark round citizens pull from: it names a suite and its driver is citizen-
-    /// class. A detached solve or a chat spawned under the commons is not one.
-    pub fn is_citizen_benchmark(&self) -> bool {
-        self.suite.is_some()
-            && self
-                .driver
-                .as_deref()
-                .map(|d| d.to_ascii_lowercase().contains("citizen"))
-                .unwrap_or(false) // unwrap_or: no driver named = not a citizen round; a remote node never seats on a guess
-    }
 }
 
 /// The children a parent's wall names — one per child room, the NEWEST record wins when a
@@ -84,35 +68,28 @@ mod tests {
         }
     }
 
-    // what this catches: a remote node seating its residents into the wrong child (a chat,
-    // a detached solve, or a stale duplicate announcement) — only a citizen-driven
-    // benchmark round with a suite qualifies, and the newest record for a room wins.
+    // what this catches: a stale duplicate announcement hiding the newest one, or one
+    // malformed post hiding the rest — the newest record for a room wins.
     #[test]
-    fn only_citizen_benchmark_children_qualify_and_the_newest_record_wins() {
+    fn the_newest_record_wins_and_a_malformed_post_hides_nothing() {
         let bench = RoomChildRecord {
             room_id: uuid::Uuid::from_u128(1),
             name: "bench-swe-bench-verified-1".into(),
             recipe: "benchmark".into(),
-            driver: Some("citizen".into()),
             suite: Some("swe-bench-verified".into()),
             spawned_at_ms: 10,
         };
-        let detached = RoomChildRecord { driver: Some("detached_solve".into()), room_id: uuid::Uuid::from_u128(2), ..bench.clone() };
-        let chat = RoomChildRecord { suite: None, driver: None, room_id: uuid::Uuid::from_u128(3), ..bench.clone() };
+        let chat = RoomChildRecord { suite: None, room_id: uuid::Uuid::from_u128(3), ..bench.clone() };
         let older = RoomChildRecord { spawned_at_ms: 5, name: "stale".into(), ..bench.clone() };
         let posts = vec![
             post(&serde_json::to_string(&older).unwrap()),   // unwrap: test literal
             post(&serde_json::to_string(&bench).unwrap()),   // unwrap: test literal
             post("not json"),
-            post(&serde_json::to_string(&detached).unwrap()), // unwrap: test literal
             post(&serde_json::to_string(&chat).unwrap()),     // unwrap: test literal
         ];
         let children = project_children(&posts);
-        assert_eq!(children.len(), 3, "{children:?}");
+        assert_eq!(children.len(), 2, "{children:?}");
         let r1 = children.iter().find(|c| c.room_id == uuid::Uuid::from_u128(1)).expect("r1 present"); // expect: test asserts presence
         assert_eq!(r1.name, "bench-swe-bench-verified-1", "the newest record wins");
-        assert!(r1.is_citizen_benchmark());
-        assert!(!detached.is_citizen_benchmark());
-        assert!(!chat.is_citizen_benchmark());
     }
 }

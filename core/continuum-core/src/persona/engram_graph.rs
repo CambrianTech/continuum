@@ -219,26 +219,6 @@ impl EngramGraph {
         self.edges.iter().map(|e| e.value().len()).sum()
     }
 
-    /// Remove all edges involving this engram (both outbound and
-    /// inbound). Called when an engram is pruned from the store
-    /// under storage pressure or by sleep-policy consolidation.
-    pub fn evict_engram(&self, id: &Uuid) {
-        // Outbound — remove the source's whole entry.
-        self.edges.remove(id);
-        // Inbound — scan every other source's edge list and filter
-        // out edges targeting this id. We rewrite the vec rather than
-        // mutating in place because `DashMap::iter` doesn't permit
-        // mutation through the iterator; using `iter_mut` would work
-        // but we'd hold per-shard write locks longer. Acceptable
-        // O(N) given the cold-path use case.
-        let sources: Vec<Uuid> = self.edges.iter().map(|e| *e.key()).collect();
-        for src in sources {
-            if let Some(mut entry) = self.edges.get_mut(&src) {
-                entry.retain(|edge| &edge.target != id);
-            }
-        }
-    }
-
     /// Whether the graph has any edges. Cheap.
     pub fn is_empty(&self) -> bool {
         self.edges.is_empty()
@@ -346,45 +326,6 @@ mod tests {
         g.add_edge(src, target, EdgeKind::RecallCoOccurrence, 0.5);
         g.add_edge(src, target, EdgeKind::RecallCoOccurrence, 0.5);
         assert_eq!(g.in_degree(&target), 2);
-    }
-
-    #[test]
-    fn evict_engram_removes_outbound_edges() {
-        let g = EngramGraph::new();
-        let evicted = Uuid::new_v4();
-        let other = Uuid::new_v4();
-        g.add_edge(evicted, other, EdgeKind::SharedEntity, 1.0);
-        g.add_edge(evicted, Uuid::new_v4(), EdgeKind::SharedTopic, 0.5);
-
-        g.evict_engram(&evicted);
-        assert!(g.neighbors(&evicted).is_empty());
-    }
-
-    #[test]
-    fn evict_engram_removes_inbound_edges_from_other_engrams() {
-        let g = EngramGraph::new();
-        let evicted = Uuid::new_v4();
-        let survivor_src = Uuid::new_v4();
-        let unrelated = Uuid::new_v4();
-
-        g.add_edge(survivor_src, evicted, EdgeKind::SharedEntity, 1.0);
-        g.add_edge(survivor_src, unrelated, EdgeKind::SharedTopic, 0.7);
-
-        g.evict_engram(&evicted);
-
-        // survivor's edge to evicted is gone, edge to unrelated survives.
-        let remaining = g.neighbors(&survivor_src);
-        assert_eq!(remaining.len(), 1);
-        assert_eq!(remaining[0].target, unrelated);
-    }
-
-    #[test]
-    fn evict_engram_is_idempotent() {
-        let g = EngramGraph::new();
-        let id = Uuid::new_v4();
-        g.evict_engram(&id); // no-op
-        g.evict_engram(&id); // still no-op
-        assert!(g.is_empty());
     }
 
     #[test]

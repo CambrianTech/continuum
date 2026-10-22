@@ -67,11 +67,6 @@ impl<'a> Params<'a> {
         Uuid::parse_str(s).map_err(|e| format!("Invalid {key}: {e}"))
     }
 
-    /// Optional UUID parameter.
-    pub fn uuid_opt(&self, key: &str) -> Option<Uuid> {
-        self.str_opt(key).and_then(|s| Uuid::parse_str(s).ok())
-    }
-
     // ================================================================
     // Integers
     // ================================================================
@@ -94,19 +89,9 @@ impl<'a> Params<'a> {
         self.0.get(key).and_then(|v| v.as_u64())
     }
 
-    /// Optional u32 (returns None if missing or value exceeds u32::MAX).
-    pub fn u32_opt(&self, key: &str) -> Option<u32> {
-        self.u64_opt(key).and_then(|n| u32::try_from(n).ok())
-    }
-
     /// Optional i64.
     pub fn i64_opt(&self, key: &str) -> Option<i64> {
         self.0.get(key).and_then(|v| v.as_i64())
-    }
-
-    /// i64 with default.
-    pub fn i64_or(&self, key: &str, default: i64) -> i64 {
-        self.i64_opt(key).unwrap_or(default)
     }
 
     // ================================================================
@@ -121,11 +106,6 @@ impl<'a> Params<'a> {
     /// Optional f64 (returns None if missing).
     pub fn f64_opt(&self, key: &str) -> Option<f64> {
         self.0.get(key).and_then(|v| v.as_f64())
-    }
-
-    /// f64 with default (returns default if missing).
-    pub fn f64_or(&self, key: &str, default: f64) -> f64 {
-        self.f64_opt(key).unwrap_or(default)
     }
 
     /// Required f32 parameter.
@@ -262,14 +242,6 @@ mod tests {
     }
 
     #[test]
-    fn test_uuid_opt() {
-        let v = json!({"id": "550e8400-e29b-41d4-a716-446655440000"});
-        let p = Params::new(&v);
-        assert!(p.uuid_opt("id").is_some());
-        assert!(p.uuid_opt("missing").is_none());
-    }
-
-    #[test]
     fn test_bool_or() {
         let v = json!({"flag": true});
         let p = Params::new(&v);
@@ -294,16 +266,6 @@ mod tests {
     }
 
     #[test]
-    fn test_u32_opt() {
-        let v = json!({"line": 100, "big": 5_000_000_000u64});
-        let p = Params::new(&v);
-        assert_eq!(p.u32_opt("line"), Some(100));
-        assert_eq!(p.u32_opt("missing"), None);
-        // Values exceeding u32::MAX return None instead of silently truncating
-        assert_eq!(p.u32_opt("big"), None);
-    }
-
-    #[test]
     fn test_bool_opt() {
         let v = json!({"flag": true, "off": false});
         let p = Params::new(&v);
@@ -313,27 +275,11 @@ mod tests {
     }
 
     #[test]
-    fn test_i64_or() {
-        let v = json!({"offset": -10});
-        let p = Params::new(&v);
-        assert_eq!(p.i64_or("offset", 0), -10);
-        assert_eq!(p.i64_or("missing", -1), -1);
-    }
-
-    #[test]
     fn test_f64_required() {
         let v = json!({"temp": 0.7});
         let p = Params::new(&v);
         assert!((p.f64("temp").unwrap() - 0.7).abs() < 0.001);
         assert!(p.f64("missing").is_err());
-    }
-
-    #[test]
-    fn test_f64_or() {
-        let v = json!({"temp": 0.9});
-        let p = Params::new(&v);
-        assert!((p.f64_or("temp", 0.5) - 0.9).abs() < 0.001);
-        assert!((p.f64_or("missing", 0.5) - 0.5).abs() < 0.001);
     }
 
     #[test]

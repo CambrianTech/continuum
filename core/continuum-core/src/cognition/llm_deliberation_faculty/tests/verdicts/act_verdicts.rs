@@ -468,12 +468,12 @@ async fn no_tools_authorized_never_acts() {
 // faculty records the turn's separated reasoning into working memory so the
 // persona can resume its train of thought next turn. The room only saw the
 // verdict text; the reasoning lives in working memory.
-// what this catches: the steps-taken ledger (PERCEPTION-FACTS.md) —
-// typed Receipt entries render as [steps taken this session]; facts
-// NEVER appear as steps; an empty session renders the EXPLICIT
-// zero-case (the shelter-hardened void) instead of nothing.
+// what this catches: her action stream not reaching the prompt she is sent. With working
+// memory wired, the view carries the explicit nothing-has-executed void before any act, and
+// a settled act as its own item afterwards; a fact is never rendered as an act. (The stream's
+// honest states themselves: `context_streams::tests`.)
 #[test]
-fn steps_ledger_renders_receipts_and_explicit_zero_case() {
+fn her_action_stream_reaches_the_prompt() {
     use crate::cognition::working_memory::WorkingMemory;
 
     let adapter = Arc::new(ScriptedAdapter::new(vec![]));
@@ -481,48 +481,28 @@ fn steps_ledger_renders_receipts_and_explicit_zero_case() {
     let faculty =
         LlmDeliberationFaculty::new(Uuid::new_v4(), "Ivar", "You are Ivar.", adapter)
             .with_working_memory(Arc::clone(&wm));
-
-    // Zero-case: explicit, never absent.
     let ws = Workspace::new("hello room");
-    let view = faculty.prompt_view(&ws);
-    let ledger = view
-        .messages
-        .iter()
-        .filter_map(|m| match &m.content {
-            crate::ai::types::MessageContent::Text(t)
-                if t.starts_with("[steps taken this session]") =>
-            {
-                Some(t.clone())
-            }
-            _ => None,
-        })
-        .next()
-        .expect("ledger section always present when WM is wired");
-    assert!(ledger.contains("nothing has executed yet"), "{ledger}");
+    let texts = |view: &DeliberationPromptView| -> Vec<String> {
+        view.messages.iter().map(|m| m.content_text()).collect()
+    };
 
-    // With a receipt + a fact: the receipt is a step, the fact is not.
+    let before = texts(&faculty.prompt_view(&ws));
+    assert!(before.iter().any(|t| t.contains("nothing has executed yet")), "{before:?}");
+
     wm.record_receipt("I ran code/list({\"path\":\".\"}) Result: 4 files");
     wm.record_fact("[unfulfilled] I said I would run commands, but no tool ran");
-    let view = faculty.prompt_view(&ws);
-    let ledger = view
-        .messages
-        .iter()
-        .filter_map(|m| match &m.content {
-            crate::ai::types::MessageContent::Text(t)
-                if t.starts_with("[steps taken this session]") =>
-            {
-                Some(t.clone())
-            }
-            _ => None,
-        })
-        .next()
-        .expect("ledger present");
-    assert!(ledger.contains("[action #1] I ran code/list"), "{ledger}");
-    assert!(
-        !ledger.contains("[unfulfilled]"),
-        "facts are never steps: {ledger}"
-    );
-    assert!(!ledger.contains("nothing has executed yet"));
+    wm.record_settlement("listed", None);
+    let after = texts(&faculty.prompt_view(&ws));
+    assert!(after.iter().any(|t| t.starts_with("[result #1") && t.contains("I ran code/list")), "{after:?}");
+    assert!(!after.iter().any(|t| t.starts_with("[result") && t.contains("[unfulfilled]")), "facts are never acts");
+    // Her view is a timeline: within an epoch the void said before her first act stays where
+    // it was said, superseded by what came after it; a turnover renders only what is true now.
+    // Either way it never stands after her act unanswered.
+    let act = after.iter().position(|t| t.starts_with("[result #1"));
+    if let Some(void) = after.iter().position(|t| t.contains("nothing has executed yet")) {
+        assert!(Some(void) < act, "{after:?}");
+        assert!(after.iter().any(|t| t == "(that was before my first act; my acts follow)"), "{after:?}");
+    }
 }
 
 #[tokio::test]

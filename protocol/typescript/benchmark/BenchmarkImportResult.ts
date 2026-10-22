@@ -8,15 +8,9 @@ export type BenchmarkImportResult = { suite: string, cards: Array<ImportedCard>,
  */
 skippedAlreadyResolved: Array<string>, 
 /**
- * Instances drawn but NOT offered because THIS BOX cannot grade them: their env class
- * is proven red by `benchmark/validate`, or their own env refusal marker stands from
- * an earlier round. Each entry names the instance and the wall, so the round's
+ * Instances drawn but NOT offered because THIS BOX cannot grade them: their own env
+ * refusal marker stands from an earlier attempt. Each entry names the instance and the wall, so the round's
  * receipt says what the deck withheld and why (2026-09-13: two of five seed-4 cards
  * burned hours on pytest's pluggy and requests' 2013 pytest).
  */
-skippedUngradeable: Array<string>, 
-/**
- * Instances drawn but NOT offered because another WORKING round on this node still
- * has an open card for them — one tree, one verdict, one holder per instance.
- */
-skippedDuplicate: Array<string>, };
+skippedUngradeable: Array<string>, };

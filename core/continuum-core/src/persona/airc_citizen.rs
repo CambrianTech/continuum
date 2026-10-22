@@ -406,12 +406,6 @@ impl StubAircCitizen {
         }
     }
 
-    /// A handle to the `claim_card` (pull) recording — clone before moving the
-    /// stub behind an `Arc<dyn AircCitizen>`, then read which cards she pulled.
-    pub fn claim_recorder(&self) -> std::sync::Arc<std::sync::Mutex<Vec<airc_lib::WorkCardId>>> {
-        self.claimed.clone()
-    }
-
     /// Seed the cards this stub reports as active claims — so the held-work
     /// gate sees held work.
     pub fn with_claims(mut self, cards: Vec<airc_lib::WorkCard>) -> Self {
@@ -428,13 +422,6 @@ impl StubAircCitizen {
     /// Seed a subscribed board without changing which cards the citizen holds.
     pub fn with_board(mut self, room: Uuid, cards: Vec<airc_lib::WorkCard>) -> Self {
         self.boards.insert(room, cards);
-        self
-    }
-
-    /// Offer `cards` as claimable on every room's board
-    /// (what [`AircCitizen::claimable_cards_in`] reports).
-    pub fn with_claimable(mut self, cards: Vec<Uuid>) -> Self {
-        self.claimable = cards;
         self
     }
 

@@ -43,7 +43,8 @@ pub struct VddModule {
     /// `~/.continuum/vdd`; in tests, the harness wires a temp
     /// dir so test data doesn't leak into the dev's real
     /// artifact store.
-    artifact_root: PathBuf,
+    /// `None` when no home directory resolves: the module then exposes no commands.
+    artifact_root: Option<PathBuf>,
 }
 
 impl VddModule {
@@ -57,7 +58,7 @@ impl VddModule {
     /// pointing the module at any artifact root.
     pub fn with_root(root: impl Into<PathBuf>) -> Self {
         Self {
-            artifact_root: root.into(),
+            artifact_root: Some(root.into()),
         }
     }
 }
@@ -71,11 +72,8 @@ impl Default for VddModule {
 /// Resolve `~/.continuum/vdd` as the canonical artifact root.
 /// Matches `vdd::ArtifactWriter::continuum_default()` — that's the
 /// writer's path; this is the reader's path; they must agree.
-fn default_artifact_root() -> PathBuf {
-    dirs::home_dir()
-        .expect("home directory must exist for VDD artifact reads")
-        .join(".continuum")
-        .join("vdd")
+fn default_artifact_root() -> Option<PathBuf> {
+    dirs::home_dir().map(|home| home.join(".continuum").join("vdd"))
 }
 
 #[async_trait]
@@ -109,7 +107,13 @@ impl ServiceModule for VddModule {
     fn commands(&self) -> Vec<Arc<dyn DynCommand>> {
         // `vdd/report` is dep-holding (captures the artifact root). `vdd/score` is
         // stateless and self-registers via the inventory, so it is NOT listed here.
-        command_objects(self.artifact_root.clone())
+        match &self.artifact_root {
+            Some(root) => command_objects(root.clone()),
+            None => {
+                crate::clog_error!("vdd: no home directory; vdd/report is not registered");
+                Vec::new()
+            }
+        }
     }
 
     fn as_any(&self) -> &dyn Any {

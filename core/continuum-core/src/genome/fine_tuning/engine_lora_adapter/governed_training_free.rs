@@ -106,11 +106,6 @@ pub fn hold_training(reason: &str) -> TrainingHold {
     TrainingHolds::node().hold(reason)
 }
 
-/// Pause the in-engine run on one lane of this node (its root url) until the hold is dropped.
-pub fn hold_training_on(lane: &str, reason: &str) -> TrainingHold {
-    TrainingHolds::node().hold_on(lane, reason)
-}
-
 /// The reasons holding the run on `lane`: every node-wide hold and every hold on that lane.
 pub(super) fn holds_on(holds: &BTreeMap<u64, (String, String)>, lane: &str) -> Vec<String> {
     let lane = lane_scope(lane);

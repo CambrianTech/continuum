@@ -264,7 +264,7 @@ pub(super) fn llama_server_catalog() -> Vec<Model> {
             hf_source: Some("Qwen/Qwen2.5-3B-Instruct"),
             ..ModelSpec::default()
         }),
-        // NOTE: benchmark OPPONENTS (Hermes, unsloth, cloud models) are DELIBERATELY absent
+        // NOTE: benchmark OPPONENTS (Hermes, cloud models) are DELIBERATELY absent
         // from this catalog — we never depend on either, ever. They are scored as external,
         // optional /v1 endpoints by the standalone harness in `benchmarks/coder/`, which
         // imports nothing from the product. Zero coupling by construction.

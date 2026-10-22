@@ -640,7 +640,7 @@ install_livekit() {
 install_livekit
 
 # ============================================================================
-# Inference + LoRA-training engine — NATIVE, no separate install (Unsloth excised)
+# Inference + LoRA-training engine — NATIVE, no separate install
 # ============================================================================
 #
 # Continuum OWNS its inference + genome-forge stack: the core spawns its own

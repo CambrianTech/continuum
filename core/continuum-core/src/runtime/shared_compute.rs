@@ -8,7 +8,7 @@
 //! let embedding = compute.get_or_compute(
 //!     "persona-123", "query_embedding",
 //!     embed_model.embed(&text)
-//! ).await;
+//! ).await; // Option<Arc<T>>: None only if (scope, key) was cached as another type
 //! // Second call returns cached result instantly
 //! let same_embedding = compute.get_or_compute(
 //!     "persona-123", "query_embedding",
@@ -78,8 +78,8 @@ impl SharedCompute {
     ///
     /// # Type Safety
     /// The caller must use the same type T for the same (scope, key) pair.
-    /// Mismatched types panic.
-    pub async fn get_or_compute<T, F>(&self, scope: &str, key: &str, compute: F) -> Arc<T>
+    /// Mismatched types return `None` (nothing is recomputed or overwritten).
+    pub async fn get_or_compute<T, F>(&self, scope: &str, key: &str, compute: F) -> Option<Arc<T>>
     where
         T: Any + Send + Sync + 'static,
         F: std::future::Future<Output = T>,
@@ -94,10 +94,7 @@ impl SharedCompute {
             })
             .await;
 
-        any_arc
-            .clone()
-            .downcast::<T>()
-            .expect("SharedCompute type mismatch: same (scope, key) used with different types")
+        any_arc.clone().downcast::<T>().ok()
     }
 
     fn cell(&self, scope: &str, key: &str) -> Arc<LazyValue> {
@@ -170,11 +167,6 @@ impl SharedCompute {
     /// Clear the entire cache.
     pub fn clear(&self) {
         self.cache.clear();
-    }
-
-    /// Number of scopes in the cache.
-    pub fn scope_count(&self) -> usize {
-        self.cache.len()
     }
 
     /// Number of cached values in a scope.
@@ -251,7 +243,8 @@ mod tests {
                 count.fetch_add(1, Ordering::SeqCst);
                 "hello".to_string()
             })
-            .await;
+            .await
+            .expect("same type");
 
         let count = call_count.clone();
         let result2: Arc<String> = compute
@@ -259,11 +252,23 @@ mod tests {
                 count.fetch_add(1, Ordering::SeqCst);
                 "should not run".to_string()
             })
-            .await;
+            .await
+            .expect("same type");
 
         assert_eq!(*result1, "hello");
         assert_eq!(*result2, "hello"); // Same cached value
         assert_eq!(call_count.load(Ordering::SeqCst), 1); // Computed only once
+    }
+
+    /// What this catches: the old `.expect` made a type clash between two callers of one
+    /// (scope, key) a process panic; it must now be a plain `None` for the second caller.
+    #[tokio::test]
+    async fn test_type_mismatch_is_none_not_panic() {
+        let compute = SharedCompute::new();
+        let first = compute.get_or_compute("s", "k", async { 1i32 }).await;
+        assert!(first.is_some());
+        let clash = compute.get_or_compute("s", "k", async { "x".to_string() }).await;
+        assert!(clash.is_none());
     }
 
     #[tokio::test]
@@ -279,10 +284,11 @@ mod tests {
                     compute.cache.try_get_mut("s"),
                     dashmap::try_result::TryResult::Present(_)
                 ));
-                *compute.get_or_compute("s", "b", async { 2 }).await - 1
+                *compute.get_or_compute("s", "b", async { 2 }).await.expect("same type") - 1
             })
-            .await;
-        let r2: Arc<i32> = compute.get_or_compute("s", "b", async { 2 }).await;
+            .await
+            .expect("same type");
+        let r2: Arc<i32> = compute.get_or_compute("s", "b", async { 2 }).await.expect("same type");
 
         assert_eq!(*r1, 1);
         assert_eq!(*r2, 2);
@@ -292,8 +298,8 @@ mod tests {
     async fn test_different_scopes() {
         let compute = SharedCompute::new();
 
-        let r1: Arc<i32> = compute.get_or_compute("s1", "key", async { 10 }).await;
-        let r2: Arc<i32> = compute.get_or_compute("s2", "key", async { 20 }).await;
+        let r1: Arc<i32> = compute.get_or_compute("s1", "key", async { 10 }).await.expect("same type");
+        let r2: Arc<i32> = compute.get_or_compute("s2", "key", async { 20 }).await.expect("same type");
 
         assert_eq!(*r1, 10);
         assert_eq!(*r2, 20);
@@ -303,14 +309,14 @@ mod tests {
     async fn test_invalidate_key() {
         let compute = SharedCompute::new();
 
-        let _: Arc<i32> = compute.get_or_compute("s", "k", async { 1 }).await;
+        let _: Arc<i32> = compute.get_or_compute("s", "k", async { 1 }).await.expect("same type");
         assert!(compute.get::<i32>("s", "k").is_some());
 
         compute.invalidate("s", "k");
         assert!(compute.get::<i32>("s", "k").is_none());
 
         // Can recompute after invalidation
-        let r: Arc<i32> = compute.get_or_compute("s", "k", async { 2 }).await;
+        let r: Arc<i32> = compute.get_or_compute("s", "k", async { 2 }).await.expect("same type");
         assert_eq!(*r, 2);
     }
 
@@ -318,8 +324,8 @@ mod tests {
     async fn test_invalidate_scope() {
         let compute = SharedCompute::new();
 
-        let _: Arc<i32> = compute.get_or_compute("s", "a", async { 1 }).await;
-        let _: Arc<i32> = compute.get_or_compute("s", "b", async { 2 }).await;
+        let _: Arc<i32> = compute.get_or_compute("s", "a", async { 1 }).await.expect("same type");
+        let _: Arc<i32> = compute.get_or_compute("s", "b", async { 2 }).await.expect("same type");
         assert_eq!(compute.key_count("s"), 2);
 
         compute.invalidate_scope("s");
@@ -343,16 +349,17 @@ mod tests {
                 dashmap::try_result::TryResult::Present(_)
             ));
         }
-        assert_eq!(*compute.get_or_compute("s", "b", async { 2 }).await, 2);
+        assert_eq!(*compute.get_or_compute("s", "b", async { 2 }).await.expect("same type"), 2);
         let mut second = Box::pin(compute.get_or_compute("s", "a", async { 3 }));
         assert!(futures::poll!(&mut second).is_pending());
         drop(first);
-        let result = second.await;
+        let result = second.await.expect("same type");
         let cached = compute
             .get_or_compute::<i32, _>("s", "a", async {
                 panic!("computed twice");
             })
-            .await;
+            .await
+            .expect("same type");
         assert_eq!(*result, 3);
         assert!(Arc::ptr_eq(&result, &cached));
     }

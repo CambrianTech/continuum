@@ -83,7 +83,7 @@ pub(super) async fn run_persona_host(
     // Event-driven spawn: the persona host reacts to the serving
     // daemon's published plan (its watch channel) instead of probing
     // the gateway once at boot. The serving daemon ticks every 5s; the
-    // unsloth gateway may still be loading the model when boot first
+    // local llama-server may still be loading the model when boot first
     // reaches here, so the adapter factory's live `/v1/models` probe
     // can fail on the first attempt — the "0 citizens hosted" race.
     //

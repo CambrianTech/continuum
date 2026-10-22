@@ -29,7 +29,7 @@ impl ResourceBrokerConfig {
     pub fn local_default() -> Self {
         let logical_cpus = std::thread::available_parallelism()
             .map(|n| n.get())
-            .expect("host must report available parallelism for resource defaults");
+            .unwrap_or(1); // unwrap_or: host reports no parallelism, so assume 1 CPU (smallest, safest budgets)
         let gpu_slots = logical_cpus.clamp(GPU_SLOTS_FLOOR, GPU_SLOTS_CEILING);
         let scaled_cost = |slots: usize| (slots as u32).saturating_mul(100);
 
@@ -262,11 +262,17 @@ impl ResourceBroker {
 
             lane.0 += 1;
             lane.1 = lane.1.saturating_add(demand.cost_units);
-            let lease = demand.into_lease(now_ms);
-            self.leases
-                .acquire(lease.clone(), now_ms)
-                .expect("lease id should be unique after demand coalescing");
-            admitted.push(lease);
+            let lease = demand.clone().into_lease(now_ms);
+            match self.leases.acquire(lease.clone(), now_ms) {
+                Ok(_) => admitted.push(lease),
+                Err(_) => {
+                    // Coalescing should make ids unique; if one still collides, the
+                    // existing lease wins: undo this lane's accounting and refuse.
+                    lane.0 -= 1;
+                    lane.1 = lane.1.saturating_sub(demand.cost_units);
+                    refused.push((demand, ResourceRefusalReason::Superseded));
+                }
+            }
         }
 
         ResourceAdmissionReport {

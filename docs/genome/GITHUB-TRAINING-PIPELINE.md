@@ -248,7 +248,7 @@ Joel: "✅ Approved"
 
 ## Training Data Format
 
-### **JSONL Schema** (Compatible with OpenAI/Unsloth)
+### **JSONL Schema** (Compatible with OpenAI chat fine-tuning format)
 
 ```jsonl
 {
@@ -367,7 +367,7 @@ system/training/
 **Goal**: Train LoRA adapters from extracted data
 
 **Tasks**:
-1. Integrate with Unsloth fine-tuning
+1. Integrate with the engine's LoRA training (llama.cpp fork / `mlx_lm.lora`)
 2. Create training commands
 3. Add validation/testing
 4. Deploy trained adapters
@@ -400,7 +400,7 @@ commands/genome/train/
 └── server/GenomeTrainServerCommand.ts
 
 system/training/
-├── UnslothTrainer.ts                  # Unsloth integration
+├── EngineTrainer.ts                   # Engine LoRA training integration
 ├── TrainingMonitor.ts                 # Track progress
 └── ModelEvaluator.ts                  # Validate quality
 ```

@@ -184,30 +184,6 @@ impl ConnectionManager {
         Ok(())
     }
 
-    /// Evict pools that have been idle too long
-    pub async fn evict_idle(&self) -> Result<usize, String> {
-        let cutoff = ManagedPool::now_nanos().saturating_sub(self.config.idle_timeout.as_nanos() as u64);
-        let mut evicted = 0;
-
-        let idle_paths: Vec<PathBuf> = self
-            .pools
-            .iter()
-            .filter(|entry| entry.value().last_access_nanos() < cutoff)
-            .map(|entry| entry.key().clone())
-            .collect();
-
-        for path in idle_paths {
-            if let Some((_, pool)) = self.pools.remove(&path) {
-                let mut adapter = pool.adapter.write().await;
-                if adapter.close().await.is_ok() {
-                    evicted += 1;
-                }
-            }
-        }
-
-        Ok(evicted)
-    }
-
     /// Get current pool count
     pub fn pool_count(&self) -> usize {
         self.pools.len()

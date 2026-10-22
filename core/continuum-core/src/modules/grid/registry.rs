@@ -316,15 +316,6 @@ impl NodeRegistry {
             .collect()
     }
 
-    /// Find the best node for a given address (for routing).
-    /// Prefers: lower latency, higher trust, more recently seen.
-    pub fn find_by_address(&self, address: &TransportAddress) -> Option<GridNode> {
-        self.nodes
-            .iter()
-            .find(|r| r.value().addresses.contains(address))
-            .map(|r| r.value().clone())
-    }
-
     /// Persist the registry to disk.
     pub fn save_to_disk(&self) -> Result<(), String> {
         let nodes = self.all_nodes();

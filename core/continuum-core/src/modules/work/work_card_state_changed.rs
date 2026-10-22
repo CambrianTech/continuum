@@ -532,28 +532,13 @@ pub(crate) async fn follow_card_room(
     card_id: WorkCardId,
     verb: &'static str,
 ) -> Option<String> {
-    // The card's room: a subscribed room's board first; else the round tracker
-    // (node-wide — a bench card names its run room whether or not the caller has
-    // ever stood in it). Measured 2026-09-05: the operator's `work/state` on a
-    // fresh team round's cards was refused from `general` because the caller
-    // subscribed to none of that round's rooms, so the fallback never fired.
-    let (room_name, room_channel) = match room_holding_card(airc, card_id).await {
-        Some(room) => (room.name, Some(room.channel)),
-        None => {
-            let wanted = card_id.as_uuid().to_string();
-            let name = crate::cognition::bench_round::live_rounds()
-                .into_iter()
-                .find(|r| r.cards.iter().any(|c| c.card_id == wanted))
-                .map(|r| r.run_room_name)
-                .filter(|n| !n.is_empty())?;
-            (name, None)
-        }
-    };
+    // The card's room: the subscribed room whose board holds it. The round tracker's
+    // node-wide fallback went with the detached runner (card c4f4b8cd step 2).
+    let room = room_holding_card(airc, card_id).await?;
+    let (room_name, room_channel) = (room.name, room.channel);
     let current = airc.current_room().await.ok();
-    if let Some(ch) = room_channel {
-        if current.as_ref().is_some_and(|c| c.channel == ch) {
-            return None;
-        }
+    if current.as_ref().is_some_and(|c| c.channel == room_channel) {
+        return None;
     }
     if airc.join(&room_name).await.is_err() {
         return None;

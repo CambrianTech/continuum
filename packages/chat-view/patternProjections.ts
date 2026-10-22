@@ -9,7 +9,7 @@
  * a target only draws them.
  */
 
-import { HERE_NOW_LISTING_ID, WORKING_NOW_LISTING_ID, listingWidget } from '@continuum/patterns';
+import { HERE_NOW_LISTING_ID, listingWidget } from '@continuum/patterns';
 import type {
   ListingView,
   ListingCell,
@@ -23,9 +23,7 @@ import type {
 } from '@continuum/patterns';
 import type { GaugeView, ServingPanelView } from '@continuum/patterns';
 import type {
-  BenchViewState,
   KanbanViewState,
-  NavTab,
   NavViewState,
   ServingViewState,
   SystemMetricsViewState,
@@ -37,7 +35,7 @@ import type {
   RosterMemberVM,
   TranscriptRowVM,
 } from './chatViewModel';
-import { ARENA_PURPOSE, BENCH_PURPOSE, CANVAS_PURPOSE, GRID_PURPOSE, LIVE_PURPOSE, PERSONA_PURPOSE, SERVING_PURPOSE, SETTINGS_PURPOSE, contentFamilyOf, type ArenaContentBody as ArenaContentBodyT, type BenchContentBody, type CanvasContentBody, type GridContentBody, type GridNodeVM, type ServingContentBody, type ServingNodeVM, type SettingsContentBody } from '@continuum/patterns';
+import { ARENA_PURPOSE, CANVAS_PURPOSE, GRID_PURPOSE, LIVE_PURPOSE, PERSONA_PURPOSE, SERVING_PURPOSE, SETTINGS_PURPOSE, contentFamilyOf, type ArenaContentBody as ArenaContentBodyT, type CanvasContentBody, type GridContentBody, type GridNodeVM, type ServingContentBody, type ServingNodeVM, type SettingsContentBody } from '@continuum/patterns';
 import type { LiveContentBody, PersonaContentBody } from '@continuum/patterns';
 import {
   focusedPersonaTab,
@@ -45,7 +43,6 @@ import {
   personaFactsListing,
 } from './personaProjections';
 import { liveContentBody, liveFaceOpen, type LiveCallOverlay } from './liveProjections';
-import { benchContentBody } from './benchProjections';
 import { arenaContentBody, type ArenaViewState } from './arenaProjections';
 import { canvasContentBody, type CanvasViewState } from './canvasProjections';
 import { PROJECT_PURPOSE, projectContentBody, type ProjectContentBody } from './projectProjections';
@@ -147,60 +144,19 @@ export function roomsListing(vm: ChatViewModel): ListingView {
  *  rides the neutral `count` (a badge pill on web, `(3 new)` in RAG), and the
  *  tab's target kind is the `group` facet — the All/Rooms/DMs filter is a facet
  *  over groups, not a new widget. */
-/** A run room's rail label from the bench view — what the round IS, not its
- *  raw name: `verified · working · 9/12 in hands`, `mini · paused · 1/4 settled`.
- *  Matched by the round's run room name; a tab without a round keeps its name. */
-/** A RUN room shows its OWN round; the academy (or any bench-purpose room that
- *  is not a round's run room) shows the whole board. Live 2026-09-04: every run
- *  room rendered the global rounds index — a citizen's room looked like the
- *  academy and the round she was working was one row among thirty. */
-export function benchViewForRoom(
-  bench: BenchViewState | undefined,
-  roomName: string,
-): BenchViewState | undefined {
-  if (!bench) return bench;
-  const mine = bench.rounds.filter((r) => r.run_room !== '' && r.run_room === roomName);
-  return mine.length > 0 ? { ...bench, rounds: mine } : bench;
-}
-
-export function benchRoomLabel(
-  tab: { readonly title: string },
-  bench: BenchViewState | undefined,
-): { readonly title: string; readonly subtitle: string } | undefined {
-  const round = bench?.rounds.find((r) => r.run_room !== '' && r.run_room === tab.title);
-  if (round === undefined) return undefined;
-  const suite = round.benchmark.replace(/^swe-bench-/, '').replace(/-/g, ' ');
-  const held = round.cards.filter((c) => c.owner !== '' && c.board_state !== 'closed').length;
-  const stage = round.stage.toLowerCase();
-  const progress =
-    stage === 'working' ? `${held}/${round.dispatched} in hands` : `${round.settled}/${round.dispatched} settled`;
-  return { title: `${suite} · ${stage}`, subtitle: progress };
-}
-
 export function roomsListingFromNav(
   nav: NavViewState,
   focusedRoomId: string,
-  bench?: BenchViewState,
 ): ListingView {
-  // Working rounds lead, finished/paused ones trail; everything else keeps the
-  // nav's own order. A view choice over one truth — never a hidden row.
-  const rank = (tab: NavTab): number => {
-    const label = benchRoomLabel(tab, bench);
-    if (label === undefined) return 1;
-    return label.title.endsWith('working') ? 0 : 2;
-  };
-  const ordered = [...nav.open_tabs].sort((a, b) => rank(a) - rank(b));
   return {
     id: 'rooms',
     title: 'Activities',
-    cells: ordered.map((tab): ListingCell => {
-      const bl = benchRoomLabel(tab, bench);
+    cells: nav.open_tabs.map((tab): ListingCell => {
       const cell: ListingCell = {
         id: tab.id,
         // A child activity draws its LINEAGE label (`<instance> · <card>`), not
-        // the raw room name — the rail-tree IA (#2632 slice b); a bench run room
-        // draws what the round is.
-        title: bl ? bl.title : tab.display_label !== '' ? tab.display_label : tab.title,
+        // the raw room name — the rail-tree IA (#2632 slice b).
+        title: tab.display_label !== '' ? tab.display_label : tab.title,
         status: tab.id === focusedRoomId ? 'active' : 'idle',
         group: tab.kind,
         // The strip's membership: opened by the citizen (nav truth), never
@@ -210,7 +166,7 @@ export function roomsListingFromNav(
         // The room's recipe-defined activity purpose, carried verbatim as the
         // description line ([[room-purpose-is-per-recipe-not-an-enum]]).
         // Empty = unresolved — no subtitle drawn, never a fabricated blurb.
-        ...(bl ? { subtitle: bl.subtitle } : tab.purpose ? { subtitle: tab.purpose } : {}),
+        ...(tab.purpose ? { subtitle: tab.purpose } : {}),
       };
       return tab.unread > 0 ? { ...cell, count: tab.unread } : cell;
     }),
@@ -475,9 +431,6 @@ export interface WorkspaceLive {
   /** The `kind="arena"` eval-ledger view — feeds an arena-purpose room's
    *  leaderboards. Honestly absent until the feed delivers. */
   readonly arena?: ArenaViewState;
-  /** The node's `kind="bench"` benchmark board (#329) — adds the academy
-   *  right-rail bench widget. Honestly absent until the feed delivers. */
-  readonly bench?: BenchViewState;
   /** The `kind="canvas"` design-bench observation feed — feeds a
    *  canvas-purpose run room's live artifact render (DESIGN-BENCH-VISUAL-
    *  CRAFT.md §5). Honestly absent until the feed delivers. */
@@ -487,24 +440,6 @@ export interface WorkspaceLive {
 /** The chat activity's `Content` body — the conversation. `Content` is keyed by the
  *  room's `purpose` (here `vm.purpose`, `"chat"`), so a target's registered chat
  *  renderer draws these rows; a foundry room would carry a different purpose + body. */
-/** The ACADEMY LANDING's content — the campus page, not a chat log (Joel,
- *  2026-08-30: "how a main academy page should look, maybe more of a
- *  landing?"). The live board is the hero; the room's own chat rides below
- *  as a disclosure. Counts feed the hero strip. */
-export const ACADEMY_PURPOSE = 'academy';
-export interface AcademyContentBody {
-  /** The landing's name: `Academy` for the campus, the round's humanized
-   *  label (`verified · working · 12/12 in hands`) for a run room. */
-  readonly title: string;
-  readonly bench: BenchContentBody;
-  readonly chat: ChatContentBody;
-  /** A run room's conversation is open by default — operator lines land
-   *  there; the campus keeps chat folded under the board. */
-  readonly chatOpen: boolean;
-  readonly memberCount: number;
-  readonly activeCount: number;
-}
-
 export interface ChatContentBody {
   readonly messages: readonly MessageRowVM[];
   /** The full interleaved transcript (speech + collapsed act receipts, #243) —
@@ -571,64 +506,6 @@ export function chatWorkspace(vm: ChatViewModel, live?: WorkspaceLive): Workspac
     !personaBody && !liveBody && !arenaBody && !servingBody && vm.purpose === GRID_PURPOSE
       ? gridContentBody(live?.sys, live?.serving)
       : undefined;
-  // The BENCH face (#431): a room whose recipe purpose is in the benchmark
-  // FAMILY (`benchmark/hard-rs` — the dispatched run rooms) renders the live
-  // board. Before this branch existed those rooms fell through to a chat body
-  // under an unregistered purpose and painted `Interface error` — a dispatched
-  // round's room was unrenderable, the scoreboard region unreachable.
-  // A RUN room is a conversation with its round on top (live 2026-09-04: the
-  // round widget REPLACED the transcript, so an operator's line into a run room
-  // — and the "heard by N" receipt on it — had nowhere to render). It takes the
-  // academy landing's shape: its own round center-stage, the chat as the
-  // secondary layer. Only a bench-family room that is NOT a round's run room
-  // (a bench index) renders the board alone.
-  const isRunRoom = live?.bench?.rounds.some((r) => r.run_room !== '' && r.run_room === vm.roomName) ?? false;
-  const benchBody =
-    !personaBody &&
-    !liveBody &&
-    !arenaBody &&
-    !servingBody &&
-    !gridBody &&
-    !isRunRoom &&
-    contentFamilyOf(vm.purpose) === BENCH_PURPOSE
-      ? benchContentBody(benchViewForRoom(live?.bench, vm.roomName))
-      : undefined;
-  // The persona home carries HER live benchmark runs — profile = identity +
-  // cognition + the work itself (Joel: "all the cognitive and profile pages").
-  const personaWithWork =
-    personaBody && live?.bench
-      ? {
-          ...personaBody,
-          runs: benchContentBody(live.bench).runs.filter(
-            (r) => r.persona.toLowerCase() === personaBody.name.toLowerCase(),
-          ),
-        }
-      : personaBody;
-  // The ACADEMY LANDING: the default campus room renders as a landing —
-  // live board center-stage, chat as the secondary layer — never a stale
-  // transcript posing as the main page.
-  const academyBody: AcademyContentBody | undefined =
-    !personaBody &&
-    !liveBody &&
-    !arenaBody &&
-    !servingBody &&
-    !gridBody &&
-    !benchBody &&
-    (vm.roomName.toLowerCase() === 'academy' || isRunRoom)
-      ? {
-          title: isRunRoom
-            ? (() => {
-                const label = benchRoomLabel({ title: vm.roomName }, live?.bench);
-                return label ? `${label.title} · ${label.subtitle}` : vm.roomName;
-              })()
-            : 'Academy',
-          bench: benchContentBody(isRunRoom ? benchViewForRoom(live?.bench, vm.roomName) : live?.bench),
-          chat: { messages: vm.messages, transcript: vm.transcript, isEmpty: vm.isEmpty },
-          chatOpen: isRunRoom,
-          memberCount: vm.memberCount,
-          activeCount: vm.activeCount,
-        }
-      : undefined;
   // The CANVAS face (DESIGN-BENCH-VISUAL-CRAFT.md §5): a design-bench run
   // room's canvas region renders the persona's page LIVE — the frame renders
   // (the awaiting stage) even before the first observation delivers, exactly
@@ -639,7 +516,6 @@ export function chatWorkspace(vm: ChatViewModel, live?: WorkspaceLive): Workspac
     !arenaBody &&
     !servingBody &&
     !gridBody &&
-    !benchBody &&
     contentFamilyOf(vm.purpose) === CANVAS_PURPOSE
       ? canvasContentBody(live?.canvas)
       : undefined;
@@ -650,14 +526,12 @@ export function chatWorkspace(vm: ChatViewModel, live?: WorkspaceLive): Workspac
     | ContentView<ArenaContentBodyT>
     | ContentView<ServingContentBody>
     | ContentView<GridContentBody>
-    | ContentView<BenchContentBody>
-    | ContentView<AcademyContentBody>
     | ContentView<CanvasContentBody>
     | ContentView<ProjectContentBody>
     | ContentView<SettingsContentBody> = settingsBody
     ? { purpose: SETTINGS_PURPOSE, body: settingsBody }
     : personaBody
-    ? { purpose: PERSONA_PURPOSE, body: personaWithWork ?? personaBody }
+    ? { purpose: PERSONA_PURPOSE, body: personaBody }
     : liveBody
       ? { purpose: LIVE_PURPOSE, body: liveBody }
       : arenaBody
@@ -666,40 +540,19 @@ export function chatWorkspace(vm: ChatViewModel, live?: WorkspaceLive): Workspac
           ? { purpose: SERVING_PURPOSE, body: servingBody }
           : gridBody
             ? { purpose: GRID_PURPOSE, body: gridBody }
-            : benchBody
-              ? { purpose: BENCH_PURPOSE, body: benchBody }
-              : canvasBody
-                ? { purpose: CANVAS_PURPOSE, body: canvasBody }
-                : academyBody
-                  ? { purpose: ACADEMY_PURPOSE, body: academyBody }
-                  : vm.purpose === PROJECT_PURPOSE
+            : canvasBody
+              ? { purpose: CANVAS_PURPOSE, body: canvasBody }
+              : vm.purpose === PROJECT_PURPOSE
                     ? { purpose: PROJECT_PURPOSE, body: projectContentBody(vm, live?.board) }
                   : {
-                      purpose: vm.purpose,
+                      purpose: contentFamilyOf(vm.purpose),
                       body: { messages: vm.messages, transcript: vm.transcript, isEmpty: vm.isEmpty },
                     };
   // The ACTIVE nav cell follows the citizen's current tab: the persona tab
   // when a persona home is focused, else the chat room on screen.
   const roomsBase = live?.nav
-    ? roomsListingFromNav(live.nav, persona?.id ?? vm.roomId, live?.bench)
+    ? roomsListingFromNav(live.nav, persona?.id ?? vm.roomId)
     : roomsListing(vm);
-  // AMBIENT PULSE (Joel, 2026-08-31: "see live benchmarks, events, etc
-  // everywhere as this dynamic system operates"): the academy's rail cell
-  // carries the node's live work heartbeat — visible from ANY room, one
-  // glance, one click to the campus.
-  const workingNow =
-    live?.bench?.runs.filter((r) => r.phase === 'active' || r.phase === 'queued').length ?? 0;
-  const rooms: ListingView =
-    workingNow > 0
-      ? {
-          ...roomsBase,
-          cells: roomsBase.cells.map((c) =>
-            c.title.toLowerCase() === 'academy'
-              ? { ...c, subtitle: `${workingNow} working now`, badges: [...(c.badges ?? []), 'live'] }
-              : c,
-          ),
-        }
-      : roomsBase;
   // The left rail = a global widget stack (the README's sidebar): System (SYS
   // gauge, when live) · AI Performance (live team cognition) · Rooms (all
   // rooms/DMs) · Users & Agents (the rich live tiles). Each is one PanelWidget
@@ -714,16 +567,11 @@ export function chatWorkspace(vm: ChatViewModel, live?: WorkspaceLive): Workspac
     continuonWidget(vm, live?.version, live?.feed),
     systemPanelWidget(vm, live?.sys, live?.serving),
     ...(nodes ? [nodes] : []),
-    listingWidget(rooms),
+    listingWidget(roomsBase),
     listingWidget(rosterListing(vm, live?.board)),
   ];
-  // No bench rail: the board is CONTENT — the academy landing and the run
-  // rooms render it center-stage; the right column belongs to the focused
-  // activity's own context (Joel: "the right column is for the content
-  // itself").
-
   return {
-    nav: rooms,
+    nav: roomsBase,
     left,
     content,
     // The right contextual rail follows the focused activity: persona FACTS
@@ -731,46 +579,31 @@ export function chatWorkspace(vm: ChatViewModel, live?: WorkspaceLive): Workspac
     // else the room's info card — the ContextPanel primitive, activity-scoped.
     context: {
       listings: [personaBody ? personaFactsListing(personaBody) : roomInfoListing(vm)],
-      // PAGES-IA slices 3+4: the rail carries the FOCUSED page's instruments.
-      // Run room → its round's lifecycle stats; solve room → the run's card
-      // facts + the worker. Composed from existing widget kinds, honest-absent.
-      ...(personaWithWork === undefined || personaWithWork === null
-        ? (() => {
-            // Instruments first (round/card lifecycle on run/solve rooms),
-            // then the room's PEOPLE (here-now / working-now doors) — the
-            // chat-room answer to "what do I do and monitor here".
-            const w = [...roomContextWidgets(vm, live), ...chatRoomPresenceWidgets(vm, live)];
+      // The rail carries the FOCUSED page's instruments, composed from existing
+      // widget kinds, honest-absent. A chat room shows its PEOPLE (here-now
+      // doors); a persona home shows ENGINE (live speed needles as numbers)
+      // (Joel: "good potential for righthand widgets in the profile pages").
+      ...(personaBody
+        ? { widgets: personaContextWidgets(personaBody) }
+        : (() => {
+            const w = chatRoomPresenceWidgets(vm);
             return w.length > 0 ? { widgets: w } : {};
-          })()
-        : {}),
-      // PROFILE RIGHT-RAIL INSTRUMENTS (Joel: "good potential for righthand
-      // widgets in the profile pages") — composed from EXISTING widget kinds
-      // (metrics stat-rows + listing cells), each honestly absent until its
-      // data is: RECORD (verdict identity), ENGINE (live speed needles as
-      // numbers), ACTIVE WORK (her runs as door cells).
-      ...(personaWithWork
-        ? { widgets: personaContextWidgets(personaWithWork) }
-        : {}),
+          })()),
     },
   };
 }
 
 /** CHAT-ROOM rail instruments (Joel 2026-08-31: "think about what you want to
  *  DO and monitor in each activity" — the rail was an info card and blank).
- *  A chat room is PEOPLE, so the rail answers the two live questions:
+ *  A chat room is PEOPLE, so the rail answers the live question:
  *
  *  - **Here now** — the members attached and awake, each cell a DOOR to their
  *    persona home (the roster-pick verb; humans lead, then citizens).
- *  - **Working now** — this room's members with live runs, each cell a DOOR
- *    to the run's solve room (the run-card verb).
  *
- *  Honest-absent throughout: nobody active → no widget; no live runs (or no
- *  bench feed) → no widget; a run without a minted solve room stays doorless
- *  and is skipped rather than half-opening. Real presence + ledger data only —
+ *  Honest-absent: nobody active → no widget. Real presence data only —
  *  never fabricated rows. */
 function chatRoomPresenceWidgets(
   vm: ChatViewModel,
-  live?: WorkspaceLive,
 ): PanelWidget<MetricsView | ListingView>[] {
   const widgets: PanelWidget<MetricsView | ListingView>[] = [];
   const here = vm.members.filter((m) => m.active);
@@ -794,165 +627,6 @@ function chatRoomPresenceWidgets(
       },
     });
   }
-  const memberById = new Map(vm.members.map((m) => [m.id, m.name]));
-  const working = (live?.bench?.runs ?? []).filter(
-    (r) =>
-      (r.phase === 'active' || r.phase === 'queued') &&
-      r.solver !== undefined &&
-      memberById.has(r.solver) &&
-      r.solve_room !== undefined,
-  );
-  if (working.length > 0) {
-    widgets.push({
-      id: WORKING_NOW_LISTING_ID,
-      kind: 'listing',
-      title: 'Working now',
-      scope: 'activity',
-      body: {
-        id: WORKING_NOW_LISTING_ID,
-        title: `Working now · ${working.length}`,
-        cells: working.slice(0, 8).map((r) => ({
-          id: r.solve_room as string,
-          group: 'room',
-          title: memberById.get(r.solver as string) ?? (r.solver as string),
-          subtitle: r.instance ?? r.run_id,
-          badges: [r.phase, ...(r.acts !== undefined ? [`${r.acts} acts`] : [])],
-        })),
-      },
-    });
-  }
-  return widgets;
-}
-
-/** Compact seconds → "12s" / "3m" / "2h" — rail legibility, not precision. */
-function formatAge(seconds: number): string {
-  if (seconds < 60) return `${seconds}s`;
-  if (seconds < 3600) return `${Math.floor(seconds / 60)}m`;
-  return `${Math.floor(seconds / 3600)}h`;
-}
-
-/** Run/solve room rail instruments (PAGES-IA slices 3+4): a run ROOM shows
- *  its round's lifecycle; a solve room shows its card + worker. Existing
- *  widget kinds only ([[compression]]). */
-function roomContextWidgets(vm: ChatViewModel, live?: WorkspaceLive): PanelWidget<MetricsView | ListingView>[] {
-  const widgets: PanelWidget<MetricsView | ListingView>[] = [];
-  const bench = live?.bench;
-  if (!bench) return widgets;
-  const rounds = bench.rounds ?? [];
-  const round = rounds.find((r) => r.round_id === vm.roomId);
-  if (round) {
-    // The verdict is the thrash-vs-grind sensor (2026-09-01: `working 0/8`
-    // was pixel-identical for three hours of workspace-less narration and a
-    // healthy grind). Core-pronounced; empty on a pre-verdict wire → omitted.
-    const verdict = round.verdict ?? '';
-    const unstarted = (round.cards ?? []).filter((c) => c.state === 'unstarted').length;
-    widgets.push({
-      id: 'room-round',
-      kind: 'metrics',
-      title: 'Round',
-      scope: 'activity',
-      body: {
-        stats: [
-          { label: 'STAGE', value: round.stage, tone: round.stage === 'working' ? 'accent' : 'muted' },
-          ...(verdict !== '' && verdict !== round.stage
-            ? [{
-                label: 'VERDICT',
-                value:
-                  verdict === 'grinding' && round.idle_secs != null
-                    ? `grinding · ${formatAge(round.idle_secs)}`
-                    : verdict,
-                tone: (verdict === 'grinding' ? 'good' : 'warn') as 'good' | 'warn',
-              }]
-            : []),
-          { label: 'SETTLED', value: `${round.settled}/${round.dispatched}`, tone: 'good' },
-          ...(unstarted > 0
-            ? [{ label: 'NOT STARTED', value: String(unstarted), tone: 'warn' as const }]
-            : []),
-          { label: 'DRIVER', value: round.driver, tone: round.driver === 'citizen' ? 'good' : 'warn' },
-        ],
-      },
-    });
-    // THE CARD BOARD, in the rail (Joel 2026-09-01: "there should be so many
-    // righthand widgets here… so as to let us know wtf is wrong"). One cell
-    // per card — including the unstarted ones, which is exactly the "wtf":
-    // a card with no run row used to render as nothing anywhere.
-    const cards = round.cards ?? [];
-    if (cards.length > 0) {
-      // Assignees arrive as persona uuids from the tracker; the room roster
-      // knows their names — resolve, fall back to the compact id.
-      const nameOf = new Map(vm.members.map((m) => [m.id, m.name]));
-      widgets.push({
-        id: 'room-round-cards',
-        kind: 'listing',
-        title: 'Cards',
-        scope: 'activity',
-        body: {
-          id: 'room-round-cards',
-          title: `Cards · ${cards.length}`,
-          cells: cards.slice(0, 16).map((c) => ({
-            id: c.card_id,
-            title: c.instance !== '' ? c.instance : c.card_id.slice(0, 8),
-            // BOARD truth first: who HOLDS the card (seen live 2026-09-03: a round nine
-            // citizens were working read "unassigned" from the tracker's assignee).
-            subtitle:
-              (c.owner ?? '') !== ''
-                ? c.owner
-                : c.assignee === ''
-                  ? 'unassigned'
-                  : (nameOf.get(c.assignee) ?? c.assignee.slice(0, 8)),
-            badges: [
-              (c.board_state ?? '') !== '' && c.state === 'unstarted' ? c.board_state : c.state,
-              ...(c.acts != null ? [`${c.acts} acts`] : []),
-              ...(c.patch_bytes != null ? [`${c.patch_bytes}B patch`] : []),
-              ...(c.last_act_secs != null ? [`${formatAge(c.last_act_secs)} ago`] : []),
-            ],
-          })),
-        },
-      });
-    }
-    // VERDICTS — this round's settled truth (the grade tail, visible).
-    const verdicts = (bench.runs ?? []).filter(
-      (r) => r.round_id === round.round_id && (r.resolved !== undefined || r.phase === 'failed'),
-    );
-    if (verdicts.length > 0) {
-      widgets.push({
-        id: 'room-round-verdicts',
-        kind: 'listing',
-        title: 'Verdicts',
-        scope: 'activity',
-        body: {
-          id: 'room-round-verdicts',
-          title: `Verdicts · ${verdicts.length}`,
-          cells: verdicts.slice(0, 10).map((r) => ({
-            id: r.run_id,
-            title: r.instance ?? r.run_id,
-            subtitle: r.resolved === true ? '✓ resolved' : '✗ missed',
-            badges: [
-              ...(r.fail_to_pass !== undefined ? [`f2p ${r.fail_to_pass}`] : []),
-              ...(r.pass_to_pass !== undefined ? [`p2p ${r.pass_to_pass}`] : []),
-              ...r.failed_tests.slice(0, 1),
-            ],
-          })),
-        },
-      });
-    }
-  }
-  const run = (bench.runs ?? []).find((r) => r.solve_room === vm.roomId);
-  if (run) {
-    widgets.push({
-      id: 'room-card',
-      kind: 'metrics',
-      title: 'This work',
-      scope: 'activity',
-      body: {
-        stats: [
-          { label: 'STATE', value: run.phase, tone: run.phase === 'resolved' ? 'good' : run.phase === 'failed' ? 'warn' : 'accent' },
-          ...(run.acts !== undefined ? [{ label: 'ACTS', value: String(run.acts), tone: 'muted' as const }] : []),
-          ...(run.solver !== undefined ? [{ label: 'WORKER', value: run.solver, tone: 'accent' as const }] : []),
-        ],
-      },
-    });
-  }
   return widgets;
 }
 
@@ -960,33 +634,6 @@ function roomContextWidgets(vm: ChatViewModel, live?: WorkspaceLive): PanelWidge
  *  existing kind — no new renderer, no new wire type ([[compression]]). */
 function personaContextWidgets(body: PersonaContentBody): PanelWidget<MetricsView | ListingView>[] {
   const widgets: PanelWidget<MetricsView | ListingView>[] = [];
-  // RECORD — the verdict identity, as tone-colored stats.
-  const runs = body.runs ?? [];
-  const settled = runs.filter((r) => r.state === 'resolved' || r.state === 'failed');
-  if (settled.length > 0) {
-    const wins = settled.filter((r) => r.state === 'resolved').length;
-    // The FORM CURVE: a rolling resolve-rate over the settled sequence
-    // (window 3) — the shape of recent growth, oldest to newest.
-    const form: number[] = settled.map((_, i) => {
-      const win = settled.slice(Math.max(0, i - 2), i + 1);
-      const w = win.filter((r) => r.state === 'resolved').length;
-      return Math.round((w / win.length) * 100);
-    });
-    widgets.push({
-      id: 'p-record',
-      kind: 'metrics',
-      title: 'Record',
-      scope: 'activity',
-      body: {
-        ...(form.length > 1 ? { spark: form } : {}),
-        stats: [
-          { label: 'RESOLVED', value: String(wins), tone: 'good' },
-          { label: 'SETTLED', value: String(settled.length), tone: 'muted' },
-          { label: 'RATE', value: `${Math.round((wins / settled.length) * 100)}%`, tone: wins > 0 ? 'accent' : 'warn' },
-        ],
-      },
-    });
-  }
   // ENGINE — the speed pulse as readable numbers beside the tile needles.
   const tps = body.vitals['tps'];
   const pfx = body.vitals['pfx'];
@@ -1004,27 +651,6 @@ function personaContextWidgets(body: PersonaContentBody): PanelWidget<MetricsVie
             ? [{ label: 'ACT', value: String(body.vitals['activity']), tone: 'muted' as const }]
             : []),
         ],
-      },
-    });
-  }
-  // ACTIVE WORK — live runs as door cells (select routes like a room pick).
-  const live = runs.filter((r) => r.state === 'working' || r.state === 'grading' || r.state === 'queued');
-  if (live.length > 0) {
-    widgets.push({
-      id: 'p-active-work',
-      kind: 'listing',
-      title: 'Active work',
-      scope: 'activity',
-      body: {
-        id: 'p-active-work',
-        title: 'Active work',
-        cells: live.map((r) => ({
-          id: r.roomId ?? r.runId,
-          title: r.instance,
-          subtitle: r.state,
-          status: 'active' as const,
-          ...(r.roomId !== undefined ? { group: 'room' } : {}),
-        })),
       },
     });
   }

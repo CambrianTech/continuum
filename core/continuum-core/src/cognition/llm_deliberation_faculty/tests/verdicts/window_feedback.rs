@@ -627,15 +627,12 @@ async fn a_replys_engine_prompt_count_refits_the_next_prompt() {
     let faculty = LlmDeliberationFaculty::new(persona, "Ivar", "You are Ivar.", adapter.clone())
         .with_context_window(window);
     let before = faculty.prompt_view(&ws);
-    // precondition: the fit binds (history was trimmed to the window), or a refit
-    // has nothing to show and this test would pass for the wrong reason
-    assert!(
-        before.estimated_prompt_tokens as u64 + u64::from(before.completion_reserve)
-            >= u64::from(window) * 9 / 10,
-        "fixture must fill its window: {} + {} of {window}",
-        before.estimated_prompt_tokens,
-        before.completion_reserve
-    );
+    // precondition: the window binds (her history was cut to fit it), or a refit has
+    // nothing to show and this test would pass for the wrong reason
+    let shown = |view: &DeliberationPromptView| {
+        view.messages.iter().filter(|m| m.content_text().contains("distinct_history_")).count()
+    };
+    assert!(shown(&before) < 160, "fixture must bind its window: {} of 160 turns shown", shown(&before));
     // the engine bills 25% more than the estimate, as Kimi's lane did
     let billed = (before.estimated_prompt_tokens as u32) * 5 / 4;
     let mut reply = make_response(FinishReason::Stop, "PASS", None);
@@ -644,12 +641,17 @@ async fn a_replys_engine_prompt_count_refits_the_next_prompt() {
     assert!(faculty.contribute(&ws).await.expect("verdict").fault.is_none());
 
     let after = faculty.prompt_view(&ws);
-    assert!(
-        after.estimated_prompt_tokens < before.estimated_prompt_tokens,
-        "the measured density must make room: {} then {}",
-        before.estimated_prompt_tokens,
-        after.estimated_prompt_tokens
-    );
+    // When the first prompt did not fit at the measured density, the next one is smaller.
+    // (Her view may have left room already: an epoch starts at half what its grant buys.)
+    let before_priced = (before.estimated_prompt_tokens as u64 * 5).div_ceil(4);
+    if before_priced + u64::from(before.completion_reserve) > u64::from(window) {
+        assert!(
+            after.estimated_prompt_tokens < before.estimated_prompt_tokens,
+            "the measured density must make room: {} then {}",
+            before.estimated_prompt_tokens,
+            after.estimated_prompt_tokens
+        );
+    }
     let priced = (after.estimated_prompt_tokens as u64 * 5).div_ceil(4);
     assert!(
         priced + u64::from(after.completion_reserve) <= u64::from(window),

@@ -59,7 +59,7 @@ pub const UNKNOWN_MEMBERS: &str = "unknown members";
 const HOUR_GAP_THRESHOLD_MS: u64 = 60 * 60 * 1000;
 
 /// Routing sentinel for the best available local Qwen/llama.cpp runtime.
-// The inference gateway is our OWN llama-server (the sole local inference path; Unsloth excised).
+// The inference gateway is our OWN llama-server (the sole local inference path).
 // Was "local" (the in-process llama.cpp adapter) — now gated off, so routing the turn
 // to "local" + a hardcoded model id that the gateway doesn't serve would hard-fail
 // select(). The turn binds to the llama-server gateway + the discovered served model
@@ -282,7 +282,7 @@ pub async fn evaluate_response(
     let _lease = acquire_generate_response_lease(&request, start_ms, timeout_ms)?;
 
     // Bind this turn to the persona's ESTABLISHED inference handle (reused across
-    // turns, re-homed if lost — self-healing), bound to the model unsloth actually
+    // turns, re-homed if lost — self-healing), bound to the model the engine actually
     // serves (discovered, NOT a hardcoded id that no longer matches the gateway).
     // The handle is the seam that makes inference grid-routable + survive a node
     // dropping. [[long-running-commands-are-handle-based]] [[compute-lease-boundary]]
@@ -296,14 +296,14 @@ pub async fn evaluate_response(
     let session = match sessions.persona_session(persona_uuid) {
         Some(s) => s,
         None => {
-            // unsloth serves one model today, so bind to the discovered served model
+            // the engine serves one model today, so bind to the discovered served model
             // regardless of any (possibly stale) request.model. Fit-selection over a
             // multi-model gateway is the next slice. Fail loud if nothing serves.
             let served = crate::cognition::inference_session::resolve_model(None)
                 .await
                 .map_err(|e| {
                     GenerateResponseError::Generation(format!(
-                        "inference model resolve failed (unsloth gateway): {e:?}"
+                        "inference model resolve failed (local llama-server): {e:?}"
                     ))
                 })?;
             sessions.ensure_for_persona(persona_uuid, served)

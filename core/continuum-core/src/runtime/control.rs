@@ -42,18 +42,6 @@ impl RuntimeControl {
         }
     }
 
-    /// Adjust module priority at runtime
-    pub fn set_priority(&self, module_name: &str, priority: ModulePriority) -> Result<(), String> {
-        // Verify module exists
-        if !self.registry.has_module(module_name) {
-            return Err(format!("Module not found: {}", module_name));
-        }
-
-        self.priority_overrides
-            .insert(module_name.to_string(), priority);
-        Ok(())
-    }
-
     /// Get current effective priority (override or default)
     pub fn effective_priority(&self, module_name: &str) -> Option<ModulePriority> {
         // Check override first
@@ -63,11 +51,6 @@ impl RuntimeControl {
 
         // Fall back to module default
         self.registry.get_priority(module_name)
-    }
-
-    /// Clear priority override, revert to default
-    pub fn clear_override(&self, module_name: &str) {
-        self.priority_overrides.remove(module_name);
     }
 
     /// List all modules with their info
@@ -95,24 +78,4 @@ impl RuntimeControl {
             .collect()
     }
 
-    /// Get info for specific module
-    pub fn module_info(&self, module_name: &str) -> Option<ModuleInfo> {
-        let config = self.registry.get_config(module_name)?;
-        let stats = self.registry.get_metrics(module_name).map(|m| m.stats());
-
-        Some(ModuleInfo {
-            name: module_name.to_string(),
-            default_priority: config.priority,
-            effective_priority: self
-                .effective_priority(module_name)
-                .unwrap_or(config.priority),
-            needs_dedicated_thread: config.needs_dedicated_thread,
-            command_prefixes: config
-                .command_prefixes
-                .iter()
-                .map(|s| s.to_string())
-                .collect(),
-            stats,
-        })
-    }
 }

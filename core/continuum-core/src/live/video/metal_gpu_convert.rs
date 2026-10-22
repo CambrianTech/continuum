@@ -275,8 +275,12 @@ impl MetalGpuConverter {
         width: u32,
         height: u32,
     ) -> *mut Object {
-        let desc_class =
-            objc::runtime::Class::get("MTLTextureDescriptor").expect("MTLTextureDescriptor class");
+        // A missing class means Metal is not loaded: report it as the same null
+        // texture the failure path below returns, so callers already handle it.
+        let Some(desc_class) = objc::runtime::Class::get("MTLTextureDescriptor") else {
+            clog_warn!("MTLTextureDescriptor class not found; cannot create IOSurface texture");
+            return std::ptr::null_mut();
+        };
         let desc: *mut Object = objc::msg_send![desc_class, new];
 
         let _: () = objc::msg_send![desc, setTextureType: 2u64]; // MTLTextureType2D

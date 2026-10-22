@@ -239,47 +239,6 @@ pub struct SweVerdict {
     pub solver: String,
 }
 
-/// Where a detached benchmark run journals its state. One file per run, rewritten in place:
-/// `state: "running"` at dispatch, then the verdict — or a killed-by-reboot marker.
-///
-/// Honours `CONTINUUM_HOME` the same way every other progress-ledger reader does
-/// (`paths::continuum_home`). It did not until 2026-08-18, which made this the SECOND
-/// way to spell the ledger root — and a reader that resolves a directory differently from
-/// the writer reports a self-consistent lie about an empty dir, the same failure shape the
-/// `swe_cache_dir` doc records for env coverage.
-pub fn solve_ledger_dir() -> PathBuf {
-    crate::paths::continuum_home()
-        .unwrap_or_else(|_| {
-            PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| "/tmp".into())).join(".continuum")
-        })
-        .join("progress")
-}
-
-/// The ONE filename prefix a detached solve run's ledger carries: `agent-solve-<run_id>.json`,
-/// with its verdict alongside as `agent-solve-<run_id>.grade.json`.
-///
-/// # Why this is a constant and not spelled out per call site (2026-08-18)
-///
-/// It was spelled out per call site, and the two spellings did not match. `agent/solve`
-/// wrote `agent-solve-*` (`agent_solve_ledger_path`, the only production writer); the reaper
-/// and the reboot guard below read `swe-solve-*`, a name NOTHING in the tree has ever
-/// written. Measured on this box the day it was found: **506 `agent-solve-*` ledgers, 19 of
-/// them still marked `running` — the oldest 162 hours old — against 32 legacy `swe-solve-*`
-/// files, 0 running.** So neither half of the mechanism had ever engaged on a real run:
-///
-/// - [`reap_orphaned_solve_runs_in`] had never reaped a production run, so 19 orphans sat
-///   frozen as `running` instead of becoming honest FAILED records — the exact silent-death
-///   hole its own doc says it exists to close.
-/// - [`in_flight_solve_runs_in`] answered "nothing is in flight" to the reboot guard while
-///   19 runs were marked otherwise, so `continuum reboot` would have destroyed live work
-///   without naming it. A guard that cannot see is worse than no guard: it reports safety.
-///
-/// A unit test even pinned the mismatch as intent — it wrote `agent-solve-other.json` and
-/// asserted it stayed untouched as "another subsystem's ledger". There is no other
-/// subsystem; that WAS the production ledger.
-/// [[the-same-bug-at-two-sites-is-a-missing-constraint-not-two-bugs]]
-pub const SOLVE_LEDGER_PREFIX: &str = "agent-solve-";
-
 /// Marker carried by the one error a CACHED-env re-point failure produces, so a
 /// consumer can tell "my cache is stale for THIS tree" apart from "this instance
 /// has no buildable environment". ONE definition, written at the error site and
@@ -287,8 +246,8 @@ pub const SOLVE_LEDGER_PREFIX: &str = "agent-solve-";
 ///
 /// Why it must be distinguishable (glass-boxed 2026-08-27, django-11734): the
 /// per-instance env is cached, and each grader re-points its editable install at
-/// ITS OWN tree — `agent/solve` at the citizen's dirty workspace, `benchmark_grade`
-/// at a pristine clone + patch. A patch that breaks the build backend therefore
+/// ITS OWN tree (the citizen's dirty workspace, or `benchmark_grade`'s pristine clone +
+/// patch). A patch that breaks the build backend therefore
 /// fails the solve's re-point while the fresh clone grades fine seconds later. The
 /// close path used to read ANY grade error as an environment absence, which both
 /// lied in the log and armed the per-boot parking brake against an instance whose
@@ -299,183 +258,6 @@ pub const SOLVE_LEDGER_PREFIX: &str = "agent-solve-";
 /// prose — is tracked in #2531; this constant is the seam that makes the current
 /// taxonomy honest without a wire-shape change mid-round.
 pub const ENV_CACHE_REPOINT_FAILED: &str = "cached-env re-point failed";
-
-/// The run id a ledger file name carries, or `None` if it is not a run ledger.
-///
-/// Rejects `agent-solve-<id>.grade.json`: a grade is read as a SIBLING of its run, never
-/// enumerated as one. Without that check the prefix/suffix strip yields a phantom run whose
-/// id ends in `.grade` — the live first-use bug `scan_run_cards` already carried a guard for,
-/// now shared rather than re-derived.
-pub fn solve_run_id_from_file_name(name: &str) -> Option<&str> {
-    let run_id = name
-        .strip_prefix(SOLVE_LEDGER_PREFIX)?
-        .strip_suffix(".json")?;
-    if run_id.is_empty() || run_id.ends_with(".grade") {
-        return None;
-    }
-    Some(run_id)
-}
-
-/// This run's ledger file. The one path builder, so writer and reader cannot drift again.
-pub fn solve_ledger_path(dir: &Path, run_id: &str) -> PathBuf {
-    dir.join(format!("{SOLVE_LEDGER_PREFIX}{run_id}.json"))
-}
-
-/// This run's verdict file, alongside its ledger.
-pub fn solve_grade_path(dir: &Path, run_id: &str) -> PathBuf {
-    dir.join(format!("{SOLVE_LEDGER_PREFIX}{run_id}.grade.json"))
-}
-
-/// Runs this ledger dir believes are IN FLIGHT — written at dispatch, not yet resolved.
-///
-/// Two callers, one truth: the reboot guard asks before killing the core, and the boot reaper
-/// asks after. Returning `(run_id, instance)` rather than a bool is what lets the guard NAME
-/// what it would destroy, which is the difference between a policy and a nag.
-pub fn in_flight_solve_runs_in(dir: &Path) -> Vec<(String, String)> {
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return Vec::new();
-    };
-    let mut live = Vec::new();
-    for entry in entries.flatten() {
-        let path = entry.path();
-        let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
-            continue;
-        };
-        let Some(run_id) = solve_run_id_from_file_name(name) else {
-            continue;
-        };
-        let run_id = run_id.to_string();
-        let Ok(text) = std::fs::read_to_string(&path) else {
-            continue;
-        };
-        let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) else {
-            continue;
-        };
-        if v.get("state").and_then(|s| s.as_str()) != Some("running") {
-            continue;
-        }
-        let instance = v
-            .get("instance")
-            .and_then(|i| i.as_str())
-            .unwrap_or("unknown")
-            .to_string();
-        live.push((run_id, instance));
-    }
-    live.sort();
-    live
-}
-
-/// Convenience over the real ledger dir.
-pub fn in_flight_solve_runs() -> Vec<(String, String)> {
-    in_flight_solve_runs_in(&solve_ledger_dir())
-}
-
-/// A `running` ledger that nothing has touched for this long is not a solve in flight — it
-/// is a solve that died without a reboot (a SIGKILL, a panicked task, the power event of
-/// 2026-09-16). The boot reaper only sees deaths a restart caused; between boots a dead
-/// ledger would otherwise hold its instance out of grading forever (Cormac, #4117 review).
-/// A live solve rewrites its ledger on every act, so an hour of silence is decisive.
-pub const SOLVE_LEDGER_STALE: std::time::Duration = std::time::Duration::from_secs(60 * 60);
-
-/// In-flight runs whose ledger is FRESH: `(run_id, instance)` for every `running` ledger
-/// touched within [`SOLVE_LEDGER_STALE`]; stale ones are returned separately so the caller
-/// can name them instead of silently ignoring them.
-pub fn in_flight_solve_runs_fresh_in(
-    dir: &Path,
-    now: std::time::SystemTime,
-) -> (Vec<(String, String)>, Vec<(String, String)>) {
-    let mut fresh = Vec::new();
-    let mut stale = Vec::new();
-    for (run_id, instance) in in_flight_solve_runs_in(dir) {
-        let path = solve_ledger_path(dir, &run_id);
-        let age = std::fs::metadata(&path)
-            .and_then(|m| m.modified())
-            .ok()
-            .and_then(|m| now.duration_since(m).ok());
-        match age {
-            Some(a) if a > SOLVE_LEDGER_STALE => stale.push((run_id, instance)),
-            _ => fresh.push((run_id, instance)), // an unreadable mtime is treated as fresh: never grade over a solve that might be live
-        }
-    }
-    (fresh, stale)
-}
-
-pub fn in_flight_solve_runs_fresh() -> (Vec<(String, String)>, Vec<(String, String)>) {
-    in_flight_solve_runs_fresh_in(&solve_ledger_dir(), std::time::SystemTime::now())
-}
-
-/// At boot, any run still marked `running` was owned by a core that no longer exists — a
-/// reboot, a crash, a SIGKILL. Rewrite it as a FAILED run naming the cause.
-///
-/// Glass-boxed the day `swe-solve` shipped: two reboots silently killed a detached run, and
-/// its ledger simply never appeared. A poller cannot distinguish "still working" from "died an
-/// hour ago" when the evidence for both is an absent file — the same shape as #137's 41 train
-/// jobs submitted with zero outcomes recorded. The marker at dispatch is what makes the death
-/// observable; this reap is what makes it honest.
-/// The reap MERGES the death into the existing ledger rather than replacing it, because the
-/// ledger is the only pointer to what the dead run LEFT BEHIND.
-///
-/// A live `running` record carries `workspace` — the absolute path of the checkout her hands
-/// edited — alongside `instance`, `persona_id` and `acts`. Overwriting it with a bare marker
-/// (which this did until 2026-08-18) turns a gradeable orphan into an unlocatable one: the
-/// patch is still on disk, and nothing on the board can say where. That is the same class of
-/// harm as reaping a finished verdict, and the reason the existing keys are preserved here
-/// and only the failure fields are added.
-/// Returns `(run_id, instance)` for every run it reaped — the SAME pair
-/// [`in_flight_solve_runs_in`] returns, and for the same reason: the caller has to be able
-/// to NAME what died. Returning bare ids was a measured loss of the only fact that makes a
-/// reap actionable. On 2026-08-21, 8 of 20 runs on this box carried
-/// `killed by a core restart`, and the boot probe could say only that A run died — not
-/// WHICH INSTANCE — so recovering the round meant hand-opening ledger files. The instance
-/// is written into the record three lines below; dropping it on the way out was pure
-/// discard.
-pub fn reap_orphaned_solve_runs_in(dir: &Path) -> Vec<(String, String)> {
-    let mut reaped = Vec::new();
-    for (run_id, instance) in in_flight_solve_runs_in(dir) {
-        let path = solve_ledger_path(dir, &run_id);
-        // Start from what the run itself journaled; the death is an ANNOTATION on that
-        // record, never a replacement for it.
-        let mut record = std::fs::read_to_string(&path)
-            .ok()
-            .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
-            .filter(|v| v.is_object())
-            .unwrap_or_else(|| serde_json::json!({}));
-        let obj = record.as_object_mut().expect("filtered to an object above");
-        obj.insert("failed".into(), serde_json::Value::Bool(true));
-        // `state` is what `in_flight_solve_runs_in` keys on. Clearing it off `running` is
-        // what makes the reap idempotent — a second boot must not re-reap.
-        obj.insert("state".into(), serde_json::Value::String("failed".into()));
-        // `run_id`, NOT `runId`: this ledger family is written by `agent/solve`, which spells
-        // it snake_case throughout. The first cut of this reap inserted `runId` and shipped
-        // records carrying BOTH — two names for one field, in the same change that collapsed
-        // two names for one file. Caught on the live reap of 19 orphans. `entry` so a record
-        // that already carries its id keeps it untouched. (`cognition/eval` uses `runId` for
-        // its OWN ledger family; that is a different family and stays as it is.)
-        obj.entry("run_id")
-            .or_insert_with(|| serde_json::Value::String(run_id.clone()));
-        obj.insert(
-            "instance".into(),
-            serde_json::Value::String(instance.clone()),
-        );
-        obj.insert(
-            "error".into(),
-            serde_json::Value::String(
-                "killed by a core restart — the run was in flight when the core that owned it \
-                 went away. Nothing was scored; re-dispatch to measure this instance."
-                    .into(),
-            ),
-        );
-        if std::fs::write(&path, record.to_string()).is_ok() {
-            reaped.push((run_id, instance));
-        }
-    }
-    reaped
-}
-
-/// Convenience over the real ledger dir.
-pub fn reap_orphaned_solve_runs() -> Vec<(String, String)> {
-    reap_orphaned_solve_runs_in(&solve_ledger_dir())
-}
 
 /// Where cached datasets and per-instance environments live. A governed cache class, not a
 /// scratch dir — see the disk-eviction contract.
@@ -503,8 +285,8 @@ pub fn reap_orphaned_solve_runs() -> Vec<(String, String)> {
 /// Corollary for anyone measuring env coverage: read the root from here, never from a path
 /// you remember or a directory you found by name.
 /// ONE MORE ROOT-DERIVATION NOTE, added 2026-08-18 because this function became the very
-/// thing its doc warns about. It resolved `HOME` directly while `solve_ledger_dir` and every
-/// other progress reader resolve `CONTINUUM_HOME` — so the benchmarks root and the ledger
+/// thing its doc warns about. It resolved `HOME` directly while every progress reader
+/// resolves `CONTINUUM_HOME` — so the benchmarks root and the ledger
 /// root were TWO roots again, exactly the shape described above.
 ///
 /// It surfaced as test pollution, which is the cheap way to find it: a unit test set
@@ -543,7 +325,7 @@ pub fn verdict_dir() -> PathBuf {
 }
 
 /// This instance's verdict file. One naming, so writer and board reader cannot drift
-/// (the failure mode that cost the boot reaper weeks — see [`SOLVE_LEDGER_PREFIX`]).
+/// (a writer and reader that spell a path twice drift apart).
 pub fn verdict_path(instance_id: &str) -> PathBuf {
     verdict_dir().join(format!("{instance_id}.json"))
 }

@@ -53,8 +53,6 @@ import {
   kanbanStateFromEnvelope,
   navStateFromEnvelope,
   servingFromEnvelope,
-  BENCH_KIND,
-  benchFromEnvelope,
   CANVAS_KIND,
   canvasFromEnvelope,
   systemMetricsFromEnvelope,
@@ -356,43 +354,6 @@ async function main(): Promise<void> {
     );
   };
   widget.selectRoomHandler = selectRoomHandler;
-
-  // A run card is a DOOR (bench-run-open, renderBench): clicking it stands
-  // you in that run's activity room — same navigation verb as a tab click.
-  // A worker's NAME on a bench card doors to her page; the wire carries the
-  // display name, the directory seed resolves it to the durable id.
-  widget.addEventListener('persona-open-by-name', (e: Event) => {
-    const name = (e as CustomEvent<{ name?: string }>).detail?.name?.toLowerCase();
-    if (name === undefined || name.length === 0 || name === 'unclaimed') return;
-    const hit = widget.directorySeed.find((m) => m.name.toLowerCase() === name);
-    if (hit) {
-      void selectRoomHandler(hit.id, 'persona').catch((err: unknown) => {
-        console.error('persona-open-by-name failed:', err);
-      });
-    }
-  });
-
-  widget.addEventListener('bench-run-open', (e: Event) => {
-    const detail = (e as CustomEvent<{ roomId?: string; roomName?: string }>).detail;
-    const roomId = detail?.roomId;
-    if (typeof roomId !== 'string' || roomId.length === 0) return;
-    void (async () => {
-      try {
-        // Standing in a room requires MEMBERSHIP: join first (by name — the
-        // derived-channel law), then select. Without the name (a pre-naming
-        // room) selection alone still works when already a member.
-        if (detail.roomName !== undefined && detail.roomName.length > 0) {
-          await transport.execute(
-            buildCommandUri('room/join'),
-            JSON.stringify({ userId: senderId, room: detail.roomName }),
-          );
-        }
-        await selectRoomHandler(roomId, 'room');
-      } catch (err) {
-        console.error('bench-run-open navigation failed:', err);
-      }
-    })();
-  });
 
   // Bookmark restore: a deep-linked URL (`/room/general`) re-selects that
   // activity — resolved against the nav state, because `nav/select` is
@@ -715,18 +676,6 @@ async function main(): Promise<void> {
   void seedDirectory();
   setInterval(() => void seedDirectory(), 30_000);
 
-  // Round pause/resume from the bench rail (composed event out of the pure
-  // renderer): bind to the AiSafe verbs. Fire-and-forget — the round's stage
-  // flips in the next bench projection, so the UI's truth stays the feed,
-  // never an optimistic local toggle.
-  widget.addEventListener('bench-round-control', (e: Event) => {
-    const { action, roundId } = (e as CustomEvent<{ action: string; roundId: string }>).detail;
-    const verb = action === 'pause' ? 'benchmark/pause' : 'benchmark/resume';
-    void transport
-      .execute(buildCommandUri(verb), JSON.stringify({ roundId }))
-      .catch((err: unknown) => console.error(`${verb} failed:`, err));
-  });
-
   // CONNECTION STATE IS THE CONTINUON + FAVICON, never a text banner. The old
   // fixed bar ("positron: state feed reconnecting — … retry #19 in 8s") was the
   // anti-pattern this replaces (Joel, 2026-08-31: the continuon was designed to
@@ -842,10 +791,6 @@ async function main(): Promise<void> {
   // The serving glass box (#141) — model header + pager control-loop telemetry.
   state.on(SERVING_KIND, (envelope: StateEnvelope) => {
     widget.serving = servingFromEnvelope(envelope);
-  });
-  // The benchmark board (#329) — the academy rail's live run rows.
-  state.on(BENCH_KIND, (envelope: StateEnvelope) => {
-    widget.bench = benchFromEnvelope(envelope);
   });
   // The canvas feed (ninth ViewState, 2026-08-23) — the persona's own
   // observations of her artifact, published at the act seam: the desktop

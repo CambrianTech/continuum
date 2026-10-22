@@ -16,7 +16,6 @@ pub mod rms_threshold;
 pub mod silero;
 pub mod silero_raw;
 pub mod test_audio;
-pub mod wav_loader;
 pub mod webrtc;
 
 // Re-export implementations

@@ -262,18 +262,11 @@ pub struct LlmDeliberationFaculty {
     /// the ceiling; deliberately NOT a process global, because that value feeds a
     /// decision and a global read inside a decision makes tests order-dependent.
     working_set: Option<super::working_set::WorkingSetRegistry>,
-    /// The prefix the engine REPORTED it reused on her last answered prompt (`cache_n`),
-    /// bounded by the conversation that prompt carried. That much rides free on the next
-    /// turn; the act-latency cap bounds only what is new beyond it. MEASURED, never
-    /// assumed: the first cut of this credited her whole last conversation on the premise
-    /// that her slot held it, and on the M5 (2026-10-18) it did not (reuse 13-18%), so the
-    /// prompt grew with the window (median 8.5k tokens at a 25.6k window to 50.6k at 74k)
-    /// and every act paid it cold: 76 s to 547 s per prefill at the same ~105 tokens/s.
-    /// Credited from the engine's own count, the cap grows when reuse works and falls back
-    /// to the latency target when it does not.
-    cached_prefix_tokens: std::sync::atomic::AtomicUsize,
-    /// This resident's ring results collapsed to pointers (`ring_collapse`).
-    collapsed_results: parking_lot::Mutex<super::ring_collapse::StickyCollapse>,
+    /// Her context view across acts (`prompt/epoch.rs`): one epoch that only appends, turned
+    /// over when it outgrows her history's grant.
+    context_view: parking_lot::Mutex<
+        Option<continuum_context::view::View<crate::cognition::context_streams::ContextMessage>>,
+    >,
 }
 
 impl LlmDeliberationFaculty {
@@ -308,8 +301,7 @@ impl LlmDeliberationFaculty {
             genome: empty_genome(),
             decoding: relaxed_decoding(),
             working_set: None,
-            cached_prefix_tokens: std::sync::atomic::AtomicUsize::new(0),
-            collapsed_results: parking_lot::Mutex::new(super::ring_collapse::StickyCollapse::default()),
+            context_view: parking_lot::Mutex::new(None),
         }
     }
 
@@ -379,11 +371,6 @@ impl LlmDeliberationFaculty {
             model: Some(model.clone()),
             context_window: cur.context_window,
         });
-        self
-    }
-
-    pub fn with_temperature(mut self, temperature: f32) -> Self {
-        self.temperature = temperature;
         self
     }
 

@@ -352,11 +352,3 @@ impl RagSource for StubRagSource {
         Some(self.deliver(ctx, budget, ResolutionPreference::Raw).await)
     }
 }
-
-// Silence unused-Arc-import warning on builds where the type isn't
-// referenced outside docs. The Arc pattern is the expected runtime
-// shape for sharing sources across modules.
-#[allow(dead_code)]
-pub(super) fn _doc_arc_pattern_unused() -> Option<Arc<dyn RagSource>> {
-    None
-}

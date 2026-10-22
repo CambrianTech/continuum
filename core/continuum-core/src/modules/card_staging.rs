@@ -441,11 +441,6 @@ pub async fn stage_for_claimer(home: &Path, claimer: Uuid, title: &str) -> Stagi
         ms = started.elapsed().as_millis() as u64,
         "on-claim staging — the claimer's workspace prepared per the card's recipe"
     );
-    // A staged tree (fresh clone, pristine restage, or shield) is a written workspace:
-    // the bench board learns of it from this event, not from a clock (card f860e59c).
-    if let Staging::Ready { path } = &outcome {
-        crate::code::workspace_events::note_written(path);
-    }
     outcome
 }
 
@@ -553,21 +548,16 @@ async fn stage_swe(workspace: &Path, instance: &crate::cognition::swe_bench::Swe
     }
     // The env (pytest + the repo, per-instance uv venv) builds BEHIND the claim: cached
     // after the first build, minutes the first time — never on the claim's critical
-    // path. Failure marks the instance broken this boot so a scored solve is not
-    // fired into a known wall; the card stays claimable once the env heals.
+    // path. A failure is an ENV failure, named on the probe; the card stays claimable.
     let inst = instance.clone();
     tokio::spawn(async move {
         match swe_bench::ensure_env(&inst, &dir).await {
-            Ok(_) => {
-                crate::modules::work::env_broken_this_boot().remove(&inst.instance_id);
-                continuum_base::probe!(
-                    class = "benchmark.env.prewarmed",
-                    instance = %inst.instance_id,
-                    "env ready behind the claim"
-                );
-            }
+            Ok(_) => continuum_base::probe!(
+                class = "benchmark.env.prewarmed",
+                instance = %inst.instance_id,
+                "env ready behind the claim"
+            ),
             Err(e) => {
-                crate::modules::work::env_broken_this_boot().insert(inst.instance_id.clone());
                 continuum_base::probe!(
                     class = "benchmark.env.prewarm_failed",
                     instance = %inst.instance_id,

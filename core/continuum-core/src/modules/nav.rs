@@ -60,8 +60,13 @@ impl NavShared {
     /// [`Self::publish_nav_changed`].
     fn publish_chat_focused(&self, room: Uuid) {
         if let Some(bus) = self.bus.read().unwrap_or_else(|e| e.into_inner()).as_ref() {
-            let payload = serde_json::to_value(AircChatFocused { room_id: room })
-                .expect("AircChatFocused serializes — wire-struct bug, not a runtime error");
+            let payload = match serde_json::to_value(AircChatFocused { room_id: room }) {
+                Ok(payload) => payload,
+                Err(e) => {
+                    crate::clog_error!("nav: AircChatFocused failed to serialize: {e}");
+                    return;
+                }
+            };
             bus.publish_async_only(CHAT_FOCUSED, payload);
             crate::ipc::positron_presence::request_presence_resync(bus);
         }

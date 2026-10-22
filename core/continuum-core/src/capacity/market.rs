@@ -67,14 +67,6 @@ pub fn expected_cost(s: &Specs, rep: &Reputation) -> f64 {
     entry_price(s) as f64 / rep.trust_lower_bound()
 }
 
-/// The final price a customer pays = the supply-side risk-adjusted ask × the DEMAND-side scarcity
-/// multiplier `lambda`. λ is the grid-market-clearing price of the contended seam (BigMama's lane);
-/// this crate proves the supply side with λ = 1.0. Kept as the single named seam so λ drops in without
-/// touching the routing or the convergence invariants.
-pub fn clearing_price(s: &Specs, rep: &Reputation, lambda: f64) -> f64 {
-    expected_cost(s, rep) * lambda
-}
-
 /// The MINT STAKE as an "earn your way in" GRADUATION GATE — my #396 identity lane, the second and
 /// independent defense against CROSS-class churn (the capability filter removes the hiding terrain; this
 /// gate requires proven delivery to enter paid work). It is deliberately NOT a currency bond: the entry
@@ -152,12 +144,10 @@ impl Participant {
 pub fn run_market(participants: &mut [Participant], jobs: usize) {
     for _ in 0..jobs {
         let Some(w) = (0..participants.len()).min_by(|&a, &b| {
-            expected_cost(&participants[a].specs, &participants[a].reputation)
-                .partial_cmp(&expected_cost(
-                    &participants[b].specs,
-                    &participants[b].reputation,
-                ))
-                .expect("entry prices and trust bounds are finite")
+            expected_cost(&participants[a].specs, &participants[a].reputation).total_cmp(&expected_cost(
+                &participants[b].specs,
+                &participants[b].reputation,
+            ))
         }) else {
             break;
         };
@@ -174,12 +164,10 @@ pub fn run_paid_market(participants: &mut [Participant], jobs: usize, probe_quot
         let Some(w) = (0..participants.len())
             .filter(|&i| graduated(&participants[i].reputation, probe_quota))
             .min_by(|&a, &b| {
-                expected_cost(&participants[a].specs, &participants[a].reputation)
-                    .partial_cmp(&expected_cost(
-                        &participants[b].specs,
-                        &participants[b].reputation,
-                    ))
-                    .expect("entry prices and trust bounds are finite")
+                expected_cost(&participants[a].specs, &participants[a].reputation).total_cmp(&expected_cost(
+                &participants[b].specs,
+                &participants[b].reputation,
+            ))
             })
         else {
             break; // no graduated participant is eligible for paid work this tick

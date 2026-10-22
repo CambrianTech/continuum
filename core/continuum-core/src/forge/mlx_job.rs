@@ -173,7 +173,7 @@ mod tests {
     // handle while the (blocking) trainer runs off-thread, the watch transitions
     // training → completed with NO polling, and a FAILING trainer publishes `failed`
     // with the error NAMED (never a silent Completed for a genome that never trained
-    // — the exact silent break the Unsloth excision must never introduce). One
+    // — a silent break). One
     // sequential test because the registry is single-resident by design (one native
     // train per host) — parallel scenarios would legitimately clobber each other.
     #[tokio::test]
