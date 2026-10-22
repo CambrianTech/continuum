@@ -182,7 +182,7 @@ pub async fn materialize_adapters(
         // factory + warmup above already paid the init cost per
         // [[init-once-handle-then-lease-zero-copy-refs]].
         {
-            let registry_arc = crate::modules::ai_provider::global_registry();
+            let registry_arc = crate::ai::adapter::global_registry();
             let mut registry = registry_arc.write().await;
             registry.register(adapter.clone(), slot_index);
         }

@@ -48,18 +48,8 @@ pub(super) struct DmrEndpoint {
     pub(super) base_url: Option<String>,
 }
 
-/// Global singleton registry - survives module recreation on server restart
-pub(super) static GLOBAL_REGISTRY: Lazy<Arc<RwLock<AdapterRegistry>>> =
-    Lazy::new(|| Arc::new(RwLock::new(AdapterRegistry::new())));
-
 /// Track if we've done first-time initialization
 pub(super) static INITIALIZED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-
-/// Public accessor for the global adapter registry.
-/// Used by the HTTP inference endpoint to share adapters with AIProviderModule.
-pub fn global_registry() -> Arc<RwLock<AdapterRegistry>> {
-    GLOBAL_REGISTRY.clone()
-}
 
 /// AIProviderModule - ServiceModule implementation for AI inference
 pub struct AIProviderModule {
@@ -116,7 +106,7 @@ pub(super) fn kv_safe_context(model: &crate::model_registry::Model) -> u32 {
 impl AIProviderModule {
     pub fn new() -> Self {
         Self {
-            registry: GLOBAL_REGISTRY.clone(),
+            registry: crate::ai::adapter::global_registry(),
             log: OnceLock::new(),
             gpu_manager: None,
             dmr_consecutive_down_ticks: Arc::new(AtomicU64::new(0)),
@@ -129,7 +119,7 @@ impl AIProviderModule {
         gpu_manager: Arc<crate::gpu::memory_manager::GpuMemoryManager>,
     ) -> Self {
         Self {
-            registry: GLOBAL_REGISTRY.clone(),
+            registry: crate::ai::adapter::global_registry(),
             log: OnceLock::new(),
             gpu_manager: Some(gpu_manager),
             dmr_consecutive_down_ticks: Arc::new(AtomicU64::new(0)),

@@ -57,7 +57,7 @@ struct HistoryEntry {
 // ─── Adapter bootstrap ────────────────────────────────────────────────────
 //
 // respond() calls run_render which pulls from
-// crate::modules::ai_provider::global_registry(). For the test to actually
+// crate::ai::adapter::global_registry(). For the test to actually
 // generate text we have to put a working adapter in there. LlamaCppAdapter
 // is the in-process one the live system uses (priority 0); registering
 // only that means the test routes deterministically — no DMR / cloud
@@ -98,7 +98,7 @@ async fn ensure_llamacpp_registered() {
         "LlamaCppAdapter health_check failed — GGUF not present? \
          Pull continuum-ai/qwen3.5-4b-code-forged-gguf via DMR first."
     );
-    let registry_arc = continuum_core::modules::ai_provider::global_registry();
+    let registry_arc = continuum_core::ai::adapter::global_registry();
     let mut reg = registry_arc.write().await;
     reg.register(std::sync::Arc::new(adapter), 0);
     drop(reg);

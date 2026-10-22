@@ -189,7 +189,7 @@ pub fn find_candidate(
             sized.mmproj_bytes = std::fs::metadata(&mmproj).ok().map(|md| md.len());
         }
         let Some(need_bytes) =
-            crate::modules::serving_footprints::resident_bytes_for(&sized, SIDECAR_CTX, 1)
+            crate::inference::serving_footprints::resident_bytes_for(&sized, SIDECAR_CTX, 1)
         else {
             skipped.push(format!("{}: cannot be sized (no footprint for row)", m.id));
             continue;
@@ -365,7 +365,7 @@ mod tests {
         row.weights_bytes = Some(5 * 1024 * 1024 * 1024);
         row.mmproj_bytes = Some(1_400_000_000);
 
-        let need = crate::modules::serving_footprints::resident_bytes_for(&row, SIDECAR_CTX, 1)
+        let need = crate::inference::serving_footprints::resident_bytes_for(&row, SIDECAR_CTX, 1)
             .expect("a hydrated row sizes without touching disk");
 
         assert!(
@@ -380,7 +380,7 @@ mod tests {
         small.weights_bytes = Some(1024 * 1024 * 1024);
         small.mmproj_bytes = Some(400_000_000);
         let small_need =
-            crate::modules::serving_footprints::resident_bytes_for(&small, SIDECAR_CTX, 1)
+            crate::inference::serving_footprints::resident_bytes_for(&small, SIDECAR_CTX, 1)
                 .unwrap();
         assert!(
             small_need < need,

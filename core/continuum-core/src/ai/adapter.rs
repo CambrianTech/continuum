@@ -29,6 +29,8 @@ mod inference_device;
 pub use inference_device::*;
 mod adapter_selection_error;
 pub use adapter_selection_error::*;
+mod global_registry;
+pub use global_registry::global_registry;
 
 // ArcAdapterShim + register_arc were deleted in task #162's Box→Arc
 // migration. The registry stores Arc natively; callers pass

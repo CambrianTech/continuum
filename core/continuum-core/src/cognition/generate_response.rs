@@ -43,7 +43,7 @@ use crate::resources::throughput_class::{ResourceClass, TargetSilicon};
 use crate::inference::resource_admission::{ResourceAdmissionError, ResourceAdmissionGate, ResourceAdmissionGuard, ResourceAdmissionPolicy, ResourceAdmissionRequest};
 use crate::cognition::should_respond::AIDecisionContext;
 use crate::resources::throughput_lease::ThroughputLeaseRevocationPolicy;
-use crate::modules::ai_provider::global_registry;
+use crate::ai::adapter::global_registry;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::sync::LazyLock;

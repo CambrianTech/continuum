@@ -205,7 +205,7 @@ impl ServingDaemonModule {
         // reclaim it cannot perform would have the authority plan against a release that
         // silently never happens.
         let vision_source = Arc::new(
-            crate::modules::serving_footprints::CatalogFootprintSource::vision(
+            crate::inference::serving_footprints::CatalogFootprintSource::vision(
                 self.catalog.clone(),
                 self.subscribe_serving(),
             ),
@@ -217,7 +217,7 @@ impl ServingDaemonModule {
             "vision footprint source registered with the authority",
         );
         self.resource_daemon.add_consumer(Arc::new(
-            crate::modules::serving_footprints::MonitoredHolder::new(
+            crate::inference::serving_footprints::MonitoredHolder::new(
                 vision_source,
                 "vision provider (sidecar or main lane)",
                 "no on-demand release: vision residency is dropped by the serving \

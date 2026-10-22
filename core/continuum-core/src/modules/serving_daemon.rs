@@ -29,8 +29,8 @@ use crate::capacity::placement::PlacementRequest;
 use crate::cognition::model_resolver::types::HwCapabilityTier;
 use crate::inference::planning::serving_plan::footprint::{footprint_for, footprint_from_parts};
 use crate::inference::planning::serving_plan::{
-    plan_serving, plan_serving_at_rest, plan_serving_stable, HostBudget, ModelFootprint,
-    ServingDemand, ServingPlan,
+    host_budget_from, plan_serving, plan_serving_at_rest, plan_serving_stable, HostBudget,
+    HostBudgetInputs, ModelFootprint, ServingDemand, ServingPlan,
 };
 use crate::gpu::GpuMemoryManager;
 use crate::inference::lane_registry::LaneRecord;
@@ -681,10 +681,7 @@ pub use demand::{
     sustained_leased_in,
 };
 mod budget;
-pub use budget::{
-    governed_host_budget, host_budget_from, live_host_budget, perf_cores, physical_usable_bytes,
-    HostBudgetInputs,
-};
+pub use budget::{governed_host_budget, live_host_budget, perf_cores, physical_usable_bytes};
 #[cfg(test)]
 use budget::{lane_admission_decision, pin_fit_decision};
 mod holds;

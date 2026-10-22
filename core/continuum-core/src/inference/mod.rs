@@ -66,6 +66,7 @@ pub mod placement_capture;
 pub mod recipe_budget;
 pub mod request_body;
 pub mod resource_admission;
+pub mod serving_footprints;
 pub mod serving_guard;
 pub mod throughput_expectation;
 pub mod turn_admission;
