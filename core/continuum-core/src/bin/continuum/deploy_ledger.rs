@@ -281,9 +281,9 @@ impl ConsumeLedger {
 }
 
 pub(super) fn deploy_request_path() -> Result<PathBuf, String> {
-    // The same home the tracker writes under (`resolve_continuum_root`: CONTINUUM_HOME
+    // The same home the tracker writes under (`paths::continuum_root`: CONTINUUM_HOME
     // or ~/.continuum) — one resolver, so the consumer reads where the decision wrote.
-    Ok(continuum_core::modules::persona_instance_manager::resolve_continuum_root()
+    Ok(continuum_core::paths::continuum_root()
         .join("state")
         .join("deploy-request.json"))
 }

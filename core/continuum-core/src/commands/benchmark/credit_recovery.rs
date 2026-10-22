@@ -50,7 +50,7 @@ impl ActionCommand for BenchmarkCreditRecover {
     type Output = CreditRecoveryResult;
 
     async fn run(&self, ctx: &Ctx, params: Self::Params) -> Result<Self::Output, CommandError> {
-        if crate::routing::grid_trust_policy::caller_trust(ctx.caller.as_ref())
+        if crate::modules::grid::trust_policy::caller_trust(ctx.caller.as_ref())
             != crate::modules::grid::node::TrustLevel::Owner
         {
             return Err(CommandError::Denied(

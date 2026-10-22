@@ -1,5 +1,6 @@
 #![cfg(test)]
     use super::*;
+    use crate::system_resources::disk_reporters::Kept;
 
     // what this catches (e92f227c): captured background commands allocating or
     // inheriting a console. The observation is made by the actual native child.
@@ -41,7 +42,7 @@
         let (shell_pid, grandchild_pid) = (dir.path().join("sh.pid"), dir.path().join("gc.pid"));
         let script = format!("echo started; echo $$ > {}; sleep 600 & echo $! > {}; wait", shell_pid.display(), grandchild_pid.display());
         let read_pid = |path: &std::path::Path| std::fs::read_to_string(path).ok().and_then(|t| t.trim().parse::<u32>().ok());
-        let context = crate::code::hands::HandsContext::fresh();
+        let context = crate::identity::hands_context::HandsContext::fresh();
         let lease = std::sync::Arc::new(crate::code::hands::admit(context).expect("open hands"));
         let capture = std::sync::Arc::new(RunCapture::default());
         let mut cmd = tokio::process::Command::new("sh");
@@ -92,7 +93,7 @@
         cmd.arg("-c").arg("echo before; sleep 600 & wait");
         let exclusion: Kept = std::sync::Arc::new(());
         let exclusion_held = std::sync::Arc::downgrade(&exclusion);
-        let admission = std::sync::Arc::new(crate::code::hands::admit(crate::code::hands::HandsContext::fresh()).expect("open hands"));
+        let admission = std::sync::Arc::new(crate::code::hands::admit(crate::identity::hands_context::HandsContext::fresh()).expect("open hands"));
         let timed = crate::code::hands::admitted(Some(admission), holding(exclusion, run_owned(cmd, Some(std::time::Duration::from_millis(500)), "test", std::sync::Arc::default())))
             .await
             .expect("ran");
@@ -112,7 +113,7 @@
     async fn a_process_that_holds_an_exited_childs_output_past_the_bound_is_held_never_claimed_ended() {
         let dir = tempfile::tempdir().unwrap();
         let holder_pid = dir.path().join("holder.pid");
-        let context = crate::code::hands::HandsContext::fresh();
+        let context = crate::identity::hands_context::HandsContext::fresh();
         let lease = std::sync::Arc::new(crate::code::hands::admit(context).expect("open hands"));
         let mut cmd = tokio::process::Command::new("sh");
         // the shell exits at once; its background sleep inherited stdout and stderr
@@ -139,7 +140,7 @@
         // A cancel DURING that drain (Codex root on #5030 at 3f597b9aa): the readers stay owned
         // and are stopped, and the holder is fenced on the hands just the same.
         let (shell_pid, holder_pid) = (dir.path().join("sh2.pid"), dir.path().join("holder2.pid"));
-        let context = crate::code::hands::HandsContext::fresh();
+        let context = crate::identity::hands_context::HandsContext::fresh();
         let lease = std::sync::Arc::new(crate::code::hands::admit(context).expect("open hands"));
         let capture = std::sync::Arc::new(RunCapture::default());
         let mut cmd = tokio::process::Command::new("sh");
@@ -260,7 +261,7 @@
 
         // at the bound
         let first = dir.path().join("holder1.pid");
-        let context = crate::code::hands::HandsContext::fresh();
+        let context = crate::identity::hands_context::HandsContext::fresh();
         let lease = std::sync::Arc::new(crate::code::hands::admit(context).expect("open hands"));
         let out = crate::code::hands::admitted(Some(lease), run_owned_with_input(holder(&first), input(), Some(std::time::Duration::from_millis(500)), "test", std::sync::Arc::default()))
             .await
@@ -274,7 +275,7 @@
 
         // on a cancel AFTER the child exited, while the write is still waiting
         let second = dir.path().join("holder2.pid");
-        let context = crate::code::hands::HandsContext::fresh();
+        let context = crate::identity::hands_context::HandsContext::fresh();
         let lease = std::sync::Arc::new(crate::code::hands::admit(context).expect("open hands"));
         let capture = std::sync::Arc::new(RunCapture::default());
         let run = crate::code::hands::admitted(Some(lease), run_owned_with_input(holder(&second), input(), None, "test", capture.clone()));

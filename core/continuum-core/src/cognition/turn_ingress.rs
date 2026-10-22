@@ -130,6 +130,35 @@ pub(crate) struct TurnSettle {
     pub waited_ms: u64,
 }
 
+/// Admitted turns as a stop participant: close the door, let them finish within the cap, and
+/// say how many the stop still tore. Installed at boot (`runtime::extensions`).
+pub struct TurnsSettle;
+
+impl crate::runtime::extensions::SettleBeforeStop for TurnsSettle {
+    fn name(&self) -> &'static str {
+        "admitted_turns"
+    }
+
+    fn settle(
+        &self,
+        cap: std::time::Duration,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'static>> {
+        Box::pin(async move {
+            let s = settle(cap).await;
+            continuum_base::probe!(
+                class = "cognition.turns.settled",
+                in_flight_at_close = s.in_flight_at_close,
+                cut = s.cut,
+                bound_ms = s.bound_ms,
+                bound_source = s.bound_source,
+                waited_ms = s.waited_ms,
+                cap_ms = cap.as_millis() as u64,
+                "the stop let admitted turns finish before saving — `cut` is how many it still tore"
+            );
+        })
+    }
+}
+
 /// CLOSE THE DOOR, THEN LET THE CITIZENS FINISH: the step before a stop saves.
 ///
 /// Called only from the runtime's shutdown task, which no connection owns, so the door

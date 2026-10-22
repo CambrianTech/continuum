@@ -47,11 +47,11 @@ impl ShellSession {
 
     /// Confine every later child of this session to `confinement`'s roots. Set by the
     /// workspace authority for a citizen; the operator's session never calls it.
-    pub fn confine(&mut self, confinement: super::super::confinement::Confinement) {
+    pub fn confine(&mut self, confinement: crate::system_resources::confinement::Confinement) {
         self.confinement = Some(confinement);
     }
 
-    pub fn confinement(&self) -> Option<&super::super::confinement::Confinement> {
+    pub fn confinement(&self) -> Option<&crate::system_resources::confinement::Confinement> {
         self.confinement.as_ref()
     }
 

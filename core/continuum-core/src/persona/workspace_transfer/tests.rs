@@ -461,7 +461,7 @@
         let card = Uuid::new_v4();
         let root = m.a.clone();
         // under an admission, as the turn path's sync always is (sync_after_act_for)
-        let context = crate::code::hands::HandsContext::fresh();
+        let context = crate::identity::hands_context::HandsContext::fresh();
         let lease = std::sync::Arc::new(crate::code::hands::admit(context).expect("open hands"));
         let syncing = tokio::spawn(async move {
             let unbounded_here = tokio::time::Instant::now() + std::time::Duration::from_secs(600); // a cancel ends it, not this
@@ -515,7 +515,7 @@
         let original_head = head(&root).await;
 
         let (persona, card, claim) = (Uuid::new_v4(), Uuid::new_v4(), Uuid::new_v4());
-        let context = crate::code::hands::HandsContext::for_claim(persona, card, claim);
+        let context = crate::identity::hands_context::HandsContext::for_claim(persona, card, claim);
         let lease = std::sync::Arc::new(
             crate::code::hands::admit(context).expect("open hands admit"),
         );

@@ -56,7 +56,7 @@ pub(crate) async fn root_acting_workspace(
 
 /// Forget where an acting context stood: what a context's release on drop (the abnormal-exit
 /// fallback) does once its release CONFIRMED, so no bookkeeping outlives it.
-pub(crate) fn forget_acting_context(persona_id: Uuid, context: crate::code::hands::HandsContext) {
+pub(crate) fn forget_acting_context(persona_id: Uuid, context: crate::identity::hands_context::HandsContext) {
     note_acting_root_in(persona_id, Some(context), None);
 }
 
@@ -624,7 +624,7 @@ impl PersonaWorkspaceRegistry {
         context_window: u32,
     ) -> usize {
         self.re_home_all_at(
-            &crate::modules::persona_instance_manager::resolve_continuum_root(),
+            &crate::paths::continuum_root(),
             adapter,
             model,
             context_window,

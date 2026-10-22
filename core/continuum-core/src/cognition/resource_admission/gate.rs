@@ -1,7 +1,7 @@
 //! The hard resource-admission gate and its lease-backed guard.
 
-use crate::inference::planning::adaptive_throughput::{ResourceClass, TargetSilicon};
-use crate::inference::planning::throughput_lease::{
+use crate::resources::throughput_class::{ResourceClass, TargetSilicon};
+use crate::resources::throughput_lease::{
     ThroughputLease, ThroughputLeaseError, ThroughputLeaseRegistry, ThroughputLeaseRevocationPolicy,
 };
 use serde::{Deserialize, Serialize};

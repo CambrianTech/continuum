@@ -1,7 +1,7 @@
 #![cfg(test)]
     use super::*;
-    use crate::inference::planning::adaptive_throughput::{ResourceClass, TargetSilicon};
-    use crate::inference::planning::throughput_lease::{ThroughputLease, ThroughputLeaseRevocationPolicy};
+    use crate::resources::throughput_class::{ResourceClass, TargetSilicon};
+    use crate::resources::throughput_lease::{ThroughputLease, ThroughputLeaseRevocationPolicy};
     use crate::gpu::MockMonitor;
     use crate::inference::kv_quant::Residency;
     // PressureTier is already in scope via `use super::*` (module-scope import).

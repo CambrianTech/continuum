@@ -1,0 +1,83 @@
+[package]
+name = "continuum-kernel"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = """
+The microkernel of the continuum substrate: identity, paths, paging, logging, the ORM,
+system resources and pressure, the runtime (ServiceModule, bus, dispatch, extension
+hooks), the governor, resource pools, GPU accounting, routing and the command contract.
+It depends on nothing above it (MICROKERNEL-DECOMPOSITION.md); every other layer extends
+it through the contracts it owns (dispatch hooks, interceptors, settle-before-stop, the
+command-name resolver, MeshPresence, ClogSink) installed at boot.
+"""
+
+[dependencies]
+continuum-base = { path = "../continuum-base" }
+continuum-airc-protocol = { path = "../continuum-airc-protocol" }
+continuum-cli-lifecycle = { path = "../continuum-cli-lifecycle" }
+continuum-orm-derive = { path = "../continuum-orm-derive" }
+continuum-client = { path = "../../client/continuum-client" }
+tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+uuid.workspace = true
+chrono.workspace = true
+async-trait.workspace = true
+thiserror.workspace = true
+parking_lot.workspace = true
+once_cell.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+tracing-appender.workspace = true
+ts-rs.workspace = true
+sha2.workspace = true
+rusqlite = { version = "0.32", features = ["bundled"] }
+deadpool-postgres.workspace = true
+tokio-postgres.workspace = true
+tokio-stream.workspace = true
+futures-util.workspace = true
+airc-core.workspace = true
+airc-lib.workspace = true
+airc-protocol.workspace = true
+airc-ipc.workspace = true
+airc-bus.workspace = true
+schemars = { version = "0.8", features = ["uuid1"] }
+dashmap = "6.1"
+inventory = "0.3"
+libc = "0.2"
+fs2 = "0.4"
+toml = "0.8"
+base64 = "0.22"
+ed25519-dalek = { version = "2", features = ["rand_core", "serde"] }
+futures = "0.3"
+dirs = "5.0"
+sysinfo = "0.33"
+arc-swap = "1.7"
+notify = "8"
+rayon.workspace = true
+# Test fixtures (fresh_adapter) need a temp dir; only fixture builds link it.
+tempfile = { version = "3", optional = true }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.60", features = ["Win32_System_SystemInformation", "Win32_System_ProcessStatus", "Win32_Storage_FileSystem", "Win32_Foundation", "Win32_Globalization", "Win32_Security", "Win32_Security_AppLocker", "Win32_System_Threading", "Win32_System_Pipes", "Win32_System_JobObjects", "Win32_System_Console", "Win32_System_Environment", "Win32_System_SystemServices"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+landlock = "0.4"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+metal = "0.32"
+objc = "0.2"
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }
+tempfile = "3"
+source-hygiene = { path = "../source-hygiene" }
+
+[features]
+default = []
+cuda = []
+vulkan = []
+ts-codegen = []
+test-fixtures = ["continuum-base/test-fixtures", "dep:tempfile"]
+stress-tests = []

@@ -57,7 +57,7 @@ pub(super) fn announce_ipc_ready(socket_path: &str) {
     // wanting to know when IPC is up) observes the false→true edge.
     // The watch supersedes the previous oneshot parameter — any number
     // of late or eager subscribers can attach via `subscribe_ready()`.
-    let _ = ipc_ready_tx().send(true);
+    let _ = crate::runtime::ipc_ready::ipc_ready_tx().send(true);
     continuum_base::probe!(
         class = "ready.observed",
         module = "ipc-server",

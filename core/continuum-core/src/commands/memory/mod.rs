@@ -251,9 +251,9 @@ mod tests {
     use super::*;
     use crate::sdk_codegen::ActionCommand;
 
-    /// The one crate-wide home lock (`crate::test_env`, #4082) — pins HOME, USERPROFILE,
+    /// The one crate-wide home lock (`crate::paths::test_home`, #4082) — pins HOME, USERPROFILE,
     /// HF_HOME and CONTINUUM_HOME together and restores them on drop.
-    use crate::test_env::HomeGuard;
+    use crate::paths::test_home::HomeGuard;
 
     fn fresh_memory_module() -> Arc<dyn crate::runtime::ServiceModule> {
         let manager = Arc::new(crate::memory::PersonaMemoryManager::new(Arc::new(

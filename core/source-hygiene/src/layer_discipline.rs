@@ -23,11 +23,11 @@ use super::{SourceFile, SourceRule, Violation};
 /// Ring 0, the kernel: the machine. Nothing about models, minds, rooms or commands.
 const KERNEL: &[&str] = &[
     "time", "identity", "fs_portable", "paths", "concurrency", "paging", "logging", "orm",
-    "system_resources", "runtime", "governor", "capacity", "resources", "gpu",
+    "system_resources", "runtime", "governor", "routing", "sdk_codegen", "resources", "gpu",
 ];
 /// Ring 1, the engine: serving. Knows the kernel.
 const ENGINE: &[&str] = &[
-    "inference", "inference_capability", "model_registry", "ai", "live", "media", "sensory",
+    "inference", "inference_capability", "model_registry", "capacity", "ai", "live", "media", "sensory",
     "tool_parsing",
 ];
 /// Ring 2, the mind: the citizen. Knows the engine and the kernel.
@@ -37,7 +37,7 @@ const MIND: &[&str] = &[
 ];
 /// Ring 3, the surface: how the outside reaches in. Knows everything below.
 const SURFACE: &[&str] = &[
-    "commands", "ipc", "routing", "sdk_codegen", "airc", "http", "modules", "interface",
+    "commands", "ipc", "airc", "http", "modules", "interface",
     "contracts", "events", "forge", "provisioning", "comms", "ffi", "bin",
 ];
 
@@ -139,20 +139,20 @@ mod tests {
     fn a_lower_ring_importing_a_higher_ring_is_one_violation_per_line_and_module() {
         let f = SourceFile::for_test(
             "runtime/registry.rs",
-            "use crate::sdk_codegen::input_schema;\nfn f() { crate::routing::x(); crate::routing::y(); crate::time::now(); }\n",
+            "use crate::cognition::input_schema;\nfn f() { crate::modules::x(); crate::modules::y(); crate::time::now(); }\n",
         );
         let v = LayerDiscipline.check(&f);
         let named: Vec<&str> = v.iter().map(|x| x.source.as_str()).collect();
-        assert_eq!(v.len(), 2, "sdk_codegen and routing once per line, never time: {named:?}");
+        assert_eq!(v.len(), 2, "cognition and modules once per line, never time: {named:?}");
         // Two coupling sites are two violations, and moving one of them to a sibling file
         // (a split by owner) leaves the total unchanged.
-        let two = SourceFile::for_test("runtime/a.rs", "use crate::routing::x;\nfn f() { crate::routing::y(); }\n");
-        let one = SourceFile::for_test("runtime/a.rs", "use crate::routing::x;\n");
-        let moved = SourceFile::for_test("runtime/a/tests.rs", "fn f() { crate::routing::y(); }\n");
+        let two = SourceFile::for_test("runtime/a.rs", "use crate::modules::x;\nfn f() { crate::modules::y(); }\n");
+        let one = SourceFile::for_test("runtime/a.rs", "use crate::modules::x;\n");
+        let moved = SourceFile::for_test("runtime/a/tests.rs", "fn f() { crate::modules::y(); }\n");
         assert_eq!(LayerDiscipline.check(&two).len(), 2);
         assert_eq!(LayerDiscipline.check(&one).len() + LayerDiscipline.check(&moved).len(), 2);
-        assert!(named.iter().any(|s| s.contains("`crate::sdk_codegen::`")));
-        assert!(named.iter().any(|s| s.contains("`crate::routing::`")));
+        assert!(named.iter().any(|s| s.contains("`crate::cognition::`")));
+        assert!(named.iter().any(|s| s.contains("`crate::modules::`")));
         // A grouped import names each head, across lines, nested groups included.
         let grouped = SourceFile::for_test(
             "inference/x.rs",

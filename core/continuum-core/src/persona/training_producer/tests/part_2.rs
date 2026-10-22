@@ -275,7 +275,7 @@ use super::*;
         registry.register(Arc::new(crate::modules::data::DataModule::new()));
         let executor = Arc::new(
             CommandExecutor::new(registry.clone())
-                .with_policy(Arc::new(crate::routing::GridTrustAuthPolicy::new())),
+                .with_policy(Arc::new(crate::modules::grid::GridTrustAuthPolicy::new())),
         );
         registry.install_executor_on_all(executor.clone());
         executor

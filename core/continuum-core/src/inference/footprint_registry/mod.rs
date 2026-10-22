@@ -36,7 +36,7 @@ pub use types::{
     RegistrySnapshot, ResourceType,
 };
 
-use crate::inference::planning::throughput_lease::{
+use crate::resources::throughput_lease::{
     ThroughputLease, ThroughputLeaseError, ThroughputLeaseRevocationPolicy, ThroughputLeaseSnapshot,
 };
 use crate::paging::broker::PressureTier;

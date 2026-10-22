@@ -53,7 +53,8 @@ pub use crate::cognition::handoff::SaveReason;
 #[cfg(test)]
 use crate::{
     modules::{card_staging, code::{CodeModule, CodeState}},
-    routing::{CallerIdentity, GridTrustAuthPolicy},
+    modules::grid::GridTrustAuthPolicy,
+    routing::CallerIdentity,
 };
 
 // The tests gate themselves (`#![cfg(test)]` in tests.rs), so the scanner reads the file as test code.

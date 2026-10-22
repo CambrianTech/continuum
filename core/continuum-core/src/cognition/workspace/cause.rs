@@ -116,7 +116,7 @@ impl Burst {
     }
 
     /// This turn acts with the hands of `context` (the card claim it works).
-    pub fn in_hands(mut self, context: Option<crate::code::hands::HandsContext>) -> Self {
+    pub fn in_hands(mut self, context: Option<crate::identity::hands_context::HandsContext>) -> Self {
         self.hands = context;
         self
     }

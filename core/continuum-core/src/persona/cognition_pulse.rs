@@ -168,6 +168,41 @@ impl CommandWork {
     }
 }
 
+/// The pulse's per-card work accounting as a dispatch hook: a call in a card claim's hands
+/// counts as work on that card while it runs, and its success is the evidence a claim renewal
+/// reads. Installed at boot.
+pub struct CardWorkPulse;
+
+struct Working(parking_lot::Mutex<Option<CommandWork>>);
+
+impl crate::runtime::dispatch_hook::DispatchScope for Working {
+    fn allowed(&self) {
+        let mut slot = self.0.lock();
+        *slot = slot.take().map(CommandWork::begin);
+    }
+
+    fn succeeded(&self) {
+        if let Some(work) = self.0.lock().as_ref() {
+            work.completed(continuum_base::time::EpochMs::now().millis());
+        }
+    }
+}
+
+impl crate::runtime::dispatch_hook::DispatchHook for CardWorkPulse {
+    fn name(&self) -> &'static str {
+        "card_work_pulse"
+    }
+
+    fn enter(
+        &self,
+        caller: Option<&crate::routing::CallerIdentity>,
+    ) -> Result<Option<std::sync::Arc<dyn crate::runtime::dispatch_hook::DispatchScope>>, String> {
+        Ok(caller
+            .and_then(CommandWork::capture)
+            .map(|work| std::sync::Arc::new(Working(parking_lot::Mutex::new(Some(work)))) as _))
+    }
+}
+
 impl Drop for CommandWork {
     fn drop(&mut self) {
         if !self.active {

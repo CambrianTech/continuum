@@ -173,6 +173,13 @@ const AUDITED_CRATE: &str = "continuum-core";
 /// per-path rule stays unambiguous.
 const SPLIT_CRATES: &[&str] = &["continuum-base"];
 
+/// Crates cut out of `continuum-core` that keep core's module names: `continuum-kernel`'s
+/// `runtime/`, `routing/`, `orm/`… are re-exported by core as `crate::runtime` and so on, so
+/// their files are audited UNPREFIXED (`runtime/registry.rs`), exactly as before the cut.
+/// Every allow-list, ring and count stays continuous; prefixing them would drop 78k lines out
+/// of the ring table and the path allow-lists, and the counts would fall for no change.
+const MODULE_CRATES: &[&str] = &["continuum-kernel"];
+
 /// Every file the per-file and crate-wide rules audit: `continuum-core/src` with paths
 /// relative to it, then each split crate's `src` with its name prefixed. A listed crate
 /// whose `src` is missing fails loudly rather than auditing nothing.
@@ -185,6 +192,14 @@ pub fn audited_files() -> Vec<SourceFile> {
         let src = core_dir.join(name).join("src");
         assert!(src.is_dir(), "split crate {name} has no src at {}: the gates would audit nothing", src.display());
         files.extend(collect_files(&src).into_iter().map(|f| SourceFile { rel: format!("{name}/{}", f.rel), ..f }));
+    }
+    for name in MODULE_CRATES {
+        // A tree from before the cut has no such crate: its modules are still in
+        // continuum-core/src and were collected above, so nothing goes unaudited.
+        let src = core_dir.join(name).join("src");
+        if src.is_dir() {
+            files.extend(collect_files(&src).into_iter().filter(|f| f.rel != "lib.rs"));
+        }
     }
     files
 }
@@ -278,6 +293,12 @@ pub fn workspace_src_roots() -> Vec<PathBuf> {
 /// const above the code (generate_response.rs, line 75 of 644), hid everything below it:
 /// a split read as 10 unwraps removed when none were (found on #5225, 2026-10-20).
 /// Lines of a gated item are blanked, not dropped, so line numbers stay true.
+/// The attributes that gate an item OUT of a production build: unit tests, and the fixtures a
+/// crate exports to its dependents' tests (`test-fixtures` is never enabled in a release
+/// build). Code under either is test code to these scans; the kernel cut moved its fixtures
+/// from the first spelling to the second so core's tests can reach them across the crate.
+const TEST_GATES: &[&str] = &["#[cfg(test)]", "#[cfg(any(test, feature = \"test-fixtures\"))]"];
+
 pub fn production_half(src: &str) -> String {
     let lines: Vec<&str> = src.lines().collect();
     let mut out: Vec<&str> = Vec::with_capacity(lines.len());
@@ -289,15 +310,15 @@ pub fn production_half(src: &str) -> String {
             gated = true;
             break; // the whole file from here is a test module moved out of its owner
         }
-        if !code.starts_with("#[cfg(test)]") {
+        let Some(gate) = TEST_GATES.iter().find(|gate| code.starts_with(**gate)) else {
             out.push(lines[i]);
             i += 1;
             continue;
-        }
+        };
         // The gated item can begin on the attribute's own line. Keep the slice's
         // line count intact so blanking still preserves source line numbers.
         let mut item_lines = lines[i..].to_vec();
-        item_lines[0] = &lines[i]["#[cfg(test)]".len()..];
+        item_lines[0] = &lines[i][gate.len()..];
         let end = i + gated_item_end(&item_lines, 0);
         out.extend(std::iter::repeat_n("", end + 1 - i));
         gated = true;

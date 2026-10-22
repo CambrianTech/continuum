@@ -20,6 +20,7 @@ members = [
     "core/continuum-base",
     "core/continuum-context",
     "core/continuum-core",
+    "core/continuum-kernel",
     "core/expert-pager-policy",
     "core/source-hygiene",
     "core/continuum-orm-derive",

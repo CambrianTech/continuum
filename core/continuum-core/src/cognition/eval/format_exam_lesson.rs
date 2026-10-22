@@ -67,7 +67,7 @@ impl LessonSink {
             ),
         )]);
         let peer_dir = crate::identity::citizen_peer_dir(
-            &crate::modules::persona_instance_manager::resolve_continuum_root(),
+            &crate::paths::continuum_root(),
             crate::identity::PeerId::from_uuid(*persona_uuid),
         );
         if let Err(e) = std::fs::create_dir_all(&peer_dir) {

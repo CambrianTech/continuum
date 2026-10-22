@@ -701,5 +701,5 @@ pub struct Burst {
     /// whoever admitted it; every act of the turn runs in these hands and no turn moves
     /// another's (card fc9e9fd7). It lives here for the reason `room` and `cause` do: a
     /// parameter beside the burst could drift from the turn it belongs to.
-    pub hands: Option<crate::code::hands::HandsContext>,
+    pub hands: Option<crate::identity::hands_context::HandsContext>,
 }

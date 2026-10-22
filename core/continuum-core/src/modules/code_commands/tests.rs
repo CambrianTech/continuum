@@ -16,7 +16,7 @@
         let cmd = CodeCreateWorkspace { state: state.clone() };
         let persona = crate::identity::PeerId::from_uuid(uuid::Uuid::new_v4());
         let ctx = Ctx {
-            caller: Some(crate::routing::CallerIdentity::local_persona(persona).in_hands(crate::code::hands::HandsContext::fresh())),
+            caller: Some(crate::routing::CallerIdentity::local_persona(persona).in_hands(crate::identity::hands_context::HandsContext::fresh())),
             ..Ctx::default()
         };
         let at = |root: &std::path::Path| CodeCreateWorkspaceParams {
@@ -40,7 +40,7 @@
     // The operator is never confined. The decision is the caller's identity, never a params field.
     #[test]
     fn a_resident_reaches_the_host_but_its_credentials_and_an_outside_peer_is_confined() {
-        let _home = crate::test_env::HomeGuard::preserve_blocking(); // reads the process home a guarded fixture may be swapping (card cb3221a5)
+        let _home = crate::paths::test_home::HomeGuard::preserve_blocking(); // reads the process home a guarded fixture may be swapping (card cb3221a5)
         let ws = tempfile::tempdir().expect("test: ws");
         assert!(confinement_of(&Ctx::default(), ws.path()).is_none(), "the operator");
         let resident = Ctx {
@@ -692,7 +692,7 @@
         let home = tempfile::tempdir().expect("home");
         // Under the one crate-wide home lock (#4082): this unlocked CONTINUUM_HOME write
         // raced every other test that resolves the citizen layer.
-        let _home = crate::test_env::HomeGuard::set(home.path()).await;
+        let _home = crate::paths::test_home::HomeGuard::set(home.path()).await;
         std::env::set_var("CONTINUUM_HOME", home.path());
 
         let peer = "test-peer-1234";

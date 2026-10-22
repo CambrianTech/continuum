@@ -53,7 +53,7 @@ jobs:
     # A failed selector must not turn required checks into successful skips.
     if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45  # a PR that changes Cargo.lock builds from a cold cache (PR runs never save it): #5278 measured 30m15s, cancelled after every test had passed; warm runs take 16-22 min
     env:
       DATABASE_URL: postgres://continuum:continuum@localhost:5432/continuum_test
       # The crate builds headless by default (`default = []`); THIS job is the one that
@@ -140,6 +140,11 @@ jobs:
             --skip 'modules::gpu::' \
             --skip 'modules::persona_allocator::' \
             --skip 'persona::allocator::tests::test_allocate'
+          # The microkernel is its own crate (core/continuum-kernel): its unit tests moved out of
+          # continuum-core's run above, so they run here, same profile and fixtures (seconds).
+          cd ../..
+          cargo test -p continuum-kernel --lib --profile dev-fast --features test-fixtures -- \
+            --skip 'gpu::memory_manager::'
 
       - name: Retain Unix build evidence
         if: always() && needs.changes.outputs.rust != 'false'
@@ -204,12 +209,13 @@ jobs:
           sudo -u postgres createdb -O continuum continuum_test
           pg_isready -h localhost -p 5432
 
-      - name: cargo test -p continuum-core --lib (Postgres, --ignored)
+      - name: cargo test -p continuum-kernel --lib (Postgres, --ignored)
         if: needs.changes.outputs.rust != 'false'
         run: |
           set -o pipefail
-          (cd core/continuum-core && LD_LIBRARY_PATH="$CONTINUUM_LIB_TEST_LD_LIBRARY_PATH" \
-            "$CONTINUUM_LIB_TEST" orm::postgres --ignored --test-threads=1) 2>&1 | tee pg.log
+          # The ORM lives in the kernel crate; its test binary was built by the step above.
+          cargo test -p continuum-kernel --lib --profile dev-fast --features test-fixtures \
+            orm::postgres -- --ignored --test-threads=1 2>&1 | tee pg.log
           passed=$(grep -oE 'test result: ok\. [0-9]+ passed' pg.log | grep -oE '[0-9]+' | head -1)
           echo "postgres tests passed: ${passed:-0}"
           if [ "${passed:-0}" -lt 1 ]; then
@@ -259,7 +265,9 @@ jobs:
   windows-core-contract:
     name: Windows core compilation and custody
     needs: changes
-    if: ${{ !cancelled() }}
+    # Windows runs where it pays: pushes to main, PRs into main, or a PR labelled 'windows'.
+    # Canary PRs skip it (39-44 min, billed 2x; Joel 2026-10-22: CI must test in minutes).
+    if: ${{ !cancelled() && ((github.event_name == 'push' && github.ref == 'refs/heads/main') || github.base_ref == 'main' || contains(github.event.pull_request.labels.*.name, 'windows')) }}
     runs-on: windows-latest
     # Run39000527521 spent >39m before the CLI fixture; its prior measured8m46
     # makes ~48m total. Keep shared compilation, plus12m for runner variation.
@@ -326,10 +334,7 @@ jobs:
           foreach ($test in @(
             'model_registry::artifacts::expert_placement::tests::online_preparation_preserves_readers_until_explicit_final_exclusion',
             'model_registry::artifacts::expert_placement::tests::actual_lazy_reader_excludes_freeze_until_its_lifetime_ends',
-            'inference::engine_install::tests::installed_engine_receipt_binds_bytes_and_candidate_membership',
-            'system_resources::disk_eviction::tests::broker_reclaims_release_incremental_only_after_profile_custody',
-            'system_resources::disk_eviction::tests::redirected_profile_or_incremental_child_never_reaches_external_data',
-            'system_resources::disk_eviction::tests::ladder_frees_in_order_and_preserves_release_outputs'
+            'inference::engine_install::tests::installed_engine_receipt_binds_bytes_and_candidate_membership'
           )) {
             $output = & $env:CONTINUUM_LIB_TEST $test --exact --nocapture 2>&1
             $result = $LASTEXITCODE
@@ -338,6 +343,19 @@ jobs:
             if (($output -join "`n") -notmatch '1 passed;') { throw "Fixture did not execute: $test" }
           }
           Pop-Location
+          # Disk eviction lives in the kernel crate (core/continuum-kernel); its native custody
+          # fixtures run from there.
+          foreach ($test in @(
+            'system_resources::disk_eviction::tests::broker_reclaims_release_incremental_only_after_profile_custody',
+            'system_resources::disk_eviction::tests::redirected_profile_or_incremental_child_never_reaches_external_data',
+            'system_resources::disk_eviction::tests::ladder_frees_in_order_and_preserves_release_outputs'
+          )) {
+            $output = & cargo test -p continuum-kernel --lib --profile dev-fast --features test-fixtures $test -- --exact --nocapture 2>&1
+            $result = $LASTEXITCODE
+            $output | Write-Output
+            if ($result -ne 0) { exit $result }
+            if (($output -join "`n") -notmatch '1 passed;') { throw "Fixture did not execute: $test" }
+          }
       - name: Retain Windows build evidence
         if: always() && needs.changes.outputs.rust != 'false'
         uses: actions/upload-artifact@v4
@@ -370,7 +388,7 @@ jobs:
   windows-lifecycle-contract:
     name: Windows standalone installer and lifecycle
     needs: changes
-    if: ${{ !cancelled() }}
+    if: ${{ !cancelled() && ((github.event_name == 'push' && github.ref == 'refs/heads/main') || github.base_ref == 'main' || contains(github.event.pull_request.labels.*.name, 'windows')) }}
     runs-on: windows-latest
     timeout-minutes: 45
     steps:
@@ -450,4 +468,5 @@ jobs:
           CORE_RESULT: ${{ needs.windows-core-contract.result }}
           LIFECYCLE_RESULT: ${{ needs.windows-lifecycle-contract.result }}
         run: |
-          test "$CORE_RESULT" = success && test "$LIFECYCLE_RESULT" = success
+          ok() { test "$1" = success || test "$1" = skipped; }  # skipped = a canary PR, by design
+          ok "$CORE_RESULT" && ok "$LIFECYCLE_RESULT"

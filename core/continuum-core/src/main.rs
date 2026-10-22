@@ -319,7 +319,10 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
         }));
     }
 
-    let probe_install = install_probe_tracing(ProbeTracingConfig::from_env("info"))?;
+    let probe_install = install_probe_tracing(
+        ProbeTracingConfig::from_env("info"),
+        continuum_core::modules::logger_clog_sink::LoggerQueueSink,
+    )?;
     if let Some(ref path) = probe_install.probe_log_path {
         // Use println so it appears even when RUST_LOG filters out
         // info-level tracing events — the operator who just set the
@@ -556,7 +559,7 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
     let ipc_memory_manager = memory_manager.clone();
     let ipc_pressure_monitor = pressure_monitor.clone();
     let ipc_disk_pressure_monitor = disk_pressure_monitor.clone();
-    let mut ipc_ready_rx = continuum_core::ipc::subscribe_ready();
+    let mut ipc_ready_rx = continuum_core::runtime::ipc_ready::subscribe_ready();
     continuum_base::probe!(
         class = "boot.phase",
         phase = "main_to_ipc_thread",
