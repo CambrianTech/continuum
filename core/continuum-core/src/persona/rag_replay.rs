@@ -395,7 +395,7 @@ mod tests {
             .await; // packs 1 item
         recorder
             .deliver(&second_ctx, 100, ResolutionPreference::Raw)
-            .await; // packs the rest
+            .await; // re-derives from scratch — full budget fits both items
 
         // Now replay the captured events through ReplayRagSource.
         let captured = sink.events();
@@ -427,8 +427,12 @@ mod tests {
         assert_eq!(replay.budget_claim(1, 1), second_claim);
 
         let second = replay.deliver(&ctx(), 999, ResolutionPreference::Raw).await;
-        assert_eq!(second.items.len(), 1);
-        assert_eq!(second.items[0].content, "beta");
+        // Ruling a: the live stub re-derives from scratch on each call (no
+        // positional cursor), so the captured second delivery holds both items —
+        // and the replay returns it verbatim.
+        assert_eq!(second.items.len(), 2);
+        assert_eq!(second.items[0].content, "alpha");
+        assert_eq!(second.items[1].content, "beta");
 
         // Trace exhausted now.
         let third = replay.deliver(&ctx(), 999, ResolutionPreference::Raw).await;
