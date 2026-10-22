@@ -315,35 +315,35 @@
     // consumer only ever waited on the tip. The newest PUBLISHED candidate is the deploy.
     #[tokio::test]
     async fn the_newest_published_build_is_deployed_not_only_the_tip() {
+        struct Source<'a> {
+            keys: &'a [String],
+            published: &'a [bool],
+            verdicts: &'a [Option<crate::deploy_tracker::Checks>],
+            fetched: std::sync::Mutex<Vec<String>>,
+        }
+        #[async_trait::async_trait]
+        impl PublishedCoreSource for Source<'_> {
+            type Artifact = String;
+            async fn published(&self, key: &str) -> Result<bool, String> {
+                if key == "unreadable" { return Err("publication transport unavailable".into()); }
+                Ok(self.published[self.keys.iter().position(|k| k == key).unwrap()])
+            }
+            async fn checks(&self, key: &str) -> Result<crate::deploy_tracker::Checks, String> {
+                let verdict = self.verdicts[self.keys.iter().position(|k| k == key).unwrap()];
+                // None exercises a failed read; Some(Unknown) tests an explicit unknown verdict.
+                verdict.ok_or_else(|| "CI source unavailable".into())
+            }
+            async fn fetch(&self, key: &str) -> Result<Option<String>, PublishedCoreError> {
+                self.fetched.lock().unwrap().push(key.to_string());
+                Ok(Some(key.to_string()))
+            }
+        }
         async fn newest_published(candidates: &[String], published: &[bool], verdicts: &[Option<crate::deploy_tracker::Checks>]) -> Option<String> {
-            struct Source<'a> {
-                keys: &'a [String],
-                published: &'a [bool],
-                verdicts: &'a [Option<crate::deploy_tracker::Checks>],
-                fetched: std::sync::Mutex<Vec<String>>,
-            }
-            #[async_trait::async_trait]
-            impl PublishedCoreSource for Source<'_> {
-                type Artifact = String;
-                async fn published(&self, key: &str) -> Result<bool, String> {
-                    if key == "unreadable" { return Err("publication transport unavailable".into()); }
-                    Ok(self.published[self.keys.iter().position(|k| k == key).unwrap()])
-                }
-                async fn checks(&self, key: &str) -> Result<crate::deploy_tracker::Checks, String> {
-                    let verdict = self.verdicts[self.keys.iter().position(|k| k == key).unwrap()];
-                    // None exercises a failed read; Some(Unknown) tests an explicit unknown verdict.
-                    verdict.ok_or_else(|| "CI source unavailable".into())
-                }
-                async fn fetch(&self, key: &str) -> Result<Option<String>, PublishedCoreError> {
-                    self.fetched.lock().unwrap().push(key.to_string());
-                    Ok(Some(key.to_string()))
-                }
-            }
             let source = Source { keys: candidates, published, verdicts, fetched: Default::default() };
             let selected = select_published_core(candidates, &source).await;
             let key = match selected {
                 Some((key, Ok(Some(artifact)))) => { assert_eq!(artifact, key); Some(key) }
-                Some((_, Err(PublishedCoreError::OperationalBlocked(why)))) => {
+                Some((_, Err(PublishedCoreError::SourcePending(why)))) => {
                     assert!(!why.is_empty(), "retain the failed observation for diagnosis");
                     None
                 }
@@ -362,6 +362,25 @@
             .to_vec();
         use crate::deploy_tracker::Checks;
         let green = [Some(Checks::Green); 3];
+        // Same source and fetch recorder across uncertain observations and recovery:
+        // a20380a6 must be a typed source wait, not an operational exit that forces
+        // the actuator to spend another launch after its stranded backoff.
+        let recovery_keys = vec!["published".into()];
+        let unknown = [Some(Checks::Unknown)];
+        let pending = [Some(Checks::Pending)];
+        let failed_read = [None];
+        let authorized = [Some(Checks::Green)];
+        let mut recovering_source = Source { keys: &recovery_keys, published: &[true], verdicts: &unknown, fetched: Default::default() };
+        for observations in [&unknown, &pending, &failed_read] {
+            recovering_source.verdicts = observations;
+            assert!(matches!(select_published_core(&recovery_keys, &recovering_source).await,
+                Some((_, Err(PublishedCoreError::SourcePending(_))))));
+        }
+        assert!(matches!(recovering_source.fetched.lock(), Ok(ref fetched) if fetched.is_empty()));
+        recovering_source.verdicts = &authorized;
+        assert!(matches!(select_published_core(&recovery_keys, &recovering_source).await,
+            Some((_, Ok(Some(_))))));
+        assert!(matches!(recovering_source.fetched.lock(), Ok(ref fetched) if **fetched == recovery_keys));
         assert_eq!(
             newest_published(&candidates, &[false, false, true], &green).await.as_deref(),
             Some("8de501e35")
