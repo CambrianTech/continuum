@@ -430,3 +430,19 @@
             assert!(allocation.available_for_sources <= window);
         }
     }
+
+    // what this catches: a lane need learned from the GRANT, which the flexbox grows to any
+    // window, so the need tracked the window and refused every extra lane (the M5, 10-18).
+    #[test]
+    fn a_turns_need_is_its_floors_however_much_the_window_granted() {
+        let claim = |id: &str, floor: u32, max: u32| RagSourceBudget {
+            source_id: id.into(), priority: 5, floor_tokens: floor, min_tokens: floor, max_tokens: max, required: false,
+        };
+        let claims = [claim("required", 9_000, 9_000), claim("history", 4_000, 60_000), claim("reply", 2_000, 16_000)];
+        assert_eq!(turn_need(&claims), 15_000);
+        for window in [20_000, 102_912] {
+            let granted: u32 = ["required", "history", "reply"].iter().map(|id| flex_allocate(window, &claims).granted(id)).sum();
+            assert!(granted >= turn_need(&claims), "a window that holds the floors grants at least them");
+        }
+        assert_eq!(turn_need(&[claim("a", u32::MAX, u32::MAX), claim("b", 1, 1)]), u32::MAX, "saturates, never wraps");
+    }

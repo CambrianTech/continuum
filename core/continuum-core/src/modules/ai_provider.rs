@@ -33,7 +33,7 @@ use std::time::Duration;
 use std::sync::OnceLock;
 use tokio::sync::RwLock;
 
-use crate::ai::global_registry::{DMR_PROVIDER_ID, GLOBAL_REGISTRY};
+use crate::ai::adapter::DMR_PROVIDER_ID;
 
 mod dmr_provider_id;
 pub use dmr_provider_id::*;

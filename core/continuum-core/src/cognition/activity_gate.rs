@@ -167,7 +167,7 @@ pub fn spawn_activity_gate() {
             ticker.tick().await;
             let now = EpochMs::now().millis();
             let hold_active = hold_rx.borrow().is_some();
-            let inflight = crate::cognition::resource_admission::inflight_model_calls();
+            let inflight = crate::inference::resource_admission::inflight_model_calls();
             let prev = gate().tx.borrow().state;
             // Thread the hysteresis memory: the instant inputs read active,
             // idle memory resets; the first idle instant starts the clock.

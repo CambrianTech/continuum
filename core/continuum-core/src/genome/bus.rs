@@ -153,7 +153,7 @@ mod tests {
     //! dispatch path end-to-end for genome events.
     use super::*;
     use crate::genome::tier::{EvictionPolicy, TierRole};
-    use crate::genome::working_set::{ArtifactId, PageKind, PageOffset, PageRef};
+    use crate::inference::page_ref::{ArtifactId, PageKind, PageOffset, PageRef};
     use crate::identity::PeerId;
     use crate::runtime::runtime::Runtime;
     use crate::runtime::service_module::{

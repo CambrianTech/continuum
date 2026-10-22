@@ -353,7 +353,7 @@ pub struct LaunchKv {
 impl LaunchKv {
     /// f16 is the engine's default, so "no flag" and "f16" are the same launch.
     pub fn cache_type_or_default(&self) -> &str {
-        self.cache_type.as_deref().unwrap_or(crate::cognition::kv_cache_plan::F16) // unwrap_or: no flag = the engine's f16 default, a value not an absence
+        self.cache_type.as_deref().unwrap_or(crate::inference::kv_cache_plan::F16) // unwrap_or: no flag = the engine's f16 default, a value not an absence
     }
 }
 

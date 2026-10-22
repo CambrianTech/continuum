@@ -23,7 +23,8 @@ use async_trait::async_trait;
 
 use super::blob::{ArtifactBlob, Provenance};
 use super::tier::{EvictionRecord, TierCapacity, TierError, TierRole};
-use super::working_set::{PageHandle, PageRef};
+use super::working_set::PageHandle;
+use crate::inference::page_ref::PageRef;
 
 /// The single trait every tier implementation satisfies. The
 /// working-set-manager (PR-3) holds `Box<dyn TierStore>` per
@@ -89,7 +90,7 @@ mod tests {
     //! tested against the real semantics; PR-2 only proves the seam.
 
     use super::*;
-    use crate::genome::working_set::{ArtifactId, PageKind, PageOffset};
+    use crate::inference::page_ref::{ArtifactId, PageKind, PageOffset};
     use std::sync::Arc;
     use uuid::Uuid;
 

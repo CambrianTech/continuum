@@ -1,29 +1,28 @@
-//! The process's one AI adapter registry and the plain "generate with what is registered"
-//! verb over it. Engine-ring facts: the service module (`modules::ai_provider`) fills the
-//! registry at boot and keeps it current; minds, commands and the HTTP gateway read it here,
-//! so a reader never has to reach up into the module layer for an engine fact.
+//! The process's one adapter registry (the engine's table of inference adapters) and the plain
+//! "generate with what is registered" verb over it. The registry is what the
+//! layers above populate (the AI provider module registers its adapters at boot) and every
+//! inference seam reads. The registry is an engine fact, so it lives with the adapter types;
+//! the populating module calls down to it rather than the engine reaching up.
 
-use super::{
-    adapter::InferenceDevice,
-    AdapterRegistry, RoutingInfo, TextGenerationRequest, TextGenerationResponse,
-};
-use once_cell::sync::Lazy;
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
+
 use tokio::sync::RwLock;
+
+use super::{AdapterRegistry, InferenceDevice};
+use crate::ai::{RoutingInfo, TextGenerationRequest, TextGenerationResponse};
+
+/// Survives the AI provider module being recreated on a server restart.
+static GLOBAL_REGISTRY: LazyLock<Arc<RwLock<AdapterRegistry>>> =
+    LazyLock::new(|| Arc::new(RwLock::new(AdapterRegistry::new())));
+
+/// The shared adapter registry.
+pub fn global_registry() -> Arc<RwLock<AdapterRegistry>> {
+    Arc::clone(&GLOBAL_REGISTRY)
+}
 
 /// Provider ID for the Docker Model Runner adapter — single source of truth
 /// shared between init-time registration and the watchdog tick.
 pub const DMR_PROVIDER_ID: &str = "docker-model-runner";
-
-/// Global singleton registry - survives module recreation on server restart
-pub(crate) static GLOBAL_REGISTRY: Lazy<Arc<RwLock<AdapterRegistry>>> =
-    Lazy::new(|| Arc::new(RwLock::new(AdapterRegistry::new())));
-
-/// Public accessor for the global adapter registry.
-/// Used by the HTTP inference endpoint to share adapters with AIProviderModule.
-pub fn global_registry() -> Arc<RwLock<AdapterRegistry>> {
-    GLOBAL_REGISTRY.clone()
-}
 
 /// Build the user-visible error message when `select()` returns None.
 /// Distinguishes:
@@ -33,7 +32,7 @@ pub fn global_registry() -> Arc<RwLock<AdapterRegistry>> {
 ///
 /// Hoisted out of both `ai/generate` and the convenience `generate_text` so
 /// the two paths report the same diagnosis.
-pub(crate) fn select_failure_message(
+pub fn select_failure_message(
     registry: &AdapterRegistry,
     requested_provider: Option<&str>,
     requested_model: Option<&str>,

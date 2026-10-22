@@ -173,6 +173,26 @@ impl EngineIncarnation {
     }
 }
 
+/// The work owner's re-attach spec for a run, held whole and never read by the engine: the
+/// training layer writes it with the binding (inside the admission hold) and reads it back as
+/// its own type to re-attach. Stored in place exactly as the owner serialized it, so the
+/// residency file's format is unchanged; the engine knows the binding, the owner knows the run.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct OwnerSpec(serde_json::Value);
+
+impl OwnerSpec {
+    /// Hold the owner's spec.
+    pub fn of<T: Serialize>(spec: &T) -> Result<Self, serde_json::Error> {
+        serde_json::to_value(spec).map(Self) // the residency file boundary: held as that file stores it, once per bound run
+    }
+
+    /// The owner's spec back, as the owner's type.
+    pub fn read<T: serde::de::DeserializeOwned>(&self) -> Result<T, serde_json::Error> {
+        T::deserialize(&self.0)
+    }
+}
+
 /// One live piece of work bound to the engine incarnation that hosts it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -199,7 +219,7 @@ pub struct ResidentWork {
     /// finish it (SHARED-RESIDENT-LIFECYCLE.md step 3, card 7bb4e5a2). Written with the binding
     /// inside the admission hold. `None`: a record from before the field, never re-attached.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub job_spec: Option<crate::genome::fine_tuning::engine_lora_adapter::EngineRunSpec>,
+    pub job_spec: Option<OwnerSpec>,
     /// The governed pool `reserved_bytes` was leased in, recorded at bind: what a successor
     /// core re-takes for a surviving run, never what the next launch's configuration would
     /// choose (Codex on #5264: a placement change across a restart would charge the wrong

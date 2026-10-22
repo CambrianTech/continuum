@@ -237,9 +237,9 @@ async fn pinned_act_result_reaches_the_prompt_even_with_an_empty_broadcast() {
     let guard_text = format!("{grep_result}日本語訳");
     assert_eq!(
         LlmDeliberationFaculty::message_cost(&ChatMessage::text("user", &guard_text)),
-        est_tokens(&guard_text) + LlmDeliberationFaculty::PER_MESSAGE_TEMPLATE_TOKENS,
+        estimate_guard_tokens(&guard_text) + LlmDeliberationFaculty::PER_MESSAGE_TEMPLATE_TOKENS,
     );
-    assert!(required >= est_tokens(&grep_result));
+    assert!(required >= estimate_guard_tokens(&grep_result));
     assert!(faculty.fit_messages(prompt, required - 1).is_err(), "native pair cannot be split under pressure");
     let fitted = faculty.fit_messages(faculty.messages_unfitted(&ws, None), required).unwrap();
     assert!(fitted.messages.iter().any(|m| matches!(&m.content, MessageContent::Parts(parts) if parts.iter().any(|p| matches!(p, ContentPart::ToolUse {id, ..} if id == "capture")))));
@@ -284,7 +284,7 @@ async fn pinned_act_result_reaches_the_prompt_even_with_an_empty_broadcast() {
     error.call.name = "bash".into();
     error.call.input = json!({"command": "cat missing.rs"});
     let original_error_call = error.call.clone();
-    crate::cognition::tool_dialect::normalize_call(&mut error.call);
+    crate::ai::tool_dialect::normalize_call(&mut error.call);
     assert_eq!(error.call.name, "code/shell");
     error.output.image = None;
     error.output.additional_images = None;

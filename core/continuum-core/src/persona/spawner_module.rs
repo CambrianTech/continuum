@@ -27,7 +27,7 @@
 //!   `DesiredRole`, calls
 //!   `PersonaInstanceManagerModule::bootstrap_one` to get an airc
 //!   identity, then `spawner::derive_spawn_plan` to materialize the
-//!   inference profile, then `LlamaCppAdapter::for_persona` to
+//!   inference profile, then `LlamaCppAdapter::for_launch` to
 //!   construct the adapter.
 //! - Per-persona subscribe-and-respond tokio task (the demo binary's
 //!   main loop, factored as a reusable function).
@@ -331,7 +331,7 @@ impl PersonaSpawnerModule {
         self.population = population;
     }
 
-    /// Apply the serving daemon's [`ServingPlan`](crate::cognition::serving_plan::ServingPlan):
+    /// Apply the serving daemon's [`ServingPlan`](crate::inference::planning::serving_plan::ServingPlan):
     /// every desired role runs the plan's base model, lane count, and host-fit
     /// served context window. The daemon makes the honest per-host decision
     /// (budget + footprints, GPU-residency, served window); the spawner obeys
@@ -341,7 +341,7 @@ impl PersonaSpawnerModule {
     /// `plan_for_tier` defaults.
     pub fn with_serving(
         mut self,
-        plan: Option<&crate::cognition::serving_plan::ServingPlan>,
+        plan: Option<&crate::inference::planning::serving_plan::ServingPlan>,
     ) -> Self {
         if let Some(p) = plan.filter(|p| p.fits_on_gpu) {
             self.serving_base_model = Some(p.base_model.model_id.clone());
@@ -356,7 +356,7 @@ impl PersonaSpawnerModule {
     /// Mutating twin of [`Self::with_serving`] for the resident reconciler: the
     /// serving plan changes at runtime (a pin, a tier swap, a lane relaunch) and the
     /// roster's seat count follows the LIVE lane count, never the boot-time one.
-    pub fn set_serving(&mut self, plan: Option<&crate::cognition::serving_plan::ServingPlan>) {
+    pub fn set_serving(&mut self, plan: Option<&crate::inference::planning::serving_plan::ServingPlan>) {
         match plan {
             Some(p) if p.fits_on_gpu => {
                 self.serving_base_model = Some(p.base_model.model_id.clone());

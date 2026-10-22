@@ -55,7 +55,7 @@ test('API uncertainty fails instead of dispatching expensive work', async () => 
   assert.equal(calls.filter(call => call.options.method === 'POST').length, 0);
 });
 
-test('phase one retains push publication and protects active builds', async () => {
+test('hourly publication replaces push and protects active builds', async () => {
   const workflow = await readFile(new URL('../../../.github/workflows/core-binaries-hourly.yml', import.meta.url), 'utf8');
   const publisher = await readFile(new URL('../../../.github/workflows/core-binaries.yml', import.meta.url), 'utf8');
   assert.match(workflow, /cron: '23 \* \* \* \*'/);
@@ -63,7 +63,7 @@ test('phase one retains push publication and protects active builds', async () =
   assert.match(workflow, /CORE_BINARIES_HOURLY_ENABLED == 'true'/);
   assert.match(workflow, /default: true/);
   assert.match(workflow, /cancel-in-progress: false/);
-  assert.match(publisher, /push:\s*branches: \[canary\]/);
+  assert.doesNotMatch(publisher, /^  push:/m);
   assert.match(publisher, /cancel-in-progress: \$\{\{ github.event_name == 'pull_request' \}\}/);
   assert.match(publisher, /workflow_dispatch:/);
 });

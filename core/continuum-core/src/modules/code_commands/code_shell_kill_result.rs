@@ -239,13 +239,13 @@ impl ActionCommand for CodeReleaseHands {
                     .into(),
             ));
         }
-        crate::code::hands::close(context).await;
+        crate::identity::hands_gate::close(context).await;
         let who = key.map_key();
         let pending = self.state.begin_release(&who);
         // Detached shells hold process custody, not foreground command admission.
         // Their owner has now received the kill request; drain their full task
         // lifetime before reading uncertainty or deleting the acting world.
-        let lingering = crate::code::hands::drain_processes(context).await;
+        let lingering = crate::identity::hands_gate::drain_processes(context).await;
         // WAIT each one out: its own task sets `process_ended` after the reap, or
         // `process_end_error` when the reap itself failed, at the cadence the task notices a
         // kill (`KILL_POLL`). SIGKILL can't be ignored, so a direct child's reap always comes;
@@ -294,7 +294,7 @@ impl ActionCommand for CodeReleaseHands {
                     }
                     break;
                 }
-                tokio::time::sleep(crate::code::shell_session::KILL_POLL).await;
+                tokio::time::sleep(crate::inference::lane_process::KILL_POLL).await;
             }
         }
         // What admitted work started and couldn't confirm gone (a gh's git): the same recheck
@@ -308,7 +308,7 @@ impl ActionCommand for CodeReleaseHands {
                 unconfirmed.extend(still.iter().map(|who| who.pid));
                 errors.push(format!("processes {:?} its work started are not confirmed gone", still.iter().map(|who| who.pid).collect::<Vec<_>>()));
             }
-            crate::code::hands::retain_processes(context, still);
+            crate::identity::hands_gate::retain_processes(context, still);
         }
         // a tree no walk could read: nothing can confirm it, so the hands are held and it is named
         errors.extend(lingering.unknown.iter().map(|why| format!("a process its work started ended unconfirmed: {why}")));

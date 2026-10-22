@@ -475,7 +475,7 @@
     // Read relative to a baseline taken before, never as an absolute (the #1960 flake class).
     #[tokio::test]
     async fn an_inbound_generate_is_counted_as_leased_in_demand_for_the_whole_dispatch() {
-        use crate::cognition::resource_admission::leased_in_calls;
+        use crate::inference::resource_admission::leased_in_calls;
         use crate::routing::{ClosurePolicy, RouteDecision};
         use std::sync::{Arc as StdArc, Mutex};
         let seen: StdArc<Mutex<Vec<(String, usize)>>> = StdArc::new(Mutex::new(Vec::new()));

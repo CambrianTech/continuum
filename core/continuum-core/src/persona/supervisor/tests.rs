@@ -188,7 +188,7 @@
         let sol = hosted[1].as_ref().expect("Sol hosted");
         assert_eq!(
             sol.profile.context_length,
-            crate::cognition::serving_plan::BOOTSTRAP_WORKING_SET,
+            crate::inference::planning::serving_plan::BOOTSTRAP_WORKING_SET,
             "unknown responder → the planner's floor, never the local lane"
         );
     }

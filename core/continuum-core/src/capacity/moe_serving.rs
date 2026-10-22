@@ -22,8 +22,8 @@ use candle_core::quantized::gguf_file::Content;
 use super::expert_residency::ExpertId;
 use super::placement::PlacementRequest;
 use super::serving_pager::ServingExpertPager;
-use crate::genome::expert_layout::{locate_layer_sets, ExpertLayoutError};
-use crate::genome::gate_magnitude::locate_gate_magnitudes;
+use crate::inference_capability::expert_layout::{locate_layer_sets, ExpertLayoutError};
+use crate::inference_capability::gate_magnitude::locate_gate_magnitudes;
 use crate::inference_capability::gguf_keys;
 
 /// A served MoE model's pager plus the layout dimensions

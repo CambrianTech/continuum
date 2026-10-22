@@ -37,7 +37,7 @@
 use continuum_base::time::EpochMs;
 use crate::ai::adapter::InferenceDevice;
 use crate::ai::types::{EmbeddingInput, EmbeddingRequest, EmbeddingResponse};
-use crate::ai::global_registry::global_registry;
+use crate::ai::adapter::global_registry;
 use serde::{Deserialize, Serialize};
 use std::sync::{LazyLock, Mutex};
 use ts_rs::TS;

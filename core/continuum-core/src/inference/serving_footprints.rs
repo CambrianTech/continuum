@@ -56,7 +56,7 @@ use crate::resources::lease::ResourceKind;
 /// `None` — never a number — when the model cannot be sized. A caller that turns that
 /// into `0` re-creates the silent-zero defect; the two live callers both refuse instead.
 pub fn resident_bytes_for(model: &Model, window: u32, lanes: u32) -> Option<u64> {
-    let fp = crate::cognition::serving_plan::footprint::footprint_for(model)?;
+    let fp = crate::inference::planning::serving_plan::footprint::footprint_for(model)?;
     // NO `unwrap_or(0)` HERE, deliberately. `mmproj_bytes` is `Some(0)` when the model
     // genuinely has no projector and `None` only when nothing has resolved it — so
     // defaulting to 0 would silently under-report a vision lane by the projector's whole

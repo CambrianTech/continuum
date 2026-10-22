@@ -169,7 +169,7 @@ pub fn affordable_prompt_tokens(tps: f64, floor: u32, served: u32, audience: Aud
 /// number the substrate owns instead of inventing a second one. The first completed
 /// generation on the box replaces it with a measurement ([`observe`]).
 pub const UNMEASURED_FILL_FLOOR_TOKENS: usize =
-    crate::cognition::serving_plan::BOOTSTRAP_WORKING_SET as usize;
+    crate::inference::planning::serving_plan::BOOTSTRAP_WORKING_SET as usize;
 
 /// The one ladder, shared with the decode axis — see [`crate::inference::decode_knee::rate_from`].
 pub use crate::inference::decode_knee::rate_from;

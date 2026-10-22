@@ -572,7 +572,7 @@ use super::*;
             // 10 s is this test's bound on a SIGKILLed `sleep` being reaped, not a product timeout.
             tokio::time::timeout(std::time::Duration::from_secs(10), async {
                 while world_dir.exists() || !state.file_engines.is_empty() || acting_root_in(persona, context).is_some() {
-                    tokio::time::sleep(crate::code::shell_session::KILL_POLL).await;
+                    tokio::time::sleep(crate::inference::lane_process::KILL_POLL).await;
                 }
             })
             .await

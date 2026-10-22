@@ -38,7 +38,8 @@ use uuid::Uuid;
 
 use super::local_manager::LocalWorkingSetManager;
 use super::manager::WorkingSetManager;
-use super::working_set::{ArtifactId, PageKind, PageOffset, PageRef, WorkingSetCapacity};
+use super::working_set::WorkingSetCapacity;
+use crate::inference::page_ref::{ArtifactId, PageKind, PageOffset, PageRef};
 use crate::identity::PeerId;
 use crate::runtime::artifact_handle::{ArtifactKey, ArtifactSelector};
 use crate::runtime::governor_bus::{PersonaScheduled, PERSONA_SCHEDULED_KEY};

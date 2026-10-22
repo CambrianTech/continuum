@@ -627,7 +627,7 @@ fn prompt_view_stays_within_the_served_window() {
     ));
 
     let view = faculty.prompt_view(&ws);
-    let total = est_tokens(&view.system) + est_tokens(&view.user_text());
+    let total = estimate_guard_tokens(&view.system) + estimate_guard_tokens(&view.user_text());
     assert!(
         total <= window as usize,
         "prompt must fit the served window: {total} tokens > {window}"

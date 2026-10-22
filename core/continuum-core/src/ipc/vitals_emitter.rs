@@ -83,25 +83,6 @@ fn remember_vitals(persona: Uuid, vitals: &BTreeMap<String, u8>) {
 /// lands ~1-3 acts per generation; 4 in a 2s window is flat-out).
 const ACT_PULSE_FULL_SCALE: u64 = 4;
 
-/// THE SPEED PULSE: per-persona decode + prefill tokens/sec from the last
-/// completed generation (llama-server's own `timings`), recorded by the
-/// inference adapter at stream close. Radiated as `tps`/`pfx` vitals while
-/// fresh — the roster tile draws them as micro-speedometers (Joel:
-/// "speedometers not massive text; thin lines and meters").
-static SPEED_PULSE: std::sync::LazyLock<
-    std::sync::Mutex<HashMap<Uuid, (f64, f64, std::time::Instant)>>,
-> = std::sync::LazyLock::new(|| std::sync::Mutex::new(HashMap::new()));
-
-/// Record the last generation's speeds for `persona` (uuid-string; non-uuid
-/// callers — CLI, probes — are silently not a tile and skip).
-pub fn record_speed(persona: &str, decode_tps: f64, prefill_tps: f64) {
-    let Ok(id) = Uuid::parse_str(persona) else {
-        return;
-    };
-    let mut pulse = SPEED_PULSE.lock().unwrap_or_else(|e| e.into_inner());
-    pulse.insert(id, (decode_tps, prefill_tps, std::time::Instant::now()));
-}
-
 /// A speed sample older than this stops radiating — a stale needle is a lie.
 const SPEED_FRESH: Duration = Duration::from_secs(20);
 /// Decode t/s that reads as a pegged needle (Ornith depth-tax band tops ~40).
@@ -166,13 +147,7 @@ pub(crate) fn sample_vitals(
             .sum();
 
         // Speed needles: radiate while fresh, drop when stale (honest-absent).
-        let speed = {
-            let pulse = SPEED_PULSE.lock().unwrap_or_else(|e| e.into_inner());
-            pulse
-                .get(&id)
-                .filter(|(_, _, at)| at.elapsed() < SPEED_FRESH)
-                .map(|(d, p, _)| (*d, *p))
-        };
+        let speed = crate::inference::speed_pulse::fresh_speed(id, SPEED_FRESH);
         let genome = cycle.genome();
         let mut vitals = BTreeMap::new();
         vitals.insert(

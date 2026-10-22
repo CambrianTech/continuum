@@ -26,7 +26,7 @@
 use super::DeviceCapacity;
 use crate::system_resources::drives::{detect_drives, DriveInfo, DriveRole, MIN_COLD_TIER_BYTES};
 use crate::governor::types::HardwareClass;
-use crate::modules::serving_daemon::{host_budget_from, HostBudgetInputs};
+use crate::inference::planning::serving_plan::{host_budget_from, HostBudgetInputs};
 
 /// What THIS box can do — the catalog's resolution input. Composes the hardware class,
 /// live device capacity, detected drives, and the perf-core count into one descriptor.

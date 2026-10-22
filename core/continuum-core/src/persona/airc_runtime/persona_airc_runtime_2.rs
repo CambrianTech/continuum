@@ -352,7 +352,7 @@ impl crate::persona::airc_citizen::AircCitizen for PersonaAircRuntime {
     }
 
     async fn subscribe_all_rooms(&self) -> Result<airc_lib::FilteredEventStream, AircError> {
-        crate::persona::airc_citizen::subscribe_every_room(&self.airc).await
+        crate::routing::airc_subscription::subscribe_every_room(&self.airc).await
     }
 
     fn membership_epoch(&self) -> tokio::sync::watch::Receiver<u64> {

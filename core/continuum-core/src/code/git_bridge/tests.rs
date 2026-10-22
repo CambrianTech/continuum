@@ -511,8 +511,8 @@
 
         let _ = fs::remove_file(&hook_pid);
         let context = crate::identity::hands_context::HandsContext::fresh();
-        let lease = std::sync::Arc::new(crate::code::hands::admit(context).expect("open hands"));
-        let run = crate::code::hands::admitted(Some(lease), run_git(dir.path(), &commit));
+        let lease = std::sync::Arc::new(crate::identity::hands_gate::admit(context).expect("open hands"));
+        let run = crate::identity::hands_gate::admitted(Some(lease), run_git(dir.path(), &commit));
         tokio::select! {
             out = run => panic!("the git ended on its own: {out:?}"),
             () = async {
@@ -528,15 +528,15 @@
         // within the deadline (#5062's CI, 2026-10-15: pid 15439 was unconfirmed at the snapshot;
         // card fb166622; the same race #5053 fixed for the hook pid).
         tokio::time::timeout(std::time::Duration::from_secs(10), async {
-            let lingering = crate::code::hands::close(context).await;
+            let lingering = crate::identity::hands_gate::close(context).await;
             assert!(lingering.unknown.is_empty(), "no tree it started is unknown: {lingering:?}");
             let mut still = lingering.processes;
             while !still.is_empty() {
                 still = crate::inference::lane_process::recheck(&still);
-                crate::code::hands::retain_processes(context, still.clone());
+                crate::identity::hands_gate::retain_processes(context, still.clone());
                 tokio::time::sleep(std::time::Duration::from_millis(10)).await;
             }
-            assert!(crate::code::hands::close(context).await.is_empty(), "the release confirmed everything it started");
+            assert!(crate::identity::hands_gate::close(context).await.is_empty(), "the release confirmed everything it started");
         })
         .await
         .expect("the release confirms the cancelled git's tree ended");

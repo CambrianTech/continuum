@@ -526,7 +526,7 @@ impl InferenceHandleModule {
                 // returned `Arc` is owned, so the guard drops at the `;`.
                 // (`open_lane` below is synchronous, so no await follows the
                 // read anyway — the guard is held across nothing.)
-                let from_registry = crate::ai::global_registry::global_registry()
+                let from_registry = crate::ai::adapter::global_registry()
                     .read()
                     .await
                     .get_arc(&params.provider);

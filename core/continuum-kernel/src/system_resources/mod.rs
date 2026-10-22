@@ -34,6 +34,7 @@ pub mod rotation_log_pool;
 pub mod swap_activity;
 pub mod sustained;
 pub mod ports;
+pub mod process_tree;
 
 pub use concurrency::local_inference_capacity;
 

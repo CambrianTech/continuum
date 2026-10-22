@@ -21,8 +21,8 @@ pub trait PersonaAdapterFactory: Send + Sync {
     ) -> Result<Arc<dyn AIProviderAdapter>, String>;
 }
 
-/// Production factory: hands every profile to
-/// `LlamaCppAdapter::for_persona`. Stateless — safe to share via
+/// Production factory: resolves every profile to its launch and hands it to
+/// `LlamaCppAdapter::for_launch`. Stateless — safe to share via
 /// `Arc` across the supervisor's persona materialization loop.
 pub struct LlamaCppPersonaAdapterFactory;
 
@@ -32,9 +32,10 @@ impl PersonaAdapterFactory for LlamaCppPersonaAdapterFactory {
         &self,
         profile: &PersonaInferenceProfile,
     ) -> Result<Arc<dyn AIProviderAdapter>, String> {
-        let adapter = crate::inference::llamacpp_adapter::LlamaCppAdapter::for_persona(profile)
-            .map_err(|e| format!("LlamaCppAdapter::for_persona failed: {e}"))?;
-        Ok(Arc::new(adapter))
+        let launch = profile
+            .llamacpp_launch()
+            .map_err(|e| format!("LlamaCppAdapter launch failed: {e}"))?;
+        Ok(Arc::new(crate::inference::llamacpp_adapter::LlamaCppAdapter::for_launch(&launch)))
     }
 }
 

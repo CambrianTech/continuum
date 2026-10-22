@@ -413,12 +413,12 @@ impl ServingDaemonModule {
                                 && g.lanes == live.lanes
                         })
                     {
-                        let observed = crate::cognition::working_set::PromptSample::geometry_median(
+                        let observed = crate::inference::resource_admission::PromptSample::geometry_median(
                             &(self.leased_in_sent)(),
                             endpoint.root(),
                             &geometry,
                         );
-                        crate::modules::served_window_store::record_reconciled(
+                        crate::inference::served_window_store::record_reconciled(
                             geometry,
                             settled_now,
                             observed,

@@ -249,7 +249,7 @@ pub struct CommandDescriptor {
     pub native: bool,
     /// The trained/former/expected tool-call names this command answers to (from
     /// [`CommandSpec::ALIASES`]). Aggregated into the one generated inverse index
-    /// (`cognition::tool_dialect`) that maps a model's reflex name back to this
+    /// (`ai::tool_dialect`) that maps a model's reflex name back to this
     /// command. Empty for most commands.
     pub aliases: &'static [&'static str],
     pub params: TypeRef,

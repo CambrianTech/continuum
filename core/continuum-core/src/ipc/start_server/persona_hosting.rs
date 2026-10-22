@@ -207,7 +207,7 @@ pub(super) fn start_persona_host(
             .with_remembered_lanes(
                 // One record, one law (#4255): a collapsed geometry seeds the roster bound no
                 // more than it seeds the boot plan.
-                crate::modules::served_window_store::load_geometry()
+                crate::inference::served_window_store::load_geometry()
                     .and_then(|g| g.cache_geometry().map(|(_, l)| l)),
             ),
         instance_manager.clone(),

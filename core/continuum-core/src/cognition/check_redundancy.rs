@@ -50,7 +50,7 @@ use continuum_base::time::EpochMs;
 use crate::ai::types::ResponseFormat;
 use crate::ai::{ChatMessage, MessageContent, TextGenerationRequest};
 use crate::cognition::should_respond::{AIDecisionContext, GatingConversationMessage};
-use crate::ai::global_registry::{generate_text, global_registry};
+use crate::ai::adapter::{generate_text, global_registry};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use ts_rs::TS;

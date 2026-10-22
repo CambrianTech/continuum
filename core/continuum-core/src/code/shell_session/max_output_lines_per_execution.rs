@@ -46,7 +46,7 @@ pub struct ExecutionState {
     /// What the shell had started that was still running after the kill, by identity. Not
     /// assumed gone: a release re-kills and re-checks each one, and keeps the context while any
     /// is still present.
-    pub unconfirmed_descendants: Vec<crate::inference::lane_process::ProcessIdentity>,
+    pub unconfirmed_descendants: Vec<crate::system_resources::process_tree::ProcessIdentity>,
     /// Cursor: index of next stdout line to return on poll/watch.
     pub(super) stdout_cursor: usize,
     /// Cursor: index of next stderr line to return on poll/watch.
@@ -62,7 +62,7 @@ pub struct ExecutionState {
 // completed-looking execution whose descendants have not been confirmed ended.
 pub(super) struct ShellCargoCustody {
     pub(super) state: Arc<Mutex<ExecutionState>>,
-    pub(super) admission: Arc<super::super::hands::HandsLease>,
+    pub(super) admission: Arc<crate::identity::hands_gate::HandsLease>,
     pub(super) kept: crate::system_resources::disk_reporters::Kept,
     pub(super) completed: bool,
 }
@@ -84,7 +84,7 @@ impl Drop for ShellCargoCustody {
             self.admission.keep_held(&[self.kept.clone()]);
             return;
         }
-        let end = crate::inference::lane_process::TreeEnd {
+        let end = crate::system_resources::process_tree::TreeEnd {
             reaped: if state.process_ended && state.process_end_error.is_none() { Ok(()) }
                 else { Err(state.process_end_error.clone().unwrap_or_else(|| "shell task ended without confirming its child".into())) },
             survivors: state.unconfirmed_descendants.clone(),

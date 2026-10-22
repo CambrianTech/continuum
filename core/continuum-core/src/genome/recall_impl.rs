@@ -13,7 +13,7 @@ use super::recall_trait::{
     CapabilityQuery, CompositionHint, DemandAlignedRecall, EngramRef, LoRALayerRef, MoEExpertRef,
     RankedPool, RecallContext, RecallScoreWeights, RecallTrace,
 };
-use super::working_set::{ArtifactId, PageKind};
+use crate::inference::page_ref::{ArtifactId, PageKind};
 
 /// A fully-described candidate ready for scoring. The caller
 /// (PR-3c's working-set walker) populates these from substrate

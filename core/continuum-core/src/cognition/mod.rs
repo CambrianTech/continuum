@@ -101,7 +101,6 @@ pub mod handoff;
 /// requires of anything that accumulates (#3903 review).
 pub(crate) mod bounded_room_ledger;
 pub mod provenance;
-pub mod prefill_throttle;
 pub mod prompt_capture;
 pub(crate) mod prompt_prefix;
 pub mod rag_source_faculty;
@@ -112,13 +111,10 @@ pub mod audience;
 pub mod replay;
 pub mod room_roster;
 pub mod resolution;
-pub mod resource_admission;
+pub mod turn_ledger;
 pub mod response_orchestrator;
 pub mod response_validator;
 pub mod self_repeat;
-pub mod kv_cache_plan;
-pub mod serving_plan;
-pub mod window_allocator;
 pub mod shared_analysis;
 pub mod should_respond;
 pub mod should_respond_module;
@@ -126,11 +122,9 @@ pub mod swe_bench;
 pub mod swe_verdict_sweep;
 pub mod threat_detector;
 pub mod token_budget;
-pub mod tool_dialect;
 pub mod tool_embedding;
 pub mod tool_executor;
 pub mod tool_relevance;
-pub mod tool_usage;
 pub mod turn_batch;
 pub mod types;
 pub mod validate_response;
@@ -144,7 +138,6 @@ pub mod workspace_capture;
 pub mod workspace_dashboard;
 
 pub use model_resolver::*;
-pub use resource_admission::*;
 pub use response_orchestrator::{
     orchestrate, score_persona, PersonaSlot, DEFAULT_RELEVANCE_THRESHOLD,
 };

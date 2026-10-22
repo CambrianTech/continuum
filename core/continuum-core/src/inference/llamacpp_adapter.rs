@@ -89,6 +89,7 @@ fn model_info_with_runtime(
 }
 
 mod construction;
+pub use construction::LlamaCppLaunch;
 mod payload;
 #[cfg(test)]
 mod tests;

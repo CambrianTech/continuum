@@ -31,6 +31,7 @@ pub mod airc_event_transport;
 pub mod airc_realtime;
 pub mod airc_realtime_wire;
 pub mod airc_transport;
+pub mod airc_subscription;
 pub mod auth_policy;
 pub mod capped_appender;
 pub mod command_acl;

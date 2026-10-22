@@ -185,7 +185,7 @@ impl AircCitizen for AircHandleAdapter {
     }
 
     async fn subscribe_all_rooms(&self) -> Result<airc_lib::FilteredEventStream, AircError> {
-        crate::persona::airc_citizen::subscribe_every_room(&self.inner).await
+        crate::routing::airc_subscription::subscribe_every_room(&self.inner).await
     }
 
     async fn say_in(&self, room_id: Uuid, text: &str) -> Result<EventId, AircError> {

@@ -169,7 +169,7 @@ mod tests {
     //! subscriber sees the right key + payload. Same shape as
     //! genome::bus tests (#1358).
     use super::*;
-    use crate::genome::working_set::{ArtifactId, PageKind, PageOffset, PageRef};
+    use crate::inference::page_ref::{ArtifactId, PageKind, PageOffset, PageRef};
     use crate::identity::PeerId;
     use crate::inference::llm_module::{
         CompositionPlan, FinishReason, GenerationBudget, InferenceRequestId, SamplingParams,

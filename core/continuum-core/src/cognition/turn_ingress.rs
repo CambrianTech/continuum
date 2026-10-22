@@ -171,7 +171,7 @@ pub(crate) async fn settle(cap: std::time::Duration) -> TurnSettle {
     let started = std::time::Instant::now();
     let in_flight_at_close = in_flight();
     let cap_ms = cap.as_millis().min(u128::from(u64::MAX)) as u64;
-    let turns = crate::cognition::resource_admission::in_flight_turns(EpochMs::now().millis());
+    let turns = crate::cognition::turn_ledger::in_flight_turns(EpochMs::now().millis());
     let bound_ms = settle_bound_ms(&turns, in_flight_at_close > turns.len() as u64, cap_ms);
     let bound_source = if in_flight_at_close == 0 {
         "nothing_in_flight"

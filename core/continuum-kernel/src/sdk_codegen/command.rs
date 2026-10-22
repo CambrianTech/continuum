@@ -338,7 +338,7 @@ pub trait ActionCommand: Send + Sync + Sized + 'static {
     /// name this command carried before it moved. Declared HERE, on the command
     /// itself, so a command is fully portable: rename/move it and its aliases
     /// travel with it — no central table to keep in sync. Aggregated into one
-    /// generated inverse index ([`crate::cognition::tool_dialect`]); a name two
+    /// generated inverse index ([`crate::ai::tool_dialect`]); a name two
     /// commands both claim is a build-time panic. Defaults to none.
     const ALIASES: &'static [&'static str] = &[];
 

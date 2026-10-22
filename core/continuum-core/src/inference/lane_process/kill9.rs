@@ -2,7 +2,13 @@
 #[cfg(windows)]
 use super::*;
 use crate::system_resources::disk_reporters::Kept;
+use crate::system_resources::process_tree::{ProcessIdentity, TreeEnd};
 
+
+/// How often an owned execution's task looks for a kill request: the cadence a kill is noticed
+/// at, and so the cadence a release checks a killed tree has ended at ([`confirm_gone`] waits
+/// one of these). The shell's execution task polls at it too.
+pub const KILL_POLL: std::time::Duration = std::time::Duration::from_millis(100);
 
 /// `SIGKILL` the pid. Best-effort: a race where it already exited is fine.
 #[cfg(unix)]
@@ -19,14 +25,6 @@ pub fn kill9(pid: u32) {
     let _ = airc_core::process::background("taskkill")
         .args(["/F", "/T", "/PID", &pid.to_string()])
         .output();
-}
-
-/// One process as the process table saw it: its pid and start time. An act on it later is
-/// refused if the pid now names another process (pid reuse never kills a stranger).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ProcessIdentity {
-    pub pid: u32,
-    pub start_time: u64,
 }
 
 /// Every descendant of `pid` in the process table, DEEPEST FIRST, each with its identity: what
@@ -96,32 +94,6 @@ pub fn kill_if_same(who: ProcessIdentity) -> bool {
     }
 }
 
-/// How ending a child and everything it started came out (Astra on ea06701d and #5026): whether
-/// the child's own reap was PROVEN, which of its descendants still run as the same process, and
-/// why the tree could not be walked at all. Delivering a signal is not confirming an exit, so
-/// nothing here is assumed.
-#[derive(Debug)]
-pub struct TreeEnd {
-    pub reaped: Result<(), String>,
-    pub survivors: Vec<ProcessIdentity>,
-    /// Set when the walk for descendants itself failed: what the child started is UNKNOWN, so
-    /// nothing may count it gone (a release holds the hands and names this).
-    pub unwalked: Option<String>,
-}
-
-impl TreeEnd {
-    /// Everything ended and confirmed: reaped, nothing surviving, nothing unknown.
-    pub fn confirmed(&self) -> bool {
-        self.reaped.is_ok() && self.survivors.is_empty() && self.unwalked.is_none()
-    }
-
-    /// What no re-check can confirm: an unproven reap of the child itself, and a tree no walk
-    /// read. A holder of the end keeps these until its owner decides (Codex root on #5026).
-    pub fn unknown(&self) -> impl Iterator<Item = String> + '_ {
-        self.reaped.as_ref().err().cloned().into_iter().chain(self.unwalked.clone())
-    }
-}
-
 /// End `child` and its tree: THE one way an owned child is ended (the shell's execution task and
 /// `gh`'s owner). Its descendants are found while it is alive and still their parent, killed
 /// deepest first (each only while its pid names the same process), then the child is killed and
@@ -157,7 +129,7 @@ pub async fn end_tree(child: &mut tokio::process::Child) -> TreeEnd {
     // from 1 ms, until it is gone or one KILL_POLL has passed, the cadence a release already checks
     // a killed execution at. What remains after that is recorded, never assumed gone: a release
     // re-checks it, as before.
-    let survivors = confirm_gone(check, crate::code::shell_session::KILL_POLL).await;
+    let survivors = confirm_gone(check, KILL_POLL).await;
     TreeEnd { reaped, survivors, unwalked }
 }
 
@@ -276,7 +248,7 @@ pub(super) async fn read_stream(pipe: Option<impl tokio::io::AsyncRead + Unpin>,
 /// A child the core waits on, owned until its whole lifecycle has ended: the child and the tree
 /// it started, AND the reading of its output (Astra on #5026, Codex root on #5030). Ending it is
 /// ONE path for a timeout and a dropped waiter (a cancelled command, a rebooting core) alike. It
-/// keeps the admission of the work that started it (`code::hands::current`), so a release never
+/// keeps the admission of the work that started it (`identity::hands_gate::current`), so a release never
 /// completes under it, and what it can't confirm is kept on that admission.
 /// One pipe task a run owns: a reader of its stdout or stderr, or the writer of its stdin.
 /// Every one has the SAME lifecycle (Codex root on #5035: the ownership defect repeated across
@@ -293,13 +265,13 @@ pub(super) struct PipeTask {
 /// A child the core waits on, owned until its whole lifecycle has ended: the child and the tree
 /// it started, AND its pipes (Astra on #5026, Codex root on #5030 and #5035). Ending it is ONE
 /// path for a timeout and a dropped waiter (a cancelled command, a rebooting core) alike. It
-/// keeps the admission of the work that started it (`code::hands::current`), so a release never
+/// keeps the admission of the work that started it (`identity::hands_gate::current`), so a release never
 /// completes under it, and what it can't confirm is kept on that admission.
 pub(super) struct OwnedChild {
     pub(super) child: Option<tokio::process::Child>,
     pub(super) pipes: Vec<PipeTask>,
     pub(super) capture: std::sync::Arc<RunCapture>,
-    pub(super) held: Option<std::sync::Arc<crate::code::hands::HandsLease>>,
+    pub(super) held: Option<std::sync::Arc<crate::identity::hands_gate::HandsLease>>,
     /// What its caller holds for it ([`holding`]), kept until its tree has ended.
     pub(super) kept: Vec<Kept>,
     pub(super) label: &'static str,
@@ -315,7 +287,7 @@ tokio::task_local! {
 /// tree's end runs after it ([`OwnedChild`]'s drop), so an exclusion held only by the future
 /// (a checkout's sync lock) would admit the next holder beside a git still being ended
 /// (Codex reviewer on #5037). Nested scopes add to what the outer ones hold. It needs an
-/// admission ([`crate::code::hands::admitted`]): what an unconfirmed end keeps goes onto it.
+/// admission ([`crate::identity::hands_gate::admitted`]): what an unconfirmed end keeps goes onto it.
 pub async fn holding<F: std::future::Future>(value: Kept, work: F) -> F::Output {
     let mut all = HOLDING.try_with(Vec::clone).unwrap_or_default(); // unwrap_or_default: outside any scope nothing else is held
     all.push(value);
@@ -386,7 +358,7 @@ impl Drop for OwnedChild {
 /// End an owned child and its tree ([`end_tree`]) while holding the admission it was started
 /// under. What can't be confirmed ended is kept ON the admission before it drops, so the
 /// release that waits it out re-checks those processes and holds the hands for the rest.
-pub(super) async fn end_owned(mut child: tokio::process::Child, held: Option<std::sync::Arc<crate::code::hands::HandsLease>>, kept: Vec<Kept>, label: &'static str) -> TreeEnd {
+pub(super) async fn end_owned(mut child: tokio::process::Child, held: Option<std::sync::Arc<crate::identity::hands_gate::HandsLease>>, kept: Vec<Kept>, label: &'static str) -> TreeEnd {
     let end = end_tree(&mut child).await;
     if !end.confirmed() {
         continuum_base::probe!(
@@ -412,7 +384,7 @@ pub(super) async fn end_owned(mut child: tokio::process::Child, held: Option<std
 /// its admission's lingering record, released only when a re-check finds nothing left (Codex
 /// reviewer on #5037). `kept` is non-empty only under an admission: [`run_owned_with_input`]
 /// refuses `holding` without one before anything starts.
-pub(super) fn keep_with_lingering(held: Option<&std::sync::Arc<crate::code::hands::HandsLease>>, kept: &[Kept]) {
+pub(super) fn keep_with_lingering(held: Option<&std::sync::Arc<crate::identity::hands_gate::HandsLease>>, kept: &[Kept]) {
     if let Some(lease) = held {
         lease.keep_held(kept);
     }
@@ -578,7 +550,7 @@ pub async fn run_owned_with_input(
     }
     let deadline = bound.map(|b| tokio::time::Instant::now() + b);
     let kept = HOLDING.try_with(Vec::clone).unwrap_or_default(); // unwrap_or_default: started outside any `holding` scope, it keeps nothing extra
-    let held = crate::code::hands::current();
+    let held = crate::identity::hands_gate::current();
     if !kept.is_empty() && held.is_none() {
         // what a caller holds for a child is released when the child's end is confirmed, or by
         // the admission's re-check when it isn't; with no admission nothing could release it

@@ -296,7 +296,7 @@ async fn serve_or_adopt<C: LlamaServerControl + ?Sized>(
             // that seat within seven minutes. Adopt against the geometry a spawn would
             // produce NOW: a different decision is a stale lane and relaunches once, the
             // probe naming both. Unknown (no argv, a fake) is not a mismatch.
-            let planned_kv = crate::cognition::kv_cache_plan::resolve();
+            let planned_kv = crate::inference::kv_cache_plan::resolve();
             let running_kv = ctrl.launch_kv();
             let kv_ok = running_kv.as_ref().is_none_or(|r| {
                 r.cache_type_or_default().eq_ignore_ascii_case(&planned_kv.cache_type)

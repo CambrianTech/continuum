@@ -506,7 +506,7 @@ pub(super) async fn acquire_exam_serving_context() -> crate::cognition::exam_ser
     else {
         return ExamServingContext::ludicrous_fallback().await;
     };
-    let Some(fp) = crate::cognition::serving_plan::footprint::footprint_for(&model) else {
+    let Some(fp) = crate::inference::planning::serving_plan::footprint::footprint_for(&model) else {
         return ExamServingContext::ludicrous_fallback().await;
     };
     // Capacity = the ONE memory authority's governed budget (VRAM netted over every measured

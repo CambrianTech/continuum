@@ -102,7 +102,7 @@ fn a_boot_before_any_lane_reports_its_model_reads_the_remembered_models_knee() {
     assert_eq!(knee_lanes(17, None), 17);
     // Exercise the actual plan as well as the lookup: remembering a one-lane
     // collapse cannot defeat today's two-lane knee, even before a slot reports.
-    use crate::cognition::serving_plan::{
+    use crate::inference::planning::serving_plan::{
         plan_serving_at_rest, HostBudget, ModelFootprint, ServingDemand,
     };
     let model = ModelFootprint {
@@ -380,7 +380,7 @@ async fn a_plan_below_one_coding_turn_is_not_published_and_the_previous_stands()
         .expect("a cold boot publishes the best runnable plan, starved or not");
     assert!(starved.served_context_window <= 32_768);
     assert!(
-        !crate::cognition::serving_plan::persona_lane_holds(
+        !crate::inference::planning::serving_plan::persona_lane_holds(
             starved.served_context_window,
             Some(70_071)
         ),

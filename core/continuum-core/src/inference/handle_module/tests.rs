@@ -129,7 +129,7 @@ async fn open_resolves_via_shared_registry_when_absent_from_local_map() {
     // Register the heuristic adapter in the SHARED registry only.
     // get_arc(HEURISTIC_PROVIDER_ID) is robust to a prior test having
     // already registered it — either way it resolves to Some.
-    crate::ai::global_registry::global_registry()
+    crate::ai::adapter::global_registry()
         .write()
         .await
         .register(

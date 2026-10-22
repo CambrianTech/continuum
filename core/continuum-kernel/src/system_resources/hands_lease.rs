@@ -2,7 +2,7 @@
 //! trees (workspace reclaim, cargo-target observation) so two never overlap. A machine fact
 //! the kernel's pools take, so it lives here rather than in the work module above them.
 //!
-//! (Not the per-context `code::hands::HandsLease`, which is a different admission.)
+//! (Not the per-context `identity::hands_gate::HandsLease`, which is a different admission.)
 
 /// One-per-persona hands lease: a workspace reclaim takes the resident's hands so no
 /// two reclaims (or a reclaim and anything else that takes them) work one tree at once.

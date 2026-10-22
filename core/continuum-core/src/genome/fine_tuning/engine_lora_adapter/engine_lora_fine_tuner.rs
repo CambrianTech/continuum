@@ -414,7 +414,10 @@ impl FineTuningAdapter for EngineLoraFineTuner {
                     consumer: consumer.clone(),
                     reserved_bytes: bytes,
                     interrupted: None,
-                    job_spec: Some(spec.clone()),
+                    job_spec: Some(
+                        crate::inference::engine_residency::OwnerSpec::of(&spec)
+                            .map_err(|e| failure(&format!("engine training could not hold its re-attach spec: {e}")))?,
+                    ),
                     memory: Some(memory),
                 };
                 let (bind_store, mut bind_work) = (store.clone(), bound.clone());

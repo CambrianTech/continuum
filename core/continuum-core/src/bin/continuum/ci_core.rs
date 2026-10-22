@@ -2,49 +2,7 @@
 
 use super::*;
 
-/// The build keys this node could move to, newest first: those after the running core up
-/// to the tip (bounded by `DEPLOY_CANDIDATE_LIMIT`), with the tip's own key always first.
-/// With no running core, or a history git cannot walk, it is the tip's key alone, said in
-/// the log.
-pub(super) fn deploy_candidates(repo: &Path, running: Option<&str>, tip: &str, newest_key: &str) -> Vec<String> {
-    let mut keys: Vec<String> = match running {
-        None => Vec::new(),
-        Some(running) => {
-            let args = continuum_cli_lifecycle::prebuilt_artifact::candidate_keys_log_args(running, tip);
-            let args: Vec<&str> = args.iter().map(String::as_str).collect();
-            match git_in(repo, &args) {
-                Ok(out) => out.lines().map(str::trim).filter(|l| !l.is_empty()).map(str::to_string).collect(),
-                Err(why) => {
-                    deploy_note(&format!("deploy-consume: cannot list builds since {running}: {why}; waiting on the tip's core only"));
-                    Vec::new()
-                }
-            }
-        }
-    };
-    keys.retain(|key| key != newest_key);
-    keys.insert(0, newest_key.to_string());
-    keys
-}
-
-/// Has CI published `key`'s core for `platform`? One small request for the manifest: the
-/// archive is fetched only for the key chosen.
-pub(super) async fn ci_core_published(key: &str, platform: &str) -> Result<bool, String> {
-    let url = continuum_cli_lifecycle::prebuilt_artifact::manifest_url(key, platform)
-        .ok_or_else(|| format!("{key} is not a full commit sha"))?;
-    let client = reqwest::Client::builder()
-        .connect_timeout(Duration::from_secs(30))
-        .timeout(Duration::from_secs(60))
-        .build()
-        .map_err(|e| format!("http client: {e}"))?;
-    // GET, not HEAD: a release asset redirects to storage signed for GET, which can refuse
-    // a HEAD; the manifest is a few hundred bytes.
-    let resp = client.get(&url).send().await.map_err(|e| format!("asking {url}: {e}"))?;
-    match resp.status() {
-        reqwest::StatusCode::NOT_FOUND => Ok(false),
-        status if status.is_success() => Ok(true),
-        status => Err(format!("asking {url}: {status}")),
-    }
-}
+pub(super) use continuum_core::modules::deploy_candidate::{deploy_candidates, ci_core_published};
 
 pub(super) struct CiPublishedCore<'a> {
     pub(super) repo: &'a Path,

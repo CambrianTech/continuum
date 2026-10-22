@@ -405,11 +405,11 @@ impl ServiceModule for GridModule {
                 .unwrap_or_default(); // unwrap_or_default: no registry = no residents = no requirement yet
             let requirement = crate::cognition::working_set::global()
                 .sent_median_of(&residents)
-                .map(crate::cognition::serving_plan::prompt_floor_of);
+                .map(crate::inference::planning::serving_plan::prompt_floor_of);
             let local = crate::persona::placement_switch::LocalShape {
                 requirement,
                 lane_wait_p50_ms: {
-                    let (p50, samples) = crate::cognition::resource_admission::local_lane_wait_p50_ms();
+                    let (p50, samples) = crate::inference::resource_admission::local_lane_wait_p50_ms();
                     (samples > 0).then_some(p50)
                 },
                 resident: crate::persona::airc_runtime_registry::PersonaAircRuntimeRegistry::try_global()
@@ -420,7 +420,7 @@ impl ServiceModule for GridModule {
                     .active_model
                     .as_deref()
                     .and_then(rank_of)
-                    .unwrap_or(crate::cognition::serving_plan::footprint::UNMEASURED_RANK_CAP), // JUSTIFIED unwrap_or: an unmeasured local model ranks at the planner's proxy cap, the number the planner itself uses
+                    .unwrap_or(crate::inference::planning::serving_plan::footprint::UNMEASURED_RANK_CAP), // JUSTIFIED unwrap_or: an unmeasured local model ranks at the planner's proxy cap, the number the planner itself uses
             };
             for line in placement::follow_the_fleet(now, peers, local, &rank_of).await {
                 say_in_org_room(&line).await;

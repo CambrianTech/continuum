@@ -311,7 +311,7 @@ pub(crate) fn persona_tool_error(attempted: &str, raw: String) -> String {
     // Omission from the default menu is not an authorization failure. These verbs
     // remain discoverable; preserve the actual refusal (or transport failure) so
     // a legitimate reviewer can recover, alongside purpose/own-work guidance.
-    if let Some(withheld) = crate::cognition::tool_dialect::withheld_from_hands(&normalized) {
+    if let Some(withheld) = crate::ai::tool_dialect::withheld_from_hands(&normalized) {
         return format!(
             "`{normalized}` failed: {raw}\n{}\n{}",
             withheld.why, withheld.instead
@@ -347,12 +347,12 @@ pub(crate) fn persona_tool_error(attempted: &str, raw: String) -> String {
         // the teach message names what actually runs. This is the alias-aware face of
         // the ONE tool_dialect section [[tool-naming-meet-their-training-alias-or-redirect]].
         let mut candidates = ai_names.clone();
-        candidates.extend_from_slice(crate::cognition::tool_dialect::ai_safe_aliases());
+        candidates.extend_from_slice(crate::ai::tool_dialect::ai_safe_aliases());
         let mut seen = std::collections::HashSet::new();
         let suggestions: Vec<String> =
             crate::sdk_codegen::ai_help::did_you_mean(&normalized, &candidates)
                 .into_iter()
-                .map(crate::cognition::tool_dialect::resolve_wire_name)
+                .map(crate::ai::tool_dialect::resolve_wire_name)
                 .filter(|canonical| seen.insert(canonical.clone()))
                 .collect();
         // Not a wrong verb — not a verb at all. A path or a bare symbol in the name
@@ -360,7 +360,7 @@ pub(crate) fn persona_tool_error(attempted: &str, raw: String) -> String {
         // has nothing near it, and "call `commands/help`" was the whole receipt
         // (card b579a9c7). Name the slip and put her own arguments back in front of
         // her, the way the nameless-args sentinel does.
-        if let Some(slip) = crate::cognition::tool_dialect::not_a_verb(attempted, !suggestions.is_empty()) {
+        if let Some(slip) = crate::ai::tool_dialect::not_a_verb(attempted, !suggestions.is_empty()) {
             continuum_base::probe!(
                 class = "tool.name.not_a_verb",
                 slip = ?slip,
@@ -368,14 +368,14 @@ pub(crate) fn persona_tool_error(attempted: &str, raw: String) -> String {
                 "the tool NAME field held something that is not a verb; the receipt names the slip"
             );
             return match slip {
-                crate::cognition::tool_dialect::NotAVerb::Path => format!(
+                crate::ai::tool_dialect::NotAVerb::Path => format!(
                     "`{attempted}` is a PATH, not a tool — you put the path where the tool \
                      NAME goes, so nothing ran. A path is an argument; the verb goes first:\n\
                      `code/read({{\"file_path\": \"{attempted}\"}})` to read it, `code/write` or \
                      `code/edit` to change it, `code/list` for a directory, `code/shell` with \
                      `cwd` to run a command there. Retry with the verb in front."
                 ),
-                crate::cognition::tool_dialect::NotAVerb::Identifier => format!(
+                crate::ai::tool_dialect::NotAVerb::Identifier => format!(
                     "`{attempted}` is not a tool, and is not near one — it reads like a symbol \
                      from what you were working on (a field, a variable, a name) put where the \
                      tool NAME goes, so nothing ran. The verb goes first: \
@@ -609,7 +609,7 @@ impl ToolExecutor for CommandToolExecutor {
                     // longer decodes projects `Undecodable` — schema drift, a defect,
                     // and never silently a success (Astra, #4352 review).
                     let canonical =
-                        crate::cognition::tool_dialect::resolve_wire_name(&calls[i].name);
+                        crate::ai::tool_dialect::resolve_wire_name(&calls[i].name);
                     let (verdict, dispatch_handle) =
                         crate::sdk_codegen::project_result(&canonical, &value);
                     if verdict == ActVerdict::Undecodable {

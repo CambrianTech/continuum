@@ -73,7 +73,7 @@ pub struct AIProviderModule {
 /// an unknown budget must not become an invented ceiling.
 pub(super) fn kv_safe_context(model: &crate::model_registry::Model) -> u32 {
     let trained = model.context_window;
-    let Some(fp) = crate::cognition::serving_plan::footprint::footprint_for(model) else {
+    let Some(fp) = crate::inference::planning::serving_plan::footprint::footprint_for(model) else {
         return trained;
     };
     if fp.kv_per_token == 0 {
@@ -102,7 +102,7 @@ pub(super) fn kv_safe_context(model: &crate::model_registry::Model) -> u32 {
 impl AIProviderModule {
     pub fn new() -> Self {
         Self {
-            registry: GLOBAL_REGISTRY.clone(),
+            registry: crate::ai::adapter::global_registry(),
             log: OnceLock::new(),
             gpu_manager: None,
             dmr_consecutive_down_ticks: Arc::new(AtomicU64::new(0)),
@@ -115,7 +115,7 @@ impl AIProviderModule {
         gpu_manager: Arc<crate::gpu::memory_manager::GpuMemoryManager>,
     ) -> Self {
         Self {
-            registry: GLOBAL_REGISTRY.clone(),
+            registry: crate::ai::adapter::global_registry(),
             log: OnceLock::new(),
             gpu_manager: Some(gpu_manager),
             dmr_consecutive_down_ticks: Arc::new(AtomicU64::new(0)),

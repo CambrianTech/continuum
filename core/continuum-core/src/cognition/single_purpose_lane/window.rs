@@ -70,7 +70,7 @@ pub(crate) fn plan_lane_ctx(base: &crate::model_registry::Model) -> u32 {
 /// memory authority `plan_serving` sizes against, never a raw GPU probe. `None` when the host is
 /// ungoverned or the model can't be sized, which the caller reads as "no cap".
 pub(crate) fn lane_fit_window(base: &crate::model_registry::Model) -> Option<u32> {
-    let fp = crate::cognition::serving_plan::footprint::footprint_for(base)?;
+    let fp = crate::inference::planning::serving_plan::footprint::footprint_for(base)?;
     if fp.kv_per_token == 0 {
         return None;
     }

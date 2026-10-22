@@ -91,7 +91,7 @@ fn git(repo: &Path, args: &[&str]) -> Result<String, CommandError> {
 /// for the miner's verification record.
 fn cargo_test(
     dir: &Path,
-    admission: std::sync::Arc<crate::code::hands::HandsLease>,
+    admission: std::sync::Arc<crate::identity::hands_gate::HandsLease>,
 ) -> (bool, String) {
     let runtime = match tokio::runtime::Handle::try_current() {
         Ok(runtime) => runtime,
@@ -100,7 +100,7 @@ fn cargo_test(
     // The blocking miner borrows the batch's existing admission. Its compiler
     // uses the same owned child path as code/cargo, including unresolved ends.
     let result: Result<_, String> =
-        runtime.block_on(crate::code::hands::admitted(Some(admission), async {
+        runtime.block_on(crate::identity::hands_gate::admitted(Some(admission), async {
             let target = crate::paths::cargo::target_dir(dir)?;
             let cargo =
                 crate::system_resources::disk_reporters::admit_cargo_target(&target, dir, None)
@@ -274,8 +274,8 @@ impl ActionCommand for GymMine {
 
         // The mining walk is blocking (git + cargo shell-outs, potentially
         // minutes) — off the async worker, one spawn_blocking for the batch.
-        let mined = crate::code::hands::scoped_admitted(async move {
-            let admission = crate::code::hands::current()
+        let mined = crate::identity::hands_gate::scoped_admitted(async move {
+            let admission = crate::identity::hands_gate::current()
                 .ok_or_else(|| CommandError::Internal("mining needs process admission".into()))?;
             tokio::task::spawn_blocking(move || mine(&repo, &tasks_dir, limit, admission))
                 .await
@@ -326,7 +326,7 @@ struct MineOutcome {
 /// The blocking mining walk. Newest-first over non-merge commits touching `.rs`.
 fn mine(
     repo: &Path, tasks_dir: &Path, limit: usize,
-    admission: std::sync::Arc<crate::code::hands::HandsLease>,
+    admission: std::sync::Arc<crate::identity::hands_gate::HandsLease>,
 ) -> Result<MineOutcome, CommandError> {
     let log = git(repo, &["log", "--no-merges", "--pretty=%H", "--", "*.rs"])?;
     let mut tasks = Vec::new();
@@ -621,8 +621,8 @@ mod tests {
         rt.block_on(crate::system_resources::disk_reporters::prepare_writer_fixture());
         let out = rt
             .block_on(async move {
-            crate::code::hands::scoped_admitted(async move {
-                    let admission = crate::code::hands::current().unwrap();
+            crate::identity::hands_gate::scoped_admitted(async move {
+                    let admission = crate::identity::hands_gate::current().unwrap();
                     tokio::task::spawn_blocking(move || mine(&repo, &tasks_dir, 5, admission))
                         .await
                         .unwrap()

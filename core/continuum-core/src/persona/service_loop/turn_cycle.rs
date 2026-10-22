@@ -172,7 +172,7 @@ pub(super) async fn run_turn_cycle(
             let _ambient_permit = if attention.requires_priority() || holds_work {
                 None
             } else {
-                match crate::cognition::resource_admission::try_hold_ambient_turn() {
+                match crate::inference::resource_admission::try_hold_ambient_turn() {
                     Some(permit) => Some(permit),
                     None => {
                         continuum_base::probe!(

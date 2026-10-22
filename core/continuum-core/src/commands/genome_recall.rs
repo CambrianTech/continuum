@@ -21,7 +21,7 @@ use ts_rs::TS;
 
 use crate::genome::recall_impl::{RecallDecision, RecallTraceStore};
 use crate::genome::recall_trait::{RankedPool, RecallScoreWeights, RecallTrace};
-use crate::genome::working_set::ArtifactId;
+use crate::inference::page_ref::ArtifactId;
 use crate::orm::OrmStore;
 use crate::runtime::LateBound;
 use crate::sdk_codegen::{AccessLevel, ActionCommand, CommandError, Ctx};

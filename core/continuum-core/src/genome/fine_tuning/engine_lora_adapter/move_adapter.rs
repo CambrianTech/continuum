@@ -178,8 +178,12 @@ impl EngineLoraFineTuner {
                 Ok(ReattachOutcome::Uncertain { reason })
             }
             Disposition::Attach => {
-                let Some(spec) = work.job_spec.clone() else {
+                let Some(held) = work.job_spec.as_ref() else {
                     return Ok(ReattachOutcome::Uncertain { reason: "the binding carries no job_spec".into() });
+                };
+                let spec: EngineRunSpec = match held.read() {
+                    Ok(spec) => spec,
+                    Err(e) => return Ok(ReattachOutcome::Uncertain { reason: format!("the binding's job_spec is not this build's run spec: {e}") }),
                 };
                 let lease = self.resident_leases.lock().ok().and_then(|mut leases| leases.remove(&job));
                 if lease.is_none() {

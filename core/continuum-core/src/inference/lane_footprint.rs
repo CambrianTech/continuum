@@ -79,7 +79,7 @@ impl MeasuredCost {
 /// at the floor the node fell to — the trap the 5090 sat in on 2026-09-20 (1 × 2,048,
 /// refusing every 17–31k prompt). A starved window is a fact for the plan to escape,
 /// never a measurement to remember.
-pub const MEASURABLE_WINDOW_MIN: u32 = crate::cognition::serving_plan::BOOTSTRAP_WORKING_SET;
+pub const MEASURABLE_WINDOW_MIN: u32 = crate::inference::planning::serving_plan::BOOTSTRAP_WORKING_SET;
 
 /// PURE: whether a per-token reading taken at `window` is a measurement at all.
 pub fn window_measurable(window: u32) -> bool {

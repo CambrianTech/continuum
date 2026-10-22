@@ -24,7 +24,7 @@ use ts_rs::TS;
 use uuid::Uuid;
 
 use crate::ai::types::ChatMessage;
-use crate::ai::global_registry::{generate_text, global_registry};
+use crate::ai::adapter::{generate_text, global_registry};
 use crate::sdk_codegen::{AccessLevel, ActionCommand, CommandError, Ctx};
 
 /// A live inference lease: a handle bound to a concrete model. Held in the global

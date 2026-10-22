@@ -31,6 +31,7 @@ pub mod benchmark_grade;
 pub mod citizen_health;
 pub(crate) mod deploy_actuator;
 pub mod deploy_tracker;
+pub mod deploy_candidate;
 pub mod floor_fetch;
 // The Bevy renderer's residency consumer — only with the renderer (`avatar-3d`).
 #[cfg(feature = "avatar-3d")]
@@ -95,8 +96,6 @@ pub mod sentinel;
 pub mod serving_consumer;
 pub mod serving_daemon;
 pub mod serving_pin_store;
-pub mod served_window_store;
-pub mod serving_footprints;
 pub mod serving_tier_down;
 pub mod system_resources;
 pub mod training_completion_sentinel;

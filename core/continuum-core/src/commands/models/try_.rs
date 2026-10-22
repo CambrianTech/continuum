@@ -34,7 +34,7 @@ use crate::ai::types::ImageInput;
 use crate::ai::{AdapterRegistry, ChatMessage, ContentPart, MessageContent, TextGenerationRequest};
 use crate::model_registry::live::{ModelCatalog, VerifyReport};
 use crate::model_registry::Capability;
-use crate::ai::global_registry::select_failure_message;
+use crate::ai::adapter::select_failure_message;
 use crate::sdk_codegen::CommandError;
 
 /// A 2×2 solid-red PNG (the smallest real image that survives a vision encoder).

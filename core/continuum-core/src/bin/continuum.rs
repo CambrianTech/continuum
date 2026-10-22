@@ -434,7 +434,7 @@ async fn run() -> Result<(), CliError> {
             // section personas and the socket route use — so the CLI accepts the
             // same vocabulary, and help + param-adaptation below key off the real
             // command name. Idempotent for an already-canonical name.
-            let command = continuum_core::cognition::tool_dialect::resolve_wire_name(command);
+            let command = continuum_core::ai::tool_dialect::resolve_wire_name(command);
             let rest: Vec<String> = args.collect();
             if rest.iter().any(|a| a == "--help" || a == "-h") {
                 return help_for(&command).await;
