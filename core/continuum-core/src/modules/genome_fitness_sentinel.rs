@@ -228,7 +228,7 @@ impl ServiceModule for GenomeFitnessSentinel {
     async fn tick(&self) -> Result<(), String> {
         // Enumerate the registered genes. A missing manifest = zero layers = nothing
         // to assess (not an error — the honest empty state).
-        let genes = match crate::forge::adapter_manifest::load() {
+        let genes = match crate::genome::adapter_manifest::load() {
             Ok(g) => g,
             Err(e) => {
                 continuum_base::probe!(

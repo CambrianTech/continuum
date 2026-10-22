@@ -221,7 +221,7 @@ impl FineTuningAdapter for MlxLoraFineTuner {
             })?;
 
             let mut cmd = tokio::process::Command::new(&python);
-            cmd.args(crate::forge::mlx_train::capped_lora_entrypoint(footprint))
+            cmd.args(crate::genome::fine_tuning::mlx_train::capped_lora_entrypoint(footprint))
                 .arg("--model")
                 .arg(&train_base)
                 .arg("--train")
@@ -316,7 +316,7 @@ pub(super) async fn admit_training(
     serving: Option<crate::inference::serving_lifecycle::LifecycleGate>,
 ) -> Result<crate::resources::LeaseGuard, FineTuningError> {
     let footprint = tokio::task::spawn_blocking(move || {
-        crate::forge::mlx_train::derive_train_footprint_bytes(&model_dir, batch, sequence)
+        crate::genome::fine_tuning::mlx_train::derive_train_footprint_bytes(&model_dir, batch, sequence)
     })
     .await
     .map_err(|error| FineTuningError::LocalTrainerFailed(error.to_string()))?
@@ -506,7 +506,7 @@ fn iters_for(request: &TrainingJobRequest, schedule: &ScheduleParams) -> u32 {
 /// variable and changes nothing else about what the trainer touches.
 fn lora_config_yaml(lora: &LoRAHyperparams) -> String {
     let scale = lora.alpha as f64 / (lora.rank.max(1) as f64);
-    crate::forge::mlx_train::render_lora_parameters_yaml(lora.rank, scale, lora.dropout as f64, &[])
+    crate::genome::fine_tuning::mlx_train::render_lora_parameters_yaml(lora.rank, scale, lora.dropout as f64, &[])
 }
 
 #[cfg(test)]

@@ -161,7 +161,7 @@
         let warm = cached.embed("already seen").await;
         let embedder: Arc<dyn EmbeddingProvider> = Arc::new(cached);
         let texts: Vec<String> = ["already seen", "a", "bb", "ccc"].iter().map(|s| s.to_string()).collect();
-        let corpus = crate::forge::recipe::CorpusRef {
+        let corpus = crate::genome::corpus_ref::CorpusRef {
             name: "test-corpus".into(),
             content_hash: "sha256:0000000000000000000000000000000000000000000000000000000000000000".into(),
             size_bytes: 4,

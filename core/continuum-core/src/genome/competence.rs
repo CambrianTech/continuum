@@ -335,7 +335,7 @@ mod tests {
     #[test]
     fn the_nearest_gene_comes_from_the_store_in_the_same_space() {
         use crate::genome::signature::GeneSignature;
-        use crate::forge::recipe::CorpusRef;
+        use crate::genome::corpus_ref::CorpusRef;
         let sig = |embedder: &str, centroid: Vec<f32>| GeneSignature {
             embedder: embedder.into(),
             dim: centroid.len(),

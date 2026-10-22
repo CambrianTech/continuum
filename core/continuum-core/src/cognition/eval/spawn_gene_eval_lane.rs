@@ -12,7 +12,7 @@ pub(super) async fn spawn_gene_eval_lane(gene: &EvalGene) -> Result<EvalLane, Co
     use crate::inference::llama_server::{AdapterEntry, EphemeralServingLane, ServingTarget, PROVIDER_ID};
 
     // 1. The gene declares its forged base in the trained-adapter manifest.
-    let manifest = crate::forge::adapter_manifest::load()
+    let manifest = crate::genome::adapter_manifest::load()
         .map_err(|e| CommandError::Internal(format!("trained-adapter manifest unreadable: {e}")))?;
     let entry = resolve_eval_gene(&manifest, &gene.name, &gene.path)?;
     let base_id = entry.base_model_id.clone();
@@ -144,10 +144,10 @@ pub(super) async fn spawn_gene_eval_lane(gene: &EvalGene) -> Result<EvalLane, Co
 /// Resolve the artifact before acquisition. A supplied path is authoritative;
 /// an alias alone must identify exactly one manifest entry.
 pub(super) fn resolve_eval_gene<'a>(
-    manifest: &'a [crate::forge::adapter_manifest::TrainedAdapter],
+    manifest: &'a [crate::genome::adapter_manifest::TrainedAdapter],
     alias: &str,
     path: &str,
-) -> Result<&'a crate::forge::adapter_manifest::TrainedAdapter, CommandError> {
+) -> Result<&'a crate::genome::adapter_manifest::TrainedAdapter, CommandError> {
     let mut matches = manifest.iter().filter(|entry| {
         if path.is_empty() {
             entry.alias == alias

@@ -144,7 +144,7 @@ impl ActionCommand for GenomeRecall {
             .map(GenomeRecallPolicy::validated)
             .transpose()?;
         let decisions = Arc::clone(self.decisions.require().map_err(CommandError::Internal)?);
-        let manifest = crate::forge::adapter_manifest::load().map_err(CommandError::Invalid)?;
+        let manifest = crate::genome::adapter_manifest::load().map_err(CommandError::Invalid)?;
         let sig_path =
             crate::genome::signature::signature_store_path().map_err(CommandError::Invalid)?;
         let signatures = crate::genome::signature::SignatureStore::load_at(&sig_path)

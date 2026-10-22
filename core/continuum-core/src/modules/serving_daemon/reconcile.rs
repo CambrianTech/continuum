@@ -286,12 +286,12 @@ impl ServingDaemonModule {
         // are loadable into the serving catalog (the `--lora` set). Read from the
         // producer-written manifest, keyed by the CONTINUUM base id (the HF base
         // in each gene's PEFT config never matches the served id, so a directory
-        // scan can't make this association — see forge::adapter_manifest). An
+        // scan can't make this association — see genome::adapter_manifest). An
         // unreadable/corrupt manifest degrades to base-only HERE (logged loud) so
         // the reconcile tick never panics; a MISSING gene file still fails loud at
         // spawn (AdapterNotFound). Empty = base model only, the legitimate state.
-        let desired_adapters: Vec<AdapterEntry> = match crate::forge::adapter_manifest::load() {
-            Ok(all) => crate::forge::adapter_manifest::for_base(&all, &desired)
+        let desired_adapters: Vec<AdapterEntry> = match crate::genome::adapter_manifest::load() {
+            Ok(all) => crate::genome::adapter_manifest::for_base(&all, &desired)
                 .into_iter()
                 .map(|a| AdapterEntry {
                     alias: a.alias,

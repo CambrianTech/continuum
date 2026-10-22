@@ -46,7 +46,7 @@ crate::action_command! {
                 };
                 let mut by_name = std::collections::HashMap::new();
                 if let (Ok(manifest), Ok(store_path)) = (
-                    crate::forge::adapter_manifest::load(),
+                    crate::genome::adapter_manifest::load(),
                     crate::genome::signature::signature_store_path(),
                 ) {
                     if let Ok(store) = crate::genome::signature::SignatureStore::load_at(&store_path) {

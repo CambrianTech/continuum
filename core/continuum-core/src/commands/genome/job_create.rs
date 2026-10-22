@@ -260,7 +260,7 @@ crate::action_command! {
                 .map(|ex| format!("{}\n{}", ex.prompt, ex.completion))
                 .collect();
             let joined = texts.join("\n");
-            let corpus = crate::forge::recipe::CorpusRef {
+            let corpus = crate::genome::corpus_ref::CorpusRef {
                 name: p
                     .dataset_name
                     .clone()

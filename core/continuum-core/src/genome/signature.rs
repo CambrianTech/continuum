@@ -42,7 +42,7 @@ use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 
 use crate::cognition::embedding::{cosine_similarity, EmbeddingProvider};
-use crate::forge::recipe::CorpusRef;
+use crate::genome::corpus_ref::CorpusRef;
 
 /// Cluster admission floor for subspace detection. The recall space is
 /// anisotropic (unrelated pairs sit ~0.25–0.30, see `recall_faculty`'s war
@@ -212,7 +212,7 @@ pub struct SignatureStore {
 
 /// Where the sidecar lives: next to the manifest, same override semantics.
 pub fn signature_store_path() -> Result<PathBuf, String> {
-    Ok(crate::forge::adapter_manifest::manifest_path()?.with_file_name("signatures.json"))
+    Ok(crate::genome::adapter_manifest::manifest_path()?.with_file_name("signatures.json"))
 }
 
 impl SignatureStore {

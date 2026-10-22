@@ -84,7 +84,7 @@ pub fn stable_local_id(name: &str) -> ArtifactId {
 
 /// Qualified local identity for a manifest entry. Alias changes do not change
 /// identity; different bases or paths do. This is not a digest of adapter bytes.
-pub fn manifest_local_id(adapter: &crate::forge::adapter_manifest::TrainedAdapter) -> ArtifactId {
+pub fn manifest_local_id(adapter: &crate::genome::adapter_manifest::TrainedAdapter) -> ArtifactId {
     let path = adapter.path.to_string_lossy();
     // Length-prefix the base so separators inside either component cannot collide.
     stable_local_id(&format!("manifest:{}:{}{}", adapter.base_model_id.len(), adapter.base_model_id, path))
@@ -101,7 +101,7 @@ impl GenomeStoreCandidateSource {
     /// becomes a candidate; the ones the sentinel adopted since the signature
     /// slice landed carry their minted identity and rank by it.
     pub fn from_manifest(
-        manifest: &[crate::forge::adapter_manifest::TrainedAdapter],
+        manifest: &[crate::genome::adapter_manifest::TrainedAdapter],
         signatures: &crate::genome::signature::SignatureStore,
         fitness: &crate::genome::fitness_ledger::GeneFitnessIndex,
         embedder: Arc<dyn EmbeddingProvider>,
@@ -199,7 +199,7 @@ mod tests {
     // renaming one artifact must not create a second identity.
     #[test]
     fn manifest_identity_separates_artifacts_and_bases_not_aliases() {
-        let mut a = crate::forge::adapter_manifest::TrainedAdapter {
+        let mut a = crate::genome::adapter_manifest::TrainedAdapter {
             alias: "code".into(), path: "/genes/one.gguf".into(), base_model_id: "base-a".into(),
         };
         let original = manifest_local_id(&a);
@@ -233,7 +233,7 @@ mod tests {
         let embedder: Arc<dyn EmbeddingProvider> = Arc::new(LexicalEmbedder::default());
         let corpus: Vec<String> =
             vec!["parse tokens into an ast".into(), "lex the source stream".into()];
-        let corpus_ref = crate::forge::recipe::CorpusRef {
+        let corpus_ref = crate::genome::corpus_ref::CorpusRef {
             name: "parser-corpus".into(),
             content_hash: "sha256:00".into(),
             size_bytes: 1,

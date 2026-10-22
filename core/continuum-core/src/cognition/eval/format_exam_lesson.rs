@@ -618,7 +618,7 @@ pub(super) fn append_progress_ledger(
     note: Option<&str>,
     eval_set: &str,
     clean_lane: Option<bool>,
-    measured_gene: Option<&crate::forge::adapter_manifest::TrainedAdapter>,
+    measured_gene: Option<&crate::genome::adapter_manifest::TrainedAdapter>,
 ) {
     let Some(dir) = progress_ledger_dir() else {
         return;
