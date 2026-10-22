@@ -39,6 +39,8 @@ mod adapter;
 mod decision;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod preparation_tests;
 
 pub use adapter::PlacementSwitch;
 pub use decision::{

@@ -14,6 +14,10 @@ impl LlmDeliberationFaculty {
         // `.await` below; a swap that happens after this load takes effect on the
         // NEXT turn. See [`ModelBinding`].
         let loaded = self.binding.load_full();
+        // Repair a cold remote route before sampling its window or building the
+        // prompt. The same act then acquires its selected home lane's admission;
+        // no remote-sized request is replayed on a smaller local window.
+        loaded.adapter.prepare_generation().await;
         // RESTORE-AHEAD (compression-ladder rung 1): tell the serving adapter
         // this activity generates NEXT, so her KV page pages in DURING the
         // prompt assembly below instead of racing the turn at pin time. Fire-

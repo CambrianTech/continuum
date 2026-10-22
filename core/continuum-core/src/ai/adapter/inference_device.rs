@@ -393,6 +393,12 @@ pub trait AIProviderAdapter: Send + Sync {
         None
     }
 
+    /// Refresh routing before reading the served window and assembling a prompt.
+    /// A placement adapter may materialize its home lane here when its remote
+    /// circuit breaker is cold. No generation or admission is held across this
+    /// transition; the eventual concrete target owns admission as usual.
+    async fn prepare_generation(&self) {}
+
     /// Admission for the concrete target, independent of API protocol or model name.
     /// Remote, dedicated and in-process adapters own their own capacity. Only the
     /// shared local serving endpoint participates in the node's lane/prefill gates.

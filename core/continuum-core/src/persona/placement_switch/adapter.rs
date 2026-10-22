@@ -412,6 +412,20 @@ impl AIProviderAdapter for NoSeat {
 
 #[async_trait]
 impl AIProviderAdapter for PlacementSwitch {
+    async fn prepare_generation(&self) {
+        if self.seat() == Seat::Remote && self.lane_cold() {
+            // A cold breaker is typed, pre-dispatch evidence. Do not spend another
+            // act asking the same peer, or wait for the next placement beacon.
+            // FallHome retains the remote adapter and its breaker; ordinary
+            // placement policy still owns returning to that peer later.
+            let _ = self.apply(
+                &PlacementMove::FallHome { reason: "remote circuit breaker cold before generation" },
+                continuum_base::time::EpochMs::now().millis(),
+                SeatFit::default(),
+            ).await;
+        }
+    }
+
     fn generation_target(&self) -> Option<Arc<dyn AIProviderAdapter>> {
         Some(self.current())
     }
