@@ -21,7 +21,7 @@ use uuid::Uuid;
 /// emitter, the persona's grounding roster): compression principle.
 pub(crate) fn provisional_sender_name(sender_id: Uuid) -> String {
     let simple = sender_id.simple().to_string();
-    format!("peer-{}", &simple[..8])
+    format!("peer-{}", &simple[..8]) // head-cut-ok: the board's 8-char id rendering of a label, never prompt content cut short
 }
 
 /// airc's `AgentAvailabilityState` → its stable neutral wire label — airc's

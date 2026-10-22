@@ -32,6 +32,8 @@ pub struct StreamDelta {
 /// Buffered deltas per subscriber before the SLOWEST lags out. At ~4 flushes/sec per
 /// persona (the forwarder's 250ms coalesce) across a room, 256 is several seconds of
 /// slack; a client that lags past it skips tokens (cosmetic — `say()` is truth).
+// derived-or-floor: a channel buffer for cosmetic typing tokens (a lagging client only skips
+// tokens; `say()` carries the text), not a bound on anything a mind reads.
 const RAIL_CAPACITY: usize = 256;
 
 static STREAM_RAIL: OnceLock<broadcast::Sender<StreamDelta>> = OnceLock::new();

@@ -77,6 +77,8 @@ pub(crate) fn wire_card_state_payload(event: &airc_core::TranscriptEvent) -> Opt
 pub(crate) fn first_transition_sighting(card_id: &str, state: &str) -> bool {
     use std::collections::VecDeque;
     use std::sync::Mutex;
+    // derived-or-floor: a dedup ring for duplicates that arrive within one fan-out instant, sized
+    // far above any burst; an aged-out id only risks a duplicate publish, never a loss.
     const SEEN_CAP: usize = 256;
     static SEEN: OnceLock<Mutex<VecDeque<String>>> = OnceLock::new();
     let key = format!("{card_id}\u{1}{state}");
@@ -122,6 +124,8 @@ pub(crate) async fn emit_card_state_changed(payload: Value, via: &'static str) {
 pub(crate) fn first_sighting(event_id: Uuid) -> bool {
     use std::collections::VecDeque;
     use std::sync::Mutex;
+    // derived-or-floor: a dedup ring for duplicates that arrive within one fan-out instant, sized
+    // far above any burst; an aged-out id only risks a duplicate publish, never a loss.
     const SEEN_CAP: usize = 256;
     static SEEN: OnceLock<Mutex<VecDeque<Uuid>>> = OnceLock::new();
     let seen = SEEN.get_or_init(|| Mutex::new(VecDeque::with_capacity(SEEN_CAP)));

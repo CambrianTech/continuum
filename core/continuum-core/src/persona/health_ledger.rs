@@ -139,6 +139,8 @@ pub(crate) const LANE_BUCKET_MS: u64 = 2 * 60 * 1_000;
 /// buckets is twenty minutes of separate two-minute periods — not twenty minutes of
 /// elapsed time between two samples, which is the guard Astra broke: one stray early
 /// sample plus a burst cleared both a count floor and a first-to-last span.
+// derived-or-floor: a sample-sufficiency floor over the hour's own 30 buckets (a third of them),
+// not a stand-in for any rate or duration the substrate measures.
 pub const LANE_MIN_BUCKETS: usize = 10;
 
 /// The node had `lanes` lanes at a moment work was actually asked of them — fold into
@@ -311,8 +313,12 @@ pub fn note_act_of(persona: uuid::Uuid, wrote: bool) {
 /// verdicts were decided and at least [`MINDLESS_GATE_SHARE`] of them were the
 /// substrate refusing what she said (a recital, an envelope), and she changed no
 /// file. Pure — the rule the tick applies and a test can read.
+// derived-or-floor: an evidence floor (how many decided verdicts before a pattern is judged), a
+// count of her own acts, not a measured quantity.
 pub const MINDLESS_MIN_VERDICTS: u64 = 6;
 
+// derived-or-floor: a policy share of her own verdicts (four in five refused), a ratio of counts
+// the ledger keeps, not a rate, a size or a time.
 pub const MINDLESS_GATE_SHARE: f64 = 0.8;
 
 pub fn is_mindless(m: &MindHour) -> bool {
@@ -323,8 +329,12 @@ pub fn is_mindless(m: &MindHour) -> bool {
 
 /// Never page the roster below this many resident minds, and never more than this
 /// many seats in one tick — a page-out is a considered act, not a purge.
+// derived-or-floor: a floor that only ever keeps minds resident (never pages below two), a
+// roster policy, not a measurement.
 pub const MINDLESS_RESIDENT_FLOOR: u64 = 2;
 
+// derived-or-floor: a pacing cap on a considered act (at most three page-outs a tick), so a
+// rest is never a purge; nothing measured stands behind it.
 pub const MINDLESS_MAX_PER_TICK: usize = 3;
 
 /// The pure choice: which minds to page out this tick, worst first, bounded.
@@ -532,6 +542,8 @@ impl Verdict {
 /// minutes each; three was a lane every ~12, and the hour it produced (16 on 3, acts 5,
 /// every lane ask deferred) was not useful. Minds past the edge rest — dormant, not
 /// resident, not polling — and return on a change.
+// derived-or-floor: the roster shape Joel set (one mind turning, one prefilled per slot, above),
+// a policy on the count of minds per lane, not a stand-in for a measured rate.
 pub const MINDS_PER_LANE_STARVED_ABOVE: u64 = 2;
 
 /// A node is DROPPING above this share of its generations thrown away in flight. One

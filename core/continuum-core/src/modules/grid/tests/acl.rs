@@ -1,3 +1,5 @@
+#![cfg(test)]
+// Declared only under tests.rs (itself test-only); the attribute also tells the source scans so.
 //! The ACL's policy over THIS crate's registered commands (the kernel's own test binary
 //! links none of them), so its tests live where the commands do.
 

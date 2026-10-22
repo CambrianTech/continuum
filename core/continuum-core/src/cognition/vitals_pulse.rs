@@ -28,7 +28,7 @@ pub fn record_acts(persona: Uuid, n: u64) {
 /// Drain `persona`'s executed-act count since the last sample (the radiator's read).
 pub(crate) fn take_acts(persona: Uuid) -> u64 {
     let mut pulse = ACT_PULSE.lock().unwrap_or_else(|e| e.into_inner());
-    pulse.remove(&persona).unwrap_or(0)
+    pulse.remove(&persona).unwrap_or(0) // unwrap_or: no entry means no act since the last drain, which IS zero acts
 }
 
 /// FACULTY PULSES — the axes the persona HUD names (`reason`, `recall`, `focus`;
@@ -85,7 +85,7 @@ pub(crate) fn faculty_level(
 
 /// `v` as a percentage of `full`, saturating at 100 (a meter level).
 pub(crate) fn pct_u64(v: u64, full: u64) -> u8 {
-    (v.saturating_mul(100) / full.max(1)).min(100) as u8
+    (v.saturating_mul(100) / full.max(1)).min(100) as u8 // head-cut-ok: a meter level clamped to 100, not text
 }
 
 #[cfg(test)]
