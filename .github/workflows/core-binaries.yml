@@ -235,7 +235,7 @@ jobs:
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
-          ENGINE_KEY: published-engine-windows-${{ hashFiles('core/vendor/LLAMA_CPP_PIN', 'tools/scripts/lib/win-modules.ps1', 'tools/scripts/lib/install-common.ps1', 'tools/scripts/lib/cuda-targets.sh', 'core/llama/cpu_target_cli.rs') }}-cuda${{ env.CUDA_VERSION }}-sm${{ env.CUDA_COMPUTE_CAP }}-image${{ steps.runner-image.outputs.version }}
+          ENGINE_KEY: published-engine-windows-${{ hashFiles('core/vendor/LLAMA_CPP_PIN', 'tools/scripts/lib/win-engine.ps1', 'tools/scripts/lib/cuda-targets.ps1', 'tools/scripts/lib/install-common.ps1', 'tools/scripts/lib/cuda-targets.sh', 'core/llama/cpu_target_cli.rs') }}-cuda${{ env.CUDA_VERSION }}-sm${{ env.CUDA_COMPUTE_CAP }}-image${{ steps.runner-image.outputs.version }}
         # The completion contract: `published-engine.ready` is uploaded LAST and names the archive
         # by its sha256; a reader trusts nothing else. Any failure here (no release, no marker yet,
         # a partial download, a checksum mismatch, a release pruned mid-download) is a MISS and the
