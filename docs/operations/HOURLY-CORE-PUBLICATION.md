@@ -1,7 +1,7 @@
 # Hourly canary publication: staged activation
 
-This change prepares an hourly admission/dispatch workflow. It does not yet reduce
-push-triggered builds: `core-binaries.yml` remains unchanged during phase 1.
+The publisher is dispatched hourly for the latest unpublished canary revision.
+`core-binaries.yml` retains urgent manual dispatch and has no automatic push trigger.
 No service or deployment ledger changes are involved.
 
 1. Review and merge the dispatcher, script and fixtures to canary. Source fixtures
@@ -15,9 +15,8 @@ No service or deployment ledger changes are involved.
 3. Manually dispatch `core-binaries-hourly` on the default branch with `dry_run=true`.
    Verify the receipt names canary's current full SHA and correct publication state.
    This reads GitHub and starts no build. Keep `CORE_BINARIES_HOURLY_ENABLED` unset.
-4. Prepare a separate reviewed phase-2 change removing the canary `push` trigger from
-   `core-binaries.yml` and updating the lifecycle BUILD_INPUTS workflow-contract test
-   (which currently requires push paths). Retain `workflow_dispatch` for urgent repairs
+4. Review the phase-2 removal of the canary `push` trigger from `core-binaries.yml`
+   and the updated lifecycle workflow contract. Retain `workflow_dispatch` for urgent repairs
    and the existing non-cancelling publication concurrency. Do not enable
    `cancel-in-progress`: frequent merges previously cancelled every long build.
 5. Coordinate the switch: enable repository variable `CORE_BINARIES_HOURLY_ENABLED=true`
@@ -35,3 +34,10 @@ The dispatcher always targets ref `canary`; GitHub resolves it at dispatch time,
 a racing merge may produce a newer SHA than the admission receipt. The build's own
 receipt is authoritative for its revision. Workflow concurrency preserves one
 active publication and GitHub's newest pending run, without cancellation starvation.
+
+Verified prerequisite (2026-10-22): the repository default branch was `canary`.
+Dry-run 39838376645's two jobs succeeded and its receipt reported full SHA
+`b1a2b451b3a7dded517a3c54009335a7a78b13f6`, `dryRun: true`, `dispatched: false`.
+Confirm the current run conclusion before enabling the variable; preserve any active
+publication across the switch. If scheduler recovery is needed, manual publication
+remains available while a reviewed rollback restores push publication.

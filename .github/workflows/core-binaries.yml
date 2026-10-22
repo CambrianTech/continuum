@@ -24,41 +24,27 @@
 # GPU flavor is named per leg ("Windows-NVIDIA x86_64"), because cargo-features.sh probes the
 # machine it runs on and a CI runner has no GPU. A Linux leg follows the same way.
 #
-# NEWEST TIP WINS: a node deploys canary's tip, so a run for a superseded commit is
-# cancelled rather than finished. Old canary releases are pruned to the newest 20.
+# Hourly admission dispatches the latest unpublished canary. Active publication is
+# never cancelled by a newer tip. Old canary releases are pruned to the newest 20.
 
 name: core-binaries
 
 on:
   # A PR that changes HOW the binaries are built proves both legs before merge (build and
-  # package, never publish). Ordinary core PRs don't pay two macOS builds; the push does.
+  # package, never publish). Ordinary core PRs wait for hourly publication.
   pull_request:
     paths:
       - 'tools/scripts/lib/**'
       - 'tools/scripts/shared/cargo-features.sh'
       - '.github/workflows/core-binaries.yml'
       - 'tools/scripts/tests/publish-core-package.test.sh'
-  push:
-    branches: [canary]
-    # Every build input (continuum-cli-lifecycle prebuilt_artifact::BUILD_INPUTS, pinned by
-    # its test) plus this file. The workspace manifest and lockfile live at the repo root.
-    paths:
-      - 'core/**'
-      - 'Cargo.toml'
-      - 'Cargo.lock'
-      - 'rust-toolchain.toml'
-      - 'tools/scripts/lib/**'
-      - 'tools/scripts/shared/cargo-features.sh'
-      - 'tools/scripts/start-livekit-windows.ps1'
-      - 'tools/scripts/generated/manifest.windows.ps1'
-      - '.github/workflows/core-binaries.yml'
   workflow_dispatch:
 
-# A canary push must never cancel the canary build in progress. Each canary tip's core is what
+# A canary dispatch must never cancel the canary build in progress. Each canary tip's core is what
 # the deploy consumers download (card 50ca737e); the build takes 45-73 min and canary merges land
 # every 15-30 min, so cancel-in-progress cancelled EVERY build after b6ddc0d0e on 2026-10-04 and
 # no node could download anything. Without cancellation GitHub keeps one run going and only the
-# NEWEST push queued behind it (older queued pushes are dropped), so a build always finishes and
+# NEWEST dispatch queued behind it (older queued dispatches are dropped), so a build always finishes and
 # the queue cannot grow. Pull requests still cancel their own superseded runs.
 concurrency:
   group: core-binaries-${{ github.head_ref || github.ref }}
