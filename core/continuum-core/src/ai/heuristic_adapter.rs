@@ -52,6 +52,7 @@ use async_trait::async_trait;
 use sha2::{Digest, Sha256};
 
 use crate::ai::adapter::{AIProviderAdapter, AdapterCapabilities, ApiStyle, InferenceDevice};
+use crate::ai::token_estimate::estimate_prompt_tokens;
 use crate::ai::types::{
     ChatMessage, ContentPart, CostPer1kTokens, FinishReason, HealthState, HealthStatus,
     MessageContent, ModelInfo, TextGenerationRequest, TextGenerationResponse, UsageMetrics,
@@ -72,11 +73,6 @@ pub const HEURISTIC_DEFAULT_MODEL: &str = "heuristic-echo-v1";
 /// surfaces in the response.
 // context-budget-exempt: a TEST-ONLY canned adapter's echo width (gated behind test-fixtures); never a live bound
 const ECHO_CHARS: usize = 200;
-
-/// Char-to-token ratio (same rough heuristic the rest of the L1 RAG
-/// pipeline uses for cost estimation).
-// context-budget-exempt: a chars-per-token UNIT CONVERSION in the test fixture's fake token accounting
-const CHARS_PER_TOKEN: usize = 4;
 
 /// The adapter struct itself. No mutable state, no clock access, no
 /// external resources — instances are cheap and interchangeable.
@@ -275,10 +271,6 @@ impl HeuristicInferenceAdapter {
         hex
     }
 
-    fn estimate_tokens(text: &str) -> u32 {
-        ((text.chars().count() / CHARS_PER_TOKEN) as u32).saturating_add(1)
-    }
-
     /// Build the response text from the request. Pure function —
     /// no I/O, no clock, no RNG. Replay-safe.
     ///
@@ -439,24 +431,24 @@ impl AIProviderAdapter for HeuristicInferenceAdapter {
         // Token accounting: input = system + all message text;
         // output = response text. Same chars/4 heuristic the rest
         // of the L1 RAG pipeline uses.
-        let mut input_chars: usize = 0;
+        let mut input_text = String::new();
         if let Some(sys) = &request.system_prompt {
-            input_chars += sys.chars().count();
+            input_text.push_str(sys);
         }
         for msg in &request.messages {
             match &msg.content {
-                MessageContent::Text(s) => input_chars += s.chars().count(),
+                MessageContent::Text(s) => input_text.push_str(s),
                 MessageContent::Parts(parts) => {
                     for p in parts {
                         if let ContentPart::Text { text } = p {
-                            input_chars += text.chars().count();
+                            input_text.push_str(text);
                         }
                     }
                 }
             }
         }
-        let input_tokens = ((input_chars / CHARS_PER_TOKEN) as u32).saturating_add(1);
-        let output_tokens = Self::estimate_tokens(&text);
+        let input_tokens = estimate_prompt_tokens(&input_text);
+        let output_tokens = estimate_prompt_tokens(&text);
 
         let request_id = request
             .request_id

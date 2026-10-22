@@ -95,7 +95,7 @@ pub(crate) const ROSTER_SCAN: usize = 200;
 /// Token estimate — the ONE canonical chars/4 estimator (`cognition::token_budget`),
 /// shared by every RAG source so the replay ledger's numbers match. (Was a private
 /// copy — converged.)
-use crate::cognition::token_budget::estimate_prompt_tokens as estimate_tokens;
+use crate::ai::token_estimate::estimate_prompt_tokens as estimate_tokens;
 
 /// Abstract reader over airc room membership. Production impl rides on
 /// `airc_lib::Airc::room_roster`; tests use a stub that returns canned
