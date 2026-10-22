@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Build the HumanEval-Rust gym set for `cognition/eval` from MultiPL-E.
 
-Reuses HuggingFace `datasets` (the layer unsloth itself uses) to pull the
+Reuses HuggingFace `datasets` to pull the
 STANDARD HumanEval benchmark TRANSLATED TO RUST (`nuprl/MultiPL-E`, config
 `humaneval-rs`) and projects each problem onto the `EvalTask` shape the Rust
 gym grades:
@@ -97,8 +97,7 @@ def main() -> int:
         from datasets import load_dataset
     except ImportError:
         print(
-            "missing dependency: `datasets`. Install with `pip install datasets` "
-            "(the HuggingFace layer unsloth uses).",
+            "missing dependency: `datasets`. Install with `pip install datasets`.",
             file=sys.stderr,
         )
         return 1

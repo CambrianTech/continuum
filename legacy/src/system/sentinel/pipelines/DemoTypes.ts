@@ -38,7 +38,7 @@ export interface DemoPipelineConfig {
   /** Persona display name (for logging and adapter naming) */
   personaName: string;
 
-  /** Base model for LoRA training (e.g., 'unsloth/Llama-3.2-3B-Instruct') */
+  /** Base model for LoRA training (e.g., 'meta-llama/Llama-3.2-3B-Instruct') */
   baseModel: string;
 
   /** Max CodingAgent retries per milestone when tests fail (default: 2) */

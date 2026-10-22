@@ -7,13 +7,8 @@
 //! observed, never declared by config (Joel: "smart self determination, to the
 //! needs of the grid").
 //!
-//! ## Generalizes `ForgeCapability` onto the CLEAN surface
-//! The seed the contract doc (§5) names — `inference::unsloth_forge::ForgeCapability`
-//! (`reachable/busy/phase/held_genes/outputs_dir`) — is bound to the *retiring*
-//! unsloth `ForgeCustodian` trait (`train_status`/`list_loras`, the stateful
-//! `/api/*` surface excised by `[[unsloth-universal-model-gateway]]` / task #52).
-//! Building Pass 5 on it would build on dead code. Instead `ForgeEndpoint` is
-//! derived from the Contract C [`HealthResponse`](super::protocol::HealthResponse),
+//! ## Built on the Contract C surface
+//! `ForgeEndpoint` is derived from the Contract C [`HealthResponse`](super::protocol::HealthResponse),
 //! which ALREADY carries the honest router inputs (R4): `contract_version`,
 //! `ready`, `slots_total`, `slots_available`, `capability`. The Pass 3/4 health
 //! handshake IS the probe; this type is its routing-shaped projection.

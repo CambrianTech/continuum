@@ -305,7 +305,7 @@ async fn messages_handler(
 ///   "local/default"     → provider=candle, model=None (base model), adapter=None
 ///   "local/helper"      → provider=candle, model=None (base model), adapter=Some("helper")
 ///   "candle"            → provider=candle, model=None (base model), adapter=None
-///   "unsloth/Llama-3.2" → provider=candle, model=Some("unsloth/Llama-3.2"), adapter=None
+///   "meta-llama/Llama-3.2" → provider=candle, model=Some("meta-llama/Llama-3.2"), adapter=None
 ///
 /// The "local/" prefix is the convention for routing through Candle.
 /// Anything after "local/" that isn't "default" is treated as a persona
@@ -349,7 +349,7 @@ fn parse_model_spec(raw: &str) -> ModelSpec {
             adapter: None,
         }
     } else {
-        // Treat as explicit model name (e.g. "unsloth/Llama-3.2-3B-Instruct")
+        // Treat as explicit model name (e.g. "meta-llama/Llama-3.2-3B-Instruct")
         // Default to quantized for large context
         ModelSpec {
             provider: PROVIDER_CANDLE_QUANTIZED.to_string(),

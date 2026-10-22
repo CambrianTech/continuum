@@ -145,16 +145,13 @@ async function main(): Promise<void> {
     console.log('💵 Step 11: Cost comparison (all providers)...');
     const openaiCost = cost;
     const deepseekCost = cost / 27; // 27x cheaper
-    const unslothCost = 0; // Free (electricity only)
 
     console.log(`   OpenAI API:    $${openaiCost.toFixed(6)} (5 examples) - premium pricing`);
     console.log(`   DeepSeek API:  $${deepseekCost.toFixed(6)} (5 examples) - 27x cheaper!`);
-    console.log(`   Unsloth Local: $${unslothCost.toFixed(6)} (free - electricity only)`);
     console.log();
     console.log(`   For 1000 examples:`);
     console.log(`   OpenAI:    $${(openaiCost * 200).toFixed(4)}`);
     console.log(`   DeepSeek:  $${(deepseekCost * 200).toFixed(4)}`);
-    console.log(`   Unsloth:   $0.00 (but requires GPU)\n`);
 
     // Step 12: Provider comparison matrix
     console.log('📊 Step 12: Provider comparison matrix...');
@@ -163,13 +160,11 @@ async function main(): Promise<void> {
     console.log('   ├──────────────┼─────────────┼──────────────┼──────────────┤');
     console.log(`   │ OpenAI       │ $${(openaiCost * 200).toFixed(4).padStart(11)} │ No           │ 800ms/ex/ep  │`);
     console.log(`   │ DeepSeek     │ $${(deepseekCost * 200).toFixed(4).padStart(11)} │ No           │ 1000ms/ex/ep │`);
-    console.log('   │ Unsloth      │ $0.0000     │ Yes          │ 25ms/ex/ep   │');
     console.log('   └──────────────┴─────────────┴──────────────┴──────────────┘\n');
 
     console.log('   Trade-offs:');
     console.log('   - OpenAI: Premium pricing, but established API, strong documentation');
     console.log('   - DeepSeek: 27x cheaper than OpenAI, competitive alternative');
-    console.log('   - Unsloth: Free and 32x faster, but requires local GPU hardware\n');
 
     // Success summary
     console.log('✅ OpenAILoRAAdapter Standalone Test: PASSED');

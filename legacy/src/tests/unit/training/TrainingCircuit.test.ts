@@ -418,7 +418,7 @@ describe('Training Circuit', () => {
       const call = vi.mocked(GenomeJobCreate.execute).mock.calls[0][0];
 
       expect(call.personaId).toBe(PERSONA_ID);
-      expect(call.provider).toBe('unsloth');
+      expect(call.provider).toBe('peft');
       expect(call.trainingFileId).toBeDefined();
       expect(call.configuration).toBeDefined();
       expect(call.configuration.model.baseModel).toBe('llama3.2');

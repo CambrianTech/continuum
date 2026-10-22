@@ -391,7 +391,7 @@ impl RagState {
     /// Load memory source using multi-layer recall.
     ///
     /// Async: `multi_layer_recall` pre-computes the query embedding through the
-    /// adapter-routed [`EmbeddingProvider`] (unsloth `/v1/embeddings`, task #40)
+    /// adapter-routed [`EmbeddingProvider`] (llama-server `/v1/embeddings`, task #40)
     /// before its sync Rayon recall layers run.
     async fn load_memory_source(
         &self,

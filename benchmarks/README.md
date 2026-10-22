@@ -57,7 +57,7 @@ scratch lanes, so there's nothing on our side to contend for. The rule is simple
 
 ## The one hard rule
 
-**We never depend on any opponent — Hermes, unsloth, a cloud provider — ever.** Optional
+**We never depend on any opponent — Hermes, a cloud provider — ever.** Optional
 integrations that reach what a user already runs are an asset; a forced dependency is a
 weakness (and off-grid: unmanageable by our daemons).
 
@@ -89,7 +89,7 @@ registry is how a persona runs a competition by name.
 
 `coder/oneshot_opponent.py` — the lone Python, deliberately toolchain-free: Python stdlib +
 `rustc`, imports nothing from us. Point it at any external OpenAI-compatible `/v1` (a local
-llama-server, an unsloth gateway, ollama, a cloud API, or an airc node) and it scores that
+llama-server, ollama, a cloud API, or an airc node) and it scores that
 model one-shot on the same gym, graded identically. This is how outsiders replicate us and how
 we take a model on its own published claims — same tasks, both numbers.
 

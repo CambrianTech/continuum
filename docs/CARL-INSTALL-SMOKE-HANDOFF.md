@@ -41,7 +41,7 @@ There are **TWO different `install.sh`** and they've drifted independently (no s
 - **repo-root `install.sh`** — 1183 lines. This is what `curl … | bash` fetches (raw.githubusercontent) and
   what the smoke runs. **This is the one that matters.**
 - **`tools/scripts/install.sh`** — 747 lines. What `npm run install:continuum` runs. (I de-staled THIS one in
-  #1848 — Unsloth step, `cd src`/`jtag` messages — but it is NOT the file the smoke exercises.)
+  #1848 — `cd src`/`jtag` messages — but it is NOT the file the smoke exercises.)
 
 They share the `tools/scripts/lib/install-common.sh` helpers (which is why the one-line fix above lands for
 both). But the two top-level scripts are a real single-source-of-truth violation. **Recommended follow:**
@@ -58,7 +58,7 @@ Stale `src/shared/models.json` references in COMMENTS + user-facing strings (lin
 - **Container BUILD path build-proven on macOS** (`docker build`, real): core image contexts were vestigial →
   deleted (#1850); model-init context fixed → builds clean (#1851). `docker compose config` green base/+mac/+gpu.
 - The jtag-bin fatal → fixed + unit-verified (this PR).
-- Native genome forge complete + live (Unsloth deleted) — unrelated to install, but that's why `src/` moved.
+- Native genome forge complete + live — unrelated to install, but that's why `src/` moved.
 
 ## The instruments you have
 - `gh run download <run-id> -D <dir>` — pulls the smoke's artifacts (install.log + per-container logs +

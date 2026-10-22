@@ -204,7 +204,7 @@ impl PersonaMemoryManager {
     /// Operates on in-memory MemoryCorpus data. Zero SQL.
     ///
     /// Async because the query embedding is produced through the adapter-routed
-    /// [`EmbeddingProvider`] (unsloth `/v1/embeddings`, task #40) BEFORE the
+    /// [`EmbeddingProvider`] (llama-server `/v1/embeddings`, task #40) BEFORE the
     /// synchronous Rayon recall layers run. The layers themselves never embed —
     /// they consume the pre-computed `query.query_embedding`, so the only async
     /// hop is this one round-trip (cached content-addressed; one embed per unique

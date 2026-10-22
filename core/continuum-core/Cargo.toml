@@ -37,7 +37,7 @@ name = "cargo-continuum-vdd"
 path = "src/bin/cargo-continuum-vdd.rs"
 
 # The forge custodian sidecar — the continuum-owned daemon that converts a
-# trained MLX LoRA into a pageable GGUF gene (the one capability unsloth-studio
+# trained MLX LoRA into a pageable GGUF gene (the one capability the serving engine
 # lacked). Declared explicitly (not just autobins-discovered) so it's an
 # intentional, contract-bearing artifact: it serves the `forge::protocol` wire
 # contract a forge daemon will grid-negotiate against.
@@ -181,7 +181,7 @@ rand.workspace = true  # For test audio generation
 ts-rs.workspace = true  # TypeScript type generation
 
 # Memory/Hippocampus — pure compute engine (data from TS ORM via IPC).
-# NOTE: embedding is async + adapter-routed (unsloth /v1/embeddings via the
+# NOTE: embedding is async + adapter-routed (llama-server /v1/embeddings via the
 # AIProviderAdapter, see cognition::embedding) — NOT an in-process ONNX model.
 # The fastembed crate was removed in task #40. `ort` stays for live audio
 # (tts/stt/vad), which is a separate concern (task #41).

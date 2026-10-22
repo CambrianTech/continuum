@@ -68,7 +68,7 @@ Returns CommandResult with:
 ```
 
 **Expected result:**
-{ name: 'helper-coding-2026-03-01', domain: 'coding', sizeMB: 312, baseModel: 'unsloth/Llama-3.2-3B-Instruct', ... }
+{ name: 'helper-coding-2026-03-01', domain: 'coding', sizeMB: 312, baseModel: 'meta-llama/Llama-3.2-3B-Instruct', ... }
 
 ## Getting Help
 

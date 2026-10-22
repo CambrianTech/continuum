@@ -25,7 +25,7 @@ impl DataState {
         use std::time::Instant;
         let start = Instant::now();
 
-        // Embedding is adapter-routed (unsloth /v1/embeddings, task #40) — the
+        // Embedding is adapter-routed (llama-server /v1/embeddings, task #40) — the
         // SAME async neural-or-lexical embedder the live recall path uses. Build
         // it ONCE for the whole backfill. `params.model` is advisory only now;
         // the served embed model is selected by the gateway. Fail loud if no

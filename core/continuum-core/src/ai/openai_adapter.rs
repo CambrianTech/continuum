@@ -41,7 +41,7 @@ use super::types::{
 /// about (HTTP concerns — auth shape, Authorization header requirement)
 /// are derived from `Provider.auth`, not separately configured.
 /// Per-gateway thinking policy for reasoning models. The gateway can't always
-/// honor `chat_template_kwargs.enable_thinking` (verified: unsloth/llama.cpp
+/// honor `chat_template_kwargs.enable_thinking` (verified: llama.cpp
 /// ignores it for this forged model), but Qwen3's `/no_think` SOFT-SWITCH in the
 /// message works — the model emits an empty `<think></think>` then answers
 /// directly. This is the model-specific knob the adapter owns (same boundary as
@@ -81,7 +81,7 @@ pub struct OpenAICompatibleConfig {
     /// How this provider exchanges tool calls. NativeFunctionCalling = real
     /// OpenAI function-calling; JsonInPrompt = describe tools in the prompt +
     /// parse the JSON call from the response (for gateways/models that ignore
-    /// the `tools` param, e.g. unsloth+GGUF — proven 2026-06-21). Stored
+    /// the `tools` param, e.g. a local GGUF — proven 2026-06-21). Stored
     /// verbatim from the registry `Provider.capabilities.tool_protocol` (#69,
     /// the ONE `model_registry::ToolProtocol`) — never an `id == "..."` branch,
     /// never a per-adapter mirror. Gateway-level for now; per-model refinement
@@ -95,7 +95,7 @@ pub struct OpenAICompatibleConfig {
     /// This endpoint serves ONE resident model and ignores the request's
     /// `model` field, so the adapter must pre-flight model activation before
     /// each generation. From `Provider.capabilities.single_resident_model`
-    /// (#55) — replaces the `id == "unsloth"` branch in `generate_text`.
+    /// (#55) — replaces a per-id branch in `generate_text`.
     pub single_resident_model: bool,
     /// This endpoint has a DYNAMIC `/v1/models` catalog with ids that differ
     /// from the registry's logical ids (DMR's `hf.co/…:latest` mangling), so

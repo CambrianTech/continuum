@@ -67,7 +67,7 @@ Coherent decision (GWT) **fed by** the concurrent event-driven concern mesh (CBA
 drive) and emits intent. The `SubstrateGovernor` is a **resource arbiter** — it
 schedules region ticks concurrently (bounded by leases), and **routes** the
 inference command to a tower (local lane / queue+batch / remote grid GPU) via
-command→handle→event over the airc command-bus. Many unsloths = a fleet; the brain
+command→handle→event over the airc command-bus. Many engine hosts = a fleet; the brain
 stays local, only token generation routes ([[compute-lease-boundary]]).
 
 **Management is a role, not a control plane.** Because control is commands, a
@@ -311,7 +311,7 @@ which is exactly §1's "don't gate the mind" at the channel granularity.
 - **Slice 4 — Adaptive cadence + concurrent fan-out + multi-tower router (supply).**
   Governor honors `CadenceHint`, fans region/persona ticks out **concurrently**
   (bounded by leases — parallel *but governed*), and places `ai/generate` on a
-  tower via command→handle→event across the unsloth fleet.
+  tower via command→handle→event across the engine fleet.
 - **Slice 5 — Sleep-phase consolidation/learning (the dream).** `SleepPhase`
   transitions trigger the background learning loop: captured turns → `dataset/from-turns`
   → genome train → LoRA page-in. Always-learning, governed.

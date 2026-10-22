@@ -2,10 +2,8 @@
 # install-llama-server.sh — build the inference engine WE OWN.
 #
 # continuum's serving daemon launches `llama-server` (llama.cpp's OpenAI-/v1
-# gateway). That binary is OURS now, not a borrowed one: we excised unsloth, so
-# depending on `~/.unsloth/llama.cpp/build/bin/llama-server` made our inference
-# hostage to a tool we no longer ship — and a freshly-cloned public machine has
-# no `~/.unsloth` at all. This script builds llama-server from the llama.cpp
+# gateway). That binary is OURS now, not a borrowed one: a third-party
+# llama-server would make our inference hostage to a tool we do not ship. This script builds llama-server from the llama.cpp
 # submodule we already vendor and build for the in-process FFI lib
 # (core/vendor/llama.cpp — our fork, github.com/CambrianTech/llama.cpp), into a
 # continuum-owned path. ONE llama.cpp source of truth for both the lib and the

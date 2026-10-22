@@ -12,7 +12,7 @@
  * - Dataset quality validation
  * - JSONL export format
  * - Statistics tracking
- * - Ready for fine-tuning with any provider (DeepSeek, OpenAI, Unsloth)
+ * - Ready for fine-tuning with any provider (DeepSeek, OpenAI)
  */
 
 import { TrainingDatasetBuilder } from './TrainingDatasetBuilder';
@@ -155,13 +155,10 @@ async function main(): Promise<void> {
     const openaiCostPerExample = 0.00405;
     const openaiCost = exampleCount * openaiCostPerExample;
 
-    // Unsloth (free)
-    const unslothCost = 0;
 
     console.log(`   For ${exampleCount} examples × ${epochs} epochs:`);
     console.log(`   - DeepSeek API:  $${deepseekCost.toFixed(4)} (most affordable)`);
     console.log(`   - OpenAI API:    $${openaiCost.toFixed(4)} (premium)`);
-    console.log(`   - Unsloth Local: $${unslothCost.toFixed(4)} (free, requires GPU)\n`);
 
     // Step 10: Show training time estimates
     console.log('⏱️  Step 10: Training Time Estimates...');
@@ -174,14 +171,10 @@ async function main(): Promise<void> {
     const openaiTimeMs = exampleCount * epochs * 800;
     const openaiTimeSec = (openaiTimeMs / 1000).toFixed(1);
 
-    // Unsloth time
-    const unslothTimeMs = exampleCount * epochs * 25;
-    const unslothTimeSec = (unslothTimeMs / 1000).toFixed(1);
 
     console.log(`   For ${exampleCount} examples × ${epochs} epochs:`);
     console.log(`   - DeepSeek API:  ~${deepseekTimeSec}s`);
     console.log(`   - OpenAI API:    ~${openaiTimeSec}s`);
-    console.log(`   - Unsloth Local: ~${unslothTimeSec}s (fastest!)\n`);
 
     // Success summary
     console.log('✅ TrainingDatasetBuilder Test with Real Data: SUCCESS');

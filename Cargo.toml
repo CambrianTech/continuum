@@ -312,7 +312,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 # `[[never-redirect-substrate-stderr]]` doctrine memory for why.
 tracing-appender = "0.2"
 
-# Embedding is adapter-routed through the AI provider (unsloth `/v1/embeddings`),
+# Embedding is adapter-routed through the AI provider (llama-server `/v1/embeddings`),
 # not in-process ONNX — the `fastembed` crate was removed in task #40. The async
 # `cognition::embedding::EmbeddingProvider` trait is the single embedding path.
 
