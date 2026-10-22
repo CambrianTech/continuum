@@ -326,6 +326,7 @@
             impl PublishedCoreSource for Source<'_> {
                 type Artifact = String;
                 async fn published(&self, key: &str) -> Result<bool, String> {
+                    if key == "unreadable" { return Err("publication transport unavailable".into()); }
                     Ok(self.published[self.keys.iter().position(|k| k == key).unwrap()])
                 }
                 async fn checks(&self, key: &str) -> Result<crate::deploy_tracker::Checks, String> {
@@ -340,7 +341,18 @@
             }
             let source = Source { keys: candidates, published, verdicts, fetched: Default::default() };
             let selected = select_published_core(candidates, &source).await;
-            let key = selected.map(|(key, artifact)| { assert_eq!(artifact.unwrap(), Some(key.clone())); key });
+            let key = match selected {
+                Some((key, Ok(Some(artifact)))) => { assert_eq!(artifact, key); Some(key) }
+                Some((_, Err(PublishedCoreError::OperationalBlocked(why)))) => {
+                    assert!(!why.is_empty(), "retain the failed observation for diagnosis");
+                    None
+                }
+                None => {
+                    assert!(!published.iter().any(|out| *out), "a known publication must not enter the missing-artifact deadline");
+                    None
+                }
+                other => { assert!(other.is_none(), "unexpected selection: {other:?}"); None }
+            };
             assert_eq!(*source.fetched.lock().unwrap(), key.iter().cloned().collect::<Vec<_>>(),
                 "only the authorized revision may reach artifact fetch");
             key
@@ -375,6 +387,14 @@
             assert_eq!(newest_published(&candidates, &[false, true, false], &[Some(Checks::Green), refused, Some(Checks::Unknown)]).await.as_deref(),
                 None, "without a published green candidate the running core stands");
         }
+        // Regression for 0738db8a: an unreadable source is not a missing release,
+        // and the next successful authorization may fetch without resetting state.
+        let unreadable = vec!["unreadable".into()];
+        assert_eq!(newest_published(&unreadable, &[true], &[Some(Checks::Green)]).await, None);
+        let recovering = vec!["published".into()];
+        assert_eq!(newest_published(&recovering, &[true], &[Some(Checks::Unknown)]).await, None);
+        assert_eq!(newest_published(&recovering, &[true], &[Some(Checks::Green)]).await.as_deref(), Some("published"));
+        assert_eq!(newest_published(&["unreadable".into(), "older".into()], &[true, true], &[Some(Checks::Green); 2]).await.as_deref(), Some("older"));
         // A published ancestor under resource pressure remains published and authorized,
         // but may not redownload until the same measured condition clears.
         struct DeferredSource { pending: Option<(String, ResourceDeferral)>, fetches: std::sync::atomic::AtomicUsize }

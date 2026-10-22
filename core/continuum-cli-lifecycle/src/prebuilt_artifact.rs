@@ -458,17 +458,31 @@ pub async fn select_published_core<S: PublishedCoreSource>(candidates: &[String]
     -> Option<(String, Result<Option<S::Artifact>, PublishedCoreError>)>
 {
     use crate::deploy_tracker::Checks;
+    let mut blocked = None;
     for key in candidates {
-        if source.published(key).await != Ok(true) { continue; }
-        let checks = source.checks(key).await.unwrap_or(Checks::Unknown); // unreadable CI is never authorization
-        if matches!(checks, Checks::Green) {
-            if let Some(deferred) = source.deferred(key) {
-                return Some((key.clone(), Err(PublishedCoreError::ResourceDeferred(deferred))));
+        match source.published(key).await {
+            Ok(false) => continue,
+            Err(why) => {
+                blocked.get_or_insert_with(|| (key.clone(), format!("cannot determine publication for {key}: {why}")));
+                continue;
             }
-            return Some((key.clone(), source.fetch(key).await));
+            Ok(true) => {}
         }
+        let why = match source.checks(key).await {
+            Ok(Checks::Green) => {
+                if let Some(deferred) = source.deferred(key) {
+                    return Some((key.clone(), Err(PublishedCoreError::ResourceDeferred(deferred))));
+                }
+                return Some((key.clone(), source.fetch(key).await));
+            }
+            Ok(checks) => format!("published build {key} is not authorized: {checks:?}"),
+            Err(why) => format!("cannot read CI authorization for published build {key}: {why}"),
+        };
+        blocked.get_or_insert_with(|| (key.clone(), why));
     }
-    None
+    // Keep looking for an older authorized candidate, but never turn an unreadable
+    // source or a known published build into an expired publication deadline.
+    blocked.map(|(key, why)| (key, Err(PublishedCoreError::OperationalBlocked(why))))
 }
 
 /// What the consumer does when its tip has no artifact yet.
