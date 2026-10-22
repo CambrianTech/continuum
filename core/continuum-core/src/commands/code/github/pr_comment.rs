@@ -56,8 +56,8 @@ crate::action_command! {
     }
 }
 
-/// A comment reaches the people working on a PR only while it is open. A closed or merged PR
-/// is answered with its state, as a fact of the tool, the way a blank body is (card 87f1b05f:
+/// This tool comments only on open PRs: a closed or merged one is answered with its state and
+/// nothing is posted, a rule of the tool like the blank-body refusal (card 87f1b05f:
 /// four of the seven junk comments residents posted since 09-28 went to PR #1, merged
 /// 2025-04-09, each a public comment under the operator's account).
 fn refusal_for_state(number: u64, state: &str) -> Option<String> {
@@ -65,8 +65,8 @@ fn refusal_for_state(number: u64, state: &str) -> Option<String> {
         "OPEN" => None,
         "" => Some(format!("code/github/pr-comment: PR #{number}'s state could not be read, so nothing was posted.")),
         other => Some(format!(
-            "code/github/pr-comment: PR #{number} is {} — a comment there reaches no one working on it. \
-             Comment on an open PR; code/github/pr-create opens one for your own work.",
+            "code/github/pr-comment: PR #{number} is {}, and this tool comments only on open PRs, \
+             so nothing was posted.",
             other.to_ascii_lowercase()
         )),
     }
