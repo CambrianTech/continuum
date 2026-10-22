@@ -430,6 +430,7 @@ pub(super) fn inherited_27b() -> LaneRecord {
         page_dir: None,
         engine_bin: None,
         started_s: 0,
+        placement: None,
     }
 }
 

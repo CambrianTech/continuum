@@ -68,8 +68,17 @@ impl EngineLoraFineTuner {
     /// after the adapter is built and before any module ticks; a binding whose engine is
     /// verifiably dead takes no lease (re-attach releases it).
     pub fn reclaim_resident_leases(&self) {
+        if let Some(daemon) = crate::resources::ResourceDaemon::global() {
+            self.reclaim_resident_leases_in(&daemon);
+        }
+    }
+
+    /// [`Self::reclaim_resident_leases`] against `daemon`. Each lease is re-taken in the pool
+    /// its binding recorded (`ResidentWork::bound_memory`), never the pool the current
+    /// configuration would choose: the run survived in the pool it was granted.
+    pub(super) fn reclaim_resident_leases_in(&self, daemon: &crate::resources::ResourceDaemon) {
         use crate::inference::engine_residency::Liveness;
-        let (Some(store), Some(daemon)) = (self.residency_store.as_ref(), crate::resources::ResourceDaemon::global()) else {
+        let Some(store) = self.residency_store.as_ref() else {
             return;
         };
         let bound = match crate::inference::engine_residency::all(store) {
@@ -88,7 +97,7 @@ impl EngineLoraFineTuner {
                 continue;
             }
             let consumer = if work.consumer.is_empty() { format!("genome-train:{}", work.job) } else { work.consumer.clone() };
-            match daemon.acquire_guarded(&crate::forge::training_admission::request(&consumer, resident_memory(), work.reserved_bytes)) {
+            match daemon.acquire_guarded(&crate::forge::training_admission::request(&consumer, work.bound_memory(), work.reserved_bytes)) {
                 Ok(guard) => {
                     if let Ok(mut leases) = self.resident_leases.lock() {
                         leases.insert(work.job, guard);

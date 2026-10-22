@@ -123,9 +123,22 @@ pub(super) enum Unbound {
     Replaced(String),
 }
 
-/// The pool the resident lane's bytes live in, which is what a run on its weights leases.
-pub(super) fn resident_memory() -> crate::resources::ResourceKind {
-    crate::inference::llama_server::main_lane_placement().pool_kind()
+/// The pool a lane's bytes live in: its recorded placement. A lane recorded before
+/// placements were (an older build launched it) has only the configuration it was launched
+/// under, which is the configuration now unless it changed since; the probe names every such
+/// read, and the lane's next launch records its placement.
+fn lane_memory(rec: &crate::inference::lane_registry::LaneRecord) -> crate::resources::ResourceKind {
+    match rec.memory() {
+        Some(kind) => kind,
+        None => {
+            continuum_base::probe!(
+                class = "training.lane.placement_unrecorded",
+                port = rec.port as u64,
+                "a lane launched before placements were recorded: its pool is read from the current configuration until it relaunches"
+            );
+            crate::inference::llama_server::main_lane_placement().pool_kind()
+        }
+    }
 }
 
 /// The live lane serving the base on this node: training on the resident weights.
@@ -142,19 +155,24 @@ impl LaneSource for ResidentLane {
             format!("no live lane serves {base} on this node: in-engine training runs on the resident weights")
         })?;
         let (base, chosen, url) = (base.to_owned(), choice.engine, choice.url.clone());
-        Ok(LaneLease { choice, hold: None, still_bound: Box::new(move || resident_still_bound(&base, chosen, &url)) })
+        Ok(LaneLease {
+            choice,
+            hold: None,
+            still_bound: Box::new(move || still_bound_to(crate::inference::lane_registry::live_lane(), &base, chosen, &url)),
+        })
     }
 }
 
-/// The resident lane is still the one chosen: the same engine incarnation, at the same
-/// endpoint, serving the same base.
-fn resident_still_bound(
+/// `rec` (the lane serving now) is still the one chosen: the same engine incarnation, at the
+/// same endpoint, serving the same base.
+pub(super) fn still_bound_to(
+    rec: Option<crate::inference::lane_registry::LaneRecord>,
     base: &str,
     chosen: Option<crate::inference::engine_residency::EngineIncarnation>,
     url: &str,
 ) -> Result<(), Unbound> {
     let gone = || Unbound::Gone("no live engine at admission: the lane went away while this job waited".into());
-    let rec = crate::inference::lane_registry::live_lane().ok_or_else(gone)?;
+    let rec = rec.ok_or_else(gone)?;
     let now = incarnation_of(&rec).ok_or_else(gone)?;
     let same_base = crate::model_registry::artifacts::names_the_same_base(&rec.model, base);
     if chosen == Some(now) && rec.root_url() == url && same_base {
@@ -227,7 +245,7 @@ pub(super) fn live_lane_for(base: &str) -> Option<LaneChoice> {
         window: rec.context_window,
         engine: incarnation_of(&rec),
         build: rec.engine_bin.as_deref().and_then(crate::inference::engine_slots::stamp_of_bin),
-        memory: resident_memory(),
+        memory: lane_memory(&rec),
     })
 }
 

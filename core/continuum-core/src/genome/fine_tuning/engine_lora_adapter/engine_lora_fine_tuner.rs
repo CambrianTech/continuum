@@ -415,6 +415,7 @@ impl FineTuningAdapter for EngineLoraFineTuner {
                     reserved_bytes: bytes,
                     interrupted: None,
                     job_spec: Some(spec.clone()),
+                    memory: Some(memory),
                 };
                 let (bind_store, mut bind_work) = (store.clone(), bound.clone());
                 let bind_job_dir = spec.job_dir.clone();

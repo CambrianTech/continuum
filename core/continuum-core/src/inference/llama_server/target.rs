@@ -94,7 +94,8 @@ pub struct ServingTarget {
 
 
 /// Where a serving lane's model weights are resident — see [`ServingTarget::placement`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum LanePlacement {
     /// Offload every layer llama-server can to the GPU — its default, so we omit
     /// the flag. The throughput placement for the living persona lane.
