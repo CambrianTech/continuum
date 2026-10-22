@@ -98,9 +98,14 @@ impl SourceRule for DocTheft {
 
             let stolen_from = first_backticked_identifier(&lines[doc_start..i]);
             if let Some(name) = stolen_from {
-                // The later candidate must be an undocumented item of that name, and it
-                // must come before any OTHER item of the same name (the real definition
-                // is what a doc block would have been written for).
+                // The later candidate must be an item of that name, and it must come
+                // before any OTHER item of the same name (the real definition is what a
+                // doc block would have been written for). `impl` lines are candidates of
+                // NO name: impl blocks conventionally carry no docs — the type or trait
+                // does — so a doc citing [`LineWatch`] above an `impl LineWatch for …`
+                // is normal Rust, not theft. Counting impls made the first measured run
+                // report five false positives in tree (2026-10-21); skipping them puts the
+                // predicate back on the shapes it was written for.
                 let mut k = j + 1;
                 while k < lines.len() {
                     let t = lines[k].trim();
@@ -109,6 +114,13 @@ impl SourceRule for DocTheft {
                         continue;
                     }
                     if is_item_line(lines[k]) {
+                        if t == "impl" || t.starts_with("impl ") {
+                            // An impl block: not a candidate of any name. Skip its first
+                            // line and keep walking; the indented body ends the chain by
+                            // the same rule that ends it at any other code.
+                            k += 1;
+                            continue;
+                        }
                         let doc_for_k = k > 0 && lines[k - 1].trim_start().starts_with("///");
                         let name_of_k = item_name(lines[k]);
                         match name_of_k.as_deref() {
@@ -137,7 +149,6 @@ impl SourceRule for DocTheft {
                     }
                 }
             }
-            i = j + 1;
         }
 
         out.retain(|v| !ALLOW_LIST.iter().any(|(f, _)| *f == v.file.as_str()));
@@ -208,12 +219,15 @@ mod tests {
     use super::*;
     use crate::scan;
 
-    /// The measured count of the theft shape in tree when this guard landed (2026-10-20,
-    /// `core/continuum-core/src` @ b06ae8430a). **This number may only ever go DOWN.** A
-    /// rise means either a new theft or an unallow-listed false positive — both are read
-    /// out of the failure message before deciding which.
+    /// The measured count of the theft shape in tree when this guard first went green
+    /// (2026-10-21, `core/continuum-core/src`, post impl-exclusion on this branch): 0.
+    /// **This number may only ever go DOWN.** A rise means either a new theft or an
+    /// unallow-listed false positive — both are read out of the failure message before
+    /// deciding which. The first measured run (same day, pre impl-exclusion) reported
+    /// five; all five were docs citing their type or trait above its own `impl`, and the
+    /// predicate now skips impls rather than allow-listing them.
     #[cfg(test)]
-    const BASELINE: usize = 0; // MEASURED_PLACEHOLDER
+    const BASELINE: usize = 0; // MEASURED, first green run (2026-10-21)
 
     /// What this catches: a NEW doc-theft shape landing anywhere in the crate, or any
     /// existing one being fixed (lower `BASELINE` and take the win). The assertion is a
@@ -332,6 +346,29 @@ fn path_arg(x: u32) -> u32 { x }
 use crate::late_import;
 fn security() {}";
         assert_eq!(rule.check(&mk(use_between)).len(), 1, "nameless item must be skipped, not fatal");
+
+        // An `impl` of the doc's name is NOT a candidate: impls carry no docs by
+        // convention — the type or trait does. This was all five false positives in the
+        // first measured run (2026-10-21): [`LineWatch`] above `impl LineWatch for …`.
+        let impl_of_name = "\
+/// Per the `LineWatch` doctrine: one question per observer.
+pub struct ChainWatch(Box<dyn LineWatch>);
+
+impl LineWatch for ChainWatch {
+    fn observe(&mut self, _l: &str) {}
+}";
+        assert_eq!(rule.check(&mk(impl_of_name)).len(), 0, "an impl of the doc's name is not theft");
+
+        // An intervening impl severs the chain like any other item: what follows its
+        // body is no longer adjacent to the block.
+        let impl_breaks = "\
+/// The `security` surface for seat grants.
+fn path_arg(x: u32) -> u32 { x }
+impl Other {
+    fn f(&self) {}
+}
+fn security() {}";
+        assert_eq!(rule.check(&mk(impl_breaks)).len(), 0, "an intervening impl severs the chain");
         // The thief line is reported at the item under the block (1-indexed).
         let v = rule.check(&mk(incident_a));
         assert_eq!(v[0].line, 2, "violation points at the inserted fn");
