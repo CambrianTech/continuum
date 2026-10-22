@@ -94,7 +94,8 @@ pub struct ServingTarget {
 
 
 /// Where a serving lane's model weights are resident — see [`ServingTarget::placement`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum LanePlacement {
     /// Offload every layer llama-server can to the GPU — its default, so we omit
     /// the flag. The throughput placement for the living persona lane.
@@ -103,6 +104,19 @@ pub enum LanePlacement {
     /// Pin all layers to CPU RAM (`--n-gpu-layers 0`). Zero VRAM contention — for
     /// a measurement lane coexisting with a GPU-resident living lane.
     Cpu,
+}
+
+impl LanePlacement {
+    /// The pool this placement's bytes live in, which is the governed row that admits them:
+    /// a CPU-placed lane (`--n-gpu-layers 0`) keeps weights AND KV in system RAM, so it is
+    /// sized against `Ram`, never against a card holding none of it (card 7c72c0f0: nine
+    /// citizens planned against a 5.7 GB Vram row on a box with 34.4 GB of RAM in use).
+    pub fn pool_kind(self) -> crate::resources::ResourceKind {
+        match self {
+            Self::Cpu => crate::resources::ResourceKind::Ram,
+            Self::Gpu => crate::resources::ResourceKind::Vram,
+        }
+    }
 }
 
 

@@ -125,6 +125,7 @@ fn a_census_under_the_guard_never_finds_a_lane_in_neither_list_during_handoff() 
         page_dir: Some(b_dir.clone()),
         engine_bin: None,
         started_s: 0,
+        placement: None,
     };
     let (before_tx, before_rx) = mpsc::channel();
     let (done_tx, done_rx) = mpsc::channel();
@@ -214,6 +215,7 @@ fn the_live_lane_inventory_is_complete_only_when_every_live_record_names_its_dir
         page_dir: page_dir.map(PathBuf::from),
         engine_bin: None,
         started_s: 0,
+        placement: None,
     };
     let alive = |pid: u32| pid != 3;
     let (dirs, complete) = page_dirs_of(vec![rec(1, Some("/p/a")), rec(2, Some("/p/b")), rec(3, None)], alive);

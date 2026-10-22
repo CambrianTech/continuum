@@ -48,24 +48,22 @@
         assert_eq!(r.summary, "sympy/core/mul.py");
         assert_eq!(r.actor_name, "Asha");
         assert!(r.ok);
+        assert_eq!(r.thought, None, "a receipt that carries no reasoning shows none");
         // Room switch clears the receipt ring with the rest of the state.
         // PREMISE CHANGE (anti-wander): the switch is explicit focus now.
         p.apply_focus(Uuid::from_u128(0x9));
-        if let Some(ProjectionInput::Act(a)) = classify(
-            PERSONA_ACT,
-            &act_payload(
-                Uuid::from_u128(0x9),
-                Uuid::from_u128(0xa),
-                actor,
-                "code/shell",
-                "pytest -x",
-            ),
-        ) {
+        // Her reasoning for the batch rides its first receipt to the human's view, whole:
+        // the renderer decides how much of it to show (card ba1eeda1).
+        let reasoning = "the label drops the index; ".repeat(40) + "so check checks.py:1040 first";
+        let mut thinking = act_payload(Uuid::from_u128(0x9), Uuid::from_u128(0xa), actor, "code/shell", "pytest -x");
+        thinking["thought"] = json!(reasoning);
+        if let Some(ProjectionInput::Act(a)) = classify(PERSONA_ACT, &thinking) {
             p.apply_act(a);
         }
         let view = current_chat(&substrate);
         assert_eq!(view.acts.len(), 1);
         assert_eq!(view.acts[0].tool, "code/shell");
+        assert_eq!(view.acts[0].thought.as_deref(), Some(reasoning.as_str()), "the view carries her reasoning whole, never clipped");
     }
 
     // what this catches: a `chat:heard` receipt decorates the row it names — the

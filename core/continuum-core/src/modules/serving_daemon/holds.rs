@@ -106,27 +106,13 @@ impl Drop for ServingLudicrousHold {
 /// Last VRAM ceiling the governed board actually reported this process, and when.
 /// The middle rung of the substitute-value ladder: when the board goes quiet, an old
 /// REAL number keeps the planner honest where a fabricated zero floors it.
-/// The pool the main lane's bytes live in — the ONE decision every serving site
-/// keyed by a resource kind reads through: the plan's ceiling, the replace-myself
-/// credit, the credited-once check and the consumer's own attribution. A CPU-placed
-/// lane (`--n-gpu-layers 0`, #3729's Intel-Mac arm) puts weights AND KV in system
-/// RAM, so all four belong to the `Ram` row, not the `Vram` row of a card holding
-/// none of them. #4169 made the physical bound follow the placement; this makes the
-/// PLAN follow it. Card 7c72c0f0 (Intel Mac, 2026-09-17): nine citizens sized against
-/// a 5.7 GB Vram row on a box with 34.4 GB of RAM and 0 MB of VRAM in use — one warm
-/// slot, eight exiled to a remote lane that timed out at 600 s.
+/// The pool the main lane's bytes live in: the ONE decision every serving site keyed by a
+/// resource kind reads through (the plan's ceiling, the replace-myself credit, the
+/// credited-once check, the consumer's own attribution). The mapping is
+/// [`crate::inference::llama_server::LanePlacement::pool_kind`]; #4169 made the physical
+/// bound follow the placement, and this makes the PLAN follow it.
 pub fn serving_pool_kind() -> ResourceKind {
-    pool_kind_for(crate::inference::llama_server::main_lane_placement())
-}
-
-/// Pure so the mapping is assertable without config: where the placement puts the
-/// bytes is which row governs them.
-pub fn pool_kind_for(placement: crate::inference::llama_server::LanePlacement) -> ResourceKind {
-    use crate::inference::llama_server::LanePlacement;
-    match placement {
-        LanePlacement::Cpu => ResourceKind::Ram,
-        LanePlacement::Gpu => ResourceKind::Vram,
-    }
+    crate::inference::llama_server::main_lane_placement().pool_kind()
 }
 
 pub fn serving_ludicrous_active() -> bool {

@@ -20,7 +20,7 @@ use super::*;
                 .record_with(&fam(bound_at), 2 * gib, false, Uuid::nil())
                 .expect("test: graph-only refusal");
             let mut t = EngineLoraFineTuner::for_test_with_vram(url.clone(), train.path().to_path_buf(), footprints, gib);
-            t.lane = Box::new(move |_: &str| Some(LaneChoice { url: url.clone(), window: 61_696, engine: None, build: lane_build.map(str::to_owned) }));
+            t.lane = Box::new(move |_: &str| Some(LaneChoice { build: lane_build.map(str::to_owned), ..LaneChoice::at(url.clone(), 61_696) }));
             let mut r = request("ggml-org/Qwen3.8-27B-GGUF");
             r.local_artifact_dir = Some(jobs.path().to_path_buf());
             let created = t.create_job(r).await;
@@ -60,7 +60,7 @@ use super::*;
         let jobs = tempfile::tempdir().expect("test: dir");
         let (url, server, seen) = fake_lane(train.path().to_path_buf(), "short_turns").await;
         let mut t = EngineLoraFineTuner::for_test(url.clone(), train.path().to_path_buf(), jobs.path().join("footprints.json"));
-        t.lane = Box::new(move |_: &str| Some(LaneChoice { url: url.clone(), window: 61_696, engine: None, build: None }));
+        t.lane = Box::new(move |_: &str| Some(LaneChoice::at(url.clone(), 61_696)));
         let mut r = request("ggml-org/Qwen3.8-27B-GGUF");
         r.local_artifact_dir = Some(jobs.path().to_path_buf());
         let h = t.create_job(r).await.expect("test: create");
@@ -81,7 +81,7 @@ use super::*;
             let jobs = tempfile::tempdir().expect("test: dir");
             let (url, server, seen) = fake_lane(train.path().to_path_buf(), mode).await;
             let mut t = EngineLoraFineTuner::for_test(url.clone(), train.path().to_path_buf(), jobs.path().join("footprints.json"));
-            t.lane = Box::new(move |_: &str| Some(LaneChoice { url: url.clone(), window: 2048, engine: None, build: None }));
+            t.lane = Box::new(move |_: &str| Some(LaneChoice::at(url.clone(), 2048)));
             let mut r = request("ggml-org/Qwen3.8-27B-GGUF");
             r.local_artifact_dir = Some(jobs.path().to_path_buf());
             r.dataset.examples = (0..3)
@@ -118,7 +118,7 @@ use super::*;
         let (url, server, seen) = fake_lane(train.path().to_path_buf(), "sized").await;
         let footprints = jobs.path().join("footprints.json");
         let mut t = EngineLoraFineTuner::for_test(url.clone(), train.path().to_path_buf(), footprints.clone());
-        t.lane = Box::new(move |_: &str| Some(LaneChoice { url: url.clone(), window: 61_696, engine: None, build: None }));
+        t.lane = Box::new(move |_: &str| Some(LaneChoice::at(url.clone(), 61_696)));
         let mut r = request("ggml-org/Qwen3.8-27B-GGUF");
         r.local_artifact_dir = Some(jobs.path().to_path_buf());
         // the trigger's dispatch and `return` carry no schedule: the engine runs the default
@@ -275,6 +275,7 @@ use super::*;
             reserved_bytes: 0,
             interrupted: None,
             job_spec: Some(spec),
+            memory: None,
         };
         crate::inference::engine_residency::record(&store, bound).expect("test: record");
         let mut successor = EngineLoraFineTuner::for_test(url, train.path().to_path_buf(), jobs.path().join("footprints.json"));
@@ -331,6 +332,7 @@ use super::*;
             reserved_bytes: 0,
             interrupted: None,
             job_spec: Some(spec.clone()),
+            memory: None,
         };
         crate::inference::engine_residency::record(&store, work.clone()).expect("test: record");
         let tuner = EngineLoraFineTuner::for_test(url.clone(), train.path().to_path_buf(), jobs.path().join("footprints.json"));
@@ -694,4 +696,111 @@ use super::*;
         // and a state this core does not know is Unknown, not a known one
         assert!(serde_json::from_value::<TrainStatus>(json!({"out": "x.gguf"})).is_err());
         assert_eq!(st(json!({"state": "paused"})).state, TrainState::Unknown);
+    }
+
+    // what this catches (Codex on #5264): recovery re-taking a surviving run's lease in the pool
+    // the CURRENT configuration names instead of the pool the run was granted. A placement change
+    // across a core restart then charges Ram for a run still using Vram, or the reverse, and lets
+    // competing work into the pool actually in use. Each binding names its own pool; a record from
+    // before the field was leased in Vram by the build that wrote it. This node's configuration
+    // (GPU unless config says cpu) never enters: the Ram-bound run is the reverse direction.
+    #[tokio::test]
+    async fn recovery_retakes_each_surviving_run_in_the_pool_it_was_bound_in() {
+        use crate::resources::{capacity::MockCapacitySource, DaemonConfig, GovernorConfig, ResourceDaemon, ResourceKind};
+        let daemon = ResourceDaemon::start(
+            vec![
+                Arc::new(MockCapacitySource::new(ResourceKind::Vram, 1 << 40)),
+                Arc::new(MockCapacitySource::new(ResourceKind::Ram, 1 << 40)),
+            ],
+            vec![],
+            DaemonConfig {
+                tick_interval: Duration::from_millis(20),
+                min_reclaim_budget: Duration::from_millis(100),
+                governor: GovernorConfig { min_dwell_ms: 0, graceful_grace_ms: 50 },
+            },
+        );
+        let home = tempfile::tempdir().expect("test: dir");
+        let train = tempfile::tempdir().expect("test: dir");
+        let store = crate::inference::engine_residency::store_path(home.path());
+        // this process: an engine that is verifiably alive, so every binding is re-taken
+        let engine = crate::inference::engine_residency::EngineIncarnation::of(std::process::id(), 1).expect("test: this process has a start time");
+        let bound = |consumer: &str, memory: Option<ResourceKind>| crate::inference::engine_residency::ResidentWork {
+            job: Uuid::new_v4(),
+            out: format!("{consumer}.gguf"),
+            engine,
+            base_model: "m".into(),
+            created_ms: 1,
+            consumer: consumer.into(),
+            reserved_bytes: 4096,
+            interrupted: None,
+            job_spec: None,
+            memory,
+        };
+        for work in [bound("gpu-run", Some(ResourceKind::Vram)), bound("cpu-run", Some(ResourceKind::Ram)), bound("older-run", None)] {
+            crate::inference::engine_residency::record(&store, work).expect("test: record");
+        }
+        let mut tuner = EngineLoraFineTuner::for_test("http://127.0.0.1:1".into(), train.path().to_path_buf(), train.path().join("footprints.json"));
+        tuner.residency_store = Some(store);
+        tuner.reclaim_resident_leases_in(&daemon);
+        let pool_of = |consumer: &str| daemon.board().leases.iter().find(|l| l.consumer_id == consumer).map(|l| l.kind);
+        assert_eq!(pool_of("gpu-run"), Some(ResourceKind::Vram), "a Vram-bound run is re-taken in Vram");
+        assert_eq!(pool_of("cpu-run"), Some(ResourceKind::Ram), "a Ram-bound run is re-taken in Ram");
+        assert_eq!(pool_of("older-run"), Some(ResourceKind::Vram), "a record from before the field: the Vram its build leased");
+    }
+
+    // what this catches (Codex on #5264): admission binding a run to a lane that is no longer the
+    // one chosen. The check is the production callback's own logic: the same incarnation at the
+    // same endpoint serving the same base passes; a moved endpoint, another base, or no lane at
+    // all does not.
+    #[test]
+    fn a_lane_is_still_bound_only_at_its_incarnation_endpoint_and_base() {
+        use crate::inference::lane_registry::{LaneRecord, LaneRole};
+        let rec = LaneRecord {
+            pid: 4242,
+            port: 8090,
+            role: LaneRole::Live,
+            model: "qwen/base".into(),
+            context_window: 8192,
+            lanes: 2,
+            page_dir: None,
+            engine_bin: None,
+            started_s: 1_700_000_000,
+            placement: None,
+        };
+        let chosen = Some(rec.incarnation());
+        let url = rec.root_url();
+        assert!(still_bound_to(Some(rec.clone()), "qwen/base", chosen, &url).is_ok(), "the lane chosen still serves");
+        assert!(matches!(still_bound_to(Some(rec.clone()), "qwen/base", chosen, "http://127.0.0.1:9999"), Err(Unbound::Replaced(_))), "another endpoint");
+        assert!(matches!(still_bound_to(Some(rec.clone()), "other/base", chosen, &url), Err(Unbound::Replaced(_))), "another base");
+        let relaunched = LaneRecord { pid: 5151, started_s: 1_700_000_100, ..rec.clone() };
+        assert!(matches!(still_bound_to(Some(relaunched), "qwen/base", chosen, &url), Err(Unbound::Replaced(_))), "another incarnation");
+        assert!(matches!(still_bound_to(None, "qwen/base", chosen, &url), Err(Unbound::Gone(_))), "no lane");
+    }
+
+    // what this catches (Codex on #5264): training priced in the pool the CURRENT configuration
+    // names for a lane that was launched under another. A lane's own recorded placement decides
+    // its pool; a lane recorded before placements were is not offered at all, whatever the
+    // configuration says now.
+    #[test]
+    fn a_lane_is_priced_in_its_recorded_placement_and_an_unrecorded_one_is_not_offered() {
+        use crate::inference::lane_registry::{LaneRecord, LaneRole};
+        use crate::inference::llama_server::LanePlacement;
+        use crate::resources::ResourceKind;
+        let rec = |placement: Option<LanePlacement>| LaneRecord {
+            pid: 4242,
+            port: 8090,
+            role: LaneRole::Live,
+            model: "qwen/base".into(),
+            context_window: 8192,
+            lanes: 2,
+            page_dir: None,
+            engine_bin: None,
+            started_s: 1_700_000_000,
+            placement,
+        };
+        let pool = |placement| lane_choice(rec(placement), "qwen/base").map(|choice| choice.memory);
+        assert_eq!(pool(Some(LanePlacement::Gpu)), Some(ResourceKind::Vram));
+        assert_eq!(pool(Some(LanePlacement::Cpu)), Some(ResourceKind::Ram));
+        assert_eq!(pool(None), None, "an unrecorded placement is refused, never read from configuration");
+        assert!(lane_choice(rec(Some(LanePlacement::Gpu)), "other/base").is_none(), "another base");
     }
