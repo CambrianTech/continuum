@@ -39,6 +39,30 @@ impl WeightResidency {
         self.per_backend.iter().map(|(_, b)| *b).sum()
     }
 
+    /// Where these weights live, as a lane placement, or `None` when the engine's account
+    /// does not decide it (card 22aa3379; Codex's terms on it):
+    /// - every byte in host memory: `Cpu`;
+    /// - weights on a known GPU backend: `Gpu`, even beside host buffers, since a fully
+    ///   offloaded lane still keeps some (Metal=4.7GB CPU_Mapped=0.3GB), so a host staging
+    ///   buffer never makes a GPU lane read as CPU;
+    /// - no bytes, or any non-host backend this does not know: `None`, fail closed.
+    pub fn observed_placement(&self) -> Option<crate::inference::llama_server::LanePlacement> {
+        use crate::inference::llama_server::LanePlacement;
+        if self.total_bytes() == 0 {
+            return None;
+        }
+        let accelerators: Vec<&str> = self
+            .per_backend
+            .iter()
+            .filter(|(name, bytes)| *bytes > 0 && !is_host_backend(name))
+            .map(|(name, _)| name.as_str())
+            .collect();
+        if accelerators.is_empty() {
+            return Some(LanePlacement::Cpu);
+        }
+        accelerators.iter().all(|name| is_gpu_backend(name)).then_some(LanePlacement::Gpu)
+    }
+
     /// One line for a probe or a refusal message: `Metal=4.7GB CPU_Mapped=0.3GB`.
     pub fn summary(&self) -> String {
         self.per_backend.iter().map(|(n, b)| format!("{n}={:.2}GB", *b as f64 / 1e9)).collect::<Vec<_>>().join(" ")
@@ -174,6 +198,13 @@ fn is_host_backend(name: &str) -> bool {
     n.starts_with("CPU") || n.contains("_Host") || n.starts_with("BLAS")
 }
 
+/// A backend whose memory is a GPU's: the ones llama.cpp names for the devices we place lanes
+/// on. Any other non-host name decides nothing (`observed_placement` fails closed on it).
+fn is_gpu_backend(name: &str) -> bool {
+    let n = name.trim();
+    ["Metal", "MTL", "CUDA", "Vulkan", "ROCm", "HIP", "SYCL", "OpenCL"].iter().any(|gpu| n.starts_with(gpu))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -277,5 +308,25 @@ mod tests {
         let m = WeightResidency::from_props(&metal).unwrap();
         assert_eq!(m.accelerator_bytes(), 4_700_000_000);
         assert_eq!(m.summary(), "Metal=4.70GB CPU_Mapped=0.29GB");
+    }
+
+    // what this catches (card 22aa3379): a kept lane's placement read wrong from its engine's
+    // own account. All host bytes is Cpu (IntelMac 2026-10-22: CPU_Mapped 980 MB); weights on a
+    // known GPU are Gpu even beside a host staging buffer; an unknown accelerator name, no
+    // bytes, or no field at all decide nothing.
+    #[test]
+    fn a_lane_placement_is_read_from_where_its_weights_live() {
+        use crate::inference::llama_server::LanePlacement;
+        let r = |pairs: &[(&str, u64)]| WeightResidency {
+            per_backend: pairs.iter().map(|(n, b)| (n.to_string(), *b)).collect(),
+        };
+        assert_eq!(r(&[("CPU_Mapped", 980_097_536)]).observed_placement(), Some(LanePlacement::Cpu));
+        assert_eq!(r(&[("CPU", 1), ("CPU_REPACK", 2)]).observed_placement(), Some(LanePlacement::Cpu));
+        assert_eq!(r(&[("Metal", 4_700_000_000), ("CPU_Mapped", 300_000_000)]).observed_placement(), Some(LanePlacement::Gpu));
+        assert_eq!(r(&[("CUDA0", 9_000_000_000), ("CUDA_Host", 1_000)]).observed_placement(), Some(LanePlacement::Gpu));
+        assert_eq!(r(&[("RPC[10.0.0.2]", 1_000), ("CPU_Mapped", 1_000)]).observed_placement(), None, "an unknown accelerator decides nothing");
+        assert_eq!(r(&[("Metal", 1_000), ("RPC[x]", 1_000)]).observed_placement(), None, "mixed with an unknown accelerator decides nothing");
+        assert_eq!(r(&[("CPU_Mapped", 0)]).observed_placement(), None, "no bytes");
+        assert_eq!(WeightResidency::from_props(&serde_json::json!({})).and_then(|w| w.observed_placement()), None, "no field");
     }
 }

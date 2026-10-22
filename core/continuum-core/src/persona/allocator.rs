@@ -506,8 +506,10 @@ mod tests {
     use super::*;
     use std::sync::Arc;
 
+    /// A fixed 16 GiB device, never the runner's: `detect()` panics on a host with no
+    /// GPU and sizes the allocation to whatever card the runner has (card c4d84be3).
     fn test_gpu_manager() -> Arc<GpuMemoryManager> {
-        Arc::new(GpuMemoryManager::detect())
+        Arc::new(GpuMemoryManager::simulated("test:synthetic", 16 * 1024 * 1024 * 1024))
     }
 
     #[test]
@@ -559,24 +561,11 @@ mod tests {
 
     #[test]
     fn test_allocate_no_keys() {
-        // Use a deterministic test fixture rather than real hardware
-        // detection. test_gpu_manager() calls GpuMemoryManager::detect()
-        // which leaks host hardware into a pure-logic test — empirically
-        // observed failing on Intel Mac + AMD Radeon Pro 560X (4 GB VRAM
-        // - reserves = ~2 GB usable, but every local persona needs 3 GB
-        // per catalog.json, so 0 local allocations and the
-        // `local_count >= 1` invariant blows up). The allocator's job is
-        // "given a hardware budget, decide what to spawn"; the test
-        // should hand it a known budget, not ask the OS.
-        //
-        // Sibling tests `test_allocate_5090_tier` + `test_allocate_m1_pro_tier`
-        // already use `GpuMemoryManager::simulated` for the same reason —
-        // 16 GiB is a comfortable mid-tier that fits today's largest local
-        // persona budget (5 GiB for `vision`) with room to spare.
-        let manager = Arc::new(GpuMemoryManager::simulated(
-            "test:synthetic",
-            16 * 1024 * 1024 * 1024,
-        ));
+        // A known budget, never the OS's: `detect()` once failed this on an Intel Mac +
+        // Radeon Pro 560X (4 GB VRAM, ~2 GB usable, every local persona needs 3 GB, so 0
+        // local allocations). The allocator's job is "given a hardware budget, decide what
+        // to spawn"; `test_gpu_manager` is the shared 16 GiB fixture.
+        let manager = test_gpu_manager();
         let catalog = load_catalog();
         let result = allocate(&manager, &[], &catalog, &std::collections::HashMap::new());
 

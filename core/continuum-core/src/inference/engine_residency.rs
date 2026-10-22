@@ -200,6 +200,24 @@ pub struct ResidentWork {
     /// inside the admission hold. `None`: a record from before the field, never re-attached.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub job_spec: Option<crate::genome::fine_tuning::engine_lora_adapter::EngineRunSpec>,
+    /// The governed pool `reserved_bytes` was leased in, recorded at bind: what a successor
+    /// core re-takes for a surviving run, never what the next launch's configuration would
+    /// choose (Codex on #5264: a placement change across a restart would charge the wrong
+    /// pool for a run still using the other one). Read through [`Self::bound_memory`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub memory: Option<crate::resources::ResourceKind>,
+}
+
+impl ResidentWork {
+    /// The pool this work's reservation lives in. A record without one was written by a
+    /// build whose training admission leased `Vram` unconditionally, so `Vram` is what that
+    /// run was granted: the record's own history, not a guess at its placement.
+    pub fn bound_memory(&self) -> crate::resources::ResourceKind {
+        match self.memory {
+            Some(kind) => kind,
+            None => crate::resources::ResourceKind::Vram,
+        }
+    }
 }
 
 /// The store's file under a continuum home.
@@ -342,11 +360,20 @@ pub fn interrupt(path: &Path, port: u16, reason: &str) -> Result<Vec<Uuid>, Stri
 
 /// Why serving replaced this job's engine under it, if it did.
 pub fn interruption_of(path: &Path, job: Uuid) -> Option<String> {
-    read(path)
-        .ok()?
-        .into_iter()
-        .find(|w| w.job == job)
-        .and_then(|w| w.interrupted)
+    let all = match read(path) {
+        Ok(all) => all,
+        Err(error) => {
+            // Unreadable is not "never interrupted": say which, as `occupancy_with` does.
+            continuum_base::probe!(
+                class = "inference.engine_residency.unread",
+                job = %job,
+                error = %error,
+                "the residency list is unreadable: whether serving replaced this job's engine is unknown"
+            );
+            return None;
+        }
+    };
+    all.into_iter().find(|w| w.job == job).and_then(|w| w.interrupted)
 }
 
 /// What serving may do to the engine on `port` right now.
@@ -430,6 +457,7 @@ mod tests {
             reserved_bytes: 1 << 30,
             interrupted: None,
             job_spec: None,
+            memory: None,
         }
     }
 

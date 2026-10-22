@@ -337,25 +337,38 @@ mod tests {
         assert_eq!(result.data["branchResults"][1]["stepsCompleted"], 3);
     }
 
+    // what this catches: branches executed one after another instead of together. The
+    // shape, not a stopwatch: each branch marks itself started and then waits for the
+    // OTHER branch's mark, so only concurrent execution lets both finish — run serially,
+    // the first branch waits for a mark that never comes and its step times out. No
+    // wall-clock threshold (the old `< 180 ms` failed under load on the M5, card
+    // c4d84be3); the step timeout is a liveness bound, never the assertion.
     #[tokio::test]
     async fn test_branches_run_concurrently() {
         let registry = Arc::new(ModuleRegistry::new());
         let bus = Arc::new(MessageBus::new());
         let pipeline_ctx = test_pipeline_ctx(&registry, &bus);
         let mut ctx = test_ctx();
+        let marks = tempfile::tempdir().expect("marks dir");
 
-        // Two branches each sleeping 100ms — if sequential would take 200ms+
-        let sleep_step = PipelineStep::Shell {
-            cmd: "sleep".to_string(),
-            args: vec!["0.1".to_string()],
-            timeout_secs: Some(5),
+        let rendezvous = |mine: &str, theirs: &str| PipelineStep::Shell {
+            cmd: "/bin/sh".to_string(),
+            args: vec![
+                "-c".to_string(),
+                format!(
+                    "touch '{mine}' && while [ ! -f '{theirs}' ]; do sleep 0.01; done",
+                    mine = marks.path().join(mine).display(),
+                    theirs = marks.path().join(theirs).display(),
+                ),
+            ],
+            timeout_secs: Some(30),
             working_dir: None,
             allow_failure: None,
             env: None,
         };
 
         let result = execute(
-            &[vec![sleep_step.clone()], vec![sleep_step]],
+            &[vec![rendezvous("a", "b")], vec![rendezvous("b", "a")]],
             false,
             0,
             &mut ctx,
@@ -364,12 +377,10 @@ mod tests {
         .await
         .unwrap();
 
-        assert!(result.success);
-        // Concurrent: should complete in ~100ms, not ~200ms
         assert!(
-            result.duration_ms < 180,
-            "Expected concurrent execution, took {}ms",
-            result.duration_ms
+            result.success,
+            "both branches must be running at once to meet: {:?}",
+            result.data
         );
     }
 }

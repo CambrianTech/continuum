@@ -857,3 +857,14 @@
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+// what this catches (card f3ba3b56, item 4): a Turn that names no activity must never
+// run unpinned with its cache on a pool that has a scratch slot, where the server would
+// place it by similarity over a resident. It lands where any unattributed request does.
+#[test]
+fn only_a_keyed_turn_owns_a_slot() {
+    let at = |slot, cache_prompt| Placement { slot, cache_prompt };
+    assert_eq!(placement(true, Some(1), Some(3)), at(Some(1), true), "her own slot");
+    assert_eq!(placement(false, None, Some(3)), at(Some(3), true), "keyless: scratch");
+    assert_eq!(placement(false, Some(0), None), at(Some(0), false), "borrowed, never persisted");
+    assert_eq!(placement(false, None, None), at(None, false), "no slot: no cache");
+}

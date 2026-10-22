@@ -427,7 +427,7 @@ pub fn recheck_resource_deferral(
 ) -> Option<MissingArtifact> {
     let (key, condition) = pending.as_mut()?;
     if condition.condition != ResourceCondition::VolumeCapacity {
-        return Some(MissingArtifact::Wait(format!(
+        return Some(MissingArtifact::AdmissionWait(format!(
             "published build {key} awaits explicit resource retry: {}", condition.reason
         )));
     }
@@ -436,10 +436,10 @@ pub fn recheck_resource_deferral(
         Err(PublishedCoreError::ResourceDeferred(next)) => {
             let why = format!("published build {key} awaits resource admission: {}", next.reason);
             *condition = next;
-            Some(MissingArtifact::Wait(why))
+            Some(MissingArtifact::AdmissionWait(why))
         }
         Err(PublishedCoreError::Artifact(reason)) => Some(MissingArtifact::Refuse(reason)),
-        Err(PublishedCoreError::CapabilityDeferred(reason) | PublishedCoreError::OperationalBlocked(reason)) => Some(MissingArtifact::Wait(reason)),
+        Err(PublishedCoreError::CapabilityDeferred(reason) | PublishedCoreError::OperationalBlocked(reason)) => Some(MissingArtifact::AdmissionWait(reason)),
     }
 }
 
@@ -476,6 +476,8 @@ pub async fn select_published_core<S: PublishedCoreSource>(candidates: &[String]
 pub enum MissingArtifact {
     /// CI is still inside its budget: try again next tick, without spending an attempt.
     Wait(String),
+    /// A published artifact is blocked by admission, not pending publication.
+    AdmissionWait(String),
     /// End this attempt without changing the running installation.
     Refuse(String),
 }

@@ -1,14 +1,26 @@
 use super::*;
 
-/// What the trainer is governed to have free for `consumer`: the governor's VRAM budget net of
-/// every reservation. ONE reader, for the plan here and for the trigger deciding whether a
-/// capacity-parked job may re-plan (card de9e1342), so the two can never disagree.
-pub(crate) fn governed_training_free(consumer: &str) -> u64 {
+/// What the trainer is governed to have free for `consumer` in `memory` (its lane's pool): the
+/// governor's budget net of every reservation. ONE reader, for the plan here and for the
+/// trigger deciding whether a capacity-parked job may re-plan (card de9e1342), so the two can
+/// never disagree.
+pub(crate) fn governed_training_free(consumer: &str, memory: crate::resources::ResourceKind) -> u64 {
     crate::resources::ResourceDaemon::global()
-        .map_or(0, |d| d.available_for(consumer, crate::resources::ResourceKind::Vram)) // map_or: a governed host whose governor is gone has nothing free to lease (the governed branch refuses below)
+        .map_or(0, |d| d.available_for(consumer, memory)) // map_or: a governed host whose governor is gone has nothing free to lease (the governed branch refuses below)
 }
 
 pub const PROVIDER_ID: &str = "engine-local";
+
+/// The provider id of the in-engine trainer on lanes stood up for the run
+/// ([`super::engine_lane::EngineLane`]). Its artifacts are the same kind as `engine-local`'s
+/// (an engine LoRA, ids `engine-local:<trait>:<job>`); only where it trains differs.
+pub const LANE_PROVIDER_ID: &str = "engine-lane";
+
+/// Whether `provider` trains in our engine (on the resident lane or one stood up for the run):
+/// the jobs that obey the in-engine holds and pause where they stand.
+pub fn trains_in_engine(provider: &str) -> bool {
+    provider == PROVIDER_ID || provider == LANE_PROVIDER_ID
+}
 
 /// How often the run is polled. The engine answers GET /train from memory; this is the
 /// cadence of progress and of the VRAM peak sample, not a timeout.
@@ -460,7 +472,9 @@ pub(super) fn effective_depth(layers_adapted: Option<u32>, n_layer: Option<u32>)
 /// the number of distinct shapes ever run, not by runs).
 #[derive(Clone)]
 pub(super) struct Footprints {
-    pub(super) path: PathBuf,
+    /// The store's file; `None` with no continuum home, where nothing persists and every shape
+    /// is measured again (a calibration run), never written into the working directory.
+    pub(super) path: Option<PathBuf>,
     /// The engine build this view reads and writes for (`LaneChoice::build`). Lower bounds and
     /// leases are evidence only about the engine that measured them; whole-run rows of any
     /// engine still fit the model, which is a prediction. `None` reads every row (no identity
@@ -488,7 +502,11 @@ pub(super) struct FootprintRow {
 
 impl Footprints {
     pub(super) fn at(path: PathBuf) -> Self {
-        Footprints { path, engine: None }
+        Footprints { path: Some(path), engine: None }
+    }
+    /// No store: with no continuum home there is nowhere to keep a measurement.
+    pub(super) fn unrecorded() -> Self {
+        Footprints { path: None, engine: None }
     }
     /// This store, as evidence about the engine `build`.
     pub(super) fn for_engine(&self, build: Option<String>) -> Self {
@@ -499,7 +517,10 @@ impl Footprints {
         self.engine.is_none() || row.engine == self.engine
     }
     pub(super) fn read_all(&self) -> BTreeMap<String, FootprintRow> {
-        match std::fs::read_to_string(&self.path) {
+        let Some(path) = &self.path else {
+            return BTreeMap::new();
+        };
+        match std::fs::read_to_string(path) {
             Ok(body) => serde_json::from_str(&body).unwrap_or_default(), // unwrap_or_default: a corrupt file re-measures every shape (a calibration run), never blocks training
             Err(_) => BTreeMap::new(),
         }
@@ -579,13 +600,16 @@ impl Footprints {
                 includes_context,
             },
         );
-        if let Some(dir) = self.path.parent() {
+        let Some(path) = &self.path else {
+            return Ok(()); // unrecorded: nowhere to keep it, so the next run measures again
+        };
+        if let Some(dir) = path.parent() {
             std::fs::create_dir_all(dir)?;
         }
-        let tmp = self.path.with_extension("json.tmp");
+        let tmp = path.with_extension("json.tmp");
         std::fs::write(&tmp, serde_json::to_vec_pretty(&all).map_err(std::io::Error::other)?)?;
         // a scanner holding the new temp must not lose the measurement (the 5090, 2026-10-10)
-        continuum_base::fs_portable::replace::replace_file(&tmp, &self.path)
+        continuum_base::fs_portable::replace::replace_file(&tmp, path)
     }
 }
 

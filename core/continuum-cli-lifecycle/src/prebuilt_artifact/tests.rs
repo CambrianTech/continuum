@@ -77,7 +77,7 @@
         ArtifactManifest {
             platform: "macos-x86_64".into(),
             git_sha: TIP.into(),
-            features: "--no-default-features --features livekit-webrtc,llama/mac-cpu-only".into(),
+            features: "--features llama/mac-cpu-only,livekit-webrtc".into(),
             archive: "continuum-core-macos-x86_64.tar.gz".into(),
             sha256: "9e08699366264e94d11b6f51c545a5fa0a9a0d3254224cd1afc18c7d11898cea".into(),
             bins: REQUIRED_BINS.iter().map(|b| b.to_string()).collect(),
@@ -150,7 +150,7 @@
     // another commit, another platform, or the same commit with another GPU flavor's features.
     #[test]
     fn only_the_exact_build_for_this_node_is_accepted() {
-        let local = "--no-default-features  --features livekit-webrtc,llama/mac-cpu-only";
+        let local = "--features  llama/mac-cpu-only,livekit-webrtc";
         assert_eq!(
             manifest_verdict(&manifest(), TIP, "macos-x86_64", local),
             Ok(()),
@@ -394,7 +394,7 @@
         let condition = ResourceDeferral { condition: ResourceCondition::VolumeCapacity, path: "/artifact-cache".into(), projected_bytes: 579, reason: "measured capacity refusal".into() };
         let mut source = DeferredSource { pending: Some(("older".into(), condition.clone())), fetches: Default::default() };
         for _ in 0..3 {
-            assert!(matches!(recheck_resource_deferral(&mut source.pending, Err(PublishedCoreError::ResourceDeferred(condition.clone()))), Some(MissingArtifact::Wait(_))));
+            assert!(matches!(recheck_resource_deferral(&mut source.pending, Err(PublishedCoreError::ResourceDeferred(condition.clone()))), Some(MissingArtifact::AdmissionWait(_))));
             assert!(matches!(select_published_core(&["older".into()], &source).await, Some((_, Err(PublishedCoreError::ResourceDeferred(_))))));
         }
         assert_eq!(source.fetches.load(std::sync::atomic::Ordering::SeqCst), 0);
@@ -406,7 +406,7 @@
         for kind in [ResourceCondition::UnmeasuredFilesystem, ResourceCondition::OperationalUncertainty] {
             let mut blocked = condition.clone(); blocked.condition = kind;
             source.pending = Some(("older".into(), blocked.clone()));
-            assert!(matches!(recheck_resource_deferral(&mut source.pending, Ok(())), Some(MissingArtifact::Wait(_))));
+            assert!(matches!(recheck_resource_deferral(&mut source.pending, Ok(())), Some(MissingArtifact::AdmissionWait(_))));
             assert_eq!(source.pending.as_ref().unwrap().1, blocked);
             assert!(matches!(select_published_core(&["older".into()], &source).await, Some((_, Err(PublishedCoreError::ResourceDeferred(_))))));
         }

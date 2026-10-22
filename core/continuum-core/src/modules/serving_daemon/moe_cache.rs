@@ -157,7 +157,7 @@ impl ServingDaemonModule {
                 return;
             };
             match guard.as_ref() {
-                Some((id, ctx)) if *id == active => (
+                Some((id, Some(ctx))) if *id == active => (
                     ctx.expert_bytes_total,
                     ctx.n_experts_per_layer,
                     ctx.top_k,

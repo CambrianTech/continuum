@@ -13,8 +13,10 @@
 # asset per platform: `continuum-core-<platform>.tar.gz` (continuum-core-server, continuum,
 # continuum-mcp, forge-custodian) plus its `.sha256` and a `.json` manifest carrying the
 # full sha and the exact cargo features. The features come from
-# tools/scripts/lib/core-features.sh, the same function the on-node build calls, so a
-# downloaded binary is the program the node would have compiled.
+# tools/scripts/lib/core-features.sh, the same function the on-node build calls, with the
+# platform's published node profile (published_node_features: calls and 3D avatars where
+# that platform's fleet node hosts them), so a downloaded binary is the program the node
+# would have compiled.
 #
 # PLATFORMS: the two Mac outliers (Metal on arm64; CPU-only on x86_64, where Metal hangs the
 # hardware) and Windows + NVIDIA (cuda,directml), so a Windows node never compiles its own core
@@ -161,6 +163,10 @@ jobs:
             set +u; source tools/scripts/lib/windows-build-env.sh; set -u
           fi
           source tools/scripts/lib/core-features.sh
+          # The runner is no node: it names the profile this platform's core is published
+          # with (calls / 3D avatars), which every node hosting a subset of it accepts.
+          CONTINUUM_NODE_FEATURES="$(published_node_features "${{ matrix.uname }}")"
+          export CONTINUUM_NODE_FEATURES
           select_core_features "${{ matrix.uname }}"
           echo "features: core '$CONTINUUM_FEATURES', CLI '$CONTINUUM_CLI_FEATURES'"
           echo "CONTINUUM_FEATURES=$CONTINUUM_FEATURES" >> "$GITHUB_ENV"
@@ -217,6 +223,14 @@ jobs:
           [ -n "${ImageVersion:-}" ] || { echo "::error::the runner exports no ImageVersion; the engine cache cannot key on its toolchain"; exit 1; }
           echo "version=$ImageVersion" >> "$GITHUB_OUTPUT"
           echo "runner image $ImageVersion"
+          # The engine's toolchain, named explicitly in its key (card af648389): CUDA by the nvcc it
+          # measured (CUDA_VERSION), MSVC by the runner image above, and CMake by its pin, since
+          # Mod-CMake provisions it only inside the engine build, after this key is taken. The key
+          # no longer hashes the whole installer, so a toolchain change must show up here.
+          cmake=$(awk '/^id = "cmake"/{f=1} f&&/^url = /{print; exit}' tools/scripts/install-manifest.toml | sed -n 's|.*/download/v\([0-9][0-9.]*\)/cmake-.*|\1|p')
+          [ -n "$cmake" ] || { echo "::error::no CMake pin in install-manifest.toml; the engine cache cannot key on its toolchain"; exit 1; }
+          echo "cmake=$cmake" >> "$GITHUB_OUTPUT"
+          echo "engine cmake pin $cmake"
 
       # The engine is an IMMUTABLE artifact named by everything that decides its bytes, so it is a
       # release asset, not an Actions-cache entry. The repo's Actions cache sits at its 10 GB limit
@@ -229,7 +243,7 @@ jobs:
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
-          ENGINE_KEY: published-engine-windows-${{ hashFiles('core/vendor/LLAMA_CPP_PIN', 'tools/scripts/lib/win-modules.ps1', 'tools/scripts/lib/install-common.ps1', 'tools/scripts/lib/cuda-targets.sh', 'core/llama/cpu_target_cli.rs') }}-cuda${{ env.CUDA_VERSION }}-sm${{ env.CUDA_COMPUTE_CAP }}-image${{ steps.runner-image.outputs.version }}
+          ENGINE_KEY: published-engine-windows-${{ hashFiles('core/vendor/LLAMA_CPP_PIN', 'tools/scripts/lib/win-engine.ps1', 'tools/scripts/lib/cuda-targets.ps1', 'tools/scripts/lib/install-common.ps1', 'tools/scripts/lib/cuda-targets.sh', 'core/llama/cpu_target_cli.rs') }}-cuda${{ env.CUDA_VERSION }}-sm${{ env.CUDA_COMPUTE_CAP }}-image${{ steps.runner-image.outputs.version }}-cmake${{ steps.runner-image.outputs.cmake }}
         # The completion contract: `published-engine.ready` is uploaded LAST and names the archive
         # by its sha256; a reader trusts nothing else. Any failure here (no release, no marker yet,
         # a partial download, a checksum mismatch, a release pruned mid-download) is a MISS and the

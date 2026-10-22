@@ -67,6 +67,7 @@ pub mod live;
 pub mod voice_reply_speaker;
 pub mod live_session_consumer;
 pub mod logger;
+pub mod logger_clog_sink;
 pub mod mcp;
 pub mod mcp_protocol;
 pub mod mcp_transport;

@@ -459,10 +459,23 @@ async fn live_room_input_reaches_next_action_without_replacing_task_or_room() {
             assert_eq!(requests.len(), 3);
             for (index, request) in requests.iter().enumerate() {
                 assert_eq!(request.room_id.as_deref(), Some(room.to_string().as_str()));
+                // What the model receives: text AND native tool results (content_text reads
+                // text parts only; the latest result rides as a tool_result part).
                 let text = request
                     .messages
                     .iter()
-                    .map(|m| m.content_text())
+                    .map(|m| match &m.content {
+                        crate::ai::types::MessageContent::Parts(parts) => parts
+                            .iter()
+                            .map(|p| match p {
+                                crate::ai::types::ContentPart::Text { text } => text.clone(),
+                                crate::ai::types::ContentPart::ToolResult { content, .. } => content.clone(),
+                                _ => String::new(),
+                            })
+                            .collect::<Vec<_>>()
+                            .join(""),
+                        crate::ai::types::MessageContent::Text(text) => text.clone(),
+                    })
                     .collect::<Vec<_>>()
                     .join("\n");
                 assert!(text.contains(task));
@@ -488,7 +501,7 @@ async fn live_room_input_reaches_next_action_without_replacing_task_or_room() {
                         "FIRST_COMPLETE_TOOL_RESULT"
                     } else {
                         "SECOND_COMPLETE_TOOL_RESULT"
-                    }));
+                    }), "act {index}'s prompt lacks the previous complete result:\n{text}");
                 }
             }
         }

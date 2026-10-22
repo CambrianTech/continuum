@@ -578,8 +578,10 @@ impl VolatileSnapshot {
         reachable_handles(log.receipt_keys(), &self.receipt_children, &self.open_views)
     }
 
+    /// Read through [`Self::action_records`], the one accessor that also converts a checkpoint
+    /// written before the action log; reading `actions` alone found nothing in those.
     fn unsaved_receipts(&self) -> Vec<u64> {
-        self.actions
+        self.action_records()
             .iter()
             .filter(|record| record.result.is_some() && record.handle.is_none())
             .map(|record| record.seq)
@@ -588,11 +590,15 @@ impl VolatileSnapshot {
 
     /// Move each of `unsaved`'s dependencies from its `seq:N` key to the handle it now has.
     fn refile_children(&mut self, unsaved: &[u64]) {
-        for record in &self.actions {
-            if let (true, Some(handle)) = (unsaved.contains(&record.seq), &record.handle) {
-                if let Some(children) = self.receipt_children.remove(&receipt_key(record.seq, None)) {
-                    self.receipt_children.insert(handle.clone(), children);
-                }
+        let saved: Vec<(u64, String)> = self
+            .action_records()
+            .into_iter()
+            .filter(|record| unsaved.contains(&record.seq))
+            .filter_map(|record| Some((record.seq, record.handle?)))
+            .collect();
+        for (seq, handle) in saved {
+            if let Some(children) = self.receipt_children.remove(&receipt_key(seq, None)) {
+                self.receipt_children.insert(handle, children);
             }
         }
     }

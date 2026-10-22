@@ -98,6 +98,20 @@ pub fn sweep_stale_page_generations(current: &Path, protect: &[PathBuf]) -> usiz
     swept
 }
 
+/// The revision evidence a saved KV page is keyed by: size and mtime of every file the
+/// launch resolved (model, adapters, engine). All of it, or the first path that could not
+/// be read and why: a page saved under unknown revisions is never restorable, and the
+/// caller names the file instead of a silent `None`.
+pub(super) fn revision_evidence(
+    paths: impl Iterator<Item = PathBuf>,
+) -> Result<Vec<(PathBuf, u64, std::time::SystemTime)>, (PathBuf, std::io::Error)> {
+    paths
+        .map(|path| match std::fs::metadata(&path).and_then(|m| m.modified().map(|at| (m.len(), at))) {
+            Ok((len, modified)) => Ok((path, len, modified)),
+            Err(error) => Err((path, error)),
+        })
+        .collect()
+}
 
 /// THE PAGE-DIR GUARD (Astra's re-review of #4069): one mutex owns the reservation
 /// list AND is held across the sweep's census + deletion AND across the

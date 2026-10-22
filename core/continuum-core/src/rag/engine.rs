@@ -1,7 +1,7 @@
-//! RAG Engine - Parallel Context Composition
+//! RAG Engine - Context Composition
 //!
-//! The core of fast RAG: load ALL sources in parallel via rayon.
-//! Target: <500ms total (currently 20+ seconds in TypeScript)
+//! Loads every applicable source (sequentially, see `build_context`) and composes
+//! them into one context with per-source timings.
 
 use super::budget::{BudgetManager, SourceConfig};
 use super::sources::RagSource;
@@ -10,7 +10,7 @@ use std::sync::Arc;
 use std::time::Instant;
 use tracing::{info, warn};
 
-/// RAG Engine - composes context from multiple sources in parallel
+/// RAG Engine - composes context from multiple sources
 pub struct RagEngine {
     sources: Vec<Arc<dyn RagSource>>,
     default_budget: usize,
@@ -29,7 +29,8 @@ impl RagEngine {
         self.sources.push(source);
     }
 
-    /// Build RAG context - ALL sources load in PARALLEL
+    /// Build RAG context — sources load SEQUENTIALLY (see step 4: IPC dispatch blocks
+    /// rayon threads on these results, so parallel loads starved the pool).
     pub async fn build_context(&self, options: RagOptions) -> RagContext {
         let start = Instant::now();
 
@@ -169,11 +170,15 @@ mod tests {
     use super::*;
     use uuid::Uuid;
 
+    // what this catches: a source skipped, loaded twice, or reported out of registration
+    // order, and a timing that is the source's own claim rather than the engine's
+    // measurement. Lower bounds only: a sleep lasts AT LEAST its duration on any host,
+    // so no load, CPU or scheduler can fail this — the old `< 250 ms` ceiling failed on
+    // a loaded M5 (card c4d84be3) and asserted a parallelism the engine does not have
+    // (sources load sequentially, see `build_context`).
     #[tokio::test]
-    async fn test_parallel_source_loading() {
+    async fn every_applicable_source_loads_once_in_order_and_the_engine_times_it() {
         let mut engine = RagEngine::new();
-
-        // Register mock sources with artificial delays
         engine.register_source(Arc::new(MockSource::new("fast", 10, 100)));
         engine.register_source(Arc::new(MockSource::new("slow", 50, 500)));
         engine.register_source(Arc::new(MockSource::new("medium", 30, 200)));
@@ -187,20 +192,21 @@ mod tests {
 
         let context = engine.build_context(options).await;
 
-        // All three sources should have loaded
-        assert_eq!(context.source_timings.len(), 3);
-
-        // Total time should be close to slowest source (50ms), not sum
-        // of all (10+50+30=90ms serial). Threshold is 250ms — tight
-        // enough to catch a genuine regression to serial execution
-        // (90ms minimum for serial = barely passes), loose enough to
-        // tolerate the system-load wobble that 100ms cliff caused
-        // (test flaked at 112.8ms when the host was building docker
-        // images concurrently — pre-push wedge that didn't actually
-        // indicate broken parallelism).
+        let names: Vec<&str> = context.source_timings.iter().map(|t| t.name.as_str()).collect();
+        assert_eq!(names, vec!["fast", "slow", "medium"], "each source once, in registration order");
+        assert_eq!(context.total_tokens, 800, "every section's tokens are counted");
+        for (timing, slept_ms) in context.source_timings.iter().zip([10.0, 50.0, 30.0]) {
+            assert!(
+                timing.load_time_ms >= slept_ms,
+                "{} measured {:.1} ms but slept {slept_ms} ms: the engine must time the load itself",
+                timing.name,
+                timing.load_time_ms
+            );
+        }
+        let loads: f64 = context.source_timings.iter().map(|t| t.load_time_ms).sum();
         assert!(
-            context.composition_time_ms < 250.0,
-            "Expected parallel execution, got {:.1}ms",
+            context.composition_time_ms >= loads,
+            "the composition window ({:.1} ms) covers every load ({loads:.1} ms)",
             context.composition_time_ms
         );
     }
