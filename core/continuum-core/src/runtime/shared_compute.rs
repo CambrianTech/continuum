@@ -289,10 +289,11 @@ mod tests {
                     compute.cache.try_get_mut("s"),
                     dashmap::try_result::TryResult::Present(_)
                 ));
-                *compute.get_or_compute("s", "b", async { 2 }).await - 1
+                *compute.get_or_compute("s", "b", async { 2 }).await.expect("same type") - 1
             })
-            .await;
-        let r2: Arc<i32> = compute.get_or_compute("s", "b", async { 2 }).await;
+            .await
+            .expect("same type");
+        let r2: Arc<i32> = compute.get_or_compute("s", "b", async { 2 }).await.expect("same type");
 
         assert_eq!(*r1, 1);
         assert_eq!(*r2, 2);
@@ -353,16 +354,17 @@ mod tests {
                 dashmap::try_result::TryResult::Present(_)
             ));
         }
-        assert_eq!(*compute.get_or_compute("s", "b", async { 2 }).await, 2);
+        assert_eq!(*compute.get_or_compute("s", "b", async { 2 }).await.expect("same type"), 2);
         let mut second = Box::pin(compute.get_or_compute("s", "a", async { 3 }));
         assert!(futures::poll!(&mut second).is_pending());
         drop(first);
-        let result = second.await;
+        let result = second.await.expect("same type");
         let cached = compute
             .get_or_compute::<i32, _>("s", "a", async {
                 panic!("computed twice");
             })
-            .await;
+            .await
+            .expect("same type");
         assert_eq!(*result, 3);
         assert!(Arc::ptr_eq(&result, &cached));
     }

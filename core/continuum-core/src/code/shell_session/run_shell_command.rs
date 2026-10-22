@@ -178,7 +178,7 @@ pub(super) async fn run_shell_command(
             s.status = ShellExecutionStatus::Failed;
             s.stderr_lines
                 .push("Failed to capture shell output: stdout/stderr pipes unavailable".to_string());
-            s.finished_at = Some(crate::time::EpochMs::now().millis());
+            s.finished_at = Some(continuum_base::time::EpochMs::now().millis());
             s.process_ended = true; // the child was told to die and nothing reads it
             s.output_notify.notify_one();
         }
