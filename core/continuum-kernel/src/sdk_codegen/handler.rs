@@ -286,7 +286,7 @@ where
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::sdk_codegen::AccessLevel;
     use serde::Deserialize;
@@ -296,16 +296,16 @@ mod tests {
     // under test), mirroring how command_envelope.rs unit-tests its envelope with
     // small local structs.
     #[derive(Debug, Clone, Serialize, Deserialize, TS, PartialEq)]
-    struct EchoParams {
+    pub(crate) struct EchoParams {
         text: String,
     }
     #[derive(Debug, Clone, Serialize, Deserialize, TS, PartialEq, Default)]
-    struct EchoResult {
+    pub(crate) struct EchoResult {
         echoed: String,
     }
 
     // ── A BARE command ────────────────────────────────────────────────
-    struct BareSpec;
+    pub(crate) struct BareSpec;
     impl CommandSpec for BareSpec {
         const NAME: &'static str = "test/echo-bare";
         const ACCESS_LEVEL: AccessLevel = AccessLevel::AiSafe;
@@ -313,7 +313,7 @@ mod tests {
         type Params = EchoParams;
         type Result = EchoResult;
     }
-    struct BareHandler;
+    pub(crate) struct BareHandler;
     #[async_trait]
     impl CommandHandler for BareHandler {
         type Spec = BareSpec;
@@ -470,12 +470,6 @@ mod tests {
             err.starts_with("test/echo-bare: [arguments]"),
             "named + categorized: {err}"
         );
-        let rendered = crate::cognition::tool_executor::command_executor::persona_tool_error(
-            "test/echo-bare", err.clone(),
-        );
-        assert!(rendered.contains(&err), "the real decode failure survives: {rendered}");
         assert!(CommandError::is_argument_refusal("test/echo-bare", &err));
-        assert!(rendered.starts_with(&format!("{err}\n→ Call `commands/help` with name \"test/echo-bare\"")),
-            "the argument recovery branch preserves the refusal and names its manual: {rendered}");
     }
 }

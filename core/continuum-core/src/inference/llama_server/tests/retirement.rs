@@ -643,7 +643,7 @@ async fn retiring_page_owner_requires_observed_child_exit() {
         // not claim that a fixture command is a ready inference engine.
         let fixture = tempfile::tempdir().unwrap();
         let home = fixture.path().canonicalize().unwrap();
-        let _home = crate::test_env::HomeGuard::set(&home).await;
+        let _home = crate::paths::test_home::HomeGuard::set(&home).await;
         let engine = home.join("engine");
         std::fs::create_dir(&engine).unwrap();
         let program = engine.join("llama-server.exe");

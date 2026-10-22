@@ -463,7 +463,7 @@ pub(super) fn test_pin_store() -> crate::modules::serving_pin_store::ServingPinS
 // would otherwise serve launches nothing; once the binding is released it proceeds.
 #[tokio::test]
 async fn an_engine_bound_to_live_work_is_never_replaced_under_it() {
-    let _home = crate::test_env::HomeGuard::preserve().await; // reads the process home a guarded fixture may be swapping (card cb3221a5)
+    let _home = crate::paths::test_home::HomeGuard::preserve().await; // reads the process home a guarded fixture may be swapping (card cb3221a5)
     use crate::inference::engine_residency::{
         record, release, store_path, EngineIncarnation, ResidentWork,
     };

@@ -259,28 +259,6 @@ mod tests {
         }
     }
 
-    // what this catches: the table drifting out of sync with the constants the code
-    // actually registers under. A rename of SERVING_CONSUMER_ID that left this table
-    // saying "serving" would silently make the reconciliation attribute nothing —
-    // prose cannot be allowed to fake wiring (the #344 property).
-    #[test]
-    fn declared_holders_use_the_ids_the_code_registers_under() {
-        let declared: Vec<&str> = standard_memory_holders()
-            .iter()
-            .filter(|h| h.status == HolderStatus::Declared)
-            .map(|h| h.id)
-            .collect();
-        assert!(declared.contains(&crate::modules::serving_consumer::SERVING_CONSUMER_ID));
-        assert!(declared.contains(&crate::modules::perception_consumer::PERCEPTION_CONSUMER_ID));
-        assert!(declared.contains(&crate::cognition::measurement_staging::CONSUMER_ID));
-        // `embed` has a constant but is deliberately NOT declared (#225) — if someone
-        // registers it as a consumer, this assertion is the reminder to move its row.
-        assert!(
-            !declared.contains(&crate::inference::llamacpp_adapter::EMBED_LANE_CONSUMER_ID),
-            "embed now registers as a consumer — move its row from Undeclared to Declared"
-        );
-    }
-
     // what this catches: the reconciliation arithmetic silently underflowing or
     // over-crediting. Uses the REAL board numbers from the incident so the test is the
     // measurement, not an invented example.

@@ -152,7 +152,7 @@ pub(crate) fn network_repo_identity(remote: &str) -> Option<(String, Option<u16>
 }
 
 /// Record the clone this test binary was built from as this node's own checkout, in the
-/// CURRENT home's registry (callers hold `test_env::HomeGuard`): the fixture for code that
+/// CURRENT home's registry (callers hold `paths::test_home::HomeGuard`): the fixture for code that
 /// resolves `own_checkout`. The clone root comes from git's common dir, so a linked worktree
 /// records its clone, as the CLI does.
 #[cfg(test)]
@@ -180,7 +180,7 @@ mod tests {
     #[tokio::test]
     async fn own_checkout_is_the_recorded_clone_never_the_cwd() {
         let home = tempfile::tempdir().expect("home");
-        let _home = crate::test_env::HomeGuard::set(home.path()).await;
+        let _home = crate::paths::test_home::HomeGuard::set(home.path()).await;
         let err = own_checkout().await.expect_err("nothing recorded under this home");
         assert!(err.contains("CambrianTech/continuum") && err.contains("no recorded checkout"), "{err}");
 

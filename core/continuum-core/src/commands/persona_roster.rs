@@ -155,7 +155,7 @@ mod tests {
     // (which also carries .git) is not. A fresh peer id keeps the test home unshared.
     #[test]
     fn the_roster_lists_staged_checkouts_and_never_an_in_flight_clone() {
-        let _home = crate::test_env::HomeGuard::preserve_blocking(); // reads the process home a guarded fixture may be swapping (card cb3221a5)
+        let _home = crate::paths::test_home::HomeGuard::preserve_blocking(); // reads the process home a guarded fixture may be swapping (card cb3221a5)
         // Never write under an operator's configured home: this test only runs against the
         // per-process test home (Codex on #4581).
         if std::env::var_os("CONTINUUM_HOME").is_some() {

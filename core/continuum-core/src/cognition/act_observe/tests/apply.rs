@@ -39,7 +39,7 @@ async fn bound_card_activity_is_shared_by_perception_and_execution() {
         room_board_source::RoomBoardSource,
     };
     let home = tempfile::tempdir().unwrap();
-    let _home = crate::test_env::HomeGuard::set(home.path()).await;
+    let _home = crate::paths::test_home::HomeGuard::set(home.path()).await;
     let airc = Arc::new(
         airc_lib::Airc::open_with_wire_root_for_test(home.path(), home.path())
             .await

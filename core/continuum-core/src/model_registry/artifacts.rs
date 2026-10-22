@@ -678,12 +678,12 @@ pub(crate) fn write_empty_gguf(path: &Path) {
 
 #[cfg(test)]
 pub(crate) fn with_test_home<T>(home: &Path, f: impl FnOnce() -> T) -> T {
-    // ONE lock for the whole crate (`crate::test_env`, #4082): the private ENV_LOCK
+    // ONE lock for the whole crate (`crate::paths::test_home`, #4082): the private ENV_LOCK
     // that used to live here isolated model_registry tests from each other and from
     // nobody else — a citizen-layer clone under another test's home was torn down
     // mid-write. The pin-never-remove reasoning (BigMama, 2026-08-07: HF_HOME falls
-    // back to config.env; USERPROFILE on Windows) lives in test_env now.
-    crate::test_env::with_test_home(home, f)
+    // back to config.env; USERPROFILE on Windows) lives in paths::test_home now.
+    crate::paths::test_home::with_test_home(home, f)
 }
 
 #[cfg(test)]

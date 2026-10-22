@@ -237,7 +237,7 @@ mod tests {
     fn a_retained_patch_reads_back_by_its_hash_and_a_mismatch_is_named() {
         use airc_blobs::ContentAddressedStore;
         let home = tempfile::tempdir().expect("test: home");
-        crate::test_env::with_test_home(home.path(), || {
+        crate::paths::test_home::with_test_home(home.path(), || {
             let patch = "--- a/x\n+++ b/x\n@@ -1 +1 @@\n-old\n+new\n";
             let hash = store().expect("test: store").put(patch.as_bytes()).expect("test: put");
             let reference = |size_bytes| MediaRef { hash: hash.clone(), size_bytes, mime: Some("text/x-patch".into()) };

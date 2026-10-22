@@ -24,7 +24,7 @@
 
     #[test]
     fn from_env_returns_envvar_unset_when_dir_missing() {
-        let _env = crate::test_env::HomeGuard::preserve_blocking(); // mutates CONTINUUM_PROBE_DIR/CLASSES, which the other env test also mutates (card cb3221a5)
+        let _env = crate::paths::test_home::HomeGuard::preserve_blocking(); // mutates CONTINUUM_PROBE_DIR/CLASSES, which the other env test also mutates (card cb3221a5)
         // Unset both env vars (saved + restored to avoid bleeding
         // into other tests). The substrate refuses to silently
         // synthesize a default dir — Joel's `[[no-fallbacks-ever]]`.
