@@ -209,12 +209,13 @@ jobs:
           sudo -u postgres createdb -O continuum continuum_test
           pg_isready -h localhost -p 5432
 
-      - name: cargo test -p continuum-core --lib (Postgres, --ignored)
+      - name: cargo test -p continuum-kernel --lib (Postgres, --ignored)
         if: needs.changes.outputs.rust != 'false'
         run: |
           set -o pipefail
-          (cd core/continuum-core && LD_LIBRARY_PATH="$CONTINUUM_LIB_TEST_LD_LIBRARY_PATH" \
-            "$CONTINUUM_LIB_TEST" orm::postgres --ignored --test-threads=1) 2>&1 | tee pg.log
+          # The ORM lives in the kernel crate; its test binary was built by the step above.
+          cargo test -p continuum-kernel --lib --profile dev-fast --features test-fixtures \
+            orm::postgres -- --ignored --test-threads=1 2>&1 | tee pg.log
           passed=$(grep -oE 'test result: ok\. [0-9]+ passed' pg.log | grep -oE '[0-9]+' | head -1)
           echo "postgres tests passed: ${passed:-0}"
           if [ "${passed:-0}" -lt 1 ]; then
