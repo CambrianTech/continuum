@@ -271,6 +271,52 @@ pub fn sweep_all() -> Vec<SweepOutcome> {
 }
 
 /// `<pid>.lane` under `dir`.
+/// Every write to the registry (record, remove, sweep, restamp) holds this, so a
+/// compare-then-write ([`restamp_placement_in`]) never interleaves with a replacement or a
+/// removal by another task of this core. A poisoned lock still serializes: the data it
+/// guards is on disk, not behind it.
+static WRITES: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+fn writes() -> std::sync::MutexGuard<'static, ()> {
+    WRITES.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// Record `placement` on the lane `expected` names, only if its record on disk is still
+/// exactly `expected` (card 22aa3379). `Ok(false)` = the record was replaced, changed or
+/// removed since it was read, and nothing was written: a removed record is never recreated,
+/// and no other lane's record is touched (unlike [`record_in`], which clears prior live
+/// records). The write is a temp file renamed over the record.
+pub fn restamp_placement(
+    expected: &LaneRecord,
+    placement: crate::inference::llama_server::LanePlacement,
+) -> std::io::Result<bool> {
+    let dir = lanes_dir().ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "no home dir for lane registry"))?;
+    restamp_placement_in(&dir, expected, placement)
+}
+
+pub(crate) fn restamp_placement_in(
+    dir: &Path,
+    expected: &LaneRecord,
+    placement: crate::inference::llama_server::LanePlacement,
+) -> std::io::Result<bool> {
+    let _writes = writes();
+    let path = record_path(dir, expected.pid);
+    let current = match std::fs::read_to_string(&path) {
+        Ok(raw) => serde_json::from_str::<LaneRecord>(&raw).ok(),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+        Err(e) => return Err(e),
+    };
+    if current.as_ref() != Some(expected) {
+        return Ok(false);
+    }
+    let stamped = LaneRecord { placement: Some(placement), ..expected.clone() };
+    let json = serde_json::to_string(&stamped).map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+    let tmp = path.with_extension("lane.tmp");
+    std::fs::write(&tmp, json)?;
+    std::fs::rename(&tmp, &path)?;
+    Ok(true)
+}
+
 fn record_path(dir: &Path, pid: u32) -> PathBuf {
     dir.join(format!("{pid}.lane"))
 }
@@ -278,6 +324,7 @@ fn record_path(dir: &Path, pid: u32) -> PathBuf {
 /// Write `rec` as JSON to `<pid>.lane`, creating the directory if needed. Pure:
 /// the caller owns the dir so tests never touch the real registry.
 pub(crate) fn record_in(dir: &Path, rec: &LaneRecord) -> std::io::Result<()> {
+    let _writes = writes();
     std::fs::create_dir_all(dir)?;
     // A LIVE lane is SINGULAR by nature — one persona lane on the canonical port.
     // Recording a new live lane therefore SUPERSEDES any prior live record, which
@@ -320,6 +367,7 @@ fn clear_live_records_in(dir: &Path) {
 
 /// Remove `<pid>.lane` under `dir` if present. Idempotent.
 pub(crate) fn remove_in(dir: &Path, pid: u32) {
+    let _writes = writes();
     let _ = std::fs::remove_file(record_path(dir, pid));
 }
 
@@ -408,6 +456,7 @@ fn finish_reap(path: &Path, rec: &LaneRecord) -> SweepOutcome {
 
 /// The pure sweep against an explicit `dir`. See [`sweep_orphans`] / [`sweep_all`].
 fn sweep_in(dir: &Path, mode: SweepMode) -> Vec<SweepOutcome> {
+    let _writes = writes();
     let mut outcomes = Vec::new();
     // A missing directory is the normal first-run / all-graceful-prior-shutdown
     // state — nothing to sweep, not a fallback.
@@ -496,6 +545,30 @@ mod tests {
         assert!(records_checked_in(dir.path()).is_err(), "the checked read refuses");
         let missing = dir.path().join("never-made");
         assert!(records_checked_in(&missing).expect("missing dir is empty, not an error").is_empty());
+    }
+
+    // what this catches (Codex on #5270): a placement written over a lane that changed after
+    // it was read. The restamp writes only onto the exact record it was given; a replaced
+    // record is left as it is, a removed one is never recreated, and another live lane's
+    // record survives (record_in would have cleared it).
+    #[test]
+    fn a_restamp_writes_only_onto_the_record_it_read() {
+        use crate::inference::llama_server::LanePlacement;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let kept = LaneRecord { started_s: 7, ..rec(10, 58057, LaneRole::Live) };
+        record_in(dir.path(), &kept).expect("write");
+        let other = LaneRecord { started_s: 9, ..rec(11, 58058, LaneRole::Ephemeral) };
+        record_in(dir.path(), &other).expect("write");
+        assert!(restamp_placement_in(dir.path(), &kept, LanePlacement::Cpu).expect("restamp"));
+        let after = records_in(dir.path());
+        assert!(after.contains(&LaneRecord { placement: Some(LanePlacement::Cpu), ..kept.clone() }));
+        assert!(after.contains(&other), "no other record is touched");
+        assert!(!restamp_placement_in(dir.path(), &kept, LanePlacement::Gpu).expect("restamp"), "the record changed since it was read");
+        let replaced = LaneRecord { started_s: 8, ..kept.clone() };
+        assert!(!restamp_placement_in(dir.path(), &replaced, LanePlacement::Cpu).expect("restamp"), "another incarnation's read");
+        remove_in(dir.path(), kept.pid);
+        assert!(!restamp_placement_in(dir.path(), &kept, LanePlacement::Cpu).expect("restamp"), "a removed record");
+        assert_eq!(records_in(dir.path()), vec![other], "a removed record is never recreated");
     }
 
     /// A unique temp lanes dir per test — NEVER the real `~/.continuum/run/lanes/`,
