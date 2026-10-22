@@ -114,7 +114,7 @@ use protocol::Response;
 // models.rs, data.rs, logger.rs, search.rs, embedding.rs, rag.rs for command handlers.
 
 mod prepare_unix_socket_path;
-pub use prepare_unix_socket_path::*;
+use prepare_unix_socket_path::*;
 mod start_server;
 pub(crate) use start_server::install_kernel_extensions;
 pub use start_server::*;
