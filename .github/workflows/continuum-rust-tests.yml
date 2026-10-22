@@ -53,7 +53,7 @@ jobs:
     # A failed selector must not turn required checks into successful skips.
     if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45  # a PR that changes Cargo.lock builds from a cold cache (PR runs never save it): #5278 measured 30m15s, cancelled after every test had passed; warm runs take 16-22 min
     env:
       DATABASE_URL: postgres://continuum:continuum@localhost:5432/continuum_test
       # The crate builds headless by default (`default = []`); THIS job is the one that
