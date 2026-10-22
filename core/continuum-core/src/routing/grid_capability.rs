@@ -124,7 +124,7 @@ impl GrantAuthorizer {
     /// Production constructor: real ed25519 verifier + IN-MEMORY watermark. The
     /// in-memory watermark is NOT durable — callers gating LIVE grant traffic must
     /// use [`with_watermark`](Self::with_watermark) with a
-    /// [`SqliteEpochWatermark`](super::epoch_watermark::SqliteEpochWatermark) so a
+    /// [`OrmEpochWatermark`](super::epoch_watermark::OrmEpochWatermark) so a
     /// restart can't reopen the replay window (the review hard gate).
     pub fn new(owner_pubkey: Vec<u8>, mesh: MeshIdentity) -> Self {
         Self::with_verifier(owner_pubkey, mesh, Arc::new(Ed25519GrantVerifier))
@@ -473,27 +473,28 @@ mod tests {
     #[cfg(feature = "stress-tests")]
     mod stress {
         use super::*;
-        use crate::routing::epoch_watermark::SqliteEpochWatermark;
+        use crate::routing::epoch_watermark::OrmEpochWatermark;
         use std::sync::Arc as StdArc;
 
         // what this catches: under heavy concurrent presentation of MANY epochs for
-        // the SAME grantee — through the REAL durable (SQLite) watermark — the
-        // serialized transaction keeps the decision consistent (every outcome a clean
+        // the SAME grantee — through the REAL durable (ORM) watermark — the
+        // store's critical section keeps the decision consistent (every outcome a clean
         // Authorized/Superseded, never corrupt), and afterwards a replay below the max
         // is Superseded while the max-epoch grant still authorizes. A regression to a
         // non-atomic check-and-advance would let a superseded epoch slip an Authorized
-        // through. (The store's own monotonicity is proven in epoch_watermark stress.)
+        // through. (The store's own monotonicity is proven in epoch_watermark's tests.)
         #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
         async fn concurrent_same_grantee_epochs_stay_monotonic() {
             const N: u64 = 200;
             let owner = [1u8; 32];
             let peer = [2u8; 32];
             let grantee = PeerId::new();
+            let (adapter, _dir) = crate::orm::store::fresh_adapter().await;
             let a = StdArc::new(GrantAuthorizer::with_verifier_and_watermark(
                 owner.to_vec(),
                 mesh(),
                 Arc::new(StubVerifier(true)),
-                Arc::new(SqliteEpochWatermark::in_memory().expect("open")),
+                Arc::new(OrmEpochWatermark::over(adapter).await.expect("open")),
             ));
 
             let mut handles = Vec::new();

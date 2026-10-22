@@ -34,6 +34,7 @@ pub use format_pg_error::*;
 mod build_where_clause;
 use build_where_clause::*;
 mod postgres_adapter;
+mod conditional;
 mod ensure_table_exists_pg;
 use ensure_table_exists_pg::*;
 

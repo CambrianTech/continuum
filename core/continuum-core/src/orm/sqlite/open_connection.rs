@@ -275,31 +275,8 @@ pub(super) fn do_create(conn: &Connection, record: DataRecord, types: Option<&Ha
         return StorageResult::err(e);
     }
 
-    // Build column list and values from data
-    let mut columns = vec![
-        "id".to_string(),
-        "created_at".to_string(),
-        "updated_at".to_string(),
-        "version".to_string(),
-    ];
-    let mut placeholders = vec!["?", "?", "?", "?"];
-    let mut values: Vec<Box<dyn rusqlite::ToSql>> = vec![
-        Box::new(record.id.clone()),
-        Box::new(now.clone()),
-        Box::new(now.clone()),
-        Box::new(1i64),
-    ];
-
-    if let Value::Object(data) = &record.data {
-        for (key, value) in data {
-            if METADATA_KEYS.contains(&key.as_str()) {
-                continue;
-            }
-            columns.push(naming::to_snake_case(key));
-            placeholders.push("?");
-            values.push(value_to_sql_boxed(value));
-        }
-    }
+    let (columns, values) = super::conditional::insert_columns(&record, &now);
+    let placeholders = vec!["?"; columns.len()];
 
     let sql = format!(
         "INSERT INTO {} ({}) VALUES ({})",

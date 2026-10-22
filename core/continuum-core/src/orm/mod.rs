@@ -23,6 +23,7 @@
 pub mod adapter;
 pub mod connection_manager;
 pub mod entity;
+pub mod legacy_grant_watermark;
 pub mod migration;
 pub mod postgres;
 pub mod query;
@@ -33,6 +34,7 @@ pub mod vector;
 
 #[cfg(test)]
 mod derive_test;
+pub(crate) mod gated_adapter; // test-only: the file is `#![cfg(test)]`
 
 pub use adapter::StorageAdapter;
 pub use connection_manager::{ConnectionManager, ConnectionManagerConfig};
