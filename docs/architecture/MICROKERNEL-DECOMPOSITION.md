@@ -113,6 +113,12 @@ test, canary `9871a02c0`). `clog_*`/`log_*` are crate-root macros, not modules; 
 | `capacity` | `inference_capability::gguf_keys`, `hw_probe`, `modules::serving_daemon`, `genome::blob` (21) | a module in the wrong ring: it reads GGUFs and probes hardware, so it is ring 1 (engine) |
 | `runtime` | `routing::CallerIdentity` (22), `sdk_codegen::{DynCommand, WireShape, command_registry}` (15+), `routing` transport and `AuthPolicy`, `persona::PersonaAircRuntimeRegistry::new`, `persona::cognition_pulse::CommandWork`, `modules::grid::commands` (97 in all) | verbs owned too high: **Session** (`CallerIdentity`, `AuthPolicy`) and **Commands** (the dynamic command registry) are two of the kernel's six primitives (`MODULE-ARCHITECTURE.md` § 4), filed in `routing` and `sdk_codegen`; they move down. The persona registry and the pulse's work type are injected at boot instead of named |
 
+**What each peel moves, and when the cycle count moves.** A crate may hold cycles among its
+own modules; what it cannot hold is an edge out to a module above it. So the kernel ring leaves
+the cycle all at once, when its last upward edge goes, and `module_cycles` falls in one step
+then (by the ring's 13 modules still in the cycle). The receipt for each peel before that is
+the ring-0 share of `layer_discipline`'s upward imports, which must fall with every PR.
+
 Order: the one-and-two-edge modules first (`governor`, `paging`, `paths`/`gpu` with `test_env`;
 `identity` is already out), each a small PR whose receipt is `module_cycles` falling; then
 `logging` (with #5206), `orm`, `resources`; then `system_resources`' inversion and `capacity`'s
