@@ -272,7 +272,7 @@ mod tests {
     // stride-slices (moved here from the locator's tests when it moved to the engine).
     #[test]
     fn a_located_layer_set_resolves_to_its_exact_stride_slices() {
-        let ct = crate::inference_capability::expert_layout::tests::two_layer_moe();
+        let ct = crate::inference_capability::expert_layout::fixtures::two_layer_moe();
         let sets = locate_layer_sets(&ct, "qwen3moe").expect("the fixture is MoE");
         let s = &sets[0];
         // Cross-check: build the artifact source and resolve expert 3 — it must

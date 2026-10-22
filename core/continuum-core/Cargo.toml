@@ -55,6 +55,7 @@ ron = "0.12"     # RON scene descriptions (Bevy-idiomatic on-disk format)
 uuid.workspace = true
 continuum-base = { path = "../continuum-base" }
 continuum-kernel = { path = "../continuum-kernel" }
+continuum-engine = { path = "../continuum-engine" }
 continuum-context = { path = "../continuum-context" }
 # JSON Schema generation from serde types — the runtime param schema every SDK
 # (CLI/web/mobile/RAG-tools) adapts from. Derived automatically by the command
@@ -356,13 +357,13 @@ pocket-tts = ["dep:pocket-tts"]
 # and web depend on. Regenerate after a command changes:
 # `cargo test -p continuum-core --features ts-codegen generates_live_typescript_sdk`.
 ts-codegen = ["continuum-kernel/ts-codegen"]
-metal = ["candle-core/metal", "candle-nn/metal", "candle-transformers/metal", "llama/metal", "ort/coreml"]
-cuda = ["candle-core/cuda", "candle-nn/cuda", "candle-transformers/cuda", "llama/cuda", "ort/cuda", "continuum-kernel/cuda"]
+metal = ["candle-core/metal", "candle-nn/metal", "candle-transformers/metal", "llama/metal", "ort/coreml", "continuum-engine/metal"]
+cuda = ["candle-core/cuda", "candle-nn/cuda", "candle-transformers/cuda", "llama/cuda", "ort/cuda", "continuum-kernel/cuda", "continuum-engine/cuda"]
 # Vulkan is llama.cpp-only (Candle has no Vulkan backend). Used by the
 # Mac-Carl-in-container path: Podman + krunkit routes Vulkan API calls out
 # to MoltenVK on the host, which translates to Metal. Also valid on Linux
 # Nvidia/AMD hosts with libvulkan available.
-vulkan = ["llama/vulkan", "continuum-kernel/vulkan"]
+vulkan = ["llama/vulkan", "continuum-kernel/vulkan", "continuum-engine/vulkan"]
 # ORT execution providers for the broader Carl-OOTB matrix (#964 series
 # follow-up). Each adds a cfg branch in inference/ort_providers.rs so
 # fastembed / Piper-TTS / Moonshine-STT / Kokoro / Orpheus / Silero VAD
@@ -375,15 +376,15 @@ vulkan = ["llama/vulkan", "continuum-kernel/vulkan"]
 #   directml → Windows native + DirectX 12 (Nvidia / AMD / Intel).
 #   openvino → Intel CPU/GPU/VPU (Linux + Windows). Different from CPU
 #              fallback: OpenVINO is Intel's GPU/NPU acceleration path.
-rocm = ["ort/rocm"]
-directml = ["ort/directml"]
-openvino = ["ort/openvino"]
+rocm = ["ort/rocm", "continuum-engine/rocm"]
+directml = ["ort/directml", "continuum-engine/directml"]
+openvino = ["ort/openvino", "continuum-engine/openvino"]
 # MLX — Apple Silicon native inference path (phases A–E of continuum#897).
 # Only compiles on macOS/aarch64; the adapter module is guarded by this feature
 # AND by cfg(target_os = "macos") so non-Mac targets simply don't see the code.
 # Phase A: flag only, no mlx-rs dep yet. Phase B will add `dep:mlx-rs` back
 # once we're writing forward() and can ensure full Xcode is installed.
-mlx = []
+mlx = ["continuum-engine/mlx"]
 accelerate = ["candle-core/accelerate", "candle-nn/accelerate", "candle-transformers/accelerate"]
 # Linux: swap ORT from static (download-binaries) to dynamic loading.
 # Avoids protobuf symbol conflict with webrtc-sys. macOS uses static (default).
@@ -406,7 +407,7 @@ load-dynamic-ort = ["ort/load-dynamic"]
 #     via `cargo test --features test-fixtures` or `--features test-fixtures`
 #     on the bin target.
 #   - Production: heuristic adapter doesn't exist in the binary at all.
-test-fixtures = ["continuum-base/test-fixtures", "continuum-kernel/test-fixtures"]
+test-fixtures = ["continuum-base/test-fixtures", "continuum-kernel/test-fixtures", "continuum-engine/test-fixtures"]
 
 # stress-tests: opts in concurrency / multi-thread / load tests that
 # pin substrate invariants under N-task simultaneous load. Each test
@@ -477,6 +478,7 @@ unexpected_cfgs = "allow"
 
 [dev-dependencies]
 continuum-kernel = { path = "../continuum-kernel", features = ["test-fixtures"] }
+continuum-engine = { path = "../continuum-engine", features = ["test-fixtures"] }
 # The hygiene ratchets moved to their own std-only crate so a contributor learns an
 # unwrap count rose in seconds instead of after a 12.4-minute build. Two `#[cfg(test)]`
 # call sites here still use its scanner helpers, so it is a DEV dependency — production
