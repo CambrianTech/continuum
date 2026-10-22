@@ -25,7 +25,8 @@ use continuum_core::persona::command_inbound_pump::{
 };
 use continuum_core::routing::grant_issuance::{issue_grant, IssueGrantParams};
 use continuum_core::routing::presented_grant_store::InMemoryPresentedGrantStore;
-use continuum_core::routing::{route, AircTransport, CommandUri, GridTrustAuthPolicy, Transport};
+use continuum_core::routing::{route, AircTransport, CommandUri, Transport};
+use continuum_core::modules::grid::{GridTrustAuthPolicy};
 use continuum_core::runtime::command_executor::CommandExecutor;
 use continuum_core::runtime::{
     CommandResult, ModuleConfig, ModuleContext, ModulePriority, ModuleRegistry, ServiceModule,

@@ -3,7 +3,8 @@
 //! machine and under any operator's `config.env` (card c4d84be3). One fixture shared by
 //! the capacity and provisioning tests; gated like every fixture (`test-fixtures`).
 
-use super::system_profile::{DriveInfo, SystemProfile};
+use super::system_profile::SystemProfile;
+use crate::system_resources::drives::DriveInfo;
 use super::DeviceCapacity;
 use crate::governor::types::HardwareClass;
 

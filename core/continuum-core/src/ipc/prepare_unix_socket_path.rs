@@ -439,7 +439,7 @@ pub(super) fn handle_client<S: IpcStream>(
                 // commands are refused; no unauthenticated Owner execution over TCP.
                 // Local (caller == None) skips this — the operator on the box is owner.
                 if let Some(ref c) = caller {
-                    let trust = crate::routing::caller_trust(Some(c));
+                    let trust = crate::modules::grid::caller_trust(Some(c));
                     if !crate::modules::grid::acl::is_command_authorized(cmd, trust) {
                         let _ = tx.send(Outbound::Response {
                             request_id,
@@ -521,7 +521,7 @@ pub(super) fn handle_client<S: IpcStream>(
                         // (the discoverability lie): suggest the nearest commands the
                         // caller can actually run, via the shared matcher — same PX every
                         // caller gets, persona or CLI or MCP.
-                        let caller_trust = crate::routing::caller_trust(caller.as_ref());
+                        let caller_trust = crate::modules::grid::caller_trust(caller.as_ref());
                         let names: Vec<&str> = crate::sdk_codegen::command_registry()
                             .into_iter()
                             .filter(|d| {
@@ -605,26 +605,4 @@ pub(super) fn handle_client<S: IpcStream>(
 // ============================================================================
 // Server Main Loop
 // ============================================================================
-/// Ready-edge watch for the IPC server — flips `false → true` exactly
-/// once when the Unix socket is bound + chmod'd. Any consumer can
-/// `subscribe_ready()` to get a `watch::Receiver<bool>` and await the
-/// transition; subscribers added after the flip see the current `true`
-/// value on first `borrow_and_update`. Per the substrate concurrency
-/// doctrine: signals replace races. Same shape as
-/// `bevy_renderer::subscribe_ready` and `ServiceModule::ready_edge`.
-pub(super) static IPC_READY: std::sync::OnceLock<tokio::sync::watch::Sender<bool>> =
-    std::sync::OnceLock::new();
-
-pub(super) fn ipc_ready_tx() -> &'static tokio::sync::watch::Sender<bool> {
-    IPC_READY.get_or_init(|| tokio::sync::watch::channel(false).0)
-}
-
-/// Subscribe to the IPC server's ready edge. Returns a receiver that
-/// starts at `false` and flips to `true` exactly once when the Unix
-/// socket is bound + world-rw chmod'd. Replaces the prior oneshot
-/// parameter that had to be threaded through `start_server` — now any
-/// number of consumers can await the same edge without coordination
-/// at the call site.
-pub fn subscribe_ready() -> tokio::sync::watch::Receiver<bool> {
-    ipc_ready_tx().subscribe()
-}
+use crate::runtime::ipc_ready::ipc_ready_tx;

@@ -150,7 +150,7 @@ pub(super) fn start_persona_host(
     let resident_citizens = {
         use crate::experience::source::RecipeExperienceSource;
         let overlay_dir = RecipeExperienceSource::overlay_dir(
-            &crate::modules::persona_instance_manager::resolve_continuum_root(),
+            &crate::paths::continuum_root(),
         );
         match RecipeExperienceSource::resident_citizens(&overlay_dir) {
             Ok(roles) => roles,
@@ -179,7 +179,7 @@ pub(super) fn start_persona_host(
     let grid_citizens = {
         use crate::experience::source::RecipeExperienceSource;
         let overlay_dir = RecipeExperienceSource::overlay_dir(
-            &crate::modules::persona_instance_manager::resolve_continuum_root(),
+            &crate::paths::continuum_root(),
         );
         RecipeExperienceSource::grid_citizens(&overlay_dir)
             .unwrap_or_else(|_| RecipeExperienceSource::grid_citizens_embedded()) // unwrap_or_else: a refused overlay was already reported by the resident read above; the embedded activities stand
@@ -230,7 +230,7 @@ pub(super) fn start_persona_host(
         std::sync::Arc::new(
             crate::persona::remote_lane_factory::RemoteLaneAdapterFactory::new(
                 std::sync::Arc::new(crate::persona::supervisor::ServedModelPersonaAdapterFactory),
-                crate::modules::persona_instance_manager::resolve_continuum_root(),
+                crate::paths::continuum_root(),
                 airc_interceptor_cell.clone(),
             ),
         ),
@@ -239,7 +239,7 @@ pub(super) fn start_persona_host(
         rt_handle.clone(),
     );
     let continuum_root_for_boot =
-        crate::modules::persona_instance_manager::resolve_continuum_root();
+        crate::paths::continuum_root();
     // Round-2 verifier finding on PR #1568: `spawn_all` calls
     // `bootstrap_one` which (since task #222) lazily fetches the
     // process-global CommandExecutor via `executor()`. If the

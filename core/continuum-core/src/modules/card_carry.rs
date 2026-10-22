@@ -61,7 +61,7 @@ impl CardCarryModule {
             for card in held.iter().filter(|c| crate::persona::card_holder::hold_of(c, now_ms) == crate::persona::card_holder::Hold::Held) {
                 let Some(claim) = card.claim_id else { continue };
                 let Some(root) = crate::modules::card_staging::checkout_path_for(&persona, card) else { continue };
-                let context = crate::code::hands::HandsContext::for_claim(persona, card.card_id.as_uuid(), claim.as_uuid());
+                let context = crate::identity::hands_context::HandsContext::for_claim(persona, card.card_id.as_uuid(), claim.as_uuid());
                 let lease = match crate::code::hands::admit(context) {
                     Ok(lease) => Arc::new(lease),
                     Err(why) => {

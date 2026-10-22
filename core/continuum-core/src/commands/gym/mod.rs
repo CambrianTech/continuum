@@ -109,7 +109,7 @@ fn cargo_test(
                 std::ffi::OsString::from("test"),
                 std::ffi::OsString::from("--quiet"),
             ];
-            let mut command = crate::code::confinement::command_for(
+            let mut command = crate::system_resources::confinement::command_for(
                 None,
                 "gym",
                 Path::new("cargo"),

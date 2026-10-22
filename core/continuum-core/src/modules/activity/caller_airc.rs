@@ -311,7 +311,7 @@ impl ActionCommand for ActivityRecipes {
     ) -> Result<ActivityRecipesResult, CommandError> {
         let known = crate::experience::source::RecipeExperienceSource::known_recipes(
             &crate::experience::source::RecipeExperienceSource::overlay_dir(
-                &crate::modules::persona_instance_manager::resolve_continuum_root(),
+                &crate::paths::continuum_root(),
             ),
         )
         .map_err(|e| {

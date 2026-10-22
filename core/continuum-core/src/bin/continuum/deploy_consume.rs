@@ -178,7 +178,7 @@ pub(super) enum PassEnd {
 pub(super) async fn deploy_consume_pass() -> Result<PassEnd, String> {
     let request_path = deploy_request_path()?;
     let _ = DEPLOY_LOG.set(
-        continuum_core::modules::persona_instance_manager::resolve_continuum_root()
+        continuum_core::paths::continuum_root()
             .join("logs")
             .join("deploy-consume.log"),
     );

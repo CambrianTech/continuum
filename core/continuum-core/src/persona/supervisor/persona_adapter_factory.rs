@@ -469,7 +469,7 @@ pub(super) fn remote_override_for(
     identity_home: &std::path::Path,
 ) -> Option<crate::persona::model_override::PersonaModelOverride> {
     let by_name = crate::context::citizen_home_path(
-        &crate::modules::persona_instance_manager::resolve_continuum_root(),
+        &crate::paths::continuum_root(),
         crate::identity::IdentityKind::Persona,
         None,
         persona_name,

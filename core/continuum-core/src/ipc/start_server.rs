@@ -30,6 +30,22 @@ mod serving_modules;
 mod tcp_ingress;
 mod ws_ingress;
 
+/// What the kernel's extension slots hold in this process, installed before any executor
+/// exists: every dispatch runs under the hooks (the hands' admission is a safety boundary), a
+/// command name resolves through the persona path's vocabulary, and a stop lets admitted turns
+/// finish. One list, so boot and a test that dispatches through a real executor install the same.
+pub(crate) fn install_kernel_extensions() {
+    crate::runtime::dispatch_hook::install(Arc::new(crate::code::hands::HandsAdmission));
+    crate::runtime::dispatch_hook::install(Arc::new(crate::persona::cognition_pulse::CardWorkPulse));
+    crate::runtime::extensions::install_command_name_resolver(crate::cognition::tool_dialect::resolve_wire_name);
+    crate::runtime::extensions::install_settle_before_stop(Arc::new(crate::cognition::turn_ingress::TurnsSettle));
+    crate::runtime::extensions::install_turns_in_flight(crate::cognition::turn_ingress::in_flight);
+    crate::runtime::extensions::install_roster(|| {
+        crate::persona::PersonaAircRuntimeRegistry::try_global()
+            .map(|reg| reg.roster_snapshot().into_iter().map(|(_, id)| id).collect())
+    });
+}
+
 pub fn start_server(
     socket_path: &str,
     livekit_manager: Arc<crate::live::transport::bridge_client::LiveKitAgentManager>,
@@ -39,6 +55,7 @@ pub fn start_server(
     disk_pressure_monitor: Arc<crate::system_resources::DiskPressureMonitor>,
     boot_mode: crate::runtime::BootMode,
 ) -> std::io::Result<()> {
+    install_kernel_extensions();
     let phase_started =
         model_registry_boot::prepare_socket_and_load_model_registry(socket_path, boot_mode)?;
 

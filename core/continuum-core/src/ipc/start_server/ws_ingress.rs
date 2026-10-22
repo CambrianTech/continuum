@@ -200,7 +200,7 @@ fn resolve_room_purpose(
                 &state.rt_handle,
                 projection_bus.clone(),
                 socket,
-                crate::modules::persona_instance_manager::resolve_continuum_root()
+                crate::paths::continuum_root()
                     .join("citizens")
                     .join("node")
                     .join("purpose")
@@ -223,7 +223,7 @@ fn install_persona_experience_source(room_purpose: &crate::ipc::room_purpose::Sh
     {
         use crate::experience::source::RecipeExperienceSource;
         let overlay_dir = RecipeExperienceSource::overlay_dir(
-            &crate::modules::persona_instance_manager::resolve_continuum_root(),
+            &crate::paths::continuum_root(),
         );
         let source =
             match RecipeExperienceSource::builtins_with_overlay(room_purpose.clone(), &overlay_dir)
@@ -264,7 +264,7 @@ fn spawn_node_projectors(
         .zip(persona_bootstrap_room_name.clone())
     {
         Some(((daemon_socket, room_id), room_name)) => {
-            let continuum_root = crate::modules::persona_instance_manager::resolve_continuum_root();
+            let continuum_root = crate::paths::continuum_root();
             let node_home = continuum_root
                 .join("citizens")
                 .join("node")

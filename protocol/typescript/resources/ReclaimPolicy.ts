@@ -2,7 +2,7 @@
 
 /**
  * How willing a lease is to be reclaimed under pressure. Mirrors inference planning's
- * [`ThroughputLeaseRevocationPolicy`](crate::inference::planning::throughput_lease::ThroughputLeaseRevocationPolicy)
+ * [`ThroughputLeaseRevocationPolicy`](crate::resources::throughput_lease::ThroughputLeaseRevocationPolicy)
  * so the two axes speak the same revocation vocabulary. Convergence onto one
  * shared enum is deferred — noted, not forced.
  */

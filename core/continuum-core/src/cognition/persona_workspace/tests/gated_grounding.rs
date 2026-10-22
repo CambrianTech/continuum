@@ -209,6 +209,8 @@ use super::*;
         /// A core with the real `CodeModule`, and its state, so a test can see whose hands
         /// the engine map holds.
         fn core_with_code() -> (Arc<CommandExecutor>, Arc<CodeState>) {
+            // Hands admission rides every dispatch as a hook boot installs; so does this core.
+            crate::ipc::install_kernel_extensions();
             let registry = Arc::new(ModuleRegistry::new());
             let state = Arc::new(CodeState::new(
                 Arc::new(DashMap::new()),
@@ -274,7 +276,7 @@ use super::*;
             let persona = Uuid::new_v4();
             let live = hands_for(persona);
             let (card_a, card_b) = (Uuid::new_v4(), Uuid::new_v4());
-            let claim_a = crate::code::hands::HandsContext::for_claim(persona, card_a, Uuid::new_v4());
+            let claim_a = crate::identity::hands_context::HandsContext::for_claim(persona, card_a, Uuid::new_v4());
             let hands = live.in_context(claim_a).expect("claim A's hands");
             drive_create_workspace(&hands, &home.path().to_string_lossy(), &[], "root", false)
                 .await
@@ -292,7 +294,7 @@ use super::*;
                 Some(CallerIdentity::local_persona(crate::identity::PeerId::from_uuid(persona)).in_hands(claim_a)),
             );
             // Current-thread test: the spawned task has not been polled yet. Her focus moves on.
-            let claim_b = crate::code::hands::HandsContext::for_claim(persona, card_b, Uuid::new_v4());
+            let claim_b = crate::identity::hands_context::HandsContext::for_claim(persona, card_b, Uuid::new_v4());
             note_acting_root_in(persona, Some(claim_b), Some(home.path().to_path_buf()));
             note_acting_card_in(persona, Some(claim_b), card_b);
             set_focus(persona, Some(claim_b));
@@ -328,7 +330,7 @@ use super::*;
             let persona = Uuid::new_v4();
             let (executor, _state) = core_with_code();
             let bound = CallerIdentity::local_persona(crate::identity::PeerId::from_uuid(persona))
-                .in_hands(crate::code::hands::HandsContext::fresh());
+                .in_hands(crate::identity::hands_context::HandsContext::fresh());
             executor
                 .execute_with_caller("code/create-workspace", serde_json::json!({"workspace_root": dir.path().to_string_lossy()}), Some(bound.clone()))
                 .await
@@ -339,7 +341,7 @@ use super::*;
                 .expect("open hands admit a command");
 
             let unmarked = CallerIdentity::local_persona(crate::identity::PeerId::from_uuid(persona))
-                .in_hands(crate::code::hands::HandsContext::fresh());
+                .in_hands(crate::identity::hands_context::HandsContext::fresh());
             let refused = executor.execute_with_caller("code/release-hands", serde_json::json!({}), Some(unmarked)).await;
             assert!(refused.is_err(), "a release run as ordinary work is refused: {refused:?}");
 
@@ -367,22 +369,22 @@ use super::*;
             drive_create_workspace(&live, &home.path().to_string_lossy(), &[], "home", false).await.expect("her home");
 
             let (card, claim) = (Uuid::new_v4(), Uuid::new_v4());
-            let context = crate::code::hands::HandsContext::for_claim(persona, card, claim);
+            let context = crate::identity::hands_context::HandsContext::for_claim(persona, card, claim);
             let claim_hands = live.in_context(context).expect("her executor acts in a claim's context");
             drive_create_workspace(&claim_hands, &card_dir.path().to_string_lossy(), &[], "bind", false).await.expect("rooted once");
             assert!(listing(&claim_hands).await.contains("CARD_ONLY.rs"), "the claim's hands stand in the card");
             let at_home = listing(&live).await;
             assert!(at_home.contains("HER_OWN_notes.md") && !at_home.contains("CARD_ONLY.rs"), "her default hands never moved: {at_home}");
 
-            let next_turn = live.in_context(crate::code::hands::HandsContext::for_claim(persona, card, claim)).expect("same claim");
+            let next_turn = live.in_context(crate::identity::hands_context::HandsContext::for_claim(persona, card, claim)).expect("same claim");
             assert!(listing(&next_turn).await.contains("CARD_ONLY.rs"), "the next turn of the claim finds its hands where they were rooted");
-            let reacquired = crate::code::hands::HandsContext::for_claim(persona, card, Uuid::new_v4());
+            let reacquired = crate::identity::hands_context::HandsContext::for_claim(persona, card, Uuid::new_v4());
             assert_ne!(reacquired, context, "a re-acquired claim is new hands, never the old one's");
 
             // A no-setup gym still needs bound hands. Previously its claim staged
             // Ordinary and the resolver searched only SWE checkouts, so valid
             // code/write and code/shell calls were refused as unrooted.
-            let _home = crate::test_env::HomeGuard::set(home.path()).await;
+            let _home = crate::paths::test_home::HomeGuard::set(home.path()).await;
             std::env::set_var("CONTINUUM_HOME", home.path());
             let gym_card = airc_lib::WorkCard {
                 card_id: airc_work::WorkCardId::new(),

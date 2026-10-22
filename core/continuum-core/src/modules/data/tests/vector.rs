@@ -228,7 +228,7 @@ async fn test_vector_search_basic() {
 async fn test_vector_cache_invalidation() {
     let module = DataModule::new();
     let home = tempfile::tempdir().unwrap();
-    let _home = crate::test_env::HomeGuard::set(home.path()).await;
+    let _home = crate::paths::test_home::HomeGuard::set(home.path()).await;
     let db_path = "@node".to_string();
     let alias = module.state.resolve_handle(&db_path).expect("resolve isolated node store");
     assert_ne!(db_path, alias);

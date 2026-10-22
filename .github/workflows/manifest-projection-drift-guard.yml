@@ -24,7 +24,7 @@ on:
       - 'tools/scripts/install-manifest.toml'
       - 'tools/scripts/generated/**'
       - 'tools/manifest-gen/**'
-      - 'core/continuum-core/src/paging/disk_capacity.rs'
+      - 'core/continuum-kernel/src/paging/disk_capacity.rs'
       - '.github/workflows/manifest-projection-drift-guard.yml'
   push:
     branches: [canary, main]

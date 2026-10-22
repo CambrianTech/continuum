@@ -13,77 +13,8 @@
 //! every hands map uses. The caller stays the authorization identity; the key only says
 //! WHICH of her hands.
 
-use uuid::Uuid;
 
-/// One acting context of a caller: a session of work with its own workspace and shell.
-/// `None` on a caller identity is her default (live) context.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct HandsContext {
-    id: Uuid,
-    kind: ContextKind,
-}
-
-/// What a context is, which decides what may reach it and whether it can hold a workspace.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum ContextKind {
-    /// An eval's, a fork's or a replay's own hands: isolated from every other set of the
-    /// caller's hands (nothing of hers reaches in, and it reaches nothing of hers).
-    Isolated,
-    /// The hands of one claim of a card: bound once at its checkout, hers across her turns.
-    Claim,
-    /// The stand-in a card turn acts with when its claim's hands could not be bound: never
-    /// given a workspace, so code tools refuse by name and nothing lands at home.
-    Unbound,
-}
-
-impl ContextKind {
-    fn tag(self) -> &'static str {
-        match self {
-            Self::Isolated => "isolated",
-            Self::Claim => "claim",
-            Self::Unbound => "unbound",
-        }
-    }
-}
-
-impl HandsContext {
-    /// A fresh context, distinct from every other: an eval or a fork opens one.
-    pub fn fresh() -> Self {
-        Self { id: Uuid::new_v4(), kind: ContextKind::Isolated }
-    }
-
-    pub fn id(&self) -> Uuid {
-        self.id
-    }
-
-    pub fn kind(&self) -> ContextKind {
-        self.kind
-    }
-
-    /// The context a citizen works ONE CLAIM of a card in: the same for every turn of that
-    /// claim, so her engine, shell and execution handles persist across those turns, and a
-    /// different one for any other claim (a released and re-acquired card is a new claim, so
-    /// it never inherits the old one's hands or authority: Codex root on fc9e9fd7). Derived,
-    /// not stored: any turn that knows the claim names the same hands.
-    pub fn for_claim(persona: Uuid, card: Uuid, claim: Uuid) -> Self {
-        Self { id: claim_id(persona, card, claim), kind: ContextKind::Claim }
-    }
-
-    /// The hands a turn on `card` acts with when the card's own claim hands could not be
-    /// bound (no checkout on this node, no claim id, a rooting failure): NEVER rooted, so every
-    /// code tool refuses by name while every other tool still works, and nothing meant for the
-    /// card lands in her home (Astra on #5026: a failed binding ran at home). Stable per card.
-    pub fn unbound(persona: Uuid, card: Uuid) -> Self {
-        Self { id: claim_id(persona, card, Uuid::nil()), kind: ContextKind::Unbound }
-    }
-}
-
-fn claim_id(persona: Uuid, card: Uuid, claim: Uuid) -> Uuid {
-    let mut name = [0u8; 32];
-    name[..16].copy_from_slice(card.as_bytes());
-    name[16..].copy_from_slice(claim.as_bytes());
-    Uuid::new_v5(&persona, &name)
-}
+use crate::identity::hands_context::{ContextKind, HandsContext};
 
 /// Admission to one set of hands: whether they take new work, and how much is in flight.
 /// The DISPATCHER admits every command bound to a context for the command's whole life,
@@ -104,7 +35,7 @@ struct Gate {
     /// What that work's callers held for it ([`crate::inference::lane_process::holding`], a
     /// checkout's sync lock): kept while anything lingers, released when a re-check finds
     /// nothing left (Codex reviewer on #5037).
-    kept: Vec<crate::inference::lane_process::Kept>,
+    kept: Vec<crate::system_resources::disk_reporters::Kept>,
 }
 
 /// What admitted work started and couldn't confirm ended when it ended it (a `gh` and its
@@ -185,7 +116,7 @@ impl HandsLease {
     /// Keep what an unconfirmed end's caller held for it ([`crate::inference::lane_process::holding`])
     /// with what lingers, so an exclusion over a tree nobody confirmed ended stays held until a
     /// re-check finds nothing left ([`retain_processes`]), never only until the end's task returns.
-    pub fn keep_held(&self, kept: &[crate::inference::lane_process::Kept]) {
+    pub fn keep_held(&self, kept: &[crate::system_resources::disk_reporters::Kept]) {
         let mut g = self.cell.0.lock().unwrap_or_else(|e| e.into_inner()); // unwrap_or_else: a poisoned gate still records
         g.kept.extend(kept.iter().cloned());
     }
@@ -339,6 +270,44 @@ impl HandsKey {
                     })
             }
         }
+    }
+}
+
+/// Hands admission as a dispatch hook: a caller bound to a context (a card claim's turn, an
+/// eval, a fork) is ADMITTED to its hands for the command's whole life, foreground or
+/// background, and the command runs as that admitted work, so a child process it starts keeps
+/// the admission until its tree has ended. The release itself is the one call not admitted: it
+/// closes the hands to every other (card fc9e9fd7; Astra on #5026). Installed at boot.
+pub struct HandsAdmission;
+
+struct Admitted(std::sync::Arc<HandsLease>);
+
+impl crate::runtime::dispatch_hook::DispatchScope for Admitted {
+    fn admits_hands(&self) -> bool {
+        true
+    }
+
+    fn wrap<'a>(
+        self: std::sync::Arc<Self>,
+        work: crate::runtime::dispatch_hook::DispatchFuture<'a>,
+    ) -> crate::runtime::dispatch_hook::DispatchFuture<'a> {
+        Box::pin(admitted(Some(std::sync::Arc::clone(&self.0)), work))
+    }
+}
+
+impl crate::runtime::dispatch_hook::DispatchHook for HandsAdmission {
+    fn name(&self) -> &'static str {
+        "hands_admission"
+    }
+
+    fn enter(
+        &self,
+        caller: Option<&crate::routing::CallerIdentity>,
+    ) -> Result<Option<std::sync::Arc<dyn crate::runtime::dispatch_hook::DispatchScope>>, String> {
+        let Some(context) = caller.filter(|c| !c.releases_hands).and_then(|c| c.hands) else {
+            return Ok(None);
+        };
+        Ok(Some(std::sync::Arc::new(Admitted(std::sync::Arc::new(admit(context)?)))))
     }
 }
 

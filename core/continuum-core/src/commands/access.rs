@@ -7,7 +7,7 @@ use ts_rs::TS;
 use uuid::Uuid;
 
 use crate::modules::grid::node::TrustLevel;
-use crate::routing::access_decision::{self, AccessDecision, AccessPolicy};
+use crate::modules::grid::access_decision::{self, AccessDecision, AccessPolicy};
 use crate::sdk_codegen::CommandError;
 
 /// Wire shape for `access/get`.

@@ -424,7 +424,7 @@
         assert_eq!(receipt.lock().unwrap().exit_code, Some(0));
 
         // 5058: bounded history must not own an unresolved process's cache hold.
-        let context = crate::code::hands::HandsContext::fresh();
+        let context = crate::identity::hands_context::HandsContext::fresh();
         let admission = Arc::new(crate::code::hands::admit(context).unwrap());
         let held = Arc::new(());
         let witness = Arc::downgrade(&held);
@@ -434,7 +434,7 @@
         drop(admission);
         // A direct-child exit alone does not prove output-holding descendants
         // ended when cancellation interrupts the remainder of the shell task.
-        let cancelled_context = crate::code::hands::HandsContext::fresh();
+        let cancelled_context = crate::identity::hands_context::HandsContext::fresh();
         let cancelled_admission = Arc::new(crate::code::hands::admit(cancelled_context).unwrap());
         let cancelled_hold = Arc::new(());
         let cancelled_witness = Arc::downgrade(&cancelled_hold);

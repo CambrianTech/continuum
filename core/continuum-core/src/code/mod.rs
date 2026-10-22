@@ -14,7 +14,6 @@
 //! - `hands` — whose hands a call acts with: caller + acting context (the hands-map key)
 
 pub mod change_graph;
-pub mod confinement;
 pub mod diff_engine;
 pub mod file_engine;
 pub mod git_bridge;

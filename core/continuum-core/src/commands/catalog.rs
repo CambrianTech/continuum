@@ -15,7 +15,7 @@ use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
 use crate::modules::grid::acl::is_command_authorized;
-use crate::routing::caller_trust;
+use crate::modules::grid::caller_trust;
 use crate::sdk_codegen::{ActionCommand, CommandError, Ctx, WireShape};
 use crate::sdk_codegen::ext::command_registry_live;
 

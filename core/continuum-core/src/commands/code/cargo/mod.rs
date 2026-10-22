@@ -92,7 +92,7 @@ pub(crate) async fn run_cargo(
     root: &Path,
     args: &[String],
     timeout: Duration,
-    confinement: Option<&crate::code::confinement::Confinement>,
+    confinement: Option<&crate::system_resources::confinement::Confinement>,
     who: &str,
 ) -> Result<CargoRun, CommandError> {
     let started = Instant::now();
@@ -103,7 +103,7 @@ pub(crate) async fn run_cargo(
     let cargo_grant = crate::system_resources::disk_reporters::admit_cargo_target(&target, root, confinement)
             .await
             .map_err(CommandError::Internal)?;
-    let mut cmd = crate::code::confinement::command_for(
+    let mut cmd = crate::system_resources::confinement::command_for(
         confinement,
         who, Path::new("cargo"), &args, Some(root), cargo_grant.grant(),
     );

@@ -22,7 +22,7 @@ use serde_json::{json, Value};
 use ts_rs::TS;
 
 use crate::modules::grid::acl::is_command_authorized;
-use crate::routing::grid_trust_policy::caller_trust;
+use crate::modules::grid::trust_policy::caller_trust;
 use crate::sdk_codegen::{AccessLevel, ActionCommand, CommandError, Ctx};
 use crate::sdk_codegen::ext::command_registry_live;
 

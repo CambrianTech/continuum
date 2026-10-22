@@ -132,7 +132,7 @@ pub(super) fn discover_and_register_airc(
         Arc::new(tokio::sync::OnceCell::new());
     {
         let cell = airc_interceptor_cell.clone();
-        let root = crate::modules::persona_instance_manager::resolve_continuum_root();
+        let root = crate::paths::continuum_root();
         // `rt_handle.spawn`, NOT bare `tokio::spawn` — this runs in the SYNCHRONOUS boot
         // region, AFTER the `rt_handle.enter()` guard (line ~1111) has dropped, so there is no
         // ambient Tokio runtime here. Bare `tokio::spawn` panics "there is no reactor running"

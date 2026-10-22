@@ -51,7 +51,7 @@ fn wire_chunks_of_this_stream_reach_the_sink_typed_and_others_are_ignored() {
     );
     assert_eq!(
         forward_stream_chunk(
-            &chunk_event(&id, crate::routing::command_handler::STREAM_KIND_PREFILL, r#"{"processed":10,"total":40,"cached":2}"#, false),
+            &chunk_event(&id, crate::routing::STREAM_KIND_PREFILL, r#"{"processed":10,"total":40,"cached":2}"#, false),
             &id,
             &tx
         ),
