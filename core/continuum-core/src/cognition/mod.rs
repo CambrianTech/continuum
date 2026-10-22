@@ -28,6 +28,7 @@
 //!                                  `ResponderDecision`)
 
 pub mod framing_echo;
+pub mod single_purpose_lane;
 pub mod not_speech;
 pub mod act_observe;
 pub mod directed_pending;
@@ -53,7 +54,6 @@ pub mod channel_digest_region;
 pub mod channel_element;
 pub mod channel_substrate;
 pub mod check_redundancy;
-pub mod competitor;
 pub mod context_budget;
 pub mod coursework;
 pub mod deferred_faculty;
@@ -111,8 +111,6 @@ pub mod audience;
 pub mod replay;
 pub mod room_roster;
 pub mod resolution;
-pub mod resolution_bench;
-pub mod resolution_compute;
 pub mod resource_admission;
 pub mod response_orchestrator;
 pub mod response_validator;

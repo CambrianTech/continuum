@@ -26,11 +26,14 @@
 //!    intentionally didn't ask). Open failures are LOUD per
 //!    `[[no-fallbacks-ever]]` — caller decides whether to surface or
 //!    swallow the error.
-//! 4. A `fmt` layer reading [`tracing_subscriber::EnvFilter`] from
+//! 4. [`ClogLayer`] — routes the `clog_*` / `log_*` macro events (target
+//!    [`crate::logging::CLOG_TARGET`]) to their per-category log files.
+//! 5. A `fmt` layer reading [`tracing_subscriber::EnvFilter`] from
 //!    `RUST_LOG` (with a sensible default so the server still
 //!    prints info-level lines when nobody set `RUST_LOG`). Writes
 //!    to stderr so stdout stays clean for any caller piping the
-//!    server's output.
+//!    server's output. Clog events are filtered out of it, so each
+//!    line is written once, to its category file.
 //!
 //! ## Why this lives in `routing`
 //!
@@ -57,6 +60,9 @@ use std::path::PathBuf;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::{EnvFilter, Layer};
+
+use crate::logging::clog_layer::{fmt_layer_filter, ClogLayer};
+use crate::modules::logger_clog_sink::LoggerQueueSink;
 
 use super::probe_file_sink::{
     JsonlProbeFileSink, ProbeFileSinkError, DEFAULT_MAX_LOG_FILES, ENV_PROBE_CLASSES, ENV_PROBE_DIR,
@@ -330,7 +336,8 @@ pub fn install_probe_tracing(
                 .with(UriCaptureLayer::new())
                 .with(probe_router.clone())
                 .with(probe_file_sink)
-                .with(fmt_layer.with_filter(env_filter));
+                .with(ClogLayer::new(LoggerQueueSink))
+                .with(fmt_layer.with_filter(fmt_layer_filter(env_filter)));
             let _ = registry.try_init();
             (Some(dir.clone()), Some(guard))
         }
@@ -342,7 +349,8 @@ pub fn install_probe_tracing(
                 .with(UriCaptureLayer::new())
                 .with(probe_router.clone())
                 .with(probe_file_sink)
-                .with(fmt_layer.with_filter(env_filter));
+                .with(ClogLayer::new(LoggerQueueSink))
+                .with(fmt_layer.with_filter(fmt_layer_filter(env_filter)));
             let _ = registry.try_init();
             (None, None)
         }
@@ -457,7 +465,7 @@ mod tests {
     /// ([[a-test-that-asserts-a-field-fires-does-not-assert-it-arrives]]). Reverting this
     /// to `new` puts the file at `<dir>` itself and the assert goes red.
     #[test]
-    fn disk_capture_lands_on_the_ROTATING_sink_not_the_unbounded_one() {
+    fn disk_capture_lands_on_the_rotating_sink_not_the_unbounded_one() {
         let dir = tempfile::tempdir().expect("tmpdir");
         let sink = build_probe_file_sink(&Some(dir.path().to_path_buf()), HashSet::new())
             .expect("rolling sink builds")
@@ -517,6 +525,7 @@ mod tests {
     /// parallel-safe.
     #[test]
     fn from_env_reads_documented_env_vars() {
+        let _env = crate::test_env::HomeGuard::preserve_blocking(); // mutates CONTINUUM_PROBE_DIR/CLASSES, which the other env test also mutates (card cb3221a5)
         let prev_file = std::env::var(ENV_PROBE_DIR).ok();
         let prev_classes = std::env::var(ENV_PROBE_CLASSES).ok();
 

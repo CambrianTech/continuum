@@ -79,7 +79,7 @@ const SHAPES: &[&str] = &[
 // a85454889 + this change, 2026-10-20).
 // 2,377 -> 2,376: the loop's duplicated InboxMessage build (one unwrap_or_else) is now one.
 // 2,367 after the dream_consolidation split: nine std-Mutex and nil-parent unwraps JUSTIFIED in place, not removed.
-const BASELINE_UNJUSTIFIED: usize = 2_366;
+const BASELINE_UNJUSTIFIED: usize = 2_352; // 2_353 -> 2_352 (#5254 action log); 2_355 -> 2_353 (#5206, measured by source-hygiene after the canary merge); 2_358 -> 2_355 measured by CI: the home's layout is one owner and no-home is a typed absence, not three relative-path fallbacks (card 20b4f33b)
 // 2264 -> 2257 on the extraction: seven of the counted unwraps were in this scanner's
 // own 2,173 lines, which left `continuum-core` with it. Taking the win rather than
 // keeping seven tokens of free slack ([[a-measurement-that-can-only-rise-is-not-a-measurement]]).

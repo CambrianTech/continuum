@@ -5,10 +5,12 @@ use crate::resources::{
 };
 use std::time::Duration;
 
-pub(crate) fn request(consumer: &str, bytes: u64) -> LeaseRequest {
+/// A training lease of `bytes` in `kind`: the memory the lane it trains in holds its weights
+/// in (a GPU lane's VRAM, a CPU lane's host RAM).
+pub(crate) fn request(consumer: &str, kind: ResourceKind, bytes: u64) -> LeaseRequest {
     LeaseRequest {
         consumer_id: consumer.to_owned(),
-        kind: ResourceKind::Vram,
+        kind,
         bytes,
         ttl_ms: u64::MAX,
         reclaim_policy: ReclaimPolicy::Pinned,
@@ -54,10 +56,11 @@ pub(crate) async fn wait_for_training_memory(
     daemon: std::sync::Arc<ResourceDaemon>,
     serving: &LifecycleGate,
     consumer: &str,
+    kind: ResourceKind,
     bytes: u64,
     waiting: impl FnMut(u64),
 ) -> Result<LeaseGuard, String> {
-    wait_for_training_memory_bound(daemon, serving, consumer, TrainingNeed::Measured(bytes), waiting, |_| Ok(())).await
+    wait_for_training_memory_bound(daemon, serving, consumer, kind, TrainingNeed::Measured(bytes), waiting, |_| Ok(())).await
 }
 
 /// [`wait_for_training_memory`] for a [`TrainingNeed`], plus `bind`: run with the granted
@@ -72,6 +75,7 @@ pub(crate) async fn wait_for_training_memory_bound(
     daemon: std::sync::Arc<ResourceDaemon>,
     serving: &LifecycleGate,
     consumer: &str,
+    kind: ResourceKind,
     need: TrainingNeed,
     mut waiting: impl FnMut(u64),
     bind: impl FnOnce(u64) -> Result<(), String>,
@@ -120,7 +124,7 @@ pub(crate) async fn wait_for_training_memory_bound(
         };
         serving_refusal_said = None;
         if let TrainingNeed::Calibrate { at_least } = need {
-            bytes = daemon.available_for(consumer, ResourceKind::Vram);
+            bytes = daemon.available_for(consumer, kind);
             // the smallest whole run this family ever measured, else the engine's syntax floor:
             // a grant under it can only post a run the engine must refuse (Cormac on #4949: the
             // context alone was 2,543 MiB at w67584, so a few MiB is a guaranteed refusal)
@@ -142,7 +146,7 @@ pub(crate) async fn wait_for_training_memory_bound(
                 continue;
             }
         }
-        let attempt = daemon.acquire_guarded(&request(consumer, bytes));
+        let attempt = daemon.acquire_guarded(&request(consumer, kind, bytes));
         // bound while the gate is still held; a failed bind drops the lease with the error
         let attempt = match attempt {
             Ok(guard) => match bind.take().map_or(Ok(()), |b| b(bytes)) {
@@ -182,14 +186,14 @@ pub(crate) async fn wait_for_training_memory_bound(
 
 /// The caller retains this guard through child exit/reap. This non-expiring, pinned lease cannot be
 /// reclaimed while the child runs: the lifetime of the process, not a timer, owns release.
-pub(crate) fn acquire_training_memory(consumer: &str, bytes: u64) -> Result<LeaseGuard, String> {
+pub(crate) fn acquire_training_memory(consumer: &str, kind: ResourceKind, bytes: u64) -> Result<LeaseGuard, String> {
     if bytes == 0 {
         return Err("training memory requirement must be measured before admission".into());
     }
     let daemon =
         ResourceDaemon::global().ok_or("training requires the resource governor to be running")?;
     let guard = daemon
-        .acquire_guarded(&request(consumer, bytes))
+        .acquire_guarded(&request(consumer, kind, bytes))
         .map_err(|error| format!("training memory admission refused: {error:?}"))?;
     continuum_base::probe!(
         class = "training.admission",

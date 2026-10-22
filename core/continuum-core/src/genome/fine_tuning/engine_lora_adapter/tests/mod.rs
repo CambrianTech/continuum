@@ -34,7 +34,7 @@
         let (url, server, _seen) = fake_lane(train.path().to_path_buf(), "lost_post_refused").await;
         let footprints = jobs.path().join("footprints.json");
         let mut t = EngineLoraFineTuner::for_test_with_vram(url.clone(), train.path().to_path_buf(), footprints.clone(), 6 * 1024 * 1024 * 1024);
-        t.lane = Box::new(move |_| Some(LaneChoice { url: url.clone(), window: 1536, engine: None, build: None }));
+        t.lane = Box::new(move |_: &str| Some(LaneChoice::at(url.clone(), 1536)));
         let mut r = request("ggml-org/Qwen3.8-27B-GGUF");
         r.local_artifact_dir = Some(jobs.path().to_path_buf());
         let h = t.create_job(r).await.expect("test: create");
@@ -125,6 +125,21 @@
         assert_eq!(store.get(&shape), Some(3 * gib), "a whole-run row replaces it, smaller or not");
         store.record_with(&shape, 20 * gib, false, Uuid::nil()).expect("test: a rolled-back engine");
         assert_eq!(store.get(&shape), Some(3 * gib), "and a graph-only row never replaces a whole-run one, larger or not");
+    }
+
+    // what this catches (Codex on #5261): with no continuum home the store used to resolve to a
+    // cwd-relative engine-footprints.json and write it into whatever directory the core ran
+    // from. An unrecorded store has no file: a record succeeds and keeps nothing, so every
+    // shape re-measures (a calibration run), and no path exists to write to.
+    #[test]
+    fn an_unrecorded_store_keeps_nothing_and_has_no_file() {
+        let store = Footprints::unrecorded();
+        let shape = Shape { model: "m".into(), window: 1536, rank: 8, targets: "attn_q".into(), depth: None, exact: true, chunk: 256, recompute: true };
+        store.record_with(&shape, 3 * 1024 * 1024 * 1024, true, Uuid::nil()).expect("test: an unrecorded record is not an error");
+        assert_eq!(store.get(&shape), None, "nothing was kept: the shape calibrates again");
+        assert!(store.read_all().is_empty());
+        assert!(store.path.is_none(), "no file to write, cwd-relative or otherwise");
+        assert!(store.for_engine(Some("b1".into())).path.is_none(), "an engine view of it stays unrecorded");
     }
 
     // what this catches (the 5090, 2026-10-11): footprints filed from graph_mib alone, while the
@@ -218,6 +233,45 @@
         let mut got = store.rows_like(&fam);
         got.sort_unstable();
         assert_eq!(got, vec![(1536, 256, 7), (68608, 512, 9)], "its own family only, at every window");
+    }
+
+    /// A lane source whose acquisition fails with a given error, so create_job's handling of it is
+    /// tested without standing up a serving process.
+    struct RefusingLane(fn() -> FineTuningError);
+
+    #[async_trait]
+    impl LaneSource for RefusingLane {
+        fn serves(&self, _: &str) -> bool {
+            true
+        }
+
+        async fn acquire(&self, _: &str) -> Result<LaneLease, FineTuningError> {
+            Err((self.0)())
+        }
+
+        fn provider(&self) -> &'static str {
+            LANE_PROVIDER_ID
+        }
+
+        fn place(&self) -> crate::genome::fine_tuning::adapter::TrainingPlace {
+            crate::genome::fine_tuning::adapter::TrainingPlace::EngineLaneHere
+        }
+    }
+
+    // what this catches (Codex on #5269): create_job reclassifying every lane acquisition failure
+    // as InvalidRequest ("never retriable as-is"), so a due bucket whose lane hit memory pressure
+    // or a slow start was treated as a bad request. The cause's own type comes through.
+    #[tokio::test]
+    async fn a_lane_acquisition_failure_keeps_its_type_through_create_job() {
+        let train = tempfile::tempdir().expect("test: dir");
+        let jobs = tempfile::tempdir().expect("test: dir");
+        let mut t = EngineLoraFineTuner::for_test("http://127.0.0.1:1".into(), train.path().to_path_buf(), jobs.path().join("footprints.json"));
+        t.lane = Box::new(RefusingLane(|| FineTuningError::Transient("memory pressure".into())));
+        let mut r = request("ggml-org/Qwen3.8-27B-GGUF");
+        r.local_artifact_dir = Some(jobs.path().to_path_buf());
+        assert!(matches!(t.create_job(r.clone()).await, Err(FineTuningError::Transient(_))), "pressure is retried");
+        t.lane = Box::new(RefusingLane(|| FineTuningError::InvalidRequest("no such model".into())));
+        assert!(matches!(t.create_job(r).await, Err(FineTuningError::InvalidRequest(_))), "a bad request is not");
     }
 
     pub(super) fn request(base: &str) -> TrainingJobRequest {
@@ -533,7 +587,7 @@
         let (url, server, seen) = fake_lane(train.path().to_path_buf(), "normal").await;
         let mut t = EngineLoraFineTuner::for_test(url.clone(), train.path().to_path_buf(), jobs.path().join("footprints.json"));
         let served = url.clone();
-        t.lane = Box::new(move |_| Some(LaneChoice { url: served.clone(), window: 61_696, engine: None, build: None }));
+        t.lane = Box::new(move |_: &str| Some(LaneChoice::at(served.clone(), 61_696)));
         let mut r = request("ggml-org/Qwen3.8-27B-GGUF");
         r.local_artifact_dir = Some(jobs.path().to_path_buf());
         r.schedule.as_mut().expect("test: schedule").sequence_length = 1024;
@@ -544,7 +598,7 @@
 
         for (served, why) in [(0, "an unknown served window is refused, never guessed"), (200, "a window under 256 is refused, never rounded up past serving")] {
             let lane_url = url.clone();
-            t.lane = Box::new(move |_| Some(LaneChoice { url: lane_url.clone(), window: served, engine: None, build: None }));
+            t.lane = Box::new(move |_: &str| Some(LaneChoice::at(lane_url.clone(), served)));
             let mut r = request("ggml-org/Qwen3.8-27B-GGUF");
             r.local_artifact_dir = Some(jobs.path().to_path_buf());
             assert!(t.create_job(r).await.is_err(), "{why}");
@@ -564,7 +618,7 @@
         let footprints = jobs.path().join("footprints.json");
         let gib = 1024u64 * 1024 * 1024;
         let mut t = EngineLoraFineTuner::for_test_with_vram(url.clone(), train.path().to_path_buf(), footprints.clone(), 6 * gib);
-        t.lane = Box::new(move |_| Some(LaneChoice { url: url.clone(), window: 1536, engine: None, build: None }));
+        t.lane = Box::new(move |_: &str| Some(LaneChoice::at(url.clone(), 1536)));
         let mut r = request("ggml-org/Qwen3.8-27B-GGUF");
         r.local_artifact_dir = Some(jobs.path().to_path_buf());
         let h = t.create_job(r.clone()).await.expect("test: create");
@@ -605,7 +659,7 @@
         // the grant holds it at the floor chunk but not at the served window
         let free = model.bytes(3_072, TRAINING_CHUNK_MIN);
         let mut t = EngineLoraFineTuner::for_test_with_vram(url.clone(), train.path().to_path_buf(), footprints.clone(), free);
-        t.lane = Box::new(move |_| Some(LaneChoice { url: url.clone(), window: 68_608, engine: None, build: None }));
+        t.lane = Box::new(move |_: &str| Some(LaneChoice::at(url.clone(), 68_608)));
         let mut r = request("ggml-org/Qwen3.8-27B-GGUF");
         r.local_artifact_dir = Some(jobs.path().to_path_buf());
         let h = t.create_job(r).await.expect("test: create");
@@ -633,7 +687,7 @@
         let fam = Shape { model: "ggml-org/Qwen3.8-27B-GGUF".into(), window: 3072, rank: 8, targets: "attn_q,attn_v".into(), depth: None, exact: false, chunk: TRAINING_CHUNK_MIN, recompute: true };
         Footprints::at(footprints.clone()).record_with(&fam, 2 * gib, false, Uuid::nil()).expect("test: graph-only refusal");
         let mut t = EngineLoraFineTuner::for_test_with_vram(url.clone(), train.path().to_path_buf(), footprints, gib);
-        t.lane = Box::new(move |_| Some(LaneChoice { url: url.clone(), window: 61_696, engine: None, build: None }));
+        t.lane = Box::new(move |_: &str| Some(LaneChoice::at(url.clone(), 61_696)));
         let mut r = request("ggml-org/Qwen3.8-27B-GGUF");
         r.local_artifact_dir = Some(jobs.path().to_path_buf());
         match t.create_job(r).await {
@@ -675,7 +729,7 @@
             let footprints = jobs.path().join("footprints.json");
             std::fs::copy(probe_dir.path().join("fp.json"), &footprints).expect("test: rows");
             let mut t = EngineLoraFineTuner::for_test_with_vram(url.clone(), train.path().to_path_buf(), footprints, free);
-            t.lane = Box::new(move |_| Some(LaneChoice { url: url.clone(), window: 61_696, engine: None, build: None }));
+            t.lane = Box::new(move |_: &str| Some(LaneChoice::at(url.clone(), 61_696)));
             let mut r = request("ggml-org/Qwen3.8-27B-GGUF");
             r.local_artifact_dir = Some(jobs.path().to_path_buf());
             r.dataset.examples = (0..3)

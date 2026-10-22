@@ -164,6 +164,16 @@
         assert_eq!(inv(2, 2 * 73_216).value_of("--checkpoint-min-step"), Some("2288"));
     }
 
+    // what this catches (card 912e606d, the MacBookPro 2026-10-21): a lane launched without
+    // `--n-predict` lets a request with no max_tokens decode forever (n_predict -1 plus
+    // context shift), holding its lane; the uncapped default is one per-lane window.
+    #[test]
+    fn an_uncapped_request_defaults_to_one_lane_window() {
+        assert_eq!(inv(2, 2 * 32_768).value_of("--n-predict"), Some("32768"));
+        assert_eq!(inv(1, 32_768).value_of("--n-predict"), Some("32768"));
+        assert_eq!(inv(5, 5 * 138_240).value_of("--n-predict"), Some("138240"));
+    }
+
     #[test]
     fn slot_save_path_is_part_of_the_unconditional_spine() {
         let i = inv(4, 65_536);

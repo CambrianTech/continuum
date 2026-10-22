@@ -74,6 +74,21 @@ pub async fn ensure_model_serving<C: LlamaServerControl + ?Sized>(
 pub async fn ensure_model_serving_if_current<C: LlamaServerControl + ?Sized>(
     ctrl: &C,
     target: &ServingTarget,
+    force_probe: bool,
+    current: &ServingLifecycleCheck<'_>,
+) -> EnsureOutcome {
+    let outcome = serve_or_adopt(ctrl, target, force_probe, current).await;
+    // Every adoption, whichever rail took it (an owned child, a decode-proven orphan, a busy
+    // one), records the lane's placement when its record lacks one (card 22aa3379).
+    if matches!(outcome, EnsureOutcome::AlreadyServing) {
+        ctrl.record_observed_placement().await;
+    }
+    outcome
+}
+
+async fn serve_or_adopt<C: LlamaServerControl + ?Sized>(
+    ctrl: &C,
+    target: &ServingTarget,
     // Force a decode SMOKE-PROBE even on a child we own, bypassing the "trusted
     // thereafter" short-circuit. The serving daemon's liveness heartbeat sets this after
     // it has already seen the live lane fail the decode probe on a slow cadence
@@ -130,7 +145,18 @@ pub async fn ensure_model_serving_if_current<C: LlamaServerControl + ?Sized>(
                         );
                         true
                     }
-                    Ok(GenomeInPlace::Unsupported) => false,
+                    Ok(GenomeInPlace::Unsupported) => {
+                        // The costliest fall-through this function has (every turn in flight
+                        // killed, every slot re-prefilled), so it is named like its siblings:
+                        // an engine without the in-place routes, or a gene with no staged name.
+                        continuum_base::probe!(target: "continuum_core::inference::llama_server", class = "serving.genome.in_place_unsupported",
+                            model = target.model_id(),
+                            from = active.len() as u64,
+                            to = desired.len() as u64,
+                            "the gene set changed and this engine cannot take it in place: relaunching onto the target set"
+                        );
+                        false
+                    }
                     Err(e) => {
                         continuum_base::probe!(target: "continuum_core::inference::llama_server", class = "serving.genome.in_place_failed",
                             model = target.model_id(),

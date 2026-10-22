@@ -43,6 +43,8 @@ async fn already_serving_does_not_relaunch() {
         0,
         "no relaunch when already serving"
     );
+    // card 22aa3379: an adopted lane records its placement, so training can name its pool.
+    assert_eq!(ctrl.placements_recorded.load(Ordering::SeqCst), 1, "adoption records the placement");
 }
 
 // what this catches: a same-model / same-genome lane whose live per-slot window
@@ -255,6 +257,8 @@ async fn wedged_orphan_rejected_and_respawned() {
         1,
         "wedged orphan → fresh spawn"
     );
+    // A respawned lane's launch stamps its placement; the rejected orphan's engine is not asked.
+    assert_eq!(ctrl.placements_recorded.load(Ordering::SeqCst), 0, "no adoption, no observed stamp");
 }
 
 // what this catches (card 59052747, 2026-09-20 20:44Z on the IntelMac): an adoptee

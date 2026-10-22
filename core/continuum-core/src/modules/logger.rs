@@ -138,18 +138,15 @@ pub fn enqueue_log(sender: &mpsc::SyncSender<WriteLogPayload>, payload: WriteLog
 /// Channel capacity - if full, new messages dropped (NEVER blocks)
 const CLOG_CHANNEL_CAPACITY: usize = 4096;
 
-/// Is the in-process file-log sink up? The clog_*/log_* macros consult this
-/// BEFORE paying `format!` + category/component derivation — pre-gate, every
-/// call site built its whole payload only for `queue_log` to drop it when the
-/// LoggerModule wasn't initialized (and on the native server the fallback arm
-/// is the ONLY arm, so early-boot call sites paid full formatting for nothing).
-/// Same drop semantics, zero formatting cost.
+/// Is the in-process file-log sink up? `logging::clog_layer` consults this BEFORE
+/// formatting a clog_*/log_* event's message, so lines fired before the LoggerModule
+/// exists are dropped at zero formatting cost.
 #[inline]
 pub fn log_sink_ready() -> bool {
     GLOBAL_LOG_SENDER.get().is_some()
 }
 
-/// Queue a log entry for async writing (called by clog_* macros).
+/// Queue a log entry for async writing (called by `logging::clog_layer` for the clog_*/log_* macros).
 /// GUARANTEED NON-BLOCKING: Uses try_send(), drops if channel full.
 /// If LoggerModule not yet initialized, message is dropped.
 #[inline]

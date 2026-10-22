@@ -57,7 +57,7 @@ pub fn ring_of(module: &str) -> Option<u8> {
 // 674 coupling LINES across 73 module pairs, re-measured in CI on canary a85454889 when
 // the unit changed from files to lines (2026-10-20); 253 was the same coupling counted per file.
 // 672 with both splits: resource_admission's test names ServedGeometry through an import, and openai_adapter's rustdoc link to crate::cognition became prose. Neither is a decoupling.
-const BASELINE_UPWARD_IMPORTS: usize = 672;
+const BASELINE_UPWARD_IMPORTS: usize = 658; // 672 -> 671: harness removal 1 deleted competitor/resolution_bench
 
 /// The top-level module of a scanned file: the first path component under `src/`.
 fn module_of(file: &SourceFile) -> Option<&str> {

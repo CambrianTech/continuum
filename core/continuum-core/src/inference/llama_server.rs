@@ -77,7 +77,8 @@ pub use pages::{
     PAGE_GEOMETRY_STEP,
 };
 use pages::{
-    retire_page_owner, sweep_stale_page_generations_guarded, PageDirReservation, PAGE_DIR_GUARD,
+    retire_page_owner, revision_evidence, sweep_stale_page_generations_guarded, PageDirReservation,
+    PAGE_DIR_GUARD,
 };
 mod genome;
 pub(crate) use genome::gene_stage_name;
@@ -139,6 +140,7 @@ pub use ephemeral::{
 
 mod control_impl;
 mod launch;
+mod placement_stamp;
 mod prepare;
 
 #[cfg(test)]

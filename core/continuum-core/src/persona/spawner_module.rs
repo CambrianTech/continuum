@@ -159,6 +159,32 @@ pub fn plan_for_roles(
     // that change.
 }
 
+/// The operator's roster state at one instant: the hold (an allow-list that bounds the
+/// seats) and how many seats rest under this build. It lives in the operator's home, so
+/// it is an INPUT to the seat arithmetic, never a read buried inside it: production
+/// reads it from this host ([`OperatorRoster::on_this_host`]); a test hands a fixed one,
+/// so the seat count never depends on whichever hold the machine running it carries
+/// (card c4d84be3: the M5's four-name hold made four spawner tests seat 4).
+#[derive(Clone, Debug, Default)]
+pub struct OperatorRoster {
+    pub hold: Option<crate::persona::roster_hold::RosterHold>,
+    pub resting: Vec<crate::persona::resting_seat::RestingSeat>,
+}
+
+impl OperatorRoster {
+    /// The hold and the resting seats as this host's operator left them.
+    pub fn on_this_host() -> Self {
+        Self {
+            hold: crate::persona::roster_hold::active(),
+            resting: crate::persona::resting_seat::resting(),
+        }
+    }
+
+    fn is_resting(&self, agent_name: &str) -> bool {
+        self.resting.iter().any(|s| s.agent_name.eq_ignore_ascii_case(agent_name))
+    }
+}
+
 /// Substrate ServiceModule that surfaces the spawner's roster plan.
 /// Configurable at construction time with the detected tier; today
 /// the config is static (set when the module is built at substrate
@@ -203,6 +229,10 @@ pub struct PersonaSpawnerModule {
     /// name the provider cannot fill. Told by the reconciler each pass
     /// (`set_grid_roster`), never a global read on the draw path.
     grid_roster: Option<crate::cognition::grid_allocation::GridRoster>,
+    /// Where the operator's roster state comes from (see [`OperatorRoster`]): read
+    /// live on every `seats()` and every draw, because `set`/`clear`/`rest`/`wake`
+    /// change it at runtime. Production: [`OperatorRoster::on_this_host`].
+    operator_roster: fn() -> OperatorRoster,
 }
 
 impl PersonaSpawnerModule {
@@ -236,7 +266,19 @@ impl PersonaSpawnerModule {
             population: 1,
             citizens: vec![RoleId::Helper],
             grid_roster: None,
+            operator_roster: OperatorRoster::on_this_host,
         }
+    }
+
+    /// Inject where the operator's roster state is read from (default: this host's).
+    pub fn with_operator_roster(mut self, source: fn() -> OperatorRoster) -> Self {
+        self.operator_roster = source;
+        self
+    }
+
+    /// The operator's roster state as this module's source reads it right now.
+    pub fn operator_roster(&self) -> OperatorRoster {
+        (self.operator_roster)()
     }
 
     /// The grid allocation's roster for this node, as the reconciler last read it
@@ -382,8 +424,8 @@ impl PersonaSpawnerModule {
     /// intact, waking as the lanes grow. The KV page store stays the restore path for the
     /// minds that ARE seated.
     pub fn seats(&self) -> usize {
-        let unbounded = seats_under(self.population, crate::persona::roster_hold::active().as_ref())
-            .saturating_sub(crate::persona::resting_seat::resting().len());
+        let operator = self.operator_roster();
+        let unbounded = seats_under(self.population, operator.hold.as_ref()).saturating_sub(operator.resting.len());
         let lanes = self.warm_lanes();
         // The allocation's seat count for this node owns the lane-side bound once
         // published (card 10bba591); the warm-slot bound is the prior before it.
@@ -563,9 +605,10 @@ pub struct MaterializedPersonaPlan {
 async fn draw_intents(
     provider: &mut dyn crate::persona::identity_provider::PersonaIdentityProvider,
     plan: &[DesiredRole],
-    hold: Option<crate::persona::roster_hold::RosterHold>,
+    operator: &OperatorRoster,
     already_hosted: usize,
 ) -> Result<Vec<PersonaIdentityIntent>, BootstrapPlannedError> {
+    let hold = operator.hold.as_ref();
     let required = plan.len();
     let mut intents: Vec<PersonaIdentityIntent> = Vec::with_capacity(required);
     let mut drawn = 0usize;
@@ -619,7 +662,7 @@ async fn draw_intents(
         // she returns on a change, never on the next reconcile. The seat count already
         // excludes her (`plan()`), so the loop never asks the provider for a seat it
         // cannot fill.
-        if crate::persona::resting_seat::is_resting(&intent.agent_name) {
+        if operator.is_resting(&intent.agent_name) {
             continuum_base::probe!(
                 class = "persona.host.resting",
                 agent = %intent.agent_name,
@@ -629,7 +672,7 @@ async fn draw_intents(
         }
         // Only an EXCLUSIVE (operator-file) hold holds anyone out. A derived team hold
         // orders the roster — team first — but seats the whole population (below).
-        if let Some(h) = hold.as_ref().filter(|h| h.exclusive) {
+        if let Some(h) = hold.filter(|h| h.exclusive) {
             if !h.allows(&intent.agent_name) {
                 continuum_base::probe!(
                     class = "persona.host.held_out",
@@ -648,7 +691,7 @@ async fn draw_intents(
     }
     // A DERIVED hold (a working round's team) seats its names FIRST and everyone else
     // after — never fewer minds. Stable: the provider's order is kept within each half.
-    if let Some(h) = hold.as_ref().filter(|h| !h.exclusive) {
+    if let Some(h) = hold.filter(|h| !h.exclusive) {
         let (team, rest): (Vec<_>, Vec<_>) = intents.into_iter().partition(|i| h.allows(&i.agent_name));
         intents = team.into_iter().chain(rest).collect();
     }
@@ -727,7 +770,7 @@ pub async fn bootstrap_planned(
     // PHASE 1 — draw every identity from the provider. Sequential because the
     // provider hands out one identity at a time (`&mut`), but this is CHEAP: the
     // cost is `bootstrap_one` below, not `next_persona`.
-    let intents = draw_intents(provider, &plan, crate::persona::roster_hold::active(), already_hosted).await?;
+    let intents = draw_intents(provider, &plan, &module.operator_roster(), already_hosted).await?;
 
     // PHASE 2 — bootstrap ALL personas CONCURRENTLY (fork/join). The airc keypair
     // ceremony + room join + seed are INDEPENDENT per persona, so a serial loop

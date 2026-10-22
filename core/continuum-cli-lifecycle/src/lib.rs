@@ -36,6 +36,7 @@ pub mod core_bind_guard;
 pub mod deploy_provenance;
 pub mod deploy_claim;
 pub mod deploy_tracker;
+pub mod deploy_health;
 /// Deploying the core CI built instead of compiling it (card 50ca737e).
 pub mod prebuilt_artifact;
 

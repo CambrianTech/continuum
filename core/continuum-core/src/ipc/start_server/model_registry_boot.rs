@@ -62,7 +62,7 @@ pub(super) fn prepare_socket_and_load_model_registry(
             // path is dead at that instant. Measured, three silent drops deep:
             //   1. `log_*` needs LOGGER, whose only production initializer is ffi/mod.rs
             //      (the legacy Node-embedding entry) — never called on the native server.
-            //   2. `clog_*`/`write_log_direct` needs GLOBAL_LOG_SENDER, set by
+            //   2. `clog_*` needs GLOBAL_LOG_SENDER, set by
             //      LoggerModule::new() — which has not been constructed yet here.
             //   3. even once set, `queue_log` try_sends into a bounded channel and drops
             //      silently when full.

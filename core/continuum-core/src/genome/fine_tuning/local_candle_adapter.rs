@@ -145,7 +145,7 @@ impl FineTuningAdapter for LocalCandleFineTuner {
             // Accelerator-agnostic: Candle selects Metal/CUDA/CPU at
             // device-init time, so this trainer runs on any host.
             requires: TrainerHardware::Any,
-            trains_on_resident_weights: false,
+            place: crate::genome::fine_tuning::adapter::TrainingPlace::SeparateCopyHere,
         }
     }
 

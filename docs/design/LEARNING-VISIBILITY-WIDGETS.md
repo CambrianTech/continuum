@@ -89,7 +89,7 @@ loop), and only later admits controls ([[continuous-learning-autonomic-first-the
 
 ## 6. Machine-vs-mind timeline
 
-Pressure level, lane spawns/refusals/defers (`eval.lane.pressure_defer` probes, the
+Pressure level, lane spawns/refusals/defers (`lane.memory.pressure_defer` probes, the
 memory veto), serving lifecycle, and battery events on ONE shared timeline — so a dip
 in scores visibly coincides with a build spike or a lane wedge instead of being read as
 regression. The kernel-panic postmortem (2026-07-22) as a permanent instrument.

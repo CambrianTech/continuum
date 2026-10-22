@@ -363,6 +363,7 @@ impl LlamaServerProcess {
                 engine_bin: Some(PathBuf::from(&prepared.engine_program)),
                 // the OS start time with the pid names this exact process (residency step 1)
                 started_s: crate::inference::engine_residency::process_start_s(pid).unwrap_or(0), // unwrap_or: 0 never matches a live process, so an unreadable start time holds nothing
+                placement: Some(target.placement),
             };
             // Record + release under the page-dir guard (one critical section); a
             // failed write keeps the reservation for the lane's lifetime.
@@ -562,14 +563,25 @@ impl LlamaServerProcess {
         // Cold lifecycle metadata for paths already resolved by this launcher.
         // If any revision is unreadable (including a PATH-only engine name), do
         // not carry saved eligibility across engines. Never probe to rediscover it.
-        let revisions = std::iter::once(gguf.clone())
-            .chain(target.adapters.iter().map(|adapter| adapter.path.clone()))
-            .chain(std::iter::once(PathBuf::from(&prepared.engine_program)))
-            .map(|path| {
-                let metadata = std::fs::metadata(&path).ok()?;
-                Some((path, metadata.len(), metadata.modified().ok()?))
-            })
-            .collect::<Option<Vec<_>>>();
+        let revisions = match revision_evidence(
+            std::iter::once(gguf.clone())
+                .chain(target.adapters.iter().map(|adapter| adapter.path.clone()))
+                .chain(std::iter::once(PathBuf::from(&prepared.engine_program))),
+        ) {
+            Ok(revisions) => Some(revisions),
+            Err((path, error)) => {
+                // Every saved page is unrestorable across this launch (card 689084e7): each
+                // activity that had one re-prefills cold, so the miss names its file.
+                continuum_base::probe!(target: "continuum_core::inference::llama_server", class = "inference.kv_page.revisions_unreadable",
+                    model = target.model_id(),
+                    path = %path.display(),
+                    error = %error,
+                    paging = page_dir_ready,
+                    "a launch revision is unreadable: saved KV pages are not restorable across this launch"
+                );
+                None
+            }
+        };
         transition
             .ready(
                 &self.root,
