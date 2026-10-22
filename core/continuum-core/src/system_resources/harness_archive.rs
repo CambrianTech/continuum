@@ -23,11 +23,13 @@ pub fn archive_root(continuum_home: &Path) -> PathBuf {
 const RECEIPT: &str = "archived.json";
 
 /// Whole directories the harness wrote, relative to the continuum home: the round
-/// tracker's files, the per-instance verdicts and env refusals, `benchmark/validate`'s
-/// coverage maps, the detached solve's attempt patches.
+/// tracker's files, `benchmark/validate`'s coverage maps, the detached solve's attempt
+/// patches. NOT `benchmarks/swe/verdicts`: the grader still reads it live (a box's
+/// `.ungradeable.json` env refusals keep `card_holder::standing_refusal_for_card` from
+/// re-offering an instance it cannot grade, and `benchmark_import` skips resolved ones), so
+/// it moves only when outcomes move into rooms (Cormac on #5211).
 const HARNESS_DIRS: &[&str] = &[
     "state/bench-rounds",
-    "benchmarks/swe/verdicts",
     "benchmarks/swe/coverage",
     "benchmarks/swe/captures",
 ];
@@ -121,8 +123,9 @@ mod tests {
     use super::*;
 
     // what this catches: the archive deleting or skipping harness state, sweeping a live
-    // progress ledger that is not the harness's, or running twice and taking files written
-    // after it (the verdict store stays live).
+    // progress ledger that is not the harness's, archiving the verdict store the grader
+    // still reads (its env refusals keep unrunnable instances off the board), or running
+    // twice and taking files written after it.
     #[test]
     fn harness_state_moves_once_and_nothing_else_moves() {
         let home = tempfile::tempdir().expect("tmp");
@@ -140,10 +143,11 @@ mod tests {
         let ArchiveOutcome::Moved(moved) = archive_once_in(h, 1).expect("archive") else {
             panic!("first pass must move");
         };
-        assert_eq!(moved.len(), 5, "{moved:?}");
+        assert_eq!(moved.len(), 4, "{moved:?}");
         let root = archive_root(h);
         assert!(root.join("state/bench-rounds/r1.json").exists());
-        assert!(root.join("benchmarks/swe/verdicts/sympy-1.json").exists());
+        assert!(h.join("benchmarks/swe/verdicts/sympy-1.json").exists(), "the live verdict store is never archived");
+        assert!(!root.join("benchmarks/swe/verdicts").exists());
         assert!(root.join("progress/agent-solve-a.grade.json").exists());
         assert!(!h.join("state/bench-rounds").exists());
         assert!(h.join("progress/eval-run-b.json").exists(), "another ledger stays");
