@@ -64,14 +64,12 @@ pub mod bus;
 pub mod candidate_source_store;
 pub mod eviction;
 pub mod expert_ingest;
-pub mod expert_layout;
 pub mod fine_tuning;
 pub mod fitness;
 pub mod commons_ranking;
 pub mod competence;
 pub mod recall_select;
 pub mod fitness_ledger;
-pub mod gate_magnitude;
 pub mod gene_trial;
 pub mod local_manager;
 pub mod signature;
@@ -104,10 +102,7 @@ pub use recall_trait::{
 pub use residency::GenomeResidencyModule;
 pub use store::TierStore;
 pub use tier::{EvictionPolicy, EvictionRecord, TierCapacity, TierError, TierRole};
-pub use working_set::{
-    AccessDenied, ArtifactId, PageFault, PageHandle, PageKind, PageOffset, PageRef, ResidentPage,
-    WorkingSet, WorkingSetCapacity,
-};
+pub use working_set::{AccessDenied, PageFault, PageHandle, ResidentPage, WorkingSet, WorkingSetCapacity};
 pub mod recall_scoring;
 pub use recall_scoring::{
     grid_penalty, local_role_score, recency_decay, score as recall_score, tier_proximity_for,

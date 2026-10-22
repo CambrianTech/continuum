@@ -269,7 +269,7 @@ impl PersonaCommandInboundPump {
         // narrowing it by room made her un-callable from anywhere she
         // was not currently parked — the same one-channel narrowing
         // that made operator chat structurally invisible (task #64).
-        let stream = crate::persona::airc_citizen::subscribe_every_room(&airc).await?;
+        let stream = crate::routing::airc_subscription::subscribe_every_room(&airc).await?;
         // The handler VERIFIES presented capability grants against the authorizer
         // (built from this node's own key + mesh + durable watermark). A peer
         // presenting an owner-signed grant gets the conferred command past its tier
@@ -368,7 +368,7 @@ async fn supervise(
     loop {
         let this_stream = match stream.take() {
             Some(s) => s,
-            None => match crate::persona::airc_citizen::subscribe_every_room(&airc).await {
+            None => match crate::routing::airc_subscription::subscribe_every_room(&airc).await {
                 Ok(s) => s,
                 Err(e) => {
                     continuum_base::probe!(
@@ -512,7 +512,7 @@ async fn run(
             // Joins arrive in bursts at boot (one per room). Every bump that
             // landed during the sleep is folded into this one re-open.
             let _ = membership.borrow_and_update();
-            match crate::persona::airc_citizen::subscribe_every_room(&airc).await {
+            match crate::routing::airc_subscription::subscribe_every_room(&airc).await {
                 Ok(next) => {
                     stream = next;
                     opened_with = subscribed_set(&airc).await;

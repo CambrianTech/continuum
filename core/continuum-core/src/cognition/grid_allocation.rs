@@ -122,7 +122,7 @@ pub struct LanePlan {
 impl LanePlan {
     /// A node's published plan, read as an offer. The decode measurement lives outside
     /// the plan (the knee record); the caller passes what it has.
-    pub fn of(plan: &super::serving_plan::ServingPlan, decode_tps_per_lane: Option<f32>) -> Self {
+    pub fn of(plan: &crate::inference::planning::serving_plan::ServingPlan, decode_tps_per_lane: Option<f32>) -> Self {
         Self {
             model_id: plan.base_model.model_id.clone(),
             capability_rank: plan.base_model.capability_rank,
@@ -554,7 +554,7 @@ pub fn roles_from(
                 decode_floor_tps: r.decode_floor_tps,
             },
             None => Requirement {
-                window: super::serving_plan::BOOTSTRAP_WORKING_SET,
+                window: crate::inference::planning::serving_plan::BOOTSTRAP_WORKING_SET,
                 target_window: measured_target,
                 min_capability: 0,
                 decode_floor_tps: None,

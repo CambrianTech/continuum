@@ -106,7 +106,7 @@ impl FakeControl {
     }
     /// Model an engine launched on THIS KV decision with a `--cache-ram` grant of `mib`.
     fn launched_with_cache(mut self, mib: u32) -> Self {
-        let planned = crate::cognition::kv_cache_plan::resolve();
+        let planned = crate::inference::kv_cache_plan::resolve();
         self.launched_kv = Some(crate::inference::lane_process::LaunchKv {
             cache_type: planned.launcher_cache_type().map(str::to_string),
             flash_attn: planned.flash_attn,

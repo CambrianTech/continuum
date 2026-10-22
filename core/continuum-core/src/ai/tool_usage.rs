@@ -1,5 +1,5 @@
 //! tool_usage — the miss-tracking instrument. Every tool-call name that flows
-//! through the ONE resolution section ([`crate::cognition::tool_dialect::from_wire_name`])
+//! through the ONE resolution section ([`crate::ai::tool_dialect::from_wire_name`])
 //! is tallied here by outcome: it hit a declared ALIAS, it was our CANONICAL
 //! name, or it MISSED (no command answers to it).
 //!

@@ -23,7 +23,7 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
-use super::working_set::ArtifactId;
+use crate::inference::page_ref::ArtifactId;
 
 /// Where an artifact's bytes physically live.
 ///

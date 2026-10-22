@@ -201,8 +201,8 @@ fn write_record(path: &Path, stored: &StoredServedWindow) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cognition::serving_plan::{plan_serving_at_rest, HostBudget, ModelFootprint, ServingDemand};
-    use crate::cognition::window_allocator::LaneRequirement;
+    use crate::inference::planning::serving_plan::{plan_serving_at_rest, HostBudget, ModelFootprint, ServingDemand};
+    use crate::inference::planning::window_allocator::LaneRequirement;
 
     #[test]
     fn observed_collapse_survives_restart_as_history_not_an_allocation_limit() {

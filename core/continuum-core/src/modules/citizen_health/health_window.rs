@@ -213,7 +213,7 @@ pub(super) fn read_lane_buckets() -> [u64; LANE_BUCKETS] {
 /// what made a starved hour read as a working one.
 pub fn note_lane_starved() {
     LEDGER.lane_starved.fetch_add(1, Ordering::Relaxed);
-    note_lane_sample(crate::cognition::resource_admission::served_lane_count() as u64);
+    note_lane_sample(crate::inference::resource_admission::served_lane_count() as u64);
 }
 
 /// A generation reached its end, one way or the other (the
@@ -255,7 +255,7 @@ pub fn note_act(wrote: bool) {
 pub fn note_lane_granted() {
     LEDGER.lanes_granted.fetch_add(1, Ordering::Relaxed);
     note_lanes(crate::inference::llama_server::current_serving().lanes as u64);
-    note_lane_sample(crate::cognition::resource_admission::served_lane_count() as u64);
+    note_lane_sample(crate::inference::resource_admission::served_lane_count() as u64);
 }
 
 /// Per-mind lane grants this hour — the placement chooser's "least served" order. One per-mind ledger ([`MindHour`]), not two.

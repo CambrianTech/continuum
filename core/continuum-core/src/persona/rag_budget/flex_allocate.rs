@@ -1,5 +1,14 @@
 use super::*;
 
+/// What one turn needs of a lane: the sum of its budget claims' FLOORS (framing and tools,
+/// required input, grounding floor, her last move and its outcome, the reply floor), never
+/// what the budget granted. The flexbox grows a turn into whatever window it is given, so a
+/// grant measured on a 102k lane reads as a 48.6k "need" and refuses a second lane at 46k
+/// (the M5, 2026-10-18: four residents queued on one slot, 13% reuse, 600 s lane waits).
+pub fn turn_need(claims: &[RagSourceBudget]) -> u32 {
+    claims.iter().map(|c| c.floor_tokens).fold(0, u32::saturating_add)
+}
+
 /// THE flexbox algorithm, pure: `available` tokens shared across `claims`.
 ///
 /// One algorithm for every budget in the persona. [`FlexboxRagBudgetAdapter`] runs it

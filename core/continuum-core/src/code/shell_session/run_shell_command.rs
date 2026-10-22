@@ -297,8 +297,8 @@ pub(super) async fn run_shell_command(
     // the shell started is found while the shell is alive and still their parent, and killed
     // deepest first, each only if its pid still names the same process; then the shell itself.
     // What survives is recorded, never assumed gone, and a release re-checks it.
-    let crate::inference::lane_process::TreeEnd { reaped, survivors, unwalked } = if exit_status.is_some() {
-        crate::inference::lane_process::TreeEnd { reaped: Ok(()), survivors: Vec::new(), unwalked: None }
+    let crate::system_resources::process_tree::TreeEnd { reaped, survivors, unwalked } = if exit_status.is_some() {
+        crate::system_resources::process_tree::TreeEnd { reaped: Ok(()), survivors: Vec::new(), unwalked: None }
     } else {
         crate::inference::lane_process::end_tree(&mut child).await
     };
@@ -388,10 +388,6 @@ pub(super) async fn run_shell_command(
     }
 }
 
-/// How often an execution's task looks for a kill request. The cadence a kill is noticed at,
-/// and so the cadence `code/release-hands` checks a killed execution has ended at.
-pub(crate) const KILL_POLL: Duration = Duration::from_millis(100);
-
 /// Poll the kill flag on the execution state. Returns when kill is requested.
 pub(super) async fn poll_kill_flag(state: Arc<Mutex<ExecutionState>>) {
     loop {
@@ -402,7 +398,7 @@ pub(super) async fn poll_kill_flag(state: Arc<Mutex<ExecutionState>>) {
                 }
             }
         }
-        tokio::time::sleep(KILL_POLL).await;
+        tokio::time::sleep(crate::inference::lane_process::KILL_POLL).await;
     }
 }
 

@@ -10,7 +10,7 @@
 //! PGO principle); this only breaks ties and seeds the start.
 //!
 //! Sits beside [`super::expert_layout`] (which LOCATES the expert-set byte ranges, zero-copy)
-//! and [`super::expert_ingest`] (Seam-1). Unlike those, this READS a small tensor (the router
+//! and the genome's expert ingest (Seam-1). Unlike those, this READS a small tensor (the router
 //! is tiny — `n_experts × hidden`, and llama.cpp keeps it high-precision) and computes norms
 //! via candle, dequantizing transparently. Reuses `gguf_keys` + the `candle` GGUF reader the
 //! rest of the crate already uses — no parallel GGUF parser.
@@ -48,7 +48,7 @@ impl From<candle_core::Error> for GateMagnitudeError {
 /// `(layer, expert_index)` to match the residency key `(layer, expert)` — a page's
 /// `PageRef{artifact: layer_set, offset: Expert{e}}` maps straight onto `(layer, e)`.
 ///
-/// Drives off the SAME [`locate_layer_sets`] enumeration as [`super::expert_ingest`] (Seam-1),
+/// Drives off the SAME [`locate_layer_sets`] enumeration as the genome's expert ingest (Seam-1),
 /// NOT an independent MoE-detection: the priors therefore key EXACTLY the `(layer, expert)`
 /// pages the splitter made — no format where a router-presence check and an `*_exps`-presence
 /// check could disagree (BigMama's co-review note). For each registered layer it reads the

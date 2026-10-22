@@ -481,7 +481,7 @@ pub(crate) async fn bind_card(
     let Some(hands) = live.in_context(context) else {
         return HeldCardTurn::unrooted(credit, peer_id, focus.card_id.as_uuid());
     };
-    let lease = match crate::code::hands::admit(context) {
+    let lease = match crate::identity::hands_gate::admit(context) {
         Ok(lease) => lease,
         Err(why) => {
             continuum_base::probe!(class = "persona.work.hands_closing", peer = %peer_id, card = %focus.card_id.as_uuid(), why = %why, "the claim's hands are closing; nothing acts on the card this turn");
@@ -597,7 +597,7 @@ pub(crate) struct HeldCardTurn {
 pub(crate) struct CardHands {
     pub(crate) context: crate::identity::hands_context::HandsContext,
     pub(super) hands: ActingHands,
-    pub(super) lease: std::sync::Arc<crate::code::hands::HandsLease>,
+    pub(super) lease: std::sync::Arc<crate::identity::hands_gate::HandsLease>,
 }
 
 impl CardHands {

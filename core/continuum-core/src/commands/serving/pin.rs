@@ -190,7 +190,7 @@ crate::action_command! {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cognition::serving_plan::ServingPlan;
+    use crate::inference::planning::serving_plan::ServingPlan;
     use crate::modules::serving_daemon::{PinFit, PinFitChecker};
     use crate::sdk_codegen::{ActionCommand, Ctx};
 
@@ -209,7 +209,7 @@ mod tests {
 
     fn plan(fits: bool) -> ServingPlan {
         ServingPlan {
-            base_model: crate::cognition::serving_plan::ModelFootprint {
+            base_model: crate::inference::planning::serving_plan::ModelFootprint {
                 model_id: "x".into(),
                 weights_bytes: 0,
                 kv_per_token: 0,
@@ -218,7 +218,7 @@ mod tests {
                 fixed_per_lane_bytes: 0,
             },
             served_context_window: 8192,
-            lanes_bound: crate::cognition::serving_plan::LanesBound::Demand,
+            lanes_bound: crate::inference::planning::serving_plan::LanesBound::Demand,
             lanes: 1,
             grid_overflow_lanes: 0,
             resident_models: 1,

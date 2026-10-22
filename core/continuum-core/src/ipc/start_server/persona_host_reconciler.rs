@@ -10,7 +10,7 @@ pub(super) async fn run_persona_host(
     persona_floor: usize,
     supervisor: crate::persona::host::PersonaSpawnSupervisor,
     mut serving_plan_rx: tokio::sync::watch::Receiver<
-        Option<crate::cognition::serving_plan::ServingPlan>,
+        Option<crate::inference::planning::serving_plan::ServingPlan>,
     >,
 ) {
     // Wait for the IPC thread to deliver the WIRED executor (this both

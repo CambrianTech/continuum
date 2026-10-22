@@ -1,4 +1,6 @@
-//! Turn bookkeeping: last-turn stamps, in-flight turns and turn shapes.
+//! Turn bookkeeping: last-turn stamps, in-flight turns and turn shapes, and the
+//! starving mind's bounded wait for an ambient permit (the lane pool itself is the
+//! engine's, `inference::resource_admission`).
 
 
 /// An idle mind that has not started a turn for this long is STARVING: her next ambient
@@ -142,4 +144,66 @@ pub(crate) fn typical_turn_ms(personas: &[uuid::Uuid]) -> Option<u64> {
 pub fn starving_since(last_turn_ms: Option<u64>, now_ms: u64, boot_ms: u64) -> bool {
     now_ms.saturating_sub(last_turn_ms.unwrap_or(boot_ms)) >= IDLE_STARVATION_MS
     // JUSTIFIED unwrap_or: no turn yet is measured from boot — absence IS "since boot"
+}
+
+/// The ambient permit for `persona`'s musing tail: a plain try, unless she is starving —
+/// then a bounded wait, so the pool is still the pool but the race is not rigged against
+/// the idle forever. Probe `admission.lane.idle_share` names every granted wait.
+pub async fn hold_ambient_turn_for(
+    persona: uuid::Uuid,
+    now_ms: u64,
+) -> Option<tokio::sync::OwnedSemaphorePermit> {
+    if let Some(p) = crate::inference::resource_admission::try_hold_ambient_turn() {
+        return Some(p);
+    }
+    let last = LAST_TURN_MS.lock().get(&persona).copied();
+    if !starving_since(last, now_ms, *BOOT_MS) {
+        return None;
+    }
+    let started = std::time::Instant::now();
+    match crate::inference::resource_admission::wait_ambient_turn(std::time::Duration::from_millis(IDLE_SHARE_WAIT_MS)).await {
+        Some(permit) => {
+            continuum_base::probe!(
+                class = "admission.lane.idle_share",
+                persona = %persona,
+                waited_ms = started.elapsed().as_millis() as u64,
+                idle_ms = now_ms.saturating_sub(last.unwrap_or(*BOOT_MS)), // JUSTIFIED unwrap_or: no turn yet = idle since boot
+                "a starving idle mind waited for an ambient permit and got one — the minimum share"
+            );
+            Some(permit)
+        }
+        None => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // what this catches (2026-09-14): an idle mind starving forever under holders-first —
+    // starvation is a function of her last turn, counted from boot when she never had one.
+    #[test]
+    fn a_mind_with_no_turn_for_fifteen_minutes_is_starving_and_a_recent_one_is_not() {
+        let boot = 1_000_000;
+        assert!(
+            !starving_since(Some(boot + 60_000), boot + 600_000, boot),
+            "ten minutes idle: not yet"
+        );
+        assert!(
+            starving_since(
+                Some(boot + 60_000),
+                boot + 60_000 + IDLE_STARVATION_MS,
+                boot
+            ),
+            "fifteen minutes: starving"
+        );
+        assert!(
+            starving_since(None, boot + IDLE_STARVATION_MS, boot),
+            "never had a turn: counted from boot"
+        );
+        assert!(
+            !starving_since(None, boot + 1_000, boot),
+            "just booted: not starving"
+        );
+    }
 }

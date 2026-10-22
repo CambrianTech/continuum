@@ -43,6 +43,8 @@ pub mod openai_endpoints;
 pub(crate) mod slot_discovery;
 pub mod registry_bridge;
 pub mod stream_sinks;
+pub mod tool_dialect;
+pub mod tool_usage;
 pub mod types;
 
 // Re-export commonly used types

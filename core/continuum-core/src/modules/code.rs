@@ -302,7 +302,7 @@ mod tests {
         for exec in &pending {
             while !exec.lock().unwrap().process_ended {
                 assert!(exec.lock().unwrap().process_end_error.is_none(), "a direct child's reap succeeds");
-                tokio::time::sleep(crate::code::shell_session::KILL_POLL).await;
+                tokio::time::sleep(crate::inference::lane_process::KILL_POLL).await;
             }
         }
         assert!(state.begin_release(who).is_empty(), "once reaped, nothing is left to wait out");

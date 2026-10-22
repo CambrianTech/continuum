@@ -395,7 +395,7 @@ fn catalog_fits_the_minimum_serving_window() {
     // nothing expanded (empty context) the menu is its smallest — a spine of
     // collapsed bookmarks — which is the floor case for this fit guard.
     let collapsed = faculty.compose_system("", &BTreeSet::new(), false, false, None);
-    let framing = est_tokens(&collapsed);
+    let framing = estimate_guard_tokens(&collapsed);
     // The reply's floor — what the window always holds for it — derived from the
     // claim itself, never re-spelled. Above it the reply grows by priority.
     let reserve = reply_claim(TurnKind::Pass, None, 0, false, false).0.floor_tokens as usize;

@@ -49,7 +49,7 @@ fn an_opportunity_never_steps_down_and_never_offers_a_seat_fall_home_would_rejec
 #[test]
 fn a_strictly_better_seat_moves_her_between_turns_and_never_inside_her_cooldown() {
     use crate::cognition::grid_allocation::{BetterBy, LanePlan};
-    use crate::cognition::resource_admission::TurnShape;
+    use crate::cognition::turn_ledger::TurnShape;
     let plan = |cap: u8, window: u32, lanes: u32| LanePlan { model_id: "m".into(), capability_rank: cap, window, lanes, decode_tps_per_lane: None };
     let (home, wide, strong) = (plan(9, 67_072, 2), plan(9, 131_072, 2), plan(12, 32_768, 1));
     fn i<'a>(current: Option<&'a LanePlan>, target: &'a LanePlan) -> OpportunityInputs<'a> {

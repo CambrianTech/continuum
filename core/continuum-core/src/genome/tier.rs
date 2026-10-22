@@ -11,7 +11,7 @@
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
-use super::working_set::PageRef;
+use crate::inference::page_ref::PageRef;
 
 /// The five named tier roles. Discrete-GPU configurations populate
 /// all five; UMA configurations omit `Warm` (Fast and Warm would

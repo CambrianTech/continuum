@@ -117,7 +117,7 @@ pub fn fold(
         context_share: if turn_budget_tokens == 0 {
             0.0
         } else {
-            (rendered_chars / crate::cognition::deliberation_budget::GUARD_CHARS_PER_TOKEN) as f32 / turn_budget_tokens as f32
+            (rendered_chars / continuum_base::token_estimate::GUARD_CHARS_PER_TOKEN) as f32 / turn_budget_tokens as f32
         },
     };
     snapshot

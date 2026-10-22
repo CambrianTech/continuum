@@ -6,68 +6,34 @@ use crate::model_registry::types::{Arch, MultiPartyChatStrategy};
 use crate::model_registry::Model;
 use std::collections::BTreeSet;
 
-fn lcd_compat_profile() -> crate::persona::inference_profile::PersonaInferenceProfile {
-    use crate::persona::hw_tier_descriptor::HwTierCategory;
-    use crate::persona::inference_profile::{PersonaInferenceProfile, SamplingProfile};
-    use uuid::Uuid;
-    PersonaInferenceProfile {
-        persona_id: Uuid::nil(),
-        persona_name: "Paige".to_string(),
+fn lcd_compat_launch() -> LlamaCppLaunch {
+    LlamaCppLaunch {
         model_id: "continuum-ai/qwen2.5-0.5b-instruct-GGUF".to_string(),
-        gguf_local_path: Some(PathBuf::from("/tmp/test-qwen2.5-0.5b-instruct-q4_k_m.gguf")),
-        tier_category: HwTierCategory::Compat,
-        tier_id: "mac_intel_metal_discrete".to_string(),
+        gguf_path: PathBuf::from("/tmp/test-qwen2.5-0.5b-instruct-q4_k_m.gguf"),
         context_length: 2048,
-        n_ubatch: 512,
-        n_batch: 2048,
         n_seq_max: 1,
+        n_ubatch: 512,
         n_gpu_layers: 0,
-        sampling: SamplingProfile::chat_defaults(),
-        chat_template: None,
-        stop_sequences: vec!["<|im_end|>".to_string()],
     }
 }
 
-/// `for_persona` produces an adapter with every override field set
-/// from the profile. Without this, the substrate's intent-driven
+/// `for_launch` produces an adapter with every override field set
+/// from the launch. Without this, the substrate's intent-driven
 /// guarantee per [[intent-driven-api-not-hot-patches]] breaks:
 /// hardcoded defaults silently override what the spawner resolved.
 #[test]
-fn for_persona_populates_all_overrides_from_profile() {
-    let profile = lcd_compat_profile();
-    let adapter = LlamaCppAdapter::for_persona(&profile).expect("build adapter");
+fn for_launch_populates_all_overrides_from_the_launch() {
+    let launch = lcd_compat_launch();
+    let adapter = LlamaCppAdapter::for_launch(&launch);
     assert_eq!(
         adapter.model_path,
         PathBuf::from("/tmp/test-qwen2.5-0.5b-instruct-q4_k_m.gguf")
     );
-    assert_eq!(adapter.default_model, profile.model_id);
+    assert_eq!(adapter.default_model, launch.model_id);
     assert_eq!(adapter.context_length_override, Some(2048));
     assert_eq!(adapter.n_seq_max_override, Some(1));
     assert_eq!(adapter.n_ubatch_override, Some(512));
     assert_eq!(adapter.n_gpu_layers_override, Some(0));
-}
-
-/// A profile with no `gguf_local_path` is invalid for local
-/// inference. `for_persona` rejects it loud per [[no-fallbacks-
-/// ever]] — better an error message naming the missing field than
-/// a silent fallback to a "default" model.
-#[test]
-fn for_persona_errors_when_gguf_local_path_missing() {
-    let mut profile = lcd_compat_profile();
-    profile.gguf_local_path = None;
-    // `LlamaCppAdapter` doesn't derive Debug (Arc<RwLock<...>> isn't
-    // straightforward to format), so `expect_err` won't compile.
-    // Match on the result directly.
-    match LlamaCppAdapter::for_persona(&profile) {
-        Ok(_) => panic!("missing gguf_local_path must error per no-fallbacks doctrine"),
-        Err(crate::persona::inference_profile::InferenceProfileError::NoLocalGguf {
-            model_id,
-            ..
-        }) => {
-            assert_eq!(model_id, "continuum-ai/qwen2.5-0.5b-instruct-GGUF");
-        }
-        Err(other) => panic!("unexpected error variant: {other:?}"),
-    }
 }
 
 fn text_request(response_format: Option<ResponseFormat>) -> TextGenerationRequest {

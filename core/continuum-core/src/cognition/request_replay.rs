@@ -309,7 +309,7 @@ impl ActionCommand for CognitionReplayRequest {
             .provider
             .as_deref()
             .ok_or_else(|| CommandError::Internal("replay provider missing".into()))?;
-        let registry = crate::modules::ai_provider::global_registry();
+        let registry = crate::ai::adapter::global_registry();
         let adapter = registry.read().await.get_arc(provider).ok_or_else(|| {
             CommandError::Invalid(format!("provider '{provider}' is not registered"))
         })?;

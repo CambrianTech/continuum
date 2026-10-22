@@ -148,7 +148,7 @@ fn tool_surface_is_a_category_index_plus_discovery_pair() {
     let view = faculty.prompt_view(&ws);
     let reserve = view.completion_reserve as usize;
     let prompt =
-        est_tokens(&view.system) + LlmDeliberationFaculty::messages_cost(&view.messages);
+        estimate_guard_tokens(&view.system) + LlmDeliberationFaculty::messages_cost(&view.messages);
 
     // This assertion used to demand that framing + the FULL tool surface + the
     // reply reserve all fit an 8192 window. That is arithmetically impossible and

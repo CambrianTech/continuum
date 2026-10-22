@@ -23,8 +23,8 @@ use std::collections::HashSet;
 use super::expert_pager::plan_expert_residency_budgeted;
 use super::expert_residency::{ExpertActivationProfile, ExpertId, ExpertResidencyPlan};
 use super::SystemProfile;
-use crate::genome::expert_ingest::expert_set_artifact_id;
-use crate::genome::working_set::{PageKind, PageOffset, PageRef};
+use crate::inference_capability::expert_layout::expert_set_artifact_id;
+use crate::inference::page_ref::{PageKind, PageOffset, PageRef};
 
 /// Map an [`ExpertId`] to its genome [`PageRef`]: the per-layer expert-set artifact
 /// (keyed by `(gguf_id, layer)`), with the expert selected by index. THE one place the
@@ -205,7 +205,7 @@ pub struct PagerStepOutcome {
 /// Pure + deterministic: no I/O, no clock, no serving-daemon coupling — the serving tick
 /// owns the side effects (calling this, then relaunching when `relaunch_needed`). That
 /// keeps the pager's DECISION logic testable in isolation from the serving control loop it
-/// runs inside (the same split as [`plan_serving`](crate::cognition::serving_plan) vs the
+/// runs inside (the same split as [`plan_serving`](crate::inference::planning::serving_plan) vs the
 /// serving_daemon reconcile). Empty activation / unsized experts flow through the planner's
 /// safe cold-start (all-warm) + the reconcile empty-hot guard — never evict-to-zero.
 #[allow(clippy::too_many_arguments)]

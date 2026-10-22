@@ -9,7 +9,7 @@ use continuum_base::time::EpochMs;
 use crate::ai::adapter::InferenceDevice;
 use crate::ai::types::ResponseFormat;
 use crate::ai::{ChatMessage, MessageContent, TextGenerationRequest, TextGenerationResponse};
-use crate::modules::ai_provider::global_registry;
+use crate::ai::adapter::global_registry;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use ts_rs::TS;

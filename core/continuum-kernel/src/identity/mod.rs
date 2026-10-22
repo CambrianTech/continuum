@@ -86,6 +86,7 @@ use uuid::Uuid;
 pub use airc_core::PeerId;
 
 pub mod hands_context;
+pub mod hands_gate;
 pub mod activity;
 pub use activity::{ActivityRoom, RoomlessTurn};
 

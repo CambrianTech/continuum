@@ -194,7 +194,7 @@ impl ServingDaemonModule {
         let serving = crate::inference::llama_server::current_serving();
         let active_model = serving.active_model;
         let model_for_knee = knee_model(active_model, || {
-            crate::modules::served_window_store::load_geometry().map(|g| g.model_id)
+            crate::inference::served_window_store::load_geometry().map(|g| g.model_id)
         });
         // A remembered model with no curve answers with the most CONSERVATIVE knee this box
         // holds (2026-09-20: the record read "coder-14b", a harness fixture a local test run
@@ -310,13 +310,13 @@ impl ServingDaemonModule {
         // the very calls that raised it. Zero until the inbound-generate seam feeds the
         // gauge; never invented.
         let leased_in =
-            note_leased_in_peak(crate::cognition::resource_admission::take_leased_in_peak());
+            note_leased_in_peak(crate::inference::resource_admission::take_leased_in_peak());
         // Each live mind's REQUIREMENT: the untrimmed demand her turns assemble (never
         // what a window let her send), with headroom, floored at one real turn. Built
         // once here and carried on the demand by value into the one plan — the
         // allocator's input, the governed size (card 2eec3977).
         let requirements =
-            crate::cognition::window_allocator::requirements_for(&live, &self.working_set);
+            crate::cognition::working_set::requirements_for(&live, &self.working_set);
         ServingDemand::new(lanes, demand)
             .with_requirements(requirements)
             .with_sent_tokens(sent)

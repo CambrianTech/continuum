@@ -148,7 +148,7 @@ pub struct ServingDemand {
     /// Concurrent lanes this seat serves for minds hosted on OTHER nodes — the `ai/generate`
     /// a peer sends here when its placement spills a mind onto this seat — measured at the
     /// seat's own admission as the peak per plan tick
-    /// ([`crate::cognition::resource_admission::take_leased_in_peak`]). Added to `lanes` when
+    /// ([`crate::inference::resource_admission::take_leased_in_peak`]). Added to `lanes` when
     /// the plan sizes the slot count: a seat's demand is the minds it SERVES, not only the
     /// minds it HOSTS. Measured 2026-09-18 (card c84d885a): the 5090's 27B seat served the
     /// M5's four coders and IntelMac's eight on ONE slot — lane wait p50 216 s, p90 1,387 s,
@@ -178,7 +178,7 @@ pub struct ServingDemand {
     /// Per-mind lane requirements (see `with_requirements`). Empty = the legacy
     /// median/bootstrap derivation below, kept for callers that have not migrated
     /// (card 2eec3977: to be deleted with them).
-    pub requirements: Vec<crate::cognition::window_allocator::LaneRequirement>,
+    pub requirements: Vec<crate::inference::planning::window_allocator::LaneRequirement>,
 }
 
 /// Headroom over the largest sent prompt: a mind held at a too-small window fills it,
@@ -227,7 +227,7 @@ impl ServingDemand {
     /// What each mind on this seat REQUIRES of a lane (`window_allocator`). When
     /// present, lanes × window come from the allocator over these — the governed
     /// size — and the sent-median / bootstrap path below is not consulted.
-    pub fn with_requirements(mut self, requirements: Vec<crate::cognition::window_allocator::LaneRequirement>) -> Self {
+    pub fn with_requirements(mut self, requirements: Vec<crate::inference::planning::window_allocator::LaneRequirement>) -> Self {
         self.requirements = requirements;
         self
     }
@@ -340,6 +340,45 @@ pub struct HostBudget {
     /// Performance-core count — caps useful lane parallelism (one batch
     /// driver can't usefully outrun the compute that feeds it).
     pub perf_cores: u32,
+}
+
+/// The live host readings a serving budget is derived from. A NAMED struct, not
+/// three positional args, so the two byte counts (`available_bytes` and
+/// `total_vram_bytes` are both `u64`) can never be silently transposed at a call
+/// site — the compiler cannot catch `host_budget_from(total, available, ..)` on
+/// positionals, but `HostBudgetInputs { available_bytes, total_vram_bytes, .. }`
+/// names each ([[structs-by-reference-not-massive-param-lists]]). A new input
+/// (e.g. a device-tier hint) becomes ONE added field with a default, not a fourth
+/// positional every caller must thread.
+#[derive(Debug, Clone, Copy)]
+pub struct HostBudgetInputs {
+    /// Monitor's current free memory (already net of everything else running);
+    /// we never plan above what's free.
+    pub available_bytes: u64,
+    /// Physical VRAM ceiling — we never plan above what the device has.
+    pub total_vram_bytes: u64,
+    /// Performance-core proxy for the lane cap (floored at 1 inside).
+    pub perf_cores: u32,
+    /// Fraction of the board this host treats as ours to serve from (`usable =
+    /// live × this`). The operator VRAM-headroom policy: default 0.80 (leave 20%
+    /// for the OS + Bevy + embeddings), a dedicated foundry sets 1.0. Live callers
+    /// pass `config_env::vram_headroom()`; tests pass an explicit fraction so
+    /// `host_budget_from` stays pure + environment-independent.
+    pub budget_fraction: f64,
+}
+
+/// Serving budget from LIVE free memory, capped at physical VRAM, minus headroom.
+/// Pure for tests — the headroom fraction is an INPUT (`budget_fraction`), never
+/// read from config here, so a test can't go environment-dependent. Takes
+/// [`HostBudgetInputs`] by reference so the byte-count fields are named at every
+/// call site (never transposable).
+pub fn host_budget_from(inputs: &HostBudgetInputs) -> HostBudget {
+    let live = inputs.available_bytes.min(inputs.total_vram_bytes);
+    let usable = (live as f64 * inputs.budget_fraction) as u64;
+    HostBudget {
+        usable_bytes: usable,
+        perf_cores: inputs.perf_cores.max(1),
+    }
 }
 
 /// One candidate model's memory cost — footprint-aware so a coding sentinel

@@ -27,7 +27,7 @@ pub(super) const MOE_PLAN_WINDOW_K: u32 = 8;
 /// on a box with 49 GB of host RAM free. No GPU attached (`None`) = CPU serving =
 /// everything is host-resident = the unified arithmetic.
 pub(super) fn serve_host_bytes(
-    fp: Option<&crate::cognition::serving_plan::ModelFootprint>,
+    fp: Option<&crate::inference::planning::serving_plan::ModelFootprint>,
     served_ctx: u32,
     lanes: u32,
     memory_mode: Option<crate::gpu::monitor::MemoryMode>,

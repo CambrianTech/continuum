@@ -5,7 +5,7 @@ use crate::ai::adapter::GenerationAdmissionOwner;
 pub(super) enum GenerationAdmission {
     AdapterOwned,
     SharedLocal {
-        _lane: crate::cognition::resource_admission::ServingLanePermit,
+        _lane: crate::inference::resource_admission::ServingLanePermit,
         _prefill: tokio::sync::OwnedSemaphorePermit,
     },
 }
@@ -66,11 +66,11 @@ impl LlmDeliberationFaculty {
         // lanes' own measured turn time — `lane_wait_bound`. Unmeasured (a fresh
         // boot) falls back to the named `LANE_WAIT_CEILING`, never to a short
         // guess: busy is not dead.
-        let lane_queue_ahead = crate::cognition::resource_admission::work_waiting_now();
-        let lanes_serving = crate::cognition::resource_admission::served_lane_count();
+        let lane_queue_ahead = crate::inference::resource_admission::work_waiting_now();
+        let lanes_serving = crate::inference::resource_admission::served_lane_count();
         let (lane_hold_p50_ms, lane_hold_samples) =
-            crate::cognition::resource_admission::lane_hold_p50_ms();
-        let lane_bound = crate::cognition::resource_admission::lane_wait_bound(
+            crate::inference::resource_admission::lane_hold_p50_ms();
+        let lane_bound = crate::inference::resource_admission::lane_wait_bound(
             lane_queue_ahead,
             lanes_serving,
             lane_hold_p50_ms,
@@ -78,7 +78,7 @@ impl LlmDeliberationFaculty {
         );
         let lane_bound_derived = lane_bound.is_some();
         let lane_bound =
-            lane_bound.unwrap_or(crate::cognition::resource_admission::LANE_WAIT_CEILING); // unwrap_or: UNMEASURED lanes get the named ceiling, never a short guess
+            lane_bound.unwrap_or(crate::inference::resource_admission::LANE_WAIT_CEILING); // unwrap_or: UNMEASURED lanes get the named ceiling, never a short guess
                                                                                            // THE QUEUE'S ESTIMATE IS A FLOOR, NEVER A CEILING (card ebce2ba0). The
                                                                                            // derivation above measures the LANES — `rounds x lane_hold_p50 x SLACK`,
                                                                                            // clamped — and on the M5 2026-09-20 it was computed over TWO recorded holds
@@ -105,7 +105,7 @@ impl LlmDeliberationFaculty {
             persona = %self.persona_name,
             directed = ws.directed_at_self(),
             attention = ?ws.attention,
-            lanes_available = crate::cognition::resource_admission::serving_lane_permits_available() as u64,
+            lanes_available = crate::inference::resource_admission::serving_lane_permits_available() as u64,
             // The bound she is about to wait under, and what it was derived FROM.
             bound_secs = lane_bound.as_secs(),
             bound_derived = lane_bound_derived,
@@ -130,9 +130,9 @@ impl LlmDeliberationFaculty {
         // single seam after it.
         let lane_or_starved = if ws.attention.requires_priority() {
             tokio::select! {
-                lane = crate::cognition::resource_admission::acquire_serving_lane(
+                lane = crate::inference::resource_admission::acquire_serving_lane(
                     Some(self.persona_id),
-                    crate::cognition::resource_admission::LanePriority::Directed,
+                    crate::inference::resource_admission::LanePriority::Directed,
                     None,
                 ) => Some(lane),
                 _ = tokio::time::sleep(lane_bound) => None,
@@ -144,18 +144,18 @@ impl LlmDeliberationFaculty {
             // grants in 20 min with 14 held cards — the rendered block alone is not
             // a reliable key at the gate; the turn shape is.
             let priority = if self.is_work_turn(ws) || Self::holds_work_card(ws) {
-                crate::cognition::resource_admission::LanePriority::Work
+                crate::inference::resource_admission::LanePriority::Work
             } else {
-                crate::cognition::resource_admission::LanePriority::Ambient
+                crate::inference::resource_admission::LanePriority::Ambient
             };
             // A work call states its own bound on the lane (`expected_occupancy`), so the
             // reserved lane may be lent to it inside the directed wait budget.
             let expected = match priority {
-                crate::cognition::resource_admission::LanePriority::Work => expected_turn,
+                crate::inference::resource_admission::LanePriority::Work => expected_turn,
                 _ => None,
             };
             tokio::select! {
-                lane = crate::cognition::resource_admission::acquire_serving_lane(Some(self.persona_id), priority, expected) => Some(lane),
+                lane = crate::inference::resource_admission::acquire_serving_lane(Some(self.persona_id), priority, expected) => Some(lane),
                 _ = tokio::time::sleep(lane_bound) => None,
                 _ = crate::cognition::directed_pending::wait(self.persona_id) => {
                     continuum_base::probe!(
@@ -190,7 +190,7 @@ impl LlmDeliberationFaculty {
                 queue_ahead = lane_queue_ahead as u64,
                 lanes_serving = lanes_serving as u64,
                 lane_hold_p50_ms = lane_hold_p50_ms,
-                lanes_available = crate::cognition::resource_admission::serving_lane_permits_available() as u64,
+                lanes_available = crate::inference::resource_admission::serving_lane_permits_available() as u64,
                 bound_source = lane_bound_source.as_str(),
                 turn_bound_secs = turn_bound.map(|b| b.as_secs()).unwrap_or(0), // unwrap_or: 0 = no measured expectation; the queue's estimate governed alone
                 "the lane wait hit its bound (her own measured turn when she has one, else the queue's estimate, floored at LANE_WAIT_FLOOR) — deferring without reaching the model; she keeps her act budget and tries again next tick"
@@ -206,19 +206,19 @@ impl LlmDeliberationFaculty {
                         lane_wait_started.elapsed().as_secs(),
                         lane_bound.as_secs(),
                         lane_bound_source.as_str(),
-                        crate::cognition::resource_admission::serving_lane_permits_available(),
+                        crate::inference::resource_admission::serving_lane_permits_available(),
                     ));
             }
             return None;
         };
         // The node's own queue, measured where SHE waits for it (card c84d885a, S1b):
         // the comparator every spill is judged against.
-        crate::cognition::resource_admission::note_local_lane_wait_ms(
+        crate::inference::resource_admission::note_local_lane_wait_ms(
             lane_wait_started.elapsed().as_millis() as u64,
         );
         // The reserve's guarantee, measured in its own unit: what a DIRECTED call waited.
         if ws.attention.requires_priority() {
-            crate::cognition::resource_admission::note_directed_lane_wait_ms(
+            crate::inference::resource_admission::note_directed_lane_wait_ms(
                 lane_wait_started.elapsed().as_millis() as u64,
             );
         }
@@ -232,7 +232,7 @@ impl LlmDeliberationFaculty {
         // fewer than the served lane count may PREFILL concurrently — the instant valve
         // for the 2026-07-16 compute-buffer OOM. Same fit rule the capacity sim proves;
         // no pressure → target == lanes → this never waits. Released with the block.
-        let _prefill = crate::cognition::prefill_throttle::acquire_prefill_slot().await;
+        let _prefill = crate::inference::prefill_throttle::acquire_prefill_slot().await;
         continuum_base::probe!(
             class = "delib.gate.prefill_acquired",
             persona = %self.persona_name,

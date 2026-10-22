@@ -22,7 +22,6 @@ fn a_seats_measured_wait_is_a_median_with_a_count_and_unmeasured_is_not_fast() {
 // kept, zero never a sample) so the plan's median floor sees the grid's prompts.
 #[test]
 fn leased_in_prompt_sizes_are_remembered_bounded_and_zero_is_not_a_sample() {
-    use crate::cognition::working_set::PromptSample;
     let mut samples = PromptSamples::new();
     samples.record(PromptSample::Requested(0));
     assert!(samples.snapshot().is_empty(), "an empty completion is not a prompt size");
@@ -72,6 +71,7 @@ fn a_leased_in_gauge_remembers_its_peak_per_interval_and_never_forgets_a_running
 }
 
 use super::*;
+use crate::inference::served_window_store::ServedGeometry;
 use std::sync::atomic::Ordering;
 
 // No serialization lock lives here any more, and that is the point. It used to exist
@@ -95,7 +95,7 @@ use std::sync::atomic::Ordering;
 // the gauge kills that race at the root, so no TEST_SERIAL / drain-wait is needed here.
 #[test]
 fn inflight_gauge_counts_releases_and_saturates_at_serving_concurrency() {
-    let max = crate::cognition::serving_plan::MAX_LANES as usize;
+    let max = crate::inference::planning::serving_plan::MAX_LANES as usize;
     let gauge = Gauge::new();
 
     assert_eq!(gauge.inflight(), 0, "a fresh gauge starts empty");
@@ -501,7 +501,7 @@ fn serving_lane_count_prefers_the_live_published_count_over_the_ceiling() {
     let gate = LaneAdmission::new();
     assert_eq!(
         gate.lane_count(),
-        (crate::cognition::serving_plan::MAX_LANES as usize).max(1),
+        (crate::inference::planning::serving_plan::MAX_LANES as usize).max(1),
         "unset → MAX_LANES ceiling fallback"
     );
     gate.set_served_lane_count(4);
@@ -509,32 +509,6 @@ fn serving_lane_count_prefers_the_live_published_count_over_the_ceiling() {
         gate.lane_count(),
         4,
         "published live count wins over the ceiling"
-    );
-}
-// what this catches (2026-09-14): an idle mind starving forever under holders-first —
-// starvation is a function of her last turn, counted from boot when she never had one.
-#[test]
-fn a_mind_with_no_turn_for_fifteen_minutes_is_starving_and_a_recent_one_is_not() {
-    let boot = 1_000_000;
-    assert!(
-        !starving_since(Some(boot + 60_000), boot + 600_000, boot),
-        "ten minutes idle: not yet"
-    );
-    assert!(
-        starving_since(
-            Some(boot + 60_000),
-            boot + 60_000 + IDLE_STARVATION_MS,
-            boot
-        ),
-        "fifteen minutes: starving"
-    );
-    assert!(
-        starving_since(None, boot + IDLE_STARVATION_MS, boot),
-        "never had a turn: counted from boot"
-    );
-    assert!(
-        !starving_since(None, boot + 1_000, boot),
-        "just booted: not starving"
     );
 }
 
@@ -732,7 +706,7 @@ fn the_queues_estimate_is_a_floor_under_her_own_measured_turn_never_a_ceiling() 
     // trip before the ACT does, now that both are derived. The act covers two turn
     // bounds, the gate one — so the gate trips first at every measured rate.
     let (act, _) = crate::inference::turn_bound::act_bound_with_source(
-        crate::cognition::act_observe::TICK_DEADLINE,
+        crate::inference::turn_bound::TICK_DEADLINE,
         Some(Duration::from_secs(424)),
     );
     assert!(act > bound, "the act must outlast the lane wait it contains");

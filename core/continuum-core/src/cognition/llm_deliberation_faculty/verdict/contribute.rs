@@ -668,7 +668,7 @@ impl LlmDeliberationFaculty {
                 // authorization gate and the executor ever see them (the
                 // reverse half of the offer-side rename above).
                 for c in &mut calls {
-                    crate::cognition::tool_dialect::normalize_call(c);
+                    crate::ai::tool_dialect::normalize_call(c);
                 }
                 if let Some(v) = self.yield_verdict(&calls) {
                     return Some(v);
@@ -687,7 +687,7 @@ impl LlmDeliberationFaculty {
                 // not silently no-op as an unknown name. The text-lift path skipped
                 // this, so narrated snake_case verbs died while the SAME name in a
                 // native tool_call worked. One mapping, both paths.
-                crate::cognition::tool_dialect::normalize_call(&mut call);
+                crate::ai::tool_dialect::normalize_call(&mut call);
                 return Some(self.act_verdict(vec![call], &resp, ws.activity_room_id));
             }
             // #159 fail-loud: she emitted the native `[TOOL_CALLS]` marker but named no
@@ -704,7 +704,7 @@ impl LlmDeliberationFaculty {
             {
                 let call = crate::ai::types::ToolCall {
                     id: "tool-attempt".to_string(),
-                    name: crate::cognition::tool_dialect::from_wire_name(&attempted).to_string(),
+                    name: crate::ai::tool_dialect::from_wire_name(&attempted).to_string(),
                     input: serde_json::json!({}),
                 };
                 return Some(self.act_verdict(vec![call], &resp, ws.activity_room_id));
@@ -774,7 +774,7 @@ impl LlmDeliberationFaculty {
                             .into_iter()
                             .last()
                     {
-                        crate::cognition::tool_dialect::normalize_call(&mut call);
+                        crate::ai::tool_dialect::normalize_call(&mut call);
                         continuum_base::probe!(
                             class = "persona.act.reasoning_lift",
                             persona = %self.persona_name,

@@ -6,16 +6,16 @@ pub use syntax::{
     paren_call_args, render_tool_instructions,
 };
 pub fn parse_tool_call(text: &str) -> Option<ToolCall> {
-    syntax::parse_tool_call(text, crate::cognition::tool_dialect::resolve_wire_name)
+    syntax::parse_tool_call(text, crate::ai::tool_dialect::resolve_wire_name)
 }
 pub fn parse_tool_calls(text: &str) -> Vec<ToolCall> {
-    syntax::parse_tool_calls(text, crate::cognition::tool_dialect::resolve_wire_name)
+    syntax::parse_tool_calls(text, crate::ai::tool_dialect::resolve_wire_name)
 }
 pub fn attempted_tool_name(text: &str) -> Option<String> {
-    syntax::attempted_tool_name(text, crate::cognition::tool_dialect::resolve_wire_name)
+    syntax::attempted_tool_name(text, crate::ai::tool_dialect::resolve_wire_name)
 }
 pub fn nameless_args_fence(text: &str) -> Option<String> {
-    syntax::nameless_args_fence(text, crate::cognition::tool_dialect::resolve_wire_name)
+    syntax::nameless_args_fence(text, crate::ai::tool_dialect::resolve_wire_name)
 }
 
 // The tool-exchange protocol enum is the ONE `model_registry::ToolProtocol`

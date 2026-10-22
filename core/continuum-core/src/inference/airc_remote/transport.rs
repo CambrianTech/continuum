@@ -452,7 +452,7 @@ impl AircInferenceTransport for AircLiveTransport {
         let mut chunks = if sink.is_closed() {
             None
         } else {
-            match crate::persona::airc_citizen::subscribe_every_room(&self.airc).await {
+            match crate::routing::airc_subscription::subscribe_every_room(&self.airc).await {
                 Ok(s) => Some(s),
                 Err(e) => {
                     continuum_base::probe!(

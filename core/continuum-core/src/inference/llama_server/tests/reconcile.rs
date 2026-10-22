@@ -289,8 +289,8 @@ async fn a_busy_adoptee_that_misses_the_probe_is_adopted_not_reaped() {
 // (or an unknown one) still adopts, so the #4284 warm-lane economy stands.
 #[tokio::test]
 async fn an_adopted_lane_on_last_deploys_kv_decision_relaunches_onto_this_ones() {
-    let planned = crate::cognition::kv_cache_plan::resolve();
-    let other = if planned.cache_type == crate::cognition::kv_cache_plan::Q8_0 { None } else { Some(crate::cognition::kv_cache_plan::Q8_0) };
+    let planned = crate::inference::kv_cache_plan::resolve();
+    let other = if planned.cache_type == crate::inference::kv_cache_plan::Q8_0 { None } else { Some(crate::inference::kv_cache_plan::Q8_0) };
     // Launched on the OTHER decision: stale, relaunched.
     let stale = FakeControl::probe(Ok(Some("coder-14b".into()))).owned().launched_with(other, !planned.flash_attn);
     assert_eq!(

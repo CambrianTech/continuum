@@ -37,7 +37,7 @@ pub(super) fn hands_surface(raw: &[NativeToolSpec]) -> Vec<NativeToolSpec> {
             // with an empty patch inside twenty minutes (2026-09-04) — the
             // offered-tool-is-must-use reflex. It stays one `commands/list`
             // away for a reviewer who actually holds a peer's diff.
-            if crate::cognition::tool_dialect::withheld_from_hands(n).is_some() {
+            if crate::ai::tool_dialect::withheld_from_hands(n).is_some() {
                 return false;
             }
             // The same reflex, measured 2026-09-19 (Joel: "she could do all this

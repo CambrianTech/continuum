@@ -205,7 +205,7 @@ crate::action_command! {
             .as_ref()
             .is_some_and(|c| matches!(c.source, crate::routing::CallerSource::Airc))
         {
-            crate::cognition::resource_admission::note_leased_in_sent(response.usage.input_tokens);
+            crate::inference::resource_admission::note_leased_in_sent(response.usage.input_tokens);
         }
 
         // Preserve the serving node's receipt, model mapping and adapter metadata.

@@ -179,8 +179,8 @@ pub(crate) fn offer_from_board(board: &crate::resources::LeaseBoard, at_ms: u64)
         // flight on them, local and leased-in alike, minus the slots it has GRANTED to
         // spillers that have not arrived yet (card c84d885a, S1) — one owner for the number.
         free_slots_live: crate::persona::placement_reservation::free_slots_live_now(serving.lanes, at_ms),
-        lane_wait_p50_ms: crate::cognition::resource_admission::leased_in_wait_p50_ms().0,
-        lane_wait_samples: crate::cognition::resource_admission::leased_in_wait_p50_ms().1,
+        lane_wait_p50_ms: crate::inference::resource_admission::leased_in_wait_p50_ms().0,
+        lane_wait_samples: crate::inference::resource_admission::leased_in_wait_p50_ms().1,
         served_context_window: serving.served_context_window,
         // This seat's measured speed for what it serves, so peers can ORDER placement by it
         // (card 86fef3c3); unmeasured beacons 0.

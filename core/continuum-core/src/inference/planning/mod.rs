@@ -6,7 +6,9 @@
 
 pub mod adaptive_throughput;
 pub mod service_rate;
+pub mod serving_plan;
 pub mod training_plan;
+pub mod window_allocator;
 
 /// Bare-minimum served window for a model to be runnable at ALL — a hardware
 /// reality floor, NOT a serving target or a cheapening cap. The served window is

@@ -392,7 +392,7 @@ impl CommandRequestHandler {
         // saw only its own roster while it served three nodes' coders on one slot —
         // lane wait p50 216 s, p90 1,387 s, max 7,058 s — and no receipt said why.
         let _leased_in = (parsed.request.path == STREAMED_GENERATE_PATH)
-            .then(crate::cognition::resource_admission::LeasedInCall::enter);
+            .then(crate::inference::resource_admission::LeasedInCall::enter);
         Self::execute_command_request(executor, &parsed.request, caller).await
     }
 
@@ -738,7 +738,7 @@ impl StreamPublisher {
             if closed || last_flush.elapsed() >= STREAM_FLUSH_EVERY {
                 if !first_progress_recorded && (prefill.is_some() || !token.is_empty() || !reasoning.is_empty()) {
                     first_progress_recorded = true;
-                    crate::cognition::resource_admission::note_leased_in_first_progress_ms(
+                    crate::inference::resource_admission::note_leased_in_first_progress_ms(
                         self.received_at.elapsed().as_millis().min(u64::MAX as u128) as u64,
                     );
                 }

@@ -44,7 +44,7 @@ use std::sync::Arc;
 
 use super::recall_impl::{CandidateArtifact, CandidateSource};
 use super::recall_trait::{CapabilityQuery, RecallContext};
-use super::working_set::{ArtifactId, PageKind};
+use crate::inference::page_ref::{ArtifactId, PageKind};
 
 /// How a composite handles candidates surfaced by multiple sources.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

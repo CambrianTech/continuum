@@ -21,7 +21,8 @@ use crate::ai::{ChatMessage, MessageContent, TextGenerationRequest};
 use crate::cognition::rate_proposals::parser::{parse_ratings_from_ai_response, ParseConfig};
 use crate::cognition::rate_proposals::prompt::build_rating_prompt;
 use crate::cognition::rate_proposals::types::{ProposalRating, RatingContext};
-use crate::modules::ai_provider::{generate_text, global_registry};
+use crate::modules::ai_provider::generate_text;
+use crate::ai::adapter::global_registry;
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 

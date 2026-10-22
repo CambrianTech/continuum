@@ -35,6 +35,25 @@ use std::time::Duration;
 /// eternal-hold class the floors exist for.
 pub const TURN_BOUND_HEADROOM: u32 = 2;
 
+/// The FLOOR under one ACT — perceive, deliberate, act, observe — never the ceiling.
+/// Filed with the act bound it floors ([`act_bound_with_source`]) so the engine's stream
+/// ceiling (`sse_stream`) and the mind's settle loop read ONE number from below.
+/// A mind with a measured turn raises it (card
+/// ebce2ba0); this constant governs alone until she has one, and no derived bound ever
+/// sinks below it.
+///
+/// The detached solve's stall watchdog derives its allowance from this
+/// (`commands::agent::solve::ACT_STALL_ALLOWANCE` = 3x): a run whose ledger has not
+/// advanced for several of these is wedged; one that advances at any pace is not.
+/// KNOWN BOUNDARY, recorded rather than half-fixed: that watchdog reads the CONSTANT, so
+/// once a box's measured turn passes ~19 minutes the derived act bound (4x the
+/// expectation) exceeds the 75-minute stall allowance and a single honest act could read
+/// as a stall. No box in the fleet's measured range is there today (the M5 measures ~7
+/// min a turn), and the attempt ceiling fires long before on one that slow. Making the
+/// watchdog per-persona is a change to `commands/agent/solve.rs`, which has its own
+/// required-read and belongs in its own card.
+pub const TICK_DEADLINE: std::time::Duration = std::time::Duration::from_secs(25 * 60);
+
 /// Which of the two candidates a waiting seam ended up bound by.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BoundSource {

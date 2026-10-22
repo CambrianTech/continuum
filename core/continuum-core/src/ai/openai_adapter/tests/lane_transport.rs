@@ -402,7 +402,7 @@ async fn single_slot_background_use_preserves_only_successfully_saved_activity_p
     assert!(adapter.ensure_slot_pool(&adapter.endpoints()).await.is_ok());
     assert!(crate::inference::slots::directory().page_admission_known(&root));
     let owned_geometry = endpoint.served_geometry().expect("fixture owned geometry");
-    let observed_service = || crate::cognition::resource_admission::leased_in_sent_samples()
+    let observed_service = || crate::inference::resource_admission::leased_in_sent_samples()
         .iter().filter_map(|sample| sample.served(&root, Some("test-model"))).collect::<Vec<_>>();
     let activity =
         crate::inference::slots::ActivityKey::new(uuid::Uuid::new_v4(), uuid::Uuid::new_v4())
@@ -441,8 +441,8 @@ async fn single_slot_background_use_preserves_only_successfully_saved_activity_p
     };
     assert!(!observed_service().is_empty(), "real adapter terminal records owned service");
     assert!(observed_service().iter().all(|tokens| *tokens == 4), "full prompt includes cached prefix; evaluated suffix is not the count");
-    assert_eq!(crate::cognition::working_set::PromptSample::geometry_median(
-        &crate::cognition::resource_admission::leased_in_sent_samples(), &root, &owned_geometry,
+    assert_eq!(crate::inference::resource_admission::PromptSample::geometry_median(
+        &crate::inference::resource_admission::leased_in_sent_samples(), &root, &owned_geometry,
     ), Some(4), "real adapter terminal preserves launch model, window, lanes and generation");
     generation_mode.store(1, Ordering::SeqCst);
     assert!(tokio::time::timeout(
@@ -585,7 +585,7 @@ async fn single_slot_background_use_preserves_only_successfully_saved_activity_p
     generation_mode.store(5, Ordering::SeqCst);
     tokio::time::timeout(std::time::Duration::from_secs(5), adapter.generate_text(TextGenerationRequest::default()))
         .await.expect("bounded foreign alias response").expect("response compatibility");
-    assert!(!crate::cognition::resource_admission::leased_in_sent_samples().iter()
+    assert!(!crate::inference::resource_admission::leased_in_sent_samples().iter()
         .any(|sample| sample.served(&root, Some("foreign-alias")).is_some()),
         "a wire alias that differs from the admitted engine cannot certify local service");
     server.abort();

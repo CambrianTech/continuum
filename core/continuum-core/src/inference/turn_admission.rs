@@ -111,7 +111,7 @@ impl TurnAdmission {
         tokens: u32,
     ) {
         if let Some(geometry) = response_model.and_then(|model| self._endpoint.served_geometry(model)) {
-            crate::cognition::resource_admission::note_served_prompt(endpoint, geometry, tokens);
+            crate::inference::resource_admission::note_served_prompt(endpoint, geometry, tokens);
         }
     }
 }
@@ -461,8 +461,8 @@ pub(crate) async fn admit_transient(
 /// The page switches this node has completed (ms), newest kept: what a save/restore
 /// COSTS HERE, measured — the wedge bound derives from it, and the allocator reads it
 /// as the per-turn price of fewer lanes than residents on a discrete card.
-static KV_PAGE_SWITCH_MS: crate::cognition::resource_admission::WaitRing =
-    crate::cognition::resource_admission::WaitRing::new();
+static KV_PAGE_SWITCH_MS: crate::inference::resource_admission::WaitRing =
+    crate::inference::resource_admission::WaitRing::new();
 
 /// Below this a switch is never called a wedge, whatever the ring says — the floor the
 /// first switch on a box is judged by (the UMA case lands in ~0.1 s; the floor is 100×).

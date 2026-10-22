@@ -2,7 +2,7 @@
 //! expressed the way a camera SDK expresses a capture request.
 //!
 //! A persona never names a lane, a model, or a number of seconds (that is the
-//! hardcoding trap — see [`super::serving_plan`] and the de-hardcoding contract in
+//! hardcoding trap — see [`crate::inference::planning::serving_plan`] and the de-hardcoding contract in
 //! `docs/architecture/WILL-DRIVEN-RESOLUTION.md` §6). It expresses *intent + an
 //! acceptable range* on one normalized axis, exactly like
 //! `getUserMedia({ width: { min, ideal, max } })`, and the scheduler negotiates the

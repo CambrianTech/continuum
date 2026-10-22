@@ -29,7 +29,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::OnceLock;
 
 use crate::ai::types::NativeToolSpec;
-use crate::cognition::tool_usage::{record, Outcome};
+use crate::ai::tool_usage::{record, Outcome};
 use crate::sdk_codegen::ext::command_registry_live;
 
 /// alias → canonical command name. Built ONCE from every command's declared
@@ -315,7 +315,7 @@ pub fn resolve_wire_name(wire: &str) -> String {
 }
 
 /// Map a wire tool-call name back to the canonical command, and TALLY the outcome
-/// (`cognition::tool_usage`) so a benchmark run surfaces exactly what each model
+/// (`ai::tool_usage`) so a benchmark run surfaces exactly what each model
 /// reached for. This is the RECORDING resolver — the persona tool-call path uses
 /// it (every miss/alias/canonical is a training + ergonomics signal). Other
 /// surfaces use [`resolve_wire_name`] (same mapping, no tally).

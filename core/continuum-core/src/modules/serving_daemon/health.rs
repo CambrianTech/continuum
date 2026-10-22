@@ -155,7 +155,7 @@ impl ServingDaemonModule {
                 crate::inference::prefill_knee::observe_slots(
                     &slots,
                     EpochMs::now().millis(),
-                    crate::cognition::resource_admission::served_lane_count(),
+                    crate::inference::resource_admission::served_lane_count(),
                     engine,
                 );
             }

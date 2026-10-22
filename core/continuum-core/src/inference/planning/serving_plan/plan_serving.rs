@@ -226,7 +226,7 @@ pub fn plan_serving(
     let (model, allocation) = if demand.requirements.is_empty() {
         (model, None)
     } else {
-        match crate::cognition::window_allocator::allocate(&demand.requirements, candidates, host, demand_lanes.max(1)) {
+        match crate::inference::planning::window_allocator::allocate(&demand.requirements, candidates, host, demand_lanes.max(1)) {
             Ok(a) => {
                 let chosen = candidates
                     .iter()

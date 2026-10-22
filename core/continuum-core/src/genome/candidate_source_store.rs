@@ -23,7 +23,7 @@ use super::recall::ResidencyHint;
 use super::recall_impl::{CandidateArtifact, CandidateSource};
 use super::recall_trait::{CapabilityQuery, RecallContext};
 use super::tier::TierRole;
-use super::working_set::{ArtifactId, PageKind};
+use crate::inference::page_ref::{ArtifactId, PageKind};
 use crate::cognition::embedding::{cosine_similarity, EmbeddingProvider};
 
 /// One local genome layer as the recall source sees it — content-addressed

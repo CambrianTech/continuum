@@ -183,7 +183,7 @@ fn kv_rate_from_header_cached(path: &std::path::Path) -> Option<u64> {
 /// Divide the f16 rate by the quant factor; f16 → 1 → byte-identical.
 ///
 /// THE DIVISOR IS NOT A SECOND READ OF THE CONFIG. It is the SAME
-/// [`crate::cognition::kv_cache_plan::KvCachePlan`] the launcher takes its
+/// [`crate::inference::kv_cache_plan::KvCachePlan`] the launcher takes its
 /// `--cache-type-k/v` and `--flash-attn` flags from, so the plan's arithmetic and the
 /// engine's flags cannot disagree. They shared a *key* before, which is how the 5090 —
 /// where nobody ever exported `SERVING_KV_CACHE_TYPE` — planned AND served half-size
@@ -205,7 +205,7 @@ pub(crate) fn apply_kv_quantization(mut fp: ModelFootprint) -> ModelFootprint {
 /// The resident-KV divisor of the resolved KV cache decision, so the plan sizes the
 /// served window against the KV the lane WILL actually hold, not the f16 default. (#232)
 fn kv_cache_quant_divisor() -> u64 {
-    crate::cognition::kv_cache_plan::resolve().bytes_per_token_divisor
+    crate::inference::kv_cache_plan::resolve().bytes_per_token_divisor
 }
 
 /// Pure footprint estimate from the fields that drive it — split out from the
@@ -365,12 +365,12 @@ mod tests {
     // the launcher flags with — not a second read of a config key. The two shared a
     // KEY before, which is how the 5090 (and the CPU-serving IntelMac) planned AND
     // served half-size lanes self-consistently: a 26,880-token lane, measured
-    // 2026-09-20. The divisor table itself is pinned in cognition/kv_cache_plan.rs.
+    // 2026-09-20. The divisor table itself is pinned in inference/kv_cache_plan.rs.
     #[test]
     fn the_plans_kv_divisor_is_the_resolved_decisions_divisor() {
         assert_eq!(
             kv_cache_quant_divisor(),
-            crate::cognition::kv_cache_plan::resolve().bytes_per_token_divisor,
+            crate::inference::kv_cache_plan::resolve().bytes_per_token_divisor,
             "the fit math and the launcher flag must be two projections of ONE decision"
         );
     }

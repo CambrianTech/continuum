@@ -118,40 +118,6 @@ impl LaneRequirement {
     }
 }
 
-/// Each mind's requirement, from the untrimmed demand her turns assemble with the
-/// standard headroom — the ONE derivation, shared by the serving daemon (sizing this
-/// seat's lanes) and the grid allocator daemon (sizing the grid's roles). A mind with
-/// no turn yet is `Unknown`, never a number.
-pub fn requirements_for(
-    personas: &[Uuid],
-    working_set: &crate::cognition::working_set::WorkingSetRegistry,
-) -> Vec<LaneRequirement> {
-    personas
-        .iter()
-        .map(|p| {
-            let demand = working_set.demand_of(*p);
-            let wish = demand
-                .as_ref()
-                .map(crate::cognition::working_set::requirement_tokens)
-                .unwrap_or(0); // JUSTIFIED unwrap_or: a mind with no turn yet is Unknown to the allocator (0 = no measurement, never a number)
-            let need = demand
-                .as_ref()
-                .and_then(crate::cognition::working_set::need_tokens)
-                .unwrap_or(0); // JUSTIFIED unwrap_or: no held turn measured = no floor beyond the target (0 = no measurement)
-            LaneRequirement::from_demand(*p, wish, super::serving_plan::SENT_HEADROOM).with_need(need)
-        })
-        .collect()
-}
-
-/// What one turn needs of a lane: the sum of its budget claims' FLOORS (framing and tools,
-/// required input, grounding floor, her last move and its outcome, the reply floor), never
-/// what the budget granted. The flexbox grows a turn into whatever window it is given, so a
-/// grant measured on a 102k lane reads as a 48.6k "need" and refuses a second lane at 46k
-/// (the M5, 2026-10-18: four residents queued on one slot, 13% reuse, 600 s lane waits).
-pub fn turn_need(claims: &[crate::persona::rag_budget::RagSourceBudget]) -> u32 {
-    claims.iter().map(|c| c.floor_tokens).fold(0, u32::saturating_add)
-}
-
 /// The largest requirement this seat KNOWS — what an `Unknown` resolves to before the
 /// model's own trained window, and the window an undeclared grid role stands at. `None`
 /// = nothing measured anywhere on the seat.
@@ -177,7 +143,7 @@ pub struct Allocation {
     /// The most lanes the allocator would consider, and what set that cap. `lanes < lane_cap`
     /// means the budget packed fewer; `lanes == lane_cap` means the cap decided.
     pub lane_cap: u32,
-    pub lane_cap_by: crate::cognition::serving_plan::LaneCapBy,
+    pub lane_cap_by: crate::inference::planning::serving_plan::LaneCapBy,
 }
 
 /// Why nothing could be allocated.
@@ -259,13 +225,13 @@ pub fn allocate(
     // tell a cap from a budget refusal (Codex on #4971): with more minds than `lane_cap`, the
     // unserved were never offered a lane, whatever the budget.
     let (lane_cap, lane_cap_by) = [
-        (requirements.len() as u32, crate::cognition::serving_plan::LaneCapBy::Requirements),
-        (budget.perf_cores.max(1), crate::cognition::serving_plan::LaneCapBy::Cores),
-        (MAX_LANES, crate::cognition::serving_plan::LaneCapBy::MaxLanes),
-        (max_lanes, crate::cognition::serving_plan::LaneCapBy::Demand),
+        (requirements.len() as u32, crate::inference::planning::serving_plan::LaneCapBy::Requirements),
+        (budget.perf_cores.max(1), crate::inference::planning::serving_plan::LaneCapBy::Cores),
+        (MAX_LANES, crate::inference::planning::serving_plan::LaneCapBy::MaxLanes),
+        (max_lanes, crate::inference::planning::serving_plan::LaneCapBy::Demand),
     ]
     .into_iter()
-    .fold((u32::MAX, crate::cognition::serving_plan::LaneCapBy::Requirements), |best, term| if term.0 < best.0 { term } else { best });
+    .fold((u32::MAX, crate::inference::planning::serving_plan::LaneCapBy::Requirements), |best, term| if term.0 < best.0 { term } else { best });
     let lane_cap = lane_cap.max(1);
 
     let mut best: Option<(&ModelFootprint, u32, u32)> = None;
@@ -306,23 +272,6 @@ pub fn allocate(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    // what this catches: a lane need learned from the GRANT, which the flexbox grows to any
-    // window, so the need tracked the window and refused every extra lane (the M5, 10-18).
-    #[test]
-    fn a_turns_need_is_its_floors_however_much_the_window_granted() {
-        use crate::persona::rag_budget::{flex_allocate, RagSourceBudget};
-        let claim = |id: &str, floor: u32, max: u32| RagSourceBudget {
-            source_id: id.into(), priority: 5, floor_tokens: floor, min_tokens: floor, max_tokens: max, required: false,
-        };
-        let claims = [claim("required", 9_000, 9_000), claim("history", 4_000, 60_000), claim("reply", 2_000, 16_000)];
-        assert_eq!(turn_need(&claims), 15_000);
-        for window in [20_000, 102_912] {
-            let granted: u32 = ["required", "history", "reply"].iter().map(|id| flex_allocate(window, &claims).granted(id)).sum();
-            assert!(granted >= turn_need(&claims), "a window that holds the floors grants at least them");
-        }
-        assert_eq!(turn_need(&[claim("a", u32::MAX, u32::MAX), claim("b", 1, 1)]), u32::MAX, "saturates, never wraps");
-    }
 
     const GB: u64 = 1 << 30;
 
@@ -365,11 +314,11 @@ mod tests {
     fn an_allocation_names_the_cap_that_limited_its_lanes() {
         let roomy_one_core = HostBudget { usable_bytes: 200 * GB, perf_cores: 1 };
         let a = allocate(&minds(&[40_000, 40_000]), &[qwen27b()], &roomy_one_core, 8).expect("allocation");
-        assert_eq!((a.lanes, a.lane_cap, a.lane_cap_by), (1, 1, crate::cognition::serving_plan::LaneCapBy::Cores));
+        assert_eq!((a.lanes, a.lane_cap, a.lane_cap_by), (1, 1, crate::inference::planning::serving_plan::LaneCapBy::Cores));
         assert_eq!(a.unserved.len(), 1, "unserved by the cap, whatever the budget");
         // On a tight budget the cap stays at two minds, and the BUDGET packs fewer.
         let a = allocate(&minds(&[40_000, 40_000]), &[qwen27b()], &budget(23), 8).expect("allocation");
-        assert_eq!((a.lane_cap, a.lane_cap_by), (2, crate::cognition::serving_plan::LaneCapBy::Requirements));
+        assert_eq!((a.lane_cap, a.lane_cap_by), (2, crate::inference::planning::serving_plan::LaneCapBy::Requirements));
         assert!(a.lanes < a.lane_cap, "the budget packed {} of {}", a.lanes, a.lane_cap);
     }
 

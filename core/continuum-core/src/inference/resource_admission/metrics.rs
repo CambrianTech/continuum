@@ -2,8 +2,42 @@
 
 use super::*;
 use std::sync::atomic::{AtomicUsize, Ordering};
-// Tests name the geometry through this one upward import, so the split adds no second one.
-pub(super) use crate::modules::served_window_store::ServedGeometry;
+use crate::inference::served_window_store::ServedGeometry;
+
+/// Requested capacity drives growth; only an owned, completed engine call
+/// establishes observed service. A refusal cannot be interpreted as a success.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PromptSample {
+    Served { endpoint: String, tokens: u32, geometry: ServedGeometry },
+    Requested(u32),
+}
+
+impl PromptSample {
+    pub fn requested(&self) -> Option<u32> {
+        match self {
+            Self::Requested(tokens) if *tokens > 0 => Some(*tokens),
+            _ => None,
+        }
+    }
+
+    pub fn served(&self, endpoint: &str, model: Option<&str>) -> Option<u32> {
+        match self {
+            Self::Served { endpoint: sampled_endpoint, geometry, tokens }
+                if *tokens > 0 && sampled_endpoint == endpoint && model == Some(geometry.model_id.as_str()) => Some(*tokens),
+            _ => None,
+        }
+    }
+
+    /// Exact generation cohort: a later binding never certifies an older sample.
+    pub fn geometry_median(samples: &[Self], endpoint: &str, geometry: &ServedGeometry) -> Option<u32> {
+        let mut observed: Vec<u32> = samples.iter().filter_map(|sample| match sample {
+            Self::Served { geometry: g, .. } if g == geometry => sample.served(endpoint, Some(&geometry.model_id)),
+            _ => None,
+        }).collect();
+        observed.sort_unstable();
+        observed.get(observed.len() / 2).copied()
+    }
+}
 
 // ── Soft saturation signal (the read-only companion to the hard gate) ──────────
 //
@@ -137,7 +171,7 @@ impl PeakGauge {
 /// serving plan counted only its own roster, because nothing counted these. A seat's
 /// demand is the minds it SERVES, not only the minds it HOSTS. This gauge is the missing
 /// term; the planner reads its peak per tick ([`take_leased_in_peak`]) and adds it to
-/// the resident lane demand ([`crate::cognition::serving_plan::ServingDemand::leased_in`]).
+/// the resident lane demand ([`crate::inference::planning::serving_plan::ServingDemand::leased_in`]).
 /// It is fed at the seam where an inbound remote generate is executed, which today enters
 /// neither this gauge nor the admission gate — the wire slice of the same card.
 pub(super) static LEASED_IN_CALLS: PeakGauge = PeakGauge::new();
@@ -170,8 +204,8 @@ pub(super) static LEASED_IN_SENT: std::sync::Mutex<PromptSamples> =
 /// Each semantic role retains its own existing history depth. Successful small
 /// turns cannot age unmet demand out merely by being more frequent.
 pub(super) struct PromptSamples {
-    requested: std::collections::VecDeque<crate::cognition::working_set::PromptSample>,
-    served: std::collections::VecDeque<crate::cognition::working_set::PromptSample>,
+    requested: std::collections::VecDeque<PromptSample>,
+    served: std::collections::VecDeque<PromptSample>,
 }
 
 impl PromptSamples {
@@ -182,8 +216,7 @@ impl PromptSamples {
         }
     }
 
-    pub(super) fn record(&mut self, sample: crate::cognition::working_set::PromptSample) {
-        use crate::cognition::working_set::PromptSample;
+    pub(super) fn record(&mut self, sample: PromptSample) {
         let history = match &sample {
             PromptSample::Requested(0) | PromptSample::Served { tokens: 0, .. } => return,
             PromptSample::Requested(_) => &mut self.requested,
@@ -195,7 +228,7 @@ impl PromptSamples {
         }
     }
 
-    pub(super) fn snapshot(&self) -> Vec<crate::cognition::working_set::PromptSample> {
+    pub(super) fn snapshot(&self) -> Vec<PromptSample> {
         self.requested
             .iter()
             .chain(self.served.iter())
@@ -210,7 +243,7 @@ pub const LEASED_IN_SENT_SAMPLES: usize = 64;
 /// engine generation anymore, so only the adapter may certify observed service.
 /// Zero is the empty-completion fault's territory, not a sample.
 pub fn note_leased_in_sent(input_tokens: u32) {
-    note_prompt_sample(crate::cognition::working_set::PromptSample::Requested(input_tokens));
+    note_prompt_sample(PromptSample::Requested(input_tokens));
 }
 
 /// Called while the local engine generation's admission is still owned and its
@@ -219,14 +252,14 @@ pub(crate) fn note_served_prompt(endpoint: &str, geometry: ServedGeometry, input
     if geometry.model_id.is_empty() || input_tokens == 0 {
         return;
     }
-    note_prompt_sample(crate::cognition::working_set::PromptSample::Served {
+    note_prompt_sample(PromptSample::Served {
         endpoint: endpoint.to_owned(),
         geometry,
         tokens: input_tokens,
     });
 }
 
-pub(super) fn note_prompt_sample(sample: crate::cognition::working_set::PromptSample) {
+pub(super) fn note_prompt_sample(sample: PromptSample) {
     let mut ring = LEASED_IN_SENT.lock().unwrap_or_else(|e| e.into_inner()); // unwrap_or_else: a poisoned ring reads its last state, same policy as every ledger lock here
     ring.record(sample);
 }
@@ -236,11 +269,11 @@ pub(super) fn note_prompt_sample(sample: crate::cognition::working_set::PromptSa
 /// (2026-09-20) refused 2,932 prompts at 2 × 2048 (p50 56k) while its median read 828,
 /// because a refusal never reached the sample site and the window sealed itself.
 pub fn note_refused_prompt(prompt_tokens: u32) {
-    note_prompt_sample(crate::cognition::working_set::PromptSample::Requested(prompt_tokens));
+    note_prompt_sample(PromptSample::Requested(prompt_tokens));
 }
 
 /// The remembered leased-in prompt sizes, oldest first — the plan's extra median inputs.
-pub fn leased_in_sent_samples() -> Vec<crate::cognition::working_set::PromptSample> {
+pub fn leased_in_sent_samples() -> Vec<PromptSample> {
     LEASED_IN_SENT
         .lock()
         .unwrap_or_else(|e| e.into_inner()) // unwrap_or_else: same policy — read the last state

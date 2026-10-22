@@ -274,7 +274,7 @@ use super::*;
             consumer: format!("genome-train:{job}"),
             reserved_bytes: 0,
             interrupted: None,
-            job_spec: Some(spec),
+            job_spec: Some(crate::inference::engine_residency::OwnerSpec::of(&spec).expect("test: spec serializes")),
             memory: None,
         };
         crate::inference::engine_residency::record(&store, bound).expect("test: record");
@@ -331,7 +331,7 @@ use super::*;
             consumer: format!("genome-train:{job}"),
             reserved_bytes: 0,
             interrupted: None,
-            job_spec: Some(spec.clone()),
+            job_spec: Some(crate::inference::engine_residency::OwnerSpec::of(&spec).expect("test: spec serializes")),
             memory: None,
         };
         crate::inference::engine_residency::record(&store, work.clone()).expect("test: record");

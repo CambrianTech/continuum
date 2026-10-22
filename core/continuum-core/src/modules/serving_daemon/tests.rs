@@ -10,7 +10,7 @@
 /// The grant the cache may be promised out of a ceiling: the ceiling less the
 /// cache's grant headroom (#4216 — a cache fills to its grant).
 pub(super) fn grantable(ceiling: u64) -> u64 {
-    (ceiling as f64 * (1.0 - crate::cognition::serving_plan::CACHE_GRANT_HEADROOM)) as u64
+    (ceiling as f64 * (1.0 - crate::inference::planning::serving_plan::CACHE_GRANT_HEADROOM)) as u64
 }
 
 /// The grant out of a known `available` reading: the smaller of "above the OS
@@ -23,7 +23,7 @@ pub(super) fn grantable_from_available(physical: u64, available: u64) -> u64 {
     )
 }
 use super::*;
-use crate::cognition::serving_plan::footprint::apply_kv_quantization;
+use crate::inference::planning::serving_plan::footprint::apply_kv_quantization;
 
 pub(super) const GB: u64 = 1_000_000_000;
 
