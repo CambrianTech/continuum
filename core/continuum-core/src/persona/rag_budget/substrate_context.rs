@@ -364,7 +364,7 @@ pub struct RagItem {
 }
 
 /// What a source returns when asked to deliver.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct RagDelivery {
     pub source_id: String,
     /// Items already pre-validated as complete atomic units. Never
@@ -382,6 +382,49 @@ pub struct RagDelivery {
     /// the requested resolution if the source's content can't fit
     /// at the requested resolution.
     pub resolution_used: ResolutionPreference,
+}
+
+/// Deserializes both wire forms of a delivered RAG pack. Current captures carry
+/// `truncated`; pre-ruling-a JSONL (still on disk) carries legacy
+/// `continuation` instead — `null` means the source delivered everything, an
+/// object means it stopped short and more remained. Decoding recovers that
+/// truth rather than dropping the line or defaulting it away: old captures must
+/// replay with their source-cut notice intact (ruling a deletes the resumable
+/// cursor, not the record). An explicit `truncated` always wins if both keys
+/// are ever present.
+impl<'de> Deserialize<'de> for RagDelivery {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        struct Wire {
+            source_id: String,
+            items: Vec<RagItem>,
+            tokens_used: u32,
+            /// Current form; absent on pre-ruling-a lines.
+            truncated: Option<bool>,
+            resolution_used: ResolutionPreference,
+            /// Legacy form; never emitted today — read only for old JSONL.
+            continuation: Option<serde_json::Value>,
+        }
+
+        let w = Wire::deserialize(deserializer)?;
+        let truncated = match (w.truncated, w.continuation) {
+            (Some(t), _) => t,
+            // No explicit flag: a non-null legacy object is the source saying
+            // "more remained"; null or absence means it did not.
+            (None, Some(_)) => true,
+            (None, None) => false,
+        };
+        Ok(Self {
+            source_id: w.source_id,
+            items: w.items,
+            tokens_used: w.tokens_used,
+            truncated,
+            resolution_used: w.resolution_used,
+        })
+    }
 }
 
 //=============================================================================

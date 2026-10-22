@@ -530,4 +530,112 @@ mod tests {
         assert_eq!(result.items[0].content, "hello");
         assert_eq!(result.items[1].content, "world");
     }
+    // ---- Legacy wire form (pre-ruling-a): `continuation` null/object, no `truncated` key ----
+
+    /// Build a SourceDelivered capture line in the OLD schema: serialize the
+    /// current typed event, then swap `delivery.truncated` for legacy
+    /// `continuation` (`null` = complete delivery; object = source stopped short).
+    fn legacy_source_delivered_line(
+        items: Vec<crate::persona::rag_budget::RagItem>,
+        continuation: serde_json::Value,
+    ) -> String {
+        let mut v = serde_json::to_value(RagCaptureEvent::SourceDelivered {
+            captured_at_ms: 1_000,
+            persona_id: persona(),
+            turn_id: None,
+            source_id: "stub".to_string(),
+            budget_requested: 100,
+            resolution_requested: ResolutionPreference::Raw,
+            delivery: crate::persona::rag_budget::RagDelivery {
+                source_id: "stub".to_string(),
+                items,
+                tokens_used: 5,
+                truncated: false,
+                resolution_used: ResolutionPreference::Raw,
+            },
+        })
+        .unwrap();
+        let d = v
+            .get_mut("delivery")
+            .expect("event carries a delivery object")
+            .as_object_mut()
+            .expect("delivery is a JSON object");
+        d.remove("truncated");
+        d.insert("continuation".to_string(), continuation);
+        serde_json::to_string(&v).unwrap()
+    }
+
+    #[test]
+    fn legacy_capture_lines_decode_without_dropping_or_losing_truncation() {
+        let temp = TempDir::new().unwrap();
+        let path = temp.path().join("legacy.jsonl");
+        // Three old-schema shapes: complete (continuation null), nonempty partial
+        // (object), empty partial (object, nothing fit). None may be skipped as a
+        // parse failure; the truncation truth must survive decode.
+        let lines = [
+            legacy_source_delivered_line(vec![item("alpha", 5)], serde_json::Value::Null),
+            legacy_source_delivered_line(
+                vec![item("beta", 5)],
+                serde_json::json!({ "opaque": {} }),
+            ),
+            legacy_source_delivered_line(Vec::new(), serde_json::json!({ "opaque": {} })),
+        ];
+        std::fs::write(&path, lines.join("\n")).unwrap();
+
+        let events = read_jsonl_captures(&path).unwrap();
+        assert_eq!(
+            events.len(),
+            3,
+            "no legacy line may be dropped as a parse failure"
+        );
+
+        let flags: Vec<bool> = events
+            .iter()
+            .map(|e| match e {
+                RagCaptureEvent::SourceDelivered { delivery, .. } => delivery.truncated,
+                _ => panic!("expected SourceDelivered events"),
+            })
+            .collect();
+        assert_eq!(flags, vec![false, true, true]);
+    }
+
+    #[tokio::test]
+    async fn legacy_replay_reaches_the_faculty_notice_with_source_cut() {
+        use crate::cognition::rag_source_faculty::{RagSourceFaculty, SaliencePolicy};
+        use crate::cognition::workspace::{Faculty as _, Workspace};
+
+        let ws = Workspace::new("legacy-notice");
+
+        // One pass per old-schema shape: (expected truncation, item content).
+        for (want_truncated, content) in [
+            (false, Some("roster")),
+            (true, Some("board")),
+            (true, None), // empty partial: nothing fit, but the source has more
+        ] {
+            let items = match content {
+                Some(c) => vec![item(c, 4)],
+                None => Vec::new(),
+            };
+            let line = legacy_source_delivered_line(
+                items,
+                if want_truncated {
+                    serde_json::json!({ "opaque": {} })
+                } else {
+                    serde_json::Value::Null
+                },
+            );
+            let ev: RagCaptureEvent = serde_json::from_str(&line).unwrap();
+            let replay = ReplayRagSource::from_captures("stub", persona(), vec![ev]);
+            let faculty =
+                RagSourceFaculty::new(persona(), Arc::new(replay), SaliencePolicy::Retrieved);
+            let c = faculty
+                .contribute(&ws)
+                .await
+                .expect("an empty PARTIAL delivery still contributes its notice (card e049aa82)");
+            assert_eq!(
+                c.source_truncated, want_truncated,
+                "notice must carry the source-cut truth through JSONL -> replay -> faculty"
+            );
+        }
+    }
 }
