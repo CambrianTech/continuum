@@ -554,7 +554,7 @@ impl TextToSpeech for KokoroTTS {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::audio_constants::AUDIO_SAMPLE_RATE;
+    use continuum_base::audio_constants::AUDIO_SAMPLE_RATE;
     use std::path::PathBuf;
 
     // ========================================================================

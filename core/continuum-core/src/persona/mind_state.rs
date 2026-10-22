@@ -88,18 +88,18 @@ impl MindState {
             Ok(b) => b,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return MindState::default(),
             Err(e) => {
-                crate::probe!(class = "mind.state.unreadable", path = %path.display(), error = %e, "fresh mind");
+                continuum_base::probe!(class = "mind.state.unreadable", path = %path.display(), error = %e, "fresh mind");
                 return MindState::default();
             }
         };
         match serde_json::from_slice::<MindState>(&bytes) {
             Ok(s) if s.version <= VERSION => s,
             Ok(s) => {
-                crate::probe!(class = "mind.state.newer_version", found = s.version, known = VERSION, "fresh mind");
+                continuum_base::probe!(class = "mind.state.newer_version", found = s.version, known = VERSION, "fresh mind");
                 MindState::default()
             }
             Err(e) => {
-                crate::probe!(class = "mind.state.undecodable", path = %path.display(), error = %e, "fresh mind");
+                continuum_base::probe!(class = "mind.state.undecodable", path = %path.display(), error = %e, "fresh mind");
                 MindState::default()
             }
         }

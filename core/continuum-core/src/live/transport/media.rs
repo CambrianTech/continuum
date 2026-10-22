@@ -14,7 +14,7 @@
 //! 3. Add VideoTrack variant (initially unused)
 //! 4. When video arrives: add video track to MediaSession, compositor to MediaRoom
 
-use crate::audio_constants::{AUDIO_FRAME_SIZE, AUDIO_SAMPLE_RATE};
+use continuum_base::audio_constants::{AUDIO_FRAME_SIZE, AUDIO_SAMPLE_RATE};
 use crate::runtime::handle::Handle;
 use std::collections::HashMap;
 

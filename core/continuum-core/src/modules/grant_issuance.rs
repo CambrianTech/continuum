@@ -17,7 +17,7 @@
 //! meaning only the local operator can call it. The operator owns all its personas
 //! and chooses which one issues; a remote peer can never reach this command.
 
-use crate::time::EpochMs;
+use continuum_base::time::EpochMs;
 use airc_core::PeerId;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};

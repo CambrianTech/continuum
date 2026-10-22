@@ -111,7 +111,7 @@ impl GeneSignature {
         // lease per example.
         let embeddings = embedder.embed_many(corpus_texts).await;
         let dim = embedder.dim();
-        crate::probe!(
+        continuum_base::probe!(
             class = "genome.signature.embedded",
             embedder = %embedder.id(),
             texts = corpus_texts.len() as u64,

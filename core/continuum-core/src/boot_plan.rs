@@ -61,7 +61,7 @@ impl BootReceipt {
             Outcome::Skipped(d) => ("skipped", d.clone()),
             Outcome::Failed(d) => ("failed", d.clone()),
         };
-        crate::probe!(
+        continuum_base::probe!(
             class = "boot.step",
             step = name,
             outcome = kind,
@@ -91,7 +91,7 @@ fn step_adopt_lanes() -> Outcome {
     for pid in crate::inference::lane_process::owned_llama_pids() {
         let verdict = crate::inference::lane_process::lane_verdict(pid);
         let evidence = verdict.evidence();
-        crate::probe!(
+        continuum_base::probe!(
             class = "boot.lane_verdict",
             pid = pid as u64,
             adopt = verdict.adopt(),
@@ -182,7 +182,7 @@ fn step_eye_node_beside(repo_root: &std::path::Path) -> Outcome {
         Ok(log) => log,
         Err(e) => return Outcome::Skipped(format!("eye-node log {}: {e}", log_path.display())),
     };
-    let node = match crate::shell_portable::locate_executable("node")
+    let node = match continuum_base::shell_portable::locate_executable("node")
         .and_then(|path| std::fs::canonicalize(path).ok())
     {
         Some(node) => node,
@@ -226,7 +226,7 @@ pub fn start_service_eye(
             return Err(format!("browser asset missing: {}", root.join(relative).display()));
         }
     }
-    let node = crate::shell_portable::locate_executable("node")
+    let node = continuum_base::shell_portable::locate_executable("node")
         .and_then(|path| std::fs::canonicalize(path).ok())
         .ok_or("browser worker needs Node on the service PATH")?;
     let log_path = std::path::PathBuf::from(crate::ipc::endpoint_paths::core_start_logfile())

@@ -72,9 +72,14 @@ const SHAPES: &[&str] = &[
 // 2,139 after card 0af5d5ec: not code removed, a miscount ended. Files that ARE test
 // modules (`#![cfg(test)]`: contracts/chain_tests.rs, orm/derive_test.rs) were read as
 // production; `production_half` now reads them as test code.
-// 2,135 after card bbc5b0b6 (#5205): the hand-rolled SqliteEpochWatermark and its
-// unwrap_or fallbacks deleted.
-const BASELINE_UNJUSTIFIED: usize = 2_135;
+// 2,123 -> 2,279, not new debt: the column-zero production split sees code that indented
+// test helpers hid (measured in CI on canary a85454889 + this change, 2026-10-20).
+// 2_279 -> 2_377, not new debt: production_half now blanks only the #[cfg(test)]-gated item, so
+// production code BELOW a mid-file test mod or gated helper is scanned (measured on canary
+// a85454889 + this change, 2026-10-20).
+// 2,377 -> 2,376: the loop's duplicated InboxMessage build (one unwrap_or_else) is now one.
+// 2,367 after the dream_consolidation split: nine std-Mutex and nil-parent unwraps JUSTIFIED in place, not removed.
+const BASELINE_UNJUSTIFIED: usize = 2_353; // 2_355 -> 2_353 (#5205, card bbc5b0b6: the hand-rolled SqliteEpochWatermark and its unwrap_or fallbacks deleted); 2_358 -> 2_355 measured by CI: the home's layout is one owner and no-home is a typed absence, not three relative-path fallbacks (card 20b4f33b)
 // 2264 -> 2257 on the extraction: seven of the counted unwraps were in this scanner's
 // own 2,173 lines, which left `continuum-core` with it. Taking the win rather than
 // keeping seven tokens of free slack ([[a-measurement-that-can-only-rise-is-not-a-measurement]]).

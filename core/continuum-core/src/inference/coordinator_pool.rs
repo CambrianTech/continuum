@@ -65,7 +65,7 @@ impl CoordinatorResourcePool {
     pub fn new(coordinator: Arc<InferenceCoordinator>) -> Self {
         Self {
             coordinator,
-            clock: Box::new(|| crate::time::EpochMs::now().millis()),
+            clock: Box::new(|| continuum_base::time::EpochMs::now().millis()),
             tier_name: TIER_NAME.to_string(),
             capacity_override: None,
         }

@@ -25,7 +25,7 @@
 //! the typed params/results below carry snake_case field names with NO `rename_all`,
 //! so the contract matches the established wire exactly.
 
-use crate::time::EpochMs;
+use continuum_base::time::EpochMs;
 use crate::log_info;
 use crate::runtime::MessageBus;
 use crate::runtime::{CommandResult, ModuleConfig, ModuleContext, ModulePriority, ServiceModule};

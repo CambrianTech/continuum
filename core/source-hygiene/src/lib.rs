@@ -25,8 +25,10 @@
 //! that is a follow-up, not a reason to hand-roll a fourth.
 
 pub mod boundary_serialization;
+pub mod continuum_home;
 pub mod derived_bounds;
 pub mod grab_bag;
+pub mod head_cuts;
 pub mod file_size;
 pub mod identity_discipline;
 pub mod layer_discipline;
@@ -44,15 +46,10 @@ pub struct SourceFile {
     /// Path relative to `src/`, forward-slashed — the form a rule's allow-list and
     /// a failure message should both use.
     pub rel: String,
-    /// The PRODUCTION half: everything before the file's first `#[cfg(test)]` line.
+    /// The PRODUCTION half: everything before the file's first column-zero `#[cfg(test)]`.
     ///
-    /// This is an APPROXIMATION and callers must know which way it errs. Test mods
-    /// conventionally sit at the end of a file, so this captures production exactly
-    /// in the common case. Where a file gates a helper `#[cfg(test)]` mid-file, the
-    /// split lands early and the rule sees LESS production code than exists — it
-    /// under-reports, never over-reports. A hygiene rule that under-reports lets a
-    /// violation slip; one that over-reports cries wolf and gets deleted. Erring
-    /// toward the first is the deliberate choice.
+    /// A test-only helper gated mid-file is scanned as production: this errs toward a
+    /// little noise, never toward the silence an early cut produced (see [`production_half`]).
     pub production: String,
     /// The WHOLE file, test mods included.
     ///
@@ -65,6 +62,40 @@ pub struct SourceFile {
 }
 
 impl SourceFile {
+    /// The module a file's code belongs to, as the path that names it: `x` for `x.rs`,
+    /// `x/mod.rs`, and for a test module moved out of it (`x/tests.rs`,
+    /// `x/tests/mod.rs`, `x/tests/part_2.rs`, each marked `#![cfg(test)]`). A rule that
+    /// asks "outside its own file" asks "outside its owning module": a test that moved
+    /// to a sibling file to keep its owner readable is still that owner's own test.
+    pub fn owning_module(&self) -> &str {
+        let rel = self.rel.as_str();
+        if self.is_moved_test() {
+            let dir = rel.rsplit_once('/').map_or("", |(d, _)| d);
+            return dir.strip_suffix("/tests").unwrap_or(dir); // unwrap_or: `x/tests.rs` is already at `x`
+        }
+        rel.strip_suffix("/mod.rs")
+            .or_else(|| rel.strip_suffix(".rs"))
+            .unwrap_or(rel) // unwrap_or: every scanned file ends in .rs
+    }
+
+    /// A whole file of test code: a test module moved out of its owner, which declares
+    /// `#![cfg(test)]` before any item.
+    pub fn is_moved_test(&self) -> bool {
+        for line in self.raw.lines() {
+            let code = split_code_and_comment(line).0.trim();
+            if code.is_empty() {
+                continue;
+            }
+            if !code.starts_with("#![") {
+                return false;
+            }
+            if code.starts_with("#![cfg(test)]") {
+                return true;
+            }
+        }
+        false
+    }
+
     /// Production lines paired with their 1-indexed line number in the whole file,
     /// so a violation can point at a real editor line.
     pub fn production_lines(&self) -> impl Iterator<Item = (usize, &str)> {
@@ -128,6 +159,28 @@ fn audited_crate_root() -> PathBuf {
 /// The crate under audit. One name, one place — a second spelling of this is how a
 /// rule ends up scanning a directory that does not exist and reporting zero.
 const AUDITED_CRATE: &str = "continuum-core";
+
+/// Crates split out of `continuum-core` (card a31492cb). A split must never move code out
+/// of the gates' sight, so their files are audited too, with the crate name as a path
+/// prefix (`continuum-base/time/mod.rs`): totals stay continuous across a cut and every
+/// per-path rule stays unambiguous.
+const SPLIT_CRATES: &[&str] = &["continuum-base"];
+
+/// Every file the per-file and crate-wide rules audit: `continuum-core/src` with paths
+/// relative to it, then each split crate's `src` with its name prefixed. A listed crate
+/// whose `src` is missing fails loudly rather than auditing nothing.
+pub fn audited_files() -> Vec<SourceFile> {
+    let mut files = collect_files(&crate_src_root());
+    let Some(core_dir) = audited_crate_root().parent().map(Path::to_path_buf) else {
+        panic!("{AUDITED_CRATE} has no parent directory: the split crates cannot be found");
+    };
+    for name in SPLIT_CRATES {
+        let src = core_dir.join(name).join("src");
+        assert!(src.is_dir(), "split crate {name} has no src at {}: the gates would audit nothing", src.display());
+        files.extend(collect_files(&src).into_iter().map(|f| SourceFile { rel: format!("{name}/{}", f.rel), ..f }));
+    }
+    files
+}
 
 /// The repository root, found by ANCHOR rather than by counting directories up.
 ///
@@ -193,8 +246,8 @@ pub fn workspace_src_roots() -> Vec<PathBuf> {
     roots
 }
 
-/// The PRODUCTION half of a source file (see [`SourceFile::production`]): everything
-/// before its first `#[cfg(test)]` that is CODE, not prose. Matching the raw string
+/// The PRODUCTION half of a source file (see [`SourceFile::production`]): every line
+/// not gated by a `#[cfg(test)]` that is CODE, not prose. Matching the raw string
 /// would truncate at the first doc comment that merely MENTIONS test-gating, and module
 /// headers in this crate do exactly that, including this one. Found by the guard's own
 /// positive control: the naive form excluded nearly all of `source_hygiene/mod.rs` from
@@ -204,14 +257,217 @@ pub fn workspace_src_roots() -> Vec<PathBuf> {
 /// inner `#![cfg(test)]` on its first code line: the whole file is test code. Without
 /// this, every `mod tests;` split read as all-production and charged its unwraps and
 /// spawns to the ratchets (card 0af5d5ec, 2026-10-18).
+///
+/// A COLUMN-ZERO `#[cfg(test)]` gates one file-scope item: that item is test code and
+/// nothing else is. An indented `#[cfg(test)]` (a test-only helper inside an `impl`) is
+/// scanned as production, erring toward noise: cut there, `cognition/llm_deliberation_faculty.rs`
+/// hid ~9,000 production lines from every ratchet (found 2026-10-20).
+///
+/// Only the gated ITEM is test code, never the rest of the file. The first cut stopped
+/// at the first column-zero `#[cfg(test)]`, which is the end of production only when the
+/// test mod is the file's last item. A split that declares `#[cfg(test)] mod tests;` with
+/// the other modules near the top (llamacpp_adapter.rs, line 93 of 934), or a gated test
+/// const above the code (generate_response.rs, line 75 of 644), hid everything below it:
+/// a split read as 10 unwraps removed when none were (found on #5225, 2026-10-20).
+/// Lines of a gated item are blanked, not dropped, so line numbers stay true.
 pub fn production_half(src: &str) -> String {
-    match src.lines().position(|l| {
-        let code = split_code_and_comment(l).0;
-        code.contains("#[cfg(test)]") || code.trim_start().starts_with("#![cfg(test)]")
-    }) {
-        Some(line_idx) => src.lines().take(line_idx).collect::<Vec<_>>().join("\n"),
-        None => src.to_string(),
+    let lines: Vec<&str> = src.lines().collect();
+    let mut out: Vec<&str> = Vec::with_capacity(lines.len());
+    let mut gated = false;
+    let mut i = 0;
+    while i < lines.len() {
+        let code = split_code_and_comment(lines[i]).0;
+        if code.trim_start().starts_with("#![cfg(test)]") {
+            gated = true;
+            break; // the whole file from here is a test module moved out of its owner
+        }
+        if !code.starts_with("#[cfg(test)]") {
+            out.push(lines[i]);
+            i += 1;
+            continue;
+        }
+        // The gated item can begin on the attribute's own line. Keep the slice's
+        // line count intact so blanking still preserves source line numbers.
+        let mut item_lines = lines[i..].to_vec();
+        item_lines[0] = &lines[i]["#[cfg(test)]".len()..];
+        let end = i + gated_item_end(&item_lines, 0);
+        out.extend(std::iter::repeat_n("", end + 1 - i));
+        gated = true;
+        i = end + 1;
     }
+    if !gated {
+        return src.to_string();
+    }
+    while out.last().is_some_and(|l| l.trim().is_empty()) {
+        out.pop();
+    }
+    out.join("\n")
+}
+
+/// Byte offset after a block comment's closing delimiter, given its body (after `/*`).
+/// Rust block comments nest; punctuation inside every nesting level is trivia.
+fn block_comment_end(bytes: &[u8]) -> Option<usize> {
+    let (mut depth, mut at) = (1usize, 0usize);
+    while at < bytes.len() {
+        if bytes[at..].starts_with(b"/*") {
+            depth += 1;
+            at += 2;
+        } else if bytes[at..].starts_with(b"*/") {
+            depth -= 1;
+            at += 2;
+            if depth == 0 { return Some(at); }
+        } else {
+            at += 1;
+        }
+    }
+    None
+}
+
+/// Skip Rust whitespace and comments. Comments are trivia even
+/// between `const` and `fn`; nested block comments are consumed as one comment.
+fn skip_item_trivia(mut src: &str) -> &str {
+    loop {
+        src = src.trim_start();
+        if let Some(comment) = src.strip_prefix("//") {
+            match comment.find('\n') {
+                Some(end) => src = &comment[end + 1..],
+                None => return "",
+            }
+        } else if let Some(comment) = src.strip_prefix("/*") {
+            let Some(end) = block_comment_end(comment.as_bytes()) else { return "" };
+            src = &comment[end..];
+        } else {
+            break;
+        }
+    }
+    src
+}
+
+fn significant_word(src: &str) -> (Option<&str>, &str) {
+    let src = skip_item_trivia(src);
+    let end = src.bytes().take_while(|b| b.is_ascii_alphanumeric() || *b == b'_').count();
+    if end == 0 { (None, src) } else { (Some(&src[..end]), &src[end..]) }
+}
+
+/// Index of the last line of the item starting at or after `from` (attributes, blank
+/// lines and comments before it belong to it). The item ends on the line where its
+/// braces close, or on its `;` at depth zero when it opens none (`mod tests;`, a
+/// multi-line `static ... = ...;`). Read as one character stream, not line by line: a
+/// test module's multi-line string fixtures (JSON, source snippets, raw strings) carry
+/// braces that a per-line count read as the module's end, leaking the rest of the tests
+/// into production. An item that never closes runs to the end of the file.
+fn gated_item_end(lines: &[&str], from: usize) -> usize {
+    let last = lines.len().saturating_sub(1);
+    let Some(head) = (from..lines.len()).find(|&k| {
+        let code = split_code_and_comment(lines[k]).0.trim();
+        !code.is_empty() && !code.starts_with("#[")
+    }) else {
+        return last;
+    };
+    let text = lines[head..].join("\n");
+    // Initializer blocks can be followed by operators, method calls, or more blocks.
+    // A static/const ends at its outer semicolon, never at an initializer's `}`.
+    let (mut keyword, mut rest) = significant_word(&text);
+    if keyword == Some("pub") {
+        rest = skip_item_trivia(rest);
+        if let Some(restricted) = rest.strip_prefix('(') {
+            rest = restricted;
+            loop {
+                rest = skip_item_trivia(rest);
+                match rest.chars().next() {
+                    Some(')') => {
+                        rest = &rest[1..];
+                        break;
+                    }
+                    Some(ch) => rest = &rest[ch.len_utf8()..],
+                    None => return last,
+                }
+            }
+        }
+        (keyword, rest) = significant_word(rest);
+    }
+    let semicolon_terminated = match keyword {
+        Some("static") => true,
+        Some("const") => !matches!(significant_word(rest).0, Some("fn" | "unsafe" | "extern")),
+        _ => false,
+    };
+    let b = text.as_bytes();
+    let ident = |at: usize| b[at].is_ascii_alphanumeric() || b[at] == b'_';
+    let (mut depth, mut line, mut i, mut opened) = (0usize, head, 0usize, false);
+    let (mut parentheses, mut brackets) = (0usize, 0usize);
+    while i < b.len() {
+        match b[i] {
+            b'\n' => line += 1,
+            b'/' if b.get(i + 1) == Some(&b'/') => {
+                while i + 1 < b.len() && b[i + 1] != b'\n' {
+                    i += 1;
+                }
+            }
+            b'/' if b.get(i + 1) == Some(&b'*') => {
+                let start = i + 2;
+                let Some(length) = block_comment_end(&b[start..]) else { return last };
+                line += b[start..start + length].iter().filter(|&&c| c == b'\n').count();
+                i = start + length - 1;
+            }
+            // A raw string, r"…" / r#"…"# / br#"…"#: no escapes, ends at `"` + the same hashes.
+            b'r' if (i == 0 || !ident(i - 1)) || (b[i - 1] == b'b' && (i < 2 || !ident(i - 2))) => {
+                let hashes = b[i + 1..].iter().take_while(|&&c| c == b'#').count();
+                if b.get(i + 1 + hashes) == Some(&b'"') {
+                    i += 2 + hashes;
+                    while i < b.len() && !(b[i] == b'"' && b[i + 1..].iter().take(hashes).all(|&c| c == b'#') && b.len() - i > hashes) {
+                        line += usize::from(b[i] == b'\n');
+                        i += 1;
+                    }
+                    i += hashes;
+                }
+            }
+            b'"' => {
+                i += 1;
+                while i < b.len() && b[i] != b'"' {
+                    if b[i] == b'\\' {
+                        // An escape, including the `\` + newline continuation: its newline still counts.
+                        line += usize::from(b.get(i + 1) == Some(&b'\n'));
+                        i += 2;
+                        continue;
+                    }
+                    line += usize::from(b[i] == b'\n');
+                    i += 1;
+                }
+            }
+            // A char literal ('{', '\'', '\u{7d}') is skipped whole; a lifetime ('a, 'static)
+            // has no closing quote right after its first character and is left alone.
+            b'\'' => {
+                if b.get(i + 1) == Some(&b'\\') {
+                    i += 2;
+                    while i < b.len() && b[i] != b'\'' {
+                        i += 1;
+                    }
+                } else if b.get(i + 2) == Some(&b'\'') {
+                    i += 2;
+                }
+            }
+            b'{' => {
+                depth += 1;
+                opened = true;
+            }
+            b'}' => {
+                depth = depth.saturating_sub(1);
+                if depth == 0 && parentheses == 0 && brackets == 0
+                    && opened && !semicolon_terminated
+                {
+                    return line;
+                }
+            }
+            b'(' => parentheses += 1,
+            b')' => parentheses = parentheses.saturating_sub(1),
+            b'[' => brackets += 1,
+            b']' => brackets = brackets.saturating_sub(1),
+            b';' if depth == 0 && parentheses == 0 && brackets == 0 => return line,
+            _ => {}
+        }
+        i += 1;
+    }
+    last
 }
 
 /// Read every `.rs` file under `root`, pre-split into production and test halves.
@@ -269,7 +525,7 @@ pub fn assert_baseline_is_current(name: &str, count: usize, baseline: usize) {
 
 /// Walk this crate's `src/` once and apply every per-file rule to every `.rs` file.
 pub fn scan(rules: &[&dyn SourceRule]) -> Vec<Violation> {
-    let files = collect_files(&crate_src_root());
+    let files = audited_files();
     let mut out = Vec::new();
     for file in &files {
         for rule in rules {
@@ -300,7 +556,7 @@ pub trait CrateRule {
 /// Apply crate-wide rules. Reads this crate once for violations and the workspace once
 /// for references.
 pub fn scan_crate(rules: &[&dyn CrateRule]) -> Vec<Violation> {
-    let files = collect_files(&crate_src_root());
+    let files = audited_files();
     // The reference corpus is RAW file text — production AND test halves.
     //
     // This asymmetry against `files` (production-only, the violation source) is
@@ -577,6 +833,73 @@ mod tests {
         assert_eq!(production_half(inline), "fn real() {}");
         let prose = "//! Mentions #![cfg(test)] in prose only.\nfn real() {}\n";
         assert_eq!(production_half(prose), prose, "a mention in a comment is not the marker");
+    }
+
+    // what this catches: the first cut's blind spot. A `mod tests;` declared with the other
+    // modules near the top, or a gated test const above the code, hid every production line
+    // below it (llamacpp_adapter.rs on #5225: 10 unwraps read as removed when none were).
+    #[test]
+    fn only_the_gated_item_is_test_code_never_the_rest_of_the_file() {
+        let declared = "mod a;\n#[cfg(test)]\nmod tests;\nfn real() { x.unwrap(); }\n";
+        assert_eq!(production_half(declared), "mod a;\n\n\nfn real() { x.unwrap(); }");
+        let konst = "#[cfg(test)]\n#[allow(dead_code)]\nstatic LOCK: Lazy<M> =\n    Lazy::new(|| M::new());\nfn real() { y.unwrap(); }\n";
+        assert!(production_half(konst).ends_with("fn real() { y.unwrap(); }"));
+        assert!(!production_half(konst).contains("LOCK"));
+        let mid = "#[cfg(test)]\nmod tests {\n    fn t() { let s = \"}\"; let c = '}'; }\n}\nfn after() { z.unwrap(); }\n";
+        let p = production_half(mid);
+        assert!(p.contains("fn after()") && !p.contains("fn t()"), "{p:?}");
+        assert_eq!(p.lines().count(), 5, "line numbers stay true");
+        let helper = "fn real() {}\n#[cfg(test)]\nfn helper() {\n    q.unwrap();\n}\nfn more() {}\n";
+        assert_eq!(production_half(helper), "fn real() {}\n\n\n\n\nfn more() {}");
+        // Regression for #5227: a same-line test item must not consume its successor.
+        let inline = "#[cfg(test)] mod tests {}\nfn real() { x.unwrap(); }\n";
+        assert_eq!(production_half(inline), "\nfn real() { x.unwrap(); }");
+        let inline_decl = "#[cfg(test)] mod tests;\nfn real() { x.unwrap(); }\n";
+        assert_eq!(production_half(inline_decl), "\nfn real() { x.unwrap(); }");
+        // A comment's semicolon cannot make the closed test module swallow production.
+        let commented = "#[cfg(test)]\nmod tests {\n} // diagnostic; not syntax\nfn real() { x.unwrap(); }\n";
+        assert_eq!(production_half(commented), "\n\n\nfn real() { x.unwrap(); }");
+        // Real constructor closing syntax still belongs to the gated static.
+        let constructor = "#[cfg(test)]\nstatic X: LazyLock<()> = LazyLock::new(|| {\n});\nfn real() { x.unwrap(); }\n";
+        assert_eq!(production_half(constructor), "\n\n\nfn real() { x.unwrap(); }");
+        // Regression for the first proposed fix: initializer blocks do not end a static.
+        for initializer in [
+            "{1} + { let y = 2;\n const EXTRA_LIMIT: usize = 9;\n y + EXTRA_LIMIT\n}",
+            "{1usize}.wrapping_add({ let y = 2;\n const EXTRA_LIMIT: usize = 9;\n y + EXTRA_LIMIT\n})",
+            "[ { let y = 2;\n const EXTRA_LIMIT: usize = 9;\n y + EXTRA_LIMIT\n} ][0]",
+        ] {
+            for declaration in [
+                "static X", "const X", "pub(in crate::owner) const X",
+                "pub\nconst X", "pub /* comment */ (crate) const X",
+                "pub // visibility\n(in crate::owner) static X",
+            ] {
+                let raw = format!("#[cfg(test)]\n{declaration}: usize = {initializer};\nfn real() {{ x.unwrap(); }}\n");
+                let projected = production_half(&raw);
+                assert!(!projected.contains("EXTRA_LIMIT"), "{projected}");
+                assert_eq!(projected.lines().last(), Some("fn real() { x.unwrap(); }"));
+                assert_eq!(projected.lines().count(), raw.lines().count(), "line positions");
+            }
+        }
+        // Const functions still end with their body, even when a comment has punctuation.
+        let konst_fn = "#[cfg(test)]\nconst fn helper() -> usize { 1 } // ;\nfn real() { x.unwrap(); }\n";
+        assert_eq!(production_half(konst_fn), "\n\nfn real() { x.unwrap(); }");
+        // Regression for proposed revision 4: nested comment delimiters are never code.
+        let nested = "#[cfg(test)]\nfn helper() { /* outer /* inner */ ( [ { ;\n tail ) ] } */ }\nfn production() { x.unwrap(); }\n";
+        assert_eq!(production_half(nested), "\n\n\nfn production() { x.unwrap(); }");
+        let open_delimiter = "#[cfg(test)]\nfn helper() { /* outer /* inner */ ( */ }\nfn production() { x.unwrap(); }\n";
+        assert_eq!(production_half(open_delimiter), "\n\nfn production() { x.unwrap(); }");
+
+        // Regression for proposed revision 2: comments are whitespace between keywords.
+        for trivia in ["/* explanation */", "// explanation\n", "/* outer /* nested */ tail */"] {
+            let raw = format!("#[cfg(test)]\nconst {trivia} fn helper() -> usize {{ 1 }}\nfn production() {{ x.unwrap(); }}\n");
+            let projected = production_half(&raw);
+            assert_eq!(projected.lines().last(), Some("fn production() { x.unwrap(); }"));
+            assert!(!projected.contains("helper"));
+            assert_eq!(projected.lines().count(), raw.lines().count());
+        }
+
+
+
     }
 
     /// What this catches: the production/test split silently swallowing the whole

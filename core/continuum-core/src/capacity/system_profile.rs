@@ -81,6 +81,12 @@ pub struct SystemProfile {
     pub drives: Vec<DriveInfo>,
     /// Performance-core proxy for lane parallelism (feeds the serving budget).
     pub perf_cores: u32,
+    /// The operator's serving headroom (`usable = live × this`): config, not hardware,
+    /// so it is an INPUT like every measured part — [`Self::detect`] reads
+    /// `config_env::vram_headroom()`, a fixture states its own. Read inside
+    /// `serving_budget_bytes` it made every budget test a test of whichever
+    /// `~/.continuum/config.env` the runner carries (card c4d84be3).
+    pub budget_fraction: f64,
 }
 
 impl SystemProfile {
@@ -91,12 +97,14 @@ impl SystemProfile {
         capacity: DeviceCapacity,
         drives: Vec<DriveInfo>,
         perf_cores: u32,
+        budget_fraction: f64,
     ) -> Self {
         Self {
             hardware,
             capacity,
             drives,
             perf_cores,
+            budget_fraction,
         }
     }
 
@@ -122,8 +130,8 @@ impl SystemProfile {
             total_vram_bytes: total,
             perf_cores: self.perf_cores,
             // Same operator headroom policy as every live serving-budget caller
-            // (serving_daemon): usable = live × the config fraction.
-            budget_fraction: crate::config_env::vram_headroom(),
+            // (serving_daemon): usable = live × the config fraction, handed in.
+            budget_fraction: self.budget_fraction,
         })
         .usable_bytes
     }
@@ -171,7 +179,7 @@ impl SystemProfile {
         let drives = detect_drives();
         let perf_cores = hw_profile.cpu_cores.max(1);
 
-        Self::from_parts(hardware, capacity, drives, perf_cores)
+        Self::from_parts(hardware, capacity, drives, perf_cores, continuum_base::config_env::vram_headroom())
     }
 }
 
@@ -344,9 +352,9 @@ mod tests {
 
     /// BigMama: RTX 5090 (32 GiB VRAM discrete) + a 16 TB cold drive.
     fn bigmama() -> SystemProfile {
-        SystemProfile::from_parts(
-            hw(TargetSilicon::NvidiaCuda, 32 * 1024, 128 * 1024),
-            cap(32 * GB, 30 * GB, 100 * GB),
+        crate::capacity::profile_fixtures::discrete_fixture(
+            32,
+            30,
             vec![
                 DriveInfo {
                     mount: "C:\\".into(),
@@ -361,7 +369,6 @@ mod tests {
                     role: DriveRole::Cold,
                 },
             ],
-            24,
         )
     }
 
@@ -377,6 +384,7 @@ mod tests {
                 role: DriveRole::System,
             }],
             8,
+            crate::capacity::profile_fixtures::FIXTURE_HEADROOM,
         )
     }
 
@@ -420,6 +428,7 @@ mod tests {
             cap(36 * GB, 36 * GB, 30 * GB), // capacity carries the UMA serving slice
             vec![],
             10,
+            crate::capacity::profile_fixtures::FIXTURE_HEADROOM,
         );
         // available (ram_free 30) capped at total (gpu_total 36) → 30, ×0.80.
         assert_eq!(uma.serving_budget_bytes(), (30 * GB) * 80 / 100);

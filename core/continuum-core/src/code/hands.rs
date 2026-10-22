@@ -346,6 +346,10 @@ impl HandsKey {
 mod tests {
     use super::*;
 
+    // what this catches (#5058): the release deadlock where a detached shell held FOREGROUND
+    // admission, so close() waited on a task only the not-yet-sent kill could end. Its process
+    // custody is counted apart: close() returns, the release sends the kill, and only then does
+    // drain_processes wait out the task and read what it left unconfirmed.
     #[tokio::test]
     async fn release_can_request_kill_before_draining_detached_process_custody() {
         let context = HandsContext::fresh();

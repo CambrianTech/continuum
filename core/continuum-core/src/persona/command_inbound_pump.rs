@@ -194,7 +194,7 @@ pub async fn spawn_node_pump(
     NODE_PUMP
         .set((pump, membership_tx))
         .map_err(|_| NodePumpError::AlreadyInstalled)?;
-    crate::probe!(
+    continuum_base::probe!(
         class = "node.command_pump.online",
         peer_id = %peer,
         "the node answers cross-grid commands under its own identity — the one its capacity beacon is stamped with"
@@ -376,7 +376,7 @@ async fn supervise(
             None => match crate::persona::airc_citizen::subscribe_every_room(&airc).await {
                 Ok(s) => s,
                 Err(e) => {
-                    crate::probe!(
+                    continuum_base::probe!(
                         class = "persona.command_pump.reopen_failed",
                         persona_id = %persona_id,
                         attempt = respawns,
@@ -400,7 +400,7 @@ async fn supervise(
             Ok(()) => return,
             Err(e) if e.is_panic() => {
                 respawns = respawns.saturating_add(1);
-                crate::probe!(
+                continuum_base::probe!(
                     class = "persona.command_pump.respawned_after_panic",
                     persona_id = %persona_id,
                     respawns = respawns,
@@ -422,7 +422,7 @@ async fn run(
     mut membership: watch::Receiver<u64>,
 ) {
     let self_id = airc.peer_id();
-    crate::probe!(
+    continuum_base::probe!(
         class = "persona.command_pump.installed",
         persona_id = %persona_id,
         peer_id = %self_id.0,
@@ -467,7 +467,7 @@ async fn run(
                         }
                     }
                     Some(Err(lag)) => {
-                        crate::probe!(
+                        continuum_base::probe!(
                             class = "persona.command_pump.lag",
                             persona_id = %persona_id,
                             lag = %lag,
@@ -482,7 +482,7 @@ async fn run(
                     Err(_) => {
                         // The runtime dropped its epoch sender: the citizen is
                         // being torn down. Exit for real, and say so.
-                        crate::probe!(
+                        continuum_base::probe!(
                             class = "persona.command_pump.ended",
                             persona_id = %persona_id,
                             reason = "runtime_dropped",
@@ -496,7 +496,7 @@ async fn run(
         if reason == Reopen::MembershipChanged {
             let now = subscribed_set(&airc).await;
             if now.is_some() && now == opened_with {
-                crate::probe!(
+                continuum_base::probe!(
                     class = "persona.command_pump.membership_unchanged",
                     persona_id = %persona_id,
                     rooms = opened_with.as_ref().map_or(0, |s| s.len()),
@@ -505,7 +505,7 @@ async fn run(
                 continue;
             }
         }
-        crate::probe!(
+        continuum_base::probe!(
             class = "persona.command_pump.ended",
             persona_id = %persona_id,
             reason = ?reason,
@@ -521,7 +521,7 @@ async fn run(
                 Ok(next) => {
                     stream = next;
                     opened_with = subscribed_set(&airc).await;
-                    crate::probe!(
+                    continuum_base::probe!(
                         class = "persona.command_pump.reopened",
                         persona_id = %persona_id,
                         reason = ?reason,
@@ -534,7 +534,7 @@ async fn run(
                 }
                 Err(e) => {
                     attempt = attempt.saturating_add(1);
-                    crate::probe!(
+                    continuum_base::probe!(
                         class = "persona.command_pump.reopen_failed",
                         persona_id = %persona_id,
                         attempt = attempt,

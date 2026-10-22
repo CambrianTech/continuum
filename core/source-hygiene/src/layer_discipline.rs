@@ -8,10 +8,15 @@
 //! fails on all of them today is a rule nobody runs. A baseline that may only FALL is a
 //! rule with teeth on day one, the same shape as `unwrap_justification`.
 //!
-//! What counts: one violation per (file, imported module) where the file's top-level
+//! What counts: one violation per (line, imported module) where the file's top-level
 //! module sits in a LOWER ring than the module it names with `crate::<mod>::`. Counted over
 //! the whole file (tests included): a test that reaches upward still couples the compile
 //! unit, and the crate split that this invariant exists for cannot cut through it.
+//!
+//! Per LINE, not per file: a per-file count rose by one every time a file was split by
+//! owner (the same `use crate::modules::x` read as two violations once the tests moved to
+//! a sibling file; #5224 read +7 from pure moves). A line is the coupling site itself, so a
+//! pure move cannot change the count and only removing a coupling lowers it.
 
 use super::{SourceFile, SourceRule, Violation};
 
@@ -49,7 +54,10 @@ pub fn ring_of(module: &str) -> Option<u8> {
 /// module pairs. **This number may only ever go DOWN.** Each cut in the decomposition plan
 /// lowers it; raising it to green a build is defeating the invariant.
 #[cfg(test)]
-const BASELINE_UPWARD_IMPORTS: usize = 254;
+// 674 coupling LINES across 73 module pairs, re-measured in CI on canary a85454889 when
+// the unit changed from files to lines (2026-10-20); 253 was the same coupling counted per file.
+// 672 with both splits: resource_admission's test names ServedGeometry through an import, and openai_adapter's rustdoc link to crate::cognition became prose. Neither is a decoupling.
+const BASELINE_UPWARD_IMPORTS: usize = 671; // 672 -> 671: harness removal 1 deleted competitor/resolution_bench
 
 /// The top-level module of a scanned file: the first path component under `src/`.
 fn module_of(file: &SourceFile) -> Option<&str> {
@@ -103,7 +111,7 @@ impl SourceRule for LayerDiscipline {
         let Some(own) = module_of(file).and_then(ring_of) else {
             return Vec::new();
         };
-        let mut seen: Vec<&str> = Vec::new();
+        let mut seen: Vec<(usize, &str)> = Vec::new();
         let mut out = Vec::new();
         let raw = file.raw.as_str();
         let mut rest = raw;
@@ -111,11 +119,11 @@ impl SourceRule for LayerDiscipline {
             let line_no = raw[..raw.len() - rest.len() + at].matches('\n').count();
             rest = &rest[at + "crate::".len()..];
             for dep in named_modules(rest) {
-                if seen.contains(&dep) || !ring_of(dep).is_some_and(|r| r > own) {
+                if seen.contains(&(line_no, dep)) || !ring_of(dep).is_some_and(|r| r > own) {
                     continue;
                 }
                 // `dep` borrows from `file.raw`: it lives as long as `file`.
-                seen.push(dep);
+                seen.push((line_no, dep));
                 out.push(Violation {
                     rule: "layer-discipline",
                     file: file.rel.clone(),
@@ -137,14 +145,21 @@ mod tests {
     // (a fact owned too high, a verb owned too high, or a module in the wrong ring). The
     // one line of code below the ring table is the architecture; everything else follows.
     #[test]
-    fn a_lower_ring_importing_a_higher_ring_is_one_violation_per_module() {
+    fn a_lower_ring_importing_a_higher_ring_is_one_violation_per_line_and_module() {
         let f = SourceFile::for_test(
             "runtime/registry.rs",
             "use crate::sdk_codegen::input_schema;\nfn f() { crate::routing::x(); crate::routing::y(); crate::time::now(); }\n",
         );
         let v = LayerDiscipline.check(&f);
         let named: Vec<&str> = v.iter().map(|x| x.source.as_str()).collect();
-        assert_eq!(v.len(), 2, "sdk_codegen and routing once each, never time: {named:?}");
+        assert_eq!(v.len(), 2, "sdk_codegen and routing once per line, never time: {named:?}");
+        // Two coupling sites are two violations, and moving one of them to a sibling file
+        // (a split by owner) leaves the total unchanged.
+        let two = SourceFile::for_test("runtime/a.rs", "use crate::routing::x;\nfn f() { crate::routing::y(); }\n");
+        let one = SourceFile::for_test("runtime/a.rs", "use crate::routing::x;\n");
+        let moved = SourceFile::for_test("runtime/a/tests.rs", "fn f() { crate::routing::y(); }\n");
+        assert_eq!(LayerDiscipline.check(&two).len(), 2);
+        assert_eq!(LayerDiscipline.check(&one).len() + LayerDiscipline.check(&moved).len(), 2);
         assert!(named.iter().any(|s| s.contains("`crate::sdk_codegen::`")));
         assert!(named.iter().any(|s| s.contains("`crate::routing::`")));
         // A grouped import names each head, across lines, nested groups included.
@@ -181,7 +196,7 @@ mod tests {
         let mut worst: Vec<_> = pairs.into_iter().collect();
         worst.sort_by(|a, b| b.1.cmp(&a.1));
         for ((from, to), n) in worst.iter().take(8) {
-            eprintln!("  {from} -> {to}: {n} files");
+            eprintln!("  {from} -> {to}: {n} lines");
         }
         assert!(
             count <= BASELINE_UPWARD_IMPORTS,

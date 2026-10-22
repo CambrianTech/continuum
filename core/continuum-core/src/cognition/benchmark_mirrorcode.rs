@@ -517,7 +517,7 @@ pub async fn materialize_gym(limit: Option<usize>) -> Result<(std::path::PathBuf
         .collect();
     skipped.sort();
     if !skipped.is_empty() {
-        crate::probe!(
+        continuum_base::probe!(
             class = "benchmark.mirrorcode.skip",
             skipped = %skipped.join(","),
             count = skipped.len(),

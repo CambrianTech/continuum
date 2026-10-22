@@ -36,7 +36,7 @@ use super::protocol::{
     ExportResult, GgufLoraRequest, HealthResponse, CONTRACT_VERSION, DEFAULT_CUSTODIAN_ADDR,
     ROUTE_GGUF_LORA, ROUTE_HEALTH,
 };
-use crate::config_env;
+use continuum_base::config_env;
 
 /// Typed forge-custodian client error. Two variants, distinguished so a router
 /// can decide heal-vs-don't-heal (see module docs).

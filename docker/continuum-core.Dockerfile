@@ -40,8 +40,8 @@ ARG CUDA_VERSION=12.8
 ARG GPU_FEATURES=""
 
 # Build dependencies from recipe (CACHED — this is the big win)
-# --no-default-features excludes livekit-webrtc: WebRTC is handled by the
-# livekit-bridge binary (separate process, separate protobuf address space).
+# The crate is headless by default (no livekit-webrtc, no avatar-3d): WebRTC is handled
+# by the livekit-bridge binary (separate process, separate protobuf address space).
 # load-dynamic-ort loads ONNX Runtime as shared library at runtime.
 COPY --from=planner /app/recipe.json recipe.json
 RUN cargo chef cook --release ${GPU_FEATURES} --recipe-path recipe.json

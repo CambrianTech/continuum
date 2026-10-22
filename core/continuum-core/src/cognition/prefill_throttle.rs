@@ -247,7 +247,7 @@ impl PrefillThrottle {
         // Glass box: the valve speaks ONLY when it moves — a steady grant is silence, a
         // shrink under pressure / regrow / debt-drain each leave one auditable line.
         if now != installed {
-            crate::probe!(
+            continuum_base::probe!(
                 class = "serving.prefill_throttle",
                 from = installed,
                 to = now,

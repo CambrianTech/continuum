@@ -13,7 +13,7 @@
 //! ([`crate::system_resources::citizen_workspace_pool`]) and takes nothing. `--apply true`
 //! takes each tree that passes them. `Privileged`: it deletes files on the node.
 
-use crate::time::EpochMs;
+use continuum_base::time::EpochMs;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;

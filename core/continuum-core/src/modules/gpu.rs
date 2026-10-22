@@ -72,7 +72,8 @@ mod tests {
     use super::*;
 
     fn test_gpu_module() -> GpuModule {
-        GpuModule::new(Arc::new(GpuMemoryManager::detect()))
+        // A fixed device, never the runner's (`detect()` panics with no GPU; card c4d84be3).
+        GpuModule::new(Arc::new(GpuMemoryManager::simulated("test:synthetic", 16 * 1024 * 1024 * 1024)))
     }
 
     // what this catches: the module still owns the `gpu/` prefix and contributes all

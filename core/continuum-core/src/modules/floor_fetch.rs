@@ -25,7 +25,7 @@
 //! refused) from hammering HF every tick — it stays degraded, which is the honest state
 //! (a weak node hosts orchestration, not a coder — [[weak-nodes-host-orchestration-phenotypes]]).
 
-use crate::time::EpochMs;
+use continuum_base::time::EpochMs;
 use std::any::Any;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::Arc;
@@ -148,7 +148,7 @@ impl ServiceModule for FloorFetchModule {
         let in_flight = self.in_flight.load(Ordering::Relaxed);
 
         if !should_fetch_floor(streak, in_flight, wait_ms > 0, cooldown_elapsed) {
-            crate::probe!(
+            continuum_base::probe!(
                 class = "provisioning.floor_fetch.holding",
                 streak = streak as u64,
                 in_flight,
@@ -201,14 +201,14 @@ async fn fetch_floor(
     tracker: &Arc<parking_lot::Mutex<RateLimitTracker>>,
 ) {
     let Some(dest_dir) = dirs::home_dir().map(|h| h.join(".continuum").join("genome").join("models")) else {
-        crate::probe!(class = "provisioning.floor_fetch.no_home", "no home dir — cannot place a fetched model");
+        continuum_base::probe!(class = "provisioning.floor_fetch.no_home", "no home dir — cannot place a fetched model");
         return;
     };
     let downloader = crate::provisioning::Downloader::new(client.clone());
     let progress = crate::provisioning::downloader::NoopProgress;
     let family = ModelFamily::coder();
 
-    crate::probe!(
+    continuum_base::probe!(
         class = "provisioning.floor_fetch.started",
         family = family.name,
         floor = family.ladder.first().copied().unwrap_or(""),
@@ -232,7 +232,7 @@ async fn fetch_floor(
         .await
         {
             Ok(path) => {
-                crate::probe!(
+                continuum_base::probe!(
                     class = "provisioning.floor_fetch.placed",
                     repo = *repo,
                     path = %path.display(),
@@ -248,7 +248,7 @@ async fn fetch_floor(
                 tracker
                     .lock()
                     .observe_wait_ms(wait_ms, EpochMs::now().millis());
-                crate::probe!(
+                continuum_base::probe!(
                     class = "provisioning.floor_fetch.rate_limited",
                     repo = r.as_str(),
                     wait_ms,
@@ -262,7 +262,7 @@ async fn fetch_floor(
                 continue; // too big for this box — try the next-smaller rung
             }
             Err(e) => {
-                crate::probe!(
+                continuum_base::probe!(
                     class = "provisioning.floor_fetch.failed",
                     repo = *repo,
                     error = %e,
@@ -272,7 +272,7 @@ async fn fetch_floor(
             }
         }
     }
-    crate::probe!(
+    continuum_base::probe!(
         class = "provisioning.floor_fetch.none_fit",
         family = family.name,
         total_gb = total_memory / 1_000_000_000,

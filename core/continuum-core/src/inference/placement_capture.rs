@@ -94,7 +94,9 @@ impl JsonlPlacementCaptureSink {
     /// alongside the prompt-captures glass box. Returns a Noop sink (boxed) if the
     /// home dir or file can't be opened — capture degrades, spawn proceeds.
     pub fn glass_box() -> Box<dyn PlacementCaptureSink> {
-        let dir = dirs::home_dir().map(|h| h.join(".continuum/fixtures/placement-decisions"));
+        let dir = crate::paths::continuum_home()
+            .ok()
+            .map(|h| h.join("fixtures/placement-decisions"));
         match dir.and_then(|d| Self::open(&d).ok()) {
             Some(sink) => Box::new(sink),
             None => Box::new(NoopPlacementCaptureSink),

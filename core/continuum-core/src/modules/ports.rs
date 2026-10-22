@@ -26,7 +26,7 @@
 //!   and saving is serialized in-process: one core owns its node's ports.
 //! - She sees her leases in her grounding (`WorkspaceMapSource`), so she never guesses a port.
 
-use crate::time::EpochMs;
+use continuum_base::time::EpochMs;
 use std::any::Any;
 use std::collections::BTreeSet;
 use std::sync::{Arc, OnceLock};
@@ -284,7 +284,7 @@ impl PortLeases {
                 };
                 self.store.save(row_id(&lease)?, &lease).await.map_err(|e| PortLeaseError::Store(e.to_string()))?;
                 self.remember(&lease);
-                crate::probe!(
+                continuum_base::probe!(
                     class = "ports.leased",
                     holder = %holder,
                     service,
@@ -306,7 +306,7 @@ impl PortLeases {
         lease.released_at_ms = Some(EpochMs::now().millis());
         self.store.update(row_id(&lease)?, &lease).await.map_err(|e| PortLeaseError::Store(e.to_string()))?;
         self.remember(&lease);
-        crate::probe!(
+        continuum_base::probe!(
             class = "ports.released",
             holder = %holder,
             service,

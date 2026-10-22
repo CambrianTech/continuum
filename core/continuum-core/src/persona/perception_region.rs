@@ -93,7 +93,7 @@ fn bound<T>(items: &mut Vec<T>, overflow: &mut u64, activity: Uuid, what: &'stat
     let drop = items.len() - UNPERCEIVED_CAP / 2;
     items.drain(..drop);
     *overflow += drop as u64;
-    crate::probe!(
+    continuum_base::probe!(
         class = "mind.region.overflow",
         activity = %short8(activity),
         what,
@@ -173,7 +173,7 @@ impl PerceptionRegion {
         let state = MindState::load(peer_dir);
         let resumed = state.continuation.is_none();
         if !resumed {
-            crate::probe!(
+            continuum_base::probe!(
                 class = "mind.resume",
                 persona = %me,
                 activity = %state.continuation.as_ref().map(|c| c.activity.to_string()).unwrap_or_default(),
@@ -267,7 +267,7 @@ impl PerceptionRegion {
                         continue;
                     }
                     if view.counted_reviews.contains(review) {
-                        crate::probe!(
+                        continuum_base::probe!(
                             class = "mind.surprise.duplicate",
                             persona = %self.me,
                             activity = %short8(activity),
@@ -286,7 +286,7 @@ impl PerceptionRegion {
                     if view.counted_reviews.len() > UNPERCEIVED_CAP {
                         view.counted_reviews.remove(0);
                     }
-                    crate::probe!(
+                    continuum_base::probe!(
                         class = "mind.surprise",
                         persona = %self.me,
                         activity = %short8(activity),
@@ -320,7 +320,7 @@ impl PerceptionRegion {
         let salience = view.salience.clone();
         self.publish(now_ms);
         let admitted = self.state.dial.admits(salience.level);
-        crate::probe!(
+        continuum_base::probe!(
             class = if admitted { "mind.perceive.wake" } else { "mind.perceive.quiet" },
             persona = %self.me,
             activity = %short8(activity),
@@ -397,7 +397,7 @@ impl PerceptionRegion {
 
     /// Her act: what she is working on and what she expects next.
     pub fn set_continuation(&mut self, continuation: Option<Continuation>, now_ms: u64) {
-        crate::probe!(class = "mind.continuation.written", persona = %self.me, present = continuation.is_some(), "written by her act");
+        continuum_base::probe!(class = "mind.continuation.written", persona = %self.me, present = continuation.is_some(), "written by her act");
         self.state.continuation = continuation;
         self.publish(now_ms);
     }
@@ -406,7 +406,7 @@ impl PerceptionRegion {
     /// (`mind_room::sealed_continuation`). Restored exactly like a saved open one: her
     /// first wake is `Wake::Resume`, so her private thread continues after a restart.
     pub fn restore_private_continuation(&mut self, continuation: Continuation, now_ms: u64) {
-        crate::probe!(class = "mind.resume", persona = %self.me, private = true, "a sealed private continuation: her first wake continues it");
+        continuum_base::probe!(class = "mind.resume", persona = %self.me, private = true, "a sealed private continuation: her first wake continues it");
         self.state.continuation = Some(continuation);
         self.resumed = false;
         self.publish(now_ms);
@@ -414,7 +414,7 @@ impl PerceptionRegion {
 
     /// Her act: how wide the door is.
     pub fn set_dial(&mut self, dial: AttentionDial, now_ms: u64) {
-        crate::probe!(class = "mind.dial.set", persona = %self.me, depth = ?dial.depth, pass = ?dial.pass, "set by her act");
+        continuum_base::probe!(class = "mind.dial.set", persona = %self.me, depth = ?dial.depth, pass = ?dial.pass, "set by her act");
         self.state.dial = dial;
         self.publish(now_ms);
     }
@@ -477,7 +477,7 @@ impl PerceptionRegion {
 
     fn publish(&self, now_ms: u64) {
         let snapshot = self.snapshot(now_ms);
-        crate::probe!(
+        continuum_base::probe!(
             class = "mind.load",
             persona = %self.me,
             live = snapshot.load.live_activities,

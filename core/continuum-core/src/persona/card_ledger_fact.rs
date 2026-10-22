@@ -38,7 +38,7 @@ pub async fn ledger_fact_for(peer: uuid::Uuid, held: &[&airc_lib::WorkCard]) -> 
         Ok(Some(l)) => (render_reference_for_turn(&l, peer), Some(render_for_turn(&l, peer))),
         Ok(None) => (render_absent(), None),
         Err(e) => {
-            crate::probe!(
+            continuum_base::probe!(
                 class = "card.ledger.unreadable_wall",
                 card = %card,
                 error = %e,

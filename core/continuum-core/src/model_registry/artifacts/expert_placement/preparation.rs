@@ -343,7 +343,7 @@ fn prepare_owned<'a>(
         }
         copy_members(&staging, &placement.files, &mut source, true)?;
         verify_tree(&staging, &placement.files, false, true)?;
-        crate::fs_portable::durable_rename(&staging, &destination).map_err(|e| e.to_string())?;
+        continuum_base::fs_portable::durable_rename(&staging, &destination).map_err(|e| e.to_string())?;
     }
     // Existing published destinations are verified completely and never repaired.
     let destination_directory = directory_handle(&destination)?;

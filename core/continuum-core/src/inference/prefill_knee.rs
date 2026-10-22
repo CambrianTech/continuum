@@ -309,7 +309,7 @@ pub fn observe_slots(slots: &serde_json::Value, now_ms: u64, served_lanes: usize
         let mut knee = KNEE.lock();
         *knee = next_knee(knee.take(), engine.as_ref(), bound);
     }
-    crate::probe!(
+    continuum_base::probe!(
         class = "serving.prefill_knee.published",
         server_prefill_tps = rate,
         prefilled_median = median.unwrap_or(0), // probe field: 0 = no turn measured yet

@@ -34,7 +34,7 @@
 //! - No silent default-on-error elsewhere — caller in PR-2 surfaces
 //!   typed errors.
 
-use crate::time::EpochMs;
+use continuum_base::time::EpochMs;
 use crate::ai::adapter::InferenceDevice;
 use crate::ai::types::{EmbeddingInput, EmbeddingRequest, EmbeddingResponse};
 use crate::modules::ai_provider::global_registry;

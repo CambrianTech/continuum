@@ -169,7 +169,7 @@ pub async fn stage_for_card(home: &Path, claimer: Uuid, card: &airc_lib::WorkCar
             Ok(clone) => clone,
             Err(error) => {
                 let error = error.to_string();
-                crate::probe!(
+                continuum_base::probe!(
                     class = "work.claim.repo_clone_failed",
                     claimer = %claimer,
                     repo = %repo,
@@ -205,7 +205,7 @@ pub async fn stage_for_card(home: &Path, claimer: Uuid, card: &airc_lib::WorkCar
             // A held linked worktree replaced by a card clone (airc #1582): said once, with
             // where the old tree went, so a resident's moved checkout is never a mystery.
             if let airc_lib::work_worktree::WorktreeOutcome::Migrated { path, retired } = &outcome {
-                crate::probe!(class = "card.checkout.migrated", card = %spec_card, path = %path.display(), retired = %retired.display(), "linked card worktree replaced by a card clone; old tree kept aside");
+                continuum_base::probe!(class = "card.checkout.migrated", card = %spec_card, path = %path.display(), retired = %retired.display(), "linked card worktree replaced by a card clone; old tree kept aside");
             }
             outcome.path().to_path_buf()
         })
@@ -227,7 +227,7 @@ pub async fn stage_for_card(home: &Path, claimer: Uuid, card: &airc_lib::WorkCar
         }
         Err(error) => Staging::Failed { stage: "worktree", error },
     };
-    crate::probe!(
+    continuum_base::probe!(
         class = "work.claim.staged",
         claimer = %claimer,
         bench = "repo",
@@ -280,7 +280,7 @@ pub async fn restage_held_linked_checkout(peer: Uuid, card: &airc_lib::WorkCard)
         Ok(home) => {
             stage_for_card(&home, peer, card).await;
         }
-        Err(error) => crate::probe!(
+        Err(error) => continuum_base::probe!(
             class = "persona.work.restage_skipped",
             peer = %peer,
             card = %card.card_id.as_uuid(),
@@ -400,7 +400,7 @@ async fn ensure_managed_clone(home: &Path, repo: &str) -> Result<PathBuf, CloneE
         cloned?;
     }
     crate::modules::repo_registry::record(&key, &target);
-    crate::probe!(
+    continuum_base::probe!(
         class = "work.claim.repo_cloned",
         repo = %key,
         path = %target.display(),
@@ -432,7 +432,7 @@ pub async fn stage_for_claimer(home: &Path, claimer: Uuid, title: &str) -> Stagi
         Step::Shell(shell) => stage_shell(&workspace, &shell).await,
         Step::Swe(instance) => stage_swe(&workspace, &instance).await,
     };
-    crate::probe!(
+    continuum_base::probe!(
         class = "work.claim.staged",
         claimer = %claimer,
         bench = %bench,
@@ -527,13 +527,13 @@ async fn stage_swe(workspace: &Path, instance: &crate::cognition::swe_bench::Swe
         let verdict_ms = std::fs::metadata(swe_bench::verdict_path(&instance.instance_id))
             .ok()
             .and_then(|m| m.modified().ok())
-            .and_then(|t| crate::time::EpochMs::of(t).ok())
-            .map(crate::time::EpochMs::millis);
+            .and_then(|t| continuum_base::time::EpochMs::of(t).ok())
+            .map(continuum_base::time::EpochMs::millis);
         let work_ms = crate::persona::staged_workspace::work_mtime_of(&dir);
         let resolved = swe_bench::read_verdict(&instance.instance_id).map(|v| v.resolved);
         let verdict = verdict_ms.zip(resolved);
         if restages_pristine(verdict, work_ms) {
-            crate::probe!(
+            continuum_base::probe!(
                 class = "benchmark.staging.reset_after_verdict",
                 instance = %instance.instance_id,
                 verdict_ms = verdict_ms.unwrap_or(0),
@@ -560,7 +560,7 @@ async fn stage_swe(workspace: &Path, instance: &crate::cognition::swe_bench::Swe
         match swe_bench::ensure_env(&inst, &dir).await {
             Ok(_) => {
                 crate::modules::work::env_broken_this_boot().remove(&inst.instance_id);
-                crate::probe!(
+                continuum_base::probe!(
                     class = "benchmark.env.prewarmed",
                     instance = %inst.instance_id,
                     "env ready behind the claim"
@@ -568,7 +568,7 @@ async fn stage_swe(workspace: &Path, instance: &crate::cognition::swe_bench::Swe
             }
             Err(e) => {
                 crate::modules::work::env_broken_this_boot().insert(inst.instance_id.clone());
-                crate::probe!(
+                continuum_base::probe!(
                     class = "benchmark.env.prewarm_failed",
                     instance = %inst.instance_id,
                     stage = "env",
@@ -582,7 +582,7 @@ async fn stage_swe(workspace: &Path, instance: &crate::cognition::swe_bench::Swe
 }
 
 fn failed(claimer: Uuid, title: &str, stage: &'static str, error: String) -> Staging {
-    crate::probe!(
+    continuum_base::probe!(
         class = "work.claim.stage_failed",
         claimer = %claimer,
         title = %title,

@@ -1,3 +1,4 @@
+#![cfg(test)]
 /// Integration test: CallServer → VoiceOrchestrator flow
 ///
 /// Tests that after transcribing audio, CallServer:

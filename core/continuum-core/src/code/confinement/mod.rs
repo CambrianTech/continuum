@@ -540,7 +540,7 @@ pub fn command_for(
     };
     let (cmd, receipt) = confined_command(confinement, program, args, cwd, cargo_grant);
     match &receipt {
-        Enforcement::Enforced { mechanism } => crate::probe!(
+        Enforcement::Enforced { mechanism } => continuum_base::probe!(
             class = "shell.confinement",
             who = %who,
             mechanism = %mechanism,
@@ -548,7 +548,7 @@ pub fn command_for(
             workspace = %confinement.workspace().display(),
             "a citizen's child is confined to her roots"
         ),
-        Enforcement::Unavailable { reason } => crate::probe!(
+        Enforcement::Unavailable { reason } => continuum_base::probe!(
             class = "shell.confinement.unavailable",
             who = %who,
             reason = %reason,
@@ -786,8 +786,9 @@ mod tests {
         let grant_hub = at(&format!("(allow file-write* (subpath \"{}\"))", h.join(".cache/huggingface/hub").display()));
         let grant_ws = at(&format!("(allow file-write* (subpath \"{}\"))", ws.display()));
         let deny_token = at(&format!("(deny file-read* (subpath \"{}\"))", h.join(".cache/huggingface/token").display()));
-        assert!(p.starts_with("(version 1)\n(allow default)\n"));
-        assert!(deny_home < read_zshrc && read_zshrc < grant_ws && grant_hub < deny_token, "{p}");
+        assert!(p.starts_with("(version 1)\n(allow default)\n(deny file-write* (subpath \"/\"))\n"), "writes are denied host-wide before anything is granted:\n{p}");
+        let devnull = at("(allow file-write* (literal \"/dev/null\"))");
+        assert!(devnull < deny_home && deny_home < read_zshrc && read_zshrc < grant_ws && grant_hub < deny_token, "{p}");
         assert!(!p.contains(&format!("(subpath \"{}\"))", h.join(".cache/huggingface").display())), "the root holding a carve-out is granted by its children, never whole:\n{p}");
         assert!(!list.write.iter().chain(list.read.iter()).any(|r| r.ends_with("huggingface")), "same on the allow-only side");
         assert!(!p.contains("file* "), "never the wildcard class: a deny in it loses to an earlier specific allow\n{p}");
@@ -868,14 +869,24 @@ mod tests {
             g = leak(".config/gh/hosts.yml", "GH-TOKEN"),
             t = leak(".cache/huggingface/token", "HF-TOKEN"),
         );
+        // card 0e941074: outside the home only the write roots are writable. A host path she
+        // has no root in is refused, while her workspace and /dev/null stay writable.
+        let shared = std::path::PathBuf::from("/Users/Shared").join(format!("continuum-confinement-{}", uuid::Uuid::new_v4()));
+        let script = format!(
+            "{script}; (echo x > '{shared}' && echo LEAK-HOST-WRITE); echo ok > '{ws}/written' && echo hi > /dev/null && echo WROTE",
+            shared = shared.display(),
+            ws = ws.display(),
+        );
         let (mut cmd, receipt) = confined_command(&c, Path::new("/bin/sh"), &["-c".into(), script.into()], None, None);
         assert!(receipt.is_enforced(), "{receipt:?}");
         let out = cmd.output().await.expect("test: spawn");
+        let _ = std::fs::remove_file(&shared); // only present if the deny failed; the assertion below names it
         let stdout = String::from_utf8_lossy(&out.stdout);
         let stderr = String::from_utf8_lossy(&out.stderr);
         assert!(stdout.contains("done"), "stdout={stdout} stderr={stderr}");
         assert!(stdout.starts_with("xxxx"), "her worktree, her rc file, the model cache and her citizen dir read: stdout={stdout} stderr={stderr}");
-        for tag in ["PICTURES", "SSH", "AIRC-IDENTITY", "GH-TOKEN", "HF-TOKEN", "HOME"] {
+        assert!(stdout.contains("WROTE"), "her workspace and /dev/null stay writable: stdout={stdout} stderr={stderr}");
+        for tag in ["PICTURES", "SSH", "AIRC-IDENTITY", "GH-TOKEN", "HF-TOKEN", "HOME", "HOST-WRITE"] {
             assert!(!stdout.contains(&format!("LEAK-{tag}")), "{tag} leaked: stdout={stdout}");
         }
         assert!(stderr.contains("Operation not permitted"), "the refusal is the OS's: stderr={stderr}");

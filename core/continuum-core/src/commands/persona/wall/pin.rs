@@ -102,7 +102,7 @@ crate::action_command! {
         // persona/identity/get. What a surface displays (8-char short form), its
         // verbs must accept.
         let persona_id =
-            crate::id_resolve::resolve(p.persona_id.as_str(), &crate::persona::card::ids(), "persona")
+            continuum_base::id_resolve::resolve(p.persona_id.as_str(), &crate::persona::card::ids(), "persona")
                 .map_err(CommandError::Invalid)?;
         let supersedes = match p.supersedes.as_deref() {
             Some(s) => Some(Uuid::parse_str(s).map_err(|e| {

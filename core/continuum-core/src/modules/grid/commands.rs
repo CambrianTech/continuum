@@ -13,6 +13,7 @@ use crate::runtime::{CommandSchema, ParamSchema};
 // Command name constants
 // ============================================================================
 
+pub const PREFIX: &str = "grid/";
 pub const STATUS: &str = "grid/status";
 pub const NODES: &str = "grid/nodes";
 pub const PING: &str = "grid/ping";

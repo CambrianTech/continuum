@@ -49,7 +49,7 @@
 //! - [[rust-is-the-core-node-is-the-shell]] — handle store lives in
 //!   Rust; TS commands route through the eventual ServiceModule
 
-use crate::time::EpochMs;
+use continuum_base::time::EpochMs;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
