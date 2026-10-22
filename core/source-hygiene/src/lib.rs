@@ -32,6 +32,7 @@ pub mod head_cuts;
 pub mod file_size;
 pub mod identity_discipline;
 pub mod layer_discipline;
+pub mod module_cycles;
 pub mod production_reachability;
 pub mod tenant_neutrality;
 pub mod test_mod_singularity;
