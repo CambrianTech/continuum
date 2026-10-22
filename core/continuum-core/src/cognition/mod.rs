@@ -28,6 +28,7 @@
 //!                                  `ResponderDecision`)
 
 pub mod framing_echo;
+pub mod single_purpose_lane;
 pub mod not_speech;
 pub mod act_observe;
 pub mod directed_pending;
@@ -37,7 +38,7 @@ pub mod bench_round;
 pub mod bench_title;
 pub mod held_out;
 pub mod grid_allocation;
-pub mod bench_staging;
+pub mod measurement_staging;
 pub mod bench_task;
 pub mod round_readiness;
 pub mod activity;
@@ -53,7 +54,6 @@ pub mod channel_digest_region;
 pub mod channel_element;
 pub mod channel_substrate;
 pub mod check_redundancy;
-pub mod competitor;
 pub mod context_budget;
 pub mod coursework;
 pub mod deferred_faculty;
@@ -90,6 +90,7 @@ pub mod open_views;
 pub mod parroted_perception;
 pub mod pass_intent;
 pub mod perception_facts;
+pub mod ring_collapse;
 pub mod persona_tools;
 pub mod persona_workspace;
 /// The handoff record: her state at the seam, written before a stop, read first on wake
@@ -110,8 +111,6 @@ pub mod audience;
 pub mod replay;
 pub mod room_roster;
 pub mod resolution;
-pub mod resolution_bench;
-pub mod resolution_compute;
 pub mod resource_admission;
 pub mod response_orchestrator;
 pub mod response_validator;

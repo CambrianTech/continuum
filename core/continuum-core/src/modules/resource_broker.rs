@@ -3,7 +3,7 @@
 //! This wraps `crate::resources::ResourceBroker` as a ServiceModule so TS,
 //! commands, and Rust subsystems can share one daemon-shaped resource contract.
 
-use crate::time::EpochMs;
+use continuum_base::time::EpochMs;
 use crate::resources::{ResourceAdmissionReport, ResourceBroker, ResourceDemand};
 use crate::runtime::{CommandResult, ModuleConfig, ModuleContext, ModulePriority, ServiceModule};
 use async_trait::async_trait;

@@ -11,7 +11,7 @@
 //! interesting (correlation, framing, peer discovery, retries,
 //! timeouts) lives in the transport.
 
-use crate::time::EpochMs;
+use continuum_base::time::EpochMs;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Arc;
 
@@ -122,7 +122,7 @@ impl AircRemoteInferenceAdapter {
                 // Fold this miss into the PEER's shared breaker: `Some(n)` means THIS
                 // miss — summed across every persona on the peer — tripped it cold.
                 if let Some(n) = self.breaker.observe_timeout(EpochMs::now_or_latest().millis()) {
-                    crate::probe!(
+                    continuum_base::probe!(
                         class = "remote_lane.cold",
                         peer = %self.default_target_peer.as_deref().unwrap_or("-"),  // unwrap_or: probe label only — "-" = no pinned peer, never a routing decision
                         persona = %self.persona_label(),
@@ -258,7 +258,7 @@ impl AIProviderAdapter for AircRemoteInferenceAdapter {
         if let Some(lane_model) = &self.default_model {
             if let Some(requested) = &request.model {
                 if requested != lane_model {
-                    crate::probe!(
+                    continuum_base::probe!(
                         class = "remote_lane.model_overridden",
                         peer = %self.default_target_peer.as_deref().unwrap_or("-"),  // unwrap_or: probe label only — "-" = no pinned peer
                         requested = %requested,
@@ -270,7 +270,7 @@ impl AIProviderAdapter for AircRemoteInferenceAdapter {
             request.model = Some(lane_model.clone());
         }
         if self.is_cold() {
-            crate::probe!(
+            continuum_base::probe!(
                 class = "remote_lane.refused_cold",
                 peer = %self.default_target_peer.as_deref().unwrap_or("-"),  // unwrap_or: probe label only — "-" = no pinned peer, never a routing decision
                 persona = %self.persona_label(),
@@ -295,7 +295,7 @@ impl AIProviderAdapter for AircRemoteInferenceAdapter {
         // was invisible here, and 9 misses in 200 s could not be told from 3
         // ten-minute waits (2026-09-07 01:59Z, the first read after #3818).
         match &sent {
-            Ok(r) => crate::probe!(
+            Ok(r) => continuum_base::probe!(
                 class = "remote_lane.answered",
                 peer = %self.default_target_peer.as_deref().unwrap_or("-"),  // unwrap_or: probe label only — "-" = no pinned peer
                 persona = %self.persona_label(),
@@ -306,7 +306,7 @@ impl AIProviderAdapter for AircRemoteInferenceAdapter {
                 served_window = ?r.text_response.routing.as_ref().and_then(|x| x.served_context_window),
                 "remote inference answered"
             ),
-            Err(e) => crate::probe!(
+            Err(e) => continuum_base::probe!(
                 class = "remote_lane.failed",
                 peer = %self.default_target_peer.as_deref().unwrap_or("-"),  // unwrap_or: probe label only — "-" = no pinned peer
                 persona = %self.persona_label(),

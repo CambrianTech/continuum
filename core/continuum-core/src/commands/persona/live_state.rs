@@ -25,7 +25,7 @@
 //! "persona/live-state", params}`. Benchmark work and real work read through the same rows,
 //! because both are turns and acts of the same citizen.
 
-use crate::time::EpochMs;
+use continuum_base::time::EpochMs;
 use std::collections::{BTreeMap, HashSet};
 use std::path::PathBuf;
 

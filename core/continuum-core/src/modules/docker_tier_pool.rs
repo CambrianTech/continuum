@@ -25,7 +25,7 @@
 //!   is configured to allow, NOT what continuum has set as a policy
 //!   bound. PR-4 caps that on install + alerts on >90% capacity.
 
-use crate::time::EpochMs;
+use continuum_base::time::EpochMs;
 use crate::modules::docker_tier::DockerTierProbe;
 use crate::paging::{ResourcePool, ResourcePoolEntry};
 use crate::runtime;

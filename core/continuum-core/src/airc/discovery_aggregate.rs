@@ -222,7 +222,7 @@ pub async fn discover_with_patience() -> AircDiscovery {
         let waited = effective_elapsed(started, reset_origin, std::time::Instant::now());
         if !should_retry(&d, waited, DISCOVERY_PATIENCE) {
             if attempt > 1 {
-                crate::probe!(
+                continuum_base::probe!(
                     class = "airc.discovery.settled",
                     attempts = attempt,
                     waited_ms = started.elapsed().as_millis() as u64,
@@ -233,7 +233,7 @@ pub async fn discover_with_patience() -> AircDiscovery {
             }
             return d;
         }
-        crate::probe!(
+        continuum_base::probe!(
             class = "airc.discovery.retry",
             attempt = attempt,
             waited_ms = started.elapsed().as_millis() as u64,
@@ -302,7 +302,7 @@ async fn recover_stale_daemon(socket: &std::path::Path) -> bool {
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
         answered = discover_peer_id(socket).await.is_ok();
     }
-    crate::probe!(
+    continuum_base::probe!(
         class = "airc.daemon.recovered",
         socket = %socket.display(),
         outcome = if answered { "recovered" } else { "not_recovered" },

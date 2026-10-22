@@ -304,7 +304,7 @@ pub(crate) async fn guard_resident_model(
             // 120s each while serving/status knew the exact cause — a failed
             // decode smoke-probe — and nothing surfaced it).
             let degraded = snap.degraded_reason.as_deref().unwrap_or("");
-            crate::probe!(
+            continuum_base::probe!(
                 class = "inference.awaiting_serving_transition",
                 provider = cfg.provider_id.as_str(),
                 wanted = model,

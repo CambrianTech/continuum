@@ -11,7 +11,7 @@
 //! allocated + reclaimed like any other machine resource. Owner-scoped: the local
 //! `uu` operator opens their own box's desktop; no persona identity required.
 
-use crate::time::EpochMs;
+use continuum_base::time::EpochMs;
 use std::path::PathBuf;
 
 use async_trait::async_trait;

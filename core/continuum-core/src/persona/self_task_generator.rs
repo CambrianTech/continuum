@@ -150,8 +150,8 @@ impl SelfTaskGenerator {
             "description": description,
             "priority": priority,
             "status": "pending",
-            "createdAt": crate::time::EpochMs::now().rfc3339(),
-            "updatedAt": crate::time::EpochMs::now().rfc3339(),
+            "createdAt": continuum_base::time::EpochMs::now().rfc3339(),
+            "updatedAt": continuum_base::time::EpochMs::now().rfc3339(),
         }))
     }
 
@@ -202,7 +202,7 @@ impl SelfTaskGenerator {
             None => return Ok(Vec::new()),
         };
 
-        let now_ms = crate::time::EpochMs::now().millis();
+        let now_ms = continuum_base::time::EpochMs::now().millis();
         let threshold = now_ms.saturating_sub(self.config.unfinished_work_threshold_ms);
         let mut resume_tasks = Vec::new();
 

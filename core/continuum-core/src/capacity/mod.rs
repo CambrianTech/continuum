@@ -56,6 +56,8 @@ pub mod serving_pager;
 pub mod settlement;
 pub mod sim;
 pub mod system_profile;
+#[cfg(any(test, feature = "test-fixtures"))]
+pub mod profile_fixtures;
 pub mod trace_tail;
 pub mod vq_decode;
 

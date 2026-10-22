@@ -4,7 +4,7 @@
 //! Uses the same ort crate we already have for TTS.
 
 use super::{VADError, VADResult, VoiceActivityDetection};
-use crate::audio_constants::AUDIO_SAMPLE_RATE;
+use continuum_base::audio_constants::AUDIO_SAMPLE_RATE;
 use ndarray::{Array1, Array2};
 use once_cell::sync::OnceCell;
 use ort::session::builder::GraphOptimizationLevel;

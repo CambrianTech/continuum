@@ -17,7 +17,7 @@
 //! capped). An operator's EXPLICIT `persona/spawn` stays sovereign — the hold
 //! gates the RECONCILER's adoption, never a human's direct command.
 
-use crate::time::EpochMs;
+use continuum_base::time::EpochMs;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 

@@ -156,7 +156,7 @@ impl NativeJobs {
         // ended in three killed-by-reboot jobs with no row saying when or why. One class
         // per transition, the job id on every row, so the room can follow a run.
         let provider = self.provider;
-        crate::probe!(
+        continuum_base::probe!(
             class = "training.job.queued",
             job = %id,
             provider,
@@ -168,7 +168,7 @@ impl NativeJobs {
             let prepared = tokio::select! {
                 biased;
                 _ = cancelled.changed() => {
-                    crate::probe!(
+                    continuum_base::probe!(
                         class = "training.job.cancelled",
                         job = %id,
                         provider,
@@ -184,7 +184,7 @@ impl NativeJobs {
             let PreparedJob { execution, finish } = match prepared {
                 Ok(job) => job,
                 Err(error) => {
-                    crate::probe!(
+                    continuum_base::probe!(
                         class = "training.job.prepare_failed",
                         job = %id,
                         provider,
@@ -206,7 +206,7 @@ impl NativeJobs {
                 },
                 Execution::InPlace(run) => {
                     let started = Instant::now();
-                    crate::probe!(
+                    continuum_base::probe!(
                         class = "training.job.started",
                         job = %id,
                         provider,
@@ -222,7 +222,7 @@ impl NativeJobs {
                         InPlaceEnd::Finished => (started, Ok(())),
                         InPlaceEnd::Failed(error) => (started, Err(error)),
                         InPlaceEnd::Cancelled => {
-                            crate::probe!(
+                            continuum_base::probe!(
                                 class = "training.job.cancelled",
                                 job = %id,
                                 provider,
@@ -247,7 +247,7 @@ impl NativeJobs {
                 Err(e) => Err(e),
             };
             match &artifact {
-                Ok(artifact) => crate::probe!(
+                Ok(artifact) => continuum_base::probe!(
                     class = "training.job.finished",
                     job = %id,
                     provider,
@@ -257,7 +257,7 @@ impl NativeJobs {
                     final_loss = artifact.metrics.final_loss.unwrap_or(f64::NAN), // unwrap_or: `finish` already refused a job with no finite loss; NAN here can only mean that guard moved
                     "a local training job finished with a measured learning receipt"
                 ),
-                Err(error) => crate::probe!(
+                Err(error) => continuum_base::probe!(
                     class = "training.job.failed",
                     job = %id,
                     provider,
@@ -305,7 +305,7 @@ async fn run_process(
     let mut child = match command.spawn() {
         Ok(child) => child,
         Err(error) => {
-            crate::probe!(
+            continuum_base::probe!(
                 class = "training.job.spawn_failed",
                 job = %id,
                 provider,
@@ -321,7 +321,7 @@ async fn run_process(
     let stdout = child.stdout.take();
     let stderr = child.stderr.take();
     let started = Instant::now();
-    crate::probe!(
+    continuum_base::probe!(
         class = "training.job.started",
         job = %id,
         provider,
@@ -353,7 +353,7 @@ async fn run_process(
             // Kill AND reap before announcing cancellation or releasing resources.
             let result = child.kill().await;
             for drain in drains { let _ = drain.await; }
-            crate::probe!(
+            continuum_base::probe!(
                 class = "training.job.cancelled",
                 job = %id,
                 provider,
@@ -414,7 +414,7 @@ async fn drain(
         log.write_all(format!("{line}\n").as_bytes()).await?;
         if let Some((iter, kind, loss)) = parser.and_then(|parse| parse(&line)) {
             let row = serde_json::json!({"iter":iter,"kind":kind,"loss":loss,
-                "atMs":crate::time::EpochMs::now().millis()});
+                "atMs":continuum_base::time::EpochMs::now().millis()});
             losses.write_all(format!("{row}\n").as_bytes()).await?;
         }
         if let Some(tail) = &tail {

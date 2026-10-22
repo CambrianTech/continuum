@@ -165,7 +165,7 @@ impl MemoryConsolidationRegion {
             return sleep();
         }
 
-        let now_ms = crate::time::EpochMs::now().millis();
+        let now_ms = continuum_base::time::EpochMs::now().millis();
         let thoughts: Vec<Thought> = fresh
             .iter()
             .map(|text| Thought {
@@ -238,7 +238,7 @@ impl MemoryConsolidationRegion {
                 if let Ok(mut seen) = self.seen.lock() {
                     seen.entry(persona_id).or_default().extend(fresh);
                 }
-                crate::probe!(
+                continuum_base::probe!(
                     class = "memory.consolidation.pass",
                     persona = %persona_id,
                     memories = res.memories.len(),
@@ -247,7 +247,7 @@ impl MemoryConsolidationRegion {
                 TickOutcome::idle()
             }
             Err(error) => {
-                crate::probe!(
+                continuum_base::probe!(
                     class = "memory.consolidation.failed",
                     persona = %persona_id,
                     error = %error,

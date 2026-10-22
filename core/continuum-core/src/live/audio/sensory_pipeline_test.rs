@@ -14,7 +14,7 @@
 
 #[cfg(test)]
 mod tests {
-    use crate::audio_constants::AUDIO_SAMPLE_RATE;
+    use continuum_base::audio_constants::AUDIO_SAMPLE_RATE;
     use crate::live::audio::vad::test_audio::{NoiseType, TestAudioGenerator, Vowel};
 
     /// Helper: generate a test image (colored rectangles) as RGBA bytes.
@@ -208,7 +208,7 @@ mod tests {
         use crate::live::audio::vad::ProductionVAD;
 
         let gen = TestAudioGenerator::new(AUDIO_SAMPLE_RATE);
-        let vad_frame_size = crate::audio_constants::AUDIO_FRAME_SIZE;
+        let vad_frame_size = continuum_base::audio_constants::AUDIO_FRAME_SIZE;
 
         // Initialize VAD (uses ort for Silero)
         let vad_result = tokio::task::spawn_blocking(|| {

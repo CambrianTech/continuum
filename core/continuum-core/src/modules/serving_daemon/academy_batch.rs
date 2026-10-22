@@ -502,7 +502,7 @@ impl ServingDaemonModule {
 
     fn publish_teacher_restored(&self, prior: &ServingSnapshot, revision: u64) {
         let mut restored = prior.clone();
-        restored.ready_verified_at_ms = crate::time::EpochMs::read().ok().map(crate::time::EpochMs::millis);
+        restored.ready_verified_at_ms = continuum_base::time::EpochMs::read().ok().map(continuum_base::time::EpochMs::millis);
         Self::emit_serving(self.bus.get(), &restored);
         let _ = self.serving_tx.send_replace(restored.clone());
         self.acknowledge_verified_target(&restored, revision);

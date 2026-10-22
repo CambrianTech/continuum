@@ -6,7 +6,7 @@
 //! - Event frames: forward to local message bus
 //! - Stream frames: (future) large data transfer
 
-use crate::time::EpochMs;
+use continuum_base::time::EpochMs;
 use super::acl::is_command_authorized;
 use super::audit::{AuditDirection, AuditEntry, AuditOutcome};
 use super::frame::{FrameType, GridFrame, GridPayload};

@@ -15,7 +15,7 @@
 //! a write failure is logged and dropped, NEVER fails the cognition turn —
 //! observability is not load-bearing ([[substrate-is-a-good-citizen-on-the-host]]).
 
-use crate::time::EpochMs;
+use continuum_base::time::EpochMs;
 use crate::routing::capped_appender::{CappedAppender, MAX_LOG_BYTES};
 use std::io::{BufWriter, Write};
 use std::path::Path;

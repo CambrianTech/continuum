@@ -231,7 +231,7 @@ impl ServiceModule for GenomeFitnessSentinel {
         let genes = match crate::forge::adapter_manifest::load() {
             Ok(g) => g,
             Err(e) => {
-                crate::probe!(
+                continuum_base::probe!(
                     class = "genome.fitness",
                     error = e.as_str(),
                     "adapter manifest unreadable — skipping fitness assessment this tick",
@@ -277,7 +277,7 @@ impl ServiceModule for GenomeFitnessSentinel {
             })
             .collect::<Vec<_>>()
             .join(" ");
-        crate::probe!(
+        continuum_base::probe!(
             class = "genome.fitness",
             layers = assessed.len(),
             retire_candidates,

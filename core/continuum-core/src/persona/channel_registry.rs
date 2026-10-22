@@ -385,7 +385,7 @@ mod tests {
     use super::super::channel_items::*;
     use super::super::types::SenderType;
     use super::*;
-    use crate::time::EpochMs;
+    use continuum_base::time::EpochMs;
     use uuid::Uuid;
 
     fn arc_chat(room: Uuid, mentions: bool, priority: f32) -> Arc<dyn QueueItemBehavior> {

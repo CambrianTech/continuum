@@ -47,7 +47,7 @@ impl AwarenessRagSource {
                 match reader.active_claims().await {
                     Ok(claims) if !claims.is_empty() => lines.insert(0, offer_line(claims.len())),
                     Ok(_) => {}
-                    Err(e) => crate::probe!(
+                    Err(e) => continuum_base::probe!(
                         class = "mind.strip.claims_unreadable",
                         persona = %self.persona_id,
                         error = %e.to_string(),
@@ -132,7 +132,7 @@ impl RagSource for AwarenessRagSource {
             return empty(resolution);
         }
         let Some(content) = Self::fit(&lines, budget) else {
-            crate::probe!(
+            continuum_base::probe!(
                 class = "mind.strip.unfit",
                 persona = %self.persona_id,
                 budget,
@@ -142,7 +142,7 @@ impl RagSource for AwarenessRagSource {
             return empty(resolution);
         };
         let tokens = estimate_tokens(&content);
-        crate::probe!(
+        continuum_base::probe!(
             class = "mind.strip.delivered",
             persona = %self.persona_id,
             lines_total = lines.len() as u64,

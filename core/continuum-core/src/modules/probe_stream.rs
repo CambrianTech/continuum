@@ -428,7 +428,7 @@ mod tests {
             assert_eq!(module.open_stream_count(), 1);
 
             // 2. Fire a probe — the router fans it to the open stream
-            crate::probe!(class = "decision", action = "promote");
+            continuum_base::probe!(class = "decision", action = "promote");
 
             // 3. Poll for the event with a non-blocking drain
             let next_params = serde_json::json!({ "handle": handle });
@@ -500,7 +500,7 @@ mod tests {
                 .block_on(async {
                     // Emit synchronously BEFORE the poll begins (the
                     // event lands in the broadcast buffer immediately).
-                    crate::probe!(class = "latency", duration_ms = 99i64);
+                    continuum_base::probe!(class = "latency", duration_ms = 99i64);
                     module
                         .handle_command(
                             "debug/probes/next",
@@ -627,7 +627,7 @@ mod tests {
             );
             assert_eq!(module.open_stream_count(), 2);
 
-            crate::probe!(class = "shared", n = 7i64);
+            continuum_base::probe!(class = "shared", n = 7i64);
 
             // Both streams see the event
             let r1 = rt
@@ -667,7 +667,7 @@ mod tests {
             {
                 let span = tracing::info_span!("cmd", uri = "airc:///inference/llm/generate");
                 let _enter = span.enter();
-                crate::probe!(class = "audit", verdict = "approved");
+                continuum_base::probe!(class = "audit", verdict = "approved");
             }
 
             let result = rt

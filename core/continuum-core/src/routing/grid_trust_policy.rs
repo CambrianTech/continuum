@@ -281,7 +281,7 @@ impl AuthPolicy for GridTrustAuthPolicy {
             // Refusals ONLY — the allow arm stays unprobed so the hot path pays
             // nothing. A denial is rare and decisive, which is exactly the shape the
             // probe stream is for.
-            crate::probe!(
+            continuum_base::probe!(
                 class = "routing.acl.refused",
                 path = %path,
                 trust = ?trust,

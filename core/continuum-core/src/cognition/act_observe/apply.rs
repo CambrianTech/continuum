@@ -3,7 +3,7 @@
 //! return the observation text so the caller can fold it into the next perception.
 //! Extracted verbatim from `act_observe` (pure code-motion, #386 decomposition).
 
-use crate::time::EpochMs;
+use continuum_base::time::EpochMs;
 use uuid::Uuid;
 
 use crate::ai::types::{ToolCall, ToolResult};
@@ -204,7 +204,7 @@ pub async fn apply_act(
                          on it — the result will appear in my working memory when it completes, and \
                          I can carry on meanwhile."
                     ));
-                    crate::probe!(
+                    continuum_base::probe!(
                         class = "persona.act.dispatched_background",
                         persona = %body.persona_name,
                         command = %cmd,
@@ -245,7 +245,7 @@ pub async fn apply_act(
     )
     .await
     .unwrap_or_else(|_| { // timeout elapsed = the hang this bound exists to convert; the closure builds the honest error
-        crate::probe!(
+        continuum_base::probe!(
             class = "persona.act.tool_batch_hung",
             ceiling_s = TOOL_BATCH_CEILING.as_secs(),
             tools = fg_calls.len(),
@@ -524,14 +524,14 @@ pub async fn apply_act(
                 )
                 .await
                 {
-                    Ok(_) => crate::probe!(
+                    Ok(_) => continuum_base::probe!(
                         class = "room.work_receipt.published",
                         room = %receipt_room,
                         actor = %body.persona_id,
                         acts = lines.len() as u64,
                         "act receipts radiated into the activity transcript — roommates see the work"
                     ),
-                    Err(e) => crate::probe!(
+                    Err(e) => continuum_base::probe!(
                         class = "room.work_receipt.failed",
                         room = %room_id,
                         actor = %body.persona_id,
@@ -623,7 +623,7 @@ pub async fn apply_act(
                     prior,
                     crate::persona::engram_graph::EdgeKind::CausedBy,
                 );
-                crate::probe!(
+                continuum_base::probe!(
                     class = "engram.edge.caused_by",
                     persona = %body.persona_name,
                     room_id = %room_id,
@@ -702,7 +702,7 @@ pub async fn apply_act(
         a.completed_successfully() && a.output.verb.publishes()
     });
     let wrote = wrote_by_verb || published || disk == super::disk_change::DiskChange::Changed;
-    crate::probe!(
+    continuum_base::probe!(
         class = "persona.act.observed",
         persona = %body.persona_name,
         room_id = %room_id,

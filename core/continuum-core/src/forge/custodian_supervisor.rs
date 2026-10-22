@@ -60,7 +60,7 @@ const READY_POLL: Duration = Duration::from_millis(500);
 /// Returns the first candidate that resolves; the PATH fallback is always a
 /// candidate so a `$PATH`-installed binary works even off-tree.
 fn resolve_custodian_bin() -> PathBuf {
-    if let Some(p) = crate::config_env::read("FORGE_CUSTODIAN_BIN") {
+    if let Some(p) = continuum_base::config_env::read("FORGE_CUSTODIAN_BIN") {
         let pb = PathBuf::from(p);
         if pb.exists() {
             return pb;

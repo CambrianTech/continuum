@@ -37,8 +37,25 @@ pub const READABLE_FILE_LINES: usize = 1_000;
 // 158,221 after card 32d2abbb moved the training-job directory layout and its reader out of
 // modules/training_trigger.rs into genome/fine_tuning/job_dir.rs.
 // 157,971 (with #5185) after card 67af4fca moved the credit stamp (CreditRole, OutcomeStamp, CapturedCredit,
-// SettlementVerdict) out of persona/training_producer.rs into training_producer/stamp.rs.
-const BASELINE_LINES_OVER: usize = 157_969;
+// SettlementOutcome) out of persona/training_producer.rs into training_producer/stamp.rs.
+// 157,645 after card a0790c4b moved persona/viewstate_rag.rs's test module to
+// persona/viewstate_rag/tests.rs (#![cfg(test)]): #5015 had grown it to 1,458 lines and turned canary red.
+// 157,618 after consolidating the f32 cosine kernel into cognition/embedding/similarity.rs.
+// 157,412 after card a00ab1a6 deleted the standing benchmark autopilot (no harness).
+// 156,830 after card 5e3a3e75 deleted three hand copies of paths::continuum_home.
+// 156,825 after card 394017ed folded ensure_slot_pool's inline probes into one typed miss.
+// 154,999 after placement responsibilities split on current canary.
+// 136,485 after #5224 moved 69 oversized files' test modules into sibling tests.rs files.
+// 133,731 after #5225 split eight files just over 1,000 lines by owner.
+// 57,268 after #5228 split the 59 remaining oversized files into child modules.
+// 57,131 after launch_gate, models and benchmark_dispatch were decomposed.
+// 54,053 after start_server, serve_persona_loop_inner, voice_module, launch_gate, models and
+// benchmark_dispatch were decomposed by responsibility (#5234-#5237).
+// 45,242 after bin/continuum.rs was split by responsibility into bin/continuum/* (measured here, source-hygiene run).
+// 45,131 measured on canary 13ce66b03 + this change: 45,242 - 111 (generator/templates split).
+// 36,308 after llama-server responsibility split, direct source census.
+// 364 after the split merge-train (#5229-#5233, #5240, #5244): the only Rust file past 1,000 lines is the vendored inference/vendored/quantized_llama.rs (1,364).
+const BASELINE_LINES_OVER: usize = 364;
 
 pub struct FileSize;
 

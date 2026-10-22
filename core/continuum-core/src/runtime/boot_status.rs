@@ -25,7 +25,7 @@
 //!
 //! ## Probe emission (load-bearing)
 //!
-//! Every [`boot_status`] call ALSO fires a substrate-native [`crate::probe!`]
+//! Every [`boot_status`] call ALSO fires a substrate-native [`continuum_base::probe!`]
 //! event with `class = "boot.status"` (fields `subsystem`/`kind`/`detail`).
 //! The `probe!` macro sets `probe_class` as a FIELD (not a tracing `target`),
 //! which is what `JsonlProbeFileSink` filters on (`CONTINUUM_PROBE_CLASSES=
@@ -101,7 +101,7 @@ pub fn boot_status(subsystem: &str, kind: BootStatusKind, detail: &str) {
     // Structured emission via `probe!` (routing/macros.rs). The `probe_class`
     // FIELD is what JsonlProbeFileSink + ProbeRouterLayer key on — see the
     // module doc. A `tracing::info!(target: …)` would skip both consumers.
-    crate::probe!(
+    continuum_base::probe!(
         class = "boot.status",
         subsystem = subsystem,
         kind = kind.tag(),

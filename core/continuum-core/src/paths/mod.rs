@@ -24,6 +24,8 @@ pub mod docker;
 pub mod cargo;
 pub mod artifacts;
 pub mod native;
+mod layout;
+pub use layout::ContinuumLayout;
 
 /// Configured storage tier, without inventing a machine-specific destination.
 /// Writers still resolve its physical volume and perform capacity admission.
@@ -155,7 +157,7 @@ fn configured(key: &str) -> Option<std::path::PathBuf> {
     std::env::var_os(key)
         .filter(|v| !v.is_empty())
         .map(std::path::PathBuf::from)
-        .or_else(|| crate::config_env::read(key).filter(|v| !v.is_empty()).map(Into::into))
+        .or_else(|| continuum_base::config_env::read(key).filter(|v| !v.is_empty()).map(Into::into))
 }
 
 /// PURE: [`shared_cargo_target_dir`] from its inputs (an empty value is unset).
@@ -213,6 +215,7 @@ mod tests {
     // the next boot planned 8 lanes on it. Under test the home is a per-process temp dir.
     #[test]
     fn a_test_binary_never_resolves_the_operators_home() {
+        let _home = crate::test_env::HomeGuard::preserve_blocking(); // reads the process home a guarded fixture may be swapping (card cb3221a5)
         if std::env::var_os("CONTINUUM_HOME").is_some() {
             return; // an explicitly declared home is the test's own choice
         }

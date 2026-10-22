@@ -194,7 +194,6 @@ pub fn grid_has_fit(snapshot: &GridSnapshot, footprint: &ModelFootprint) -> bool
 mod tests {
     use super::*;
     use crate::capacity::{DeviceCapacity, DriveInfo, DriveRole};
-    use crate::governor::types::{HardwareClass, PowerSource, TargetSilicon, ThermalClass};
 
     const GB: u64 = 1024 * 1024 * 1024;
 
@@ -213,25 +212,7 @@ mod tests {
                 role: DriveRole::Cold,
             });
         }
-        SystemProfile::from_parts(
-            HardwareClass {
-                silicon: TargetSilicon::NvidiaCuda,
-                silicon_model: "test".into(),
-                vram_mb: vram_gb * 1024,
-                system_ram_mb: 128 * 1024,
-                power_source: PowerSource::Plugged,
-                thermal_class: ThermalClass::Workstation,
-                battery_pct: None,
-                thermal_headroom_pct: None,
-            },
-            DeviceCapacity {
-                gpu_total_bytes: vram_gb * GB,
-                gpu_free_bytes_live: gpu_free_gb * GB,
-                system_ram_free_bytes: 100 * GB,
-            },
-            drives,
-            24,
-        )
+        crate::capacity::profile_fixtures::discrete_fixture(vram_gb, gpu_free_gb, drives)
     }
 
     fn footprint(weights_gb: u64) -> ModelFootprint {

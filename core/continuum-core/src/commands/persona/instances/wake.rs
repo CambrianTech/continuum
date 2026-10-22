@@ -90,7 +90,7 @@ crate::action_command! {
                 resting.iter().map(|s| s.agent_name.as_str()).collect::<Vec<_>>()
             )));
         }
-        crate::probe!(
+        continuum_base::probe!(
             class = "persona.mindless.woken",
             persona = name,
             "the operator's word: a resting seat returns at the next reconcile"

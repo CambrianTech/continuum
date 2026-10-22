@@ -51,7 +51,7 @@ pub fn staging_root(peer: &uuid::Uuid) -> Option<PathBuf> {
 fn in_flight_tree(root: &std::path::Path, name: &str) -> bool {
     let in_flight = crate::cognition::swe_bench::is_in_flight_staging_name(name);
     if in_flight {
-        crate::probe!(
+        continuum_base::probe!(
             class = "staging.in_flight_tree_not_a_checkout",
             root = %root.display(),
             name = %name,
@@ -416,7 +416,7 @@ fn candidate_paths_changed_from(root: &std::path::Path, base: Option<&str>) -> S
                 Ok(o) => String::from_utf8_lossy(&o.stderr).trim().to_string(),
                 Err(e) => e.to_string(),
             };
-            crate::probe!(
+            continuum_base::probe!(
                 class = "benchmark.workspace.candidate_diff_unreadable",
                 workspace = %root.display(),
                 why = why.as_str(),
@@ -460,8 +460,8 @@ fn newest_work_mtime_ms(root: &std::path::Path, porcelain: &str) -> Option<u64> 
                 .or_else(|| path.parent().and_then(|p| std::fs::metadata(p).ok()))
         })
         .filter_map(|m| m.modified().ok())
-        .filter_map(|t| crate::time::EpochMs::of(t).ok())
-        .map(crate::time::EpochMs::millis)
+        .filter_map(|t| continuum_base::time::EpochMs::of(t).ok())
+        .map(continuum_base::time::EpochMs::millis)
         .max()
 }
 
@@ -537,7 +537,7 @@ where
         CardWorkspace::One { path, .. } => Some(path),
         CardWorkspace::None => None,
         CardWorkspace::Ambiguous { candidates } => {
-            crate::probe!(
+            continuum_base::probe!(
                 class = "persona.work.staged_ambiguous",
                 peer = %peer,
                 matches = candidates.len(),

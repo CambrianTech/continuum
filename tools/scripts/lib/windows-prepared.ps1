@@ -293,10 +293,12 @@ function Retire-CorePreviousSelectionForSlot {
     # An independent free engine needs no release retirement. Leave the normal
     # selector's existing refusal/skip behavior in charge of that case.
     if ((Get-CoreEngineIdleSlot -Cli $Cli -InstallRoot $InstallRoot) -ne $engine) { return }
-    if ((ConvertTo-CoreImagePath (Split-Path $active.Receipt.release.artifact -Parent)) -eq (ConvertTo-CoreImagePath $Slot) -or
-        (ConvertTo-CoreImagePath (Split-Path $active.Receipt.release.engine -Parent)) -eq $engine) {
+    if ((ConvertTo-CoreImagePath (Split-Path $active.Receipt.release.artifact -Parent)) -eq (ConvertTo-CoreImagePath $Slot)) {
         throw 'Inactive selection supersession would withdraw active release custody.'
     }
+    # A shared engine remains Active's property. Preserve both receipts here;
+    # the selector must exclude their engine and find another lane-safe slot.
+    if ((ConvertTo-CoreImagePath (Split-Path $active.Receipt.release.engine -Parent)) -eq $engine) { return }
     # Service idleness does not imply engine idleness: independent lanes outlive
     # cores. Only the current CLI's lane-aware selector can authorize this slot.
     $task = Get-ScheduledTask -TaskName ContinuumCore -TaskPath '\' -ErrorAction Stop
