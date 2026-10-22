@@ -383,8 +383,8 @@ mod tests {
 
     // what this catches (the VDD dimension): measure() runs the command N times,
     // collects latency, and the p95 gate passes for a fast command. This is the
-    // per-module VDD loop — a test gating on a MEASURED property, and the bench
-    // projects into a StandardVddRecord for baselining/replay.
+    // per-module VDD loop — a test gating on a MEASURED property (the bench's
+    // projection into a StandardVddRecord is pinned in test_env/kernel_integration.rs).
     #[tokio::test]
     async fn harness_measures_latency_and_gates_p95() {
         let h = ModuleHarness::with(Arc::new(GreeterModule {
@@ -401,12 +401,5 @@ mod tests {
         // A trivial in-process command is fast — generous gate avoids CI flake
         // while still pinning that the VDD assertion mechanism works.
         bench.assert_p95_under(std::time::Duration::from_millis(250));
-
-        // Projects into the VDD record substrate for baselining/replay.
-        let rec = crate::vdd::record::StandardVddRecord::from_bench(&bench, "greeter-hello-bench", "test-sha");
-        assert_eq!(rec.command, "greet/hello");
-        assert_eq!(rec.status, crate::vdd::record::HarnessStatus::Pass);
-        assert!(rec.execution_ms.is_some(), "p50 recorded as execution_ms");
-        assert_eq!(rec.error_count, 0);
     }
 }

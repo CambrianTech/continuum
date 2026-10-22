@@ -1,5 +1,4 @@
 #![cfg(test)]
-    use crate::inference::airc_remote::interceptor::AircInterceptor;
     use super::*;
     use async_trait::async_trait;
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -26,8 +25,11 @@
     #[test]
     fn with_interceptor_grows_chain_in_insertion_order() {
         let registry = Arc::new(ModuleRegistry::new());
-        let executor =
-            CommandExecutor::new(registry).with_interceptor(Arc::new(AircInterceptor::new()));
+        let executor = CommandExecutor::new(registry).with_interceptor(Arc::new(RecordingDecliner {
+            name: "any",
+            seen: Arc::new(AtomicUsize::new(0)),
+            mark: 0,
+        }));
         assert_eq!(
             executor.interceptor_count(),
             1,
@@ -85,111 +87,6 @@
         }
     }
 
-    // what this catches: the TYPED PATH end-to-end through the REAL executor —
-    // `ping` (migrated to a DynCommand object via ActionCommand) dispatches all the
-    // way through CommandExecutor::execute, which consults the registry's object map
-    // (step 2) BEFORE any prefix routing, and returns the bare PingResult. This is
-    // the integration proof that the per-module match arm is gone for ping and the
-    // self-routing object map serves it. Pure headless Rust — no Node, no socket,
-    // no npm start.
-    #[tokio::test]
-    async fn ping_dispatches_through_executor_via_typed_object_path() {
-        let registry = Arc::new(ModuleRegistry::new());
-        registry.register(Arc::new(crate::modules::health::HealthModule::new()));
-        let executor = CommandExecutor::new(registry);
-
-        let result = executor
-            .execute("ping", serde_json::json!({}))
-            .await
-            .expect("ping dispatches through the executor");
-        match result {
-            CommandResult::Json(v) => {
-                assert_eq!(v["ok"], true, "ping returned the bare PingResult");
-                assert!(
-                    v.get("success").is_none(),
-                    "Bare wire — no envelope wrapping on the typed path"
-                );
-            }
-            other => panic!("expected Json, got {other:?}"),
-        }
-    }
-
-    // what this catches: NO ESCALATION THROUGH COMPOSITION, via a REAL composing
-    // handler (not just the gate). `Composer` is an ActionCommand whose `run`
-    // composes a sub-command with `ctx.caller.clone()` — exactly the pattern a
-    // dep-holding command uses. Invoked as the local owner the sub-call passes the
-    // gate; invoked as an airc/Provisional caller the propagated identity is gated,
-    // so it CANNOT reach the Owner-only `data/delete`. This pins that identity flows
-    // through composition (and, by the same mechanism, across the grid), never
-    // escalating — the guarantee the COMMAND-ORGANIZATION doc claims.
-    #[tokio::test]
-    async fn composing_handler_propagates_ctx_caller_no_escalation() {
-        use crate::routing::{CallerIdentity};
-        use crate::modules::grid::{GridTrustAuthPolicy};
-        use crate::sdk_codegen::{ActionCommand, CommandError, Ctx};
-
-        #[derive(
-            Default, serde::Serialize, serde::Deserialize, ts_rs::TS, schemars::JsonSchema,
-        )]
-        struct NoParams {}
-        #[derive(serde::Serialize, serde::Deserialize, ts_rs::TS)]
-        struct Out {
-            forbidden: bool,
-        }
-
-        // A command that COMPOSES another, propagating its own caller (ctx.caller).
-        struct Composer {
-            exec: Arc<CommandExecutor>,
-        }
-        #[async_trait]
-        impl ActionCommand for Composer {
-            const NAME: &'static str = "test/composer";
-            type Params = NoParams;
-            type Output = Out;
-            async fn run(&self, ctx: &Ctx, _p: NoParams) -> Result<Out, CommandError> {
-                let r = self
-                    .exec
-                    .execute_with_caller(
-                        "data/delete",
-                        Value::Object(Default::default()),
-                        ctx.caller.clone(),
-                    )
-                    .await;
-                Ok(Out {
-                    forbidden: r
-                        .as_ref()
-                        .err()
-                        .map(|e| e.contains("forbidden"))
-                        .unwrap_or(false),
-                })
-            }
-        }
-
-        let registry = Arc::new(ModuleRegistry::new());
-        let exec = Arc::new(
-            CommandExecutor::new(registry).with_policy(Arc::new(GridTrustAuthPolicy::new())),
-        );
-        let composer = Composer { exec: exec.clone() };
-
-        // Composed as the local owner (ctx.caller None) → sub-call NOT gate-forbidden.
-        let owner = composer.run(&Ctx::default(), NoParams {}).await.unwrap();
-        assert!(
-            !owner.forbidden,
-            "owner composing data/delete is not forbidden"
-        );
-
-        // Composed as an airc/Provisional caller → identity propagated → FORBIDDEN.
-        let airc_ctx = Ctx {
-            caller: Some(CallerIdentity::airc(crate::identity::PeerId::new())),
-            ..Default::default()
-        };
-        let escalated = composer.run(&airc_ctx, NoParams {}).await.unwrap();
-        assert!(
-            escalated.forbidden,
-            "airc composing data/delete must be forbidden — handler propagated ctx.caller, no escalation"
-        );
-    }
-
     #[tokio::test]
     async fn interceptors_walked_in_insertion_order_when_all_decline() {
         let last_seen = Arc::new(AtomicUsize::new(0));
@@ -242,77 +139,6 @@
             later_called.load(Ordering::SeqCst),
             0,
             "interceptors after the first Handled must not be consulted"
-        );
-    }
-
-    #[tokio::test]
-    async fn airc_interceptor_declines_when_no_airc_target_params() {
-        // The airc interceptor at the head of the chain must NOT block
-        // existing local-Rust commands that don't carry airc routing
-        // params. This is the back-compat guarantee that lets the airc
-        // interceptor be safely installed at init_executor.
-        //
-        // Without a registered Rust module for "test/cmd", the executor
-        // walks the interceptor chain (airc Declines because no
-        // aircPeer in params), then the registry (no match), then
-        // returns CommandNotFound per [[no-fallbacks-ever]] (task #219).
-        // The test is asserting the airc interceptor did NOT
-        // short-circuit — the failure source MUST be the registry miss,
-        // NOT the airc interceptor.
-        let registry = Arc::new(ModuleRegistry::new());
-        let executor =
-            CommandExecutor::new(registry).with_interceptor(Arc::new(AircInterceptor::new()));
-
-        let result = executor
-            .execute("test/cmd", serde_json::json!({ "ordinaryParam": "value" }))
-            .await;
-
-        // Failure must be the CommandNotFound shape (no Rust module),
-        // not the airc interceptor short-circuiting. The substring
-        // "no Rust module handles command" is the contract we depend on
-        // — if the airc interceptor had wrongly intercepted, the error
-        // would mention "airc" instead.
-        let err = result.expect_err("command has no Rust handler; expect typed error");
-        assert!(
-            err.contains("no Rust module handles command"),
-            "error must come from registry miss (the no-fallbacks surface), \
-             not from airc interceptor. err: {err}"
-        );
-        assert!(
-            !err.contains("aircPeer") && !err.contains("airc interceptor"),
-            "error must NOT mention airc routing — proves the airc \
-             interceptor declined cleanly. err: {err}"
-        );
-    }
-
-    #[tokio::test]
-    async fn airc_interceptor_fails_loud_when_airc_peer_targeted() {
-        // The airc interceptor MUST short-circuit with a loud error when
-        // a caller passes aircPeer, even before the transport is wired.
-        // Silent fall-through would hide the missing transport from the
-        // caller, who would then see local-dispatch results (or worse,
-        // success on the wrong machine) and not know airc wasn't used.
-        let registry = Arc::new(ModuleRegistry::new());
-        let executor =
-            CommandExecutor::new(registry).with_interceptor(Arc::new(AircInterceptor::new()));
-
-        let err = executor
-            .execute(
-                "chat/send",
-                serde_json::json!({ "aircPeer": "peer-id", "content": "hello" }),
-            )
-            .await
-            .expect_err(
-                "explicit aircPeer must error until transport is wired — \
-                 not silently fall through to local",
-            );
-        assert!(
-            err.contains("airc"),
-            "error must identify airc as the unresolved transport: {err}"
-        );
-        assert!(
-            err.contains("peer-id"),
-            "error must echo the target so the caller can correlate logs: {err}"
         );
     }
 

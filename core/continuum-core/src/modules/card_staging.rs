@@ -704,7 +704,7 @@ mod tests {
     fn a_generic_repo_card_is_never_answered_with_a_bench_checkout_that_its_title_names() {
         let home = tempfile::tempdir().unwrap(); // test: temp dir creation
         // Under the one crate-wide home lock (#4082); restored by the guard's drop.
-        let _home = crate::test_env::HomeGuard::set_blocking(home.path());
+        let _home = crate::paths::test_home::HomeGuard::set_blocking(home.path());
         std::env::set_var("CONTINUUM_HOME", home.path());
 
         let peer = Uuid::new_v4();

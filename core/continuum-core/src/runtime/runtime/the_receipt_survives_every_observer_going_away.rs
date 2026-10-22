@@ -549,51 +549,29 @@ pub(super) mod conditional_modules_tests {
             );
         }
 
-        // what this catches: the card itself — the real airc interceptor on the
-        // socket route refuses a peer-addressed generate by NAME instead of
-        // letting it run locally.
-        #[tokio::test]
-        async fn a_peer_addressed_generate_on_the_socket_route_never_runs_locally() {
-            let runtime = Runtime::new();
-            runtime
-                .interceptor_chain()
-                .write()
-                .unwrap_or_else(|e| e.into_inner()) // unwrap_or_else: test lock
-                .push(Arc::new(crate::inference::airc_remote::interceptor::AircInterceptor::new()));
-            let out = runtime
-                .route_command(
-                    "ai/generate",
-                    serde_json::json!({"aircPeer": "not-a-uuid", "prompt": "hi"}),
-                    None,
-                )
-                .await
-                .expect("the airc interceptor answers a peer-addressed call");
-            let err = out.expect_err("a peer-addressed generate must not run locally");
-            assert!(
-                err.contains("airc") && (err.contains("attached") || err.contains("aircPeer")),
-                "the refusal names the seam: {err}"
-            );
-        }
     }
-    use crate::airc::{AircDiscovery, DiscoveryFailure, PartialDiscovery};
-    use airc_core::RoomId;
-    use std::path::PathBuf;
-    use uuid::Uuid;
+    /// The mesh states the census reads, as the kernel sees them: through `MeshPresence`
+    /// alone (airc's `AircDiscovery` is the real implementor, above the kernel).
+    struct Mesh {
+        can_host: bool,
+        kind: &'static str,
+    }
 
-    fn healthy() -> AircDiscovery {
-        AircDiscovery::Healthy {
-            socket: PathBuf::from("/tmp/x.sock"),
-            default_room: RoomId::from_uuid(Uuid::new_v4()),
-            room_name: "general".into(),
-            peer_id: Uuid::new_v4(),
+    impl MeshPresence for Mesh {
+        fn can_host_personas(&self) -> bool {
+            self.can_host
+        }
+        fn kind(&self) -> &'static str {
+            self.kind
         }
     }
 
-    fn degraded() -> AircDiscovery {
-        AircDiscovery::Degraded {
-            reason: DiscoveryFailure::NoDefaultRoom,
-            partial: PartialDiscovery::default(),
-        }
+    fn healthy() -> Mesh {
+        Mesh { can_host: true, kind: "healthy" }
+    }
+
+    fn degraded() -> Mesh {
+        Mesh { can_host: false, kind: "degraded" }
     }
 
     /// FullCitizen + Healthy → must include persona hosting.

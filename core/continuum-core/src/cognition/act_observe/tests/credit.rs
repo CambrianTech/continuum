@@ -29,7 +29,7 @@ async fn directed_credit_survives_partial_cancellation_and_atomic_retry() {
     };
 
     let home = tempfile::tempdir().unwrap();
-    let _home = crate::test_env::HomeGuard::set(home.path()).await;
+    let _home = crate::paths::test_home::HomeGuard::set(home.path()).await;
     crate::persona::register_substrate_orm_entities(crate::orm::OrmEntityRegistry::global())
         .unwrap();
     let entered = Arc::new(tokio::sync::Notify::new());

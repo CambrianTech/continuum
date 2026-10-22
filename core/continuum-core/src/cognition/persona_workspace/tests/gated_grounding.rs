@@ -384,7 +384,7 @@ use super::*;
             // A no-setup gym still needs bound hands. Previously its claim staged
             // Ordinary and the resolver searched only SWE checkouts, so valid
             // code/write and code/shell calls were refused as unrooted.
-            let _home = crate::test_env::HomeGuard::set(home.path()).await;
+            let _home = crate::paths::test_home::HomeGuard::set(home.path()).await;
             std::env::set_var("CONTINUUM_HOME", home.path());
             let gym_card = airc_lib::WorkCard {
                 card_id: airc_work::WorkCardId::new(),

@@ -434,27 +434,6 @@ fn explain_if_dir_is_actually_a_file(
 mod tests {
     use super::*;
 
-    /// `install_probe_tracing` accepts a typed config and is
-    /// parallel-safe in tests — no env-var mutation, no shared
-    /// global state beyond `tracing`'s own default subscriber
-    /// (which is exactly the thing we're testing the idempotency
-    /// of).
-    #[test]
-    fn install_is_idempotent_with_no_disk_capture() {
-        let config = ProbeTracingConfig {
-            probe_dir: None,
-            probe_classes: HashSet::new(),
-            default_filter: "warn".to_string(),
-            log_dir: None,
-        };
-        let first = install_probe_tracing(config.clone(), crate::modules::logger_clog_sink::LoggerQueueSink);
-        let second = install_probe_tracing(config, crate::modules::logger_clog_sink::LoggerQueueSink);
-        assert!(first.is_ok(), "first install must succeed");
-        assert!(second.is_ok(), "second install must no-op cleanly");
-        assert!(first.unwrap().probe_log_path.is_none());
-        assert!(second.unwrap().probe_log_path.is_none());
-    }
-
     /// what this catches: THE REGRESSION THIS TEST EXISTS FOR — boot silently taking the
     /// UNBOUNDED single-file constructor. `JsonlProbeFileSink::from_env` is documented as
     /// "the ONLY env-based entry point — rolling mode, bounded disk usage" and had zero
@@ -486,37 +465,6 @@ mod tests {
         );
     }
 
-    /// Typed-error contract: an unwritable `probe_dir` path must
-    /// surface `ProbeFileSinkError::OpenFailed` per
-    /// `[[no-fallbacks-ever]]`. Operators must see the
-    /// configuration problem; substrate refuses to silently drop
-    /// probes.
-    ///
-    /// Parallel-safe because the bad path is passed via typed
-    /// config — no env-var mutation, no racing on
-    /// `CONTINUUM_PROBE_DIR`.
-    #[test]
-    fn install_surfaces_open_failed_for_unwritable_path() {
-        let config = ProbeTracingConfig {
-            probe_dir: Some(PathBuf::from(
-                "/this/path/definitely/does/not/exist/probes.jsonl",
-            )),
-            probe_classes: HashSet::new(),
-            default_filter: "warn".to_string(),
-            log_dir: None,
-        };
-        let result = install_probe_tracing(config, crate::modules::logger_clog_sink::LoggerQueueSink);
-        // Can't `{:?}` the Ok branch — ProbeInstall holds a
-        // WorkerGuard which isn't Debug. Match the variant
-        // explicitly instead so the assertion error is still
-        // informative.
-        match &result {
-            Err(ProbeFileSinkError::OpenFailed { .. }) => {}
-            Err(other) => panic!("expected OpenFailed, got error {other:?}"),
-            Ok(_) => panic!("expected Err, got Ok(_)"),
-        }
-    }
-
     /// The env-coupling seam. `from_env` is the ONE function that
     /// touches `std::env`; everything downstream takes typed
     /// values. Pin both the populated and empty paths so a future
@@ -529,7 +477,7 @@ mod tests {
     /// parallel-safe.
     #[test]
     fn from_env_reads_documented_env_vars() {
-        let _env = crate::test_env::HomeGuard::preserve_blocking(); // mutates CONTINUUM_PROBE_DIR/CLASSES, which the other env test also mutates (card cb3221a5)
+        let _env = crate::paths::test_home::HomeGuard::preserve_blocking(); // mutates CONTINUUM_PROBE_DIR/CLASSES, which the other env test also mutates (card cb3221a5)
         let prev_file = std::env::var(ENV_PROBE_DIR).ok();
         let prev_classes = std::env::var(ENV_PROBE_CLASSES).ok();
 

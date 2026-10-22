@@ -805,7 +805,7 @@ mod tests {
         // with the rest of libtest, and every HomeGuard writes HF_HOME. The guard pins
         // the four home variables to `home`; the relocated HF_HOME override sits on top
         // and the guard's drop restores everything.
-        let _home = crate::test_env::HomeGuard::set_blocking(home.path());
+        let _home = crate::paths::test_home::HomeGuard::set_blocking(home.path());
         std::env::set_var("HF_HOME", relocated.path());
 
         let dirs = standard_tracked_dirs(home.path());
