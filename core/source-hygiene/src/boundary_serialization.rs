@@ -60,22 +60,6 @@ const SHAPES: &[&str] = &[
     "STANDARD_NO_PAD.decode(",
 ];
 
-/// Unjustified production occurrences at the time this guard landed
-/// (2026-08-23, the day the audits ran — measured by running the rule with a
-/// zero baseline and reading the count, so there is no slack for new sites to
-/// hide in).
-///
-/// **This number may only ever go DOWN.** A single total, not a per-file map,
-/// for the same reason as the unwrap ratchet: pressure on the whole surface.
-#[cfg(test)]
-// 237 after card 0af5d5ec: the same `#![cfg(test)]` files stop counting as production.
-// 235 -> 246, not new debt: the shared production split cut at the first #[cfg(test)]
-// anywhere, so indented test helpers hid production code from this scan; at column zero
-// it sees them (measured in CI on canary a85454889 + this change, 2026-10-20).
-// 246 -> 251, not new debt: production_half now blanks only the #[cfg(test)]-gated item, so
-// production code BELOW a mid-file test mod or gated helper is scanned (measured on canary
-// a85454889 + this change, 2026-10-20).
-const BASELINE_UNJUSTIFIED: usize = 247;
 
 pub struct BoundarySerialization;
 
@@ -117,29 +101,28 @@ mod tests {
     /// see the module header. If this fails because you added one: either the
     /// encode crosses a true boundary (say which, same line) or it shouldn't
     /// exist (pass `&T`/`Arc<T>`/a handle instead). If it fails because you
-    /// removed some, lower `BASELINE_UNJUSTIFIED` and take the win.
+    /// removed some, the ratchet holds the new count from the next PR on.
     #[test]
     fn the_unjustified_serialization_count_never_rises() {
         let violations = scan(&[&BoundarySerialization]);
         let count = violations.len();
 
-        assert!(
-            count <= BASELINE_UNJUSTIFIED,
-            "unjustified serialization sites rose to {count} (baseline {BASELINE_UNJUSTIFIED}).\n\
-             Serialize ONLY at a true system boundary (socket, disk format, wire protocol, \n\
-             foreign API) and say WHICH boundary on the same line. Between in-process layers, \n\
-             data travels as &T / Arc<T> / a handle — typed → Value → typed is the sickness \n\
-             the 2026-08-23 audits measured as most of the substrate's self-inflicted CPU \n\
-             waste. Base64 pixels inside JSON are never justified on-machine.\n\
-             First few new ones:\n{}",
-            violations
-                .iter()
-                .take(10)
-                .map(|v| format!("  {}:{}  {}", v.file, v.line, v.source))
-                .collect::<Vec<_>>()
-                .join("\n")
-        );
-        crate::assert_baseline_is_current("BASELINE_UNJUSTIFIED", count, BASELINE_UNJUSTIFIED);
+        crate::ratchet::hold("unjustified_serialization", count, || {
+            format!(
+                "Serialize ONLY at a true system boundary (socket, disk format, wire protocol, \
+                 foreign API) and say WHICH boundary on the same line. Between in-process layers, \
+                 data travels as &T / Arc<T> / a handle: typed -> Value -> typed is the sickness \
+                 the 2026-08-23 audits measured as most of the substrate's self-inflicted CPU \
+                 waste. Base64 pixels inside JSON are never justified on-machine.\n\
+                 Sites:\n{}",
+                violations
+                    .iter()
+                    .take(10)
+                    .map(|v| format!("  {}:{}  {}", v.file, v.line, v.source))
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            )
+        });
     }
 
     /// What this catches: the justification predicate accepting a non-reason —

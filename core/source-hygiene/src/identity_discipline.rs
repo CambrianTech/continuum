@@ -21,13 +21,6 @@
 
 use super::{SourceFile, SourceRule, Violation};
 
-/// Production `Uuid::nil()` literals on room-adjacent lines when this guard
-/// landed (2026-08-26), after the ActivityRoom sweep. The survivors are each
-/// deliberate (watch-channel sentinels skipped before cognition, fixture
-/// builders) — listed so a NEW one has to argue, not sneak.
-#[cfg(test)]
-const BASELINE_NIL_ROOM_LINES: usize = 3;
-
 /// Directories whose production halves carry cognition turns — the trees where
 /// a nil room becomes an invisible turn.
 const COGNITION_TREES: [&str; 3] = ["cognition/", "persona/", "commands/"];
@@ -63,13 +56,6 @@ impl SourceRule for NoNilRoomInProductionCognition {
             .collect()
     }
 }
-
-/// String-composite id keys (`format!` gluing values with `@`) in the serving /
-/// inference path: ZERO. The `persona@room` slot-lease key this rule was
-/// written against died with the typed `ActivityKey` registry (slice B1,
-/// same day). This stays 0 forever.
-#[cfg(test)]
-const BASELINE_STRING_COMPOSITE_KEYS: usize = 0;
 
 /// The serving/inference trees where id-keyed maps live.
 const SERVING_TREES: [&str; 2] = ["ai/", "inference/"];
@@ -117,9 +103,9 @@ mod tests {
     #[test]
     fn nil_room_literals_never_rise() {
         let violations = scan(&[&NoNilRoomInProductionCognition]);
-        assert!(
-            violations.len() <= BASELINE_NIL_ROOM_LINES,
-            "production nil-room literals rose to {} (baseline {BASELINE_NIL_ROOM_LINES}).\n\
+        crate::ratchet::hold("nil_room_lines", violations.len(), || {
+            format!(
+            "production nil-room literals rose to {}.\n\
              An activity without a room is unrepresentable (#425) — mint or rejoin an \
              ActivityRoom instead.\nNew offenders:\n{}",
             violations.len(),
@@ -129,8 +115,8 @@ mod tests {
                 .map(|v| format!("  {}:{} — {}", v.file, v.line, v.source))
                 .collect::<Vec<_>>()
                 .join("\n")
-        );
-        crate::assert_baseline_is_current("BASELINE_NIL_ROOM_LINES", violations.len(), BASELINE_NIL_ROOM_LINES);
+            )
+        });
     }
 
     // what this catches: a NEW `format!("…{a}@{b}…")` composite key in the
@@ -139,9 +125,9 @@ mod tests {
     #[test]
     fn string_composite_id_keys_never_rise() {
         let violations = scan(&[&NoStringCompositeIdKeys]);
-        assert!(
-            violations.is_empty(),
-            "string-composite id keys rose to {} (baseline {BASELINE_STRING_COMPOSITE_KEYS}).\n\
+        crate::ratchet::hold("string_composite_keys", violations.len(), || {
+            format!(
+            "string-composite id keys rose to {}.\n\
              Key on a typed struct of UUIDs, never a formatted string.\nOffenders:\n{}",
             violations.len(),
             violations
@@ -149,7 +135,8 @@ mod tests {
                 .map(|v| format!("  {}:{} — {}", v.file, v.line, v.source))
                 .collect::<Vec<_>>()
                 .join("\n")
-        );
+            )
+        });
     }
 
     // what this catches: the predicates counting the wrong thing in either

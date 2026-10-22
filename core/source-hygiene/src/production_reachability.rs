@@ -75,24 +75,6 @@ const CONSTRUCTOR_SHAPES: &[&str] = &[
     "fn start(",
 ];
 
-/// Unwired public machinery at the time this guard landed (2026-08-20).
-///
-/// **This number may only ever go DOWN.** Raising it to make a red build green is
-/// defeating the guard and should be refused in review — the whole point is that the
-/// five defects above were each individually "not worth blocking on" and collectively
-/// cost days. If your new type trips this, the fix is to WIRE it or to not land it
-/// yet; a type with no caller is not finished work.
-// 60 -> 61, not new debt: production_half now blanks only the #[cfg(test)]-gated item, so
-// production code BELOW a mid-file test mod or gated helper is scanned (measured on canary
-// a85454889 + this change, 2026-10-20).
-// 61 -> 57 on #5228 is NOT four types wired. BenchRound, EmbeddingCache,
-// NeuralEmbeddingProvider and CommandRegistration are still constructed only inside their
-// own former file; the split put each constructor call in a sibling chunk, which this
-// file-based rule reads as outside use. Card 7660e70f owns wiring or deleting them.
-#[cfg(test)]
-// 56 after the dream_consolidation split: NOT new wiring. SemanticDistiller was always built in its own file; that construction now sits in a sibling (passes.rs).
-const BASELINE_UNWIRED: usize = 54; // 56 -> 54: harness removal 1 deleted resolution_compute and CodeVerifier
-
 pub struct ProductionReachability;
 
 impl ProductionReachability {
@@ -261,14 +243,14 @@ mod tests {
     ///
     /// A RATCHET, not a wall: thousands of lines predate the rule. If this fails
     /// because you added a type, wire it or don't land it. If it fails because you
-    /// wired one, LOWER the baseline and take the win.
+    /// wired one, the ratchet holds the lower count.
     #[test]
     fn unwired_public_machinery_never_increases() {
         let violations = scan_crate(&[&ProductionReachability]);
         let count = violations.len();
-        assert!(
-            count <= BASELINE_UNWIRED,
-            "unwired public machinery rose to {count} (baseline {BASELINE_UNWIRED}).\n\
+        crate::ratchet::hold("unwired_machinery", count, || {
+            format!(
+            "unwired public machinery rose to {count}.\n\
              A pub type with a constructor and no caller anywhere in the workspace is \
              not finished work — it is the `AgentContext` defect (#27), which sat \
              complete-and-tested while the operator had no airc identity and benchmark \
@@ -280,8 +262,8 @@ mod tests {
                 .map(|v| format!("  {}:{}  {}", v.file, v.line, v.source))
                 .collect::<Vec<_>>()
                 .join("\n")
-        );
-        crate::assert_baseline_is_current("BASELINE_UNWIRED", count, BASELINE_UNWIRED);
+            )
+        });
     }
 
     /// What this catches: the two exclusions that decide whether this rule is useful

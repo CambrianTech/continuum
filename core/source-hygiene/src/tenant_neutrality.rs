@@ -21,12 +21,6 @@ use super::{split_code_and_comment, SourceFile, SourceRule, Violation};
 /// code), never against comments.
 const TENANT_TOKENS: &[&str] = &["cambriantech", "joel"];
 
-/// Production occurrences when this guard landed (2026-09-05): `airc/discovery.rs`
-/// (the airc installer URL) and `forge/hf_publisher.rs` (the model-card attribution
-/// link). Both name the product's upstream. A NEW one has to argue.
-#[cfg(test)]
-const BASELINE_TENANT_LINES: usize = 2;
-
 pub struct NoTenantIdentityInProduction;
 
 impl SourceRule for NoTenantIdentityInProduction {
@@ -160,9 +154,9 @@ mod tests {
     #[test]
     fn tenant_identity_in_production_code_never_rises() {
         let violations = scan(&[&NoTenantIdentityInProduction]);
-        assert!(
-            violations.len() <= BASELINE_TENANT_LINES,
-            "production lines naming our own org rose to {} (baseline {BASELINE_TENANT_LINES}).\n\
+        crate::ratchet::hold("tenant_lines", violations.len(), || {
+            format!(
+            "production lines naming our own org rose to {}.\n\
              This repo is for other people and their orgs: derive the identity from the \
              git remote or the spawned activity, never a literal.\nOffenders:\n{}",
             violations.len(),
@@ -171,8 +165,8 @@ mod tests {
                 .map(|v| format!("  {}:{} — {}", v.file, v.line, v.source))
                 .collect::<Vec<_>>()
                 .join("\n")
-        );
-        crate::assert_baseline_is_current("BASELINE_TENANT_LINES", violations.len(), BASELINE_TENANT_LINES);
+            )
+        });
     }
 
     // what this catches: the predicate erring in either direction — a comment
