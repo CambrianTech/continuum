@@ -28,6 +28,7 @@
 //!                                  `ResponderDecision`)
 
 pub mod framing_echo;
+pub mod single_purpose_lane;
 pub mod not_speech;
 pub mod act_observe;
 pub mod directed_pending;
