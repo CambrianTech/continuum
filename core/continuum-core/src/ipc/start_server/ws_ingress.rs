@@ -142,20 +142,6 @@ pub(super) fn spawn_ws_ingress(
                     ws_substrate.clone(),
                 );
 
-                // Benchmark board (#329): fold the run-ledger projection into
-                // kind="bench" — the academy right-rail's live rows (who is
-                // solving what, attempt N/M, patch forming, verdicts). Two
-                // targets from one fold: the node-wide board on the websocket
-                // substrate for human eyes, and ONE VIEW PER ROOM in the room
-                // registry for citizen minds (#426, per room since 2026-10-04,
-                // HER-LOOP-IS-HER-OWN.md rule 5: she reads the board of the
-                // activity she is in, never the node's).
-                positron_bench_source::spawn_bench_emitter(
-                    &state.rt_handle,
-                    ws_substrate.clone(),
-                    global_room_substrates(),
-                );
-
                 // Canvas feed (ninth ViewState, 2026-08-23): EVENT-driven — a
                 // persona's own observe/hot-edit results publish frames at the
                 // act seam; no tick, no scan. Install-only here; the act loop

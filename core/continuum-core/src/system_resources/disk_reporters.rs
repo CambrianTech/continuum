@@ -381,6 +381,9 @@ pub fn standard_tracked_dirs(home: &std::path::Path) -> Vec<Arc<TrackedDir>> {
         // checkout is ~240 MB. Entirely re-creatable (git + uv), which is what makes it a
         // cache class rather than data.
         TrackedDir::new("benchmarks", home.join(".continuum/benchmarks")),
+        // The retired benchmark harness's state, moved here once at boot (card c4f4b8cd
+        // step 2; `harness_archive`). Written once, never grown.
+        TrackedDir::new("benchmark-harness-archive", home.join(".continuum/archive/benchmark-harness")),
         // Managed clones of repos a citizen claimed a card for when this node had no
         // checkout (`card_staging::ensure_managed_clone`). One full clone per repo, and
         // every per-card worktree for that repo is cut from it.

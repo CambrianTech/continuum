@@ -30,7 +30,6 @@ import {
 import type {
   KanbanViewState,
   NavViewState,
-  BenchViewState,
   ServingViewState,
   StreamDelta,
   SystemMetricsViewState,
@@ -108,7 +107,6 @@ export class ChatWidget extends LitElement {
     nav: { attribute: false },
     sys: { attribute: false },
     serving: { attribute: false },
-    bench: { attribute: false },
     board: { attribute: false },
     arena: { attribute: false },
     canvas: { attribute: false },
@@ -161,10 +159,6 @@ export class ChatWidget extends LitElement {
   /** The node's live `kind="serving"` view (the serving glass box, #141),
    *  when the host's subscription has delivered. `undefined` = no widget. */
   serving?: ServingViewState;
-
-  /** The node's live `kind="bench"` benchmark board (#329) — fills the academy
-   *  contextual rail with run rows. Honestly absent until the feed delivers. */
-  bench?: BenchViewState;
 
   /** The node's live `kind="kanban"` work board, when the host's subscription
    *  has delivered — feeds the persona home's claims. `undefined` = the claims
@@ -1064,45 +1058,10 @@ export class ChatWidget extends LitElement {
     /* VISUAL STATE LANGUAGE (Joel: "be more visual"): every run card carries
      * a severity stripe — state readable from across the room, before any
      * text. Working breathes; terminal states sit still. */
-    .bench-card {
-      border-left: 3px solid transparent;
-    }
-    .bench-card.bench-state-working,
-    .bench-card.bench-state-grading {
-      border-left-color: var(--content-accent, #35d0e0);
-    }
-    .bench-card.bench-state-resolved {
-      border-left-color: #3fb950;
-    }
-    .bench-card.bench-state-failed {
-      border-left-color: #f85149;
-    }
-    .bench-card.bench-state-stalled {
-      border-left-color: #d29922;
-    }
-    .bench-card.bench-state-queued {
-      border-left-color: var(--content-tertiary, #667);
-    }
     @media (prefers-reduced-motion: no-preference) {
       /* Compositor-only breathe: animate OPACITY of a painted-once overlay —
        * box-shadow keyframes repainted every card every frame (Joel:
        * "animation issues, speed issues"). */
-      .bench-card.bench-state-working {
-        position: relative;
-      }
-      .bench-card.bench-state-working::after {
-        content: '';
-        position: absolute;
-        inset: 0 auto 0 0;
-        width: 3px;
-        background: rgba(53, 208, 224, 0.45);
-        animation: bench-breathe 3s ease-in-out infinite;
-        pointer-events: none;
-      }
-      @keyframes bench-breathe {
-        0%, 100% { opacity: 0; }
-        50% { opacity: 1; }
-      }
     }
     /* HOME INTERIOR — the orthographic dollhouse card. Quiet inks; the lit
      * window and glowing desk items are the only saturated marks. */
@@ -1139,14 +1098,8 @@ export class ChatWidget extends LitElement {
     }
     /* HOVER LIFE — interactive things answer the pointer (transform-only,
      * compositor-cheap; the fun half of "polish till it's fun"). */
-    .bench-card[data-door],
-    .p-run[data-door],
     .cell[data-selectable] {
       transition: transform 0.12s ease;
-    }
-    .bench-card[data-door]:hover,
-    .p-run[data-door]:hover {
-      transform: translateY(-1px);
     }
     .element-link { cursor: pointer; }
     .element-link:hover { text-decoration: underline; text-underline-offset: 2px; }
@@ -1248,73 +1201,13 @@ export class ChatWidget extends LitElement {
       color: var(--content-tertiary, #667);
       margin-top: 1px;
     }
-    /* Persona home ACTIVE WORK rows — compact run rows with the board's
-     * state-stripe language; a row that knows its room is a door. */
-    .p-runs {
-      list-style: none;
-      margin: 0;
-      padding: 0;
-      display: flex;
-      flex-direction: column;
-      gap: var(--spacing-xs);
-    }
-    .p-run {
-      display: flex;
-      align-items: baseline;
-      gap: var(--spacing-md);
-      padding: var(--spacing-xs) var(--spacing-sm);
-      border-left: 3px solid transparent;
-      font-size: 12px;
-    }
-    .p-run.bench-state-working { border-left-color: var(--content-accent, #35d0e0); }
-    .p-run.bench-state-resolved { border-left-color: #3fb950; }
-    .p-run.bench-state-failed { border-left-color: #f85149; }
-    .p-run.bench-state-stalled { border-left-color: #d29922; }
-    .p-run[data-door] { cursor: pointer; }
-    .p-run[data-door]:hover { outline: 1px solid var(--content-accent); outline-offset: -1px; }
-    .p-run-instance { font-family: var(--font-mono, monospace); }
-    .p-run-state { text-transform: uppercase; font-size: 10px; color: var(--content-tertiary, #667); }
-    .p-run-pulse { color: var(--content-secondary, #8aa); }
     /* PAINT BUDGET (Joel: "Lit animations are already overdrawing"):
      * off-screen rows in the three long lists cost zero paint/layout —
      * the browser skips rendering until they scroll into view. */
     .messages > li,
-    .cells > li,
-    .bench-card {
+    .cells > li {
       content-visibility: auto;
       contain-intrinsic-size: auto 72px;
-    }
-    /* GROUPED BOARD: one section per round — its lifecycle row, then ITS runs
-     * (live first, settled folded). A card that knows its room is a DOOR. */
-    .bench-round-group {
-      display: flex;
-      flex-direction: column;
-      gap: var(--spacing-sm);
-      padding: var(--spacing-sm) 0;
-      border-bottom: 1px solid var(--border-subtle);
-    }
-    .bench-round-group:last-child {
-      border-bottom: none;
-    }
-    .bench-card[data-door] {
-      cursor: pointer;
-    }
-    .bench-card[data-door]:hover {
-      outline: 1px solid var(--content-accent);
-      outline-offset: -1px;
-    }
-    .bench-digest {
-      font-size: 11px;
-      color: var(--content-tertiary, #667);
-      padding: var(--spacing-xs) 0;
-    }
-    .bench-history > summary {
-      cursor: pointer;
-      font-size: 11px;
-      text-transform: uppercase;
-      letter-spacing: 0.05em;
-      color: var(--content-tertiary, #667);
-      padding: var(--spacing-xs) 0;
     }
     .project-workspace { padding: var(--spacing-md); min-width: 0; }
     .project-heading { display: flex; align-items: baseline; gap: 1rem; flex-wrap: wrap; }
@@ -1324,47 +1217,6 @@ export class ChatWidget extends LitElement {
     .project-card h3 { font-size: 1rem; margin: 0.6rem 0; }
     .project-card-meta { display: flex; justify-content: space-between; gap: 0.5rem; font-size: 0.8rem; }
     .project-description { white-space: pre-wrap; }
-    /* ACADEMY LANDING — the campus page: hero strip, live board, chat below. */
-    .academy-landing {
-      display: flex;
-      flex-direction: column;
-      gap: var(--spacing-md);
-      padding: var(--spacing-md);
-      overflow-y: auto;
-      min-height: 0;
-    }
-    .academy-hero {
-      display: flex;
-      align-items: baseline;
-      gap: var(--spacing-lg);
-      padding: var(--spacing-md) var(--spacing-sm) var(--spacing-sm);
-      border-bottom: 1px solid var(--border-subtle);
-    }
-    .academy-title {
-      font-size: 22px;
-      font-weight: 650;
-      letter-spacing: 0.02em;
-      color: var(--content-accent);
-    }
-    .academy-strip {
-      display: flex;
-      gap: var(--spacing-lg);
-      font-size: 13px;
-      color: var(--content-secondary);
-    }
-    .academy-stat i {
-      font-style: normal;
-      opacity: 0.65;
-      margin-left: 2px;
-    }
-    .academy-chat > summary {
-      cursor: pointer;
-      font-size: 12px;
-      text-transform: uppercase;
-      letter-spacing: 0.06em;
-      color: var(--content-tertiary, #667);
-      padding: var(--spacing-sm) 0;
-    }
     /* THE WORKING WAVE (Joel, 2026-08-30: "active tasks wave as they are
      * active, as a gradient cyclic"): anything mid-work carries a slow cyclic
      * gradient sweep across its label — alive reads as MOVING, done reads as
@@ -1710,344 +1562,6 @@ export class ChatWidget extends LitElement {
       border: 1px solid var(--border-subtle);
       border-radius: var(--radius-sm);
       overflow: hidden;
-    }
-    /* BENCH board (#329) — console-grade: scoreboard header, state-dot
-     * cards with a real acts progress bar, patch-forming accent chip, and
-     * the REGRESSION alarm. Working dots pulse (reduced-motion: static). */
-    .bench-board {
-      display: flex;
-      flex-direction: column;
-      gap: 8px;
-      padding: var(--spacing-xs) var(--spacing-md) var(--spacing-sm);
-    }
-    .bench-score {
-      display: grid;
-      grid-template-columns: repeat(3, 1fr);
-      gap: 6px;
-      margin-bottom: 2px;
-    }
-    /* In-flight ROUND rows (#371) — the tracker's lifecycle truth above the
-     * per-run cards: suite name, stage, settled/dispatched with a settle bar,
-     * and the citizen/detached driver tag (detached = no curriculum, dimmed). */
-    .bench-rounds {
-      display: flex;
-      flex-direction: column;
-      gap: 4px;
-    }
-    .bench-round {
-      position: relative;
-      display: grid;
-      grid-template-columns: auto auto auto 1fr auto;
-      align-items: center;
-      gap: 8px;
-      padding: 6px 10px 6px 12px;
-      border: 1px solid var(--border-subtle);
-      border-radius: var(--radius-sm);
-      background: color-mix(in srgb, var(--surface, #0b1220) 65%, transparent);
-      font-size: 11px;
-      overflow: hidden;
-    }
-    /* Stage stripe: the round's lifecycle as a left edge of light —
-     * working breathes in the accent, done settles into success. */
-    .bench-round::before {
-      content: '';
-      position: absolute;
-      inset: 0 auto 0 0;
-      width: 3px;
-      background: var(--accent-primary);
-      box-shadow: 0 0 8px color-mix(in srgb, var(--accent-primary) 60%, transparent);
-      animation: bench-round-breathe 2.4s ease-in-out infinite;
-    }
-    .bench-round[data-stage='done']::before {
-      background: var(--status-success, #4caf7d);
-      box-shadow: 0 0 6px color-mix(in srgb, var(--status-success, #4caf7d) 50%, transparent);
-      animation: none;
-    }
-    @keyframes bench-round-breathe {
-      0%, 100% { opacity: 1; }
-      50% { opacity: 0.45; }
-    }
-    .bench-round-name {
-      font-weight: 700;
-      letter-spacing: 0.02em;
-      white-space: nowrap;
-      color: var(--content-primary);
-    }
-    .bench-round-stage {
-      text-transform: uppercase;
-      font-size: 8.5px;
-      letter-spacing: 0.12em;
-      padding: 1px 6px;
-      border-radius: 999px;
-      border: 1px solid color-mix(in srgb, var(--accent-primary) 40%, transparent);
-      color: var(--accent-primary);
-      background: color-mix(in srgb, var(--accent-primary) 10%, transparent);
-    }
-    .bench-round[data-stage='done'] .bench-round-stage {
-      border-color: color-mix(in srgb, var(--status-success, #4caf7d) 40%, transparent);
-      color: var(--status-success, #4caf7d);
-      background: color-mix(in srgb, var(--status-success, #4caf7d) 10%, transparent);
-    }
-    /* Verdict chip — the thrash-vs-grind sensor. Same pill anatomy as the
-       stage chip; the COLOR is the signal: unstarted amber, stalled red,
-       grinding green. */
-    .bench-round-verdict {
-      text-transform: uppercase;
-      font-size: 8.5px;
-      letter-spacing: 0.12em;
-      padding: 1px 6px;
-      border-radius: 999px;
-      white-space: nowrap;
-    }
-    .bench-round-verdict i {
-      font-style: normal;
-      opacity: 0.8;
-      font-variant-numeric: tabular-nums;
-    }
-    .bench-verdict-grinding {
-      border: 1px solid color-mix(in srgb, var(--status-success, #4caf7d) 45%, transparent);
-      color: var(--status-success, #4caf7d);
-      background: color-mix(in srgb, var(--status-success, #4caf7d) 10%, transparent);
-    }
-    .bench-verdict-unstarted {
-      border: 1px solid color-mix(in srgb, var(--status-warning, #d9a032) 55%, transparent);
-      color: var(--status-warning, #d9a032);
-      background: color-mix(in srgb, var(--status-warning, #d9a032) 12%, transparent);
-    }
-    .bench-verdict-stalled {
-      border: 1px solid color-mix(in srgb, var(--status-error, #d9534f) 55%, transparent);
-      color: var(--status-error, #d9534f);
-      background: color-mix(in srgb, var(--status-error, #d9534f) 12%, transparent);
-      animation: bench-round-breathe 2.4s ease-in-out infinite;
-    }
-    /* Roll-call: the cards nobody has touched — WHAT waits, on WHOM. */
-    .bench-rollcall {
-      display: flex;
-      flex-wrap: wrap;
-      align-items: baseline;
-      gap: 4px 8px;
-      padding: 2px 8px 4px;
-      font-size: 9.5px;
-    }
-    .bench-rollcall-head {
-      text-transform: uppercase;
-      letter-spacing: 0.1em;
-      font-size: 8.5px;
-      font-weight: 700;
-      color: var(--status-warning, #d9a032);
-      white-space: nowrap;
-    }
-    .bench-rollcall-card {
-      font-family: var(--font-mono, monospace);
-      color: var(--content-secondary);
-      white-space: nowrap;
-    }
-    .bench-rollcall-card i {
-      font-style: normal;
-      opacity: 0.75;
-    }
-    .bench-round-count {
-      font-variant-numeric: tabular-nums;
-      font-weight: 700;
-      white-space: nowrap;
-      color: var(--content-primary);
-    }
-    .bench-round .bench-bar {
-      margin: 0;
-    }
-    /* Settle bar earns a gradient + glow — progress is the row's headline. */
-    .bench-round .bench-bar-fill {
-      background: linear-gradient(
-        90deg,
-        color-mix(in srgb, var(--accent-primary) 75%, transparent),
-        var(--status-success, #4caf7d)
-      );
-      box-shadow: 0 0 6px color-mix(in srgb, var(--status-success, #4caf7d) 45%, transparent);
-    }
-    .bench-round-driver {
-      font-size: 8.5px;
-      text-transform: uppercase;
-      letter-spacing: 0.1em;
-      padding: 1px 6px;
-      border-radius: 3px;
-      border: 1px solid var(--border-subtle);
-      color: var(--content-secondary);
-    }
-    .bench-round-detached {
-      opacity: 0.45;
-    }
-    @media (prefers-reduced-motion: reduce) {
-      .bench-round::before {
-        animation: none;
-      }
-    }
-    .bench-stat {
-      display: flex;
-      flex-direction: column;
-      align-items: center;
-      padding: 8px 4px 6px;
-      border: 1px solid var(--border-subtle);
-      border-radius: var(--radius-sm);
-      background: color-mix(in srgb, var(--surface, #0b1220) 60%, transparent);
-    }
-    .bench-stat-n {
-      font-size: 22px;
-      font-weight: 800;
-      line-height: 1;
-      font-variant-numeric: tabular-nums;
-      color: var(--content-primary);
-    }
-    .bench-stat-l {
-      margin-top: 3px;
-      font-size: 8.5px;
-      letter-spacing: 0.12em;
-      text-transform: uppercase;
-      color: var(--content-secondary);
-    }
-    .bench-stat-resolved .bench-stat-n { color: var(--status-success, #4caf7d); }
-    .bench-stat-working .bench-stat-n { color: var(--accent-primary); }
-    .bench-stat-failed .bench-stat-n { color: var(--content-secondary); }
-    .bench-stall-banner {
-      padding: 5px 8px;
-      border: 1px solid color-mix(in srgb, var(--status-warning, #e0a458) 45%, transparent);
-      border-radius: var(--radius-sm);
-      background: color-mix(in srgb, var(--status-warning, #e0a458) 12%, transparent);
-      color: var(--status-warning, #e0a458);
-      font-size: 9.5px;
-      font-weight: 600;
-    }
-    .bench-card {
-      display: flex;
-      flex-direction: column;
-      gap: 5px;
-      padding: 8px 10px;
-      border: 1px solid var(--border-subtle);
-      border-radius: var(--radius-sm);
-      background: color-mix(in srgb, var(--surface, #0b1220) 45%, transparent);
-      font-size: 10px;
-      color: var(--content-secondary);
-    }
-    .bench-state-queued { opacity: 0.65; }
-    .bench-card-head {
-      display: flex;
-      align-items: center;
-      gap: 7px;
-      min-width: 0;
-    }
-    .bench-dot {
-      flex-shrink: 0;
-      width: 8px;
-      height: 8px;
-      border-radius: 50%;
-      background: var(--border-subtle);
-    }
-    .bench-state-working .bench-dot,
-    .bench-state-grading .bench-dot {
-      background: var(--accent-primary);
-      box-shadow: 0 0 6px var(--accent-primary);
-      animation: bench-pulse 1.6s ease-in-out infinite;
-    }
-    .bench-state-stalled .bench-dot { background: var(--status-warning, #e0a458); }
-    .bench-state-resolved .bench-dot { background: var(--status-success, #4caf7d); }
-    .bench-state-failed .bench-dot { background: var(--status-error, #d9534f); }
-    @keyframes bench-pulse {
-      0%, 100% { opacity: 1; transform: scale(1); }
-      50% { opacity: 0.45; transform: scale(0.8); }
-    }
-    @media (prefers-reduced-motion: reduce) {
-      .bench-dot { animation: none !important; }
-    }
-    .bench-instance {
-      flex: 1;
-      min-width: 0;
-      font-family: var(--font-mono);
-      font-weight: 700;
-      font-size: 11px;
-      color: var(--content-primary);
-      overflow: hidden;
-      text-overflow: ellipsis;
-      white-space: nowrap;
-    }
-    .bench-attempt {
-      flex-shrink: 0;
-      font-size: 10px;
-      font-weight: 700;
-      font-variant-numeric: tabular-nums;
-      color: var(--content-secondary);
-    }
-    .bench-attempt i { font-style: normal; opacity: 0.5; padding: 0 1px; }
-    .bench-card-meta {
-      display: flex;
-      align-items: baseline;
-      flex-wrap: wrap;
-      gap: 8px;
-      font-size: 9.5px;
-    }
-    .bench-persona { font-weight: 700; color: var(--content-primary); }
-    .bench-selfclaimed {
-      font-size: 8px;
-      letter-spacing: 0.08em;
-      text-transform: uppercase;
-      color: var(--accent-primary);
-    }
-    .bench-pulse { font-variant-numeric: tabular-nums; }
-    .bench-nogen { font-style: italic; opacity: 0.7; }
-    .bench-patch {
-      margin-left: auto;
-      font-family: var(--font-mono);
-      font-weight: 800;
-      font-size: 9.5px;
-      color: var(--accent-primary);
-    }
-    .bench-bar {
-      height: 3px;
-      border-radius: 2px;
-      background: color-mix(in srgb, var(--border-subtle) 60%, transparent);
-      overflow: hidden;
-    }
-    .bench-bar-fill {
-      height: 100%;
-      border-radius: 2px;
-      background: linear-gradient(90deg,
-        color-mix(in srgb, var(--accent-primary) 45%, transparent),
-        var(--accent-primary));
-    }
-    .bench-state-resolved .bench-bar-fill { background: var(--status-success, #4caf7d); }
-    .bench-state-stalled .bench-bar-fill { background: var(--status-warning, #e0a458); }
-    .bench-verdict {
-      display: flex;
-      flex-wrap: wrap;
-      align-items: baseline;
-      gap: 7px;
-      padding-top: 1px;
-      font-size: 9.5px;
-    }
-    .bench-verdict b { color: var(--content-primary); font-variant-numeric: tabular-nums; }
-    .bench-resolved {
-      font-weight: 800;
-      letter-spacing: 0.06em;
-      color: var(--status-success, #4caf7d);
-    }
-    .bench-alarm {
-      font-weight: 800;
-      letter-spacing: 0.04em;
-      color: var(--status-error, #d9534f);
-    }
-    .bench-failed {
-      font-family: var(--font-mono);
-      font-size: 8.5px;
-      opacity: 0.8;
-      overflow: hidden;
-      text-overflow: ellipsis;
-      white-space: nowrap;
-      max-width: 100%;
-    }
-    .bench-lanes,
-    .bench-snapshot-banner,
-    .bench-awaiting {
-      font-size: 9.5px;
-      font-style: italic;
-      color: var(--content-secondary);
     }
     .serving-arm[data-chosen] {
       border-color: var(--accent-primary);
@@ -5357,9 +4871,6 @@ export class ChatWidget extends LitElement {
     /* Cosmos legibility: the center's reading surfaces get a whisper more
      * backing so star names never fight the text — the universe glows at
      * the edges, the work stays crisp. */
-    :host([data-universe='cosmos']) .bench-card,
-    :host([data-universe='cosmos']) .bench-score,
-    :host([data-universe='cosmos']) .bench-round,
     :host([data-universe='cosmos']) .msg-body,
     :host([data-universe='cosmos']) .p-card {
       background-color: rgba(10, 14, 24, 0.82);
@@ -5661,7 +5172,6 @@ export class ChatWidget extends LitElement {
         directory: [...this._directory.values()],
         sys: this.sys,
         serving: this.serving,
-        bench: this.bench,
         board: this.board,
         arena: this.arena,
         canvas: this.canvas,
@@ -5713,7 +5223,6 @@ export class ChatWidget extends LitElement {
     if (this._universe) {
       this._universe.update({
         citizens: vm.members.map((m) => ({ name: m.name, active: m.active })),
-        energy: Math.min(1, (this.bench?.runs ?? []).filter((r) => r.phase === 'active').length / 4),
       });
     }
     return html`
@@ -5727,26 +5236,14 @@ export class ChatWidget extends LitElement {
    *  rows that slid out of the 50-row window RETIRE onto the buffer's tail —
    *  otherwise a new message would open a silent gap between scrolled-back
    *  history and the live window. */
-  private _lastResolved = -1;
   private _lastMsgCount = -1;
   private _lastActCount = -1;
   /** The mounted universe, spoken to ONLY through UniverseInstance. */
   private _universe?: UniverseInstance;
 
   protected override willUpdate(changed: PropertyValues): void {
-    // Verdict comets: a NEW resolve fires the backdrop's surge — spectacle
-    // wired to real outcomes.
     // Universe facts — one interface call per REAL event delta, whatever
     // world is mounted (or none). No element spelunking, ever.
-    if (changed.has('bench')) {
-      const resolved = (this.bench?.runs ?? []).filter((r) => r.resolved === true).length;
-      if (this._lastResolved >= 0 && resolved > this._lastResolved && this._universe) {
-        for (let i = this._lastResolved; i < resolved; i++) {
-          this._universe.onFact({ kind: 'verdict' });
-        }
-      }
-      this._lastResolved = resolved;
-    }
     if (changed.has('state') && this.state && this._universe) {
       const msgs = this.state.messages.length;
       const acts = this.state.acts.length;

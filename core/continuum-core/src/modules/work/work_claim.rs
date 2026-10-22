@@ -262,32 +262,9 @@ impl ActionCommand for WorkClaim {
     }
 }
 
-/// How many graded chances a claim-dispatched SWE run gets (`AgentSolveParams::attempts`).
-/// This is the SWE adapter's N, not a global — each benchmark adapter owns its own.
-pub(super) const SWE_CLAIM_ATTEMPTS: u32 = 3;
-
-/// WHO works, WHICH card, WHERE the work is visible — the three facts that define one
-/// staged-SWE dispatch, as a value object rather than a positional argument list.
-///
-/// WHY A STRUCT (Joel, 2026-08-17: *"make sure params are well formed structs and
-/// constants, good OOP, not random parameter lists"*). The previous signature was
-/// `(ctx, airc, Uuid, WorkCardId, Option<Uuid>)`: two BARE UUIDs distinguished only by
-/// argument POSITION, so transposing claimer and room compiled cleanly and dispatched a
-/// citizen's solve under a room's id. Typed fields make that a compile error, and the next
-/// fact this dispatch needs becomes a FIELD instead of a sixth argument. `ctx` and `airc`
-/// stay separate parameters on purpose — they are ambient services, not facts about the
-/// dispatch, and folding them in would turn the value object into a context bag.
-///
-/// WHY `room` IS NOT `Option` (Joel, same day: *"if something is required, remove the
-/// option… a required param is caught at compile time not runtime"*). It used to be
-/// `Option<Uuid>`, and `work/claim` passed `None` — which is #425: the solve ran, her acts
-/// radiated no receipts (`apply_act` skips a nil room by design), and no room, peer or human
-/// ever saw the work. Making the field required moves that from a runtime shrug to an
-/// unrepresentable state: a caller that cannot name the activity cannot build the struct,
-/// so it must resolve one ([`room_holding_card`]) or report why it could not.
-/// One-per-persona solve lease — see the "ONE PAIR OF HANDS" note in
-/// [`dispatch_staged_swe_solve`]. RAII: dropping the lease (any exit path,
-/// panics included) frees the persona for the next solve.
+/// One-per-persona hands lease: a workspace reclaim takes the resident's hands so no
+/// two reclaims (or a reclaim and anything else that takes them) work one tree at once.
+/// RAII: dropping the lease (any exit path, panics included) frees the persona.
 pub(crate) struct HandsLease(pub(super) uuid::Uuid);
 
 pub(super) fn busy_hands() -> &'static std::sync::Mutex<std::collections::HashSet<uuid::Uuid>> {
@@ -297,8 +274,7 @@ pub(super) fn busy_hands() -> &'static std::sync::Mutex<std::collections::HashSe
 }
 
 impl HandsLease {
-    /// Take this persona's hands, or `None` while a solve holds them. Disk reclaim of a
-    /// resident's workspace takes them too, so no solve starts inside a tree being removed.
+    /// Take this persona's hands, or `None` while another holder has them.
     pub(crate) fn try_take(persona: uuid::Uuid) -> Option<Self> {
         let mut g = busy_hands().lock().expect("busy-hands lock never poisoned"); // expect: guards a HashSet op only
         if g.insert(persona) {
@@ -315,29 +291,4 @@ impl Drop for HandsLease {
             g.remove(&self.0);
         }
     }
-}
-
-pub(crate) struct StagedSolveDispatch {
-    /// The citizen who does the work — her own airc identity.
-    pub claimer: crate::identity::PeerId,
-    /// The card she is working.
-    pub card: airc_work::WorkCardId,
-    /// The activity the run BELONGS to: `benchmark/dispatch` passes the per-run room it
-    /// just spawned (#329), `work/claim` resolves the card's own room. Every act the
-    /// solver executes radiates a receipt into it (#243), which is what makes the work
-    /// visible where the work lives.
-    pub room: airc_core::RoomId,
-    /// TEAM solves (#team-proof gap 1): citizens joined to the solve room
-    /// beside the claimer. Empty = solo (every existing caller). They are
-    /// INVITED members, not co-claimers — the C1 shape: presence + an
-    /// addressed charge to review, with the kanban terminal untouched.
-    pub teammates: Vec<crate::identity::PeerId>,
-}
-
-/// Instances whose env FAILED this boot's pre-warm — the dispatch gate reads
-/// this so a still-broken card idles (no attempt-burning loop) while a healed
-/// one re-fires automatically. Per-boot by construction: a restart re-walks.
-pub fn env_broken_this_boot() -> &'static dashmap::DashSet<String> {
-    static SET: std::sync::OnceLock<dashmap::DashSet<String>> = std::sync::OnceLock::new();
-    SET.get_or_init(dashmap::DashSet::new)
 }

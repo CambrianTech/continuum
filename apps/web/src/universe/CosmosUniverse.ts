@@ -1,7 +1,6 @@
 /**
  * `CosmosUniverse` — the room reflected in a night sky: citizens as named
- * stars on a quiet ring, field energy following live work, a comet per
- * resolved verdict.
+ * stars on a quiet ring.
  *
  * Adapter over the `<cosmos-backdrop>` element: the CLASS owns the element
  * and translates the [`UniverseInstance`] contract onto it — the host never
@@ -24,12 +23,9 @@ class CosmosInstance implements UniverseInstance {
 
   update(frame: UniverseFrame): void {
     this.backdrop.citizens = frame.citizens.map((c) => ({ name: c.name, active: c.active }));
-    this.backdrop.energy = frame.energy;
   }
 
-  onFact(fact: UniverseFact): void {
-    if (fact.kind === 'verdict') this.backdrop.surge();
-  }
+  onFact(_fact: UniverseFact): void {}
 
   dispose(): void {
     this.backdrop.remove();

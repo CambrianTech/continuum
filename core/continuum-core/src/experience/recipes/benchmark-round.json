@@ -214,14 +214,6 @@
       "default": [],
       "doc": "citizen names to invite into the run room; empty = nobody is seated (nothing seats a citizen into a round she did not join, HER-LOOP row C)"
     },
-    "driver": {
-      "default": "citizen",
-      "doc": "citizen (her own held-work turns in the room) or detached_solve"
-    },
-    "review_gate": {
-      "default": false,
-      "doc": "an owner's done becomes review + a sibling review card a non-owner pulls"
-    },
     "doctrine": {
       "default": "",
       "doc": "the round's standing rules, posted into the run room after the cards; empty = none (the control arm)"
@@ -253,17 +245,6 @@
       ]
     },
     {
-      "command": "benchmark/round-open",
-      "params": {
-        "roomId": "$room.id",
-        "roomName": "$room.name",
-        "suite": "$args.suite",
-        "driver": "$args.driver",
-        "reviewGate": "$args.review_gate",
-        "team": "$args.team"
-      }
-    },
-    {
       "command": "work/create",
       "each": "$imported.cards",
       "params": {
@@ -276,14 +257,6 @@
       "saves": [
         "cards"
       ]
-    },
-    {
-      "command": "benchmark/round-track",
-      "params": {
-        "roomId": "$room.id",
-        "cards": "$cards",
-        "tasks": "$imported.cards"
-      }
     },
     {
       "command": "activity/invite",

@@ -24,7 +24,11 @@ Maximum effort, zero learning. Every benchmark run executed through the parallel
 path has been discarded as training signal. **That — not the pass rate — is why
 benchmarks are a failure.**
 
-## What is PARALLEL today (2026-08-13). These are the work items.
+## Status 2026-10-19 (card c4f4b8cd step 2)
+
+The detached runner is gone: `agent/solve`, `benchmark/dispatch|record|runs|rounds|scoreboard|validate|pause|resume|round|round-stop|round-report|round-open|round-track`, the round tracker's persisted state, the solve-run ledger, the `bench` ViewState and its RAG source. What remains is the adapter: `benchmark/list`, `benchmark/import`, `coursework/import`, `benchmark/fetch`, `benchmark/swe-setup`, and `grade_swe` as the oracle the grade-on-done subscriber runs. The old on-disk state was archived once, at first boot, under `~/.continuum/archive/benchmark-harness/` (`system_resources::harness_archive`), never deleted. Step 3 moves the remaining readers of `cognition::bench_round` onto the board; step 4 is the academy adapter.
+
+## What was PARALLEL (2026-08-13). These were the work items.
 
 | Parallel thing | Where | Should be |
 |---|---|---|

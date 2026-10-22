@@ -12,7 +12,6 @@
 //! - `tree` — Directory tree generation
 //! - `git_bridge` — Git status, diff, and branch operations
 //! - `hands` — whose hands a call acts with: caller + acting context (the hands-map key)
-//! - `workspace_events` — `workspace:written` bus events emitted at every write site
 
 pub mod change_graph;
 pub mod confinement;
@@ -27,7 +26,6 @@ pub mod shell_types;
 pub mod syntax;
 pub mod tree;
 pub mod types;
-pub mod workspace_events;
 
 // Re-export key types for convenience
 pub use change_graph::ChangeGraph;

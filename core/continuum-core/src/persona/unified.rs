@@ -89,16 +89,6 @@ pub struct PersonaCognition {
     pub roster_source: Option<Arc<dyn RagSource>>,
     /// Her awareness strip across all activities (`AwarenessRagSource`); turn churn.
     pub awareness_source: Option<Arc<dyn RagSource>>,
-    /// The persona's benchmark-board RAG source — the live run rows
-    /// (`ViewStateRagSource::<BenchViewState>::per_room` over
-    /// `ipc::global_room_substrates()`): the board of the ROOM the turn is
-    /// in, the same rows the academy rail renders for that round. Bound at
-    /// supervisor boot (#426); per room since 2026-10-04 (HER-LOOP-IS-HER-OWN.md
-    /// rule 5: nothing node-wide is pushed into her head). `None` pre-attach
-    /// / in tests. A citizen perceives run state through the same pipe the
-    /// human's screen uses, never a file read
-    /// ([[benchmarks-must-be-positronic-activities-not-a-parallel-subsystem]]).
-    pub bench_source: Option<Arc<dyn RagSource>>,
     /// The persona's room-doctrine RAG source — "what KIND of room is
     /// this" (the airc-published operating contract via
     /// `Airc::room_doctrine`). Bound at supervisor boot from the same
@@ -199,7 +189,6 @@ impl PersonaCognition {
             airc_source: None,
             roster_source: None,
             awareness_source: None,
-            bench_source: None,
             doctrine_source: None,
             capture_sink,
         }
@@ -269,19 +258,6 @@ impl PersonaCognition {
             self.capture_sink.clone(),
         ));
         self.awareness_source = Some(decorated);
-    }
-
-    /// Bind the brain's benchmark-board RAG source
-    /// (`ViewStateRagSource::<BenchViewState>::per_room` over the room
-    /// registry). Same boot-time wire and capture decoration as
-    /// `set_roster_source` — bench deliveries are recorded + replayable
-    /// on the same wire (task #426).
-    pub fn set_bench_source(&mut self, raw_source: Arc<dyn RagSource>) {
-        let decorated: Arc<dyn RagSource> = Arc::new(RecordingRagSource::new(
-            ArcRagSource::new(raw_source),
-            self.capture_sink.clone(),
-        ));
-        self.bench_source = Some(decorated);
     }
 
     /// Bind the brain's room-doctrine RAG source (`RoomDoctrineSource`).
@@ -368,12 +344,6 @@ impl PersonaCognition {
         }
         if let Some(ref doctrine) = self.doctrine_source {
             sources.push(doctrine.clone());
-        }
-        // The benchmark board (#426): live run rows through the same
-        // budgeter as everything else. Its budget rides the generic
-        // floor_tokens arm — a handful of run lines, never a heavyweight.
-        if let Some(ref bench) = self.bench_source {
-            sources.push(bench.clone());
         }
         // Her awareness across every activity (EVENT-MIND §6): the strip. Lightweight,
         // loudest first, fitted by its own source; the one block that says where else
@@ -847,80 +817,6 @@ mod tests {
         assert_eq!(allocation.requested_min, 0);
         assert_eq!(allocation.requested_floor, 0);
         assert!(composed.deliveries.iter().any(|d| d.source_id == source.id && d.items.len() == 3));
-    }
-
-    /// what this catches: the #426 wiring itself. `BenchViewState` had a
-    /// doctrine-citing `RagRenderable` impl and ZERO bindings — citizens could
-    /// only learn run state from a progress-dir scrape command. This pins that
-    /// a bound bench source delivers REAL run rows through the SAME budgeter
-    /// as every other source; if the compose push or setter regresses, minds
-    /// go blind to the board again and only this fails.
-    #[tokio::test]
-    async fn compose_for_turn_delivers_the_benchmark_board() {
-        use continuum_positron::bench::{BenchRunRow, BenchViewState};
-        use continuum_positron::StateBuilder;
-
-        let id = Uuid::new_v4();
-        let room = Uuid::new_v4();
-        let rag = Arc::new(RagEngine::new());
-        let mut pc = PersonaCognition::new(id, "TestBot".into(), rag);
-
-        // One run row in the mind-side substrate — the same envelope shape the
-        // emitter dual-publishes (a session revision of the global fold).
-        let substrate = continuum_positron::Substrate::new();
-        substrate.store(StateBuilder::standalone().session(BenchViewState {
-            runs: vec![BenchRunRow {
-                round_id: None,
-                solve_room: None,
-                solve_room_name: None,
-                run_id: "run-7".into(),
-                instance: Some("sympy__sympy-24152".into()),
-                solver: Some("Asha".into()),
-                phase: "solving".into(),
-                stalled: false,
-                attempt: Some(1),
-                max_attempts: Some(3),
-                age_secs: 42,
-                acts: Some(5),
-                patch_bytes: None,
-                resolved: None,
-                fail_to_pass: None,
-                pass_to_pass: None,
-                failed_tests: Vec::new(),
-                infra_error: None,
-            }],
-            rounds: vec![],
-            sample_interval_ms: 1000,
-            room_id: Some(room.to_string()),
-        }));
-        // Per room since 2026-10-04 (HER-LOOP-IS-HER-OWN.md rule 5): the board is
-        // the turn's room's own view in the room registry, so the turn names it.
-        let rooms = Arc::new(continuum_positron::scoping::PerRoomSubstrates::new());
-        rooms.for_room(room).store_shared(
-            substrate.cache().get(BenchViewState::KIND).expect("stored above"),
-        );
-        let bench: Arc<dyn RagSource> = Arc::new(
-            crate::persona::viewstate_rag::ViewStateRagSource::<BenchViewState>::per_room(rooms),
-        );
-        pc.set_bench_source(bench);
-
-        let composed = pc.compose_for_turn(&lcd_profile(), 1_000_000, Some(room)).await;
-        let bench_delivery = composed
-            .deliveries
-            .iter()
-            .find(|d| d.source_id == "bench")
-            .expect("bench board must be composed alongside the other sources");
-        let rendered = bench_delivery
-            .items
-            .iter()
-            .map(|i| i.content.clone())
-            .collect::<Vec<_>>()
-            .join("\n");
-        assert!(rendered.contains("run-7"), "run row missing: {rendered}");
-        assert!(
-            rendered.contains("sympy__sympy-24152"),
-            "instance missing: {rendered}"
-        );
     }
 
     // what this catches: a turn in her mind room landing in the RAG capture (sink 5 of
