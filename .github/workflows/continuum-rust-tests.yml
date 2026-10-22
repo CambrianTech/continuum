@@ -140,6 +140,11 @@ jobs:
             --skip 'modules::gpu::' \
             --skip 'modules::persona_allocator::' \
             --skip 'persona::allocator::tests::test_allocate'
+          # The microkernel is its own crate (core/continuum-kernel): its unit tests moved out of
+          # continuum-core's run above, so they run here, same profile and fixtures (seconds).
+          cd ../..
+          cargo test -p continuum-kernel --lib --profile dev-fast --features test-fixtures -- \
+            --skip 'gpu::memory_manager::'
 
       - name: Retain Unix build evidence
         if: always() && needs.changes.outputs.rust != 'false'
@@ -326,10 +331,7 @@ jobs:
           foreach ($test in @(
             'model_registry::artifacts::expert_placement::tests::online_preparation_preserves_readers_until_explicit_final_exclusion',
             'model_registry::artifacts::expert_placement::tests::actual_lazy_reader_excludes_freeze_until_its_lifetime_ends',
-            'inference::engine_install::tests::installed_engine_receipt_binds_bytes_and_candidate_membership',
-            'system_resources::disk_eviction::tests::broker_reclaims_release_incremental_only_after_profile_custody',
-            'system_resources::disk_eviction::tests::redirected_profile_or_incremental_child_never_reaches_external_data',
-            'system_resources::disk_eviction::tests::ladder_frees_in_order_and_preserves_release_outputs'
+            'inference::engine_install::tests::installed_engine_receipt_binds_bytes_and_candidate_membership'
           )) {
             $output = & $env:CONTINUUM_LIB_TEST $test --exact --nocapture 2>&1
             $result = $LASTEXITCODE
@@ -338,6 +340,19 @@ jobs:
             if (($output -join "`n") -notmatch '1 passed;') { throw "Fixture did not execute: $test" }
           }
           Pop-Location
+          # Disk eviction lives in the kernel crate (core/continuum-kernel); its native custody
+          # fixtures run from there.
+          foreach ($test in @(
+            'system_resources::disk_eviction::tests::broker_reclaims_release_incremental_only_after_profile_custody',
+            'system_resources::disk_eviction::tests::redirected_profile_or_incremental_child_never_reaches_external_data',
+            'system_resources::disk_eviction::tests::ladder_frees_in_order_and_preserves_release_outputs'
+          )) {
+            $output = & cargo test -p continuum-kernel --lib --profile dev-fast --features test-fixtures $test -- --exact --nocapture 2>&1
+            $result = $LASTEXITCODE
+            $output | Write-Output
+            if ($result -ne 0) { exit $result }
+            if (($output -join "`n") -notmatch '1 passed;') { throw "Fixture did not execute: $test" }
+          }
       - name: Retain Windows build evidence
         if: always() && needs.changes.outputs.rust != 'false'
         uses: actions/upload-artifact@v4
