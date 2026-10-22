@@ -251,7 +251,7 @@ pub(crate) fn claim_gone_verdict(
     use crate::persona::card_holder::{hold_of, refused_by_claim, Hold};
     if refused_by_claim(card.state) {
         return Some(ClaimGone::MovedOn {
-            state: crate::modules::work::state_str(&card.state),
+            state: crate::persona::work_board::facts::state_str(&card.state),
         });
     }
     let expired_at_ms = card.claim_expires_at_ms;
@@ -398,7 +398,7 @@ pub(crate) async fn activity_room_for(
     else {
         return wake_room;
     };
-    match crate::modules::work::room_holding_card(runtime.airc(), airc_lib::WorkCardId::from_uuid(card)).await {
+    match crate::persona::work_board::horizon::room_holding_card(runtime.airc(), airc_lib::WorkCardId::from_uuid(card)).await {
         Some(room) => room.channel.as_uuid(),
         None => wake_room,
     }

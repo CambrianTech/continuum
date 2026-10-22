@@ -53,7 +53,7 @@ async fn room_of_card(
     airc: &std::sync::Arc<airc_lib::Airc>,
     card: uuid::Uuid,
 ) -> Option<airc_lib::Room> {
-    crate::modules::work::card_in_subscribed_rooms(airc, airc_lib::WorkCardId::from_uuid(card))
+    crate::persona::work_board::horizon::card_in_subscribed_rooms(airc, airc_lib::WorkCardId::from_uuid(card))
         .await
         .map(|(room, _)| room)
 }

@@ -1,7 +1,7 @@
 //! Event-driven SWE grade-on-done — closes the kanban benchmark loop.
 //!
 //! Subscribes to `work.card.state_changed` (emitted by `work/state`, see
-//! [`crate::modules::work::WORK_CARD_STATE_CHANGED`]) and, when a benchmark SWE card
+//! [`crate::persona::work_board::events::WORK_CARD_STATE_CHANGED`]) and, when a benchmark SWE card
 //! (`[bench swe-*]`) reaches a terminal state, grades the citizen's workspace diff against
 //! the HELD-OUT oracle and posts the verdict into the room. The whole system is
 //! event-based, never polling ([[the-whole-system-is-event-based-not-polling]]): nothing
@@ -21,7 +21,7 @@ use serde_json::Value;
 
 use crate::commands::benchmark::{grade_swe, SweGradeParams};
 use crate::recipe::benchmark_catalog::known_benchmarks;
-use crate::modules::work::WORK_CARD_STATE_CHANGED;
+use crate::persona::work_board::events::WORK_CARD_STATE_CHANGED;
 use crate::persona::PersonaAircRuntimeRegistry;
 use crate::runtime::{CommandResult, ModuleConfig, ModuleContext, ModulePriority, ServiceModule};
 

@@ -260,7 +260,7 @@ impl AircPersonaConversation {
                             {
                                 continue;
                             }
-                            crate::modules::work::bridge_wire_work_event(
+                            crate::persona::work_board::events::bridge_wire_work_event(
                                 event,
                                 self.runtime.peer_id(),
                             )
@@ -498,7 +498,7 @@ impl AircPersonaConversation {
         // so a citizen's own `work/state` echo counts. State events dedup by
         // event id; reviewed-credit delivery selects the publisher observer
         // and retains its durable retry identity.
-        crate::modules::work::bridge_wire_work_event(&event, self.runtime.peer_id()).await;
+        crate::persona::work_board::events::bridge_wire_work_event(&event, self.runtime.peer_id()).await;
         self.last_lamport = self.last_lamport.max(event.lamport);
         // Recover a perceptual room turn. Two on-wire shapes
         // reach a persona's subscribe stream and both are

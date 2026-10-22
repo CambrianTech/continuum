@@ -10,28 +10,6 @@ use super::*;
 // LITERALLY TRUE: the claimant of the bakery card could not re-read its
 // own requirements, and the card sat at five plans / zero files. Every
 // write-only surface eventually proves it needs its read half.
-/// Inverse of [`parse_state`] — the wire spelling of a card state.
-pub(crate) fn state_str(s: &CardState) -> &'static str {
-    match s {
-        CardState::Open => "open",
-        CardState::Claimed => "claimed",
-        CardState::InProgress => "in_progress",
-        CardState::Blocked => "blocked",
-        CardState::Review => "review",
-        CardState::Merged => "merged",
-        CardState::Closed => "closed",
-    }
-}
-
-/// Is this card CONCLUDED: merged or closed, its lane over. Narrower than airc's
-/// `CardState::is_settled`, which also counts Review (past claiming, but a card in review
-/// is still live work: its holder's ledger is her resumption state). The one place that
-/// says which states end a card's lane here (the transition gate's `finishing`, and which
-/// card ledgers leave a persona's context).
-pub(crate) fn is_concluded(s: &CardState) -> bool {
-    matches!(s, CardState::Merged | CardState::Closed)
-}
-
 /// The board's displayed 8-char short form of an id — what every surface
 /// shows and what the lifecycle verbs accept back.
 /// The peer genuinely ON this card right now, or `None`.
@@ -120,9 +98,6 @@ pub(crate) fn classify_refusal(holder: Option<Uuid>, caller: Option<Uuid>) -> Cl
     }
 }
 
-pub(super) fn short8(u: Uuid) -> String {
-    u.simple().to_string().chars().take(8).collect()
-}
 
 /// Browse the live work board (read-only).
 pub struct WorkList {

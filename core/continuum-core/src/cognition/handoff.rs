@@ -486,7 +486,7 @@ pub fn render_on_wake(h: &Handoff, current_build: &str, now_ms: u64) -> String {
                 card.title.trim(),
                 card.state
             ));
-            if let Some(sub) = crate::modules::work::submission::latest_submission(card) {
+            if let Some(sub) = crate::persona::work_board::submissions::latest_submission(card) {
                 out.push_str(&format!(
                     "\n  Latest submission on it: {}, made {} (re-fetch by id; do not re-make it).",
                     sub.submission_id.as_uuid(),

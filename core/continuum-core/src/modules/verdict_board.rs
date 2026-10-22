@@ -192,7 +192,7 @@ pub async fn follow_with(verdict: &SweVerdict, mode: FollowMode) -> FollowTally 
             let open_reviews = snap
                 .cards
                 .iter()
-                .filter(|k| !crate::modules::work::is_concluded(&k.state))
+                .filter(|k| !crate::persona::work_board::facts::is_concluded(&k.state))
                 .filter_map(|k| k.reviews.map(|parent| (parent.as_uuid(), k.card_id.as_uuid())))
                 .filter(|(parent, _)| all.contains(parent))
                 .collect();
@@ -224,11 +224,11 @@ pub async fn follow_with(verdict: &SweVerdict, mode: FollowMode) -> FollowTally 
         // settled parent and round within a second).
         if verdict.resolved {
             if let Some(review) = open_reviews.iter().find(|(parent, _)| *parent == card).map(|(_, review)| *review) {
-                match crate::modules::work::advance_card_state(
+                match crate::persona::work_board::advance::advance_card_state(
                     &airc,
                     airc_lib::WorkCardId::from_uuid(review),
                     airc_lib::CardState::Closed,
-                    crate::modules::work::VIA_VERDICT,
+                    crate::persona::work_board::advance::VIA_VERDICT,
                     None,
                 )
                 .await
@@ -262,11 +262,11 @@ pub async fn follow_with(verdict: &SweVerdict, mode: FollowMode) -> FollowTally 
         } else {
             airc_lib::CardState::InProgress
         };
-        let moved = match crate::modules::work::advance_card_state(
+        let moved = match crate::persona::work_board::advance::advance_card_state(
             &airc,
             card_id,
             next,
-            crate::modules::work::VIA_VERDICT,
+            crate::persona::work_board::advance::VIA_VERDICT,
             None,
         )
         .await

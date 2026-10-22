@@ -346,13 +346,13 @@ impl RoomBoardSource {
     /// Current signed candidate state is independent of a potentially long title.
     /// Reuse the submission owner's next-action semantics and evidence address.
     fn submission_guidance(card: &airc_work::WorkCard, board: &BoardSnapshot) -> Option<String> {
-        let candidate = crate::modules::work::submission::latest_submission(card)?;
+        let candidate = crate::persona::work_board::submissions::latest_submission(card)?;
         let reviews: Vec<_> = board.submission_reviews.iter().filter(|review| {
             review.card_id == card.card_id && review.submission_id == candidate.submission_id
         }).collect();
         let review = reviews.first()?;
         let outcomes: Vec<_> = reviews.iter().map(|review| review.outcome).collect();
-        let next = crate::modules::work::submission::next_after_submission(
+        let next = crate::persona::work_board::submissions::next_after_submission(
             Some(candidate.submission_id.as_uuid()), &outcomes,
             crate::recipe::benchmark_catalog::graded_at_submit(&card.title),
             Some(review.review_card_id),

@@ -115,7 +115,7 @@ impl ServiceModule for PersonaInstanceManagerModule {
                             airc_lib::HeartbeatWorkClaim {
                                 card_id: card.card_id,
                                 claim_id,
-                                ttl_ms: crate::modules::work::DEFAULT_CLAIM_TTL_MS,
+                                ttl_ms: crate::persona::work_board::facts::DEFAULT_CLAIM_TTL_MS,
                             },
                         )
                         .await

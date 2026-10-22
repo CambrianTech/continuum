@@ -1,12 +1,5 @@
 use super::*;
 
-/// Latest accepted candidate in the board's transcript order. AIRC projects submissions
-/// newest first; publisher wall clocks do not define recency. Keep handoff and review
-/// consumers on this contract so a resumed citizen sees the candidate being reviewed.
-pub(crate) fn latest_submission(card: &airc_lib::WorkCard) -> Option<&airc_work::WorkSubmission> {
-    card.submissions.first()
-}
-
 /// How a room is NAMED in a refusal (Kimi's `work/submit`, 2026-09-21).
 ///
 /// "card 31c241e2 is absent from this room" is TRUE and USELESS: she asked for one room

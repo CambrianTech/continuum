@@ -100,12 +100,12 @@ fn unavailable(room: &airc_lib::Room, why: String) -> PolicyRead {
 /// recipe declares one). An unreadable binding is `None` here too, never a guessed gate:
 /// this is the finish gate, unchanged by #5017 (credit no longer reads it as admission).
 pub(crate) async fn room_review(airc: &std::sync::Arc<Airc>, card_id: WorkCardId) -> Option<RoomReview> {
-    let (room, card) = super::card_in_subscribed_rooms(airc, card_id).await?;
+    let (room, card) = super::horizon::card_in_subscribed_rooms(airc, card_id).await?;
     let PolicyRead::Declared(policy) = room_policy(airc, &room).await else {
         return None;
     };
     let board = airc.work_board_in(&room).await.ok()?;
-    let latest = super::submission::latest_submission(&card);
+    let latest = super::submissions::latest_submission(&card);
     let author = latest.map(|s| s.publisher.as_uuid()).or(card.owner.map(|o| o.as_uuid()));
     let reviews: Vec<ReviewFact> = match latest {
         Some(sub) => board

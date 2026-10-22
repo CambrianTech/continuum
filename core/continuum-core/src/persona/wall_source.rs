@@ -158,9 +158,9 @@ fn ledgers_for_context(posts: Vec<WallPostPublished>, labels: Option<&CardLabels
             let short = ledger.card_id.simple().to_string();
             let short = &short[..8];
             let head = match labels.get(&ledger.card_id) {
-                Some((_, state)) if crate::modules::work::is_concluded(state) => return None,
+                Some((_, state)) if crate::persona::work_board::facts::is_concluded(state) => return None,
                 Some((title, state)) => {
-                    format!("ledger of card {short} \"{title}\" ({})\n", crate::modules::work::state_str(state))
+                    format!("ledger of card {short} \"{title}\" ({})\n", crate::persona::work_board::facts::state_str(state))
                 }
                 None => format!("ledger of card {short} (not on this room's board)\n"),
             };

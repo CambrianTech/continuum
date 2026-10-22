@@ -404,11 +404,11 @@ impl WorkGet {
             .map(submission::WorkReviewResult::from).collect();
         // the holder's card only: a review card's next step is its verdict, not a submission
         if card.reviews.is_none() {
-            let latest = submission::latest_submission(card).map(|s| s.submission_id);
+            let latest = crate::persona::work_board::submissions::latest_submission(card).map(|s| s.submission_id);
             let outcomes: Vec<_> = latest
                 .map(|id| board.submission_reviews_for(id).filter(|r| r.card_id == card.card_id).map(|r| r.outcome).collect())
                 .unwrap_or_default(); // unwrap_or_default: no submission, no outcomes
-            receipt.next = submission::next_after_submission(latest.map(|id| id.as_uuid()), &outcomes, crate::recipe::benchmark_catalog::graded_at_submit(&card.title), submission::submission_review_handoff(board, card.card_id, latest));
+            receipt.next = crate::persona::work_board::submissions::next_after_submission(latest.map(|id| id.as_uuid()), &outcomes, crate::recipe::benchmark_catalog::graded_at_submit(&card.title), crate::persona::work_board::submissions::submission_review_handoff(board, card.card_id, latest));
         }
         Ok(receipt)
     }
