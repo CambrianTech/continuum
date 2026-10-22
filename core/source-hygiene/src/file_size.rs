@@ -13,49 +13,6 @@ use super::{SourceFile, SourceRule, Violation};
 /// Lines a file may carry before every further line counts against the crate.
 pub const READABLE_FILE_LINES: usize = 1_000;
 
-/// Lines past `READABLE_FILE_LINES`, summed over the crate, measured on canary `4b6a66a6e`
-/// (2026-10-18). #5164 (the M5 proving build) and #5153 (this ratchet) were each green at
-/// their own heads and never ran against each other; merged in that order they left canary
-/// red at 160,594. That is canary's measured state, set here so every PR is not blocked;
-/// the batch split lowers it. **This number may only ever go DOWN.** A split by owner lowers
-/// it; raising it is growing the monolith.
-#[cfg(test)]
-// 159,615 after card 0af5d5ec moved disk_eviction.rs's 1,143-line test module to
-// disk_eviction/tests.rs (#![cfg(test)]): disk_eviction.rs fell from 2,426 to 1,283 lines.
-// 159,463 after card 5b497852 moved lane_args.rs's 477-line test module to lane_args/tests.rs
-// (#![cfg(test)]): lane_args.rs fell from 1,198 to 722 lines.
-// 159,447 after card 3026b83e moved SurfaceReason and the tool-surface receipt out of the
-// deliberation faculty into cognition/tool_surface.rs.
-// 159,419 after card b406e901 moved ModelBinding out of the deliberation faculty into
-// cognition/model_binding.rs.
-// 159,391 after persona admission permit extraction (PR5176).
-// 159,277 after card 573cc58a moved the cache-class eviction decisions out of
-// disk_eviction/tests.rs (1,145 lines) into disk_eviction/eviction_decisions.rs.
-// 158,283 after card 573cc58a moved persona_workspace.rs's 1,995-line test module to
-// cognition/persona_workspace/tests.rs (#![cfg(test)]): persona_workspace.rs fell from 4,380 to 2,370 lines.
-// 158,255: both card 573cc58a splits measured together on canary 16a075c71.
-// 158,221 after card 32d2abbb moved the training-job directory layout and its reader out of
-// modules/training_trigger.rs into genome/fine_tuning/job_dir.rs.
-// 157,971 (with #5185) after card 67af4fca moved the credit stamp (CreditRole, OutcomeStamp, CapturedCredit,
-// SettlementOutcome) out of persona/training_producer.rs into training_producer/stamp.rs.
-// 157,645 after card a0790c4b moved persona/viewstate_rag.rs's test module to
-// persona/viewstate_rag/tests.rs (#![cfg(test)]): #5015 had grown it to 1,458 lines and turned canary red.
-// 157,618 after consolidating the f32 cosine kernel into cognition/embedding/similarity.rs.
-// 157,412 after card a00ab1a6 deleted the standing benchmark autopilot (no harness).
-// 156,830 after card 5e3a3e75 deleted three hand copies of paths::continuum_home.
-// 156,825 after card 394017ed folded ensure_slot_pool's inline probes into one typed miss.
-// 154,999 after placement responsibilities split on current canary.
-// 136,485 after #5224 moved 69 oversized files' test modules into sibling tests.rs files.
-// 133,731 after #5225 split eight files just over 1,000 lines by owner.
-// 57,268 after #5228 split the 59 remaining oversized files into child modules.
-// 57,131 after launch_gate, models and benchmark_dispatch were decomposed.
-// 54,053 after start_server, serve_persona_loop_inner, voice_module, launch_gate, models and
-// benchmark_dispatch were decomposed by responsibility (#5234-#5237).
-// 45,242 after bin/continuum.rs was split by responsibility into bin/continuum/* (measured here, source-hygiene run).
-// 45,131 measured on canary 13ce66b03 + this change: 45,242 - 111 (generator/templates split).
-// 36,308 after llama-server responsibility split, direct source census.
-// 364 after the split merge-train (#5229-#5233, #5240, #5244): the only Rust file past 1,000 lines is the vendored inference/vendored/quantized_llama.rs (1,364).
-const BASELINE_LINES_OVER: usize = 364;
 
 pub struct FileSize;
 
@@ -105,23 +62,23 @@ mod tests {
         assert_eq!(excess(&v[0]), 250, "{}", v[0].source);
     }
 
-    // what this catches: the monolith growing. Every split by owner lowers the count; if
-    // this fails because you lowered it, lower `BASELINE_LINES_OVER` and take the win.
+    // what this catches: the monolith growing. Every split by owner lowers the count, and the
+    // ratchet holds whatever the base tree reached.
     #[test]
     fn lines_past_the_readable_size_never_rise() {
         let violations = scan(&[&FileSize]);
         let total: usize = violations.iter().map(excess).sum();
         let mut worst: Vec<_> = violations.iter().map(|v| (excess(v), v.file.as_str())).collect();
         worst.sort_by(|a, b| b.0.cmp(&a.0));
-        eprintln!("lines past {READABLE_FILE_LINES}: {total} across {} files (baseline {BASELINE_LINES_OVER})", violations.len());
+        eprintln!("lines past {READABLE_FILE_LINES}: {total} across {} files", violations.len());
         for (n, f) in worst.iter().take(6) {
             eprintln!("  {f}: +{n}");
         }
-        assert!(
-            total <= BASELINE_LINES_OVER,
-            "lines past {READABLE_FILE_LINES} rose to {total} (baseline {BASELINE_LINES_OVER}). Split the \
-             file you grew by owner, one responsibility per file. Never raise the baseline."
-        );
-        crate::assert_baseline_is_current("BASELINE_LINES_OVER", total, BASELINE_LINES_OVER);
+        crate::ratchet::hold("lines_over", total, || {
+            format!(
+                "Lines past {READABLE_FILE_LINES} grew. Split the file you grew by owner, one \
+                 responsibility per file."
+            )
+        });
     }
 }

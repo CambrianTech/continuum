@@ -50,15 +50,6 @@ pub fn ring_of(module: &str) -> Option<u8> {
         .map(|r| r as u8)
 }
 
-/// Upward imports when the ratchet landed (canary `bc42092af`, 2026-10-18): 256 across 73
-/// module pairs. **This number may only ever go DOWN.** Each cut in the decomposition plan
-/// lowers it; raising it to green a build is defeating the invariant.
-#[cfg(test)]
-// 674 coupling LINES across 73 module pairs, re-measured in CI on canary a85454889 when
-// the unit changed from files to lines (2026-10-20); 253 was the same coupling counted per file.
-// 672 with both splits: resource_admission's test names ServedGeometry through an import, and openai_adapter's rustdoc link to crate::cognition became prose. Neither is a decoupling.
-const BASELINE_UPWARD_IMPORTS: usize = 671; // 672 -> 671: harness removal 1 deleted competitor/resolution_bench
-
 /// The top-level module of a scanned file: the first path component under `src/`.
 fn module_of(file: &SourceFile) -> Option<&str> {
     let first = file.rel.split('/').next()?;
@@ -180,8 +171,7 @@ mod tests {
 
     // what this catches: the invariant moving the wrong way. Every cut in
     // MICROKERNEL-DECOMPOSITION.md lowers this count; a PR that raises it has put a fact
-    // or a verb in a ring above its owner. If this fails because you lowered the count,
-    // lower `BASELINE_UPWARD_IMPORTS` and take the win.
+    // or a verb in a ring above its owner. The ratchet holds the base tree's count.
     #[test]
     fn upward_imports_never_rise() {
         let violations = scan(&[&LayerDiscipline]);
@@ -192,18 +182,16 @@ mod tests {
             let to = v.source.split('`').nth(1).unwrap_or("?").to_string(); // unwrap_or: the source line is built by `check` with the backticked path
             *pairs.entry((from, to)).or_default() += 1;
         }
-        eprintln!("upward imports: {count} across {} module pairs (baseline {BASELINE_UPWARD_IMPORTS})", pairs.len());
+        eprintln!("upward imports: {count} across {} module pairs", pairs.len());
         let mut worst: Vec<_> = pairs.into_iter().collect();
         worst.sort_by(|a, b| b.1.cmp(&a.1));
         for ((from, to), n) in worst.iter().take(8) {
             eprintln!("  {from} -> {to}: {n} lines");
         }
-        assert!(
-            count <= BASELINE_UPWARD_IMPORTS,
-            "upward imports rose to {count} (baseline {BASELINE_UPWARD_IMPORTS}). A lower ring now \
-             names a higher ring: move the fact or verb down to its owner, or place the module \
-             in its ring. Never raise the baseline."
-        );
-        crate::assert_baseline_is_current("BASELINE_UPWARD_IMPORTS", count, BASELINE_UPWARD_IMPORTS);
+        crate::ratchet::hold("upward_imports", count, || {
+            "upward imports rose. A lower ring now names a higher ring: move the fact or verb \
+             down to its owner, or place the module in its ring."
+                .to_string()
+        });
     }
 }

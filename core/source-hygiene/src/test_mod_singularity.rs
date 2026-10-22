@@ -16,18 +16,6 @@
 
 use super::{SourceFile, SourceRule, Violation};
 
-/// Excess test mods (the 2nd, 3rd, … in a file) when this guard landed
-/// (2026-08-22): 13 files, worst `modules/grid/tests.rs` (6 mods),
-/// `runtime/runtime.rs` and `commands/benchmark.rs` (3 each).
-///
-/// **This number may only ever go DOWN.** Merging a file's mods into one (nested
-/// themes inside it are fine) lowers it; raising it to green a build is defeating
-/// the guard.
-#[cfg(test)]
-// 15 after #5228: the multi-mod files' suites moved into one test file each, as nested themes.
-// 13 after the working_memory split moved its suites into one test file.
-const BASELINE_EXCESS_TEST_MODS: usize = 13;
-
 /// 1-indexed lines of `#[cfg(test)]` attributes that gate a `mod`.
 fn test_mod_lines(file: &SourceFile) -> Vec<usize> {
     let lines: Vec<&str> = file.raw.lines().collect();
@@ -81,15 +69,14 @@ mod tests {
     /// What this catches: a NEW second `#[cfg(test)] mod` landing in any file.
     /// If this fails because you added one: fold your tests into the file's
     /// existing mod (a nested `mod theme_name { use super::*; }` inside it keeps
-    /// the grouping). If it fails because you MERGED some, lower the baseline and
-    /// take the win.
+    /// the grouping). If you MERGED some, the ratchet holds the lower count.
     #[test]
     fn the_excess_test_mod_count_never_rises() {
         let violations = scan(&[&TestModSingularity]);
         let count = violations.len();
-        assert!(
-            count <= BASELINE_EXCESS_TEST_MODS,
-            "excess test mods rose to {count} (baseline {BASELINE_EXCESS_TEST_MODS}).\n\
+        crate::ratchet::hold("excess_test_mods", count, || {
+            format!(
+            "excess test mods rose to {count}.\n\
              One `#[cfg(test)] mod` per file — new themes nest INSIDE it as \
              `mod theme {{ use super::*; }}`.\nNew offenders:\n{}",
             violations
@@ -98,8 +85,8 @@ mod tests {
                 .map(|v| format!("  {}:{}", v.file, v.line))
                 .collect::<Vec<_>>()
                 .join("\n")
-        );
-        crate::assert_baseline_is_current("BASELINE_EXCESS_TEST_MODS", count, BASELINE_EXCESS_TEST_MODS);
+            )
+        });
     }
 
     /// What this catches: the detector counting the wrong thing — a gated helper
