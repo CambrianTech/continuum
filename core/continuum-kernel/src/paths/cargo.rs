@@ -46,7 +46,7 @@ pub fn physical_root(path: &Path) -> Result<PathBuf, String> {
 
 /// Native device identity, not a mount-path inference. An unavailable device is
 /// an error; callers retain its ownership rather than treating it as empty.
-pub(crate) fn volume_id(path: &Path) -> Result<u64, String> {
+pub fn volume_id(path: &Path) -> Result<u64, String> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::MetadataExt;

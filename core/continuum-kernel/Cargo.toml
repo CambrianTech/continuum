@@ -56,6 +56,8 @@ sysinfo = "0.33"
 arc-swap = "1.7"
 notify = "8"
 rayon.workspace = true
+# Test fixtures (fresh_adapter) need a temp dir; only fixture builds link it.
+tempfile = { version = "3", optional = true }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.60", features = ["Win32_System_SystemInformation", "Win32_System_ProcessStatus", "Win32_Storage_FileSystem", "Win32_Foundation", "Win32_Globalization", "Win32_Security", "Win32_Security_AppLocker", "Win32_System_Threading", "Win32_System_Pipes", "Win32_System_JobObjects", "Win32_System_Console", "Win32_System_Environment", "Win32_System_SystemServices"] }
@@ -68,6 +70,7 @@ metal = "0.32"
 objc = "0.2"
 
 [dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }
 tempfile = "3"
 source-hygiene = { path = "../source-hygiene" }
 
@@ -76,5 +79,5 @@ default = []
 cuda = []
 vulkan = []
 ts-codegen = []
-test-fixtures = ["continuum-base/test-fixtures"]
+test-fixtures = ["continuum-base/test-fixtures", "dep:tempfile"]
 stress-tests = []

@@ -202,13 +202,13 @@ mod registry;
 pub type Kept = std::sync::Arc<dyn std::any::Any + Send + Sync>;
 
 pub use registry::{admit_cargo_target, bind_cargo_owners, register_cargo_target, restore_cargo_roots};
-pub(crate) use registry::resolve_existing_storage_path;
+pub use registry::resolve_existing_storage_path;
 pub(crate) use registry::citizen_has_cargo_owner;
-#[cfg(test)]
-pub(crate) use registry::prepare_writer_fixture;
+#[cfg(any(test, feature = "test-fixtures"))]
+pub use registry::prepare_writer_fixture;
 use registry::TRACKED_DIRS;
 
-pub(crate) fn registry_installed() -> bool { TRACKED_DIRS.get().is_some() }
+pub fn registry_installed() -> bool { TRACKED_DIRS.get().is_some() }
 
 /// Install the boot-time tracked-dir set. Second call is a boot-sequence
 /// bug — fail loud, never silently keep two measurement sets.

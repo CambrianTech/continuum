@@ -26,8 +26,8 @@ pub mod cargo;
 pub mod artifacts;
 pub mod native;
 mod layout;
-#[cfg(test)]
-pub(crate) mod test_home;
+#[cfg(any(test, feature = "test-fixtures"))]
+pub mod test_home;
 pub use layout::ContinuumLayout;
 
 /// Configured storage tier, without inventing a machine-specific destination.
@@ -135,8 +135,8 @@ pub fn payload_root(home: &std::path::Path) -> Result<std::path::PathBuf, String
 /// Preserve a nonempty HOME override, then use the OS-native home discovery.
 /// Native Windows embeddings need not inherit a Unix shell environment. Never
 /// substitute the checkout/current directory for missing persistent storage.
-pub(crate) fn home_dir() -> Option<std::path::PathBuf> {
-    #[cfg(test)]
+pub fn home_dir() -> Option<std::path::PathBuf> {
+    #[cfg(any(test, feature = "test-fixtures"))]
     if let Some(native) = TEST_NATIVE_HOME.with(|root| root.borrow().clone()) {
         return resolve_home(None, || Some(native));
     }
@@ -190,7 +190,7 @@ pub(crate) fn resolve_cargo_target(
         .or_else(|| home.map(|h| h.join(".continuum").join("cache").join("cargo-target")))
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-fixtures"))]
 thread_local! {
     // The recorder's existing per-thread fixture-root seam, shared with the
     // other readers/writers using this policy. Models HOME absence and a native
@@ -199,24 +199,24 @@ thread_local! {
         const { std::cell::RefCell::new(None) };
 }
 
-#[cfg(test)]
-pub(crate) struct NativeHomeOverride(Option<std::path::PathBuf>);
+#[cfg(any(test, feature = "test-fixtures"))]
+pub struct NativeHomeOverride(Option<std::path::PathBuf>);
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-fixtures"))]
 impl NativeHomeOverride {
-    pub(crate) fn install(path: &std::path::Path) -> Self {
+    pub fn install(path: &std::path::Path) -> Self {
         Self(TEST_NATIVE_HOME.with(|root| root.replace(Some(path.to_path_buf()))))
     }
 
     /// The override installed on THIS thread, for a test-scoped fixture to carry into
     /// a thread it spawns (the seam writes residents on their own threads, #4414):
     /// a thread-local that is not carried is a real home written from a test.
-    pub(crate) fn current() -> Option<std::path::PathBuf> {
+    pub fn current() -> Option<std::path::PathBuf> {
         TEST_NATIVE_HOME.with(|root| root.borrow().clone())
     }
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-fixtures"))]
 impl Drop for NativeHomeOverride {
     fn drop(&mut self) {
         TEST_NATIVE_HOME.with(|root| *root.borrow_mut() = self.0.take());

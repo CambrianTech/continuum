@@ -82,7 +82,6 @@ use super::{DeferredReason, ForbiddenReason, RouteDecision, Verdict};
 /// `#[non_exhaustive]` so adding (e.g.) `Grid` or `Bridge` later
 /// is non-breaking for external policies.
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[non_exhaustive]
 pub enum CallerSource {
     /// The caller is this substrate's own code invoking commands
     /// internally (e.g. a persona's service_loop dispatching via

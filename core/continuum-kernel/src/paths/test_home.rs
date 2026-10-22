@@ -33,7 +33,7 @@ static HOME_ENV: LazyLock<Arc<tokio::sync::Mutex<()>>> =
 const VARS: [&str; 4] = ["HOME", "USERPROFILE", "HF_HOME", "CONTINUUM_HOME"];
 
 /// Exclusive ownership of the process home for a test's lifetime.
-pub(crate) struct HomeGuard {
+pub struct HomeGuard {
     /// Captured with `var_os` — a present non-Unicode path is restored, never removed.
     prior: Vec<(&'static str, Option<std::ffi::OsString>)>,
     _lock: tokio::sync::OwnedMutexGuard<()>,
@@ -43,7 +43,7 @@ impl HomeGuard {
     /// Wait for home-mutating fixtures, then retain the restored process home
     /// unchanged across async subprocess execution. Do not nest under another
     /// HomeGuard: the fixture must choose either isolation or preservation.
-    pub(crate) async fn preserve() -> Self {
+    pub async fn preserve() -> Self {
         Self {
             prior: Vec::new(),
             _lock: HOME_ENV.clone().lock_owned().await,
@@ -55,7 +55,7 @@ impl HomeGuard {
     /// may be swapping (`continuum_home`, `HOME`) needs this as much as a writer needs
     /// [`set_blocking`](Self::set_blocking): unguarded, it races the swap (card cb3221a5).
     /// Panics inside an async runtime, as `set_blocking` does.
-    pub(crate) fn preserve_blocking() -> Self {
+    pub fn preserve_blocking() -> Self {
         Self {
             prior: Vec::new(),
             _lock: HOME_ENV.clone().blocking_lock_owned(),
@@ -63,14 +63,14 @@ impl HomeGuard {
     }
 
     /// Take the lock from an async test (held across awaits).
-    pub(crate) async fn set(home: &Path) -> Self {
+    pub async fn set(home: &Path) -> Self {
         let lock = HOME_ENV.clone().lock_owned().await;
         Self::pin(home, lock)
     }
 
     /// Take the lock from a sync test. Panics if called inside an async runtime —
     /// use [`HomeGuard::set`] there.
-    pub(crate) fn set_blocking(home: &Path) -> Self {
+    pub fn set_blocking(home: &Path) -> Self {
         let lock = HOME_ENV.clone().blocking_lock_owned();
         Self::pin(home, lock)
     }
@@ -97,7 +97,7 @@ impl Drop for HomeGuard {
 }
 
 /// Run `f` with the process home pinned to `home`, under the one lock (sync tests).
-pub(crate) fn with_test_home<T>(home: &Path, f: impl FnOnce() -> T) -> T {
+pub fn with_test_home<T>(home: &Path, f: impl FnOnce() -> T) -> T {
     let _guard = HomeGuard::set_blocking(home);
     f()
 }

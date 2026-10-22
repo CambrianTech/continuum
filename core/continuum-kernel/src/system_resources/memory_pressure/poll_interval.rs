@@ -100,7 +100,7 @@ pub(super) fn anomaly_scan_due(level: PressureLevel, last_scan: Option<Duration>
 }
 
 /// Per-reporter call budget. A reporter exceeding this is treated as a fault.
-pub(super) const REPORTER_TIMEOUT: Duration = Duration::from_millis(100);
+pub const REPORTER_TIMEOUT: Duration = Duration::from_millis(100);
 
 /// Consecutive faults before a reporter is quarantined (skipped) to stop a
 /// misbehaving reporter from cascading into the monitor.

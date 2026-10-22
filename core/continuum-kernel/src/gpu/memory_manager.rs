@@ -495,7 +495,7 @@ impl GpuMemoryManager {
     }
 
     /// Simulated GPU for tests — just name + total VRAM, default budget split.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-fixtures"))]
     pub fn simulated(gpu_name: &str, total_vram_bytes: u64) -> Self {
         let reserve_bytes = (total_vram_bytes as f64 * RESERVE_PCT) as u64;
         let usable = total_vram_bytes.saturating_sub(reserve_bytes);
@@ -522,7 +522,7 @@ impl GpuMemoryManager {
     }
 
     /// Test-only constructor for creating managers with known budgets.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-fixtures"))]
     pub fn new_for_test(
         total_vram_bytes: u64,
         gpu_name: String,
@@ -950,27 +950,6 @@ fn detect_vulkan() -> Option<(u64, String)> {
 
 // detect_cpu_fallback() removed — see detect_gpu()'s panic for rationale.
 // CPU fallback is forbidden architecturally; absent GPU = absent system.
-
-/// Total physical system RAM, cross-platform via `sysinfo` (Windows / Linux / macOS).
-///
-/// The old hand-rolled probes were per-OS: macOS shelled out to `sysctl hw.memsize`, and the
-/// `#[cfg(not(target_os = "macos"))]` branch read `/proc/meminfo` — which is LINUX-ONLY. On
-/// Windows there is no `/proc/meminfo`, so the read failed and the function fell through to an
-/// 8 GiB fallback. Every downstream fit decision (which model fits, what serving budget) was
-/// then made against a phantom 8 GiB box regardless of the real machine — a 5090 workstation
-/// with 63 GiB looked like an 8 GiB laptop and refused to serve anything bigger than a toy.
-/// `sysinfo` (already a dependency) reports real physical memory uniformly on all three OSes.
-fn get_system_ram() -> u64 {
-    use sysinfo::System;
-    let mut sys = System::new();
-    sys.refresh_memory();
-    let total = sys.total_memory(); // bytes in sysinfo 0.30+
-    if total > 0 {
-        total
-    } else {
-        8 * 1024 * 1024 * 1024 // last-resort only if the OS probe genuinely returns 0
-    }
-}
 
 // =============================================================================
 // TESTS

@@ -27,7 +27,7 @@ pub enum ContextKind {
 }
 
 impl ContextKind {
-    pub(crate) fn tag(self) -> &'static str {
+    pub fn tag(self) -> &'static str {
         match self {
             Self::Isolated => "isolated",
             Self::Claim => "claim",

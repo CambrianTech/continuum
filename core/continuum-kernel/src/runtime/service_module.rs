@@ -131,7 +131,6 @@ pub struct ModuleConfig {
 /// [`CommandResult::to_json_value`] when the call site just needs the
 /// payload as JSON regardless of which cell shape arrived.
 #[derive(Debug)]
-#[non_exhaustive]
 pub enum CommandResult {
     /// Standard JSON response. The Value cell shape under the legacy
     /// name; preferred for new code that produces a typed result.

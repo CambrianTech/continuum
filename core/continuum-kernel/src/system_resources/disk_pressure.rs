@@ -355,7 +355,7 @@ const POLL_INTERVAL: Duration = Duration::from_secs(30);
 const QUARANTINE_AFTER: u32 = 3;
 
 /// Reporter call budget — 100 ms hard ceiling per call.
-pub(crate) const REPORTER_TIMEOUT: Duration = Duration::from_millis(100);
+pub const REPORTER_TIMEOUT: Duration = Duration::from_millis(100);
 
 /// THE VOLUME WE MEASURE IS THE ONE THAT HOLDS THE SUBSTRATE'S HOME — resolved
 /// through the drive adapter ([`crate::system_resources::drives::drive_holding`]),

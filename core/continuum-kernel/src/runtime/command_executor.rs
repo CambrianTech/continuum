@@ -30,7 +30,6 @@
 //! ends at the Rust registry. TS is an explicit-API destination, not
 //! a silent dependency.
 
-use continuum_base::time::EpochMs;
 use serde_json::Value;
 use std::sync::Arc;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};

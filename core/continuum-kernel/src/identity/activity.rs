@@ -83,7 +83,7 @@ impl ActivityRoom {
 
     /// A real-shaped, non-nil room for tests. Deterministic so fixtures and
     /// byte-diff assertions stay reproducible.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-fixtures"))]
     pub fn test_room() -> Self {
         Self(airc_core::RoomId::from_u128(0x7e57_0000_0000_0000_0000_0000_0000_0001))
     }

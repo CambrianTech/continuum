@@ -27,7 +27,7 @@ pub type DispatchFuture<'a> = Pin<Box<dyn Future<Output = Dispatched> + Send + '
 
 /// One concern that attaches around every dispatch.
 pub trait DispatchHook: Send + Sync + 'static {
-    /// Its name, for the probe and for installing it once.
+    /// Its description, for probes and logs. Identity is the hook's type, never this name.
     fn name(&self) -> &'static str;
 
     /// Before the gate: `Ok(None)` when this call is not its concern, `Err` to refuse it.
@@ -50,20 +50,22 @@ pub trait DispatchScope: Send + Sync {
 }
 
 // parking_lot: no poisoning, so no recovery path to justify; the list only grows by whole entries.
-static HOOKS: parking_lot::RwLock<Vec<Arc<dyn DispatchHook>>> = parking_lot::RwLock::new(Vec::new());
+static HOOKS: parking_lot::RwLock<Vec<(std::any::TypeId, Arc<dyn DispatchHook>)>> = parking_lot::RwLock::new(Vec::new());
 
-/// Install `hook` for every dispatch in this process. Installing the same name twice keeps
-/// the first: boot may run more than once in tests, and a hook must never run twice per call.
-pub fn install(hook: Arc<dyn DispatchHook>) {
+/// Install `hook` for every dispatch in this process. A hook is identified by its type: a
+/// second install of the same type keeps the first (boot may run more than once in tests, and
+/// a hook must never run twice per call). No name or string decides identity.
+pub fn install<H: DispatchHook>(hook: Arc<H>) {
+    let id = std::any::TypeId::of::<H>();
     let mut hooks = HOOKS.write();
-    if hooks.iter().all(|h| h.name() != hook.name()) {
-        hooks.push(hook);
+    if hooks.iter().all(|(installed, _)| *installed != id) {
+        hooks.push((id, hook));
     }
 }
 
 /// Enter every installed hook for one dispatch, in install order. The first refusal ends it.
 pub(crate) fn enter_all(caller: Option<&CallerIdentity>) -> Result<Vec<Arc<dyn DispatchScope>>, String> {
-    let hooks: Vec<Arc<dyn DispatchHook>> = HOOKS.read().clone();
+    let hooks: Vec<Arc<dyn DispatchHook>> = HOOKS.read().iter().map(|(_, hook)| Arc::clone(hook)).collect();
     let mut scopes = Vec::new();
     for hook in hooks {
         if let Some(scope) = hook.enter(caller)? {

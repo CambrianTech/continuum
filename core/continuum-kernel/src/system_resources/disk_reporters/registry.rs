@@ -14,14 +14,14 @@ use record::RootRecord;
 
 pub(super) static TRACKED_DIRS: OnceLock<Registry> = OnceLock::new();
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-fixtures"))]
 static TEST_OWNERSHIP: tokio::sync::OnceCell<(Registry, tempfile::TempDir)> =
     tokio::sync::OnceCell::const_new();
 
 /// Explicit command-fixture setup, without installing a monitor or altering
 /// unrelated module tests' production boot registration state.
-#[cfg(test)]
-pub(crate) async fn prepare_writer_fixture() {
+#[cfg(any(test, feature = "test-fixtures"))]
+pub async fn prepare_writer_fixture() {
     TEST_OWNERSHIP
         .get_or_init(|| async {
             let (adapter, directory) = crate::orm::store::fresh_adapter().await;
@@ -44,7 +44,7 @@ fn writer_registry() -> Result<&'static Registry, String> {
     if let Some(registry) = TRACKED_DIRS.get() {
         return Ok(registry);
     }
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-fixtures"))]
     if let Some((registry, _)) = TEST_OWNERSHIP.get() {
         return Ok(registry);
     }
@@ -599,7 +599,7 @@ pub async fn restore_cargo_roots(adapter: Arc<dyn StorageAdapter>) -> Result<(),
 
 /// Existing-path custody uses the registry's bounded, retained path worker;
 /// an unavailable mount cannot create a new orphan worker on every request.
-pub(crate) async fn resolve_existing_storage_path(path: &Path) -> Result<std::path::PathBuf, String> {
+pub async fn resolve_existing_storage_path(path: &Path) -> Result<std::path::PathBuf, String> {
     Ok(writer_registry()?.path_work(path, PathWork::ResolveExisting).await?.path)
 }
 

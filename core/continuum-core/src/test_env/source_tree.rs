@@ -96,7 +96,9 @@ pub(crate) fn code_only(line: &str) -> &str {
     source_hygiene::split_code_and_comment(line).0
 }
 
-/// Every `.rs` file under this crate's `src/`.
+/// Every `.rs` file under this crate's `src/`, and under `continuum-kernel/src` (its modules
+/// are this crate's `crate::runtime`, `crate::orm`… re-exported, so they keep these relative
+/// paths and every guard that walks the tree still sees them).
 pub(crate) fn crate_sources() -> Vec<SourceFile> {
     fn walk(dir: &Path, root: &Path, out: &mut Vec<SourceFile>) {
         let Ok(entries) = std::fs::read_dir(dir) else {
@@ -118,9 +120,12 @@ pub(crate) fn crate_sources() -> Vec<SourceFile> {
             }
         }
     }
-    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
     let mut out = Vec::new();
-    walk(&root, &root, &mut out);
+    for root in [manifest.join("src"), manifest.join("../continuum-kernel/src")] {
+        walk(&root, &root, &mut out);
+    }
+    out.retain(|f| !(f.rel == "lib.rs" && f.path.starts_with(manifest.join("../continuum-kernel/src"))));
     out
 }
 

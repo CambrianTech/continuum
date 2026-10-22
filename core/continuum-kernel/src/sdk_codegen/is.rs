@@ -79,7 +79,7 @@ pub enum WireShape {
 impl WireShape {
     /// Whether the generated surface wraps params/result in the envelope generics.
     /// Only `Enveloped` does — `Bare`/`Provided` exchange the types directly.
-    pub(super) fn is_enveloped(self) -> bool {
+    pub fn is_enveloped(self) -> bool {
         matches!(self, WireShape::Enveloped)
     }
 }
@@ -510,7 +510,7 @@ pub fn generate_command_api(
 /// every generated surface automatically (the anti-drift guarantee, mandatory
 /// when commands are infinitely-extensible / written on the fly).
 pub struct CommandRegistration {
-    pub(super) descriptor_fn: fn() -> CommandDescriptor,
+    pub descriptor_fn: fn() -> CommandDescriptor,
 }
 
 impl CommandRegistration {

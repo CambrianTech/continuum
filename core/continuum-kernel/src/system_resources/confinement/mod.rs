@@ -190,7 +190,7 @@ const CARVED_OUT_HOME_ENTRIES: &[&str] = &[
 const CREDENTIAL_SUFFIXES: &[&str] = &[".airc/identity.key"];
 
 /// Whether `path` ends in a [`CREDENTIAL_SUFFIXES`] entry. One check for every consumer.
-pub(crate) fn is_scoped_credential(path: &Path) -> bool {
+pub fn is_scoped_credential(path: &Path) -> bool {
     CREDENTIAL_SUFFIXES.iter().any(|suffix| path.ends_with(suffix))
 }
 

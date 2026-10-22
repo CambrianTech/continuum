@@ -224,7 +224,7 @@ where
     /// re-serializing an immutable payload when only linkage metadata changes.
     /// The adapter still owns its read/write representation and version bump;
     /// this is not a compare-and-swap or multi-row transaction.
-    pub(crate) async fn update_fields<P: Serialize>(
+    pub async fn update_fields<P: Serialize>(
         &self,
         id: Uuid,
         fields: &P,
@@ -239,7 +239,7 @@ where
     }
 
     /// The create of a new row, as one operation of an atomic [`commit`].
-    pub(crate) fn create_op(&self, id: Uuid, entity: &T) -> Result<BatchOperation, OrmStoreError> {
+    pub fn create_op(&self, id: Uuid, entity: &T) -> Result<BatchOperation, OrmStoreError> {
         Ok(BatchOperation {
             operation_type: BatchOperationType::Create,
             collection: T::COLLECTION.to_string(),
@@ -250,7 +250,7 @@ where
 
     /// The overwrite of an existing row ([`OrmStore::update`]), as one operation of an atomic
     /// [`commit`].
-    pub(crate) fn update_op(&self, id: Uuid, entity: &T) -> Result<BatchOperation, OrmStoreError> {
+    pub fn update_op(&self, id: Uuid, entity: &T) -> Result<BatchOperation, OrmStoreError> {
         Ok(BatchOperation {
             operation_type: BatchOperationType::Update,
             collection: T::COLLECTION.to_string(),
@@ -293,7 +293,7 @@ fn row_data<P: Serialize>(entity: &P) -> Result<serde_json::Value, OrmStoreError
 
 /// Apply `operations` (built by stores sharing `adapter`) ATOMICALLY: every one commits, or none
 /// does. The one way a decision and the row it changes are written together.
-pub(crate) async fn commit(adapter: &Arc<dyn StorageAdapter>, operations: Vec<BatchOperation>) -> Result<(), OrmStoreError> {
+pub async fn commit(adapter: &Arc<dyn StorageAdapter>, operations: Vec<BatchOperation>) -> Result<(), OrmStoreError> {
     let result = adapter.batch(operations).await;
     unwrap_adapter(result, "batch", "atomic commit")?;
     Ok(())
@@ -355,8 +355,8 @@ fn unwrap_storage<T>(
 /// collide via the SQLite shared-cache `:memory:` alias. Return the
 /// `TempDir` alongside the adapter — caller owns its lifetime; drop
 /// at test-end cleans up cleanly (no `/tmp` accumulation).
-#[cfg(test)]
-pub(crate) async fn fresh_adapter() -> (Arc<dyn StorageAdapter>, tempfile::TempDir) {
+#[cfg(any(test, feature = "test-fixtures"))]
+pub async fn fresh_adapter() -> (Arc<dyn StorageAdapter>, tempfile::TempDir) {
     use crate::orm::sqlite::SqliteAdapter;
     let tmp = tempfile::tempdir().expect("tempdir");
     let adapter = SqliteAdapter::open(&tmp.path().join("orm-store-test.sqlite"))

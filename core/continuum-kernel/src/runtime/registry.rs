@@ -548,48 +548,4 @@ mod tests {
         assert!(found.is_some());
     }
 
-    // what this catches: the registered-but-undispatchable class (#309 final layer —
-    // work/list shipped advertised in help/suggestions/the tool offer while dispatch
-    // refused it, live 2026-08-03). dispatch_orphans must read BOTH sides: with no
-    // module registered, every dep-holding descriptor is an orphan (proves it reads
-    // the descriptor registry, and that stateless self-registering commands are
-    // exempt by construction); registering the work module clears ALL SEVEN work
-    // verbs (proves objects clear orphans — and pins that commands() carries every
-    // verb the descriptors advertise, the exact two-line gap that shipped).
-    // what this catches: the audit counting a `Provided` command as undispatchable. Such a
-    // command has NO ServiceModule by construction — an adapter is its server — so it can
-    // never appear in `command_objects` or a prefix route, and no amount of module
-    // registration will ever clear it. Counting it made the boot ERROR permanently noisy
-    // (3 orphans, 2 of them healthy adapter-served commands) AND made the documented
-    // promotion to a boot refusal unreachable, since the count could not reach zero.
-    //
-    // Asserted on a registry with NOTHING registered — the worst case for the audit, where
-    // every module-served command IS an orphan. If a Provided name survives even there, the
-    // filter is gone. Reverting the `wire != Provided` filter puts interface/screenshot back
-    // in the list and this goes red.
-    #[test]
-    fn a_provided_command_is_never_an_orphan_because_it_has_no_module_to_be_missing_from() {
-        let registry = ModuleRegistry::new();
-        let orphans = registry.dispatch_orphans();
-
-        // Every Provided descriptor in the registry, by shape — not a hand-kept name list,
-        // so a newly-added adapter command inherits the guarantee.
-        let provided: Vec<&'static str> = crate::sdk_codegen::command_registry()
-            .into_iter()
-            .filter(|d| d.wire == crate::sdk_codegen::WireShape::Provided)
-            .map(|d| d.name)
-            .collect();
-        assert!(
-            !provided.is_empty(),
-            "positive control: the registry must contain at least one Provided command \
-             (interface/screenshot), or this test proves nothing"
-        );
-        for name in provided {
-            assert!(
-                !orphans.contains(&name),
-                "{name} is adapter-served (WireShape::Provided) — it has no module to be \
-                 missing from, so the dispatch audit must not report it. orphans: {orphans:?}"
-            );
-        }
-    }
 }

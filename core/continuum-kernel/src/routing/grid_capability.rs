@@ -92,7 +92,7 @@ impl GrantVerifier for Ed25519GrantVerifier {
 /// ([`GridTrustAuthPolicy::gate`](crate::modules::grid::GridTrustAuthPolicy)) re-checks a
 /// caller's verified `granted_capabilities` through the SAME matching rule — one
 /// source of truth for capability→command conferral, never a divergent copy.
-pub(crate) fn confers(capabilities: &[String], command: &str) -> bool {
+pub fn confers(capabilities: &[String], command: &str) -> bool {
     capabilities
         .iter()
         .any(|c| command == c || command.starts_with(&format!("{c}/")))

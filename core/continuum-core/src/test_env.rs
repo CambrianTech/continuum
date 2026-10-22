@@ -4,5 +4,6 @@
 //! The home lock moved down to `paths::test_home` with the kernel tests that need it.
 pub(crate) mod source_tree;
 mod kernel_integration;
+mod registry_contract;
 mod loose_id_guard;
 mod module_wiring_guard;

@@ -444,7 +444,7 @@ where
 ///    `tracing_subscriber::EnvFilter`. Keeps comma-separated env
 ///    var values short — `CONTINUUM_PROBE_CLASSES=persona`
 ///    captures every `persona.*` class without enumerating.
-pub(crate) fn class_passes_filter(class: &str, filter: &HashSet<String>) -> bool {
+pub fn class_passes_filter(class: &str, filter: &HashSet<String>) -> bool {
     if filter.is_empty() {
         return true;
     }

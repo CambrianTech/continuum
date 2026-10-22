@@ -269,93 +269,6 @@ mod tests {
         assert!(operator.get(CALLER_PEER_FIELD).is_none(), "no caller: nothing claimed");
     }
     use serde_json::json;
-    use std::sync::atomic::{AtomicUsize, Ordering};
-
-    /// A canned in-core eye-node: records how many times it was asked, and
-    /// echoes a fixed observation. Stands in for the real Node adapter so the
-    /// routing + fail-loud arms are provable without a browser.
-    struct FakeEye {
-        calls: Arc<AtomicUsize>,
-    }
-
-    #[async_trait]
-    impl ProvidedCommandProvider for FakeEye {
-        async fn fulfill(&self, command: &str, params: Value) -> Result<Value, String> {
-            self.calls.fetch_add(1, Ordering::SeqCst);
-            Ok(json!({
-                "success": true,
-                "fulfilledBy": self.label(),
-                "command": command,
-                "echoedParams": params,
-            }))
-        }
-        fn label(&self) -> &str {
-            "fake-eye"
-        }
-    }
-
-    // what this catches: a Provided command WITH a connected provider forwards to
-    // it and returns the provider's bare result — the whole point of the seam
-    // (a persona's perception/observe reaches an eye-node).
-    #[tokio::test]
-    async fn routes_a_provided_command_to_its_connected_provider() {
-        let registry = Arc::new(ProviderRegistry::new());
-        let calls = Arc::new(AtomicUsize::new(0));
-        registry.register(
-            &["perception/observe"],
-            Arc::new(FakeEye {
-                calls: calls.clone(),
-            }),
-        );
-
-        let interceptor = ProvidedCommandInterceptor::new(registry);
-        let outcome = interceptor
-            .try_route(
-                "perception/observe",
-                &json!({ "target": "https://x" }),
-                None,
-            )
-            .await
-            .expect("a connected provider must fulfill, not error");
-
-        match outcome {
-            InterceptorOutcome::Handled(CommandResult::Json(v)) => {
-                assert_eq!(v["success"], true);
-                assert_eq!(v["fulfilledBy"], "fake-eye");
-                assert_eq!(v["echoedParams"]["target"], "https://x");
-            }
-            other => panic!("expected Handled(Json), got {other:?}"),
-        }
-        assert_eq!(
-            calls.load(Ordering::SeqCst),
-            1,
-            "provider must be invoked exactly once"
-        );
-    }
-
-    // what this catches: a Provided command with NO connected provider fails loud
-    // (not a silent decline, not a fabrication) and names both the command and the
-    // missing eye-node — the honest browserless-core state.
-    #[tokio::test]
-    async fn provided_command_with_no_provider_fails_loud() {
-        let interceptor = ProvidedCommandInterceptor::new(Arc::new(ProviderRegistry::new()));
-        let err = interceptor
-            .try_route(
-                "perception/observe",
-                &json!({ "target": "https://x" }),
-                None,
-            )
-            .await
-            .expect_err("no provider connected must surface an error, never a silent decline");
-        assert!(
-            err.contains("perception/observe"),
-            "names the command: {err}"
-        );
-        assert!(
-            err.contains("eye-node"),
-            "names the missing adapter kind: {err}"
-        );
-    }
 
     // what this catches: a NORMAL (non-Provided) command is untouched — the
     // interceptor declines so local Rust dispatch handles it exactly as before.
@@ -377,18 +290,4 @@ mod tests {
         );
     }
 
-    // what this catches: the interceptor's `provided` set is really sourced from
-    // the live registry — perception/observe and interface/screenshot (both
-    // Provided) are in it, and a Bare command is not. Regression-pins the wiring
-    // that decides "act vs decline".
-    #[test]
-    fn provided_set_is_the_real_provided_slice_of_the_registry() {
-        // The shared set both dispatch paths consult (interceptor + route_command).
-        assert!(is_provided_command("perception/observe"));
-        assert!(is_provided_command("interface/screenshot"));
-        assert!(
-            !is_provided_command("code/read"),
-            "a Bare command must NOT be in the Provided set"
-        );
-    }
 }

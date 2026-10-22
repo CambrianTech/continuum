@@ -341,69 +341,6 @@ pub(super) mod piece_2_pr3_dispatch_tests {
         assert_eq!(b_keys, vec!["paging/broker.snapshot".to_string()]);
     }
 
-    // what this catches: the SOCKET route (`route_command`, used by uu / IPC / MCP)
-    // reaches a connected Provided-command provider through the SAME
-    // `provider_registry` the in-process persona route uses via the interceptor —
-    // no dispatch path can gain (or lack) a capability the other has. Both call the
-    // ONE `route_provided`. Regression-pins the "one infrastructure, every caller"
-    // invariant for Provided commands (perception/observe) — the exact divergence
-    // that let benchmarks take a different command path before.
-    #[tokio::test]
-    async fn route_command_reaches_the_provider_registry_for_a_provided_command() {
-        use crate::runtime::ProvidedCommandProvider;
-        use serde_json::json;
-
-        struct FakeEye;
-        #[async_trait]
-        impl ProvidedCommandProvider for FakeEye {
-            async fn fulfill(
-                &self,
-                command: &str,
-                params: serde_json::Value,
-            ) -> Result<serde_json::Value, String> {
-                Ok(json!({ "success": true, "command": command, "echoedTarget": params["target"] }))
-            }
-            fn label(&self) -> &str {
-                "fake-eye"
-            }
-        }
-
-        let runtime = Runtime::new();
-
-        // No eye-node connected → the socket route fails loud, named (not "Unknown
-        // command", not a fabricated observation).
-        match runtime
-            .route_command("perception/observe", json!({ "target": "https://x" }), None)
-            .await
-        {
-            Some(Err(e)) => {
-                assert!(e.contains("perception/observe"), "names the command: {e}");
-                assert!(e.contains("eye-node"), "names the missing adapter: {e}");
-            }
-            _ => panic!("a Provided command with no provider must fail loud on the socket route"),
-        }
-
-        // Bind a provider on the SAME registry the IPC layer binds eye-nodes into.
-        runtime
-            .provider_registry()
-            .register(&["perception/observe"], Arc::new(FakeEye));
-
-        match runtime
-            .route_command("perception/observe", json!({ "target": "https://x" }), None)
-            .await
-        {
-            Some(Ok(CommandResult::Json(v))) => {
-                assert_eq!(v["success"], true);
-                assert_eq!(
-                    v["echoedTarget"], "https://x",
-                    "forwarded params reached the eye-node"
-                );
-            }
-            _ => {
-                panic!("the socket route must forward a Provided command to its connected provider")
-            }
-        }
-    }
 }
 
 #[cfg(test)]

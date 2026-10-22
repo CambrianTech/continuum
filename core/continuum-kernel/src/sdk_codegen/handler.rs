@@ -89,7 +89,7 @@ impl CommandError {
 
     /// Read our category at the refusal boundary, never a tag quoted in domain prose.
     /// The transport preserves command errors as `command: [category] message`.
-    pub(crate) fn is_argument_refusal(command: &str, refusal: &str) -> bool {
+    pub fn is_argument_refusal(command: &str, refusal: &str) -> bool {
         let body = refusal.strip_prefix(command).and_then(|rest| rest.strip_prefix(": ")).unwrap_or(refusal);
         body.starts_with("[arguments] ")
     }
@@ -285,8 +285,8 @@ where
     }
 }
 
-#[cfg(test)]
-pub(crate) mod tests {
+#[cfg(any(test, feature = "test-fixtures"))]
+pub mod tests {
     use super::*;
     use crate::sdk_codegen::AccessLevel;
     use serde::Deserialize;
@@ -296,16 +296,16 @@ pub(crate) mod tests {
     // under test), mirroring how command_envelope.rs unit-tests its envelope with
     // small local structs.
     #[derive(Debug, Clone, Serialize, Deserialize, TS, PartialEq)]
-    pub(crate) struct EchoParams {
+    pub struct EchoParams {
         text: String,
     }
     #[derive(Debug, Clone, Serialize, Deserialize, TS, PartialEq, Default)]
-    pub(crate) struct EchoResult {
+    pub struct EchoResult {
         echoed: String,
     }
 
     // ── A BARE command ────────────────────────────────────────────────
-    pub(crate) struct BareSpec;
+    pub struct BareSpec;
     impl CommandSpec for BareSpec {
         const NAME: &'static str = "test/echo-bare";
         const ACCESS_LEVEL: AccessLevel = AccessLevel::AiSafe;
@@ -313,7 +313,7 @@ pub(crate) mod tests {
         type Params = EchoParams;
         type Result = EchoResult;
     }
-    pub(crate) struct BareHandler;
+    pub struct BareHandler;
     #[async_trait]
     impl CommandHandler for BareHandler {
         type Spec = BareSpec;
