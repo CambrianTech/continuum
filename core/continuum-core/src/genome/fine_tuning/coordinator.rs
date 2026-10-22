@@ -551,6 +551,39 @@ mod tests {
         assert_eq!(id, "mlx-local");
     }
 
+    // what this catches (card d67fd801): a separate trainer process winning over our own engine.
+    // On Apple Silicon the MLX copy is native and its place is SeparateCopyHere; a lane of our
+    // engine stood up for the run is EngineLaneHere and must outrank it whatever the
+    // accelerator, and the resident lane must still outrank both.
+    #[test]
+    fn an_engine_lane_beats_a_native_separate_trainer_and_the_resident_lane_beats_it() {
+        let engine_lane = FineTuningCapabilities {
+            place: TrainingPlace::EngineLaneHere,
+            ..caps_hw("engine-lane", true, TrainerHardware::Any)
+        };
+        let reg = registry_with(vec![
+            ("mlx-local", caps_hw("mlx-local", true, TrainerHardware::AppleSilicon)),
+            ("engine-lane", engine_lane.clone()),
+        ]);
+        let apple = HardwareProfile { platform: "macos-arm64-m5pro".into(), ..host(true, false, false) };
+        let coord = FineTuningCoordinator::with_host(reg, apple.clone());
+        let (id, _) = coord.select(&base_request("Qwen/Qwen2.5-Coder-3B"), None).unwrap();
+        assert_eq!(id, "engine-lane");
+        let reg = registry_with(vec![
+            ("engine-lane", engine_lane),
+            (
+                "engine-local",
+                FineTuningCapabilities {
+                    place: TrainingPlace::ResidentHere,
+                    ..caps_hw("engine-local", true, TrainerHardware::Any)
+                },
+            ),
+        ]);
+        let coord = FineTuningCoordinator::with_host(reg, apple);
+        let (id, _) = coord.select(&base_request("Qwen/Qwen2.5-Coder-3B"), None).unwrap();
+        assert_eq!(id, "engine-local");
+    }
+
     // what this catches: "the same for CUDA or other varieties" made
     // real — a CUDA trainer advertising TrainerHardware::Cuda lands in
     // the native-accelerator tier on an NVIDIA host and beats Candle,

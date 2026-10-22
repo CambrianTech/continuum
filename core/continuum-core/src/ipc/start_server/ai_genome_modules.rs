@@ -40,6 +40,11 @@ pub(super) fn register_ai_provider_and_genome_modules(
         let engine_tuner = std::sync::Arc::new(EngineLoraFineTuner::new());
         engine_tuner.reclaim_resident_leases();
         ft_registry.register(engine_tuner);
+        // In-engine training on a lane stood up for the run, for a base no live lane here serves
+        // (card d67fd801): ranked after the resident lane and before any separate trainer process
+        // (TrainingPlace::EngineLaneHere). Its runs' lanes die with the core, so it has no leases
+        // to reclaim at boot.
+        ft_registry.register(std::sync::Arc::new(EngineLoraFineTuner::on_engine_lanes()));
 
         // OpenAI when credentials present. Other cloud LoRA-trainer
         // adapters (Mistral, Anthropic, Fireworks, DeepSeek,

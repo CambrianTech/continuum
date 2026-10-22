@@ -101,6 +101,10 @@ pub(super) trait LaneSource: Send + Sync {
     fn serves(&self, base: &str) -> bool;
     /// A lane for `base`, alive for as long as the returned lease is held.
     async fn acquire(&self, base: &str) -> Result<LaneLease, String>;
+    /// The coordinator's provider id for a trainer on these lanes.
+    fn provider(&self) -> &'static str;
+    /// Where a trainer on these lanes trains ([`TrainingPlace`]).
+    fn place(&self) -> crate::genome::fine_tuning::adapter::TrainingPlace;
 }
 
 /// A lane a run trains in, and what keeps it alive: `hold` is `None` for a lane that outlives
@@ -143,6 +147,13 @@ impl LaneSource for ResidentLane {
             still_bound: Box::new(move || still_bound_to(crate::inference::lane_registry::live_lane(), &base, chosen, &url)),
         })
     }
+    fn provider(&self) -> &'static str {
+        PROVIDER_ID
+    }
+
+    fn place(&self) -> crate::genome::fine_tuning::adapter::TrainingPlace {
+        crate::genome::fine_tuning::adapter::TrainingPlace::ResidentHere
+    }
 }
 
 /// `rec` (the lane serving now) is still the one chosen: the same engine incarnation, at the
@@ -181,6 +192,13 @@ impl<F: Fn(&str) -> Option<LaneChoice> + Send + Sync> LaneSource for F {
     async fn acquire(&self, base: &str) -> Result<LaneLease, String> {
         let choice = self(base).ok_or_else(|| format!("the test lane serves no {base}"))?;
         Ok(LaneLease { choice, hold: None, still_bound: Box::new(|| Ok(())) })
+    }
+    fn provider(&self) -> &'static str {
+        PROVIDER_ID
+    }
+
+    fn place(&self) -> crate::genome::fine_tuning::adapter::TrainingPlace {
+        crate::genome::fine_tuning::adapter::TrainingPlace::ResidentHere
     }
 }
 
@@ -292,16 +310,27 @@ impl Default for EngineLoraFineTuner {
 }
 
 impl EngineLoraFineTuner {
+    /// Training on the resident weights: the lane that serves the base on this node.
     pub fn new() -> Self {
+        Self::on(Box::new(ResidentLane))
+    }
+
+    /// Training on a lane of our own engine stood up for the run ([`EngineLane`]), for a base
+    /// no live lane here serves.
+    pub fn on_engine_lanes() -> Self {
+        Self::on(Box::new(super::engine_lane::EngineLane))
+    }
+
+    fn on(lane: LaneResolver) -> Self {
         // Without a home nothing persists: every shape re-measures (a calibration run), never a guessed footprint.
         let footprints = match crate::paths::ContinuumLayout::home() {
             Ok(layout) => Footprints::at(layout.genome().join("engine-footprints.json")),
             Err(_) => Footprints::unrecorded(),
         };
         Self {
-            jobs: NativeJobs::new(PROVIDER_ID),
+            jobs: NativeJobs::new(lane.provider()),
             http: reqwest::Client::new(),
-            lane: Box::new(ResidentLane),
+            lane,
             train_dir: crate::inference::llama_server::engine_train_dir(),
             footprints,
             admission: Admission::Governed,
