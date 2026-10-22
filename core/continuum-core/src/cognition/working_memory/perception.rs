@@ -209,18 +209,19 @@ impl WorkingMemory {
             .map(|record| {
                 let attribution = ResultAttribution::of(record);
                 let workspace = workspace_label(record.scope.as_deref());
-                let pointer = match (&record.handle, &record.head) {
+                let whole = record.result.as_deref().map(|result| format!("[result {attribution}{workspace}] {result}"));
+                let pointer = match (&record.handle, &whole, &record.head) {
                     // An older build's pointer, as it was written (its operation lives there).
-                    (Some(_), _) if record.written_pointer.is_some() => record.written_pointer.clone().into_iter().collect(),
-                    (Some(_), _) => format!("[result {attribution}{workspace} — collapsed; query tool/output to expand]"),
-                    (None, Some(head)) => head.clone(),
+                    (Some(_), _, _) if record.written_pointer.is_some() => record.written_pointer.clone().into_iter().collect(),
+                    (Some(_), _, _) => format!("[result {attribution}{workspace} — collapsed; query tool/output to expand]"),
+                    // Retained but never saved: no handle could reopen a collapsed line, so it stays
+                    // whole (goal 7: the full result stays reachable; Cormac on #5255).
+                    (None, Some(whole), _) => whole.clone(),
+                    (None, None, Some(head)) => head.clone(),
                     // Unsaved and off the ledger: what it was, which never collapses anyway.
-                    (None, None) => format!("[action #{}] {}", record.seq, record.operation),
+                    (None, None, None) => format!("[action #{}] {}", record.seq, record.operation),
                 };
-                let full = match record.result.as_deref() {
-                    Some(result) => format!("[result {attribution}{workspace}] {result}"),
-                    None => pointer.clone(),
-                };
+                let full = whole.unwrap_or_else(|| pointer.clone());
                 (record.seq, full, pointer)
             })
             .collect();

@@ -63,3 +63,17 @@ fn her_view_survives_a_restart_in_her_checkpoint() {
     assert_eq!(rendered(&resumed), before);
     assert!(restored.take_view().is_none(), "taken once, by the act that resumes it");
 }
+
+// what this catches (Cormac on #5255): a result kept in memory but never saved under a handle
+// collapsing at a turnover to its one-line ledger head, which nothing can reopen (goal 7). Its
+// collapsed form is the whole result, so the view can only keep it, never cut it.
+#[test]
+fn an_unsaved_result_never_collapses_to_a_line_nothing_reopens() {
+    let memory = WorkingMemory::new(8);
+    memory.record_receipt("I ran code/shell(cat Cargo.toml) Result: [package] name = \"x\"");
+    memory.record_settlement("read the manifest", None);
+    let (acts, _) = memory.action_renderings();
+    let (_, full, pointer) = acts.last().expect("the act is on record");
+    assert!(full.contains("name = \"x\""), "{full}");
+    assert_eq!(pointer, full, "an unsaved result's pointer is the result itself");
+}
