@@ -431,11 +431,30 @@ fn archive_head(seq: u64, result: &str, acts: &[Observation], trail_head_chars: 
     }
     let calls: Vec<String> = acts
         .iter()
-        .map(|o| {
-            let args = o.call.input.to_string();
-            let args: String = args.chars().take(48).collect();
-            format!("{}({args})", o.call.name)
-        })
+        .map(|o| format!("{}({})", o.call.name, call_args(&o.call.input, trail_head_chars)))
         .collect();
     format!("[action #{seq}] {}", calls.join("; "))
+}
+
+/// One call's arguments for its ledger line, with no value ever cut (card d624a9a1). The line
+/// cut the JSON at 48 chars, so `{"file_path":"/home/resident/.continuum/citizens/pe` read as a
+/// real path: a 1.5B resident copied it, was refused three times, and looped (IntelMac,
+/// 2026-10-22; goal 7). A string value longer than `value_chars`, or spanning lines (a write's
+/// body), becomes an explicit `<N chars>` marker; every other value renders whole. So a value
+/// she reads is either exactly what she sent or plainly not it, never a plausible prefix.
+pub(super) fn call_args(input: &serde_json::Value, value_chars: usize) -> String {
+    fn shown(value: &serde_json::Value, value_chars: usize) -> serde_json::Value {
+        use serde_json::Value;
+        match value {
+            Value::String(text) if text.contains('\n') || text.chars().count() > value_chars => {
+                Value::String(format!("<{} chars>", text.chars().count()))
+            }
+            Value::Array(items) => Value::Array(items.iter().map(|item| shown(item, value_chars)).collect()),
+            Value::Object(fields) => {
+                Value::Object(fields.iter().map(|(key, item)| (key.clone(), shown(item, value_chars))).collect())
+            }
+            other => other.clone(),
+        }
+    }
+    shown(input, value_chars).to_string()
 }
