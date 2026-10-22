@@ -39,6 +39,8 @@ struct FakeControl {
     /// What an in-place genome change comes to. Defaults to `Unsupported`, the
     /// engine every pre-S1 test modelled: a genome change relaunches.
     in_place: GenomeInPlace,
+    /// How many times the reconcile asked this lane to record its observed placement.
+    placements_recorded: AtomicUsize,
 }
 
 impl FakeControl {
@@ -56,6 +58,7 @@ impl FakeControl {
             served_lanes: 0,
             served_window: 32768,
             in_place: GenomeInPlace::Unsupported,
+            placements_recorded: AtomicUsize::new(0),
         }
     }
     fn with_in_place(mut self, outcome: GenomeInPlace) -> Self {
@@ -177,6 +180,9 @@ impl LlamaServerControl for FakeControl {
     }
     fn owns_child(&self) -> bool {
         self.owns
+    }
+    async fn record_observed_placement(&self) {
+        self.placements_recorded.fetch_add(1, Ordering::SeqCst);
     }
 }
 

@@ -290,6 +290,10 @@ impl LlamaServerControl for LlamaServerProcess {
         self.child.lock().unwrap().is_some()
     }
 
+    async fn record_observed_placement(&self) {
+        self.stamp_observed_placement().await;
+    }
+
     fn launch_kv(&self) -> Option<crate::inference::lane_process::LaunchKv> {
         let (_host, port) = split_host_port(&self.root);
         let record = crate::inference::lane_registry::live_lane().filter(|r| r.port == port)?;

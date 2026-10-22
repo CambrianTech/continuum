@@ -140,6 +140,7 @@ pub use ephemeral::{
 
 mod control_impl;
 mod launch;
+mod placement_stamp;
 mod prepare;
 
 #[cfg(test)]

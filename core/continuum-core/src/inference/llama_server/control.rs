@@ -445,4 +445,10 @@ pub trait LlamaServerControl: Send + Sync {
     fn wedge_flag(&self) -> Option<crate::inference::wedge::WedgeFlag> {
         None
     }
+
+    /// Record the adopted lane's placement from the engine's own account when its lane record
+    /// has none (a lane kept across a deploy from before records carried one; card 22aa3379).
+    /// The reconcile calls it on every `AlreadyServing`. Default: nothing, for a control with
+    /// no lane record to write (a fake or a remote control).
+    async fn record_observed_placement(&self) {}
 }
