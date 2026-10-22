@@ -374,7 +374,7 @@ impl LlmDeliberationFaculty {
             source
         }));
         let plan = crate::persona::rag_budget::flex_allocate(context_window, &claims);
-        let budget_floor = super::super::super::window_allocator::turn_need(&claims).saturating_sub(claims[4].floor_tokens).saturating_add(reply_need);
+        let budget_floor = super::super::super::window_allocator::turn_need(&claims).saturating_sub(claims.iter().find(|c| c.source_id == FLEX_REPLY).map_or(0, |c| c.floor_tokens)).saturating_add(reply_need);
         // Whatever no claim took is hers to write with, up to the runaway bound.
         let reply_grant = plan.granted(FLEX_REPLY);
         let completion_reserve = reply_grant
