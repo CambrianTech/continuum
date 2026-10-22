@@ -410,6 +410,12 @@ pub async fn apply_act(
         .and_then(|e| e.message_bus())
     {
         let now_ms = EpochMs::now().millis();
+        // Her reasoning for this batch rides its FIRST receipt, whole: the human's view of
+        // her thinking, which the renderer collapses or opens (Joel, 2026-10-22: "could
+        // always interrogate the think in ui"). It never goes to the room below, and a turn
+        // in her mind room shows no one her reasoning.
+        let mut reasoning =
+            Some(intent.trim()).filter(|r| !private && !r.is_empty()).map(str::to_owned);
         for obs in &acts {
             // The human OBJECT of the act: the first extracted path (reads,
             // writes, edits), else the shell command head, else empty —
@@ -441,6 +447,7 @@ pub async fn apply_act(
                 // rides `state` beside it.
                 ok: !obs.is_err(),
                 state: obs.output.verdict.label().to_string(),
+                thought: reasoning.take(),
                 timestamp: now_ms,
             };
             match serde_json::to_value(&update) {
@@ -462,17 +469,16 @@ pub async fn apply_act(
         // looks wrong. Receipts are history, not imperatives — coalescing is
         // correct here (the one-block-per-imperative law governs kickoffs,
         // not transcripts).
-        // Her WORKING THOUGHT leads the receipt (Joel, 2026-08-30: "they
-        // should be chatty as they work like you are"). The deliberation
-        // already narrates every act batch — `intent` is her stated reasoning
-        // for these calls — and we were discarding it into capture logs. This
-        // is the running commentary of an engineer pairing: thought first,
-        // then the moves it chose. Zero extra inference; we stop throwing
-        // away what she already said.
+        // What she SAID with these calls leads the receipt (Joel, 2026-08-30: "they
+        // should be chatty as they work like you are"): the words she wrote beside them,
+        // recorded by the verdict as her action statement. Never `intent`, which is her
+        // reasoning: that was published here until 2026-10-22 (PRIVACY-OF-THOUGHT.md, sink
+        // 6; Joel: "Why would thinking be broadcast?"). Her reasoning reaches her own next
+        // turn through working memory and the human through the act receipt above. A batch
+        // she said nothing about leads with its acts.
         let mut lines: Vec<String> = Vec::with_capacity(acts.len() + 1);
-        let thought = intent.trim();
-        if !thought.is_empty() {
-            lines.push(crate::persona::presence_glyph::thought_line(thought, 240));
+        if let Some(said) = body.working_memory.action_statement(room_id) {
+            lines.push(crate::persona::presence_glyph::said_line(said.trim()));
         }
         lines.extend(acts.iter().map(|obs| {
                 let object = obs

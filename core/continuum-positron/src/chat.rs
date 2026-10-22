@@ -442,6 +442,14 @@ pub struct ActReceiptView {
     /// Unix-ms substrate-local time of execution.
     #[ts(type = "number")]
     pub timestamp: u64,
+    /// The actor's reasoning for the batch of acts this receipt opens, whole and never
+    /// clipped; `None` on the batch's later receipts and when there was none. The renderer
+    /// owns presentation (collapsed by default, opened to read or question it); the
+    /// substrate transports it. It is the human's view of her thinking: the room's
+    /// transcript carries only what she said.
+    #[serde(default)]
+    #[ts(optional)]
+    pub thought: Option<String>,
 }
 
 /// Top-level state for the `"chat"` widget kind. Fills

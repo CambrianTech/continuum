@@ -197,6 +197,7 @@ impl ChatProjection {
             summary: act.summary,
             ok: act.ok,
             timestamp: act.timestamp,
+            thought: act.thought,
         });
         while accum.acts.len() > MAX_ACTS_PER_SNAPSHOT {
             accum.acts.pop_front();
