@@ -57,5 +57,5 @@ pub use residency::{
     ResidencyEvidence, ResidencyGateResult,
 };
 pub use types::{
-    kinds, HardwareProfile, InferenceCapability, InferenceKind, LatencyClass, NodeCapability,
+    kinds, InferenceCapability, InferenceKind, LatencyClass, NodeCapability,
 };

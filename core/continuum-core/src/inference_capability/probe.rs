@@ -14,8 +14,9 @@
 //! `sysinfo` + GpuMemoryManager + Metal/CUDA probes, then calls
 //! `probe_inference_capabilities()` here to derive the capability list.
 
+use crate::system_resources::hardware_profile::HardwareProfile;
 use crate::inference_capability::types::{
-    kinds, HardwareProfile, InferenceCapability, InferenceKind, LatencyClass,
+    kinds, InferenceCapability, InferenceKind, LatencyClass,
 };
 
 /// Minimum free VRAM (bytes) below which the node should NOT advertise a

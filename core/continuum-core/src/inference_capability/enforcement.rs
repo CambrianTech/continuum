@@ -27,7 +27,7 @@ use crate::inference_capability::hw_probe::probe_hardware_profile;
 use crate::inference_capability::residency::{
     check_residency_gate, BlockReason, QwenModelMetadata, ResidencyEvidence, ResidencyGateResult,
 };
-use crate::inference_capability::types::HardwareProfile;
+use crate::system_resources::hardware_profile::HardwareProfile;
 use std::path::Path;
 
 /// Typed error for the enforcement path. Carries the BlockReasons

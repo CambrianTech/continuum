@@ -45,7 +45,8 @@ use std::sync::Arc;
 use super::adapter::{ArcFineTuningAdapter, FineTuningCapabilities, TrainingPlace};
 use super::registry::FineTuningRegistry;
 use super::types::TrainingJobRequest;
-use crate::inference_capability::{probe_hardware_profile, HardwareProfile};
+use crate::inference_capability::probe_hardware_profile;
+use crate::system_resources::hardware_profile::HardwareProfile;
 
 /// Why the coordinator couldn't pick an adapter for a given request.
 /// Typed so the calling ServiceModule can map each variant to the
@@ -244,7 +245,7 @@ mod tests {
     use crate::genome::fine_tuning::types::{
         JobHandle, TrainingDataset, TrainingSource, TrainingStatus,
     };
-    use crate::inference_capability::HardwareProfile;
+    use crate::system_resources::hardware_profile::HardwareProfile;
     use async_trait::async_trait;
     use uuid::Uuid;
 

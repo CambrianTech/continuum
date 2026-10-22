@@ -109,8 +109,9 @@ impl NodeCapabilityRegistry {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::system_resources::hardware_profile::HardwareProfile;
     use crate::inference_capability::types::{
-        kinds, HardwareProfile, InferenceCapability, LatencyClass,
+        kinds, InferenceCapability, LatencyClass,
     };
 
     fn mk_node(
