@@ -216,7 +216,9 @@ impl PerceptionFact for ContextBounds {
     fn render(&self, cx: &FactContext) -> Option<String> {
         let available = cx.turns.len();
         Some(format!(
-            "[context] {available} input turn{} available before prompt fitting; this request may retain only part of that history",
+            // Names the way back (Cormac on #5255): a turn her view collapsed leaves it, and
+            // chat/history rereads it from the room, so nothing she was told is out of reach.
+            "[context] {available} input turn{} available before prompt fitting; this request may retain only part of that history, and chat/history rereads any turn not shown",
             if available == 1 { " was" } else { "s were" }
         ))
     }
@@ -309,7 +311,7 @@ mod tests {
         };
         let facts = render_facts(&cx, &FactPolicy::default());
         assert_eq!(facts.len(), 1, "quiet room: only the bounds fact renders");
-        assert_eq!(facts[0], "[context] 3 input turns were available before prompt fitting; this request may retain only part of that history");
+        assert_eq!(facts[0], "[context] 3 input turns were available before prompt fitting; this request may retain only part of that history, and chat/history rereads any turn not shown");
     }
 
     // what this catches: FactPolicy::disable actually silences a fact — the
