@@ -428,6 +428,9 @@ use super::*;
 
         /// One tool call through these hands: its content, and whether it was an error.
         async fn call(hands: &ActingHands, name: &str, input: serde_json::Value) -> (String, bool) {
+            // A shell admits its cargo root through the disk ownership registry; install the
+            // test one here, never rely on an earlier test in the binary having done it.
+            crate::system_resources::disk_reporters::prepare_writer_fixture().await;
             let ctx = crate::cognition::tool_executor::ToolExecutionContext {
                 persona_id: hands.persona_id,
                 persona_name: hands.persona_name.clone(),
