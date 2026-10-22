@@ -21,6 +21,7 @@ impl LlamaServerProcess {
         // next launch must take the slot `current` now names (card 2c5d0ec0), or #4464's
         // convergence relaunches onto the binary it is trying to leave.
         let bin = self.engine_bin()?;
+        crate::inference::engine_slots::note_unowned_launch(&bin, super::engine_install::engine_override().is_some());
         // Resolve the GGUF from the model struct already in hand — no re-fetch by
         // id. No file → fail loud; we never serve a substitute model
         // ([[fallbacks-are-illegal-fail-loud]]).

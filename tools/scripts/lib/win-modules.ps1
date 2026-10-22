@@ -53,9 +53,8 @@ function Assert-Sha256 {
 
 #  GPU feature selection (PS port of tools/scripts/shared/cargo-features.sh)
 # NVIDIA present -> cuda (candle-cuda + ggml-cuda, full native GPU). Otherwise
-# directml (DX12 is universal on Win10+). --no-default-features is applied by
-# Mod-BuildCore to drop livekit-webrtc (its /MT libwebrtc collides with the /MD
-# rest -- the separate live-persona track).
+# directml (DX12 is universal on Win10+). Calls and 3D avatars are not GPU features:
+# they are the node's profile (Get-NodeFeatures).
 function Get-CargoFeatures {
     # NVIDIA -> full GPU: the manifest's build-core features (candle+llama CUDA +
     # ORT CUDA EP; load-dynamic = ORT loaded at runtime, no build-time ORT lib).
@@ -65,6 +64,32 @@ function Get-CargoFeatures {
         return (Get-ManifestModule 'build-core').build.features
     }
     return 'directml'
+}
+
+#  Node profile: what this node HOSTS (calls = livekit-webrtc, 3D avatars = avatar-3d)
+# The crate builds headless by default; the profile is CONTINUUM_NODE_FEATURES in
+# ~/.continuum/config.env, resolved by the ONE owner every deploy path and CI use
+# (tools/scripts/lib/core-features.sh resolve_node_features), never re-parsed here. Git for
+# Windows' bash runs it; System32's bash.exe is the WSL launcher, not a POSIX shell
+# (continuum_core::shell_portable::locate_bash keeps the same order).
+function Get-NodeFeatures {
+    param([Parameter(Mandatory = $true)][string]$RepoRoot)
+    $candidates = @($env:CONTINUUM_BASH)
+    foreach ($root in @($env:ProgramFiles, ${env:ProgramFiles(x86)}, $env:LOCALAPPDATA)) {
+        if ($root) { $candidates += (Join-Path $root 'Git\bin\bash.exe'), (Join-Path $root 'Programs\Git\bin\bash.exe') }
+    }
+    $bash = $candidates | Where-Object { $_ -and (Test-Path -LiteralPath $_ -PathType Leaf) } | Select-Object -First 1
+    if (-not $bash) { Module-Fail 'build' 'no Git for Windows bash.exe to read the node profile with (install Git for Windows, or set CONTINUUM_BASH)' }
+    Push-Location $RepoRoot
+    try {
+        $nodeProfile = & $bash -c 'source tools/scripts/lib/core-features.sh && resolve_node_features'
+        $code = $LASTEXITCODE
+    } finally { Pop-Location }
+    if ($code -ne 0) { Module-Fail 'build' "the node profile (CONTINUUM_NODE_FEATURES in ~/.continuum/config.env) was refused; see the message above" }
+    $nodeProfile = "$nodeProfile".Trim()
+    if ($nodeProfile) { Write-Ok "node profile: $nodeProfile" }
+    else { Write-Warn2 'node profile: headless -- CONTINUUM_NODE_FEATURES is not set in ~/.continuum/config.env, so this build carries no calls (livekit-webrtc) and no 3D avatars (avatar-3d). A node that hosts them sets CONTINUUM_NODE_FEATURES=livekit-webrtc,avatar-3d' }
+    return $nodeProfile
 }
 
 #  CUDA version probe (Blackwell / sm_120 floor is 12.8) 
@@ -877,12 +902,14 @@ function Mod-BuildCore {
     New-Item -ItemType Directory -Force -Path $env:CARGO_TARGET_DIR | Out-Null
     Protect-CoreBuildOutput -TargetDirectory $env:CARGO_TARGET_DIR
 
-    # No-compromise GPU build (docs/architecture/GPU-CONTRACT.md): KEEP default
-    # features (livekit + bevy stay on the GPU) and ADD the GPU features. NEVER
-    # --no-default-features (that drops livekit off the GPU, a compromise). The
-    # whole build is /MT via .cargo/config.toml's +crt-static, matching livekit's
-    # prebuilt libwebrtc; cuda's nvcc host-compiles /MT the same way.
+    # No-compromise GPU build (docs/architecture/GPU-CONTRACT.md): the GPU features plus
+    # the node's profile (livekit + bevy where this node hosts calls and avatars; the
+    # crate's default is headless). The whole build is /MT via .cargo/config.toml's
+    # +crt-static, matching livekit's prebuilt libwebrtc; cuda's nvcc host-compiles /MT
+    # the same way.
     $features = Get-CargoFeatures
+    $nodeFeatures = Get-NodeFeatures -RepoRoot $RepoRoot
+    if ($nodeFeatures) { $features = "$features,$nodeFeatures" }
 
     # GPU build env (NVIDIA path): nvcc needs its MSVC host compiler on PATH +
     # INCLUDE/LIB, and cmake/candle need to target the right VS + GPU arch. The
@@ -900,7 +927,7 @@ function Mod-BuildCore {
         }
     }
 
-    Module-Start 'build' "cargo build continuum-core-server (release, default features + $features)"
+    Module-Start 'build' "cargo build continuum-core-server (release, features $features)"
 
     Push-Location $core
     try {
@@ -918,7 +945,7 @@ function Mod-BuildCore {
         if ($code -eq 0) {
             # The client does not serve models or render frames. Keep its launch
             # independent of GPU DLLs, including while repairing the service.
-            Invoke-InstallerProcess -FilePath 'cargo' -ArgumentList @('build', '-p', 'continuum-core', '--bin', 'continuum', '--release', '--no-default-features') -OwnProcessTree
+            Invoke-InstallerProcess -FilePath 'cargo' -ArgumentList @('build', '-p', 'continuum-core', '--bin', 'continuum', '--release') -OwnProcessTree
             $code = $LASTEXITCODE
         }
         if ($code -eq 0) {

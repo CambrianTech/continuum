@@ -36,6 +36,9 @@ source "$SCRIPT_DIR/lib/payload-paths.sh"
 
 # ── PATH + config ────────────────────────────────────────────────────
 [ -f "$HOME/.cargo/env" ] && source "$HOME/.cargo/env"
+# The node profile (core-features.sh) is the file's, as it is now: never a value a parent
+# process carried from an older read of it.
+unset CONTINUUM_NODE_FEATURES
 [ -f "$HOME/.continuum/config.env" ] && { set -a; source "$HOME/.continuum/config.env"; set +a; }
 PAYLOAD_ROOT="$(managed_payload_root)" || exit 1
 
@@ -150,10 +153,12 @@ fi
 source "$SCRIPT_DIR/lib/windows-build-env.sh"
 
 # ── Per-platform feature flags ───────────────────────────────────────
-# The mapping lives in lib/core-features.sh, shared with CI's published binaries.
+# The mapping lives in lib/core-features.sh, shared with CI's published binaries: the
+# platform's GPU set plus this node's profile (CONTINUUM_NODE_FEATURES in config.env,
+# sourced above). It says which, and refuses a profile it does not recognize.
 # shellcheck source=lib/core-features.sh
 source "$SCRIPT_DIR/lib/core-features.sh"
-select_core_features
+select_core_features || exit 1
 
 if [[ "$CONTINUUM_FEATURES" == *cuda* ]]; then
   source "$SCRIPT_DIR/lib/cuda-targets.sh"

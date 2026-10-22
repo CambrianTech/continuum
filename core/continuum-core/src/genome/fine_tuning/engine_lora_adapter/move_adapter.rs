@@ -197,6 +197,7 @@ impl EngineLoraFineTuner {
                     job,
                     hold_store: self.hold_store.clone(),
                     residency: Some((store, work)),
+                    _lane_hold: None, // a reattached run trains in the lane that still holds it
                     _lease: lease,
                 };
                 let finish = finish_run(job, spec, self.footprints.clone(), last);

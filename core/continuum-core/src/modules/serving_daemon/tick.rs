@@ -179,10 +179,11 @@ impl ServingDaemonModule {
             if live_free == 0 {
                 return None;
             }
-            let tiers = da::discover_resident_tiers(
-                &crate::model_registry::artifacts::device_fit_cache_dir(active),
-                native_resident_bytes,
-            );
+            // No storage root (no home, no storage tier) holds no cached tiers.
+            let tiers = match crate::model_registry::artifacts::device_fit_cache_dir(active) {
+                Some(dir) => da::discover_resident_tiers(&dir, native_resident_bytes),
+                None => Default::default(),
+            };
             let n_tiers = tiers.len();
             let hw = expert_pager_policy::division::HardwareBudget {
                 vram_total_bytes: live_free.saturating_add(native_resident_bytes),
