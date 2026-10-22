@@ -16,7 +16,6 @@
 use super::types::*;
 use safetensors::tensor::TensorView;
 use safetensors::{Dtype, SafeTensors};
-use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 /// Discover all safetensors shard files for a model directory.
