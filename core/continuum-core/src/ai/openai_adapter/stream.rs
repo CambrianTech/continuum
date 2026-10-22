@@ -712,7 +712,7 @@ impl OpenAICompatibleAdapter {
         // prompt_n is the KV-cache hit/miss that dominates Metal wall-clock.
         if let Some(t) = &stream_timings {
             // The roster tile's speed needles — one map write per stream close.
-            crate::ipc::vitals_emitter::record_speed(
+            crate::inference::speed_pulse::record_speed(
                 &probe_persona,
                 t.predicted_per_second,
                 t.prompt_per_second,

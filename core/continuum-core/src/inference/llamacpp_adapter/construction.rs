@@ -2,6 +2,21 @@
 
 use super::*;
 
+/// What a local llama.cpp adapter launches with: the model, its GGUF on disk, and the knobs
+/// its caller already resolved. An engine value, so the adapter never names the persona layer
+/// whose profile produces it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LlamaCppLaunch {
+    pub model_id: String,
+    pub gguf_path: PathBuf,
+    /// Per-sequence context the KV cache is bounded to.
+    pub context_length: u32,
+    pub n_seq_max: u32,
+    pub n_ubatch: u32,
+    /// -1 = every layer on the GPU, 0 = CPU only, N = the bottom N layers.
+    pub n_gpu_layers: i32,
+}
+
 impl LlamaCppAdapter {
     /// Construct from the model_registry. Looks up the first model under
     /// provider `llamacpp-local` whose GGUF artifact resolved locally
@@ -102,38 +117,25 @@ impl LlamaCppAdapter {
     /// **The intent-driven constructor** per
     /// [[intent-driven-api-not-hot-patches]] (Joel, 2026-06-01).
     /// Replaces the chain of `with_model_id().with_context_length()
-    /// .with_n_seq_max()...` with one call that takes a substrate-
-    /// resolved profile and derives every knob from declared intent.
+    /// .with_n_seq_max()...` with one call that takes the launch its caller
+    /// already resolved and derives every knob from it.
     ///
-    /// The profile is produced by `PersonaSpawnerModule` (#121) from
-    /// the persona's (role_template, hw_tier_descriptor, model_meta).
-    /// Callers — chat surface, RAG inspector, future inference command
-    /// hot path — never touch n_ubatch, n_seq_max, n_gpu_layers, etc.
-    /// directly; they're already resolved in the profile.
-    ///
-    /// Returns an error per [[no-fallbacks-ever]] if the profile says
-    /// "local inference" but `gguf_local_path` is None (cloud-only
-    /// profiles route through Anthropic/OpenAI adapters, not here).
-    pub fn for_persona(
-        profile: &crate::persona::inference_profile::PersonaInferenceProfile,
-    ) -> Result<Self, crate::persona::inference_profile::InferenceProfileError> {
-        let gguf_path = profile.gguf_local_path.clone().ok_or_else(|| {
-            crate::persona::inference_profile::InferenceProfileError::NoLocalGguf {
-                model_id: profile.model_id.clone(),
-                gguf_hint: None,
-            }
-        })?;
-        Ok(Self {
+    /// A persona's launch comes from her inference profile
+    /// (`PersonaInferenceProfile::llamacpp_launch`, #121), which refuses a
+    /// profile with no local GGUF per [[no-fallbacks-ever]] before it reaches here.
+    /// Callers never touch n_ubatch, n_seq_max, n_gpu_layers, etc. directly.
+    pub fn for_launch(launch: &LlamaCppLaunch) -> Self {
+        Self {
             backend: Arc::new(RwLock::new(None)),
-            model_path: gguf_path,
+            model_path: launch.gguf_path.clone(),
             last_throughput_tok_s: Arc::new(RwLock::new(0.0)),
-            default_model: profile.model_id.clone(),
-            context_length_override: Some(profile.context_length),
+            default_model: launch.model_id.clone(),
+            context_length_override: Some(launch.context_length),
             kv_quant_policy: crate::inference::kv_quant::KvQuantPolicy::default(),
-            n_seq_max_override: Some(profile.n_seq_max),
-            n_ubatch_override: Some(profile.n_ubatch),
-            n_gpu_layers_override: Some(profile.n_gpu_layers),
-        })
+            n_seq_max_override: Some(launch.n_seq_max),
+            n_ubatch_override: Some(launch.n_ubatch),
+            n_gpu_layers_override: Some(launch.n_gpu_layers),
+        }
     }
 
     /// Override the per-sequence context budget. Pass smaller-than-trained

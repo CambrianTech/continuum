@@ -27,7 +27,7 @@
 //!   `DesiredRole`, calls
 //!   `PersonaInstanceManagerModule::bootstrap_one` to get an airc
 //!   identity, then `spawner::derive_spawn_plan` to materialize the
-//!   inference profile, then `LlamaCppAdapter::for_persona` to
+//!   inference profile, then `LlamaCppAdapter::for_launch` to
 //!   construct the adapter.
 //! - Per-persona subscribe-and-respond tokio task (the demo binary's
 //!   main loop, factored as a reusable function).
