@@ -265,7 +265,9 @@ jobs:
   windows-core-contract:
     name: Windows core compilation and custody
     needs: changes
-    if: ${{ !cancelled() }}
+    # Windows runs where it pays: pushes to main, PRs into main, or a PR labelled 'windows'.
+    # Canary PRs skip it (39-44 min, billed 2x; Joel 2026-10-22: CI must test in minutes).
+    if: ${{ !cancelled() && ((github.event_name == 'push' && github.ref == 'refs/heads/main') || github.base_ref == 'main' || contains(github.event.pull_request.labels.*.name, 'windows')) }}
     runs-on: windows-latest
     # Run39000527521 spent >39m before the CLI fixture; its prior measured8m46
     # makes ~48m total. Keep shared compilation, plus12m for runner variation.
@@ -386,7 +388,7 @@ jobs:
   windows-lifecycle-contract:
     name: Windows standalone installer and lifecycle
     needs: changes
-    if: ${{ !cancelled() }}
+    if: ${{ !cancelled() && ((github.event_name == 'push' && github.ref == 'refs/heads/main') || github.base_ref == 'main' || contains(github.event.pull_request.labels.*.name, 'windows')) }}
     runs-on: windows-latest
     timeout-minutes: 45
     steps:
@@ -466,4 +468,5 @@ jobs:
           CORE_RESULT: ${{ needs.windows-core-contract.result }}
           LIFECYCLE_RESULT: ${{ needs.windows-lifecycle-contract.result }}
         run: |
-          test "$CORE_RESULT" = success && test "$LIFECYCLE_RESULT" = success
+          ok() { test "$1" = success || test "$1" = skipped; }  # skipped = a canary PR, by design
+          ok "$CORE_RESULT" && ok "$LIFECYCLE_RESULT"
