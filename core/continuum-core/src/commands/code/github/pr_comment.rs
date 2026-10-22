@@ -42,12 +42,33 @@ crate::action_command! {
             return Err(CommandError::Invalid("code/github/pr-comment: 'body' is required".into()));
         }
         let root = workspace_root_for(&this.state, ctx).await?;
+        let number = p.number.to_string();
+        let state = run_gh(root.clone(), vec!["pr".into(), "view".into(), number.clone(), "--json".into(), "state".into(), "--jq".into(), ".state".into()]).await?;
+        if let Some(refusal) = refusal_for_state(p.number, &state) {
+            return Err(CommandError::Invalid(refusal));
+        }
         let args = vec![
-            "pr".to_string(), "comment".to_string(), p.number.to_string(),
+            "pr".to_string(), "comment".to_string(), number,
             "--body".to_string(), super::attributed(p.body, ctx),
         ];
         let url = run_gh(root, args).await?;
         Ok(GithubPrCommentResult { url })
+    }
+}
+
+/// A comment reaches the people working on a PR only while it is open. A closed or merged PR
+/// is answered with its state, as a fact of the tool, the way a blank body is (card 87f1b05f:
+/// four of the seven junk comments residents posted since 09-28 went to PR #1, merged
+/// 2025-04-09, each a public comment under the operator's account).
+fn refusal_for_state(number: u64, state: &str) -> Option<String> {
+    match state.trim() {
+        "OPEN" => None,
+        "" => Some(format!("code/github/pr-comment: PR #{number}'s state could not be read, so nothing was posted.")),
+        other => Some(format!(
+            "code/github/pr-comment: PR #{number} is {} — a comment there reaches no one working on it. \
+             Comment on an open PR; code/github/pr-create opens one for your own work.",
+            other.to_ascii_lowercase()
+        )),
     }
 }
 
@@ -71,5 +92,17 @@ mod tests {
             .await
             .unwrap_err();
         assert!(matches!(err, CommandError::Invalid(_)));
+    }
+
+    // what this catches (card 87f1b05f): a public comment posted on a PR nobody works on. Only
+    // an OPEN PR takes one; merged, closed, or anything `gh` reports that is not OPEN is
+    // answered with its state and nothing is posted.
+    #[test]
+    fn only_an_open_pr_takes_a_comment() {
+        assert_eq!(refusal_for_state(5270, "OPEN\n"), None);
+        let merged = refusal_for_state(1, "MERGED").expect("a merged PR is refused");
+        assert!(merged.contains("PR #1 is merged"), "{merged}");
+        assert!(refusal_for_state(7, "CLOSED").is_some());
+        assert!(refusal_for_state(7, "").is_some(), "an unread state is not OPEN");
     }
 }
