@@ -49,6 +49,15 @@ try:
     r = {"ubatch": int(UB), "ctx_tokens": ctx, "out_tokens": out_n}
     t = call("/completion", dec())["timings"]; r["cold_prefill_tps"] = t["prompt_per_second"]  # fills slot 0 at depth
     t = call("/completion", dec())["timings"]; r["solo_decode_tps"] = t["predicted_per_second"]; r["solo_decode_uncached_n"] = t["prompt_n"]
+    # The contended arm needs two slots; a lane serving one (--parallel 1) queues its residents
+    # instead, so there is no concurrent decode to measure and the arm is recorded as absent.
+    a = D["argv"]
+    slots = int(a[a.index("--parallel") + 1]) if "--parallel" in a else 1
+    if slots < 2:
+        r["contended"] = "n/a: the live lane serves --parallel 1"
+        r["at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        print(json.dumps(r)); open(OUT, "a").write(json.dumps(r) + "\n")
+        raise SystemExit
     res = {}
     th = threading.Thread(target=lambda: res.__setitem__("a", call("/completion", dec())["timings"]))
     body = pre()
