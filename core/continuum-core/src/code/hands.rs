@@ -13,7 +13,6 @@
 //! every hands map uses. The caller stays the authorization identity; the key only says
 //! WHICH of her hands.
 
-use uuid::Uuid;
 
 use crate::identity::hands_context::{ContextKind, HandsContext};
 
@@ -271,6 +270,40 @@ impl HandsKey {
                     })
             }
         }
+    }
+}
+
+/// Hands admission as a dispatch hook: a caller bound to a context (a card claim's turn, an
+/// eval, a fork) is ADMITTED to its hands for the command's whole life, foreground or
+/// background, and the command runs as that admitted work, so a child process it starts keeps
+/// the admission until its tree has ended. The release itself is the one call not admitted: it
+/// closes the hands to every other (card fc9e9fd7; Astra on #5026). Installed at boot.
+pub struct HandsAdmission;
+
+struct Admitted(std::sync::Arc<HandsLease>);
+
+impl crate::runtime::dispatch_hook::DispatchScope for Admitted {
+    fn wrap<'a>(
+        self: std::sync::Arc<Self>,
+        work: crate::runtime::dispatch_hook::DispatchFuture<'a>,
+    ) -> crate::runtime::dispatch_hook::DispatchFuture<'a> {
+        Box::pin(admitted(Some(std::sync::Arc::clone(&self.0)), work))
+    }
+}
+
+impl crate::runtime::dispatch_hook::DispatchHook for HandsAdmission {
+    fn name(&self) -> &'static str {
+        "hands_admission"
+    }
+
+    fn enter(
+        &self,
+        caller: Option<&crate::routing::CallerIdentity>,
+    ) -> Result<Option<std::sync::Arc<dyn crate::runtime::dispatch_hook::DispatchScope>>, String> {
+        let Some(context) = caller.filter(|c| !c.releases_hands).and_then(|c| c.hands) else {
+            return Ok(None);
+        };
+        Ok(Some(std::sync::Arc::new(Admitted(std::sync::Arc::new(admit(context)?)))))
     }
 }
 

@@ -81,7 +81,7 @@ pub struct DispatchFailure {
 }
 
 impl DispatchFailure {
-    fn not_committed(message: String) -> Self {
+    pub(crate) fn not_committed(message: String) -> Self {
         Self { outcome: DispatchOutcome::NotCommitted, message }
     }
 
@@ -414,13 +414,11 @@ impl CommandExecutor {
         // what starts after it and waits out what is admitted (card fc9e9fd7; Astra on #5026:
         // admission at the operation's lifetime boundary, never in helpers). The release itself
         // is the one operation not admitted: it closes the hands to every other.
-        let admitted = match caller.filter(|c| !c.releases_hands).and_then(|c| c.hands) {
-            Some(context) => Some(std::sync::Arc::new(
-                crate::code::hands::admit(context).map_err(DispatchFailure::not_committed)?,
-            )),
-            None => None,
-        };
-        let work = caller.and_then(crate::persona::cognition_pulse::CommandWork::capture);
+        // Around-dispatch concerns (a caller's hands admission, the cognition pulse's work
+        // accounting) are installed by their owners at boot (`dispatch_hook`); one refusal
+        // ends the dispatch with nothing committed.
+        let scopes = super::dispatch_hook::enter_all(caller).map_err(DispatchFailure::not_committed)?;
+        let in_command = scopes.clone();
         let decision = route(command);
         // Local in-process dispatches pass `None` — substrate's own
         // code calling itself, implicitly trusted by the default
@@ -462,7 +460,9 @@ impl CommandExecutor {
             // AircTransport commit lands, swapping `remote_transport`
             // is the only change needed — this match shape doesn't
             // move.
-            let work = work.map(crate::persona::cognition_pulse::CommandWork::begin);
+            for scope in &in_command {
+                scope.allowed();
+            }
             let outcome = match decision {
                 RouteDecision::Local { path, .. } => {
                     self.execute_inner(&path, params, caller).await
@@ -474,16 +474,16 @@ impl CommandExecutor {
                     .map_err(DispatchFailure::uncertain),
             };
             if outcome.is_ok() {
-                if let Some(work) = &work {
-                    work.completed(EpochMs::now().millis());
+                for scope in &in_command {
+                    scope.succeeded();
                 }
             }
             outcome
         }
         .instrument(span);
-        // The command runs as the task's admitted work: a child process it starts keeps the
-        // admission until the child's tree has ended (`lane_process::run_owned`).
-        crate::code::hands::admitted(admitted, command).await
+        // The command runs inside every scope (the hands' admission is a task-local its
+        // children inherit until their tree has ended: `lane_process::run_owned`).
+        super::dispatch_hook::wrap_all(&scopes, Box::pin(command)).await
     }
 
     /// The dispatch chain itself. Extracted so `execute` can wrap it

@@ -209,6 +209,8 @@ use super::*;
         /// A core with the real `CodeModule`, and its state, so a test can see whose hands
         /// the engine map holds.
         fn core_with_code() -> (Arc<CommandExecutor>, Arc<CodeState>) {
+            // Hands admission rides every dispatch as a hook boot installs; so does this core.
+            crate::ipc::install_dispatch_hooks();
             let registry = Arc::new(ModuleRegistry::new());
             let state = Arc::new(CodeState::new(
                 Arc::new(DashMap::new()),

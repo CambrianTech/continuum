@@ -118,6 +118,7 @@ use protocol::Response;
 mod prepare_unix_socket_path;
 pub use prepare_unix_socket_path::*;
 mod start_server;
+pub(crate) use start_server::install_dispatch_hooks;
 pub use start_server::*;
 
 #[cfg(test)]

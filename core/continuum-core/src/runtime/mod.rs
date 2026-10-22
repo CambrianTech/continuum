@@ -36,6 +36,7 @@ pub mod command_envelope;
 pub mod command_events;
 pub mod command_executor;
 pub mod command_interceptor;
+pub mod dispatch_hook;
 pub mod control;
 pub mod event_graph;
 pub mod tracked_checkout;

@@ -30,6 +30,14 @@ mod serving_modules;
 mod tcp_ingress;
 mod ws_ingress;
 
+/// The around-dispatch concerns, installed before any executor exists: every dispatch in
+/// this process runs under them (the hands' admission is a safety boundary). One list, so
+/// boot and a test that dispatches through a real executor install the same hooks.
+pub(crate) fn install_dispatch_hooks() {
+    crate::runtime::dispatch_hook::install(Arc::new(crate::code::hands::HandsAdmission));
+    crate::runtime::dispatch_hook::install(Arc::new(crate::persona::cognition_pulse::CardWorkPulse));
+}
+
 pub fn start_server(
     socket_path: &str,
     livekit_manager: Arc<crate::live::transport::bridge_client::LiveKitAgentManager>,
@@ -39,6 +47,7 @@ pub fn start_server(
     disk_pressure_monitor: Arc<crate::system_resources::DiskPressureMonitor>,
     boot_mode: crate::runtime::BootMode,
 ) -> std::io::Result<()> {
+    install_dispatch_hooks();
     let phase_started =
         model_registry_boot::prepare_socket_and_load_model_registry(socket_path, boot_mode)?;
 
