@@ -105,7 +105,7 @@ fn a_checkpoint_keeps_the_shape_the_previous_build_reads() {
 // what was sent.
 #[test]
 fn an_acts_arguments_are_whole_or_plainly_elided_never_cut() {
-    let path = "/Users/joel/.continuum/citizens/peers/cf6b4df6-ab13-4fd8-81fb-bcb115215468/workspace/src/ipc/mod.rs";
+    let path = "/home/resident/.continuum/citizens/peers/cf6b4df6-ab13-4fd8-81fb-bcb115215468/workspace/src/ipc/mod.rs";
     let body = "fn main() {}\n".repeat(200);
     let args = serde_json::json!({"file_path": path, "content": body, "lines": [1, 40], "nested": {"mode": "append"}});
     let line = crate::cognition::working_memory::ledger::call_args(&args, path.chars().count());
@@ -114,5 +114,5 @@ fn an_acts_arguments_are_whole_or_plainly_elided_never_cut() {
     assert!(line.contains("[1,40]") && line.contains("\"mode\":\"append\""), "{line}");
     let tight = crate::cognition::working_memory::ledger::call_args(&args, 10);
     assert!(tight.contains(&format!("<{} chars>", path.chars().count())), "a path over budget is a marker, not a prefix: {tight}");
-    assert!(!tight.contains("/Users/joel/"), "no prefix of the path survives: {tight}");
+    assert!(!tight.contains("/home/resident/"), "no prefix of the path survives: {tight}");
 }

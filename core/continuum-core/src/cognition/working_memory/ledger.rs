@@ -437,7 +437,7 @@ fn archive_head(seq: u64, result: &str, acts: &[Observation], trail_head_chars: 
 }
 
 /// One call's arguments for its ledger line, with no value ever cut (card d624a9a1). The line
-/// cut the JSON at 48 chars, so `{"file_path":"/Users/joel/.continuum/citizens/pe` read as a
+/// cut the JSON at 48 chars, so `{"file_path":"/home/resident/.continuum/citizens/pe` read as a
 /// real path: a 1.5B resident copied it, was refused three times, and looped (IntelMac,
 /// 2026-10-22; goal 7). A string value longer than `value_chars`, or spanning lines (a write's
 /// body), becomes an explicit `<N chars>` marker; every other value renders whole. So a value
