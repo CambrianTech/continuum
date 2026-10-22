@@ -99,8 +99,10 @@ pub(super) trait LaneSource: Send + Sync {
     /// Whether a lane for `base` is available now; the coordinator asks before it ranks, so a
     /// trainer is never chosen for a job it would refuse.
     fn serves(&self, base: &str) -> bool;
-    /// A lane for `base`, alive for as long as the returned lease is held.
-    async fn acquire(&self, base: &str) -> Result<LaneLease, String>;
+    /// A lane for `base`, alive for as long as the returned lease is held. Typed by cause (Codex
+    /// on #5269): an invalid request is `InvalidRequest`, never retried as-is; memory pressure, a
+    /// lane that will not start, or a transport error is `Transient`, retried by the dispatch.
+    async fn acquire(&self, base: &str) -> Result<LaneLease, FineTuningError>;
     /// The coordinator's provider id for a trainer on these lanes.
     fn provider(&self) -> &'static str;
     /// Where a trainer on these lanes trains ([`TrainingPlace`]).
@@ -136,9 +138,11 @@ impl LaneSource for ResidentLane {
         live_lane_for(base).is_some()
     }
 
-    async fn acquire(&self, base: &str) -> Result<LaneLease, String> {
+    async fn acquire(&self, base: &str) -> Result<LaneLease, FineTuningError> {
         let choice = live_lane_for(base).ok_or_else(|| {
-            format!("no live lane serves {base} on this node: in-engine training runs on the resident weights")
+            FineTuningError::InvalidRequest(format!(
+                "no live lane serves {base} on this node: in-engine training runs on the resident weights"
+            ))
         })?;
         let (base, chosen, url) = (base.to_owned(), choice.engine, choice.url.clone());
         Ok(LaneLease {
@@ -189,8 +193,8 @@ impl<F: Fn(&str) -> Option<LaneChoice> + Send + Sync> LaneSource for F {
         self(base).is_some()
     }
 
-    async fn acquire(&self, base: &str) -> Result<LaneLease, String> {
-        let choice = self(base).ok_or_else(|| format!("the test lane serves no {base}"))?;
+    async fn acquire(&self, base: &str) -> Result<LaneLease, FineTuningError> {
+        let choice = self(base).ok_or_else(|| FineTuningError::InvalidRequest(format!("the test lane serves no {base}")))?;
         Ok(LaneLease { choice, hold: None, still_bound: Box::new(|| Ok(())) })
     }
     fn provider(&self) -> &'static str {

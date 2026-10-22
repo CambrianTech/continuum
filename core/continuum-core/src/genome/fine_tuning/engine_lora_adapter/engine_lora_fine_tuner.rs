@@ -38,7 +38,7 @@ impl FineTuningAdapter for EngineLoraFineTuner {
         }
         let targets = gguf_targets(&lora.target_modules).map_err(FineTuningError::InvalidRequest)?;
         let LaneLease { choice, hold: lane_hold, still_bound } =
-            self.lane.acquire(&request.base_model).await.map_err(FineTuningError::InvalidRequest)?;
+            self.lane.acquire(&request.base_model).await?;
         let LaneChoice { url: lane, window: served_window, engine, build, memory } = choice;
         let train_dir = self
             .train_dir

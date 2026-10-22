@@ -35,6 +35,21 @@ pub(super) fn stands_up_for(
     weights_here && !live.is_some_and(|rec| crate::model_registry::artifacts::names_the_same_base(&rec.model, base))
 }
 
+/// Refuse to stand up a lane for `base` once a live lane serves it: the resident trainer takes
+/// it, so the dispatch retries (`Transient`) and selection picks the resident lane, rather than
+/// loading a second copy beside it.
+pub(super) fn refuse_if_resident(
+    base: &str,
+    live: Option<&crate::inference::lane_registry::LaneRecord>,
+) -> Result<(), FineTuningError> {
+    if stands_up_for(base, live, true) {
+        return Ok(());
+    }
+    Err(FineTuningError::Transient(format!(
+        "a live lane now serves {base}: its resident trainer takes the run, not a second copy"
+    )))
+}
+
 fn model_for(base: &str) -> Option<crate::model_registry::Model> {
     crate::model_registry::try_global().and_then(|registry| registry.model(base).cloned())
 }
@@ -48,11 +63,15 @@ impl LaneSource for EngineLane {
         stands_up_for(base, crate::inference::lane_registry::live_lane().as_ref(), weights_here)
     }
 
-    async fn acquire(&self, base: &str) -> Result<LaneLease, String> {
+    async fn acquire(&self, base: &str) -> Result<LaneLease, FineTuningError> {
         use crate::cognition::single_purpose_lane as lane;
         use crate::inference::llama_server::{EphemeralServingLane, ServingTarget};
-        let model = model_for(base).ok_or_else(|| format!("no model {base} in the registry to train on"))?;
-        lane::await_lane_memory_headroom(lane::lane_footprint(&model)).await?;
+        use FineTuningError::Transient;
+        let model = model_for(base)
+            .ok_or_else(|| FineTuningError::InvalidRequest(format!("no model {base} in the registry to train on")))?;
+        lane::await_lane_memory_headroom(lane::lane_footprint(&model)).await.map_err(Transient)?;
+        // The headroom wait can be long: a lane for this base may have come up since selection.
+        refuse_if_resident(base, crate::inference::lane_registry::live_lane().as_ref())?;
         let window = lane::plan_lane_ctx(&model);
         let (evidence, lease) = lane::decide_lane_placement(&model, window, &format!("train-lane {base}"), TRAIN_LANE_TERMS);
         let target = ServingTarget {
@@ -69,16 +88,17 @@ impl LaneSource for EngineLane {
         };
         let spawned = EphemeralServingLane::spawn_with_reservation(&target, TRAIN_LANE_BASE_PORT, lease)
             .await
-            .map_err(|e| format!("could not stand up a training lane for {base}: {e}"))?;
+            .map_err(|e| Transient(format!("could not stand up a training lane for {base}: {e}")))?;
         let port = spawned.port();
-        let record = lane_record_at(port).ok_or_else(|| format!("the training lane for {base} on port {port} registered no lane record"))?;
+        let record = lane_record_at(port)
+            .ok_or_else(|| Transient(format!("the training lane for {base} on port {port} registered no lane record")))?;
         let mut choice = lane_choice(record, base)
-            .ok_or_else(|| format!("the training lane on port {port} does not record {base} with a placement"))?;
+            .ok_or_else(|| Transient(format!("the training lane on port {port} does not record {base} with a placement")))?;
         // The window the lane serves, read back from it, never the planned one.
         choice.window = spawned
             .served_context_window()
             .await
-            .map_err(|e| format!("the training lane for {base} is up but its served window is unreadable: {e}"))?;
+            .map_err(|e| Transient(format!("the training lane for {base} is up but its served window is unreadable: {e}")))?;
         continuum_base::probe!(
             class = "training.lane.stood_up",
             base = base,
@@ -143,5 +163,16 @@ mod tests {
         assert!(stands_up_for(small, None, true), "nothing is resident");
         assert!(!stands_up_for(resident, Some(&live(resident)), true), "the resident lane serves it");
         assert!(!stands_up_for(small, Some(&live(resident)), false), "no weights here");
+    }
+
+    // what this catches (Codex on #5269): a base that became resident between selection and the
+    // spawn (the headroom wait can be long) loaded a second time. The recheck refuses it as
+    // Transient, so the retried dispatch selects the resident trainer.
+    #[test]
+    fn a_base_that_became_resident_before_the_spawn_is_refused_as_transient() {
+        let small = "continuum-ai/qwen2.5-coder-0.5b-instruct-GGUF";
+        assert!(refuse_if_resident(small, None).is_ok());
+        assert!(refuse_if_resident(small, Some(&live("continuum-ai/qwen2.5-coder-1.5b-instruct-GGUF"))).is_ok());
+        assert!(matches!(refuse_if_resident(small, Some(&live(small))), Err(FineTuningError::Transient(_))));
     }
 }

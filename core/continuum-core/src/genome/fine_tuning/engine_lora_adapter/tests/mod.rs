@@ -235,6 +235,45 @@
         assert_eq!(got, vec![(1536, 256, 7), (68608, 512, 9)], "its own family only, at every window");
     }
 
+    /// A lane source whose acquisition fails with a given error, so create_job's handling of it is
+    /// tested without standing up a serving process.
+    struct RefusingLane(fn() -> FineTuningError);
+
+    #[async_trait]
+    impl LaneSource for RefusingLane {
+        fn serves(&self, _: &str) -> bool {
+            true
+        }
+
+        async fn acquire(&self, _: &str) -> Result<LaneLease, FineTuningError> {
+            Err((self.0)())
+        }
+
+        fn provider(&self) -> &'static str {
+            LANE_PROVIDER_ID
+        }
+
+        fn place(&self) -> crate::genome::fine_tuning::adapter::TrainingPlace {
+            crate::genome::fine_tuning::adapter::TrainingPlace::EngineLaneHere
+        }
+    }
+
+    // what this catches (Codex on #5269): create_job reclassifying every lane acquisition failure
+    // as InvalidRequest ("never retriable as-is"), so a due bucket whose lane hit memory pressure
+    // or a slow start was treated as a bad request. The cause's own type comes through.
+    #[tokio::test]
+    async fn a_lane_acquisition_failure_keeps_its_type_through_create_job() {
+        let train = tempfile::tempdir().expect("test: dir");
+        let jobs = tempfile::tempdir().expect("test: dir");
+        let mut t = EngineLoraFineTuner::for_test("http://127.0.0.1:1".into(), train.path().to_path_buf(), jobs.path().join("footprints.json"));
+        t.lane = Box::new(RefusingLane(|| FineTuningError::Transient("memory pressure".into())));
+        let mut r = request("ggml-org/Qwen3.8-27B-GGUF");
+        r.local_artifact_dir = Some(jobs.path().to_path_buf());
+        assert!(matches!(t.create_job(r.clone()).await, Err(FineTuningError::Transient(_))), "pressure is retried");
+        t.lane = Box::new(RefusingLane(|| FineTuningError::InvalidRequest("no such model".into())));
+        assert!(matches!(t.create_job(r).await, Err(FineTuningError::InvalidRequest(_))), "a bad request is not");
+    }
+
     pub(super) fn request(base: &str) -> TrainingJobRequest {
         TrainingJobRequest {
             persona_id: Uuid::nil(),
