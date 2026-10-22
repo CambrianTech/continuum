@@ -223,3 +223,26 @@ fn the_live_lane_inventory_is_complete_only_when_every_live_record_names_its_dir
     assert_eq!(dirs, vec![PathBuf::from("/p/a")]);
     assert!(!complete, "a LIVE record without a dir → incomplete → no sweep");
 }
+
+// what this catches (card 689084e7): one unreadable launch revision (a deleted adapter, a
+// PATH-only engine name) silently made every saved KV page unrestorable across a launch.
+// The evidence now names the file that failed and why; a launch whose files all read keeps
+// one entry per file, in order.
+#[test]
+fn revision_evidence_names_the_unreadable_file() -> Result<(), Box<dyn std::error::Error>> {
+    let dir = tempfile::tempdir()?;
+    let model = dir.path().join("model.gguf");
+    std::fs::write(&model, b"gguf")?;
+    let missing = dir.path().join("llama-server");
+    let read = revision_evidence(std::iter::once(model.clone()))
+        .map_err(|(path, error)| format!("{}: {error}", path.display()))?;
+    assert_eq!((read.len(), read[0].0.clone(), read[0].1), (1, model.clone(), 4));
+    match revision_evidence([model, missing.clone()].into_iter()) {
+        Err((path, error)) => {
+            assert_eq!(path, missing, "the unreadable file is named, not the first");
+            assert_eq!(error.kind(), std::io::ErrorKind::NotFound);
+        }
+        Ok(evidence) => panic!("a missing engine binary produced evidence: {evidence:?}"),
+    }
+    Ok(())
+}

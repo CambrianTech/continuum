@@ -98,18 +98,14 @@ impl ServingDaemonModule {
         let mut guard = self.moe_serving.lock().ok()?;
         let stale = guard.as_ref().map(|(id, _)| id.as_str()) != Some(model.id.as_str());
         if stale {
-            let ctx =
-                crate::model_registry::artifacts::resolve_gguf_for_model(model).and_then(|gguf| {
-                    crate::capacity::moe_serving::moe_serving_context(
-                        &gguf,
-                        &model.id,
-                        EXPERT_PLACEMENT_MARGIN_BYTES,
-                        RELAUNCH_LAYER_CHURN_THRESHOLD,
-                    )
-                });
-            *guard = ctx.map(|c| (model.id.clone(), c));
+            // The verdict is cached per model, dense included (it was re-read every tick); an
+            // unresolved GGUF is not, so it is read once it lands (card 60f74ac5).
+            *guard = crate::model_registry::artifacts::resolve_gguf_for_model(model).map(|gguf| {
+                let built = crate::capacity::moe_serving::moe_serving_context(&gguf, &model.id, EXPERT_PLACEMENT_MARGIN_BYTES, RELAUNCH_LAYER_CHURN_THRESHOLD);
+                (model.id.clone(), built.unwrap_or_else(|why| { continuum_base::probe!(target: "continuum_core::modules::serving_daemon", class = "serving.moe.geometry_unreadable", model = model.id.as_str(), why = %why, "MoE geometry unreadable: served dense, no expert placement"); None })) // unwrap_or_else: probed here; dense is the one placement that needs no geometry
+            });
         }
-        let (_, ctx) = guard.as_mut()?;
+        let (_, Some(ctx)) = guard.as_mut()? else { return None };
         let outcome = ctx
             .pager
             .tick_layer_placement(budget, ctx.n_experts_per_layer, ctx.n_layers);
@@ -165,7 +161,7 @@ impl ServingDaemonModule {
         let expert_bytes_total = {
             let guard = self.moe_serving.lock().ok()?;
             match guard.as_ref() {
-                Some((id, ctx)) if id.as_str() == model.id.as_str() => ctx.expert_bytes_total,
+                Some((id, Some(ctx))) if id.as_str() == model.id.as_str() => ctx.expert_bytes_total,
                 _ => return None,
             }
         };

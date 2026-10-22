@@ -16,7 +16,8 @@ pub const PROVIDER_ID: &str = "cuda-local";
 
 pub struct CudaLoraFineTuner {
     jobs: NativeJobs,
-    python: PathBuf,
+    /// `None` with no override and no continuum home: no trainer to run.
+    python: Option<PathBuf>,
 }
 
 #[derive(Serialize)]
@@ -45,18 +46,12 @@ fn failure(error: impl std::fmt::Display) -> FineTuningError {
 
 impl CudaLoraFineTuner {
     pub fn new() -> Self {
-        let python = continuum_base::config_env::read("CUDA_TRAIN_PYTHON")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| {
-                // An absent explicit override selects the conventional local installation.
-                let home = dirs::home_dir().unwrap_or_default(); // Without a home, the relative candidate must still pass is_file before execution.
-                let root = home.join(".continuum/tools/cuda-training");
-                if cfg!(windows) {
-                    root.join("Scripts/python.exe")
-                } else {
-                    root.join("bin/python")
-                }
-            });
+        // An explicit override, else the conventional installation under the continuum home;
+        // with neither there is no trainer, and `start` says so.
+        let python = continuum_base::config_env::read("CUDA_TRAIN_PYTHON").map(PathBuf::from).or_else(|| {
+            let root = crate::paths::ContinuumLayout::home().ok()?.tools().join("cuda-training");
+            Some(if cfg!(windows) { root.join("Scripts/python.exe") } else { root.join("bin/python") })
+        });
         Self {
             jobs: NativeJobs::new(PROVIDER_ID),
             python,
@@ -108,11 +103,14 @@ impl FineTuningAdapter for CudaLoraFineTuner {
                 "invalid CUDA training data/schedule/LoRA geometry".into(),
             ));
         }
-        if !self.python.is_file() {
-            return Err(failure(format!("CUDA trainer Python absent at {}; provision cuda-training requirements or set CUDA_TRAIN_PYTHON", self.python.display())));
+        let Some(python) = self.python.as_ref() else {
+            return Err(failure("no CUDA trainer Python: CUDA_TRAIN_PYTHON is unset and there is no continuum home to hold tools/cuda-training"));
+        };
+        if !python.is_file() {
+            return Err(failure(format!("CUDA trainer Python absent at {}; provision cuda-training requirements or set CUDA_TRAIN_PYTHON", python.display())));
         }
         let id = Uuid::new_v4();
-        let python = self.python.clone();
+        let python = python.clone();
         Ok(self.jobs.prepare(id, move |progress| async move {
             let directory = job_dir_for(&request, id);
             let adapters = directory.join("adapters");

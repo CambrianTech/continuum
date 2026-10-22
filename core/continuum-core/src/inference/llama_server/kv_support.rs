@@ -9,11 +9,11 @@ use super::*;
 /// `did_not_enumerate` (the flag exists but the build lists no allowed values — we do
 /// NOT guess; the backend table decides), `probe_failed`, `probe_timeout`.
 ///
-/// One ask per process even when the answer is "it did not say", so a box whose engine
-/// is silent does not pay a 10 s help probe on every relaunch.
+/// One ask per engine binary that answers, even "it did not say"; a failed or timed-out probe
+/// is asked again at the next launch, and a promoted binary afresh (f3ba3b56 item 11).
 pub(super) async fn ensure_engine_kv_support_recorded(bin: &str, mut command: tokio::process::Command) {
-    static ASKED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-    if ASKED.swap(true, std::sync::atomic::Ordering::SeqCst) {
+    static ANSWERED_BY: parking_lot::Mutex<Option<String>> = parking_lot::Mutex::new(None);
+    if ANSWERED_BY.lock().as_deref() == Some(bin) {
         return;
     }
     command.arg("--help");
@@ -29,7 +29,7 @@ pub(super) async fn ensure_engine_kv_support_recorded(bin: &str, mut command: to
                 let mut text = String::from_utf8_lossy(&out.stdout.bytes).into_owned();
                 text.push('\n');
                 text.push_str(&String::from_utf8_lossy(&out.stderr.bytes));
-                let _ = ENGINE_TRAIN_DIR.set(engine_help_lists_train_dir(&text));
+                ENGINE_TRAIN_DIR.store(engine_help_lists_train_dir(&text), std::sync::atomic::Ordering::Relaxed);
                 match crate::cognition::kv_cache_plan::parse_engine_kv_support(&text) {
                     Some(v) => ("answered", Some(v), String::new()),
                     None => ("did_not_enumerate", None, String::new()),
@@ -37,9 +37,8 @@ pub(super) async fn ensure_engine_kv_support_recorded(bin: &str, mut command: to
             }
         },
     };
-    if let Some(v) = support {
-        crate::cognition::kv_cache_plan::record_engine_quantized_kv_support(v);
-    }
+    crate::cognition::kv_cache_plan::record_engine_quantized_kv_support(support); // None = unanswered: the backend table decides
+    if matches!(outcome, "answered" | "did_not_enumerate") { *ANSWERED_BY.lock() = Some(bin.to_owned()) } else { ENGINE_TRAIN_DIR.store(false, std::sync::atomic::Ordering::Relaxed) }
     continuum_base::probe!(target: "continuum_core::inference::llama_server", class = "serving.kv_cache.engine_support",
         bin = bin,
         outcome = outcome,

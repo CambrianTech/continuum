@@ -37,7 +37,7 @@ printf 'echo MEDIA_PREPARE >> "$FIXTURE_TRACE"\n' > "$scratch/repo/tools/scripts
 printf '# staged media helper\n' > "$scratch/repo/tools/scripts/start-livekit-windows.ps1"
 # Toolchain setup is orthogonal to lifecycle; isolate it from the host machine.
 printf ':\n' > "$scratch/repo/tools/scripts/lib/windows-build-env.sh"
-printf 'CARGO_GPU_FEATURES=--no-default-features\n' > "$scratch/repo/tools/scripts/shared/cargo-features.sh"
+printf 'CARGO_GPU_FEATURES=\n' > "$scratch/repo/tools/scripts/shared/cargo-features.sh"
 printf '// fixture source\n' > "$scratch/repo/core/continuum-core/src/lib.rs"
 export CARGO_TARGET_DIR="$scratch/build cache 雪"
 export CONTINUUM_BUILD_RECEIPT="$scratch/artifact.receipt"
@@ -152,7 +152,7 @@ for platform in "${platforms[@]}"; do
     # continuum` line is the #296 restore of a swept CLI — the fixture cache
     # starts empty — not a fourth build.)
     core_lines="$(grep -c -- '--bin continuum-core-server' "$FIXTURE_TRACE" || true)"
-    head -1 "$FIXTURE_TRACE" | grep -q -- '--bin continuum-core-server --bin continuum-mcp --bin forge-custodian --release --no-default-features$'
+    head -1 "$FIXTURE_TRACE" | grep -q -- '--bin continuum-core-server --bin continuum-mcp --bin forge-custodian --release$'
     if [ "$failure" = 0 ]; then [ "$core_lines" = 1 ]; else [ "$core_lines" = 2 ]; fi
     echo "PASS $platform build-only (core build failure=$failure)"
   done
@@ -195,8 +195,10 @@ HOME="$fixture_home" FIXTURE_PLATFORM=Linux FAIL_CORE_BUILD=0 CONTINUUM_SKIP_SEL
   bash "$launcher" > "$scratch/output" 2>&1
 if grep -Eq 'FORBIDDEN|LAUNCHED' "$FIXTURE_TRACE"; then cat "$FIXTURE_TRACE" >&2; exit 1; fi
 [ "$(grep -c '^cargo build ' "$FIXTURE_TRACE")" = 1 ]
-grep -q -- '--bin continuum-core-server --bin continuum-mcp --bin forge-custodian --bin continuum --release --no-default-features$' "$FIXTURE_TRACE"
+grep -q -- '--bin continuum-core-server --bin continuum-mcp --bin forge-custodian --bin continuum --release$' "$FIXTURE_TRACE"
 grep -q 'the library compiles once' "$scratch/output"
+# No profile in config.env: headless, and the build says so rather than guessing.
+grep -q 'node profile: headless' "$scratch/output"
 echo "PASS one cargo invocation names all four bins with one feature set"
 
 # The one sanctioned exception, pinned to its smallest shape: a set that links a GPU
@@ -213,5 +215,30 @@ HOME="$fixture_home" FIXTURE_PLATFORM=Linux FAIL_CORE_BUILD=0 CONTINUUM_SKIP_SEL
 if grep -Eq 'FORBIDDEN|LAUNCHED' "$FIXTURE_TRACE"; then cat "$FIXTURE_TRACE" >&2; exit 1; fi
 [ "$(grep -c '^cargo build ' "$FIXTURE_TRACE")" = 2 ]
 grep -q -- '--bin continuum-core-server --bin continuum-mcp --bin forge-custodian --release --features cuda,load-dynamic-ort$' "$FIXTURE_TRACE"
-grep -q -- '--bin continuum --release --no-default-features$' "$FIXTURE_TRACE"
+grep -q -- '--bin continuum --release$' "$FIXTURE_TRACE"
 echo "PASS a GPU-runtime box separates only the CLI, on exactly one extra line"
+
+# ── The node profile (core-features.sh): calls and 3D avatars come from config.env ──
+# what this catches: `default = []` silently turning calls/avatars off on a node that hosts
+# them, and a misspelled profile building a node without what it asked for.
+mkdir -p "$fixture_home/.continuum"
+printf "CONTINUUM_NODE_FEATURES='avatar-3d, livekit-webrtc'\n" > "$fixture_home/.continuum/config.env"
+: > "$FIXTURE_TRACE"; : > "$CONTINUUM_BUILD_RECEIPT"
+HOME="$fixture_home" FIXTURE_PLATFORM=Linux FAIL_CORE_BUILD=0 CONTINUUM_SKIP_SELF_BUILD= \
+  CONTINUUM_NODE_FEATURES=stale-parent-value bash "$launcher" > "$scratch/output" 2>&1
+if grep -Eq 'FORBIDDEN|LAUNCHED' "$FIXTURE_TRACE"; then cat "$FIXTURE_TRACE" >&2; exit 1; fi
+grep -q -- '--bin continuum-core-server --bin continuum-mcp --bin forge-custodian --release --features cuda,load-dynamic-ort,livekit-webrtc,avatar-3d$' "$FIXTURE_TRACE"
+grep -q -- '--bin continuum --release$' "$FIXTURE_TRACE"
+grep -q 'node profile: livekit-webrtc,avatar-3d' "$scratch/output"
+echo "PASS the node profile adds calls and avatars to the core, in canonical order, never to the GPU-free CLI"
+
+printf 'CONTINUUM_NODE_FEATURES=livekit-webrtc,avatars\n' > "$fixture_home/.continuum/config.env"
+: > "$FIXTURE_TRACE"; : > "$CONTINUUM_BUILD_RECEIPT"
+status=0
+HOME="$fixture_home" FIXTURE_PLATFORM=Linux FAIL_CORE_BUILD=0 CONTINUUM_SKIP_SELF_BUILD= \
+  bash "$launcher" > "$scratch/output" 2>&1 || status=$?
+[ "$status" != 0 ]
+if grep -q '^cargo build ' "$FIXTURE_TRACE"; then cat "$FIXTURE_TRACE" >&2; exit 1; fi
+grep -q 'names `avatars`' "$scratch/output"
+rm -f "$fixture_home/.continuum/config.env"
+echo "PASS an unrecognized node profile refuses the build, naming the word"

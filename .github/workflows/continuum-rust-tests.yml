@@ -56,6 +56,11 @@ jobs:
     timeout-minutes: 30
     env:
       DATABASE_URL: postgres://continuum:continuum@localhost:5432/continuum_test
+      # The crate builds headless by default (`default = []`); THIS job is the one that
+      # compiles and tests the call (livekit-webrtc) and 3D-avatar (avatar-3d) paths a
+      # node's profile turns on. Every cargo line in the job names the same set, so the
+      # library compiles once. The headless default is the Windows job's configuration.
+      CORE_FEATURES: livekit-webrtc,avatar-3d
     steps:
       - uses: actions/checkout@v4
         if: needs.changes.outputs.rust != 'false'
@@ -116,7 +121,7 @@ jobs:
           # compiler-message records, which the render-diagnostics form sends to stderr
           # as text instead. The artifact script reads compiler-artifact records, present
           # in both.
-          python3 tools/scripts/ci-lib-test-artifact.py --capture lib-artifacts.jsonl -- cargo test -p continuum-core --lib --profile dev-fast --no-run --timings --message-format=json
+          python3 tools/scripts/ci-lib-test-artifact.py --capture lib-artifacts.jsonl -- cargo test -p continuum-core --lib --profile dev-fast --features "$CORE_FEATURES" --no-run --timings --message-format=json
           # Warning debt is monotonic: the same stream, counted against
           # scripts/ratchets/rust-warnings-baseline.txt (grow = red; shrink = lower it here).
           bash scripts/ratchets/check-rust-warnings.sh lib-artifacts.jsonl
@@ -160,7 +165,7 @@ jobs:
             tests::reboot_tests::prebuilt_reboot_launch_retains_candidate_socket_and_cwd \
             tests::reboot_tests::service_reboot_rejects_stale_action_and_artifact_before_teardown \
             tests::deploy_consume_tests::the_deploy_consumer_deploys_only_a_clean_checkout_toward_a_tip_not_running; do
-            cargo test -p continuum-core --bin continuum --profile dev-fast "$test" -- --exact 2>&1 | tee cli-handoff.log
+            cargo test -p continuum-core --bin continuum --profile dev-fast --features "$CORE_FEATURES" "$test" -- --exact 2>&1 | tee cli-handoff.log
             if ! grep -q 'test result: ok. 1 passed;' cli-handoff.log; then
               echo "::error::The exact CLI handoff regression did not execute: $test"
               exit 1
@@ -176,7 +181,7 @@ jobs:
           set -o pipefail
           # Same profile as the --lib build above, deliberately: a different profile
           # here would be a SECOND full codegen of a 625k-line crate, not a cheap extra step.
-          cargo test -p continuum-core --doc --profile dev-fast BindingIsUnstatable 2>&1 | tee doc-guard.log
+          cargo test -p continuum-core --doc --profile dev-fast --features "$CORE_FEATURES" BindingIsUnstatable 2>&1 | tee doc-guard.log
           if ! grep -q 'test result: ok. 2 passed' doc-guard.log; then
             echo "::error::expected exactly 2 BindingIsUnstatable doctests to pass."
             echo "A zero-match filter exits 0, so this is how a renamed or deleted"
@@ -281,10 +286,11 @@ jobs:
           cache-on-failure: true
       - name: Build one headless core test artifact and run Windows cache custody fixtures
         if: needs.changes.outputs.rust != 'false'
-        # Headless configuration: --no-default-features drops `avatar-3d` (bevy/wgpu), which is
-        # what the Intel-Mac CPU path and the CUDA CLI build (card be575955). Folded into this
-        # existing job (one job per contract, Joel 2026-10-02) rather than a new one. The
-        # bevy-on configuration stays covered by cargo-test-continuum-core (default features).
+        # Headless configuration: the crate's default (`default = []`: no LiveKit, no
+        # bevy/wgpu), which every node without a profile and the CUDA CLI build (card
+        # be575955). Folded into this existing job (one job per contract, Joel 2026-10-02)
+        # rather than a new one. The calls + avatars configuration is covered once, by
+        # cargo-test-continuum-core (CORE_FEATURES).
         shell: pwsh
         run: |
           python tools/scripts/tests/test_ci_lib_test_artifact.py
@@ -301,7 +307,7 @@ jobs:
           # reduced-debug profile avoids the full-debug PDB size failure; compile
           # once and reuse it for these native custody tests, not a second lane.
           # Shared streaming capture keeps compiler errors visible before failure or cancellation.
-          python tools/scripts/ci-lib-test-artifact.py --capture windows-lib-artifacts.jsonl -- cargo test -p continuum-core --lib --profile dev-fast --no-default-features --features livekit-webrtc,test-fixtures --no-run --timings --message-format=json
+          python tools/scripts/ci-lib-test-artifact.py --capture windows-lib-artifacts.jsonl -- cargo test -p continuum-core --lib --profile dev-fast --features test-fixtures --no-run --timings --message-format=json
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           $testEnv = python tools/scripts/ci-lib-test-artifact.py windows-lib-artifacts.jsonl core/continuum-core (rustc --print target-libdir)
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
@@ -344,14 +350,14 @@ jobs:
           retention-days: 1
       - name: Type-check integration targets using the same headless profile
         if: needs.changes.outputs.rust != 'false'
-        run: cargo check -p continuum-core --test '*' --profile dev-fast --no-default-features --features livekit-webrtc,test-fixtures
+        run: cargo check -p continuum-core --test '*' --profile dev-fast --features test-fixtures
       - name: Windows maintenance durable-stop regression
         if: needs.changes.outputs.rust != 'false'
         run: |
           foreach ($test in @(
             'tests::reboot_tests::legacy_core_requires_explicit_recovery_before_reboot_teardown'
           )) {
-            $output = & cargo test -p continuum-core --bin continuum --profile dev-fast --no-default-features --features livekit-webrtc,test-fixtures $test -- --exact 2>&1
+            $output = & cargo test -p continuum-core --bin continuum --profile dev-fast --features test-fixtures $test -- --exact 2>&1
             $result = $LASTEXITCODE
             $output | Write-Output
             if ($result -ne 0) { exit $result }
