@@ -1,4 +1,6 @@
-//! Realistic persona load harness — a cooperative team on a shared project.
+//! Realistic persona load harness — a cooperative team on a shared project. It drives
+//! the REAL `CodeModule` through a mind's tool executor, so it lives with the module it
+//! loads (the mind never names the module).
 //!
 //! The synthetic echo curve in `command_executor.rs::tests::stress` proves the
 //! dispatch FLOOR (no lock, no FIFO). This harness measures what 50 personas
@@ -15,13 +17,13 @@
 //!
 //! Gated `stress-tests` per the test doctrine. Run:
 //! `cargo test -p continuum-core --features stress-tests,metal,accelerate --lib \
-//!   cognition::tool_executor::load_harness -- --nocapture --test-threads=1`
+//!   modules::code::load_harness -- --nocapture --test-threads=1`
 
-use super::types::{PersonaMediaConfigLite, ToolExecutionContext};
-use super::{CommandToolExecutor, ToolExecutor};
+use crate::cognition::tool_executor::types::{PersonaMediaConfigLite, ToolExecutionContext};
+use crate::cognition::tool_executor::{CommandToolExecutor, ToolExecutor};
 use crate::ai::types::ToolCall as NativeToolCall;
 use crate::logging::timing::PerformanceStats;
-use crate::modules::code::{CodeModule, CodeState};
+use super::{CodeModule, CodeState};
 use crate::routing::CallerIdentity;
 use crate::runtime::{CommandExecutor, InProcessTransport, ModuleRegistry};
 use continuum_client::Connection;

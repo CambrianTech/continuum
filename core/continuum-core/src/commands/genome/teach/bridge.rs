@@ -11,7 +11,8 @@ use ts_rs::TS;
 use uuid::Uuid;
 
 use super::{EvalTask, GenomeTeach, GenomeTeachParams, GenomeTeachResult};
-use crate::commands::training_trigger::submit::{SubmitOutcome, SubmitParams};
+use crate::commands::training_trigger::submit::SubmitParams;
+use crate::genome::training_outcome::SubmitOutcome;
 use crate::genome::fine_tuning::{TrainingDataset, TrainingSource};
 use crate::identity::PersonaRef;
 use crate::modules::dataset::{CandidateReservation, DatasetCandidate, DatasetService};

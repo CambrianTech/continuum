@@ -28,7 +28,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
-use crate::commands::training_trigger::submit::SubmitOutcome;
+use crate::genome::training_outcome::SubmitOutcome;
 use crate::log_info;
 use crate::logging::TimingGuard;
 use crate::memory::MemoryRecord;

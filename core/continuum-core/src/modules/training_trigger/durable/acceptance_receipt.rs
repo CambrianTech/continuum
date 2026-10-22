@@ -1,19 +1,5 @@
 use super::*;
 
-/// Present only after this destination has durably accepted the immutable batch.
-/// This does not attest that training ran, or deduplicate a different destination.
-#[derive(Debug, Clone, Serialize, Deserialize, TS, schemars::JsonSchema)]
-#[serde(rename_all = "camelCase")]
-#[ts(
-    export,
-    export_to = "../../../protocol/typescript/training_trigger/AcceptanceReceipt.ts"
-)]
-pub struct AcceptanceReceipt {
-    #[ts(type = "string")]
-    pub submission_id: Uuid,
-    pub replayed: bool,
-}
-
 #[derive(Debug)]
 pub(crate) enum DispatchFailure {
     Retryable(String),

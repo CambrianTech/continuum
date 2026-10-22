@@ -82,6 +82,7 @@ pub mod residency;
 pub mod store;
 pub mod teach;
 pub mod tier;
+pub mod training_outcome;
 pub mod working_set;
 
 pub use blob::{ArtifactBlob, Provenance};

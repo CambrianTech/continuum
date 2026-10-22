@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 use uuid::Uuid;
 
-use crate::commands::genome::job_create::Took;
+use crate::genome::training_outcome::{AcceptanceReceipt, Took};
 #[cfg(not(test))]
 use crate::genome::fine_tuning::TrainingJobBoard;
 use crate::genome::fine_tuning::{job_board::DispatchLookup, JobHandle};
