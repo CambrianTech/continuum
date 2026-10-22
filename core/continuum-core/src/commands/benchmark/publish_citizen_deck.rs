@@ -167,6 +167,26 @@ pub(crate) fn workspace_candidate_diff_from(
     ws: &str,
     base: Option<&str>,
 ) -> Result<String, CommandError> {
+    // git diff BASE succeeds even with unmerged index entries, publishing conflict
+    // markers and unrelated reverse deltas as a candidate (card 8ae653b1).
+    let unmerged = std::process::Command::new("git")
+        .args(["ls-files", "--unmerged", "-z"])
+        .current_dir(ws)
+        .output()
+        .map_err(|e| {
+            CommandError::Internal(format!("could not inspect {ws}'s candidate index: {e}"))
+        })?;
+    if !unmerged.status.success() {
+        return Err(CommandError::Internal(format!(
+            "could not inspect {ws}'s candidate index: {}",
+            String::from_utf8_lossy(&unmerged.stderr).trim()
+        )));
+    }
+    if !unmerged.stdout.is_empty() {
+        return Err(CommandError::Invalid(format!(
+            "candidate source {ws} has unresolved index conflicts; resolve or abort the merge/rebase in this card's checkout before submitting; work in another checkout is not this candidate"
+        )));
+    }
     let base = base.unwrap_or("HEAD"); // unwrap_or: the no-base caller explicitly requests working changes against HEAD
     if base.is_empty() || base.starts_with('-') {
         return Err(CommandError::Invalid(

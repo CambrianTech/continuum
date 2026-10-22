@@ -297,6 +297,61 @@ pub(super) mod swe_setup_tests {
             assert!(
                 matches!(error, CommandError::Internal(ref message) if message.contains("candidate diff is not UTF-8; refusing to change patch bytes"))
             );
+            // What this catches (8ae653b1): work/submit can select a conflicted
+            // card checkout while the author's tested work lives in another one.
+            // Git happily emits a patch; candidate extraction must refuse it.
+            std::fs::write(root.path().join("code.txt"), format!("branch{newline}"))
+                .expect("test: divergent change");
+            git(&["add", "code.txt"]);
+            git(&[
+                "-c",
+                "user.name=Fixture",
+                "-c",
+                "user.email=fixture@example.test",
+                "-c",
+                "commit.gpgsign=false",
+                "commit",
+                "-qm",
+                "divergent change",
+            ]);
+            let divergent = git(&["rev-parse", "HEAD"]).trim().to_string();
+            git(&["checkout", "--detach", &base]);
+            std::fs::write(root.path().join("code.txt"), format!("other{newline}"))
+                .expect("test: conflicting change");
+            git(&["add", "code.txt"]);
+            git(&[
+                "-c",
+                "user.name=Fixture",
+                "-c",
+                "user.email=fixture@example.test",
+                "-c",
+                "commit.gpgsign=false",
+                "commit",
+                "-qm",
+                "other change",
+            ]);
+            let merge = std::process::Command::new("git")
+                .args([
+                    "-c",
+                    "user.name=Fixture",
+                    "-c",
+                    "user.email=fixture@example.test",
+                    "merge",
+                    "--no-commit",
+                    &divergent,
+                ])
+                .current_dir(root.path())
+                .output()
+                .expect("test: conflicting merge");
+            assert!(!merge.status.success());
+            assert!(!git(&["ls-files", "--unmerged"]).is_empty());
+            assert!(!git(&["diff", "--no-ext-diff", &base]).is_empty());
+            let error = workspace_candidate_diff_from(ws, Some(&base))
+                .expect_err("test: conflicted candidate refused before retention");
+            assert!(matches!(error, CommandError::Invalid(ref message)
+                if message.contains(ws) && message.contains("unresolved index conflicts")));
+            git(&["merge", "--abort"]);
+            assert!(workspace_candidate_diff_from(ws, Some(&base)).is_ok());
             let not_repo = tempfile::tempdir().expect("test: non-repository directory");
             assert!(
                 workspace_candidate_diff_from(not_repo.path().to_str().expect("test: temp path"), None)
