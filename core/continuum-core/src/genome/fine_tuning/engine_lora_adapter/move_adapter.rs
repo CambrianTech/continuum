@@ -76,7 +76,7 @@ impl EngineLoraFineTuner {
     /// [`Self::reclaim_resident_leases`] against `daemon`. Each lease is re-taken in the pool
     /// its binding recorded (`ResidentWork::bound_memory`), never the pool the current
     /// configuration would choose: the run survived in the pool it was granted.
-    pub(super) fn reclaim_resident_leases_in(&self, daemon: &crate::resources::ResourceDaemon) {
+    pub(super) fn reclaim_resident_leases_in(&self, daemon: &std::sync::Arc<crate::resources::ResourceDaemon>) {
         use crate::inference::engine_residency::Liveness;
         let Some(store) = self.residency_store.as_ref() else {
             return;
