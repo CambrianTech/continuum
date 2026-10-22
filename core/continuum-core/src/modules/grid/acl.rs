@@ -525,6 +525,40 @@ mod tests {
         ));
     }
 
+    // what this catches (card e710ed0f, the #3690 measurement): a RAW peer- or
+    // room-addressed URI string that reaches the ACL as a command name — any path that
+    // gates on the raw wire string before `addressed_elsewhere` splits URIs off (the
+    // remote-TCP boundary gate in ipc/mod.rs is exactly such a path) — must land on the
+    // OWNER tier: no rule prefix matches an `airc://…` string, it names no registered
+    // command, so it falls to the default-deny wildcard. That fail-closed default is
+    // load-bearing: `execute_with_caller` performs NO per-command ACL of its own, so if
+    // a URI string ever became Provisional/Trusted-reachable (an accidental `airc://`
+    // prefix rule, or command_access_level learning to parse URIs), an unelevated remote
+    // peer could route arbitrary verbs through the executor's transport. A local caller
+    // never hits this — `caller == None` skips the gate entirely and the URI is parsed,
+    // not ACL'd as a name.
+    #[test]
+    fn raw_peer_and_room_uri_strings_are_owner_tier_default_deny() {
+        for uri in [
+            "airc://2f0aed7f-3359-4dd5-9f9b-aaa0b07c6266/ping",
+            "airc://room:3be59578-7f1d-5d78-8b17-1eb0834b4643/ping",
+        ] {
+            assert!(
+                is_command_authorized(uri, TrustLevel::Owner),
+                "{uri} stays owner-runnable — the local operator keeps full access"
+            );
+            for trust in [TrustLevel::Trusted, TrustLevel::Provisional] {
+                assert!(
+                    !is_command_authorized(uri, trust),
+                    "a raw URI string must NOT authorize at {trust:?} — it names no \
+                     command, so it falls to the default-deny (Owner) wildcard; a \
+                     remote caller's address is parsed by addressed_elsewhere, never \
+                     ACL'd as a name"
+                );
+            }
+        }
+    }
+
     #[test]
     fn test_rules_sorted_by_specificity() {
         let rules = default_rules();
