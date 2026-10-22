@@ -72,5 +72,12 @@ jobs:
             base="origin/${{ github.base_ref }}"
           else
             base="${{ github.event.before }}"
+            # A new branch pushes with an all-zero 'before', and a force push can leave it
+            # unreachable: judge against canary then, and say so, rather than erroring.
+            if [ -z "$base" ] || [ "$base" = "0000000000000000000000000000000000000000" ] \
+               || ! git cat-file -e "${base}^{commit}" 2>/dev/null; then
+              echo "::notice::push base '${base}' is absent or unreachable (new branch or force push); judging ratchets against origin/canary"
+              base="origin/canary"
+            fi
           fi
           cargo run -q -p source-hygiene --bin ratchets -- "$base"
