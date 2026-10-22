@@ -116,6 +116,7 @@ use protocol::Response;
 mod prepare_unix_socket_path;
 use prepare_unix_socket_path::*;
 mod start_server;
+#[cfg(test)]
 pub(crate) use start_server::install_kernel_extensions;
 pub use start_server::*;
 
