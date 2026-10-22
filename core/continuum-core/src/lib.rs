@@ -28,6 +28,7 @@ extern crate self as continuum_core;
 // The microkernel (core/continuum-kernel): re-exported module by module so `crate::runtime::…`
 // paths, and `continuum_core::runtime::…` for every other crate, keep resolving to the one
 // owner. New code may name `continuum_kernel` directly.
+pub use continuum_engine::{ai, capacity, inference, inference_capability, model_registry, sensory};
 pub use continuum_kernel::{
     concurrency, governor, gpu, identity, logging, orm, paging, paths, resources, routing, runtime,
     sdk_codegen, system_resources,
@@ -37,9 +38,7 @@ pub use continuum_kernel::{
     log_warn, register_command, register_event, register_outcome, register_stateless_command, stack,
     time_async, time_section,
 };
-pub mod ai;
 pub mod airc;
-pub mod capacity;
 pub mod code;
 pub mod cognition;
 pub mod commands;
@@ -52,21 +51,17 @@ pub mod forge;
 pub mod genome;
 pub mod http;
 pub mod boot_plan;
-pub mod inference;
-pub mod inference_capability;
 pub mod interface;
 pub mod ipc;
 pub mod live;
 pub mod media;
 pub mod memory;
-pub mod model_registry;
 pub mod modules;
 pub mod perception;
 pub mod persona;
 pub mod provisioning;
 pub mod rag;
 pub mod recipe;
-pub mod sensory;
 #[cfg(test)]
 pub(crate) mod test_env;
 pub mod vdd;

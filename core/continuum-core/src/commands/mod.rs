@@ -11,6 +11,7 @@
 //! are exposed through that module's `commands()`.
 
 pub mod access;
+mod tool_aliases;
 pub mod adapter;
 pub mod agent;
 pub mod ai;

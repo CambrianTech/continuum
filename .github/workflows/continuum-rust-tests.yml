@@ -130,11 +130,6 @@ jobs:
           cat lib-test.env >> "$GITHUB_ENV"
           while IFS='=' read -r name value; do export "$name=$value"; done < lib-test.env
           cd core/continuum-core
-          interop_output=$(LD_LIBRARY_PATH="$CONTINUUM_LIB_TEST_LD_LIBRARY_PATH" "$CONTINUUM_LIB_TEST" \
-            model_registry::artifacts::expert_placement::tests::fs2_and_native_container_locks_interoperate_across_processes \
-            --exact --ignored --nocapture)
-          printf '%s\n' "$interop_output"
-          [[ "$interop_output" == *"1 passed;"* ]]
           LD_LIBRARY_PATH="$CONTINUUM_LIB_TEST_LD_LIBRARY_PATH" "$CONTINUUM_LIB_TEST" \
             --skip 'gpu::memory_manager::' \
             --skip 'modules::gpu::' \
@@ -145,6 +140,15 @@ jobs:
           cd ../..
           cargo test -p continuum-kernel --lib --profile dev-fast --features test-fixtures -- \
             --skip 'gpu::memory_manager::'
+          # The engine is its own crate too (core/continuum-engine: ai, inference, model_registry,
+          # capacity, sensory): its unit tests and the native/fs2 custody interop fixture run here.
+          export LD_LIBRARY_PATH="$CONTINUUM_LIB_TEST_LD_LIBRARY_PATH"
+          cargo test -p continuum-engine --lib --profile dev-fast --features test-fixtures
+          interop_output=$(cargo test -p continuum-engine --lib --profile dev-fast --features test-fixtures \
+            model_registry::artifacts::expert_placement::tests::fs2_and_native_container_locks_interoperate_across_processes \
+            -- --exact --ignored --nocapture 2>&1)
+          printf '%s\n' "$interop_output"
+          [[ "$interop_output" == *"1 passed;"* ]]
 
       - name: Retain Unix build evidence
         if: always() && needs.changes.outputs.rust != 'false'
@@ -292,7 +296,7 @@ jobs:
           save-if: ${{ github.event_name != 'pull_request' }}
           cache-workspace-crates: true
           cache-on-failure: true
-      - name: Build one headless core test artifact and run Windows cache custody fixtures
+      - name: Run Windows cache custody fixtures (engine and kernel crates)
         if: needs.changes.outputs.rust != 'false'
         # Headless configuration: the crate's default (`default = []`: no LiveKit, no
         # bevy/wgpu), which every node without a profile and the CUDA CLI build (card
@@ -301,8 +305,6 @@ jobs:
         # cargo-test-continuum-core (CORE_FEATURES).
         shell: pwsh
         run: |
-          python tools/scripts/tests/test_ci_lib_test_artifact.py
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           . ./tools/scripts/lib/install-common.ps1
           Enter-MsvcEnv
           $env:CONTINUUM_NATIVE_CONTAINER_LEASE_TEST = Join-Path $env:RUNNER_TEMP 'continuum-container-custody-test.exe'
@@ -311,22 +313,11 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           & $env:CONTINUUM_NATIVE_CONTAINER_LEASE_TEST
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          # Replace the lib-only type check with a runnable artifact. The existing
-          # reduced-debug profile avoids the full-debug PDB size failure; compile
-          # once and reuse it for these native custody tests, not a second lane.
-          # Shared streaming capture keeps compiler errors visible before failure or cancellation.
-          python tools/scripts/ci-lib-test-artifact.py --capture windows-lib-artifacts.jsonl -- cargo test -p continuum-core --lib --profile dev-fast --features test-fixtures --no-run --timings --message-format=json
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          $testEnv = python tools/scripts/ci-lib-test-artifact.py windows-lib-artifacts.jsonl core/continuum-core (rustc --print target-libdir)
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          foreach ($entry in $testEnv) {
-            $parts = $entry -split '=', 2
-            [Environment]::SetEnvironmentVariable($parts[0], $parts[1], 'Process')
-          }
-          $env:PATH = $env:CONTINUUM_LIB_TEST_LD_LIBRARY_PATH + ';' + $env:PATH
           $env:CONTINUUM_REQUIRE_WINDOWS_REPARSE_TEST = '1'
-          Push-Location core/continuum-core
-          $interop = & $env:CONTINUUM_LIB_TEST 'model_registry::artifacts::expert_placement::tests::fs2_and_native_container_locks_interoperate_across_processes' --exact --ignored --nocapture 2>&1
+          # The engine's native custody fixtures (expert placement, engine install) live in the
+          # engine crate (core/continuum-engine); they run from there. Core's compile on Windows
+          # is the windows-msvc check's job, so no core test binary is built here.
+          $interop = & cargo test -p continuum-engine --lib --profile dev-fast --features test-fixtures 'model_registry::artifacts::expert_placement::tests::fs2_and_native_container_locks_interoperate_across_processes' -- --exact --ignored --nocapture 2>&1
           $interopResult = $LASTEXITCODE
           $interop | Write-Output
           if ($interopResult -ne 0) { exit $interopResult }
@@ -336,13 +327,12 @@ jobs:
             'model_registry::artifacts::expert_placement::tests::actual_lazy_reader_excludes_freeze_until_its_lifetime_ends',
             'inference::engine_install::tests::installed_engine_receipt_binds_bytes_and_candidate_membership'
           )) {
-            $output = & $env:CONTINUUM_LIB_TEST $test --exact --nocapture 2>&1
+            $output = & cargo test -p continuum-engine --lib --profile dev-fast --features test-fixtures $test -- --exact --nocapture 2>&1
             $result = $LASTEXITCODE
             $output | Write-Output
             if ($result -ne 0) { exit $result }
             if (($output -join "`n") -notmatch '1 passed;') { throw "Fixture did not execute: $test" }
           }
-          Pop-Location
           # Disk eviction lives in the kernel crate (core/continuum-kernel); its native custody
           # fixtures run from there.
           foreach ($test in @(
@@ -356,16 +346,6 @@ jobs:
             if ($result -ne 0) { exit $result }
             if (($output -join "`n") -notmatch '1 passed;') { throw "Fixture did not execute: $test" }
           }
-      - name: Retain Windows build evidence
-        if: always() && needs.changes.outputs.rust != 'false'
-        uses: actions/upload-artifact@v4
-        with:
-          name: windows-lib-build-evidence
-          path: |
-            windows-lib-artifacts.jsonl
-            ${{ env.CONTINUUM_CARGO_TIMINGS }}
-          if-no-files-found: ignore
-          retention-days: 1
       - name: Type-check integration targets using the same headless profile
         if: needs.changes.outputs.rust != 'false'
         run: cargo check -p continuum-core --test '*' --profile dev-fast --features test-fixtures

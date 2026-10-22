@@ -55,7 +55,8 @@ for line in open(sys.argv[1], encoding="utf-8", errors="replace"):
         continue
     if rec.get("reason") != "compiler-message":
         continue
-    if (rec.get("target") or {}).get("name") not in ("continuum-core", "continuum_core"):
+    # The engine is cut out of continuum-core (core/continuum-engine); its warnings stay counted.
+    if (rec.get("target") or {}).get("name") not in ("continuum-core", "continuum_core", "continuum-engine", "continuum_engine"):
         continue
     msg = rec.get("message") or {}
     if msg.get("level") != "warning":
