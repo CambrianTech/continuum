@@ -166,7 +166,7 @@ impl ResourcePool for FilesystemTierPool {
             };
             match removal {
                 Removal::Protected => {
-                    crate::probe!(
+                    continuum_base::probe!(
                         class = "pool.evict_protected",
                         tier = %self.tier_name,
                         path = %path.display(),
@@ -175,7 +175,7 @@ impl ResourcePool for FilesystemTierPool {
                 }
                 Removal::Removed => {
                     freed = freed.saturating_add(*size);
-                    crate::probe!(
+                    continuum_base::probe!(
                         class = "pool.evicted",
                         tier = %self.tier_name,
                         path = %path.display(),
@@ -193,7 +193,7 @@ impl ResourcePool for FilesystemTierPool {
                         error = %e,
                         "FilesystemTierPool: eviction skip"
                     );
-                    crate::probe!(
+                    continuum_base::probe!(
                         class = "pool.evict_failed",
                         tier = %self.tier_name,
                         path = %path.display(),

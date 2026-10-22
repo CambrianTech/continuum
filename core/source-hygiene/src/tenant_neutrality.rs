@@ -172,6 +172,7 @@ mod tests {
                 .collect::<Vec<_>>()
                 .join("\n")
         );
+        crate::assert_baseline_is_current("BASELINE_TENANT_LINES", violations.len(), BASELINE_TENANT_LINES);
     }
 
     // what this catches: the predicate erring in either direction — a comment

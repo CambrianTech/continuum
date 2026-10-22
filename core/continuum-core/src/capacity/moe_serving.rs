@@ -22,7 +22,7 @@ use candle_core::quantized::gguf_file::Content;
 use super::expert_residency::ExpertId;
 use super::placement::PlacementRequest;
 use super::serving_pager::ServingExpertPager;
-use crate::genome::expert_layout::locate_layer_sets;
+use crate::genome::expert_layout::{locate_layer_sets, ExpertLayoutError};
 use crate::genome::gate_magnitude::locate_gate_magnitudes;
 use crate::inference_capability::gguf_keys;
 
@@ -57,8 +57,10 @@ pub struct MoeServingContext {
     pub committed_placement: Option<PlacementRequest>,
 }
 
-/// Build a [`MoeServingContext`] from a model's GGUF, or `None` if the model is dense (no MoE
-/// expert layers) or the GGUF can't be read. Pure over the GGUF. `margin_bytes` is the VRAM
+/// Build a [`MoeServingContext`] from a model's GGUF: `Ok(None)` for a dense model (no MoE
+/// expert layers), `Err(why)` when the GGUF or its MoE geometry cannot be read. The two were
+/// one `None`, so an unreadable MoE served dense without a word (card 60f74ac5, f3ba3b56
+/// item 19). Pure over the GGUF. `margin_bytes` is the VRAM
 /// headroom the pager holds below the serving budget; `relaunch_threshold` the hot-layer churn
 /// that earns a (process-respawning) relaunch.
 pub fn moe_serving_context(
@@ -66,31 +68,34 @@ pub fn moe_serving_context(
     gguf_id: &str,
     margin_bytes: u64,
     relaunch_threshold: usize,
-) -> Option<MoeServingContext> {
-    let mut file = File::open(gguf_path).ok()?;
-    let ct = Content::read(&mut file).ok()?;
-    let arch = gguf_keys::architecture(&ct)?;
+) -> Result<Option<MoeServingContext>, String> {
+    let mut file = File::open(gguf_path).map_err(|e| format!("open {}: {e}", gguf_path.display()))?;
+    let ct = Content::read(&mut file).map_err(|e| format!("gguf header: {e}"))?;
+    let arch = gguf_keys::architecture(&ct).ok_or_else(|| "no general.architecture".to_string())?;
 
-    // MoE detection + geometry. Empty / NotMoe → dense → no expert placement.
+    // MoE detection + geometry. NotMoe → dense → no expert placement. An expert count with
+    // no stacked expert tensors, or a malformed layout, is unreadable geometry, not dense.
     let sets = match locate_layer_sets(&ct, &arch) {
         Ok(sets) if !sets.is_empty() => sets,
-        _ => return None,
+        Err(ExpertLayoutError::NotMoe) => return Ok(None),
+        Ok(_) => return Err("expert_count set but no stacked *_exps tensors".to_string()),
+        Err(e) => return Err(format!("expert layout: {e:?}")),
     };
     let n_experts_per_layer = sets[0].n_experts;
     if n_experts_per_layer == 0 {
-        return None;
+        return Err("an expert layer with zero experts".to_string());
     }
     // Router top-k — experts activated per token per MoE layer. Required geometry
     // for the retention arithmetic (#287): without it the governed cache cannot
     // say whether its lease retains even ONE token's expert working set. A MoE
     // artifact missing the key has unreadable geometry → None (same contract as
     // the other reads here).
-    let top_k = gguf_keys::expert_used_count(&ct, &arch)?;
+    let top_k = gguf_keys::expert_used_count(&ct, &arch).ok_or_else(|| "no expert_used_count (router top-k)".to_string())?;
     // Per-expert bytes: the layer's stacked expert blob divided by its expert count. K3-class
     // geometry is uniform across MoE layers, so the first set sizes them all.
     let expert_bytes = sets[0].total_bytes() / n_experts_per_layer as u64;
     let expert_bytes_total: u64 = sets.iter().map(|s| s.total_bytes()).sum();
-    let n_layers = gguf_keys::block_count(&ct, &arch)?;
+    let n_layers = gguf_keys::block_count(&ct, &arch).ok_or_else(|| "no block_count".to_string())?;
 
     // Cold-start seed: the router's baked per-expert preference. Empty is fine (rides live
     // hits alone); a read error is non-fatal (same — never block serving on the seed).
@@ -107,12 +112,12 @@ pub fn moe_serving_context(
         relaunch_threshold,
         gate,
     );
-    Some(MoeServingContext {
+    Ok(Some(MoeServingContext {
         pager,
         n_experts_per_layer,
         top_k,
         n_layers,
         expert_bytes_total,
         committed_placement: None,
-    })
+    }))
 }

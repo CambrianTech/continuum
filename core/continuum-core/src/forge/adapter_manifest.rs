@@ -45,7 +45,7 @@ pub struct TrainedAdapter {
 /// A missing HOME with no override is pathological — fail loud rather than
 /// silently writing the manifest into a surprise location.
 pub fn manifest_path() -> Result<PathBuf, String> {
-    if let Some(raw) = crate::config_env::read("CONTINUUM_ADAPTER_MANIFEST") {
+    if let Some(raw) = continuum_base::config_env::read("CONTINUUM_ADAPTER_MANIFEST") {
         let trimmed = raw.trim();
         if !trimmed.is_empty() {
             return Ok(PathBuf::from(trimmed));

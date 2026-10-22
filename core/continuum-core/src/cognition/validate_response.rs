@@ -33,7 +33,7 @@
 //! - No JSON parsing — model is asked for a single word, not JSON.
 //!   Different from check_redundancy.
 
-use crate::time::EpochMs;
+use continuum_base::time::EpochMs;
 use crate::ai::adapter::InferenceDevice;
 use crate::ai::types::ResponseFormat;
 use crate::ai::{ChatMessage, MessageContent, TextGenerationRequest, TextGenerationResponse};

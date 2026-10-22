@@ -200,7 +200,7 @@ impl ServiceModule for CognitionModule {
     /// `turn_ingress`'s own contract), so a 0 here means "no citizen turn", not "nothing
     /// executing".
     async fn tick(&self) -> Result<(), String> {
-        crate::probe!(
+        continuum_base::probe!(
             class = "cognition.turn_ingress.depth",
             in_flight = crate::cognition::turn_ingress::in_flight(),
             "citizens inside a turn right now — the drain budget's competitor, sampled before the drain instead of only at it"
@@ -271,7 +271,7 @@ impl ServiceModule for CognitionModule {
             tokio::time::sleep(POLL).await;
         }
         let left = crate::cognition::turn_ingress::in_flight();
-        crate::probe!(
+        continuum_base::probe!(
             class = "cognition.drain.incomplete",
             in_flight = left,
             first_to_close = first_to_close,

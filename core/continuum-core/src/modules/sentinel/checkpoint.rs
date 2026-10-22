@@ -14,31 +14,30 @@ use super::types::{PipelineCheckpoint, PipelineStatus};
 ///
 /// Production: `~/.continuum/sentinel/checkpoints/`.
 /// Tests / dev tools: set `CONTINUUM_CHECKPOINT_DIR` to redirect.
-fn checkpoints_dir() -> Result<PathBuf, String> {
+fn checkpoints_dir() -> PathBuf {
     if let Some(override_dir) = std::env::var_os("CONTINUUM_CHECKPOINT_DIR") {
-        return Ok(PathBuf::from(override_dir));
+        return PathBuf::from(override_dir);
     }
-    let home = dirs::home_dir()
-        .ok_or_else(|| "cannot resolve home directory for sentinel checkpoints".to_string())?;
-    Ok(home.join(".continuum").join("sentinel").join("checkpoints"))
+    let home = dirs::home_dir().expect("Failed to resolve home directory");
+    home.join(".continuum").join("sentinel").join("checkpoints")
 }
 
 /// Ensure the checkpoints directory exists
 fn ensure_dir() -> Result<(), String> {
-    let dir = checkpoints_dir()?;
+    let dir = checkpoints_dir();
     std::fs::create_dir_all(&dir)
         .map_err(|e| format!("Failed to create checkpoints dir {}: {e}", dir.display()))
 }
 
 /// Checkpoint file path for a given handle
-fn checkpoint_path(handle: &str) -> Result<PathBuf, String> {
-    Ok(checkpoints_dir()?.join(format!("{handle}.json")))
+fn checkpoint_path(handle: &str) -> PathBuf {
+    checkpoints_dir().join(format!("{handle}.json"))
 }
 
 /// Save a checkpoint atomically (write .tmp then rename)
 pub fn save_checkpoint(handle: &str, checkpoint: &PipelineCheckpoint) -> Result<(), String> {
     ensure_dir()?;
-    let path = checkpoint_path(handle)?;
+    let path = checkpoint_path(handle);
     let tmp_path = path.with_extension("json.tmp");
 
     let json = serde_json::to_string_pretty(checkpoint)
@@ -55,7 +54,7 @@ pub fn save_checkpoint(handle: &str, checkpoint: &PipelineCheckpoint) -> Result<
 
 /// Load a checkpoint by handle. Returns None if not found.
 pub fn load_checkpoint(handle: &str) -> Result<Option<PipelineCheckpoint>, String> {
-    let path = checkpoint_path(handle)?;
+    let path = checkpoint_path(handle);
     if !path.exists() {
         return Ok(None);
     }
@@ -71,7 +70,7 @@ pub fn load_checkpoint(handle: &str) -> Result<Option<PipelineCheckpoint>, Strin
 
 /// List all checkpoints (reads every JSON file in the checkpoints dir)
 pub fn list_checkpoints() -> Result<Vec<PipelineCheckpoint>, String> {
-    let dir = checkpoints_dir()?;
+    let dir = checkpoints_dir();
     if !dir.exists() {
         return Ok(Vec::new());
     }
@@ -110,7 +109,7 @@ pub fn list_checkpoints() -> Result<Vec<PipelineCheckpoint>, String> {
 
 /// Delete a checkpoint file
 pub fn delete_checkpoint(handle: &str) -> Result<(), String> {
-    let path = checkpoint_path(handle)?;
+    let path = checkpoint_path(handle);
     if path.exists() {
         std::fs::remove_file(&path)
             .map_err(|e| format!("Failed to delete checkpoint {}: {e}", path.display()))?;

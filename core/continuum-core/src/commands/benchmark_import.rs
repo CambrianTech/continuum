@@ -17,9 +17,10 @@
 //! these two verbs go with it and the recipe's pipeline gets two steps shorter.
 
 use crate::commands::benchmark::{
-    known_benchmarks, parse_card_title, prepare_cards, CardSelection, CardWork, PreparedCard,
+    known_benchmarks, prepare_cards, CardSelection, CardWork, PreparedCard,
 };
 use crate::cognition::bench_round::WorkDriver;
+use crate::cognition::bench_title::parse_card_title;
 use crate::sdk_codegen::{AccessLevel, ActionCommand, CommandError, Ctx};
 use async_trait::async_trait;
 use schemars::JsonSchema;
@@ -180,7 +181,7 @@ impl ActionCommand for BenchmarkImport {
                 && row.kind == "swe"
                 && crate::cognition::swe_bench::read_verdict(&row.task_id).is_some_and(|v| v.resolved)
             {
-                crate::probe!(
+                continuum_base::probe!(
                     class = "bench.round.already_resolved",
                     instance = %row.task_id,
                     "a citizen's card already resolved this instance — it stays in the sample and its score, and is not offered as work again"
@@ -196,7 +197,7 @@ impl ActionCommand for BenchmarkImport {
                     .or_else(|| crate::cognition::swe_verdict_sweep::standing_env_refusal(&row.task_id)
                         .map(|r| format!("env refusal stands from an earlier round: {r}")));
                 if let Some(wall) = wall {
-                    crate::probe!(
+                    continuum_base::probe!(
                         class = "bench.round.ungradeable_withheld",
                         instance = %row.task_id,
                         wall = %wall,
@@ -207,7 +208,7 @@ impl ActionCommand for BenchmarkImport {
                 }
             }
             if row.kind == "swe" && open_elsewhere.contains(&row.task_id) {
-                crate::probe!(
+                continuum_base::probe!(
                     class = "bench.round.duplicate_withheld",
                     instance = %row.task_id,
                     "another working round on this node holds an open card for this instance — not offered twice"
@@ -423,7 +424,7 @@ impl ActionCommand for CourseworkImport {
             .take(limit)
             .map(|pc| imported_from(pc, &p.repo))
             .collect::<Result<Vec<_>, _>>()?;
-        crate::probe!(
+        continuum_base::probe!(
             class = "coursework.set_imported",
             set = %set,
             lessons = prepared.len() as u64,
@@ -448,7 +449,8 @@ crate::register_command!(CourseworkImport);
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::commands::benchmark::{dispatch_card_title, dispatch_swe_card_body};
+    use crate::cognition::bench_title::dispatch_card_title;
+    use crate::commands::benchmark::dispatch_swe_card_body;
 
     // what this catches: a recipe-posted card and a dispatch-posted card must be the
     // SAME card to the grader, which keys on the title. `imported_from` recovers the

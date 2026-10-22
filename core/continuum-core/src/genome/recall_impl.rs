@@ -442,7 +442,7 @@ impl DemandAlignedRecall for LocalDemandAlignedRecall {
             Some(src) => src.fetch(query, context).await,
             None => Vec::new(),
         };
-        let now_ms = crate::time::EpochMs::now().millis();
+        let now_ms = continuum_base::time::EpochMs::now().millis();
         let Some(store) = &self.trace_store else {
             return Ok(self.rank(now_ms, candidates));
         };

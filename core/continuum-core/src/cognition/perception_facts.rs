@@ -97,6 +97,20 @@ impl PerceptionFact for MemoryNotices {
     }
 }
 
+/// Her open views (`cognition::open_views`): which lines of each large file and saved
+/// output she has read. A REQUIRED notice, never history: the pages themselves rode history
+/// and were the first thing a tight window's fit dropped, so she re-read from line 1 every
+/// turn (Benchy, the M5, 2026-10-17). One line per view; changes only when a view does.
+struct OpenViews;
+
+impl PerceptionFact for OpenViews {
+    fn id(&self) -> &'static str { "open_views" }
+    fn placement(&self) -> FactPlacement { FactPlacement::Notice }
+    fn render(&self, cx: &FactContext) -> Option<String> {
+        cx.working_memory?.open_views_block()
+    }
+}
+
 /// Expandable source content shares its pin lifetime with the required reference.
 struct MemoryNoticeDetails;
 impl PerceptionFact for MemoryNoticeDetails {
@@ -320,7 +334,7 @@ impl PerceptionFact for StepsLedger {
         // on every render, so archive starvation / scope partition / eviction
         // pressure are diagnosable from the probe stream — today's diagnosis
         // needed capture-scraping precisely because these numbers were invisible.
-        crate::probe!(
+        continuum_base::probe!(
             class = "perception.steps_ledger",
             room = %cx.room_id.map(|r| r.to_string()).unwrap_or_else(|| "unscoped".into()),
             // WHOSE ledger, and WHICH working-memory instance. Without these two,
@@ -411,6 +425,7 @@ fn standard_facts() -> Vec<Box<dyn PerceptionFact>> {
         Box::new(PeerEcho),
         Box::new(InboundRestates),
         Box::new(ContextBounds),
+        Box::new(OpenViews),
         Box::new(MemoryNoticeDetails),
         Box::new(MemoryNotices),
         Box::new(StepsLedger),
@@ -425,7 +440,7 @@ pub fn render_facts(cx: &FactContext, policy: &FactPolicy) -> Vec<RenderedFact> 
     let mut rendered = Vec::new();
     for fact in standard_facts() {
         if !policy.enabled(fact.id()) {
-            crate::probe!(
+            continuum_base::probe!(
                 class = "perception.fact",
                 id = fact.id(),
                 fired = false,
@@ -435,7 +450,7 @@ pub fn render_facts(cx: &FactContext, policy: &FactPolicy) -> Vec<RenderedFact> 
             continue;
         }
         let out = fact.render(cx);
-        crate::probe!(
+        continuum_base::probe!(
             class = "perception.fact",
             id = fact.id(),
             fired = out.is_some(),
@@ -623,8 +638,8 @@ mod tests {
             result_scopes: Default::default(),
             handoff: None,
             evicted_pointers: Vec::new(),
-            evicted_pointer_scopes: Vec::new(),
             receipt_children: Default::default(),
+            open_views: Vec::new(),
         });
         let cx2 = FactContext {
             turns: &turns,

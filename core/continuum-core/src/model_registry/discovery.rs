@@ -269,7 +269,7 @@ async fn fetch_openai_compatible(config: &ProviderConfig) -> Result<Vec<Discover
         .await
         .map_err(|e| format!("JSON parse error: {}", e))?;
 
-    let now = crate::time::EpochMs::now().millis();
+    let now = continuum_base::time::EpochMs::now().millis();
     let models: Vec<DiscoveredModel> = data
         .data
         .into_iter()
@@ -326,7 +326,7 @@ async fn fetch_gemini(config: &ProviderConfig) -> Result<Vec<DiscoveredModel>, S
         .await
         .map_err(|e| format!("JSON parse error: {}", e))?;
 
-    let now = crate::time::EpochMs::now().millis();
+    let now = continuum_base::time::EpochMs::now().millis();
     let models: Vec<DiscoveredModel> = data
         .models
         .into_iter()
@@ -361,7 +361,7 @@ async fn fetch_gemini(config: &ProviderConfig) -> Result<Vec<DiscoveredModel>, S
 
 /// Return pre-configured models for providers without a listing API
 fn use_static_models(config: &ProviderConfig) -> Vec<DiscoveredModel> {
-    let now = crate::time::EpochMs::now().millis();
+    let now = continuum_base::time::EpochMs::now().millis();
     config
         .static_models
         .iter()

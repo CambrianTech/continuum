@@ -254,7 +254,7 @@ impl ProcessCommand {
         let mut cmd = tokio::process::Command::new(self.program());
         cmd.args(&self.manifest.exec[1..]).current_dir(self.working_dir());
         let body = serde_json::to_vec(&params).map_err(|e| e.to_string())?; // boundary: params leave this process on the child's stdin
-        crate::probe!(
+        continuum_base::probe!(
             class = "ext.command.spawned",
             command = %self.name,
             program = %self.manifest.exec[0],
@@ -273,7 +273,7 @@ impl ProcessCommand {
             Answer::Not(unanswered) => {
                 match &unanswered.why {
                     Why::TimedOut { unconfirmed } => {
-                        crate::probe!(
+                        continuum_base::probe!(
                             class = "ext.command.timed_out",
                             command = %self.name,
                             timeout_ms = self.manifest.timeout_ms,
@@ -282,7 +282,7 @@ impl ProcessCommand {
                         );
                     }
                     Why::Exited(status) => {
-                        crate::probe!(
+                        continuum_base::probe!(
                             class = "ext.command.failed",
                             command = %self.name,
                             code = status.code().unwrap_or(-1), // unwrap_or: killed by a signal has no exit code; -1 names that
@@ -306,7 +306,7 @@ impl ProcessCommand {
                 format!("{}: stdout is not JSON ({e}): {}", self.name, stdout.trim())
             })?
         };
-        crate::probe!(
+        continuum_base::probe!(
             class = "ext.command.finished",
             command = %self.name,
             elapsed_ms,

@@ -60,12 +60,6 @@ use super::deliberation_budget::GUARD_CHARS_PER_TOKEN;
 
 /// Per-step size of the rolling trail: `1/64` of the window (the calibrated trail-head
 /// fraction from the table above). Named so the COUNT below cannot drift from the SIZE.
-/// The one-result share's floor as a fraction of the served window (see
-/// [`ContextBudget::latest_action_chars`]).
-// derived-or-floor: derived — the quantity is the SERVED window (live, per lane); only the
-// share is chosen, an eighth, so one whole source file (~10k tokens at 104k) fits where the
-// prefill-affordable quarter did not (the M5, 2026-10-16: a 250-line read spilled every time).
-const RESULT_FLOOR_DENOM: usize = 8;
 const TRAIL_HEAD_DENOM: usize = 64;
 
 /// The trail's TOTAL share of the window: `1/4` — the same allotment
@@ -271,14 +265,14 @@ fn prefill_affordable_window_for(served: u32, audience: crate::inference::prefil
     // so each cancel shrinks the next prompt until one completes and re-measures for real.
     // The failure becomes the evidence. Card a2578811; not in this change.
     let rate = crate::inference::prefill_rate::measured_rate_for(&model);
-    let affordable = Self::affordable_for_rate(rate, served, audience, crate::modules::citizen_health::prompt_cache_fraction());
+    let affordable = Self::affordable_for_rate(rate, served, audience, crate::inference::prefill_knee::cache_fraction());
     static LAST: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(u64::MAX);
     let shape = ((served as u64) << 32)
         | (affordable as u64) << 3
         | (rate.source as u64) << 1
         | (audience == crate::inference::prefill_rate::Audience::Unattended) as u64;
     if LAST.swap(shape, std::sync::atomic::Ordering::Relaxed) != shape {
-        crate::probe!(
+        continuum_base::probe!(
             class = "cognition.budget.prefill_bound",
             model = %model,
             served_window = served as u64,
@@ -301,12 +295,20 @@ fn prefill_affordable_window_for(served: u32, audience: crate::inference::prefil
 /// Share of the served window recall may spend. See [`ContextBudget::recall_tokens`].
 const RECALL_DENOM: usize = 10;
 
-    /// `1/denom` of the window in chars; `usize::MAX` (no bound) when the window is unknown.
     /// Whether a window is known: every bound below is a real number, not "no bound".
     pub fn is_known(&self) -> bool {
         self.total_chars.is_some()
     }
 
+    /// The whole prompt this window affords, in tokens: the served window bounded by what
+    /// the lane can prefill inside the turn's TTFT budget ([`Self::from_window`]). `None`
+    /// when the window is unknown. The receipt a turn's tool and framing cost is read
+    /// against (card 3026b83e).
+    pub fn affordable_tokens(&self) -> Option<usize> {
+        self.total_chars.map(|total| total / GUARD_CHARS_PER_TOKEN)
+    }
+
+    /// `1/denom` of the window in chars; `usize::MAX` (no bound) when the window is unknown.
     fn fraction(&self, denom: usize) -> usize {
         match self.total_chars {
             Some(total) => total / denom.max(1),
@@ -350,20 +352,15 @@ const RECALL_DENOM: usize = 10;
         (TRAIL_HEAD_DENOM / TRAIL_TOTAL_DENOM).max(1)
     }
 
-    /// The FULL most-recent-action block. This one rides in the volatile prompt tail and
-    /// re-prefills every turn it is present, so it is the biggest latency lever in the
-    /// prompt — a quarter of the window is the balance between "she can work with what her
-    /// hands just fetched" and "one `code/tree` dump costs 30s of re-prefill per turn".
+    /// The result of her most recent act: WHOLE, up to the window she is served. It used to be
+    /// a quarter of a prefill-bounded total (later floored at an eighth of the window), so her
+    /// own file reads came back cut and she re-read them in slices for hours (Benchy, the M5,
+    /// 2026-10-16 and 10-17, "more than this window's 12960-char share"). Joel 2026-10-17:
+    /// "Stop coding in shit to stop them from choosing what to do." A result larger than the
+    /// whole window cannot fit and is still saved whole behind its handle (spill); nothing
+    /// smaller is cut.
     pub fn latest_action_chars(&self) -> usize {
-        // Never below an eighth of the SERVED window. The affordable total is prefill-bounded
-        // (TTFT x measured prefill t/s): on a box prefilling at 110 tok/s that is 6,600
-        // tokens, a quarter of which is ~1,100 tokens for the result of the act she just
-        // took, so a 250-line file read spilled every time and she re-read it in slices for
-        // hours (the M5, 2026-10-16). The result of her own act is what an act is for; the
-        // optional prompt (history, pointers) is where affordability should bite. An eighth
-        // of the window at 104k is ~10k tokens: one whole source file, ~90 s of prefill
-        // at that rate, once, instead of the loop.
-        self.fraction(4).max(self.served_chars.map_or(0, |c| c / RESULT_FLOOR_DENOM))
+        self.served_chars.or(self.total_chars).unwrap_or(usize::MAX)
     }
 
     /// A dispatched command's result (a compile log, a sentinel's report) folded back in.
@@ -538,11 +535,11 @@ const RECALL_DENOM: usize = 10;
     /// the latest action gets, because a working mind's own results ARE its work.
     /// Storage bound (same leak-honesty contract as [`Self::receipt_archive_chars`]).
     pub fn recent_results_chars(&self) -> usize {
-        match self.total_chars {
-            Some(_) => self.fraction(4),
-            None => {
-                Self::from_window(crate::inference::planning::MIN_SERVE_CTX).fraction(4)
-            }
+        // Her results stay until her WINDOW is full (Joel 2026-10-17: no machinery choosing
+        // for her). The prompt's own fit drops the oldest history when a turn does not fit.
+        match self.served_chars.or(self.total_chars) {
+            Some(chars) => chars,
+            None => Self::from_window(crate::inference::planning::MIN_SERVE_CTX).served_chars.unwrap_or(0),
         }
     }
 }
@@ -660,7 +657,9 @@ mod tests {
             );
         };
         near(b.trail_head_chars(), 800); // WM_ACTION_HEAD_CHARS
-        near(b.latest_action_chars(), 12_000); // WM_ACTION_FULL_MAX_CHARS
+        // Her own act's result is no longer a tuned share: it is the whole served window
+        // (Joel 2026-10-17), so it is pinned to the window, not to the old 12,000.
+        assert_eq!(b.latest_action_chars(), 16_384 * GUARD_CHARS_PER_TOKEN);
         near(b.dispatch_result_chars(), 4_000); // DISPATCH_RESULT_MAX_CHARS
         near(b.render_slice_chars(), 12_000); // RENDER_BUDGET_CHARS
         near(b.catalog_summary_chars(), 96); // SUMMARY_MAX_CHARS
@@ -800,7 +799,6 @@ mod tests {
     fn no_new_hardcoded_context_or_prompt_size_constant_anywhere_in_the_crate() {
         // Crate-wide, not just cognition/: the 4096/2048 adapter floor (#46's own surface) sat
         // outside cognition and would not have been caught by a cognition-only scan.
-        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
         let named = |n: &str| {
             // Categorically not size bounds, so they don't need to spend an exemption line:
             // a duration (`*_MS`), an identifier (`*_ID`), or a vocabulary offset (`*_OFFSET`).
@@ -812,98 +810,88 @@ mod tests {
                 .any(|k| n.contains(k))
         };
         let mut offenders = Vec::new();
-        let mut stack = vec![dir];
-        while let Some(d) = stack.pop() {
-            let Ok(entries) = std::fs::read_dir(&d) else {
+        for file in crate::test_env::source_tree::crate_sources() {
+            // Vendored upstream code (candle/llama ports) is not ours to restyle; its
+            // constants are the upstream model's own defaults.
+            if file.rel.split('/').any(|c| c == "vendored") {
                 continue;
-            };
-            for e in entries.flatten() {
-                let path = e.path();
-                if path.is_dir() {
-                    // Vendored upstream code (candle/llama ports) is not ours to restyle; its
-                    // constants are the upstream model's own defaults.
-                    if !path.ends_with("vendored") {
-                        stack.push(path);
+            }
+            // This module IS the sanctioned home for the calibration; its doc table
+            // quotes the very constants it replaced.
+            if file.path.file_name().is_some_and(|f| f == "context_budget.rs") {
+                continue;
+            }
+            let (path, src) = (&file.path, &file.text);
+            let lines: Vec<&str> = src.lines().collect();
+            for (i, line) in lines.iter().enumerate() {
+                let t = line.trim_start();
+                // Declared non-bound: the marker appears anywhere in the contiguous
+                // comment block directly above (a reason worth writing often needs two
+                // lines, and a doc comment may sit between it and the const).
+                let exempt = lines[..i]
+                    .iter()
+                    .rev()
+                    .take_while(|l| {
+                        let t = l.trim_start();
+                        t.starts_with("//") || t.is_empty()
+                    })
+                    .any(|l| l.contains("context-budget-exempt:"));
+                if exempt {
+                    continue;
+                }
+                // Any visibility, `pub(in crate::path)` included: a split by owner widens
+                // a moved constant to that form, and a fixed prefix list lost it.
+                let unscoped = match t.strip_prefix("pub") {
+                    Some(after) if after.starts_with('(') => {
+                        after.split_once(')').map_or(t, |(_, rest)| rest.trim_start())
                     }
-                    continue;
-                }
-                if path.extension().is_none_or(|x| x != "rs") {
-                    continue;
-                }
-                // This module IS the sanctioned home for the calibration; its doc table
-                // quotes the very constants it replaced.
-                if path.file_name().is_some_and(|f| f == "context_budget.rs") {
-                    continue;
-                }
-                let Ok(src) = std::fs::read_to_string(&path) else {
+                    Some(after) => after.trim_start(),
+                    None => t,
+                };
+                let Some(rest) = unscoped.strip_prefix("const ") else {
                     continue;
                 };
-                let lines: Vec<&str> = src.lines().collect();
-                for (i, line) in lines.iter().enumerate() {
-                    let t = line.trim_start();
-                    // Declared non-bound: the marker appears anywhere in the contiguous
-                    // comment block directly above (a reason worth writing often needs two
-                    // lines, and a doc comment may sit between it and the const).
-                    let exempt = lines[..i]
-                        .iter()
-                        .rev()
-                        .take_while(|l| {
-                            let t = l.trim_start();
-                            t.starts_with("//") || t.is_empty()
-                        })
-                        .any(|l| l.contains("context-budget-exempt:"));
-                    if exempt {
-                        continue;
-                    }
-                    let Some(rest) = t.strip_prefix("const ").or_else(|| {
-                        t.strip_prefix("pub const ")
-                            .or_else(|| t.strip_prefix("pub(super) const "))
-                            .or_else(|| t.strip_prefix("pub(crate) const "))
-                    }) else {
-                        continue;
-                    };
-                    let Some((name, tail)) = rest.split_once(':') else {
-                        continue;
-                    };
-                    if !named(name.trim()) {
-                        continue;
-                    }
-                    let Some((ty, value)) = tail.split_once('=') else {
-                        continue;
-                    };
-                    // Only sizes and RATIOS. A &str / bool / Duration named "...CONTEXT..." is
-                    // not a bound.
-                    //
-                    // The float types are here because of a hole this test had for its whole
-                    // life, found 2026-08-20 the first time anyone wrote a window-relative
-                    // constant that wasn't a token COUNT: `WINDOW_COMPARABILITY_FACTOR: f64 =
-                    // 2.0` (#2339, mine). Name matched, value was a bare literal, and it
-                    // sailed through — because the type list stopped at the integers. A guard
-                    // against invented numbers that a `f64` annotation defeats teaches exactly
-                    // one lesson: type your magic number as a float. A ratio over the window is
-                    // as much a fresh guess as a count of its tokens, and is caught the same way.
-                    if !["u32", "usize", "u64", "i32", "i64", "f32", "f64"].contains(&ty.trim()) {
-                        continue;
-                    }
-                    // A bare literal is the defect — decimal or float, since both are equally
-                    // guessed. An expression built from another named bound (`MIN_SERVE_CTX * 8`)
-                    // is a derivation, not a fresh guess.
-                    let v = value.trim().trim_end_matches(';').trim();
-                    let bare_literal = !v.is_empty()
-                        && v.chars().all(|c| c.is_ascii_digit() || c == '_' || c == '.')
-                        // `.` only as a decimal point: `1.5` yes, `A.b` / `1..2` no.
-                        && v.matches('.').count() <= 1
-                        && v.starts_with(|c: char| c.is_ascii_digit());
-                    if bare_literal {
-                        offenders.push(format!(
-                            "{}:{} — const {}: {} = {}",
-                            path.file_name().unwrap_or_default().to_string_lossy(),
-                            i + 1,
-                            name.trim(),
-                            ty.trim(),
-                            v
-                        ));
-                    }
+                let Some((name, tail)) = rest.split_once(':') else {
+                    continue;
+                };
+                if !named(name.trim()) {
+                    continue;
+                }
+                let Some((ty, value)) = tail.split_once('=') else {
+                    continue;
+                };
+                // Only sizes and RATIOS. A &str / bool / Duration named "...CONTEXT..." is
+                // not a bound.
+                //
+                // The float types are here because of a hole this test had for its whole
+                // life, found 2026-08-20 the first time anyone wrote a window-relative
+                // constant that wasn't a token COUNT: `WINDOW_COMPARABILITY_FACTOR: f64 =
+                // 2.0` (#2339, mine). Name matched, value was a bare literal, and it
+                // sailed through — because the type list stopped at the integers. A guard
+                // against invented numbers that a `f64` annotation defeats teaches exactly
+                // one lesson: type your magic number as a float. A ratio over the window is
+                // as much a fresh guess as a count of its tokens, and is caught the same way.
+                if !["u32", "usize", "u64", "i32", "i64", "f32", "f64"].contains(&ty.trim()) {
+                    continue;
+                }
+                // A bare literal is the defect — decimal or float, since both are equally
+                // guessed. An expression built from another named bound (`MIN_SERVE_CTX * 8`)
+                // is a derivation, not a fresh guess.
+                let v = value.trim().trim_end_matches(';').trim();
+                let bare_literal = !v.is_empty()
+                    && v.chars().all(|c| c.is_ascii_digit() || c == '_' || c == '.')
+                    // `.` only as a decimal point: `1.5` yes, `A.b` / `1..2` no.
+                    && v.matches('.').count() <= 1
+                    && v.starts_with(|c: char| c.is_ascii_digit());
+                if bare_literal {
+                    offenders.push(format!(
+                        "{}:{} — const {}: {} = {}",
+                        path.file_name().unwrap_or_default().to_string_lossy(),
+                        i + 1,
+                        name.trim(),
+                        ty.trim(),
+                        v
+                    ));
                 }
             }
         }

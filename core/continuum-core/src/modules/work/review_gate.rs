@@ -86,7 +86,7 @@ pub(crate) async fn room_policy(airc: &Airc, room: &airc_lib::Room) -> PolicyRea
 }
 
 fn unavailable(room: &airc_lib::Room, why: String) -> PolicyRead {
-    crate::probe!(
+    continuum_base::probe!(
         class = "work.review.policy_unreadable",
         room = %room.channel.as_uuid(),
         why = %why,

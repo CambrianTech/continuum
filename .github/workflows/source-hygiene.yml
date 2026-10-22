@@ -34,6 +34,18 @@ jobs:
           # The scans read `core/continuum-core/src`; vendor_pin additionally asks git
           # for the recorded submodule pointer, so the checkout must be able to answer.
           submodules: recursive
+          # The oversized-edit gate diffs against the PR's base.
+          fetch-depth: 0
+
+      # NEW RULE (Joel, 2026-10-20): "No one can edit a large file." Every Rust file a PR adds or
+      # modifies is at most 1,000 lines at the PR's head: the only PR that touches a monolith is
+      # the one that breaks it apart. The PR's final state is judged, so its commits may split
+      # step by step. Seconds, no build.
+      - name: no edit to an oversized file without breaking it apart
+        if: github.event_name == 'pull_request'
+        run: |
+          tools/scripts/tests/oversized-edits.test.sh
+          tools/scripts/oversized-edits.sh "origin/${{ github.base_ref }}"
 
       - name: Install Rust toolchain from rust-toolchain.toml
         run: rustup show active-toolchain || rustup show

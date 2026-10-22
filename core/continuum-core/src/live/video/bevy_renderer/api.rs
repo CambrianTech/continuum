@@ -86,7 +86,7 @@ pub fn get_or_init() -> Arc<BevyAvatarSystem> {
     // means no consumers; that's fine, the value is still stored for
     // future late subscribers via `subscribe_ready`'s borrow.
     let _ = ready_tx().send(true);
-    crate::probe!(
+    continuum_base::probe!(
         class = "ready.observed",
         module = "bevy-renderer",
         slots = MAX_AVATAR_SLOTS

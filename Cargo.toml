@@ -17,6 +17,7 @@ members = [
     # its only spawn wiring pointed at a dir that no longer exists.
     "core/continuum-cli-lifecycle",
     "core/continuum-tool-protocol",
+    "core/continuum-base",
     "core/continuum-core",
     "core/expert-pager-policy",
     "core/source-hygiene",
@@ -210,20 +211,25 @@ members = [
 # airc-protocol::mind_seal), #1536 Airc::mind_store() + put_at/remove, #1537
 # submission_reviews_for_card, #1538 `airc work submission-review`. Privacy of thought
 # step 2 reads and writes her mind store through Airc::mind_store(), never her key.
-airc-core = { git = "https://github.com/CambrianTech/airc", rev = "379a147f9998421c29af182e02e56b81d994327b" }
-airc-blobs = { git = "https://github.com/CambrianTech/airc", rev = "379a147f9998421c29af182e02e56b81d994327b" }
-airc-protocol = { git = "https://github.com/CambrianTech/airc", rev = "379a147f9998421c29af182e02e56b81d994327b" }
-airc-ipc = { git = "https://github.com/CambrianTech/airc", rev = "379a147f9998421c29af182e02e56b81d994327b" }
-airc-bus = { git = "https://github.com/CambrianTech/airc", rev = "379a147f9998421c29af182e02e56b81d994327b" }
-airc-lib = { git = "https://github.com/CambrianTech/airc", rev = "379a147f9998421c29af182e02e56b81d994327b" }
-airc-wire = { git = "https://github.com/CambrianTech/airc", rev = "379a147f9998421c29af182e02e56b81d994327b" }
+# 2026-10-21 bump 44478af -> 2666f36: #1598 a transition to Open ends the claim (card
+# 12afbb2f: Atlas held SWE cards the board showed Open), so continuum's own release on
+# reopen and work_focus's Open arm go; #1595 stream chunks publish as transient delivery
+# (live to subscribers, never durable history: airc_remote reads its pre-armed subscription);
+# #1594/#1596/#1597 agent-feed delivery (CLI + airc-lib agent_delivery), #1592 a test.
+airc-core = { git = "https://github.com/CambrianTech/airc", rev = "2666f362f66ccc993489e6d757967d86610776d0" }
+airc-blobs = { git = "https://github.com/CambrianTech/airc", rev = "2666f362f66ccc993489e6d757967d86610776d0" }
+airc-protocol = { git = "https://github.com/CambrianTech/airc", rev = "2666f362f66ccc993489e6d757967d86610776d0" }
+airc-ipc = { git = "https://github.com/CambrianTech/airc", rev = "2666f362f66ccc993489e6d757967d86610776d0" }
+airc-bus = { git = "https://github.com/CambrianTech/airc", rev = "2666f362f66ccc993489e6d757967d86610776d0" }
+airc-lib = { git = "https://github.com/CambrianTech/airc", rev = "2666f362f66ccc993489e6d757967d86610776d0" }
+airc-wire = { git = "https://github.com/CambrianTech/airc", rev = "2666f362f66ccc993489e6d757967d86610776d0" }
 # airc-work: the work-board domain (cards/lanes/PRs). `Airc::work_board`
 # returns a `WorkBoardProjection` whose types (`WorkCard`, `LaneRecord`,
 # `CardState`, …) the positron kanban projector maps → `KanbanViewState`
 # at the seam. Only continuum-core (the projector) depends on it; the
 # neutral `continuum-positron` contract crate MIRRORS these enums and
 # must NOT depend on airc-work.
-airc-work = { git = "https://github.com/CambrianTech/airc", rev = "379a147f9998421c29af182e02e56b81d994327b" }
+airc-work = { git = "https://github.com/CambrianTech/airc", rev = "2666f362f66ccc993489e6d757967d86610776d0" }
 
 # Candle ML framework — patched via [patch.crates-io] below.
 # Fixes: Metal buffer pool leak (#2271), RoPE NEOX convention (#3410)

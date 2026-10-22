@@ -116,7 +116,7 @@ pub struct QuiesceLease {
     flags: Vec<Arc<AtomicBool>>,
     /// The serving lane-demand override this lease holds (released on drop). Held as an
     /// ID into the demand authority's override registry — NOT a saved prev-value — so
-    /// overlapping leases (eval `quiesce_all` + a solve's `quiesce_others`) release in
+    /// overlapping leases (eval `quiesce_all` + a solve's `lease_measured_work`) release in
     /// any order and the effective demand recomputes from what remains. `None` when no
     /// serving daemon was booted (unit tests / tools), keeping the lease pure there.
     demand_override: Option<u64>,
@@ -208,7 +208,7 @@ impl PersonaAircRuntimeRegistry {
                 });
                 crate::persona::airc_citizen::AircCitizen::own_task(runtime_arc.as_ref(), task);
             }
-            Err(_) => crate::probe!(
+            Err(_) => continuum_base::probe!(
                 class = "training.credit.reconcile_deferred",
                 persona = %agent_name,
                 "registered outside a runtime — reviews already on her boards settle on the next live verdict"
@@ -389,8 +389,8 @@ impl PersonaAircRuntimeRegistry {
 
     /// Suspend the self-tick of every persona in `pairs` EXCEPT `except` (`None` = the
     /// whole fleet), returning the RAII lease. Pulled out of `quiesce_all` /
-    /// `quiesce_others` as a PURE function so the exclusion invariant — a
-    /// `quiesce_others(solver)` must NEVER suspend the solver, or her measured drive
+    /// `lease_measured_work` as a PURE function so the exclusion invariant — a
+    /// `lease_measured_work(solver)` must NEVER suspend the solver, or her measured drive
     /// would deadlock waiting on a warm slot she is forbidden to take — is unit-testable
     /// without a live airc daemon (a real `PersonaSlot` needs one). One truth for both
     /// verbs; the only difference is whether `except` is `Some`.
@@ -409,7 +409,7 @@ impl PersonaAircRuntimeRegistry {
         }
         // Drop serving's warm-slot demand to the minds that ACTUALLY need a warm slot
         // for the measurement's duration — the non-quiesced remainder (`total - flags`,
-        // = 1 for quiesce_others(solver), 0 → floored to 1 for quiesce_all). Without
+        // = 1 for lease_measured_work(solver), 0 → floored to 1 for quiesce_all). Without
         // this the plan keeps budgeting a warm slot for EVERY resident persona and
         // thrashes recompute→relaunch trying to warm-host a fleet that is deliberately
         // idle — the exact 4→0→2 oscillation glass-boxed under a dispatched solve
@@ -437,16 +437,16 @@ impl PersonaAircRuntimeRegistry {
     /// [[first-class-citizens-even-during-benchmarks]]
     #[must_use = "bind the lease to a named `_lease` for the solve's duration; \
                   binding to `_` drops it immediately and resumes the fleet at once"]
-    pub fn quiesce_others(&self, except: Uuid) -> QuiesceLease {
+    pub fn lease_measured_work(&self, except: Uuid) -> QuiesceLease {
         Self::quiesce_lease_over(self.quiesce_pairs(), &[except])
     }
 
-    /// [`quiesce_others`] generalized to a PARTICIPANT SET — the solver plus her
+    /// [`lease_measured_work`] generalized to a PARTICIPANT SET — the solver plus her
     /// teammates. A measured team solve needs every participant awake (a quiesced
     /// reviewer cannot review — first team round, 2026-08-30); the lane-demand
     /// override inside the lease counts the whole except-set, so serving budgets
     /// a warm slot per participant.
-    pub fn quiesce_others_than(&self, except: &[Uuid]) -> QuiesceLease {
+    pub fn lease_measured_work_excluding(&self, except: &[Uuid]) -> QuiesceLease {
         Self::quiesce_lease_over(self.quiesce_pairs(), except)
     }
 
@@ -738,7 +738,7 @@ mod tests {
 
     #[test]
     fn quiesce_others_never_suspends_the_solver() {
-        // what this catches: quiesce_others(solver) MUST leave the solver's OWN flag
+        // what this catches: lease_measured_work(solver) MUST leave the solver's OWN flag
         // untouched. If it suspended her too, her measured drive would wait forever on a
         // warm slot she is forbidden to take — a deadlocked solve — which is the exact
         // opposite of the exclusive-warm-slot fix's intent (#266/#386 prefill contention).

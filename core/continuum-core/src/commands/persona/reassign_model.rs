@@ -254,11 +254,11 @@ crate::action_command! {
         //    the operator knows it won't survive a restart (we do NOT silently
         //    unpin — that would hide the disk fault behind a "reverted" lie).
         let override_record = match p.remote_peer.as_deref() {
-            None => PersonaModelOverride::new(p.model_id.clone(), p.set_by.clone(), crate::time::EpochMs::now().millis()),
+            None => PersonaModelOverride::new(p.model_id.clone(), p.set_by.clone(), continuum_base::time::EpochMs::now().millis()),
             Some(peer) => PersonaModelOverride::new_remote(
                 p.model_id.clone(),
                 p.set_by.clone(),
-                crate::time::EpochMs::now().millis(),
+                continuum_base::time::EpochMs::now().millis(),
                 peer,
             ),
         };

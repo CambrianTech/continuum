@@ -129,7 +129,7 @@ function Get-CoreEngineIdleSlot {
     # unreadable from the operator's session). One implementation for bash and PowerShell.
     # $null when this CLI predates the verb: the one deploy after the verbs land is driven by
     # the OLD CLI, and the caller keeps the process-table selection for that deploy, saying so.
-    param([string]$Cli, [Parameter(Mandatory = $true)][string]$InstallRoot, [switch]$SkipIfBusy)
+    param([string]$Cli, [Parameter(Mandatory = $true)][string]$InstallRoot, [switch]$SkipIfBusy, [string[]]$ReservedSlots = @())
     # Native stderr under 'Stop' is a terminating error in Windows PowerShell 5.1; the exit code
     # is the contract here, so read it rather than the error stream.
     $ErrorActionPreference = 'Continue'
@@ -139,7 +139,15 @@ function Get-CoreEngineIdleSlot {
     $saved = $env:CONTINUUM_HOME
     try {
         $env:CONTINUUM_HOME = $InstallRoot
-        $answer = @(Invoke-InstallerProcess $Cli @('engine', 'idle-slot') 2>$null)
+        $arguments = @('engine', 'idle-slot')
+        # New CLIs apply installer reservations inside the same lane-aware selector.
+        # Older CLIs still face the receipt guard below; never guess an alternative.
+        if ($help -match '--exclude-slot') {
+            foreach ($reserved in $ReservedSlots) {
+                $arguments += @('--exclude-slot', (Split-Path $reserved -Leaf))
+            }
+        }
+        $answer = @(Invoke-InstallerProcess $Cli $arguments 2>$null)
         $code = $LASTEXITCODE
     } finally { $env:CONTINUUM_HOME = $saved }
     if ($code -eq 3) {
@@ -195,9 +203,9 @@ function Get-CoreKeptEngineSlot {
 function Select-CoreEngineSlot {
     param([string]$InstallRoot = (Join-Path $env:USERPROFILE '.continuum'), $Descriptor, [string]$Cli, [switch]$SkipIfBusy)
     $root = ConvertTo-CoreImagePath (Join-Path (Get-ManagedPayloadRoot -HomeRoot $InstallRoot) 'bin')
-    $fromCore = Get-CoreEngineIdleSlot -Cli $Cli -InstallRoot $InstallRoot -SkipIfBusy:$SkipIfBusy
-    if ($fromCore -eq 'BUSY') { return $null }
     $receipted = @(Get-CoreReceiptedEngineSlots -InstallRoot $InstallRoot -Descriptor $Descriptor)
+    $fromCore = Get-CoreEngineIdleSlot -Cli $Cli -InstallRoot $InstallRoot -SkipIfBusy:$SkipIfBusy -ReservedSlots $receipted
+    if ($fromCore -eq 'BUSY') { return $null }
     if ($fromCore) {
         if (@($receipted | Where-Object { [string]::Equals($_, $fromCore, [StringComparison]::OrdinalIgnoreCase) }).Count) {
             # The verb prefers a slot that is neither current nor previous, so on a node whose records
@@ -577,6 +585,8 @@ function New-CoreServiceRelease {
         Get-CoreEngineReceipt -Directory $publishedEngine | Out-Null
     }
     # The CLI this release installs is the one that knows the lane records' contract.
+    # Every path below can reuse the service slot, including kept/explicit engines.
+    Retire-CorePreviousSelectionForSlot -InstallRoot $InstallRoot -Slot $slot -Descriptor $descriptor -DamagedOnly
     $engineSlot = if ($EnginePath) { Split-Path $EnginePath -Parent }
         elseif ($kept = Get-CoreKeptEngineSlot -ArtifactDirectory $ArtifactDirectory -Descriptor $descriptor) { $kept }
         else {

@@ -451,7 +451,7 @@ pub async fn synthesize(
                 }
                 let re_resolved = resolve_voice_gendered(next.as_ref(), voice, gender_hint);
                 if let Ok(mut result) = next.synthesize(text, &re_resolved).await {
-                    crate::probe!(
+                    continuum_base::probe!(
                         class = "tts.fallthrough",
                         from = adapter.name(),
                         to = name,
@@ -684,7 +684,7 @@ mod tests {
         assert!(synthesis.samples.len() > 0, "Should produce some samples");
         assert_eq!(
             synthesis.sample_rate,
-            crate::audio_constants::AUDIO_SAMPLE_RATE
+            continuum_base::audio_constants::AUDIO_SAMPLE_RATE
         );
         // All samples should be zero (silence)
         assert!(

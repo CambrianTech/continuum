@@ -25,7 +25,7 @@ use uuid::Uuid;
 
 use crate::modules::cognition::CognitionState;
 use crate::persona::redaction::{
-    ExamKeyDetector, RedactionClass, RedactionDetector, RedactionPolicy, SecretDetector,
+    HeldOutAnswerDetector, RedactionClass, RedactionDetector, RedactionPolicy, SecretDetector,
 };
 use crate::sdk_codegen::CommandError;
 
@@ -53,7 +53,7 @@ pub struct RedactMemoryParams {
 
     /// Minimum answer length to be redactable (shorter answers are too generic
     /// to scrub safely — use `forget-context` for those episodes). Defaults to
-    /// `ExamKeyDetector::DEFAULT_MIN_LEN`.
+    /// `HeldOutAnswerDetector::DEFAULT_MIN_LEN`.
     #[serde(default)]
     #[ts(optional)]
     pub min_answer_len: Option<usize>,
@@ -97,11 +97,11 @@ crate::action_command! {
         // asked for nothing to do, or asked to scrub exam keys but none were
         // loadable — a silent no-op here would let un-redacted answers survive
         // under the illusion of hygiene ([[fallbacks-are-illegal-fail-loud]]).
-        let min_len = p.min_answer_len.unwrap_or(ExamKeyDetector::DEFAULT_MIN_LEN);
+        let min_len = p.min_answer_len.unwrap_or(HeldOutAnswerDetector::DEFAULT_MIN_LEN);
         let mut detectors: Vec<Box<dyn RedactionDetector>> = Vec::new();
 
         if !p.exam_answers.is_empty() {
-            let detector = ExamKeyDetector::new(p.exam_answers.iter().cloned(), min_len);
+            let detector = HeldOutAnswerDetector::new(p.exam_answers.iter().cloned(), min_len);
             if detector.answer_count() == 0 {
                 return Err(CommandError::Invalid(format!(
                     "redact-memory: {} exam answer(s) supplied but none are redactable \
@@ -146,7 +146,7 @@ crate::action_command! {
         let report = admission.redact(&policy);
 
         Ok(RedactMemoryResult {
-            exam_keys_redacted: report.count(RedactionClass::ExamKey),
+            exam_keys_redacted: report.count(RedactionClass::HeldOutAnswer),
             secrets_redacted: report.count(RedactionClass::Secret),
             total_redacted: report.total(),
             engram_count: admission.engram_count(),

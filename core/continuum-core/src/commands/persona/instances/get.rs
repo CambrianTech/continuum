@@ -52,7 +52,7 @@ crate::action_command! {
         // UUID passes straight through; a short/mistyped form expands against the
         // live registry — the ONE shared id_resolve primitive, candidates = who's
         // online.
-        let persona_id = crate::id_resolve::resolve(
+        let persona_id = continuum_base::id_resolve::resolve(
             p.persona_id.as_str(),
             &this.registry.ids(),
             "persona",

@@ -3,7 +3,7 @@
 //! return the observation text so the caller can fold it into the next perception.
 //! Extracted verbatim from `act_observe` (pure code-motion, #386 decomposition).
 
-use crate::time::EpochMs;
+use continuum_base::time::EpochMs;
 use uuid::Uuid;
 
 use crate::ai::types::{ToolCall, ToolResult};
@@ -127,16 +127,22 @@ pub async fn apply_act(
     // EVERY re-injection bound in this act comes from her LIVE served window, never a
     // constant — an unknown window folds NOTHING rather than inventing a number
     // ([[never-hardcode-a-context-window-4k-defaults-destroy-the-moe-thesis]]).
-    let budget = cycle
-        .model_loadout()
-        .map(|(_, w)| ContextBudget::from_window(w))
-        .unwrap_or_else(ContextBudget::unknown);
     // WM clips inside its OWN record path (it owns its truncation), so it needs the live
     // window too — pushed from here, the seam that has the cycle. Re-pushed every act so a
     // lane relaunch at a different `-c` is picked up without a restart.
     if let Some((_, w)) = cycle.model_loadout() {
         body.working_memory.set_served_window(w);
     }
+    // ONE budget for what an act's results may hold: working memory's own, which is the
+    // same for every turn of hers. Sized from the running turn's audience, a room turn
+    // (Interactive) cut a 440-line read at 12,960 chars while the ring the result joins next
+    // budgets ~26k (Benchy, the M5, 2026-10-17 23:06Z: "more than this window's 12960-char
+    // share", the same file re-read every turn, no write).
+    let budget = if cycle.model_loadout().is_some() {
+        body.working_memory.budget()
+    } else {
+        ContextBudget::unknown()
+    };
     let ctx = crate::cognition::tool_executor::ToolExecutionContext {
         persona_id: body.persona_id,
         persona_name: body.persona_name.clone(),
@@ -198,7 +204,7 @@ pub async fn apply_act(
                          on it — the result will appear in my working memory when it completes, and \
                          I can carry on meanwhile."
                     ));
-                    crate::probe!(
+                    continuum_base::probe!(
                         class = "persona.act.dispatched_background",
                         persona = %body.persona_name,
                         command = %cmd,
@@ -239,7 +245,7 @@ pub async fn apply_act(
     )
     .await
     .unwrap_or_else(|_| { // timeout elapsed = the hang this bound exists to convert; the closure builds the honest error
-        crate::probe!(
+        continuum_base::probe!(
             class = "persona.act.tool_batch_hung",
             ceiling_s = TOOL_BATCH_CEILING.as_secs(),
             tools = fg_calls.len(),
@@ -518,14 +524,14 @@ pub async fn apply_act(
                 )
                 .await
                 {
-                    Ok(_) => crate::probe!(
+                    Ok(_) => continuum_base::probe!(
                         class = "room.work_receipt.published",
                         room = %receipt_room,
                         actor = %body.persona_id,
                         acts = lines.len() as u64,
                         "act receipts radiated into the activity transcript — roommates see the work"
                     ),
-                    Err(e) => crate::probe!(
+                    Err(e) => continuum_base::probe!(
                         class = "room.work_receipt.failed",
                         room = %room_id,
                         actor = %body.persona_id,
@@ -617,7 +623,7 @@ pub async fn apply_act(
                     prior,
                     crate::persona::engram_graph::EdgeKind::CausedBy,
                 );
-                crate::probe!(
+                continuum_base::probe!(
                     class = "engram.edge.caused_by",
                     persona = %body.persona_name,
                     room_id = %room_id,
@@ -665,6 +671,8 @@ pub async fn apply_act(
     );
     body.working_memory
         .record_receipt_measured(&acts, &observation, Some(room_id), custody, disk);
+    // Each open view this act touched keeps what she understood when she read it.
+    body.working_memory.annotate_open_views(intent);
     // Recorded and published: working memory now names every handle this batch saved, its
     // receipt's and each call's, so the pin that held them since before they were written can go.
     drop(pin);
@@ -694,7 +702,7 @@ pub async fn apply_act(
         a.completed_successfully() && a.output.verb.publishes()
     });
     let wrote = wrote_by_verb || published || disk == super::disk_change::DiskChange::Changed;
-    crate::probe!(
+    continuum_base::probe!(
         class = "persona.act.observed",
         persona = %body.persona_name,
         room_id = %room_id,

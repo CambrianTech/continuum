@@ -137,7 +137,7 @@ pub(crate) fn finish_body(
             Some(VISION_DESCRIPTION_PURPOSE) => "vision.description.reasoning_budgeted",
             _ => "delib.pass.reasoning_budgeted",
         };
-        crate::probe!(
+        continuum_base::probe!(
             class = budget_class,
             model = %model,
             budget,
@@ -204,7 +204,7 @@ pub(crate) fn finish_body(
     // same context+tools+sampling called instantly — the ONLY remaining unknown
     // was what this body actually carried. This probe states it per request so
     // "tools offered" is never inferred from a capture again.
-    crate::probe!(
+    continuum_base::probe!(
         class = "ai.request.tool_surface",
         model = %model,
         tools_n = body.get("tools").and_then(|t| t.as_array()).map_or(0, |a| a.len()),
@@ -572,6 +572,15 @@ pub(crate) fn build_base_body(
         if let Some(obj) = body.as_object_mut() {
             obj.insert("max_tokens".to_string(), json!(max));
         }
+    } else {
+        // The lane's `--n-predict` bounds it to one window (card 912e606d); name the
+        // caller, whose cap is still owed: a window of decode holds a lane for minutes.
+        continuum_base::probe!(
+            class = "inference.request.uncapped",
+            purpose = request.purpose.as_deref().unwrap_or("none"), // unwrap_or: an unnamed caller is reported as such
+            model = %model,
+            "a request with no max_tokens: bounded only by the lane's one-window --n-predict default"
+        );
     }
 
     // stop — the turn-boundary + reserved-marker stop sequences (#150, #158).

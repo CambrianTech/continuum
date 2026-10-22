@@ -84,7 +84,7 @@ impl GlobalLogger {
     fn emit(&self, level: LogLevel, label: &str, category: &str, component: &str, message: &str) {
         if let Some(client) = LOGGER.get() {
             client.log(category, level, component, message, None);
-        } else if crate::modules::logger::log_sink_ready() {
+        } else if log_sink_ready() {
             write_log_direct(category, label, component, message);
         }
     }
@@ -309,7 +309,7 @@ pub fn extract_component(module_path: &str) -> &str {
 // If LoggerModule not initialized, messages silently dropped.
 // If channel full, messages silently dropped (NEVER blocks).
 
-use crate::modules::logger::{queue_log, LogLevel as ModuleLogLevel};
+use crate::modules::logger::{log_sink_ready, queue_log, LogLevel as ModuleLogLevel};
 
 /// Queue log entry via LoggerModule (NON-BLOCKING)
 #[inline]

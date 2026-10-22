@@ -34,7 +34,7 @@ pub fn voice_model_root() -> PathBuf {
     //    injection start-server.sh uses (`export CONTINUUM_MODELS_DIR=$REPO_ROOT/tools/models`)
     //    so a binary launched from any CWD still resolves. config.env wins when
     //    both are set (persistent operator choice over transient boot value).
-    let from_cfg = crate::config_env::read("CONTINUUM_MODELS_DIR")
+    let from_cfg = continuum_base::config_env::read("CONTINUUM_MODELS_DIR")
         .or_else(|| std::env::var("CONTINUUM_MODELS_DIR").ok());
     if let Some(dir) = from_cfg {
         let trimmed = dir.trim();

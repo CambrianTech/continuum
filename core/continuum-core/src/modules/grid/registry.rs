@@ -3,7 +3,7 @@
 //! Persisted to .continuum/grid/known_nodes.json.
 //! Updated by discovery, manual pairing, and periodic health checks.
 
-use crate::time::EpochMs;
+use continuum_base::time::EpochMs;
 use super::node::{DiscoveredNode, GridNode, TransportAddress, TrustLevel};
 use crate::identity::PeerId;
 use dashmap::DashMap;
@@ -366,9 +366,10 @@ impl NodeRegistry {
 // and settlement reputation (GRID-ELASTIC-CAPABILITY §3d). What is still NOT wired:
 // (a) the DashMap's primary index is still the address, so `get_by_peer` is a linear
 // scan (fine at fleet scale; a secondary PeerId index is the follow-up when it
-// matters); (b) `routing::PeerTrustSource` — resolving an airc caller's TRUST through
-// this registry — still needs the airc-side enrollment/trust bridge (task #38); until
-// then the auth gate uses its flat Provisional ceiling. See routing/grid_trust_policy.rs.
+// matters). Legacy address-routing trust is not authenticated AIRC authority.
+// The production AIRC gate reads PeerId decisions from access_decision; grid/nodes
+// exposes that separate local policy projection. Discovery defaults are never
+// imported as explicit access decisions.
 
 /// Derive a canonical node_id from a transport address.
 fn address_to_node_id(address: &TransportAddress) -> String {
@@ -531,6 +532,36 @@ mod tests {
             Some(peer),
             "and it carries the durable identity"
         );
+
+        // Address trust stays untouched; correlated aliases share ONE access decision.
+        use super::super::handlers::nodes::GridNodeView;
+        use crate::routing::access_decision::{AccessDecision, AccessPolicy, LocalInboundAircAuthorization};
+        let mut policy = AccessPolicy::default();
+        let unrecorded = GridNodeView::from_policy(found.clone(), &policy);
+        assert_eq!(unrecorded.node.trust_level, TrustLevel::Blocked);
+        assert_eq!(unrecorded.local_inbound_airc_authorization,
+            LocalInboundAircAuthorization::Unrecorded { effective_level: TrustLevel::Provisional });
+        for level in [TrustLevel::Trusted, TrustLevel::Blocked] {
+            policy.decisions = vec![AccessDecision { peer: peer.as_uuid(), level,
+                reason: "fixture decision".into(), decided_by: None, decided_ms: 1 }];
+            let first = GridNodeView::from_policy(found.clone(), &policy);
+            let mut alias = found.clone();
+            alias.node_id = peer.to_string();
+            let second = GridNodeView::from_policy(alias, &policy);
+            assert_eq!(first.local_inbound_airc_authorization, second.local_inbound_airc_authorization);
+            assert_eq!(first.local_inbound_airc_authorization,
+                LocalInboundAircAuthorization::Recorded { effective_level: level, decision: policy.decisions[0].clone() });
+            let mut uncorrelated = found.clone();
+            uncorrelated.peer_id = None;
+            assert_eq!(GridNodeView::from_policy(uncorrelated, &policy).local_inbound_airc_authorization,
+                LocalInboundAircAuthorization::Uncorrelated);
+            let before = serde_json::to_value(&found).expect("legacy node");
+            let after = serde_json::to_value(&first).expect("node view");
+            for (key, value) in before.as_object().expect("node object") {
+                assert_eq!(after.get(key), Some(value), "legacy field {key} must not change");
+            }
+            assert!(after.get("local_inbound_airc_authorization").is_some());
+        }
 
         // Correlating an UNKNOWN node fails loud — never silently invents a node.
         let ghost = PeerId::from_uuid(uuid::Uuid::from_u128(0xdead));

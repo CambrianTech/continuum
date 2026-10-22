@@ -91,7 +91,7 @@ impl TrainingRates {
             format!("{base}|c{chunk}"),
             RateRow {
                 secs_per_char_epoch: (wall_ms as f64 / 1000.0) / (chars as f64 * f64::from(epochs)),
-                measured_at_ms: crate::time::EpochMs::now().millis(),
+                measured_at_ms: continuum_base::time::EpochMs::now().millis(),
                 job: job.to_string(),
             },
         );
@@ -100,7 +100,7 @@ impl TrainingRates {
         }
         let tmp = self.path.with_extension("json.tmp");
         std::fs::write(&tmp, serde_json::to_vec_pretty(&all).map_err(std::io::Error::other)?)?;
-        crate::fs_portable::replace::replace_file(&tmp, &self.path)
+        continuum_base::fs_portable::replace::replace_file(&tmp, &self.path)
     }
 }
 

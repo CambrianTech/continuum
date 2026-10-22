@@ -42,7 +42,7 @@ pub(crate) async fn resolve_room(airc: &Airc, named: Option<&str>) -> Result<air
     // A CARD ID WHERE A ROOM GOES (card 7d03cef2): Kimi passed her card's id `db0aa5b2` as
     // work/create's room twice on 2026-10-12 and the refusal never said what she had done. Only an
     // id-shaped name is looked up, on the refusal path, across the boards she can read.
-    let lookup = match crate::id_resolve::handle_prefix(wanted) {
+    let lookup = match continuum_base::id_resolve::handle_prefix(wanted) {
         Some(needle) => cards_on_the_boards(airc, &rooms, &needle).await,
         None => CardLookup::default(),
     };
@@ -81,7 +81,7 @@ async fn cards_on_the_boards(airc: &Airc, rooms: &[airc_lib::Room], needle: &str
         }
     }
     let ids: Vec<uuid::Uuid> = seen.iter().map(|(id, _, _)| *id).collect();
-    let matches = crate::id_resolve::prefix_matches(needle, &ids)
+    let matches = continuum_base::id_resolve::prefix_matches(needle, &ids)
         .into_iter()
         .filter_map(|id| {
             // a card visible from two rooms is one card: its first room names it
@@ -258,8 +258,8 @@ mod tests {
         assert!(text.contains("matches card") && !text.contains("is card"), "{text}");
         assert!(text.contains("#general could not be"), "names the board it could not read: {text}");
         // what decides a lookup is id_resolve's strict handle reading, never a parse of our own
-        assert_eq!(crate::id_resolve::handle_prefix("db0aa5b2").as_deref(), Some("db0aa5b2"));
-        assert_eq!(crate::id_resolve::handle_prefix("academy"), None, "a room name is never looked up");
-        assert_eq!(crate::id_resolve::handle_prefix("abc"), None, "nor a short word");
+        assert_eq!(continuum_base::id_resolve::handle_prefix("db0aa5b2").as_deref(), Some("db0aa5b2"));
+        assert_eq!(continuum_base::id_resolve::handle_prefix("academy"), None, "a room name is never looked up");
+        assert_eq!(continuum_base::id_resolve::handle_prefix("abc"), None, "nor a short word");
     }
 }

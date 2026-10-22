@@ -153,7 +153,7 @@ impl ProbeTracingConfig {
         let log_dir = std::env::var(ENV_LOG_DIR)
             .ok()
             .map(PathBuf::from)
-            .or_else(|| dirs::home_dir().map(|h| h.join(".continuum").join("logs")));
+            .or_else(|| crate::paths::continuum_home().ok().map(|h| h.join("logs")));
         Self {
             probe_dir,
             probe_classes,
@@ -517,6 +517,7 @@ mod tests {
     /// parallel-safe.
     #[test]
     fn from_env_reads_documented_env_vars() {
+        let _env = crate::test_env::HomeGuard::preserve_blocking(); // mutates CONTINUUM_PROBE_DIR/CLASSES, which the other env test also mutates (card cb3221a5)
         let prev_file = std::env::var(ENV_PROBE_DIR).ok();
         let prev_classes = std::env::var(ENV_PROBE_CLASSES).ok();
 
@@ -539,19 +540,18 @@ mod tests {
         assert!(empty.probe_dir.is_none());
         assert!(empty.probe_classes.is_empty());
         assert_eq!(empty.default_filter, "warn");
-        // log_dir defaults to `~/.continuum/logs/` when neither
-        // `CONTINUUM_LOG_DIR` nor `dirs::home_dir()` failure forces
-        // None. CI runners always have HOME; the only None case is
-        // truly homeless environments. Pin the default so future
-        // refactors can't silently move logs back to stderr-default.
+        // log_dir defaults to `<continuum home>/logs` when `CONTINUUM_LOG_DIR` is unset: the
+        // home `paths::continuum_home()` resolves (under a test, the per-process test home, so a
+        // test never writes the operator's logs; card 5e3a3e75). Pin the default so future
+        // refactors can't silently move logs back to stderr-default or off the one home.
         let log_dir = empty
             .log_dir
             .as_deref()
-            .expect("CI/dev environments have HOME — default must resolve");
-        assert!(
-            log_dir.ends_with(std::path::PathBuf::from(".continuum/logs")),
-            "default log_dir should end with .continuum/logs, got {}",
-            log_dir.display()
+            .expect("CI/dev environments have a home — default must resolve");
+        assert_eq!(
+            Some(log_dir.to_path_buf()),
+            crate::paths::continuum_home().ok().map(|home| home.join("logs")),
+            "default log_dir is the continuum home's logs"
         );
 
         // Restore prior env state so other tests aren't affected

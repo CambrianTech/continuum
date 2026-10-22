@@ -147,7 +147,7 @@ crate::action_command! {
         // (their registered cards) — the ONE id_resolve primitive (#164).
         let caller = ctx.caller.as_ref();
         let target_id = match p.persona_id.as_ref().map(|r| r.as_str()) {
-            Some(raw) => crate::id_resolve::resolve(raw, &crate::persona::card::ids(), "persona")
+            Some(raw) => continuum_base::id_resolve::resolve(raw, &crate::persona::card::ids(), "persona")
                 .map_err(CommandError::Invalid)?,
             None => caller
                 .map(|c| c.peer_id.as_uuid())

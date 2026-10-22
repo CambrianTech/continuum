@@ -398,7 +398,7 @@ pub async fn write_seed_atomic(
     // rename call itself (2026-09-21, the Windows grid node's seed tests). Errors
     // are surfaced: failure to durably persist is signal, not noise.
     let (tmp, dst) = (tmp_path.clone(), path.to_path_buf());
-    tokio::task::spawn_blocking(move || crate::fs_portable::durable_rename(&tmp, &dst))
+    tokio::task::spawn_blocking(move || continuum_base::fs_portable::durable_rename(&tmp, &dst))
         .await
         .map_err(|e| PersonaSeedError::Io {
             path: tmp_path.clone(),

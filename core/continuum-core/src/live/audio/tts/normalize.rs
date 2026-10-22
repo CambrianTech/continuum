@@ -5,7 +5,7 @@
 //! operations it composes are `live::audio::pcm`'s.
 
 use super::{SynthesisResult, TTSError};
-use crate::audio_constants::AUDIO_SAMPLE_RATE;
+use continuum_base::audio_constants::AUDIO_SAMPLE_RATE;
 use crate::live::audio::pcm;
 
 /// Normalize f32 audio from any native sample rate to standard SynthesisResult.

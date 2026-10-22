@@ -42,7 +42,7 @@ fn record_key(post: &WallPostPublished) -> Option<(uuid::Uuid, &'static str, Str
         LEDGER_WALL_CATEGORY => match serde_json::from_str::<CardLedger>(&post.body) {
             Ok(ledger) => keyed(LEDGER_WALL_CATEGORY, ledger.card_id.to_string()),
             Err(error) => {
-                crate::probe!(
+                continuum_base::probe!(
                     class = "card.ledger.unreadable",
                     post = %post.post_id,
                     error = %error,

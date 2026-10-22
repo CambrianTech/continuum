@@ -34,7 +34,7 @@
 //!
 //! ## Where provenance lives
 //! Deliberately NOT a manifest field. The honesty stamp (benchmark's
-//! `cleanLane` → `BenchmarkProvenance`) rides on the flowing region **payload**,
+//! `cleanLane` → `MeasurementProvenance`) rides on the flowing region **payload**,
 //! where "is this number a lie?" is a fact about the live truth, not the static
 //! frame. The manifest points at the region; the region's ViewState carries its
 //! own provenance. Keeping it there avoids a second Clean/Contended/Unknown type

@@ -15,15 +15,36 @@ use super::{Confinement, Enforcement};
 /// same pair.
 const SEATBELT_OPS: [&str; 2] = ["file-read*", "file-write*"];
 
+/// The device files a shell writes to on nearly every command (`> /dev/null`, the tty,
+/// `/dev/fd/N` behind `/dev/stderr`, dyld's dtrace helper), granted as writes after the
+/// host-wide write deny. Measured with the real `sandbox-exec` on IntelMac (macOS 15.7.7,
+/// 2026-10-15, card 0e941074): without them `echo hi > /dev/null` is "Operation not
+/// permitted"; with them `git`, `xcrun`, `cc` (compile and run in the workspace), Python's
+/// `tempfile.mkstemp` and `mktemp -d` all pass, while writes to `/Users/Shared`,
+/// `/usr/local` and `/Volumes` are refused. `literal` is the exact file, `subpath` its tree.
+const SEATBELT_WRITABLE_DEVICES: [(&str, &str); 5] = [
+    ("literal", "/dev/null"),
+    ("literal", "/dev/zero"),
+    ("literal", "/dev/tty"),
+    ("literal", "/dev/dtracehelper"),
+    ("subpath", "/dev/fd"),
+];
+
 /// Render the seatbelt profile (macOS `sandbox-exec -p`) for an allow-list. Within an
 /// operation, rules are evaluated last-match-wins, so the order is: allow the host, deny
-/// the home, grant every root, deny the carve-outs last. The carve-outs are already
+/// WRITES host-wide (outside the home only her write roots are writable, as landlock
+/// enforces; `(allow default)` alone left `/Users/Shared` and `/usr/local` writable, card
+/// 0e941074), re-grant the devices a shell writes to, deny the home, grant every root,
+/// deny the carve-outs last. The carve-outs are already
 /// absent from the granted roots ([`carve`]); writing them again is the belt to that
 /// brace. Nothing is ever granted beneath a deny, so order never cuts against a root of
 /// hers (Cormac on #4882: a first draft denied `~/.airc` and re-granted only her citizen
 /// dir after it, refusing her own card worktree under `~/.airc/worktrees`).
 pub fn seatbelt_profile(home: &Path, list: &AllowList) -> String {
-    let mut out = String::from("(version 1)\n(allow default)\n");
+    let mut out = String::from("(version 1)\n(allow default)\n(deny file-write* (subpath \"/\"))\n");
+    for (filter, device) in SEATBELT_WRITABLE_DEVICES {
+        out.push_str(&format!("(allow file-write* ({filter} \"{device}\"))\n"));
+    }
     let rule = |out: &mut String, verdict: &str, ops: &[&str], root: &Path| {
         for op in ops {
             out.push_str(&format!("({verdict} {op} (subpath \"{}\"))\n", sbpl_string(root)));
@@ -44,10 +65,43 @@ pub fn seatbelt_profile(home: &Path, list: &AllowList) -> String {
     for root in &list.write {
         rule(&mut out, "allow", &SEATBELT_OPS, root);
     }
-    for root in &list.deny {
-        rule(&mut out, "deny", &SEATBELT_OPS, root);
+    // A directory a carve-out was cut from is listable itself (`literal`, not `subpath`):
+    // nothing beneath it is granted by this rule.
+    for dir in &list.listable {
+        out.push_str(&format!("(allow file-read* (literal \"{}\"))\n", sbpl_string(dir)));
     }
+    deny_credentials(&mut out, list);
     out
+}
+
+/// Escape a literal path fragment for an SBPL `#"..."` regex.
+fn regex_escape(fragment: &str) -> String {
+    fragment.chars().flat_map(|c| if ".^$*+?()[]{}|\\".contains(c) { vec!['\\', c] } else { vec![c] }).collect()
+}
+
+/// The profile for a HOST-reach resident: everything the operator's process may do, minus
+/// the credential roots and scope keys, written as denials only. Deny-capable, so it needs
+/// no carved grant: a directory she creates after her shell started is hers like any other.
+pub fn seatbelt_host_profile(list: &AllowList) -> String {
+    let mut out = String::from("(version 1)\n(allow default)\n");
+    deny_credentials(&mut out, list);
+    out
+}
+
+/// The carve-outs and scope keys, last: within an operation the last match wins.
+fn deny_credentials(out: &mut String, list: &AllowList) {
+    for root in &list.deny {
+        for op in SEATBELT_OPS {
+            out.push_str(&format!("(deny {op} (subpath \"{}\"))\n", sbpl_string(root)));
+        }
+    }
+    // A scope's signing key wherever the scope sits (`<repo>/.airc/identity.key`).
+    for suffix in super::CREDENTIAL_SUFFIXES {
+        let pattern = format!("/{}$", regex_escape(suffix));
+        for op in SEATBELT_OPS {
+            out.push_str(&format!("(deny {op} (regex #\"{pattern}\"))\n"));
+        }
+    }
 }
 
 fn sbpl_string(p: &Path) -> String {
@@ -61,7 +115,7 @@ pub(super) fn confined_command_with(
     program: &Path,
     args: &[std::ffi::OsString],
 ) -> (tokio::process::Command, Enforcement) {
-    let profile = seatbelt_profile(&confinement.home, list);
+    let profile = if confinement.reaches_host() { seatbelt_host_profile(list) } else { seatbelt_profile(&confinement.home, list) };
     let mut cmd = tokio::process::Command::new("/usr/bin/sandbox-exec");
     cmd.arg("-p").arg(profile).arg(program).args(args);
     (cmd, Enforcement::Enforced { mechanism: "seatbelt" })

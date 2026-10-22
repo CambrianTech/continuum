@@ -60,7 +60,7 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
-use continuum_core::config_env;
+use continuum_base::config_env;
 use continuum_core::forge::lora_convert::{mlx_adapters_to_peft, PeftLoraConfig};
 // The wire contract is single-sourced in `forge::protocol` so this server and
 // the core-side client can never drift (see that module's docs). This binary is

@@ -59,7 +59,7 @@
 //! same whether the producer runs in-process, in a sibling module, or
 //! on a remote peer over grid/airc.
 
-use crate::time::EpochMs;
+use continuum_base::time::EpochMs;
 use super::handle::Handle;
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;

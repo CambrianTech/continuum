@@ -3,6 +3,7 @@
 # Run with Windows PowerShell 5.1 (also the scheduler's production runtime).
 $ErrorActionPreference = 'Stop'
 $repo = (Resolve-Path (Join-Path $PSScriptRoot '..\..\..')).Path
+& (Join-Path $PSScriptRoot 'windows-engine-reservations.test.ps1')
 . (Join-Path $repo 'tools\scripts\lib\windows-service.ps1')
 . (Join-Path $repo 'tools\scripts\lib\windows-prepared.ps1')
 . (Join-Path $repo 'tools\scripts\lib\windows-engine-receipt.ps1')
@@ -1045,6 +1046,101 @@ try { [IO.File]::WriteAllText('$($marker.Replace("'", "''"))', 'acquired') } fin
         try { Get-CorePreparedRelease -InstallRoot $resumeRoot -Selection Active | Out-Null } catch { $refused = $_ -match 'changed since preparation' }
         if (-not $refused) { throw 'Changed runtime DLL was accepted' }
         Copy-Item -LiteralPath $dll -Destination (Join-Path $secondSlot 'fixture-runtime.dll') -Force
+        # A damaged inactive service does not invalidate its shared live engine.
+        & {
+            $previousPath = Join-Path $resumeRoot 'install-previous.json'
+            $savedPrevious = [IO.File]::ReadAllBytes($previousPath)
+            $savedActive = [IO.File]::ReadAllBytes($activePath)
+            $savedCli = [IO.File]::ReadAllBytes($release.cli)
+            $evidenceWriter = ${function:Save-CoreRecoveryEvidence}
+            function Get-CimInstance { @() }
+            # Intact Previous and Active may share an engine even when pointers
+            # have moved elsewhere. Do not retire their custody to free a slot.
+            & {
+                function Get-CoreEngineIdleSlot { Split-Path $second.engine -Parent }
+                Retire-CorePreviousSelectionForSlot -InstallRoot $resumeRoot -Slot $serviceSlot -Descriptor $second -Cli 'fixture'
+                if ([Convert]::ToBase64String([IO.File]::ReadAllBytes($previousPath)) -cne [Convert]::ToBase64String($savedPrevious)) {
+                    throw 'Shared Active engine lost its Previous receipt during selection.'
+                }
+            }
+            try {
+                [IO.File]::WriteAllText($release.cli, 'damaged inactive CLI')
+                function Save-CoreRecoveryEvidence { throw 'fixture archive failure' }
+                $refused = $false
+                try { Retire-CorePreviousSelectionForSlot -InstallRoot $resumeRoot -Slot $serviceSlot -Descriptor $second -Cli 'fixture' }
+                catch { $refused = $_ -match 'fixture archive failure' }
+                if (-not $refused -or -not (Test-Path $previousPath)) { throw 'Damaged Previous archive failure lost receipt' }
+                Set-Item Function:Save-CoreRecoveryEvidence -Value $evidenceWriter
+                function Get-CimInstance { @([pscustomobject]@{ExecutablePath=$release.cli}) }
+                $refused = $false
+                try { Retire-CorePreviousSelectionForSlot -InstallRoot $resumeRoot -Slot $serviceSlot -Descriptor $second -Cli 'fixture' }
+                catch { $refused = $_ -match 'live image' }
+                if (-not $refused) { throw 'Damaged Previous live service was retired' }
+                function Get-CimInstance { @() }
+                function Save-CoreRecoveryEvidence {
+                    param($Snapshot,$InstallRoot,$Disposition)
+                    & $evidenceWriter -Snapshot $Snapshot -InstallRoot $InstallRoot -Disposition $Disposition
+                    [IO.File]::AppendAllText($release.cli, ' raced')
+                }
+                $refused = $false
+                try { Retire-CorePreviousSelectionForSlot -InstallRoot $resumeRoot -Slot $serviceSlot -Descriptor $second -Cli 'fixture' }
+                catch { $refused = $_ -match 'files changed' }
+                if (-not $refused -or -not (Test-Path $previousPath)) { throw 'Damaged Previous hash race was accepted' }
+                $activeCli = [IO.File]::ReadAllBytes($second.cli)
+                foreach ($race in @('active-receipt', 'previous-receipt', 'registration', 'active-file')) {
+                    function Save-CoreRecoveryEvidence {
+                        param($Snapshot,$InstallRoot,$Disposition)
+                        & $evidenceWriter -Snapshot $Snapshot -InstallRoot $InstallRoot -Disposition $Disposition
+                        switch ($race) {
+                            'active-receipt' { [IO.File]::AppendAllText($activePath, ' ') }
+                            'previous-receipt' { [IO.File]::AppendAllText($previousPath, ' ') }
+                            'registration' { $script:resumeTask.Description += ' ' }
+                            'active-file' { [IO.File]::AppendAllText($second.cli, ' raced') }
+                        }
+                    }
+                    $refused = $false
+                    try { Retire-CorePreviousSelectionForSlot -InstallRoot $resumeRoot -Slot $serviceSlot -Descriptor $second -Cli 'fixture' }
+                    catch { $refused = $_ -match 'receipts changed|registration changed|Active files changed' }
+                    if (-not $refused -or -not (Test-Path $previousPath)) { throw "Damaged Previous accepted $race race" }
+                    [IO.File]::WriteAllBytes($activePath, $savedActive)
+                    [IO.File]::WriteAllBytes($previousPath, $savedPrevious)
+                    [IO.File]::WriteAllBytes($second.cli, $activeCli)
+                    $script:resumeTask.Description = $fixedDescription
+                }
+                Set-Item Function:Save-CoreRecoveryEvidence -Value $evidenceWriter
+                $independent = $release | ConvertTo-Json | ConvertFrom-Json
+                $independent.engine = Join-Path $payload 'bin\engine-b\llama-server.exe'
+                New-Item -ItemType Directory -Force -Path (Split-Path $independent.engine -Parent) | Out-Null
+                [IO.File]::WriteAllText($independent.engine, 'sealed independent engine')
+                Save-CorePreparedRelease -Release $independent -InstallRoot $resumeRoot
+                Copy-Item -LiteralPath (Join-Path $resumeRoot 'install-prepared.json') -Destination $previousPath -Force
+                [IO.File]::AppendAllText($independent.engine, ' damaged')
+                $refused = $false
+                try { Retire-CorePreviousSelectionForSlot -InstallRoot $resumeRoot -Slot $serviceSlot -Descriptor $second -DamagedOnly }
+                catch { $refused = $_ -match 'non-service files' }
+                if (-not $refused -or -not (Test-Path $previousPath)) { throw 'Previous-only engine damage was retired' }
+                [IO.File]::WriteAllBytes($previousPath, $savedPrevious)
+                [IO.File]::WriteAllBytes($previousPath, $savedActive)
+                [IO.File]::AppendAllText($second.cli, ' damaged active')
+                $refused = $false
+                try { Retire-CorePreviousSelectionForSlot -InstallRoot $resumeRoot -Slot $secondSlot -Descriptor $second -DamagedOnly }
+                catch { $refused = $_ -match 'Active release changed' }
+                if (-not $refused -or -not (Test-Path $previousPath)) { throw 'Overlapping Active damage was retired' }
+                [IO.File]::WriteAllBytes($second.cli, $activeCli)
+                [IO.File]::WriteAllBytes($previousPath, $savedPrevious)
+                Retire-CorePreviousSelectionForSlot -InstallRoot $resumeRoot -Slot $serviceSlot -Descriptor $second -Cli 'fixture'
+                if (Test-Path $previousPath) { throw 'Damaged Previous was not retired' }
+                if ([Convert]::ToBase64String([IO.File]::ReadAllBytes($activePath)) -cne [Convert]::ToBase64String($savedActive)) { throw 'Damaged retirement modified Active' }
+                if ((Read-CoreReleaseReceipt -InstallRoot $resumeRoot -Selection Active).Changed.Count) { throw 'Damaged retirement invalidated Active files' }
+                $archives = @(Get-ChildItem $resumeRoot -Filter 'install-previous.damaged-*.json')
+                if (-not @($archives | Where-Object { [Convert]::ToBase64String([IO.File]::ReadAllBytes($_.FullName)) -ceq [Convert]::ToBase64String($savedPrevious) }).Count) { throw 'Damaged Previous exact evidence missing' }
+                Write-Output 'PASS: damaged Previous shared-engine retirement and archive, live-image, hash-race refusals'
+            } finally {
+                [IO.File]::WriteAllBytes($release.cli, $savedCli)
+                [IO.File]::WriteAllBytes($previousPath, $savedPrevious)
+                [IO.File]::WriteAllBytes($activePath, $savedActive)
+            }
+        }
         # 23938f81: independent engine rollback leaves current=c, Active=b and
         # Previous=a. Reusing inactive service-a must retire only its exact,
         # verified receipt before engine-a can be staged, retaining evidence.
@@ -1223,7 +1319,12 @@ try { [IO.File]::WriteAllText('$($marker.Replace("'", "''"))', 'acquired') } fin
             if (-not $refused -or (Test-Path -LiteralPath $previousPath)) { throw 'Partial recovery did not retain its fail-closed state' }
         } finally { $heldActive.Dispose() }
         if ([Convert]::ToBase64String([IO.File]::ReadAllBytes($activePath)) -cne [Convert]::ToBase64String($activeBytes)) { throw 'Failed switch resealed old Active' }
-        if (@(Get-ChildItem -LiteralPath $resumeRoot -Filter 'install-*.damaged-*.json').Count -ne 2) { throw 'Original damaged receipts were not archived' }
+        foreach ($original in @($activeBytes, $previousBytes)) {
+            $matches = @(Get-ChildItem -LiteralPath $resumeRoot -Filter 'install-*.damaged-*.json' | Where-Object {
+                [Convert]::ToBase64String([IO.File]::ReadAllBytes($_.FullName)) -ceq [Convert]::ToBase64String($original)
+            })
+            if (-not $matches.Count) { throw 'Original damaged receipts were not archived' }
+        }
         $retry = Get-CoreDamagedSelectionRecovery -InstallRoot $resumeRoot
         Complete-CoreDamagedSelectionRecovery -Plan $retry -Release $second -InstallRoot $resumeRoot
         if ((Get-CorePreparedRelease -InstallRoot $resumeRoot -Selection Active).artifact -ne $second.artifact -or (Test-Path -LiteralPath $previousPath)) { throw 'Recovery invented a rollback or selected wrong candidate' }

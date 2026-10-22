@@ -32,9 +32,10 @@ gate fails and the persona substrate refuses to serve.
 
 ## Build implication (Windows/GPU lane)
 
-No-compromise means the binary keeps **livekit + bevy** AND adds **CUDA
-everywhere** — i.e. FULL cargo features + `cuda,load-dynamic-ort`, never
-`--no-default-features` (that drops livekit off the GPU, a compromise).
+No-compromise means a node that hosts calls and avatars keeps **livekit + bevy** AND
+adds **CUDA everywhere**: its profile (`CONTINUUM_NODE_FEATURES=livekit-webrtc,avatar-3d`
+in `~/.continuum/config.env`, see BUILD-AND-PACKAGING.md "Node profile") plus
+`cuda,load-dynamic-ort`. The crate itself is headless by default (`default = []`).
 
 livekit links a **prebuilt `webrtc.lib` built `/MT`** (static CRT — Google/LiveKit
 ship it that way; it cannot be recompiled `/MD` short of building libwebrtc from

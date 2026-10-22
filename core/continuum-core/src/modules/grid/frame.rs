@@ -7,7 +7,7 @@
 //! Frame format on the wire: length-prefixed JSON (same as IPC protocol).
 //! [4 bytes u32 BE length][JSON payload bytes]
 
-use crate::time::EpochMs;
+use continuum_base::time::EpochMs;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 

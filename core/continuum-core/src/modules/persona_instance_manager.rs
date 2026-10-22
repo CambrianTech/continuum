@@ -47,7 +47,7 @@
 //!   identity across restarts is a follow-up slice that adds
 //!   on-disk seed storage.
 
-use crate::time::EpochMs;
+use continuum_base::time::EpochMs;
 use std::any::Any;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -339,7 +339,7 @@ impl PersonaBirth {
                     card.persona_id.to_string(),
                 );
                 match runtime.airc().set_local_identity_card(identity).await {
-                    Ok(()) => crate::probe!(
+                    Ok(()) => continuum_base::probe!(
                         class = "persona.identity.published",
                         persona_id = %card.persona_id,
                         agent_name = %card.agent_name,
@@ -638,13 +638,13 @@ impl ServiceModule for PersonaInstanceManagerModule {
             renewed
         };
         match tokio::time::timeout(std::time::Duration::from_millis(1500), work).await {
-            Ok(renewed) => crate::probe!(
+            Ok(renewed) => continuum_base::probe!(
                 class = "persona.claim.renewed_for_seam",
                 residents = runtimes.len() as u64,
                 renewed = renewed as u64,
                 "held leases renewed before the core stops — the holds outlive the build window"
             ),
-            Err(_) => crate::probe!(
+            Err(_) => continuum_base::probe!(
                 class = "persona.claim.seam_renewal_timed_out",
                 residents = runtimes.len() as u64,
                 "seam renewal did not finish inside its bound — some holds may lapse across this stop"

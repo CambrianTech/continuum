@@ -162,7 +162,7 @@ impl Drop for InFlight {
             self.turn_bound,
         );
         let lost_names = partial.tool_calls.join(",");
-        crate::probe!(
+        continuum_base::probe!(
             class = "persona.generation.dropped",
             persona = %self.persona,
             at = "generation",

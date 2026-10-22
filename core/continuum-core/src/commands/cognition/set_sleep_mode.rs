@@ -61,7 +61,7 @@ crate::action_command! {
     params: SetSleepModeParams,
     output: SetSleepModeResult,
     run(this, _ctx, p) => {
-        let now_ms = crate::time::EpochMs::read().map_err(|e| CommandError::Internal(format!("system clock before UNIX epoch: {e}")))?.millis();
+        let now_ms = continuum_base::time::EpochMs::read().map_err(|e| CommandError::Internal(format!("system clock before UNIX epoch: {e}")))?.millis();
 
         let wake_at_ms = p.duration_minutes.map(|d| now_ms + (d * 60_000.0) as u64);
 

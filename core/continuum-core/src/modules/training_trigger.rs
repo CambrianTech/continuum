@@ -70,7 +70,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use uuid::Uuid;
 
-use crate::genome::fine_tuning::types::{JobHandle, LoRAHyperparams, ScheduleParams, TrainingExample, TrainingJobRequest, TrainingSource};
+use crate::genome::fine_tuning::types::{JobHandle, LoRAHyperparams, ScheduleParams, TrainingExample, TrainingSource};
 use crate::runtime::{CommandExecutor, CommandResult, LateBound, ModuleConfig, ModuleContext, ModulePriority, PerKeyGate, ServiceModule};
 use crate::sdk_codegen::DynCommand;
 
@@ -368,21 +368,21 @@ impl TrainingTriggerState {
             return;
         }
         let Some(root) = genome_root() else {
-            crate::probe!(class = "training.job.remainder_unrooted", jobs = completed.len() as u64, "no home: completed jobs cannot be found to return what they parked");
+            continuum_base::probe!(class = "training.job.remainder_unrooted", jobs = completed.len() as u64, "no home: completed jobs cannot be found to return what they parked");
             return;
         };
         let mut retry = Vec::new();
         for job in completed {
             match return_parked_remainder(self, board, &root, &job).await {
                 Ok(Remainder::Nothing | Remainder::AlreadyReturned) => {}
-                Ok(Remainder::Submitted(outcome)) if outcome.success => crate::probe!(
+                Ok(Remainder::Submitted(outcome)) if outcome.success => continuum_base::probe!(
                     class = "training.job.remainder_returned",
                     job = %job.local_id,
                     persona = %job.persona_name,
                     "a completed job's parked examples went back to her bucket, whole; the next dispatch re-plans them"
                 ),
                 Ok(Remainder::Submitted(outcome)) => {
-                    crate::probe!(
+                    continuum_base::probe!(
                         class = "training.job.remainder_refused",
                         job = %job.local_id,
                         error = ?outcome.error,
@@ -391,14 +391,14 @@ impl TrainingTriggerState {
                     retry.push(job);
                 }
                 // A malformed record is refused loudly and not retried: retrying reads the same bytes.
-                Err(error @ crate::sdk_codegen::CommandError::Invalid(_)) => crate::probe!(
+                Err(error @ crate::sdk_codegen::CommandError::Invalid(_)) => continuum_base::probe!(
                     class = "training.job.remainder_invalid",
                     job = %job.local_id,
                     error = %error,
                     "a completed job's partition does not match its request; its parked examples stay in its directory for a human"
                 ),
                 Err(error) => {
-                    crate::probe!(
+                    continuum_base::probe!(
                         class = "training.job.remainder_failed",
                         job = %job.local_id,
                         error = %error,
@@ -424,7 +424,7 @@ impl TrainingTriggerState {
             return;
         }
         let Some(root) = genome_root() else {
-            crate::probe!(class = "training.job.refusal_return_unrooted", jobs = failed.len() as u64, "no home: refused jobs cannot be found to return");
+            continuum_base::probe!(class = "training.job.refusal_return_unrooted", jobs = failed.len() as u64, "no home: refused jobs cannot be found to return");
             return;
         };
         for job in failed {
@@ -439,7 +439,7 @@ impl TrainingTriggerState {
             };
             if let Returnable::EngineRefused(refusal) = &returnable {
                 if !refusal_has_smaller_rung(refusal) {
-                    crate::probe!(
+                    continuum_base::probe!(
                         class = "training.job.refusal_at_floor",
                         job = %id,
                         chunk = refusal.chunk as u64,
@@ -450,20 +450,20 @@ impl TrainingTriggerState {
                 }
             }
             match crate::commands::training_trigger::return_::return_job(self, board, &root, id).await {
-                Ok(outcome) if outcome.success => crate::probe!(
+                Ok(outcome) if outcome.success => continuum_base::probe!(
                     class = "training.job.refusal_returned",
                     job = %id,
                     persona = %job.persona_name,
                     why = ?returnable,
                     "a job that ended without training (engine refusal or replaced lane) handed its examples back to her bucket; the next dispatch re-plans"
                 ),
-                Ok(outcome) => crate::probe!(
+                Ok(outcome) => continuum_base::probe!(
                     class = "training.job.refusal_return_refused",
                     job = %id,
                     error = ?outcome.error,
                     "the return of a refused job was refused; its examples stay in its directory"
                 ),
-                Err(error) => crate::probe!(
+                Err(error) => continuum_base::probe!(
                     class = "training.job.refusal_return_failed",
                     job = %id,
                     error = %error,
@@ -484,7 +484,7 @@ impl TrainingTriggerState {
             return; // not installed yet: try again next tick, the orphans wait on the board
         };
         let board = crate::genome::fine_tuning::job_board::TrainingJobBoard::global();
-        let now = crate::time::EpochMs::now().millis();
+        let now = continuum_base::time::EpochMs::now().millis();
         // the held ones whose time to ask again has come, and (once) the boot's orphans
         let mut due = self.take_due_orphans(now);
         if !self.resumed_orphans.swap(true, Ordering::AcqRel) {
@@ -497,7 +497,7 @@ impl TrainingTriggerState {
             // the first run may still be training in. One rule: `permits_resume`.
             let answer = self.reattach(&executor, &orphan).await;
             if let Err(error) = &answer {
-                crate::probe!(
+                continuum_base::probe!(
                     class = "training.job.reattach_unanswered",
                     local_id = %orphan.local_id,
                     error = %error,
@@ -519,7 +519,7 @@ impl TrainingTriggerState {
             let origin = board.resume_origin(orphan.local_id);
             let attempt = board.resume_attempts(origin) + 1;
             if attempt > crate::genome::fine_tuning::job_board::MAX_RESUMES {
-                crate::probe!(
+                continuum_base::probe!(
                     class = "training.job.resume_refused",
                     origin = %origin,
                     local_id = %orphan.local_id,
@@ -529,7 +529,7 @@ impl TrainingTriggerState {
                 continue;
             }
             let Some(dir) = default_job_dir(&orphan.persona_name, &orphan.trait_kind, orphan.local_id) else {
-                crate::probe!(
+                continuum_base::probe!(
                     class = "training.job.not_resumable",
                     local_id = %orphan.local_id,
                     error = "no home directory: the job directory cannot be found",
@@ -541,7 +541,7 @@ impl TrainingTriggerState {
             let params = match resumable_request(&dir, &orphan.provider_id, dispatch_id) {
                 Ok(params) => params,
                 Err(error) => {
-                    crate::probe!(
+                    continuum_base::probe!(
                         class = "training.job.not_resumable",
                         local_id = %orphan.local_id,
                         dir = %dir.display(),
@@ -560,7 +560,7 @@ impl TrainingTriggerState {
                     // Her trial file could not be read: nothing is returned or journaled
                     // blind; the orphan stays for the next restart, which reads again.
                     if matches!(took, Took::TrialFileUnreadable) {
-                        crate::probe!(
+                        continuum_base::probe!(
                             class = "training.job.resume_deferred",
                             origin = %origin,
                             from = %orphan.local_id,
@@ -594,7 +594,7 @@ impl TrainingTriggerState {
                             Took::TrialFileUnreadable => {} // guarded above: never reaches a resubmit
                         }
                     }
-                    crate::probe!(
+                    continuum_base::probe!(
                         class = "training.job.resume_joined",
                         origin = %origin,
                         from = %orphan.local_id,
@@ -605,7 +605,7 @@ impl TrainingTriggerState {
                 }
                 Ok(Created::Job(handle, provider)) => {
                     board.journal_resumed(origin, orphan.local_id, handle.local_id, attempt);
-                    crate::probe!(
+                    continuum_base::probe!(
                         class = "training.job.resumed",
                         origin = %origin,
                         from = %orphan.local_id,
@@ -616,7 +616,7 @@ impl TrainingTriggerState {
                     );
                 }
                 Err(error) => {
-                    crate::probe!(
+                    continuum_base::probe!(
                         class = "training.job.resume_failed",
                         origin = %origin,
                         local_id = %orphan.local_id,
@@ -706,50 +706,14 @@ impl TrainingTriggerState {
 
 // ─── Module ──────────────────────────────────────────────────────────
 
-/// Consume the existing typed command envelope. Only an explicit refusal is
-/// evidence that retry is safe; malformed/transport responses may follow creation.
-/// Where a native job's directory lives when the request named no `local_artifact_dir`
-/// — the same rule as `native_jobs::job_dir_for`, from the ledger's fields.
-pub(crate) fn default_job_dir(persona_name: &str, trait_kind: &str, local_id: Uuid) -> Option<std::path::PathBuf> {
-    Some(job_dir_under(&genome_root()?, persona_name, trait_kind, local_id))
-}
-
-/// Where this node keeps its persona genomes (and their job directories).
-pub(crate) fn genome_root() -> Option<std::path::PathBuf> {
-    dirs::home_dir().map(|home| home.join(".continuum/genome"))
-}
-
-/// A job's directory under a genome root: THE one layout of persona/trait/job.
-pub(crate) fn job_dir_under(root: &std::path::Path, persona_name: &str, trait_kind: &str, local_id: Uuid) -> std::path::PathBuf {
-    root
-        .join(persona_name.replace(['/', ' '], "_"))
-        .join(trait_kind.chars().map(|c| if c.is_alphanumeric() { c } else { '_' }).collect::<String>())
-        .join(local_id.to_string())
-}
+// The job directory layout and its one reader live with the jobs (genome::fine_tuning::job_dir,
+// card 32d2abbb); the trigger reads through them like every other caller.
+use crate::genome::fine_tuning::job_dir::{default_job_dir, genome_root, job_dir_under, read_job_request};
 
 /// PURE over the job directory: the `genome/job-create` params that re-create a job from
 /// its own `request.json` (the flattened `TrainingJobRequest` the trainer was handed,
 /// with the adapter's admission fields alongside, which the request type ignores).
 /// `None` when there is nothing on disk to resume from.
-/// A job's own request, read from its directory as the trigger first sent it. THE one
-/// reader of a job's `request.json` (the resume and `genome/training-trigger/return`).
-pub(crate) fn read_job_request(dir: &std::path::Path) -> Result<TrainingJobRequest, String> {
-    let path = dir.join("request.json");
-    let text = std::fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?;
-    let spec: Value = serde_json::from_str(&text).map_err(|e| format!("{}: not JSON: {e}", path.display()))?;
-    let mut request: TrainingJobRequest =
-        serde_json::from_value(spec.clone()).map_err(|e| format!("{}: not a training request: {e}", path.display()))?;
-    // The spec on disk is the PLANNER's: the adapter replaced `baseModel` with the
-    // trainable HF base (hf_source) and kept the registry id in `canonicalBase`.
-    // job-create takes the registry id, so the resume must too. Measured on the 5090
-    // 2026-10-05: all five killed-by-reboot jobs failed to resume with "cannot resolve
-    // hf_source for 'Qwen/Qwen3.8-27B'": the HF id fed back where a registry id belongs.
-    if let Some(canonical) = spec.get("canonicalBase").and_then(Value::as_str).filter(|s| !s.trim().is_empty()) {
-        request.base_model = canonical.to_string();
-    }
-    Ok(request)
-}
-
 pub(crate) fn resumable_request(dir: &std::path::Path, provider: &str, dispatch_id: Uuid) -> Result<Value, String> {
     let mut request = read_job_request(dir)?;
     // The dead job's latest checkpoint, when it got that far: the re-created job
@@ -792,6 +756,8 @@ pub(crate) enum Created {
     Held(Took),
 }
 
+/// Consume the existing typed command envelope. Only an explicit refusal is
+/// evidence that retry is safe; malformed/transport responses may follow creation.
 fn decode_job_create(response: Value) -> Result<Created, DispatchFailure> {
     use crate::commands::genome::job_create::JobCreateOutcome;
     if response
@@ -956,204 +922,4 @@ impl ServiceModule for TrainingTriggerModule {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    // what this catches (card de9e1342): a capacity refusal decoded as a retry (re-planning
-    // every tick) or as recovery (left for a human), or parked with no wake key to wake by.
-    #[test]
-    fn a_capacity_refusal_decodes_as_parked_only_with_its_wait() {
-        use crate::genome::fine_tuning::types::CapacityWait;
-        use crate::inference::planning::training_plan::NeedSource;
-        let wait = CapacityWait { window: 16_128, need_bytes: 18 << 30, need_source: NeedSource::LowerBound, governed_free: 4 << 30, engine_stamp: Some("abc:cuda".into()) };
-        let refused = |wait: Option<&CapacityWait>| {
-            let mut v = serde_json::json!({"success": false, "error": "waiting for capacity", "errorKind": "CapacityParked"});
-            if let Some(w) = wait {
-                v["capacityWait"] = serde_json::to_value(w).expect("test: encode");
-            }
-            v
-        };
-        assert!(matches!(decode_job_create(refused(Some(&wait))), Err(DispatchFailure::Parked(w)) if w == wait));
-        assert!(matches!(decode_job_create(refused(None)), Err(DispatchFailure::Uncertain(_))), "no wake key, no park");
-    }
-
-    // what this catches (Cormac on #4537): an orphan whose engine was silent at boot asked
-    // once and dropped, holding serving off its run for the engine's life; or, worse, resumed
-    // (a second POST into an engine still training it). Uncertain on the first tick holds it;
-    // it is not due again before its wait; on the next ask an Attached answer registers the
-    // SAME job. Neither tick is a Resume, the only step that reaches genome/job-create.
-    #[test]
-    fn an_uncertain_orphan_is_held_then_reattached_and_never_resumed() {
-        use crate::genome::fine_tuning::{job_board::OrphanedJob, JobHandle, ReattachOutcome};
-        let state = TrainingTriggerState::new();
-        let job = Uuid::new_v4();
-        let orphan = OrphanedJob {
-            local_id: job,
-            trigger_dispatch_id: None,
-            provider_id: "engine-local".into(),
-            persona_id: Uuid::new_v4(),
-            persona_name: "Kimi".into(),
-            base_model: "qwen3.8-27b".into(),
-            trait_kind: "code".into(),
-            eval_set: None,
-        };
-        let t0 = 1_000_000;
-        let first = orphan_step(&orphan, Ok(ReattachOutcome::Uncertain { reason: "no answer".into() }));
-        assert!(matches!(first, OrphanStep::Hold), "tick 1: uncertain holds");
-        state.hold_orphan(orphan, t0);
-        assert!(state.take_due_orphans(t0 + 1).is_empty(), "not asked again before its wait");
-        let mut due = state.take_due_orphans(t0 + HELD_ORPHAN_REASK_MS);
-        assert_eq!(due.len(), 1, "asked again once its wait is up");
-        let again = due.remove(0);
-        let handle = JobHandle { provider_id: "engine-local".into(), provider_job_id: job.to_string(), local_id: job };
-        let OrphanStep::Register(watched) = orphan_step(&again, Ok(ReattachOutcome::Attached { handle })) else {
-            panic!("tick 2: an attached run is registered, never resumed");
-        };
-        assert_eq!(watched.handle.local_id, job, "the same job, watched again");
-        assert!(state.take_due_orphans(u64::MAX).is_empty(), "a registered job is no longer held");
-        assert!(matches!(orphan_step(&again, Err("executor down".into())), OrphanStep::Hold), "no answer holds too");
-        assert!(matches!(orphan_step(&again, Ok(ReattachOutcome::NotResident)), OrphanStep::Resume), "positive control");
-    }
-
-    // What this catches (278afa6c): malformed command output cannot turn an
-    // uncertain provider creation into a safe retry. Exercise the actual decoder.
-    #[test]
-    fn job_create_requires_explicit_typed_refusal_evidence() {
-        use serde_json::json;
-        for response in [
-            json!({}),
-            json!({"success": "false"}),
-            json!({"success": false}),
-            json!({"success": false, "error": "bad", "errorKind": 7}),
-            json!({"success": false, "error": "bad", "errorKind": null}),
-            json!({"success": false, "error": "bad", "errorKind": "Transient"}),
-            json!({"success": true}),
-        ] {
-            assert!(matches!(
-                decode_job_create(response),
-                Err(DispatchFailure::Uncertain(_))
-            ));
-        }
-        // what this catches (Cormac on #4794): a refusal that created no job is retryable,
-        // never Uncertain; Uncertain froze the bucket in RecoveryRequired with no journal
-        // row to recover from.
-        for kind in [
-            None,
-            Some("InvalidRequest"),
-            Some("MissingCredentials"),
-            Some("ProviderRejected"),
-            Some(crate::commands::genome::job_create::ERROR_KIND_REUSE_PULL_FAILED),
-            Some(crate::commands::genome::job_create::ERROR_KIND_REUSE_ADOPT_FAILED),
-            Some(crate::commands::genome::job_create::ERROR_KIND_TRIAL_FILE_UNREADABLE),
-        ] {
-            let mut response = json!({"success": false, "error": "explicit refusal"});
-            if let Some(kind) = kind {
-                response["errorKind"] = json!(kind);
-            }
-            assert!(matches!(
-                decode_job_create(response),
-                Err(DispatchFailure::Retryable(_))
-            ));
-        }
-    }
-
-    // what this catches: every migrated verb now fails loud through the legacy
-    // path, naming itself + pointing at the typed registry (no silent success that
-    // would mask a routing regression). The behavioral tests live in the command
-    // files (commands/training_trigger/*).
-    #[tokio::test]
-    async fn migrated_arms_fail_loud() {
-        let module = TrainingTriggerModule::new();
-        for command in [
-            "genome/training-trigger/submit",
-            "genome/training-trigger/flush",
-            "genome/training-trigger/status",
-        ] {
-            let err = module
-                .handle_command(command, Value::Null)
-                .await
-                .expect_err("migrated arm must fail loud");
-            assert!(err.contains("migrated"), "for {command}: {err}");
-            assert!(err.contains(command), "for {command}: {err}");
-        }
-    }
-
-    // what this catches: the module contributes the three dep-holding verbs to the
-    // typed object map (sharing its one state). A regression that drops the
-    // `commands()` override — leaving them unroutable — is caught.
-    #[test]
-    fn contributes_the_typed_training_trigger_commands() {
-        let module = TrainingTriggerModule::new();
-        let names: Vec<&str> = module.commands().iter().map(|c| c.name()).collect();
-        assert!(names.contains(&"genome/training-trigger/submit"));
-        assert!(names.contains(&"genome/training-trigger/flush"));
-        assert!(names.contains(&"genome/training-trigger/status"));
-    }
-
-    // what this catches: an unmigrated/unknown verb still errors (not a panic, not
-    // a silent ok).
-    #[tokio::test]
-    async fn unknown_command_errors() {
-        let module = TrainingTriggerModule::new();
-        let result = module
-            .handle_command("genome/training-trigger/nope", Value::Null)
-            .await;
-        assert!(result.is_err());
-    }
-
-    // regression for card 244757bc (BigMama, 2026-09-26): three jobs in the ledger ended
-    // `killed-by-reboot` — the consumer deploys six times a day — and nothing resumed
-    // them, while each job directory still held the full request.json.
-    // what this catches: the resumable input is the job directory's own request.json,
-    // re-created as job-create params under a fresh dispatch id on the same provider;
-    // a directory with nothing in it resumes nothing; the directory rule matches
-    // `job_dir_for` for the ledger's fields.
-    #[test]
-    fn a_dead_jobs_request_json_is_its_resume_and_an_empty_directory_is_none() {
-        let dir = tempfile::tempdir().expect("test: tempdir");
-        let dispatch = Uuid::new_v4();
-        assert!(resumable_request(dir.path(), "cuda-local", dispatch).is_err(), "nothing on disk");
-        // What the CUDA adapter writes: the flattened request plus its admission fields.
-        let spec = serde_json::json!({
-            "personaId": Uuid::from_u128(7).to_string(),
-            "personaName": "Kimi",
-            // What the adapter really writes: the TRAINABLE base here, the registry id
-            // in canonicalBase. The fixture once wrote the same id in both, so it could
-            // not see a resume that fed the HF id back to job-create.
-            "baseModel": "Qwen/Qwen3.8-27B",
-            "traitKind": "code",
-            "dataset": {"examples": [{"prompt": "p", "completion": "c"}], "source": "teacher_synthesized", "validationSplit": 0.1},
-            "canonicalBase": "ggml-org/Qwen3.8-27B-GGUF",
-            "memoryBytes": 30_000_000_000u64,
-            "availableBytes": 6_000_000_000u64,
-            "microBatchSize": 1,
-            "revision": null
-        });
-        std::fs::write(dir.path().join("request.json"), spec.to_string()).expect("test: write");
-        let params = resumable_request(dir.path(), "cuda-local", dispatch).expect("test: resumable");
-        assert_eq!(params["triggerDispatchId"], serde_json::json!(dispatch.to_string()));
-        assert!(
-            params.get("preferredProvider").is_none(),
-            "a job that never checkpointed is re-chosen, not pinned to the trainer that never ran it"
-        );
-        assert_eq!(params["personaName"], serde_json::json!("Kimi"));
-        assert_eq!(
-            params["baseModel"],
-            serde_json::json!("ggml-org/Qwen3.8-27B-GGUF"),
-            "a resume re-creates the job against the registry id, never the HF base"
-        );
-        assert_eq!(params["dataset"]["examples"].as_array().map(|e| e.len()), Some(1));
-        assert!(params.get("memoryBytes").is_none(), "admission fields are the adapter's, not the request's");
-        assert!(params.get("resumeFrom").is_none(), "no checkpoint, no resume point");
-        // A checkpoint the dead job finished writing becomes the resume point.
-        let ck = dir.path().join("checkpoints").join("step-8");
-        std::fs::create_dir_all(&ck).expect("test: checkpoint dir");
-        std::fs::write(ck.join("adapter_config.json"), "{}").expect("test: adapter config");
-        std::fs::write(dir.path().join("checkpoints").join("LATEST"), "step-8\n").expect("test: pointer");
-        let params = resumable_request(dir.path(), "cuda-local", dispatch).expect("test: resumable");
-        assert_eq!(params["resumeFrom"], serde_json::json!(ck.to_string_lossy()), "continues from the latest checkpoint");
-        assert_eq!(params["preferredProvider"], serde_json::json!("cuda-local"), "a checkpoint is its trainer's format: pinned");
-        let d = default_job_dir("Kimi", "code/owner", Uuid::from_u128(9)).expect("test: a home directory");
-        assert!(d.ends_with(std::path::Path::new("Kimi").join("code_owner").join(Uuid::from_u128(9).to_string())), "{d:?}");
-    }
-}
+mod tests;

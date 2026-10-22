@@ -79,13 +79,13 @@ pub fn checkout_path_for(peer: &Uuid, card: &airc_lib::WorkCard) -> Option<PathB
     // A benchmark REVIEW card's work is in the OWNER's checkout (the fix under review
     // lives there), so the reviewer's hands stand in it. One rule for every turn (card
     // fc9e9fd7: the held-work turn kept its own copy of this resolver).
-    if let Some(instance) = crate::commands::benchmark::parse_review_title(&card.title) {
+    if let Some(instance) = crate::cognition::bench_title::parse_review_title(&card.title) {
         let copies = crate::persona::staged_workspace::owners_of(&instance);
         if let Some(copy) = copies.iter().find(|c| c.has_work).or_else(|| copies.first()) {
             return Some(copy.path.clone());
         }
     }
-    if let Some((bench, _)) = crate::commands::benchmark::parse_card_title(&card.title) {
+    if let Some((bench, _)) = crate::cognition::bench_title::parse_card_title(&card.title) {
         let spec = crate::commands::benchmark::known_benchmarks().iter().find(|s| s.name == bench)?;
         return if spec.swe_dataset().is_some() {
             crate::persona::staged_workspace::workspace_for_held_cards(peer, std::iter::once(card.title.as_str()))
@@ -135,14 +135,21 @@ pub fn is_card_branch(branch: &str) -> bool {
 /// there. A repo this node never checked out is cloned into a managed checkout first
 /// ([`ensure_managed_clone`]); a clone that fails is `Failed { stage: "clone" }`.
 pub async fn stage_for_card(home: &Path, claimer: Uuid, card: &airc_lib::WorkCard) -> Staging {
-    if crate::commands::benchmark::parse_card_title(&card.title).is_some() {
+    if crate::cognition::bench_title::parse_card_title(&card.title).is_some() {
         return stage_for_claimer(home, claimer, &card.title).await;
     }
     let repo = card.repo.to_string();
     let branch = card_branch(card);
     // Already staged: the same lookup a held-card turn uses, so claim time and turn
     // time can never disagree about where her work lives.
-    if let Some(existing) = checkout_path_for(&claimer, card) {
+    // A checkout made as a linked worktree (before card d166e4f2) is NOT returned as-is: it
+    // falls through to the clone path below, whose ensure_card_clone migrates it to a card
+    // clone when nothing can be lost (airc #1582). Returning it here made that migration
+    // unreachable for exactly the checkouts it exists for (the M5, 2026-10-19: 0 of 3
+    // eligible held checkouts migrated in an hour; Fable).
+    if let Some(existing) = checkout_path_for(&claimer, card)
+        .filter(|existing| !airc_lib::work_worktree::is_linked_worktree(existing))
+    {
         // THE WORKSPACE MOVES WITH THE MIND (card 73eefbbb): a checkout that already
         // exists here may be BEHIND what another node pushed on this branch (the card
         // changed hands), or DIVERGED from it. The transfer owner fetches and
@@ -162,7 +169,7 @@ pub async fn stage_for_card(home: &Path, claimer: Uuid, card: &airc_lib::WorkCar
             Ok(clone) => clone,
             Err(error) => {
                 let error = error.to_string();
-                crate::probe!(
+                continuum_base::probe!(
                     class = "work.claim.repo_clone_failed",
                     claimer = %claimer,
                     repo = %repo,
@@ -178,61 +185,49 @@ pub async fn stage_for_card(home: &Path, claimer: Uuid, card: &airc_lib::WorkCar
     let spec_repo = card.repo.clone();
     let clone_for_spawn = clone.clone();
     let branch_for_spawn = branch.clone();
+    // A card's checkout is its OWN repository (card d166e4f2, Joel: "do it right"). The
+    // registry clone is the deploy checkout here, and a worktree of it registered every
+    // resident's card in the deploy repo's .git, which git under confinement could only reach
+    // through a write grant on that .git (#5116, not merged). Instead the node keeps a
+    // precious bare mirror (no inode shared with the deploy repo, objects never pruned) and
+    // each card clones from it with borrowed objects. Her git then needs only her own
+    // checkout plus a READ-only root on <mirror>/objects (confinement.rs).
     let outcome = tokio::task::spawn_blocking(move || {
-        airc_lib::work_worktree::ensure_worktree(&airc_lib::work_worktree::WorktreeSpec {
+        let mirror = airc_lib::work_worktree::ensure_mirror(&spec_repo, &clone_for_spawn)?;
+        airc_lib::work_worktree::ensure_card_clone(&airc_lib::work_worktree::WorktreeSpec {
             repo: &spec_repo,
             card_id: spec_card,
-            clone_path: &clone_for_spawn,
+            clone_path: &mirror,
             branch: &branch_for_spawn,
             start_point: None,
         })
-        .map(|o| o.path().to_path_buf())
+        .map(|outcome| {
+            // A held linked worktree replaced by a card clone (airc #1582): said once, with
+            // where the old tree went, so a resident's moved checkout is never a mystery.
+            if let airc_lib::work_worktree::WorktreeOutcome::Migrated { path, retired } = &outcome {
+                continuum_base::probe!(class = "card.checkout.migrated", card = %spec_card, path = %path.display(), retired = %retired.display(), "linked card worktree replaced by a card clone; old tree kept aside");
+            }
+            outcome.path().to_path_buf()
+        })
     })
     .await
     .unwrap_or_else(|e| Err(format!("worktree task panicked: {e}"))); // unwrap_or_else: a panicked blocking task is a staging failure, never a crash
-    // A fresh worktree has EMPTY submodule paths (core/vendor/llama.cpp): a build
-    // there dies in cmake and a symlink workaround breaks git status (IntelMac +
-    // M5, three times, 2026-09-05). Initialise them here, bounded, with a named
-    // outcome — a worktree whose vendor is empty is not Ready.
+
+    // Submodules are initialised by airc's ensure_card_clone (bounded, borrowing each one's
+    // objects from its own mirror, airc #1591) on every clone it creates or migrates; a
+    // failure there arrives here as stage "worktree". A second pass here was one owner too
+    // many, and its tokio timeout abandoned the git child instead of killing it (card 84d3bcd8).
     let staged = match outcome {
         Ok(path) => {
-            let path_for_init = path.clone();
-            let init = tokio::time::timeout(
-                std::time::Duration::from_secs(600),
-                tokio::task::spawn_blocking(move || {
-                    std::process::Command::new("git")
-                        .args(["-C", &path_for_init.to_string_lossy(), "submodule", "update", "--init", "--recursive"])
-                        .output()
-                        .map_err(|e| e.to_string())
-                        .and_then(|o| {
-                            if o.status.success() {
-                                Ok(())
-                            } else {
-                                Err(String::from_utf8_lossy(&o.stderr).trim().to_string())
-                            }
-                        })
-                }),
-            )
-            .await;
-            match init {
-                Ok(Ok(Ok(()))) => {
-                    // A branch cut here from the clone's HEAD: if another node already
-                    // pushed this card's branch, her work is there — fetch it and stand
-                    // at its tip before her first turn (card 73eefbbb).
-                    crate::persona::workspace_transfer::arrive_for(path.clone(), branch.clone(), card.card_id.as_uuid()).await;
-                    Staging::Ready { path }
-                }
-                Ok(Ok(Err(error))) => Staging::Failed { stage: "submodules", error },
-                Ok(Err(join)) => Staging::Failed { stage: "submodules", error: format!("init task panicked: {join}") },
-                Err(_) => Staging::Failed {
-                    stage: "submodules",
-                    error: "git submodule update --init --recursive did not finish within 600 s".to_string(),
-                },
-            }
+            // A branch cut here from the clone's HEAD: if another node already
+            // pushed this card's branch, her work is there — fetch it and stand
+            // at its tip before her first turn (card 73eefbbb).
+            crate::persona::workspace_transfer::arrive_for(path.clone(), branch.clone(), card.card_id.as_uuid()).await;
+            Staging::Ready { path }
         }
         Err(error) => Staging::Failed { stage: "worktree", error },
     };
-    crate::probe!(
+    continuum_base::probe!(
         class = "work.claim.staged",
         claimer = %claimer,
         bench = "repo",
@@ -242,6 +237,57 @@ pub async fn stage_for_card(home: &Path, claimer: Uuid, card: &airc_lib::WorkCar
         "on-claim staging — a repo card gets airc's per-card worktree"
     );
     staged
+}
+
+/// Restage a HELD card whose checkout is still a linked worktree (staged before card
+/// d166e4f2), as the resident's turn on it starts and before her hands are rooted in it, so
+/// nothing of hers is running in the tree that may move. Residents keep their claims, so the
+/// claim-time staging never comes again for them (the M5, 2026-10-19: 0 of 3 eligible held
+/// checkouts migrated in an hour; Fable). [`stage_for_card`] migrates it when nothing can be
+/// lost and probes the outcome (`work.claim.staged`, `card.checkout.migrated`); if it cannot,
+/// the old tree stays hers and the turn binds to it as before. A card clone is untouched.
+///
+/// Gated so a tree that cannot migrate is not restaged on every turn (Fable on #5132: each
+/// try is a GitHub fetch, a submodule pass and a branch arrival). It is tried only when the
+/// local checks the migration itself needs already pass (clean, on a branch, nothing
+/// unpushed; local git only, no network), and at most once per carry interval per (resident,
+/// card): the carry is what pushes her commits, so that is when an unpushed tree can become
+/// migratable.
+pub async fn restage_held_linked_checkout(peer: Uuid, card: &airc_lib::WorkCard) {
+    static TRIED: std::sync::LazyLock<dashmap::DashMap<(Uuid, Uuid), std::time::Instant>> =
+        std::sync::LazyLock::new(dashmap::DashMap::new);
+    let Some(existing) = checkout_path_for(&peer, card)
+        .filter(|existing| airc_lib::work_worktree::is_linked_worktree(existing))
+    else {
+        return;
+    };
+    use crate::persona::workspace_transfer::{current_branch, has_unpushed_work, is_dirty};
+    if !matches!(is_dirty(&existing).await, Ok(false))
+        || current_branch(&existing).await.is_none()
+        || has_unpushed_work(&existing).await
+    {
+        return;
+    }
+    let key = (peer, card.card_id.as_uuid());
+    if TRIED
+        .get(&key)
+        .is_some_and(|at| at.elapsed() < crate::modules::card_carry::CARRY_SWEEP)
+    {
+        return;
+    }
+    TRIED.insert(key, std::time::Instant::now());
+    match crate::paths::continuum_home() {
+        Ok(home) => {
+            stage_for_card(&home, peer, card).await;
+        }
+        Err(error) => continuum_base::probe!(
+            class = "persona.work.restage_skipped",
+            peer = %peer,
+            card = %card.card_id.as_uuid(),
+            error = %error,
+            "a held linked checkout could not be restaged: no continuum home"
+        ),
+    }
 }
 
 /// A card repo this node may clone: exactly `owner/name`. The card's repo id is written by
@@ -354,7 +400,7 @@ async fn ensure_managed_clone(home: &Path, repo: &str) -> Result<PathBuf, CloneE
         cloned?;
     }
     crate::modules::repo_registry::record(&key, &target);
-    crate::probe!(
+    continuum_base::probe!(
         class = "work.claim.repo_cloned",
         repo = %key,
         path = %target.display(),
@@ -369,7 +415,7 @@ pub(crate) fn gym_workspace(home: &Path, peer: Uuid) -> PathBuf {
 }
 
 pub async fn stage_for_claimer(home: &Path, claimer: Uuid, title: &str) -> Staging {
-    let Some((bench, task)) = crate::commands::benchmark::parse_card_title(title) else {
+    let Some((bench, task)) = crate::cognition::bench_title::parse_card_title(title) else {
         return Staging::Ordinary;
     };
     let workspace = gym_workspace(home, claimer);
@@ -386,7 +432,7 @@ pub async fn stage_for_claimer(home: &Path, claimer: Uuid, title: &str) -> Stagi
         Step::Shell(shell) => stage_shell(&workspace, &shell).await,
         Step::Swe(instance) => stage_swe(&workspace, &instance).await,
     };
-    crate::probe!(
+    continuum_base::probe!(
         class = "work.claim.staged",
         claimer = %claimer,
         bench = %bench,
@@ -481,13 +527,13 @@ async fn stage_swe(workspace: &Path, instance: &crate::cognition::swe_bench::Swe
         let verdict_ms = std::fs::metadata(swe_bench::verdict_path(&instance.instance_id))
             .ok()
             .and_then(|m| m.modified().ok())
-            .and_then(|t| crate::time::EpochMs::of(t).ok())
-            .map(crate::time::EpochMs::millis);
+            .and_then(|t| continuum_base::time::EpochMs::of(t).ok())
+            .map(continuum_base::time::EpochMs::millis);
         let work_ms = crate::persona::staged_workspace::work_mtime_of(&dir);
         let resolved = swe_bench::read_verdict(&instance.instance_id).map(|v| v.resolved);
         let verdict = verdict_ms.zip(resolved);
         if restages_pristine(verdict, work_ms) {
-            crate::probe!(
+            continuum_base::probe!(
                 class = "benchmark.staging.reset_after_verdict",
                 instance = %instance.instance_id,
                 verdict_ms = verdict_ms.unwrap_or(0),
@@ -514,7 +560,7 @@ async fn stage_swe(workspace: &Path, instance: &crate::cognition::swe_bench::Swe
         match swe_bench::ensure_env(&inst, &dir).await {
             Ok(_) => {
                 crate::modules::work::env_broken_this_boot().remove(&inst.instance_id);
-                crate::probe!(
+                continuum_base::probe!(
                     class = "benchmark.env.prewarmed",
                     instance = %inst.instance_id,
                     "env ready behind the claim"
@@ -522,7 +568,7 @@ async fn stage_swe(workspace: &Path, instance: &crate::cognition::swe_bench::Swe
             }
             Err(e) => {
                 crate::modules::work::env_broken_this_boot().insert(inst.instance_id.clone());
-                crate::probe!(
+                continuum_base::probe!(
                     class = "benchmark.env.prewarm_failed",
                     instance = %inst.instance_id,
                     stage = "env",
@@ -536,7 +582,7 @@ async fn stage_swe(workspace: &Path, instance: &crate::cognition::swe_bench::Swe
 }
 
 fn failed(claimer: Uuid, title: &str, stage: &'static str, error: String) -> Staging {
-    crate::probe!(
+    continuum_base::probe!(
         class = "work.claim.stage_failed",
         claimer = %claimer,
         title = %title,

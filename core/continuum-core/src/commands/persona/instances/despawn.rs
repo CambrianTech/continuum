@@ -87,7 +87,7 @@ crate::action_command! {
         //    caller was shown (rosters DISPLAY short ids) or a one-char-mistyped
         //    UUID expands against who's online. The ONE shared id_resolve primitive
         //    (#164), candidates = the live runtime registry — same as instances/get.
-        let persona_id = crate::id_resolve::resolve(
+        let persona_id = continuum_base::id_resolve::resolve(
             p.persona_id.as_str(),
             &this.registry.ids(),
             "persona",

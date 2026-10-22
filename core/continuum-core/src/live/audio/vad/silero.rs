@@ -14,7 +14,7 @@
 //! - Works on 8kHz and 16kHz audio
 
 use super::{VADError, VADResult, VoiceActivityDetection};
-use crate::audio_constants::AUDIO_SAMPLE_RATE;
+use continuum_base::audio_constants::AUDIO_SAMPLE_RATE;
 use crate::{clog_info, clog_warn};
 use ndarray::{Array1, Array2};
 use once_cell::sync::OnceCell;

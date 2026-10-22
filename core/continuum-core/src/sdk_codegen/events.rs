@@ -45,7 +45,7 @@ impl EventDescriptor {
     pub fn of<E: EventSpec>() -> Self {
         let cfg = Config::default();
         let payload_dep = Dependency::from_ty::<E::Payload>(&cfg)
-            .expect("event Payload must be a named TS type (struct/enum)"); // JUSTIFIED: codegen-time authoring check; an unnamed payload type is a compile-time design error
+            .expect("event Payload must be a named TS type (struct/enum)");
         Self {
             class: E::CLASS,
             payload: TypeRef::from_dependency(&payload_dep),

@@ -55,7 +55,7 @@ pub fn load_from(path: &Path) -> Option<GridRosterFact> {
         Ok(b) => b,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return None,
         Err(e) => {
-            crate::probe!(
+            continuum_base::probe!(
                 class = "persona.host.grid_roster_memory_unreadable",
                 path = %path.display(),
                 error = %e,
@@ -67,7 +67,7 @@ pub fn load_from(path: &Path) -> Option<GridRosterFact> {
     match serde_json::from_slice::<GridRosterFact>(&bytes) {
         Ok(f) => Some(f),
         Err(e) => {
-            crate::probe!(
+            continuum_base::probe!(
                 class = "persona.host.grid_roster_memory_unreadable",
                 path = %path.display(),
                 error = %e,
@@ -88,7 +88,7 @@ pub fn save_to(path: &Path, fact: &GridRosterFact) {
         std::fs::rename(&tmp, path)
     })();
     if let Err(e) = result {
-        crate::probe!(
+        continuum_base::probe!(
             class = "persona.host.grid_roster_memory_unsaved",
             path = %path.display(),
             error = %e,

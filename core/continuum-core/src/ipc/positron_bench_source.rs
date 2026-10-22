@@ -16,7 +16,7 @@
 //! unconditionally because its series genuinely changes every sample; this
 //! one compares and skips.
 
-use crate::time::EpochMs;
+use continuum_base::time::EpochMs;
 use std::time::Duration;
 
 use continuum_positron::bench::{BenchRoundCardRow, BenchRoundRow, BenchRunRow, BenchViewState};

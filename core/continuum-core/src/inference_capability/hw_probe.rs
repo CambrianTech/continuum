@@ -186,7 +186,7 @@ fn try_detect_cuda() -> Option<(u64, String)> {
             ],
             std::time::Duration::from_secs(10),
         );
-        crate::probe!(
+        continuum_base::probe!(
             class = "boot.gpu_detect",
             backend = "cuda",
             stage = "hw_profile",
@@ -225,7 +225,7 @@ fn try_detect_vulkan() -> Option<(u64, String)> {
             &["--summary"],
             std::time::Duration::from_secs(10),
         );
-        crate::probe!(
+        continuum_base::probe!(
             class = "boot.gpu_detect",
             backend = "vulkan",
             stage = "hw_profile",

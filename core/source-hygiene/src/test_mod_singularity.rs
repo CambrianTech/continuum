@@ -24,7 +24,9 @@ use super::{SourceFile, SourceRule, Violation};
 /// themes inside it are fine) lowers it; raising it to green a build is defeating
 /// the guard.
 #[cfg(test)]
-const BASELINE_EXCESS_TEST_MODS: usize = 19;
+// 15 after #5228: the multi-mod files' suites moved into one test file each, as nested themes.
+// 13 after the working_memory split moved its suites into one test file.
+const BASELINE_EXCESS_TEST_MODS: usize = 13;
 
 /// 1-indexed lines of `#[cfg(test)]` attributes that gate a `mod`.
 fn test_mod_lines(file: &SourceFile) -> Vec<usize> {
@@ -97,6 +99,7 @@ mod tests {
                 .collect::<Vec<_>>()
                 .join("\n")
         );
+        crate::assert_baseline_is_current("BASELINE_EXCESS_TEST_MODS", count, BASELINE_EXCESS_TEST_MODS);
     }
 
     /// What this catches: the detector counting the wrong thing — a gated helper

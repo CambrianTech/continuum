@@ -156,7 +156,7 @@ pub fn get(identity: &str) -> Option<PersonaCard> {
 
 /// Every registered card's persona_id — the candidate set for resolving a
 /// short/mistyped persona id a caller quotes back (`persona/identity/{get,set}`
-/// via [`crate::id_resolve::resolve`], #164). Cards register at spawn and on
+/// via [`continuum_base::id_resolve::resolve`], #164). Cards register at spawn and on
 /// every identity edit, so this is "the personas this process knows about" — the
 /// same role `PersonaAircRuntimeRegistry::ids()` plays for the runtime verbs.
 pub fn ids() -> Vec<Uuid> {

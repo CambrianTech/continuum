@@ -1,0 +1,770 @@
+use super::*;
+
+/// `GET /train`'s body. `state` is required: a body without one does not parse, and an
+/// unparsable status is retried like a lost one, never read as "not ours".
+#[derive(Debug, Clone, Deserialize)]
+pub(super) struct TrainStatus {
+    pub(super) state: TrainState,
+    #[serde(default)]
+    pub(super) out: Option<String>,
+    #[serde(default)]
+    pub(super) batch: Option<u64>,
+    #[serde(default)]
+    pub(super) batch_max: Option<u64>,
+    #[serde(default)]
+    pub(super) epochs: Vec<EpochReport>,
+    #[serde(default)]
+    pub(super) trainable_tokens: Option<u64>,
+    /// the held-out trainable tokens the eval loss is measured over (fork #31); absent on an
+    /// engine before it
+    #[serde(default)]
+    pub(super) eval_trainable_tokens: Option<u64>,
+    /// the training graph the engine measured before allocating it
+    #[serde(default)]
+    pub(super) graph_mib: Option<f64>,
+    /// what the training context itself held on the device (K/V for the window, compute buffers;
+    /// fork #52), allocated outside the graph's budget; absent on an engine before it
+    #[serde(default)]
+    pub(super) context_mib: Option<f64>,
+    /// The chunk the engine trained at (`state["chunk"]`): the shape its footprint is filed
+    /// under. An engine before the key reports none and the core mirrors its rule.
+    #[serde(default)]
+    pub(super) chunk: Option<u32>,
+    /// fork #28: a pause asked for, and one the worker has reached (a pause is real only when
+    /// both are true); waiting on serving slots is a separate, automatic yield
+    #[serde(default)]
+    pub(super) pause_requested: bool,
+    #[serde(default)]
+    pub(super) paused: bool,
+    #[serde(default)]
+    pub(super) waiting_for_serving: bool,
+    /// the share the run took of the lane (fork #32): windows run, windows taken while a
+    /// serving slot was busy, and the time yielded to serving; absent on an engine before it
+    #[serde(default)]
+    pub(super) yielded_ms: Option<u64>,
+    #[serde(default)]
+    pub(super) windows: Option<u64>,
+    #[serde(default)]
+    pub(super) windows_while_busy: Option<u64>,
+    #[serde(default)]
+    pub(super) share_ppm: Option<u64>,
+    /// the slowdown bound and her measured rates (fork #36): tokens/s with no window running
+    /// and while one ran, over the run, and the slowdown they realized; absent before #36
+    #[serde(default)]
+    pub(super) max_slowdown_ppm: Option<u64>,
+    #[serde(default)]
+    pub(super) decode_tps_no_window: Option<f64>,
+    #[serde(default)]
+    pub(super) decode_tps_in_window: Option<f64>,
+    #[serde(default)]
+    pub(super) slowdown_ppm_realized: Option<u64>,
+    /// the model's block count and the blocks this run adapts (fork #27); absent on an engine
+    /// that predates `top_layers`, which adapts every block
+    #[serde(default)]
+    pub(super) n_layer: Option<u32>,
+    #[serde(default)]
+    pub(super) layers_adapted: Option<u32>,
+    /// examples kept, cut from the front to fit the window, and skipped because her last
+    /// reply alone did not fit (fork #29); absent on an engine before it
+    #[serde(default)]
+    pub(super) examples: Option<u64>,
+    #[serde(default)]
+    pub(super) examples_truncated: Option<u64>,
+    #[serde(default)]
+    pub(super) examples_skipped: Option<u64>,
+    /// WHICH examples the run skipped, by their index in what this core sent (fork #51); absent
+    /// on an engine before it
+    #[serde(default)]
+    pub(super) skipped_indices: Vec<usize>,
+    /// the window the engine's training graph actually used (fork #30: the longest fitted
+    /// example rounded up to 256, never above the window sent); absent on an engine before it
+    #[serde(default)]
+    pub(super) window: Option<u32>,
+    #[serde(default)]
+    pub(super) error: Option<String>,
+}
+
+/// Where the lane serving `base` answers, if one does on this node.
+/// The live lane serving a base: its url and the per-slot window it was launched with (0 =
+/// a record from before that field, which is unknown). One lookup decides both, so the
+/// training window can never come from a second source that disagrees with the lane
+/// (Cormac on #4498).
+pub(super) type LaneResolver = Box<dyn LaneSource>;
+
+/// Where a run's lane comes from: the ONE difference between the in-engine trainers (this
+/// node's resident lane, a lane stood up for the run, a grid peer's lane). The training is
+/// the same `POST /train` against whatever lane this returns; no trainer is its own process.
+#[async_trait]
+pub(super) trait LaneSource: Send + Sync {
+    /// Whether a lane for `base` is available now; the coordinator asks before it ranks, so a
+    /// trainer is never chosen for a job it would refuse.
+    fn serves(&self, base: &str) -> bool;
+    /// A lane for `base`, alive for as long as the returned lease is held.
+    async fn acquire(&self, base: &str) -> Result<LaneLease, String>;
+}
+
+/// A lane a run trains in, and what keeps it alive: `hold` is `None` for a lane that outlives
+/// the run (the resident lane), and owns a lane stood up for this run until the run ends.
+pub(super) struct LaneLease {
+    pub(super) choice: LaneChoice,
+    pub(super) hold: Option<Box<dyn std::any::Any + Send + Sync>>,
+}
+
+/// The live lane serving the base on this node: training on the resident weights.
+pub(super) struct ResidentLane;
+
+#[async_trait]
+impl LaneSource for ResidentLane {
+    fn serves(&self, base: &str) -> bool {
+        live_lane_for(base).is_some()
+    }
+
+    async fn acquire(&self, base: &str) -> Result<LaneLease, String> {
+        let choice = live_lane_for(base).ok_or_else(|| {
+            format!("no live lane serves {base} on this node: in-engine training runs on the resident weights")
+        })?;
+        Ok(LaneLease { choice, hold: None })
+    }
+}
+
+/// A test's lane: any `Fn(base) -> Option<LaneChoice>`, held by nothing.
+#[cfg(test)]
+#[async_trait]
+impl<F: Fn(&str) -> Option<LaneChoice> + Send + Sync> LaneSource for F {
+    fn serves(&self, base: &str) -> bool {
+        self(base).is_some()
+    }
+
+    async fn acquire(&self, base: &str) -> Result<LaneLease, String> {
+        let choice = self(base).ok_or_else(|| format!("the test lane serves no {base}"))?;
+        Ok(LaneLease { choice, hold: None })
+    }
+}
+
+/// The lane a run will train in, as the ONE live-lane record names it.
+#[derive(Debug, Clone)]
+pub(super) struct LaneChoice {
+    pub(super) url: String,
+    /// The per-slot window it was launched with (0 = unknown, refused).
+    pub(super) window: u32,
+    /// The engine process hosting it (pid plus OS start time), the identity a run binds to at
+    /// admission (SHARED-RESIDENT-LIFECYCLE.md step 1). `None` only in tests with no engine.
+    pub(super) engine: Option<crate::inference::engine_residency::EngineIncarnation>,
+    /// The build of that engine (its slot stamp): what a footprint measured on it is filed under,
+    /// so a measurement is never read as evidence about another engine (card de9e1342). `None`
+    /// on a pre-slot install and in tests.
+    pub(super) build: Option<String>,
+}
+
+/// A lane record's incarnation. A record from before `started_s` names the live process by
+/// its pid and the start time the table reports now.
+pub(super) fn incarnation_of(rec: &crate::inference::lane_registry::LaneRecord) -> Option<crate::inference::engine_residency::EngineIncarnation> {
+    if rec.started_s != 0 {
+        Some(rec.incarnation())
+    } else {
+        crate::inference::engine_residency::EngineIncarnation::of(rec.pid, rec.port)
+    }
+}
+
+pub(super) fn live_lane_for(base: &str) -> Option<LaneChoice> {
+    let rec = crate::inference::lane_registry::live_lane()?;
+    crate::model_registry::artifacts::names_the_same_base(&rec.model, base).then(|| LaneChoice {
+        url: rec.root_url(),
+        window: rec.context_window,
+        engine: incarnation_of(&rec),
+        build: rec.engine_bin.as_deref().and_then(crate::inference::engine_slots::stamp_of_bin),
+    })
+}
+
+/// Admission: the governed lease a run holds for its life. `Governed` in production;
+/// tests drive the run without a governor.
+pub(super) enum Admission {
+    Governed,
+    /// No governor: the free VRAM a chunk is fitted against is what the test says it is
+    /// (`u64::MAX` = nothing to fit against, the default chunk).
+    #[cfg(test)]
+    Ungoverned { vram_free: u64 },
+}
+
+pub struct EngineLoraFineTuner {
+    pub(super) jobs: NativeJobs,
+    pub(super) http: reqwest::Client,
+    pub(super) lane: LaneResolver,
+    /// The lanes' `--train-dir` (the engine writes `<job>.gguf` here).
+    pub(super) train_dir: Option<PathBuf>,
+    pub(super) footprints: Footprints,
+    pub(super) admission: Admission,
+    /// the holds this tuner's runs obey (the node's, or a test's own)
+    pub(super) holds: TrainingHolds,
+    /// Where `genome/job-pause` records a job's pause, so it outlives the core (`None`: no
+    /// home, so no persisted pauses; the in-memory holds still apply).
+    pub(super) hold_store: Option<PathBuf>,
+    /// Where a run's binding to its engine incarnation is recorded (`None`: no home, or a
+    /// test with no engine; an ungoverned run binds nothing).
+    pub(super) residency_store: Option<PathBuf>,
+    /// Leases re-taken at boot for runs a previous core bound to a still-live engine
+    /// ([`Self::reclaim_resident_leases`]), held here until `reattach` hands each to its run or
+    /// the binding is released. The lease was in the dead core's memory; the engine's
+    /// allocation was not, so until this re-takes it a second job could be admitted into it.
+    pub(super) resident_leases: Arc<Mutex<BTreeMap<Uuid, crate::resources::LeaseGuard>>>,
+    /// The least a run's POST may wait ([`post_wait_for`]): [`POST_WAIT_FLOOR`], or a test's
+    /// shorter one, so a lost POST can be exercised without a two-minute wait.
+    pub(super) post_wait_floor: Duration,
+}
+
+impl Default for EngineLoraFineTuner {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl EngineLoraFineTuner {
+    pub fn new() -> Self {
+        // Without a home nothing persists: every shape re-measures (a calibration run), never a guessed footprint.
+        let footprints = match crate::paths::ContinuumLayout::home() {
+            Ok(layout) => Footprints::at(layout.genome().join("engine-footprints.json")),
+            Err(_) => Footprints::unrecorded(),
+        };
+        Self {
+            jobs: NativeJobs::new(PROVIDER_ID),
+            http: reqwest::Client::new(),
+            lane: Box::new(ResidentLane),
+            train_dir: crate::inference::llama_server::engine_train_dir(),
+            footprints,
+            admission: Admission::Governed,
+            holds: TrainingHolds::node().clone(),
+            hold_store: crate::paths::continuum_home()
+                .ok()
+                .map(|home| super::super::training_hold_store::store_path(&home)),
+            residency_store: crate::paths::continuum_home()
+                .ok()
+                .map(|home| crate::inference::engine_residency::store_path(&home)),
+            resident_leases: Arc::new(Mutex::new(BTreeMap::new())),
+            post_wait_floor: POST_WAIT_FLOOR,
+        }
+    }
+
+    #[cfg(test)]
+    /// [`Self::for_test`] on a host with `vram_free` bytes governed and free, so a chunk is
+    /// chosen against it (card d6dae498).
+    #[cfg(test)]
+    pub(super) fn for_test_with_vram(lane_url: String, train_dir: PathBuf, footprints: PathBuf, vram_free: u64) -> Self {
+        let mut t = Self::for_test(lane_url, train_dir, footprints);
+        t.admission = Admission::Ungoverned { vram_free };
+        t
+    }
+
+    /// The VRAM a job may fit a chunk into now: the governor's figure for this consumer, or
+    /// what an ungoverned (test) host declares.
+    pub(super) fn vram_free_for(&self, consumer: &str) -> u64 {
+        match self.admission {
+            Admission::Governed => governed_training_free(consumer),
+            #[cfg(test)]
+            Admission::Ungoverned { vram_free } => vram_free,
+        }
+    }
+
+    #[cfg(test)]
+    pub(super) fn for_test(lane_url: String, train_dir: PathBuf, footprints: PathBuf) -> Self {
+        Self {
+            jobs: NativeJobs::new(PROVIDER_ID),
+            http: reqwest::Client::new(),
+            // a lane launched at 256 per slot: the window every existing test asserts
+            lane: Box::new(move |_: &str| Some(LaneChoice { url: lane_url.clone(), window: 256, engine: None, build: None })),
+            train_dir: Some(train_dir),
+            footprints: Footprints::at(footprints),
+            admission: Admission::Ungoverned { vram_free: u64::MAX },
+            holds: TrainingHolds::new(),
+            hold_store: None,
+            residency_store: None,
+            resident_leases: Arc::new(Mutex::new(BTreeMap::new())),
+            post_wait_floor: Duration::from_secs(1),
+        }
+    }
+}
+
+/// The in-place run: POST /train on the lane, poll to its end, stop it on a cancel.
+pub(super) struct EngineRun {
+    pub(super) http: reqwest::Client,
+    pub(super) lane: String,
+    /// The shape this run trains, and where footprints are filed: a REFUSED run files the
+    /// graph the engine's preflight measured, under the chunk it reports, so the next
+    /// dispatch of this shape chooses a smaller chunk instead of calibrating at the same
+    /// one forever (BigMama on #4894: footprints were filed by a finished run only).
+    pub(super) shape: Shape,
+    pub(super) footprints: Footprints,
+    /// The run to POST, or `None` for a run this core RE-ATTACHED to: it is already training in
+    /// the engine, and POSTing it again would be the duplicate run step 3 exists to prevent.
+    pub(super) start: Option<TrainRequest>,
+    /// How long the POST of `start` may take: the engine prepares (renders and tokenizes) every
+    /// example before it answers, so the wait derives from this job's measured render time
+    /// ([`post_wait_for`]), never a constant that a larger batch outlasts.
+    pub(super) post_wait: Duration,
+    /// The engine's name for the run (`/train`'s `out`), what every status is matched on.
+    pub(super) out: String,
+    /// where the engine writes this job's adapter (removed if a cancel races a finish)
+    pub(super) adapter_path: PathBuf,
+    /// This job's own directory, where a refusal is recorded for the trigger (card 2dfce676).
+    pub(super) job_dir: PathBuf,
+    pub(super) epochs: u32,
+    /// The run's last status as the engine reported it (finish reads its losses and footprint).
+    pub(super) last: Arc<Mutex<Option<TrainStatus>>>,
+    pub(super) holds: TrainingHolds,
+    /// This job's id (its handle's `local_id`) and the store its persisted pauses live in.
+    pub(super) job: Uuid,
+    pub(super) hold_store: Option<PathBuf>,
+    /// Where this run's binding to its engine incarnation is recorded, and that incarnation,
+    /// when admission bound it (`None`: an ungoverned test run). Released only when the run's
+    /// end is SETTLED: see [`EngineProbe::settled`].
+    pub(super) residency: Option<(PathBuf, crate::inference::engine_residency::ResidentWork)>,
+    /// What keeps a lane stood up for this run alive ([`LaneLease::hold`]): dropped with the run.
+    pub(super) _lane_hold: Option<Box<dyn std::any::Any + Send + Sync>>,
+    /// The governed lease, held for exactly as long as the engine may be running this job's
+    /// training: `run` returns only once it has ended there, and the lease drops with `self`.
+    pub(super) _lease: Option<crate::resources::LeaseGuard>,
+}
+
+/// Just enough of a run to ask the engine, after the run's future has ended, whether this job
+/// is still running there.
+pub(super) struct EngineProbe {
+    pub(super) http: reqwest::Client,
+    pub(super) lane: String,
+    pub(super) out: String,
+}
+
+impl EngineProbe {
+    /// The end of a run the engine provably never started (card 26df): its documented refusal
+    /// of the POST, and nothing else. `settled` can't decide this case,
+    /// since it waits for THIS run's terminal state and a refused run never has one. The
+    /// binding is settled when the bound incarnation is verifiably dead, or is still the same
+    /// process, which owns the lane that answered. An unreadable process keeps it.
+    pub(super) async fn never_started(&self, engine: &crate::inference::engine_residency::EngineIncarnation) -> bool {
+        use crate::inference::engine_residency::Liveness;
+        let engine = *engine;
+        matches!(
+            tokio::task::spawn_blocking(move || engine.liveness()).await,
+            Ok(Liveness::Dead | Liveness::Alive)
+        )
+    }
+
+    /// Is this run's end SETTLED (SHARED-RESIDENT-LIFECYCLE.md; Codex on #4531)? Only on
+    /// positive evidence:
+    /// - the incarnation is VERIFIABLY dead (no such process, or the pid was reused); or
+    /// - the engine answers 2xx that THIS run (`out`) is in a terminal state (done, cancelled
+    ///   or error), and the incarnation is still the same one after that network round trip.
+    /// Everything else is unknown and holds: an unreadable process, no answer, a non-2xx
+    /// answer, a foreign or idle answer (not proof about this run).
+    pub(super) async fn settled(&self, engine: &crate::inference::engine_residency::EngineIncarnation) -> bool {
+        use crate::inference::engine_residency::Liveness;
+        let liveness = || {
+            let engine = *engine;
+            tokio::task::spawn_blocking(move || engine.liveness())
+        };
+        match liveness().await {
+            Ok(Liveness::Dead) => return true,
+            Ok(Liveness::Alive) => {}
+            Ok(Liveness::Unknown) | Err(_) => return false,
+        }
+        let Ok(r) = self.http.get(format!("{}/train", self.lane)).timeout(Duration::from_secs(10)).send().await else {
+            return false;
+        };
+        if !r.status().is_success() {
+            return false;
+        }
+        let Ok(s) = r.json::<TrainStatus>().await else { return false };
+        let this_run_ended = s.out.as_deref() == Some(self.out.as_str())
+            && matches!(s.state, TrainState::Done | TrainState::Cancelled | TrainState::Error);
+        // the answer is only this engine's if the engine is still the same process
+        this_run_ended && matches!(liveness().await, Ok(Liveness::Alive))
+    }
+}
+
+impl EngineRun {
+    pub(super) async fn status_once(&self) -> Result<TrainStatus, String> {
+        Self::status_at(&self.http, &self.lane).await
+    }
+
+    /// One `GET /train` on `lane`: the engine's training status, or why it could not be read.
+    pub(super) async fn status_at(http: &reqwest::Client, lane: &str) -> Result<TrainStatus, String> {
+        let r = http
+            .get(format!("{lane}/train"))
+            .timeout(Duration::from_secs(10))
+            .send()
+            .await
+            .map_err(|e| format!("GET /train on {lane}: {e}"))?;
+        if !r.status().is_success() {
+            return Err(format!("GET /train on {lane}: HTTP {}", r.status()));
+        }
+        r.json::<TrainStatus>().await.map_err(|e| format!("GET /train on {lane}: {e}"))
+    }
+
+    /// The engine's training status, retried through a silence shorter than [`LANE_SILENCE`].
+    /// `Err` means the lane has answered nothing for that long: it is gone, and the run with it.
+    pub(super) async fn status(&self) -> Result<TrainStatus, String> {
+        let since = tokio::time::Instant::now();
+        loop {
+            match self.status_once().await {
+                Ok(s) => return Ok(s),
+                Err(e) if since.elapsed() >= LANE_SILENCE => {
+                    return Err(format!("{e} (no answer for {}s: the lane and its run are gone)", LANE_SILENCE.as_secs()))
+                }
+                Err(_) => tokio::time::sleep(POLL).await,
+            }
+        }
+    }
+
+    /// True while the engine MAY be running this job's training (it runs one at a time): the
+    /// status is ours and not a known end. An unknown state counts as running: releasing the
+    /// lease on a state nobody here understands is exactly the unsafe case.
+    pub(super) fn running_ours(&self, s: &TrainStatus) -> bool {
+        self.ours(s) && !matches!(s.state, TrainState::Done | TrainState::Cancelled | TrainState::Error)
+    }
+
+    /// The one way out of a run that did not finish: make sure the engine is not still training
+    /// this job before the lease is let go. Cancels (retrying the POST) and waits until the
+    /// engine's status is no longer this job's live run, or the lane is gone.
+    pub(super) async fn stop_ours(&self) {
+        loop {
+            match self.status().await {
+                Ok(s) if self.running_ours(&s) => {
+                    let _ = self
+                        .http
+                        .post(format!("{}/train/cancel", self.lane))
+                        .timeout(Duration::from_secs(10))
+                        .send()
+                        .await; // a refused or lost cancel is retried by the next pass; the status decides
+                    tokio::time::sleep(POLL).await;
+                }
+                _ => return, // not ours, not running, or the lane is gone: nothing of ours trains
+            }
+        }
+    }
+
+    pub(super) async fn failed(&self, why: String) -> InPlaceEnd {
+        self.stop_ours().await;
+        InPlaceEnd::Failed(why)
+    }
+
+    /// The engine runs one training at a time; a status for a different `out` is not ours.
+    pub(super) fn ours(&self, s: &TrainStatus) -> bool {
+        s.out.as_deref() == Some(self.out.as_str())
+    }
+
+    /// Steer the engine's pause toward `want` (fork #28's contract): ask when the status says
+    /// otherwise, and let the next status tell whether it took. A refused or lost request is
+    /// asked again next tick; uncertainty is never turned into a cancel. An engine without the
+    /// routes (404) cannot pause: the run keeps its automatic serving yield.
+    pub(super) async fn steer_pause(&self, s: &TrainStatus, want: bool) {
+        if s.pause_requested == want {
+            return;
+        }
+        let verb = if want { "pause" } else { "resume" };
+        let _ = self
+            .http
+            .post(format!("{}/train/{verb}", self.lane))
+            .json(&json!({ "out": self.out }))
+            .timeout(Duration::from_secs(10))
+            .send()
+            .await; // the status decides whether it took; a failure is retried on the next tick
+    }
+}
+
+/// The run's HELD-OUT loss, only when held-out tokens were actually evaluated (Codex, attempt 2).
+/// With no split, the engine's empty eval result is a loss of 0.0, and read as a validation
+/// loss that would claim a perfect held-out score. An engine with fork #31 says how many
+/// held-out tokens it evaluated; one before it says nothing, and then only a run that asked for
+/// a split is believed to have one.
+pub(super) fn held_out_loss(s: &TrainStatus, asked_split: f32) -> Option<f64> {
+    let evaluated = s.eval_trainable_tokens.map_or(asked_split > 0.0, |n| n > 0);
+    s.epochs.last().and_then(|e| e.eval_loss).filter(|_| evaluated)
+}
+
+/// Percent done and the current epoch from an engine status: completed epochs plus the current
+/// epoch's batch fraction.
+pub(super) fn progress_of(s: &TrainStatus, epochs: u32) -> (f32, u32) {
+    let done = s.epochs.len() as f32;
+    let batch = s.batch.unwrap_or(0) as f32; // unwrap_or: absent before the first batch — zero of this epoch is the truth
+    let max = s.batch_max.unwrap_or(0) as f32; // unwrap_or: absent before the first batch
+    let frac = if max > 0.0 { (batch / max).min(1.0) } else { 0.0 };
+    let pct = if epochs == 0 { 0.0 } else { ((done + frac) / epochs as f32 * 100.0).min(100.0) };
+    (pct, done as u32)
+}
+
+#[async_trait]
+impl InPlaceRun for EngineRun {
+    fn place(&self) -> String {
+        self.lane.clone()
+    }
+
+    async fn run(self: Box<Self>, cancel: watch::Receiver<bool>, progress: RunProgress) -> InPlaceEnd {
+        let (store, job) = (self.hold_store.clone(), self.job);
+        let residency = self.residency.clone();
+        let probe_run = EngineProbe { http: self.http.clone(), lane: self.lane.clone(), out: self.out.clone() };
+        let (mut end, never_started) = match self.begin().await {
+            Begin::NeverStarted(end) => (end, true),
+            Begin::Unproven(end) => (end, false),
+            Begin::Running(run) => (run.run_steered(cancel, progress).await, false),
+        };
+        // serving replaced the engine under this run anyway (an emergency): the failure says why
+        if let (InPlaceEnd::Failed(why), Some((path, _))) = (&end, &residency) {
+            if let Some(reason) = crate::inference::engine_residency::interruption_of(path, job) {
+                end = InPlaceEnd::Failed(format!("{why}; serving replaced the engine under this run: {reason}"));
+            }
+        }
+        // THE ENGINE IS RELEASED ONLY WHEN THE END IS SETTLED (SHARED-RESIDENT-LIFECYCLE.md):
+        // the engine answered that this job is not running, or its incarnation is verifiably
+        // gone. A lane that is alive but unreachable keeps the record: the run may still be
+        // training in it, so serving must not replace it on a guess (the explicit recovery act
+        // resolves that case, never a timeout).
+        if let Some((path, bound)) = residency {
+            let settled = if never_started {
+                probe_run.never_started(&bound.engine).await
+            } else {
+                probe_run.settled(&bound.engine).await
+            };
+            if settled {
+                let released = tokio::task::spawn_blocking(move || crate::inference::engine_residency::release(&path, &bound)).await;
+                if !matches!(released, Ok(Ok(_))) {
+                    continuum_base::probe!(
+                        class = "training.residency.release_failed",
+                        job = %job,
+                        "a settled run's engine binding could not be released; serving stays held on it until it can be"
+                    );
+                }
+            } else {
+                continuum_base::probe!(
+                    class = "training.residency.kept_uncertain",
+                    job = %job,
+                    pid = bound.engine.pid as u64,
+                    "the run ended here but its engine is alive and did not answer: the binding stays, serving stays off the engine"
+                );
+            }
+        }
+        // The job ended (finished, failed or cancelled), and its pauses end with it. A dropped
+        // future (a core shutting down) never reaches this line, so its intent stays on disk for
+        // the re-attach path that does not exist yet (see training_hold_store).
+        if let Some(store) = store {
+            let released = tokio::task::spawn_blocking(move || {
+                super::super::training_hold_store::release_job(&store, job, continuum_base::time::EpochMs::now().millis())
+            })
+            .await;
+            if !matches!(released, Ok(Ok(_))) {
+                continuum_base::probe!(
+                    class = "training.hold.release_failed",
+                    job = %job,
+                    "a finished job's persisted pauses could not be released; they expire on their TTL"
+                );
+            }
+        }
+        end
+    }
+}
+
+impl EngineRun {
+    /// Start the run in the engine, or say provably that it never started there. Split from
+    /// the watch so a refused start settles its engine binding as "never started" (card 26df),
+    /// not by waiting on a terminal state the engine will never report for this run.
+    pub(super) async fn begin(self: Box<Self>) -> Begin {
+        // a re-attached run is already in the engine: it is watched, never started again
+        if let Some(body) = &self.start {
+            match self
+                .http
+                .post(format!("{}/train", self.lane))
+                .json(body)
+                .timeout(self.post_wait)
+                .send()
+                .await
+            {
+                Ok(r) if r.status().is_success() => {}
+                Ok(r) => {
+                    let status = r.status();
+                    let why = r.text().await.unwrap_or_default(); // unwrap_or_default: an unreadable refusal body still fails the job
+                    let end = InPlaceEnd::Failed(format!("the engine refused the training run: HTTP {status}: {why}"));
+                    // Only the engine's documented refusal proves nothing of ours runs (Codex on
+                    // #5001): any other non-2xx (a 500, a proxy's answer) proves nothing.
+                    return if is_documented_train_refusal(status, &why) { Begin::NeverStarted(end) } else { Begin::Unproven(end) };
+                }
+                // LOST ON THE WAY BACK, RECONCILED BY THE RUN'S ID (card 93ffc555): the engine may
+                // have the run (fork #55 claims and shows it 'preparing' before its long prepare),
+                // so its status decides, never a clock: this job's run, in ANY state including its
+                // error, is handed to the watch loop below, whose arms already file a refused
+                // graph's footprint and its returnable record (Cormac on #4946: a shortcut here
+                // dropped both, which is 97e081e2 again); anything else means it never started
+                // there, and it fails as before.
+                Err(e) => {
+                    let status = self.status().await.ok();
+                    match after_lost_post(status.as_ref(), |s| self.ours(s)) {
+                        LostPost::Watch => continuum_base::probe!(
+                            class = "training.job.post_reconciled",
+                            job = %self.job,
+                            error = %e,
+                            "the POST was lost on the way back but the engine reports this job's run: it is watched to its end, not failed"
+                        ),
+                        // A lost POST may still be queued or in flight when the status is read, so a
+                        // status naming another run or none does not prove it will never start
+                        // (Codex on #5001). Its binding settles only the ordinary way.
+                        LostPost::NeverStarted => {
+                            return Begin::Unproven(self.failed(format!("POST /train on {}: {e}", self.lane)).await);
+                        }
+                    }
+                }
+            }
+        }
+        Begin::Running(self)
+    }
+
+    pub(super) async fn run_steered(self: Box<Self>, mut cancel: watch::Receiver<bool>, progress: RunProgress) -> InPlaceEnd {
+        let mut tick = tokio::time::interval(POLL);
+        tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        let mut cancelling = false;
+        let mut holds = self.holds.subscribe();
+        let mut was_paused = false;
+        loop {
+            tokio::select! {
+                changed = cancel.changed(), if !cancelling => {
+                    if changed.is_err() || *cancel.borrow() {
+                        cancelling = true;
+                    }
+                }
+                _ = holds.changed() => {}
+                _ = tick.tick() => {}
+            }
+            if cancelling {
+                // stops at the next training window; Cancelled only once the engine says so. A run
+                // that reached done in the meantime wrote its adapter: a cancelled job keeps none.
+                self.stop_ours().await;
+                let _ = std::fs::remove_file(&self.adapter_path); // absent unless the run finished first
+                return InPlaceEnd::Cancelled;
+            }
+            let s = match self.status().await {
+                Ok(s) => s,
+                Err(e) => return InPlaceEnd::Failed(e), // the lane is gone, and its run with it
+            };
+            if !self.ours(&s) {
+                // one run at a time: another run in the engine means ours has ended
+                return InPlaceEnd::Failed(format!("the engine's training run is no longer this job's (out {:?})", s.out));
+            }
+            if let Ok(mut last) = self.last.lock() {
+                *last = Some(s.clone());
+            }
+            match s.state {
+                TrainState::Preparing | TrainState::Starting | TrainState::Running => {
+                    let (pct, epoch) = progress_of(&s, self.epochs);
+                    progress.running(pct, epoch);
+                    // held: pause at the next window, keeping everything; released: resume. The
+                    // lease stays held throughout, since the paused run keeps its allocation.
+                    let mut reasons = holds_on(&holds.borrow(), &self.lane);
+                    // a pause asked through genome/job-pause, read every tick: it outlives the core
+                    if let Some(store) = &self.hold_store {
+                        // Holds are created and expire in wall time, which a core restart keeps. A pre-1970
+                        // clock reads 0 here: every hold reads as live, never as expired early.
+                        let now = continuum_base::time::EpochMs::now().millis();
+                        match super::super::training_hold_store::live_on(store, self.job, now).await {
+                            Ok(persisted) => reasons.extend(persisted.into_iter().map(|h| h.reason)),
+                            // unreadable intent holds: a paused job is never resumed on a guess
+                            Err(e) => reasons.push(format!("hold store unreadable: {e}")),
+                        }
+                    }
+                    self.steer_pause(&s, !reasons.is_empty()).await;
+                    // the worker's own state: paused while it waits at a boundary, whatever was
+                    // asked (a resume request clears pause_requested before the worker wakes)
+                    let now_paused = s.paused;
+                    if now_paused != was_paused {
+                        continuum_base::probe!(
+                            class = if now_paused { "training.run.paused" } else { "training.run.resumed" },
+                            out = self.out.as_str(),
+                            holds = reasons.join(",").as_str(),
+                            // a pause with no hold is the engine yielding its slots to serving
+                            yielding_to_serving = s.waiting_for_serving,
+                            pct = pct as f64,
+                            "an in-engine run reached a pause at a window boundary, or left one, with its optimizer and adapter kept"
+                        );
+                        was_paused = now_paused;
+                    }
+                }
+                TrainState::Done => {
+                    // THE SHARE, as the engine itself counted it (Cormac on #4798): auditable on
+                    // every node from the run's own receipt, no second run. An engine before
+                    // fork #32 reports no counts: the probe says so, so "not reported" is
+                    // never read as a zero share, and an old engine is told apart from a probe
+                    // that never fired.
+                    match (s.windows, s.windows_while_busy, s.yielded_ms) {
+                        (Some(windows), Some(busy), Some(yielded)) => continuum_base::probe!(
+                            class = "training.run.share",
+                            out = self.out.as_str(),
+                            reported = true,
+                            windows,
+                            windows_while_busy = busy,
+                            yielded_ms = yielded,
+                            share_ppm = s.share_ppm.map(|v| v as i64).unwrap_or(-1), // -1 = counts reported, policy not (an engine between the counts and the policy); never a 0 that reads as a zero share
+                            max_slowdown_ppm = s.max_slowdown_ppm.map(|v| v as i64).unwrap_or(-1), // -1 = an engine before the bound (fork #36): it paced by the share
+                            slowdown_ppm_realized = s.slowdown_ppm_realized.map(|v| v as i64).unwrap_or(-1), // -1 = not measured: no busy stretch both with and without a window, or an engine before #36
+                            decode_tps_no_window = s.decode_tps_no_window.unwrap_or(-1.0), // -1 = not measured, never a 0 that reads as her stopping
+                            decode_tps_in_window = s.decode_tps_in_window.unwrap_or(-1.0), // -1 = not measured, never a 0 that reads as her stopping
+                            "the in-engine run finished: how many windows it took beside busy serving, how long it yielded, and what it cost her decoding against the bound"
+                        ),
+                        _ => continuum_base::probe!(
+                            class = "training.run.share",
+                            out = self.out.as_str(),
+                            reported = false,
+                            "the in-engine run finished on an engine that does not report its share (before fork #32): the counts are not known"
+                        ),
+                    }
+                    return InPlaceEnd::Finished;
+                }
+                TrainState::Cancelled => return InPlaceEnd::Failed("the engine's run was cancelled by someone else".into()),
+                TrainState::Error => {
+                    let why = s.error.as_deref().unwrap_or("no error text"); // unwrap_or: the state alone is the failure
+                    // THE REFUSAL IS THE MEASUREMENT: the preflight sized the graph before refusing
+                    // it, and the engine reports that size on an error too. Filed under the chunk
+                    // the engine ran, so `choose_chunk` steps down on the next dispatch.
+                    let grown = s.run_bytes();
+                    if grown > 0 {
+                        let ran_window = s.window.unwrap_or(self.shape.window); // unwrap_or: an engine that reports no window ran the one asked
+                        let ran_chunk = s.chunk.unwrap_or_else(|| train_chunk_for(ran_window, self.shape.chunk)); // unwrap_or_else: an engine that reports no chunk ran the mirrored rule
+                        let refused = Shape { window: ran_window, chunk: ran_chunk, ..self.shape.clone() };
+                        // The job's examples belong back in her bucket so the next dispatch can
+                        // step down; the trigger reads this to decide (card 2dfce676).
+                        if let Err(e) = write_returnable(&self.job_dir, &Returnable::EngineRefused(Refusal { window: ran_window, chunk: ran_chunk, graph_bytes: grown, error: why.to_string() })) {
+                            continuum_base::probe!(
+                                class = "training.job.refusal_unrecorded",
+                                job = %self.job,
+                                error = %e,
+                                "the refusal could not be recorded in the job's directory; its examples wait for a manual return"
+                            );
+                        }
+                        // file I/O that may wait out a Windows sharing violation: off the runtime
+                        let store = self.footprints.clone();
+                        let (shape, job) = (refused.clone(), self.job);
+                        let whole = s.context_mib.is_some();
+                        let recorded = tokio::task::spawn_blocking(move || store.record_with(&shape, grown, whole, job))
+                            .await
+                            .unwrap_or_else(|e| Err(std::io::Error::other(e.to_string())));
+                        match recorded {
+                            Ok(()) => continuum_base::probe!(
+                                class = "training.job.footprint_from_refusal",
+                                job = %self.job,
+                                window = ran_window as u64,
+                                chunk = ran_chunk as u64,
+                                exact = refused.exact,
+                                graph_bytes = grown,
+                                "the engine refused this shape's graph; its measured size is filed so the next dispatch chooses a smaller chunk"
+                            ),
+                            Err(e) => continuum_base::probe!(
+                                class = "training.job.footprint_unrecorded",
+                                job = %self.job,
+                                error = %e,
+                                "the refused graph's size could not be recorded; the next dispatch calibrates at the same chunk"
+                            ),
+                        }
+                    }
+                    return InPlaceEnd::Failed(format!("the engine's training run failed: {why}"));
+                }
+                // idle while ours is named, or a state this core does not know: not a known end
+                TrainState::Idle | TrainState::Unknown => {
+                    return self.failed(format!("the engine reports training state {:?} for this job", s.state)).await
+                }
+            }
+        }
+    }
+}

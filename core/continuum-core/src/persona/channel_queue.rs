@@ -8,7 +8,7 @@
 //!
 //! One ChannelQueue per ActivityDomain. The CNS iterates channels in priority order.
 
-use crate::time::EpochMs;
+use continuum_base::time::EpochMs;
 use super::channel_items::{ChatQueueItem, TaskQueueItem};
 use super::channel_types::{ActivityDomain, ChannelStatus, CoherentUnit, QueueItemBehavior};
 use std::sync::Arc;
