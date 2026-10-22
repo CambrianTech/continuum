@@ -22,27 +22,83 @@ fn module_of(rel: &str) -> &str {
     first.strip_suffix(".rs").unwrap_or(first) // unwrap_or: a directory module has no .rs suffix
 }
 
-/// Every `crate::<ident>` head in `text`'s code. Comment lines are skipped: a doc link to a
-/// module couples no compilation (`identity`'s only reference to `cognition` was a `//!`
-/// link), and a cut must not be refused for one.
-fn named_heads(text: &str) -> BTreeSet<&str> {
+/// Every top-level module `text`'s code names from the crate root, in the three spellings the
+/// tree uses (Cormac on #5266): `crate::<ident>`, a `crate::{…}` group (each top-level path
+/// in it, across lines), and a `super::` chain that climbs from `rel`'s depth to the root.
+/// Comment lines are skipped: a doc link to a module couples no compilation (`identity`'s only
+/// reference to `cognition` was a `//!` link), and a cut must not be refused for one.
+/// Undercounting is the failure that matters: a missed spelling lets a cycle pass, and lets a
+/// "peel" lower the count by rewriting an import.
+fn named_heads(text: &str, rel: &str) -> BTreeSet<String> {
+    let code: String = text
+        .lines()
+        .filter(|line| !line.trim_start().starts_with("//"))
+        .collect::<Vec<_>>()
+        .join("\n");
     let mut heads = BTreeSet::new();
-    let code = text.lines().filter(|line| !line.trim_start().starts_with("//"));
-    for line in code {
-        heads.extend(line_heads(line));
+    for (at, _) in code.match_indices("crate::") {
+        heads.extend(heads_after(&code[at + "crate::".len()..]));
+    }
+    let depth = module_depth(rel);
+    let mut at = 0;
+    while let Some(found) = code[at..].find("super::") {
+        let start = at + found;
+        let mut climbs = 0;
+        let mut rest = &code[start..];
+        while let Some(next) = rest.strip_prefix("super::") {
+            climbs += 1;
+            rest = next;
+        }
+        // A `super::` right after another is the tail of a chain already counted at its first
+        // one; a chain that stops short of the root stays inside its own top-level module.
+        let fresh = !code[..start].ends_with("super::");
+        if fresh && climbs >= depth {
+            heads.extend(heads_after(rest));
+        }
+        at = start + "super::".len();
     }
     heads
 }
 
-fn line_heads(text: &str) -> BTreeSet<&str> {
-    let mut heads = BTreeSet::new();
-    for (at, _) in text.match_indices("crate::") {
-        let rest = &text[at + "crate::".len()..];
-        let end = rest.find(|c: char| !(c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')).unwrap_or(rest.len()); // unwrap_or: an identifier running to the end of the text ends there
-        if end > 0 {
-            heads.insert(&rest[..end]);
-        }
+/// How many `super::` reach the crate root from the file at `rel`: its module path's length
+/// (`a/b/c.rs` is `a::b::c`, 3; `a/b/mod.rs` is `a::b`, 2; `lib.rs`/`main.rs` are the root).
+fn module_depth(rel: &str) -> usize {
+    let parts: Vec<&str> = rel.trim_end_matches(".rs").split('/').collect();
+    match parts.as_slice() {
+        [only] if *only == "lib" || *only == "main" => 0,
+        [path @ .., "mod"] => path.len(),
+        path => path.len(),
     }
+}
+
+/// The module heads a path starting at `rest` names: its first identifier, or, for a
+/// `{…}` group, each top-level path's first identifier (`self` and empty items name nothing).
+fn heads_after(rest: &str) -> Vec<String> {
+    let ident = |s: &str| -> String {
+        s.trim_start().chars().take_while(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || *c == '_').collect()
+    };
+    let Some(group) = rest.strip_prefix('{') else {
+        let head = ident(rest);
+        return if head.is_empty() { Vec::new() } else { vec![head] };
+    };
+    let mut heads = Vec::new();
+    let (mut depth, mut item) = (0usize, String::new());
+    for c in group.chars() {
+        match c {
+            '{' => depth += 1,
+            '}' if depth == 0 => break,
+            '}' => depth -= 1,
+            ',' if depth == 0 => {
+                heads.push(ident(&item));
+                item.clear();
+                continue;
+            }
+            _ => {}
+        }
+        item.push(c);
+    }
+    heads.push(ident(&item));
+    heads.retain(|head| !head.is_empty() && head != "self");
     heads
 }
 
@@ -53,9 +109,9 @@ pub fn module_graph(files: &[SourceFile]) -> BTreeMap<String, BTreeSet<String>> 
     for file in files {
         let from = module_of(&file.rel);
         let edges = graph.entry(from.to_owned()).or_default();
-        for head in named_heads(&file.production) {
-            if head != from && modules.contains(head) {
-                edges.insert(head.to_owned());
+        for head in named_heads(&file.production, &file.rel) {
+            if head != from && modules.contains(head.as_str()) {
+                edges.insert(head);
             }
         }
     }
@@ -173,6 +229,27 @@ mod tests {
         let found = cycles(&module_graph(&files));
         assert_eq!(found, vec![vec!["mind".to_owned(), "surface".to_owned()]]);
         assert_eq!(ModuleCycles.check_crate(&files, "").len(), 2, "one violation per module in a cycle");
+    }
+
+    // what this catches (Cormac on #5266): a cycle hidden by how an import is spelled. A
+    // grouped `crate::{…}` (across lines) and a `super::` chain that climbs to the root are
+    // edges like `crate::x`; a chain that stays inside its own module, and `self` in a group,
+    // are not.
+    #[test]
+    fn every_spelling_of_a_root_path_is_an_edge() {
+        let grouped = [
+            file("mind.rs", "use crate::{\n    clog_info,\n    surface::{x, y},\n};\n"),
+            file("surface/mod.rs", "use crate::mind::z;\n"),
+        ];
+        assert_eq!(cycles(&module_graph(&grouped)), vec![vec!["mind".to_owned(), "surface".to_owned()]]);
+        let climbed = [
+            file("mind/a/b.rs", "use super::super::super::surface::x;\nuse super::sibling::y;\n"),
+            file("surface/mod.rs", "use crate::mind::a;\n"),
+        ];
+        assert_eq!(cycles(&module_graph(&climbed)), vec![vec!["mind".to_owned(), "surface".to_owned()]]);
+        assert_eq!(heads_after("{self, kernel::a, ,}"), vec!["kernel".to_owned()]);
+        assert_eq!(module_depth("mind/a/mod.rs"), 2);
+        assert_eq!(module_depth("lib.rs"), 0);
     }
 
     #[test]
