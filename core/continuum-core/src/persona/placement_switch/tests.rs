@@ -441,3 +441,47 @@ fn a_return_is_asked_only_of_a_seat_whose_beacon_offers_a_slot() {
     r.seat_offers_slot = false;
     assert_eq!(decide(r), PlacementMove::Stay, "seated there already: the offer is not hers to need");
 }
+
+// what this catches (6780e79b): placement changes cannot exchange the concrete
+// adapter between admission and dispatch; the next call resolves the new seat.
+#[tokio::test]
+async fn admitted_target_survives_fall_home_and_next_call_uses_home() {
+    use crate::ai::adapter::{AIProviderAdapter, GenerationAdmissionOwner};
+    use crate::ai::heuristic_adapter::HeuristicInferenceAdapter;
+    use crate::ai::types::TextGenerationRequest;
+    use crate::inference::airc_remote::{AircRemoteInferenceAdapter, RemoteInferenceError};
+    use crate::inference::airc_remote::transport::StubInferenceTransport;
+    use crate::persona::inference_profile::{PersonaInferenceProfile, SamplingProfile};
+    use crate::persona::hw_tier_descriptor::HwTierCategory;
+    use crate::persona::scripted_adapter_factory::ScriptedPersonaAdapterFactory;
+    use std::sync::Arc;
+    use uuid::Uuid;
+
+    let home: Arc<dyn AIProviderAdapter> = Arc::new(HeuristicInferenceAdapter::new());
+    let factory_home = Arc::clone(&home);
+    let factory = Arc::new(ScriptedPersonaAdapterFactory::custom(move |_| Ok(Arc::clone(&factory_home))));
+    let profile = PersonaInferenceProfile {
+        persona_id: Uuid::new_v4(), persona_name: "route fixture".into(),
+        model_id: "fixture".into(), gguf_local_path: None,
+        tier_category: HwTierCategory::Compat, tier_id: "fixture".into(),
+        context_length: 8192, n_ubatch: 512, n_batch: 512, n_seq_max: 1, n_gpu_layers: 0,
+        sampling: SamplingProfile::chat_defaults(), chat_template: None, stop_sequences: vec![],
+    };
+    let remote = Arc::new(AircRemoteInferenceAdapter::new(
+        StubInferenceTransport::always_failing(RemoteInferenceError::Transport {
+            message: "selected remote receipt".into(),
+        }),
+    ));
+    let switch = PlacementSwitch::new(profile.persona_id, profile.persona_name.clone(),
+        Uuid::new_v4(), remote, factory, profile, None, None);
+    let selected = switch.generation_target().expect("concrete remote target");
+    assert_eq!(selected.generation_admission(), GenerationAdmissionOwner::Adapter);
+    let moved = switch.apply(&PlacementMove::FallHome { reason: "fixture transition" },
+        1, SeatFit { window: None, requirement: None }).await;
+    assert!(moved.is_some());
+    let (sink, _receiver) = tokio::sync::mpsc::unbounded_channel();
+    let result = selected.generate_stream_checked(TextGenerationRequest::default(), sink).await;
+    assert!(result.expect_err("the admitted remote still dispatches remotely").to_string().contains("selected remote receipt"));
+    let next = switch.generation_target().expect("concrete home target");
+    assert!(Arc::ptr_eq(&next, &home), "fall-home is effective on the next call");
+}

@@ -30,6 +30,10 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
         }
     }
 
+    fn generation_admission(&self) -> crate::ai::adapter::GenerationAdmissionOwner {
+        self.generation_admission_for(&crate::inference::llama_server::current_serving().base_url)
+    }
+
     fn name(&self) -> &str {
         &self.config.name
     }
@@ -476,5 +480,19 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
             .model_prefixes
             .iter()
             .any(|prefix| lower.starts_with(&prefix.to_lowercase()))
+    }
+}
+
+impl OpenAICompatibleAdapter {
+    pub(super) fn generation_admission_for(
+        &self,
+        serving_base: &str,
+    ) -> crate::ai::adapter::GenerationAdmissionOwner {
+        use crate::ai::adapter::GenerationAdmissionOwner;
+        if !self.dedicated_lane && self.targets_serving_endpoint(serving_base) {
+            GenerationAdmissionOwner::SharedLocal
+        } else {
+            GenerationAdmissionOwner::Adapter
+        }
     }
 }

@@ -92,6 +92,7 @@ pub use super::model_binding::ModelBinding;
 mod prompt;
 pub use self::prompt::*;
 mod request;
+mod admission;
 use self::request::*;
 mod reply_claim;
 use self::reply_claim::*;

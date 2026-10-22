@@ -126,7 +126,11 @@ impl OpenAICompatibleAdapter {
     /// URL equality against the ONE published snapshot, never a name sniff (#70).
     pub(super) fn targets_local_serving_lane(&self) -> bool {
         let snap = crate::inference::llama_server::current_serving();
-        if snap.base_url.is_empty() {
+        self.targets_serving_endpoint(&snap.base_url)
+    }
+
+    pub(super) fn targets_serving_endpoint(&self, serving_base: &str) -> bool {
+        if serving_base.is_empty() {
             return false;
         }
         fn norm(s: &str) -> &str {
@@ -138,7 +142,7 @@ impl OpenAICompatibleAdapter {
             .runtime_base_url
             .as_deref()
             .unwrap_or(self.config.base_url.as_str());
-        norm(raw) == norm(&snap.base_url)
+        norm(raw) == norm(serving_base)
     }
 
     /// The endpoint base for a SPECIFIC requested model. Same as [`Self::endpoints`]

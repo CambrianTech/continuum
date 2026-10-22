@@ -591,3 +591,17 @@ async fn single_slot_background_use_preserves_only_successfully_saved_activity_p
     server.abort();
     let _ = server.await;
 }
+
+// what this catches (6780e79b): API/capability labels cannot decide admission;
+// the actual endpoint must match the shared engine, excluding dedicated lanes.
+#[test]
+fn generation_admission_follows_effective_endpoint_not_provider_label() {
+    use crate::ai::adapter::GenerationAdmissionOwner;
+    let mut adapter = test_adapter();
+    adapter.config.provider_id = "arbitrary-http-protocol".into();
+    assert!(!adapter.capabilities().is_local, "historical HTTP metadata is remote");
+    assert_eq!(adapter.generation_admission_for("http://127.0.0.1:0/v1/"), GenerationAdmissionOwner::SharedLocal);
+    assert_eq!(adapter.generation_admission_for("http://127.0.0.1:42"), GenerationAdmissionOwner::Adapter);
+    let adapter = adapter.with_dedicated_lane();
+    assert_eq!(adapter.generation_admission_for("http://127.0.0.1:0"), GenerationAdmissionOwner::Adapter);
+}
