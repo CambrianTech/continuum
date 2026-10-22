@@ -389,7 +389,7 @@ pub(super) async fn deploy_consume_pass() -> Result<PassEnd, String> {
                         if let Err(reason) = ledger.save(&attempts_path) { return Ok(PassEnd::ResourceBlocked(reason)); }
                         return Ok(PassEnd::ResourceBlocked(reason));
                     }
-                    Err(PublishedCoreError::CapabilityDeferred(reason) | PublishedCoreError::OperationalBlocked(reason)) => return Ok(PassEnd::ResourceBlocked(reason)),
+                    Err(PublishedCoreError::SourcePending(reason) | PublishedCoreError::CapabilityDeferred(reason) | PublishedCoreError::OperationalBlocked(reason)) => return Ok(PassEnd::ResourceBlocked(reason)),
                     Err(PublishedCoreError::Artifact(reason)) => return Err(reason),
                 }
                 Ok(PassEnd::Done)
@@ -505,6 +505,10 @@ pub(super) async fn ci_core_for(repo: &Path, candidates: &[String], request_path
                             }
                             MissingArtifact::AdmissionWait(why)
                         }
+                        // Source reads can disagree during GitHub's suite propagation.
+                        // Keep this consumer's custody and recheck; exiting here strands
+                        // the actuation even after the same candidate becomes green.
+                        Err(PublishedCoreError::SourcePending(why)) => MissingArtifact::AdmissionWait(why),
                         Err(PublishedCoreError::CapabilityDeferred(why) | PublishedCoreError::OperationalBlocked(why)) => return CiCore::ResourceBlocked(why),
                         Err(PublishedCoreError::Artifact(why)) if key == newest.as_str() => MissingArtifact::Refuse(format!(
                             "the CI build for {key} was refused: {why}; repair the prebuilt artifact before retrying; running core preserved"
