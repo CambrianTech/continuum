@@ -122,7 +122,7 @@ pub(crate) fn crate_sources() -> Vec<SourceFile> {
     }
     let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
     let mut out = Vec::new();
-    for root in [manifest.join("src"), manifest.join("../continuum-kernel/src")] {
+    for root in [manifest.join("src"), manifest.join("../continuum-kernel/src"), manifest.join("../continuum-engine/src")] {
         walk(&root, &root, &mut out);
     }
     out.retain(|f| !(f.rel == "lib.rs" && f.path.starts_with(manifest.join("../continuum-kernel/src"))));

@@ -112,9 +112,11 @@ pub(crate) fn decide_lane_placement(
     // Formal capture — a load-bearing decision gets a structured record, not just a
     // log line ([[observability-is-half-the-architecture]]). Best-effort: a sink
     // open/write failure never blocks the lane.
-    use crate::inference::placement_capture::{JsonlPlacementCaptureSink, PlacementDecisionRecord};
+    use crate::inference::placement_capture::{
+        JsonlPlacementCaptureSink, PlacementDecisionRecord, SCHEMA_VERSION,
+    };
     JsonlPlacementCaptureSink::glass_box().record(&PlacementDecisionRecord {
-        schema_version: 1,
+        schema_version: SCHEMA_VERSION,
         captured_at_ms: EpochMs::now().millis(),
         context: context.to_string(),
         model: base.id.clone(),
