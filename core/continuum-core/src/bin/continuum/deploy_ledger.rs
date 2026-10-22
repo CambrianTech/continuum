@@ -154,6 +154,17 @@ pub(super) struct ConsumeLedger {
 }
 
 impl ConsumeLedger {
+    /// Only observed adoption resolves an incident. It never changes the newer
+    /// request's selected build or forgives failures belonging to another build.
+    pub(super) fn observe_running(&mut self, running: &str) -> bool {
+        if self.refusal.as_ref().is_some_and(|r| r.resolved_by(running)) {
+            self.refusal = None;
+            true
+        } else {
+            false
+        }
+    }
+
     pub(super) fn record_refusal(&mut self, request: &str, build: &str,
         kind: continuum_cli_lifecycle::deploy_health::RefusalKind, reason: &str) {
         self.refusal = Some(continuum_cli_lifecycle::deploy_health::DeployRefusal::observe(
