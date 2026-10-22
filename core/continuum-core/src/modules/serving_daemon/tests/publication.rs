@@ -497,6 +497,7 @@ async fn an_engine_bound_to_live_work_is_never_replaced_under_it() {
         reserved_bytes: 1 << 30,
         interrupted: None,
         job_spec: None,
+        memory: None,
     };
     record(&store, bound.clone()).expect("test: record");
     assert!(

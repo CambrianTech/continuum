@@ -188,6 +188,7 @@ impl FineTuningAdapter for CudaLoraFineTuner {
                     failure("CUDA training requires the serving lifecycle gate")
                 })?,
                 &format!("genome-train:{id}"),
+                crate::resources::ResourceKind::Vram,
                 plan.memory_bytes,
                 |available| progress.waiting_for_capacity(plan.memory_bytes, available),
             )

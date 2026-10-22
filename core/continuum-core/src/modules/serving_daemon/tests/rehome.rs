@@ -611,20 +611,20 @@ async fn a_cpu_placed_lane_budgets_against_the_ram_row_not_the_card() {
         },
     );
     assert_eq!(
-        pool_kind_for(LanePlacement::Cpu),
+        LanePlacement::Cpu.pool_kind(),
         crate::resources::ResourceKind::Ram
     );
     assert_eq!(
-        pool_kind_for(LanePlacement::Gpu),
+        LanePlacement::Gpu.pool_kind(),
         crate::resources::ResourceKind::Vram
     );
     assert_eq!(
-        governed_pool_ceiling(&daemon, pool_kind_for(LanePlacement::Cpu)),
+        governed_pool_ceiling(&daemon, LanePlacement::Cpu.pool_kind()),
         Some(30_000),
         "a CPU-placed lane plans against the RAM its KV lives in"
     );
     assert_eq!(
-        governed_pool_ceiling(&daemon, pool_kind_for(LanePlacement::Gpu)),
+        governed_pool_ceiling(&daemon, LanePlacement::Gpu.pool_kind()),
         Some(4_000),
         "a GPU-placed lane plans against the card"
     );

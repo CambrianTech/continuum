@@ -335,6 +335,7 @@ pub(super) async fn admit_training(
             )
         })?,
         &format!("genome-train:{local_id}"),
+        crate::resources::ResourceKind::Vram,
         footprint,
         |available| progress.waiting_for_capacity(footprint, available),
     )

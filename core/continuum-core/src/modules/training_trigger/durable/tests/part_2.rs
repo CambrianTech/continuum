@@ -479,6 +479,7 @@ use super::*;
             reserved_bytes: 0,
             interrupted: None,
             job_spec: None,
+            memory: None,
         };
         let persona = Uuid::new_v4();
         let on_base = [work("synthetic")];
