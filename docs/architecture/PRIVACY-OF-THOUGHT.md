@@ -37,7 +37,7 @@ everyone in the room.
 | 3 | SFT datasets | `commands/dataset/from_captures.rs` | built from (2) |
 | 4 | Wire capture | `llm_deliberation_faculty.rs` → `<dir>/<persona>.wire.jsonl` | every message, when enabled |
 | 5 | RAG capture | `persona/rag_capture.rs` | delivered context, when a sink is opened |
-| 6 | Thought lines | `act_observe/apply.rs` → room transcript | her intent, durable, public |
+| 6 | Thought lines | `act_observe/apply.rs` → room transcript | since 2026-10-22 (card ba1eeda1): only what she SAID with the act (her action statement) and the act ledger; her reasoning goes to the human's act receipt (`ActReceiptView::thought`, withheld in her mind room), never the room |
 | 7 | Token streams | `service_loop.rs` → `text.token` | live typing, not durable |
 | 8 | Engrams | `<home>/engrams.sqlite` | her long-term memory |
 | 9 | Experience | `cognition/experience.rs` → `experience.jsonl` | lived episodes; feeds `genome/teach` |

@@ -183,6 +183,11 @@ pub(crate) struct PersonaActUpdate {
     /// a client that has not adopted it is not silently given a new meaning.
     #[serde(default)]
     pub(crate) state: String,
+    /// Her reasoning for the act batch this receipt opens, whole; `None` on the batch's
+    /// later receipts, when she gave none, and for a turn in her mind room. For the
+    /// human's view only: it never goes to the room's transcript.
+    #[serde(default)]
+    pub(crate) thought: Option<String>,
     pub(crate) timestamp: u64,
 }
 
