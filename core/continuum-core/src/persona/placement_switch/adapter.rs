@@ -418,6 +418,11 @@ impl AIProviderAdapter for PlacementSwitch {
             // act asking the same peer, or wait for the next placement beacon.
             // FallHome retains the remote adapter and its breaker; ordinary
             // placement policy still owns returning to that peer later.
+            // This changes inference routing only: RemoteInferenceRequest carries
+            // a prompt and returns text, while residency, hands and workspace
+            // remain here. It therefore does not require workspace migration.
+            // The synchronous request path records the existing fell_home probe;
+            // unlike the grid tick, it does not publish an org-room announcement.
             let _ = self.apply(
                 &PlacementMove::FallHome { reason: "remote circuit breaker cold before generation" },
                 continuum_base::time::EpochMs::now().millis(),

@@ -1,8 +1,7 @@
 //! Cold routes must be repaired before prompt sizing and admission, without a grid tick.
 use super::*;
-use crate::ai::adapter::AIProviderAdapter;
-use crate::ai::heuristic_adapter::HeuristicInferenceAdapter;
-use crate::ai::types::TextGenerationRequest;
+use crate::ai::adapter::{AIProviderAdapter, GenerationAdmissionOwner};
+use crate::ai::types::{TextGenerationRequest, TextGenerationResponse};
 use crate::inference::airc_remote::peer_breaker::COLD_AFTER_DEADLINES;
 use crate::inference::airc_remote::{
     AircRemoteInferenceAdapter, RemoteInferenceError, StubInferenceTransport,
@@ -10,6 +9,34 @@ use crate::inference::airc_remote::{
 use crate::persona::hw_tier_descriptor::HwTierCategory;
 use crate::persona::inference_profile::{PersonaInferenceProfile, SamplingProfile};
 use crate::persona::scripted_adapter_factory::ScriptedPersonaAdapterFactory;
+
+// An admission/window contract fixture: preparation must never generate itself.
+struct HomeLane;
+
+#[async_trait::async_trait]
+impl AIProviderAdapter for HomeLane {
+    fn provider_id(&self) -> &str {
+        "home-lane-fixture"
+    }
+    fn name(&self) -> &str {
+        "home lane"
+    }
+    fn default_model(&self) -> &str {
+        "fixture"
+    }
+    fn generation_admission(&self) -> GenerationAdmissionOwner {
+        GenerationAdmissionOwner::SharedLocal
+    }
+    fn live_served_window(&self) -> Option<u32> {
+        Some(4096)
+    }
+    async fn generate_text(
+        &self,
+        _request: TextGenerationRequest,
+    ) -> Result<TextGenerationResponse, String> {
+        Err("preparation must not generate".into())
+    }
+}
 
 fn switch(
     factory: Arc<ScriptedPersonaAdapterFactory>,
@@ -62,7 +89,7 @@ async fn trip(remote: &AircRemoteInferenceAdapter) {
 #[tokio::test]
 async fn cold_route_prepares_home_once_and_preserves_breaker(
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let home: Arc<dyn AIProviderAdapter> = Arc::new(HeuristicInferenceAdapter::new());
+    let home: Arc<dyn AIProviderAdapter> = Arc::new(HomeLane);
     let home_for_factory = Arc::clone(&home);
     let factory = Arc::new(ScriptedPersonaAdapterFactory::custom(move |_| {
         Ok(Arc::clone(&home_for_factory))
@@ -70,13 +97,23 @@ async fn cold_route_prepares_home_once_and_preserves_breaker(
     let remote = remote();
     let switch = switch(Arc::clone(&factory), Arc::clone(&remote));
     let prior_target = switch.generation_target().ok_or("missing remote target")?;
+    assert_eq!(
+        prior_target.generation_admission(),
+        GenerationAdmissionOwner::Adapter
+    );
+    // The remote has not answered yet; the bound profile budgets 8192. Home
+    // reports 4096, so preparation must expose the reduction before prompt fit.
+    assert_eq!(switch.live_served_window(), None);
     trip(&remote).await;
     switch.prepare_generation().await;
     let target = switch.generation_target().ok_or("missing home target")?;
     assert_eq!(switch.seat(), Seat::Home);
     assert!(Arc::ptr_eq(&target, &home));
-    assert_eq!(target.generation_admission(), home.generation_admission());
-    assert_eq!(switch.live_served_window(), home.live_served_window());
+    assert_eq!(
+        target.generation_admission(),
+        GenerationAdmissionOwner::SharedLocal
+    );
+    assert_eq!(switch.live_served_window(), Some(4096));
     assert!(
         remote.is_cold(),
         "preparation must not reset or replace the breaker"
@@ -112,6 +149,6 @@ async fn cold_route_without_home_keeps_honest_refusal() {
     assert_eq!(
         factory.build_count(),
         1,
-        "a failed home build is not a retry spin"
+        "the failed home build is cached; cold act refusals remain an open limitation"
     );
 }
