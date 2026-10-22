@@ -6,9 +6,12 @@ No service or deployment ledger changes are involved.
 
 1. Review and merge the dispatcher, script and fixtures to canary. Source fixtures
    need only Node; do not run the three-platform build to test scheduling.
-2. Through the normal reviewed main-promotion process, place the scheduler YAML
-   **and its fixture/script dependencies** on the default branch. GitHub cron uses
-   default-branch YAML. Merging to canary alone does not activate it.
+2. Read the live default branch with `gh repo view --json defaultBranchRef`.
+   GitHub cron uses default-branch YAML. If that branch is `canary`, the merge in
+   step 1 already installs the scheduler and dependencies there; no main promotion
+   is needed. Otherwise use the normal reviewed promotion process to place the
+   scheduler YAML **and its fixture/script dependencies** on the reported default
+   branch before proceeding. Do not assume the default branch is `main`.
 3. Manually dispatch `core-binaries-hourly` on the default branch with `dry_run=true`.
    Verify the receipt names canary's current full SHA and correct publication state.
    This reads GitHub and starts no build. Keep `CORE_BINARIES_HOURLY_ENABLED` unset.
