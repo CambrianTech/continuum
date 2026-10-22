@@ -105,6 +105,11 @@ impl LlmDeliberationFaculty {
                 // An opaque stimulus has no time: its position among the turns is its identity.
                 None => format!("#{index}"),
             };
+            let role = if turn.is_self {
+                crate::cognition::context_streams::Role::Assistant
+            } else {
+                crate::cognition::context_streams::Role::User
+            };
             turns.push(crate::cognition::context_streams::conversation::Turn { key, role, line });
         }
         // What follows the view in this act's prompt: facts, the clock, demoted payloads.

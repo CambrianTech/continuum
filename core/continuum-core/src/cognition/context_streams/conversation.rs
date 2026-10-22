@@ -5,11 +5,11 @@
 
 use continuum_context::source::{Item, Source};
 
-use super::{priority, ContextMessage};
+use super::{priority, ContextMessage, Role};
 
 pub(crate) struct Turn {
     pub key: String,
-    pub role: &'static str,
+    pub role: Role,
     pub line: String,
 }
 

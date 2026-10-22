@@ -16,20 +16,37 @@ use continuum_context::epoch::Block;
 
 use crate::ai::types::ChatMessage;
 
-/// One message of her context view: who it speaks as, and what it says.
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// Who a message of her view speaks as: her own voice, or anyone else's.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub(crate) enum Role {
+    User,
+    Assistant,
+}
+
+impl Role {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::User => "user",
+            Self::Assistant => "assistant",
+        }
+    }
+}
+
+/// One message of her context view: who it speaks as, and what it says. Serializable, so her
+/// view is saved with her working memory and survives a restart.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(crate) struct ContextMessage {
-    pub role: &'static str,
+    pub role: Role,
     pub text: String,
 }
 
 impl ContextMessage {
     pub fn user(text: String) -> Self {
-        Self { role: "user", text }
+        Self { role: Role::User, text }
     }
 
     pub fn to_chat(&self) -> ChatMessage {
-        ChatMessage::text(self.role, self.text.clone())
+        ChatMessage::text(self.role.as_str(), self.text.clone())
     }
 }
 

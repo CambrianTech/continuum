@@ -305,6 +305,7 @@ fn volatile_snapshot_round_trips_and_renders_the_interruption() {
         handoff: None,
         evicted_pointers: Vec::new(),
         actions: Vec::new(),
+        context_view: None,
         receipt_children: Default::default(),
         open_views: Vec::new(),
     });

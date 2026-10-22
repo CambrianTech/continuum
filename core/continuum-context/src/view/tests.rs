@@ -188,3 +188,23 @@ fn an_item_without_a_pointer_leaves_the_view_when_collapsed() {
     view.advance(&[&turns]);
     assert_eq!(rendered(&view), "three\nfour", "a new turn arrives whole; the collapsed stay gone");
 }
+
+// what this catches: a restart rebuilding her view from scratch. Restored, the view must render
+// the same bytes (the engine's saved page for it still matches) and keep its epoch's choices:
+// a collapsed item stays collapsed, and the next act only appends.
+#[test]
+fn a_restored_view_renders_the_same_bytes_and_keeps_appending() {
+    let mut actions = Fake::new("actions", 1);
+    actions.push("#1", &"x".repeat(9_000));
+    actions.push("#2", "short");
+    let (mut view, _) = View::start(vec!["head".into()], &[&actions], |claims| vec![claims[0].pointer_chars + 10]).unwrap();
+    view.advance(&[&actions]);
+    let saved = serde_json::to_string(&view).unwrap();
+    let mut restored: View<String> = serde_json::from_str(&saved).unwrap();
+    assert_eq!(rendered(&restored), rendered(&view));
+    let before = rendered(&restored);
+    actions.push("#3", "next");
+    restored.advance(&[&actions]);
+    assert!(rendered(&restored).starts_with(&before), "the next act only appends");
+    assert!(!rendered(&restored).contains(&"x".repeat(9_000)), "a collapsed item stays collapsed");
+}

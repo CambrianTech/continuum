@@ -57,6 +57,9 @@ pub struct Start {
     pub collapsed: usize,
 }
 
+/// Serializable, so a mind's view survives her restart with the rest of her volatile state:
+/// restored, it renders the same bytes, and the engine's saved page for it still matches.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct View<T: Block> {
     epoch: Epoch<T>,
     /// Items rendered as their pointer for this epoch; every other item renders in full.

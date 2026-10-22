@@ -88,6 +88,10 @@ const WORKING_MEMORY_SALIENCE: f32 = 0.5;
 // behavior on a small machine is unchanged while a big window finally gets a big budget).
 // [[never-hardcode-a-context-window-4k-defaults-destroy-the-moe-thesis]]
 use crate::cognition::act_observe::Observation;
+
+/// Her context view, the type her working memory checkpoints.
+pub(crate) type ContextView =
+    continuum_context::view::View<crate::cognition::context_streams::ContextMessage>;
 use crate::cognition::context_budget::ContextBudget;
 
 /// Clip a full action-result body to [`WM_ACTION_FULL_MAX_CHARS`] for prompt inclusion.
@@ -300,6 +304,11 @@ pub struct WorkingMemory {
     /// of a code read is broken code), and the handle that reopens it once collapsed
     /// (2026-08-24: collapse, never delete). One record per act, so one act has one key.
     actions: Mutex<action_log::ActionLog>,
+    /// Her context view as her last act left it (`llm_deliberation_faculty/prompt/epoch.rs`),
+    /// kept here so it is checkpointed with the rest of her volatile mind: restored after a
+    /// restart it renders the same bytes, and the engine's saved page for them still matches,
+    /// where a view rebuilt from scratch cost every resident one cold turn per deploy.
+    view: Mutex<Option<ContextView>>,
     /// Each retained receipt's DEPENDENCIES: the per-call results its saved text shows as
     /// pointers, keyed by the receipt ([`receipt_key`]). They belong to the receipt, not to the
     /// entry that carried its acts: while the receipt is in the ring or collapsed to a pointer,
@@ -469,6 +478,10 @@ pub struct VolatileSnapshot {
     /// so a rollback still restores her. Empty on snapshots written before it.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub(crate) actions: Vec<action_log::ActionRecord>,
+    /// Her context view ([`WorkingMemory`]'s `view`). Absent on snapshots written before it,
+    /// and then her first act after the restore starts a new one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) context_view: Option<ContextView>,
     /// Each retained receipt's per-call dependencies ([`WorkingMemory`]'s `receipt_children`),
     /// so a restart keeps what a restored receipt points at reachable. Empty on snapshots
     /// written before this field.

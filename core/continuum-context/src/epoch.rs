@@ -7,7 +7,7 @@
 //! (`view::View::turn_over`), which re-renders from the sources rather than editing this one.
 
 /// Names the producer of a block (the results ring, the kanban, recall, a perception feed).
-#[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
 pub struct SourceId(pub String);
 
 /// What a block holds: plain text, or a caller's richer rendering (a role-tagged message).
@@ -26,7 +26,7 @@ impl Block for String {
 }
 
 /// One rendered block: what a source said, and which of its versions this is.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Event<T = String> {
     pub source: SourceId,
     pub version: u32,
@@ -45,7 +45,7 @@ pub enum Observed {
 }
 
 /// A mind's view for one epoch.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct Epoch<T = String> {
     id: u64,
     head: Vec<T>,

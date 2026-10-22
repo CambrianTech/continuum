@@ -366,6 +366,8 @@ fn reply_priority_trades_history_not_required_input() {
             .with_working_memory(Arc::clone(&wm))
     };
     let pass_view = fresh().prompt_view_within(&pass, window);
+    // Working memory keeps her view for her checkpoint; this act starts its own.
+    wm.take_view();
     let act_faculty = fresh();
     let act_view = act_faculty.prompt_view_within(&act, window);
     for view in [&pass_view, &act_view] {

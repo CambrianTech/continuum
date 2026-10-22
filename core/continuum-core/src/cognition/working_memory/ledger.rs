@@ -64,6 +64,7 @@ impl WorkingMemory {
             action_fps: Mutex::new(VecDeque::new()),
             action_fp_counts: Mutex::new(HashMap::new()),
             actions: Mutex::new(Default::default()),
+            view: Mutex::new(None),
             receipt_children: Mutex::new(BTreeMap::new()),
             active_from_seq: AtomicU64::new(0),
             open_views: Mutex::new(Default::default()),

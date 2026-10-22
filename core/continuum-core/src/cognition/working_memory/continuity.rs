@@ -189,6 +189,7 @@ impl WorkingMemory {
                 .collect(),
             evicted_pointers: pointers,
             actions: records,
+            context_view: self.view.lock().clone(),
             receipt_children: self.receipt_children.lock().clone(),
             open_views: self.open_views.lock().saved(),
         }
@@ -202,6 +203,16 @@ impl WorkingMemory {
     /// labels it recorded as pending. It does not establish when an interruption
     /// happened, whether those operations completed, or what side effects they
     /// produced. The persona decides what to do with that uncertainty.
+    /// Keep her context view as this act left it, for the checkpoint.
+    pub(crate) fn keep_view(&self, view: Option<ContextView>) {
+        *self.view.lock() = view;
+    }
+
+    /// Her context view as a checkpoint restored it, taken once by the act that resumes it.
+    pub(crate) fn take_view(&self) -> Option<ContextView> {
+        self.view.lock().take()
+    }
+
     pub fn restore(&self, mut snap: VolatileSnapshot) {
         // Read before any field moves out of the snapshot below.
         let records = snap.action_records();
@@ -247,6 +258,7 @@ impl WorkingMemory {
             action_log::ActionLog::from_records(records, self.budget().receipt_archive_chars());
         *self.last_action.lock() = snap.last_action;
         *self.receipt_children.lock() = snap.receipt_children;
+        *self.view.lock() = snap.context_view;
         *self.open_views.lock() = super::super::open_views::OpenViews::from_saved(snap.open_views);
         // Against the REAL window only; an unknown one folds nothing (the rule lives in
         // `collapse_results_over_cap`): a floor here folded results the served window holds,

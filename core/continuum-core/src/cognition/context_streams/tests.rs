@@ -39,3 +39,27 @@ fn her_actions_say_honestly_what_has_executed() {
     assert!(!aged.contains("nothing has executed yet"), "denied her real acts: {aged}");
     assert!(!aged.to_lowercase().contains("recall can retrieve"), "{aged}");
 }
+
+// what this catches: a deploy costing every resident a cold turn. Her view is checkpointed with
+// her working memory, so after a restart it renders the same messages, the bytes the engine's
+// saved page holds, instead of a new epoch built from scratch.
+#[test]
+fn her_view_survives_a_restart_in_her_checkpoint() {
+    use continuum_context::view::{Claim, View};
+
+    let memory = WorkingMemory::new(8);
+    memory.record_receipt("I ran code/list Result: 4 files");
+    memory.record_settlement("listed", None);
+    let actions = Actions { memory: &memory };
+    let whole = |claims: &[Claim]| claims.iter().map(|claim| claim.full_chars).collect();
+    let (view, _) = View::start(Vec::new(), &[&actions as &dyn Source<_>], whole).unwrap();
+    let rendered = |view: &View<super::ContextMessage>| view.render().map(|m| m.text.clone()).collect::<Vec<_>>();
+    let before = rendered(&view);
+    memory.keep_view(Some(view));
+
+    let restored = WorkingMemory::new(8);
+    restored.restore(memory.snapshot());
+    let resumed = restored.take_view().expect("the checkpoint carried her view");
+    assert_eq!(rendered(&resumed), before);
+    assert!(restored.take_view().is_none(), "taken once, by the act that resumes it");
+}

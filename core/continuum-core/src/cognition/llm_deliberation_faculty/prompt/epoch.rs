@@ -21,6 +21,7 @@ use super::*;
 use crate::cognition::context_streams::actions::Actions;
 use crate::cognition::context_streams::thoughts::Thoughts;
 use crate::cognition::context_streams::ContextMessage;
+use crate::cognition::working_memory::WorkingMemory;
 
 /// The prefix of a view source's claim id in the window's one allocation.
 const VIEW_CLAIM: &str = "view/";
@@ -152,6 +153,11 @@ impl LlmDeliberationFaculty {
         let thoughts = memory.map(|memory| Thoughts { memory });
         let sources = Self::view_sources(streams, actions.as_ref(), thoughts.as_ref());
         let mut held = self.context_view.lock();
+        // A restart resumes the view her checkpoint kept, the same bytes the engine's saved
+        // page holds, instead of starting a new epoch cold.
+        if held.is_none() {
+            *held = memory.and_then(WorkingMemory::take_view);
+        }
         let started = held.is_none();
         if let Some(view) = held.as_mut() {
             let advance = view.advance(&sources);
@@ -176,6 +182,9 @@ impl LlmDeliberationFaculty {
                     "her view could not start"
                 ),
             }
+        }
+        if let Some(memory) = memory {
+            memory.keep_view(held.clone());
         }
         (Self::render(held.as_ref()), started)
     }
@@ -215,6 +224,9 @@ impl LlmDeliberationFaculty {
                 mismatch = %mismatch,
                 "her view could not turn over"
             ),
+        }
+        if let Some(memory) = memory {
+            memory.keep_view(held.clone());
         }
         Self::render(held.as_ref())
     }
