@@ -73,7 +73,7 @@ pub mod serving_footprints;
 pub mod serving_guard;
 pub mod serving_holds;
 pub mod serving_lifecycle;
-pub(crate) mod training_admission;
+pub mod training_admission;
 pub mod throughput_expectation;
 pub mod turn_admission;
 pub mod turn_bound;

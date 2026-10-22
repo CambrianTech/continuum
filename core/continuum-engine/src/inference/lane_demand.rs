@@ -85,7 +85,7 @@ pub fn lane_demand_overridden() -> bool {
 
 /// Register the daemon's live demand cell the first time boot sets the floor, then set the
 /// floor and recompute. Idempotent registration: a later call only moves the floor.
-pub(crate) fn register(cell: Arc<AtomicU32>, demand: u32) {
+pub fn register(cell: Arc<AtomicU32>, demand: u32) {
     let state = LANE_DEMAND.get_or_init(|| LaneDemandState {
         cell,
         base: std::sync::Mutex::new(demand.max(1)),

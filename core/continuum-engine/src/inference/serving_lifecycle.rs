@@ -17,7 +17,7 @@ use continuum_base::time::EpochMs;
 /// gate in silence, and the evidence died with the kill that restored it).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
-pub(crate) enum ReconcileStep {
+pub enum ReconcileStep {
     None = 0,
     /// Waiting on the external endpoint's reachability probe.
     External = 1,
@@ -35,7 +35,7 @@ pub(crate) enum ReconcileStep {
     TrainingAdmission = 7,
 }
 impl ReconcileStep {
-    pub(crate) fn name(self) -> &'static str {
+    pub fn name(self) -> &'static str {
         match self {
             Self::None => "none",
             Self::External => "external_probe",
@@ -47,7 +47,7 @@ impl ReconcileStep {
             Self::TrainingAdmission => "training_admission",
         }
     }
-    pub(crate) fn from_u8(v: u8) -> Self {
+    pub fn from_u8(v: u8) -> Self {
         match v {
             1 => Self::External,
             2 => Self::Retire,
@@ -61,13 +61,13 @@ impl ReconcileStep {
     }
 }
 
-pub(crate) struct ServingOperation {
+pub struct ServingOperation {
     pub(crate) gate: Arc<AtomicBool>,
     pub(crate) started_ms: Arc<AtomicU64>,
     pub(crate) step: Arc<AtomicU8>,
 }
 impl ServingOperation {
-    pub(crate) fn acquire(
+    pub fn acquire(
         gate: Arc<AtomicBool>,
         started_ms: Arc<AtomicU64>,
         step: Arc<AtomicU8>,
@@ -83,7 +83,7 @@ impl ServingOperation {
         })
     }
     /// Name the await this operation is entering.
-    pub(crate) fn step(&self, step: ReconcileStep) {
+    pub fn step(&self, step: ReconcileStep) {
         self.step.store(step as u8, Ordering::Release);
     }
 }
@@ -98,7 +98,7 @@ impl Drop for ServingOperation {
 
 /// Why an admission may not decide now.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum GateRefusal {
+pub enum GateRefusal {
     /// Serving has not published its first plan on this core: the authority may not
     /// hold a physical reading yet, so free memory is a boot artefact, not capacity.
     Unsettled,
@@ -107,7 +107,7 @@ pub(crate) enum GateRefusal {
     Operation,
 }
 /// The gate, held while one admission reads and leases; dropping it releases the gate.
-pub(crate) struct AdmissionHold {
+pub struct AdmissionHold {
     _operation: ServingOperation,
 }
 
@@ -120,7 +120,7 @@ pub(crate) struct AdmissionHold {
 /// the training lease is what keeps serving out of that memory, and holding the gate
 /// for hours would stop every relaunch on a node where training and serving co-reside.
 #[derive(Clone)]
-pub(crate) struct LifecycleGate {
+pub struct LifecycleGate {
     gate: Arc<AtomicBool>,
     started_ms: Arc<AtomicU64>,
     step: Arc<AtomicU8>,
@@ -139,7 +139,7 @@ pub(crate) static LIFECYCLE_GATE: OnceLock<LifecycleGate> = OnceLock::new();
 impl LifecycleGate {
     /// The gate over a serving daemon's own operation state (its reconcile flag, the
     /// operation's start and step, and whether its first plan is published).
-    pub(crate) fn new(
+    pub fn new(
         gate: Arc<AtomicBool>,
         started_ms: Arc<AtomicU64>,
         step: Arc<AtomicU8>,
@@ -149,17 +149,17 @@ impl LifecycleGate {
     }
     /// Publish THE serving daemon's gate (first writer wins — the boot path). One serving
     /// lifecycle per core, same precedent as `ResourceDaemon::set_global`.
-    pub(crate) fn set_global(gate: LifecycleGate) {
+    pub fn set_global(gate: LifecycleGate) {
         let _ = LIFECYCLE_GATE.set(gate);
     }
     /// The published gate, if boot installed a serving daemon (None in bare unit tests).
-    pub(crate) fn global() -> Option<LifecycleGate> {
+    pub fn global() -> Option<LifecycleGate> {
         LIFECYCLE_GATE.get().cloned()
     }
     /// A gate no serving daemon owns, for admission tests.
     /// A gate no serving daemon owns, for admission tests; `settled` as its planner would be.
-    #[cfg(test)]
-    pub(crate) fn unowned(settled: bool) -> Self {
+    #[cfg(any(test, feature = "test-fixtures"))]
+    pub fn unowned(settled: bool) -> Self {
         Self {
             gate: Arc::new(AtomicBool::new(false)),
             started_ms: Arc::new(AtomicU64::new(0)),
@@ -168,12 +168,12 @@ impl LifecycleGate {
         }
     }
     /// What a test's planner does on its first publish.
-    #[cfg(test)]
-    pub(crate) fn settle(&self) {
+    #[cfg(any(test, feature = "test-fixtures"))]
+    pub fn settle(&self) {
         self.settled.store(true, Ordering::Release);
     }
     /// Take the gate for one admission decision, or say why it cannot decide now.
-    pub(crate) fn hold_for_admission(&self) -> Result<AdmissionHold, GateRefusal> {
+    pub fn hold_for_admission(&self) -> Result<AdmissionHold, GateRefusal> {
         if !self.settled.load(Ordering::Acquire) {
             return Err(GateRefusal::Unsettled);
         }
