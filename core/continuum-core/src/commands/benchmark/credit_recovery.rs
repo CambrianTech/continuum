@@ -167,7 +167,7 @@ async fn verify_evidence(
     evidence: &LegacyGradeEvidence,
 ) -> Result<crate::cognition::swe_bench::SweVerdict, CommandError> {
     let room =
-        crate::modules::room_resolve::resolve_room(airc, Some(&evidence.room.to_string())).await?;
+        crate::persona::room_resolve::resolve_room(airc, Some(&evidence.room.to_string())).await?;
     let board = airc.work_board_in(&room).await.map_err(invalid)?;
     let card = board
         .card(airc_work::WorkCardId::from_uuid(evidence.card))

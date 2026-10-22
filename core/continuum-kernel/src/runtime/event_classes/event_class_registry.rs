@@ -12,7 +12,7 @@
 //! Registration is idempotent for identical re-declarations; conflicting
 //! re-declarations throw — event classes are wire contracts.
 
-use crate::events::event_class::{
+use super::event_class::{
     resolve_event_class_config, EventClassChannelStrategy, EventClassConfig,
     EventClassDeclareError, ResolvedEventClassConfig,
 };

@@ -80,6 +80,7 @@ pub mod recall;
 pub mod recall_trait;
 pub mod residency;
 pub mod store;
+pub mod teach;
 pub mod tier;
 pub mod working_set;
 

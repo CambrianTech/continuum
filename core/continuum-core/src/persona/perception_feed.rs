@@ -86,11 +86,23 @@ pub fn refresh_membership(persona: Uuid, rooms: &[(Uuid, String)]) {
 /// own adoption covers registry, bench, spawned and operator rooms, never the union
 /// of residents' memberships. So every room in her region is attached here.
 fn attach_her_rooms(region: &Arc<Mutex<PerceptionRegion>>) {
-    let Some(registry) = crate::airc::inbound_attach::AttachRegistry::try_global() else { return };
+    let Some(attach) = *ROOM_ATTACHER.read() else { return }; // no transport attached in this process
     let rooms: Vec<Uuid> = region.lock().unwrap_or_else(|p| p.into_inner()).activities();
     for room in rooms {
-        registry.ensure_attached(airc_core::RoomId::from_uuid(room));
+        attach(airc_core::RoomId::from_uuid(room));
     }
+}
+
+/// Bridges one room's transcript into this core (at most once per room). The airc layer
+/// owns the attach streams (`airc::inbound_attach::AttachRegistry`) and installs this when
+/// it stands them up; the feed only says which rooms her region holds.
+pub type RoomAttacher = fn(airc_core::RoomId);
+
+static ROOM_ATTACHER: parking_lot::RwLock<Option<RoomAttacher>> = parking_lot::RwLock::new(None);
+
+/// Install the one room attacher. A second install replaces the first.
+pub fn install_room_attacher(attacher: RoomAttacher) {
+    *ROOM_ATTACHER.write() = Some(attacher);
 }
 
 /// Her awareness strip right now, for the turn's grounding source. `None` = no

@@ -326,7 +326,7 @@ pub(crate) fn persona_tool_error(attempted: &str, raw: String) -> String {
         command_registry()
             .into_iter()
             .find(|d| d.name == name && d.access_level == AccessLevel::AiSafe)
-            .map(|d| crate::commands::help::render_ai_help(d.name, d.description, &d.params_schema))
+            .map(|d| crate::sdk_codegen::ai_help::render_ai_help(d.name, d.description, &d.params_schema))
     };
 
     // Unknown command: the substrate's dev-facing message is useless to her. Suggest
@@ -350,7 +350,7 @@ pub(crate) fn persona_tool_error(attempted: &str, raw: String) -> String {
         candidates.extend_from_slice(crate::cognition::tool_dialect::ai_safe_aliases());
         let mut seen = std::collections::HashSet::new();
         let suggestions: Vec<String> =
-            crate::commands::help::did_you_mean(&normalized, &candidates)
+            crate::sdk_codegen::ai_help::did_you_mean(&normalized, &candidates)
                 .into_iter()
                 .map(crate::cognition::tool_dialect::resolve_wire_name)
                 .filter(|canonical| seen.insert(canonical.clone()))

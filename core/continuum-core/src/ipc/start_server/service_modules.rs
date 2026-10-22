@@ -35,7 +35,7 @@ pub(super) fn register_code_data_and_service_modules(
     runtime.register(Arc::new(DataModule::new()));
     // RecipeModule: the node's durable recipe runs (`recipe_runs`) and the recipe/*
     // verbs. Its store opens through DataModule's adapter at initialize.
-    runtime.register(Arc::new(crate::modules::recipe::RecipeModule::new()));
+    runtime.register(Arc::new(crate::recipe::runs_owner::RecipeModule::new()));
 
     // ChatModule: the kernel `chat/send` + `chat/poll` surface (aliases of
     // `collaboration/chat/*`). Unlike `search/*` these DynCommands are NOT

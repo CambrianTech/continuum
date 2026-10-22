@@ -12,7 +12,7 @@ impl WorkCreate {
                     .into(),
             ));
         }
-        let room = crate::modules::room_resolve::resolve_room(airc, Some(&p.room)).await?;
+        let room = crate::persona::room_resolve::resolve_room(airc, Some(&p.room)).await?;
         // A named repo wins; then the card she holds (Kimi, 2026-09-28: the doc's example
         // named this repo, so her first career-wrangler slice card was filed against
         // continuum); then THE ROOM (Kimi, 2026-10-05: six refusals filing cards in a

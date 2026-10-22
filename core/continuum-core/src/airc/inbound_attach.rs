@@ -43,6 +43,12 @@ impl AttachRegistry {
     /// Install the process-wide registry (AircModule::initialize owns this).
     /// Idempotent; the first install wins.
     pub fn install(socket: PathBuf, bus: Arc<MessageBus>, rt: tokio::runtime::Handle) -> Arc<Self> {
+        // A mind's perception feed attaches the rooms her region holds through this registry.
+        crate::persona::perception_feed::install_room_attacher(|room| {
+            if let Some(registry) = AttachRegistry::try_global() {
+                registry.ensure_attached(room);
+            }
+        });
         ATTACHES
             .get_or_init(|| {
                 Arc::new(Self {

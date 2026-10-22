@@ -536,7 +536,7 @@ mod tests {
             &conn,
             gym_cache.clone(),
             |reservation| async move {
-                let generated = super::super::teacher_generate(
+                let generated = crate::genome::teach::teacher_generate(
                     &adapter,
                     "requested-teacher",
                     vec![ChatMessage::text("user", &task.prompt)],
@@ -550,7 +550,7 @@ mod tests {
                 )
                 .await;
                 assert!(passed, "{grade}");
-                let row = super::super::build_sharegpt(
+                let row = crate::genome::teach::build_sharegpt(
                     &[
                         ChatMessage::text("user", &task.prompt),
                         ChatMessage::text("assistant", generated.text),

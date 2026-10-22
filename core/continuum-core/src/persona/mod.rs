@@ -115,6 +115,7 @@ pub mod room_doctrine_source;
 pub mod identity_card_cache;
 pub mod room_directory;
 pub mod room_event;
+pub mod room_resolve;
 pub mod room_roster_source;
 pub mod room_substrates;
 pub mod roster_slot;

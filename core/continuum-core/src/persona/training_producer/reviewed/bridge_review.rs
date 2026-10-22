@@ -131,7 +131,7 @@ pub(crate) async fn verified_review(
     let airc_work::WorkEvent::WorkSubmissionReviewed(review) = item.event else {
         return Ok(None);
     };
-    let room = crate::modules::room_resolve::resolve_room(airc, Some(&event.room_id.as_uuid().to_string())).await?;
+    let room = crate::persona::room_resolve::resolve_room(airc, Some(&event.room_id.as_uuid().to_string())).await?;
     let board = airc
         .work_board_in(&room)
         .await
@@ -249,7 +249,7 @@ pub(crate) async fn consume_as_publisher(
         ));
     }
     // The publisher must actually inhabit this activity; never substitute focus.
-    let room = crate::modules::room_resolve::resolve_room(runtime.airc(), Some(&room_id.to_string())).await?;
+    let room = crate::persona::room_resolve::resolve_room(runtime.airc(), Some(&room_id.to_string())).await?;
     let admission = self_review(runtime.airc(), &room).await;
     let conn = Connection::new(InProcessTransport::new(
         executor,

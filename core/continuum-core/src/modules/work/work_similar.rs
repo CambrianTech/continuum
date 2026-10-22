@@ -408,7 +408,7 @@ impl WorkGet {
             let outcomes: Vec<_> = latest
                 .map(|id| board.submission_reviews_for(id).filter(|r| r.card_id == card.card_id).map(|r| r.outcome).collect())
                 .unwrap_or_default(); // unwrap_or_default: no submission, no outcomes
-            receipt.next = submission::next_after_submission(latest.map(|id| id.as_uuid()), &outcomes, crate::modules::benchmark_grade::graded_at_submit(&card.title), submission::submission_review_handoff(board, card.card_id, latest));
+            receipt.next = submission::next_after_submission(latest.map(|id| id.as_uuid()), &outcomes, crate::recipe::benchmark_catalog::graded_at_submit(&card.title), submission::submission_review_handoff(board, card.card_id, latest));
         }
         Ok(receipt)
     }

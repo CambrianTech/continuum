@@ -367,12 +367,12 @@ impl PrivateTeacherLane {
         tasks: &[EvalTask],
         temperature: f32,
         max_fix_iters: u32,
-    ) -> Result<crate::commands::genome::teach::RemediationCorpus, CommandError> {
+    ) -> Result<crate::genome::teach::RemediationCorpus, CommandError> {
         let adapter = self
             .adapter
             .as_ref()
             .ok_or_else(|| CommandError::Internal("private teacher is not ready".into()))?;
-        crate::commands::genome::teach::synthesize_remediation_with_adapter(
+        crate::genome::teach::synthesize_remediation_with_adapter(
             tasks,
             &self.target.model.id,
             temperature,

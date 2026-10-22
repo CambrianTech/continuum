@@ -19,7 +19,7 @@ use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
 use crate::cognition::tool_usage::{snapshot, Stat};
-use crate::commands::help::did_you_mean;
+use crate::sdk_codegen::ai_help::did_you_mean;
 use crate::sdk_codegen::{command_registry, AccessLevel, ActionCommand, CommandError, Ctx};
 
 /// Params for `tool/usage` — no inputs; the report is the whole tally since the

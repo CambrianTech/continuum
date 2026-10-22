@@ -240,6 +240,44 @@ fn chat_transcript_content(envelope: &AircRealtimeEnvelope, fallback_peer: uuid:
     Some(RoomTurn { sender, text: text.to_string(), media })
 }
 
+/// One chat-transcript line as its envelope carries it: the encode side of
+/// [`chat_transcript_message`]'s decoder, so the shape is written and read in one place.
+pub struct ChatTranscriptLine<'a> {
+    pub room_id: uuid::Uuid,
+    pub sender_id: uuid::Uuid,
+    pub text: &'a str,
+    pub media: &'a [crate::persona::channel_items::MediaItemRequest],
+    pub reply_to_id: Option<uuid::Uuid>,
+}
+
+/// The realtime envelope (as JSON) for one chat line: the shape operator publication,
+/// caller-owned publication and a hydrated durable row all send.
+pub fn chat_transcript_envelope(message_id: uuid::Uuid, line: &ChatTranscriptLine<'_>, now_ms: u64) -> serde_json::Value {
+    serde_json::json!({
+        "eventId": uuid::Uuid::new_v4().to_string(),
+        "roomId": line.room_id.to_string(),
+        "sourceId": line.sender_id.to_string(),
+        "createdAtMs": now_ms,
+        // Delivery must match the payload's semantics — see
+        // `AircRealtimePayload::delivery()`. ExistingSchema/
+        // ChatTranscript → Durable.
+        "delivery": "durable",
+        "payload": {
+            "kind": "existing_schema",
+            "payload": {
+                "schema": "chat_transcript",
+                "inline": {
+                    "messageId": message_id.to_string(),
+                    "text": line.text,
+                    "media": line.media,
+                    "senderId": line.sender_id.to_string(),
+                    "replyToId": line.reply_to_id.map(|u| u.to_string()),
+                }
+            }
+        },
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

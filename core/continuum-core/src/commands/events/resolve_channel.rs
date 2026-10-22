@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use ts_rs::TS;
 
-use crate::events::resolve_event_class_channel;
+use crate::runtime::event_classes::resolve_event_class_channel;
 use crate::sdk_codegen::CommandError;
 
 /// Inputs to `events/resolve-channel`.
@@ -57,7 +57,7 @@ crate::action_command! {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::events::{declare_event_class, EventClassChannelStrategy, EventClassConfig};
+    use crate::runtime::event_classes::{declare_event_class, EventClassChannelStrategy, EventClassConfig};
     use crate::sdk_codegen::{ActionCommand, Ctx};
 
     // what this catches: name/access wiring — channel resolution is a read on the

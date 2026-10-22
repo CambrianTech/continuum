@@ -354,7 +354,7 @@ impl RoomBoardSource {
         let outcomes: Vec<_> = reviews.iter().map(|review| review.outcome).collect();
         let next = crate::modules::work::submission::next_after_submission(
             Some(candidate.submission_id.as_uuid()), &outcomes,
-            crate::modules::benchmark_grade::graded_at_submit(&card.title),
+            crate::recipe::benchmark_catalog::graded_at_submit(&card.title),
             Some(review.review_card_id),
         )?;
         Some(format!("{next} Read work/submission card_id={} submission_id={} for all {} signed verdicts, reviewers, and evidence.", card.card_id, candidate.submission_id, reviews.len()))

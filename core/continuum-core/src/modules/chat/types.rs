@@ -150,6 +150,19 @@ pub struct ChatSendParams {
     pub reply_to_id: Option<Uuid>,
 }
 
+impl ChatSendParams {
+    /// This send as the chat-transcript line its envelope carries.
+    pub fn transcript_line(&self) -> crate::persona::room_event::ChatTranscriptLine<'_> {
+        crate::persona::room_event::ChatTranscriptLine {
+            room_id: self.room_id,
+            sender_id: self.sender_id,
+            text: &self.text,
+            media: &self.media,
+            reply_to_id: self.reply_to_id,
+        }
+    }
+}
+
 /// Result of `chat/send`.
 ///
 /// Carries the stored message's id (the local persistence ground

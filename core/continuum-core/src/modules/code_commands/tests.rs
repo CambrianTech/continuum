@@ -170,7 +170,7 @@
         assert!(schema["required"].as_array().unwrap().contains(&serde_json::json!("edit_mode")));
         assert_eq!(schema["properties"].as_object().unwrap().len(), 3,
             "legacy fallback fields must not duplicate the canonical operation schema");
-        let manual = crate::commands::help::render_ai_help("code/edit", "edit", &schema);
+        let manual = crate::sdk_codegen::ai_help::render_ai_help("code/edit", "edit", &schema);
         let envelope = manual.split_once("\n{").unwrap().1;
         let envelope = format!("{{{}", envelope.split_once("\n\nArguments:").unwrap().0);
         let envelope: serde_json::Value = serde_json::from_str(&envelope).unwrap();

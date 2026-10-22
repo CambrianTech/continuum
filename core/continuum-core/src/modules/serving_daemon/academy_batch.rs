@@ -3,7 +3,7 @@
 
 use super::*;
 use crate::cognition::eval::{EvalTask, PrivateTeacherLane};
-use crate::commands::genome::teach::RemediationCorpus;
+use crate::genome::teach::RemediationCorpus;
 use crate::inference::llama_server::{EngineRetirementStatus, OwnedRestoreSession};
 use crate::sdk_codegen::CommandError;
 use futures::FutureExt;
@@ -261,7 +261,7 @@ impl ServingDaemonModule {
         if let Some(shared) = shared {
             // Cancellation stops new attempts, never drops an in-flight shared
             // generation and pretends that the live engine stopped decoding.
-            return crate::commands::genome::teach::synthesize_remediation_with_adapter(
+            return crate::genome::teach::synthesize_remediation_with_adapter(
                 &batch.request.tasks,
                 &batch.request.teacher_model,
                 batch.request.temperature,

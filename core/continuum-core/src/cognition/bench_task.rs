@@ -170,7 +170,7 @@ impl BenchTask {
 
 /// Register both classes. Idempotent, same as `declare_contract_event_classes`.
 pub fn declare_bench_task_event_classes() -> Result<usize, String> {
-    use crate::events::{declare_event_class, EventClassChannelStrategy, EventClassConfig};
+    use crate::runtime::event_classes::{declare_event_class, EventClassChannelStrategy, EventClassConfig};
 
     // Posed: per-room, because a bench task belongs to its run room and subscribers must be
     // able to filter on the channel WITHOUT decoding the payload first.
@@ -536,7 +536,7 @@ mod tests {
     /// site — which is the whole reason typed classes beat string-matched routing here.
     #[test]
     fn the_answer_key_can_never_be_broadcast_while_the_task_always_is() {
-        use crate::events::lookup_event_class;
+        use crate::runtime::event_classes::lookup_event_class;
         declare_bench_task_event_classes().expect("declare must succeed");
 
         let posed = lookup_event_class(EVENT_TASK_POSED).expect("posed class must be registered");

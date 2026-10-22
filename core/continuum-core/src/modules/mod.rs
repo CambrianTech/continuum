@@ -90,7 +90,6 @@ pub mod recipe;
 pub mod resource_broker;
 pub mod resources_module;
 pub mod room;
-pub mod room_resolve;
 pub mod runtime_control;
 pub mod sentinel;
 pub mod serving_consumer;

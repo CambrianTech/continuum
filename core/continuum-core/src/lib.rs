@@ -46,7 +46,6 @@ pub mod commands;
 pub mod comms;
 pub mod context;
 pub mod contracts;
-pub mod events;
 pub mod experience;
 pub mod forge;
 pub mod genome;

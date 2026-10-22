@@ -213,7 +213,7 @@ pub(super) async fn room_of_card(
             // the id is whole but on no READABLE board: named, that room answers for itself;
             // unnamed, an unreadable board is a read failure (horizon's own story), never "absent"
             match named {
-                Some(asked) => crate::modules::room_resolve::resolve_room(airc, Some(asked)).await,
+                Some(asked) => crate::persona::room_resolve::resolve_room(airc, Some(asked)).await,
                 None if !horizon.unreadable.is_empty() => Err(horizon.not_found("card", raw_card)),
                 None => Err(CommandError::Invalid(format!(
                     "{verb}: the card you named is on no board of a room you are in, so it cannot say its room: \
@@ -231,7 +231,7 @@ pub(super) async fn room_of_card(
                 return Ok(room);
             }
             match named {
-                Some(asked) => crate::modules::room_resolve::resolve_room(airc, Some(asked)).await,
+                Some(asked) => crate::persona::room_resolve::resolve_room(airc, Some(asked)).await,
                 None => Err(refusal),
             }
         }

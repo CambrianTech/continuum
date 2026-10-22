@@ -1,6 +1,10 @@
-//! Live `genome/teach` progress: the watch cell, the run ledger on disk, and the bus milestone events.
+//! Live teach progress: the watch cell, the live run-ledger row, and the bus milestone events
+//! a curriculum synthesis emits. The terminal result row is the `genome/teach` command's.
 
-use super::*;
+use continuum_base::time::EpochMs;
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
+use ts_rs::TS;
 
 /// Live teach progress — the queryable snapshot `genome/teach-status` returns, so a
 /// long corpus-gen run is OBSERVABLE (poll `done/total/currentTask`) instead of a
@@ -55,36 +59,10 @@ fn set_teach_progress(p: TeachProgress) {
 /// fire-and-stream (#86). The watch cell + bus carry PROGRESS (push, live); this file carries
 /// the terminal RESULT, cross-process and surviving the run, so `genome/teach-status --run_id`
 /// resolves to complete+result (or a failed row) regardless of who's watching or when.
-fn teach_ledger_path(run_id: &str) -> Option<std::path::PathBuf> {
+pub(crate) fn teach_ledger_path(run_id: &str) -> Option<std::path::PathBuf> {
     crate::paths::ContinuumLayout::home()
         .ok()
         .map(|layout| layout.progress().join("teach").join(format!("{run_id}.json")))
-}
-
-/// Write the terminal row for a detached run — success carries the full result, failure
-/// carries the loud error keyed on the SAME run_id (a poller sees the failure, never waits
-/// on a corpse — the eval `append_failed_ledger` lesson). [[fallbacks-are-illegal-fail-loud]]
-pub(super) fn write_teach_ledger(run_id: &str, result: Result<&GenomeTeachResult, String>) {
-    let Some(path) = teach_ledger_path(run_id) else {
-        return;
-    };
-    if let Some(dir) = path.parent() {
-        let _ = std::fs::create_dir_all(dir);
-    }
-    let row = match result {
-        Ok(r) => serde_json::json!({ "runId": run_id, "complete": true, "ok": true, "result": r }),
-        Err(e) => serde_json::json!({ "runId": run_id, "complete": true, "ok": false, "error": e }),
-    };
-    let _ = std::fs::write(
-        &path,
-        serde_json::to_string_pretty(&row).unwrap_or_default(),
-    );
-}
-
-pub(super) fn read_teach_ledger(run_id: &str) -> Option<serde_json::Value> {
-    let path = teach_ledger_path(run_id)?;
-    let txt = std::fs::read_to_string(path).ok()?;
-    serde_json::from_str(&txt).ok()
 }
 
 /// The run_id of the teach pass executing NOW — set at `run_teach` entry so the emit
@@ -94,7 +72,7 @@ pub(super) fn read_teach_ledger(run_id: &str) -> Option<serde_json::Value> {
 /// progress bar advances for any poller/widget. Mirrors eval's CURRENT_RUN_ID.
 static CURRENT_TEACH_RUN: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
 
-pub(super) fn set_current_teach_run(run_id: Option<String>) {
+pub(crate) fn set_current_teach_run(run_id: Option<String>) {
     if let Ok(mut g) = CURRENT_TEACH_RUN.lock() {
         *g = run_id;
     }
@@ -125,7 +103,7 @@ fn write_teach_progress_ledger(prog: &TeachProgress) {
 /// point of long jobs being observable — the same `MessageBus` seam `emit_eval_phase`
 /// uses for `eval:phase`). Feedback is a first-class cross-modality dimension: this
 /// long job streams its own progress. [[feedback-is-a-first-class-cross-modality-dimension-jtag-cu]]
-pub(super) fn emit_teach_progress(
+pub(crate) fn emit_teach_progress(
     done: usize,
     total: usize,
     task_id: &str,
@@ -169,7 +147,7 @@ pub(super) fn emit_teach_progress(
 /// emits an event so a UI can render a real progress bar: `started` sizes it, the
 /// per-task `emit_teach_progress` increments it, `completed` closes it. Same seam as
 /// the per-task events. [[feedback-is-a-first-class-cross-modality-dimension-jtag-cu]]
-pub(super) fn emit_teach_milestone(phase: &str, done: usize, total: usize, solved: usize) {
+pub(crate) fn emit_teach_milestone(phase: &str, done: usize, total: usize, solved: usize) {
     let prog = TeachProgress {
         phase: phase.to_string(),
         done,

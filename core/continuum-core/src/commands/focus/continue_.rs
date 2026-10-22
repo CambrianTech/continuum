@@ -132,7 +132,7 @@ impl ActionCommand for FocusContinue {
                 let runtime = crate::persona::PersonaAircRuntimeRegistry::try_global()
                     .and_then(|r| r.get(persona))
                     .ok_or_else(|| CommandError::Invalid("your airc runtime is not resident on this core".into()))?;
-                crate::modules::room_resolve::resolve_room(runtime.airc(), Some(p.room.trim())).await?.channel.as_uuid()
+                crate::persona::room_resolve::resolve_room(runtime.airc(), Some(p.room.trim())).await?.channel.as_uuid()
             };
             let expectation = expectation_from(&p, now);
             Some(Continuation { activity, note: p.note.trim().to_string(), expectation, written_at_ms: now })

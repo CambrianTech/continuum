@@ -139,17 +139,22 @@ pub(crate) fn event_from_row(room: Uuid, row: crate::persona::durable_history::R
     let (body, headers) = if row.media.is_empty() {
         (Body::text(&row.text), Headers::default())
     } else {
-        let params = crate::modules::chat::types::ChatSendParams {
-            room_id: room, sender_id: row.sender, text: row.text.clone(),
-            media: row.media, reply_to_id: None,
-        };
+
         let mut headers = Headers::default();
         headers.insert(
             airc_protocol::HEADER_FORGE_BODY_HINT.to_string(),
             crate::routing::airc_realtime_wire::CONTINUUM_BODY_HINT.to_string(),
         );
-        (Body::Json(crate::modules::chat::ChatModule::transcript_envelope(
-            row.id, &params, row.occurred_at_ms,
+        (Body::Json(crate::persona::room_event::chat_transcript_envelope(
+            row.id,
+            &crate::persona::room_event::ChatTranscriptLine {
+                room_id: room,
+                sender_id: row.sender,
+                text: &row.text,
+                media: &row.media,
+                reply_to_id: None,
+            },
+            row.occurred_at_ms,
         )), headers)
     };
     airc_lib::TranscriptEvent {

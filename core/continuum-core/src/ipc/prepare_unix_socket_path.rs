@@ -510,7 +510,7 @@ pub(super) fn handle_client<S: IpcStream>(
                             })
                             .map(|d| d.name)
                             .collect();
-                        let suggestions = crate::commands::help::did_you_mean(cmd, &names);
+                        let suggestions = crate::sdk_codegen::ai_help::did_you_mean(cmd, &names);
                         let hint = if suggestions.is_empty() {
                             "Call `commands/help` with no arguments to list every command you can run."
                                 .to_string()

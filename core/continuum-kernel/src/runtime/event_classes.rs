@@ -1,4 +1,4 @@
-//! Event-class registry — the Rust-truth layer for cross-environment
+//! Event-class registry (a kernel primitive beside the bus) — the Rust-truth layer for cross-environment
 //! event metadata that decides which transport tier carries each event.
 //!
 //! Roadmap item L1-1 (see docs/grid/GRID-MIGRATION-ROADMAP.md).
