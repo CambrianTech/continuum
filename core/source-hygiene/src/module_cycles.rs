@@ -180,18 +180,11 @@ mod tests {
         let violations = scan_crate(&[&ModuleCycles]);
         let count = violations.len();
         let largest = violations.first().map_or("", |v| v.source.as_str()); // map_or: no cycle, nothing to name
-        eprintln!("modules in a cycle: {count} (baseline {BASELINE_MODULES_IN_CYCLES}); largest {largest}");
-        assert!(
-            count <= BASELINE_MODULES_IN_CYCLES,
-            "modules caught in a dependency cycle rose to {count} (baseline {BASELINE_MODULES_IN_CYCLES}). \
-             A new import closes a loop: move the fact or verb down to its owner, or invert it \
-             behind a trait the lower module owns. Never raise the baseline."
-        );
-        crate::assert_baseline_is_current("BASELINE_MODULES_IN_CYCLES", count, BASELINE_MODULES_IN_CYCLES);
+        eprintln!("modules in a cycle: {count}; largest {largest}");
+        crate::ratchet::hold("modules_in_cycles", count, || {
+            "A new import closes a dependency loop: move the fact or verb down to its owner, or \
+             invert it behind a trait the lower module owns."
+                .to_owned()
+        });
     }
-
-    /// Measured on canary 9871a02c0 (2026-10-22): one cycle of 37 of 50 top-level modules
-    /// (40 counting doc links, which couple no compilation: `events`, `identity` and
-    /// `interface` were held in by comments alone).
-    const BASELINE_MODULES_IN_CYCLES: usize = 37;
 }
