@@ -14,8 +14,9 @@ use airc_ipc::{codec::read_frame, AttachRequest, AttachStart, DaemonClient, IpcC
 use airc_lib::decode_wire_event;
 use tracing::warn;
 
-use crate::airc::realtime::AircRealtimeEnvelope;
-use crate::airc::realtime_wire::{bus_event_from_envelope, chat_transcript_message, envelope_from_event};
+use crate::routing::airc_realtime::AircRealtimeEnvelope;
+use crate::persona::room_event::chat_transcript_message;
+use crate::routing::airc_realtime_wire::{bus_event_from_envelope, envelope_from_event};
 use crate::ipc::positron_kanban_source::KANBAN_CHANGED;
 use crate::ipc::positron_source::CHAT_POSTED;
 use crate::ipc::positron_wall_source::WALL_CHANGED;
@@ -470,7 +471,7 @@ fn chat_posted_from_envelope(
 ) -> Option<(&'static str, serde_json::Value)> {
     let (sender_id, content) = chat_transcript_message(envelope, event.peer_id.as_uuid())?;
     let message_id = match &envelope.payload {
-        crate::airc::realtime::AircRealtimePayload::ExistingSchema { payload } => payload
+        crate::routing::airc_realtime::AircRealtimePayload::ExistingSchema { payload } => payload
             .inline
             .as_ref()
             .and_then(|i| i.get("messageId"))
@@ -496,11 +497,11 @@ fn chat_posted_from_envelope(
 fn capacity_offer_from_envelope(
     envelope: &AircRealtimeEnvelope,
 ) -> Option<crate::capacity::gossip::CapacityOffer> {
-    let crate::airc::realtime::AircRealtimePayload::ExistingSchema { payload } = &envelope.payload
+    let crate::routing::airc_realtime::AircRealtimePayload::ExistingSchema { payload } = &envelope.payload
     else {
         return None;
     };
-    if payload.schema != crate::airc::realtime::AircRealtimeSchema::GridCapacity {
+    if payload.schema != crate::routing::airc_realtime::AircRealtimeSchema::GridCapacity {
         return None;
     }
     // Borrow-decode: this runs per inbound event, and `.clone()?` copied the
@@ -587,8 +588,8 @@ fn kanban_changed_from_event(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::airc::realtime::{AircRealtimeEnvelope, AircRealtimePayload, AircRealtimePayloadRef, AircRealtimeSchema};
-    use crate::airc::realtime_wire::headers_for_envelope;
+    use crate::routing::airc_realtime::{AircRealtimeEnvelope, AircRealtimePayload, AircRealtimePayloadRef, AircRealtimeSchema};
+    use crate::routing::airc_realtime_wire::headers_for_envelope;
     use airc_core::{Body, ClientId, EventId, MentionTarget, PeerId, RoomId, TranscriptEvent, TranscriptKind};
     use serde_json::json;
     use tokio::time::{timeout, Duration};

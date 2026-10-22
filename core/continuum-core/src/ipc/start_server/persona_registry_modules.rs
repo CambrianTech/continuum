@@ -11,7 +11,7 @@ pub(super) fn register_persona_registry_modules(
     pressure_monitor: &Arc<crate::system_resources::MemoryPressureMonitor>,
     daemon_socket: std::path::PathBuf,
     discovered_default_room: Option<airc_core::RoomId>,
-) -> Arc<crate::modules::persona_instance_manager::PersonaInstanceManagerModule> {
+) -> Arc<crate::persona::instance_manager::PersonaInstanceManagerModule> {
     // Grid capacity gossip (#56 step 4): this node offers its live capacity to
     // the grid on the module tick and hears every peer's offers (its own echo
     // included — the loopback proof) via inbound_attach → gossip::global_ledger.
@@ -128,7 +128,7 @@ pub(super) fn register_persona_registry_modules(
             .with_pressure_gate(pressure_monitor.subscribe()),
     ));
     let instance_manager = Arc::new(
-        crate::modules::persona_instance_manager::PersonaInstanceManagerModule::new(
+        crate::persona::instance_manager::PersonaInstanceManagerModule::new(
             registry,
             daemon_socket,
             continuum_root,

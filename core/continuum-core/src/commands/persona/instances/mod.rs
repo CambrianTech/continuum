@@ -5,7 +5,7 @@
 //!
 //! "Who is online right now, and bring one offline cleanly." The roster lives in
 //! the [`PersonaAircRuntimeRegistry`](crate::persona::PersonaAircRuntimeRegistry)
-//! owned by [`PersonaInstanceManagerModule`](crate::modules::persona_instance_manager).
+//! owned by [`PersonaInstanceManagerModule`](crate::persona::instance_manager).
 //!
 //! ## Allocation symmetry
 //!
@@ -37,7 +37,7 @@ use get::PersonaInstancesGet;
 use list::PersonaInstancesList;
 
 /// The dep-holding `persona/instances/*` command objects the
-/// [`PersonaInstanceManagerModule`](crate::modules::persona_instance_manager::PersonaInstanceManagerModule)
+/// [`PersonaInstanceManagerModule`](crate::persona::instance_manager::PersonaInstanceManagerModule)
 /// contributes to the kernel's typed object map. They share the one
 /// `PersonaAircRuntimeRegistry` so every caller acts on the SAME live roster.
 pub fn command_objects(registry: PersonaAircRuntimeRegistry) -> Vec<Arc<dyn DynCommand>> {

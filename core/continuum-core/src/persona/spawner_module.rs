@@ -36,7 +36,7 @@
 //! commit reviewable and testable without an airc fixture.
 
 use crate::cognition::model_resolver::types::HwCapabilityTier;
-use crate::modules::persona_instance_manager::{PersonaInstanceInfo, PersonaInstanceManagerModule};
+use crate::persona::instance_manager::{PersonaInstanceInfo, PersonaInstanceManagerModule};
 use crate::persona::hw_tier_descriptor::HwTierCategory;
 use crate::persona::identity_provider::PersonaIdentityIntent;
 use crate::persona::inference_profile::{InferenceProfileError, PersonaInferenceProfile};

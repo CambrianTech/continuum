@@ -146,7 +146,7 @@ pub(crate) fn event_from_row(room: Uuid, row: crate::persona::durable_history::R
         let mut headers = Headers::default();
         headers.insert(
             airc_protocol::HEADER_FORGE_BODY_HINT.to_string(),
-            crate::airc::realtime_wire::CONTINUUM_BODY_HINT.to_string(),
+            crate::routing::airc_realtime_wire::CONTINUUM_BODY_HINT.to_string(),
         );
         (Body::Json(crate::modules::chat::ChatModule::transcript_envelope(
             row.id, &params, row.occurred_at_ms,

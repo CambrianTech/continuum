@@ -2,7 +2,7 @@
 
     use super::*;
     use crate::ai::HeuristicInferenceAdapter;
-    use crate::modules::persona_instance_manager::PersonaInstanceInfo;
+    use crate::persona::instance_manager::PersonaInstanceInfo;
     use crate::persona::airc_citizen::StubAircCitizen;
     use crate::persona::identity_provider::PersonaIdentitySource;
     use crate::persona::role_template::RoleId;

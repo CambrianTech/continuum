@@ -50,7 +50,7 @@
 //!
 //! `agent_name`, `home`, `default_room`, `persona_id`, `source` —
 //! these are persona-substrate metadata, not airc-citizen surface.
-//! They live on [`PersonaInstanceInfo`](crate::modules::persona_instance_manager::PersonaInstanceInfo)
+//! They live on [`PersonaInstanceInfo`](crate::persona::instance_manager::PersonaInstanceInfo)
 //! and on `PersonaContext.identity`. The substrate carries metadata
 //! via the identity struct; AircCitizen carries the *live handle*.
 //! Two concerns, two types.

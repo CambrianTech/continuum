@@ -12,14 +12,14 @@
 //!   module's `commands()`, NOT by the shared [`command_objects`] below.
 //!
 //! The dep-holding members are wired together by [`command_objects`], which the
-//! owning [`PersonaInstanceManagerModule`](crate::modules::persona_instance_manager)
+//! owning [`PersonaInstanceManagerModule`](crate::persona::instance_manager)
 //! calls in one place — it holds the `continuum_root` + the late-bound executor that
 //! `persona/reassign-model` needs, plus the registry the `instances/*` verbs share.
 
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use crate::modules::persona_instance_manager::PersonaBirth;
+use crate::persona::instance_manager::PersonaBirth;
 use crate::persona::PersonaAircRuntimeRegistry;
 use crate::runtime::{CommandExecutor, LateBound};
 use crate::sdk_codegen::DynCommand;
@@ -41,7 +41,7 @@ use reassign_model::PersonaReassignModel;
 use spawn::PersonaSpawn;
 
 /// All dep-holding `persona/*` command objects the
-/// [`PersonaInstanceManagerModule`](crate::modules::persona_instance_manager::PersonaInstanceManagerModule)
+/// [`PersonaInstanceManagerModule`](crate::persona::instance_manager::PersonaInstanceManagerModule)
 /// contributes to the kernel's typed object map: the `instances/*` roster verbs
 /// (sharing the one live registry) plus `persona/reassign-model` (which resolves
 /// persona homes under `continuum_root` and composes `serving/pin` through the

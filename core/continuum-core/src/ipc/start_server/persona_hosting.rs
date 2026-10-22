@@ -8,7 +8,7 @@ use super::*;
 pub(super) fn start_persona_host(
     runtime: &Arc<Runtime>,
     serving_daemon: &Arc<crate::modules::serving_daemon::ServingDaemonModule>,
-    instance_manager: &Arc<crate::modules::persona_instance_manager::PersonaInstanceManagerModule>,
+    instance_manager: &Arc<crate::persona::instance_manager::PersonaInstanceManagerModule>,
     airc_interceptor_cell: &Arc<tokio::sync::OnceCell<Arc<airc_lib::Airc>>>,
     rt_handle: &tokio::runtime::Handle,
     stretch_mark: &mut impl FnMut(&'static str, &'static str),

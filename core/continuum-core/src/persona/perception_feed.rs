@@ -28,7 +28,7 @@ use uuid::Uuid;
 
 use super::perception_region::{PerceptionRegion, Wake};
 use super::salience::{BoardChange, ObservedVerdict, SpeechLine};
-use crate::airc::realtime_wire::{room_work_from_event, RoomWork};
+use crate::persona::room_event::{room_work_from_event, RoomWork};
 
 struct Resident {
     peer: PeerId,
@@ -154,7 +154,7 @@ pub fn classify(event: &TranscriptEvent) -> Fed {
         Ok(Some(RoomWork::Submitted { card_id, publisher })) => Fed::Board(BoardChange::Moved { card_id, by: publisher }),
         Ok(Some(RoomWork::Other { kind })) => Fed::OtherWork(kind),
         Err(reason) => Fed::NotPerception(reason),
-        Ok(None) => match crate::airc::realtime_wire::room_content_from_event(event) {
+        Ok(None) => match crate::persona::room_event::room_content_from_event(event) {
             Ok(_) => Fed::Speech,
             Err(reason) => Fed::NotPerception(reason),
         },

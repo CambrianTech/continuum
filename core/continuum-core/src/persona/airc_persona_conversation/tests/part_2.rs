@@ -20,7 +20,7 @@ use super::*;
             blob_hash: Some("sha256:1234".into()), url: None, description: None,
         });
         let media_event = event_from_row(room, with_media);
-        let envelope = crate::airc::realtime_wire::envelope_from_event(&media_event)
+        let envelope = crate::routing::airc_realtime_wire::envelope_from_event(&media_event)
             .expect("valid hydrated envelope").expect("media envelope present");
         let encoded = serde_json::to_value(envelope).expect("encode");
         assert_eq!(encoded["payload"]["payload"]["inline"]["media"][0]["blobHash"], "sha256:1234");
@@ -28,7 +28,7 @@ use super::*;
         let incoming = perceptual_from_event(&media_event).expect("caption turn");
         assert_eq!(incoming.text, row.text);
         assert_eq!(incoming.media.len(), 1);
-        let (sender, rendered) = crate::airc::realtime_wire::room_turn_from_event(&media_event).unwrap();
+        let (sender, rendered) = crate::persona::room_event::room_turn_from_event(&media_event).unwrap();
         let attention = AttentionEvent::classify(Arc::new(media_event.clone())).unwrap();
         let classified = attention.perception.unwrap();
         assert_eq!(SeenRooms::fingerprint(sender, &rendered),
@@ -106,8 +106,8 @@ use super::*;
     /// `as_text() == None`.
     pub(super) mod perceptual {
         use super::super::super::perceptual_from_event;
-        use crate::airc::realtime::AircRealtimeEnvelope;
-        use crate::airc::realtime_wire::{body_for_envelope, headers_for_envelope};
+        use crate::routing::airc_realtime::AircRealtimeEnvelope;
+        use crate::routing::airc_realtime_wire::{body_for_envelope, headers_for_envelope};
         use airc_core::{Body, ClientId, EventId, Headers, MentionTarget, PeerId, RoomId, TranscriptEvent, TranscriptKind};
         use serde_json::json;
         use uuid::Uuid;
