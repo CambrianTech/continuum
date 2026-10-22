@@ -374,8 +374,8 @@ impl FineTuningAdapter for EngineLoraFineTuner {
                 // it (`TrainingNeed::Calibrate`). `bytes` here is what is free now, for the plan
                 // probe and the wait's report; the lease the engine runs under is what was granted.
                 let need = match measured {
-                    Some(bytes) => crate::forge::training_admission::TrainingNeed::Measured(bytes),
-                    None => crate::forge::training_admission::TrainingNeed::Calibrate { at_least: calibration_floor },
+                    Some(bytes) => crate::inference::training_admission::TrainingNeed::Measured(bytes),
+                    None => crate::inference::training_admission::TrainingNeed::Calibrate { at_least: calibration_floor },
                 };
                 let bytes = match measured {
                     Some(bytes) => bytes,
@@ -394,7 +394,7 @@ impl FineTuningAdapter for EngineLoraFineTuner {
                     "engine training: the measured footprint for this shape, or (unmeasured) all governed \
                      free VRAM for a calibration run"
                 );
-                let gate = crate::modules::serving_daemon::LifecycleGate::global()
+                let gate = crate::inference::serving_lifecycle::LifecycleGate::global()
                     .ok_or_else(|| failure("engine training requires the serving lifecycle gate"))?;
                 // THE RUN BINDS TO ITS ENGINE INSIDE THE ADMISSION HOLD (SHARED-RESIDENT-LIFECYCLE.md
                 // step 1): the lane chosen above must still be the one its source chose (the same
@@ -435,7 +435,7 @@ impl FineTuningAdapter for EngineLoraFineTuner {
                     }
                     crate::inference::engine_residency::record(&bind_store, bind_work)
                 };
-                let reservation = crate::forge::training_admission::wait_for_training_memory_bound(
+                let reservation = crate::inference::training_admission::wait_for_training_memory_bound(
                     daemon.clone(),
                     &gate,
                     &consumer,

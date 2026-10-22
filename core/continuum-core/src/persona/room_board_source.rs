@@ -381,7 +381,7 @@ fn claim_is_live(card: &airc_work::WorkCard, now_ms: u64) -> bool {
 }
 
 /// One held card in the `[your work]` lead: its id, title and state, and the absolute path
-/// its work lives at on this node when there is one ([`crate::modules::card_staging::checkout_path_for`],
+/// its work lives at on this node when there is one ([`crate::persona::card_checkout::checkout_path_for`],
 /// the one answer to "where does this card's work live").
 ///
 /// WHY (card 31a9fe2b; the M5, 2026-10-08/09): the card and the round's kickoff name only
@@ -643,7 +643,7 @@ impl RoomBoardSource {
                 .iter()
                 .take(5)
                 .map(|c| {
-                    let checkout = crate::modules::card_staging::checkout_path_for(&self.persona_id, c);
+                    let checkout = crate::persona::card_checkout::checkout_path_for(&self.persona_id, c);
                     held_card_line(c, checkout.as_deref())
                 })
                 .collect::<Vec<_>>()

@@ -43,6 +43,14 @@ pub(crate) fn install_kernel_extensions() {
     crate::persona::command_inbound_pump::install_command_handler(|airc, executor, grants| {
         crate::ipc::command_ingress::CommandRequestHandler::with_grant_authorizer(airc, executor, grants)
     });
+    crate::persona::card_checkout::install_card_stager(|home, peer, card| {
+        Box::pin(async move {
+            crate::modules::card_staging::stage_for_card(&home, peer, &card).await;
+        })
+    });
+    crate::inference::governed_budget::install(|daemon| {
+        crate::modules::serving_daemon::governed_host_budget(daemon).usable_bytes
+    });
     crate::runtime::extensions::install_roster(|| {
         crate::persona::PersonaAircRuntimeRegistry::try_global()
             .map(|reg| reg.roster_snapshot().into_iter().map(|(_, id)| id).collect())

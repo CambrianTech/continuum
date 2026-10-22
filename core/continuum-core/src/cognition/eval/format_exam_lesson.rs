@@ -512,8 +512,7 @@ pub(super) async fn acquire_exam_serving_context() -> crate::cognition::exam_ser
     // Capacity = the ONE memory authority's governed budget (VRAM netted over every measured
     // consumer + external pressure), the same source `plan_serving` sizes against — never a
     // raw GPU probe. No authority (ungoverned host) or a zero budget ⇒ fall back.
-    let Some(capacity) = crate::resources::ResourceDaemon::global()
-        .map(|d| crate::modules::serving_daemon::governed_host_budget(&d).usable_bytes)
+    let Some(capacity) = crate::inference::governed_budget::usable_bytes()
         .filter(|c| *c > 0)
     else {
         return ExamServingContext::ludicrous_fallback().await;

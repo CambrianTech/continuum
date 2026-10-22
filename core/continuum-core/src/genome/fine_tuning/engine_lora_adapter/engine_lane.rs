@@ -16,7 +16,7 @@ use super::*;
 const TRAIN_LANE_BASE_PORT: u16 = 58_300;
 
 /// A training lane holds its governed slot for the life of its run, like every training lease
-/// (`forge::training_admission::request`): pinned, and released when the lane's process exits.
+/// (`inference::training_admission::request`): pinned, and released when the lane's process exits.
 const TRAIN_LANE_TERMS: crate::cognition::single_purpose_lane::LaneLeaseTerms =
     crate::cognition::single_purpose_lane::LaneLeaseTerms { consumer: "train-lane", ttl_ms: u64::MAX };
 

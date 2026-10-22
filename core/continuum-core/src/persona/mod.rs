@@ -39,6 +39,8 @@ pub mod allocator;
 pub mod base_model_policy;
 pub mod cached_source;
 pub mod card;
+pub mod card_carry;
+pub mod card_checkout;
 pub mod card_holder;
 pub mod held_claims;
 pub mod card_ledger_fact;

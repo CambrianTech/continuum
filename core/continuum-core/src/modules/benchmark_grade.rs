@@ -19,7 +19,8 @@ use std::any::Any;
 use async_trait::async_trait;
 use serde_json::Value;
 
-use crate::commands::benchmark::{grade_swe, known_benchmarks, SweGradeParams};
+use crate::commands::benchmark::{grade_swe, SweGradeParams};
+use crate::recipe::benchmark_catalog::known_benchmarks;
 use crate::modules::work::WORK_CARD_STATE_CHANGED;
 use crate::persona::PersonaAircRuntimeRegistry;
 use crate::runtime::{CommandResult, ModuleConfig, ModuleContext, ModulePriority, ServiceModule};
@@ -466,7 +467,7 @@ async fn grade_gym_card(
         .to_string();
     let task = normalized_gym_task(reference, task_id)?;
     // Her workspace root — the same layout every other per-citizen path uses.
-    let workspace = crate::modules::card_staging::gym_workspace(
+    let workspace = crate::persona::card_checkout::gym_workspace(
         &crate::paths::continuum_home().map_err(|e| format!("{e:?}"))?,
         owner.parse().map_err(|e| format!("invalid gym owner {owner}: {e}"))?,
     );

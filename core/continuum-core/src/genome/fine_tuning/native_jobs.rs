@@ -487,7 +487,7 @@ mod tests {
     // AT ADMISSION, and its bind sees the bytes actually granted.
     #[tokio::test]
     async fn a_calibration_run_takes_what_is_free_at_admission_not_at_plan() {
-        use crate::forge::training_admission::{wait_for_training_memory, wait_for_training_memory_bound, TrainingNeed};
+        use crate::inference::training_admission::{wait_for_training_memory, wait_for_training_memory_bound, TrainingNeed};
         use crate::resources::{capacity::MockCapacitySource, DaemonConfig, ResourceDaemon, ResourceKind};
         use futures::FutureExt;
         let mib = 1024u64 * 1024;
@@ -496,7 +496,7 @@ mod tests {
             vec![],
             DaemonConfig::default(),
         );
-        let gate = crate::modules::serving_daemon::LifecycleGate::unowned(true);
+        let gate = crate::inference::serving_lifecycle::LifecycleGate::unowned(true);
         let planned = daemon.available_for("trainer", ResourceKind::Vram);
         assert_eq!(planned, 1024 * mib, "test: everything is free when the run plans");
         // serving grows into the memory after the plan
@@ -541,7 +541,7 @@ mod tests {
     // release, and cancellation must never turn a queued job into a trainer.
     #[tokio::test]
     async fn prepared_training_waits_for_capacity_and_remains_cancellable() {
-        use crate::forge::training_admission::wait_for_training_memory;
+        use crate::inference::training_admission::wait_for_training_memory;
         use crate::resources::{
             capacity::MockCapacitySource, DaemonConfig, ResourceDaemon, ResourceKind,
         };
@@ -551,7 +551,7 @@ mod tests {
             vec![],
             DaemonConfig::default(),
         );
-        let gate = crate::modules::serving_daemon::LifecycleGate::unowned(true);
+        let gate = crate::inference::serving_lifecycle::LifecycleGate::unowned(true);
         let held = wait_for_training_memory(daemon.clone(), &gate, "serving", crate::resources::ResourceKind::Vram, 1024, |_| {})
             .await
             .unwrap();
@@ -642,8 +642,8 @@ mod tests {
     // admission must NOT keep the gate for the run.
     #[tokio::test]
     async fn training_admission_waits_out_boot_and_serving_operations_and_never_keeps_the_gate() {
-        use crate::forge::training_admission::wait_for_training_memory;
-        use crate::modules::serving_daemon::LifecycleGate;
+        use crate::inference::training_admission::wait_for_training_memory;
+        use crate::inference::serving_lifecycle::LifecycleGate;
         use crate::resources::{
             capacity::MockCapacitySource, DaemonConfig, ResourceDaemon, ResourceKind,
         };

@@ -23,7 +23,7 @@
 //!   exists cannot acknowledge anything, and its death is the release evidence.
 //!
 //! Who writes and releases it is decided elsewhere: the record is written inside training
-//! admission's hold (`forge::training_admission`), and released only on the engine's own
+//! admission's hold (`inference::training_admission`), and released only on the engine's own
 //! terminal or cancel acknowledgment or on verified death. A dropped controller future, a
 //! lost HTTP connection or a timeout releases nothing.
 

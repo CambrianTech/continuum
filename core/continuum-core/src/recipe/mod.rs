@@ -20,6 +20,7 @@
 //! - [`validate`] — steps checked against the command registry's own schemas
 //! - [`executor`] — `PipelineExecutor`, the kernel loop that walks steps
 
+pub mod benchmark_catalog;
 pub mod condition;
 pub mod executor;
 pub mod interpolate;

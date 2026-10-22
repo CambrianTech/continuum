@@ -444,8 +444,8 @@ pub(crate) async fn bind_card(
     // edit (eb5a2606, 2026-09-08) landed in the resident workspace that way. The
     // title was the symptom; asking a benchmark-shaped resolver about an ordinary
     // repo card was the defect.
-    crate::modules::card_staging::restage_held_linked_checkout(peer_id, focus).await;
-    let Some(ws) = crate::modules::card_staging::checkout_path_for(&peer_id, focus) else {
+    crate::persona::card_checkout::restage_held_linked_checkout(peer_id, focus).await;
+    let Some(ws) = crate::persona::card_checkout::checkout_path_for(&peer_id, focus) else {
         // NOT a silent `?`. The ambiguous case has always been probed; the
         // not-found case was the one that said nothing, which is why this went
         // unnoticed until a citizen's commit turned up in the wrong tree.
@@ -509,7 +509,7 @@ pub(crate) async fn bind_card(
         // career-wrangler/docs/... failed with no word of why. Recorded as told only AFTER
         // the line is pinned (Cormac on #4555).
         if !already_told(peer_id, &ws) {
-            let branch = crate::modules::card_staging::card_branch(focus);
+            let branch = crate::persona::card_checkout::card_branch(focus);
             body.working_memory.pin_fact_for_turns("rooted", &rooted_notice(&focus.repo.to_string(), &ws, &branch), 3);
             mark_told(peer_id, &ws);
             continuum_base::probe!(
@@ -629,7 +629,7 @@ pub(crate) async fn end_card_turn(card: &CardHands, acts: usize) {
         crate::persona::workspace_transfer::sync_after_act_for(std::sync::Arc::clone(&card.lease), hands.persona_id, &hands.persona_name, root, card_id).await;
     }
     // Her other held cards' committed work rides the carry owner, not this card's turn.
-    crate::modules::card_carry::request();
+    crate::persona::card_carry::request();
 }
 
 /// PURE: has the claim behind `context` ENDED, by the card's own row? Closed hands never

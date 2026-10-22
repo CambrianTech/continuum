@@ -153,7 +153,7 @@ impl ActionCommand for WorkSubmit {
             // submit refusals, 3 claim refusals, 29 of 42 board calls failed). The
             // owner's submit stages the same way her claim does; staging is the
             // substrate's job whenever she needs her hands, never a verb she must find.
-            let checkout = match crate::modules::card_staging::checkout_path_for(&runtime.persona_id(), card) {
+            let checkout = match crate::persona::card_checkout::checkout_path_for(&runtime.persona_id(), card) {
                 Some(path) => path,
                 None => stage_for_owner_on_demand(&runtime, card).await?,
             };

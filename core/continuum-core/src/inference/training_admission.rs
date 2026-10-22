@@ -1,5 +1,7 @@
-//! Training leases share the resource authority used by live serving.
-use crate::modules::serving_daemon::LifecycleGate;
+//! Training leases share the resource authority used by live serving: an engine concern
+//! (the lease and the serving gate it reads under), so the genome's trainers and the forge
+//! both admit through it here.
+use crate::inference::serving_lifecycle::LifecycleGate;
 use crate::resources::{
     LeaseError, LeaseGuard, LeaseRequest, ReclaimPolicy, ResourceDaemon, ResourceKind,
 };

@@ -368,7 +368,7 @@ fn acquire_train_slot(
             base_model_dir.display()
         )
     })?;
-    super::training_admission::acquire_training_memory("forge-train", crate::resources::ResourceKind::Vram, footprint)
+    crate::inference::training_admission::acquire_training_memory("forge-train", crate::resources::ResourceKind::Vram, footprint)
 }
 
 /// Run the native MLX LoRA trainer end-to-end: validate the env + IO contract,

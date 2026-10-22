@@ -726,7 +726,7 @@ pub async fn apply_act(
     // An act that changed a checkout wakes the one carry owner (modules::card_carry), which
     // carries every resident's committed card work; a turn's end is no longer the only push.
     if disk == super::disk_change::DiskChange::Changed {
-        crate::modules::card_carry::request();
+        crate::persona::card_carry::request();
     }
 
     ActOutcome::Acted { acts }

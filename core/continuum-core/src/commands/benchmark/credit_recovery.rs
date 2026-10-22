@@ -205,7 +205,7 @@ async fn verify_evidence(
             "gym artifact must remain inside its existing workspace",
         ));
     }
-    let workspace = crate::modules::card_staging::gym_workspace(
+    let workspace = crate::persona::card_checkout::gym_workspace(
         &crate::paths::continuum_home().map_err(invalid)?,
         evidence.owner,
     );

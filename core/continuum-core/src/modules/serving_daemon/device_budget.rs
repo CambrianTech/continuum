@@ -2,6 +2,9 @@
 
 use super::*;
 
+/// Last VRAM ceiling the governed board actually reported this process, and when.
+/// The middle rung of the substitute-value ladder: when the board goes quiet, an old
+/// REAL number keeps the planner honest where a fabricated zero floors it.
 pub(super) static LAST_GOOD_VRAM_CEILING: AtomicU64 = AtomicU64::new(0);
 pub(super) static LAST_GOOD_VRAM_CEILING_AT_MS: AtomicU64 = AtomicU64::new(0);
 
