@@ -77,7 +77,7 @@
         ArtifactManifest {
             platform: "macos-x86_64".into(),
             git_sha: TIP.into(),
-            features: "--no-default-features --features livekit-webrtc,llama/mac-cpu-only".into(),
+            features: "--features llama/mac-cpu-only,livekit-webrtc".into(),
             archive: "continuum-core-macos-x86_64.tar.gz".into(),
             sha256: "9e08699366264e94d11b6f51c545a5fa0a9a0d3254224cd1afc18c7d11898cea".into(),
             bins: REQUIRED_BINS.iter().map(|b| b.to_string()).collect(),
@@ -150,7 +150,7 @@
     // another commit, another platform, or the same commit with another GPU flavor's features.
     #[test]
     fn only_the_exact_build_for_this_node_is_accepted() {
-        let local = "--no-default-features  --features livekit-webrtc,llama/mac-cpu-only";
+        let local = "--features  llama/mac-cpu-only,livekit-webrtc";
         assert_eq!(
             manifest_verdict(&manifest(), TIP, "macos-x86_64", local),
             Ok(()),
