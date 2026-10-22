@@ -11,6 +11,17 @@ pub(crate) fn governed_training_free(consumer: &str, memory: crate::resources::R
 
 pub const PROVIDER_ID: &str = "engine-local";
 
+/// The provider id of the in-engine trainer on lanes stood up for the run
+/// ([`super::engine_lane::EngineLane`]). Its artifacts are the same kind as `engine-local`'s
+/// (an engine LoRA, ids `engine-local:<trait>:<job>`); only where it trains differs.
+pub const LANE_PROVIDER_ID: &str = "engine-lane";
+
+/// Whether `provider` trains in our engine (on the resident lane or one stood up for the run):
+/// the jobs that obey the in-engine holds and pause where they stand.
+pub fn trains_in_engine(provider: &str) -> bool {
+    provider == PROVIDER_ID || provider == LANE_PROVIDER_ID
+}
+
 /// How often the run is polled. The engine answers GET /train from memory; this is the
 /// cadence of progress and of the VRAM peak sample, not a timeout.
 // derived-or-floor: a floor — far below an epoch, far above a spin.

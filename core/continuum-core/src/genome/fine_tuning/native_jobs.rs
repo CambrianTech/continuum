@@ -473,7 +473,7 @@ pub(super) fn default_lora() -> LoRAHyperparams {
 /// Whether this native adapter could have materialized exactly these omitted defaults.
 /// Recovery uses the same policy owner as training; unknown providers never qualify.
 pub(crate) fn materialized_defaults(provider: &str, lora: &Option<LoRAHyperparams>, schedule: &Option<ScheduleParams>) -> bool {
-    matches!(provider, super::cuda_lora_adapter::PROVIDER_ID | super::engine_lora_adapter::PROVIDER_ID | super::mlx_lora_adapter::PROVIDER_ID)
+    matches!(provider, super::cuda_lora_adapter::PROVIDER_ID | super::engine_lora_adapter::PROVIDER_ID | super::engine_lora_adapter::LANE_PROVIDER_ID | super::mlx_lora_adapter::PROVIDER_ID)
         && lora.as_ref() == Some(&default_lora()) && schedule.as_ref() == Some(&default_schedule())
 }
 

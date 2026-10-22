@@ -139,6 +139,10 @@ pub enum TrainingPlace {
     ResidentHere,
     /// On the lane of a grid peer that serves the base.
     GridPeer,
+    /// On a lane of our own engine stood up for the run, for a base no live lane here serves:
+    /// a second copy of the weights, but trained in the engine that serves them, so it ranks
+    /// before a separate trainer process (card d67fd801).
+    EngineLaneHere,
     /// A trainer holding its own copy of the base on this host.
     SeparateCopyHere,
     /// This host's CPU, at background priority: the last local resort.

@@ -4,14 +4,14 @@ use super::*;
 impl FineTuningAdapter for EngineLoraFineTuner {
     fn capabilities(&self) -> FineTuningCapabilities {
         FineTuningCapabilities {
-            provider_id: PROVIDER_ID.into(),
+            provider_id: self.lane.provider().into(),
             supports_lora: true,
             supports_validation: true,
             produces_local_artifact: true,
-            // any base a live lane on this node serves; create_job checks the lane
+            // any base its lane source serves (`serves_base`); create_job acquires the lane
             supported_base_model_prefixes: vec![],
             requires: TrainerHardware::Any,
-            place: crate::genome::fine_tuning::adapter::TrainingPlace::ResidentHere,
+            place: self.lane.place(),
         }
     }
 
@@ -38,7 +38,7 @@ impl FineTuningAdapter for EngineLoraFineTuner {
         }
         let targets = gguf_targets(&lora.target_modules).map_err(FineTuningError::InvalidRequest)?;
         let LaneLease { choice, hold: lane_hold, still_bound } =
-            self.lane.acquire(&request.base_model).await.map_err(FineTuningError::InvalidRequest)?;
+            self.lane.acquire(&request.base_model).await?;
         let LaneChoice { url: lane, window: served_window, engine, build, memory } = choice;
         let train_dir = self
             .train_dir
