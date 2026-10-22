@@ -375,7 +375,7 @@ pub fn into_governor_policy(
 mod tests {
     use super::*;
     use crate::governor::types::{classify_hardware, PowerSource, ThermalClass};
-    use crate::inference_capability::types::HardwareProfile;
+    use crate::system_resources::hardware_profile::HardwareProfile;
 
     // Canonical valid policy text — matches the spec's M-Air example.
     const VALID_AIR_POLICY: &str = r#"

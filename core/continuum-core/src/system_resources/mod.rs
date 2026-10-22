@@ -22,6 +22,7 @@ pub mod disk_pressure;
 pub mod fd_gauge;
 pub mod power_assertion;
 pub mod fd_pressure;
+pub mod hardware_profile;
 pub mod disk_reporters;
 pub mod memory_pressure;
 pub mod monitor;

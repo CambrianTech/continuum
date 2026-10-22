@@ -40,7 +40,7 @@
 //!   system_ram=0). Logged on the cognition channel so an observer
 //!   sees the fallback.
 
-use crate::inference_capability::types::HardwareProfile;
+use crate::system_resources::hardware_profile::HardwareProfile;
 
 /// Probe the local hardware + return a `HardwareProfile` suitable for
 /// feeding into `check_residency_gate` and `probe_inference_capabilities`.

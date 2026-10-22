@@ -29,7 +29,7 @@
 //! governor wires the actual TOML policy file selection off the
 //! resulting `HardwareClass`.
 
-use crate::inference_capability::types::HardwareProfile;
+use crate::system_resources::hardware_profile::HardwareProfile;
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 

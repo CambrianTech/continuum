@@ -1,6 +1,7 @@
 # Microkernel decomposition of `continuum-core`
 
-**Status:** the plan and its invariant, measured on canary `bc42092af`, 2026-10-18.
+**Status:** the plan and its invariant, measured on canary `bc42092af`, 2026-10-18; the cycle
+measurement and the kernel's exact edges added 2026-10-22 (canary `9871a02c0`).
 **Owner:** Fable (this session) for the invariant and the ring table; each cut has its own
 card and owner (below). The invariant is enforced by a `source-hygiene` ratchet from the day
 this lands, so the number below can only fall.
@@ -75,6 +76,63 @@ Each upward import is one of three things, and the fix is the same each time:
 3. **A module in the wrong ring.** `modules/` holds service modules that are ring 1 or 2
    logic beside their ring-3 command wiring. Split each by owner: the logic goes to its
    ring, the wiring stays.
+
+## Why no cut has landed (measured 2026-10-22)
+
+On canary `9871a02c0` the core is 691,410 lines in 50 top-level modules, and **37 of them are
+one strongly connected component** in code: through some path, each depends on every other.
+(Counting doc links too it is 40; `events`, `identity` and `interface` are held in by comments
+alone, which couple no compilation.) A crate is a set of modules that compiles without the rest,
+so no crate can be cut while its modules sit in that cycle. The upward-import ratchet above
+counts LINES, and lines can fall for weeks while the cycle stays at 40. That is why every
+"split into crates" attempt this month stalled.
+
+So the cuts need a second number: **`source-hygiene::module_cycles` counts the modules caught
+in any cycle (production code, comments skipped). Baseline 37; it may only fall.** A cut is possible exactly when
+its modules have left the cycle.
+
+Outside the cycle today: `bin`, `boot_plan`, `comms`, `concurrency`, `events`, `ffi`, `identity`,
+`interface`, `main`, `rag`, `test_env`, `tool_parsing` (and `lib`).
+
+### Peeling the kernel out: the exact edges
+
+Each ring-0 module and what holds it in the cycle (its references into rings 1-3, production and
+test, canary `9871a02c0`). `clog_*`/`log_*` are crate-root macros, not modules; they leave with
+#5206 (one logging system). `test_env` is a test utility: it becomes a dev-only crate.
+
+| module | held in by | fix (the three kinds above) |
+|---|---|---|
+| `identity` | nothing in code (its one `cognition` reference is a doc link) | already out of the cycle: ready for `continuum-base` |
+| `paths`, `gpu`, `concurrency` | `test_env` only (and log macros) | `test_env` to a dev crate |
+| `governor` | `inference_capability::types::HardwareProfile` (2) | fact owned too high: `HardwareProfile` is a machine fact, ring 0 |
+| `paging` | `inference::planning::{throughput_lease, adaptive_throughput}` (2) | fact owned too high: the lease types move down |
+| `logging` | `modules::logger::log_sink_ready` (12) | fact owned too high: the sink's readiness is the logger's own state |
+| `orm` | `modules::entity_schemas`, `modules::data::DataModule`, `persona` (3) | verb owned too high: entity registration becomes a trait the ORM owns, modules implement |
+| `resources` | consumer ids from `modules`/`cognition` (3), `inference::planning::throughput_lease` (5) | ids are registered by their owners at boot; the lease is the `paging` fix above |
+| `system_resources` | `code::confinement::*`, `modules::work::HandsLease`, `cognition`, `airc`, `ipc` (38) | inversion: owners register the directories and leases they hold (the `TrackedDir` registry already exists for eviction); disk pressure never imports a workspace |
+| `capacity` | `inference_capability::gguf_keys`, `hw_probe`, `modules::serving_daemon`, `genome::blob` (21) | a module in the wrong ring: it reads GGUFs and probes hardware, so it is ring 1 (engine) |
+| `runtime` | `routing::CallerIdentity` (22), `sdk_codegen::{DynCommand, WireShape, command_registry}` (15+), `routing` transport and `AuthPolicy`, `persona::PersonaAircRuntimeRegistry::new`, `persona::cognition_pulse::CommandWork`, `modules::grid::commands` (97 in all) | verbs owned too high: **Session** (`CallerIdentity`, `AuthPolicy`) and **Commands** (the dynamic command registry) are two of the kernel's six primitives (`MODULE-ARCHITECTURE.md` § 4), filed in `routing` and `sdk_codegen`; they move down. The persona registry and the pulse's work type are injected at boot instead of named |
+
+**What each peel moves, and when the cycle count moves.** A crate may hold cycles among its
+own modules; what it cannot hold is an edge out to a module above it. So the kernel ring leaves
+the cycle all at once, when its last upward edge goes, and `module_cycles` falls in one step
+then (by the ring's 13 modules still in the cycle). The receipt for each peel before that is
+the ring-0 share of `layer_discipline`'s upward imports, which must fall with every PR.
+
+Order: the one-and-two-edge modules first (`governor`, `paging`, `paths`/`gpu` with `test_env`;
+`identity` is already out), each a small PR whose receipt is `module_cycles` falling; then
+`logging` (with #5206), `orm`, `resources`; then `system_resources`' inversion and `capacity`'s
+re-ring; then `runtime`'s Session and Commands moving down. When ring 0 has left the cycle,
+cut 4 (`continuum-kernel`) is a pure move.
+
+### The extension contract, shown working
+
+`continuum-context` (#5255) is the pattern for everything above ring 0: a pure crate that owns a
+contract (`Source`: keyed items, a priority, a collapsed form), the kernel-side owner that calls
+it (the epoch view, one allocation), and small adapters in the core (`cognition/context_streams/`),
+one file each. A new context source is a new adapter file, never a branch in the prompt assembly.
+Its 13 tests run in under a second on any machine, and a Hermes driver can link it without the
+core.
 
 ## Cut order, each with its gate
 
