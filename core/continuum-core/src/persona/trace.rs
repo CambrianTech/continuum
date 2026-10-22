@@ -39,7 +39,7 @@
 //! known cognition path. Recipe-specific seams (added in Phase B+)
 //! supply their own string at the call site.
 
-use crate::time::EpochMs;
+use continuum_base::time::EpochMs;
 use serde::{Deserialize, Serialize};
 
 /// Standard seam names used by `respond()` and the in-process

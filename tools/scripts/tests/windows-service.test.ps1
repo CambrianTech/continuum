@@ -3,6 +3,7 @@
 # Run with Windows PowerShell 5.1 (also the scheduler's production runtime).
 $ErrorActionPreference = 'Stop'
 $repo = (Resolve-Path (Join-Path $PSScriptRoot '..\..\..')).Path
+& (Join-Path $PSScriptRoot 'windows-engine-reservations.test.ps1')
 . (Join-Path $repo 'tools\scripts\lib\windows-service.ps1')
 . (Join-Path $repo 'tools\scripts\lib\windows-prepared.ps1')
 . (Join-Path $repo 'tools\scripts\lib\windows-engine-receipt.ps1')
@@ -1053,6 +1054,15 @@ try { [IO.File]::WriteAllText('$($marker.Replace("'", "''"))', 'acquired') } fin
             $savedCli = [IO.File]::ReadAllBytes($release.cli)
             $evidenceWriter = ${function:Save-CoreRecoveryEvidence}
             function Get-CimInstance { @() }
+            # Intact Previous and Active may share an engine even when pointers
+            # have moved elsewhere. Do not retire their custody to free a slot.
+            & {
+                function Get-CoreEngineIdleSlot { Split-Path $second.engine -Parent }
+                Retire-CorePreviousSelectionForSlot -InstallRoot $resumeRoot -Slot $serviceSlot -Descriptor $second -Cli 'fixture'
+                if ([Convert]::ToBase64String([IO.File]::ReadAllBytes($previousPath)) -cne [Convert]::ToBase64String($savedPrevious)) {
+                    throw 'Shared Active engine lost its Previous receipt during selection.'
+                }
+            }
             try {
                 [IO.File]::WriteAllText($release.cli, 'damaged inactive CLI')
                 function Save-CoreRecoveryEvidence { throw 'fixture archive failure' }

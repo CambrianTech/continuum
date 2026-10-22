@@ -40,7 +40,12 @@ pub const ANSWERED_BY_A_LIBRARY: &[(&str, &str)] = &[
 ];
 
 /// Every `Command::new(` in production code on 2026-09-12 (canary 48fbbfd44). May only fall.
-pub const BASELINE_SPAWN_SITES: usize = 123;
+// 122 -> 127, not new debt: the column-zero production split sees code that indented
+// test helpers hid (measured in CI on canary a85454889 + this change, 2026-10-20).
+// 127 -> 132, not new debt: production_half now blanks only the #[cfg(test)]-gated item, so
+// production code BELOW a mid-file test mod or gated helper is scanned (measured on canary
+// a85454889 + this change, 2026-10-20).
+pub const BASELINE_SPAWN_SITES: usize = 131; // 132 -> 131: harness removal 1 deleted competitor.rs (hermes subprocess arm)
 
 /// Per-program baselines for [`ANSWERED_BY_A_LIBRARY`] on the same day. May only fall.
 pub const BASELINE_BY_PROGRAM: &[(&str, usize)] = &[

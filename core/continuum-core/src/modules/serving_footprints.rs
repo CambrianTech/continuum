@@ -237,7 +237,7 @@ impl FootprintSource for CatalogFootprintSource {
                 LaneClaim::Holds(s) => (s.model_id.as_str(), s.window, s.lanes),
                 _ => ("-", 0, 0),
             };
-            crate::probe!(
+            continuum_base::probe!(
                 class = "resources.footprint",
                 holder = self.holder_id,
                 model = model,
@@ -324,7 +324,7 @@ impl crate::resources::consumer::ResourceConsumer for MonitoredHolder {
         &self,
         request: crate::resources::consumer::ReclaimRequest,
     ) -> crate::resources::consumer::ReclaimOutcome {
-        crate::probe!(
+        continuum_base::probe!(
             class = "resources.footprint.reclaim_refused",
             holder = self.source.holder_id(),
             target_bytes = request.target_bytes,

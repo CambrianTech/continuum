@@ -426,6 +426,9 @@ pub fn spawn_vitals_emitter(rt: &tokio::runtime::Handle, bus: Arc<MessageBus>) {
     });
 }
 
+// ============================================================================
+// Tests - Binary Framing & Protocol
+// ============================================================================
 #[cfg(test)]
 mod tests {
     // what this catches: a faculty pulse lights its axis while fresh and reads

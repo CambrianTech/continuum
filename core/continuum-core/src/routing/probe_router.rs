@@ -1,7 +1,7 @@
 //! `ProbeRouterLayer` — the substrate's per-class event fanout.
 //!
 //! Per `docs/architecture/GRID-ADDRESSING-AND-ROUTING.md` §"Per-class
-//! routing": every [`probe!`](crate::probe) call emits a
+//! routing": every [`probe!`](continuum_base::probe) call emits a
 //! `tracing::Event` carrying a `probe_class` field. This Layer
 //! intercepts those events, captures the substrate's URI ancestry via
 //! [`current_uri_chain`](crate::routing::current_uri_chain), and
@@ -355,7 +355,7 @@ mod tests {
     fn subscribed_class_receives_emitted_probe() {
         install(|router| {
             let mut rx = router.subscribe("latency");
-            crate::probe!(class = "latency", "turn complete");
+            continuum_base::probe!(class = "latency", "turn complete");
             let event = rx.try_recv().expect("subscriber must receive event");
             assert_eq!(event.class, "latency");
             assert_eq!(event.message.as_deref(), Some("turn complete"));
@@ -372,7 +372,7 @@ mod tests {
             let mut rx = router.subscribe("decision");
             let span = tracing::info_span!("cmd", uri = "airc:///inference/llm/generate");
             let _enter = span.enter();
-            crate::probe!(
+            continuum_base::probe!(
                 class = "decision",
                 action = "evict-lora",
                 target = "typescript-expertise"
@@ -402,7 +402,7 @@ mod tests {
     fn unsubscribed_class_is_a_noop_fanout() {
         install(|router| {
             // Don't subscribe to "latency" — probe fires, nobody home.
-            crate::probe!(class = "latency", "nobody watching");
+            continuum_base::probe!(class = "latency", "nobody watching");
             // The router only knows about classes that have ever been
             // subscribed, NOT every class that fires. That's the
             // "no fabricated consumers" property.
@@ -418,7 +418,7 @@ mod tests {
         install(|router| {
             let mut rx1 = router.subscribe("admission");
             let mut rx2 = router.subscribe("admission");
-            crate::probe!(class = "admission", lane = 3i64, verdict = "accepted");
+            continuum_base::probe!(class = "admission", lane = 3i64, verdict = "accepted");
             let e1 = rx1.try_recv().expect("rx1 receives");
             let e2 = rx2.try_recv().expect("rx2 receives");
             assert_eq!(e1.class, e2.class);
@@ -434,9 +434,9 @@ mod tests {
             let mut latency_rx = router.subscribe("latency");
             let mut decision_rx = router.subscribe("decision");
 
-            crate::probe!(class = "latency", duration_ms = 42u64);
-            crate::probe!(class = "decision", action = "promote");
-            crate::probe!(class = "latency", duration_ms = 99u64);
+            continuum_base::probe!(class = "latency", duration_ms = 42u64);
+            continuum_base::probe!(class = "decision", action = "promote");
+            continuum_base::probe!(class = "latency", duration_ms = 99u64);
 
             // latency channel should get both latency events
             let l1 = latency_rx.try_recv().expect("latency #1");
@@ -464,7 +464,7 @@ mod tests {
             // Scope so the span is fully dropped (closes) before
             // we check the channel.
             {
-                let _result: i32 = crate::time_sync!("test_phase", 21 * 2);
+                let _result: i32 = continuum_base::time_sync!("test_phase", 21 * 2);
             }
             let event = rx
                 .try_recv()
@@ -497,7 +497,7 @@ mod tests {
                 42
             }
             let _result: i32 =
-                runtime.block_on(async { crate::time_probe!("async_test_phase", produces()) });
+                runtime.block_on(async { continuum_base::time_probe!("async_test_phase", produces()) });
             let event = rx.try_recv().expect("subscriber must receive timing event");
             assert_eq!(event.class, "timing");
             assert_eq!(
@@ -551,9 +551,9 @@ mod tests {
         // doctrine is "subscribe at boot, never lose events on the
         // wire by lazy-subscribing mid-flight."
         install(|router| {
-            crate::probe!(class = "missed", value = 1i64);
+            continuum_base::probe!(class = "missed", value = 1i64);
             let mut rx = router.subscribe("missed");
-            crate::probe!(class = "missed", value = 2i64);
+            continuum_base::probe!(class = "missed", value = 2i64);
             let event = rx.try_recv().expect("post-subscribe event arrives");
             assert_eq!(event.fields.get("value").map(String::as_str), Some("2"));
             assert!(
@@ -585,10 +585,10 @@ mod tests {
             .with(router.clone());
         tracing::subscriber::with_default(subscriber, || {
             let mut rx = router.subscribe("burst");
-            crate::probe!(class = "burst", n = 1i64);
-            crate::probe!(class = "burst", n = 2i64);
-            crate::probe!(class = "burst", n = 3i64);
-            crate::probe!(class = "burst", n = 4i64);
+            continuum_base::probe!(class = "burst", n = 1i64);
+            continuum_base::probe!(class = "burst", n = 2i64);
+            continuum_base::probe!(class = "burst", n = 3i64);
+            continuum_base::probe!(class = "burst", n = 4i64);
             // First recv should observe Lagged with the count of
             // dropped events.
             let first = rx.try_recv();

@@ -671,7 +671,7 @@ impl Vowel {
 
 impl Default for TestAudioGenerator {
     fn default() -> Self {
-        use crate::audio_constants::AUDIO_SAMPLE_RATE;
+        use continuum_base::audio_constants::AUDIO_SAMPLE_RATE;
         Self::new(AUDIO_SAMPLE_RATE)
     }
 }
@@ -679,7 +679,7 @@ impl Default for TestAudioGenerator {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::audio_constants::{AUDIO_FRAME_SIZE, AUDIO_SAMPLE_RATE};
+    use continuum_base::audio_constants::{AUDIO_FRAME_SIZE, AUDIO_SAMPLE_RATE};
 
     #[test]
     fn test_formant_speech_generation() {

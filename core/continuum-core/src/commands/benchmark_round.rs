@@ -394,7 +394,7 @@ impl ActionCommand for BenchmarkRound {
                 {
                     Ok(r) => Some(r.room_id.as_uuid()),
                     Err(e) => {
-                        crate::probe!(
+                        continuum_base::probe!(
                             class = "bench.round.room_spawn_failed",
                             run_id = %run_id,
                             error = %e.to_string(),
@@ -435,7 +435,7 @@ impl ActionCommand for BenchmarkRound {
             claimed_actor_kind: None,
         };
         let ack = CognitionEval.run(&ctx, eval_params).await?;
-        crate::probe!(
+        continuum_base::probe!(
             class = "bench.round.dispatched",
             benchmark = %p.benchmark,
             run_id = %run_id,

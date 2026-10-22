@@ -27,7 +27,7 @@
 //! terminal or cancel acknowledgment or on verified death. A dropped controller future, a
 //! lost HTTP connection or a timeout releases nothing.
 
-use crate::time::EpochMs;
+use continuum_base::time::EpochMs;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -200,6 +200,24 @@ pub struct ResidentWork {
     /// inside the admission hold. `None`: a record from before the field, never re-attached.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub job_spec: Option<crate::genome::fine_tuning::engine_lora_adapter::EngineRunSpec>,
+    /// The governed pool `reserved_bytes` was leased in, recorded at bind: what a successor
+    /// core re-takes for a surviving run, never what the next launch's configuration would
+    /// choose (Codex on #5264: a placement change across a restart would charge the wrong
+    /// pool for a run still using the other one). Read through [`Self::bound_memory`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub memory: Option<crate::resources::ResourceKind>,
+}
+
+impl ResidentWork {
+    /// The pool this work's reservation lives in. A record without one was written by a
+    /// build whose training admission leased `Vram` unconditionally, so `Vram` is what that
+    /// run was granted: the record's own history, not a guess at its placement.
+    pub fn bound_memory(&self) -> crate::resources::ResourceKind {
+        match self.memory {
+            Some(kind) => kind,
+            None => crate::resources::ResourceKind::Vram,
+        }
+    }
 }
 
 /// The store's file under a continuum home.
@@ -279,7 +297,7 @@ fn on_released(work: &ResidentWork) {
     super::lane_footprint::residency_changed();
     LAST_RELEASE_MS.store(EpochMs::now().millis(), std::sync::atomic::Ordering::Relaxed);
     let retired = super::lane_footprint::retire_if_sampled_since(&work.base_model, work.created_ms);
-    crate::probe!(
+    continuum_base::probe!(
         class = "serving.residency.released",
         job = %work.job,
         base = work.base_model.as_str(),
@@ -342,11 +360,20 @@ pub fn interrupt(path: &Path, port: u16, reason: &str) -> Result<Vec<Uuid>, Stri
 
 /// Why serving replaced this job's engine under it, if it did.
 pub fn interruption_of(path: &Path, job: Uuid) -> Option<String> {
-    read(path)
-        .ok()?
-        .into_iter()
-        .find(|w| w.job == job)
-        .and_then(|w| w.interrupted)
+    let all = match read(path) {
+        Ok(all) => all,
+        Err(error) => {
+            // Unreadable is not "never interrupted": say which, as `occupancy_with` does.
+            continuum_base::probe!(
+                class = "inference.engine_residency.unread",
+                job = %job,
+                error = %error,
+                "the residency list is unreadable: whether serving replaced this job's engine is unknown"
+            );
+            return None;
+        }
+    };
+    all.into_iter().find(|w| w.job == job).and_then(|w| w.interrupted)
 }
 
 /// What serving may do to the engine on `port` right now.
@@ -388,7 +415,7 @@ pub fn occupancy_with(path: &Path, port: u16, probe: &dyn Fn(u32) -> ProcessProb
         }
         for w in &dead {
             on_released(w);
-            crate::probe!(
+            continuum_base::probe!(
                 class = "serving.residency.released_on_death",
                 job = %w.job,
                 pid = w.engine.pid as u64,
@@ -430,6 +457,7 @@ mod tests {
             reserved_bytes: 1 << 30,
             interrupted: None,
             job_spec: None,
+            memory: None,
         }
     }
 
@@ -547,7 +575,7 @@ mod tests {
     fn a_release_retires_only_the_footprint_sampled_during_the_work() {
         use super::super::lane_footprint::{retire_sampled_since, MeasuredCost};
         let bound_at = 1_000;
-        let reading = |last_ms| MeasuredCost { per_token_bytes: 36_000, lanes: 1, window: 32_768, anon_bytes: 20 << 30, last_ms };
+        let reading = |last_ms| MeasuredCost { per_token_bytes: 36_000, lanes: 1, window: 32_768, allocated_tokens: None, anon_bytes: 20 << 30, last_ms };
         let mut costs = std::collections::BTreeMap::new();
         costs.insert("during".to_string(), reading(bound_at + 60_000));
         costs.insert("before".to_string(), reading(bound_at - 1));
@@ -571,7 +599,7 @@ mod tests {
     #[test]
     fn a_sample_that_straddles_a_residency_change_is_never_published() {
         use super::super::lane_footprint::{begin_sample, publish_sample, MeasuredCost};
-        let reading = MeasuredCost { per_token_bytes: 36_000, lanes: 1, window: 32_768, anon_bytes: 20 << 30, last_ms: 5 };
+        let reading = MeasuredCost { per_token_bytes: 36_000, lanes: 1, window: 32_768, allocated_tokens: None, anon_bytes: 20 << 30, last_ms: 5 };
         let dir = tempfile::tempdir().expect("tempdir");
         let path = store_path(dir.path());
         let w = work(10, 25281, 1_000, 58058);

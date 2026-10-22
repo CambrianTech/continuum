@@ -8,14 +8,14 @@
 //! `/train/pause` with no hold is steered back by design. A paused run KEEPS its allocation,
 //! so a pause reduces compute demand and never relieves memory.
 
-use crate::time::EpochMs;
+use continuum_base::time::EpochMs;
 use std::sync::Arc;
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
-use crate::genome::fine_tuning::engine_lora_adapter::PROVIDER_ID as ENGINE_PROVIDER;
+use crate::genome::fine_tuning::engine_lora_adapter::trains_in_engine;
 use crate::genome::fine_tuning::training_hold_store as store;
 use crate::genome::fine_tuning::{FineTuningRegistry, JobHandle, TrainingStatus};
 
@@ -87,15 +87,15 @@ crate::action_command! {
     params: JobPauseParams,
     output: JobPauseOutcome,
     run(this, _ctx, p) => {
-        if p.handle.provider_id != ENGINE_PROVIDER {
+        if !trains_in_engine(&p.handle.provider_id) {
             return Ok(refused("Unsupported", format!(
-                "only in-engine jobs ({ENGINE_PROVIDER}) pause; this one is {:?}", p.handle.provider_id
+                "only in-engine jobs pause; this one is {:?}", p.handle.provider_id
             )));
         }
         // a pause on a job that is not running would stand over nothing until its TTL
         let live = match this.registry.get(&p.handle.provider_id) {
             Some(adapter) => adapter.poll(&p.handle).await,
-            None => return Ok(refused("Unsupported", format!("no adapter registered for {ENGINE_PROVIDER}"))),
+            None => return Ok(refused("Unsupported", format!("no adapter registered for {:?}", p.handle.provider_id))),
         };
         if !matches!(live, Ok(TrainingStatus::Queued | TrainingStatus::WaitingForCapacity { .. } | TrainingStatus::Running { .. })) {
             return Ok(refused("NotRunning", format!("job {} is not queued, waiting or running", p.handle.local_id)));

@@ -265,7 +265,7 @@ impl PersonaChannelView for ChatChannelView {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::time::EpochMs;
+    use continuum_base::time::EpochMs;
     use crate::persona::channel_items::ChatQueueItem;
     use crate::persona::types::SenderType;
     use std::sync::OnceLock;

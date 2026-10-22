@@ -351,7 +351,7 @@ pub(crate) fn derive_train_footprint_bytes(
 }
 
 /// Ask the ONE resource authority for a training job's VRAM/UMA slot (#56/G2), the
-/// forge sibling of the eval lane's `acquire_eval_lane_slot`. A `mlx_lm.lora` job
+/// forge sibling of the single-purpose lane's `acquire_lane_slot`. A `mlx_lm.lora` job
 /// loads the FULL base into unified memory — on a UMA box that is VRAM contention
 /// with the live persona lanes, and it used to launch with ZERO governor check
 /// (invisible pressure that could OOM a live video-chat mid-forge). Now it leases:
@@ -369,7 +369,7 @@ fn acquire_train_slot(
             base_model_dir.display()
         )
     })?;
-    super::training_admission::acquire_training_memory("forge-train", footprint)
+    super::training_admission::acquire_training_memory("forge-train", crate::resources::ResourceKind::Vram, footprint)
 }
 
 /// Run the native MLX LoRA trainer end-to-end: validate the env + IO contract,
@@ -405,7 +405,7 @@ pub fn run_mlx_train(
     // chat_template). Caller-supplied + idempotent; a no-op when already ready.
     let prep_changes = prepare_base_for_mlx(&spec.base_model_dir, &spec.base_prep)?;
     for change in &prep_changes {
-        crate::probe!(
+        continuum_base::probe!(
             class = "forge.mlx_train.base_prep",
             change = %change,
             "normalized HF base for mlx_lm before training"

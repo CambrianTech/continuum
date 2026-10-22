@@ -124,7 +124,7 @@ pub fn probe_tripped(
     source: BoundSource,
     turn_bound: Option<Duration>,
 ) {
-    crate::probe!(
+    continuum_base::probe!(
         class = "inference.bound.tripped",
         at = at,
         name = name,

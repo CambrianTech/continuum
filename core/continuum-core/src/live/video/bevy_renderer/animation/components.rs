@@ -4,7 +4,6 @@
 //! animation concern. Systems find entities via Query<&mut ComponentType>.
 //! No slot IDs, no HashMaps, no global resources.
 
-use bevy::mesh::morph::MorphWeights;
 use bevy::prelude::*;
 
 use super::super::scene::avatar::{BoneInfo, VrmLookAtConfig};

@@ -190,7 +190,7 @@ pub(crate) fn settle_reuse(persona: uuid::Uuid, request_id: &str, timing: Option
     };
     let previous = COMMITTED.get(&persona).map(|c| (extends_whole(&c.0, &now), c.1));
     match previous.and_then(|(extends, tokens)| split_reuse(extends, Some(tokens), cached)) {
-        Some(ReuseSplit::Candidate { reusable, cached, gap }) => crate::probe!(
+        Some(ReuseSplit::Candidate { reusable, cached, gap }) => continuum_base::probe!(
             class = "delib.prompt.reuse_split",
             persona = %persona,
             request = request_id,
@@ -206,7 +206,7 @@ pub(crate) fn settle_reuse(persona: uuid::Uuid, request_id: &str, timing: Option
                 .get(&persona)
                 .and_then(|c| first_divergence(&c.0, &now))
                 .unwrap_or_default(); // unwrap_or_default: a changed request always diverges; empty only if the record moved meanwhile
-            crate::probe!(
+            continuum_base::probe!(
                 class = "delib.prompt.reuse_split",
                 persona = %persona,
                 request = request_id,
@@ -232,7 +232,7 @@ pub(crate) fn observe(persona: uuid::Uuid, req: &TextGenerationRequest) {
     LAST.insert(persona, now);
     let Some(found) = found else { return };
     let (index, banner) = found.first_divergent.clone().unwrap_or((usize::MAX, String::new()));
-    crate::probe!(
+    continuum_base::probe!(
         class = "delib.prompt.common_prefix",
         persona = %persona,
         common_chars = found.common_chars as u64,

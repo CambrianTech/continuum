@@ -87,13 +87,13 @@ mod macos {
         let held = HELD.get_or_init(|| ASSERTIONS.iter().map(|(kind, name)| (*kind, take(kind, name))).collect());
         for (kind, outcome) in held {
             match outcome {
-                Ok(id) => crate::probe!(
+                Ok(id) => continuum_base::probe!(
                     class = "power.assertion.held",
                     kind = *kind,
                     assertion_id = *id as u64,
                     "the core holds this sleep assertion for its lifetime — the seat stays awake without a caffeinate wrapper"
                 ),
-                Err(rc) => crate::probe!(
+                Err(rc) => continuum_base::probe!(
                     class = "power.assertion.refused",
                     kind = *kind,
                     io_return = *rc as i64,

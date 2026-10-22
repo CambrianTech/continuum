@@ -61,7 +61,7 @@ impl ServingPinStore {
             Ok(b) => b,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return None,
             Err(e) => {
-                crate::probe!(
+                continuum_base::probe!(
                     class = "serving.pin.store_unreadable",
                     path = %self.path.display(),
                     error = %e,
@@ -73,7 +73,7 @@ impl ServingPinStore {
         match serde_json::from_slice::<StoredServingPin>(&bytes) {
             Ok(pin) => Some(pin),
             Err(e) => {
-                crate::probe!(
+                continuum_base::probe!(
                     class = "serving.pin.store_corrupt",
                     path = %self.path.display(),
                     error = %e,
@@ -89,7 +89,7 @@ impl ServingPinStore {
     pub fn save(&self, model_id: &str) {
         let pin = StoredServingPin {
             model_id: model_id.to_string(),
-            set_at_ms: crate::time::EpochMs::now().millis(), // pre-1970 reads 0: a clock before 1970 is impossible on a running host; 0 only labels the record
+            set_at_ms: continuum_base::time::EpochMs::now().millis(), // pre-1970 reads 0: a clock before 1970 is impossible on a running host; 0 only labels the record
         };
         let path = &self.path;
         let result = (|| -> std::io::Result<()> {
@@ -104,7 +104,7 @@ impl ServingPinStore {
             std::fs::rename(&tmp, path)
         })();
         match result {
-            Ok(()) => crate::probe!(
+            Ok(()) => continuum_base::probe!(
                 class = "serving.pin.stored",
                 model_id = %model_id,
                 path = %path.display(),
@@ -123,7 +123,7 @@ impl ServingPinStore {
     pub fn clear(&self) {
         match std::fs::remove_file(&self.path) {
             Ok(()) => {
-                crate::probe!(class = "serving.pin.cleared", path = %self.path.display(), "stored serving pin removed")
+                continuum_base::probe!(class = "serving.pin.cleared", path = %self.path.display(), "stored serving pin removed")
             }
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
             Err(e) => {

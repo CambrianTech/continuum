@@ -55,14 +55,14 @@ impl SlotDiscoveryMiss {
         };
         match self {
             Self::LatchedUnsupported => {}
-            Self::EndpointAbsent { .. } => crate::probe!(
+            Self::EndpointAbsent { .. } => continuum_base::probe!(
                 class = "inference.slot_affinity.unsupported",
                 root = root,
                 cause = self.as_str(),
                 detail = %detail,
                 "props endpoint absent — slot affinity latched OFF for this server; its requests run unpinned"
             ),
-            _ => crate::probe!(
+            _ => continuum_base::probe!(
                 class = "inference.slot_affinity.deferred",
                 root = root,
                 cause = self.as_str(),

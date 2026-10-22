@@ -27,26 +27,21 @@ extern crate self as continuum_core;
 
 pub mod ai;
 pub mod airc;
-pub mod audio_constants;
 pub mod capacity;
 pub mod code;
 pub mod cognition;
 pub mod commands;
 pub mod comms;
 pub mod concurrency;
-pub mod config_env;
 pub mod context;
 pub mod contracts;
 pub mod events;
 pub mod experience;
-pub mod ffi;
 pub mod forge;
-pub mod fs_portable;
 pub mod genome;
 pub mod governor;
 pub mod gpu;
 pub mod http;
-pub mod id_resolve;
 pub mod identity;
 pub mod boot_plan;
 pub mod inference;
@@ -71,17 +66,13 @@ pub mod routing;
 pub mod recipe;
 pub mod runtime;
 pub mod sdk_codegen;
-pub mod secrets;
 pub mod sensory;
-pub mod shell_portable;
 pub mod system_resources;
 #[cfg(test)]
 pub(crate) mod test_env;
-pub mod time;
 pub mod tool_parsing;
 pub mod vdd;
 
-pub use audio_constants::*;
 
 pub use concurrency::*;
 pub use live::VoiceOrchestrator;
@@ -92,5 +83,5 @@ pub use persona::{
 // Easy logging macros - auto-route to proper log files based on module_path!()
 // Usage: clog_info!("Session started"); clog_warn!("Warning"); etc.
 pub use ipc::start_server;
-pub use logging::{extract_component, init_logger, logger, module_path_to_category, LogLevel};
+pub use logging::{extract_component, module_path_to_category};
 pub use rag::{LlmMessage, MessageRole, RagContext, RagEngine, RagOptions};

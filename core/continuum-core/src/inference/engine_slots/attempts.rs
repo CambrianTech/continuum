@@ -69,7 +69,7 @@ fn write(root: &Path, slot: &str, record: &Attempt) -> Result<(), String> {
         .and_then(|_| staged.sync_all())
         .map_err(|e| format!("engine attempt write: {e}"))?;
     drop(staged);
-    crate::fs_portable::durable_rename(&temporary, &path)
+    continuum_base::fs_portable::durable_rename(&temporary, &path)
         .map_err(|e| format!("engine attempt commit: {e}"))
 }
 
@@ -158,7 +158,7 @@ fn candidate(root: &Path, slot: &str, stamp: &str) -> Result<Attempt, String> {
         schema: 1,
         stamp: stamp.into(),
         artifact,
-        admitted_at_ms: crate::time::EpochMs::now().millis(),
+        admitted_at_ms: continuum_base::time::EpochMs::now().millis(),
         failed_at_ms: None,
         restored: None,
         reason: None,
@@ -181,7 +181,7 @@ pub(super) fn failed(root: &Path, slot: &str, restored: &str, reason: &str) -> R
             reason: None,
         },
     };
-    record.failed_at_ms = Some(crate::time::EpochMs::now().millis());
+    record.failed_at_ms = Some(continuum_base::time::EpochMs::now().millis());
     record.restored = Some(restored.into());
     record.reason = Some(reason.into());
     write(root, slot, &record)

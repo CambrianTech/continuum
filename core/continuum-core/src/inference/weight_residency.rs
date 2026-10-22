@@ -32,24 +32,40 @@ impl WeightResidency {
     /// buffer types: `CPU`, `CPU_Mapped`, `CPU_REPACK`, `*_Host` (CUDA pinned host
     /// memory is still RAM), and BLAS (Accelerate on a Mac runs on the CPU).
     pub fn accelerator_bytes(&self) -> u64 {
-        self.per_backend
-            .iter()
-            .filter(|(name, _)| !is_host_backend(name))
-            .map(|(_, b)| *b)
-            .sum()
+        self.per_backend.iter().filter(|(name, _)| !is_host_backend(name)).map(|(_, b)| *b).sum()
     }
 
     pub fn total_bytes(&self) -> u64 {
         self.per_backend.iter().map(|(_, b)| *b).sum()
     }
 
+    /// Where these weights live, as a lane placement, or `None` when the engine's account
+    /// does not decide it (card 22aa3379; Codex's terms on it):
+    /// - every byte in host memory: `Cpu`;
+    /// - weights on a known GPU backend: `Gpu`, even beside host buffers, since a fully
+    ///   offloaded lane still keeps some (Metal=4.7GB CPU_Mapped=0.3GB), so a host staging
+    ///   buffer never makes a GPU lane read as CPU;
+    /// - no bytes, or any non-host backend this does not know: `None`, fail closed.
+    pub fn observed_placement(&self) -> Option<crate::inference::llama_server::LanePlacement> {
+        use crate::inference::llama_server::LanePlacement;
+        if self.total_bytes() == 0 {
+            return None;
+        }
+        let accelerators: Vec<&str> = self
+            .per_backend
+            .iter()
+            .filter(|(name, bytes)| *bytes > 0 && !is_host_backend(name))
+            .map(|(name, _)| name.as_str())
+            .collect();
+        if accelerators.is_empty() {
+            return Some(LanePlacement::Cpu);
+        }
+        accelerators.iter().all(|name| is_gpu_backend(name)).then_some(LanePlacement::Gpu)
+    }
+
     /// One line for a probe or a refusal message: `Metal=4.7GB CPU_Mapped=0.3GB`.
     pub fn summary(&self) -> String {
-        self.per_backend
-            .iter()
-            .map(|(n, b)| format!("{n}={:.2}GB", *b as f64 / 1e9))
-            .collect::<Vec<_>>()
-            .join(" ")
+        self.per_backend.iter().map(|(n, b)| format!("{n}={:.2}GB", *b as f64 / 1e9)).collect::<Vec<_>>().join(" ")
     }
 }
 
@@ -81,11 +97,7 @@ impl EngineMemory {
     /// The bytes BEYOND the weights on accelerators: KV cache + compute buffers on every buffer
     /// type that is not host memory. What the device delta measures on a discrete GPU.
     pub fn accelerator_beyond_weights(&self) -> u64 {
-        self.per_buffer
-            .iter()
-            .filter(|b| !is_host_backend(&b.buffer_type))
-            .map(|b| b.context_bytes + b.compute_bytes)
-            .sum()
+        self.per_buffer.iter().filter(|b| !is_host_backend(&b.buffer_type)).map(|b| b.context_bytes + b.compute_bytes).sum()
     }
 
     /// The KV (context) bytes alone on accelerators, compute buffers excluded.
@@ -106,8 +118,9 @@ pub struct EngineContext {
     /// KV plus compute buffers on accelerators: everything the engine says it holds beyond weights.
     pub beyond_weights: u64,
     pub slots: u32,
-    /// Each slot's context. The lane passes `--parallel` explicitly, so the cache is never unified
-    /// and the engine holds `slots × n_ctx_per_slot` tokens.
+    /// Total physical token capacity; unified caches do not multiply this by slots.
+    pub allocated_tokens: u64,
+    /// Maximum context for one sequence, independently of total physical capacity.
     pub n_ctx_per_slot: u32,
 }
 
@@ -132,7 +145,7 @@ impl EngineContextReading {
         // (`{"error": …}`), or a geometry that is missing, null or zero is not an old engine,
         // and a missing breakdown there is no reading (Codex on #4961). The same parse decides
         // here and in `from_props`, so the two cannot disagree about what a geometry is.
-        if slot_geometry(props).is_none() {
+        if slot_geometry(props).and_then(|(slots, window)| allocated_capacity(props, slots, window)).is_none() {
             return Self::Invalid;
         }
         if props.get("memory_breakdown").is_none() {
@@ -148,13 +161,26 @@ impl EngineContext {
     pub fn from_props(props: &serde_json::Value) -> Option<Self> {
         let memory = EngineMemory::from_props(props)?;
         let (slots, n_ctx_per_slot) = slot_geometry(props)?;
+        let allocated_tokens = allocated_capacity(props, slots, n_ctx_per_slot)?;
         let context_bytes = memory.accelerator_context();
-        (context_bytes > 0).then(|| Self {
-            context_bytes,
-            beyond_weights: memory.accelerator_beyond_weights(),
-            slots,
-            n_ctx_per_slot,
-        })
+        (context_bytes > 0).then(|| Self { context_bytes, beyond_weights: memory.accelerator_beyond_weights(), slots, allocated_tokens, n_ctx_per_slot })
+    }
+}
+
+fn allocated_capacity(props: &serde_json::Value, slots: u32, n_ctx_per_slot: u32) -> Option<u64> {
+    match props.get("context_geometry") {
+        Some(geometry) => {
+            let tokens = geometry.get("allocated_tokens")?.as_u64()?;
+            let capacity = geometry.get("sequence_capacity")?.as_u64()?;
+            let window = geometry.get("max_tokens_per_sequence")?.as_u64()?;
+            if tokens == 0 || capacity != u64::from(slots) || window != u64::from(n_ctx_per_slot) || window > tokens {
+                return None;
+            }
+            Some(tokens)
+        }
+        // Older managed engines used divided caches. Only absence permits their
+        // legacy geometry; a present malformed receipt must never take this path.
+        None => Some(u64::from(slots) * u64::from(n_ctx_per_slot)),
     }
 }
 
@@ -170,6 +196,13 @@ fn slot_geometry(props: &serde_json::Value) -> Option<(u32, u32)> {
 fn is_host_backend(name: &str) -> bool {
     let n = name.trim();
     n.starts_with("CPU") || n.contains("_Host") || n.starts_with("BLAS")
+}
+
+/// A backend whose memory is a GPU's: the ones llama.cpp names for the devices we place lanes
+/// on. Any other non-host name decides nothing (`observed_placement` fails closed on it).
+fn is_gpu_backend(name: &str) -> bool {
+    let n = name.trim();
+    ["Metal", "MTL", "CUDA", "Vulkan", "ROCm", "HIP", "SYCL", "OpenCL"].iter().any(|gpu| n.starts_with(gpu))
 }
 
 #[cfg(test)]
@@ -202,7 +235,25 @@ mod tests {
         let ctx = EngineContext::from_props(&with_slots).expect("reads");
         assert_eq!((ctx.context_bytes, ctx.slots, ctx.n_ctx_per_slot), (117440512, 2, 2048));
         assert_eq!(ctx.beyond_weights, 117440512 + 66594944);
+        assert_eq!(ctx.allocated_tokens, 4096);
         assert_eq!(EngineContextReading::of(&with_slots), EngineContextReading::Read(ctx));
+        // A unified cache's per-sequence limit is not independent storage per slot.
+        let mut unified = with_slots.clone();
+        unified["context_geometry"] = serde_json::json!({
+            "allocated_tokens": 2048, "max_tokens_per_sequence": 2048, "sequence_capacity": 2
+        });
+        assert_eq!(EngineContext::from_props(&unified).expect("unified receipt").allocated_tokens, 2048);
+        for invalid in [
+            serde_json::Value::Null,
+            serde_json::json!({"allocated_tokens": 0, "max_tokens_per_sequence": 2048, "sequence_capacity": 2}),
+            serde_json::json!({"allocated_tokens": 2048, "max_tokens_per_sequence": 2048, "sequence_capacity": 3}),
+        ] {
+            unified["context_geometry"] = invalid;
+            assert_eq!(EngineContextReading::of(&unified), EngineContextReading::Invalid);
+            let mut no_breakdown = unified.clone();
+            no_breakdown.as_object_mut().expect("props fixture").remove("memory_breakdown");
+            assert_eq!(EngineContextReading::of(&no_breakdown), EngineContextReading::Invalid);
+        }
         // present but unusable is no reading, never the legacy fallback (Codex on #4961)
         assert_eq!(EngineContextReading::of(&props), EngineContextReading::Invalid, "no slot geometry");
         let mut zero_slots = with_slots.clone();
@@ -257,5 +308,25 @@ mod tests {
         let m = WeightResidency::from_props(&metal).unwrap();
         assert_eq!(m.accelerator_bytes(), 4_700_000_000);
         assert_eq!(m.summary(), "Metal=4.70GB CPU_Mapped=0.29GB");
+    }
+
+    // what this catches (card 22aa3379): a kept lane's placement read wrong from its engine's
+    // own account. All host bytes is Cpu (IntelMac 2026-10-22: CPU_Mapped 980 MB); weights on a
+    // known GPU are Gpu even beside a host staging buffer; an unknown accelerator name, no
+    // bytes, or no field at all decide nothing.
+    #[test]
+    fn a_lane_placement_is_read_from_where_its_weights_live() {
+        use crate::inference::llama_server::LanePlacement;
+        let r = |pairs: &[(&str, u64)]| WeightResidency {
+            per_backend: pairs.iter().map(|(n, b)| (n.to_string(), *b)).collect(),
+        };
+        assert_eq!(r(&[("CPU_Mapped", 980_097_536)]).observed_placement(), Some(LanePlacement::Cpu));
+        assert_eq!(r(&[("CPU", 1), ("CPU_REPACK", 2)]).observed_placement(), Some(LanePlacement::Cpu));
+        assert_eq!(r(&[("Metal", 4_700_000_000), ("CPU_Mapped", 300_000_000)]).observed_placement(), Some(LanePlacement::Gpu));
+        assert_eq!(r(&[("CUDA0", 9_000_000_000), ("CUDA_Host", 1_000)]).observed_placement(), Some(LanePlacement::Gpu));
+        assert_eq!(r(&[("RPC[10.0.0.2]", 1_000), ("CPU_Mapped", 1_000)]).observed_placement(), None, "an unknown accelerator decides nothing");
+        assert_eq!(r(&[("Metal", 1_000), ("RPC[x]", 1_000)]).observed_placement(), None, "mixed with an unknown accelerator decides nothing");
+        assert_eq!(r(&[("CPU_Mapped", 0)]).observed_placement(), None, "no bytes");
+        assert_eq!(WeightResidency::from_props(&serde_json::json!({})).and_then(|w| w.observed_placement()), None, "no field");
     }
 }

@@ -48,7 +48,7 @@ crate::action_command! {
             .get(&req.persona_id)
             .ok_or_else(|| CommandError::NotFound(format!("No cognition for {}", req.persona_id)))?;
 
-        let now_ms = crate::time::EpochMs::now().millis();
+        let now_ms = continuum_base::time::EpochMs::now().millis();
 
         let result = evaluator::full_evaluate(
             &req,

@@ -415,7 +415,7 @@ impl DeployActuator {
             .unwrap_or_else(|| root.clone()); // unwrap_or_else: no home at all = look beside the root; no tracker can be installed there, so the actuator acts
         let switch = std::env::var(ACTUATOR_SWITCH_KEY)
             .ok()
-            .or_else(|| crate::config_env::read(ACTUATOR_SWITCH_KEY));
+            .or_else(|| continuum_base::config_env::read(ACTUATOR_SWITCH_KEY));
         Self::with_spawner(user_home, root, switch, Box::new(CliSpawner))
     }
 
@@ -475,7 +475,7 @@ impl DeployActuator {
             let mut said = self.said_deferred.lock();
             if said.as_deref() != Some(req.tip_sha.as_str()) {
                 *said = Some(req.tip_sha.clone());
-                crate::probe!(
+                continuum_base::probe!(
                     class = "deploy.actuate.deferred_to_external_owner",
                     tip = req.tip_sha.as_str(),
                     owner = owner.name(),
@@ -493,7 +493,7 @@ impl DeployActuator {
                 let mut said = self.said_gave_up.lock();
                 if said.as_deref() != Some(req.tip_sha.as_str()) {
                     *said = Some(req.tip_sha.clone());
-                    crate::probe!(
+                    continuum_base::probe!(
                         class = "deploy.actuate.gave_up",
                         tip = req.tip_sha.as_str(),
                         attempts,
@@ -503,7 +503,7 @@ impl DeployActuator {
                 return ActuateOutcome::Skipped(decision);
             }
             ActuateDecision::AwaitingBound { attempt, elapsed_ms, bound_ms } => {
-                crate::probe!(
+                continuum_base::probe!(
                     class = "deploy.actuate.decision",
                     verdict = "awaiting_bound",
                     tip = req.tip_sha.as_str(),
@@ -539,7 +539,7 @@ impl DeployActuator {
                     landed_waited_ms: None,
                     last_deploy_ms,
                 });
-                crate::probe!(
+                continuum_base::probe!(
                     class = "deploy.actuate.spawned",
                     tip = req.tip_sha.as_str(),
                     pid = spawned.pid.unwrap_or(0), // unwrap_or: a task run has no pid; 0 is the honest "none" in a numeric field
@@ -565,7 +565,7 @@ impl DeployActuator {
                     landed_waited_ms: None,
                     last_deploy_ms,
                 });
-                crate::probe!(
+                continuum_base::probe!(
                     class = "deploy.actuate.spawn_failed",
                     tip = req.tip_sha.as_str(),
                     attempt,
@@ -583,7 +583,7 @@ impl DeployActuator {
     pub(crate) fn report_boot_outcome(&self, running_sha: &str, now_ms: u64) -> BootOutcome {
         let receipt = self.receipt();
         let outcome = classify_boot(receipt.as_ref(), running_sha);
-        crate::probe!(
+        continuum_base::probe!(
             class = "deploy.actuate.outcome",
             outcome = outcome.word(),
             running = running_sha,

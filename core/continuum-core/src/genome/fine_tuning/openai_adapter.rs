@@ -34,7 +34,7 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::secrets::get_secret;
+use continuum_base::secrets::get_secret;
 
 use super::adapter::{FineTuningAdapter, FineTuningCapabilities, FineTuningError, TrainerHardware};
 use super::types::{
@@ -158,7 +158,7 @@ impl FineTuningAdapter for OpenAIFineTuningAdapter {
             // Cloud HTTP trainer — runs from any host regardless of
             // local accelerator.
             requires: TrainerHardware::Any,
-            trains_on_resident_weights: false,
+            place: crate::genome::fine_tuning::adapter::TrainingPlace::Cloud,
         }
     }
 

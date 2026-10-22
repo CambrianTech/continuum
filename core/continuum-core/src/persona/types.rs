@@ -253,7 +253,7 @@ impl PersonaState {
 
         // Update counts
         self.response_count += 1;
-        self.last_activity_time = crate::time::EpochMs::now().millis();
+        self.last_activity_time = continuum_base::time::EpochMs::now().millis();
 
         // Recalculate mood
         self.calculate_mood();

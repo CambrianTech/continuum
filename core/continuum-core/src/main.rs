@@ -249,7 +249,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // thread exists (`set_var` must not race a reader). A launcher that applied it to the
     // child froze it into a supervisor's plist/task at install time; the core owning it
     // means "edit the file, reboot" holds under launchd exactly as on the direct path.
-    let applied = continuum_core::config_env::apply_to_process();
+    let applied = continuum_base::config_env::apply_to_process();
     if applied > 0 {
         eprintln!("continuum-core: applied {applied} assignment(s) from config.env");
     }
@@ -557,7 +557,7 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
     let ipc_pressure_monitor = pressure_monitor.clone();
     let ipc_disk_pressure_monitor = disk_pressure_monitor.clone();
     let mut ipc_ready_rx = continuum_core::ipc::subscribe_ready();
-    continuum_core::probe!(
+    continuum_base::probe!(
         class = "boot.phase",
         phase = "main_to_ipc_thread",
         ms = boot_entry.elapsed().as_millis() as u64,

@@ -145,7 +145,7 @@ pub(crate) async fn send_with_lane_retry(
             super::serving_guard::guard_resident_model(
                 cfg, quote.dedicated_lane, fill.model, super::serving_guard::PromptCount::Measured { prompt: fill.prompt_tokens, reply: quote.reply }, quote.caller,
             ).await?;
-            crate::probe!(
+            continuum_base::probe!(
                 class = "inference.prompt.prompt_quote",
                 request_id = quote.request_id,
                 model = fill.model,
@@ -187,7 +187,7 @@ pub(crate) async fn send_with_lane_retry(
                 HEADER_WAIT_QUIET_CHECKPOINTS,
                 || crate::inference::llama_server::engine_probe(&root, probe_client()),
                 |checkpoints| {
-                    crate::probe!(
+                    continuum_base::probe!(
                         class = "inference.header_wait.busy_not_dead",
                         provider = %cfg.name,
                         checkpoints,
@@ -253,7 +253,7 @@ pub(crate) async fn send_with_lane_retry(
             {
                 relaunch_retries += 1;
                 let backoff = LANE_RELAUNCH_RETRY_BASE * relaunch_retries;
-                crate::probe!(
+                continuum_base::probe!(
                     class = "inference.lane_relaunch_retry",
                     provider = cfg.provider_id.as_str(),
                     attempt = relaunch_retries,
@@ -273,7 +273,7 @@ pub(crate) async fn send_with_lane_retry(
             {
                 relaunch_retries += 1;
                 let backoff = LANE_RELAUNCH_RETRY_BASE * relaunch_retries;
-                crate::probe!(
+                continuum_base::probe!(
                     class = "inference.lane_relaunch_retry",
                     provider = cfg.provider_id.as_str(),
                     attempt = relaunch_retries,
@@ -316,7 +316,7 @@ pub(crate) async fn send_with_lane_retry(
             } => (*requested, *available),
             _ => (0, 0),
         };
-        crate::probe!(
+        continuum_base::probe!(
             class = "ai.request.rejected",
             provider = %cfg.name,
             status = status.as_u16(),

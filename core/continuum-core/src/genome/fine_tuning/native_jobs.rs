@@ -156,7 +156,7 @@ impl NativeJobs {
         // ended in three killed-by-reboot jobs with no row saying when or why. One class
         // per transition, the job id on every row, so the room can follow a run.
         let provider = self.provider;
-        crate::probe!(
+        continuum_base::probe!(
             class = "training.job.queued",
             job = %id,
             provider,
@@ -168,7 +168,7 @@ impl NativeJobs {
             let prepared = tokio::select! {
                 biased;
                 _ = cancelled.changed() => {
-                    crate::probe!(
+                    continuum_base::probe!(
                         class = "training.job.cancelled",
                         job = %id,
                         provider,
@@ -184,7 +184,7 @@ impl NativeJobs {
             let PreparedJob { execution, finish } = match prepared {
                 Ok(job) => job,
                 Err(error) => {
-                    crate::probe!(
+                    continuum_base::probe!(
                         class = "training.job.prepare_failed",
                         job = %id,
                         provider,
@@ -206,7 +206,7 @@ impl NativeJobs {
                 },
                 Execution::InPlace(run) => {
                     let started = Instant::now();
-                    crate::probe!(
+                    continuum_base::probe!(
                         class = "training.job.started",
                         job = %id,
                         provider,
@@ -222,7 +222,7 @@ impl NativeJobs {
                         InPlaceEnd::Finished => (started, Ok(())),
                         InPlaceEnd::Failed(error) => (started, Err(error)),
                         InPlaceEnd::Cancelled => {
-                            crate::probe!(
+                            continuum_base::probe!(
                                 class = "training.job.cancelled",
                                 job = %id,
                                 provider,
@@ -247,7 +247,7 @@ impl NativeJobs {
                 Err(e) => Err(e),
             };
             match &artifact {
-                Ok(artifact) => crate::probe!(
+                Ok(artifact) => continuum_base::probe!(
                     class = "training.job.finished",
                     job = %id,
                     provider,
@@ -257,7 +257,7 @@ impl NativeJobs {
                     final_loss = artifact.metrics.final_loss.unwrap_or(f64::NAN), // unwrap_or: `finish` already refused a job with no finite loss; NAN here can only mean that guard moved
                     "a local training job finished with a measured learning receipt"
                 ),
-                Err(error) => crate::probe!(
+                Err(error) => continuum_base::probe!(
                     class = "training.job.failed",
                     job = %id,
                     provider,
@@ -305,7 +305,7 @@ async fn run_process(
     let mut child = match command.spawn() {
         Ok(child) => child,
         Err(error) => {
-            crate::probe!(
+            continuum_base::probe!(
                 class = "training.job.spawn_failed",
                 job = %id,
                 provider,
@@ -321,7 +321,7 @@ async fn run_process(
     let stdout = child.stdout.take();
     let stderr = child.stderr.take();
     let started = Instant::now();
-    crate::probe!(
+    continuum_base::probe!(
         class = "training.job.started",
         job = %id,
         provider,
@@ -353,7 +353,7 @@ async fn run_process(
             // Kill AND reap before announcing cancellation or releasing resources.
             let result = child.kill().await;
             for drain in drains { let _ = drain.await; }
-            crate::probe!(
+            continuum_base::probe!(
                 class = "training.job.cancelled",
                 job = %id,
                 provider,
@@ -414,7 +414,7 @@ async fn drain(
         log.write_all(format!("{line}\n").as_bytes()).await?;
         if let Some((iter, kind, loss)) = parser.and_then(|parse| parse(&line)) {
             let row = serde_json::json!({"iter":iter,"kind":kind,"loss":loss,
-                "atMs":crate::time::EpochMs::now().millis()});
+                "atMs":continuum_base::time::EpochMs::now().millis()});
             losses.write_all(format!("{row}\n").as_bytes()).await?;
         }
         if let Some(tail) = &tail {
@@ -473,7 +473,7 @@ pub(super) fn default_lora() -> LoRAHyperparams {
 /// Whether this native adapter could have materialized exactly these omitted defaults.
 /// Recovery uses the same policy owner as training; unknown providers never qualify.
 pub(crate) fn materialized_defaults(provider: &str, lora: &Option<LoRAHyperparams>, schedule: &Option<ScheduleParams>) -> bool {
-    matches!(provider, super::cuda_lora_adapter::PROVIDER_ID | super::engine_lora_adapter::PROVIDER_ID | super::mlx_lora_adapter::PROVIDER_ID)
+    matches!(provider, super::cuda_lora_adapter::PROVIDER_ID | super::engine_lora_adapter::PROVIDER_ID | super::engine_lora_adapter::LANE_PROVIDER_ID | super::mlx_lora_adapter::PROVIDER_ID)
         && lora.as_ref() == Some(&default_lora()) && schedule.as_ref() == Some(&default_schedule())
 }
 
@@ -500,12 +500,12 @@ mod tests {
         let planned = daemon.available_for("trainer", ResourceKind::Vram);
         assert_eq!(planned, 1024 * mib, "test: everything is free when the run plans");
         // serving grows into the memory after the plan
-        let _serving = wait_for_training_memory(daemon.clone(), &gate, "serving", 768 * mib, |_| {})
+        let _serving = wait_for_training_memory(daemon.clone(), &gate, "serving", crate::resources::ResourceKind::Vram, 768 * mib, |_| {})
             .await
             .unwrap();
         let bound = Arc::new(std::sync::Mutex::new(None));
         let saw = bound.clone();
-        let admitted = wait_for_training_memory_bound(daemon.clone(), &gate, "trainer", TrainingNeed::Calibrate { at_least: None }, |_| {}, move |granted| {
+        let admitted = wait_for_training_memory_bound(daemon.clone(), &gate, "trainer", crate::resources::ResourceKind::Vram, TrainingNeed::Calibrate { at_least: None }, |_| {}, move |granted| {
             *saw.lock().unwrap() = Some(granted);
             Ok(())
         })
@@ -518,11 +518,11 @@ mod tests {
         // smallest budget was granted, posted as memory_budget_mib=0 and refused unreturnably.
         // With less than 1 MiB free, a calibration admission waits instead of granting it.
         drop(admitted);
-        let _rest = wait_for_training_memory(daemon.clone(), &gate, "serving-2", 256 * mib - 512 * 1024, |_| {})
+        let _rest = wait_for_training_memory(daemon.clone(), &gate, "serving-2", crate::resources::ResourceKind::Vram, 256 * mib - 512 * 1024, |_| {})
             .await
             .unwrap();
         assert!(
-            wait_for_training_memory_bound(daemon.clone(), &gate, "trainer", TrainingNeed::Calibrate { at_least: None }, |_| {}, |_| Ok(()))
+            wait_for_training_memory_bound(daemon.clone(), &gate, "trainer", crate::resources::ResourceKind::Vram, TrainingNeed::Calibrate { at_least: None }, |_| {}, |_| Ok(()))
                 .now_or_never()
                 .is_none(),
             "512 KiB free: the calibration waits, it is not granted"
@@ -530,7 +530,7 @@ mod tests {
         // and a family that once measured a whole run waits for at least that much (Cormac on #4949)
         drop(_rest);
         assert!(
-            wait_for_training_memory_bound(daemon.clone(), &gate, "trainer", TrainingNeed::Calibrate { at_least: Some(300 * mib) }, |_| {}, |_| Ok(()))
+            wait_for_training_memory_bound(daemon.clone(), &gate, "trainer", crate::resources::ResourceKind::Vram, TrainingNeed::Calibrate { at_least: Some(300 * mib) }, |_| {}, |_| Ok(()))
                 .now_or_never()
                 .is_none(),
             "256 MiB free under a 300 MiB measured floor: it waits"
@@ -552,13 +552,14 @@ mod tests {
             DaemonConfig::default(),
         );
         let gate = crate::modules::serving_daemon::LifecycleGate::unowned(true);
-        let held = wait_for_training_memory(daemon.clone(), &gate, "serving", 1024, |_| {})
+        let held = wait_for_training_memory(daemon.clone(), &gate, "serving", crate::resources::ResourceKind::Vram, 1024, |_| {})
             .await
             .unwrap();
         let mut waiting = Box::pin(wait_for_training_memory(
             daemon.clone(),
             &gate,
             "trainer",
+            crate::resources::ResourceKind::Vram,
             512,
             |_| {},
         ));
@@ -657,6 +658,7 @@ mod tests {
             daemon.clone(),
             &gate,
             "trainer",
+            crate::resources::ResourceKind::Vram,
             512,
             |_| {},
         ));
@@ -672,6 +674,7 @@ mod tests {
             daemon.clone(),
             &gate,
             "trainer",
+            crate::resources::ResourceKind::Vram,
             512,
             |_| {},
         ));

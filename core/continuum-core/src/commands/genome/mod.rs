@@ -142,7 +142,7 @@ pub(crate) mod test_support {
                 produces_local_artifact: false,
                 supported_base_model_prefixes: vec![],
                 requires: TrainerHardware::Any,
-                trains_on_resident_weights: false,
+                place: crate::genome::fine_tuning::adapter::TrainingPlace::Cloud,
             }
         }
         async fn create_job(&self, _r: TrainingJobRequest) -> Result<JobHandle, FineTuningError> {

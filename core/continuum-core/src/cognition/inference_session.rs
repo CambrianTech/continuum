@@ -13,7 +13,7 @@
 //! generation OVER a handle + grid routing of `open` are the next slices; the
 //! handle is the seam they hang on.
 
-use crate::time::EpochMs;
+use continuum_base::time::EpochMs;
 use std::sync::{Arc, OnceLock};
 
 use async_trait::async_trait;

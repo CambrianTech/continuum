@@ -153,7 +153,7 @@ impl ActionCommand for CodeRun {
                             .map_err(|error| CommandError::Internal(format!("code/run: {error}"))),
                     };
                 let shape = script_shape(&params.code);
-                crate::probe!(
+                continuum_base::probe!(
                     class = "code.run.shape",
                     shape = shape.unwrap_or("program"),
                     rooted = cwd.is_some(),

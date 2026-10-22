@@ -15,7 +15,7 @@
 //! DISCOVERED default room (AircModule discovery, same dep the persona bootstrap and
 //! node-presence emitter consume) — never a hardcoded id (#124).
 
-use crate::time::EpochMs;
+use continuum_base::time::EpochMs;
 use std::any::Any;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -98,7 +98,7 @@ impl ServiceModule for GridCapacityModule {
                 .swap(u64::MAX - 1, Ordering::AcqRel)
                 != u64::MAX - 1
             {
-                crate::probe!(
+                continuum_base::probe!(
                     class = "grid.capacity.ungoverned",
                     "no governed memory on this node (neither VRAM nor RAM) — no capacity offer published",
                 );
@@ -129,7 +129,7 @@ impl ServiceModule for GridCapacityModule {
         // Glass box: speak on change (rounded GB), silent on a steady offer.
         let free_gb = offer.gpu_free_bytes_live / 1_000_000_000;
         if self.last_probed_free_gb.swap(free_gb, Ordering::AcqRel) != free_gb {
-            crate::probe!(
+            continuum_base::probe!(
                 class = "grid.capacity.offer",
                 free_gb = free_gb,
                 total_gb = (offer.gpu_total_bytes / 1_000_000_000),

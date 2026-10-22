@@ -59,7 +59,7 @@ impl PersonaWorkspaceRegistry {
                 None => Some("missing_template"),
             };
             if let Some(reason) = reason {
-                crate::probe!(
+                continuum_base::probe!(
                     class = "persona.rehome.kept_binding",
                     persona_id = %id,
                     reason,

@@ -137,7 +137,7 @@ impl Preparation {
         let runtime = match registry.get_by_agent_name(recipient.as_str()) {
             Some(runtime) => runtime,
             None => {
-                let id = crate::id_resolve::resolve(
+                let id = continuum_base::id_resolve::resolve(
                     recipient.as_str(),
                     &registry.live_personas(),
                     "recipient",

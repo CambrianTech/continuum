@@ -28,7 +28,7 @@ impl Drop for ServingLanePermit {
         // The measured turn time the NEXT mind's wait is bounded by (`lane_wait_bound`).
         // One ring push per release, on a path that already probes.
         note_lane_held_ms(held_ms);
-        crate::probe!(
+        continuum_base::probe!(
             class = "admission.lane.released",
             persona = ?self.persona,
             directed = self.directed,

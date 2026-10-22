@@ -41,7 +41,7 @@ impl MlxLoraFineTuner {
     /// (`MLX_PYTHON`), falling back to the unsloth-studio env that
     /// ships `mlx_lm` on this machine class.
     pub fn new() -> Self {
-        let python = crate::config_env::read(MLX_PYTHON_KEY)
+        let python = continuum_base::config_env::read(MLX_PYTHON_KEY)
             .map(PathBuf::from)
             .unwrap_or_else(default_mlx_python);
         Self {
@@ -98,9 +98,11 @@ impl FineTuningAdapter for MlxLoraFineTuner {
             // MLX-loadable; create_job validates it's non-empty.
             supported_base_model_prefixes: vec![],
             // Apple's MLX path — the coordinator routes here only on a
-            // host whose probed HardwareProfile reports a Metal device.
+            // host the shared hardware classifier (governor's
+            // `classify_silicon`) names Apple Silicon; an Intel Mac's
+            // Metal GPU does not qualify.
             requires: TrainerHardware::AppleSilicon,
-            trains_on_resident_weights: false,
+            place: crate::genome::fine_tuning::adapter::TrainingPlace::SeparateCopyHere,
         }
     }
 
@@ -135,22 +137,22 @@ impl FineTuningAdapter for MlxLoraFineTuner {
         // the 12GB 4-bit conversion coexists. A deliberate, LOGGED preference
         // for a local trainable artifact. Without one, admission refuses an
         // unsized HF id before either tokenizer or trainer can launch.
-        let train_base = {
-            let q4 = dirs::home_dir()
-                .unwrap_or_else(|| std::path::PathBuf::from("."))
-                .join(".continuum/genome/models/mlx-q4")
-                .join(train_base.replace('/', "_"));
-            if q4.join("config.json").exists() {
-                crate::probe!(
+        // No continuum home holds no local conversion: train against the id as given.
+        let local_q4 = crate::paths::ContinuumLayout::home()
+            .ok()
+            .map(|layout| layout.genome_models().join("mlx-q4").join(train_base.replace('/', "_")))
+            .filter(|q4| q4.join("config.json").exists());
+        let train_base = match local_q4 {
+            Some(q4) => {
+                continuum_base::probe!(
                     class = "genome.train.base",
                     base = %train_base,
                     local_q4 = %q4.display(),
                     "training against the local 4-bit MLX conversion (fits beside the living lane)"
                 );
                 q4.to_string_lossy().into_owned()
-            } else {
-                train_base
             }
+            None => train_base,
         };
         if request.dataset.examples.is_empty() {
             return Err(FineTuningError::InvalidRequest(
@@ -333,6 +335,7 @@ pub(super) async fn admit_training(
             )
         })?,
         &format!("genome-train:{local_id}"),
+        crate::resources::ResourceKind::Vram,
         footprint,
         |available| progress.waiting_for_capacity(footprint, available),
     )

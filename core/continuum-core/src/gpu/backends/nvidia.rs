@@ -237,7 +237,7 @@ fn probe_blocking() -> Option<(String, SmiReading)> {
         &QUERY_GPU_ARGS,
         NVIDIA_PROBE_TIMEOUT,
     );
-    crate::probe!(
+    continuum_base::probe!(
         class = "boot.gpu_detect",
         backend = "nvidia",
         stage = "monitor_probe",

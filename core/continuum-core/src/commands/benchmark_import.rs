@@ -181,7 +181,7 @@ impl ActionCommand for BenchmarkImport {
                 && row.kind == "swe"
                 && crate::cognition::swe_bench::read_verdict(&row.task_id).is_some_and(|v| v.resolved)
             {
-                crate::probe!(
+                continuum_base::probe!(
                     class = "bench.round.already_resolved",
                     instance = %row.task_id,
                     "a citizen's card already resolved this instance — it stays in the sample and its score, and is not offered as work again"
@@ -197,7 +197,7 @@ impl ActionCommand for BenchmarkImport {
                     .or_else(|| crate::cognition::swe_verdict_sweep::standing_env_refusal(&row.task_id)
                         .map(|r| format!("env refusal stands from an earlier round: {r}")));
                 if let Some(wall) = wall {
-                    crate::probe!(
+                    continuum_base::probe!(
                         class = "bench.round.ungradeable_withheld",
                         instance = %row.task_id,
                         wall = %wall,
@@ -208,7 +208,7 @@ impl ActionCommand for BenchmarkImport {
                 }
             }
             if row.kind == "swe" && open_elsewhere.contains(&row.task_id) {
-                crate::probe!(
+                continuum_base::probe!(
                     class = "bench.round.duplicate_withheld",
                     instance = %row.task_id,
                     "another working round on this node holds an open card for this instance — not offered twice"
@@ -424,7 +424,7 @@ impl ActionCommand for CourseworkImport {
             .take(limit)
             .map(|pc| imported_from(pc, &p.repo))
             .collect::<Result<Vec<_>, _>>()?;
-        crate::probe!(
+        continuum_base::probe!(
             class = "coursework.set_imported",
             set = %set,
             lessons = prepared.len() as u64,

@@ -8,7 +8,7 @@ version.workspace = true
 authors.workspace = true
 
 [lib]
-crate-type = ["cdylib", "rlib"]  # cdylib for FFI, rlib for other Rust
+crate-type = ["rlib"]
 
 [[bin]]
 name = "continuum-core-server"
@@ -53,6 +53,7 @@ serde.workspace = true
 serde_json.workspace = true
 ron = "0.12"     # RON scene descriptions (Bevy-idiomatic on-disk format)
 uuid.workspace = true
+continuum-base = { path = "../continuum-base" }
 # JSON Schema generation from serde types — the runtime param schema every SDK
 # (CLI/web/mobile/RAG-tools) adapts from. Derived automatically by the command
 # base traits; uuid1 so Uuid fields schema-ize as string. See COMMAND-ORGANIZATION.md.
@@ -317,13 +318,16 @@ objc = "0.2"    # Objective-C runtime — for Metal APIs not wrapped by metal cr
 #   Linux + CUDA:          cargo build --features cuda,load-dynamic-ort
 #   Linux CPU / WSL2-Ubuntu / Windows: cargo build  (no GPU features)
 #
-# `scripts/shared/cargo-features.sh` already detects the right set per
-# uname; `npm start` and the docker builds source it. The only cost is
-# a Mac dev typing `cargo build` directly without features now gets a
-# CPU-only build — paid by the dev who knows to add the flags. The
-# benefit is docker / CI / cross-platform builds stop pulling Apple-
-# only crates into their dep tree on every host.
-default = ["livekit-webrtc", "avatar-3d"]
+# HEADLESS BY DEFAULT (Joel 2026-10-19: "headless with desktop clients, so you can operate
+# more easily in things like AWS"). Calls (`livekit-webrtc`) and 3D avatars (`avatar-3d`)
+# are what a NODE hosts, not what the crate is: every deploy path takes them from the
+# node's profile, `CONTINUUM_NODE_FEATURES` in ~/.continuum/config.env, through ONE
+# function, tools/scripts/lib/core-features.sh `select_core_features` (which also detects
+# the platform GPU set above). A node with no profile builds headless and the build says
+# so. A plain `cargo check` / `cargo test` therefore compiles neither Bevy+wgpu nor
+# LiveKit; name them to work on those paths:
+#   cargo check -p continuum-core --features metal,accelerate,livekit-webrtc,avatar-3d
+default = []
 livekit-webrtc = ["dep:livekit", "dep:livekit-api"]
 # 3D VRM avatar rendering — the headless Bevy renderer (live/video/bevy_renderer),
 # its GPU→GPU frame converters (wgpu / Metal-via-wgpu-hal), the `bevy_3d` avatar
@@ -331,8 +335,8 @@ livekit-webrtc = ["dep:livekit", "dep:livekit-api"]
 # Split out of the always-on set because headless and CPU-only nodes don't render
 # 3D, and bevy was ~16% of the core binary and ~24% of the CLI's (card 0bff1a0a;
 # Joel 2026-10-03: "bevy is unrealistic and unused for some headless forms and
-# some machines"). ON by default so GPU hosts keep it; builds that pass
-# `--no-default-features` (the IntelMac CPU path, the CUDA CLI) drop it. Without
+# some machines"). OFF by default; a node that renders avatars names it in its
+# profile (CONTINUUM_NODE_FEATURES, see above). Without
 # it the pure avatar types (Emotion, Gesture, slot/resolution constants in
 # live/video/avatar_types.rs) and the live2d/procedural backends remain; any
 # request for 3D rendering fails loudly naming this feature — never a silent
@@ -401,7 +405,7 @@ load-dynamic-ort = ["ort/load-dynamic"]
 #     via `cargo test --features test-fixtures` or `--features test-fixtures`
 #     on the bin target.
 #   - Production: heuristic adapter doesn't exist in the binary at all.
-test-fixtures = []
+test-fixtures = ["continuum-base/test-fixtures"]
 
 # stress-tests: opts in concurrency / multi-thread / load tests that
 # pin substrate invariants under N-task simultaneous load. Each test
@@ -478,6 +482,7 @@ unexpected_cfgs = "allow"
 source-hygiene = { path = "../source-hygiene" }
 tokio-test = "0.4"
 tempfile = "3"                   # Temp directories for code module tests
+continuum-base = { path = "../continuum-base", features = ["test-fixtures"] }
 
 # Enable continuum-client's test-fixtures (the `mock` transport) in TEST builds
 # only — production links the regular dep above without it. Lets tests drive a
