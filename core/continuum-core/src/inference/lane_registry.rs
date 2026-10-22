@@ -278,7 +278,7 @@ pub fn sweep_all() -> Vec<SweepOutcome> {
 static WRITES: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 fn writes() -> std::sync::MutexGuard<'static, ()> {
-    WRITES.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+    WRITES.lock().unwrap_or_else(std::sync::PoisonError::into_inner) // poisoned still serializes: the guarded data is on disk, a panicked writer left no torn state here
 }
 
 /// Record `placement` on the lane `expected` names, only if its record on disk is still
@@ -310,9 +310,8 @@ pub(crate) fn restamp_placement_in(
         return Ok(false);
     }
     let stamped = LaneRecord { placement: Some(placement), ..expected.clone() };
-    let json = serde_json::to_string(&stamped).map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
     let tmp = path.with_extension("lane.tmp");
-    std::fs::write(&tmp, json)?;
+    std::fs::write(&tmp, encode(&stamped)?)?;
     std::fs::rename(&tmp, &path)?;
     Ok(true)
 }
@@ -337,9 +336,12 @@ pub(crate) fn record_in(dir: &Path, rec: &LaneRecord) -> std::io::Result<()> {
     if rec.role == LaneRole::Live {
         clear_live_records_in(dir);
     }
-    let json = serde_json::to_string(rec)
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
-    std::fs::write(record_path(dir, rec.pid), json)
+    std::fs::write(record_path(dir, rec.pid), encode(rec)?)
+}
+
+/// A record's on-disk form, the one encoder both writers use.
+fn encode(rec: &LaneRecord) -> std::io::Result<String> {
+    serde_json::to_string(rec).map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e)) // file format on disk: the `.lane` JSON an operator reads and a successor core adopts by
 }
 
 /// Remove every existing LIVE-role record under `dir`. Called only when a fresh
