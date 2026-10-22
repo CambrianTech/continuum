@@ -195,7 +195,7 @@ pub struct CallerIdentity {
     /// citizen, beside her live session). Bound by the kernel side of the connection
     /// ([`Self::in_hands`]), never from params: a caller can't name another context's
     /// hands. `None` is the caller's default context. See [`crate::code::hands`].
-    pub hands: Option<crate::code::hands::HandsContext>,
+    pub hands: Option<crate::identity::hands_context::HandsContext>,
     /// This call RELEASES `hands` rather than acting in them: the one operation the dispatcher
     /// does not admit to them, because it closes them to every other (card fc9e9fd7, Astra on
     /// #5026). Set only by the kernel's release path ([`Self::releasing_hands`]), never from
@@ -205,7 +205,7 @@ pub struct CallerIdentity {
 
 impl CallerIdentity {
     /// This identity, acting in `context`: same caller, same trust, its own hands.
-    pub fn in_hands(mut self, context: crate::code::hands::HandsContext) -> Self {
+    pub fn in_hands(mut self, context: crate::identity::hands_context::HandsContext) -> Self {
         self.hands = Some(context);
         self
     }

@@ -101,7 +101,7 @@ pub async fn apply_act(
     intent: &str,
     room_id: Uuid,
     chain: &ActChain,
-    hands: Option<crate::code::hands::HandsContext>,
+    hands: Option<crate::identity::hands_context::HandsContext>,
 ) -> ActOutcome {
     // no hands → cannot act (and tools were never offered)
     let Some(body) = cycle.acting() else {

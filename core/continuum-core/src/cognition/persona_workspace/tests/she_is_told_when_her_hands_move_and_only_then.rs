@@ -96,7 +96,7 @@ use super::*;
         let me = her.as_uuid();
         let card_id = WorkCardId::new();
         let mine = ClaimId::from_uuid(Uuid::new_v4());
-        let context = crate::code::hands::HandsContext::for_claim(me, card_id.as_uuid(), mine.as_uuid());
+        let context = crate::identity::hands_context::HandsContext::for_claim(me, card_id.as_uuid(), mine.as_uuid());
         let row = |owner: Option<PeerId>, claim: Option<ClaimId>, expires: Option<u64>, state: CardState| WorkCard {
             card_id,
             repo: RepoId::new("CambrianTech/continuum").expect("valid repo id in fixture"),

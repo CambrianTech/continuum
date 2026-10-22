@@ -429,7 +429,7 @@ impl ActionCommand for CodeCreateWorkspace {
         let key = &hands_of(ctx);
         // The OWNER of a workspace refuses one for a card turn's unbound stand-in: those hands
         // exist so code tools refuse rather than act anywhere (Astra on #5026).
-        if key.context.is_some_and(|c| c.kind() == crate::code::hands::ContextKind::Unbound) {
+        if key.context.is_some_and(|c| c.kind() == crate::identity::hands_context::ContextKind::Unbound) {
             return Err(CommandError::Invalid(
                 "these are a card turn's unbound hands (its checkout couldn't be bound): they never get \
                  a workspace, so code tools can't act in them this turn"

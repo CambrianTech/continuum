@@ -227,7 +227,8 @@ mod tests {
     #[tokio::test]
     async fn a_running_command_stays_reachable_by_its_handle_in_any_of_her_hands() {
         crate::system_resources::disk_reporters::prepare_writer_fixture().await;
-        use crate::code::hands::{HandsContext, HandsKey};
+        use crate::code::hands::HandsKey;
+        use crate::identity::hands_context::HandsContext;
         let rt = tokio::runtime::Handle::current();
         let root = tempfile::tempdir().unwrap();
         let state = CodeState::new(Arc::new(DashMap::new()), Arc::new(DashMap::new()), rt.clone());

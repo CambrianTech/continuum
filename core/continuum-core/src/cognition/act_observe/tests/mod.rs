@@ -43,7 +43,7 @@ struct RecordingExecutor {
 
 #[async_trait]
 impl ToolExecutor for RecordingExecutor {
-    fn in_hands(&self, _persona: Uuid, _context: crate::code::hands::HandsContext) -> Option<Arc<dyn ToolExecutor>> {
+    fn in_hands(&self, _persona: Uuid, _context: crate::identity::hands_context::HandsContext) -> Option<Arc<dyn ToolExecutor>> {
         Some(Arc::new(self.clone()))
     }
     async fn execute_native_batch(

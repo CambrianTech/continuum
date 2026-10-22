@@ -61,8 +61,7 @@ use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::{EnvFilter, Layer};
 
-use crate::logging::clog_layer::{fmt_layer_filter, ClogLayer};
-use crate::modules::logger_clog_sink::LoggerQueueSink;
+use crate::logging::clog_layer::{fmt_layer_filter, ClogLayer, ClogSink};
 
 use super::probe_file_sink::{
     JsonlProbeFileSink, ProbeFileSinkError, DEFAULT_MAX_LOG_FILES, ENV_PROBE_CLASSES, ENV_PROBE_DIR,
@@ -264,8 +263,13 @@ pub fn installed_probe_router() -> Option<ProbeRouterLayer> {
 /// Does NOT return an error when `config.probe_dir` is `None` —
 /// that's an intentional "no disk capture this run", not a
 /// configuration failure.
-pub fn install_probe_tracing(
+///
+/// `clog_sink` is where `clog_*`/`log_*` events land. The kernel names only the
+/// [`ClogSink`] contract; the process passes its logger at boot, so tracing installs
+/// without knowing which module owns the files.
+pub fn install_probe_tracing<K: ClogSink>(
     config: ProbeTracingConfig,
+    clog_sink: K,
 ) -> Result<ProbeInstall, ProbeFileSinkError> {
     let default_filter = if config.default_filter.is_empty() {
         "info"
@@ -336,7 +340,7 @@ pub fn install_probe_tracing(
                 .with(UriCaptureLayer::new())
                 .with(probe_router.clone())
                 .with(probe_file_sink)
-                .with(ClogLayer::new(LoggerQueueSink))
+                .with(ClogLayer::new(clog_sink))
                 .with(fmt_layer.with_filter(fmt_layer_filter(env_filter)));
             let _ = registry.try_init();
             (Some(dir.clone()), Some(guard))
@@ -349,7 +353,7 @@ pub fn install_probe_tracing(
                 .with(UriCaptureLayer::new())
                 .with(probe_router.clone())
                 .with(probe_file_sink)
-                .with(ClogLayer::new(LoggerQueueSink))
+                .with(ClogLayer::new(clog_sink))
                 .with(fmt_layer.with_filter(fmt_layer_filter(env_filter)));
             let _ = registry.try_init();
             (None, None)
@@ -443,8 +447,8 @@ mod tests {
             default_filter: "warn".to_string(),
             log_dir: None,
         };
-        let first = install_probe_tracing(config.clone());
-        let second = install_probe_tracing(config);
+        let first = install_probe_tracing(config.clone(), crate::modules::logger_clog_sink::LoggerQueueSink);
+        let second = install_probe_tracing(config, crate::modules::logger_clog_sink::LoggerQueueSink);
         assert!(first.is_ok(), "first install must succeed");
         assert!(second.is_ok(), "second install must no-op cleanly");
         assert!(first.unwrap().probe_log_path.is_none());
@@ -501,7 +505,7 @@ mod tests {
             default_filter: "warn".to_string(),
             log_dir: None,
         };
-        let result = install_probe_tracing(config);
+        let result = install_probe_tracing(config, crate::modules::logger_clog_sink::LoggerQueueSink);
         // Can't `{:?}` the Ok branch — ProbeInstall holds a
         // WorkerGuard which isn't Debug. Match the variant
         // explicitly instead so the assertion error is still

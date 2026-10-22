@@ -74,7 +74,7 @@ async fn bound_card_activity_is_shared_by_perception_and_execution() {
         crate::persona::identity_provider::PersonaIdentitySource::FreshlyMinted,
     ));
     let hands =
-        crate::code::hands::HandsContext::for_claim(persona, card.as_uuid(), claim.as_uuid());
+        crate::identity::hands_context::HandsContext::for_claim(persona, card.as_uuid(), claim.as_uuid());
     let checkout = airc_lib::work_worktree::worktree_path_for(card).unwrap();
     assert!(checkout.starts_with(home.path()));
     std::fs::create_dir_all(checkout.join(".git")).unwrap();
@@ -164,7 +164,7 @@ async fn bound_card_activity_is_shared_by_perception_and_execution() {
         "private thoughts never adopt public task scope"
     );
     // An eval's fresh hands and a roomless fixture never borrow the focused claim.
-    let fork = crate::code::hands::HandsContext::fresh();
+    let fork = crate::identity::hands_context::HandsContext::fresh();
     assert_eq!(
         crate::cognition::persona_workspace::activity_room_for(persona, Some(fork), Uuid::nil())
             .await,

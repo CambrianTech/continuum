@@ -510,7 +510,7 @@
         assert!(out_of_time(&err) && !interrupted(&err), "with no time left a git never starts: {err}");
 
         let _ = fs::remove_file(&hook_pid);
-        let context = crate::code::hands::HandsContext::fresh();
+        let context = crate::identity::hands_context::HandsContext::fresh();
         let lease = std::sync::Arc::new(crate::code::hands::admit(context).expect("open hands"));
         let run = crate::code::hands::admitted(Some(lease), run_git(dir.path(), &commit));
         tokio::select! {

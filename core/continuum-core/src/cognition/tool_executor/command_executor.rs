@@ -73,7 +73,7 @@ pub struct CommandToolExecutor {
     core: Option<Arc<CommandExecutor>>,
     /// The acting context these hands are bound to (bound into the connection's identity,
     /// so the kernel keys her code tools by it). `None` = her default (live) context.
-    hands: Option<crate::code::hands::HandsContext>,
+    hands: Option<crate::identity::hands_context::HandsContext>,
     /// For a context's hands: ends the context when the last clone of these hands drops (the
     /// fork is over, on any exit path). `None` for her live hands, which never end.
     _release: Option<Arc<ContextRelease>>,
@@ -87,7 +87,7 @@ struct ContextRelease {
     core: Arc<CommandExecutor>,
     identity: CallerIdentity,
     persona: Uuid,
-    context: crate::code::hands::HandsContext,
+    context: crate::identity::hands_context::HandsContext,
 }
 
 impl Drop for ContextRelease {
@@ -148,7 +148,7 @@ impl CommandToolExecutor {
     pub fn for_persona_in(
         executor: Arc<CommandExecutor>,
         persona: Uuid,
-        hands: Option<crate::code::hands::HandsContext>,
+        hands: Option<crate::identity::hands_context::HandsContext>,
     ) -> Self {
         // A local persona is the owner's own in-process agent, not a cross-grid
         // peer: it carries `LocalPersona` identity → resolves to `Trusted` at the
@@ -175,7 +175,7 @@ impl CommandToolExecutor {
     /// The core executor behind these hands, if any (a live persona's; not a harness's).
     /// Act in an EXISTING context this executor does not own: no release on drop. The
     /// context's owner (a card claim's lifetime) releases it (card fc9e9fd7).
-    pub fn for_persona_bound(executor: Arc<CommandExecutor>, persona: Uuid, context: crate::code::hands::HandsContext) -> Self {
+    pub fn for_persona_bound(executor: Arc<CommandExecutor>, persona: Uuid, context: crate::identity::hands_context::HandsContext) -> Self {
         let identity = CallerIdentity::local_persona(crate::identity::PeerId::from_uuid(persona)).in_hands(context);
         let transport = InProcessTransport::new(executor.clone(), Some(identity));
         Self {
@@ -481,16 +481,16 @@ impl ToolExecutor for CommandToolExecutor {
         self.core_executor()
     }
 
-    fn hands_context(&self) -> Option<crate::code::hands::HandsContext> {
+    fn hands_context(&self) -> Option<crate::identity::hands_context::HandsContext> {
         self.hands
     }
 
     fn in_fresh_hands(&self, persona: Uuid) -> Option<Arc<dyn ToolExecutor>> {
         let core = self.core.clone()?;
-        Some(Arc::new(Self::for_persona_in(core, persona, Some(crate::code::hands::HandsContext::fresh()))))
+        Some(Arc::new(Self::for_persona_in(core, persona, Some(crate::identity::hands_context::HandsContext::fresh()))))
     }
 
-    fn in_hands(&self, persona: Uuid, context: crate::code::hands::HandsContext) -> Option<Arc<dyn ToolExecutor>> {
+    fn in_hands(&self, persona: Uuid, context: crate::identity::hands_context::HandsContext) -> Option<Arc<dyn ToolExecutor>> {
         let core = self.core.clone()?;
         Some(Arc::new(Self::for_persona_bound(core, persona, context)))
     }

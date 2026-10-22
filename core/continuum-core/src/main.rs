@@ -319,7 +319,10 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
         }));
     }
 
-    let probe_install = install_probe_tracing(ProbeTracingConfig::from_env("info"))?;
+    let probe_install = install_probe_tracing(
+        ProbeTracingConfig::from_env("info"),
+        continuum_core::modules::logger_clog_sink::LoggerQueueSink,
+    )?;
     if let Some(ref path) = probe_install.probe_log_path {
         // Use println so it appears even when RUST_LOG filters out
         // info-level tracing events — the operator who just set the

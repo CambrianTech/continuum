@@ -16,7 +16,7 @@
         let cmd = CodeCreateWorkspace { state: state.clone() };
         let persona = crate::identity::PeerId::from_uuid(uuid::Uuid::new_v4());
         let ctx = Ctx {
-            caller: Some(crate::routing::CallerIdentity::local_persona(persona).in_hands(crate::code::hands::HandsContext::fresh())),
+            caller: Some(crate::routing::CallerIdentity::local_persona(persona).in_hands(crate::identity::hands_context::HandsContext::fresh())),
             ..Ctx::default()
         };
         let at = |root: &std::path::Path| CodeCreateWorkspaceParams {

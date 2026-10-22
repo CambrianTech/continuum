@@ -25,7 +25,7 @@ pub(crate) struct ActingHands {
     pub(super) working_memory: Arc<crate::cognition::working_memory::WorkingMemory>,
     /// Which of her hands these are: `None` her live ones, `Some` an eval's or a fork's own
     /// (`ToolExecutor::hands_context`). Rooting and restore act on THESE hands only.
-    pub(super) context: Option<crate::code::hands::HandsContext>,
+    pub(super) context: Option<crate::identity::hands_context::HandsContext>,
 }
 
 impl ActingHands {
@@ -42,7 +42,7 @@ impl ActingHands {
 
     /// The same persona's hands in `context`, a context these hands don't own (a card
     /// claim's): `None` when her executor can't act in a context.
-    pub(super) fn in_context(&self, context: crate::code::hands::HandsContext) -> Option<Self> {
+    pub(super) fn in_context(&self, context: crate::identity::hands_context::HandsContext) -> Option<Self> {
         Some(Self {
             executor: self.executor.in_hands(self.persona_id, context)?,
             context: Some(context),
@@ -115,7 +115,7 @@ pub(super) static ACTING_ROOTS: std::sync::LazyLock<
 > = std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
 
 /// Whose place: the persona, and which of her hands (`None` = live).
-pub(super) type ActingKey = (uuid::Uuid, Option<crate::code::hands::HandsContext>);
+pub(super) type ActingKey = (uuid::Uuid, Option<crate::identity::hands_context::HandsContext>);
 
 /// Where she stands: the checkout root, and the card whose checkout it is when
 /// a held card rooted her (None for a plain workspace_root).
@@ -130,15 +130,15 @@ pub(super) struct ActingPlace {
 /// place ever moves (card fc9e9fd7). Set by [`root_at_held_card`], cleared when that
 /// claim's hands close.
 pub(super) static FOCUS: std::sync::LazyLock<
-    std::sync::Mutex<std::collections::HashMap<uuid::Uuid, crate::code::hands::HandsContext>>,
+    std::sync::Mutex<std::collections::HashMap<uuid::Uuid, crate::identity::hands_context::HandsContext>>,
 > = std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
 
-pub(super) fn focus_of(persona_id: uuid::Uuid) -> Option<crate::code::hands::HandsContext> {
+pub(super) fn focus_of(persona_id: uuid::Uuid) -> Option<crate::identity::hands_context::HandsContext> {
     FOCUS.lock().unwrap_or_else(|e| e.into_inner()).get(&persona_id).copied() // poisoned lock = read the last state, same policy as every lock in this crate
 }
 
 /// Point her perception at `context` (or home). The map she perceives re-renders when it moved.
-pub(super) fn set_focus(persona_id: uuid::Uuid, context: Option<crate::code::hands::HandsContext>) {
+pub(super) fn set_focus(persona_id: uuid::Uuid, context: Option<crate::identity::hands_context::HandsContext>) {
     let moved = {
         let mut map = FOCUS.lock().unwrap_or_else(|e| e.into_inner()); // poisoned lock = read the last state, same policy as every lock in this crate
         let before = match context {
@@ -162,7 +162,7 @@ pub fn acting_root_of(persona_id: uuid::Uuid) -> Option<std::path::PathBuf> {
 }
 
 /// Where one set of her hands stands: her live ones (`None`) or a context's.
-pub(crate) fn acting_root_in(persona_id: uuid::Uuid, context: Option<crate::code::hands::HandsContext>) -> Option<std::path::PathBuf> {
+pub(crate) fn acting_root_in(persona_id: uuid::Uuid, context: Option<crate::identity::hands_context::HandsContext>) -> Option<std::path::PathBuf> {
     ACTING_ROOTS
         .lock()
         .unwrap_or_else(|e| e.into_inner())
@@ -180,7 +180,7 @@ pub fn acting_card_of(persona_id: uuid::Uuid) -> Option<uuid::Uuid> {
 }
 
 /// The card one set of her hands is rooted at: her live ones (`None`) or a context's.
-pub(crate) fn acting_card_in(persona_id: uuid::Uuid, context: Option<crate::code::hands::HandsContext>) -> Option<uuid::Uuid> {
+pub(crate) fn acting_card_in(persona_id: uuid::Uuid, context: Option<crate::identity::hands_context::HandsContext>) -> Option<uuid::Uuid> {
     ACTING_ROOTS
         .lock()
         .unwrap_or_else(|e| e.into_inner())
@@ -188,7 +188,7 @@ pub(crate) fn acting_card_in(persona_id: uuid::Uuid, context: Option<crate::code
         .and_then(|p| p.card) // poisoned lock = read the last state, same policy as every lock in this crate
 }
 
-pub(super) fn note_acting_card_in(persona_id: uuid::Uuid, context: Option<crate::code::hands::HandsContext>, card: uuid::Uuid) {
+pub(super) fn note_acting_card_in(persona_id: uuid::Uuid, context: Option<crate::identity::hands_context::HandsContext>, card: uuid::Uuid) {
     if let Some(place) = ACTING_ROOTS
         .lock()
         .unwrap_or_else(|e| e.into_inner())
@@ -201,7 +201,7 @@ pub(super) fn note_acting_card_in(persona_id: uuid::Uuid, context: Option<crate:
 
 pub(super) fn note_acting_root_in(
     persona_id: uuid::Uuid,
-    context: Option<crate::code::hands::HandsContext>,
+    context: Option<crate::identity::hands_context::HandsContext>,
     root: Option<std::path::PathBuf>,
 ) {
     {
@@ -357,9 +357,9 @@ pub(super) async fn bind_held_card(
     // The hands of every claim she no longer holds close, whether or not a card is
     // bound this turn.
     if let Some(live) = ActingHands::of(cycle) {
-        let held_contexts: Vec<crate::code::hands::HandsContext> = held
+        let held_contexts: Vec<crate::identity::hands_context::HandsContext> = held
             .iter()
-            .filter_map(|c| c.claim_id.map(|claim| crate::code::hands::HandsContext::for_claim(peer_id, c.card_id.as_uuid(), claim.as_uuid())))
+            .filter_map(|c| c.claim_id.map(|claim| crate::identity::hands_context::HandsContext::for_claim(peer_id, c.card_id.as_uuid(), claim.as_uuid())))
             .collect();
         close_ended_claims(&live, &held_contexts, citizen.as_ref(), peer_id).await;
     }
@@ -384,7 +384,7 @@ pub(super) async fn bind_held_card(
 /// acts never inherit her live card's room (Astra's review of #5005).
 pub(crate) async fn activity_room_for(
     persona_id: Uuid,
-    context: Option<crate::code::hands::HandsContext>,
+    context: Option<crate::identity::hands_context::HandsContext>,
     wake_room: Uuid,
 ) -> Uuid {
     if crate::persona::mind_room::is_private_room(persona_id, wake_room) {
@@ -477,7 +477,7 @@ pub(crate) async fn bind_card(
         );
         return HeldCardTurn::unrooted(credit, peer_id, focus.card_id.as_uuid());
     };
-    let context = crate::code::hands::HandsContext::for_claim(peer_id, focus.card_id.as_uuid(), claim.as_uuid());
+    let context = crate::identity::hands_context::HandsContext::for_claim(peer_id, focus.card_id.as_uuid(), claim.as_uuid());
     let Some(hands) = live.in_context(context) else {
         return HeldCardTurn::unrooted(credit, peer_id, focus.card_id.as_uuid());
     };
@@ -587,7 +587,7 @@ pub(crate) struct HeldCardTurn {
     pub(crate) hands: Option<CardHands>,
     /// When the card is known but its hands could not be bound: the never-rooted context the
     /// turn acts with instead, so its code tools refuse rather than act at home.
-    pub(super) unbound: Option<crate::code::hands::HandsContext>,
+    pub(super) unbound: Option<crate::identity::hands_context::HandsContext>,
 }
 
 /// A turn's admission to the hands of the card claim it works (card fc9e9fd7). The context
@@ -595,7 +595,7 @@ pub(crate) struct HeldCardTurn {
 /// holds the hands open until the turn ends, so closing them (the claim ended) waits the
 /// turn out instead of dropping its engine or shell under it.
 pub(crate) struct CardHands {
-    pub(crate) context: crate::code::hands::HandsContext,
+    pub(crate) context: crate::identity::hands_context::HandsContext,
     pub(super) hands: ActingHands,
     pub(super) lease: std::sync::Arc<crate::code::hands::HandsLease>,
 }
@@ -644,7 +644,7 @@ pub(crate) async fn end_card_turn(card: &CardHands, acts: usize) {
 /// 0c69aa07 for hours (2026-10-21: `persona.work.hands_closing` on the 5090 every turn while
 /// the board showed her claim live).
 pub(crate) fn claim_has_ended(
-    context: crate::code::hands::HandsContext,
+    context: crate::identity::hands_context::HandsContext,
     card: Option<&airc_lib::WorkCard>,
     her: uuid::Uuid,
 ) -> bool {
@@ -654,7 +654,7 @@ pub(crate) fn claim_has_ended(
     }
     match card.claim_id {
         None => true,
-        Some(current) => crate::code::hands::HandsContext::for_claim(her, card.card_id.as_uuid(), current.as_uuid()) != context,
+        Some(current) => crate::identity::hands_context::HandsContext::for_claim(her, card.card_id.as_uuid(), current.as_uuid()) != context,
     }
 }
 
@@ -665,11 +665,11 @@ pub(crate) fn claim_has_ended(
 /// ones, then releases its engine and shells.
 pub(super) async fn close_ended_claims(
     live: &ActingHands,
-    held: &[crate::code::hands::HandsContext],
+    held: &[crate::identity::hands_context::HandsContext],
     citizen: &dyn crate::persona::airc_citizen::AircCitizen,
     her: uuid::Uuid,
 ) {
-    let candidates: Vec<(crate::code::hands::HandsContext, uuid::Uuid)> = ACTING_ROOTS
+    let candidates: Vec<(crate::identity::hands_context::HandsContext, uuid::Uuid)> = ACTING_ROOTS
         .lock()
         .unwrap_or_else(|e| e.into_inner()) // poisoned lock = read the last state, same policy as every lock in this crate
         .iter()
@@ -714,7 +714,7 @@ pub(super) async fn close_ended_claims(
 impl HeldCardTurn {
     /// The hands this turn acts with: its card claim's, the card's never-rooted stand-in when
     /// those could not be bound, or her default hands when she works no card.
-    pub(crate) fn turn_hands(&self) -> Option<crate::code::hands::HandsContext> {
+    pub(crate) fn turn_hands(&self) -> Option<crate::identity::hands_context::HandsContext> {
         self.hands.as_ref().map(|h| h.context).or(self.unbound)
     }
 
@@ -732,7 +732,7 @@ impl HeldCardTurn {
         Self {
             credit: Some(credit),
             hands: None,
-            unbound: Some(crate::code::hands::HandsContext::unbound(persona, card)),
+            unbound: Some(crate::identity::hands_context::HandsContext::unbound(persona, card)),
         }
     }
 }
