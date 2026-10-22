@@ -79,19 +79,20 @@ Each upward import is one of three things, and the fix is the same each time:
 
 ## Why no cut has landed (measured 2026-10-22)
 
-On canary `9871a02c0` the core is 691,410 lines in 50 top-level modules, and **40 of them are
-one strongly connected component**: through some path, each depends on every other (93 module
-pairs import each other directly). A crate is a set of modules that compiles without the rest,
+On canary `9871a02c0` the core is 691,410 lines in 50 top-level modules, and **37 of them are
+one strongly connected component** in code: through some path, each depends on every other.
+(Counting doc links too it is 40; `events`, `identity` and `interface` are held in by comments
+alone, which couple no compilation.) A crate is a set of modules that compiles without the rest,
 so no crate can be cut while its modules sit in that cycle. The upward-import ratchet above
 counts LINES, and lines can fall for weeks while the cycle stays at 40. That is why every
 "split into crates" attempt this month stalled.
 
 So the cuts need a second number: **`source-hygiene::module_cycles` counts the modules caught
-in any cycle (production code). Baseline 40; it may only fall.** A cut is possible exactly when
+in any cycle (production code, comments skipped). Baseline 37; it may only fall.** A cut is possible exactly when
 its modules have left the cycle.
 
-Outside the cycle today: `bin`, `boot_plan`, `comms`, `concurrency`, `ffi`, `main`, `rag`,
-`test_env`, `tool_parsing` (and `lib`).
+Outside the cycle today: `bin`, `boot_plan`, `comms`, `concurrency`, `events`, `ffi`, `identity`,
+`interface`, `main`, `rag`, `test_env`, `tool_parsing` (and `lib`).
 
 ### Peeling the kernel out: the exact edges
 
@@ -101,7 +102,7 @@ test, canary `9871a02c0`). `clog_*`/`log_*` are crate-root macros, not modules; 
 
 | module | held in by | fix (the three kinds above) |
 |---|---|---|
-| `identity` | `cognition::workspace::Cause` (1) | fact owned too high: `Cause` moves down, or the one function using it moves up |
+| `identity` | nothing in code (its one `cognition` reference is a doc link) | already out of the cycle: ready for `continuum-base` |
 | `paths`, `gpu`, `concurrency` | `test_env` only (and log macros) | `test_env` to a dev crate |
 | `governor` | `inference_capability::types::HardwareProfile` (2) | fact owned too high: `HardwareProfile` is a machine fact, ring 0 |
 | `paging` | `inference::planning::{throughput_lease, adaptive_throughput}` (2) | fact owned too high: the lease types move down |
@@ -112,8 +113,8 @@ test, canary `9871a02c0`). `clog_*`/`log_*` are crate-root macros, not modules; 
 | `capacity` | `inference_capability::gguf_keys`, `hw_probe`, `modules::serving_daemon`, `genome::blob` (21) | a module in the wrong ring: it reads GGUFs and probes hardware, so it is ring 1 (engine) |
 | `runtime` | `routing::CallerIdentity` (22), `sdk_codegen::{DynCommand, WireShape, command_registry}` (15+), `routing` transport and `AuthPolicy`, `persona::PersonaAircRuntimeRegistry::new`, `persona::cognition_pulse::CommandWork`, `modules::grid::commands` (97 in all) | verbs owned too high: **Session** (`CallerIdentity`, `AuthPolicy`) and **Commands** (the dynamic command registry) are two of the kernel's six primitives (`MODULE-ARCHITECTURE.md` § 4), filed in `routing` and `sdk_codegen`; they move down. The persona registry and the pulse's work type are injected at boot instead of named |
 
-Order: the one-and-two-edge modules first (`identity`, `governor`, `paging`, `paths`/`gpu`/
-`concurrency` with `test_env`), each a small PR whose receipt is `module_cycles` falling; then
+Order: the one-and-two-edge modules first (`governor`, `paging`, `paths`/`gpu` with `test_env`;
+`identity` is already out), each a small PR whose receipt is `module_cycles` falling; then
 `logging` (with #5206), `orm`, `resources`; then `system_resources`' inversion and `capacity`'s
 re-ring; then `runtime`'s Session and Commands moving down. When ring 0 has left the cycle,
 cut 4 (`continuum-kernel`) is a pure move.

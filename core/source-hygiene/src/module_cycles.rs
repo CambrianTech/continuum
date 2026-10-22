@@ -4,8 +4,7 @@
 //! `layer_discipline` counts upward import LINES, and that count can fall for a month while
 //! no crate becomes cuttable: a crate is a set of modules that can compile without the rest,
 //! and no set can while it sits in a cycle with the rest. On canary `9871a02c0` (2026-10-22)
-//! 40 of the core's 50 top-level modules were one strongly connected component, 93 module
-//! pairs importing each other, which is why "split into crates" kept stalling. This counts
+//! 37 of the core's 50 top-level modules were one strongly connected component, which is why "split into crates" kept stalling. This counts
 //! the modules in any cycle (production code, `crate::<module>` references); peeling one off
 //! is the step a crate cut needs, and the baseline may only fall.
 //!
@@ -23,8 +22,19 @@ fn module_of(rel: &str) -> &str {
     first.strip_suffix(".rs").unwrap_or(first) // unwrap_or: a directory module has no .rs suffix
 }
 
-/// Every `crate::<ident>` head in `text`.
+/// Every `crate::<ident>` head in `text`'s code. Comment lines are skipped: a doc link to a
+/// module couples no compilation (`identity`'s only reference to `cognition` was a `//!`
+/// link), and a cut must not be refused for one.
 fn named_heads(text: &str) -> BTreeSet<&str> {
+    let mut heads = BTreeSet::new();
+    let code = text.lines().filter(|line| !line.trim_start().starts_with("//"));
+    for line in code {
+        heads.extend(line_heads(line));
+    }
+    heads
+}
+
+fn line_heads(text: &str) -> BTreeSet<&str> {
     let mut heads = BTreeSet::new();
     for (at, _) in text.match_indices("crate::") {
         let rest = &text[at + "crate::".len()..];
@@ -156,6 +166,8 @@ mod tests {
         let files = [
             file("kernel/a.rs", "fn f() {}\n"),
             file("mind.rs", "use crate::kernel::a;\nuse crate::surface::x;\n"),
+            // a doc link couples no compilation
+            file("kernel/b.rs", "//! see [`crate::surface::x`]\nfn g() {}\n"),
             file("surface/mod.rs", "use crate::mind::y;\nuse crate::kernel::b;\n"),
         ];
         let found = cycles(&module_graph(&files));
@@ -178,6 +190,8 @@ mod tests {
         crate::assert_baseline_is_current("BASELINE_MODULES_IN_CYCLES", count, BASELINE_MODULES_IN_CYCLES);
     }
 
-    /// Measured on canary 9871a02c0 (2026-10-22): one cycle of 40 of 50 top-level modules.
-    const BASELINE_MODULES_IN_CYCLES: usize = 40;
+    /// Measured on canary 9871a02c0 (2026-10-22): one cycle of 37 of 50 top-level modules
+    /// (40 counting doc links, which couple no compilation: `events`, `identity` and
+    /// `interface` were held in by comments alone).
+    const BASELINE_MODULES_IN_CYCLES: usize = 37;
 }
