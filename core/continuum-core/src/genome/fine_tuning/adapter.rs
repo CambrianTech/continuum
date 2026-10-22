@@ -127,6 +127,26 @@ impl TrainerHardware {
     }
 }
 
+/// WHERE a trainer fits the adapter, in the order the coordinator prefers it: the state
+/// walk of ONE-RESIDENT-MODEL §S3 (Joel, 2026-09-26: the GPU here, on the resident weights >
+/// a GPU on the grid > the CPU here at background priority). Declared by each trainer; the
+/// coordinator ranks by it and nothing else decides the order.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum TrainingPlace {
+    /// On the resident weights of a lane that serves the base on this node: no second copy
+    /// of the model, no trainer process (Joel, 2026-10-05: "inference and training are
+    /// exactly the same model with training switched on").
+    ResidentHere,
+    /// On the lane of a grid peer that serves the base.
+    GridPeer,
+    /// A trainer holding its own copy of the base on this host.
+    SeparateCopyHere,
+    /// This host's CPU, at background priority: the last local resort.
+    CpuHere,
+    /// A provider's service: the artifact lives provider-side.
+    Cloud,
+}
+
 // ─── Capabilities ────────────────────────────────────────────────────
 
 /// Static declaration of what an adapter can do. Lets the dispatcher
@@ -166,14 +186,8 @@ pub struct FineTuningCapabilities {
     /// never routes a job to a trainer the host can't run. `Any` for
     /// cloud HTTP trainers and accelerator-agnostic in-process trainers.
     pub requires: TrainerHardware,
-    /// This trainer fits the adapter ON THE RESIDENT WEIGHTS of the lane that serves
-    /// the base: no second copy of the model, no trainer process (ONE-RESIDENT-MODEL
-    /// S3/S4; Joel, 2026-10-05: "inference and training are exactly the same model with
-    /// training switched on in the model that can inference; separate is a waste of
-    /// GPU"). The coordinator ranks such a trainer FIRST whenever a live lane serves the
-    /// request's base; the process trainers are the fallbacks (S6). `false` for every
-    /// trainer that loads its own copy.
-    pub trains_on_resident_weights: bool,
+    /// Where this trainer fits the adapter ([`TrainingPlace`]): the coordinator's ranking.
+    pub place: TrainingPlace,
 }
 
 // ─── The trait ───────────────────────────────────────────────────────
@@ -276,7 +290,7 @@ mod tests {
                 produces_local_artifact: true,
                 supported_base_model_prefixes: vec![],
                 requires: TrainerHardware::Any,
-                trains_on_resident_weights: false,
+                place: TrainingPlace::SeparateCopyHere,
             }
         }
 

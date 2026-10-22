@@ -11,12 +11,12 @@ impl FineTuningAdapter for EngineLoraFineTuner {
             // any base a live lane on this node serves; create_job checks the lane
             supported_base_model_prefixes: vec![],
             requires: TrainerHardware::Any,
-            trains_on_resident_weights: true,
+            place: crate::genome::fine_tuning::adapter::TrainingPlace::ResidentHere,
         }
     }
 
     fn serves_base(&self, base_model: &str) -> bool {
-        (self.lane)(base_model).is_some()
+        self.lane.serves(base_model)
     }
 
     async fn create_job(&self, mut request: TrainingJobRequest) -> Result<JobHandle, FineTuningError> {
@@ -37,12 +37,9 @@ impl FineTuningAdapter for EngineLoraFineTuner {
             ));
         }
         let targets = gguf_targets(&lora.target_modules).map_err(FineTuningError::InvalidRequest)?;
-        let LaneChoice { url: lane, window: served_window, engine, build } = (self.lane)(&request.base_model).ok_or_else(|| {
-            FineTuningError::InvalidRequest(format!(
-                "no live lane serves {} on this node: in-engine training runs on the resident weights",
-                request.base_model
-            ))
-        })?;
+        let LaneLease { choice, hold: lane_hold } =
+            self.lane.acquire(&request.base_model).await.map_err(FineTuningError::InvalidRequest)?;
+        let LaneChoice { url: lane, window: served_window, engine, build } = choice;
         let train_dir = self
             .train_dir
             .clone()
@@ -474,6 +471,7 @@ impl FineTuningAdapter for EngineLoraFineTuner {
                 job: id,
                 hold_store,
                 residency,
+                _lane_hold: lane_hold,
                 _lease: reservation,
             };
             Ok(PreparedJob {
