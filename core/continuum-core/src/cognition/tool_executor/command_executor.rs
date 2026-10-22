@@ -21,7 +21,7 @@
 //! **Identity + scope come from the connection, not per call.** The connection
 //! carries the persona's [`CallerIdentity`] (set where it is built), so the SAME
 //! `AuthPolicy` gate that protects every command (incl.
-//! [`crate::routing::GridTrustAuthPolicy`]) gates the persona too. Per batch we
+//! [`crate::modules::grid::GridTrustAuthPolicy`]) gates the persona too. Per batch we
 //! `scoped(ctx.context_id)` so each tool call is stamped with the room it acts in
 //! (the third ID tier), exactly as a browser tab scopes to its room.
 //!
@@ -131,7 +131,7 @@ impl CommandToolExecutor {
     /// `Connection<InProcessTransport>` carrying the persona's OWN
     /// [`CallerIdentity`], dispatching through the **substrate's wired**
     /// [`CommandExecutor`] (the one `start_server` built with the
-    /// [`GridTrustAuthPolicy`](crate::routing::GridTrustAuthPolicy) + interceptors).
+    /// [`GridTrustAuthPolicy`](crate::modules::grid::GridTrustAuthPolicy) + interceptors).
     ///
     /// Taking the wired executor — NOT a fresh `CommandExecutor::new(registry)`,
     /// which has an AllowAll default policy and no interceptors — is the

@@ -22,6 +22,9 @@
 #[cfg(test)]
 mod tests;
 
+pub mod access_decision;
+pub mod trust_policy;
+pub use trust_policy::{caller_trust, GridTrustAuthPolicy, PeerTrustSource};
 pub mod acl;
 pub mod audit;
 pub mod commands;

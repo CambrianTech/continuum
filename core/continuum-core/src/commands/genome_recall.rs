@@ -318,7 +318,7 @@ impl ActionCommand for GenomeRecallReplay {
             .map_err(|e| CommandError::Invalid(e.to_string()))?;
         // Capture includes the caller's need/context. Verified peers can inspect
         // their own decisions; local substrate/operator retains mechanic access.
-        if crate::routing::grid_trust_policy::caller_trust(ctx.caller.as_ref())
+        if crate::modules::grid::trust_policy::caller_trust(ctx.caller.as_ref())
             != crate::modules::grid::node::TrustLevel::Owner
             && ctx
                 .caller

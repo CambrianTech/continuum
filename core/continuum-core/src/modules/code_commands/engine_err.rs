@@ -24,7 +24,7 @@ pub(super) fn engine_err(e: crate::code::file_engine::FileEngineError) -> Comman
 /// than the shell grant.
 pub(super) fn read_scope_of(ctx: &Ctx, workspace: &std::path::Path) -> crate::code::path_security::ReadScope {
     use crate::code::path_security::ReadScope;
-    let trust = crate::routing::grid_trust_policy::caller_trust(ctx.caller.as_ref());
+    let trust = crate::modules::grid::trust_policy::caller_trust(ctx.caller.as_ref());
     if !crate::modules::grid::acl::is_command_authorized("code/shell", trust) {
         return ReadScope::Sandbox;
     }
@@ -491,7 +491,7 @@ pub(super) async fn ensure_shell(state: &CodeState, ctx: &Ctx) -> Result<String,
 /// peer. Her shell also never inherits the core's secrets (`strip_secret_env`).
 pub(crate) fn confinement_of(ctx: &Ctx, workspace: &std::path::Path) -> Option<crate::code::confinement::Confinement> {
     let resident = ctx.caller.as_ref().is_some_and(|c| c.source == crate::routing::auth_policy::CallerSource::LocalPersona);
-    let trust = crate::routing::grid_trust_policy::caller_trust(ctx.caller.as_ref());
+    let trust = crate::modules::grid::trust_policy::caller_trust(ctx.caller.as_ref());
     if !resident && trust == crate::modules::grid::node::TrustLevel::Owner {
         return None;
     }

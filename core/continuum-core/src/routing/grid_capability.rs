@@ -89,7 +89,7 @@ impl GrantVerifier for Ed25519GrantVerifier {
 /// `starts_with`, which would be the classic prefix-without-boundary over-grant).
 ///
 /// `pub(crate)` so the gate's grant fast-path
-/// ([`GridTrustAuthPolicy::gate`](crate::routing::GridTrustAuthPolicy)) re-checks a
+/// ([`GridTrustAuthPolicy::gate`](crate::modules::grid::GridTrustAuthPolicy)) re-checks a
 /// caller's verified `granted_capabilities` through the SAME matching rule — one
 /// source of truth for capability→command conferral, never a divergent copy.
 pub(crate) fn confers(capabilities: &[String], command: &str) -> bool {

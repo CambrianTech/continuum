@@ -23,7 +23,6 @@
 //! `probe!`/`time!`/`stack!` macros, and the env registry +
 //! `Context::environment()` accessor.
 
-pub mod access_decision;
 pub mod airc_command_protocol;
 pub mod airc_event_adapters;
 pub mod airc_event_protocol;
@@ -37,7 +36,6 @@ pub mod environment;
 pub mod epoch_watermark;
 pub mod grant_issuance;
 pub mod grid_capability;
-pub mod grid_trust_policy;
 #[macro_use]
 pub mod macros;
 pub mod presented_grant_store;
@@ -82,7 +80,6 @@ pub use auth_policy::{
 };
 pub use command_uri::{CommandUri, NodeId, PeerRef, UriParseError};
 pub use environment::{EnvironmentId, WellKnownEnv};
-pub use grid_trust_policy::{caller_trust, GridTrustAuthPolicy, PeerTrustSource};
 pub use probe_file_sink::{
     JsonlProbeFileSink, ProbeFileSinkError, DEFAULT_MAX_LOG_FILES, ENV_PROBE_CLASSES, ENV_PROBE_DIR,
 };

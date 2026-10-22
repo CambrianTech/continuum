@@ -98,7 +98,7 @@ pub(super) fn build_and_install_executor(
             // authenticated-peer deny, and address trust must not promote AIRC callers.
             // grid/nodes exposes both facts separately. Unknown peers keep the existing
             // Provisional tier; enrollment alone grants no additional permissions.
-            .with_policy(Arc::new(crate::routing::GridTrustAuthPolicy::new())),
+            .with_policy(Arc::new(crate::modules::grid::GridTrustAuthPolicy::new())),
     );
     runtime
         .registry()

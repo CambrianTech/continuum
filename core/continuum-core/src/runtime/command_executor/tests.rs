@@ -124,7 +124,8 @@
     // escalating — the guarantee the COMMAND-ORGANIZATION doc claims.
     #[tokio::test]
     async fn composing_handler_propagates_ctx_caller_no_escalation() {
-        use crate::routing::{CallerIdentity, GridTrustAuthPolicy};
+        use crate::routing::{CallerIdentity};
+        use crate::modules::grid::{GridTrustAuthPolicy};
         use crate::sdk_codegen::{ActionCommand, CommandError, Ctx};
 
         #[derive(

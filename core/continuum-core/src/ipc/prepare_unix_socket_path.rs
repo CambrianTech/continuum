@@ -439,7 +439,7 @@ pub(super) fn handle_client<S: IpcStream>(
                 // commands are refused; no unauthenticated Owner execution over TCP.
                 // Local (caller == None) skips this — the operator on the box is owner.
                 if let Some(ref c) = caller {
-                    let trust = crate::routing::caller_trust(Some(c));
+                    let trust = crate::modules::grid::caller_trust(Some(c));
                     if !crate::modules::grid::acl::is_command_authorized(cmd, trust) {
                         let _ = tx.send(Outbound::Response {
                             request_id,
@@ -521,7 +521,7 @@ pub(super) fn handle_client<S: IpcStream>(
                         // (the discoverability lie): suggest the nearest commands the
                         // caller can actually run, via the shared matcher — same PX every
                         // caller gets, persona or CLI or MCP.
-                        let caller_trust = crate::routing::caller_trust(caller.as_ref());
+                        let caller_trust = crate::modules::grid::caller_trust(caller.as_ref());
                         let names: Vec<&str> = crate::sdk_codegen::command_registry()
                             .into_iter()
                             .filter(|d| {
