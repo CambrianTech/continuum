@@ -20,6 +20,7 @@
 //! - (future) `hf_cache` — Hugging Face model cache root
 //! - (future) `nvme_pool` — LoRA Genome Paging tier
 
+pub mod huggingface;
 pub mod docker;
 pub mod cargo;
 pub mod artifacts;

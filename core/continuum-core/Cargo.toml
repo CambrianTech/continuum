@@ -54,6 +54,7 @@ serde_json.workspace = true
 ron = "0.12"     # RON scene descriptions (Bevy-idiomatic on-disk format)
 uuid.workspace = true
 continuum-base = { path = "../continuum-base" }
+continuum-kernel = { path = "../continuum-kernel" }
 continuum-context = { path = "../continuum-context" }
 # JSON Schema generation from serde types — the runtime param schema every SDK
 # (CLI/web/mobile/RAG-tools) adapts from. Derived automatically by the command
@@ -354,14 +355,14 @@ pocket-tts = ["dep:pocket-tts"]
 # and wire/** are imported by sdk/typescript/Commands.ts, which apps/tui, eye-node, desktop
 # and web depend on. Regenerate after a command changes:
 # `cargo test -p continuum-core --features ts-codegen generates_live_typescript_sdk`.
-ts-codegen = []
+ts-codegen = ["continuum-kernel/ts-codegen"]
 metal = ["candle-core/metal", "candle-nn/metal", "candle-transformers/metal", "llama/metal", "ort/coreml"]
-cuda = ["candle-core/cuda", "candle-nn/cuda", "candle-transformers/cuda", "llama/cuda", "ort/cuda"]
+cuda = ["candle-core/cuda", "candle-nn/cuda", "candle-transformers/cuda", "llama/cuda", "ort/cuda", "continuum-kernel/cuda"]
 # Vulkan is llama.cpp-only (Candle has no Vulkan backend). Used by the
 # Mac-Carl-in-container path: Podman + krunkit routes Vulkan API calls out
 # to MoltenVK on the host, which translates to Metal. Also valid on Linux
 # Nvidia/AMD hosts with libvulkan available.
-vulkan = ["llama/vulkan"]
+vulkan = ["llama/vulkan", "continuum-kernel/vulkan"]
 # ORT execution providers for the broader Carl-OOTB matrix (#964 series
 # follow-up). Each adds a cfg branch in inference/ort_providers.rs so
 # fastembed / Piper-TTS / Moonshine-STT / Kokoro / Orpheus / Silero VAD
@@ -405,7 +406,7 @@ load-dynamic-ort = ["ort/load-dynamic"]
 #     via `cargo test --features test-fixtures` or `--features test-fixtures`
 #     on the bin target.
 #   - Production: heuristic adapter doesn't exist in the binary at all.
-test-fixtures = ["continuum-base/test-fixtures"]
+test-fixtures = ["continuum-base/test-fixtures", "continuum-kernel/test-fixtures"]
 
 # stress-tests: opts in concurrency / multi-thread / load tests that
 # pin substrate invariants under N-task simultaneous load. Each test
@@ -425,7 +426,7 @@ test-fixtures = ["continuum-base/test-fixtures"]
 # `#[cfg(test)] mod tests` block (chat, generator, data cursors,
 # airc realtime_store as of this writing). Greppable by:
 #     grep -rln 'cfg(feature = "stress-tests")' src/
-stress-tests = []
+stress-tests = ["continuum-kernel/stress-tests"]
 
 # Integration tests that link a `test-fixtures`-gated lib symbol (the
 # HeuristicInferenceAdapter stand-in, or the ChatQueueItem `compute_calls`

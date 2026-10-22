@@ -311,7 +311,7 @@ pub fn standard_tracked_dirs(home: &std::path::Path) -> Vec<Arc<TrackedDir>> {
     //
     // If the resolver cannot answer, the honest outcome is to say so and NOT claim the class is
     // tracked. A missing hf-hub row is visibly missing; a wrong one looks governed.
-    let hf_root = match crate::model_registry::artifacts::huggingface_cache_root()
+    let hf_root = match crate::paths::huggingface::huggingface_cache_root()
         .and_then(|hub| hub.parent().map(|p| p.to_path_buf()))
     {
         Some(root) => Some(root),
@@ -663,7 +663,7 @@ impl Daemon for DiskUsageScanner {
         // boot watchdog killed a working core. "first scan pending" is the
         // honest report until then; the walk is worth nothing before the
         // socket answers.
-        let mut ready = crate::ipc::subscribe_ready();
+        let mut ready = crate::runtime::ipc_ready::subscribe_ready();
         while !*ready.borrow_and_update() {
             if ready.changed().await.is_err() {
                 return; // IPC thread gone — the process is exiting

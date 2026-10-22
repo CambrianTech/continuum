@@ -329,7 +329,7 @@ pub fn find_first_local_gguf() -> Option<PathBuf> {
     for dir in local_model_roots() {
         collect_ggufs_recursive(&dir, &mut candidates);
     }
-    if let Some(cache) = huggingface_cache_root() {
+    if let Some(cache) = crate::paths::huggingface::huggingface_cache_root() {
         collect_ggufs_recursive(&cache, &mut candidates);
     }
     pick_best_candidate(candidates)
@@ -522,13 +522,13 @@ fn find_model_dir_in_root(model_id: &str, root: &Path) -> Option<PathBuf> {
 
 fn resolve_from_huggingface_hint(hint: &str) -> Option<PathBuf> {
     let repo_slug = hf_repo_slug(hint)?;
-    let cache = huggingface_cache_root()?;
+    let cache = crate::paths::huggingface::huggingface_cache_root()?;
     let model_dir = find_hf_model_dir(&cache, &repo_slug)?;
     find_ggufs_under_snapshots(&model_dir)
 }
 
 fn resolve_from_huggingface_model_id(model_id: &str) -> Option<PathBuf> {
-    let cache = huggingface_cache_root()?;
+    let cache = crate::paths::huggingface::huggingface_cache_root()?;
     let wanted = model_id.to_lowercase().replace('/', "--");
     let mut candidates = Vec::new();
     for entry in fs::read_dir(cache).ok()?.flatten() {
@@ -558,29 +558,6 @@ fn hf_repo_slug(hint: &str) -> Option<String> {
         parts[parts.len() - 2],
         parts[parts.len() - 1]
     ))
-}
-
-// Merge: BigMama's pub(crate) visibility (install code calls it) + M5's
-// config.env HF_HOME read (the cold-storage installer writes it there).
-pub(crate) fn huggingface_cache_root() -> Option<PathBuf> {
-    // Process env wins (a launcher's explicit override), then config.env — the
-    // ONE cross-platform source ([[config-env-single-owner]]): Windows persists
-    // user env in the registry and Linux has no equivalent, so the cold-storage
-    // installer writes HF_HOME to config.env and the core must honor it here
-    // (BigMama 16TB routing, 2026-07-24).
-    let hf_home = std::env::var("HF_HOME")
-        .ok()
-        .filter(|s| !s.trim().is_empty())
-        .or_else(|| continuum_base::config_env::read("HF_HOME").filter(|s| !s.trim().is_empty()));
-    if let Some(hf_home) = hf_home {
-        return Some(PathBuf::from(hf_home).join("hub"));
-    }
-    Some(
-        PathBuf::from(home_dir_string()?)
-            .join(".cache")
-            .join("huggingface")
-            .join("hub"),
-    )
 }
 
 fn find_hf_model_dir(cache: &Path, repo_slug: &str) -> Option<PathBuf> {

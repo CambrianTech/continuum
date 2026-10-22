@@ -38,6 +38,7 @@ pub mod command_executor;
 pub mod command_interceptor;
 pub mod dispatch_hook;
 pub mod extensions;
+pub mod ipc_ready;
 pub mod control;
 pub mod event_graph;
 pub mod tracked_checkout;

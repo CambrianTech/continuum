@@ -209,8 +209,8 @@ impl CitizenWorkspacePool {
     /// The roster as the runtime knows it. `Unreadable` when no registry is up — the boot
     /// window, a test, a core without personas — and then nothing is evicted.
     fn roster() -> Roster {
-        match crate::persona::PersonaAircRuntimeRegistry::try_global() {
-            Some(reg) => Roster::Live(reg.roster_snapshot().into_iter().map(|(_, id)| id).collect()),
+        match crate::runtime::extensions::roster() {
+            Some(ids) => Roster::Live(ids.into_iter().collect()),
             None => Roster::Unreadable,
         }
     }
@@ -384,7 +384,9 @@ impl CitizenWorkspacePool {
 /// - no citizen turn in flight (`turn_ingress::in_flight()`).
 /// `Err` names the first gate that refuses.
 pub(crate) fn node_quiescence(home: &Path) -> Result<(), String> {
-    let turns = crate::cognition::turn_ingress::in_flight();
+    let Some(turns) = crate::runtime::extensions::turns_in_flight() else {
+        return Err("citizen_turns_unknown: nothing installed the turn count".to_string());
+    };
     if turns > 0 {
         return Err(format!("citizen_turn_in_flight: {turns}"));
     }

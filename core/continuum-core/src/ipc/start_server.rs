@@ -39,6 +39,11 @@ pub(crate) fn install_kernel_extensions() {
     crate::runtime::dispatch_hook::install(Arc::new(crate::persona::cognition_pulse::CardWorkPulse));
     crate::runtime::extensions::install_command_name_resolver(crate::cognition::tool_dialect::resolve_wire_name);
     crate::runtime::extensions::install_settle_before_stop(Arc::new(crate::cognition::turn_ingress::TurnsSettle));
+    crate::runtime::extensions::install_turns_in_flight(crate::cognition::turn_ingress::in_flight);
+    crate::runtime::extensions::install_roster(|| {
+        crate::persona::PersonaAircRuntimeRegistry::try_global()
+            .map(|reg| reg.roster_snapshot().into_iter().map(|(_, id)| id).collect())
+    });
 }
 
 pub fn start_server(

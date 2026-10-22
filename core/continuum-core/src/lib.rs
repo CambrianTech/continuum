@@ -25,6 +25,17 @@ extern crate objc;
 // emit absolute paths back into their home crate.
 extern crate self as continuum_core;
 
+// The microkernel (core/continuum-kernel): re-exported module by module so `crate::runtime::…`
+// paths, and `continuum_core::runtime::…` for every other crate, keep resolving to the one
+// owner. New code may name `continuum_kernel` directly.
+pub use continuum_kernel::{
+    concurrency, governor, gpu, identity, logging, orm, paging, paths, resources, routing, runtime,
+    sdk_codegen, system_resources,
+};
+pub use continuum_kernel::{
+    action_command, clog_debug, clog_error, clog_info, clog_warn, log_debug, log_error, log_info,
+    log_warn, register_command, register_stateless_command, stack, time_async, time_section,
+};
 pub mod ai;
 pub mod airc;
 pub mod capacity;
@@ -32,48 +43,35 @@ pub mod code;
 pub mod cognition;
 pub mod commands;
 pub mod comms;
-pub mod concurrency;
 pub mod context;
 pub mod contracts;
 pub mod events;
 pub mod experience;
 pub mod forge;
 pub mod genome;
-pub mod governor;
-pub mod gpu;
 pub mod http;
-pub mod identity;
 pub mod boot_plan;
 pub mod inference;
 pub mod inference_capability;
 pub mod interface;
 pub mod ipc;
 pub mod live;
-pub mod logging;
 pub mod media;
 pub mod memory;
 pub mod model_registry;
 pub mod modules;
-pub mod orm;
-pub mod paging;
-pub mod paths;
 pub mod perception;
 pub mod persona;
 pub mod provisioning;
 pub mod rag;
-pub mod resources;
-pub mod routing;
 pub mod recipe;
-pub mod runtime;
-pub mod sdk_codegen;
 pub mod sensory;
-pub mod system_resources;
 #[cfg(test)]
 pub(crate) mod test_env;
 pub mod vdd;
 
 
-pub use concurrency::*;
+pub use continuum_kernel::concurrency::*;
 pub use live::VoiceOrchestrator;
 pub use persona::{
     CognitionDecision, InboxMessage, InboxTask, Modality, Mood, PersonaCognitionEngine,

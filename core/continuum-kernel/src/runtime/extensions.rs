@@ -51,3 +51,35 @@ pub async fn settle_before_stop(cap: Duration) {
         settler.settle(cap).await;
     }
 }
+
+/// The citizens this node hosts, by id, as the persona layer knows them; `None` when no
+/// roster is up (the boot window, a test, a core without personas). Installed at boot.
+pub type RosterProvider = fn() -> Option<Vec<uuid::Uuid>>;
+
+static ROSTER: parking_lot::RwLock<Option<RosterProvider>> = parking_lot::RwLock::new(None);
+
+/// Install the one roster provider.
+pub fn install_roster(provider: RosterProvider) {
+    *ROSTER.write() = Some(provider);
+}
+
+/// The hosted citizens, or `None` when nothing installed a roster or it is not up yet.
+pub fn roster() -> Option<Vec<uuid::Uuid>> {
+    (*ROSTER.read()).and_then(|provider| provider())
+}
+
+/// How many citizen turns are running now. Installed at boot by the layer that admits turns.
+pub type TurnsInFlight = fn() -> u64;
+
+static TURNS_IN_FLIGHT: parking_lot::RwLock<Option<TurnsInFlight>> = parking_lot::RwLock::new(None);
+
+/// Install the one turns-in-flight count.
+pub fn install_turns_in_flight(count: TurnsInFlight) {
+    *TURNS_IN_FLIGHT.write() = Some(count);
+}
+
+/// Citizen turns running now; `None` when nothing installed the count, so a caller that must
+/// know (a quiescence gate) refuses rather than reading an unknown as zero.
+pub fn turns_in_flight() -> Option<u64> {
+    (*TURNS_IN_FLIGHT.read()).map(|count| count())
+}
