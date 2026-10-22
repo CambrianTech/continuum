@@ -2,6 +2,50 @@
 use super::*;
 use serde_json::json;
 
+// Card 0f6c4872: an older published candidate's Unknown verdict must not be
+// attributed to a newer request. Actual adoption resolves only that incident;
+// handoff alone and unrelated adoption do not, and newer-request debt survives.
+#[test]
+fn adopted_candidate_resolves_source_wait_without_satisfying_newer_request()
+    -> Result<(), Box<dyn std::error::Error>> {
+    use continuum_cli_lifecycle::deploy_health::{self, DeployHealth, DeploySelection, RefusalKind};
+    let request = "5a765f7a14546557736f8ccd33cd8c3e67e6e8d2";
+    let candidate = "5e01cca3970382b9588c422b71a2b0e8986df614";
+    let root = tempfile::tempdir()?;
+    let state = root.path().join("state");
+    std::fs::create_dir(&state)?;
+    std::fs::write(state.join("deploy-request.json"), serde_json::to_vec(&json!({
+        "tip_sha": request, "requested_ms": 1
+    }))?)?;
+    let path = state.join("deploy-consume-attempts.json");
+    let mut ledger = super::ConsumeLedger {
+        selection: Some(DeploySelection { request: request.into(), build: request.into() }),
+        ..Default::default()
+    };
+    ledger.record_refusal(request, candidate, RefusalKind::SourceAuthorization, "checks Unknown");
+    ledger.save(&path)?;
+    let mut restarted = super::ConsumeLedger::read(&path)?;
+    assert!(matches!(deploy_health::read(root.path(), "4a2e3a004"),
+        DeployHealth::Blocked { refusal } if refusal.kind == RefusalKind::SourceAuthorization
+            && refusal.build == candidate));
+    restarted.landed(candidate);
+    assert!(restarted.refusal.is_some(), "handoff is not observed adoption");
+    assert!(!restarted.observe_running("4a2e3a004"));
+    assert!(restarted.observe_running("5e01cca39"));
+    assert_eq!(restarted.selection, ledger.selection);
+    assert_eq!(restarted.failures, ledger.failures);
+    assert_eq!(restarted.resource_deferrals, ledger.resource_deferrals);
+    restarted.save(&path)?;
+    assert!(matches!(deploy_health::read(root.path(), "5e01cca39"), DeployHealth::Pending { .. }));
+    assert!(matches!(deploy_health::read(root.path(), "5a765f7a1"), DeployHealth::Running));
+    // Existing unrelated failure memory must not be forgiven by incident recovery.
+    restarted.record_failure(request);
+    restarted.record_refusal(request, candidate, RefusalKind::SourceAuthorization, "checks Unknown");
+    assert!(restarted.observe_running(candidate));
+    assert_eq!(restarted.failures(request), 1);
+    Ok(())
+}
+
 // Health must read evidence saved by the consumer, including receipts with no
 // failed attempts or resource deferrals. Handwritten JSON misses save's cleanup.
 #[test]

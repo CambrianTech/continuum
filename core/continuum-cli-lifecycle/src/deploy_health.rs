@@ -133,6 +133,8 @@ impl DeployHealth {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RefusalKind {
+    /// A particular published candidate has not passed source authorization yet.
+    SourceAuthorization,
     ResourceAdmission,
     CheckoutDirty,
     AttemptsExhausted,
