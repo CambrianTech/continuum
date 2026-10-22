@@ -1,7 +1,7 @@
 //! What other layers attach around every dispatch, as a kernel contract.
 //!
 //! The dispatcher used to name two of them directly: a caller's hands admission
-//! (`code::hands::admit`, held for the command's whole life) and the cognition pulse's
+//! (`identity::hands_gate::admit`, held for the command's whole life) and the cognition pulse's
 //! per-card work accounting. That held the kernel in the core's dependency cycle (it
 //! imported Hands and the persona layer) and made each new around-dispatch concern another
 //! edit to the dispatcher. Now the kernel owns the contract and its owners install

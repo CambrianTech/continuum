@@ -462,10 +462,10 @@
         let root = m.a.clone();
         // under an admission, as the turn path's sync always is (sync_after_act_for)
         let context = crate::identity::hands_context::HandsContext::fresh();
-        let lease = std::sync::Arc::new(crate::code::hands::admit(context).expect("open hands"));
+        let lease = std::sync::Arc::new(crate::identity::hands_gate::admit(context).expect("open hands"));
         let syncing = tokio::spawn(async move {
             let unbounded_here = tokio::time::Instant::now() + std::time::Duration::from_secs(600); // a cancel ends it, not this
-            crate::code::hands::admitted(Some(lease), sync_by(unbounded_here, &root, sync(&root, card, "node-a"))).await
+            crate::identity::hands_gate::admitted(Some(lease), sync_by(unbounded_here, &root, sync(&root, card, "node-a"))).await
         });
         while !hook_pid.exists() {
             assert!(!syncing.is_finished(), "the sync ended before its push reached the remote");
@@ -482,7 +482,7 @@
             .await
             .expect("the checkout is free once the cancelled git's tree has ended");
         drop(freed);
-        let lingering = crate::code::hands::close(context).await;
+        let lingering = crate::identity::hands_gate::close(context).await;
         assert!(lingering.is_empty(), "the cancelled push's tree was confirmed ended: {lingering:?}");
 
         assert!(REMOTE_UNKNOWN.contains(&m.a), "a cancelled push leaves the remote unknown");
@@ -517,7 +517,7 @@
         let (persona, card, claim) = (Uuid::new_v4(), Uuid::new_v4(), Uuid::new_v4());
         let context = crate::identity::hands_context::HandsContext::for_claim(persona, card, claim);
         let lease = std::sync::Arc::new(
-            crate::code::hands::admit(context).expect("open hands admit"),
+            crate::identity::hands_gate::admit(context).expect("open hands admit"),
         );
         assert_eq!(carry_committed(lease.clone(), persona, "Benchy", root.clone(), card).await, None, "a dirty tree is not the carry's");
         assert_eq!(head(&root).await, original_head, "no commit was made for her");
@@ -559,7 +559,7 @@
         assert_eq!(head(&root).await, authored);
         assert_eq!(git(&m.origin, &["rev-parse", &format!("refs/heads/{}", m.branch)]).await.trim(), authored);
         drop(lease);
-        assert!(crate::code::hands::close(context).await.is_empty());
+        assert!(crate::identity::hands_gate::close(context).await.is_empty());
         drop(lock);
         forget_checkout(&root);
     }

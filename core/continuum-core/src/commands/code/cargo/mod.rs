@@ -109,7 +109,7 @@ pub(crate) async fn run_cargo(
     );
     cmd.env("CARGO_TERM_COLOR", "never");
     cmd.env("CARGO_TARGET_DIR", target);
-    let out = crate::code::hands::scoped_admitted(crate::inference::lane_process::holding(
+    let out = crate::identity::hands_gate::scoped_admitted(crate::inference::lane_process::holding(
         cargo_grant.kept(),
         crate::inference::lane_process::run_owned(
             cmd,

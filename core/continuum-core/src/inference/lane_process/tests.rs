@@ -43,7 +43,7 @@
         let script = format!("echo started; echo $$ > {}; sleep 600 & echo $! > {}; wait", shell_pid.display(), grandchild_pid.display());
         let read_pid = |path: &std::path::Path| std::fs::read_to_string(path).ok().and_then(|t| t.trim().parse::<u32>().ok());
         let context = crate::identity::hands_context::HandsContext::fresh();
-        let lease = std::sync::Arc::new(crate::code::hands::admit(context).expect("open hands"));
+        let lease = std::sync::Arc::new(crate::identity::hands_gate::admit(context).expect("open hands"));
         let capture = std::sync::Arc::new(RunCapture::default());
         let mut cmd = tokio::process::Command::new("sh");
         cmd.arg("-c").arg(&script);
@@ -64,7 +64,7 @@
         }
         let gone_at_release = std::sync::Arc::new(std::sync::Mutex::new(None));
         let witness: Kept = std::sync::Arc::new(Witness { grandchild: grandchild_pid.clone(), gone_at_release: gone_at_release.clone() });
-        let run = crate::code::hands::admitted(Some(lease), holding(witness, run_owned(cmd, None, "test", capture.clone())));
+        let run = crate::identity::hands_gate::admitted(Some(lease), holding(witness, run_owned(cmd, None, "test", capture.clone())));
         let tree = tokio::select! {
             out = run => panic!("the run ended on its own: {out:?}"),
             tree = async {
@@ -79,7 +79,7 @@
                 }
             } => tree, // the run's future is dropped here: its waiter is gone
         };
-        let lingering = tokio::time::timeout(std::time::Duration::from_secs(10), crate::code::hands::close(context))
+        let lingering = tokio::time::timeout(std::time::Duration::from_secs(10), crate::identity::hands_gate::close(context))
             .await
             .expect("the release completes once the tree is ended, not before and not never");
         assert!(lingering.is_empty(), "nothing is left unconfirmed: {lingering:?}");
@@ -93,8 +93,8 @@
         cmd.arg("-c").arg("echo before; sleep 600 & wait");
         let exclusion: Kept = std::sync::Arc::new(());
         let exclusion_held = std::sync::Arc::downgrade(&exclusion);
-        let admission = std::sync::Arc::new(crate::code::hands::admit(crate::identity::hands_context::HandsContext::fresh()).expect("open hands"));
-        let timed = crate::code::hands::admitted(Some(admission), holding(exclusion, run_owned(cmd, Some(std::time::Duration::from_millis(500)), "test", std::sync::Arc::default())))
+        let admission = std::sync::Arc::new(crate::identity::hands_gate::admit(crate::identity::hands_context::HandsContext::fresh()).expect("open hands"));
+        let timed = crate::identity::hands_gate::admitted(Some(admission), holding(exclusion, run_owned(cmd, Some(std::time::Duration::from_millis(500)), "test", std::sync::Arc::default())))
             .await
             .expect("ran");
         assert!(exclusion_held.upgrade().is_none(), "a confirmed end releases what its caller held for it (Codex reviewer on #5037)");
@@ -114,7 +114,7 @@
         let dir = tempfile::tempdir().unwrap();
         let holder_pid = dir.path().join("holder.pid");
         let context = crate::identity::hands_context::HandsContext::fresh();
-        let lease = std::sync::Arc::new(crate::code::hands::admit(context).expect("open hands"));
+        let lease = std::sync::Arc::new(crate::identity::hands_gate::admit(context).expect("open hands"));
         let mut cmd = tokio::process::Command::new("sh");
         // the shell exits at once; its background sleep inherited stdout and stderr
         cmd.arg("-c").arg(format!("echo out; sleep 600 & echo $! > {}", holder_pid.display()));
@@ -123,14 +123,14 @@
         let exclusion: Kept = std::sync::Arc::new(());
         let exclusion_held = std::sync::Arc::downgrade(&exclusion);
         let started = std::time::Instant::now();
-        let out = crate::code::hands::admitted(Some(lease), holding(exclusion, run_owned(cmd, Some(std::time::Duration::from_millis(500)), "test", std::sync::Arc::default())))
+        let out = crate::identity::hands_gate::admitted(Some(lease), holding(exclusion, run_owned(cmd, Some(std::time::Duration::from_millis(500)), "test", std::sync::Arc::default())))
             .await
             .expect("ran");
         assert!(started.elapsed() < std::time::Duration::from_secs(5), "the bound covers the pipes, not only the exit");
         assert!(matches!(out.ended, Ended::Exited(status) if status.success()), "the shell itself exited: {out:?}");
         assert_eq!(String::from_utf8_lossy(&out.stdout.bytes), "out\n", "what was read is kept");
         assert!(matches!(out.stdout.end, CaptureEnd::Cut(ref why) if why.contains("held it past the bound")), "the read is cut by the holder: {out:?}");
-        let lingering = crate::code::hands::close(context).await;
+        let lingering = crate::identity::hands_gate::close(context).await;
         assert_eq!(lingering.unknown.len(), 1, "the holder is held by name on the hands, never claimed ended: {lingering:?}");
         assert!(exclusion_held.upgrade().is_some(), "and what its caller held for it stays held with it");
         if let Some(pid) = std::fs::read_to_string(&holder_pid).ok().and_then(|t| t.trim().parse::<u32>().ok()) {
@@ -141,11 +141,11 @@
         // and are stopped, and the holder is fenced on the hands just the same.
         let (shell_pid, holder_pid) = (dir.path().join("sh2.pid"), dir.path().join("holder2.pid"));
         let context = crate::identity::hands_context::HandsContext::fresh();
-        let lease = std::sync::Arc::new(crate::code::hands::admit(context).expect("open hands"));
+        let lease = std::sync::Arc::new(crate::identity::hands_gate::admit(context).expect("open hands"));
         let capture = std::sync::Arc::new(RunCapture::default());
         let mut cmd = tokio::process::Command::new("sh");
         cmd.arg("-c").arg(format!("echo $$ > {}; echo out; sleep 600 & echo $! > {}", shell_pid.display(), holder_pid.display()));
-        let run = crate::code::hands::admitted(Some(lease), run_owned(cmd, None, "test", capture.clone()));
+        let run = crate::identity::hands_gate::admitted(Some(lease), run_owned(cmd, None, "test", capture.clone()));
         let read_pid = |path: &std::path::Path| std::fs::read_to_string(path).ok().and_then(|t| t.trim().parse::<u32>().ok());
         tokio::select! {
             out = run => panic!("the run ended while its output was held: {out:?}"),
@@ -157,7 +157,7 @@
                 }
             } => {}, // the run's future is dropped mid-drain
         }
-        let lingering = crate::code::hands::close(context).await;
+        let lingering = crate::identity::hands_gate::close(context).await;
         assert_eq!(lingering.unknown.len(), 1, "a cancel mid-drain fences the unidentified holder: {lingering:?}");
         assert!(matches!(capture.stdout.snapshot().end, CaptureEnd::Cut(_)), "and its read is cut, its prefix kept on the capture");
         if let Some(pid) = read_pid(&holder_pid) {
@@ -262,13 +262,13 @@
         // at the bound
         let first = dir.path().join("holder1.pid");
         let context = crate::identity::hands_context::HandsContext::fresh();
-        let lease = std::sync::Arc::new(crate::code::hands::admit(context).expect("open hands"));
-        let out = crate::code::hands::admitted(Some(lease), run_owned_with_input(holder(&first), input(), Some(std::time::Duration::from_millis(500)), "test", std::sync::Arc::default()))
+        let lease = std::sync::Arc::new(crate::identity::hands_gate::admit(context).expect("open hands"));
+        let out = crate::identity::hands_gate::admitted(Some(lease), run_owned_with_input(holder(&first), input(), Some(std::time::Duration::from_millis(500)), "test", std::sync::Arc::default()))
             .await
             .expect("ran");
         assert!(matches!(out.ended, Ended::Exited(_)), "the shell itself exited: {out:?}");
         assert!(matches!(out.input, Some(CaptureEnd::Cut(ref why)) if why.contains("held it past the bound")), "the input is cut by the holder: {:?}", out.input);
-        assert_eq!(crate::code::hands::close(context).await.unknown.len(), 1, "and the holder holds the release by name");
+        assert_eq!(crate::identity::hands_gate::close(context).await.unknown.len(), 1, "and the holder holds the release by name");
         if let Some(pid) = read_pid(&first) {
             kill9(pid); // the test's own cleanup of the holder it made
         }
@@ -276,9 +276,9 @@
         // on a cancel AFTER the child exited, while the write is still waiting
         let second = dir.path().join("holder2.pid");
         let context = crate::identity::hands_context::HandsContext::fresh();
-        let lease = std::sync::Arc::new(crate::code::hands::admit(context).expect("open hands"));
+        let lease = std::sync::Arc::new(crate::identity::hands_gate::admit(context).expect("open hands"));
         let capture = std::sync::Arc::new(RunCapture::default());
-        let run = crate::code::hands::admitted(Some(lease), run_owned_with_input(holder(&second), input(), None, "test", capture.clone()));
+        let run = crate::identity::hands_gate::admitted(Some(lease), run_owned_with_input(holder(&second), input(), None, "test", capture.clone()));
         tokio::select! {
             out = run => panic!("the run ended while its stdin was held: {out:?}"),
             () = async {
@@ -290,7 +290,7 @@
             } => {}, // the run's future is dropped during the writer's wait
         }
         assert_eq!(capture.input.snapshot().end, CaptureEnd::Cut("the operation was cancelled".into()), "the cancel cuts the input by name");
-        assert_eq!(crate::code::hands::close(context).await.unknown.len(), 1, "and the holder holds the release");
+        assert_eq!(crate::identity::hands_gate::close(context).await.unknown.len(), 1, "and the holder holds the release");
         if let Some(pid) = read_pid(&second) {
             kill9(pid);
         }

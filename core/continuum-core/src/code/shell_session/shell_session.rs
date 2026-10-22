@@ -180,9 +180,9 @@ impl ShellSession {
 
         // This task can outlive the command. Release must reach the existing
         // shell kill path before waiting for the task's process/output lifetime.
-        let admission = super::super::hands::current().map(|lease| Arc::new(lease.process_custody()));
+        let admission = crate::identity::hands_gate::current().map(|lease| Arc::new(lease.process_custody()));
         rt_handle.spawn(async move {
-            let result = super::super::hands::admitted(admission, super::super::hands::scoped_admitted(async {
+            let result = crate::identity::hands_gate::admitted(admission, crate::identity::hands_gate::scoped_admitted(async {
             let cargo_grant = match crate::system_resources::disk_reporters::admit_cargo_target(&target, &cwd, confinement.as_ref()).await {
                 Ok(grant) => grant,
                 Err(error) => {
@@ -196,7 +196,7 @@ impl ShellSession {
                     return;
                 }
             };
-            let Some(admission) = super::super::hands::current() else {
+            let Some(admission) = crate::identity::hands_gate::current() else {
                 if let Ok(mut state) = state.lock() {
                     state.status = ShellExecutionStatus::Failed;
                     state.stderr_lines.push("Shell has no process custody admission".into());

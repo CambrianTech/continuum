@@ -351,9 +351,9 @@
                     break pid;
                 }
                 assert!(std::time::Instant::now() < deadline, "the shell never started its grandchild");
-                std::thread::sleep(KILL_POLL);
+                std::thread::sleep(crate::inference::lane_process::KILL_POLL);
             };
-            let identity = crate::inference::lane_process::ProcessIdentity {
+            let identity = crate::system_resources::process_tree::ProcessIdentity {
                 pid: grandchild,
                 start_time: match crate::inference::engine_residency::probe_process(grandchild) {
                     crate::inference::engine_residency::ProcessProbe::Present(start) => start,
@@ -366,7 +366,7 @@
             while !state.lock().unwrap().process_ended {
                 assert!(state.lock().unwrap().process_end_error.is_none(), "the shell's reap succeeds");
                 assert!(std::time::Instant::now() < deadline, "the killed shell is reaped");
-                std::thread::sleep(KILL_POLL);
+                std::thread::sleep(crate::inference::lane_process::KILL_POLL);
             }
             // Regression for combined canary 8ea: direct-child reap does not imply that
             // every signalled descendant has already exited at end_tree's snapshot.
@@ -379,7 +379,7 @@
                 if surviving.is_empty() { break; }
                 assert!(std::time::Instant::now() < deadline,
                     "the grandchild and recorded descendants must die with their shell: {surviving:?}");
-                std::thread::sleep(KILL_POLL);
+                std::thread::sleep(crate::inference::lane_process::KILL_POLL);
             }
         }
     }
@@ -425,23 +425,23 @@
 
         // 5058: bounded history must not own an unresolved process's cache hold.
         let context = crate::identity::hands_context::HandsContext::fresh();
-        let admission = Arc::new(crate::code::hands::admit(context).unwrap());
+        let admission = Arc::new(crate::identity::hands_gate::admit(context).unwrap());
         let held = Arc::new(());
         let witness = Arc::downgrade(&held);
-        receipt.lock().unwrap().unconfirmed_descendants.push(crate::inference::lane_process::ProcessIdentity { pid: 4242, start_time: 7 });
+        receipt.lock().unwrap().unconfirmed_descendants.push(crate::system_resources::process_tree::ProcessIdentity { pid: 4242, start_time: 7 });
         drop(ShellCargoCustody { state: receipt.clone(), admission: admission.clone(), kept: held, completed: true });
         receipt.lock().unwrap().unconfirmed_descendants.clear();
         drop(admission);
         // A direct-child exit alone does not prove output-holding descendants
         // ended when cancellation interrupts the remainder of the shell task.
         let cancelled_context = crate::identity::hands_context::HandsContext::fresh();
-        let cancelled_admission = Arc::new(crate::code::hands::admit(cancelled_context).unwrap());
+        let cancelled_admission = Arc::new(crate::identity::hands_gate::admit(cancelled_context).unwrap());
         let cancelled_hold = Arc::new(());
         let cancelled_witness = Arc::downgrade(&cancelled_hold);
         drop(ShellCargoCustody { state: receipt.clone(), admission: cancelled_admission.clone(), kept: cancelled_hold, completed: false });
         drop(cancelled_admission);
-        assert!(!rt.block_on(crate::code::hands::close(cancelled_context)).unknown.is_empty());
-        crate::code::hands::retain_processes(cancelled_context, Vec::new());
+        assert!(!rt.block_on(crate::identity::hands_gate::close(cancelled_context)).unknown.is_empty());
+        crate::identity::hands_gate::retain_processes(cancelled_context, Vec::new());
         assert!(cancelled_witness.upgrade().is_some(), "unknown output lifetime is not cleared by an empty known-descendant list");
 
         // Count eviction keeps only the newest terminal receipt, not running work.
@@ -450,7 +450,7 @@
         assert_eq!(session.history().len(), 1);
         assert!(session.get_execution_state(&result.execution_id).is_err());
         assert!(witness.upgrade().is_some(), "history eviction must not release unresolved process custody");
-        crate::code::hands::retain_processes(context, Vec::new());
+        crate::identity::hands_gate::retain_processes(context, Vec::new());
         assert!(witness.upgrade().is_none());
         assert!(session.get_execution_state(&running).is_ok());
         let retained_id = session.history()[0].execution_id.clone();

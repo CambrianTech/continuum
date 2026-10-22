@@ -62,7 +62,7 @@ impl CardCarryModule {
                 let Some(claim) = card.claim_id else { continue };
                 let Some(root) = crate::modules::card_staging::checkout_path_for(&persona, card) else { continue };
                 let context = crate::identity::hands_context::HandsContext::for_claim(persona, card.card_id.as_uuid(), claim.as_uuid());
-                let lease = match crate::code::hands::admit(context) {
+                let lease = match crate::identity::hands_gate::admit(context) {
                     Ok(lease) => Arc::new(lease),
                     Err(why) => {
                         continuum_base::probe!(class = "workspace.carry.refused", persona = %name, card = %card.card_id, admission = %why, "held card's hands are closing; not carried");
