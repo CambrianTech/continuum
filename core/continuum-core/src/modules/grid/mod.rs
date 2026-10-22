@@ -23,6 +23,7 @@
 mod tests;
 
 pub mod access_decision;
+pub mod interceptor;
 pub mod trust_policy;
 pub use trust_policy::{caller_trust, GridTrustAuthPolicy, PeerTrustSource};
 pub mod acl;

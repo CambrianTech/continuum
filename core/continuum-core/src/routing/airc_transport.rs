@@ -113,7 +113,7 @@ impl std::fmt::Debug for AircTransport {
 }
 
 /// [`AircTransport`] behind the same late-bound cell the
-/// [`AircInterceptor`](crate::runtime::AircInterceptor) uses.
+/// [`AircInterceptor`](crate::inference::airc_remote::interceptor::AircInterceptor) uses.
 ///
 /// ## Why this exists
 ///

@@ -1,5 +1,5 @@
 //! GridInterceptor — bridges the existing [`crate::modules::grid`] routing
-//! into the kernel's [`super::command_interceptor::CommandInterceptor`]
+//! into the kernel's [`crate::runtime::CommandInterceptor`]
 //! chain.
 //!
 //! # What this connects
@@ -47,7 +47,7 @@ use async_trait::async_trait;
 use serde_json::Value;
 use std::sync::Arc;
 
-use super::command_interceptor::{CommandInterceptor, InterceptorOutcome};
+use crate::runtime::{CommandInterceptor, InterceptorOutcome};
 use crate::modules::grid::GridState;
 
 /// GridInterceptor — wraps `GridState::try_route_remote` and bridges it

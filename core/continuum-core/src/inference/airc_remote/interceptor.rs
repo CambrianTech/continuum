@@ -51,11 +51,11 @@ use serde_json::Value;
 use tokio::sync::OnceCell;
 use uuid::Uuid;
 
-use super::command_interceptor::{CommandInterceptor, InterceptorOutcome};
+use crate::runtime::{CommandInterceptor, InterceptorOutcome};
 use crate::ai::types::TextGenerationRequest;
 use crate::inference::airc_remote::protocol::RemoteInferenceRequest;
 use crate::inference::airc_remote::transport::{AircInferenceTransport, AircLiveTransport};
-use crate::runtime::service_module::CommandResult;
+use crate::runtime::CommandResult;
 
 /// The one command that rides the airc inference transport in this first cut.
 /// Generic any-command routing over airc (mirroring grid's `dispatch_to_node`)

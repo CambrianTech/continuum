@@ -559,7 +559,7 @@ pub(super) mod conditional_modules_tests {
                 .interceptor_chain()
                 .write()
                 .unwrap_or_else(|e| e.into_inner()) // unwrap_or_else: test lock
-                .push(Arc::new(crate::runtime::AircInterceptor::new()));
+                .push(Arc::new(crate::inference::airc_remote::interceptor::AircInterceptor::new()));
             let out = runtime
                 .route_command(
                     "ai/generate",

@@ -1,5 +1,5 @@
 #![cfg(test)]
-    use super::super::airc_interceptor::AircInterceptor;
+    use crate::inference::airc_remote::interceptor::AircInterceptor;
     use super::*;
     use async_trait::async_trait;
     use std::sync::atomic::{AtomicUsize, Ordering};

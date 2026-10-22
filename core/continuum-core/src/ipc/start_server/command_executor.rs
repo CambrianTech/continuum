@@ -73,10 +73,10 @@ pub(super) fn build_and_install_executor(
             .with_remote_transport(Arc::new(crate::routing::LateBoundAircTransport::new(
                 airc_interceptor_cell.clone(),
             )))
-            .with_interceptor(Arc::new(crate::runtime::AircInterceptor::with_airc_cell(
+            .with_interceptor(Arc::new(crate::inference::airc_remote::interceptor::AircInterceptor::with_airc_cell(
                 airc_interceptor_cell,
             )))
-            .with_interceptor(Arc::new(crate::runtime::GridInterceptor::new(grid_state)))
+            .with_interceptor(Arc::new(crate::modules::grid::interceptor::GridInterceptor::new(grid_state)))
             // `provided` sits at the TAIL of the chain: airc/grid get first look
             // so an explicitly remote-targeted perception/observe still hops to a
             // peer's eye, but an ordinary (untargeted) Provided call — a persona

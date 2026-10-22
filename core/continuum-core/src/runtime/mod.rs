@@ -25,7 +25,6 @@ use std::sync::Arc;
 use std::sync::OnceLock;
 
 pub mod admission_gate;
-pub mod airc_interceptor;
 pub mod artifact_handle;
 pub mod boot_clock;
 pub mod boot_mode;
@@ -42,7 +41,6 @@ pub mod event_graph;
 pub mod tracked_checkout;
 pub mod daemon;
 pub mod governor_bus;
-pub mod grid_interceptor;
 pub mod handle;
 pub mod in_process_transport;
 pub mod late_bound;
@@ -69,7 +67,6 @@ pub mod params;
 
 pub use boot_mode::{extract_boot_mode, BootMode, BootModeParseError};
 
-pub use airc_interceptor::AircInterceptor;
 pub use artifact_handle::{ArtifactKey, ArtifactSelector, Cadence};
 pub use brain_region::{
     BrainRegion, CadenceHint, ComputeClass, MemoryClass, Orientation, PersonaLifecycle,
@@ -88,7 +85,6 @@ pub use daemon::{
     DEFAULT_QUARANTINE_LIMIT,
 };
 pub use governor_bus::{publish_persona_scheduled, PersonaScheduled, PERSONA_SCHEDULED_KEY};
-pub use grid_interceptor::GridInterceptor;
 pub use handle::Handle;
 pub use in_process_transport::InProcessTransport;
 pub use late_bound::LateBound;
