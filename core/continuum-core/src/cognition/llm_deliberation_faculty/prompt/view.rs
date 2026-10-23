@@ -425,7 +425,7 @@ impl LlmDeliberationFaculty {
         )));
         // Her view within what the allocation granted its sources (`epoch.rs`): the only place
         // it is ever collapsed.
-        self.fit_view(&mut all_messages, view, &plan, view_room as usize);
+        self.fit_view(&mut all_messages, view, &plan, view_room as usize, calibration);
 
         // WHAT THIS TURN WOULD HAVE COST WITH NO BUDGET — recorded before either
         // fitting step throws the evidence away, and deliberately free to exceed
