@@ -3,6 +3,73 @@
     use crate::cognition::llm_deliberation_faculty::admission_clock;
     use crate::inference::resource_admission::{LaneAdmission, LanePriority};
 
+    // Inject only the engine observation; acquisition and watchdog remain real.
+    async fn healthy_wait<T>(acquire: impl std::future::Future<Output=T>) -> T {
+        let mut tokens = 0;
+        admission_clock::waiting_with_probe(acquire, move || {
+            tokens += 1;
+            std::future::ready(admission_clock::QueueProgress {
+                grants: (0, 0),
+                holders: vec![(1, crate::inference::llama_server::InFlightSlot { root: "fixture".into(), slot: 0 }, Some(crate::inference::llama_server::SlotWork { task: 1, processing: true, work: tokens }))],
+            })
+        }).await
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn never_granted_queue_without_progress_ends_and_releases_entry() -> Result<(), Box<dyn std::error::Error>> {
+        let gate: &'static LaneAdmission = Box::leak(Box::new(LaneAdmission::new()));
+        gate.set_served_lane_count(2);
+        let held = gate.acquire_serving_lane(None, LanePriority::Work, None).await;
+        let (wait, acquire) = gate.serving_lane_request(None, LanePriority::Work, None);
+        let bound = std::time::Duration::from_secs(10);
+        let start = tokio::time::Instant::now();
+        let turn = tokio::spawn(super::until_act_stalls(start + bound, bound, None, admission_clock::waiting(wait, acquire)));
+        queued(gate, 1).await;
+        assert!(turn.await?.is_err(), "a held permit without progress cannot park forever");
+        assert_eq!(start.elapsed(), bound);
+        assert_eq!(gate.work_waiting(), 0);
+        drop(held);
+        Ok(())
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn queue_that_stops_advancing_ends_at_the_next_checkpoint() {
+        let bound = std::time::Duration::from_secs(10);
+        let start = tokio::time::Instant::now();
+        let mut samples = 0;
+        let waiting = admission_clock::waiting_with_probe(std::future::pending::<()>(), move || {
+            samples += 1;
+            std::future::ready(admission_clock::QueueProgress { grants: (0, samples.min(2)), holders: vec![] })
+        });
+        assert!(super::until_act_stalls(start + bound, bound, None, waiting).await.is_err());
+        assert_eq!(start.elapsed(), bound * 2, "one grant earns one checkpoint, not a permanent exemption");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn processing_without_more_tokens_is_not_queue_progress() {
+        let bound = std::time::Duration::from_secs(10);
+        let start = tokio::time::Instant::now();
+        let waiting = admission_clock::waiting_with_probe(std::future::pending::<()>(), || std::future::ready(admission_clock::QueueProgress {
+            grants: (0, 0),
+            holders: vec![(1, crate::inference::llama_server::InFlightSlot { root: "fixture".into(), slot: 0 }, Some(crate::inference::llama_server::SlotWork { task: 1, processing: true, work: 42 }))],
+        }));
+        assert!(super::until_act_stalls(start + bound, bound, None, waiting).await.is_err());
+        assert_eq!(start.elapsed(), bound, "a processing flag alone cannot renew the wait");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn late_queue_registration_and_completion_cannot_revive_expired_budget() {
+        let bound = std::time::Duration::from_secs(10);
+        let expired = tokio::time::Instant::now() - bound;
+        let step = async {
+            healthy_wait(std::future::ready(())).await;
+            std::future::pending::<()>().await;
+        };
+        let start = tokio::time::Instant::now();
+        assert!(super::until_act_stalls(expired, bound, None, step).await.is_err());
+        assert_eq!(start.elapsed(), std::time::Duration::ZERO);
+    }
+
     async fn queued(gate: &LaneAdmission, count: usize) {
         for _ in 0..100 {
             if gate.work_waiting() == count { return; }
@@ -21,7 +88,7 @@
         let bound = std::time::Duration::from_secs(10);
         let first = tokio::spawn(super::until_act_stalls(
             tokio::time::Instant::now() + bound, bound, None,
-            admission_clock::waiting(gate.acquire_serving_lane(None, LanePriority::Work, None)),
+            healthy_wait(gate.acquire_serving_lane(None, LanePriority::Work, None)),
         ));
         queued(gate, 1).await;
         tokio::time::advance(bound * 3).await;
@@ -50,7 +117,7 @@
         let (ready, grant) = tokio::sync::oneshot::channel();
         let turn = tokio::spawn(super::until_act_stalls(start + bound, bound, None, async move {
             tokio::time::sleep(std::time::Duration::from_secs(3)).await;
-            let _permit = admission_clock::waiting(gate.acquire_serving_lane(None, LanePriority::Work, None)).await;
+            let _permit = healthy_wait(gate.acquire_serving_lane(None, LanePriority::Work, None)).await;
             let _ = ready.send(());
             std::future::pending::<()>().await;
         }));
@@ -75,7 +142,7 @@
         let bound = std::time::Duration::from_secs(10);
         let turn = tokio::spawn(super::until_act_stalls(
             tokio::time::Instant::now() + bound, bound, None,
-            admission_clock::waiting(gate.acquire_serving_lane(None, LanePriority::Work, None)),
+            healthy_wait(gate.acquire_serving_lane(None, LanePriority::Work, None)),
         ));
         queued(gate, 1).await;
         tokio::time::advance(bound * 3).await;
@@ -99,7 +166,7 @@
         let deadline = tokio::time::Instant::now() + bound;
         let turn = tokio::spawn(super::until_act_stalls(deadline, bound, Some(persona), async move {
             tokio::select! {
-                _ = admission_clock::waiting(gate.acquire_serving_lane(Some(persona), LanePriority::Work, None)) => false,
+                _ = healthy_wait(gate.acquire_serving_lane(Some(persona), LanePriority::Work, None)) => false,
                 _ = crate::cognition::directed_pending::wait(persona) => true,
             }
         }));

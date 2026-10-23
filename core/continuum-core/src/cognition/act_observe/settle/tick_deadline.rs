@@ -17,7 +17,9 @@ pub(super) const ACT_EXTENSIONS: u32 = 2;
 /// ends the act exactly as before (`Err(Elapsed)`), so a request lost inside a busy engine
 /// still ends. Registered admission queue intervals are excluded from this
 /// step's watchdog clock: they retain FIFO ownership without a pinned engine
-/// slot. On grant the unspent budget resumes; no other await gets this exemption.
+/// slot while relevant grants or blocking holders advance at each act-bound
+/// checkpoint. A stalled/unknown queue ends the act. On grant the unspent budget
+/// resumes; no other await gets this exemption.
 pub(super) async fn until_act_stalls<F: std::future::Future>(
     deadline: tokio::time::Instant,
     bound: std::time::Duration,
@@ -25,14 +27,14 @@ pub(super) async fn until_act_stalls<F: std::future::Future>(
     step: F,
 ) -> Result<F::Output, ()> {
     use crate::cognition::llm_deliberation_faculty::admission_clock;
-    let (queue_tx, mut queue_rx) = tokio::sync::watch::channel(admission_clock::QueueTime::default());
-    let step = admission_clock::scope(queue_tx, step);
+    let (queue_tx, mut queue_rx) = tokio::sync::watch::channel(admission_clock::QueueTime::new(deadline, bound));
+    let step = admission_clock::scope(queue_tx.clone(), step);
     tokio::pin!(step);
-    let mut deadline = deadline;
     let mut extensions = 0u32;
     let mut previous = None;
     loop {
-        let due = queue_rx.borrow_and_update().deadline(deadline);
+        let state = *queue_rx.borrow_and_update();
+        let due = if state.stalled { Some(tokio::time::Instant::now()) } else { state.deadline() };
         tokio::select! {
             biased;
             out = &mut step => return Ok(out),
@@ -43,6 +45,7 @@ pub(super) async fn until_act_stalls<F: std::future::Future>(
                     None => std::future::pending::<()>().await,
                 }
             } => {
+                if state.stalled { return Err(()); }
                 let pinned = persona.and_then(crate::inference::llama_server::in_flight_slot);
                 let now = match &pinned {
                     Some(p) => crate::inference::llama_server::slot_work(&p.root, p.slot, act_probe_client()).await,
@@ -58,7 +61,7 @@ pub(super) async fn until_act_stalls<F: std::future::Future>(
                 }
                 extensions += 1;
                 previous = now;
-                deadline += bound;
+                queue_tx.send_modify(|state| state.extend());
                 continuum_base::probe!(
                     class = "settle.tick.extended",
                     slot = pinned.as_ref().map(|p| p.slot as u64).unwrap_or(0), // probe field: extension implies a pinned slot
