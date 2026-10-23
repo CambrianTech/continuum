@@ -224,6 +224,43 @@ pub(super) fn test_resource_daemon() -> Arc<ResourceDaemon> {
     )
 }
 
+// Upper-layer transaction owns invocation of the engine's shared real-child scenario.
+#[cfg(windows)]
+#[tokio::test]
+async fn cancelled_exclusive_teacher_restores_real_owned_child() {
+    const CHILD_ENV: &str = "CONTINUUM_TEACHER_RESTORE_CHILD";
+    if std::env::var_os(CHILD_ENV).is_some() {
+        use std::io::Read;
+        let mut byte = [0];
+        let _ = std::io::stdin().read(&mut byte);
+        return;
+    }
+    let executable = std::env::current_exe();
+    assert!(executable.is_ok(), "fixture executable must be available");
+    let Ok(executable) = executable else {
+        return;
+    };
+    let mut command = tokio::process::Command::new(executable);
+    command
+        .args([
+            "--exact",
+            "modules::serving_daemon::tests::cancelled_exclusive_teacher_restores_real_owned_child",
+        ])
+        .env(CHILD_ENV, "1")
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .kill_on_drop(true)
+        .creation_flags(0x08000000);
+    crate::inference::llama_server::test_fixtures::exercise_prepared_restore(
+        command,
+        |server, generation, root, http, saves| async move {
+            exercise_cancelled_exclusive_teacher(server, generation, &root, http, saves).await;
+        },
+    )
+    .await;
+}
+
 // Called by the existing real-child fixture, which supplies original validated
 // inputs, a real child, and the actual HTTP checkpoint acknowledgement.
 #[cfg(windows)]
@@ -272,7 +309,7 @@ pub(crate) async fn exercise_cancelled_exclusive_teacher(
         })
         .unwrap();
     let owner = daemon.clone();
-    let caller = tokio::spawn(async move {
+    let mut caller = tokio::spawn(async move {
         owner
             .run_teacher_batch(TeacherBatchRequest {
                 tasks: vec![],
@@ -284,11 +321,11 @@ pub(crate) async fn exercise_cancelled_exclusive_teacher(
     });
     tokio::time::timeout(Duration::from_secs(15), async {
         let mut tick = tokio::time::interval(Duration::from_millis(10));
-        while !generation.has_exited() {
-            assert!(
-                !caller.is_finished(),
-                "checkpoint/retirement must be reached through the owner"
-            );
+        while !crate::inference::llama_server::test_fixtures::generation_has_exited(&generation) {
+            if caller.is_finished() {
+                let outcome = (&mut caller).await.map(|result| result.map(|_| ()));
+                panic!("checkpoint/retirement must be reached through the owner; early result: {outcome:?}");
+            }
             tick.tick().await;
         }
     })

@@ -3,7 +3,7 @@ use super::*;
 impl LlamaServerProcess {
     /// The engine this launch runs: [`server_bin`], resolved now (see `prepare_local_launch`).
     pub(super) fn engine_bin(&self) -> Result<String, LlamaServerError> {
-        #[cfg(test)]
+        #[cfg(any(test, feature = "test-fixtures"))]
         if let Some(pin) = &self.bin_pin {
             return Ok(pin.clone());
         }

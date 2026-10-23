@@ -26,6 +26,7 @@ impl SchedulerCustody {
 
     async fn disable_for(root: &Path, legacy: Option<LegacyPurpose>) -> Result<Self, String> {
         let lease = take_install_lease(root)?;
+        require_idle_claim(root)?;
         let launch_gate = launch_gate(root, true)?;
         let snapshot = RecoverySnapshot {
             version: 1,
@@ -64,24 +65,26 @@ impl SchedulerCustody {
             .map_err(|e| format!("cannot pin durable maintenance evidence: {e}"))?;
         // The mutation child hashes these pinned bytes against the original
         // snapshot before its first task mutation.
-        set_enabled(
-            &snapshot,
-            false,
-            false,
-            &lease,
-            &journal,
-            &file,
-            &bootstrap_pins,
-        )
-        .await?;
-        Ok(Self {
+        let custody = Self {
             snapshot,
             journal,
             journal_pin: file,
             _lease: lease,
             _launch_gate: Some(launch_gate),
             _bootstrap_pins: bootstrap_pins,
-        })
+        };
+        let disabled = set_enabled(
+            &custody.snapshot,
+            false,
+            false,
+            &custody._lease,
+            &custody.journal,
+            &custody.journal_pin,
+            &custody._bootstrap_pins,
+        )
+        .await;
+        let legacy = custody.snapshot.legacy.is_some();
+        settle_disable(custody, legacy, disabled, |custody| custody.restore()).await
     }
 
     /// Recheck actual scheduler exclusion before the caller's separate drain.
@@ -203,7 +206,8 @@ impl LegacySchedulerWindow {
         serving_expectation: serde_json::Value,
     ) -> Result<Self, String> {
         require_idle_claim(root)?;
-        let core = super::super::super::super::task_report(super::super::super::super::CORE_TASK).await?;
+        let core =
+            super::super::super::super::task_report(super::super::super::super::CORE_TASK).await?;
         let envelope = crate::installed_release::envelope(&core.description)?
             .ok_or("protected bootstrap absent")?;
         let active = crate::installed_release::read_receipt(&root.join("install-active.json"))?;
@@ -258,9 +262,7 @@ impl LegacySchedulerWindow {
             return Err("legacy recovery source differs".into());
         }
         if purpose.phase != LegacyPhase::Excluded {
-            return Err(
-                "restoration already pending; resume verification without draining".into(),
-            );
+            return Err("restoration already pending; resume verification without draining".into());
         }
         refuse_own_image(root, purpose).await?;
         if Path::new(&purpose.payload) != payload {
@@ -307,10 +309,7 @@ impl LegacySchedulerWindow {
         Ok(Self::recovery_purpose(root, source)?.phase == LegacyPhase::Restoring)
     }
 
-    pub fn recovery_expectation(
-        root: &Path,
-        source: &Path,
-    ) -> Result<serde_json::Value, String> {
+    pub fn recovery_expectation(root: &Path, source: &Path) -> Result<serde_json::Value, String> {
         Ok(Self::recovery_purpose(root, source)?.serving_expectation)
     }
 
@@ -459,8 +458,7 @@ impl LegacyRestoration {
             .legacy
             .as_ref()
             .ok_or("legacy restoration binding absent")?;
-        if purpose.source != canonical_source(source)? || Path::new(&purpose.payload) != payload
-        {
+        if purpose.source != canonical_source(source)? || Path::new(&purpose.payload) != payload {
             return Err("legacy restoration source/payload differs".into());
         }
         if purpose.phase != LegacyPhase::Restoring {
@@ -537,5 +535,27 @@ impl LegacyImageCustody {
         drop(_bootstrap);
         drop(files);
         window.restore().await
+    }
+}
+
+/// A failed generic disable has not touched serving or artifacts; restore even
+/// partial scheduler mutation. Legacy placement keeps its explicit recovery authority.
+pub(super) async fn settle_disable<T, F, R>(
+    custody: T,
+    legacy: bool,
+    disabled: Result<(), String>,
+    restore: F,
+) -> Result<T, String>
+where
+    F: FnOnce(T) -> R,
+    R: std::future::Future<Output = Result<(), String>>,
+{
+    match disabled {
+        Ok(()) => Ok(custody),
+        Err(error) if legacy => Err(error),
+        Err(error) => match restore(custody).await {
+            Ok(()) => Err(format!("maintenance disable failed; original scheduler intent restored: {error}")),
+            Err(recovery) => Err(format!("maintenance disable failed: {error}; restoration failed: {recovery}; run continuum maintenance recover")),
+        },
     }
 }
