@@ -378,6 +378,18 @@ enum Reopen {
     MembershipChanged,
 }
 
+/// Owns the supervisor's inner pump task: dropping it (the supervisor returns, or is
+/// aborted by [`PersonaCommandInboundPump::shutdown`]) aborts the task. Awaiting a bare
+/// `JoinHandle` and then dropping it DETACHES the task, so a shut-down pump kept reading
+/// and kept its handler, and every generation it was serving, alive (card b3e5b582).
+struct AbortOnDrop(JoinHandle<()>);
+
+impl Drop for AbortOnDrop {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+
 async fn supervise(
     persona_id: Uuid,
     airc: Arc<Airc>,
@@ -405,14 +417,14 @@ async fn supervise(
                 }
             },
         };
-        let task = tokio::spawn(run(
+        let mut task = AbortOnDrop(tokio::spawn(run(
             persona_id,
             Arc::clone(&airc),
             Arc::clone(&handler),
             this_stream,
             membership.clone(),
-        ));
-        match task.await {
+        )));
+        match (&mut task.0).await {
             // `run` returns only when the runtime dropped its epoch sender.
             Ok(()) => return,
             Err(e) if e.is_panic() => {
