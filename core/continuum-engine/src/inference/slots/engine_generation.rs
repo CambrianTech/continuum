@@ -458,6 +458,7 @@ impl SlotDirectory {
                 let (ready, ready_rx) = tokio::sync::watch::channel(true);
                 Arc::new(EndpointSlots {
                     gate: Arc::new(tokio::sync::RwLock::new(())),
+                    paging_tasks: Mutex::new(tokio::task::JoinSet::new()),
                     ready_rx,
                     state: Mutex::new(EndpointState {
                         ready,

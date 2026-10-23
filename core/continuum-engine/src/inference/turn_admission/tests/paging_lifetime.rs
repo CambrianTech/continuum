@@ -1,0 +1,304 @@
+#![cfg(test)]
+
+use super::*;
+use std::time::Duration;
+
+// What this catches: abandonment during evictee SAVE must retain its durable
+// ledger receipt, but must not launch the next RESTORE for a requester who left.
+#[tokio::test]
+async fn abandoned_context_switch_finishes_save_without_starting_restore() {
+    use axum::{
+        extract::{Path, Query},
+        routing::post,
+        Json, Router,
+    };
+    let entered = Arc::new(tokio::sync::Notify::new());
+    let release = Arc::new(tokio::sync::Notify::new());
+    let calls = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+    let app = Router::new().route(
+        "/slots/{slot}",
+        post({
+            let entered = entered.clone();
+            let release = release.clone();
+            let calls = calls.clone();
+            move |Path(slot): Path<u32>,
+                  Query(query): Query<std::collections::HashMap<String, String>>,
+                  Json(body): Json<serde_json::Value>| {
+                let entered = entered.clone();
+                let release = release.clone();
+                let calls = calls.clone();
+                async move {
+                    let action = query.get("action").expect("test: action").clone();
+                    calls.lock().expect("test: calls").push(action.clone());
+                    entered.notify_one();
+                    release.notified().await;
+                    let count = if action == "save" {
+                        "n_saved"
+                    } else {
+                        "n_restored"
+                    };
+                    Json(json!({"id_slot": slot, "filename": body["filename"], (count): 42}))
+                }
+            }
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("test: bind");
+    let root = format!("http://{}", listener.local_addr().expect("test: address"));
+    let server = tokio::spawn(async move { axum::serve(listener, app).await });
+    let directory = crate::inference::slots::directory();
+    let pool = directory.ensure_pool(&root, 1);
+    assert!(
+        directory
+            .negotiate_page_admission(&root, &pool, None, None)
+            .await
+    );
+    let old = ActivityKey::new(Uuid::new_v4(), Uuid::new_v4()).expect("test: old activity");
+    let next = ActivityKey::new(Uuid::new_v4(), Uuid::new_v4()).expect("test: next activity");
+    let sem = Arc::new(Semaphore::new(1));
+    let client = reqwest::Client::new();
+    let mut resident = admit_turn(
+        &sem,
+        Some(old),
+        Some(pool.clone()),
+        &client,
+        &root,
+        100,
+        Duration::ZERO,
+    )
+    .await
+    .expect("test: cold resident");
+    resident.generation_completed();
+    drop(resident);
+    pool.note_saved(next);
+    let mut admitting = Box::pin(admit_turn(
+        &sem,
+        Some(next),
+        Some(pool.clone()),
+        &client,
+        &root,
+        100,
+        Duration::ZERO,
+    ));
+    tokio::time::timeout(Duration::from_secs(5), async {
+        tokio::select! {
+            _ = &mut admitting => panic!("test: save completed before receipt"),
+            _ = entered.notified() => {}
+        }
+    })
+    .await
+    .expect("test: save reached engine");
+    drop(admitting);
+    release.notify_one();
+    let permit = tokio::time::timeout(Duration::from_secs(5), pool.acquire_slot(0))
+        .await
+        .expect("test: abandoned switch released after save")
+        .expect("test: physical slot");
+    assert_eq!(calls.lock().expect("test: calls").as_slice(), &["save"]);
+    assert!(
+        pool.plan_paging(0, old).restore,
+        "completed save remains eligible for its owner"
+    );
+    assert!(!directory.endpoint(&root).paging_recovery_required());
+    drop(permit);
+    server.abort();
+    let _ = server.await;
+}
+
+// Regression for 424e0961: a caller's deadline/drop released a live restore's
+// generation reader and physical slot, quarantining a healthy engine repeatedly.
+// Exercise actual admit_turn and HTTP; only the requester clock is advanced.
+#[tokio::test]
+async fn abandoned_restore_retains_slot_lane_and_generation_until_terminal_receipt() {
+    use axum::{extract::Path, routing::post, Json, Router};
+
+    for deadline in [false, true] {
+        for verified in [false, true] {
+            let entered = Arc::new(tokio::sync::Notify::new());
+            let release = Arc::new(tokio::sync::Notify::new());
+            let app = Router::new().route("/slots/{slot}", post({
+                let entered = entered.clone();
+                let release = release.clone();
+                move |Path(slot): Path<u32>, Json(body): Json<serde_json::Value>| {
+                    let entered = entered.clone();
+                    let release = release.clone();
+                    async move {
+                        entered.notify_one();
+                        release.notified().await;
+                        Json(if verified {
+                            json!({"id_slot": slot, "filename": body["filename"], "n_restored": 42})
+                        } else {
+                            json!({"headers_are_not_completion": true})
+                        })
+                    }
+                }
+            }));
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+                .await
+                .expect("test: bind");
+            let root = format!(
+                "http://{}",
+                listener.local_addr().expect("test: bound address")
+            );
+            let server = tokio::spawn(async move { axum::serve(listener, app).await });
+            let endpoint = crate::inference::slots::directory().endpoint(&root);
+            let pool = crate::inference::slots::directory().ensure_pool(&root, 3);
+            let key = ActivityKey::new(Uuid::new_v4(), Uuid::new_v4()).expect("test: activity");
+            pool.note_saved(key);
+            let sem = Arc::new(Semaphore::new(1));
+            let client = reqwest::Client::new();
+            let mut admitting = Box::pin(admit_turn(
+                &sem,
+                Some(key),
+                Some(pool.clone()),
+                &client,
+                &root,
+                100,
+                AdmissionPatience::for_turn(Some(Duration::from_secs(5)), Duration::ZERO),
+            ));
+            tokio::time::timeout(Duration::from_secs(5), async {
+                tokio::select! {
+                    _ = &mut admitting => panic!("test: admission completed before paging receipt"),
+                    _ = entered.notified() => {}
+                }
+            })
+            .await
+            .expect("test: restore dispatched");
+            let slot = pool.lease(key).await.expect("test: pinned activity");
+            if deadline {
+                tokio::time::pause();
+                tokio::time::advance(Duration::from_secs(6)).await;
+                let result = admitting.as_mut().await;
+                assert!(
+                    matches!(result, Err(ref error) if error == "turn deadline elapsed during admission")
+                );
+                tokio::time::resume();
+            }
+            drop(admitting);
+            assert_eq!(
+                sem.available_permits(),
+                0,
+                "abandonment cannot release the paging lane"
+            );
+            assert!(
+                !endpoint.paging_recovery_required(),
+                "abandonment is not an uncertain engine receipt"
+            );
+            let mut physical = Box::pin(pool.acquire_slot(slot));
+            assert!(
+                futures::poll!(&mut physical).is_pending(),
+                "no same-slot reuse during IO"
+            );
+            let mut transition = Box::pin(endpoint.transition());
+            assert!(
+                futures::poll!(&mut transition).is_pending(),
+                "replacement must drain the exact reader"
+            );
+            release.notify_one();
+            let permit = tokio::time::timeout(Duration::from_secs(5), physical)
+                .await
+                .expect("test: terminal receipt releases slot")
+                .expect("test: slot permit");
+            let drained = tokio::time::timeout(Duration::from_secs(5), transition)
+                .await
+                .expect("test: terminal receipt releases generation reader");
+            assert_eq!(sem.available_permits(), 1);
+            assert_eq!(
+                endpoint.paging_recovery_required(),
+                !verified,
+                "unknown receipts still quarantine, even after the caller has left"
+            );
+            assert_eq!(
+                pool.plan_paging(slot, key).already_resident,
+                verified,
+                "only a verified restore survives abandoned result delivery"
+            );
+            drop(permit);
+            drop(drained);
+            server.abort();
+            let _ = server.await;
+        }
+    }
+}
+
+// What this catches: retaining only the header future leaves an endpoint reader
+// forever if a server sends headers and then never finishes its receipt body.
+#[tokio::test]
+async fn paging_progress_watchdog_covers_the_complete_response_body() {
+    use axum::{
+        body::{Body, Bytes},
+        extract::Query,
+        routing::{get, post},
+        Json, Router,
+    };
+    use futures::StreamExt;
+    let headers = Arc::new(tokio::sync::Notify::new());
+    let app = Router::new()
+        .route(
+            "/slots/{slot}",
+            post({
+                let headers = headers.clone();
+                move || {
+                    let headers = headers.clone();
+                    async move {
+                        Body::from_stream(
+                            futures::stream::once(async move {
+                                headers.notify_one();
+                                Ok::<_, std::convert::Infallible>(Bytes::from_static(
+                                    b"{\"id_slot\":",
+                                ))
+                            })
+                            .chain(futures::stream::pending()),
+                        )
+                    }
+                }
+            }),
+        )
+        .route(
+            "/slots",
+            get(
+                |Query(query): Query<std::collections::HashMap<String, String>>| async move {
+                    Json(
+                        json!({"operation_id": query.get("operation_id"), "id_slot": 0,
+                "action": "restore", "phase": 5}),
+                    )
+                },
+            ),
+        );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("test: bind");
+    let root = format!(
+        "http://{}",
+        listener.local_addr().expect("test: bound address")
+    );
+    let server = tokio::spawn(async move { axum::serve(listener, app).await });
+    let key = ActivityKey::new(Uuid::new_v4(), Uuid::new_v4()).expect("test: activity");
+    let client = reqwest::Client::new();
+    let bound = kv_page_wedge_bound(KV_PAGE_SWITCH_MS.p50_p90().1);
+    let mut action = Box::pin(kv_page_action(&client, &root, 0, &key, "restore"));
+    tokio::time::timeout(Duration::from_secs(5), async {
+        tokio::select! {
+            _ = &mut action => panic!("test: incomplete JSON cannot complete"),
+            _ = headers.notified() => {}
+        }
+    })
+    .await
+    .expect("test: response started");
+    assert!(futures::poll!(&mut action).is_pending());
+    tokio::time::pause();
+    tokio::time::advance(bound + Duration::from_secs(1)).await;
+    // Poll once under the advanced clock to start the existing progress probe.
+    let checkpoint = futures::poll!(&mut action);
+    tokio::time::resume();
+    let outcome = match checkpoint {
+        std::task::Poll::Ready(outcome) => outcome,
+        std::task::Poll::Pending => tokio::time::timeout(Duration::from_secs(5), action)
+            .await
+            .expect("test: terminal failure probe ends incomplete receipt"),
+    };
+    assert_eq!(outcome, PageOutcome::Uncertain);
+    server.abort();
+    let _ = server.await;
+}

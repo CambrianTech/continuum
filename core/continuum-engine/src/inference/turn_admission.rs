@@ -31,6 +31,8 @@ use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use crate::inference::llama_server::EngineProbe;
 use crate::inference::slots::{ActivityKey, KvSlotPool, SlotPermit, SlotPin};
 
+mod paging_lifetime;
+
 /// How this turn's KV reached its slot: the evidence the restore economy is judged by
 /// (`inference.restored_turn`). A restore the engine refused is a fast-path MISS, recorded
 /// as one, never folded into "nothing to restore" (card f3ba3b56).
@@ -388,46 +390,54 @@ async fn admit(
                     );
                 }
 
-                // 3. The context switch onto a now-free slot: page the evictee out,
-                //    page this activity in. Lands immediately (no defer) because the slot
-                //    is not decoding.
-                if let Some(prev) = pg.save_first {
-                    // A failed or cancelled save may have replaced an older file.
-                    // Only a completed save can make this page restorable again.
-                    pool.note_page_lost(&prev);
-                    if admission
-                        .page_action(client, root, pg.slot, &prev, "save")
-                        .await?
-                    {
-                        pool.note_saved(prev);
-                        admission.saved_evictee = true;
-                    }
-                }
-                if pg.restore {
-                    let restored = admission
-                        .page_action(client, root, pg.slot, &k, "restore")
-                        .await?;
-                    admission.page_confirmed = restored;
-                    admission.page_in = if restored {
-                        PageIn::Restored
-                    } else {
-                        PageIn::RestoreRejected
-                    };
-                    if !restored {
-                        pool.note_page_lost(&k);
-                        // Reported HERE, at the decision, so a refused restore counts even when
-                        // the turn is then cancelled, fails, or reports no timing (Astra on #5190).
-                        // The same class and outcome the deploy self-check reads; the completion
-                        // probe reports only restores that happened, so nothing counts twice.
-                        continuum_base::probe!(
-                            class = "inference.restored_turn",
-                            persona = %k.persona,
-                            room = %k.room,
-                            slot = pg.slot as u64,
-                            outcome = "restore_rejected",
-                            "the engine refused this turn's KV restore: it re-prefills in full"
-                        );
-                    }
+                if pg.save_first.is_some() || pg.restore {
+                    let pool = Arc::clone(pool);
+                    let client = client.clone();
+                    let paging_root = root.to_owned();
+                    admission = admission.retain_paging(root, move |mut admission, interested| async move {
+                        // 3. The context switch onto a now-free slot: page the evictee out,
+                        //    page this activity in. Lands immediately (no defer) because the slot
+                        //    is not decoding.
+                        if let Some(prev) = pg.save_first {
+                            // A failed or cancelled save may have replaced an older file.
+                            // Only a completed save can make this page restorable again.
+                            pool.note_page_lost(&prev);
+                            if admission
+                                .page_action(&client, &paging_root, pg.slot, &prev, "save")
+                                .await?
+                            {
+                                pool.note_saved(prev);
+                                admission.saved_evictee = true;
+                            }
+                        }
+                        if pg.restore && interested.load(std::sync::atomic::Ordering::Acquire) {
+                            let restored = admission
+                                .page_action(&client, &paging_root, pg.slot, &k, "restore")
+                                .await?;
+                            admission.page_confirmed = restored;
+                            admission.page_in = if restored {
+                                PageIn::Restored
+                            } else {
+                                PageIn::RestoreRejected
+                            };
+                            if !restored {
+                                pool.note_page_lost(&k);
+                                // Reported HERE, at the decision, so a refused restore counts even when
+                                // the turn is then cancelled, fails, or reports no timing (Astra on #5190).
+                                // The same class and outcome the deploy self-check reads; the completion
+                                // probe reports only restores that happened, so nothing counts twice.
+                                continuum_base::probe!(
+                                    class = "inference.restored_turn",
+                                    persona = %k.persona,
+                                    room = %k.room,
+                                    slot = pg.slot as u64,
+                                    outcome = "restore_rejected",
+                                    "the engine refused this turn's KV restore: it re-prefills in full"
+                                );
+                            }
+                        }
+                        Ok(admission)
+                    }).await?;
                 }
                 // Price basis for the eviction policy (B5): this activity's current
                 // prompt size — comparable across slots, which is all eviction needs.
@@ -446,7 +456,7 @@ async fn admit(
             // BEFORE the await so cancellation cannot leave the next activity treating
             // transient KV as its own warm tail.
             let slot = pool.transient_slot();
-            admission.borrow_slot_for_transient(pool, slot, client, root).await?;
+            admission = admission.borrow_slot_for_transient(pool, slot, client, root).await?;
         } else if let (Some(pool), Some(scratch)) = (pool.as_ref(), admission.scratch) {
             // Anonymous traffic lands on the SCRATCH slot, and takes its operation permit
             // like every other slot user. Before this, every non-turn call wrote the
@@ -470,25 +480,31 @@ impl TurnAdmission {
     /// SAVE the resident's page so its warmth survives, and leave the slot unattributed
     /// so no activity later mistakes this traffic's KV for its own.
     async fn borrow_slot_for_transient(
-        &mut self,
+        mut self,
         pool: &Arc<KvSlotPool>,
         slot: u32,
         client: &reqwest::Client,
         root: &str,
-    ) -> Result<(), String> {
+    ) -> Result<Self, String> {
         self._slot_permit = Some(pool.acquire_slot(slot).await?);
         self._endpoint.check_ready()?;
         let (previous, pin) = pool.take_resident(slot);
         self._pin = pin;
         if let Some(previous) = previous {
-            pool.note_page_lost(&previous);
-            if self.page_action(client, root, slot, &previous, "save").await? {
-                pool.note_saved(previous);
-                self.saved_evictee = true;
-            }
+            let pool = pool.clone();
+            let client = client.clone();
+            let paging_root = root.to_owned();
+            self = self.retain_paging(root, move |mut admission, _interested| async move {
+                pool.note_page_lost(&previous);
+                if admission.page_action(&client, &paging_root, slot, &previous, "save").await? {
+                    pool.note_saved(previous);
+                    admission.saved_evictee = true;
+                }
+                Ok(admission)
+            }).await?;
         }
         self.slot = Some(slot);
-        Ok(())
+        Ok(self)
     }
 }
 
@@ -544,7 +560,7 @@ pub async fn admit_transient(
             pool.n_slots()
         ));
     }
-    admission.borrow_slot_for_transient(&pool, slot, client, root).await?;
+    admission = admission.borrow_slot_for_transient(&pool, slot, client, root).await?;
     Ok(admission)
 }
 
@@ -713,10 +729,13 @@ async fn kv_page_action_with_capacity(
             }
         }
     }
-    let send = client
-        .post(&url)
-        .json(&payload)
-        .send();
+    // The same progress bound covers the complete receipt, not just headers.
+    let send = async {
+        let response = client.post(&url).json(&payload).send().await?;
+        let status = response.status().as_u16();
+        let body = response.json::<serde_json::Value>().await.ok();
+        Ok::<_, reqwest::Error>((status, body))
+    };
     let resp = wait_while_engine_progresses(
         send,
         bound,
@@ -741,7 +760,10 @@ async fn kv_page_action_with_capacity(
     )
     .await
     .and_then(Result::ok);
-    let status = resp.as_ref().map(|r| r.status().as_u16()).unwrap_or(0); // JUSTIFIED unwrap_or: status 0 records transport failure or a silent engine, never success.
+    let (status, body) = match resp {
+        Some(receipt) => receipt,
+        None => (0, None), // Status zero records transport/watchdog failure, never success.
+    };
 
     // Headers alone are not a terminal receipt. A disconnected waiter can leave
     // a queued restore behind; malformed/truncated/default responses fail closed.
@@ -749,10 +771,6 @@ async fn kv_page_action_with_capacity(
     // its clock starts after a busy slot's deferral, so `ms - engine_ms` is the wait and
     // engine_ms the load (card a40e1bbf; the 5090 2026-10-11: Kimi's restores took 6-7.5 min
     // and nothing could say how much was waiting for the slot and how much was reading).
-    let body = match resp {
-        Some(response) => response.json::<serde_json::Value>().await.ok(),
-        None => None,
-    };
     let engine_ms = body.as_ref().and_then(|b| {
         b["timings"][if action == "save" { "save_ms" } else { "restore_ms" }].as_f64().map(|ms| ms as u64)
     });

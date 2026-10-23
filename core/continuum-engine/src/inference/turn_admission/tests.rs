@@ -728,63 +728,27 @@
             assert!(futures::poll!(&mut queued).is_pending());
             queued
         };
-        assert!(
-            pool.take_resident(slot).0.is_none(),
-            "cancelled restore cannot leave warm attribution"
-        );
-        assert!(
-            queued.as_mut().await.is_err(),
-            "already-admitted same-slot waiter must refuse after quarantine"
-        );
-        drop(queued);
-        assert_eq!(sem.available_permits(), 2);
-        assert!(
-            warm_ahead(&sem, key, pool.clone(), &client, &root)
-                .await
-                .is_err(),
-            "retry must refuse WHILE the old backend request is blocked"
-        );
-        assert_eq!(
-            calls.load(Ordering::SeqCst),
-            2,
-            "quarantine sent no replacement request"
-        );
-        let replacement = endpoint.transition().await;
-        assert!(
-            replacement.ready(&root, &old, contract.clone()).is_err(),
-            "same-generation readiness cannot clear quarantine"
-        );
-        assert!(
-            replacement.start_generation().is_err(),
-            "actual predecessor exit still required"
-        );
-        // This acknowledges only the fixture request; local Drop does not claim
-        // that cancelling an HTTP client stops the production backend operation.
+        // Dropping the warm-ahead waiter is not cancellation of engine IO.
+        assert!(futures::poll!(&mut queued).is_pending(), "same-slot waiter stays behind the restore");
+        assert_eq!(sem.available_permits(), 0, "both admissions still own their lanes");
+        assert!(endpoint.is_ready(), "caller cancellation does not condemn a progressing engine");
+        assert_eq!(calls.load(Ordering::SeqCst), 2, "no duplicate restore was dispatched");
         release.notify_one();
         tokio::time::timeout(std::time::Duration::from_secs(5), finished.notified())
-            .await
-            .expect("fixture request drained");
-
-        old.observed_exit();
-        let new = replacement
-            .start_generation()
-            .expect("verified predecessor exit");
-        replacement
-            .ready(&root, &new, contract.clone())
-            .expect("new verified generation");
-        drop(replacement);
-        let pool = endpoint
-            .admit()
-            .await
-            .expect("reopened")
-            .pool
-            .expect("fresh pool");
+            .await.expect("fixture request drained");
+        let mut admitted = tokio::time::timeout(std::time::Duration::from_secs(5), queued)
+            .await.expect("slot released after receipt").expect("same engine remains usable");
+        assert_eq!(admitted.page_in(), PageIn::Resident, "abandoned verified restore retained warmth");
+        admitted.generation_completed();
+        drop(admitted);
+        assert_eq!(sem.available_permits(), 2);
+        let new = old;
         mode.store(0, Ordering::SeqCst);
         warm_ahead(&sem, key, pool.clone(), &client, &root)
             .await
             .expect("successful retry");
         let restored_calls = calls.load(Ordering::SeqCst);
-        assert_eq!(restored_calls, 3);
+        assert_eq!(restored_calls, 2);
         warm_ahead(&sem, key, pool.clone(), &client, &root)
             .await
             .expect("already resident");
@@ -966,3 +930,5 @@
         }
         server.abort();
     }
+
+mod paging_lifetime;
