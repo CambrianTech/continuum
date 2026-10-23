@@ -23,6 +23,13 @@ impl ActionCommand for WorkClaim {
     async fn run(&self, ctx: &Ctx, p: WorkClaimParams) -> Result<WorkClaimResult, CommandError> {
         let airc = persona_airc(&self.registry, ctx, "work commands")?;
         let card_id = resolve_card_id(&airc, &p.card_id).await?;
+        // AIRC normally resumes the same owner's claim as Ok(existing_id).
+        // Capture that identity before claiming: a resume must not transfer an
+        // existing checkout as if ownership had just changed.
+        let previous_claim = card_in_subscribed_rooms(&airc, card_id)
+            .await
+            .filter(|(_, card)| card.owner == Some(airc.peer_id()))
+            .and_then(|(_, card)| card.claim_id);
         // A card whose instance this box cannot grade is refused at the VERB, the same
         // predicate the pull reads (`card_holder::standing_refusal_for_card`): the pull
         // skipped requests-1766, then a message-turn claim by id took it anyway (Atlas,
@@ -160,7 +167,8 @@ impl ActionCommand for WorkClaim {
                 // NOT start anything: a claim starts no detached work.
                 if let Some(claim_id) = already_yours {
                     if origin == airc_work::ClaimOrigin::Explicit {
-                        airc.select_work_claim(card_id, claim_id).await
+                        airc.select_work_claim(card_id, claim_id)
+                            .await
                             .map_err(|e| CommandError::Denied(e.to_string()))?;
                     }
                     continuum_base::probe!(
@@ -173,6 +181,7 @@ impl ActionCommand for WorkClaim {
                     return Ok(WorkClaimResult {
                         card_id: p.card_id,
                         claim_id: claim_id.as_uuid().to_string(),
+                        workspace: super::claim_workspace::for_claim(&airc, card_id, true).await,
                     });
                 }
                 // A rejection is WORK-STATE, not a transient tool result: the
@@ -196,68 +205,18 @@ impl ActionCommand for WorkClaim {
                 });
             }
         };
-        // ON-CLAIM STAGING (the pull inversion, 2026-09-03): the CLAIMER's workspace is
-        // prepared per the card's recipe HERE — whoever pulls a card gets its work where
-        // her hands are. ONE seam serves a pulled card, a tool-call claim, and a
-        // detached-solve round's directed assignee (`benchmark/dispatch` calls the same
-        // function before firing her solve). Then the room's DRIVER decides what fires:
-        // a citizen-driven round leaves the card to her held-work loop; a detached-solve
-        // round starts her scored solve (#346 — claiming IS the start of the work) IN
-        // THE CARD'S OWN ROOM (#425: boards are per-room, so the card's activity is the
-        // room whose board holds it). Best-effort past the claim: the claim is hers
-        // either way, and the probes say what happened. A card we cannot place gets NO
-        // detached fallback — inventing invisible work is the failure #425 removed.
-        // THE CLAIMER IS THE IDENTITY THE CLAIM WAS MADE AS — `airc.peer_id()`, never
-        // `ctx.caller`. The uu operator carries no caller identity: her claim rode the
-        // operator self-peer's airc and landed on the board as hers, then this block
-        // skipped her (no caller) — no staging, no hands, a card she could not work.
-        // 2026-09-12: the first agent to take a benchmark card through the verbs alone
-        // found it. A persona's airc peer IS her caller peer, so nothing changes for her.
-        let claimer_peer = airc.peer_id();
+        // Ownership stands independently of provisioning. Return its outcome so the
+        // caller can distinguish held-but-unbound from a usable workspace.
         record_held_claim(&airc, card_id, claim_id).await;
-        {
-            match card_in_subscribed_rooms(&airc, card_id).await {
-                Some((_room, card)) => {
-                    use crate::modules::card_staging::Staging;
-                    let staging = match crate::paths::continuum_home() {
-                        Ok(home) => {
-                            crate::modules::card_staging::stage_for_card(
-                                &home,
-                                claimer_peer.as_uuid(),
-                                &card,
-                            )
-                            .await
-                        }
-                        Err(e) => Staging::Failed {
-                            stage: "home",
-                            error: e.to_string(),
-                        },
-                    };
-                    // A claim stages the claimer's workspace and nothing more: the
-                    // work is hers to do in her own loop; no runner starts it for her.
-                    continuum_base::probe!(
-                        class = "work.claim.held",
-                        card_id = %short8(card_id.as_uuid()),
-                        claimer = %short8(claimer_peer.as_uuid()),
-                        staging = ?staging,
-                        "claim staged — the card is hers to work in her own loop; nothing detached fires"
-                    );
-                }
-                None => continuum_base::probe!(
-                    class = "work.claim.unplaceable_card",
-                    card_id = %short8(card_id.as_uuid()),
-                    claimer = %short8(claimer_peer.as_uuid()),
-                    "claimed a card no subscribed room's board holds — the claim STANDS, \
-                     but nothing is staged and no solve fires: work whose activity we \
-                     cannot name is work no room can see (#425)"
-                ),
-            }
-        }
+        let workspace =
+            super::claim_workspace::for_claim(&airc, card_id, previous_claim == Some(claim_id))
+                .await;
         // A claim is a hold boundary for the governor, whichever path took it.
         crate::persona::work_burst::note_hold_boundary(airc.peer_id().as_uuid());
         Ok(WorkClaimResult {
             card_id: p.card_id,
             claim_id: claim_id.as_uuid().to_string(),
+            workspace,
         })
     }
 }
