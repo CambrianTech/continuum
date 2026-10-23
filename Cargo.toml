@@ -222,20 +222,24 @@ members = [
 # reopen and work_focus's Open arm go; #1595 stream chunks publish as transient delivery
 # (live to subscribers, never durable history: airc_remote reads its pre-armed subscription);
 # #1594/#1596/#1597 agent-feed delivery (CLI + airc-lib agent_delivery), #1592 a test.
-airc-core = { git = "https://github.com/CambrianTech/airc", rev = "2666f362f66ccc993489e6d757967d86610776d0" }
-airc-blobs = { git = "https://github.com/CambrianTech/airc", rev = "2666f362f66ccc993489e6d757967d86610776d0" }
-airc-protocol = { git = "https://github.com/CambrianTech/airc", rev = "2666f362f66ccc993489e6d757967d86610776d0" }
-airc-ipc = { git = "https://github.com/CambrianTech/airc", rev = "2666f362f66ccc993489e6d757967d86610776d0" }
-airc-bus = { git = "https://github.com/CambrianTech/airc", rev = "2666f362f66ccc993489e6d757967d86610776d0" }
-airc-lib = { git = "https://github.com/CambrianTech/airc", rev = "2666f362f66ccc993489e6d757967d86610776d0" }
-airc-wire = { git = "https://github.com/CambrianTech/airc", rev = "2666f362f66ccc993489e6d757967d86610776d0" }
+# 2026-10-23: #1615 resolves unconfigured repository defaults from origin's
+# advertisement when allocating from a bare mirror. Resident claims use this
+# embedded library; updating the standalone CLI alone cannot repair staging.
+# Also inherits reviewed #1599-1614 delivery, maintenance and checkout fixes.
+airc-core = { git = "https://github.com/CambrianTech/airc", rev = "f069f793a466dd92830aab7672e8a69dcde11d8e" }
+airc-blobs = { git = "https://github.com/CambrianTech/airc", rev = "f069f793a466dd92830aab7672e8a69dcde11d8e" }
+airc-protocol = { git = "https://github.com/CambrianTech/airc", rev = "f069f793a466dd92830aab7672e8a69dcde11d8e" }
+airc-ipc = { git = "https://github.com/CambrianTech/airc", rev = "f069f793a466dd92830aab7672e8a69dcde11d8e" }
+airc-bus = { git = "https://github.com/CambrianTech/airc", rev = "f069f793a466dd92830aab7672e8a69dcde11d8e" }
+airc-lib = { git = "https://github.com/CambrianTech/airc", rev = "f069f793a466dd92830aab7672e8a69dcde11d8e" }
+airc-wire = { git = "https://github.com/CambrianTech/airc", rev = "f069f793a466dd92830aab7672e8a69dcde11d8e" }
 # airc-work: the work-board domain (cards/lanes/PRs). `Airc::work_board`
 # returns a `WorkBoardProjection` whose types (`WorkCard`, `LaneRecord`,
 # `CardState`, …) the positron kanban projector maps → `KanbanViewState`
 # at the seam. Only continuum-core (the projector) depends on it; the
 # neutral `continuum-positron` contract crate MIRRORS these enums and
 # must NOT depend on airc-work.
-airc-work = { git = "https://github.com/CambrianTech/airc", rev = "2666f362f66ccc993489e6d757967d86610776d0" }
+airc-work = { git = "https://github.com/CambrianTech/airc", rev = "f069f793a466dd92830aab7672e8a69dcde11d8e" }
 
 # Candle ML framework — patched via [patch.crates-io] below.
 # Fixes: Metal buffer pool leak (#2271), RoPE NEOX convention (#3410)

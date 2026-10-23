@@ -248,4 +248,7 @@ pub struct WorkClaimParams {
 pub struct WorkClaimResult {
     pub card_id: String,
     pub claim_id: String,
+    /// Claim ownership stands even when provisioning fails. Retry work/claim
+    /// after the reported substrate fault is repaired; shell cannot bind itself.
+    pub workspace: super::ClaimWorkspace,
 }
