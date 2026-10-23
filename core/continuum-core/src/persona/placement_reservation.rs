@@ -195,6 +195,18 @@ pub fn release(mind: Uuid) {
     let _ = ledger().release(&lease_id_of(mind));
 }
 
+/// THE PRODUCTION BOUNDARY for capability doctrine #3941 (send-back ca4758d2 on 8014ac25; cards d62743d6/8bd75362): a spill or return may ask seat `peer` for a slot ONLY when its beacon affirmatively advertises [`crate::capacity::gossip::CapabilityId::PlacementReservationGrant`] — a seat that never learned the field still beacons `free_slots_live` as lanes − residents, which overcounts what a second node would see; asking it rebuilds the 2026-09-18 double-spill the grant exists to close. No row at all is the same refusal: typed absence = safe (an old core's serde default is an empty list). Pure over the ledger, so the acceptance fixture exercises exactly this boundary with no wire.
+pub fn reservation_capability_gate(
+    ledger: &crate::capacity::gossip::GridCapacityLedger,
+    peer: Uuid,
+) -> crate::capacity::gossip::CapabilityDecision {
+    let required = crate::capacity::gossip::CapabilityId::PlacementReservationGrant;
+    match ledger.foreign_offers_with_age().into_iter().find(|(p, _, _)| *p == peer) {
+        Some((_, offer, _)) => crate::capacity::gossip::capability_decision(&offer, required),
+        None => crate::capacity::gossip::CapabilityDecision::Refuse { required }, // no beacon at all: absence is a refusal, not an invitation
+    }
+}
+
 /// THE SPILLER'S HALF: ask `peer` for a slot for `mind` over airc and wait for its word,
 /// bounded by [`RESERVE_DEADLINE`]. `Err` = no answer or no route: not a seat this tick.
 pub async fn request_reservation(
@@ -204,6 +216,14 @@ pub async fn request_reservation(
 ) -> Result<PlacementReservationReport, String> {
     if crate::persona::self_peer::is_this_node(peer) {
         return Err(format!("seat {peer} is this node — a node never asks itself for a slot"));
+    }
+    // THE capability gate (#3941): ask ONLY a seat whose beacon affirmatively advertises the grant. A refusal here sends NOTHING over the wire — no ACL evaluation at the seat, no deadline wait — and writes NO fault row: it is a stable fact of the seat's beacon (which may refresh with new capabilities next beat), not a transport or policy fault; re-reading it each tick costs one ledger scan. The caller receipts this as its existing "stays home" path — the refusal travels through this operation's own result type.
+    if let crate::capacity::gossip::CapabilityDecision::Refuse { required } =
+        reservation_capability_gate(&crate::capacity::gossip::global_ledger(), peer)
+    {
+        return Err(format!(
+            "seat {peer} does not advertise the capability this ask requires ({required:?}) — its slot arithmetic is lanes−residents, never asked"
+        ));
     }
     let now = EpochMs::now().millis();
     // The guard lives in its own block: this fn awaits the wire below, and a std
@@ -378,5 +398,68 @@ mod tests {
         assert!(r.granted, "{r:?}");
         assert_eq!((r.lane_wait_p50_ms, r.lane_wait_samples), (216_000, 40), "the wait rides the grant");
         assert_eq!(r.free_slots_live, 0);
+    }
+    // what this catches (send-back ca4758d2 on 8014ac25 — THE production acceptance line): a spill or return asks a seat for a slot ONLY when its beacon AFFIRMATIVELY advertises PlacementReservationGrant. Missing row, pre-capability wire shape (no key at all), and an Unknown-only advertisement all refuse; exact presence allows; a different id does not stand in. The gate sits before send_reservation_ask in request_reservation, so a refusal never reaches the wire — no ACL evaluation at the seat, no deadline wait — and writes no fault row: it is a stable fact of the beacon, re-read each tick for one ledger scan.
+    #[test]
+    fn the_seat_is_never_asked_unless_its_beacon_affirmatively_advertises_the_grant() -> Result<(), serde_json::Error> {
+        use crate::capacity::gossip::{CapabilityDecision, CapabilityId, GridCapacityLedger};
+
+        let peer = Uuid::from_u128(0x5e4a7c3b9d21); // a foreign seat — never this node
+        let ledger = GridCapacityLedger::default();
+
+        fn beacon(caps: Option<serde_json::Value>) -> Result<crate::capacity::gossip::CapacityOffer, serde_json::Error> {
+            let mut j = serde_json::json!({
+                "gpuTotalBytes": 1u64,
+                "gpuFreeBytesLive": 0u64,
+                "systemRamFreeBytes": 0u64,
+                "atMs": NOW,
+            });
+            if let Some(c) = caps {
+                j["capabilities"] = c;
+            }
+            serde_json::from_value(j) // wire shape of a foreign core's beacon — parse failure is the test's own error
+        }
+
+        // (a) No row at all — the seat never beaconed: typed absence is a refusal, not an invitation.
+        assert_eq!(
+            reservation_capability_gate(&ledger, peer),
+            CapabilityDecision::Refuse { required: CapabilityId::PlacementReservationGrant },
+            "no beacon, no ask"
+        );
+
+        // (b) Pre-capability wire shape — NO "capabilities" key at all → serde default empty.
+        ledger.hear(peer, beacon(None)?, NOW);
+        assert_eq!(
+            reservation_capability_gate(&ledger, peer),
+            CapabilityDecision::Refuse { required: CapabilityId::PlacementReservationGrant },
+            "an older core's beacon still parses and still refuses"
+        );
+
+        // (c) Unknown-only advertisement — a name this build does not know folds to the parse-only
+        // Unknown, which never grants.
+        ledger.hear(peer, beacon(Some(serde_json::json!(["some_future_capability"])))?, NOW);
+        assert_eq!(
+            reservation_capability_gate(&ledger, peer),
+            CapabilityDecision::Refuse { required: CapabilityId::PlacementReservationGrant },
+            "the parse-only fold cannot stand in for the grant"
+        );
+
+        // (d) A different capability does not stand in — exact-name membership only.
+        ledger.hear(peer, beacon(Some(serde_json::json!(["served_window_stamp", "lane_wait_reporting"])))?, NOW);
+        assert_eq!(
+            reservation_capability_gate(&ledger, peer),
+            CapabilityDecision::Refuse { required: CapabilityId::PlacementReservationGrant },
+            "exact-name membership, not 'has any capability'"
+        );
+
+        // (e) Exact presence — the seat affirmatively advertises the grant → allow.
+        ledger.hear(peer, beacon(Some(serde_json::json!(["placement_reservation_grant", "some_future_capability"])))?, NOW);
+        assert_eq!(
+            reservation_capability_gate(&ledger, peer),
+            CapabilityDecision::Allow,
+            "affirmative advertisement admits the ask"
+        );
+
+        Ok(())
     }
 }

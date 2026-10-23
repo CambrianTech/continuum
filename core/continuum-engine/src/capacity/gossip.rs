@@ -123,6 +123,87 @@ pub struct CapacityOffer {
     /// integer, like the other numbers here, so the offer stays `Eq`.
     #[serde(default)]
     pub decode_tps_milli: u32,
+    /// THE AFFIRMATIVE CAPABILITY LIST (card 8bd75362, doctrine #3941): what this core
+    /// knows how to do, named by the beacon itself. A gate that needs capability C checks
+    /// membership here and REFUSES on absence — there is no "probably new enough" fallback:
+    /// a core predating this field advertises nothing (serde default), so typed absence IS
+    /// safe by construction, and an older core never has to be guessed at. This replaces the
+    /// shape #3940 caught in the wild — deciding which class of peer you are talking to by
+    /// whether a rendered error string matched a phrase, where an unmatched phrasing PASSED.
+    /// `build_number` is NOT here for nothing: it orders beacons and renders fleet drift,
+    /// but it never authorizes a capability (the registry.rs pin comment marks its only
+    /// comparison site).
+    #[serde(default)]
+    pub capabilities: Vec<CapabilityId>,
+}
+
+/// What a core knows how to do — the names a beacon may advertise in
+/// [`CapacityOffer::capabilities`] and a gate checks for affirmatively. A CLOSED set on
+/// each build (the emission is `this_build_capabilities()`, one source); the wire form is
+/// snake_case, so a name travels as e.g. `"lane_wait_reporting"`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CapabilityId {
+    /// The beacon carries `served_context_window` and it is measured from the seat's actual
+    /// admission (card beea5a7a: a 1×2048 seat refusing every prompt because nothing said how
+    /// wide its window was). A gate that must not place a turn wider than a seat's window
+    /// requires this.
+    ServedWindowStamp,
+    /// The beacon carries `lane_wait_p50_ms` + `lane_wait_samples`, measured at the seat —
+    /// the queue delay of generates it serves for other nodes (#4198). A gate that orders or
+    /// refuses by wait time requires this; absence reads as UNMEASURED, never as fast.
+    LaneWaitReporting,
+    /// The seat GRANTS spill slots to peers before they arrive (`persona/placement/reserve`,
+    /// #4199) and `free_slots_live` nets those grants out. A gate that trusts a peer's
+    /// granted-slot arithmetic requires this; absence means the number is lanes-residents,
+    /// which overcounts what a second node would see.
+    PlacementReservationGrant,
+    /// Parse-only: a name THIS build does not know (a newer core advertising a capability we
+    /// predate). It never grants — membership of this list is exact-name, so an unknown name
+    /// cannot stand in for another — but its presence must not drop the rest of the beacon,
+    /// so forward compatibility stays fail-safe in BOTH directions: an old core reads a new
+    /// name as unknown rather than refusing to parse.
+    #[serde(other)]
+    Unknown,
+}
+
+/// What THIS build advertises — the one emission source (every beacon builder calls it), so
+/// the list cannot drift between sites and every addition is a single auditable line: name the
+/// capability only when the code that makes it true lives in this tree. A build with none of
+/// these names would advertise an empty list, which gates read as "nothing", never as "all".
+pub fn this_build_capabilities() -> Vec<CapabilityId> {
+    vec![
+        CapabilityId::ServedWindowStamp,
+        CapabilityId::LaneWaitReporting,
+        CapabilityId::PlacementReservationGrant,
+    ]
+}
+
+/// The outcome of checking one advertised capability against what a peer offers. TYPED on
+/// purpose (doctrine #3941): refusal names its gap, so a caller can say "the seat lacks
+/// `served_window_stamp`" instead of inverting a bool it could get wrong.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CapabilityDecision {
+    /// The offer advertises exactly this capability; the action may proceed.
+    Allow,
+    /// Absent (key missing -> empty list), only other ids, or only Unknown folds: fail closed.
+    Refuse { required: CapabilityId },
+}
+
+/// THE consumer shape doctrine #3941 names: affirmative membership on the offer's OWN
+/// advertised set. `build_number` is not a parameter and cannot be read here -- version is
+/// ordering + display only, never an authorization (the registry keeps its one comparison
+/// site). The signature itself is the grep-gate's structural half: any version input would
+/// have to change it, which review sees without reading the body. A requirement for a
+/// name THIS build does not know ([`CapabilityId::Unknown`]) refuses as well: a parse-only
+/// fold can never stand in for an affirmative capability, so requiring one is asking for
+/// something no beacon can truthfully advertise.
+pub fn capability_decision(offer: &CapacityOffer, required: CapabilityId) -> CapabilityDecision {
+    if required == CapabilityId::Unknown || !offer.capabilities.contains(&required) {
+        CapabilityDecision::Refuse { required }
+    } else {
+        CapabilityDecision::Allow
+    }
 }
 
 /// The beacon's form of this seat's measured decode rate: this model's OWN curve only, fresh
@@ -412,6 +493,10 @@ mod tests {
             lane_wait_samples: 0,
             served_context_window: 0,
             decode_tps_milli: 0,
+            // A synthetic offer stands in for an OLDER core: it advertises no
+            // capabilities at all, and the ledger must fold that as 'nothing',
+            // never as 'all' (card 8bd75362).
+            capabilities: Vec::new(),
         }
     }
     // what this catches (2026-09-19, the M5 spilled two minds to ITSELF): a node hears
@@ -608,5 +693,112 @@ mod tests {
         assert!(!replays_an_older_reading(0, 5) && !replays_an_older_reading(5, 0));
         assert!(!replays_an_older_reading(5, 5));
         assert!(replays_an_older_reading(6, 5));
+    }
+
+    // what this catches: THE acceptance line (card 8bd75362, doctrine #3941) -- a gate that
+    // needs capability C refuses a beacon without it and accepts one with it. Exact-name
+    // membership only: no other id, an empty list, or an unknown name stands in for the
+    // required one, and build_number cannot authorize (it is not even a parameter here).
+    #[test]
+    fn advertised_capability_allows() {
+        let mut o = offer(8, 1_000); // existing helper: all fields set, capabilities empty
+        assert_eq!(
+            capability_decision(&o, CapabilityId::ServedWindowStamp),
+            CapabilityDecision::Refuse { required: CapabilityId::ServedWindowStamp },
+            "an empty advertisement refuses everything (the pre-capability wire shape)"
+        );
+        o.capabilities.push(CapabilityId::ServedWindowStamp);
+        assert_eq!(
+            capability_decision(&o, CapabilityId::ServedWindowStamp),
+            CapabilityDecision::Allow
+        );
+    }
+
+    #[test]
+    fn a_different_id_does_not_stand_in() {
+        let mut o = offer(8, 1_000);
+        o.capabilities.push(CapabilityId::LaneWaitReporting);
+        assert_eq!(
+            capability_decision(&o, CapabilityId::ServedWindowStamp),
+            CapabilityDecision::Refuse { required: CapabilityId::ServedWindowStamp },
+            "exact-name membership, not 'has any capability'"
+        );
+    }
+
+    #[test]
+    fn pre_capability_beacon_deserializes_empty_and_refuses_everything() -> Result<(), serde_json::Error> {
+        // Wire shape of a core that predates the field: NO "capabilities" key at all. The
+        // four required fields are exactly what an older beacon carries (the idiom already
+        // used by an_older_beacon_without_served_fields_still_parses).
+        let json = serde_json::json!({
+            "gpuTotalBytes": 1u64, "gpuFreeBytesLive": 0u64,
+            "systemRamFreeBytes": 0u64, "atMs": 0u64
+        });
+        let o: CapacityOffer = serde_json::from_value(json)?; // #[serde(default)] -> empty
+        assert!(o.capabilities.is_empty(), "typed absence: the key is missing, not false");
+        for required in [
+            CapabilityId::ServedWindowStamp,
+            CapabilityId::LaneWaitReporting,
+            CapabilityId::PlacementReservationGrant,
+        ] {
+            assert_eq!(capability_decision(&o, required), CapabilityDecision::Refuse { required });
+        }
+
+        Ok(())
+    }
+
+    #[test]
+    fn unknown_names_never_grant() -> Result<(), serde_json::Error> {
+        // Emitter names an id this build does not know -> folds to Unknown (#[serde(other)]).
+        // NOTE: the enum's wire form is SNAKE_CASE (its own rename_all), unlike the struct.
+        let json = serde_json::json!({
+            "gpuTotalBytes": 1u64, "gpuFreeBytesLive": 0u64,
+            "systemRamFreeBytes": 0u64, "atMs": 0u64,
+            "capabilities": ["served_window_stamp", "some_future_capability"]
+        });
+        let o: CapacityOffer = serde_json::from_value(json)?;
+        assert!(o.capabilities.contains(&CapabilityId::Unknown), "the unknown name folded");
+        // The known id still grants its own gate...
+        assert_eq!(capability_decision(&o, CapabilityId::ServedWindowStamp), CapabilityDecision::Allow);
+        // ...and the Unknown fold cannot stand in for anything else.
+        assert_eq!(
+            capability_decision(&o, CapabilityId::LaneWaitReporting),
+            CapabilityDecision::Refuse { required: CapabilityId::LaneWaitReporting }
+        );
+        // ...nor be REQUIRED at all: no beacon can truthfully advertise the parse-only fold, so a gate may never demand it (API correction, ca4758d2).
+        assert_eq!(
+            capability_decision(&o, CapabilityId::Unknown),
+            CapabilityDecision::Refuse { required: CapabilityId::Unknown },
+            "a requirement for the parse-only fold is asking for something no beacon can honestly advertise"
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn build_number_cannot_authorize() {
+        // Fully-stamped, absurdly high-build offer with an EMPTY capability set is still refused.
+        let mut o = offer(8, 1_000);
+        o.build = u64::MAX;      // stamp the version fields to absurd heights...
+        o.build_number = u64::MAX;
+        assert!(o.capabilities.is_empty()); // ...with nothing advertised.
+        for required in [
+            CapabilityId::ServedWindowStamp,
+            CapabilityId::LaneWaitReporting,
+            CapabilityId::PlacementReservationGrant,
+        ] {
+            assert_eq!(capability_decision(&o, required), CapabilityDecision::Refuse { required });
+        }
+    }
+
+    #[test]
+    fn advertised_names_serialize_as_stable_snake_case_and_never_unknown() -> Result<(), serde_json::Error> {
+        // The reviewer's wire-compatibility ask: the names this build advertises travel as
+        // stable snake_case, and the emission source can never carry a parse-only fold.
+        let wire = serde_json::to_string(&this_build_capabilities())?;
+        assert_eq!(wire, "[\"served_window_stamp\",\"lane_wait_reporting\",\"placement_reservation_grant\"]");
+        assert!(!this_build_capabilities().contains(&CapabilityId::Unknown), "emission never advertises Unknown");
+
+        Ok(())
     }
 }

@@ -188,6 +188,10 @@ pub(crate) fn offer_from_board(board: &crate::resources::LeaseBoard, at_ms: u64)
             .active_model
             .as_deref()
             .map_or(0, |model| crate::capacity::gossip::beacon_decode_milli(&crate::inference::decode_knee::rate_for(model))),
+        // The affirmative capability list — one emission source (card 8bd75362, doctrine #3941):
+        // a gate checks membership here and refuses on absence; an older core advertises
+        // nothing (serde default), so typed absence is safe by construction.
+        capabilities: crate::capacity::gossip::this_build_capabilities(),
     })
 }
 
