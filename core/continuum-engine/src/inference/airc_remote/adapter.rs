@@ -156,6 +156,7 @@ impl AircRemoteInferenceAdapter {
                     crate::capacity::gossip::global_ledger(),
                     seat,
                     refused_at_ms,
+                    EpochMs::now_or_latest().millis(),
                 )
             });
         if reopened {
