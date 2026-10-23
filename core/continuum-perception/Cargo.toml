@@ -29,3 +29,9 @@ base64 = "0.22"  # perception/look encodes a captured frame as a data URL
 tokio = { workspace = true, features = ["test-util"] }
 tempfile = "3"
 airc-blobs.workspace = true  # tests: frames retained into a real blob store
+
+[features]
+default = []
+# Test-only helpers of the live layer (PerceptionBuffer::seed_frame_for_test); production
+# binaries never build with it. The mind's test-fixtures forwards here.
+test-fixtures = ["continuum-live/test-fixtures"]

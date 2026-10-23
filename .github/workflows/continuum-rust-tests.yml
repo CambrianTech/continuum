@@ -154,7 +154,7 @@ jobs:
           cargo test -p continuum-mind --lib --profile dev-fast --features test-fixtures -- \
             --skip 'persona::allocator::tests::test_allocate'
           # Perception and rag, cut out of the mind (core/continuum-perception, card 2f5b275b).
-          cargo test -p continuum-perception --lib --profile dev-fast
+          cargo test -p continuum-perception --lib --profile dev-fast --features test-fixtures
           interop_output=$(cargo test -p continuum-engine --lib --profile dev-fast --features test-fixtures \
             model_registry::artifacts::expert_placement::tests::fs2_and_native_container_locks_interoperate_across_processes \
             -- --exact --ignored --nocapture 2>&1)
