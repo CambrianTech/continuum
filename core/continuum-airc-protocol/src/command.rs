@@ -41,6 +41,11 @@ pub const DEFAULT_COMMAND_DEADLINE: Duration = Duration::from_secs(30);
 /// airc header naming the URI path being dispatched.
 pub const HEADER_COMMAND_PATH: &str = "continuum.command.path";
 
+/// The command path of a generation request. A seat serves each one concurrently: it
+/// holds a serving lane for minutes, and the pump must keep reading meanwhile (card
+/// b3e5b582). One owner for the literal on the wire; other hand-written sites migrate.
+pub const COMMAND_PATH_AI_GENERATE: &str = "ai/generate";
+
 /// airc header naming the `RouteKind` of the dispatch.
 pub const HEADER_COMMAND_KIND: &str = "continuum.command.kind";
 

@@ -66,6 +66,7 @@ tempfile = { version = "3", optional = true }  # test-fixtures: the job board's 
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util"] }
+airc-test-fixtures = { path = "../airc-test-fixtures" }  # real two-peer airc loopback for the command pump
 tempfile = "3"
 continuum-base = { path = "../continuum-base", features = ["test-fixtures"] }
 continuum-client = { path = "../../client/continuum-client", features = ["test-fixtures"] }

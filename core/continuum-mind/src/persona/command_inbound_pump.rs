@@ -75,10 +75,13 @@ use std::time::Duration;
 
 use airc_lib::adapter::ConsumerAdapter;
 use airc_lib::{Airc, AircError, FilteredEventStream};
-use continuum_airc_protocol::{COMMAND_REQUEST_BODY_HINT, HEADER_CONTINUUM_BODY_HINT};
+use continuum_airc_protocol::{
+    COMMAND_PATH_AI_GENERATE, COMMAND_REQUEST_BODY_HINT, HEADER_COMMAND_PATH,
+    HEADER_CONTINUUM_BODY_HINT,
+};
 use futures::stream::StreamExt;
 use tokio::sync::watch;
-use tokio::task::JoinHandle;
+use tokio::task::{JoinHandle, JoinSet};
 use tracing::{debug, warn};
 use uuid::Uuid;
 
@@ -459,9 +462,27 @@ async fn run(
     // to re-open: every re-open costs a daemon connection per channel, and the
     // 2026-09-12 reseat storm turned 1,961 no-op bumps into 19,589 open sockets.
     let mut opened_with = subscribed_set(&airc).await;
+    // A served generation holds a lane for minutes. Awaited inline it stopped this loop
+    // from reading: a 2-lane seat answered remote requesters one at a time, and the
+    // queue it built was invisible to its own lane-wait beacon, which starts at handler
+    // entry (IntelMac -> M5, 2026-10-23, card b3e5b582). Generations run as tasks owned
+    // by this pump; each still waits for a serving lane through the seat's admission,
+    // so this adds no limit of its own. Every other command stays inline and ordered.
+    // Dropping the set (pump exit) aborts them, as the inline await was aborted before.
+    let mut generations: JoinSet<()> = JoinSet::new();
     loop {
         let reason = loop {
             tokio::select! {
+                Some(done) = generations.join_next(), if !generations.is_empty() => {
+                    if let Err(e) = done {
+                        continuum_base::probe!(
+                            class = "persona.command_pump.generation_task_failed",
+                            persona_id = %persona_id,
+                            error = %e,
+                            "a served generation task ended without completing (panic or abort)"
+                        );
+                    }
+                }
                 next = stream.next() => match next {
                     Some(Ok(event)) => {
                         attempt = 0;
@@ -473,6 +494,27 @@ async fn run(
                             .get(HEADER_CONTINUUM_BODY_HINT)
                             .map(|s| s.as_str());
                         if hint != Some(COMMAND_REQUEST_BODY_HINT) {
+                            continue;
+                        }
+                        let path = event.headers.get(HEADER_COMMAND_PATH).map(String::as_str);
+                        if path == Some(COMMAND_PATH_AI_GENERATE) {
+                            let handler = Arc::clone(&handler);
+                            let envelope = (*event).clone();
+                            generations.spawn(async move {
+                                if let Err(e) = handler.on_envelope(envelope).await {
+                                    warn!(
+                                        persona_id = %persona_id,
+                                        error = %e,
+                                        "PersonaCommandInboundPump: a served generation's envelope was rejected"
+                                    );
+                                }
+                            });
+                            continuum_base::probe!(
+                                class = "persona.command_pump.generation_dispatched",
+                                persona_id = %persona_id,
+                                in_flight = generations.len() as u64,
+                                "a generation request runs as its own task; the pump keeps reading"
+                            );
                             continue;
                         }
                         if let Err(e) = handler.on_envelope((*event).clone()).await {
@@ -585,5 +627,92 @@ mod tests {
         assert_eq!(reopen_delay(4), Duration::from_secs(16));
         assert_eq!(reopen_delay(5), Duration::from_secs(30));
         assert_eq!(reopen_delay(40), Duration::from_secs(30));
+    }
+
+    /// Holds the first generation request until released; signals each later one.
+    struct HoldingHandler {
+        seen: std::sync::atomic::AtomicUsize,
+        first_entered: tokio::sync::Notify,
+        release_first: tokio::sync::Notify,
+        later_entered: tokio::sync::Notify,
+    }
+
+    #[async_trait::async_trait]
+    impl ConsumerAdapter for HoldingHandler {
+        async fn on_envelope(
+            &self,
+            _envelope: airc_core::TranscriptEvent,
+        ) -> Result<(), airc_lib::adapter::AdapterError> {
+            if self.seen.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0 {
+                self.first_entered.notify_one();
+                self.release_first.notified().await;
+            } else {
+                self.later_entered.notify_one();
+            }
+            Ok(())
+        }
+    }
+
+    // what this catches (card b3e5b582, IntelMac -> M5 2026-10-23): the pump awaited each
+    // served generation inline, so while one remote request held its lane the seat read
+    // nothing else, and a second requester queued at the pump (invisible to the seat's
+    // lane-wait beacon) instead of reaching a free lane. Real airc loopback, real `run`
+    // loop: while the first generation's handler is still running, the second request
+    // must reach the handler. On the inline pump the second never does (timeout).
+    #[tokio::test]
+    async fn a_held_generation_does_not_stop_the_pump_reading_the_next_request() {
+        use crate::ai::types::{ChatMessage, MessageContent, TextGenerationRequest};
+        use crate::inference::airc_remote::protocol::RemoteInferenceRequest;
+        use crate::inference::airc_remote::transport::{AircInferenceTransport, AircLiveTransport};
+
+        let loop_back = airc_test_fixtures::TwoAircLoopback::new()
+            .await
+            .expect("two-peer loopback fixture");
+        let handler = Arc::new(HoldingHandler {
+            seen: std::sync::atomic::AtomicUsize::new(0),
+            first_entered: tokio::sync::Notify::new(),
+            release_first: tokio::sync::Notify::new(),
+            later_entered: tokio::sync::Notify::new(),
+        });
+        let stream = crate::routing::airc_subscription::subscribe_every_room(loop_back.peer_a())
+            .await
+            .expect("the seat subscribes its rooms");
+        let (_membership_tx, membership_rx) = watch::channel(0u64);
+        let pump = tokio::spawn(run(
+            loop_back.peer_a_id(),
+            Arc::clone(loop_back.peer_a()),
+            Arc::clone(&handler) as Arc<dyn ConsumerAdapter>,
+            stream,
+            membership_rx,
+        ));
+
+        let transport = AircLiveTransport::new(Arc::clone(loop_back.peer_b()), loop_back.peer_a_id());
+        let ask = |prompt: &str| {
+            let transport = Arc::clone(&transport);
+            let request = RemoteInferenceRequest::new(TextGenerationRequest {
+                messages: vec![ChatMessage {
+                    role: "user".to_string(),
+                    content: MessageContent::Text(prompt.to_string()),
+                    name: None,
+                }],
+                ..Default::default()
+            });
+            tokio::spawn(async move { transport.send_request(request).await })
+        };
+        // The handler replies to nothing, so both requests stay pending; only whether the
+        // second REACHES the seat while the first is held is under test.
+        let first = ask("hold the lane");
+        tokio::time::timeout(Duration::from_secs(30), handler.first_entered.notified())
+            .await
+            .expect("the first generation reaches the seat");
+        let second = ask("answer while the lane is held");
+        tokio::time::timeout(Duration::from_secs(30), handler.later_entered.notified())
+            .await
+            .expect("the second request reaches the seat while the first still holds its lane");
+
+        handler.release_first.notify_one();
+        first.abort();
+        second.abort();
+        pump.abort();
     }
 }

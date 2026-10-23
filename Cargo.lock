@@ -3141,6 +3141,7 @@ dependencies = [
  "airc-core",
  "airc-lib",
  "airc-protocol",
+ "airc-test-fixtures",
  "airc-work",
  "arc-swap",
  "async-trait",
