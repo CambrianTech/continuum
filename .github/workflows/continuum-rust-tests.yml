@@ -354,6 +354,8 @@ jobs:
         run: |
           foreach ($test in @(
             'tests::reboot_tests::legacy_core_requires_explicit_recovery_before_reboot_teardown'
+            'maintenance::tests::maintenance_is_bounded_and_recovery_cannot_repeat_observation'
+            'maintenance::tests::every_drain_observation_and_restart_failure_restores_once'
           )) {
             $output = & cargo test -p continuum-core --bin continuum --profile dev-fast --features test-fixtures $test -- --exact 2>&1
             $result = $LASTEXITCODE

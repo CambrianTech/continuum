@@ -63,6 +63,12 @@ mod elevated_teardown;
 #[cfg(windows)]
 #[path = "continuum/container_maintenance.rs"]
 mod container_maintenance;
+#[cfg(windows)]
+#[path = "continuum/maintenance_serving.rs"]
+mod maintenance_serving;
+#[cfg(windows)]
+#[path = "continuum/maintenance.rs"]
+mod maintenance;
 // Child modules by responsibility; each starts with `use super::*;` and exposes its items
 // to siblings as `pub(super)`. A crate-root file resolves `mod x;` beside itself, so each
 // declaration names its file under `continuum/`.
@@ -282,6 +288,12 @@ async fn run() -> Result<(), CliError> {
     }
     if first == "prepare-prebuilt" {
         return prepare_prebuilt(args.collect()).await.map_err(CliError::Command);
+    }
+    if first == "maintenance" {
+        #[cfg(windows)]
+        return maintenance::run(args.collect()).await.map_err(CliError::Command);
+        #[cfg(not(windows))]
+        return Err(CliError::Command("managed maintenance currently requires Windows scheduler custody".into()));
     }
     if first == "container-maintenance" {
         #[cfg(windows)]
