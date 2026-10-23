@@ -670,6 +670,27 @@
             }
         }
 
+        /// An executor serving [`Seat`] with every command allowed.
+        fn seat_executor(
+            entered: &StdArc<tokio::sync::Notify>,
+            release: &StdArc<tokio::sync::Notify>,
+            dropped: &StdArc<tokio::sync::Notify>,
+        ) -> Arc<crate::runtime::CommandExecutor> {
+            let registry = Arc::new(crate::runtime::ModuleRegistry::new());
+            registry.register(Arc::new(Seat {
+                entered: StdArc::clone(entered),
+                release: StdArc::clone(release),
+                dropped: StdArc::clone(dropped),
+            }));
+            let allow = crate::routing::ClosurePolicy::new(
+                "allow-all",
+                |_decision: &crate::routing::RouteDecision, _caller: Option<&crate::routing::CallerIdentity>| {
+                    crate::routing::Verdict::Allowed
+                },
+            );
+            Arc::new(crate::runtime::CommandExecutor::new(registry).with_policy(StdArc::new(allow)))
+        }
+
         struct Rig {
             loop_back: TwoAircLoopback,
             entered: StdArc<tokio::sync::Notify>,
@@ -685,19 +706,7 @@
             let entered = StdArc::new(tokio::sync::Notify::new());
             let release = StdArc::new(tokio::sync::Notify::new());
             let dropped = StdArc::new(tokio::sync::Notify::new());
-            let registry = Arc::new(crate::runtime::ModuleRegistry::new());
-            registry.register(Arc::new(Seat {
-                entered: StdArc::clone(&entered),
-                release: StdArc::clone(&release),
-                dropped: StdArc::clone(&dropped),
-            }));
-            let allow = crate::routing::ClosurePolicy::new(
-                "allow-all",
-                |_decision: &crate::routing::RouteDecision, _caller: Option<&crate::routing::CallerIdentity>| {
-                    crate::routing::Verdict::Allowed
-                },
-            );
-            let executor = Arc::new(crate::runtime::CommandExecutor::new(registry).with_policy(StdArc::new(allow)));
+            let executor = seat_executor(&entered, &release, &dropped);
             let seat = Arc::clone(loop_back.peer_a());
             let handler = CommandRequestHandler::with_generation_bound(
                 CommandRequestHandler::new(Arc::clone(&seat), executor),
@@ -723,8 +732,13 @@
 
         /// Peer B asks the seat; `header_path` is what the header claims (None = absent),
         /// `body_path` what the body executes. Returns the seat's typed answer.
-        async fn ask(rig: &Rig, header_path: Option<&str>, body_path: &str, params: Value) -> AircCommandResponse {
-            let asker = rig.loop_back.peer_b();
+        async fn ask(
+            loop_back: &TwoAircLoopback,
+            header_path: Option<&str>,
+            body_path: &str,
+            params: Value,
+        ) -> AircCommandResponse {
+            let asker = loop_back.peer_b();
             let request = AircCommandRequest { path: body_path.into(), kind: "peer".into(), env: None, params };
             let mut headers = airc_core::Headers::new();
             if let Some(path) = header_path {
@@ -735,7 +749,7 @@
             let room = asker.current_room().await.expect("the asker has a room");
             let body = Body::Json(serde_json::to_value(&request).expect("serialize request"));
             let pending = asker
-                .request_in(&room, MentionTarget::Peer(PeerId(rig.loop_back.peer_a_id())), headers, body, WAIT)
+                .request_in(&room, MentionTarget::Peer(PeerId(loop_back.peer_a_id())), headers, body, WAIT)
                 .await
                 .expect("the request leaves");
             let reply = tokio::time::timeout(WAIT, asker.await_reply(pending))
@@ -763,13 +777,13 @@
             let rig = StdArc::new(rig().await);
             let task_rig = StdArc::clone(&rig);
             let held = tokio::spawn(async move {
-                ask(&task_rig, Some("ai/generate"), "ai/generate", serde_json::json!({ "prompt": HOLD })).await
+                ask(&task_rig.loop_back, Some("ai/generate"), "ai/generate", serde_json::json!({ "prompt": HOLD })).await
             });
             tokio::time::timeout(WAIT, rig.entered.notified()).await.expect("the held generation reaches the seat");
 
-            let control = ask(&rig, Some("test/echo"), "test/echo", serde_json::json!({ "n": 1 })).await;
+            let control = ask(&rig.loop_back, Some("test/echo"), "test/echo", serde_json::json!({ "n": 1 })).await;
             assert!(matches!(&control, AircCommandResponse::Ok { .. }), "control answered: {control:?}");
-            let burst = ask(&rig, Some("ai/generate"), "ai/generate", serde_json::json!({ "prompt": "second" })).await;
+            let burst = ask(&rig.loop_back, Some("ai/generate"), "ai/generate", serde_json::json!({ "prompt": "second" })).await;
             assert!(overloaded(&burst), "the burst is refused at once: {burst:?}");
 
             rig.release.notify_one();
@@ -780,7 +794,7 @@
                 }
                 other => panic!("the held generation must succeed once released: {other:?}"),
             }
-            let after = ask(&rig, Some("ai/generate"), "ai/generate", serde_json::json!({ "prompt": "after" })).await;
+            let after = ask(&rig.loop_back, Some("ai/generate"), "ai/generate", serde_json::json!({ "prompt": "after" })).await;
             assert!(matches!(&after, AircCommandResponse::Ok { .. }), "the freed slot admits again: {after:?}");
             rig.pump.abort();
         }
@@ -794,15 +808,15 @@
             let rig = StdArc::new(rig().await);
             let task_rig = StdArc::clone(&rig);
             let held = tokio::spawn(async move {
-                ask(&task_rig, Some("ai/generate"), "ai/generate", serde_json::json!({ "prompt": HOLD })).await
+                ask(&task_rig.loop_back, Some("ai/generate"), "ai/generate", serde_json::json!({ "prompt": HOLD })).await
             });
             tokio::time::timeout(WAIT, rig.entered.notified()).await.expect("the held generation reaches the seat");
 
-            let header_lies = ask(&rig, Some("ai/generate"), "test/echo", serde_json::json!({ "n": 2 })).await;
+            let header_lies = ask(&rig.loop_back, Some("ai/generate"), "test/echo", serde_json::json!({ "n": 2 })).await;
             assert!(matches!(&header_lies, AircCommandResponse::Ok { .. }), "body test/echo is not a generation: {header_lies:?}");
-            let no_header = ask(&rig, None, "ai/generate", serde_json::json!({ "prompt": "x" })).await;
+            let no_header = ask(&rig.loop_back, None, "ai/generate", serde_json::json!({ "prompt": "x" })).await;
             assert!(overloaded(&no_header), "a body generation without a header is bounded: {no_header:?}");
-            let wrong_header = ask(&rig, Some("test/echo"), "ai/generate", serde_json::json!({ "prompt": "y" })).await;
+            let wrong_header = ask(&rig.loop_back, Some("test/echo"), "ai/generate", serde_json::json!({ "prompt": "y" })).await;
             assert!(overloaded(&wrong_header), "a body generation behind a wrong header is bounded: {wrong_header:?}");
 
             rig.release.notify_one();
@@ -818,7 +832,7 @@
             let rig = StdArc::new(rig().await);
             let task_rig = StdArc::clone(&rig);
             let held = tokio::spawn(async move {
-                ask(&task_rig, Some("ai/generate"), "ai/generate", serde_json::json!({ "prompt": HOLD })).await
+                ask(&task_rig.loop_back, Some("ai/generate"), "ai/generate", serde_json::json!({ "prompt": HOLD })).await
             });
             tokio::time::timeout(WAIT, rig.entered.notified()).await.expect("the held generation reaches the seat");
             rig.pump.abort();
@@ -827,4 +841,48 @@
                 .expect("the served generation's work is dropped when the pump stops");
             held.abort();
         }
+
+        // what this catches (Codex re-review of 3cc27cbf5): the PUBLIC pump shutdown aborted
+        // only its supervisor, which awaited a bare JoinHandle for the inner `run` task;
+        // dropping that handle detached the loop, which kept reading and kept its handler and
+        // registry, so the served generation ran on for no one. Real PersonaCommandInboundPump
+        // spawn and shutdown, with the membership sender kept alive (a live runtime).
+        #[tokio::test]
+        async fn the_public_pump_shutdown_aborts_the_generation_it_was_serving() {
+            let loop_back = StdArc::new(TwoAircLoopback::new().await.expect("two-peer loopback"));
+            let entered = StdArc::new(tokio::sync::Notify::new());
+            let release = StdArc::new(tokio::sync::Notify::new());
+            let dropped = StdArc::new(tokio::sync::Notify::new());
+            let executor = seat_executor(&entered, &release, &dropped);
+            let home = tempfile::tempdir().expect("tempdir for the grant watermark");
+            let grants = crate::persona::command_inbound_pump::build_grant_authorizer(loop_back.peer_a(), home.path())
+                .await
+                .expect("grant authorizer for the loopback seat");
+            crate::persona::command_inbound_pump::install_command_handler(|airc, executor, grants| {
+                CommandRequestHandler::with_grant_authorizer(airc, executor, grants)
+            });
+            let (membership_tx, membership_rx) = tokio::sync::watch::channel(0u64);
+            let pump = crate::persona::command_inbound_pump::PersonaCommandInboundPump::spawn(
+                loop_back.peer_a_id(),
+                Arc::clone(loop_back.peer_a()),
+                executor,
+                grants,
+                membership_rx,
+            )
+            .await
+            .expect("the public pump spawns");
+
+            let asker = StdArc::clone(&loop_back);
+            let held = tokio::spawn(async move {
+                ask(&asker, Some("ai/generate"), "ai/generate", serde_json::json!({ "prompt": HOLD })).await
+            });
+            tokio::time::timeout(WAIT, entered.notified()).await.expect("the held generation reaches the seat");
+            pump.shutdown().await;
+            tokio::time::timeout(Duration::from_secs(10), dropped.notified())
+                .await
+                .expect("shutting the public pump down drops the generation it was serving");
+            held.abort();
+            drop(membership_tx);
+        }
+
     }
