@@ -42,7 +42,7 @@ pub(crate) fn citizen_layer_path(peer: &str) -> Result<std::path::PathBuf, Comma
         .join("workspace"))
 }
 
-pub(crate) async fn ensure_citizen_layer(peer: &str) -> Result<std::path::PathBuf, CommandError> {
+pub async fn ensure_citizen_layer(peer: &str) -> Result<std::path::PathBuf, CommandError> {
     // The shared base is OUR checkout, as this node recorded it (never the cwd: a
     // launchd core runs in its data dir, card 2a2cd6f1). Resolved ONCE here, then handed
     // to the provisioning body as a concrete base so it is a pure function of
@@ -59,7 +59,7 @@ pub(crate) async fn ensure_citizen_layer(peer: &str) -> Result<std::path::PathBu
 /// argument (production passes our recorded checkout; tests pass a scoped temp dir)
 /// rather than an implicit read of process-global state. See the note above on why that
 /// matters for the parallel test suite.
-pub(crate) async fn ensure_citizen_layer_from_base(
+pub async fn ensure_citizen_layer_from_base(
     peer: &str,
     base: &std::path::Path,
 ) -> Result<std::path::PathBuf, CommandError> {

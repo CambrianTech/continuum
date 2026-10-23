@@ -96,6 +96,7 @@ fn directed_pending() -> bool {
 /// serving, a later publication collects surplus boot permits without interrupting
 /// running work. Subsequent serving ticks retry any held shrink debt.
 pub struct LaneAdmission {
+    pub(super) progress: parking_lot::Mutex<super::progress::ProgressLedger>,
     /// LIVE `--parallel` count; 0 until serving publishes one.
     pub(super) served: AtomicUsize,
     pub(super) serving: std::sync::OnceLock<std::sync::Arc<tokio::sync::Semaphore>>,
@@ -264,6 +265,7 @@ impl LaneAdmission {
     /// tests call it to get their own and therefore run order-independently and in parallel.
     pub const fn new() -> Self {
         Self {
+            progress: parking_lot::Mutex::new(super::progress::ProgressLedger::new()),
             served: AtomicUsize::new(0),
             serving: std::sync::OnceLock::new(),
             nondirected: std::sync::OnceLock::new(),
@@ -393,6 +395,19 @@ impl LaneAdmission {
         priority: LanePriority,
         expected_occupancy: Option<std::time::Duration>,
     ) -> ServingLanePermit {
+        let (_, acquire) = self.serving_lane_request(persona, priority, expected_occupancy);
+        acquire.await
+    }
+
+    /// One request and a read-only observer of its actual blocking budget.
+    pub fn serving_lane_request(
+        &'static self,
+        persona: Option<uuid::Uuid>,
+        priority: LanePriority,
+        expected_occupancy: Option<std::time::Duration>,
+    ) -> (super::LaneWait, impl std::future::Future<Output = ServingLanePermit> + Send) {
+        let (observer, progress) = self.observe(persona, priority);
+        let acquire = async move {
         let queued_at = std::time::Instant::now();
         let directed = priority.is_directed();
         // Non-directed reserves within the (lanes-1) budget FIRST, so the physical-lane
@@ -447,6 +462,7 @@ impl LaneAdmission {
             }
             LanePriority::Ambient => (Some(self.acquire_nondirected_as_ambient().await), None),
         };
+        progress.physical(nondirected.is_some());
         let lane = match lent_lane {
             Some(lane) => lane,
             None => {
@@ -467,7 +483,9 @@ impl LaneAdmission {
             now_available = self.serving_lanes().available_permits() as u64,
             "serving-lane permit granted"
         );
+        progress.granted();
         ServingLanePermit {
+            _progress: progress,
             _lane: lane,
             _nondirected: nondirected,
             _inflight: InflightModelCall::enter(),
@@ -477,6 +495,8 @@ impl LaneAdmission {
             priority,
             released: &self.released,
         }
+        };
+        (observer, acquire)
     }
 
     /// A held-work caller queues in the non-directed semaphore in arrival order, and
@@ -586,4 +606,9 @@ pub async fn acquire_serving_lane(
     expected_occupancy: Option<std::time::Duration>,
 ) -> ServingLanePermit {
     LANES.acquire_serving_lane(persona, priority, expected_occupancy).await
+}
+
+/// Observe the process gate without changing its queue policy.
+pub fn serving_lane_request(persona: Option<uuid::Uuid>, priority: LanePriority, expected: Option<std::time::Duration>) -> (super::LaneWait, impl std::future::Future<Output = ServingLanePermit> + Send) {
+    LANES.serving_lane_request(persona, priority, expected)
 }

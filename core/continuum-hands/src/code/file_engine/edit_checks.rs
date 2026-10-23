@@ -549,7 +549,7 @@ pub(super) fn numbered_line(number: u32, line: &str) -> String {
 
 /// The line number a [`numbered_line`] carries, or `None` for a line with no gutter.
 /// Working memory reads which lines of a file a read actually showed from these.
-pub(crate) fn gutter_line_number(rendered: &str) -> Option<u32> {
+pub fn gutter_line_number(rendered: &str) -> Option<u32> {
     let t = rendered.trim_start();
     let digits = t.chars().take_while(|c| c.is_ascii_digit()).count();
     if digits == 0 {

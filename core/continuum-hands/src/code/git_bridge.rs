@@ -464,7 +464,7 @@ tokio::task_local! {
 
 /// Run `work` with every git call in it bounded by ONE absolute `deadline`: carried across them
 /// all, never reset per call, so a slow first call leaves the later ones less time, not more.
-pub(crate) async fn within<F: std::future::Future>(deadline: tokio::time::Instant, work: F) -> F::Output {
+pub async fn within<F: std::future::Future>(deadline: tokio::time::Instant, work: F) -> F::Output {
     DEADLINE.scope(deadline, work).await
 }
 
@@ -475,12 +475,13 @@ const INTERRUPTED: &str = "interrupted at its deadline: its effect is unknown";
 const NOT_STARTED: &str = "not started: its deadline had passed";
 
 /// Did the deadline end this git mid-run (its effect unknown)?
+#[cfg(test)]
 pub(crate) fn interrupted(err: &str) -> bool {
     err.contains(INTERRUPTED)
 }
 
 /// Did the deadline stop this git before it started, or end it mid-run?
-pub(crate) fn out_of_time(err: &str) -> bool {
+pub fn out_of_time(err: &str) -> bool {
     err.contains(INTERRUPTED) || err.contains(NOT_STARTED)
 }
 
@@ -493,20 +494,20 @@ pub(crate) fn deadline() -> Option<tokio::time::Instant> {
 /// runner (env stripped, ceiling set, no terminal prompt) is shared by every crate seam
 /// that shells to git — `persona::workspace_transfer` carries a card's branch between
 /// nodes through it — rather than each seam re-deriving the hygiene below.
-pub(crate) async fn run_git(workspace_root: &Path, args: &[&str]) -> Result<String, String> {
+pub async fn run_git(workspace_root: &Path, args: &[&str]) -> Result<String, String> {
     Ok(run_git_input(workspace_root, args, &[], None).await?)
 }
 
 /// [`run_git`] with extra environment for this one invocation (e.g. `GIT_AUTHOR_*` so a
 /// citizen's act commit is authored by her). Same hygiene; the env is applied last.
-pub(crate) async fn run_git_with_env(workspace_root: &Path, args: &[&str], env: &[(&str, &str)]) -> Result<String, String> {
+pub async fn run_git_with_env(workspace_root: &Path, args: &[&str], env: &[(&str, &str)]) -> Result<String, String> {
     Ok(run_git_input(workspace_root, args, env, None).await?)
 }
 
 /// How a git that gave no answer ended, for a caller whose next step depends on whether it had
 /// an effect (a push: did the remote take it?).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum GitEnd {
+pub enum GitEnd {
     /// It never ran: its deadline had passed before it started. It had no effect.
     NeverRan,
     /// It exited non-zero: git's own verdict that it failed. For a push that doesn't prove the
@@ -519,8 +520,8 @@ pub(crate) enum GitEnd {
 
 /// A git that gave no answer: how it ended, and the one rendering of why.
 #[derive(Debug)]
-pub(crate) struct GitError {
-    pub(crate) end: GitEnd,
+pub struct GitError {
+    pub end: GitEnd,
     message: String,
 }
 
@@ -541,7 +542,7 @@ impl From<GitError> for String {
 /// An exit that isn't success is an `Err` with git's stderr; so is an output that wasn't read
 /// whole or an input that wasn't delivered; a deadline that ended it says its effect is UNKNOWN
 /// (a push may have landed), never that nothing happened.
-pub(crate) async fn run_git_input(workspace_root: &Path, args: &[&str], env: &[(&str, &str)], input: Option<Vec<u8>>) -> Result<String, GitError> {
+pub async fn run_git_input(workspace_root: &Path, args: &[&str], env: &[(&str, &str)], input: Option<Vec<u8>>) -> Result<String, GitError> {
     use crate::inference::lane_process::{run_owned_with_input, Answer, Why};
     let bound = match deadline() {
         Some(at) => {

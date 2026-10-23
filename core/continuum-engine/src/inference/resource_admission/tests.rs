@@ -741,3 +741,48 @@ fn directed_wait_percentiles_are_nearest_rank() {
     assert_eq!(percentiles_of([5, 1, 9, 3].into_iter()), (5, 9, 4));
 }
 
+
+// A busy directed reserve is not evidence that a stuck work budget advances.
+#[tokio::test]
+async fn queue_progress_names_only_blocking_budget_holders() {
+    let gate: &'static LaneAdmission = Box::leak(Box::new(LaneAdmission::new()));
+    gate.set_served_lane_count(2);
+    let worker = uuid::Uuid::new_v4();
+    let directed = uuid::Uuid::new_v4();
+    let work = gate.acquire_serving_lane(Some(worker), LanePriority::Work, None).await;
+    let reserve = gate.acquire_serving_lane(Some(directed), LanePriority::Directed, None).await;
+    let (wait, acquire) = gate.serving_lane_request(None, LanePriority::Work, None);
+    let before = wait.progress();
+    assert_eq!(before.holders.len(), 1);
+    assert_eq!(before.holders[0].1, worker);
+    drop(reserve);
+    let reserve = gate.acquire_serving_lane(Some(directed), LanePriority::Directed, None).await;
+    assert_eq!(wait.progress().grants, before.grants, "reserved-lane churn cannot hide leaked work permit");
+    drop(acquire);
+    drop(work);
+    drop(reserve);
+    assert!(wait.progress().holders.is_empty());
+}
+
+// The dependency crosses budgets when a nondirected holder is still waiting
+// for physical capacity: the physical holders are then relevant to its follower.
+#[tokio::test]
+async fn queue_progress_follows_budget_holders_waiting_for_physical_slots() {
+    let gate: &'static LaneAdmission = Box::leak(Box::new(LaneAdmission::new()));
+    gate.set_served_lane_count(2);
+    let one = uuid::Uuid::new_v4();
+    let two = uuid::Uuid::new_v4();
+    let first = gate.acquire_serving_lane(Some(one), LanePriority::Directed, None).await;
+    let second = gate.acquire_serving_lane(Some(two), LanePriority::Directed, None).await;
+    let (_, acquire) = gate.serving_lane_request(None, LanePriority::Work, None);
+    tokio::pin!(acquire);
+    assert!(std::future::poll_fn(|cx| std::task::Poll::Ready(std::future::Future::poll(acquire.as_mut(), cx).is_pending())).await);
+    let (follower, queued) = gate.serving_lane_request(None, LanePriority::Work, None);
+    let holders = follower.progress().holders;
+    assert_eq!(holders.len(), 2);
+    assert!(holders.iter().any(|(_, persona)| *persona == one));
+    assert!(holders.iter().any(|(_, persona)| *persona == two));
+    drop(queued);
+    drop(first);
+    drop(second);
+}

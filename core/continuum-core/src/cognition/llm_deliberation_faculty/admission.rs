@@ -117,12 +117,13 @@ impl LlmDeliberationFaculty {
         };
         // One acquisition future owns the queue entry for this turn. An estimate
         // expiring reports contention but never drops or recreates that future.
-        let admission = observe_wait(
-            crate::inference::resource_admission::acquire_serving_lane(
+        let (wait, acquire) = crate::inference::resource_admission::serving_lane_request(
                 Some(self.persona_id),
                 priority,
                 expected,
-            ),
+            );
+        let admission = super::admission_clock::waiting(wait, observe_wait(
+            acquire,
             tokio::time::sleep(lane_bound),
             || {
                 continuum_base::probe!(
@@ -135,7 +136,7 @@ impl LlmDeliberationFaculty {
                     "lane wait exceeded its estimate; retaining the same admission request and queue position"
                 );
             },
-        );
+        ));
         let _lane = if ws.attention.requires_priority() {
             admission.await
         } else {
