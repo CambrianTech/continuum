@@ -27,7 +27,7 @@
 //! [`ObservedImage`](super::ObservedImage) an observe returns, so a persona — and
 //! every renderer — sees one `Percept` shape from both eyes.
 //!
-//! Self-scoped like [`focus/mute`](crate::commands): the buffer key is the
+//! Self-scoped like core's `focus/mute`: the buffer key is the
 //! AUTHENTICATED caller ([`CallerIdentity::local_persona`], stamped onto the tool
 //! connection by `CommandToolExecutor::for_persona`), NEVER a spoofable param — a
 //! persona looks through its OWN eyes, never another's ([[persona-is-a-client]]).
@@ -304,7 +304,6 @@ crate::register_stateless_command!(LookCommand);
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cognition::persona_tools::native_tool_specs;
     use crate::identity::PeerId;
     use crate::media::MediaFrame;
     use crate::routing::CallerIdentity;
@@ -344,8 +343,9 @@ mod tests {
     // the call, which this pins loudly.
     #[test]
     fn look_is_an_ai_safe_bare_command_in_the_native_surface() {
-        // Registry audit (mind cut): stays in the mind: it reads only the perception/* commands, which
-        // this crate declares, so the mind's own registry carries them.
+        // Registry audit: reads only the perception/* commands this crate declares. The native
+        // surface is cognition's projection of each descriptor's `native` flag, asserted here at
+        // its source (perception cut, card 2f5b275b).
         let descriptor = command_registry()
             .into_iter()
             .find(|d| d.name == "perception/look")
@@ -360,12 +360,7 @@ mod tests {
             WireShape::Bare,
             "look is substrate-served off the in-process buffer, never a Provided eye-node"
         );
-        assert!(
-            native_tool_specs()
-                .iter()
-                .any(|s| s.name == "perception/look"),
-            "look must be offered natively beside perception/observe"
-        );
+        assert!(descriptor.native, "look must be offered natively beside perception/observe");
     }
 
     // what this catches: self-scope + fail-loud — a dispatch with NO caller identity

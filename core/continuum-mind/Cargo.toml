@@ -14,6 +14,7 @@ continuum-kernel = { path = "../continuum-kernel" }
 continuum-engine = { path = "../continuum-engine" }
 continuum-hands = { path = "../continuum-hands" }
 continuum-live = { path = "../continuum-live" }
+continuum-perception = { path = "../continuum-perception" }
 tokio.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -58,7 +59,6 @@ ts-rs.workspace = true  # TypeScript type generation
 arc-swap = "1.7"           # Wait-free policy publish for SubstrateGovernor (Lane H)
 image = "0.25"
 regex = "1"
-scraper = "0.21"
 tempfile = { version = "3", optional = true }  # test-fixtures: the job board's test storage
 
 [dev-dependencies]
@@ -78,4 +78,4 @@ vulkan = ["continuum-kernel/vulkan", "continuum-engine/vulkan"]
 stress-tests = ["continuum-kernel/stress-tests"]
 # Test-only code (fixtures shared with core's integration tests, the heuristic adapter it
 # drives); production binaries never build with it.
-test-fixtures = ["continuum-base/test-fixtures", "continuum-kernel/test-fixtures", "continuum-engine/test-fixtures", "continuum-hands/test-fixtures", "continuum-live/test-fixtures", "dep:tempfile"]
+test-fixtures = ["continuum-base/test-fixtures", "continuum-kernel/test-fixtures", "continuum-engine/test-fixtures", "continuum-hands/test-fixtures", "continuum-live/test-fixtures", "continuum-perception/test-fixtures", "dep:tempfile"]

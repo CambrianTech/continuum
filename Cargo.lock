@@ -3155,6 +3155,7 @@ dependencies = [
  "continuum-hands",
  "continuum-kernel",
  "continuum-live",
+ "continuum-perception",
  "continuum-positron",
  "dashmap",
  "dirs 5.0.1",
@@ -3171,7 +3172,6 @@ dependencies = [
  "reqwest",
  "safetensors 0.7.0",
  "schemars",
- "scraper",
  "serde",
  "serde_json",
  "sha2",
@@ -3194,6 +3194,28 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.117",
+]
+
+[[package]]
+name = "continuum-perception"
+version = "0.1.0"
+dependencies = [
+ "airc-blobs",
+ "async-trait",
+ "base64 0.22.1",
+ "continuum-base",
+ "continuum-live",
+ "image",
+ "inventory",
+ "schemars",
+ "scraper",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tracing",
+ "ts-rs 12.0.1",
+ "uuid",
 ]
 
 [[package]]

@@ -177,7 +177,6 @@ crate::register_command!(SessionCloseCommand);
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cognition::persona_tools::native_tool_specs;
     use crate::sdk_codegen::{command_registry, AccessLevel, WireShape};
 
     // what this catches: the action wire drifting from the eye-node's `DomAction` kinds
@@ -236,14 +235,15 @@ mod tests {
     // verb bloating the per-turn tool surface.
     #[test]
     fn interact_is_a_native_provided_verb_and_close_is_catalog_only() {
-        // Registry audit (mind cut): stays in the mind: it reads only the perception/* commands, which
-        // this crate declares, so the mind's own registry carries them.
+        // Registry audit: reads only the perception/* commands this crate declares. The native
+        // surface is cognition's projection of each descriptor's `native` flag, asserted here at
+        // its source (perception cut, card 2f5b275b).
         let registry = command_registry();
         for (name, native) in [("perception/interact", true), ("perception/session-close", false)] {
             let d = registry.iter().find(|d| d.name == name).unwrap_or_else(|| panic!("{name} registered"));
             assert_eq!(d.access_level, AccessLevel::AiSafe, "{name}");
             assert_eq!(d.wire, WireShape::Provided, "{name} is served by an eye-node");
-            assert_eq!(native_tool_specs().iter().any(|s| s.name == name), native, "{name} native={native}");
+            assert_eq!(d.native, native, "{name} native={native}");
         }
     }
 }
