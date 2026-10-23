@@ -458,6 +458,9 @@ pub(super) struct EndpointState {
 pub struct EndpointSlots {
     pub(super) gate: Arc<tokio::sync::RwLock<()>>,
     pub(super) state: Mutex<EndpointState>,
+    /// In-flight paging retains its exact admission after a requester leaves.
+    /// Physical slot permits bound this set; no queued admissions run in it.
+    pub(super) paging_tasks: Mutex<tokio::task::JoinSet<()>>,
     /// The read side of `EndpointState::ready`, for turns that hold through a transition.
     pub(super) ready_rx: tokio::sync::watch::Receiver<bool>,
 }
@@ -491,6 +494,14 @@ impl EndpointAdmission {
 }
 
 impl EndpointSlots {
+    pub(crate) fn retain_paging(&self, operation: impl std::future::Future<Output = ()> + Send + 'static) {
+        let mut tasks = self.paging_tasks.lock();
+        while tasks.try_join_next().is_some() {}
+        // The endpoint owns the task, and the task owns the admission reader:
+        // lifecycle transitions drain that reader before replacing the engine.
+        tasks.spawn(operation);
+    }
+
     pub fn served_geometry(&self) -> Option<crate::inference::served_window_store::ServedGeometry> {
         let state = self.state.lock();
         let generation = state.generation.as_ref()?;
