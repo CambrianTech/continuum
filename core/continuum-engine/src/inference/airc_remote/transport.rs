@@ -565,6 +565,23 @@ impl AircInferenceTransport for AircLiveTransport {
         // get classified as Transport when NoPeerReachable would
         // be more semantically accurate).
         let pending_correlation = pending.correlation_id;
+        // From here every path that stops waiting without a reply (the deadline, a stalled
+        // stream, an error, or the turn dropping this future) tells the seat to stop, so it
+        // does not finish a generation for no one (card 83f774fb). Disarmed on a reply.
+        let abandon = super::abandon::AbandonGuard::new(
+            Arc::clone(&self.airc),
+            room.clone(),
+            target,
+            pending_correlation,
+            super::abandon::seat_accepts_cancel(
+                super::seat_deadline::heard_seat_offer(
+                    target.0,
+                    None,
+                    continuum_base::time::EpochMs::now().millis(),
+                )
+                .as_ref(),
+            ),
+        );
         let expected = ReplyExpectation {
             responder: target,
             requester: self.airc.peer_id(),
@@ -718,6 +735,8 @@ impl AircInferenceTransport for AircLiveTransport {
                 });
             }
         };
+        // The seat answered: its work is done, there is nothing left to cancel.
+        abandon.disarm();
 
         let responding_peer = reply.peer_id.0.to_string();
         let reply_body = reply.body.ok_or_else(|| RemoteInferenceError::Transport {

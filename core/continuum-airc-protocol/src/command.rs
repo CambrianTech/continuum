@@ -46,6 +46,19 @@ pub const HEADER_COMMAND_PATH: &str = "continuum.command.path";
 /// b3e5b582). One owner for the literal on the wire; other hand-written sites migrate.
 pub const COMMAND_PATH_AI_GENERATE: &str = "ai/generate";
 
+/// The control command a requester sends when it abandons a generation it asked a seat
+/// for (its deadline passed, or its turn was dropped): the seat aborts that generation
+/// instead of finishing it for no one (card 83f774fb). Sent only to a seat that
+/// advertises the capability; the seat honors it only from the original requester.
+pub const COMMAND_PATH_AI_GENERATE_CANCEL: &str = "ai/generate/cancel";
+
+/// Params of [`COMMAND_PATH_AI_GENERATE_CANCEL`]: the airc correlation id of the
+/// abandoned `ai/generate` request.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GenerateCancel {
+    pub correlation: uuid::Uuid,
+}
+
 /// airc header naming the `RouteKind` of the dispatch.
 pub const HEADER_COMMAND_KIND: &str = "continuum.command.kind";
 

@@ -158,6 +158,11 @@ pub enum CapabilityId {
     /// granted-slot arithmetic requires this; absence means the number is lanes-residents,
     /// which overcounts what a second node would see.
     PlacementReservationGrant,
+    /// The seat aborts a served generation when its requester sends
+    /// `ai/generate/cancel` for it (card 83f774fb). A requester that abandons a generation
+    /// sends the cancel only to a seat advertising this; absence means it would be ignored,
+    /// and a seat that never learned the command must not be sent one.
+    RemoteGenerateCancel,
     /// Parse-only: a name THIS build does not know (a newer core advertising a capability we
     /// predate). It never grants — membership of this list is exact-name, so an unknown name
     /// cannot stand in for another — but its presence must not drop the rest of the beacon,
@@ -176,6 +181,7 @@ pub fn this_build_capabilities() -> Vec<CapabilityId> {
         CapabilityId::ServedWindowStamp,
         CapabilityId::LaneWaitReporting,
         CapabilityId::PlacementReservationGrant,
+        CapabilityId::RemoteGenerateCancel,
     ]
 }
 
@@ -796,7 +802,10 @@ mod tests {
         // The reviewer's wire-compatibility ask: the names this build advertises travel as
         // stable snake_case, and the emission source can never carry a parse-only fold.
         let wire = serde_json::to_string(&this_build_capabilities())?;
-        assert_eq!(wire, "[\"served_window_stamp\",\"lane_wait_reporting\",\"placement_reservation_grant\"]");
+        assert_eq!(
+            wire,
+            "[\"served_window_stamp\",\"lane_wait_reporting\",\"placement_reservation_grant\",\"remote_generate_cancel\"]"
+        );
         assert!(!this_build_capabilities().contains(&CapabilityId::Unknown), "emission never advertises Unknown");
 
         Ok(())

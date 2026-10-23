@@ -599,6 +599,40 @@ impl ConsumerAdapter for CommandRequestHandler {
             correlation = %parsed.correlation_id,
             "peer command request ACCEPTED — this node answers it"
         );
+        // The requester abandoned a generation it asked for (card 83f774fb): abort it here
+        // instead of finishing it for no one. A control command, answered inline before
+        // any generation logic, so it never queues behind the work it cancels. Honored
+        // only from the peer that asked (the registry records the caller).
+        if parsed.request.path == continuum_airc_protocol::COMMAND_PATH_AI_GENERATE_CANCEL {
+            let response = match serde_json::from_value::<continuum_airc_protocol::GenerateCancel>(
+                parsed.request.params.clone(),
+            ) {
+                Ok(cancel) => {
+                    let outcome = match &self.generations {
+                        Some(generations) => generations.cancel(cancel.correlation, parsed.caller_peer_id),
+                        None => served_generations::CancelOutcome::NotServing,
+                    };
+                    continuum_base::probe!(
+                        class = "airc.command.generation_cancel",
+                        correlation = %cancel.correlation,
+                        requester = %parsed.caller_peer_id.0,
+                        outcome = outcome.as_str(),
+                        "a requester abandoned a served generation"
+                    );
+                    AircCommandResponse::Ok {
+                        result: serde_json::json!({
+                            "cancelled": outcome == served_generations::CancelOutcome::Cancelled,
+                            "outcome": outcome.as_str(),
+                        }),
+                    }
+                }
+                Err(e) => AircCommandResponse::Error {
+                    message: format!("ai/generate/cancel needs params {{correlation: uuid}}: {e}"),
+                },
+            };
+            self.send_reply(&parsed, &response).await?;
+            return Ok(());
+        }
         // A served generation holds a lane for minutes: it runs as its own task so the
         // pump keeps reading (card b3e5b582). Classified from the parsed body, the path
         // that executes, never from a header. Over the bound it is refused at once with a
@@ -606,7 +640,7 @@ impl ConsumerAdapter for CommandRequestHandler {
         if parsed.request.path == STREAMED_GENERATE_PATH {
             if let Some(generations) = &self.generations {
                 let bound = (self.generation_bound)();
-                match generations.admit(parsed.correlation_id, bound) {
+                match generations.admit(parsed.correlation_id, parsed.caller_peer_id, bound) {
                     Ok(admission) => {
                         let correlation = parsed.correlation_id;
                         let answerer = self.detached();
