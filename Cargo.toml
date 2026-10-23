@@ -21,6 +21,7 @@ members = [
     "core/continuum-context",
     "core/continuum-core",
     "core/continuum-kernel",
+    "core/continuum-hands",
     "core/continuum-engine",
     "core/expert-pager-policy",
     "core/source-hygiene",

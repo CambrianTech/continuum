@@ -2870,6 +2870,7 @@ dependencies = [
  "continuum-client",
  "continuum-context",
  "continuum-engine",
+ "continuum-hands",
  "continuum-kernel",
  "continuum-orm-derive",
  "continuum-positron",
@@ -2906,7 +2907,6 @@ dependencies = [
  "ort",
  "parking_lot",
  "pocket-tts",
- "proc-macro2",
  "rand 0.8.6",
  "rayon",
  "regex",
@@ -2923,7 +2923,6 @@ dependencies = [
  "sha2",
  "similar",
  "source-hygiene",
- "syn 2.0.117",
  "sysinfo",
  "tempfile",
  "thiserror 2.0.18",
@@ -2994,6 +2993,39 @@ dependencies = [
  "ts-rs 12.0.1",
  "uuid",
  "windows-sys 0.60.2",
+]
+
+[[package]]
+name = "continuum-hands"
+version = "0.1.0"
+dependencies = [
+ "airc-core",
+ "airc-lib",
+ "airc-work",
+ "async-trait",
+ "continuum-base",
+ "continuum-engine",
+ "continuum-kernel",
+ "dashmap",
+ "futures",
+ "ignore",
+ "inventory",
+ "parking_lot",
+ "proc-macro2",
+ "regex",
+ "reqwest",
+ "rustpython-parser",
+ "schemars",
+ "serde",
+ "serde_json",
+ "similar",
+ "syn 2.0.117",
+ "sysinfo",
+ "tempfile",
+ "tokio",
+ "tracing",
+ "ts-rs 12.0.1",
+ "uuid",
 ]
 
 [[package]]
