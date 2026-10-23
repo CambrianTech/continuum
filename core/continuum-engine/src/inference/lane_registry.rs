@@ -263,10 +263,68 @@ pub fn sweep_orphans() -> Vec<SweepOutcome> {
 ///
 /// Role-blind on purpose. The live/ephemeral split exists to decide ADOPTION, and
 /// nothing is adoptable by a core that is exiting.
-pub fn sweep_all() -> Vec<SweepOutcome> {
-    match lanes_dir() {
-        Some(dir) => sweep_in(&dir, SweepMode::Shutdown),
-        None => Vec::new(),
+pub async fn sweep_all() -> Result<Vec<SweepOutcome>, String> {
+    let Some(dir) = lanes_dir() else {
+        return Ok(Vec::new());
+    };
+    let (mut outcomes, pending) = tokio::task::spawn_blocking(move || {
+        let mut pending = Vec::new();
+        let outcomes = sweep_collect(&dir, SweepMode::Shutdown, &mut pending);
+        (outcomes, pending)
+    })
+    .await
+    .map_err(|e| format!("lane shutdown sweep failed: {e}"))?;
+    let identities = pending.iter().map(|(_, rec)| lane_identity(rec)).collect();
+    let survivors = lane_process::confirm_gone(identities, lane_process::KILL_POLL).await;
+    tokio::task::spawn_blocking(move || {
+        for (path, rec) in pending {
+            if survivors.contains(&lane_identity(&rec)) {
+                continue;
+            }
+            if let Some(outcome) = outcomes.iter_mut().find(|o| {
+                matches!(o,
+                SweepOutcome::ExitUnconfirmed { pid, .. } if *pid == rec.pid)
+            }) {
+                *outcome = finish_confirmed_reap(&path, &rec);
+            }
+        }
+        outcomes
+    })
+    .await
+    .map_err(|e| format!("lane exit confirmation failed: {e}"))
+}
+
+fn lane_identity(rec: &LaneRecord) -> crate::system_resources::process_tree::ProcessIdentity {
+    crate::system_resources::process_tree::ProcessIdentity {
+        pid: rec.pid,
+        start_time: rec.started_s,
+    }
+}
+
+// The wait releases the registry lock. A replacement must never be removed or
+// reported stopped by the predecessor's exit proof.
+fn finish_confirmed_reap(path: &Path, rec: &LaneRecord) -> SweepOutcome {
+    let _writes = writes();
+    let unchanged = std::fs::read_to_string(path)
+        .ok()
+        .and_then(|raw| serde_json::from_str::<LaneRecord>(&raw).ok())
+        .as_ref()
+        == Some(rec);
+    if !unchanged || std::fs::remove_file(path).is_err() {
+        return SweepOutcome::ExitUnconfirmed {
+            pid: rec.pid,
+            port: rec.port,
+        };
+    }
+    match rec.role {
+        LaneRole::Live => SweepOutcome::ReapedLive {
+            pid: rec.pid,
+            port: rec.port,
+        },
+        LaneRole::Ephemeral => SweepOutcome::ReapedEphemeral {
+            pid: rec.pid,
+            port: rec.port,
+        },
     }
 }
 
@@ -458,6 +516,10 @@ fn finish_reap(path: &Path, rec: &LaneRecord) -> SweepOutcome {
 
 /// The pure sweep against an explicit `dir`. See [`sweep_orphans`] / [`sweep_all`].
 fn sweep_in(dir: &Path, mode: SweepMode) -> Vec<SweepOutcome> {
+    sweep_collect(dir, mode, &mut Vec::new())
+}
+
+fn sweep_collect(dir: &Path, mode: SweepMode, pending: &mut Vec<(PathBuf, LaneRecord)>) -> Vec<SweepOutcome> {
     let _writes = writes();
     let mut outcomes = Vec::new();
     // A missing directory is the normal first-run / all-graceful-prior-shutdown
@@ -505,8 +567,17 @@ fn sweep_in(dir: &Path, mode: SweepMode) -> Vec<SweepOutcome> {
             continue;
         }
         if lane_process::is_llama_server(rec.pid) {
+            // Capture the stamped incarnation before signalling. Legacy records
+            // cannot provide identity-safe delayed confirmation and retain the
+            // conservative immediate check.
+            let identified = rec.started_s != 0
+                && !lane_process::still_present(&[lane_identity(&rec)]).is_empty();
             lane_process::kill9(rec.pid);
-            outcomes.push(finish_reap(&path, &rec));
+            let outcome = finish_reap(&path, &rec);
+            if identified && matches!(outcome, SweepOutcome::ExitUnconfirmed { .. }) {
+                pending.push((path, rec));
+            }
+            outcomes.push(outcome);
         } else {
             // Alive but not one of ours — a reused pid. Drop the stale
             // record; never signal an unrelated process.
@@ -621,6 +692,106 @@ mod tests {
         assert!(path.exists(), "cleaning a dead lane must preserve the survivor");
     }
 
+    // A true survivor remains owned; later exit and PID reuse cannot erase a replacement.
+    #[tokio::test]
+    async fn shutdown_confirmation_waits_for_exit_and_preserves_replacements() {
+        const CHILD: &str = "CONTINUUM_LANE_EXIT_FIXTURE";
+        if std::env::var_os(CHILD).is_some() {
+            use std::io::Read;
+            std::io::stdin()
+                .read_to_end(&mut Vec::new())
+                .expect("fixture input");
+            return;
+        }
+        use std::process::Stdio;
+        use std::time::Duration;
+        use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System};
+        let mut command =
+            tokio::process::Command::from(continuum_cli_lifecycle::process::quiet_command(
+                std::env::current_exe().expect("fixture executable"),
+            ));
+        let mut child = command
+            .args(["--exact", "inference::lane_registry::tests::shutdown_confirmation_waits_for_exit_and_preserves_replacements", "--nocapture"])
+            .env(CHILD, "1").stdin(Stdio::piped()).stdout(Stdio::null()).kill_on_drop(true)
+            .spawn().expect("fixture child");
+        let pid = child.id().expect("child pid");
+        let mut table = System::new();
+        table.refresh_processes_specifics(
+            ProcessesToUpdate::Some(&[Pid::from_u32(pid)]),
+            true,
+            ProcessRefreshKind::nothing(),
+        );
+        let started_s = table
+            .process(Pid::from_u32(pid))
+            .expect("live child")
+            .start_time();
+        let lane = LaneRecord {
+            started_s,
+            ..rec(pid, 58202, LaneRole::Ephemeral)
+        };
+        let identity = lane_identity(&lane);
+        let dir = tempfile::tempdir().expect("registry");
+        record_in(dir.path(), &lane).expect("record");
+        let path = record_path(dir.path(), pid);
+        assert_eq!(
+            lane_process::confirm_gone(vec![identity], lane_process::KILL_POLL).await,
+            vec![identity]
+        );
+        assert_eq!(
+            finish_reap(&path, &lane),
+            SweepOutcome::ExitUnconfirmed {
+                pid,
+                port: lane.port
+            }
+        );
+        assert!(path.exists());
+        let recycled = crate::system_resources::process_tree::ProcessIdentity {
+            start_time: started_s + 1,
+            ..identity
+        };
+        assert!(
+            lane_process::confirm_gone(vec![recycled], lane_process::KILL_POLL)
+                .await
+                .is_empty()
+        );
+        let input = child.stdin.take().expect("owned input");
+        let release = async {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+            drop(input);
+            child.wait().await.expect("fixture exit")
+        };
+        let (survivors, status) = tokio::join!(
+            lane_process::confirm_gone(vec![identity], Duration::from_secs(5)),
+            release
+        );
+        assert!(survivors.is_empty());
+        assert!(status.success());
+        let replacement = LaneRecord {
+            started_s: started_s + 1,
+            ..lane.clone()
+        };
+        record_in(dir.path(), &replacement).expect("replacement");
+        assert_eq!(
+            finish_confirmed_reap(&path, &lane),
+            SweepOutcome::ExitUnconfirmed {
+                pid,
+                port: lane.port
+            }
+        );
+        assert_eq!(
+            records_checked_in(dir.path()).expect("retained"),
+            vec![replacement]
+        );
+        record_in(dir.path(), &lane).expect("original fixture record");
+        assert_eq!(
+            finish_confirmed_reap(&path, &lane),
+            SweepOutcome::ReapedEphemeral {
+                pid,
+                port: lane.port
+            }
+        );
+        assert!(!path.exists());
+    }
     // what this catches: record_in → the file exists and round-trips through JSON;
     // remove_in deletes it and is idempotent. The accounting is useless if a
     // recorded lane can't be read back or cleaned up.
