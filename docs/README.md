@@ -89,3 +89,5 @@ link-check, not a drive-by. Until then: **the root is not a category, it is a ba
 ---
 
 **Last Updated:** 2026-08-18 — index covers all 28 directories; re-verify counts when adding one.
+
+CI scope trial (c), closed unmerged.
