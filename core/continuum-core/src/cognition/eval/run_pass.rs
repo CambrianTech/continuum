@@ -213,7 +213,7 @@ pub(super) async fn run_pass(
                 }),
             }],
             tokens_used: 0,
-            continuation: None,
+            truncated: false,
             resolution_used: crate::persona::rag_budget::ResolutionPreference::Raw,
         };
         // own_peer/agent_name attribute the persona's OWN past posts; a single-task
@@ -409,7 +409,7 @@ pub(super) async fn run_pass(
                     metadata: serde_json::json!({ "peer_id": "peer", "occurred_at_ms": EVAL_EPOCH_MS }),
                 }],
                 tokens_used: 0,
-                continuation: None,
+                truncated: false,
                 resolution_used: crate::persona::rag_budget::ResolutionPreference::Raw,
             };
             let nudge_burst = crate::cognition::workspace::Burst::from_turns(
@@ -530,7 +530,7 @@ Fix the workspace and finish —                              the grade reads th
                         metadata: serde_json::json!({ "peer_id": "peer", "occurred_at_ms": EVAL_EPOCH_MS }),
                     }],
                     tokens_used: 0,
-                    continuation: None,
+                    truncated: false,
                     resolution_used: crate::persona::rag_budget::ResolutionPreference::Raw,
                 };
                 let red_burst = crate::cognition::workspace::Burst::from_turns(

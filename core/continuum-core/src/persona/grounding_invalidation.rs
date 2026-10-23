@@ -184,7 +184,7 @@ mod tests {
     use super::*;
     use crate::persona::cached_source::{CachedRagSource, DirtyHandle};
     use crate::persona::rag_budget::{
-        ContinuationCursor, RagContext, RagDelivery, RagSource, ResolutionPreference,
+         RagContext, RagDelivery, RagSource, ResolutionPreference,
     };
     use async_trait::async_trait;
     use std::sync::atomic::{AtomicU32, Ordering};
@@ -219,17 +219,9 @@ mod tests {
                     metadata: serde_json::json!({}),
                 }],
                 tokens_used: 4,
-                continuation: None,
+                truncated: false,
                 resolution_used: ResolutionPreference::Raw,
             }
-        }
-        async fn deliver_continuation(
-            &self,
-            _ctx: &RagContext,
-            _cursor: ContinuationCursor,
-            _budget: u32,
-        ) -> Option<RagDelivery> {
-            None
         }
     }
 

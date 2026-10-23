@@ -87,17 +87,9 @@ use super::*;
                     metadata: serde_json::Value::Null,
                 }],
                 tokens_used: 12,
-                continuation: None,
+                truncated: false,
                 resolution_used: resolution,
             }
-        }
-        async fn deliver_continuation(
-            &self,
-            _ctx: &crate::persona::rag_budget::RagContext,
-            _cursor: crate::persona::rag_budget::ContinuationCursor,
-            _budget: u32,
-        ) -> Option<crate::persona::rag_budget::RagDelivery> {
-            None
         }
     }
 

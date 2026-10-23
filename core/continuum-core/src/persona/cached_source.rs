@@ -32,7 +32,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 
 use crate::persona::rag_budget::{
-    ContinuationCursor, RagContext, RagDelivery, RagSource, ResolutionPreference,
+     RagContext, RagDelivery, RagSource, ResolutionPreference,
 };
 
 /// The invalidation lever the OWNER wires to the source's change event.
@@ -108,13 +108,13 @@ impl CachedRagSource {
     ///
     /// - Same room (a projection is room-scoped state).
     /// - It fits the budget (`tokens_used <= budget`).
-    /// - It is COMPLETE (`continuation.is_none()`) **or** the budget hasn't
-    ///   grown past what it was able to spend — a truncated delivery under a
-    ///   bigger budget could legitimately yield more, so it re-fetches.
+    /// - It is COMPLETE (`!truncated`) **or** the budget hasn't grown past what
+    ///   it was able to spend — a truncated delivery under a bigger budget
+    ///   could legitimately yield more, so it re-fetches.
     fn answers(cached: &CachedDelivery, room: Option<uuid::Uuid>, budget: u32) -> bool {
         cached.room == room
             && cached.delivery.tokens_used <= budget
-            && (cached.delivery.continuation.is_none() || budget <= cached.delivery.tokens_used)
+            && (!cached.delivery.truncated || budget <= cached.delivery.tokens_used)
     }
 }
 
@@ -167,15 +167,6 @@ impl RagSource for CachedRagSource {
         delivery
     }
 
-    /// Pagination is inherently a live walk — pass through, never cached.
-    async fn deliver_continuation(
-        &self,
-        ctx: &RagContext,
-        cursor: ContinuationCursor,
-        budget: u32,
-    ) -> Option<RagDelivery> {
-        self.inner.deliver_continuation(ctx, cursor, budget).await
-    }
 }
 
 #[cfg(test)]
@@ -214,17 +205,9 @@ mod tests {
                     metadata: serde_json::json!({}),
                 }],
                 tokens_used: 4,
-                continuation: None,
+                truncated: false,
                 resolution_used: ResolutionPreference::Raw,
             }
-        }
-        async fn deliver_continuation(
-            &self,
-            _ctx: &RagContext,
-            _cursor: ContinuationCursor,
-            _budget: u32,
-        ) -> Option<RagDelivery> {
-            None
         }
     }
 

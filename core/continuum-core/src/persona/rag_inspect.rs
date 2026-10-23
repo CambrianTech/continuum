@@ -459,7 +459,7 @@ pub async fn inspect_persona_rag_with_inference(
             source_id: delivery.source_id.clone(),
             budget_requested,
             tokens_used: delivery.tokens_used,
-            has_continuation: delivery.continuation.is_some(),
+            has_continuation: delivery.truncated,
             items,
         }],
         trace_path: request.trace_path.clone(),

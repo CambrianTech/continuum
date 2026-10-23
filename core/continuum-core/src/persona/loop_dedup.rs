@@ -264,7 +264,7 @@ mod tests {
             source_id: "airc".to_string(),
             items,
             tokens_used: 0,
-            continuation: None,
+            truncated: false,
             resolution_used: ResolutionPreference::Placeholder,
         }
     }
