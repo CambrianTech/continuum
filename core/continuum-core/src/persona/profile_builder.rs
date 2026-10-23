@@ -16,7 +16,7 @@
 //! - `persona_id` — UUID, typically derived from the persona's airc
 //!   peer_id per [[persona-identity-derives-from-source-id]].
 //! - `persona_name` — display name, derived from the same seed via
-//!   `name_generator::agent_name_from_identity`.
+//!   `live::avatar::names::agent_name_from_identity`.
 //! - `role_id` — Helper / Coder / Sentinel / Custom. Currently
 //!   informational (the model_id already picks the model); a future
 //!   refinement reads role_template.cognition_defaults to drive

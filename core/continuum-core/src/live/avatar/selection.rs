@@ -125,6 +125,32 @@ static AVATAR_ALLOCATION: std::sync::Mutex<Option<HashMap<String, usize>>> =
 static PERSONA_GENDER: std::sync::Mutex<Option<HashMap<String, AvatarGender>>> =
     std::sync::Mutex::new(None);
 
+/// The gender on each local persona's durable card, published by the card registry
+/// (`persona::card::register`) so presentation reads it here without reaching up into
+/// persona. Tier 1 of [`registered_gender`].
+static CARD_GENDER: std::sync::Mutex<Option<HashMap<String, AvatarGender>>> =
+    std::sync::Mutex::new(None);
+
+/// A local persona's card registered or changed: her card's gender is authoritative.
+pub fn register_card_gender(identity: &str, gender: AvatarGender) {
+    CARD_GENDER
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .get_or_insert_with(HashMap::new)
+        .insert(identity.to_string(), gender);
+}
+
+/// A local persona's card left the registry.
+pub fn forget_card_gender(identity: &str) {
+    if let Some(m) = CARD_GENDER
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .as_mut()
+    {
+        m.remove(identity);
+    }
+}
+
 /// Capture a REMOTE/live participant's name-anchored gender, keyed by their live
 /// identity. Call this when a participant's identity + display name co-occur (voice-
 /// session join) and no local card exists for them. A unisex/custom name
@@ -132,7 +158,7 @@ static PERSONA_GENDER: std::sync::Mutex<Option<HashMap<String, AvatarGender>>> =
 /// gender. (Local personas register a durable [`PersonaCard`](crate::persona::card) at
 /// spawn instead — this is not their path.)
 pub fn register_persona_gender(identity: &str, name: &str) {
-    if let Some(gender) = crate::persona::name_generator::gender_from_name(name) {
+    if let Some(gender) = super::names::gender_from_name(name) {
         clog_info!(
             "🎭 coherence: persona '{}' ({}) → {:?} (name-anchored; avatar+voice will follow)",
             name,
@@ -159,7 +185,12 @@ pub fn register_persona_gender(identity: &str, name: &str) {
 /// Callers fall back to `gender_from_identity` when both miss.
 pub fn registered_gender(identity: &str) -> Option<AvatarGender> {
     // (1) Local persona's durable card wins.
-    if let Some(gender) = crate::persona::card::gender_of(identity) {
+    if let Some(gender) = CARD_GENDER
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .as_ref()
+        .and_then(|m| m.get(identity).copied())
+    {
         return Some(gender);
     }
     // (2) Remote/live participant name-anchor.
@@ -623,7 +654,7 @@ mod tests {
         // live layer registers the name-anchored gender, select_avatar_by_identity must
         // honor the NAME's gender, not the id-hash — so a feminine-named persona keeps a
         // feminine face even when its peer_id happens to hash Male.
-        use crate::persona::name_generator::{agent_name_from_identity, gender_from_name};
+        use crate::live::avatar::names::{agent_name_from_identity, gender_from_name};
 
         // A name unambiguously in the FEMALE pool (via a Female-hashing identity).
         let female_name = (0..500)

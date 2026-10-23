@@ -90,7 +90,6 @@ pub mod placement_switch;
 pub mod self_peer;
 pub mod remote_lane_factory;
 pub mod model_selection;
-pub mod name_generator;
 pub mod persona_identity;
 pub mod portability;
 pub mod profile_builder;
@@ -195,7 +194,6 @@ pub use model_override::{PersonaModelOverride, PersonaModelOverrideError};
 pub use model_selection::{
     AdapterInfo, AdapterRegistry, ModelSelectionError, ModelSelectionRequest, ModelSelectionResult,
 };
-pub use name_generator::agent_name_from_identity;
 pub use turn_context::TurnContext;
 pub use turn_frame::{
     ConsolidatedInboxChunk, PersonaTurnFrame, PersonaTurnFrameReplayRecord, RagAssemblySeed,

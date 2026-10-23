@@ -32,7 +32,8 @@ use std::path::{Path, PathBuf};
 
 use uuid::Uuid;
 
-use crate::persona::card_checkout::{card_branch, checkout_path_for, gym_workspace};
+use crate::code::card_branch::card_branch;
+use crate::persona::card_checkout::{checkout_path_for, gym_workspace};
 
 /// What staging produced for this claimer.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -470,7 +471,7 @@ fn failed(claimer: Uuid, title: &str, stage: &'static str, error: String) -> Sta
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::persona::card_checkout::is_card_branch;
+    use crate::code::card_branch::is_card_branch;
 
     // what this catches: the dispatch→pull inversion at its seam. A card claimed by a
     // citizen who was NEVER its assignee must be staged into HER workspace (keyed by her

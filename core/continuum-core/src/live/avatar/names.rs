@@ -33,9 +33,9 @@
 //! sprinkled throughout) to populate the first 100 personas in any
 //! continuum without collision noise.
 
-use crate::live::avatar::gender::gender_from_identity;
-use crate::live::avatar::hash::deterministic_pick;
-use crate::live::avatar::types::AvatarGender;
+use super::gender::gender_from_identity;
+use super::hash::deterministic_pick;
+use super::types::AvatarGender;
 
 /// Female-tagged name pool. Curated for diversity across cultures,
 /// styles, and historical periods. Tron-flavored entries (Quorra,
