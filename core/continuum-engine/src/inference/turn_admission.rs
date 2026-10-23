@@ -407,7 +407,7 @@ async fn admit(
                             outcome = "restore_rejected",
                             "the engine refused this turn's KV restore: it re-prefills in full"
                         );
-                        }
+                    }
                 }
                 // Price basis for the eviction policy (B5): this activity's current
                 // prompt size — comparable across slots, which is all eviction needs.
