@@ -268,6 +268,8 @@ pub struct LlmDeliberationFaculty {
     context_view: parking_lot::Mutex<
         Option<continuum_context::view::View<crate::cognition::context_streams::ContextMessage>>,
     >,
+    /// A measurement fork's (`fork_eval_cycle`): its turns warm their own page, never hers.
+    forked: bool,
 }
 
 impl LlmDeliberationFaculty {
@@ -303,6 +305,7 @@ impl LlmDeliberationFaculty {
             decoding: relaxed_decoding(),
             working_set: None,
             context_view: parking_lot::Mutex::new(None),
+            forked: false,
         }
     }
 
@@ -459,7 +462,7 @@ impl LlmDeliberationFaculty {
     /// after that would be measured against a stale floor. Deriving it means the requirement
     /// tracks reality for free. (#124 — de-hardcode the dynamic system.)
     pub fn framing_floor_tokens(&self) -> u32 {
-        let bare = self.compose_system("", &std::collections::BTreeSet::new(), false, false, None);
+        let bare = self.compose_system(&std::collections::BTreeSet::new(), false, false, None);
         estimate_guard_tokens(&bare) as u32
     }
 

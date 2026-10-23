@@ -692,10 +692,11 @@ fn a_held_work_card_survives_budget_pressure_that_drops_everything_else() {
     ));
 
     let view = faculty.prompt_view(&ws);
+    // The room's context rides her messages (after her view), never the system message.
     assert!(
-        view.system.contains("psf__requests-2148"),
-        "the held card's content must survive budget pressure; system was:\n{}",
-        view.system
+        view.messages.iter().any(|m| m.content_text().contains("psf__requests-2148")),
+        "the held card's content must survive budget pressure; messages were:\n{}",
+        view.user_text()
     );
 }
 

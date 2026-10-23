@@ -211,7 +211,7 @@ pub fn should_defer(class: SlotClass, hold: Option<&HoldInfo>, caller: Option<Uu
     match class {
         // A real turn or its sidecars never wait (see module doc: outranking +
         // deadlock-freedom; idle citizens' turns are already quiesced upstream).
-        SlotClass::Turn | SlotClass::Sidecar => false,
+        SlotClass::Turn | SlotClass::Fork | SlotClass::Sidecar => false,
         // Background/Probe defer unless they belong to the measured run itself.
         SlotClass::Background | SlotClass::Probe => caller != Some(hold.holder),
     }

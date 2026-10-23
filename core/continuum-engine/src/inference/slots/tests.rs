@@ -172,8 +172,15 @@ mod ledger;
         assert!(samples.len() <= STATE_DIRS, "bounded by dirs");
     }
 
-    fn key(p: u128, r: u128) -> ActivityKey {
-        ActivityKey::new(Uuid::from_u128(p), Uuid::from_u128(r)).expect("non-nil test ids")
+    /// A distinct page per (p, r). The pool is agnostic to the key class, so these tests
+    /// key distinct pages as forks of one persona; one page per mind is tested on its own.
+    fn key(p: u128, r: u128) -> PageKey {
+        PageKey::fork(Uuid::from_u128(p), Uuid::from_u128(r)).expect("non-nil test ids")
+    }
+
+    /// A resident mind's page: what the ledger persists.
+    fn mind(p: u128) -> PageKey {
+        PageKey::mind(Uuid::from_u128(p)).expect("non-nil test id")
     }
 
     // regression for card 6102ac09 (BigMama, 2026-09-26 12:28Z): a turn that reached a
@@ -322,8 +329,9 @@ mod ledger;
         let fourth = pool.lease(key(7, 4)).await.expect("evicts, not refuses");
         assert!(fourth < 3, "the 4th activity takes a citizen slot, never scratch");
         // Nil is unrepresentable.
-        assert!(ActivityKey::new(Uuid::from_u128(7), Uuid::nil()).is_none());
-        assert!(ActivityKey::new(Uuid::nil(), Uuid::from_u128(1)).is_none());
+        assert!(PageKey::fork(Uuid::from_u128(7), Uuid::nil()).is_none());
+        assert!(PageKey::fork(Uuid::nil(), Uuid::from_u128(1)).is_none());
+        assert!(PageKey::mind(Uuid::nil()).is_none());
     }
 
     // what this catches: eviction leaking slot indices. When a 5th activity
@@ -388,7 +396,10 @@ mod ledger;
         tokio::time::sleep(std::time::Duration::from_millis(5)).await;
         let pa4 = pool.lease_paged(a).await.expect("a after lost page");
         assert!(!pa4.restore, "a lost page must not be offered again");
-        assert_eq!(page_filename(&a), format!("a-{}-{}.bin", a.persona.simple(), a.room.simple()));
+        assert_eq!(
+            page_filename(&a),
+            format!("a-{}-fork-{}.bin", Uuid::from_u128(1).simple(), Uuid::from_u128(1).simple())
+        );
     }
 
     // what this catches: the scratch reservation and the placement law. On a
@@ -416,6 +427,37 @@ mod ledger;
         assert_eq!(class_for(Some("some-future-producer")), SlotClass::Background,
             "unknown purposes default AWAY from citizen slots");
         assert_eq!(class_for(None), SlotClass::Background);
+    }
+
+    // what this catches: a resident's acts in two rooms keyed as two pages (the per-room key
+    // this replaced: every move between rooms paid a restore or a cold prefill for a prefix
+    // her epoch view already shares), and a fork keyed onto her page (an eval exam would
+    // overwrite her warm view and wait behind her act). Plan line 3b, card 424e0961.
+    #[tokio::test]
+    async fn one_mind_acting_in_two_rooms_warms_one_page_and_a_fork_never_shares_it() {
+        use crate::inference::request_body::{ACT_PURPOSE, DELIBERATION_PURPOSE, FORK_ACT_PURPOSE, FORK_DELIBERATION_PURPOSE};
+        let (her, general, academy) = (Uuid::from_u128(31), Uuid::from_u128(32), Uuid::from_u128(33));
+        let act = class_for(Some(ACT_PURPOSE));
+        let pass = class_for(Some(DELIBERATION_PURPOSE));
+        let in_general = act.page_key(Some(her), Some(general)).expect("her act in general has a page");
+        assert_eq!(pass.page_key(Some(her), Some(academy)), Some(in_general), "two rooms, one page");
+        assert_eq!(act.page_key(Some(her), None), Some(in_general), "a mind's page needs no room");
+        assert_eq!(page_filename(&in_general), format!("a-{}.bin", her.simple()));
+
+        let fork = class_for(Some(FORK_ACT_PURPOSE));
+        assert_eq!(fork, class_for(Some(FORK_DELIBERATION_PURPOSE)));
+        assert!(fork.holds_a_page() && act.holds_a_page() && !class_for(Some("cognition/should-respond")).holds_a_page());
+        let exam = fork.page_key(Some(her), Some(general)).expect("a fork in a room has a page");
+        assert_ne!(exam, in_general, "a fork never warms her page");
+        assert_ne!(fork.page_key(Some(her), Some(academy)), Some(exam), "each fork room is its own page");
+        assert_eq!(fork.page_key(Some(her), None), None, "a fork without a room has no page");
+        assert_ne!(page_filename(&exam), page_filename(&in_general));
+
+        // One slot holds her across both rooms: the second room's act is a warm re-lease.
+        let pool = KvSlotPool::new("test://one-mind", 2);
+        let first = pool.lease_paged(in_general).await.expect("general leases");
+        let second = pool.lease_paged(act.page_key(Some(her), Some(academy)).expect("academy page")).await.expect("academy leases");
+        assert_eq!((second.slot, second.already_resident, second.save_first), (first.slot, true, None));
     }
 
     // what this catches: KV-CACHE-ECONOMY §2's arithmetic, as a pinned test. A

@@ -149,7 +149,6 @@ impl LlmDeliberationFaculty {
         let framing_tokens = Self::framing_cost(
             &self
                 .compose_system_split(
-                    "",
                     &expanded,
                     ws.directed_at_self(),
                     ws.self_initiated,
@@ -245,7 +244,7 @@ impl LlmDeliberationFaculty {
                     persona = %self.persona_name,
                     wanted_tokens = wanted,
                     budget_tokens = grounding_budget,
-                    kept_tokens = plan.system_reserve() + plan.trailing_tokens(),
+                    kept_tokens = plan.context_reserve() + plan.trailing_tokens(),
                     "standing grounding did not fit its budget — thinking with less                      enrichment rather than refusing the turn"
                 );
                 plan
@@ -277,7 +276,7 @@ impl LlmDeliberationFaculty {
                 .unwrap_or(0) // No optional source bid means no enrichment reservation.
                 .min(after_framing / 2)
         } else {
-            grounding.system_reserve()
+            grounding.context_reserve()
         };
 
         // ONE ALLOCATION FOR THE WHOLE WINDOW. Owner's rule: "Flexbox is the right way.
@@ -566,14 +565,13 @@ impl LlmDeliberationFaculty {
             fitted.grounding_at..fitted.grounding_at,
             trailing_grounding,
         );
-        let messages = fitted.messages;
+        let FittedMessages { mut refit, mut messages, grounding_at, .. } = fitted;
 
         // Whatever remains after framing + conversation goes to enrichment
-        // context. The framing estimate above was taken with an EMPTY context,
-        // where `working_context_block`'s wrapper header is absent — so the
-        // moment any context renders, the system prompt grows by that header
-        // too. Charge the context budget for it up front, or the final prompt
-        // systematically exceeds the estimate by ~50 tokens (masked by
+        // context. Rendered, it is one more message opened by a header — so the
+        // moment any context renders, the prompt grows by that header and its
+        // message wrapper too. Charge the context budget for both up front, or the
+        // final prompt systematically exceeds the estimate by ~50 tokens (masked by
         // rounding slop until the tool-menu example grew the prompt to the
         // budget edge — glass-boxed 2026-07-13, llama-server 400 territory).
         let used_msg_tokens = Self::messages_cost(&messages);
@@ -597,6 +595,16 @@ impl LlmDeliberationFaculty {
                 surface_reason: selected.reason,
             },
         );
+        // A ROOM'S CONTEXT NEVER ENTERS THE SYSTEM MESSAGE (2026-10-23). It rendered
+        // there, after her identity and tools, so every room switch rewrote the end of
+        // the system message and the engine re-prefilled her whole view behind it
+        // (pages keyed per room restored ~7.4k tokens across a switch on the M5). It is
+        // a room's, so it rides the fresh tail after her view, with the grounding the
+        // refit keeps frozen; grounding sources themselves are her view's blocks.
+        if let Some(block) = deliberation_prompt::working_context_message(&context) {
+            messages.insert(grounding_at + refit.grounding_len, ChatMessage::text("user", block));
+            refit.grounding_len += 1;
+        }
 
         // #266 KV-cache fix, THE SPLIT ACTUALLY APPLIED. The split composer
         // existed and its own docs called it "the live path" — but this view
@@ -610,8 +618,8 @@ impl LlmDeliberationFaculty {
         // nothing; hit_rate was 0.0 fleet-wide with every persona on her OWN
         // slot ([[a-mutating-system-prompt-destroys-kv-reuse-for-everything-after-it]]).
         //
-        // Now: `stable` (identity + tools + grounding context) IS the system
-        // message; `trailing` (clock + presence framing) rides as the NEWEST
+        // Now: `stable` (tools + identity + turn contract, no room content) IS the
+        // system message; `trailing` (clock + presence framing) rides as the NEWEST
         // user turn — same text, nearest generation, zero prefix invalidation.
         // Same delivery the `.trailing()` contributions already use and test.
         // The trailing half was already rendered into the FACTS phase of the
@@ -619,7 +627,6 @@ impl LlmDeliberationFaculty {
         // preserved); only the byte-stable half may touch the system message.
         let system = self
             .compose_system_split(
-                &context,
                 &expanded,
                 ws.directed_at_self(),
                 ws.self_initiated,
@@ -644,7 +651,7 @@ impl LlmDeliberationFaculty {
         });
         let segments = segment_map(&system, &messages);
         DeliberationPromptView {
-            refit: fitted.refit,
+            refit,
             system,
             input_identity,
             estimated_prompt_tokens,

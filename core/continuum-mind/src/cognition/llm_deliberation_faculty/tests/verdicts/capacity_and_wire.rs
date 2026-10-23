@@ -193,7 +193,13 @@ async fn prompt_preserves_stimulus_and_large_action_on_the_wire() {
             "and it is genuinely on the wire, not merely implied"
         );
 
+        // The held card's context reaches her in the assembled-context message after her
+        // view, never the system message, which is hers in every room (2026-10-23).
         assert!(request
+            .messages
+            .iter()
+            .any(|m| m.content_text().contains("Held activity context")));
+        assert!(!request
             .system_prompt
             .as_ref()
             .unwrap()

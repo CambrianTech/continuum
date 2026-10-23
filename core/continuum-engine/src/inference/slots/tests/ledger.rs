@@ -24,7 +24,7 @@ fn confirmed_saves_survive_a_restart_under_the_same_page_format() {
     };
     let fp = contract.fingerprint().expect("test: an exact contract fingerprints");
     let ledger = || SavedLedger::in_dir(dir.path(), fp.clone());
-    let (kept, gone, interrupted) = (key(1, 2), key(3, 4), key(5, 6));
+    let (kept, gone, interrupted) = (mind(1), mind(3), mind(5));
     let first = KvSlotPool::new("test://ledger", 2);
     assert_eq!(first.attach_ledger(ledger(), true), 0, "nothing saved yet");
     for k in [kept, gone, interrupted] {
@@ -66,7 +66,7 @@ fn a_page_survives_an_engine_restart_unless_its_format_changed() {
         revisions: Some(vec![("/models/qwen.gguf".into(), 17_000_000_000, at(100)), ("/genes/a.lora".into(), 12, at(200))]),
     };
     let fp = contract.fingerprint().expect("test: fingerprint");
-    let k = key(11, 12);
+    let k = mind(11);
     let first = KvSlotPool::new("test://format", 2);
     first.attach_ledger(SavedLedger::in_dir(dir.path(), fp), true);
     first.note_saved(k);
@@ -128,19 +128,20 @@ fn a_page_survives_an_engine_restart_unless_its_format_changed() {
 #[test]
 fn a_legacy_ledger_adopts_only_pages_newer_than_the_model() {
     let dir = tempfile::tempdir().expect("test: page dir");
-    let (fresh, stale) = (key(21, 22), key(23, 24));
+    let (fresh, stale) = ((Uuid::from_u128(21), Uuid::from_u128(22)), (Uuid::from_u128(23), Uuid::from_u128(24)));
+    let page = |(p, r): (Uuid, Uuid)| dir.path().join(activity_page_filename(p, r));
     for k in [fresh, stale] {
-        std::fs::write(dir.path().join(page_filename(&k)), b"kv").expect("test: page");
+        std::fs::write(page(k), b"kv").expect("test: page");
     }
     let floor = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_800_000_000);
-    let set_mtime = |k: &ActivityKey, t: std::time::SystemTime| {
-        std::fs::File::options().write(true).open(dir.path().join(page_filename(k))).and_then(|f| f.set_modified(t)).expect("test: mtime");
+    let set_mtime = |k: (Uuid, Uuid), t: std::time::SystemTime| {
+        std::fs::File::options().write(true).open(page(k)).and_then(|f| f.set_modified(t)).expect("test: mtime");
     };
-    set_mtime(&fresh, floor + std::time::Duration::from_secs(60));
-    set_mtime(&stale, floor - std::time::Duration::from_secs(60));
+    set_mtime(fresh, floor + std::time::Duration::from_secs(60));
+    set_mtime(stale, floor - std::time::Duration::from_secs(60));
     let legacy = serde_json::json!({
         "fingerprint": "9d987bf2befc05cd6dcce35fc4c3bfbc654374e996d7e4b90130d9c002683162",
-        "keys": [[fresh.persona, fresh.room], [stale.persona, stale.room]],
+        "keys": [[fresh.0, fresh.1], [stale.0, stale.1]],
         "incarnation": [38527, 1792732176u64],
     });
     std::fs::write(dir.path().join(SAVED_LEDGER_FILE), legacy.to_string()).expect("test: legacy ledger");
@@ -152,12 +153,63 @@ fn a_legacy_ledger_adopts_only_pages_newer_than_the_model() {
     let pool = KvSlotPool::new("test://legacy", 2);
     let ledger = SavedLedger::in_dir(dir.path(), "fp".into()).with_identity_floor(Some(floor));
     assert_eq!(pool.attach_ledger(ledger, true), 1);
-    assert!(pool.saved.lock().contains(&fresh), "written after the model: adopted");
-    assert!(!pool.saved.lock().contains(&stale), "written before the model changed: dropped");
+    assert!(pool.saved.lock().contains(&mind(21)), "written after the model: adopted, as her mind's page");
+    assert!(!pool.saved.lock().contains(&mind(23)), "written before the model changed: dropped");
     let file: SavedLedgerFile = serde_json::from_slice(&std::fs::read(dir.path().join(SAVED_LEDGER_FILE)).expect("test: read")).expect("test: parse");
     assert_eq!((file.format, file.fingerprint.as_str()), (LEDGER_FORMAT, "fp"), "rewritten in the new format");
-    assert_eq!(file.keys, vec![(fresh.persona, fresh.room)]);
-    assert!(dir.path().join(page_filename(&stale)).is_file(), "a dropped page's file is never deleted");
+    assert_eq!(file.minds, vec![fresh.0]);
+    assert!(page(stale).is_file(), "a dropped page's file is never deleted");
+}
+
+// What this catches: the migration to one page per mind (plan line 3b, card 424e0961). A
+// ledger of per-room pages folds into ONE page per mind: the NEWEST of her room pages is
+// renamed to her mind page WITH its sidecars, every other page file stays on disk unlisted,
+// and the ledger is rewritten listing minds only. Folding again (a crash after the rename,
+// before the rewrite) never moves an older page over the newer one already moved.
+#[test]
+fn a_per_room_ledger_folds_into_the_newest_page_per_mind() {
+    let dir = tempfile::tempdir().expect("test: page dir");
+    let (her, other) = (Uuid::from_u128(41), Uuid::from_u128(51));
+    let (general, academy, lobby) = (Uuid::from_u128(42), Uuid::from_u128(43), Uuid::from_u128(52));
+    let at = |s: u64| std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_800_000_000 + s);
+    let write = |name: &str, body: &[u8], t: std::time::SystemTime| {
+        std::fs::write(dir.path().join(name), body).expect("test: page");
+        std::fs::File::options().write(true).open(dir.path().join(name)).and_then(|f| f.set_modified(t)).expect("test: mtime");
+    };
+    let old_room = activity_page_filename(her, general);
+    let new_room = activity_page_filename(her, academy);
+    write(&old_room, b"general", at(10));
+    write(&format!("{old_room}.lora"), b"old adapter", at(10));
+    write(&new_room, b"academy", at(20));
+    write(&format!("{new_room}.ckpt"), b"academy checkpoints", at(20));
+    write(&activity_page_filename(other, lobby), b"lobby", at(5));
+    let per_room = serde_json::json!({
+        "format": LEDGER_FORMAT,
+        "fingerprint": "fp",
+        "keys": [[her, general], [her, academy], [other, lobby]],
+    });
+    std::fs::write(dir.path().join(SAVED_LEDGER_FILE), per_room.to_string()).expect("test: ledger");
+
+    let pool = KvSlotPool::new("test://fold", 2);
+    assert_eq!(pool.attach_ledger(SavedLedger::in_dir(dir.path(), "fp".into()), true), 2, "one page per mind");
+    let (hers, theirs) = (PageKey::mind(her).expect("test: id"), PageKey::mind(other).expect("test: id"));
+    assert_eq!(*pool.saved.lock(), [hers, theirs].into_iter().collect::<std::collections::HashSet<_>>());
+    let read = |name: String| std::fs::read(dir.path().join(name)).ok();
+    assert_eq!(read(page_filename(&hers)), Some(b"academy".to_vec()), "her newest room page is her mind page");
+    assert_eq!(read(format!("{}.ckpt", page_filename(&hers))), Some(b"academy checkpoints".to_vec()), "its checkpoints moved with it");
+    assert_eq!(read(format!("{}.lora", page_filename(&hers))), None, "never another page's adapter vector");
+    assert_eq!(read(old_room.clone()), Some(b"general".to_vec()), "the older page stays on disk, unlisted");
+    assert_eq!(read(page_filename(&theirs)), Some(b"lobby".to_vec()));
+    let file: SavedLedgerFile = serde_json::from_slice(&std::fs::read(dir.path().join(SAVED_LEDGER_FILE)).expect("test: read")).expect("test: parse");
+    assert_eq!((file.minds, file.activities.len()), (vec![her, other], 0), "rewritten as minds, the per-room keys gone");
+
+    // The fold interrupted before its rewrite: the per-room ledger is read again, and her
+    // moved page (now the newest candidate) stays; the older room page is not moved over it.
+    std::fs::write(dir.path().join(SAVED_LEDGER_FILE), per_room.to_string()).expect("test: ledger again");
+    let again = KvSlotPool::new("test://fold", 2);
+    assert_eq!(again.attach_ledger(SavedLedger::in_dir(dir.path(), "fp".into()), true), 2);
+    assert_eq!(read(page_filename(&hers)), Some(b"academy".to_vec()), "folding twice keeps the newest");
+    assert!(again.saved.lock().contains(&hers));
 }
 
 // What this catches: a core deploy that adopts the running engine started a pool with no
@@ -168,7 +220,7 @@ fn a_legacy_ledger_adopts_only_pages_newer_than_the_model() {
 #[tokio::test]
 async fn an_adopted_engine_resumes_its_residents_in_place() {
     let dir = tempfile::tempdir().expect("test: page dir");
-    let (a, b) = (key(31, 32), key(33, 34));
+    let (a, b) = (mind(31), mind(33));
     let old_core = KvSlotPool::new("test://resident", 3);
     old_core.attach_ledger(SavedLedger::in_dir(dir.path(), "fp".into()), true);
     old_core.stamp_incarnation((5151, 1_800_000_000));
@@ -214,7 +266,7 @@ fn an_adopted_engine_restores_only_the_ledger_its_own_process_wrote() {
     let fp = contract.fingerprint().expect("test: fingerprint");
     let spawned = KvSlotPool::new("test://adopt", 2);
     spawned.attach_ledger(SavedLedger::in_dir(dir.path(), fp), true);
-    let k = key(7, 8);
+    let k = mind(7);
     spawned.note_saved(k);
     std::fs::write(dir.path().join(page_filename(&k)), b"kv").expect("test: page");
 
@@ -222,7 +274,7 @@ fn an_adopted_engine_restores_only_the_ledger_its_own_process_wrote() {
     let first_core = KvSlotPool::new("test://adopt", 2);
     assert_eq!(adopt_engine_ledger(&first_core, empty.path(), 4242, 1_700_000_000), Err(AdoptRefusal::NoLedger));
     // ...but the adopting core starts this process's ledger, so its saves survive the next deploy
-    let saved_after = key(9, 10);
+    let saved_after = mind(9);
     first_core.note_saved(saved_after);
     std::fs::write(empty.path().join(page_filename(&saved_after)), b"kv").expect("test: page");
     let next_core = KvSlotPool::new("test://adopt", 2);

@@ -477,8 +477,8 @@ impl AIProviderAdapter for PlacementSwitch {
     fn api_style(&self) -> ApiStyle {
         self.current().api_style()
     }
-    fn warm_ahead(&self, persona: Uuid, room: Uuid) {
-        self.current().warm_ahead(persona, room)
+    fn warm_ahead(&self, page: crate::inference::slots::PageKey) {
+        self.current().warm_ahead(page)
     }
     fn capacity_changed(
         &self,

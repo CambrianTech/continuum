@@ -54,8 +54,8 @@ async fn abandoned_context_switch_finishes_save_without_starting_restore() {
             .negotiate_page_admission(&root, &pool, None, None)
             .await
     );
-    let old = ActivityKey::new(Uuid::new_v4(), Uuid::new_v4()).expect("test: old activity");
-    let next = ActivityKey::new(Uuid::new_v4(), Uuid::new_v4()).expect("test: next activity");
+    let old = PageKey::mind(Uuid::new_v4()).expect("test: old activity");
+    let next = PageKey::mind(Uuid::new_v4()).expect("test: next activity");
     let sem = Arc::new(Semaphore::new(1));
     let client = reqwest::Client::new();
     let mut resident = admit_turn(
@@ -144,7 +144,7 @@ async fn abandoned_restore_retains_slot_lane_and_generation_until_terminal_recei
             let server = tokio::spawn(async move { axum::serve(listener, app).await });
             let endpoint = crate::inference::slots::directory().endpoint(&root);
             let pool = crate::inference::slots::directory().ensure_pool(&root, 3);
-            let key = ActivityKey::new(Uuid::new_v4(), Uuid::new_v4()).expect("test: activity");
+            let key = PageKey::mind(Uuid::new_v4()).expect("test: activity");
             pool.note_saved(key);
             let sem = Arc::new(Semaphore::new(1));
             let client = reqwest::Client::new();
@@ -306,7 +306,7 @@ async fn paging_owner_panic_releases_guards_and_quarantines_uncertain_io() {
             .negotiate_page_admission(&root, &pool, None, None)
             .await
     );
-    let key = ActivityKey::new(Uuid::new_v4(), Uuid::new_v4()).expect("test: activity");
+    let key = PageKey::mind(Uuid::new_v4()).expect("test: activity");
     let sem = Arc::new(Semaphore::new(1));
     let client = reqwest::Client::new();
     let admission = admit_turn(

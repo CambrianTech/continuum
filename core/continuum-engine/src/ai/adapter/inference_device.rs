@@ -424,7 +424,7 @@ pub trait AIProviderAdapter: Send + Sync {
     }
 
     /// RESTORE-AHEAD (compression-ladder rung 1, FOLLOW-THE-SIGNAL doc): the
-    /// caller is ABOUT to generate for this activity — begin paging its warm
+    /// caller is ABOUT to generate for this page (a mind, or a fork) — begin paging its warm
     /// KV state into a serving slot NOW, overlapped with the caller's own
     /// prompt assembly, instead of racing the restore against the turn at pin
     /// time (measured 2026-09-01: pin-time restores queue behind busy slots to
@@ -433,7 +433,7 @@ pub trait AIProviderAdapter: Send + Sync {
     ///
     /// Default: no-op — cloud adapters and adapters without slot paging have
     /// nothing to warm.
-    fn warm_ahead(&self, _persona: uuid::Uuid, _room: uuid::Uuid) {}
+    fn warm_ahead(&self, _page: crate::inference::slots::PageKey) {}
 
     /// The LIVE served context window (tokens) of the lane THIS adapter serves on,
     /// or `None` when the adapter's own binding window is already authoritative.

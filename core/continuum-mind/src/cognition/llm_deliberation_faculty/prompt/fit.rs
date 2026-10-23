@@ -17,10 +17,14 @@ impl LlmDeliberationFaculty {
         (faculty.len() + body_bytes + "\n[]\n\n".len()).div_ceil(GUARD_CHARS_PER_TOKEN)
     }
 
+    /// What wrapping a non-empty assembled context costs: its header, and the chat-template
+    /// wrapper of the message it now is (it rides the tail after her view, never the system
+    /// message; `deliberation_prompt::working_context_message`).
     pub(in super::super) fn working_context_header_cost() -> usize {
         deliberation_prompt::WORKING_CONTEXT_HEADER
             .len()
             .div_ceil(GUARD_CHARS_PER_TOKEN)
+            + Self::PER_MESSAGE_TEMPLATE_TOKENS
     }
 
     pub fn framing_cost(system: &str) -> usize {
@@ -536,7 +540,9 @@ pub(in super::super) enum Fitted<T> {
 impl<'a> GroundingPlan<'a> {
     /// The standing sources' truthful minimums, whatever the budget — the plan the
     /// caller WANTS. Fitting it is [`GroundingPlan::within_budget`]'s job. Only the
-    /// system half: a block that rides the conversation is a source of her view
+    /// standing sources no producer marked as a view block: they render in the
+    /// assembled-context message after her view (never the system message, which is hers
+    /// in every room); a block that rides the conversation is a source of her view
     /// (`prompt/epoch.rs`), budgeted by its epoch.
     pub fn minimum(ws: &'a Workspace) -> Self {
         Self {
@@ -557,14 +563,15 @@ impl<'a> GroundingPlan<'a> {
     /// card while refusing. Grounding is enrichment; its shortfall is not a reason to
     /// stop thinking.
     ///
-    /// What sheds first, and why: the SYSTEM half goes before the TRAILING half. Trailing
-    /// pieces sit nearest the generation and carry the act-shaped facts (the pinned
-    /// result, the live board); the system half is standing background, and dropping it
-    /// also frees `working_context_header_cost` in one go. Pieces are shed newest-kept /
-    /// oldest-first within each half, so what survives is the freshest world she has.
+    /// What sheds first, and why: the CONTEXT half (the assembled-context message) goes
+    /// before the TRAILING half. Trailing pieces sit nearest the generation and carry the
+    /// act-shaped facts (the pinned result, the live board); the context half is standing
+    /// background, and dropping it also frees `working_context_header_cost` in one go.
+    /// Pieces are shed newest-kept / oldest-first within each half, so what survives is
+    /// the freshest world she has.
     pub(in super::super) fn within_budget(ws: &'a Workspace, budget: usize) -> Fitted<Self> {
         let whole = Self::minimum(ws);
-        let wanted = whole.system_reserve() + whole.trailing_tokens();
+        let wanted = whole.context_reserve() + whole.trailing_tokens();
         if wanted <= budget {
             return Fitted::Whole(whole);
         }
@@ -582,7 +589,7 @@ impl<'a> GroundingPlan<'a> {
     }
 
     pub(in super::super) fn expand_within(&mut self, budget: usize) {
-        let mut used = self.system_reserve() + self.trailing_tokens();
+        let mut used = self.context_reserve() + self.trailing_tokens();
         // Every minimum remains owned before optional details can spend spare
         // room. Preserve broadcast order for standing sources' trailing KV tier.
         for piece in &mut self.pieces {
@@ -602,7 +609,7 @@ impl<'a> GroundingPlan<'a> {
             .sum()
     }
 
-    pub(in super::super) fn system_tokens(&self) -> usize {
+    pub(in super::super) fn context_tokens(&self) -> usize {
         self.pieces
             .iter()
             .filter(|p| !p.contribution.trailing)
@@ -610,8 +617,10 @@ impl<'a> GroundingPlan<'a> {
             .sum()
     }
 
-    pub fn system_reserve(&self) -> usize {
-        let tokens = self.system_tokens();
+    /// What the context half costs rendered: its pieces, plus the header and message
+    /// wrapper of the assembled-context message when any piece renders.
+    pub fn context_reserve(&self) -> usize {
+        let tokens = self.context_tokens();
         tokens
             + if tokens > 0 {
                 LlmDeliberationFaculty::working_context_header_cost()
