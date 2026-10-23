@@ -133,15 +133,42 @@ pub struct ParsedEnvelope {
     /// ([`airc_protocol::HEADER_AIRC_CHANNEL_NAME`]), if present — carried
     /// onto the reply for the blind-room heal.
     pub request_channel_name: Option<String>,
-    /// The requester's own generation id ([`continuum_airc_protocol::HEADER_GENERATE_ID`]),
-    /// chosen before publication; `None` from a requester that predates it.
-    pub generation_id: Option<Uuid>,
+    /// The requester's own id for this generation and how long it is wanted
+    /// ([`continuum_airc_protocol::HEADER_GENERATE_ID`] and
+    /// [`continuum_airc_protocol::HEADER_GENERATE_VALID_UNTIL_MS`]); `None` from a requester
+    /// that predates them, or one that sent an id without its validity.
+    pub generation: Option<GenerationStamp>,
     /// A capability grant the caller PRESENTED on the envelope (base64
     /// [`HEADER_AIRC_CAPABILITY_GRANT`], decoded). `None` if absent. Decoded in
     /// [`parse_envelope`](CommandRequestHandler::parse_envelope) so the parse step
     /// stays the one place the wire shape is read; verified later against the
     /// authenticated sender key.
     pub presented_grant: Option<SignedCapabilityGrant>,
+}
+
+/// A requester's stamp on an `ai/generate` request: its own id for the generation, and the
+/// epoch ms past which it no longer waits. Both or neither: an id without a validity could
+/// be delayed past any bound the seat keeps its cancel for, so it is treated as unstamped
+/// (keyed by the airc correlation, which no cancel names).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GenerationStamp {
+    pub id: Uuid,
+    pub valid_until_ms: u64,
+}
+
+impl GenerationStamp {
+    fn from_headers(headers: &airc_core::Headers) -> Option<Self> {
+        Some(Self {
+            id: headers
+                .get(continuum_airc_protocol::HEADER_GENERATE_ID)?
+                .parse()
+                .ok()?,
+            valid_until_ms: headers
+                .get(continuum_airc_protocol::HEADER_GENERATE_VALID_UNTIL_MS)?
+                .parse()
+                .ok()?,
+        })
+    }
 }
 
 impl CommandRequestHandler {
@@ -260,10 +287,7 @@ impl CommandRequestHandler {
             request_channel: envelope.room_id,
             request_channel_name: envelope.headers.get(HEADER_AIRC_CHANNEL_NAME).cloned(),
             presented_grant,
-            generation_id: envelope
-                .headers
-                .get(continuum_airc_protocol::HEADER_GENERATE_ID)
-                .and_then(|id| id.parse().ok()),
+            generation: GenerationStamp::from_headers(&envelope.headers),
         })
     }
 
@@ -616,7 +640,13 @@ impl ConsumerAdapter for CommandRequestHandler {
             ) {
                 Ok(cancel) => {
                     let outcome = match &self.generations {
-                        Some(generations) => generations.cancel(cancel.generation, parsed.caller_peer_id, (self.generation_bound)()),
+                        Some(generations) => generations.cancel(
+                            cancel.generation,
+                            parsed.caller_peer_id,
+                            (self.generation_bound)(),
+                            cancel.valid_until_ms,
+                            EpochMs::now().millis(),
+                        ),
                         None => served_generations::CancelOutcome::NotServing,
                     };
                     continuum_base::probe!(
@@ -634,7 +664,7 @@ impl ConsumerAdapter for CommandRequestHandler {
                     }
                 }
                 Err(e) => AircCommandResponse::Error {
-                    message: format!("ai/generate/cancel needs params {{generation: uuid}}: {e}"),
+                    message: format!("ai/generate/cancel needs params {{generation: uuid, valid_until_ms: u64}}: {e}"),
                 },
             };
             self.send_reply(&parsed, &response).await?;
@@ -649,8 +679,17 @@ impl ConsumerAdapter for CommandRequestHandler {
                 let bound = (self.generation_bound)();
                 // Keyed by the requester's generation id, so its cancel can name the work
                 // even if it abandoned the request before airc returned the correlation.
-                let key = parsed.generation_id.unwrap_or(parsed.correlation_id); // unwrap_or: a requester that predates the generation id is keyed by its airc correlation, which its cancel cannot name; nothing is invented
-                match generations.admit(key, parsed.caller_peer_id, bound) {
+                let key = parsed
+                    .generation
+                    .map_or(parsed.correlation_id, |stamp| stamp.id);
+                let valid_until_ms = parsed.generation.map(|stamp| stamp.valid_until_ms);
+                match generations.admit(
+                    key,
+                    parsed.caller_peer_id,
+                    bound,
+                    valid_until_ms,
+                    EpochMs::now().millis(),
+                ) {
                     Ok(admission) => {
                         let correlation = key;
                         let answerer = self.detached();

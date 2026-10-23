@@ -53,10 +53,13 @@ pub const COMMAND_PATH_AI_GENERATE: &str = "ai/generate";
 pub const COMMAND_PATH_AI_GENERATE_CANCEL: &str = "ai/generate/cancel";
 
 /// Params of [`COMMAND_PATH_AI_GENERATE_CANCEL`]: the requester's generation id
-/// ([`HEADER_GENERATE_ID`]) of the abandoned `ai/generate` request.
+/// ([`HEADER_GENERATE_ID`]) of the abandoned `ai/generate` request, and that request's own
+/// validity ([`HEADER_GENERATE_VALID_UNTIL_MS`]): the seat remembers a cancel that overtook
+/// its request exactly as long as the request could still be admitted.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GenerateCancel {
     pub generation: uuid::Uuid,
+    pub valid_until_ms: u64,
 }
 
 /// airc header on an `ai/generate` request: the REQUESTER's id for this generation, chosen
@@ -64,6 +67,12 @@ pub struct GenerateCancel {
 /// can name it even when the requester abandons the request before airc hands back its own
 /// correlation id (card 83f774fb: airc publishes before `request_in` returns).
 pub const HEADER_GENERATE_ID: &str = "continuum.generate.id";
+
+/// airc header on an `ai/generate` request, sent with [`HEADER_GENERATE_ID`]: the epoch ms
+/// past which the requester no longer waits for it (publication time plus its deadline).
+/// The seat refuses a request that arrives after it, so a delayed frame can never start
+/// work nobody waits for, and an early cancel need be remembered only until it.
+pub const HEADER_GENERATE_VALID_UNTIL_MS: &str = "continuum.generate.valid_until_ms";
 
 /// airc header naming the `RouteKind` of the dispatch.
 pub const HEADER_COMMAND_KIND: &str = "continuum.command.kind";
@@ -88,7 +97,10 @@ pub const COMMAND_RESPONSE_BODY_HINT: &str = "continuum.command.response.v1";
 /// Wire-out envelope: the substrate's "dispatch this command on your
 /// peer" shape. Serialized as JSON in the airc frame body.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
-#[ts(export, export_to = "../../../protocol/typescript/transport/AircCommandRequest.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/transport/AircCommandRequest.ts"
+)]
 pub struct AircCommandRequest {
     pub path: String,
     pub kind: String,
@@ -117,7 +129,10 @@ impl AircCommandRequest {
 
 /// Wire-back envelope: typed success/error.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
-#[ts(export, export_to = "../../../protocol/typescript/transport/AircCommandResponse.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/transport/AircCommandResponse.ts"
+)]
 #[serde(tag = "status", rename_all = "snake_case")]
 pub enum AircCommandResponse {
     Ok {

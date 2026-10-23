@@ -306,7 +306,7 @@
             request_channel: airc_core::RoomId::from_uuid(Uuid::new_v4()),
             request_channel_name: None,
             presented_grant: None,
-            generation_id: None,
+            generation: None,
         }
     }
 
@@ -442,7 +442,7 @@
             request_channel: airc_core::RoomId::from_uuid(Uuid::new_v4()),
             request_channel_name: None,
             presented_grant: None,
-            generation_id: None,
+            generation: None,
         };
 
         // The path doesn't resolve to a module, so execute_with_caller
@@ -508,7 +508,7 @@
             request_channel: airc_core::RoomId::from_uuid(Uuid::new_v4()),
             request_channel_name: None,
             presented_grant: None,
-            generation_id: None,
+            generation: None,
         };
         let baseline = leased_in_calls();
 

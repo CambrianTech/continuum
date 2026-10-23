@@ -25,31 +25,34 @@ use uuid::Uuid;
 pub(super) struct ServedGenerations {
     outstanding: Mutex<HashMap<Uuid, Served>>,
     /// Cancels that arrived before their generation was admitted, per authenticated
-    /// requester: (generation, arrival). A cancel travels on its own connection and can
-    /// overtake the request it cancels; a remembered cancel refuses THAT requester's
-    /// request when it arrives. Keyed by requester first, so one peer's cancel can neither
-    /// overwrite nor evict another's. Each requester keeps at most the admission bound; past
-    /// it the seat FAILS CLOSED: it forgets the individual cancels and fences that requester
-    /// (refuses all its new generations) for one window, so no abandoned request can start
-    /// because its cancel was dropped. Always locked after `outstanding`, so a cancel and an
-    /// admission never interleave.
+    /// requester. A cancel travels on its own connection and can overtake the request it
+    /// cancels; a remembered cancel refuses THAT requester's request when it arrives. It is
+    /// remembered exactly as long as the original request can still be admitted: the
+    /// request's own validity (HEADER_GENERATE_VALID_UNTIL, which admission enforces), so a
+    /// delayed original is refused either by its cancel or as expired, never started.
+    /// Keyed by requester first, so one peer's cancel can neither overwrite nor evict
+    /// another's. Each requester keeps at most the admission bound; past it the seat FAILS
+    /// CLOSED and fences that requester until the latest validity it was holding. Always
+    /// locked after `outstanding`, so a cancel and an admission never interleave.
     early_cancels: Mutex<HashMap<PeerId, EarlyCancels>>,
 }
 
 /// One requester's cancels that arrived ahead of their requests.
 #[derive(Default)]
 struct EarlyCancels {
-    /// (generation, arrival), at most the admission bound.
-    remembered: std::collections::VecDeque<(Uuid, tokio::time::Instant)>,
-    /// Set when `remembered` overflowed: until then every new generation from this
+    /// (generation, the original request's validity in epoch ms), at most the bound.
+    remembered: std::collections::VecDeque<(Uuid, u64)>,
+    /// Set when `remembered` overflowed: until this epoch ms every new generation from this
     /// requester is refused (fail closed, O(1) memory).
-    fenced_until: Option<tokio::time::Instant>,
+    fenced_until_ms: Option<u64>,
 }
 
-/// How long an early cancel is remembered: the command round-trip budget both ends already
-/// agree on. A request and its own cancel arrive within one such round trip of each other.
-// derived-or-floor: the protocol's shared round-trip deadline, not a new number.
-const EARLY_CANCEL_WINDOW: std::time::Duration = continuum_airc_protocol::DEFAULT_COMMAND_DEADLINE;
+/// A requester-stated validity, capped so no requester can make this seat remember (or
+/// fence) for longer than any act can last ([`ACT_CEILING`]).
+fn held_until(valid_until_ms: u64, now_ms: u64) -> u64 {
+    let ceiling = crate::inference::turn_bound::ACT_CEILING.as_millis() as u64;
+    valid_until_ms.min(now_ms.saturating_add(ceiling))
+}
 
 /// One outstanding generation.
 struct Served {
@@ -69,10 +72,11 @@ pub(super) enum CancelOutcome {
     /// This seat serves no generations (a registry-less copy); nothing to cancel.
     NotServing,
     /// Nothing outstanding has that generation yet: the cancel is remembered for
-    /// [`EARLY_CANCEL_WINDOW`] and refuses the request if it arrives after its cancel.
+    /// Nothing outstanding has that generation yet: the cancel is remembered until the
+    /// original request's own validity and refuses it if it arrives after its cancel.
     Remembered,
-    /// Past the per-requester bound: the requester is fenced for one window instead of a
-    /// live cancel being dropped.
+    /// Past the per-requester bound: the requester is fenced until the latest validity it
+    /// held, instead of a live cancel being dropped.
     Fenced,
     /// It is outstanding but was asked for by another peer: left running.
     NotYours,
@@ -100,8 +104,10 @@ pub(super) enum Refusal {
     /// Its requester cancelled it before it arrived here.
     CancelledByRequester { correlation: Uuid },
     /// Its requester sent more early cancels than this seat remembers, so all of that
-    /// requester's new generations are refused for one cancel window (fail closed).
+    /// requester's new generations are refused until the fence lifts (fail closed).
     Fenced { correlation: Uuid },
+    /// It arrived after its own stated validity: a request this late is never started.
+    Expired { correlation: Uuid },
 }
 
 impl std::fmt::Display for Refusal {
@@ -117,7 +123,11 @@ impl std::fmt::Display for Refusal {
             }
             Self::Fenced { correlation } => write!(
                 f,
-                "generation {correlation} refused: its requester overflowed this seat's early-cancel memory; retry after the cancel window"
+                "generation {correlation} refused: its requester overflowed this seat's early-cancel memory; retry later"
+            ),
+            Self::Expired { correlation } => write!(
+                f,
+                "generation {correlation} arrived after its own validity; not started"
             ),
             Self::CancelledByRequester { correlation } => write!(
                 f,
@@ -144,22 +154,29 @@ impl Drop for Admission {
 }
 
 impl ServedGenerations {
-    /// Admit `correlation` if fewer than `bound` generations are outstanding.
+    /// Admit `correlation` if it is still valid (`valid_until_ms`, the requester's stated
+    /// validity; `None` from a requester that predates it), not cancelled ahead of time,
+    /// and fewer than `bound` generations are outstanding.
     pub(super) fn admit(
         self: &Arc<Self>,
         correlation: Uuid,
         caller: PeerId,
         bound: usize,
+        valid_until_ms: Option<u64>,
+        now_ms: u64,
     ) -> Result<Admission, Refusal> {
+        if valid_until_ms.is_some_and(|valid| now_ms > valid) {
+            return Err(Refusal::Expired { correlation });
+        }
         let mut outstanding = self.outstanding.lock();
         if outstanding.contains_key(&correlation) {
             return Err(Refusal::Duplicate { correlation });
         }
         {
             let mut early = self.early_cancels.lock();
-            forget_expired(&mut early);
+            forget_expired(&mut early, now_ms);
             if let Some(cancels) = early.get_mut(&caller) {
-                if cancels.fenced_until.is_some() {
+                if cancels.fenced_until_ms.is_some() {
                     return Err(Refusal::Fenced { correlation });
                 }
                 if let Some(at) = cancels
@@ -214,24 +231,28 @@ impl ServedGenerations {
         correlation: Uuid,
         requester: PeerId,
         bound: usize,
+        valid_until_ms: u64,
+        now_ms: u64,
     ) -> CancelOutcome {
         let mut outstanding = self.outstanding.lock();
         let Some(served) = outstanding.get_mut(&correlation) else {
             let mut early = self.early_cancels.lock();
-            forget_expired(&mut early);
-            let now = tokio::time::Instant::now();
+            forget_expired(&mut early, now_ms);
+            let until = held_until(valid_until_ms, now_ms);
             let cancels = early.entry(requester).or_default();
-            if cancels.fenced_until.is_some() {
-                // Already fenced: a further early cancel extends the fence to cover it.
-                cancels.fenced_until = Some(now + EARLY_CANCEL_WINDOW);
+            if let Some(fence) = cancels.fenced_until_ms.as_mut() {
+                // Already fenced: the fence must also cover this cancel's request.
+                *fence = (*fence).max(until);
                 return CancelOutcome::Fenced;
             }
             cancels.remembered.retain(|(id, _)| *id != correlation);
-            cancels.remembered.push_back((correlation, now));
+            cancels.remembered.push_back((correlation, until));
             if cancels.remembered.len() > bound.max(1) {
-                // Never drop a live cancel: fence the requester for one window instead.
+                // Never drop a live cancel: fence the requester until the latest validity
+                // among the cancels it was holding, then forget them (O(1) memory).
+                let latest = cancels.remembered.iter().map(|(_, until)| *until).max();
                 cancels.remembered.clear();
-                cancels.fenced_until = Some(now + EARLY_CANCEL_WINDOW);
+                cancels.fenced_until_ms = latest;
                 return CancelOutcome::Fenced;
             }
             return CancelOutcome::Remembered;
@@ -251,18 +272,15 @@ impl ServedGenerations {
     }
 }
 
-/// Drop early cancels older than [`EARLY_CANCEL_WINDOW`]: bounded by time, so a cancel
-/// for a request that never comes (or already finished) does not live on.
-fn forget_expired(early: &mut HashMap<PeerId, EarlyCancels>) {
-    let now = tokio::time::Instant::now();
+/// Drop early cancels whose original request can no longer be admitted (past its validity,
+/// which admission refuses anyway), and lift fences that have run out.
+fn forget_expired(early: &mut HashMap<PeerId, EarlyCancels>, now_ms: u64) {
     early.retain(|_, cancels| {
-        cancels
-            .remembered
-            .retain(|(_, at)| at.elapsed() <= EARLY_CANCEL_WINDOW);
-        if cancels.fenced_until.is_some_and(|until| now >= until) {
-            cancels.fenced_until = None;
+        cancels.remembered.retain(|(_, until)| now_ms <= *until);
+        if cancels.fenced_until_ms.is_some_and(|until| now_ms > until) {
+            cancels.fenced_until_ms = None;
         }
-        !cancels.remembered.is_empty() || cancels.fenced_until.is_some()
+        !cancels.remembered.is_empty() || cancels.fenced_until_ms.is_some()
     });
 }
 
@@ -293,6 +311,10 @@ pub(super) fn admission_bound() -> usize {
 mod tests {
     use super::*;
 
+    /// A wall clock for the tests (epoch ms) and a request validity one minute past it.
+    const NOW: u64 = 1_000_000;
+    const VALID: u64 = NOW + 60_000;
+
     fn peer(n: u128) -> PeerId {
         PeerId(Uuid::from_u128(n))
     }
@@ -304,20 +326,24 @@ mod tests {
     fn admission_is_bounded_and_a_finished_generation_frees_its_slot() {
         let registry = Arc::new(ServedGenerations::default());
         let first = registry
-            .admit(Uuid::from_u128(1), peer(100), 2)
+            .admit(Uuid::from_u128(1), peer(100), 2, Some(VALID), NOW)
             .expect("first admitted");
         let _second = registry
-            .admit(Uuid::from_u128(2), peer(100), 2)
+            .admit(Uuid::from_u128(2), peer(100), 2, Some(VALID), NOW)
             .expect("second admitted");
         assert_eq!(
-            registry.admit(Uuid::from_u128(3), peer(100), 2).err(),
+            registry
+                .admit(Uuid::from_u128(3), peer(100), 2, Some(VALID), NOW)
+                .err(),
             Some(Refusal::Overloaded {
                 outstanding: 2,
                 bound: 2
             })
         );
         assert_eq!(
-            registry.admit(Uuid::from_u128(2), peer(100), 3).err(),
+            registry
+                .admit(Uuid::from_u128(2), peer(100), 3, Some(VALID), NOW)
+                .err(),
             Some(Refusal::Duplicate {
                 correlation: Uuid::from_u128(2)
             })
@@ -325,7 +351,9 @@ mod tests {
         drop(first);
         assert_eq!(registry.outstanding(), 1);
         assert!(
-            registry.admit(Uuid::from_u128(3), peer(100), 2).is_ok(),
+            registry
+                .admit(Uuid::from_u128(3), peer(100), 2, Some(VALID), NOW)
+                .is_ok(),
             "the freed slot is admissible"
         );
     }
@@ -336,7 +364,9 @@ mod tests {
     async fn dropping_the_registry_aborts_every_outstanding_generation() {
         let registry = Arc::new(ServedGenerations::default());
         let correlation = Uuid::from_u128(7);
-        let admission = registry.admit(correlation, peer(100), 1).expect("admitted");
+        let admission = registry
+            .admit(correlation, peer(100), 1, Some(VALID), NOW)
+            .expect("admitted");
         let task = tokio::spawn(async move {
             let _admission = admission;
             std::future::pending::<()>().await;
@@ -361,15 +391,20 @@ mod tests {
         let registry = Arc::new(ServedGenerations::default());
         let (asker, stranger) = (peer(1), peer(2));
         let held = Uuid::from_u128(10);
-        let admission = registry.admit(held, asker, 2).expect("admitted");
+        let admission = registry
+            .admit(held, asker, 2, Some(VALID), NOW)
+            .expect("admitted");
         let task = tokio::spawn(async move {
             let _admission = admission;
             std::future::pending::<()>().await;
         });
         registry.attach(held, task.abort_handle());
-        assert_eq!(registry.cancel(held, stranger, 4), CancelOutcome::NotYours);
         assert_eq!(
-            registry.cancel(Uuid::from_u128(99), asker, 4),
+            registry.cancel(held, stranger, 4, VALID, NOW),
+            CancelOutcome::NotYours
+        );
+        assert_eq!(
+            registry.cancel(Uuid::from_u128(99), asker, 4, VALID, NOW),
             CancelOutcome::Remembered
         );
         assert_eq!(
@@ -377,7 +412,10 @@ mod tests {
             1,
             "another peer's cancel left it running"
         );
-        assert_eq!(registry.cancel(held, asker, 4), CancelOutcome::Cancelled);
+        assert_eq!(
+            registry.cancel(held, asker, 4, VALID, NOW),
+            CancelOutcome::Cancelled
+        );
         let joined = tokio::time::timeout(std::time::Duration::from_secs(5), task)
             .await
             .expect("the cancelled task ends promptly");
@@ -389,8 +427,13 @@ mod tests {
         );
 
         let early = Uuid::from_u128(11);
-        let admission = registry.admit(early, asker, 2).expect("admitted");
-        assert_eq!(registry.cancel(early, asker, 4), CancelOutcome::Cancelled);
+        let admission = registry
+            .admit(early, asker, 2, Some(VALID), NOW)
+            .expect("admitted");
+        assert_eq!(
+            registry.cancel(early, asker, 4, VALID, NOW),
+            CancelOutcome::Cancelled
+        );
         let task = tokio::spawn(async move {
             let _admission = admission;
             std::future::pending::<()>().await;
@@ -404,52 +447,110 @@ mod tests {
 
     // what this catches (Codex review of cf08ff017): a cancel travels on its own
     // connection and can arrive BEFORE the request it cancels. It is remembered for the
-    // round-trip window and refuses that requester's request when it arrives; another
-    // caller's request with the same id is not blocked; after the window it is forgotten.
-    #[tokio::test(start_paused = true)]
+    // original request's own validity and refuses that requester's request when it arrives;
+    // another caller's request with the same id is not blocked.
+    #[test]
     async fn a_cancel_that_overtakes_its_request_refuses_it_within_the_window() {
         let registry = Arc::new(ServedGenerations::default());
         let (asker, stranger) = (peer(1), peer(2));
         let early = Uuid::from_u128(20);
-        assert_eq!(registry.cancel(early, asker, 4), CancelOutcome::Remembered);
+        assert_eq!(
+            registry.cancel(early, asker, 4, VALID, NOW),
+            CancelOutcome::Remembered
+        );
         assert!(
-            registry.admit(early, stranger, 4).is_ok(),
+            registry.admit(early, stranger, 4, Some(VALID), NOW).is_ok(),
             "another caller is not blocked"
         );
         let late = Uuid::from_u128(21);
-        assert_eq!(registry.cancel(late, asker, 4), CancelOutcome::Remembered);
         assert_eq!(
-            registry.admit(late, asker, 4).err(),
+            registry.cancel(late, asker, 4, VALID, NOW),
+            CancelOutcome::Remembered
+        );
+        assert_eq!(
+            registry.admit(late, asker, 4, Some(VALID), NOW).err(),
             Some(Refusal::CancelledByRequester { correlation: late }),
             "the overtaken request is refused, never started"
         );
-        let stale = Uuid::from_u128(22);
-        assert_eq!(registry.cancel(stale, asker, 4), CancelOutcome::Remembered);
-        tokio::time::advance(EARLY_CANCEL_WINDOW + std::time::Duration::from_secs(1)).await;
+    }
+
+    // what this catches (Codex review of 7b05b3981): the early-cancel memory is bounded by
+    // the ENFORCED validity of the request, not a nominal round trip. A delayed original
+    // arriving long after its cancel (far past any round-trip budget) but still inside its
+    // validity is refused by the remembered cancel; once past its validity it is refused as
+    // expired, so forgetting the cancel there can never let it start. A requester's stated
+    // validity is capped at the act ceiling.
+    #[test]
+    fn a_delayed_original_is_refused_until_and_after_its_validity() {
+        let registry = Arc::new(ServedGenerations::default());
+        let asker = peer(1);
+        let valid_until = NOW + 20 * 60_000;
+        let delayed = Uuid::from_u128(22);
+        assert_eq!(
+            registry.cancel(delayed, asker, 4, valid_until, NOW),
+            CancelOutcome::Remembered
+        );
+        let much_later = NOW + 15 * 60_000;
+        assert_eq!(
+            registry
+                .admit(delayed, asker, 4, Some(valid_until), much_later)
+                .err(),
+            Some(Refusal::CancelledByRequester {
+                correlation: delayed
+            }),
+            "fifteen minutes on, still inside its validity: refused by its cancel"
+        );
+        let expired = Uuid::from_u128(23);
+        assert_eq!(
+            registry.cancel(expired, asker, 4, valid_until, NOW),
+            CancelOutcome::Remembered
+        );
+        assert_eq!(
+            registry
+                .admit(expired, asker, 4, Some(valid_until), valid_until + 1)
+                .err(),
+            Some(Refusal::Expired {
+                correlation: expired
+            }),
+            "past its validity: refused as expired, the cancel no longer needed"
+        );
         assert!(
-            registry.admit(stale, asker, 4).is_ok(),
-            "a cancel past the window is forgotten"
+            registry.early_cancels.lock().is_empty(),
+            "the expired cancel was forgotten"
+        );
+        let ceiling = crate::inference::turn_bound::ACT_CEILING.as_millis() as u64;
+        assert_eq!(
+            held_until(u64::MAX, NOW),
+            NOW + ceiling,
+            "capped at the act ceiling"
         );
     }
 
     // what this catches (Codex re-review of 165b35a5b): early cancels are scoped to the
     // authenticated requester. B's cancel for the same id neither overwrites nor removes
     // A's, so A's overtaken request is still refused; and a requester that overflows the
-    // bound is fenced for one window (fail closed), never has a live cancel dropped.
-    #[tokio::test(start_paused = true)]
+    // bound is fenced until the latest validity it held (fail closed), never has a live
+    // cancel dropped.
+    #[test]
     async fn early_cancels_are_per_requester_and_bounded() {
         let registry = Arc::new(ServedGenerations::default());
         let (a, b) = (peer(1), peer(2));
         let id = Uuid::from_u128(30);
-        assert_eq!(registry.cancel(id, a, 4), CancelOutcome::Remembered);
-        assert_eq!(registry.cancel(id, b, 4), CancelOutcome::Remembered);
         assert_eq!(
-            registry.admit(id, a, 4).err(),
+            registry.cancel(id, a, 4, VALID, NOW),
+            CancelOutcome::Remembered
+        );
+        assert_eq!(
+            registry.cancel(id, b, 4, VALID, NOW),
+            CancelOutcome::Remembered
+        );
+        assert_eq!(
+            registry.admit(id, a, 4, Some(VALID), NOW).err(),
             Some(Refusal::CancelledByRequester { correlation: id }),
             "B's cancel did not overwrite A's"
         );
         assert_eq!(
-            registry.admit(id, b, 4).err(),
+            registry.admit(id, b, 4, Some(VALID), NOW).err(),
             Some(Refusal::CancelledByRequester { correlation: id }),
             "and B's own cancel still applies to B"
         );
@@ -463,29 +564,40 @@ mod tests {
             Uuid::from_u128(41),
             Uuid::from_u128(42),
         );
-        assert_eq!(registry.cancel(r1, b, bound), CancelOutcome::Remembered);
-        assert_eq!(registry.cancel(r2, b, bound), CancelOutcome::Fenced);
         assert_eq!(
-            registry.admit(r1, b, 4).err(),
+            registry.cancel(r1, b, bound, VALID, NOW),
+            CancelOutcome::Remembered
+        );
+        assert_eq!(
+            registry.cancel(r2, b, bound, VALID, NOW),
+            CancelOutcome::Fenced
+        );
+        assert_eq!(
+            registry.admit(r1, b, 4, Some(VALID), NOW).err(),
             Some(Refusal::Fenced { correlation: r1 }),
             "the delayed r1 is refused: its cancel was never silently dropped"
         );
         assert_eq!(
-            registry.admit(r3, b, 4).err(),
+            registry.admit(r3, b, 4, Some(VALID), NOW).err(),
             Some(Refusal::Fenced { correlation: r3 }),
-            "every new generation from the fenced requester is refused within the window"
+            "every new generation from the fenced requester is refused while fenced"
         );
         let early = Uuid::from_u128(31);
-        assert_eq!(registry.cancel(early, a, bound), CancelOutcome::Remembered);
         assert_eq!(
-            registry.admit(early, a, bound).err(),
+            registry.cancel(early, a, bound, VALID, NOW),
+            CancelOutcome::Remembered
+        );
+        assert_eq!(
+            registry.admit(early, a, bound, Some(VALID), NOW).err(),
             Some(Refusal::CancelledByRequester { correlation: early }),
             "B's fence never touched A"
         );
-        tokio::time::advance(EARLY_CANCEL_WINDOW + std::time::Duration::from_secs(1)).await;
+        let after = VALID + 1;
         assert!(
-            registry.admit(r3, b, 4).is_ok(),
-            "the fence lifts after one window"
+            registry
+                .admit(r3, b, 4, Some(after + 60_000), after)
+                .is_ok(),
+            "the fence lifts once every request it covered has expired"
         );
     }
 }

@@ -474,6 +474,16 @@ impl AircInferenceTransport for AircLiveTransport {
             continuum_airc_protocol::HEADER_GENERATE_ID.to_string(),
             correlation_id.to_string(),
         );
+        // ...and how long it is wanted: past this the seat refuses it, so a frame delayed
+        // in transit never starts work nobody waits for, and the cancel carries the same
+        // value so the seat remembers an early cancel exactly that long.
+        let valid_until_ms = continuum_base::time::EpochMs::now()
+            .millis()
+            .saturating_add(deadline.as_millis() as u64);
+        headers.insert(
+            continuum_airc_protocol::HEADER_GENERATE_VALID_UNTIL_MS.to_string(),
+            valid_until_ms.to_string(),
+        );
         let seat_accepts_cancel = super::abandon::seat_accepts_cancel(
             super::seat_deadline::heard_seat_offer(
                 target.0,
@@ -524,6 +534,7 @@ impl AircInferenceTransport for AircLiveTransport {
                 room.clone(),
                 target,
                 correlation_id,
+                valid_until_ms,
                 seat_accepts_cancel,
             );
             let (pending, abandon) = super::abandon::publish_armed(

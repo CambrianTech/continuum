@@ -44,15 +44,18 @@ struct Cancel {
     room: airc_lib::Room,
     seat: PeerId,
     generation: Uuid,
+    valid_until_ms: u64,
 }
 
 impl AbandonGuard {
     /// Armed only for a seat that accepts the cancel ([`seat_accepts_cancel`]).
+    /// `valid_until_ms` is the request's own stamped validity, carried on the cancel.
     pub(super) fn new(
         airc: Arc<Airc>,
         room: airc_lib::Room,
         seat: PeerId,
         generation: Uuid,
+        valid_until_ms: u64,
         seat_accepts: bool,
     ) -> Self {
         let cancel = Cancel {
@@ -60,6 +63,7 @@ impl AbandonGuard {
             room,
             seat,
             generation,
+            valid_until_ms,
         };
         Self {
             armed: seat_accepts
@@ -123,7 +127,8 @@ impl Cancel {
             kind: KIND_PEER.to_string(),
             env: None,
             params: serde_json::json!(GenerateCancel {
-                generation: self.generation
+                generation: self.generation,
+                valid_until_ms: self.valid_until_ms,
             }),
         };
         let headers = AircTransport::build_headers(&request);
