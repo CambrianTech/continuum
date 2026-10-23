@@ -324,6 +324,62 @@
         assert_eq!(adm_b.slot(), Some(slot_a), "B must land PINNED on the freed slot");
     }
 
+    // what this catches (10417f6d): a queued lifecycle writer must not form a cycle
+    // with an existing slot waiter's semaphore reacquisition and a later admission.
+    #[tokio::test(start_paused = true)]
+    async fn a_later_admission_cannot_block_the_reader_a_transition_is_draining()
+        -> Result<(), Box<dyn std::error::Error>>
+    {
+        let root = format!("test://admission-drain-{}", Uuid::new_v4());
+        let pool = Arc::new(KvSlotPool::new(&root, 1));
+        let first_adapter = Arc::new(Semaphore::new(1));
+        let waiting_adapter = Arc::new(Semaphore::new(1));
+        let client = reqwest::Client::new();
+        let first_key = ActivityKey::new(Uuid::new_v4(), Uuid::new_v4()).ok_or("first key")?;
+        let waiting_key = ActivityKey::new(Uuid::new_v4(), Uuid::new_v4()).ok_or("waiting key")?;
+        let first = admit_turn(
+            &first_adapter, Some(first_key), Some(pool.clone()), &client, &root,
+            100, std::time::Duration::ZERO,
+        ).await?;
+        let first_slot = first.slot().ok_or("first admission must pin the slot")?;
+        let mut waiting = Box::pin(admit_turn(
+            &waiting_adapter, Some(waiting_key), Some(pool.clone()), &client, &root,
+            100, std::time::Duration::ZERO,
+        ));
+        assert!(futures::poll!(&mut waiting).is_pending(), "the only slot is pinned");
+        assert_eq!(waiting_adapter.available_permits(), 1, "slot waiter released its permit");
+
+        let endpoint = crate::inference::slots::directory().endpoint(&root);
+        // A superseded intent still drains before checking authority, but must leave
+        // the healthy generation ready. No engine or HTTP fixture is needed here.
+        let superseded = || false;
+        let mut transition = Box::pin(endpoint.transition_if(&superseded));
+        assert!(futures::poll!(&mut transition).is_pending(), "existing readers must drain");
+        let mut later = Box::pin(admit_turn(
+            &waiting_adapter, None, None, &client, &root,
+            0, std::time::Duration::ZERO,
+        ));
+        assert!(futures::poll!(&mut later).is_pending(), "a later reader cannot overtake the writer");
+        drop(first);
+
+        // On the old ordering, later owns the sole semaphore permit behind the writer,
+        // waiting retains a reader while reacquiring that permit, and the writer waits
+        // for waiting. Slot release alone must break the wait; no outer watchdog fires.
+        let admitted = tokio::time::timeout(std::time::Duration::from_secs(1), &mut waiting)
+            .await.map_err(|_| "released slot could not drain: endpoint/semaphore lock cycle")??;
+        assert_eq!(admitted.slot(), Some(first_slot));
+        drop(admitted);
+        drop(waiting);
+        assert!(transition.await.is_err(), "superseded intent changes no serving state");
+        assert!(endpoint.is_ready());
+        let later_admitted = later.as_mut().await?;
+        drop(later_admitted);
+        drop(later);
+        assert_eq!(waiting_adapter.available_permits(), 1);
+        assert_eq!(first_adapter.available_permits(), 1);
+        Ok(())
+    }
+
     // what this catches (Codex on #4515): a turn that pinned its slot and is then CANCELLED
     // while awaiting the slot's operation permit (pin held, no permit) frees an evictable lease,
     // and no SlotPermit drop will ever announce it; a turn parked on the all-pinned pool must
