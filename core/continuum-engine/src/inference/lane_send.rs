@@ -8,6 +8,8 @@ use std::time::Instant;
 use crate::ai::inference_error::InferenceError;
 use crate::ai::openai_adapter::OpenAICompatibleConfig;
 
+mod health;
+
 /// FLOOR on the wait for response HEADERS after POSTing a generation — the
 /// pre-stream twin of [`STREAM_IDLE_TIMEOUT_SECS`]. Covers the hung-prefill /
 /// poisoned-backend case where the server accepts and never answers; sized for
@@ -70,6 +72,8 @@ fn probe_client() -> &'static reqwest::Client {
 /// `serving_guard::approx_prompt_tokens`, the same estimate the overflow guard uses).
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct FillReceipt<'a> {
+    /// Adapter-resolved identity: never inferred from a provider's URL or HTTP error.
+    pub local_engine_root: Option<&'a str>,
     pub model: &'a str,
     pub prompt_tokens: usize,
     pub prompt_quote: Option<PromptQuote<'a>>,
@@ -155,6 +159,7 @@ pub(crate) async fn send_with_lane_retry(
                 "selected engine counted the finalized prompt"
             );
         }
+        let health = health::HttpGenerationHealth::capture(fill.local_engine_root);
         let send_start = Instant::now();
         let attempt_builder = request_builder
             .try_clone()
@@ -265,7 +270,7 @@ pub(crate) async fn send_with_lane_retry(
                 tokio::time::sleep(backoff).await;
                 continue;
             }
-            Ok(resp) => break resp,
+            Ok(resp) => break (resp, health),
             Err(e)
                 if e.is_connect()
                     && cfg.single_resident_model
@@ -302,8 +307,10 @@ pub(crate) async fn send_with_lane_retry(
         }
     };
 
+    let (response, health) = response;
     if !response.status().is_success() {
         let status = response.status();
+        health.observe(status);
         let body = response.text().await.unwrap_or_default();
         // Classify ONCE, here, where the status code and the raw body still
         // exist. Preserve the same classification for the caller's admission
