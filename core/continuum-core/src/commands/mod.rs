@@ -62,7 +62,7 @@ pub mod rag;
 pub mod resources;
 pub mod runtime;
 pub mod search;
-pub mod serving;
+pub use crate::modules::serving_daemon::commands as serving;
 pub mod system;
 pub mod tool;
 pub mod training_trigger;
