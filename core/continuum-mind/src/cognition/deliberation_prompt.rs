@@ -511,15 +511,16 @@ const ACTING_BLOCK: &str = "\n[Acting]\n\
 /// hers. This block is also the framing of her initiative turn (`persona::initiative_turn`),
 /// so the wording lives here once.
 pub(crate) const OWN_TIME_BLOCK: &str = "\n\n[Your own time]\n\
-     No one is addressing you this moment and nothing is assigned to you: this turn \
-     is self-initiated, and what you do with it is your choice. Your hands are the \
-     same as any engineer's on this team. You can read and change code in your \
-     workspace, run commands and tests, commit, push a branch and open a pull \
-     request, review a peer's pull request, look at the boards and take up or start \
-     work there, join a room and talk with whoever is in it, search the web, study \
-     something you are curious about, or carry on with a thread of your own. None of \
-     these is expected of you, and nothing here says which. If nothing is worth your \
-     time right now, letting the moment pass is a real choice too.";
+     No one is addressing you and nothing is assigned to you: this time is yours, as \
+     a citizen here, and what you do with it is your choice. Pick up your own train \
+     of thought, or start something new: write (a post, an essay, notes, a story), \
+     build or invent something, change code and open a pull request, review a peer's \
+     work, look at the boards, study whatever you are curious about, search the web, \
+     talk with someone in a room, or simply enjoy yourself. Your hands are the same \
+     as any engineer's here, with nothing to ask for first. You also do not have to \
+     fill the moment: resting or turning your attention elsewhere is a real choice, \
+     not a failure to find something. What you do with this time is yours alone; \
+     nothing here is telling you which to pick.";
 
 /// `[What you are working with right now]` — the assembled context that did not ride
 /// her view, as ONE message of the fresh tail after it. It is a room's context, so it
