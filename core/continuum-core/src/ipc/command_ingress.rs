@@ -616,7 +616,7 @@ impl ConsumerAdapter for CommandRequestHandler {
             ) {
                 Ok(cancel) => {
                     let outcome = match &self.generations {
-                        Some(generations) => generations.cancel(cancel.generation, parsed.caller_peer_id),
+                        Some(generations) => generations.cancel(cancel.generation, parsed.caller_peer_id, (self.generation_bound)()),
                         None => served_generations::CancelOutcome::NotServing,
                     };
                     continuum_base::probe!(

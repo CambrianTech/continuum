@@ -24,11 +24,14 @@ use uuid::Uuid;
 #[derive(Default)]
 pub(super) struct ServedGenerations {
     outstanding: Mutex<HashMap<Uuid, Served>>,
-    /// Cancels that arrived before their generation was admitted, by generation, with the
-    /// requester and arrival time. A cancel travels on its own connection and can overtake
-    /// the request it cancels; a remembered cancel refuses that request when it arrives.
+    /// Cancels that arrived before their generation was admitted, per authenticated
+    /// requester: (generation, arrival). A cancel travels on its own connection and can
+    /// overtake the request it cancels; a remembered cancel refuses THAT requester's
+    /// request when it arrives. Keyed by requester first, so one peer's cancel can neither
+    /// overwrite nor evict another's. Each requester keeps at most the admission bound (it
+    /// cannot have more of its own generations in flight here), oldest evicted first.
     /// Always locked after `outstanding`, so a cancel and an admission never interleave.
-    early_cancels: Mutex<HashMap<Uuid, (PeerId, tokio::time::Instant)>>,
+    early_cancels: Mutex<HashMap<PeerId, std::collections::VecDeque<(Uuid, tokio::time::Instant)>>>,
 }
 
 /// How long an early cancel is remembered: the command round-trip budget both ends already
@@ -132,12 +135,14 @@ impl ServedGenerations {
         {
             let mut early = self.early_cancels.lock();
             forget_expired(&mut early);
-            if early
-                .get(&correlation)
-                .is_some_and(|(requester, _)| *requester == caller)
-            {
-                early.remove(&correlation);
-                return Err(Refusal::CancelledByRequester { correlation });
+            if let Some(remembered) = early.get_mut(&caller) {
+                if let Some(at) = remembered.iter().position(|(id, _)| *id == correlation) {
+                    remembered.remove(at);
+                    if remembered.is_empty() {
+                        early.remove(&caller);
+                    }
+                    return Err(Refusal::CancelledByRequester { correlation });
+                }
             }
         }
         if outstanding.len() >= bound {
@@ -174,12 +179,22 @@ impl ServedGenerations {
 
     /// The requester abandoned `correlation`: abort it, but only for the peer that asked
     /// for it. The aborted task's admission then releases its slot.
-    pub(super) fn cancel(&self, correlation: Uuid, requester: PeerId) -> CancelOutcome {
+    pub(super) fn cancel(
+        &self,
+        correlation: Uuid,
+        requester: PeerId,
+        bound: usize,
+    ) -> CancelOutcome {
         let mut outstanding = self.outstanding.lock();
         let Some(served) = outstanding.get_mut(&correlation) else {
             let mut early = self.early_cancels.lock();
             forget_expired(&mut early);
-            early.insert(correlation, (requester, tokio::time::Instant::now()));
+            let remembered = early.entry(requester).or_default();
+            remembered.retain(|(id, _)| *id != correlation);
+            remembered.push_back((correlation, tokio::time::Instant::now()));
+            while remembered.len() > bound.max(1) {
+                remembered.pop_front();
+            }
             return CancelOutcome::Remembered;
         };
         if served.caller != requester {
@@ -199,8 +214,13 @@ impl ServedGenerations {
 
 /// Drop early cancels older than [`EARLY_CANCEL_WINDOW`]: bounded by time, so a cancel
 /// for a request that never comes (or already finished) does not live on.
-fn forget_expired(early: &mut HashMap<Uuid, (PeerId, tokio::time::Instant)>) {
-    early.retain(|_, (_, at)| at.elapsed() <= EARLY_CANCEL_WINDOW);
+fn forget_expired(
+    early: &mut HashMap<PeerId, std::collections::VecDeque<(Uuid, tokio::time::Instant)>>,
+) {
+    early.retain(|_, remembered| {
+        remembered.retain(|(_, at)| at.elapsed() <= EARLY_CANCEL_WINDOW);
+        !remembered.is_empty()
+    });
 }
 
 impl Drop for ServedGenerations {
@@ -304,9 +324,9 @@ mod tests {
             std::future::pending::<()>().await;
         });
         registry.attach(held, task.abort_handle());
-        assert_eq!(registry.cancel(held, stranger), CancelOutcome::NotYours);
+        assert_eq!(registry.cancel(held, stranger, 4), CancelOutcome::NotYours);
         assert_eq!(
-            registry.cancel(Uuid::from_u128(99), asker),
+            registry.cancel(Uuid::from_u128(99), asker, 4),
             CancelOutcome::Remembered
         );
         assert_eq!(
@@ -314,7 +334,7 @@ mod tests {
             1,
             "another peer's cancel left it running"
         );
-        assert_eq!(registry.cancel(held, asker), CancelOutcome::Cancelled);
+        assert_eq!(registry.cancel(held, asker, 4), CancelOutcome::Cancelled);
         let joined = tokio::time::timeout(std::time::Duration::from_secs(5), task)
             .await
             .expect("the cancelled task ends promptly");
@@ -327,7 +347,7 @@ mod tests {
 
         let early = Uuid::from_u128(11);
         let admission = registry.admit(early, asker, 2).expect("admitted");
-        assert_eq!(registry.cancel(early, asker), CancelOutcome::Cancelled);
+        assert_eq!(registry.cancel(early, asker, 4), CancelOutcome::Cancelled);
         let task = tokio::spawn(async move {
             let _admission = admission;
             std::future::pending::<()>().await;
@@ -348,24 +368,76 @@ mod tests {
         let registry = Arc::new(ServedGenerations::default());
         let (asker, stranger) = (peer(1), peer(2));
         let early = Uuid::from_u128(20);
-        assert_eq!(registry.cancel(early, asker), CancelOutcome::Remembered);
+        assert_eq!(registry.cancel(early, asker, 4), CancelOutcome::Remembered);
         assert!(
             registry.admit(early, stranger, 4).is_ok(),
             "another caller is not blocked"
         );
         let late = Uuid::from_u128(21);
-        assert_eq!(registry.cancel(late, asker), CancelOutcome::Remembered);
+        assert_eq!(registry.cancel(late, asker, 4), CancelOutcome::Remembered);
         assert_eq!(
             registry.admit(late, asker, 4).err(),
             Some(Refusal::CancelledByRequester { correlation: late }),
             "the overtaken request is refused, never started"
         );
         let stale = Uuid::from_u128(22);
-        assert_eq!(registry.cancel(stale, asker), CancelOutcome::Remembered);
+        assert_eq!(registry.cancel(stale, asker, 4), CancelOutcome::Remembered);
         tokio::time::advance(EARLY_CANCEL_WINDOW + std::time::Duration::from_secs(1)).await;
         assert!(
             registry.admit(stale, asker, 4).is_ok(),
             "a cancel past the window is forgotten"
+        );
+    }
+
+    // what this catches (Codex re-review of 165b35a5b): early cancels are scoped to the
+    // authenticated requester. B's cancel for the same id neither overwrites nor removes
+    // A's, so A's overtaken request is still refused; and one requester's burst is bounded
+    // by the admission bound, evicting only its own oldest cancels.
+    #[tokio::test(start_paused = true)]
+    async fn early_cancels_are_per_requester_and_bounded() {
+        let registry = Arc::new(ServedGenerations::default());
+        let (a, b) = (peer(1), peer(2));
+        let id = Uuid::from_u128(30);
+        assert_eq!(registry.cancel(id, a, 4), CancelOutcome::Remembered);
+        assert_eq!(registry.cancel(id, b, 4), CancelOutcome::Remembered);
+        assert_eq!(
+            registry.admit(id, a, 4).err(),
+            Some(Refusal::CancelledByRequester { correlation: id }),
+            "B's cancel did not overwrite A's"
+        );
+        assert_eq!(
+            registry.admit(id, b, 4).err(),
+            Some(Refusal::CancelledByRequester { correlation: id }),
+            "and B's own cancel still applies to B"
+        );
+
+        let bound = 2;
+        let burst: Vec<Uuid> = (40..45).map(Uuid::from_u128).collect();
+        for id in &burst {
+            assert_eq!(registry.cancel(*id, b, bound), CancelOutcome::Remembered);
+        }
+        let kept = registry.early_cancels.lock().get(&b).map_or(0, |q| q.len());
+        assert_eq!(
+            kept, bound,
+            "a requester's burst is bounded by the admission bound"
+        );
+        assert!(
+            registry.admit(burst[0], b, bound).is_ok(),
+            "its oldest cancel was evicted"
+        );
+        assert_eq!(
+            registry.admit(burst[4], b, bound).err(),
+            Some(Refusal::CancelledByRequester {
+                correlation: burst[4]
+            }),
+            "its newest cancels are kept"
+        );
+        let early = Uuid::from_u128(31);
+        assert_eq!(registry.cancel(early, a, bound), CancelOutcome::Remembered);
+        assert_eq!(
+            registry.admit(early, a, bound).err(),
+            Some(Refusal::CancelledByRequester { correlation: early }),
+            "B's burst never evicted A's cancel"
         );
     }
 }

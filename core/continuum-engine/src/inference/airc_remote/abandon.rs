@@ -62,7 +62,8 @@ impl AbandonGuard {
             generation,
         };
         Self {
-            armed: seat_accepts.then(|| Box::new(move || cancel.dispatch()) as Box<dyn FnOnce() + Send>),
+            armed: seat_accepts
+                .then(|| Box::new(move || cancel.dispatch()) as Box<dyn FnOnce() + Send>),
         }
     }
 
@@ -198,7 +199,8 @@ mod tests {
     fn fired() -> (std::sync::Arc<std::sync::atomic::AtomicBool>, AbandonGuard) {
         let flag = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let set = std::sync::Arc::clone(&flag);
-        let guard = AbandonGuard::with_action(move || set.store(true, std::sync::atomic::Ordering::SeqCst));
+        let guard =
+            AbandonGuard::with_action(move || set.store(true, std::sync::atomic::Ordering::SeqCst));
         (flag, guard)
     }
 
@@ -210,19 +212,50 @@ mod tests {
     #[tokio::test]
     async fn the_guard_fires_through_the_publication_window_and_on_any_failure() {
         let (flag, guard) = fired();
-        let mid_publication = publish_armed(guard, std::future::pending::<Result<(), ()>>());
-        drop(mid_publication);
-        assert!(flag.load(std::sync::atomic::Ordering::SeqCst), "dropped mid-publication: cancel sent");
+        let accepted = std::sync::Arc::new(tokio::sync::Notify::new());
+        let marker = std::sync::Arc::clone(&accepted);
+        // The daemon accepts the frame, but request_in has not returned to us yet.
+        let mut publishing = Box::pin(publish_armed(guard, async move {
+            marker.notify_one();
+            std::future::pending::<Result<(), ()>>().await
+        }));
+        assert!(
+            futures::poll!(&mut publishing).is_pending(),
+            "polled into the publication"
+        );
+        tokio::time::timeout(std::time::Duration::from_secs(1), accepted.notified())
+            .await
+            .expect("the publication was accepted before its return");
+        assert!(
+            !flag.load(std::sync::atomic::Ordering::SeqCst),
+            "still waiting: not fired yet"
+        );
+        drop(publishing);
+        assert!(
+            flag.load(std::sync::atomic::Ordering::SeqCst),
+            "dropped after acceptance, before request_in returned: cancel sent"
+        );
 
         let (flag, guard) = fired();
         let failed = publish_armed(guard, async { Err::<(), &str>("publish ack lost") }).await;
         assert!(failed.is_err());
-        assert!(flag.load(std::sync::atomic::Ordering::SeqCst), "an ambiguous publish error: cancel sent");
+        assert!(
+            flag.load(std::sync::atomic::Ordering::SeqCst),
+            "an ambiguous publish error: cancel sent"
+        );
 
         let (flag, guard) = fired();
-        let (_, guard) = publish_armed(guard, async { Ok::<(), ()>(()) }).await.expect("published");
-        assert!(!flag.load(std::sync::atomic::Ordering::SeqCst), "published and still waiting: not fired");
+        let (_, guard) = publish_armed(guard, async { Ok::<(), ()>(()) })
+            .await
+            .expect("published");
+        assert!(
+            !flag.load(std::sync::atomic::Ordering::SeqCst),
+            "published and still waiting: not fired"
+        );
         guard.disarm();
-        assert!(!flag.load(std::sync::atomic::Ordering::SeqCst), "a reply disarms it");
+        assert!(
+            !flag.load(std::sync::atomic::Ordering::SeqCst),
+            "a reply disarms it"
+        );
     }
 }
