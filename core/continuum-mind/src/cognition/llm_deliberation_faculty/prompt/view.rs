@@ -179,14 +179,7 @@ impl LlmDeliberationFaculty {
         // Price the untruncated trailing sources separately: messages_unfitted
         // leaves them borrowed until the same plan has reserved their exact units.
         let input_identity = all_messages.input_identity;
-        let calibration = if calibration
-            .input_identity
-            .is_some_and(|key| key != input_identity)
-        {
-            PromptCalibration::default()
-        } else {
-            calibration
-        };
+        let calibration = calibration.for_input(input_identity);
         // Her view already carries every block that rides the conversation.
         let unfitted_message_tokens = all_messages.tokens();
         // KEEP THE OVERFLOW. This used to be one chained `saturating_sub` ending in
@@ -424,7 +417,9 @@ impl LlmDeliberationFaculty {
         )));
         // Her view within what the allocation granted its sources (`epoch.rs`): the only place
         // it is ever collapsed.
-        self.fit_view(&mut all_messages, view, &plan, view_room as usize);
+        self.fit_view(&mut all_messages, view, &plan, view_room as usize, calibration);
+        // Her view as the allocation sized it: the fit below never cuts it.
+        let view_len = all_messages.grounding_at;
 
         // WHAT THIS TURN WOULD HAVE COST WITH NO BUDGET — recorded before either
         // fitting step throws the evidence away, and deliberately free to exceed
@@ -474,8 +469,29 @@ impl LlmDeliberationFaculty {
         );
 
         let protocol_error = all_messages.active_protocol_error();
-        let (mut fitted, capacity_error) = match self.fit_messages(all_messages, msg_budget) {
-            Ok(fitted) => (fitted, None),
+        // HER VIEW IS NOT THE FIT'S TO CUT. The allocation sized it once (`fit_view`); the fit
+        // sees only the fresh tail and the required input, within their own grants. Handed
+        // the view too, it evicted from the front, where the view leads, to make room for a
+        // tail whose floor the allocation had not granted: a head clip inside a prompt that
+        // fit the window (capacity_and_wire fixtures: 1 and 3 view messages, 2026-10-23).
+        let view_messages: Vec<ChatMessage> = all_messages.history.drain(..view_len).collect();
+        all_messages.grounding_at = all_messages.grounding_at.saturating_sub(view_len);
+        let (view_pointers, tail_pointers): (Vec<_>, Vec<_>) =
+            std::mem::take(&mut all_messages.result_pointers).into_iter().partition(|(index, _)| *index < view_len);
+        all_messages.result_pointers = tail_pointers.into_iter().map(|(index, pointer)| (index - view_len, pointer)).collect();
+        let tail_budget = msg_budget.saturating_sub(Self::messages_cost(&view_messages));
+        let (mut fitted, capacity_error) = match self.fit_messages(all_messages, tail_budget) {
+            Ok(mut fitted) => {
+                fitted.messages.splice(0..0, view_messages);
+                fitted.grounding_at += view_len;
+                fitted.refit.grounding_at += view_len;
+                fitted.refit.history_len += view_len;
+                for (index, _) in &mut fitted.refit.result_pointers {
+                    *index += view_len;
+                }
+                fitted.refit.result_pointers.splice(0..0, view_pointers);
+                (fitted, None)
+            }
             Err(error) => (FittedMessages::default(), Some(error)),
         };
         // THE FIT'S RECEIPT (card d33e928a, Kimi's finding): whenever the fit dropped
@@ -640,15 +656,27 @@ impl LlmDeliberationFaculty {
         let estimated_prompt_tokens = Self::framing_cost(&system)
             .saturating_add(Self::messages_cost(&messages))
             .saturating_add(selected.tokens);
-        let wire_tokens = calibration
-            .charge(estimated_prompt_tokens)
-            .saturating_add(completion_reserve);
-        let capacity_error = capacity_error.or_else(|| {
-            (wire_tokens > context_window as usize).then_some(PromptCapacityError {
-                required_tokens: wire_tokens,
-                budget_tokens: context_window as usize,
+        // THE ONE BUDGET'S INVARIANT (`budget.rs`), at the one place the messages are final.
+        // A required input that cannot fit is a capacity refusal, decided by the fit above.
+        let budget_fault = if capacity_error.is_none() {
+            self.budget_violation(&BudgetLedger {
+                context_window,
+                calibration,
+                completion_reserve,
+                system: &system,
+                tool_tokens: selected.tokens,
+                messages: &messages,
+                view_len: grounding_at,
+                grounding_len: refit.grounding_len,
+                framing_grant: fixed_cost,
+                required_grant: required_cost,
+                history_grant: plan.granted(FLEX_HISTORY),
+                grounding_grant: plan.granted(FLEX_GROUNDING),
+                view_grant: view_granted.saturating_add(view_room),
             })
-        });
+        } else {
+            None
+        };
         let segments = segment_map(&system, &messages);
         DeliberationPromptView {
             refit,
@@ -657,6 +685,7 @@ impl LlmDeliberationFaculty {
             estimated_prompt_tokens,
             completion_reserve: completion_reserve as u32,
             capacity_error,
+            budget_fault,
             protocol_error,
             messages,
             segments,

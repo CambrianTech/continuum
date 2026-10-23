@@ -200,3 +200,83 @@ fn the_structurally_mute_sensor_still_asks_for_the_whole_surface() {
                      'she is structurally mute below here' warning now fires too late."
     );
 }
+
+// what this catches: the head clip a passing test hid (goal 7). After a provider refusal
+// scaled the calibration (~1.9x) and her view turned over twice, an unrelated small turn in
+// the room priced its allocation at 1.0, so its charged prompt plus reserve overran the
+// window by 4,326; on canary it fit only because the final fit cut her whole view from the
+// front. Then, back in the room, one act re-appended all of it, and the turnover reserved
+// that act's appends out of the start: her view rendered empty. Every part is a charged
+// claim now, the small turn fits, and back in the room her view is present with its newest
+// turn whole within the window.
+#[tokio::test]
+async fn a_scaled_calibration_after_turnovers_keeps_her_view_within_the_window() {
+    use crate::ai::inference_error::InferenceError;
+    use crate::cognition::working_set::WorkingSetRegistry;
+    use crate::cognition::workspace::Burst;
+
+    let home = tempfile::tempdir().expect("isolated demand storage");
+    let _native = crate::paths::NativeHomeOverride::install(home.path());
+    let persona = Uuid::new_v4();
+    let window = 29_440;
+    let adapter = Arc::new(ScriptedAdapter::new(vec![
+        make_response(FinishReason::Stop, "PASS", None),
+        make_response(FinishReason::Stop, "PASS", None),
+        make_response(FinishReason::Stop, "PASS", None),
+    ]));
+    // The engine counted 29,722 for a prompt estimated at about half that: a text density.
+    adapter.rejections.lock().expect("fixture rejection queue").extend([
+        InferenceError::ContextExceeded { requested: 29_722, available: window },
+        InferenceError::ContextExceeded { requested: 29_722, available: window },
+    ]);
+    let registry = WorkingSetRegistry::new();
+    for tick in 0..3 {
+        registry.record_emission_in_memory(persona, 834, 0, crate::cognition::working_set::EmissionStop::Landed, tick);
+    }
+    let faculty = LlmDeliberationFaculty::new(persona, "Ivar", "You are Ivar.", adapter.clone())
+        .with_context_window(window)
+        .with_tools(vec![read_tool()])
+        .with_working_set(registry);
+    let room = crate::identity::ActivityRoom::mint();
+    let mut turns: Vec<_> = (0..160)
+        .map(|i| {
+            BurstTurn::attributed(
+                i % 2 == 0,
+                if i % 2 == 0 { "Ivar" } else { "Peer" },
+                format!("distinct_history_{i} ").repeat(100),
+                Some(i),
+            )
+        })
+        .collect();
+    turns.push(BurstTurn::attributed(false, "Peer", "Review the current artifact.", Some(161)));
+    let ws = Workspace::new(Burst::from_turns(room, turns.clone()));
+    assert!(faculty.contribute(&ws).await.expect("bounded refusal").fault.is_some());
+    let next = faculty.contribute(&ws).await.expect("next tick");
+    assert!(next.fault.is_none(), "{:?}", next.fault);
+    let (effective, calibration) = faculty.prompt_fit(&faculty.binding.load());
+    assert!(calibration.charge(10_000) > 10_000, "the refusal scaled the calibration");
+    let within = |view: &DeliberationPromptView| {
+        assert!(view.capacity_error.is_none(), "{:?}", view.capacity_error);
+        assert!(view.budget_fault.is_none(), "{:?}", view.budget_fault);
+        assert!(
+            calibration.charge(view.estimated_prompt_tokens) + view.completion_reserve as usize
+                <= effective as usize,
+            "charged prompt + reserve fits the window"
+        );
+    };
+
+    // An unrelated small turn: her carried view rides room no source claims any more.
+    within(&faculty.prompt_view(&Workspace::in_room("What changed?", ws.room_id)));
+
+    // Back in the room, one turn on: her view's sources hold its history again.
+    turns.push(BurstTurn::attributed(false, "Peer", "What changed?", Some(162)));
+    let follow = Workspace::new(Burst::from_turns(room, turns));
+    let view = faculty.prompt_view(&follow);
+    within(&view);
+    assert!(
+        view.messages.iter().any(|m| m.content_text().contains("distinct_history_159 ")),
+        "her view is present with its newest turn whole"
+    );
+    let outcome = faculty.contribute(&follow).await.expect("follow-up turn");
+    assert!(outcome.fault.is_none(), "{:?}", outcome.fault);
+}

@@ -497,3 +497,54 @@ async fn tool_use_response_becomes_an_act_verdict() {
     memory.record_settlement("finished", Some(room));
     assert!(faculty.messages_unfitted(&ws, None).action_statement.is_none(), "settlement ends this decision");
 }
+
+// what this catches: the one budget's invariant (goal 7, `prompt/budget.rs`). A prompt whose
+// charged cost plus reserve is over its window is a named budget fault, never a prompt made
+// to comply by cutting it: a real assembled prompt checked against its own window passes,
+// and the same prompt forced against a window one token short faults, with every message it
+// was handed still there and her view still leading it.
+#[test]
+fn an_over_budget_prompt_is_a_budget_fault_never_a_clipped_prompt() {
+    use crate::cognition::llm_deliberation_faculty::prompt::BudgetLedger;
+    use crate::cognition::workspace::Burst;
+
+    let window = 32_768u32;
+    let faculty = LlmDeliberationFaculty::new(
+        Uuid::new_v4(),
+        "Ivar",
+        "You are Ivar.",
+        Arc::new(ScriptedAdapter::new(vec![])),
+    )
+    .with_context_window(window)
+    .with_tools(vec![read_tool()]);
+    let room = crate::identity::ActivityRoom::from_uuid(Uuid::new_v4()).expect("fixture room is non-nil");
+    let mut turns: Vec<_> = (0..40)
+        .map(|i| BurstTurn::attributed(i % 2 == 0, if i % 2 == 0 { "Ivar" } else { "Peer" }, format!("turn_{i} ").repeat(40), Some(i)))
+        .collect();
+    turns.push(BurstTurn::attributed(false, "Peer", "What changed?", Some(41)));
+    let view = faculty.prompt_view(&Workspace::new(Burst::from_turns(room, turns)));
+    assert!(view.budget_fault.is_none(), "{:?}", view.budget_fault);
+    assert!(view.messages.first().is_some_and(|m| m.content_text().contains("turn_0 ")), "her view leads the prompt");
+    let framing = LlmDeliberationFaculty::framing_cost(&view.system);
+    let tools = view.estimated_prompt_tokens - framing - LlmDeliberationFaculty::messages_cost(&view.messages);
+    let charged = view.estimated_prompt_tokens + view.completion_reserve as usize;
+    let ledger = |context_window: usize| BudgetLedger {
+        context_window: context_window as u32,
+        calibration: PromptCalibration::default(),
+        completion_reserve: view.completion_reserve as usize,
+        system: &view.system,
+        tool_tokens: tools,
+        messages: &view.messages,
+        view_len: view.refit.grounding_at,
+        grounding_len: view.refit.grounding_len,
+        framing_grant: 0,
+        required_grant: 0,
+        history_grant: 0,
+        grounding_grant: 0,
+        view_grant: 0,
+    };
+    assert!(faculty.budget_violation(&ledger(charged)).is_none(), "at its window the prompt complies");
+    let fault = faculty.budget_violation(&ledger(charged - 1)).expect("one token over is a budget fault");
+    assert!(fault.contains("prompt budget violated"), "{fault}");
+    assert!(view.messages.first().is_some_and(|m| m.content_text().contains("turn_0 ")), "nothing was cut to comply");
+}

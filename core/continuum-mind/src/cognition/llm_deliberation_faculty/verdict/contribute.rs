@@ -133,6 +133,10 @@ impl LlmDeliberationFaculty {
             if let Some(error) = &view.protocol_error {
                 return Some(Contribution::deliberation_fault(error.clone()));
             }
+            // The one budget broke (`prompt/budget.rs` probed each claim): never sent.
+            if let Some(fault) = &view.budget_fault {
+                return Some(Contribution::deliberation_fault(fault.clone()));
+            }
             if let Some(error) = view.capacity_error {
                 continuum_base::probe!(
                     class = "delib.prompt.capacity",

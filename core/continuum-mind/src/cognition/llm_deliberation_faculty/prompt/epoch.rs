@@ -98,11 +98,16 @@ impl LlmDeliberationFaculty {
         view: ViewPlacement,
         plan: &crate::persona::rag_budget::FlexAllocation,
         room: usize,
+        calibration: super::types::PromptCalibration,
     ) {
         if view.len == 0 {
             return;
         }
-        let view_tokens = Self::messages_cost(&prompt.history[..view.len]);
+        // In the allocation's unit: grants and room are charged tokens (`calibration.charge`),
+        // so the view is charged too. Compared raw, a view near its grant passed here and the
+        // final fit, which converts its budget back to raw, cut 96-99 of its oldest messages
+        // from the front with no turnover (Benchy, the M5, 2026-10-23: a head clip, goal 7).
+        let view_tokens = calibration.charge(Self::messages_cost(&prompt.history[..view.len]));
         let granted: usize = plan
             .allocations
             .iter()
@@ -117,7 +122,17 @@ impl LlmDeliberationFaculty {
         }
         // What the epoch being replaced appended per act: the growth the next one reserves.
         let appended_per_act = self.context_view.lock().as_ref().and_then(View::appended_per_act);
-        let started = self.turn_over_view_with(&prompt.streams, |claims: &[Claim]| {
+        // A source the allocation could not grant its floor is shed from this epoch: its
+        // floor is what it renders collapsed, so starting it anyway put the view over its
+        // grant and left the fit to cut it (an atomic standing block, its minimum the whole
+        // block, 21,857 tokens on an 8,192 window). A later act's advance offers it again.
+        let shed: Vec<&str> = plan
+            .allocations
+            .iter()
+            .filter(|a| a.allocated_tokens < a.requested_floor)
+            .filter_map(|a| a.source_id.strip_prefix(VIEW_CLAIM))
+            .collect();
+        let started = self.turn_over_view_with(&prompt.streams, &shed, |claims: &[Claim]| {
             start_grants(claims, plan, granted + room, appended_per_act)
         });
         prompt.grounding_at = started.len();
@@ -130,6 +145,7 @@ impl LlmDeliberationFaculty {
             room,
             appended_per_act = appended_per_act.unwrap_or(0), // unwrap_or: no act yet in the epoch it replaced
             restart = view.started,
+            shed_sources = shed.len(),
             "her view outgrew what the window granted its sources and started a new epoch, \
              its growing sources leaving a reserve as large as their start"
         );
@@ -181,12 +197,18 @@ impl LlmDeliberationFaculty {
     }
 
     /// Start a new epoch of her view within `budget_chars`, the flexbox granting each
-    /// source its share by priority.
-    fn turn_over_view_with(&self, streams: &Streams, allocate: impl FnOnce(&[Claim]) -> Vec<usize>) -> Vec<ChatMessage> {
+    /// source its share by priority, without the `shed` sources.
+    fn turn_over_view_with(
+        &self,
+        streams: &Streams,
+        shed: &[&str],
+        allocate: impl FnOnce(&[Claim]) -> Vec<usize>,
+    ) -> Vec<ChatMessage> {
         let memory = self.working_memory.as_deref();
         let actions = memory.map(|memory| Actions { memory });
         let thoughts = memory.map(|memory| Thoughts { memory });
-        let sources = Self::view_sources(streams, actions.as_ref(), thoughts.as_ref());
+        let mut sources = Self::view_sources(streams, actions.as_ref(), thoughts.as_ref());
+        sources.retain(|source| !shed.contains(&source.name()));
         let mut held = self.context_view.lock();
         let started = if let Some(view) = held.as_mut() {
             view.turn_over(Vec::new(), &sources, allocate)
@@ -315,7 +337,17 @@ pub(in super::super) fn start_grants(
         .sum::<usize>()
         .min(available);
     let growable = available - grounding;
-    let growing = (growable / 2).min(growable.saturating_sub(per_act_tokens));
+    // An act that appended more than the growing sources can hold at all cannot be reserved
+    // for at any start, and subtracting it started them at zero: every item collapsed, her
+    // newest end with them. A re-home back into a 160-turn room measured 331,230 tokens
+    // appended in one act against a 20,693 grant, and her view rendered empty
+    // (`provider_context_feedback_bounds_replay_and_scales_next_turn`, 2026-10-23). Such an
+    // epoch turns over on the next act whatever its start, so it keeps the half start.
+    let growing = if per_act_tokens < growable {
+        (growable / 2).min(growable - per_act_tokens)
+    } else {
+        growable / 2
+    };
     let start = grounding + growing;
     let budgets: Vec<crate::persona::rag_budget::RagSourceBudget> = claims
         .iter()
