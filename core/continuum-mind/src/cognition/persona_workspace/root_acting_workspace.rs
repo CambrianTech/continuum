@@ -495,6 +495,8 @@ impl PersonaWorkspaceRegistry {
         // measure a starved copy. Faithful eval = synchronous perception here.
         cfg.defer_recall = false;
         cfg.defer_grounding = false;
+        // It acts beside her, so it never shares her page or waits on her act.
+        cfg.forked = true;
         // Match the tool surface to the exam's grading MODALITY. A spoken-graded task
         // (`test`/`expect`, answer read from her mouth) needs NO hands — offering the
         // discovery-pair tool surface only lets a native-tool-call model loop on
@@ -559,6 +561,8 @@ impl PersonaWorkspaceRegistry {
         // Synchronous perception on the eval copy (see `fork_eval_cycle`).
         cfg.defer_recall = false;
         cfg.defer_grounding = false;
+        // It acts beside her, so it never shares her page or waits on her act.
+        cfg.forked = true;
         // Speak-only for spoken-graded exams (see `fork_eval_cycle` for why).
         if !with_tools {
             cfg.tool_executor = None;

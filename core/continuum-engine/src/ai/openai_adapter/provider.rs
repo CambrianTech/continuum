@@ -38,14 +38,11 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
         &self.config.name
     }
 
-    /// Restore the next activity during prompt assembly through the same
+    /// Restore the next page during prompt assembly through the same
     /// admission and paging owner as generation. Only a completed restore or
     /// existing physical residency is warm; failure leaves the turn backstop
     /// responsible for restoring or prefilling normally.
-    fn warm_ahead(&self, persona: uuid::Uuid, room: uuid::Uuid) {
-        let Some(key) = crate::inference::slots::ActivityKey::new(persona, room) else {
-            return; // nil halves (test workspaces, roomless background) — nothing to warm
-        };
+    fn warm_ahead(&self, key: crate::inference::slots::PageKey) {
         let root = self.endpoints().root().to_string();
         // Discovery is the pin path's job — warm-ahead only acts on servers
         // whose slot pool is already installed (every server after its first
@@ -60,8 +57,7 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
             // serves two citizen slots and no scratch, so this is every act there).
             continuum_base::probe!(
                 class = "inference.kv_warm_ahead.skipped",
-                persona = %key.persona,
-                room = %key.room,
+                page = %key,
                 reason = "no_scratch_slot",
                 "warm-ahead skipped: this server has no scratch slot, so the page restore runs at admission instead of during prompt assembly"
             );

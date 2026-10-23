@@ -106,6 +106,10 @@ pub struct PersonaBrainConfig {
     /// [[eval-reproducibility-is-two-tier-lift-controlled-absolute-drifts]],
     /// [[redaction-makes-exam-learning-honest]].
     pub suppress_recall: bool,
+    /// A measurement FORK of the mind (`fork_eval_cycle`): its turns warm their own KV
+    /// page per room and never queue behind the living mind's act, since it acts beside
+    /// her (`slots::PageKey::Fork`). `false` for every resident.
+    pub forked: bool,
 }
 
 /// Whether a grounding source must run synchronously on the inference loop, or
@@ -484,7 +488,7 @@ pub(super) fn assemble_workspace_cycle(
         None,
         cfg.context_window,
     );
-    let mut deliberation =
+    let deliberation =
         LlmDeliberationFaculty::new(cfg.persona_id, cfg.persona_name, cfg.system_prompt, adapter)
             .with_working_memory(Arc::clone(&working_memory))
             .with_genome(Arc::clone(&genome))
@@ -504,6 +508,7 @@ pub(super) fn assemble_workspace_cycle(
                 ws.rehydrate(cfg.persona_id);
                 ws
             });
+    let mut deliberation = if cfg.forked { deliberation.forked() } else { deliberation };
     if tool_executor.is_some() {
         // Offer EXACTLY what this persona is authorized to run (offer ==
         // authorized) — never a tool the gate would refuse. A local persona is the

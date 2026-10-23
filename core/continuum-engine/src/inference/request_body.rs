@@ -46,6 +46,13 @@ pub(crate) const ACT_REASONING_BUDGET: u32 = 1024;
 /// The purpose a deliberation (speak / pass) turn announces on its request.
 pub const DELIBERATION_PURPOSE: &str = "cognition/deliberation";
 
+/// A FORK's act and deliberation: a measurement copy of a mind (an eval exam) acting
+/// beside the living one. The same reasoning budgets as [`ACT_PURPOSE`] and
+/// [`DELIBERATION_PURPOSE`]; only the page differs: a fork warms its own page per room,
+/// never the mind's one page (`slots::PageKey::Fork`), and never waits on her act gate.
+pub const FORK_ACT_PURPOSE: &str = "cognition/fork-act";
+pub const FORK_DELIBERATION_PURPOSE: &str = "cognition/fork-deliberation";
+
 /// A sensory description needs answer text within its existing completion allowance.
 /// Keep it distinct from persona deliberation for routing and diagnostics.
 pub const VISION_DESCRIPTION_PURPOSE: &str = "cognition/vision-describe";
@@ -78,8 +85,8 @@ pub(crate) const DELIBERATION_ANSWER_SHARE_DIVISOR: u64 = 4;
 pub fn apply_reasoning_budget(purpose: Option<&str>, body: &mut Value) -> Option<u64> {
     let obj = body.as_object_mut()?;
     let budget = match purpose {
-        Some(ACT_PURPOSE) => u64::from(ACT_REASONING_BUDGET),
-        Some(DELIBERATION_PURPOSE | VISION_DESCRIPTION_PURPOSE) => {
+        Some(ACT_PURPOSE | FORK_ACT_PURPOSE) => u64::from(ACT_REASONING_BUDGET),
+        Some(DELIBERATION_PURPOSE | FORK_DELIBERATION_PURPOSE | VISION_DESCRIPTION_PURPOSE) => {
             deliberation_reasoning_budget(obj.get("max_tokens")?.as_u64()?)?
         }
         _ => return None,
@@ -133,7 +140,7 @@ pub(crate) fn finish_body(
     // said.
     if let Some(budget) = apply_reasoning_budget(request.purpose.as_deref(), body) {
         let budget_class = match request.purpose.as_deref() {
-            Some(ACT_PURPOSE) => "delib.act.reasoning_budgeted",
+            Some(ACT_PURPOSE | FORK_ACT_PURPOSE) => "delib.act.reasoning_budgeted",
             Some(VISION_DESCRIPTION_PURPOSE) => "vision.description.reasoning_budgeted",
             _ => "delib.pass.reasoning_budgeted",
         };

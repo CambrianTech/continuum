@@ -1,6 +1,6 @@
 use super::*;
 
-/// How many of a server's `n_slots` are CITIZEN slots — warm activity slots a
+/// How many of a server's `n_slots` are CITIZEN slots — warm page slots a
 /// Turn may hold. ≥3 slots reserve the highest index as scratch for non-Turn
 /// traffic; below that every slot is a citizen slot. More citizens than this is
 /// the DESIGN (N minds over M slots, paged like registers), never a fault — the
@@ -10,15 +10,15 @@ pub fn citizen_slots(n_slots: u32) -> u32 {
 }
 
 /// A slot pinned for the duration of a turn — while held, the pool cannot evict
-/// this activity's slot, so a concurrent returner never leases (and restores into)
+/// this page's slot, so a concurrent returner never leases (and restores into)
 /// a slot that is still decoding. RAII: dropping it releases the pin.
-pub type SlotPin = PinHandle<ActivityKey, std::sync::Arc<KvSlotLease>>;
+pub type SlotPin = PinHandle<PageKey, std::sync::Arc<KvSlotLease>>;
 
 /// How a request may touch serving slots — the traffic-class policy, AS DATA
 /// (one tested map over the existing `purpose` strings, answering the
 /// INFERENCE-SCHEDULING doc's open question; never per-callsite hacks).
 ///
-/// Placement rule: **only `Turn` may hold or evict a citizen's activity slot.**
+/// Placement rule: **only `Turn` may hold or evict a citizen's page slot.**
 /// Everything else lands on the reserved SCRATCH slot. A single-slot server
 /// saves its resident before lending that slot transiently; a two-slot server
 /// without scratch stays unpinned. Both use `cache_prompt: false`. The
@@ -29,11 +29,14 @@ pub type SlotPin = PinHandle<ActivityKey, std::sync::Arc<KvSlotLease>>;
 /// unpinned producers were free to LCP-steal any warm slot.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SlotClass {
-    /// The citizen's real turn (deliberation / persona-respond): pins her
-    /// activity slot via [`ActivityKey`].
+    /// The citizen's real turn (deliberation / act / persona-respond): pins her
+    /// MIND's slot ([`PageKey::Mind`]), one page across every room she acts in.
     Turn,
+    /// A forked copy's turn (an eval exam acting beside the living mind): pins its own
+    /// per-room slot ([`PageKey::Fork`]), never her page.
+    Fork,
     /// Short same-context helper calls riding a live turn (gates, validators,
-    /// recipe/proposal raters): scratch — never the activity slot they'd clobber.
+    /// recipe/proposal raters): scratch — never the page slot they'd clobber.
     Sidecar,
     /// Background cognition with no live turn (dream lenses, module inference,
     /// anything unrecognized): scratch.
@@ -46,6 +49,7 @@ impl SlotClass {
     pub fn as_str(&self) -> &'static str {
         match self {
             SlotClass::Turn => "turn",
+            SlotClass::Fork => "fork",
             SlotClass::Sidecar => "sidecar",
             SlotClass::Background => "background",
             SlotClass::Probe => "probe",
@@ -77,27 +81,27 @@ pub fn class_for(purpose: Option<&str>) -> SlotClass {
         | Some("local-coding-agent")
         | Some("serving-smoke-probe")
         | Some("cognition/replay-request") => SlotClass::Probe,
+        Some(crate::inference::request_body::FORK_ACT_PURPOSE)
+        | Some(crate::inference::request_body::FORK_DELIBERATION_PURPOSE) => SlotClass::Fork,
         _ => SlotClass::Background,
     }
 }
 
-/// The warm-KV identity: one persona's conversation in one room — an ACTIVITY.
-/// Typed UUIDs, non-nil by construction; the map keys on this struct itself.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct ActivityKey {
-    pub persona: Uuid,
-    pub room: Uuid,
-}
+impl SlotClass {
+    /// Whether this class holds a warm slot of its own (a mind's or a fork's).
+    pub fn holds_a_page(&self) -> bool {
+        matches!(self, SlotClass::Turn | SlotClass::Fork)
+    }
 
-impl ActivityKey {
-    /// Both halves must be real ids. A nil room cannot become a key — the old
-    /// persona-only collapse (N concurrent activities thrashing one slot) and
-    /// the nil-room phantom key were the two halves of the KV-reuse-0% bug.
-    pub fn new(persona: Uuid, room: Uuid) -> Option<Self> {
-        if persona.is_nil() || room.is_nil() {
-            return None;
+    /// The page a request of this class warms: a Turn warms the persona's ONE mind page
+    /// whatever room it acts in; a Fork warms its own page in its room. `None` for every
+    /// class that holds no page, or when the ids it needs are missing or nil.
+    pub fn page_key(&self, persona: Option<Uuid>, room: Option<Uuid>) -> Option<PageKey> {
+        match self {
+            SlotClass::Turn => PageKey::mind(persona?),
+            SlotClass::Fork => ForkKey::new(persona?, room?).map(PageKey::Fork),
+            SlotClass::Sidecar | SlotClass::Background | SlotClass::Probe => None,
         }
-        Some(Self { persona, room })
     }
 }
 
@@ -110,7 +114,7 @@ impl ActivityKey {
 pub struct KvSlotLease {
     pub(super) slot: u32,
     pub(super) free: Arc<Mutex<Vec<u32>>>,
-    /// The activity's last-known prompt size in tokens — the COST basis for the
+    /// The page's last-known prompt size in tokens — the COST basis for the
     /// priced eviction policy (cost_of_loss ∝ tail re-prefill). Updated at each
     /// pin from the request's own token estimate; an estimate is fine because
     /// eviction only needs slots COMPARABLE, not absolutely priced.
@@ -123,7 +127,7 @@ impl Drop for KvSlotLease {
     }
 }
 
-/// The per-server slot pool: N leasable slot indices, activities resident in
+/// The per-server slot pool: N leasable slot indices, pages resident in
 /// the shared paging engine.
 /// Recency tie-break window: within it, a fresher equal-cost tail outranks a
 /// staler one; beyond it equal-cost tails are genuinely equivalent. Strictly
@@ -135,7 +139,7 @@ pub(super) const RECENCY_TIEBREAK_MS: u64 = 600_000;
 pub(super) const COST_STEP: i64 = 1 << 20;
 
 pub struct KvSlotPool {
-    pub(super) pool: PagedResourcePool<ActivityKey, Arc<KvSlotLease>>,
+    pub(super) pool: PagedResourcePool<PageKey, Arc<KvSlotLease>>,
     pub(super) free: Arc<Mutex<Vec<u32>>>,
     pub(super) n_slots: u32,
     /// The reserved non-citizen slot (highest index) when the server has ≥3
@@ -148,18 +152,18 @@ pub struct KvSlotPool {
     /// onto a resident's slot and overwrote her page; Sahar reused 0 tokens on
     /// every turn while Kimi, on the other slot, reused 44,950.
     pub(super) scratch: Option<u32>,
-    /// slot index → the activity whose KV last WARMED that slot. This is the
+    /// slot index → the page whose KV last WARMED that slot. This is the
     /// paging ledger's "who is resident" half: when a lease hands a slot to a
-    /// DIFFERENT activity, the previous holder's KV is still physically in the
+    /// DIFFERENT page, the previous holder's KV is still physically in the
     /// server slot and must be SAVED to its disk page before the new turn
     /// overwrites it. Tiny map (n_slots entries), cold path (one pin per turn).
-    pub(super) holders: Mutex<std::collections::HashMap<u32, ActivityKey>>,
+    pub(super) holders: Mutex<std::collections::HashMap<u32, PageKey>>,
     /// Activities with a valid KV page on disk (written via
     /// `/slots/{id}?action=save` under the lane's `--slot-save-path`). The
-    /// restore half of the ledger: a re-entering activity whose slot was
+    /// restore half of the ledger: a re-entering page whose slot was
     /// recycled restores its page (at this node's measured switch cost) instead of
     /// re-prefilling (~35s at 22k — the 330× cliff the restore economy names).
-    pub(super) saved: Mutex<std::collections::HashSet<ActivityKey>>,
+    pub(super) saved: Mutex<std::collections::HashSet<PageKey>>,
     /// Physical-slot admission also excludes concurrent requests for the same key.
     pub(super) operations: Vec<Arc<tokio::sync::Semaphore>>,
     /// Signalled whenever a slot's operation permit is released: what a turn that found every
@@ -195,28 +199,20 @@ impl Drop for SlotPermit {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SlotPaging {
     pub slot: u32,
-    /// A different activity's KV is still resident in this slot — save it to
+    /// A different page's KV is still resident in this slot — save it to
     /// its disk page BEFORE the new turn's prefill overwrites it.
-    pub save_first: Option<ActivityKey>,
-    /// This activity has a page on disk and the slot does not currently hold
+    pub save_first: Option<PageKey>,
+    /// This page has a page on disk and the slot does not currently hold
     /// its (fresher) KV — restore the page before the turn.
     pub restore: bool,
-    /// The physical slot already contains this activity, rather than a new lease.
+    /// The physical slot already contains this page, rather than a new lease.
     pub already_resident: bool,
 }
 
-/// The page filename for an activity — stable across processes, one file per
-/// activity, overwritten on each save. Lives under the lane's geometry-keyed
-/// `--slot-save-path` dir, so a page can never be restored into a slot with a
-/// different context size or model.
-pub fn page_filename(key: &ActivityKey) -> String {
-    format!("a-{}-{}.bin", key.persona.simple(), key.room.simple())
-}
-
-/// The KV page store is VIRTUAL-MEMORY PAGING ON CHEAP DISK — one page (+ one
-/// checkpoint sidecar) per activity, overwritten on each save, kept across runs
-/// under the geometry-keyed dir — and it must hold EVERY active resident's
-/// activities without eviction (Joel, 2026-09-13: "disk is cheap … could easily
+/// The KV page store is VIRTUAL-MEMORY PAGING ON CHEAP DISK — one page (+ its
+/// sidecars) per mind, and per room of a fork, overwritten on each save, kept across
+/// runs under the geometry-keyed dir — and it must hold EVERY active resident's
+/// page without eviction (Joel, 2026-09-13: "disk is cheap … could easily
 /// support all active resident persona"). So the limit is generous bytes on
 /// disk, never the slot count, and only pages nobody has touched for
 /// [`KV_PAGE_MIN_AGE_MS`] are candidates: an active resident's page is always

@@ -20,9 +20,9 @@ impl KvSlotPool {
             sizer: Arc::new(|_| 1),
             // PRICED eviction (plan B5, KV-CACHE-ECONOMY §3.2/§6 — the classic
             // heuristic floor, dropped into the engine's own priority seam):
-            // cost_of_loss ∝ the activity's tail tokens (what a cold re-entry
+            // cost_of_loss ∝ the page's tail tokens (what a cold re-entry
             // re-prefills), discounted by staleness — halved per hour idle — so
-            // an abandoned giant eventually yields to live small activities.
+            // an abandoned giant eventually yields to live small pages.
             // Ascending sort evicts lowest first, so the CHEAPEST tail goes
             // first and a 7.6k head can never displace a warm 36k tail (§2's
             // arithmetic, pinned by test below). The learned/bandit policy is a
@@ -109,7 +109,7 @@ impl KvSlotPool {
     }
 
     /// Whether a synthetic decode (the serving heartbeat's smoke probe) could only run on a slot
-    /// holding a resident's live KV: no scratch slot, and some slot attributed to an activity.
+    /// holding a resident's live KV: no scratch slot, and some slot attributed to an page.
     /// The probe must not run then (card 9e3350bd, the 5090 2026-10-11: on a one-slot lane the
     /// 72-token smoke prompt replaced a 53,980-token resident and the next save wrote that as
     /// her page, 0 checkpoints; every restore after it re-prefilled from ~0).
@@ -138,18 +138,18 @@ impl KvSlotPool {
             .unwrap_or(0) // unwrap_or: a pool has at least one slot; an empty range is impossible
     }
 
-    /// Record the activity's current prompt size — the cost basis the priced
+    /// Record the page's current prompt size — the cost basis the priced
     /// eviction reads. Called at pin time with the request's token estimate.
-    pub fn note_tail(&self, key: &ActivityKey, tokens: u64) {
+    pub fn note_tail(&self, key: &PageKey, tokens: u64) {
         if let Some(lease) = self.pool.get(key) {
             lease.tail_tokens.store(tokens.max(1), Ordering::Relaxed);
         }
     }
 
-    /// Lease the slot for `key`: warm reuse if the activity is resident, a free
+    /// Lease the slot for `key`: warm reuse if the page is resident, a free
     /// index otherwise, evicting the engine-chosen (LRU, later priced) resident
     /// when full. `None` only if the pool cannot free an index (all pinned).
-    pub async fn lease(&self, key: ActivityKey) -> Option<u32> {
+    pub async fn lease(&self, key: PageKey) -> Option<u32> {
         // Warm path — also refreshes recency in the engine.
         if let Some(lease) = self.pool.get(&key) {
             return Some(lease.slot);
@@ -173,8 +173,7 @@ impl KvSlotPool {
                     // M5); the caller waits for a release rather than running unpinned.
                     continuum_base::probe!(
                         class = "inference.slot_affinity.all_pinned",
-                        persona = %key.persona,
-                        room = %key.room,
+                        page = %key,
                         "all slots are pinned by in-flight turns: nothing to evict"
                     );
                     return None;
@@ -182,13 +181,13 @@ impl KvSlotPool {
                 continuum_base::probe!(
                     class = "inference.slot_affinity.evicted",
                     evicted_count = evicted,
-                    "all slots held — engine evicted the least-valuable activity; its \
+                    "all slots held — engine evicted the least-valuable page; its \
                      warm prefix is forfeit and its next turn re-prefills (or restores \
                      its page at this node's measured switch cost — inference.kv_page.action ms)",
                 );
             }
             let free = Arc::clone(&self.free);
-            // The slot that physically still holds this activity's KV (evicted from the pool
+            // The slot that physically still holds this page's KV (evicted from the pool
             // but not yet overwritten, or resumed from the same engine's ledger) is taken
             // back when free: its next turn reuses that KV in place instead of restoring.
             let warm = self.holders.lock().iter().find(|(_, k)| **k == key).map(|(slot, _)| *slot);
@@ -214,10 +213,9 @@ impl KvSlotPool {
                 Ok(lease) => {
                     continuum_base::probe!(
                         class = "inference.slot_affinity.pinned",
-                        persona = %key.persona,
-                        room = %key.room,
+                        page = %key,
                         slot = lease.slot as u64,
-                        "activity pinned to a llama-server slot — its prefix warms HERE",
+                        "page pinned to a llama-server slot — its prefix warms HERE",
                     );
                     return Some(lease.slot);
                 }
@@ -232,24 +230,24 @@ impl KvSlotPool {
     }
 
     /// [`Self::lease`] plus the paging ledger: who to SAVE before this turn
-    /// overwrites the slot, and whether to RESTORE this activity's own page.
+    /// overwrites the slot, and whether to RESTORE this page's own page.
     ///
     /// The rules, in order:
-    /// - slot still holds THIS activity (warm re-lease) → no save, no restore:
+    /// - slot still holds THIS page (warm re-lease) → no save, no restore:
     ///   the in-slot KV is fresher than any page on disk.
-    /// - slot last warmed a DIFFERENT activity → save THEIRS first (their KV is
+    /// - slot last warmed a DIFFERENT page → save THEIRS first (their KV is
     ///   physically still in the server slot), then restore OURS if a page
     ///   exists.
     /// - slot holder unknown (fresh pool over a pre-existing server) → restore
     ///   ours if a page exists; nothing known to save.
-    pub async fn lease_paged(&self, key: ActivityKey) -> Option<SlotPaging> {
+    pub async fn lease_paged(&self, key: PageKey) -> Option<SlotPaging> {
         let slot = self.lease(key).await?;
         Some(self.plan_paging(slot, key))
     }
 
     /// Resolve the physical index from the pinned assignment, not a prior lease
     /// that another executor thread could have evicted before the pin.
-    pub(crate) fn pin_slot(&self, key: &ActivityKey) -> Option<(u32, SlotPin)> {
+    pub(crate) fn pin_slot(&self, key: &PageKey) -> Option<(u32, SlotPin)> {
         let pin = self.pin(key)?;
         let slot = pin.value()?.slot;
         Some((slot, pin))
@@ -274,8 +272,8 @@ impl KvSlotPool {
         Arc::clone(&self.released)
     }
 
-    /// Caller holds the physical-slot permit and activity pin before changing attribution.
-    pub(crate) fn plan_paging(&self, slot: u32, key: ActivityKey) -> SlotPaging {
+    /// Caller holds the physical-slot permit and page pin before changing attribution.
+    pub(crate) fn plan_paging(&self, slot: u32, key: PageKey) -> SlotPaging {
         let prev = self.holders.lock().insert(slot, key);
         if prev != Some(key) {
             self.persist_ledger(self.current_snapshot());
@@ -291,21 +289,21 @@ impl KvSlotPool {
         }
     }
 
-    /// Pin this activity's slot for the duration of a turn. While the returned
+    /// Pin this page's slot for the duration of a turn. While the returned
     /// [`SlotPin`] is held, priced eviction skips this slot, so a concurrent
     /// returner can never lease (and restore into) a slot that is still decoding
     /// this turn's KV — the decoupling that forced the old restore timeout. RAII:
-    /// drop the handle to release. `None` if the activity is not resident (nothing
+    /// drop the handle to release. `None` if the page is not resident (nothing
     /// to protect — a caller that just leased it will always get `Some`).
-    pub fn pin(&self, key: &ActivityKey) -> Option<SlotPin> {
+    pub fn pin(&self, key: &PageKey) -> Option<SlotPin> {
         self.pool.pin(key)
     }
 
     /// Detach the resident identity before transient traffic overwrites a slot.
     /// The caller holds the decode permit and keeps the returned pin through the
-    /// request. A later activity must restore its saved page, never mistake the
+    /// request. A later page must restore its saved page, never mistake the
     /// transient KV for its own warm state or save it under its own filename.
-    pub(crate) fn take_resident(&self, slot: u32) -> (Option<ActivityKey>, Option<SlotPin>) {
+    pub(crate) fn take_resident(&self, slot: u32) -> (Option<PageKey>, Option<SlotPin>) {
         let previous = self.holders.lock().remove(&slot);
         if previous.is_some() {
             self.persist_ledger(self.current_snapshot());
@@ -316,7 +314,7 @@ impl KvSlotPool {
 
     /// Failed/cancelled generation never proves whose KV now occupies the slot.
     /// Saved pages remain valid; only the provisional physical attribution clears.
-    pub(crate) fn forget_resident(&self, slot: u32, key: ActivityKey) {
+    pub(crate) fn forget_resident(&self, slot: u32, key: PageKey) {
         let removed = {
             let mut holders = self.holders.lock();
             holders.get(&slot) == Some(&key) && holders.remove(&slot).is_some()
@@ -328,14 +326,14 @@ impl KvSlotPool {
 
     /// Whether `key` has a page file beside this pool's ledger; `None` without a ledger (no
     /// page dir known). One stat, on the cold path only.
-    pub(crate) fn page_on_disk(&self, key: &ActivityKey) -> Option<bool> {
+    pub(crate) fn page_on_disk(&self, key: &PageKey) -> Option<bool> {
         let dir = self.ledger.get()?.path.parent()?.to_path_buf();
         Some(dir.join(page_filename(key)).is_file())
     }
 
     /// Record that `key`'s page was successfully written to disk — it becomes
     /// restorable. Called by the adapter AFTER the save HTTP call succeeds.
-    pub fn note_saved(&self, key: ActivityKey) {
+    pub fn note_saved(&self, key: PageKey) {
         let snapshot = {
             let mut saved = self.saved.lock();
             saved.insert(key);
@@ -348,7 +346,7 @@ impl KvSlotPool {
     /// mismatch) — stop offering it so the turn falls back to a plain prefill
     /// instead of retrying a dead restore every pin. Also called BEFORE a save
     /// overwrites the page, so an interrupted save is never restorable.
-    pub fn note_page_lost(&self, key: &ActivityKey) {
+    pub fn note_page_lost(&self, key: &PageKey) {
         let snapshot = {
             let mut saved = self.saved.lock();
             if !saved.remove(key) {
@@ -365,16 +363,19 @@ impl KvSlotPool {
     /// Lock order: `saved`, then `holders`.
     pub(super) fn ledger_snapshot(
         &self,
-        saved: &std::collections::HashSet<ActivityKey>,
-        holders: &std::collections::HashMap<u32, ActivityKey>,
+        saved: &std::collections::HashSet<PageKey>,
+        holders: &std::collections::HashMap<u32, PageKey>,
     ) -> Option<LedgerSnapshot> {
         self.ledger.get()?;
         let generation = self.ledger_generation.fetch_add(1, Ordering::Relaxed) + 1;
-        let mut keys: Vec<(Uuid, Uuid)> = saved.iter().map(|k| (k.persona, k.room)).collect();
-        keys.sort_unstable();
-        let mut residents: Vec<(u32, Uuid, Uuid)> = holders.iter().map(|(slot, k)| (*slot, k.persona, k.room)).collect();
+        // Minds only: a fork dies with the core that ran it, so a restart could only pin its
+        // pages on disk. In memory a fork's page is restorable like any other.
+        let mut minds: Vec<Uuid> = saved.iter().filter_map(|k| k.as_mind()).map(|m| m.persona()).collect();
+        minds.sort_unstable();
+        let mut residents: Vec<(u32, Uuid)> =
+            holders.iter().filter_map(|(slot, k)| k.as_mind().map(|m| (*slot, m.persona()))).collect();
         residents.sort_unstable();
-        Some(LedgerSnapshot { generation, keys, residents })
+        Some(LedgerSnapshot { generation, minds, residents })
     }
 
     /// [`Self::ledger_snapshot`] of the state right now, for a change that held neither lock.

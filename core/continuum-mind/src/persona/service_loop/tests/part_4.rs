@@ -114,6 +114,7 @@ use super::*;
             defer_recall: false,
             defer_grounding: false,
             suppress_recall: false,
+            forked: false,
         };
         crate::cognition::persona_workspace::global()
             .register_from_cfg(cfg)
@@ -208,6 +209,7 @@ use super::*;
                 defer_recall: false,
                 defer_grounding: false,
                 suppress_recall: false,
+                forked: false,
             };
             crate::cognition::persona_workspace::global()
                 .register_from_cfg(cfg)

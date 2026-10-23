@@ -19,11 +19,13 @@ impl LlmDeliberationFaculty {
         // no remote-sized request is replayed on a smaller local window.
         loaded.adapter.prepare_generation().await;
         // RESTORE-AHEAD (compression-ladder rung 1): tell the serving adapter
-        // this activity generates NEXT, so her KV page pages in DURING the
+        // this page generates NEXT, so her KV page pages in DURING the
         // prompt assembly below instead of racing the turn at pin time. Fire-
-        // and-forget; the pin-time path stays the backstop; a nil room (test
-        // workspaces, roomless background) no-ops inside.
-        loaded.adapter.warm_ahead(self.persona_id, ws.room_id);
+        // and-forget; the pin-time path stays the backstop; no page (a nil id, or
+        // a fork in no room) warms nothing.
+        if let Some(page) = self.page(ws.room_id) {
+            loaded.adapter.warm_ahead(page);
+        }
         // Size this turn's {prompt + reply reserve} to the LIVE served per-slot window —
         // in BOTH directions. If the lane relaunched SMALLER than this persona's spawn-time
         // pin, a prompt over the slot overflows `llama_decode` → 500 "Compute error" that

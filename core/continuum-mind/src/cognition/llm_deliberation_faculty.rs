@@ -268,6 +268,8 @@ pub struct LlmDeliberationFaculty {
     context_view: parking_lot::Mutex<
         Option<continuum_context::view::View<crate::cognition::context_streams::ContextMessage>>,
     >,
+    /// A measurement fork's (`fork_eval_cycle`): its turns warm their own page, never hers.
+    forked: bool,
 }
 
 impl LlmDeliberationFaculty {
@@ -303,6 +305,7 @@ impl LlmDeliberationFaculty {
             decoding: relaxed_decoding(),
             working_set: None,
             context_view: parking_lot::Mutex::new(None),
+            forked: false,
         }
     }
 
