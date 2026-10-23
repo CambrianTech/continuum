@@ -1,3 +1,6 @@
+//! Lane registry regressions, compiled only by the parent test module.
+#![cfg(test)]
+
 use super::*;
 
 // what this catches (Astra, #4069): a destructive census must fail CLOSED. A `.lane`
