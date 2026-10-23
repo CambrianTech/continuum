@@ -84,6 +84,7 @@
         // running daemon.
         // Dummy executor — bootstrap fires the legacy-path detection
         // BEFORE pump install, so the executor is never touched.
+        // Registry audit (mind cut): stays in the mind: the executor is never touched.
         let dummy_registry = std::sync::Arc::new(crate::runtime::ModuleRegistry::new());
         let dummy_executor = std::sync::Arc::new(
             crate::runtime::command_executor::CommandExecutor::new(dummy_registry),

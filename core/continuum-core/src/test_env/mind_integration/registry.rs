@@ -4,6 +4,7 @@
 //! registry). Each asserts exactly what it asserted before the move.
 
 mod act_observe;
+mod conformance;
 mod deliberation;
 mod persona_tools;
 mod tool_executor;

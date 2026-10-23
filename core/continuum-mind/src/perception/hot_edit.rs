@@ -214,6 +214,8 @@ mod tests {
     // from every citizen (Provided commands fail closed); this pins it loudly.
     #[test]
     fn hot_edit_is_an_ai_safe_provided_command_in_the_native_surface() {
+        // Registry audit (mind cut): stays in the mind: it reads only the perception/* commands, which
+        // this crate declares, so the mind's own registry carries them.
         let descriptor = command_registry()
             .into_iter()
             .find(|d| d.name == "perception/hot-edit")

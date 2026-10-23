@@ -271,6 +271,8 @@ mod tests {
     #[test]
     fn provided_input_schemas_preserve_routing_and_required_fields() {
         use crate::sdk_codegen::{command_registry, WireShape};
+        // Registry audit (mind cut): stays in the mind: it reads only the perception/* commands, which
+        // this crate declares, so the mind's own registry carries them.
         let registry = command_registry();
         for (name, required) in [
             ("perception/observe", "target"),
@@ -363,6 +365,8 @@ mod tests {
     // spec_for_command drops an unregistered name), which this pins loudly.
     #[test]
     fn observe_is_an_ai_safe_provided_command_in_the_native_surface() {
+        // Registry audit (mind cut): stays in the mind: it reads only the perception/* commands, which
+        // this crate declares, so the mind's own registry carries them.
         let descriptor = command_registry()
             .into_iter()
             .find(|d| d.name == "perception/observe")

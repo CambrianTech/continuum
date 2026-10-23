@@ -438,7 +438,7 @@ impl LlmDeliberationFaculty {
     /// invalidates the cached prefix. The whole-string [`compose_system_holding`] is
     /// `stable ++ trailing` of exactly this.
     #[allow(clippy::too_many_arguments)]
-    pub(in super::super) fn compose_system_split(
+    pub fn compose_system_split(
         &self,
         context: &str,
         expanded: &BTreeSet<String>,

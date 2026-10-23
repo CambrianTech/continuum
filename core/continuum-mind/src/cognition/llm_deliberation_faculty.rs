@@ -262,7 +262,7 @@ pub struct LlmDeliberationFaculty {
     /// is then simply skipped. Shared (cheap clone) with the serving daemon that reads
     /// the ceiling; deliberately NOT a process global, because that value feeds a
     /// decision and a global read inside a decision makes tests order-dependent.
-    working_set: Option<super::working_set::WorkingSetRegistry>,
+    pub working_set: Option<super::working_set::WorkingSetRegistry>,
     /// Her context view across acts (`prompt/epoch.rs`): one epoch that only appends, turned
     /// over when it outgrows her history's grant.
     context_view: parking_lot::Mutex<
@@ -556,7 +556,7 @@ impl LlmDeliberationFaculty {
     /// colocated with its renderer. Drives the working-presence contract on
     /// undirected turns; derived ONCE per prompt so the framing-token estimate and
     /// the final render agree byte-for-byte (the budget-math invariant).
-    fn holds_live_work(ws: &Workspace) -> bool {
+    pub fn holds_live_work(ws: &Workspace) -> bool {
         ws.broadcast
             .iter()
             .filter(|c| c.decision.is_none() && !c.trailing)
@@ -809,6 +809,8 @@ pub mod test_support {
 
     /// The surface internals core's registry tests price against the live registry.
     pub use super::hands_surface::hands_surface;
+    pub use super::prompt::fit::{GroundingPiece, GroundingPlan};
+    pub use super::reply_claim::reply_claim;
     pub use super::request::TurnKind;
     pub use super::tool_surface::SelectedSurface;
     pub use crate::cognition::tool_surface::SurfaceReason;

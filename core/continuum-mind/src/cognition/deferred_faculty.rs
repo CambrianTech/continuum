@@ -412,7 +412,7 @@ pub(crate) fn reproject_to_now(found: &StampedFinding, now: &Workspace) -> Contr
 /// reproject against, so we must not penalize the finding for our own blindness
 /// (fail toward serving last-good, not toward silently dropping it).
 fn lexical_relevance(finding: &str, current: &str) -> f32 {
-    fn tokens(s: &str) -> std::collections::HashSet<String> {
+    pub fn tokens(s: &str) -> std::collections::HashSet<String> {
         s.split(|ch: char| !ch.is_alphanumeric())
             .filter(|t| !t.is_empty())
             .map(|t| t.to_lowercase())

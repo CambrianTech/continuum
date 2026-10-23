@@ -539,6 +539,8 @@ mod tests {
     /// run with no bundle must not fail the step that just ran.
     #[tokio::test]
     async fn a_steps_saves_land_in_the_bundle_and_a_run_without_a_bundle_still_completes() {
+        // Registry audit (mind cut): stays in the mind: it needs every dispatch to FAIL (`work/create`
+        // is dep-holding, never auto-seeded, in any binary), not the surface.
         let exec = Arc::new(crate::runtime::command_executor::CommandExecutor::new(Arc::new(
             ModuleRegistry::new(),
         )));
@@ -574,6 +576,8 @@ mod tests {
         // imported suite. Over an EMPTY registry every dispatch fails, so with
         // on_error: skip the skip count IS the dispatch count: three items, three
         // skips. A step that ran once with the array would report one.
+        // Registry audit (mind cut): stays in the mind: it needs every dispatch to FAIL (`work/create`
+        // is dep-holding, never auto-seeded, in any binary), not the surface.
         let exec = Arc::new(crate::runtime::command_executor::CommandExecutor::new(Arc::new(
             ModuleRegistry::new(),
         )));
@@ -599,6 +603,8 @@ mod tests {
         // clean Ok receipt with held_at = 0 proves nothing was attempted — and the
         // step after it must not run either. If this regresses, an authored
         // campaign submits applications in the human's name unattended.
+        // Registry audit (mind cut): stays in the mind: it needs every dispatch to FAIL (`work/create`
+        // is dep-holding, never auto-seeded, in any binary), not the surface.
         let exec = Arc::new(crate::runtime::command_executor::CommandExecutor::new(Arc::new(
             ModuleRegistry::new(),
         )));
@@ -628,6 +634,7 @@ mod tests {
         }
 
         fn hosting(canned: &Arc<CannedModule>) -> CommandExecutor {
+            // Registry audit (mind cut): stays in the mind: dispatches only the canned module it registers.
             let registry = Arc::new(ModuleRegistry::new());
             registry.register(canned.clone());
             CommandExecutor::new(registry)

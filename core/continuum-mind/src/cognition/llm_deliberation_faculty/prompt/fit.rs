@@ -369,11 +369,11 @@ pub(in super::super) struct ContextComposition {
 
 /// A borrowed selection of whole source content or its declared atomic prefix.
 /// Reserving and expanding it never copies the source payload.
-pub(in super::super) struct GroundingPiece<'a> {
+pub struct GroundingPiece<'a> {
     pub(in super::super) contribution: &'a Contribution,
     /// None keeps the source's original rendering, including its separators.
     pub(in super::super) units: Option<usize>,
-    pub(in super::super) tokens: usize,
+    pub tokens: usize,
 }
 
 impl<'a> GroundingPiece<'a> {
@@ -386,7 +386,7 @@ impl<'a> GroundingPiece<'a> {
         }
     }
 
-    pub(in super::super) fn whole(c: &'a Contribution) -> Self {
+    pub fn whole(c: &'a Contribution) -> Self {
         // A block whose SOURCE cut it short still owes its reader the notice, even
         // when every delivered part fits: reserve it here so the budget stays exact.
         let notice = if c.source_truncated {
@@ -442,7 +442,7 @@ impl<'a> GroundingPiece<'a> {
         out.push_str(&Self::notice_text(c, omitted));
     }
 
-    pub(in super::super) fn minimum(c: &'a Contribution) -> Self {
+    pub fn minimum(c: &'a Contribution) -> Self {
         let whole = Self::whole(c);
         if c.parts.len() < 2 {
             return whole;
@@ -520,7 +520,7 @@ impl<'a> GroundingPiece<'a> {
 /// equal-salience list cannot spend a peer's reservation; KV placement never
 /// determines whether standing activity context may be evicted.
 #[derive(Default)]
-pub(in super::super) struct GroundingPlan<'a> {
+pub struct GroundingPlan<'a> {
     pub(in super::super) pieces: Vec<GroundingPiece<'a>>,
 }
 
@@ -538,7 +538,7 @@ impl<'a> GroundingPlan<'a> {
     /// caller WANTS. Fitting it is [`GroundingPlan::within_budget`]'s job. Only the
     /// system half: a block that rides the conversation is a source of her view
     /// (`prompt/epoch.rs`), budgeted by its epoch.
-    pub(in super::super) fn minimum(ws: &'a Workspace) -> Self {
+    pub fn minimum(ws: &'a Workspace) -> Self {
         Self {
             pieces: ws
                 .broadcast
@@ -594,7 +594,7 @@ impl<'a> GroundingPlan<'a> {
         }
     }
 
-    pub(in super::super) fn trailing_tokens(&self) -> usize {
+    pub fn trailing_tokens(&self) -> usize {
         self.pieces
             .iter()
             .filter(|p| p.contribution.trailing)
@@ -610,7 +610,7 @@ impl<'a> GroundingPlan<'a> {
             .sum()
     }
 
-    pub(in super::super) fn system_reserve(&self) -> usize {
+    pub fn system_reserve(&self) -> usize {
         let tokens = self.system_tokens();
         tokens
             + if tokens > 0 {

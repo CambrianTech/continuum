@@ -206,7 +206,7 @@ pub(super) fn stable_prefix_order(a: &str, b: &str) -> std::cmp::Ordering {
     churn_of(a).cmp(&churn_of(b)).then_with(|| a.cmp(b))
 }
 
-pub(super) struct ComposedSystemPrompt {
+pub struct ComposedSystemPrompt {
     /// Persona-invariant prefix — safe to place in the cacheable system message.
     pub stable: String,
     /// Per-turn situational framing — the message builder appends it as the newest turn.

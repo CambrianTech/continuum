@@ -660,7 +660,7 @@ impl LlmDeliberationFaculty {
     /// The full tool surface is always shown; relevance-scored progressive disclosure was
     /// a weak-model crutch that hid a capable persona's own hands (see the body). Empty
     /// tool set → empty (no menu at all).
-    pub(in super::super) fn expanded_categories(&self, _ws: &Workspace) -> BTreeSet<String> {
+    pub fn expanded_categories(&self, _ws: &Workspace) -> BTreeSet<String> {
         if self.tools.is_empty() {
             return BTreeSet::new();
         }

@@ -2,16 +2,13 @@
 //! From `cognition::tool_executor::command_executor`: dispatch and slip naming against the
 //! REAL registry.
 
-use std::sync::Arc;
-
-use serde_json::{json, Value};
+use serde_json::json;
 use uuid::Uuid;
 
 use crate::ai::types::ToolCall as NativeToolCall;
 use crate::cognition::tool_executor::command_executor::test_support::*;
 use crate::cognition::tool_executor::command_executor::*;
 use crate::cognition::tool_executor::ToolExecutor;
-use crate::runtime::ModuleRegistry;
 
 // what this catches (card b579a9c7, Kimi 2026-09-26): a PATH or a bare SYMBOL in the
 // tool NAME field is not a wrong verb, it is the thing she was about landed where the
@@ -135,4 +132,49 @@ fn unknown_command_offers_did_you_mean_on_dropped_prefix() {
         out.contains("retry with this shape"),
         "must inline the top match's manual so the retry needs no detour: {out}"
     );
+}
+
+#[test]
+fn unknown_command_feedback_is_persona_actionable_not_dev_noise() {
+    let raw = "no Rust module handles command: 'frobnicate'. \
+               The implicit TS-bridge fallthrough is disabled per [[no-fallbacks-ever]]. \
+               register a `ServiceModule` whose `command_prefixes` covers it."
+        .to_string();
+    let out = persona_tool_error("frobnicate", raw);
+    assert!(
+        !out.contains("ServiceModule"),
+        "dev noise leaked to persona: {out}"
+    );
+    assert!(
+        !out.contains("TS-bridge"),
+        "dev noise leaked to persona: {out}"
+    );
+    // No near-miss exists for "frobnicate", so she's pointed at full
+    // discovery (commands/help with no arguments) — the #1916 contract.
+    assert!(
+        out.contains("commands/help"),
+        "must point her at discovery: {out}"
+    );
+    assert!(
+        out.contains("`frobnicate`"),
+        "must name what she tried: {out}"
+    );
+}
+
+// what this catches: a bad-args refusal keeps the substrate's own field-naming
+// reason AND inlines the command's correct call shape — feedback that names the
+// problem and the fix in the SAME observation, no help-lookup turn (#1916).
+#[test]
+fn invalid_params_feedback_reinforces_help() {
+    let raw = "code/write: [arguments] missing field `filePath`".to_string();
+    let out = persona_tool_error("code/write", raw);
+    assert!(
+        out.contains("missing field `filePath`"),
+        "keeps the real cause: {out}"
+    );
+    assert!(
+        out.contains("fix your arguments and retry") || out.contains("commands/help"),
+        "must hand her the correct shape (inline manual) or the manual pointer: {out}"
+    );
+    assert!(out.contains("code/write"), "names the tool: {out}");
 }

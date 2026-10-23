@@ -236,6 +236,8 @@ mod tests {
     // verb bloating the per-turn tool surface.
     #[test]
     fn interact_is_a_native_provided_verb_and_close_is_catalog_only() {
+        // Registry audit (mind cut): stays in the mind: it reads only the perception/* commands, which
+        // this crate declares, so the mind's own registry carries them.
         let registry = command_registry();
         for (name, native) in [("perception/interact", true), ("perception/session-close", false)] {
             let d = registry.iter().find(|d| d.name == name).unwrap_or_else(|| panic!("{name} registered"));

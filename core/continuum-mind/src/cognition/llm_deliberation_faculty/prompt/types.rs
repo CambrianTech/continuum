@@ -275,7 +275,7 @@ impl PromptMessages {
             + self.grounding_tokens
     }
 
-    pub(in super::super) fn tokens(&self) -> usize {
+    pub fn tokens(&self) -> usize {
         LlmDeliberationFaculty::messages_cost(&self.history) + self.required_tokens()
     }
 }

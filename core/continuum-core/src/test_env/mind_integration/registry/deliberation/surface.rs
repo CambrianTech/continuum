@@ -148,3 +148,68 @@ fn the_real_registry_yields_a_non_empty_hands_surface() {
         "the discovery pair must survive"
     );
 }
+
+// what this catches: a rule that binds nothing must never bind to NOTHING. A
+// recipe naming only verbs this node has no native tool for (`mail/send` before
+// mail exists) falls back to the pre-S1 surface and says so in the ledger —
+// never an empty offer (the #206 cliff: 14/14 acts on commands/help, 0 edits).
+#[test]
+fn a_room_whose_affordances_match_no_native_verb_falls_back_never_to_nothing() {
+    let faculty = LlmDeliberationFaculty::new(
+        Uuid::new_v4(),
+        "Asha",
+        "You are Asha.",
+        Arc::new(HeuristicInferenceAdapter::new()) as Arc<dyn AIProviderAdapter>,
+    )
+    .with_context_window(65_536)
+    .with_tools(persona_tools::native_tool_specs());
+    let mut ws = Workspace::new("chase the recruiter");
+    ws.room_affordances = vec!["mail/send".to_string()];
+    let selected = faculty.select_tool_surface(&ws, 65_536);
+    assert_eq!(
+        selected.reason,
+        SurfaceReason::Full,
+        "fell through to the pre-S1 arm"
+    );
+    assert_eq!(
+        selected.specs.as_deref(),
+        Some(faculty.native_specs.as_slice())
+    );
+}
+
+// what this catches: the shipped benchmark recipe is now the RULE for every
+// benchmark room, so it must authorize at least her hands — every verb the
+// pre-S1 work turn offered — or S1 would take tools away from the citizens
+// solving cards right now. If a new native hand is added without being
+// authored here, this names it.
+#[test]
+fn the_shipped_benchmark_recipe_authorizes_every_hand_a_work_turn_offers() {
+    let raw = persona_tools::native_tool_specs();
+    for (file, json) in [
+        (
+            "benchmark.json",
+            include_str!("../../../../../../continuum-mind/src/experience/recipes/benchmark.json"),
+        ),
+        (
+            "benchmark-round.json",
+            include_str!("../../../../../../continuum-mind/src/experience/recipes/benchmark-round.json"),
+        ),
+    ] {
+        let recipe = crate::experience::recipe::ExperienceRecipe::from_json(json)
+            .expect("shipped benchmark recipe parses");
+        let authorized: std::collections::HashSet<&str> = recipe
+            .affordances
+            .iter()
+            .map(|a| a.command.as_str())
+            .collect();
+        let missing: Vec<String> = hands_surface(&raw)
+            .iter()
+            .map(|s| s.name.clone())
+            .filter(|n| !authorized.contains(n.as_str()))
+            .collect();
+        assert!(
+            missing.is_empty(),
+            "{file} must authorize every hand; missing: {missing:?}"
+        );
+    }
+}

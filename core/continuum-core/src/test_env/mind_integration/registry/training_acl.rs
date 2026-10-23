@@ -2,8 +2,6 @@
 //! From `persona::training_producer`: the rejected mark needs the substrate's authority (the
 //! REAL ACL).
 
-use crate::persona::training_producer::*;
-
 // what this catches (card ad4bfaeb): a passing review after a failure training the
 // rejected turns as good. Kimi, 2026-10-10: review 5769a6c3 failed her card 63855189
 // for unjustified production unwrap_or, she fixed it, and review 7845d153 passed it.

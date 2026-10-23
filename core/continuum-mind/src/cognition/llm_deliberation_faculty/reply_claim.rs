@@ -35,7 +35,7 @@ const PASS_RUNAWAY_MULTIPLE: u32 = 2;
 ///
 /// The runaway bound: [`LlmDeliberationFaculty::ACT_OUTPUT_CAP`] for an act; for a pass,
 /// twice her measured turn, never below the act's cap.
-pub(super) fn reply_claim(
+pub fn reply_claim(
     kind: TurnKind,
     need: Option<super::super::working_set::OutputNeed>,
     pending_peak: u32,

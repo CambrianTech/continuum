@@ -65,7 +65,7 @@ pub fn authorized_tool_specs(trust: TrustLevel) -> Vec<NativeToolSpec> {
 /// production path can reach it: the ONLY way to get a persona's tools is the
 /// identity-gated [`authorized_tool_specs`]. Kept solely to assert the projection
 /// (descriptor → spec) against the registry in tests.
-#[cfg(test)]
+#[cfg(any(test, feature = "test-fixtures"))]
 pub fn ai_safe_tool_specs() -> Vec<NativeToolSpec> {
     command_registry_live()
         .iter()
@@ -152,7 +152,7 @@ fn tool_summary(d: &CommandDescriptor) -> String {
         format!("params: {}", d.params.name)
     } else {
         // First line, then first sentence within it — whichever ends sooner.
-        let first_line = d.description.lines().next().unwrap_or("").trim();
+        let first_line = d.description.lines().next().unwrap_or("").trim(); // unwrap_or: an empty description has no first line; the summary is empty
         match first_line.find(". ") {
             Some(i) => first_line[..i].to_string(),
             None => first_line.trim_end_matches('.').to_string(),
@@ -211,7 +211,7 @@ pub fn render_tool_catalog(tools: &[NativeToolSpec], _budget_chars: usize) -> St
             .name
             .strip_prefix(cat)
             .and_then(|r| r.strip_prefix('/'))
-            .unwrap_or(&t.name);
+            .unwrap_or(&t.name); // unwrap_or: an uncategorised name renders whole
         by_cat
             .entry(cat)
             .or_default()
@@ -248,7 +248,7 @@ fn render_param_hint(schema: &ToolInputSchema) -> String {
     let required: Vec<&str> = schema
         .required
         .as_deref()
-        .unwrap_or(&[])
+        .unwrap_or(&[]) // unwrap_or: a schema with no required list requires nothing
         .iter()
         .map(String::as_str)
         .collect();
@@ -263,7 +263,7 @@ fn render_param_hint(schema: &ToolInputSchema) -> String {
                 .filter(|k| !required.contains(k))
                 .collect()
         })
-        .unwrap_or_default();
+        .unwrap_or_default(); // unwrap_or_default: a schema with no properties has no optional fields
     optional.sort_unstable();
     if required.is_empty() && optional.is_empty() {
         return String::new();
@@ -314,7 +314,7 @@ pub fn render_tool_menu(
             .name
             .strip_prefix(cat)
             .and_then(|r| r.strip_prefix('/'))
-            .unwrap_or(&t.name);
+            .unwrap_or(&t.name); // unwrap_or: an uncategorised name renders whole
         by_cat.entry(cat).or_default().push(verb.to_string());
     }
     let mut out = String::new();
@@ -361,7 +361,7 @@ pub fn group_categories(tools: &[NativeToolSpec]) -> Vec<(&str, Vec<&str>)> {
             .name
             .strip_prefix(cat)
             .and_then(|r| r.strip_prefix('/'))
-            .unwrap_or(&t.name);
+            .unwrap_or(&t.name); // unwrap_or: an uncategorised name renders whole
         by_cat.entry(cat).or_default().push(verb);
     }
     by_cat.into_iter().collect()
@@ -524,12 +524,12 @@ fn tool_input_schema_from(schema: &serde_json::Value) -> ToolInputSchema {
         schema_type: schema
             .get("type")
             .and_then(|v| v.as_str())
-            .unwrap_or("object")
+            .unwrap_or("object") // unwrap_or: JSON Schema params with no declared type are an object
             .to_string(),
         properties: schema
             .get("properties")
             .map(|p| lead_paragraph_descriptions(p.clone()))
-            .unwrap_or_else(|| json!({})),
+            .unwrap_or_else(|| json!({})), // unwrap_or_else: a command with no properties takes an empty object
         required: schema.get("required").and_then(|v| v.as_array()).map(|a| {
             a.iter()
                 .filter_map(|x| x.as_str().map(String::from))
@@ -582,7 +582,7 @@ fn lead_paragraph_descriptions(node: serde_json::Value) -> serde_json::Value {
                     // `description`, e.g. code/edit's) recurses like any other.
                     match (k.as_str(), &v) {
                         ("description", Value::String(text)) => {
-                            let lead = text.split("\n\n").next().unwrap_or(text).trim_end();
+                            let lead = text.split("\n\n").next().unwrap_or(text).trim_end(); // unwrap_or: split always yields one piece; the text itself is the lead
                             (k, Value::String(lead.to_string()))
                         }
                         _ => (k, lead_paragraph_descriptions(v)),
@@ -600,7 +600,7 @@ fn lead_paragraph_descriptions(node: serde_json::Value) -> serde_json::Value {
 /// JSON-Schema keywords whose value IS a schema (so a boolean there is a boolean
 /// *subschema*). `items` may also be an array of schemas (draft-04 tuple form),
 /// handled at the call site.
-const SCHEMA_VALUED_KEYS: &[&str] = &[
+pub const SCHEMA_VALUED_KEYS: &[&str] = &[
     "additionalProperties",
     "items",
     "additionalItems",
@@ -614,7 +614,7 @@ const SCHEMA_VALUED_KEYS: &[&str] = &[
     "unevaluatedItems",
 ];
 /// Keywords whose value is an OBJECT mapping names → schemas.
-const SCHEMA_MAP_KEYS: &[&str] = &[
+pub const SCHEMA_MAP_KEYS: &[&str] = &[
     "properties",
     "patternProperties",
     "definitions",
@@ -622,7 +622,7 @@ const SCHEMA_MAP_KEYS: &[&str] = &[
     "dependentSchemas",
 ];
 /// Keywords whose value is an ARRAY of schemas.
-const SCHEMA_ARRAY_KEYS: &[&str] = &["allOf", "anyOf", "oneOf", "prefixItems"];
+pub const SCHEMA_ARRAY_KEYS: &[&str] = &["allOf", "anyOf", "oneOf", "prefixItems"];
 
 /// Recursively rewrite JSON-Schema *boolean* subschemas (`true`/`false`) — which
 /// llama.cpp's grammar generator rejects — into their object equivalents, walking
