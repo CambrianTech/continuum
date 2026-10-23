@@ -530,14 +530,17 @@ mod tests {
         assert_eq!(result.items[0].content, "hello");
         assert_eq!(result.items[1].content, "world");
     }
-    // ---- Legacy wire form (pre-ruling-a): `continuation` null/object, no `truncated` key ----
+    // ---- Wire forms of a delivered pack: current `truncated`, legacy (pre-ruling-a)
+    //      `continuation` null/object, and lines carrying both or neither ----
 
-    /// Build a SourceDelivered capture line in the OLD schema: serialize the
-    /// current typed event, then swap `delivery.truncated` for legacy
-    /// `continuation` (`null` = complete delivery; object = source stopped short).
-    fn legacy_source_delivered_line(
+    /// Build one SourceDelivered capture line with an arbitrary combination of the
+    /// two truncation keys. `None` removes the key entirely; a value inserts it — so
+    /// old JSONL shapes (no `truncated`, legacy `continuation`) and precedence lines
+    /// (both present) are constructed exactly as they would appear on disk.
+    fn source_delivered_wire(
         items: Vec<crate::persona::rag_budget::RagItem>,
-        continuation: serde_json::Value,
+        truncated: Option<bool>,
+        continuation: Option<serde_json::Value>,
     ) -> String {
         let mut v = serde_json::to_value(RagCaptureEvent::SourceDelivered {
             captured_at_ms: 1_000,
@@ -550,7 +553,7 @@ mod tests {
                 source_id: "stub".to_string(),
                 items,
                 tokens_used: 5,
-                truncated: false,
+                truncated: truncated.unwrap_or(false),
                 resolution_used: ResolutionPreference::Raw,
             },
         })
@@ -560,34 +563,49 @@ mod tests {
             .expect("event carries a delivery object")
             .as_object_mut()
             .expect("delivery is a JSON object");
-        d.remove("truncated");
-        d.insert("continuation".to_string(), continuation);
+        match truncated {
+            Some(t) => d.insert("truncated".to_string(), serde_json::Value::Bool(t)),
+            None => d.remove("truncated"),
+        };
+        match continuation {
+            Some(c) => d.insert("continuation".to_string(), c),
+            None => d.remove("continuation"),
+        };
         serde_json::to_string(&v).unwrap()
+    }
+
+    /// Decode capture lines through the real JSONL reader (not direct serde), so
+    /// assertions ride the path replay actually uses.
+    fn decode_capture_lines(lines: &[String]) -> Vec<RagCaptureEvent> {
+        let temp = TempDir::new().unwrap();
+        let path = temp.path().join("captures.jsonl");
+        std::fs::write(&path, lines.join("\n")).unwrap();
+        read_jsonl_captures(&path).expect("JSONL reader must not fail on these lines")
     }
 
     #[test]
     fn legacy_capture_lines_decode_without_dropping_or_losing_truncation() {
-        let temp = TempDir::new().unwrap();
-        let path = temp.path().join("legacy.jsonl");
-        // Three old-schema shapes: complete (continuation null), nonempty partial
-        // (object), empty partial (object, nothing fit). None may be skipped as a
-        // parse failure; the truncation truth must survive decode.
+        // Old-schema shapes: complete (continuation null), nonempty partial
+        // (object), empty partial (object, nothing fit); plus missing-key and
+        // explicit-bool precedence lines. None may be skipped as a parse
+        // failure; the truncation truth must survive decode.
+        let object = serde_json::json!({ "opaque": {} });
         let lines = [
-            legacy_source_delivered_line(vec![item("alpha", 5)], serde_json::Value::Null),
-            legacy_source_delivered_line(
-                vec![item("beta", 5)],
-                serde_json::json!({ "opaque": {} }),
+            source_delivered_wire(vec![item("alpha", 5)], None, Some(serde_json::Value::Null)),
+            source_delivered_wire(vec![item("beta", 5)], None, Some(object.clone())),
+            source_delivered_wire(Vec::new(), None, Some(object.clone())),
+            // No truncation record at all: neither key present -> complete.
+            source_delivered_wire(vec![item("gamma", 5)], None, None),
+            // An explicit bool wins over the legacy continuation either way.
+            source_delivered_wire(
+                vec![item("delta", 5)],
+                Some(true),
+                Some(serde_json::Value::Null),
             ),
-            legacy_source_delivered_line(Vec::new(), serde_json::json!({ "opaque": {} })),
+            source_delivered_wire(Vec::new(), Some(false), Some(object.clone())),
         ];
-        std::fs::write(&path, lines.join("\n")).unwrap();
-
-        let events = read_jsonl_captures(&path).unwrap();
-        assert_eq!(
-            events.len(),
-            3,
-            "no legacy line may be dropped as a parse failure"
-        );
+        let events = decode_capture_lines(&lines);
+        assert_eq!(events.len(), 6, "no line may be dropped as a parse failure");
 
         let flags: Vec<bool> = events
             .iter()
@@ -596,7 +614,7 @@ mod tests {
                 _ => panic!("expected SourceDelivered events"),
             })
             .collect();
-        assert_eq!(flags, vec![false, true, true]);
+        assert_eq!(flags, vec![false, true, true, false, true, false]);
     }
 
     #[tokio::test]
@@ -616,15 +634,21 @@ mod tests {
                 Some(c) => vec![item(c, 4)],
                 None => Vec::new(),
             };
-            let line = legacy_source_delivered_line(
+            let line = source_delivered_wire(
                 items,
-                if want_truncated {
+                None,
+                Some(if want_truncated {
                     serde_json::json!({ "opaque": {} })
                 } else {
                     serde_json::Value::Null
-                },
+                }),
             );
-            let ev: RagCaptureEvent = serde_json::from_str(&line).unwrap();
+            // Ride the real JSONL reader path, not a direct serde parse: the
+            // cut-truth assertion must hold through what replay actually loads.
+            let ev = decode_capture_lines(&[line])
+                .into_iter()
+                .next()
+                .expect("the reader returns the line it was given");
             let replay = ReplayRagSource::from_captures("stub", persona(), vec![ev]);
             let faculty =
                 RagSourceFaculty::new(persona(), Arc::new(replay), SaliencePolicy::Retrieved);
