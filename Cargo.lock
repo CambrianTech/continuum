@@ -3173,6 +3173,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tokio",
+ "tracing",
  "ts-rs 12.0.1",
  "uuid",
 ]

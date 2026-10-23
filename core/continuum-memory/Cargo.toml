@@ -21,6 +21,7 @@ async-trait.workspace = true
 chrono.workspace = true
 dashmap = "6.1"  # Lock-free concurrent HashMap: per-persona corpora
 parking_lot.workspace = true
+tracing.workspace = true  # the kernel's log_* macros expand to ::tracing::event!
 ts-rs.workspace = true  # TypeScript type generation
 
 [dev-dependencies]
