@@ -6,8 +6,7 @@ impl DataState {
     ///
     /// Two-step resolution:
     ///   1. `resolve_handle(handle)` → opaque backend connection string
-    ///   2. Route connection string to concrete adapter (Postgres / SQLite /
-    ///      future). Adapters are cached keyed by connection string so two
+    ///   2. Route connection string to concrete adapter (SQLite only). Adapters are cached keyed by connection string so two
     ///      handles resolving to the same backend share one pool.
     pub(crate) async fn get_adapter(
         &self,
@@ -32,6 +31,8 @@ impl DataState {
         connection_string: String,
     ) -> Result<Arc<dyn StorageAdapter>, String> {
 
+        reject_unsupported_backend(&connection_string)?;
+
         // Check cache (keyed by resolved connection string, not by handle —
         // different handles can point to the same backend).
         if let Some(adapter) = self.adapters.get(&connection_string) {
@@ -48,9 +49,7 @@ impl DataState {
         // (small pool). Detection is post-resolution, on the connection
         // string, since that's where the backend shape is visible.
         let is_main_db = connection_string.contains("database/main.db")
-            || connection_string.contains("database\\main.db")
-            || connection_string.starts_with("postgres://")
-            || connection_string.starts_with("postgresql://");
+            || connection_string.contains("database\\main.db");
         let max_connections = if is_main_db { 20 } else { 4 };
 
         let config = AdapterConfig {
@@ -60,19 +59,7 @@ impl DataState {
             max_connections,
         };
 
-        let adapter: Arc<dyn StorageAdapter> = if connection_string.starts_with("postgres://")
-            || connection_string.starts_with("postgresql://")
-        {
-            log_info!(
-                "data",
-                "get_adapter",
-                "Creating PostgresAdapter for handle='{}' (resolved)",
-                handle
-            );
-            let mut pg = PostgresAdapter::new();
-            pg.initialize(config).await?;
-            Arc::new(pg)
-        } else {
+        let adapter: Arc<dyn StorageAdapter> = {
             log_info!(
                 "data",
                 "get_adapter",
@@ -88,4 +75,15 @@ impl DataState {
         self.adapters.insert(connection_string, adapter.clone());
         Ok(adapter)
     }
+}
+
+/// SQLite through the kernel ORM is the only store. A `postgres://` string
+/// (e.g. a stale `DATABASE_URL`) fails loudly here, never falls back to a local file.
+pub(super) fn reject_unsupported_backend(connection_string: &str) -> Result<(), String> {
+    if connection_string.starts_with("postgres://") || connection_string.starts_with("postgresql://") {
+        return Err(format!(
+            "Postgres is no longer supported: '{connection_string}'. Continuum stores data in SQLite only; unset DATABASE_URL or point it at a SQLite file path."
+        ));
+    }
+    Ok(())
 }

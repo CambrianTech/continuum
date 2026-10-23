@@ -71,7 +71,7 @@ pub struct ChannelState {
     pub self_task_generators: DashMap<Uuid, tokio::sync::Mutex<SelfTaskGenerator>>,
     /// Tick configuration — adjustable at runtime via channel/tick-config command.
     pub tick_config: std::sync::RwLock<ChannelTickConfig>,
-    /// Circuit breaker for DB-backed tick work. One failing Postgres path should
+    /// Circuit breaker for DB-backed tick work. One failing database path should
     /// not fan out into N personas × M queries every tick.
     pub db_tick_backoff: std::sync::Mutex<DbTickBackoff>,
 }
@@ -538,7 +538,7 @@ mod tests {
 
     #[test]
     fn tick_db_handle_preserves_explicit_override() {
-        let db_url = "postgres://user@localhost:5432/continuum".to_string();
+        let db_url = "/var/lib/continuum/tick.db".to_string();
 
         assert_eq!(
             ChannelModule::tick_db_handle_from_env(Some(db_url.clone())),
