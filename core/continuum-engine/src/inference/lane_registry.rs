@@ -196,6 +196,7 @@ pub enum SweepMode {
 pub enum SweepOutcome {
     /// Termination was requested, but exit is not observed; retain the record for retry.
     ExitUnconfirmed { pid: u32, port: u16 },
+    TerminationRefused { pid: u32, started_s: u64, reason: String },
     /// Killed a live ephemeral orphan and removed its record.
     ReapedEphemeral { pid: u32, port: u16 },
     /// Killed the LIVE lane and removed its record. [`SweepMode::Shutdown`] only —
@@ -263,7 +264,7 @@ pub fn sweep_orphans() -> Vec<SweepOutcome> {
 ///
 /// Role-blind on purpose. The live/ephemeral split exists to decide ADOPTION, and
 /// nothing is adoptable by a core that is exiting.
-pub async fn sweep_all() -> Result<Vec<SweepOutcome>, String> {
+pub async fn sweep_all(deadline: std::time::Instant) -> Result<Vec<SweepOutcome>, String> {
     let Some(dir) = lanes_dir() else {
         return Ok(Vec::new());
     };
@@ -274,7 +275,7 @@ pub async fn sweep_all() -> Result<Vec<SweepOutcome>, String> {
     })
     .await
     .map_err(|e| format!("lane shutdown sweep failed: {e}"))?;
-    confirm_pending(outcomes, pending, lane_process::KILL_POLL).await
+    confirm_pending(outcomes, pending, deadline.saturating_duration_since(std::time::Instant::now())).await
 }
 
 async fn confirm_pending(
@@ -509,6 +510,17 @@ fn records_in(dir: &Path) -> Vec<LaneRecord> {
         .collect()
 }
 
+fn finish_signal(path: &Path, rec: &LaneRecord, signal: Result<bool, String>) -> SweepOutcome {
+    match signal {
+        Ok(_) => finish_reap(path, rec),
+        Err(reason) => SweepOutcome::TerminationRefused {
+            pid: rec.pid,
+            started_s: rec.started_s,
+            reason,
+        },
+    }
+}
+
 // A successful signal request is not exit evidence (notably taskkill access
 // denial on Windows). Preserve ownership until the process is actually gone.
 fn finish_reap(path: &Path, rec: &LaneRecord) -> SweepOutcome {
@@ -575,13 +587,20 @@ fn sweep_collect(dir: &Path, mode: SweepMode, pending: &mut Vec<(PathBuf, LaneRe
             continue;
         }
         if lane_process::is_llama_server(rec.pid) {
-            // Capture the stamped incarnation before signalling. Legacy records
-            // cannot provide identity-safe delayed confirmation and retain the
-            // conservative immediate check.
-            let identified = rec.started_s != 0
-                && !lane_process::still_present(&[lane_identity(&rec)]).is_empty();
-            lane_process::kill9(rec.pid);
-            let outcome = finish_reap(&path, &rec);
+            // Capture the stamped incarnation before signalling. Unstamped
+            // legacy records cannot authorize termination of a recycled PID.
+            let identified = rec.started_s != 0;
+            let outcome = if identified {
+                finish_signal(&path, &rec, lane_process::signal_if_same(lane_identity(&rec)))
+            } else {
+                // No stamped incarnation: retain evidence instead of signalling
+                // an unbound PID after the destructive stop has begun.
+                SweepOutcome::TerminationRefused {
+                    pid: rec.pid,
+                    started_s: rec.started_s,
+                    reason: "recorded process identity could not be verified".into(),
+                }
+            };
             if identified && matches!(outcome, SweepOutcome::ExitUnconfirmed { .. }) {
                 pending.push((path, rec));
             }

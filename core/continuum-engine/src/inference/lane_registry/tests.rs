@@ -158,10 +158,18 @@ async fn shutdown_confirmation_waits_for_exit_and_preserves_replacements() {
         unresolved()
     );
     assert!(path.exists(), "true survivor ownership retained");
+    let denied = finish_signal(&path, &lane, Err("native access denied (5)".into()));
+    assert_eq!(denied, SweepOutcome::TerminationRefused {
+        pid, started_s, reason: "native access denied (5)".into(),
+    });
+    assert!(path.exists(), "denied termination retains exact ownership evidence");
+
     let recycled = crate::system_resources::process_tree::ProcessIdentity {
         start_time: started_s + 1,
         ..identity
     };
+    assert!(!lane_process::signal_if_same(recycled).expect("replaced identity is not signalled"));
+    assert!(child.try_wait().expect("child status").is_none());
     assert!(
         lane_process::confirm_gone(vec![recycled], lane_process::KILL_POLL)
             .await
@@ -169,7 +177,7 @@ async fn shutdown_confirmation_waits_for_exit_and_preserves_replacements() {
     );
     let input = child.stdin.take().expect("owned input");
     let release = async {
-        tokio::time::sleep(Duration::from_millis(20)).await;
+        tokio::time::sleep(Duration::from_millis(250)).await;
         drop(input);
         child.wait().await.expect("fixture exit")
     };
@@ -205,6 +213,22 @@ async fn shutdown_confirmation_waits_for_exit_and_preserves_replacements() {
         records_checked_in(dir.path()).expect("retained"),
         vec![replacement]
     );
+    // Exercise the actual native signal adapter on an owned disposable child;
+    // the earlier denied result is an injected policy case, not an OS denial.
+    let mut signalled = command.spawn().expect("second fixture child");
+    let signal_pid = signalled.id().expect("child pid");
+    table.refresh_processes_specifics(
+        ProcessesToUpdate::Some(&[Pid::from_u32(signal_pid)]), true,
+        ProcessRefreshKind::nothing(),
+    );
+    let signal_identity = crate::system_resources::process_tree::ProcessIdentity {
+        pid: signal_pid,
+        start_time: table.process(Pid::from_u32(signal_pid)).expect("live child").start_time(),
+    };
+    assert!(lane_process::signal_if_same(signal_identity).expect("native termination accepted"));
+    tokio::time::timeout(Duration::from_secs(5), signalled.wait())
+        .await.expect("bounded signalled exit").expect("reaped child");
+
 }
 
 // what this catches: record_in → the file exists and round-trips through JSON;
