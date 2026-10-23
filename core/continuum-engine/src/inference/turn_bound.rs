@@ -54,13 +54,22 @@ pub const TURN_BOUND_HEADROOM: u32 = 2;
 /// required-read and belongs in its own card.
 pub const TICK_DEADLINE: std::time::Duration = std::time::Duration::from_secs(25 * 60);
 
-/// Which of the two candidates a waiting seam ended up bound by.
+/// The longest any one wait inside an act may last: the act bound's floor times its
+/// checkpoint extensions (25 min x 3, card 6f3218ed). A stalled stream and a remote
+/// seat's measured service time both stop here, so no wait outlives the act that owns it.
+// derived-or-floor: a ceiling, the act bound's own 3x ceiling; it only ENDS a wait.
+pub const ACT_CEILING: std::time::Duration = std::time::Duration::from_secs(TICK_DEADLINE.as_secs() * 3);
+
+/// Which candidate a waiting seam ended up bound by.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BoundSource {
     /// The constant floor governed: the request carried no turn bound, or one below it.
     Floor,
     /// The request's own bound governed: the measured expectation with headroom.
     TurnBound,
+    /// The serving seat's own measured service time governed (its beacon's lane wait
+    /// plus decode at its measured rate), above both the floor and the turn bound.
+    SeatMeasured,
 }
 
 impl BoundSource {
@@ -68,6 +77,7 @@ impl BoundSource {
         match self {
             Self::Floor => "floor",
             Self::TurnBound => "turn_bound",
+            Self::SeatMeasured => "seat_measured",
         }
     }
 }

@@ -61,6 +61,7 @@ pub mod adapter;
 pub mod interceptor;
 pub mod peer_breaker;
 pub mod protocol;
+mod seat_deadline;
 pub mod transport;
 
 pub use adapter::{AircRemoteInferenceAdapter, AIRC_REMOTE_PROVIDER_ID};
