@@ -24,7 +24,17 @@ use uuid::Uuid;
 #[derive(Default)]
 pub(super) struct ServedGenerations {
     outstanding: Mutex<HashMap<Uuid, Served>>,
+    /// Cancels that arrived before their generation was admitted, by generation, with the
+    /// requester and arrival time. A cancel travels on its own connection and can overtake
+    /// the request it cancels; a remembered cancel refuses that request when it arrives.
+    /// Always locked after `outstanding`, so a cancel and an admission never interleave.
+    early_cancels: Mutex<HashMap<Uuid, (PeerId, tokio::time::Instant)>>,
 }
+
+/// How long an early cancel is remembered: the command round-trip budget both ends already
+/// agree on. A request and its own cancel arrive within one such round trip of each other.
+// derived-or-floor: the protocol's shared round-trip deadline, not a new number.
+const EARLY_CANCEL_WINDOW: std::time::Duration = continuum_airc_protocol::DEFAULT_COMMAND_DEADLINE;
 
 /// One outstanding generation.
 struct Served {
@@ -41,8 +51,11 @@ struct Served {
 pub(super) enum CancelOutcome {
     /// The generation was aborted (or will be, the instant its task is attached).
     Cancelled,
-    /// Nothing outstanding has that correlation: it finished, was refused, or never came.
+    /// This seat serves no generations (a registry-less copy); nothing to cancel.
     NotServing,
+    /// Nothing outstanding has that generation yet: the cancel is remembered for
+    /// [`EARLY_CANCEL_WINDOW`] and refuses the request if it arrives after its cancel.
+    Remembered,
     /// It is outstanding but was asked for by another peer: left running.
     NotYours,
 }
@@ -52,6 +65,7 @@ impl CancelOutcome {
         match self {
             Self::Cancelled => "cancelled",
             Self::NotServing => "not_serving",
+            Self::Remembered => "remembered",
             Self::NotYours => "not_yours",
         }
     }
@@ -64,6 +78,8 @@ pub(super) enum Refusal {
     Overloaded { outstanding: usize, bound: usize },
     /// A generation with this correlation is already being served.
     Duplicate { correlation: Uuid },
+    /// Its requester cancelled it before it arrived here.
+    CancelledByRequester { correlation: Uuid },
 }
 
 impl std::fmt::Display for Refusal {
@@ -77,6 +93,10 @@ impl std::fmt::Display for Refusal {
             Self::Duplicate { correlation } => {
                 write!(f, "generation {correlation} is already being served here")
             }
+            Self::CancelledByRequester { correlation } => write!(
+                f,
+                "generation {correlation} was cancelled by its requester before it arrived"
+            ),
         }
     }
 }
@@ -108,6 +128,17 @@ impl ServedGenerations {
         let mut outstanding = self.outstanding.lock();
         if outstanding.contains_key(&correlation) {
             return Err(Refusal::Duplicate { correlation });
+        }
+        {
+            let mut early = self.early_cancels.lock();
+            forget_expired(&mut early);
+            if early
+                .get(&correlation)
+                .is_some_and(|(requester, _)| *requester == caller)
+            {
+                early.remove(&correlation);
+                return Err(Refusal::CancelledByRequester { correlation });
+            }
         }
         if outstanding.len() >= bound {
             return Err(Refusal::Overloaded {
@@ -146,7 +177,10 @@ impl ServedGenerations {
     pub(super) fn cancel(&self, correlation: Uuid, requester: PeerId) -> CancelOutcome {
         let mut outstanding = self.outstanding.lock();
         let Some(served) = outstanding.get_mut(&correlation) else {
-            return CancelOutcome::NotServing;
+            let mut early = self.early_cancels.lock();
+            forget_expired(&mut early);
+            early.insert(correlation, (requester, tokio::time::Instant::now()));
+            return CancelOutcome::Remembered;
         };
         if served.caller != requester {
             return CancelOutcome::NotYours;
@@ -161,6 +195,12 @@ impl ServedGenerations {
     pub(super) fn outstanding(&self) -> usize {
         self.outstanding.lock().len()
     }
+}
+
+/// Drop early cancels older than [`EARLY_CANCEL_WINDOW`]: bounded by time, so a cancel
+/// for a request that never comes (or already finished) does not live on.
+fn forget_expired(early: &mut HashMap<Uuid, (PeerId, tokio::time::Instant)>) {
+    early.retain(|_, (_, at)| at.elapsed() <= EARLY_CANCEL_WINDOW);
 }
 
 impl Drop for ServedGenerations {
@@ -267,7 +307,7 @@ mod tests {
         assert_eq!(registry.cancel(held, stranger), CancelOutcome::NotYours);
         assert_eq!(
             registry.cancel(Uuid::from_u128(99), asker),
-            CancelOutcome::NotServing
+            CancelOutcome::Remembered
         );
         assert_eq!(
             registry.outstanding(),
@@ -297,5 +337,35 @@ mod tests {
             .await
             .expect("a cancel that landed before attach aborts at attach");
         assert!(joined.is_err_and(|e| e.is_cancelled()));
+    }
+
+    // what this catches (Codex review of cf08ff017): a cancel travels on its own
+    // connection and can arrive BEFORE the request it cancels. It is remembered for the
+    // round-trip window and refuses that requester's request when it arrives; another
+    // caller's request with the same id is not blocked; after the window it is forgotten.
+    #[tokio::test(start_paused = true)]
+    async fn a_cancel_that_overtakes_its_request_refuses_it_within_the_window() {
+        let registry = Arc::new(ServedGenerations::default());
+        let (asker, stranger) = (peer(1), peer(2));
+        let early = Uuid::from_u128(20);
+        assert_eq!(registry.cancel(early, asker), CancelOutcome::Remembered);
+        assert!(
+            registry.admit(early, stranger, 4).is_ok(),
+            "another caller is not blocked"
+        );
+        let late = Uuid::from_u128(21);
+        assert_eq!(registry.cancel(late, asker), CancelOutcome::Remembered);
+        assert_eq!(
+            registry.admit(late, asker, 4).err(),
+            Some(Refusal::CancelledByRequester { correlation: late }),
+            "the overtaken request is refused, never started"
+        );
+        let stale = Uuid::from_u128(22);
+        assert_eq!(registry.cancel(stale, asker), CancelOutcome::Remembered);
+        tokio::time::advance(EARLY_CANCEL_WINDOW + std::time::Duration::from_secs(1)).await;
+        assert!(
+            registry.admit(stale, asker, 4).is_ok(),
+            "a cancel past the window is forgotten"
+        );
     }
 }

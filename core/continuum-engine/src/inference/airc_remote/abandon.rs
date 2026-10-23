@@ -30,11 +30,13 @@ pub(super) fn seat_accepts_cancel(offer: Option<&CapacityOffer>) -> bool {
 }
 
 /// Armed BEFORE the request is published (airc publishes before `request_in` returns),
-/// keyed by the requester's own generation id. Dropped while armed (a deadline, an error,
-/// or the turn dropping its future, even mid-publication) it sends the seat a cancel;
-/// [`AbandonGuard::disarm`] once a reply arrived, because the seat is then already done.
+/// keyed by the requester's own generation id. Dropped while armed (a deadline, any error,
+/// or the turn dropping its future, even mid-publication) it fires its action, which sends
+/// the seat a cancel. Only [`AbandonGuard::disarm`] (a reply arrived) stops it: no error
+/// proves a request was not published (a publish can fail after the daemon accepted it),
+/// and a cancel for work that never arrived is harmless.
 pub(super) struct AbandonGuard {
-    armed: Option<Cancel>,
+    armed: Option<Box<dyn FnOnce() + Send>>,
 }
 
 struct Cancel {
@@ -53,13 +55,22 @@ impl AbandonGuard {
         generation: Uuid,
         seat_accepts: bool,
     ) -> Self {
+        let cancel = Cancel {
+            airc,
+            room,
+            seat,
+            generation,
+        };
         Self {
-            armed: seat_accepts.then_some(Cancel {
-                airc,
-                room,
-                seat,
-                generation,
-            }),
+            armed: seat_accepts.then(|| Box::new(move || cancel.dispatch()) as Box<dyn FnOnce() + Send>),
+        }
+    }
+
+    /// A guard whose abandonment runs `action` instead of a wire cancel (tests).
+    #[cfg(test)]
+    fn with_action(action: impl FnOnce() + Send + 'static) -> Self {
+        Self {
+            armed: Some(Box::new(action)),
         }
     }
 
@@ -71,26 +82,40 @@ impl AbandonGuard {
 
 impl Drop for AbandonGuard {
     fn drop(&mut self) {
-        let Some(cancel) = self.armed.take() else {
-            return;
-        };
-        // Drop cannot await: the cancel rides its own task. Outside a runtime (process
-        // teardown) there is nothing to send it on; the seat's own deadline still ends it.
-        match tokio::runtime::Handle::try_current() {
-            Ok(runtime) => {
-                runtime.spawn(cancel.send());
-            }
-            Err(_) => continuum_base::probe!(
-                class = "remote_lane.cancel_unsent",
-                peer = %cancel.seat.0,
-                generation = %cancel.generation,
-                "abandoned a remote generation outside a runtime; the seat was not told"
-            ),
+        if let Some(action) = self.armed.take() {
+            action();
         }
     }
 }
 
+/// Publish with `guard` already armed, and hand it back with the pending request. If this
+/// future is dropped mid-publication, or the publication fails in any way, the guard drops
+/// armed and the seat is told to stop: neither case proves the request never reached it.
+pub(super) async fn publish_armed<T, E>(
+    guard: AbandonGuard,
+    publish: impl std::future::Future<Output = Result<T, E>>,
+) -> Result<(T, AbandonGuard), E> {
+    let published = publish.await?;
+    Ok((published, guard))
+}
+
 impl Cancel {
+    /// Drop cannot await: the cancel rides its own task. Outside a runtime (process
+    /// teardown) there is nothing to send it on; the seat's own deadline still ends it.
+    fn dispatch(self) {
+        match tokio::runtime::Handle::try_current() {
+            Ok(runtime) => {
+                runtime.spawn(self.send());
+            }
+            Err(_) => continuum_base::probe!(
+                class = "remote_lane.cancel_unsent",
+                peer = %self.seat.0,
+                generation = %self.generation,
+                "abandoned a remote generation outside a runtime; the seat was not told"
+            ),
+        }
+    }
+
     async fn send(self) {
         let request = AircCommandRequest {
             path: COMMAND_PATH_AI_GENERATE_CANCEL.to_string(),
@@ -168,5 +193,36 @@ mod tests {
         assert!(seat_accepts_cancel(Some(&beacon(serde_json::json!([
             "remote_generate_cancel"
         ])))));
+    }
+
+    fn fired() -> (std::sync::Arc<std::sync::atomic::AtomicBool>, AbandonGuard) {
+        let flag = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let set = std::sync::Arc::clone(&flag);
+        let guard = AbandonGuard::with_action(move || set.store(true, std::sync::atomic::Ordering::SeqCst));
+        (flag, guard)
+    }
+
+    // what this catches (Codex review of cf08ff017): the window between airc publishing
+    // a request and request_in returning. The guard is armed before publication, so a
+    // turn dropped while publication is still pending fires the cancel, and a publication
+    // that FAILS fires it too (an error does not prove the frame was never accepted).
+    // Only a reply (disarm) stops it.
+    #[tokio::test]
+    async fn the_guard_fires_through_the_publication_window_and_on_any_failure() {
+        let (flag, guard) = fired();
+        let mid_publication = publish_armed(guard, std::future::pending::<Result<(), ()>>());
+        drop(mid_publication);
+        assert!(flag.load(std::sync::atomic::Ordering::SeqCst), "dropped mid-publication: cancel sent");
+
+        let (flag, guard) = fired();
+        let failed = publish_armed(guard, async { Err::<(), &str>("publish ack lost") }).await;
+        assert!(failed.is_err());
+        assert!(flag.load(std::sync::atomic::Ordering::SeqCst), "an ambiguous publish error: cancel sent");
+
+        let (flag, guard) = fired();
+        let (_, guard) = publish_armed(guard, async { Ok::<(), ()>(()) }).await.expect("published");
+        assert!(!flag.load(std::sync::atomic::Ordering::SeqCst), "published and still waiting: not fired");
+        guard.disarm();
+        assert!(!flag.load(std::sync::atomic::Ordering::SeqCst), "a reply disarms it");
     }
 }

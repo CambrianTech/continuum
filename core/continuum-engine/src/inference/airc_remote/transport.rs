@@ -526,18 +526,13 @@ impl AircInferenceTransport for AircLiveTransport {
                 correlation_id,
                 seat_accepts_cancel,
             );
-            match self
-                .airc
-                .request_in(&room, MentionTarget::Peer(target), headers, body, deadline)
-                .await
-            {
-                Ok(pending) => Ok::<_, airc_lib::AircError>((room, pending, abandon)),
-                Err(e) => {
-                    // Refused before or at publication: no generation to stop.
-                    abandon.disarm();
-                    Err(e)
-                }
-            }
+            let (pending, abandon) = super::abandon::publish_armed(
+                abandon,
+                self.airc
+                    .request_in(&room, MentionTarget::Peer(target), headers, body, deadline),
+            )
+            .await?;
+            Ok::<_, airc_lib::AircError>((room, pending, abandon))
         }
         .await;
         let (room, pending, abandon) = match dispatch {
