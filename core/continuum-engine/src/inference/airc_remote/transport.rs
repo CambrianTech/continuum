@@ -466,7 +466,22 @@ impl AircInferenceTransport for AircLiveTransport {
         // place. `AircTransport::build_headers` covers path + kind +
         // body_hint identically; env is None on our envelopes so the
         // env-header branch is a no-op.
-        let headers = AircTransport::build_headers(&envelope);
+        let mut headers = AircTransport::build_headers(&envelope);
+        // The requester's own id for this generation, on the wire BEFORE publication: the
+        // seat keys the served work by it, so a cancel can name it even if this turn is
+        // dropped while airc is still publishing (card 83f774fb).
+        headers.insert(
+            continuum_airc_protocol::HEADER_GENERATE_ID.to_string(),
+            correlation_id.to_string(),
+        );
+        let seat_accepts_cancel = super::abandon::seat_accepts_cancel(
+            super::seat_deadline::heard_seat_offer(
+                target.0,
+                None,
+                continuum_base::time::EpochMs::now().millis(),
+            )
+            .as_ref(),
+        );
 
         // Subscribe BEFORE the request leaves, or the first chunks race the
         // subscription and are lost. No filter: the daemon inverted a header filter
@@ -502,20 +517,30 @@ impl AircInferenceTransport for AircLiveTransport {
         // during a long generation must not strand its durable answer.
         let dispatch = async {
             let room = self.airc.current_room().await?;
-            let pending = self
+            // Armed before publication: every path that stops waiting without a reply,
+            // including this future being dropped mid-publication, tells the seat to stop.
+            let abandon = super::abandon::AbandonGuard::new(
+                Arc::clone(&self.airc),
+                room.clone(),
+                target,
+                correlation_id,
+                seat_accepts_cancel,
+            );
+            match self
                 .airc
-                .request_in(
-                    &room,
-                    MentionTarget::Peer(target),
-                    headers,
-                    body,
-                    deadline,
-                )
-                .await?;
-            Ok::<_, airc_lib::AircError>((room, pending))
+                .request_in(&room, MentionTarget::Peer(target), headers, body, deadline)
+                .await
+            {
+                Ok(pending) => Ok::<_, airc_lib::AircError>((room, pending, abandon)),
+                Err(e) => {
+                    // Refused before or at publication: no generation to stop.
+                    abandon.disarm();
+                    Err(e)
+                }
+            }
         }
         .await;
-        let (room, pending) = match dispatch {
+        let (room, pending, abandon) = match dispatch {
             Ok(p) => p,
             Err(airc_lib::AircError::NoCurrentRoom)
             | Err(airc_lib::AircError::NotSubscribed(_))
@@ -565,23 +590,6 @@ impl AircInferenceTransport for AircLiveTransport {
         // get classified as Transport when NoPeerReachable would
         // be more semantically accurate).
         let pending_correlation = pending.correlation_id;
-        // From here every path that stops waiting without a reply (the deadline, a stalled
-        // stream, an error, or the turn dropping this future) tells the seat to stop, so it
-        // does not finish a generation for no one (card 83f774fb). Disarmed on a reply.
-        let abandon = super::abandon::AbandonGuard::new(
-            Arc::clone(&self.airc),
-            room.clone(),
-            target,
-            pending_correlation,
-            super::abandon::seat_accepts_cancel(
-                super::seat_deadline::heard_seat_offer(
-                    target.0,
-                    None,
-                    continuum_base::time::EpochMs::now().millis(),
-                )
-                .as_ref(),
-            ),
-        );
         let expected = ReplyExpectation {
             responder: target,
             requester: self.airc.peer_id(),

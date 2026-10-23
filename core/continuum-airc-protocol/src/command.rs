@@ -52,12 +52,18 @@ pub const COMMAND_PATH_AI_GENERATE: &str = "ai/generate";
 /// advertises the capability; the seat honors it only from the original requester.
 pub const COMMAND_PATH_AI_GENERATE_CANCEL: &str = "ai/generate/cancel";
 
-/// Params of [`COMMAND_PATH_AI_GENERATE_CANCEL`]: the airc correlation id of the
-/// abandoned `ai/generate` request.
+/// Params of [`COMMAND_PATH_AI_GENERATE_CANCEL`]: the requester's generation id
+/// ([`HEADER_GENERATE_ID`]) of the abandoned `ai/generate` request.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GenerateCancel {
-    pub correlation: uuid::Uuid,
+    pub generation: uuid::Uuid,
 }
+
+/// airc header on an `ai/generate` request: the REQUESTER's id for this generation, chosen
+/// before the request is published. The seat keys the served generation by it, so a cancel
+/// can name it even when the requester abandons the request before airc hands back its own
+/// correlation id (card 83f774fb: airc publishes before `request_in` returns).
+pub const HEADER_GENERATE_ID: &str = "continuum.generate.id";
 
 /// airc header naming the `RouteKind` of the dispatch.
 pub const HEADER_COMMAND_KIND: &str = "continuum.command.kind";

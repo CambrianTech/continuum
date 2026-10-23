@@ -29,8 +29,9 @@ pub(super) fn seat_accepts_cancel(offer: Option<&CapacityOffer>) -> bool {
     })
 }
 
-/// Held while a remote generation is awaited. Dropped while armed (a deadline, an error,
-/// or the turn dropping its future) it sends the seat a cancel for this correlation;
+/// Armed BEFORE the request is published (airc publishes before `request_in` returns),
+/// keyed by the requester's own generation id. Dropped while armed (a deadline, an error,
+/// or the turn dropping its future, even mid-publication) it sends the seat a cancel;
 /// [`AbandonGuard::disarm`] once a reply arrived, because the seat is then already done.
 pub(super) struct AbandonGuard {
     armed: Option<Cancel>,
@@ -40,7 +41,7 @@ struct Cancel {
     airc: Arc<Airc>,
     room: airc_lib::Room,
     seat: PeerId,
-    correlation: Uuid,
+    generation: Uuid,
 }
 
 impl AbandonGuard {
@@ -49,7 +50,7 @@ impl AbandonGuard {
         airc: Arc<Airc>,
         room: airc_lib::Room,
         seat: PeerId,
-        correlation: Uuid,
+        generation: Uuid,
         seat_accepts: bool,
     ) -> Self {
         Self {
@@ -57,7 +58,7 @@ impl AbandonGuard {
                 airc,
                 room,
                 seat,
-                correlation,
+                generation,
             }),
         }
     }
@@ -82,7 +83,7 @@ impl Drop for AbandonGuard {
             Err(_) => continuum_base::probe!(
                 class = "remote_lane.cancel_unsent",
                 peer = %cancel.seat.0,
-                correlation = %cancel.correlation,
+                generation = %cancel.generation,
                 "abandoned a remote generation outside a runtime; the seat was not told"
             ),
         }
@@ -96,11 +97,12 @@ impl Cancel {
             kind: KIND_PEER.to_string(),
             env: None,
             params: serde_json::json!(GenerateCancel {
-                correlation: self.correlation
+                generation: self.generation
             }),
         };
         let headers = AircTransport::build_headers(&request);
-        let sent = match serde_json::to_value(&request) { // boundary: the airc wire, this request's body
+        let sent = match serde_json::to_value(&request) {
+            // boundary: the airc wire, this request's body
             Ok(body) => self
                 .airc
                 .request_in(
@@ -121,13 +123,13 @@ impl Cancel {
             Ok(()) => continuum_base::probe!(
                 class = "remote_lane.cancel_sent",
                 peer = %self.seat.0,
-                correlation = %self.correlation,
+                generation = %self.generation,
                 "abandoned a remote generation; told the seat to stop"
             ),
             Err(error) => continuum_base::probe!(
                 class = "remote_lane.cancel_unsent",
                 peer = %self.seat.0,
-                correlation = %self.correlation,
+                generation = %self.generation,
                 error = %error,
                 "abandoned a remote generation; the cancel could not be sent"
             ),

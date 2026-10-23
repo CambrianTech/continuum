@@ -133,6 +133,9 @@ pub struct ParsedEnvelope {
     /// ([`airc_protocol::HEADER_AIRC_CHANNEL_NAME`]), if present — carried
     /// onto the reply for the blind-room heal.
     pub request_channel_name: Option<String>,
+    /// The requester's own generation id ([`continuum_airc_protocol::HEADER_GENERATE_ID`]),
+    /// chosen before publication; `None` from a requester that predates it.
+    pub generation_id: Option<Uuid>,
     /// A capability grant the caller PRESENTED on the envelope (base64
     /// [`HEADER_AIRC_CAPABILITY_GRANT`], decoded). `None` if absent. Decoded in
     /// [`parse_envelope`](CommandRequestHandler::parse_envelope) so the parse step
@@ -257,6 +260,10 @@ impl CommandRequestHandler {
             request_channel: envelope.room_id,
             request_channel_name: envelope.headers.get(HEADER_AIRC_CHANNEL_NAME).cloned(),
             presented_grant,
+            generation_id: envelope
+                .headers
+                .get(continuum_airc_protocol::HEADER_GENERATE_ID)
+                .and_then(|id| id.parse().ok()),
         })
     }
 
@@ -609,12 +616,12 @@ impl ConsumerAdapter for CommandRequestHandler {
             ) {
                 Ok(cancel) => {
                     let outcome = match &self.generations {
-                        Some(generations) => generations.cancel(cancel.correlation, parsed.caller_peer_id),
+                        Some(generations) => generations.cancel(cancel.generation, parsed.caller_peer_id),
                         None => served_generations::CancelOutcome::NotServing,
                     };
                     continuum_base::probe!(
                         class = "airc.command.generation_cancel",
-                        correlation = %cancel.correlation,
+                        generation = %cancel.generation,
                         requester = %parsed.caller_peer_id.0,
                         outcome = outcome.as_str(),
                         "a requester abandoned a served generation"
@@ -627,7 +634,7 @@ impl ConsumerAdapter for CommandRequestHandler {
                     }
                 }
                 Err(e) => AircCommandResponse::Error {
-                    message: format!("ai/generate/cancel needs params {{correlation: uuid}}: {e}"),
+                    message: format!("ai/generate/cancel needs params {{generation: uuid}}: {e}"),
                 },
             };
             self.send_reply(&parsed, &response).await?;
@@ -640,9 +647,12 @@ impl ConsumerAdapter for CommandRequestHandler {
         if parsed.request.path == STREAMED_GENERATE_PATH {
             if let Some(generations) = &self.generations {
                 let bound = (self.generation_bound)();
-                match generations.admit(parsed.correlation_id, parsed.caller_peer_id, bound) {
+                // Keyed by the requester's generation id, so its cancel can name the work
+                // even if it abandoned the request before airc returned the correlation.
+                let key = parsed.generation_id.unwrap_or(parsed.correlation_id); // unwrap_or: a requester that predates the generation id is keyed by its airc correlation, which its cancel cannot name; nothing is invented
+                match generations.admit(key, parsed.caller_peer_id, bound) {
                     Ok(admission) => {
-                        let correlation = parsed.correlation_id;
+                        let correlation = key;
                         let answerer = self.detached();
                         let task = tokio::spawn(async move {
                             let _admission = admission;
