@@ -27,9 +27,11 @@ pub(super) fn seat_service_estimate(
         )),
         _ => None,
     };
+    // Each measured part counts; an unmeasured part adds nothing rather than a guess.
     match (wait, decode) {
         (None, None) => None,
-        (wait, decode) => Some(wait.unwrap_or_default() + decode.unwrap_or_default()),
+        (Some(part), None) | (None, Some(part)) => Some(part),
+        (Some(wait), Some(decode)) => Some(wait + decode),
     }
 }
 
