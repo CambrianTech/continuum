@@ -228,77 +228,67 @@ async fn abandoned_restore_retains_slot_lane_and_generation_until_terminal_recei
 async fn paging_progress_watchdog_covers_the_complete_response_body() {
     use axum::{
         body::{Body, Bytes},
-        extract::Query,
-        routing::{get, post},
-        Json, Router,
+        routing::post,
+        Router,
     };
     use futures::StreamExt;
     let headers = Arc::new(tokio::sync::Notify::new());
-    let app = Router::new()
-        .route(
-            "/slots/{slot}",
-            post({
+    let app = Router::new().route(
+        "/slots/0",
+        post({
+            let headers = headers.clone();
+            move || {
                 let headers = headers.clone();
-                move || {
-                    let headers = headers.clone();
-                    async move {
-                        Body::from_stream(
-                            futures::stream::once(async move {
-                                headers.notify_one();
-                                Ok::<_, std::convert::Infallible>(Bytes::from_static(
-                                    b"{\"id_slot\":",
-                                ))
-                            })
-                            .chain(futures::stream::pending()),
-                        )
-                    }
-                }
-            }),
-        )
-        .route(
-            "/slots",
-            get(
-                |Query(query): Query<std::collections::HashMap<String, String>>| async move {
-                    Json(
-                        json!({"operation_id": query.get("operation_id"), "id_slot": 0,
-                "action": "restore", "phase": 5}),
+                async move {
+                    Body::from_stream(
+                        futures::stream::once(async move {
+                            headers.notify_one();
+                            Ok::<_, std::convert::Infallible>(Bytes::from_static(b"{\"id_slot\":"))
+                        })
+                        .chain(futures::stream::pending()),
                     )
-                },
-            ),
-        );
+                }
+            }
+        }),
+    );
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
         .expect("test: bind");
-    let root = format!(
-        "http://{}",
-        listener.local_addr().expect("test: bound address")
-    );
+    let root = format!("http://{}", listener.local_addr().expect("test: address"));
     let server = tokio::spawn(async move { axum::serve(listener, app).await });
-    let key = ActivityKey::new(Uuid::new_v4(), Uuid::new_v4()).expect("test: activity");
     let client = reqwest::Client::new();
-    let bound = kv_page_wedge_bound(KV_PAGE_SWITCH_MS.p50_p90().1);
-    let mut action = Box::pin(kv_page_action(&client, &root, 0, &key, "restore"));
-    tokio::time::timeout(Duration::from_secs(5), async {
-        tokio::select! {
-            _ = &mut action => panic!("test: incomplete JSON cannot complete"),
-            _ = headers.notified() => {}
-        }
-    })
-    .await
-    .expect("test: response started");
-    assert!(futures::poll!(&mut action).is_pending());
-    tokio::time::pause();
-    tokio::time::advance(bound + Duration::from_secs(1)).await;
-    // Poll once under the advanced clock to start the existing progress probe.
-    let checkpoint = futures::poll!(&mut action);
-    tokio::time::resume();
-    let outcome = match checkpoint {
-        std::task::Poll::Ready(outcome) => outcome,
-        std::task::Poll::Pending => tokio::time::timeout(Duration::from_secs(5), action)
-            .await
-            .expect("test: terminal failure probe ends incomplete receipt"),
-    };
-    assert_eq!(outcome, PageOutcome::Uncertain);
+    let mut probes = 0;
+    let receipt = bounded_page_receipt(
+        client.post(format!("{root}/slots/0")),
+        Duration::from_millis(20),
+        || {
+            probes += 1;
+            let initial = probes == 1;
+            let headers = headers.clone();
+            async move {
+                if initial {
+                    // Start the watchdog interval only after the real HTTP body
+                    // begins. No paused clock or shared p90/probe state is involved.
+                    headers.notified().await;
+                    EngineProbe::Busy
+                } else {
+                    EngineProbe::OperationEnded
+                }
+            }
+        },
+        |_| {},
+    );
+    let outcome = tokio::time::timeout(Duration::from_secs(5), receipt)
+        .await
+        .expect("test: watchdog ends incomplete body receipt");
+    assert!(
+        outcome.is_none(),
+        "headers must not escape as a completed receipt"
+    );
+    assert_eq!(
+        probes, 2,
+        "initial observation then terminal watchdog checkpoint"
+    );
     server.abort();
     let _ = server.await;
 }
@@ -341,6 +331,7 @@ async fn paging_owner_panic_releases_guards_and_quarantines_uncertain_io() {
             task_entered.notify_one();
             task_release.notified().await;
             // Keep the actual production admission in the unwinding task.
+            assert!(admission.slot().is_some());
             assert!(admission.paging_in_flight);
             panic!("test: paging owner fault after dispatch");
         }),

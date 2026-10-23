@@ -665,6 +665,28 @@ pub(crate) async fn kv_page_action(
     }).await
 }
 
+// Keep receipt consumption inside the watchdog's owned future. Tests use this
+// same HTTP boundary with local progress evidence, without global serving state
+// or the concurrently updated switch-cost distribution.
+async fn bounded_page_receipt<P, PF>(
+    request: reqwest::RequestBuilder,
+    bound: std::time::Duration,
+    progress: P,
+    on_busy: impl FnMut(u64),
+) -> Option<Result<(u16, Option<serde_json::Value>), reqwest::Error>>
+where
+    P: FnMut() -> PF,
+    PF: std::future::Future<Output = EngineProbe>,
+{
+    let receipt = async {
+        let response = request.send().await?;
+        let status = response.status().as_u16();
+        let body = response.json::<serde_json::Value>().await.ok();
+        Ok((status, body))
+    };
+    wait_while_engine_progresses(receipt, bound, progress, on_busy).await
+}
+
 // The page-action boundary accepts capacity evidence from its existing owner;
 // HTTP fixtures can exercise the same protocol without a global monitor override.
 async fn kv_page_action_with_capacity(
@@ -730,14 +752,8 @@ async fn kv_page_action_with_capacity(
         }
     }
     // The same progress bound covers the complete receipt, not just headers.
-    let send = async {
-        let response = client.post(&url).json(&payload).send().await?;
-        let status = response.status().as_u16();
-        let body = response.json::<serde_json::Value>().await.ok();
-        Ok::<_, reqwest::Error>((status, body))
-    };
-    let resp = wait_while_engine_progresses(
-        send,
+    let resp = bounded_page_receipt(
+        client.post(&url).json(&payload),
         bound,
         || async {
             match operation {
