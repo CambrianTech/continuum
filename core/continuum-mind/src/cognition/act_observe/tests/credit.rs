@@ -184,7 +184,7 @@ async fn live_room_input_reaches_next_action_without_replacing_task_or_room() {
         // A later failed episode is taught with the same complete input,
         // through the ordinary lived-curriculum selector.
         restored.ok = false;
-        let teaching = crate::genome::curriculum::LivedExpansionSynthesizer::new()
+        let teaching = crate::cognition::curriculum::LivedExpansionSynthesizer::new()
             .select(std::slice::from_ref(&restored));
         assert_eq!(teaching, vec![restored.training_prompt()]);
         let mut legacy: serde_json::Value = serde_json::from_str(&encoded).unwrap();

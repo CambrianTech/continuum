@@ -272,7 +272,7 @@ pub async fn stage_credit<T: Transport>(
     conn: &Connection<T>,
     persona_name: &str,
     credit: &CapturedCredit,
-    generation_receipts: Vec<crate::cognition::provenance::GenerationReceipt>,
+    generation_receipts: Vec<crate::ai::provenance::GenerationReceipt>,
     prompt: String,
     completion: String,
     lived: Option<Vec<crate::genome::fine_tuning::LivedCall>>,
@@ -384,10 +384,10 @@ pub async fn stage_credit<T: Transport>(
 pub(super) async fn read_lived(
     persona_id: Uuid,
     persona_name: &str,
-    receipts: &[crate::cognition::provenance::GenerationReceipt],
+    receipts: &[crate::ai::provenance::GenerationReceipt],
     known: Vec<crate::genome::fine_tuning::LivedCall>,
 ) -> (Vec<crate::genome::fine_tuning::LivedCall>, bool) {
-    use crate::cognition::provenance::GenerationOutcome;
+    use crate::ai::provenance::GenerationOutcome;
     let served: Vec<Option<String>> = receipts
         .iter()
         .filter(|r| matches!(r.outcome, GenerationOutcome::Served { .. }))
@@ -478,9 +478,9 @@ pub(super) fn read_lived_calls(
 /// models/providers and all-faulted turns retain their full receipts without a
 /// fabricated scalar base model. Fault receipts never become successful output.
 pub(super) fn served_provenance(
-    receipts: &[crate::cognition::provenance::GenerationReceipt],
+    receipts: &[crate::ai::provenance::GenerationReceipt],
 ) -> Option<ServedProvenance> {
-    use crate::cognition::provenance::GenerationOutcome;
+    use crate::ai::provenance::GenerationOutcome;
     let mut first: Option<(&str, &str, &str)> = None;
     for receipt in receipts {
         if let GenerationOutcome::Served {

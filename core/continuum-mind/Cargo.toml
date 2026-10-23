@@ -48,9 +48,6 @@ futures = "0.3"
 once_cell.workspace = true
 rayon.workspace = true
 num_cpus = "1.16"  # CPU count detection
-wide = "0.7"  # Portable SIMD (f32x8) for embedding similarity math — NEON on
-              # aarch64 (Mac) / AVX on x86 (Linux grid), guaranteed vectorization
-              # at any opt-level (not auto-vec, which only fires in release).
 dirs = "5.0"
 sysinfo = "0.33"  # Cross-platform CPU, memory, system resource monitoring
 candle-core.workspace = true

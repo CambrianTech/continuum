@@ -7,7 +7,7 @@
 //! with the gene paged in, the stable arm with her promoted genome alone. The draw is per
 //! card, never per turn or per call, because the room judges cards: a settle verdict, the
 //! tests, a review. Every turn's receipt names the genes that ran
-//! ([`GenerationReceipt::genes`](crate::cognition::provenance::GenerationReceipt)), so a
+//! ([`GenerationReceipt::genes`](crate::ai::provenance::GenerationReceipt)), so a
 //! card's outcome is credited to exactly the genome that worked it. The gate reads those
 //! outcomes at a boundary and promotes or retires the gene; the trial row is the adoption
 //! receipt (what was decided, on what counts, when), and a promoted gene's row is what
@@ -191,9 +191,9 @@ impl CardTurn {
     /// PURE: the gate's reading of one staged turn's receipts.
     pub fn from_receipts<'a>(
         staged_at_ms: u64,
-        receipts: impl IntoIterator<Item = &'a crate::cognition::provenance::GenerationReceipt>,
+        receipts: impl IntoIterator<Item = &'a crate::ai::provenance::GenerationReceipt>,
     ) -> Self {
-        use crate::cognition::provenance::GenerationOutcome;
+        use crate::ai::provenance::GenerationOutcome;
         let served = receipts
             .into_iter()
             .filter_map(|r| match &r.outcome {
@@ -295,32 +295,6 @@ pub fn live_genes(persona: Uuid) -> Option<Vec<ActiveAdapterRequest>> {
             );
             None
         }
-    }
-}
-
-/// Puts her genome back when a work turn ends, however it ends: the snapshot taken before
-/// the turn by default, or her promoted genome when the turn got far enough to say so.
-/// Restores on drop, so a cancelled or unwinding turn cannot leave a trial gene on her
-/// cycle for the conversation turns that follow.
-pub struct GenomeRestore {
-    cycle: std::sync::Arc<crate::cognition::workspace::WorkspaceCycle>,
-    to: Vec<ActiveAdapterRequest>,
-}
-
-impl GenomeRestore {
-    pub fn snapshot(cycle: std::sync::Arc<crate::cognition::workspace::WorkspaceCycle>) -> Self {
-        let to = cycle.genome();
-        Self { cycle, to }
-    }
-
-    pub fn restore_to(&mut self, genes: Vec<ActiveAdapterRequest>) {
-        self.to = genes;
-    }
-}
-
-impl Drop for GenomeRestore {
-    fn drop(&mut self) {
-        self.cycle.page_in(std::mem::take(&mut self.to));
     }
 }
 
@@ -767,7 +741,7 @@ mod tests {
     // that ran the gene on some turns and not others, is no evidence either way.
     #[test]
     fn a_card_is_evidence_only_about_a_trial_it_was_worked_under() {
-        use crate::cognition::provenance::{GenerationOutcome, GenerationReceipt};
+        use crate::ai::provenance::{GenerationOutcome, GenerationReceipt};
         let local = crate::inference::llama_server::PROVIDER_ID;
         let served = |provider: &str, model: &str, genes: &[&str]| GenerationReceipt {
             submitted_request_id: "r".into(),
@@ -798,7 +772,7 @@ mod tests {
     // arms reach a checkpoint.
     #[test]
     fn each_settled_card_counts_once_in_the_arm_it_drew_and_the_gate_decides_at_a_checkpoint() {
-        use crate::cognition::provenance::{GenerationOutcome, GenerationReceipt};
+        use crate::ai::provenance::{GenerationOutcome, GenerationReceipt};
         let dir = tempfile::tempdir().expect("test: dir");
         let store = GeneTrials::at(dir.path().join("trials.json"));
         let kimi = Uuid::from_u128(0x6b1);

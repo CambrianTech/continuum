@@ -42,6 +42,8 @@ pub use cause::*;
 mod arbiter;
 pub use arbiter::*;
 mod workspace_cycle;
+mod genome_restore;
+pub use genome_restore::GenomeRestore;
 mod workspace_cycle_2;
 
 #[cfg(test)]

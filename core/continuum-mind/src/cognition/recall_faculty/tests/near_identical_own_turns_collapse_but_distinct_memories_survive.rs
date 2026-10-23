@@ -404,7 +404,7 @@ use super::*;
     // embedder is the bootstrap; a neural one slots in behind the same trait.
     #[tokio::test]
     pub(super) async fn relevance_beats_recency_with_embedder() {
-        use crate::cognition::embedding::LexicalEmbedder;
+        use crate::ai::embedding::LexicalEmbedder;
 
         let now = 1_000_000_000u64;
         let query = "what was our rollout plan for the auth flow again?";
@@ -491,7 +491,7 @@ use super::*;
     // a FOCUSED query, the triggering message, not the whole transcript).
     #[tokio::test]
     pub(super) async fn relevance_survives_a_noisy_burst_query() {
-        use crate::cognition::embedding::LexicalEmbedder;
+        use crate::ai::embedding::LexicalEmbedder;
 
         let now = 1_000_000_000u64;
         // The LIVE shape: the actual question buried in unrelated room chatter
@@ -575,7 +575,7 @@ use super::*;
     // relevance to overcome a maxed-out salience when the query clearly matches.
     #[tokio::test]
     pub(super) async fn relevance_outranks_max_salience_noise() {
-        use crate::cognition::embedding::LexicalEmbedder;
+        use crate::ai::embedding::LexicalEmbedder;
 
         let now = 1_000_000_000u64;
         let query = "what is the staging server's secret port?";

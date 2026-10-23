@@ -488,9 +488,10 @@ mod status;
 mod tests;
 pub use status::{GenomeTeachStatus, GenomeTeachStatusParams, GenomeTeachStatusResult};
 use crate::genome::teach::progress::{set_current_teach_run, teach_ledger_path};
+use crate::cognition::eval::synthesize_remediation;
 use crate::genome::teach::{
-    subscribe_teach_progress, synthesize_remediation, GenomeTeachTaskOutcome,
-    RemediationCorpus, TeachProgress, DEFAULT_MAX_FIX_ITERS, DEFAULT_TEMPERATURE,
+    subscribe_teach_progress, GenomeTeachTaskOutcome, RemediationCorpus, TeachProgress,
+    DEFAULT_MAX_FIX_ITERS, DEFAULT_TEMPERATURE,
 };
 
 /// Write the terminal row for a detached run — success carries the full result, failure

@@ -7,7 +7,7 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
-use crate::cognition::embedding::vector_math::pairwise_similarity_matrix;
+use crate::ai::embedding::vector_math::pairwise_similarity_matrix;
 use crate::sdk_codegen::{AccessLevel, ActionCommand, CommandError, Ctx};
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, TS, schemars::JsonSchema)]

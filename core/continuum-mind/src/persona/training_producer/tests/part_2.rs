@@ -271,7 +271,7 @@ use super::*;
     // summary must never attribute all its generations to the first model.
     #[test]
     pub(super) fn served_summary_requires_one_actual_lane_and_retains_request_identity() {
-        use crate::cognition::provenance::{GenerationOutcome, GenerationReceipt};
+        use crate::ai::provenance::{GenerationOutcome, GenerationReceipt};
         let mut receipts = vec![receipt("failed-before-serving")];
         assert!(served_provenance(&receipts).is_none());
         receipts.push(GenerationReceipt {

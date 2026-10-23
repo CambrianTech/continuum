@@ -55,7 +55,7 @@ pub struct EvalLaneInner {
     /// The lane's REAL served `/props` window — what the fork's cognition budgets against.
     pub(crate) served_ctx: u32,
     /// Where + why the lane landed (GPU/CPU), surfaced on the eval result.
-    pub(super) placement: crate::cognition::single_purpose_lane::PlacementEvidence,
+    pub(super) placement: crate::inference::single_purpose_lane::PlacementEvidence,
     /// Manifest identity captured when this lane loaded its gene; never re-resolved after evaluation.
     pub(super) measured_gene: Option<crate::genome::adapter_manifest::TrainedAdapter>,
 }
@@ -180,5 +180,5 @@ pub(super) const LEDGER_FAIL_ANSWER_CHARS: usize = 1_200;
 pub(super) const EVAL_LANE_LEASE_TTL_MS: u64 = 30 * 60 * 1000;
 
 /// The lease terms an eval lane holds its governed slot under.
-pub(super) const EVAL_LANE_TERMS: crate::cognition::single_purpose_lane::LaneLeaseTerms =
-    crate::cognition::single_purpose_lane::LaneLeaseTerms { consumer: "eval-lane", ttl_ms: EVAL_LANE_LEASE_TTL_MS };
+pub(super) const EVAL_LANE_TERMS: crate::inference::single_purpose_lane::LaneLeaseTerms =
+    crate::inference::single_purpose_lane::LaneLeaseTerms { consumer: "eval-lane", ttl_ms: EVAL_LANE_LEASE_TTL_MS };

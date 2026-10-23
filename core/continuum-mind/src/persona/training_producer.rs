@@ -74,14 +74,14 @@ pub(crate) mod tests;
 /// The receipt fixtures this module's tests and core's integration tests share.
 #[cfg(any(test, feature = "test-fixtures"))]
 pub mod test_support {
-    pub fn receipt(id: &str) -> crate::cognition::provenance::GenerationReceipt {
-        crate::cognition::provenance::GenerationReceipt::faulted(id, "irrelevant to staging")
+    pub fn receipt(id: &str) -> crate::ai::provenance::GenerationReceipt {
+        crate::ai::provenance::GenerationReceipt::faulted(id, "irrelevant to staging")
     }
 
-    pub fn served_receipt(id: &str, model: &str) -> crate::cognition::provenance::GenerationReceipt {
-        crate::cognition::provenance::GenerationReceipt {
+    pub fn served_receipt(id: &str, model: &str) -> crate::ai::provenance::GenerationReceipt {
+        crate::ai::provenance::GenerationReceipt {
             submitted_request_id: id.into(),
-            outcome: crate::cognition::provenance::GenerationOutcome::Served {
+            outcome: crate::ai::provenance::GenerationOutcome::Served {
                 model: model.into(),
                 provider: "fixture-provider".into(),
                 provider_request_id: None,

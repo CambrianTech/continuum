@@ -12,7 +12,7 @@
     // call that got truncated away is invisible exactly when someone needs it.
     #[tokio::test]
     async fn a_losing_faculty_keeps_its_receipt_even_though_attention_dropped_its_bid() {
-        use crate::cognition::provenance::GenerationReceipt;
+        use crate::ai::provenance::GenerationReceipt;
 
         let mut loud = Contribution::context(FacultyId::Recall, "loud", 0.9, "wins attention");
         loud.receipts = vec![GenerationReceipt::faulted("req-loud", "served after retry")];

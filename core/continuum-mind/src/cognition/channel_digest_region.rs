@@ -211,7 +211,7 @@ impl PersonaChannelReader for crate::persona::airc_runtime_registry::PersonaAirc
 mod tests {
     use super::*;
         use crate::cognition::channel_element::ChannelElementCache;
-    use crate::cognition::embedding::EmbeddingProvider;
+    use crate::ai::embedding::EmbeddingProvider;
     use airc_core::TranscriptEvent;
     use airc_core::{
         Body, ClientId, EventId, Headers, MentionTarget, PeerId, RoomId, TranscriptKind,

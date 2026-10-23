@@ -41,7 +41,7 @@ What already IS the shape we want, and stays:
 - **One engine, N adapters, per-request selection.** All genes for the served base load at launch (`inference/lane_args.rs:572-587`), are zeroed once ready (`inference/llama_server.rs:5500-5512`), and every request names its set as `"lora":[{id,scale}]` (`ai/openai_adapter.rs:1624-1650`). A persona's set is her genome slot, read every turn (`cognition/llm_deliberation_faculty.rs:1573-1577`), swapped by `cycle.page_in()` (`cognition/workspace.rs:2046`).
 - **Dream and sleep primitives.** `DreamConsolidationRegion` with `DreamTrigger {Idle, CardBoundary}` (`cognition/dream_consolidation.rs`), `SleepPhase {Active, Idle, Sleep}` (`runtime/brain_region.rs:289`), the persona's `SleepMode` (`persona/evaluator/sleep_state.rs`).
 - **The fork's training substrate.** `examples/training/finetune.cpp`, `llama_opt_init` / `llama_opt_epoch` / `llama_opt_param_filter` (`vendor/llama.cpp/include/llama.h:1682-1701`), `ggml-opt`. Today: full-weight, FP32-only, no LoRA-only filter, and the Rust bindings (`core/llama/src/safe.rs`) bind `load_lora` / `set_loras` but no `llama_opt_*`.
-- **The grader is the world, not a model.** Code tasks are graded by compiling and running tests (`cognition/gym_grader::test_grade`); SWE by fail-to-pass (`cognition/swe_bench.rs:189`). There is no LLM judge in the core. The doctor *teaches*; the tests *grade*.
+- **The grader is the world, not a model.** Code tasks are graded by compiling and running tests (`genome/gym_grader::test_grade`); SWE by fail-to-pass (`cognition/swe_bench.rs:189`). There is no LLM judge in the core. The doctor *teaches*; the tests *grade*.
 
 Two facts of the engine that decide the design below:
 

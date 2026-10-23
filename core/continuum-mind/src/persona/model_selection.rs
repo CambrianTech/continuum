@@ -542,7 +542,7 @@ mod tests {
     // compete (honest absence, never a lying 0).
     #[tokio::test]
     async fn rung0_distance_beats_keywords_only_when_significant_and_same_space() {
-        use crate::cognition::embedding::{EmbeddingProvider, LexicalEmbedder};
+        use crate::ai::embedding::{EmbeddingProvider, LexicalEmbedder};
         use std::sync::Arc;
         let embedder: Arc<dyn EmbeddingProvider> = Arc::new(LexicalEmbedder::default());
         let corpus: Vec<String> =

@@ -443,7 +443,7 @@ mod tests {
     fn queue_vital_sums_staged_unread_across_the_personas_channels() {
         use crate::cognition::channel_digest::ChannelDigestBuilder;
         use crate::cognition::channel_element::ChannelElementCache;
-        use crate::cognition::embedding::{CachingEmbeddingProvider, LexicalEmbedder};
+        use crate::ai::embedding::{CachingEmbeddingProvider, LexicalEmbedder};
         use crate::runtime::ready_buffer::ReadyBuffer as _;
         use airc_lib::RoomId;
 

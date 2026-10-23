@@ -269,7 +269,7 @@ crate::action_command! {
                 size_bytes: joined.len() as u64,
                 source_url: None,
             };
-            let embedder = crate::cognition::embedding::resolve_recall_embedder_local().await;
+            let embedder = crate::ai::embedding::resolve_recall_embedder_local().await;
             match crate::genome::signature::GeneSignature::mint(&texts, corpus, &embedder, continuum_base::time::EpochMs::now().millis())
                 .await
             {

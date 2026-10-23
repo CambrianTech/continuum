@@ -475,7 +475,7 @@ pub async fn materialize_adapters(
             // must share one embedding space). Already cached by the
             // resolver (embed-once-per-content, shared across personas).
             embedder: Some(
-                crate::cognition::embedding::resolve_recall_embedder(adapter.clone()).await,
+                crate::ai::embedding::resolve_recall_embedder(adapter.clone()).await,
             ),
             // Roster + doctrine bridged into the brain as STANDING-FRAMING
             // grounding faculties (high salience floor). Without these the

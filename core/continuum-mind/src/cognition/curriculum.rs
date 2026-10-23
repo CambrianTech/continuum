@@ -1,7 +1,7 @@
 //! curriculum.rs — the **salience → curriculum** seam, teacher generalized.
 //!
 //! The afferent nerve ([`crate::cognition::experience`]) turns a lived episode into
-//! a salient [`ExperienceRecord`]; the efferent organ ([`super::teach`]) turns a
+//! a salient [`ExperienceRecord`]; the efferent organ ([`crate::genome::teach`]) turns a
 //! task set into a validated corpus. Between them sat a hard-coded pipe: the only
 //! thing that drove synthesis was the `genome/teach` command over a *static gym
 //! file*. This module is the seam that generalizes it — a polymorphic
@@ -30,16 +30,17 @@
 //!
 //! ## Layering
 //!
-//! The trait lives here, next to the [`synthesize_remediation`] core it wraps, and
-//! imports the salience vocabulary DOWN from `cognition::experience` (commands →
-//! cognition is the correct direction — cognition never depends on commands). It is
+//! The trait lives in cognition, beside the salience vocabulary it reads
+//! (`cognition::experience`), and drives the genome's teacher through the eval lane owner
+//! ([`synthesize_remediation`]); the genome below never names the experience stream. It is
 //! a pure `records → corpus` transform: it does NOT write a dataset or forge a gene
 //! (the caller — the command, or the L2 producer — owns packaging), so it composes
 //! into either driver without dragging their side-effects along.
 
 use async_trait::async_trait;
 
-use crate::genome::teach::{synthesize_remediation, RemediationCorpus};
+use crate::cognition::eval::{synthesize_lived_expansion, synthesize_remediation};
+use crate::genome::teach::RemediationCorpus;
 use crate::genome::teach::{DEFAULT_MAX_FIX_ITERS, DEFAULT_TEMPERATURE};
 use crate::cognition::eval::EvalTask;
 use crate::cognition::experience::{
@@ -311,7 +312,7 @@ impl LivedExpansionSynthesizer {
                 CommandError::Internal(format!("teacher model resolve failed: {e:?}"))
             })?,
         };
-        crate::genome::teach::synthesize_lived_expansion(&stimuli, &teacher_model, self.temperature).await
+        synthesize_lived_expansion(&stimuli, &teacher_model, self.temperature).await
     }
 }
 

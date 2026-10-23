@@ -100,7 +100,7 @@ pub struct WorkSimilarResult {
 
 pub struct WorkSimilar {
     pub registry: PersonaAircRuntimeRegistry,
-    pub embedder: Arc<dyn crate::cognition::embedding::EmbeddingProvider>,
+    pub embedder: Arc<dyn crate::ai::embedding::EmbeddingProvider>,
 }
 
 
@@ -246,7 +246,7 @@ pub struct WorkDuplicatesResult {
 
 pub struct WorkDuplicates {
     pub registry: PersonaAircRuntimeRegistry,
-    pub embedder: Arc<dyn crate::cognition::embedding::EmbeddingProvider>,
+    pub embedder: Arc<dyn crate::ai::embedding::EmbeddingProvider>,
 }
 
 #[async_trait]
@@ -497,7 +497,7 @@ pub struct WorkModule {
     /// The ONE process-wide embedding space, handed in at construction — `work/similar`
     /// and `work/duplicates` score card text in it. Never built here: a second embedder
     /// is a second space, and vectors from two spaces compare as noise.
-    pub(super) embedder: Arc<dyn crate::cognition::embedding::EmbeddingProvider>,
+    pub(super) embedder: Arc<dyn crate::ai::embedding::EmbeddingProvider>,
     /// Late-bound substrate executor (the ChatModule pattern): benchmark/dispatch
     /// composes OTHER commands — `data/list` to load a recipe row, `serving/pin`
     /// to re-home the lane — through the universal primitive instead of
@@ -510,7 +510,7 @@ pub struct WorkModule {
 impl WorkModule {
     pub fn new(
         registry: PersonaAircRuntimeRegistry,
-        embedder: Arc<dyn crate::cognition::embedding::EmbeddingProvider>,
+        embedder: Arc<dyn crate::ai::embedding::EmbeddingProvider>,
     ) -> Self {
         Self {
             registry,

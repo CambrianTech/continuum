@@ -101,7 +101,7 @@
         let mut request = request_for(RECORDING_BASE_PREFIX);
         request.persona_id = persona;
         let texts: Vec<String> = request.dataset.examples.iter().map(|ex| format!("{}\n{}", ex.prompt, ex.completion)).collect();
-        let embedder = crate::cognition::embedding::resolve_recall_embedder_local().await;
+        let embedder = crate::ai::embedding::resolve_recall_embedder_local().await;
         let sig = crate::genome::signature::GeneSignature::mint(
             &texts,
             crate::genome::corpus_ref::CorpusRef { name: "near".into(), content_hash: "sha256:near".into(), size_bytes: 1, source_url: None },

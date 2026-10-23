@@ -80,7 +80,7 @@ pub struct SettleOutcome {
     /// here, not an absence — a generation that failed and a generation that never
     /// happened must not collapse to the same value, or the turn's record claims
     /// cleaner provenance than the turn had.
-    pub generation_receipts: Vec<crate::cognition::provenance::GenerationReceipt>,
+    pub generation_receipts: Vec<crate::ai::provenance::GenerationReceipt>,
 }
 
 impl SettleOutcome {
@@ -188,7 +188,7 @@ impl SettleStep {
     ) -> (
         SettleStep,
         Option<TurnMetrics>,
-        Vec<crate::cognition::provenance::GenerationReceipt>,
+        Vec<crate::ai::provenance::GenerationReceipt>,
     ) {
         let metrics = Some(outcome.metrics);
         // Carried out beside the metrics rather than dropped with the rest of the

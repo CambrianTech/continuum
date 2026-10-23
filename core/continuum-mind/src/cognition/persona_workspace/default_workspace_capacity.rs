@@ -39,7 +39,7 @@ pub struct PersonaBrainConfig {
     /// when the embed model serves and falls back to lexical otherwise. Already
     /// wrapped in the content-addressed cache by the resolver, so it's used as-is.
     ///
-    /// [`resolve_recall_embedder`]: super::embedding::resolve_recall_embedder
+    /// [`resolve_recall_embedder`]: crate::ai::embedding::resolve_recall_embedder
     pub embedder: Option<Arc<dyn EmbeddingProvider>>,
     /// The persona's HANDS. `Some` → the deliberation faculty is offered the
     /// identity-gated tool surface ([`authorized_tool_specs`], filtered to the

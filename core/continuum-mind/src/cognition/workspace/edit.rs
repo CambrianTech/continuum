@@ -307,7 +307,7 @@ pub struct Contribution {
     /// succeeded produced a real fault receipt and no contribution-level failure.
     /// Neither field can be derived from the other and neither should be removed for
     /// the other's sake.
-    pub receipts: Vec<crate::cognition::provenance::GenerationReceipt>,
+    pub receipts: Vec<crate::ai::provenance::GenerationReceipt>,
     /// The model's **verbatim generation** for this verdict — the raw response text
     /// EXACTLY as the model emitted it, BEFORE the tool-call/PASS parser lifted a
     /// [`Decision`] from it. Set ONLY by the deliberation faculty on its verdict

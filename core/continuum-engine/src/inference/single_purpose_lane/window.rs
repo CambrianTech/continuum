@@ -54,7 +54,7 @@
 /// trained window (never a fresh magic cap). Fit is still decided downstream by
 /// `decide_lane_placement`; if the window won't fit, the lane spawn fails and the caller
 /// degrades to a co-tenant SHARE rather than OOM.
-pub(crate) fn plan_lane_ctx(base: &crate::model_registry::Model) -> u32 {
+pub fn plan_lane_ctx(base: &crate::model_registry::Model) -> u32 {
     use crate::inference::planning::MIN_SERVE_CTX;
     let trained = base.context_window.max(MIN_SERVE_CTX);
     match lane_fit_window(base) {
@@ -69,7 +69,7 @@ pub(crate) fn plan_lane_ctx(base: &crate::model_registry::Model) -> u32 {
 /// Largest window whose KV + weights + compute buffer fit the GOVERNED host budget — the same
 /// memory authority `plan_serving` sizes against, never a raw GPU probe. `None` when the host is
 /// ungoverned or the model can't be sized, which the caller reads as "no cap".
-pub(crate) fn lane_fit_window(base: &crate::model_registry::Model) -> Option<u32> {
+pub fn lane_fit_window(base: &crate::model_registry::Model) -> Option<u32> {
     let fp = crate::inference::planning::serving_plan::footprint::footprint_for(base)?;
     if fp.kv_per_token == 0 {
         return None;
@@ -85,7 +85,7 @@ pub(crate) fn lane_fit_window(base: &crate::model_registry::Model) -> Option<u32
 /// Round DOWN to the nearest power of two. A quantization for run-to-run stability — a few
 /// hundred MB of budget flutter must not change `n_ctx` and thus the greedy token path. It is
 /// deliberately NOT a cap: it only ever applies to a value already limited by real fit.
-pub(crate) fn stable_window_rung(window: u32) -> u32 {
+pub fn stable_window_rung(window: u32) -> u32 {
     if window == 0 {
         0
     } else {

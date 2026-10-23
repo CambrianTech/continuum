@@ -2975,6 +2975,7 @@ dependencies = [
  "num_cpus",
  "ort",
  "parking_lot",
+ "rayon",
  "reqwest",
  "safetensors 0.7.0",
  "schemars",
@@ -2988,6 +2989,7 @@ dependencies = [
  "tracing",
  "ts-rs 12.0.1",
  "uuid",
+ "wide",
  "windows-sys 0.60.2",
 ]
 
@@ -3187,7 +3189,6 @@ dependencies = [
  "tracing",
  "ts-rs 12.0.1",
  "uuid",
- "wide",
 ]
 
 [[package]]

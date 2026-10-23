@@ -246,7 +246,7 @@ pub fn test_event_in(room: airc_core::RoomId, text: &str, lamport: u64) -> Trans
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cognition::embedding::EmbeddingProvider;
+    use crate::ai::embedding::EmbeddingProvider;
     use airc_core::RoomId;
     use async_trait::async_trait;
     use std::sync::Mutex;

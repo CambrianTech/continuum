@@ -230,7 +230,7 @@ fn sync_directory_chain(path: &Path) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cognition::provenance::{GenerationOutcome, GenerationReceipt};
+    use crate::ai::provenance::{GenerationOutcome, GenerationReceipt};
     use crate::genome::fine_tuning::types::{LoRAHyperparams, ScheduleParams};
     use serde_json::json;
     use tempfile::TempDir;

@@ -15,7 +15,7 @@
 /// silent degrade: the detached ledger carries this exact string, and the harness
 /// retries when pressure clears. Live serving is untouched — it has its own
 /// shedding machinery; this gates only the deferrable measurement load.
-pub(crate) fn refuse_lane_under_memory_pressure(footprint: Option<u64>) -> Result<(), String> {
+pub fn refuse_lane_under_memory_pressure(footprint: Option<u64>) -> Result<(), String> {
     lane_memory_veto(
         crate::system_resources::MemoryPressureMonitor::current_level(),
         crate::system_resources::is_memory_gate_closed(),
@@ -37,7 +37,7 @@ pub(crate) fn refuse_lane_under_memory_pressure(footprint: Option<u64>) -> Resul
 /// Weight-file bytes ≈ resident weight bytes; ×1.25 covers KV cache + scratch at the
 /// bounded eval ctx. `None` → couldn't size (no GGUF on disk / unstatable). ONE place
 /// so the pre-spawn RAM gate and the GPU/CPU placement decision size identically.
-pub(crate) fn lane_footprint(base: &crate::model_registry::Model) -> Option<u64> {
+pub fn lane_footprint(base: &crate::model_registry::Model) -> Option<u64> {
     crate::model_registry::artifacts::resolve_gguf_for_model(base)
         .and_then(|p| std::fs::metadata(&p).ok())
         .map(|m| (m.len() as f64 * 1.25) as u64)
@@ -47,7 +47,7 @@ pub(crate) fn lane_footprint(base: &crate::model_registry::Model) -> Option<u64>
 /// live persona lane's in-flight buffers, and page-cache churn all need slack, and a
 /// lane placed at the exact edge is the one jetsam picks. If a bigger cushion is ever
 /// wanted it belongs here, one named constant, not scattered magic.
-pub(crate) const LANE_RAM_HEADROOM_BYTES: u64 = 2 * 1024 * 1024 * 1024; // 2 GiB
+pub const LANE_RAM_HEADROOM_BYTES: u64 = 2 * 1024 * 1024 * 1024; // 2 GiB
 
 /// Whether a lane of `footprint` bytes fits in `available` free physical memory with
 /// `headroom` to spare. Pure so the load-bearing "would this OOM the machine" decision
@@ -56,7 +56,7 @@ pub(crate) const LANE_RAM_HEADROOM_BYTES: u64 = 2 * 1024 * 1024 * 1024; // 2 GiB
 /// reading is NOT a veto (the pressure-level gate and the placement lease remain the
 /// backstops; we never refuse a lane we couldn't size, to avoid starving a node whose
 /// probe is momentarily blind).
-pub(crate) fn lane_ram_veto(
+pub fn lane_ram_veto(
     available: Option<u64>,
     footprint: Option<u64>,
     headroom: u64,
@@ -81,7 +81,7 @@ pub(crate) fn lane_ram_veto(
 /// 0.90 for a couple of minutes, then the machine returns to Normal. Deferring
 /// briefly turns "battery wiped out by a build" into "battery ran 3 minutes
 /// later"; a SUSTAINED squeeze still fails loud at the deadline.
-pub(crate) const LANE_PRESSURE_WAIT: std::time::Duration = std::time::Duration::from_secs(180);
+pub const LANE_PRESSURE_WAIT: std::time::Duration = std::time::Duration::from_secs(180);
 
 /// The deferring form of the memory veto: poll until pressure clears or the
 /// bounded deadline lapses (then fail loud with the veto's own error). The
@@ -89,7 +89,7 @@ pub(crate) const LANE_PRESSURE_WAIT: std::time::Duration = std::time::Duration::
 /// solve/eval there is no operator watching to retry, so the system honors its
 /// own advice for one bounded window. Never a silent wait: each deferred tick
 /// probes, so a stall is visible in the trace, not a mystery hang.
-pub(crate) async fn await_lane_memory_headroom(footprint: Option<u64>) -> Result<(), String> {
+pub async fn await_lane_memory_headroom(footprint: Option<u64>) -> Result<(), String> {
     let deadline = tokio::time::Instant::now() + LANE_PRESSURE_WAIT;
     loop {
         let verdict = refuse_lane_under_memory_pressure(footprint);
@@ -122,7 +122,7 @@ pub(crate) async fn await_lane_memory_headroom(footprint: Option<u64>) -> Result
 /// The pure veto decision — split from the static reads so it's unit-testable
 /// without mutating process-global pressure state (same split rationale as
 /// [`super::acquire_lane_slot`]).
-pub(crate) fn lane_memory_veto(
+pub fn lane_memory_veto(
     level: crate::system_resources::PressureLevel,
     gate_closed: bool,
 ) -> Result<(), String> {

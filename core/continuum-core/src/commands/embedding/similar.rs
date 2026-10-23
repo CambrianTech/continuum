@@ -25,8 +25,8 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
-use crate::cognition::embedding::EmbeddingProvider;
-use crate::cognition::embedding::vector_math::top_k_similar;
+use crate::ai::embedding::EmbeddingProvider;
+use crate::ai::embedding::vector_math::top_k_similar;
 use crate::sdk_codegen::{AccessLevel, ActionCommand, CommandError, Ctx};
 
 fn default_k() -> usize {
@@ -297,7 +297,7 @@ mod tests {
     #[tokio::test]
     async fn a_degenerate_null_marks_nothing_significant_and_says_so() {
         let e: Arc<dyn EmbeddingProvider> =
-            Arc::new(crate::cognition::embedding::LexicalEmbedder::new());
+            Arc::new(crate::ai::embedding::LexicalEmbedder::new());
         let out = rank_texts(&e, "expand of TensorProduct is incomplete", &cands(), 3, 0.0, 3.0)
             .await
             .expect("ranks");
