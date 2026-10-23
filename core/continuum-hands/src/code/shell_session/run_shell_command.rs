@@ -423,7 +423,7 @@ pub(super) async fn poll_kill_flag(state: Arc<Mutex<ExecutionState>>) {
 /// f25f4141: the core inherits `config.env` (HF_TOKEN) and a snippet reading
 /// `os.environ` is as ordinary as a shell running `env`; quoting the output into a
 /// room puts it on the wire. Session variables set AFTER this call stay.
-pub(crate) fn strip_secret_env(cmd: &mut TokioCommand) {
+pub fn strip_secret_env(cmd: &mut TokioCommand) {
     for (name, _) in std::env::vars() {
         if is_secret_env_name(&name) {
             cmd.env_remove(&name);
@@ -439,7 +439,7 @@ pub(crate) fn strip_secret_env(cmd: &mut TokioCommand) {
 /// is Python's own switch (PEP 540); both are no-ops on a host that is already UTF-8.
 /// Applied BEFORE the session environment so a citizen who sets her own wins. One place
 /// for every citizen-facing spawn, beside [`strip_secret_env`].
-pub(crate) fn utf8_text_env(cmd: &mut TokioCommand) {
+pub fn utf8_text_env(cmd: &mut TokioCommand) {
     cmd.env("PYTHONUTF8", "1").env("PYTHONIOENCODING", "utf-8");
 }
 

@@ -125,7 +125,7 @@ pub fn repo_id_from_remote(url: &str) -> Option<String> {
 /// Host-qualified network repository identity, for comparing a Git remote with the
 /// URL returned by the configured GitHub owner (including enterprise hosts).
 /// Transport spelling may differ; custom ports remain part of the identity.
-pub(crate) fn network_repo_identity(remote: &str) -> Option<(String, Option<u16>, String)> {
+pub fn network_repo_identity(remote: &str) -> Option<(String, Option<u16>, String)> {
     let remote = remote.trim();
     let normalized;
     let remote = if !remote.contains("://") {
@@ -155,8 +155,8 @@ pub(crate) fn network_repo_identity(remote: &str) -> Option<(String, Option<u16>
 /// CURRENT home's registry (callers hold `paths::test_home::HomeGuard`): the fixture for code that
 /// resolves `own_checkout`. The clone root comes from git's common dir, so a linked worktree
 /// records its clone, as the CLI does.
-#[cfg(test)]
-pub(crate) fn record_own_checkout_for_test() -> PathBuf {
+#[cfg(any(test, feature = "test-fixtures"))]
+pub fn record_own_checkout_for_test() -> PathBuf {
     let out = std::process::Command::new("git")
         .args(["rev-parse", "--path-format=absolute", "--git-common-dir"])
         .current_dir(env!("CARGO_MANIFEST_DIR"))

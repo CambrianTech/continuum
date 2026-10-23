@@ -55,6 +55,7 @@ ron = "0.12"     # RON scene descriptions (Bevy-idiomatic on-disk format)
 uuid.workspace = true
 continuum-base = { path = "../continuum-base" }
 continuum-kernel = { path = "../continuum-kernel" }
+continuum-hands = { path = "../continuum-hands" }
 continuum-engine = { path = "../continuum-engine" }
 continuum-context = { path = "../continuum-context" }
 # JSON Schema generation from serde types — the runtime param schema every SDK
@@ -266,8 +267,6 @@ rusqlite = { version = "0.32", features = ["bundled"] }  # SQLite adapter
 deadpool-postgres.workspace = true                        # Postgres connection pool
 tokio-postgres.workspace = true                           # Postgres async driver
 rustpython-parser = "0.4.0"
-syn = { version = "2", features = ["full", "parsing", "extra-traits"] }
-proc-macro2 = { version = "1.0.107", features = ["span-locations"] }
 
 # jemalloc EVERYWHERE EXCEPT windows-msvc. jemalloc-sys builds its vendored
 # jemalloc via an autotools `configure` shell script that fails under
@@ -407,7 +406,7 @@ load-dynamic-ort = ["ort/load-dynamic"]
 #     via `cargo test --features test-fixtures` or `--features test-fixtures`
 #     on the bin target.
 #   - Production: heuristic adapter doesn't exist in the binary at all.
-test-fixtures = ["continuum-base/test-fixtures", "continuum-kernel/test-fixtures", "continuum-engine/test-fixtures"]
+test-fixtures = ["continuum-base/test-fixtures", "continuum-kernel/test-fixtures", "continuum-engine/test-fixtures", "continuum-hands/test-fixtures"]
 
 # stress-tests: opts in concurrency / multi-thread / load tests that
 # pin substrate invariants under N-task simultaneous load. Each test
@@ -479,6 +478,7 @@ unexpected_cfgs = "allow"
 [dev-dependencies]
 continuum-kernel = { path = "../continuum-kernel", features = ["test-fixtures"] }
 continuum-engine = { path = "../continuum-engine", features = ["test-fixtures"] }
+continuum-hands = { path = "../continuum-hands", features = ["test-fixtures"] }
 # The hygiene ratchets moved to their own std-only crate so a contributor learns an
 # unwrap count rose in seconds instead of after a 12.4-minute build. Two `#[cfg(test)]`
 # call sites here still use its scanner helpers, so it is a DEV dependency — production

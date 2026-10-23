@@ -29,6 +29,7 @@ extern crate self as continuum_core;
 // paths, and `continuum_core::runtime::…` for every other crate, keep resolving to the one
 // owner. New code may name `continuum_kernel` directly.
 pub use continuum_engine::{ai, capacity, inference, inference_capability, model_registry, sensory};
+pub use continuum_hands::code;
 pub use continuum_kernel::{
     concurrency, governor, gpu, identity, logging, orm, paging, paths, resources, routing, runtime,
     sdk_codegen, system_resources,
@@ -39,7 +40,6 @@ pub use continuum_kernel::{
     time_async, time_section,
 };
 pub mod airc;
-pub mod code;
 pub mod cognition;
 pub mod commands;
 pub mod comms;
