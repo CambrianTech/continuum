@@ -146,7 +146,6 @@ crate::register_command!(HotEditCommand);
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cognition::persona_tools::native_tool_specs;
     use crate::sdk_codegen::{command_registry, AccessLevel, WireShape};
 
     // what this catches: the flattened wire shape IS the contract the adapter and
@@ -214,8 +213,9 @@ mod tests {
     // from every citizen (Provided commands fail closed); this pins it loudly.
     #[test]
     fn hot_edit_is_an_ai_safe_provided_command_in_the_native_surface() {
-        // Registry audit (mind cut): stays in the mind: it reads only the perception/* commands, which
-        // this crate declares, so the mind's own registry carries them.
+        // Registry audit: reads only the perception/* commands this crate declares. The native
+        // surface is cognition's projection of each descriptor's `native` flag, asserted here at
+        // its source (perception cut, card 2f5b275b).
         let descriptor = command_registry()
             .into_iter()
             .find(|d| d.name == "perception/hot-edit")
@@ -230,11 +230,6 @@ mod tests {
             WireShape::Provided,
             "hot-edit is adapter-served (an eye-node), never a substrate ServiceModule"
         );
-        assert!(
-            native_tool_specs()
-                .iter()
-                .any(|s| s.name == "perception/hot-edit"),
-            "hot-edit must be offered natively beside perception/observe"
-        );
+        assert!(descriptor.native, "hot-edit must be offered natively beside perception/observe");
     }
 }

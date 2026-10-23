@@ -1,6 +1,6 @@
 //! `perception/*` — a persona's eyes on an artifact it created or is inspecting.
 //!
-//! Like [`interface`](crate::interface), these are
+//! Like core's `interface/*` commands, these are
 //! [`Provided`](crate::sdk_codegen::WireShape::Provided) commands: one command
 //! NAME, N platform adapters. The headless core CANNOT observe — it has no
 //! browser, no renderer, no GPU, and a datacenter rack instance has no display at
@@ -271,8 +271,7 @@ mod tests {
     #[test]
     fn provided_input_schemas_preserve_routing_and_required_fields() {
         use crate::sdk_codegen::{command_registry, WireShape};
-        // Registry audit (mind cut): stays in the mind: it reads only the perception/* commands, which
-        // this crate declares, so the mind's own registry carries them.
+        // Registry audit: reads only the perception/* commands this crate declares.
         let registry = command_registry();
         for (name, required) in [
             ("perception/observe", "target"),
@@ -353,7 +352,6 @@ mod tests {
         }
     }
 
-    use crate::cognition::persona_tools::native_tool_specs;
     use crate::sdk_codegen::{command_registry, AccessLevel, WireShape};
 
     // what this catches: `perception/observe` must (a) be in the registry as an
@@ -365,8 +363,9 @@ mod tests {
     // spec_for_command drops an unregistered name), which this pins loudly.
     #[test]
     fn observe_is_an_ai_safe_provided_command_in_the_native_surface() {
-        // Registry audit (mind cut): stays in the mind: it reads only the perception/* commands, which
-        // this crate declares, so the mind's own registry carries them.
+        // Registry audit: reads only the perception/* commands this crate declares. The native
+        // surface is cognition's projection of each descriptor's `native` flag, asserted here at
+        // its source (perception cut, card 2f5b275b).
         let descriptor = command_registry()
             .into_iter()
             .find(|d| d.name == "perception/observe")
@@ -381,11 +380,6 @@ mod tests {
             WireShape::Provided,
             "observe is adapter-served (an eye-node), never a substrate ServiceModule"
         );
-        assert!(
-            native_tool_specs()
-                .iter()
-                .any(|s| s.name == "perception/observe"),
-            "observe must be offered natively beside interface/screenshot"
-        );
+        assert!(descriptor.native, "observe must be offered natively beside interface/screenshot");
     }
 }

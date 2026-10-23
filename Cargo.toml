@@ -22,6 +22,7 @@ members = [
     "core/continuum-core",
     "core/continuum-kernel",
     "core/continuum-mind",
+    "core/continuum-perception",
     "core/continuum-live",
     "core/continuum-hands",
     "core/continuum-engine",

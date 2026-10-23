@@ -1,0 +1,29 @@
+[package]
+name = "continuum-perception"
+version = "0.1.0"
+edition = "2021"
+publish = false
+repository = "https://github.com/CambrianTech/continuum"
+
+# Perception (a mind's senses: observe, look, interact, hot-edit) and RAG (the context it
+# assembles from them), cut out of continuum-mind along MODULE-ARCHITECTURE.md section 9.2.
+# Neither names cognition or persona; the mind re-exports both modules under their old paths.
+
+[dependencies]
+continuum-live = { path = "../continuum-live" }
+continuum-base = { path = "../continuum-base" }
+tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+uuid.workspace = true
+schemars = { version = "0.8", features = ["uuid1"] }
+async-trait.workspace = true
+tracing.workspace = true
+ts-rs.workspace = true  # TypeScript type generation
+inventory = "0.3"  # register_command! submits into the kernel's command registry
+image = "0.25"
+scraper = "0.21"
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }
+tempfile = "3"
