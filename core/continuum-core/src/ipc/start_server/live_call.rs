@@ -30,7 +30,7 @@ pub(super) fn start_live_call_plane(rt_handle: &tokio::runtime::Handle) -> LiveC
     // CORE-DRIVEN SESSION REGISTRATION (#58). Built mutable so the registrar can be
     // installed BEFORE the Arc freezes it: joining a call now registers the session in
     // the core itself, instead of waiting for whichever client happened to implement it.
-    // Exactly one ever did (Node, in legacy/, now retired), which is why iOS/Android/TUI
+    // Exactly one ever did (Node, in legacy/, deleted: tag legacy-archive-2026-10-23), which is why iOS/Android/TUI
     // citizens were structurally voiceless rather than merely buggy.
     // The registrar's late-bound executor: filled beside `install_executor_on_all`
     // so a human's call join can invoke `voice/register-session` — the verb that

@@ -265,7 +265,7 @@ pub const ENV_CACHE_REPOINT_FAILED: &str = "cached-env re-point failed";
 /// # THIS IS THE ONLY SWE ENV ROOT. `swe_cache_dir()/envs`, nowhere else.
 ///
 /// A second root used to exist — `~/.continuum/cache/swe-envs`, the default of the retired
-/// `legacy/benchmarks/swe/grade_local.py`. Both directories held real venvs. Neither named
+/// `legacy/benchmarks/swe/grade_local.py` (tag legacy-archive-2026-10-23). Both directories held real venvs. Neither named
 /// the other. Nothing failed loudly, because each was internally consistent.
 ///
 /// On 2026-08-17 that cost a full misdiagnosis with a decision attached: `ls` on the retired

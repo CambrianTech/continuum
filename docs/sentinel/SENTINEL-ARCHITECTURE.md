@@ -1,5 +1,8 @@
 # Sentinel Architecture — Composable Agentic Loops
 
+> `legacy/` was deleted 2026-10-23; every `legacy/` path below is at git tag `legacy-archive-2026-10-23` (restore: `git checkout legacy-archive-2026-10-23 -- legacy/<path>`).
+
+
 > Sentinels are smart OS-level processes with decision-making — the subconscious threads of persona cognition. Narrowly focused, disposable, unlimited in scope. A persona without the being.
 
 **Parent:** [Sentinel README](README.md)
@@ -2831,8 +2834,8 @@ Long-term vision items.
 ### Implementation
 
 - [Rust SentinelModule](../../core/continuum-core/src/modules/) — Pipeline executor, process isolation, concurrency
-- [SentinelDefinition.ts](../../legacy/src/system/sentinel/SentinelDefinition.ts) — JSON schema and SentinelBuilder
-- [ModelProvider.ts](../../legacy/src/system/sentinel/ModelProvider.ts) — Multi-provider model selection
+- SentinelDefinition.ts (`legacy/src/system/sentinel/SentinelDefinition.ts`) — JSON schema and SentinelBuilder
+- ModelProvider.ts (`legacy/src/system/sentinel/ModelProvider.ts`) — Multi-provider model selection
 
 ### Design Documents
 
@@ -2848,11 +2851,11 @@ Long-term vision items.
 
 ### Pipeline Templates
 
-- [TeacherPipeline.ts](../../legacy/src/system/sentinel/pipelines/TeacherPipeline.ts) — Academy teacher (curriculum, synthesis, exams, grading, remediation)
-- [StudentPipeline.ts](../../legacy/src/system/sentinel/pipelines/StudentPipeline.ts) — Academy student (pre-test, train, exam, phenotype validate)
-- [LoRATrainingPipeline.ts](../../legacy/src/system/sentinel/pipelines/LoRATrainingPipeline.ts) — Standalone LoRA training pipeline
-- [KnowledgeExplorationPipeline.ts](../../legacy/src/system/sentinel/pipelines/KnowledgeExplorationPipeline.ts) — Data source exploration and fact extraction
-- [BenchmarkPipeline.ts](../../legacy/src/system/sentinel/pipelines/BenchmarkPipeline.ts) — Benchmark generation and runner pipelines
+- TeacherPipeline.ts (`legacy/src/system/sentinel/pipelines/TeacherPipeline.ts`) — Academy teacher (curriculum, synthesis, exams, grading, remediation)
+- StudentPipeline.ts (`legacy/src/system/sentinel/pipelines/StudentPipeline.ts`) — Academy student (pre-test, train, exam, phenotype validate)
+- LoRATrainingPipeline.ts (`legacy/src/system/sentinel/pipelines/LoRATrainingPipeline.ts`) — Standalone LoRA training pipeline
+- KnowledgeExplorationPipeline.ts (`legacy/src/system/sentinel/pipelines/KnowledgeExplorationPipeline.ts`) — Data source exploration and fact extraction
+- BenchmarkPipeline.ts (`legacy/src/system/sentinel/pipelines/BenchmarkPipeline.ts`) — Benchmark generation and runner pipelines
 - [sentinel-lora-training.md](SENTINEL-PIPELINE-ARCHITECTURE.md) — LoRA training pipeline commands + Academy quick start
 
 ### External

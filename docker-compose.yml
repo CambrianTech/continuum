@@ -53,13 +53,13 @@ services:
   model-init:
     build:
       # The download scripts live in tools/scripts (#1840); models.json is in
-      # legacy/src/shared (not yet migrated). Context = the scripts' home; the
+      # docker/model-init. Context = the scripts' home; the
       # model registry rides in as the `models` additional-context. dockerfile is
       # relative to the context (tools/scripts/../../docker → repo-root/docker).
       context: ./tools/scripts
       dockerfile: ../../docker/model-init.Dockerfile
       additional_contexts:
-        models: ./legacy/src/shared
+        models: ./docker/model-init
     image: ghcr.io/cambriantech/continuum-model-init:${CONTINUUM_IMAGE_TAG:-latest}
     # One-time downloader. Fixed budget — doesn't scale with host RAM.
     mem_limit: ${MODEL_INIT_MEM:-2g}
@@ -183,7 +183,7 @@ services:
   # The old-Node UI serving stack (node-server WS orchestrator + widget-server
   # Vite host) is deleted: the reliable client is the native Tauri DESKTOP that
   # attaches to continuum-core's WS ingress directly (desktop-only — see
-  # [[reliability-spine-*]]). Both built from ./src (now legacy/src #1840) and
+  # [[reliability-spine-*]]). Both were built from the old ./src (tag legacy-archive-2026-10-23) and
   # served the retired web UI, so they die with it. Grid nodes run core-only; a
   # desktop connects from anywhere. Web stays a dev-only vite convenience, not a
   # container service.
