@@ -98,11 +98,16 @@ impl LlmDeliberationFaculty {
         view: ViewPlacement,
         plan: &crate::persona::rag_budget::FlexAllocation,
         room: usize,
+        calibration: super::types::PromptCalibration,
     ) {
         if view.len == 0 {
             return;
         }
-        let view_tokens = Self::messages_cost(&prompt.history[..view.len]);
+        // In the allocation's unit: grants and room are charged tokens (`calibration.charge`),
+        // so the view is charged too. Compared raw, a view near its grant passed here and the
+        // final fit, which converts its budget back to raw, cut 96-99 of its oldest messages
+        // from the front with no turnover (Benchy, the M5, 2026-10-23: a head clip, goal 7).
+        let view_tokens = calibration.charge(Self::messages_cost(&prompt.history[..view.len]));
         let granted: usize = plan
             .allocations
             .iter()
