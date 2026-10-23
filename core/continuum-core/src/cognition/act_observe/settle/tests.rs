@@ -1,5 +1,120 @@
 #![cfg(test)]
     use super::*;
+    use crate::cognition::llm_deliberation_faculty::admission_clock;
+    use crate::inference::resource_admission::{LaneAdmission, LanePriority};
+
+    async fn queued(gate: &LaneAdmission, count: usize) {
+        for _ in 0..100 {
+            if gate.work_waiting() == count { return; }
+            tokio::task::yield_now().await;
+        }
+        assert_eq!(gate.work_waiting(), count, "scheduler registered the expected waiters");
+    }
+
+    // The real scheduler's FIFO entry survives the OUTER act deadline, not just
+    // the inner wait estimate. A later arrival remains behind the original mind.
+    #[tokio::test(start_paused = true)]
+    async fn queued_turn_survives_outer_deadline_without_losing_fifo() -> Result<(), Box<dyn std::error::Error>> {
+        let gate: &'static LaneAdmission = Box::leak(Box::new(LaneAdmission::new()));
+        gate.set_served_lane_count(2);
+        let held = gate.acquire_serving_lane(None, LanePriority::Work, None).await;
+        let bound = std::time::Duration::from_secs(10);
+        let first = tokio::spawn(super::until_act_stalls(
+            tokio::time::Instant::now() + bound, bound, None,
+            admission_clock::waiting(gate.acquire_serving_lane(None, LanePriority::Work, None)),
+        ));
+        queued(gate, 1).await;
+        tokio::time::advance(bound * 3).await;
+        tokio::task::yield_now().await;
+        assert!(!first.is_finished(), "waiting is not a stalled generation");
+        let second = tokio::spawn(gate.acquire_serving_lane(None, LanePriority::Work, None));
+        queued(gate, 2).await;
+        drop(held);
+        let result = first.await?;
+        assert!(result.is_ok());
+        assert!(!second.is_finished(), "later arrival cannot overtake");
+        drop(result);
+        drop(second.await?);
+        assert_eq!(gate.work_waiting(), 0);
+        Ok(())
+    }
+
+    // Queue time pauses the remaining budget; it does not reset it on grant.
+    #[tokio::test(start_paused = true)]
+    async fn grant_resumes_only_the_watchdogs_remaining_budget() -> Result<(), Box<dyn std::error::Error>> {
+        let gate: &'static LaneAdmission = Box::leak(Box::new(LaneAdmission::new()));
+        gate.set_served_lane_count(2);
+        let held = gate.acquire_serving_lane(None, LanePriority::Work, None).await;
+        let bound = std::time::Duration::from_secs(10);
+        let start = tokio::time::Instant::now();
+        let (ready, grant) = tokio::sync::oneshot::channel();
+        let turn = tokio::spawn(super::until_act_stalls(start + bound, bound, None, async move {
+            tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+            let _permit = admission_clock::waiting(gate.acquire_serving_lane(None, LanePriority::Work, None)).await;
+            let _ = ready.send(());
+            std::future::pending::<()>().await;
+        }));
+        tokio::task::yield_now().await;
+        tokio::time::advance(std::time::Duration::from_secs(3)).await;
+        queued(gate, 1).await;
+        tokio::time::advance(std::time::Duration::from_secs(30)).await;
+        drop(held);
+        grant.await?;
+        assert!(turn.await?.is_err(), "post-grant stalled generation still ends");
+        assert_eq!(start.elapsed(), std::time::Duration::from_secs(40));
+        Ok(())
+    }
+
+    // A genuine cancellation still drops the same scheduler entry, even after
+    // the old outer deadline. The wait receipt cannot keep a detached turn alive.
+    #[tokio::test(start_paused = true)]
+    async fn cancelled_queued_turn_releases_its_original_entry() -> Result<(), Box<dyn std::error::Error>> {
+        let gate: &'static LaneAdmission = Box::leak(Box::new(LaneAdmission::new()));
+        gate.set_served_lane_count(2);
+        let held = gate.acquire_serving_lane(None, LanePriority::Work, None).await;
+        let bound = std::time::Duration::from_secs(10);
+        let turn = tokio::spawn(super::until_act_stalls(
+            tokio::time::Instant::now() + bound, bound, None,
+            admission_clock::waiting(gate.acquire_serving_lane(None, LanePriority::Work, None)),
+        ));
+        queued(gate, 1).await;
+        tokio::time::advance(bound * 3).await;
+        turn.abort();
+        assert!(matches!(turn.await, Err(error) if error.is_cancelled()));
+        assert_eq!(gate.work_waiting(), 0);
+        drop(held);
+        drop(gate.acquire_serving_lane(None, LanePriority::Work, None).await);
+        Ok(())
+    }
+
+    // Directed input cancels the original entry; another step of the same persona
+    // cannot borrow this step's pause (no persona-wide flag or permanent exemption).
+    #[tokio::test(start_paused = true)]
+    async fn directed_yield_cleans_wait_and_other_step_keeps_its_deadline() -> Result<(), Box<dyn std::error::Error>> {
+        let gate: &'static LaneAdmission = Box::leak(Box::new(LaneAdmission::new()));
+        gate.set_served_lane_count(2);
+        let held = gate.acquire_serving_lane(None, LanePriority::Work, None).await;
+        let persona = uuid::Uuid::new_v4();
+        let bound = std::time::Duration::from_secs(10);
+        let deadline = tokio::time::Instant::now() + bound;
+        let turn = tokio::spawn(super::until_act_stalls(deadline, bound, Some(persona), async move {
+            tokio::select! {
+                _ = admission_clock::waiting(gate.acquire_serving_lane(Some(persona), LanePriority::Work, None)) => false,
+                _ = crate::cognition::directed_pending::wait(persona) => true,
+            }
+        }));
+        queued(gate, 1).await;
+        let other = tokio::spawn(super::until_act_stalls(deadline, bound, Some(persona), std::future::pending::<()>()));
+        tokio::time::advance(bound * 3).await;
+        assert!(other.await?.is_err());
+        assert!(!turn.is_finished());
+        crate::cognition::directed_pending::signal(persona);
+        assert_eq!(turn.await?, Ok(true));
+        crate::cognition::directed_pending::clear(persona);
+        assert_eq!(gate.work_waiting(), 0);
+        drop(held);
+        Ok(())
+    }
 
     // what this catches (card 6f3218ed): the act bound's extension leaking to an act with no
     // pinned generation. Without a slot to read, the deadline ends the act at the bound,
