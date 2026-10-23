@@ -1,5 +1,8 @@
 # Container path — Linux validation work (estimate)
 
+> `legacy/` was deleted 2026-10-23; every `legacy/` path below is at git tag `legacy-archive-2026-10-23` (restore: `git checkout legacy-archive-2026-10-23 -- legacy/<path>`).
+
+
 The container-first install is **config-validated on macOS** (`docker compose config` green for base /
 mac / gpu overlays; old-Node UI chain removed). But macOS has **no Docker GPU passthrough**, so the actual
 image **builds** and a real `docker compose up` can only be verified on a **Linux + NVIDIA** box (or WSL2
@@ -22,7 +25,7 @@ exactly that `include_str!` path. Nothing to do on Linux here beyond the normal 
 ## 2. model-init image — ✅ build-proven on macOS
 The download scripts had moved to `tools/scripts/` (not `legacy/src/scripts/`), so the build broke on the
 script COPYs (caught by an actual `docker build`). Fixed: context → `./tools/scripts`, `models.json` via a
-`models` additional-context (`./legacy/src/shared`), dead `generate-scene-models.ts` + `package.json` COPYs
+`models` additional-context (`./legacy/src/shared`, since moved to `./docker/model-init`), dead `generate-scene-models.ts` + `package.json` COPYs
 dropped. Image builds clean (`docker build` on macOS — `node:20-slim` is multi-arch, native arm64). The model
 DOWNLOAD is a runtime CMD, so only a real `up` on a network-connected box exercises the actual fetch (item 3).
 

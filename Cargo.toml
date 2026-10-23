@@ -13,7 +13,7 @@ members = [
     # core/ — rust substrate
     "core/airc-test-fixtures",
     "core/continuum-airc-protocol",
-    # "core/archive" quarantined → legacy/quarantine/archive-worker (#424):
+    # "core/archive" removed (tag legacy-archive-2026-10-23, legacy/quarantine/archive-worker, #424):
     # its only spawn wiring pointed at a dir that no longer exists.
     "core/continuum-cli-lifecycle",
     "core/continuum-tool-protocol",
@@ -58,8 +58,7 @@ members = [
 # workspace root, so `cargo` inside them failed with "failed to find a workspace
 # root" the whole time. The entries were decoration.
 #
-# They are now quarantined under legacy/persona-exercises/ (see the README
-# there). The real fix remains workspace isolation (#49): give a persona a real
+# They were removed (tag legacy-archive-2026-10-23, legacy/persona-exercises/). The real fix remains workspace isolation (#49): give a persona a real
 # workspace of her own, so what she writes is deliberate and reviewable like any
 # other contributor's — never something the substrate manifest has to fence off.
 # Shared dependencies - workers inherit these versions

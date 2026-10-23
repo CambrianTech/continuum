@@ -2015,7 +2015,7 @@ export class ChatWidget extends LitElement {
       }
     }
     /* ================= PERSONA TILE =================
-     * The legacy persona-tile (legacy/src/widgets/chat/user-list), ported onto
+     * The legacy persona-tile (tag legacy-archive-2026-10-23: legacy/src/widgets/chat/user-list), ported onto
      * the positron member card: avatar-in-ring + status dots · name · green-mono
      * identity chips · labelled vital meters · the GENOME instrument panel.
      * Every colour is a named theme token; spacing/type/motion ride the shared

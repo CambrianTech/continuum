@@ -507,7 +507,7 @@ if [ "$SKIP_BUILD" = "0" ]; then
   fi
 
   # The old `build:ts` / `build:cli` scripts left with the retired Node shell
-  # (moved to legacy/src, #1840) — they no longer exist in the root package.json.
+  # (deleted, tag legacy-archive-2026-10-23, #1840) — they no longer exist in the root package.json.
   # Calling them under `set -eo pipefail` made `npm run` exit non-zero ("Missing
   # script") and ABORTED the whole native install (install-audit FATAL). The
   # current TS deliverables are the client SDK + web app; build them BEST-EFFORT

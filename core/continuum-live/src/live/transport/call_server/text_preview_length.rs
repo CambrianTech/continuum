@@ -352,7 +352,7 @@ pub type TranscriptSink = Arc<dyn Fn(&str, &str, &str, &str) + Send + Sync>;
 /// Why it exists at all: registration was CLIENT-driven. `join_call` knew a call had
 /// started, held the call id (= the airc RoomId) and the joiner, and told nobody. So
 /// the orchestration lived in whichever client bothered to implement it — exactly one
-/// did, in Node, in `legacy/` — and iOS/Android/TUI citizens were structurally
+/// did, in Node, in `legacy/` (tag legacy-archive-2026-10-23) — and iOS/Android/TUI citizens were structurally
 /// voiceless. The legacy bridge documents the consequence: "Without this, isInCall()
 /// returns false and AI responses are silently dropped."
 pub type SessionRegistrar = Arc<dyn Fn(&str, &str, &str, bool) + Send + Sync>;

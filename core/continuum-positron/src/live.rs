@@ -11,7 +11,7 @@
 //! knows a call started (`join_call`) and holds the call id, which IS the airc
 //! room id, but never tells the orchestrator. Every path into
 //! `register_session` is a client calling in, so the orchestration logic only
-//! ever lived in 162 lines of Node in `legacy/` — presentation tier, now
+//! ever lived in 162 lines of Node in `legacy/` (tag legacy-archive-2026-10-23) — presentation tier, now
 //! retired. iOS, Android and TUI citizens are therefore not "buggy on voice",
 //! they are structurally voiceless.
 //!

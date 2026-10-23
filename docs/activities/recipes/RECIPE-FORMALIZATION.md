@@ -1,5 +1,8 @@
 # Recipe Formalization — identity, registry, and the taxonomy that groups everything
 
+> `legacy/` was deleted 2026-10-23; every `legacy/` path below is at git tag `legacy-archive-2026-10-23` (restore: `git checkout legacy-archive-2026-10-23 -- legacy/<path>`).
+
+
 **Parent:** [Recipes](./RECIPES.md) · **Task:** #274 · **Status:** Design, not built
 **Created:** 2026-08-13
 

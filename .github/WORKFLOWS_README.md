@@ -19,7 +19,7 @@ Required on canary: `cargo test -p continuum-core --lib`, `cargo check windows-m
 | `promote-main.yml` | Moves main to canary's green tip daily. |
 | `pr-labeler.yml`, `auto-close-queue-cards.yml`, `stale.yml` | Housekeeping. |
 
-The legacy Node tree (`legacy/`) is reference material only. No workflow builds, lints or guards it.
+The legacy Node tree was deleted; it lives at git tag `legacy-archive-2026-10-23` (restore: `git checkout legacy-archive-2026-10-23 -- legacy/<path>`).
 
 ## Issue & PR Templates
 
