@@ -6,6 +6,8 @@ mod view;
 mod system;
 mod messages;
 mod epoch;
+#[cfg(test)]
+pub(super) use self::epoch::start_grants;
 mod fit;
 pub(super) use self::fit::*;
 mod segments;

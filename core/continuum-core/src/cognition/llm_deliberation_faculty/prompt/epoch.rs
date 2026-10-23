@@ -82,15 +82,16 @@ impl LlmDeliberationFaculty {
 
     /// Keep her view within what the window's one allocation granted its sources, plus `room`
     /// (what no claim took beyond the reply's runaway headroom). While the epoch fits that it
-    /// only appends. When it outgrows them a new epoch starts: a
-    /// source granted all it wants whole, a source the allocation cut at half its grant, so
-    /// her reads stay whole until her window is actually full and a cut source has room to
-    /// grow by appends.
+    /// only appends. When it outgrows them a new epoch starts, sized by [`start_grants`] to
+    /// leave a growth reserve, so the next acts append instead of turning over again.
     ///
     /// Measured on the M5, 2026-10-21: sized to the 30 s latency target, Aiko's epoch started
     /// at 6,956 of 86,233 tokens and collapsed 40 items (18:20Z), the starvation the view
-    /// exists to end. The replay's half-window start halved its turnovers (continuum-context
-    /// `examples/replay.rs`).
+    /// exists to end. Measured again 2026-10-23: a source granted all it wants restarted
+    /// whole, so the start filled its grant; in a room whose window slides, the next act
+    /// kept the scrolled-out turns, appended the new ones and turned over again, every act
+    /// (Atlas in 11c1a7ac: starts of ~259k chars, 1,902 tokens of room, ~9.4k chars appended
+    /// per act; 3-11% of consecutive prompts shared).
     pub(in super::super) fn fit_view(
         &self,
         prompt: &mut PromptMessages,
@@ -102,7 +103,6 @@ impl LlmDeliberationFaculty {
             return;
         }
         let view_tokens = Self::messages_cost(&prompt.history[..view.len]);
-        let grant = |source: &str| plan.allocations.iter().find(|a| a.source_id == format!("{VIEW_CLAIM}{source}"));
         let granted: usize = plan
             .allocations
             .iter()
@@ -115,22 +115,11 @@ impl LlmDeliberationFaculty {
         if view_tokens <= granted + room {
             return;
         }
-        // A source granted all it wants starts whole; one the allocation cut starts at half
-        // its grant (its characters in proportion), the other half room to grow by appends.
-        let allocate = |claims: &[Claim]| -> Vec<usize> {
-            claims
-                .iter()
-                .map(|claim| match grant(&claim.source) {
-                    Some(a) if a.allocated_tokens >= a.requested_max => claim.full_chars,
-                    Some(a) => {
-                        let chars_per_token = claim.full_chars as f64 / f64::from(a.requested_max.max(1));
-                        (f64::from(a.allocated_tokens) * chars_per_token / 2.0) as usize
-                    }
-                    None => 0,
-                })
-                .collect()
-        };
-        let started = self.turn_over_view_with(&prompt.streams, allocate);
+        // What the epoch being replaced appended per act: the growth the next one reserves.
+        let appended_per_act = self.context_view.lock().as_ref().and_then(View::appended_per_act);
+        let started = self.turn_over_view_with(&prompt.streams, |claims: &[Claim]| {
+            start_grants(claims, plan, granted + room, appended_per_act)
+        });
         prompt.grounding_at = started.len();
         prompt.history.splice(0..view.len, started);
         continuum_base::probe!(
@@ -138,9 +127,11 @@ impl LlmDeliberationFaculty {
             persona = %self.persona_name,
             view_tokens,
             granted,
+            room,
+            appended_per_act = appended_per_act.unwrap_or(0), // unwrap_or: no act yet in the epoch it replaced
             restart = view.started,
-            "her view outgrew what the window granted its sources and started a new epoch: a \
-             source granted all it wants whole, a cut one at half its grant"
+            "her view outgrew what the window granted its sources and started a new epoch, \
+             its growing sources leaving a reserve as large as their start"
         );
     }
 
@@ -275,4 +266,81 @@ impl LlmDeliberationFaculty {
     fn clamp_u32(chars: usize) -> u32 {
         u32::try_from(chars).unwrap_or(u32::MAX) // unwrap_or: a source past 4G chars is granted the most a claim can say
     }
+}
+
+/// Each view source's character grant at a turnover: the start the next epoch re-prefills,
+/// leaving a growth reserve for the acts that follow to append into.
+///
+/// `available` is what the window's one allocation leaves her view (its sources' grants plus
+/// the room no claim took), in the allocation's tokens. The higher-priority sources (the
+/// grounding blocks: identity, tools, policy) start whole at their grant, `grounding` in all;
+/// they change least and only supersede. The lowest-priority sources (her conversation,
+/// results and thoughts), which grow by appends, start at `growing` and the reserve is what
+/// is left. The reserve is derived, not picked: an epoch whose growing sources start at
+/// `growing` and reserve `reserve` lives `reserve / per_act` acts (`per_act` = the median an
+/// act appended, [`View::appended_per_act`]), so their re-prefill amortizes to
+/// `growing * per_act / reserve` per act. Holding that to at most one act's own appends gives
+/// `reserve >= growing`: the measured rate cancels, and `growing` is at most half of
+/// `available - grounding`. (The grounding's own re-prefill adds `grounding / life` per act
+/// on top, the price of keeping it whole.) The reserve must also hold one act's appends, so
+/// `growing` is at most `available - grounding - per_act` as well, which binds only when an
+/// act appends more than half of what the growing sources may hold. Before the epoch being
+/// replaced appended anything (`None`) the half start stands alone; the replay's half-window
+/// start halved turnovers (continuum-context `examples/replay.rs`).
+///
+/// The one allocator spends it: a higher-priority source asks for its whole grant as its
+/// minimum, which `flex_allocate` serves first in priority order, and the lowest priority
+/// shares what is left. The newest end is never cut: a source keeps its newest items whole
+/// and collapses its oldest first, at the start only ([`View::turn_over`]).
+pub(in super::super) fn start_grants(
+    claims: &[Claim],
+    plan: &crate::persona::rag_budget::FlexAllocation,
+    available: usize,
+    appended_per_act: Option<usize>,
+) -> Vec<usize> {
+    let grants: Vec<Option<&crate::persona::rag_budget::SourceAllocation>> = claims
+        .iter()
+        .map(|claim| plan.allocations.iter().find(|a| a.source_id == format!("{VIEW_CLAIM}{}", claim.source)))
+        .collect();
+    // Characters per allocation token, the ratio each claim was priced at (`view_claims`).
+    let wanted_tokens: u64 = grants.iter().flatten().map(|a| u64::from(a.requested_max)).sum();
+    let wanted_chars: u64 = claims.iter().zip(&grants).filter(|(_, a)| a.is_some()).map(|(c, _)| c.full_chars as u64).sum();
+    let per_act_tokens = appended_per_act.map_or(0, |chars| (chars as u64 * wanted_tokens).div_ceil(wanted_chars.max(1)) as usize); // map_or: no act measured yet reserves the half start alone
+    let lowest = claims.iter().map(|claim| claim.priority).min().unwrap_or(0); // unwrap_or: no claims means nothing to grant
+    let grounding: usize = claims
+        .iter()
+        .zip(&grants)
+        .filter(|(claim, _)| claim.priority > lowest)
+        .filter_map(|(_, grant)| grant.map(|a| a.allocated_tokens as usize))
+        .sum::<usize>()
+        .min(available);
+    let growable = available - grounding;
+    let growing = (growable / 2).min(growable.saturating_sub(per_act_tokens));
+    let start = grounding + growing;
+    let budgets: Vec<crate::persona::rag_budget::RagSourceBudget> = claims
+        .iter()
+        .zip(&grants)
+        .map(|(claim, grant)| {
+            let (floor, max) = grant.map_or((0, 0), |a| (a.requested_floor, a.allocated_tokens)); // map_or: a source the window granted nothing starts collapsed
+            crate::persona::rag_budget::RagSourceBudget {
+                source_id: claim.source.clone(),
+                priority: claim.priority,
+                floor_tokens: floor.min(max),
+                min_tokens: if claim.priority > lowest { max } else { floor.min(max) },
+                max_tokens: max,
+                required: false,
+            }
+        })
+        .collect();
+    let sized = crate::persona::rag_budget::flex_allocate(LlmDeliberationFaculty::clamp_u32(start), &budgets);
+    claims
+        .iter()
+        .zip(&grants)
+        .zip(&sized.allocations)
+        .map(|((claim, grant), sized)| match grant {
+            Some(a) if sized.allocated_tokens >= a.requested_max => claim.full_chars,
+            Some(a) => (u64::from(sized.allocated_tokens) * claim.full_chars as u64 / u64::from(a.requested_max.max(1))) as usize,
+            None => 0,
+        })
+        .collect()
 }

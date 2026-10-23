@@ -2,14 +2,26 @@
 //! shares with the one before it: the design gate of MIND-CONTEXT-AND-ENGINE-CONFIG.md
 //! ("offline replay at >= 90% prefix").
 //!
-//! `cargo run -p continuum-context --example replay -- <prompt-capture.jsonl>...`
+//! `cargo run -p continuum-context --example replay -- [--room <id prefix>] [--purpose <suffix>] <prompt-capture.jsonl>...`
 //!
 //! Each captured request is cut the way the prompt assembly builds it: the system prompt is
-//! the head; results, pointers, the steps ledger and the action lines of working memory are
-//! ONE action log keyed by `#n`; each `[faculty]` block and each list-shaped block (open
-//! views, notices, recall, thoughts) is a source of `- ` items; whatever is left (facts,
-//! clock, the ask, the live act) is this act's fresh tail. Both arms are measured in
-//! characters: as sent, and as the view would have sent it.
+//! the head; room turns (`[occurred <when>] <who>:`) are her conversation, keyed by when and
+//! who; results, pointers, the steps ledger and the action lines of working memory are ONE
+//! action log keyed by `#n`; each `[faculty]` block and each list-shaped block (open views,
+//! notices, recall, thoughts) is a source of `- ` items; whatever is left (facts, clock, the
+//! ask, the live act) is this act's fresh tail. Everything is measured in characters: as
+//! sent, and as the view would have sent it.
+//!
+//! The view is fitted to the window each row recorded, less the reply's runaway (the largest
+//! `maxTokens` sent), at the chars per token the engine billed (`completed` rows), and turns
+//! over the way the core's `fit_view` does, under two rules: `whole` (before 2026-10-23: a
+//! source granted all it wants restarts whole, a cut one at half its grant) and `reserved`
+//! (`start_grants`: the grounding blocks whole; the conversation, results and thoughts at
+//! most half of what is left, and at most that less one act's appends).
+//!
+//! `--chars-per-token <r>` prices the window at the core's own estimate instead of the
+//! engine's bill; `--keyed-turn` keys the standing turn text into the epoch; `--trace`
+//! prints each act's view against what it may hold.
 
 use std::collections::BTreeMap;
 
@@ -21,15 +33,23 @@ struct Captured {
     items: Vec<Item<String>>,
 }
 
-/// What the allocator weighs each source by: the turn's own text and the board first, her
-/// thoughts next, then her results, her open views, and recall last.
+/// What the allocator weighs each source by, as the core's `context_streams::priority` does:
+/// her conversation, results and thoughts at 5, every standing block at 6.
 fn priority(source: &str) -> u8 {
     match source {
-        "recall" => 1,
-        "open-views" => 2,
-        "actions" => 3,
-        "working-memory" => 4,
-        _ => 5,
+        "conversation" | "actions" | "working-memory" | "turn" => 5,
+        _ => 6,
+    }
+}
+
+/// Where a source renders, as the core's `view_sources` orders them: her conversation, her
+/// actions, each standing block, her thoughts.
+fn order(source: &str) -> u8 {
+    match source {
+        "conversation" => 0,
+        "actions" => 1,
+        "working-memory" => 3,
+        _ => 2,
     }
 }
 
@@ -53,20 +73,63 @@ fn item(key: String, text: String) -> Item<String> {
     Item { key, pointer: Some(pointer), full: text }
 }
 
-/// The one allocation at an epoch start, modelled: every source gets its floor, then the
-/// rest of `budget` goes to sources in priority order up to what each wants. (In the core
-/// this is `flex_allocate`.)
+/// The one allocation, modelled: every source gets its floor, then the rest of `budget`
+/// goes to sources by priority level, highest first, sources of one level sharing in
+/// proportion to what each wants. (In the core this is `flex_allocate`.)
 fn allocate(claims: &[continuum_context::view::Claim], budget: usize) -> Vec<usize> {
     let mut grants: Vec<usize> = claims.iter().map(|claim| claim.pointer_chars).collect();
     let mut spare = budget.saturating_sub(grants.iter().sum());
-    let mut order: Vec<usize> = (0..claims.len()).collect();
-    order.sort_by_key(|index| std::cmp::Reverse(claims[*index].priority));
-    for index in order {
-        let more = claims[index].full_chars.saturating_sub(grants[index]).min(spare);
-        grants[index] += more;
-        spare -= more;
+    let mut levels: Vec<u8> = claims.iter().map(|claim| claim.priority).collect();
+    levels.sort_unstable_by(|a, b| b.cmp(a));
+    levels.dedup();
+    for level in levels {
+        let wants: Vec<(usize, usize)> = (0..claims.len())
+            .filter(|index| claims[*index].priority == level)
+            .map(|index| (index, claims[index].full_chars.saturating_sub(grants[index])))
+            .collect();
+        let wanted: usize = wants.iter().map(|(_, want)| want).sum();
+        let given = wanted.min(spare);
+        for (index, want) in wants {
+            grants[index] += (want as u128 * given as u128 / wanted.max(1) as u128) as usize;
+        }
+        spare -= given;
     }
     grants
+}
+
+#[derive(Clone, Copy, Debug)]
+enum Rule {
+    /// Before 2026-10-23: a source granted all it wants restarts whole, a cut one at half.
+    Whole,
+    /// `start_grants`: grounding whole; the growing sources at most half of what is left, less
+    /// one act's appends.
+    Reserved,
+}
+
+/// The grants a turnover starts the next epoch at, `available` being what the window leaves
+/// the view this act.
+fn start(rule: Rule, claims: &[continuum_context::view::Claim], available: usize, per_act: Option<usize>) -> Vec<usize> {
+    match rule {
+        Rule::Whole => {
+            let granted = allocate(claims, available);
+            claims
+                .iter()
+                .zip(granted)
+                .map(|(claim, grant)| if grant >= claim.full_chars { claim.full_chars } else { grant / 2 })
+                .collect()
+        }
+        Rule::Reserved => {
+            // The grounding blocks start whole at their grant; the growing sources (the
+            // lowest priority) start at half of what is left, less one act's appends.
+            let granted = allocate(claims, available);
+            let lowest = claims.iter().map(|claim| claim.priority).min().unwrap_or(0); // unwrap_or: no claims means nothing to grant
+            let grounding: usize =
+                claims.iter().zip(&granted).filter(|(claim, _)| claim.priority > lowest).map(|(_, grant)| grant).sum();
+            let growable = available.saturating_sub(grounding);
+            let growing = (growable / 2).min(per_act.map_or(growable, |chars| growable.saturating_sub(chars))); // map_or: no act measured, the half start alone
+            allocate(claims, grounding + growing)
+        }
+    }
 }
 
 /// `#n` right after `prefix` at the head of `text`.
@@ -124,6 +187,14 @@ fn standing(text: &str) -> Option<String> {
     standing.then(|| first.chars().take(120).collect())
 }
 
+/// A room turn's key: when it occurred and who said it (`[occurred <when>] <who>:`).
+fn turn_key(text: &str) -> Option<String> {
+    let rest = text.strip_prefix("[occurred ")?;
+    let (when, said) = rest.split_once("] ")?;
+    let who = said.split_once(':')?.0;
+    Some(format!("{when} {who}"))
+}
+
 fn cut(request: &serde_json::Value, keyed_turn: bool) -> Cut {
     let head = request["systemPrompt"].as_str().unwrap_or_default().to_owned();
     let mut sources: BTreeMap<String, Vec<Item<String>>> = BTreeMap::new();
@@ -137,7 +208,9 @@ fn cut(request: &serde_json::Value, keyed_turn: bool) -> Cut {
         };
         sent.push('\n');
         sent.push_str(&text);
-        if let Some(seq) = seq_after(&text, "[result #") {
+        if let Some(key) = turn_key(&text) {
+            push("conversation", vec![item(key, text)]);
+        } else if let Some(seq) = seq_after(&text, "[result #") {
             push("actions", vec![item(seq.to_string(), text)]);
         } else if text.starts_with("Recent results of your own actions") {
             push("actions", vec![item("banner".into(), text)]);
@@ -199,23 +272,29 @@ fn median(mut values: Vec<f64>) -> f64 {
     values.get(values.len() / 2).copied().unwrap_or(0.0)
 }
 
-fn replay(path: &str, cuts: &[Cut], keyed_turn: bool) -> Result<(), Box<dyn std::error::Error>> {
-    // The window as the fitter used it: the largest request it actually sent.
-    let window = cuts.iter().map(|cut| cut.sent.chars().count()).max().unwrap_or(0);
+fn percent(values: &[f64]) -> String {
+    values.iter().map(|share| format!("{:.0}", 100.0 * share)).collect::<Vec<_>>().join(" ")
+}
+
+/// Replay `cuts` (one resident's requests in one room, oldest first) through the view fitted
+/// to `window` characters for head, view and tail, turning over under `rule`.
+fn replay(label: &str, cuts: &[Cut], window: usize, rule: Rule, keyed_turn: bool, trace: bool) -> Result<(), Box<dyn std::error::Error>> {
     let mut view: Option<View<String>> = None;
     let mut previous_sent: Option<&str> = None;
     let mut previous_view = String::new();
-    let (mut sent_prefill, mut view_prefill, mut view_share, mut turnovers) = (Vec::new(), Vec::new(), Vec::new(), 0usize);
+    let (mut sent_share, mut view_share, mut view_prefill, mut turnovers) = (Vec::new(), Vec::new(), Vec::new(), 0usize);
     // What each source appended per act, and the fresh tail: where the prefill goes.
     let mut held: BTreeMap<(String, String), String> = BTreeMap::new();
     let mut appended: BTreeMap<String, usize> = BTreeMap::new();
     let mut tails = Vec::new();
     for cut in cuts {
-        let sources: Vec<Captured> =
+        let mut sources: Vec<Captured> =
             cut.sources.iter().map(|(name, items)| Captured { name: name.clone(), items: items.clone() }).collect();
+        sources.sort_by_key(|source| order(&source.name));
         let refs: Vec<&dyn Source<String>> = sources.iter().map(|s| s as &dyn Source<String>).collect();
         let tail = cut.tail.join("\n");
-        tails.push(tail.chars().count() as f64);
+        let tail_chars = tail.chars().count();
+        tails.push(tail_chars as f64);
         for (name, items) in &cut.sources {
             for item in items {
                 let key = (name.clone(), item.key.clone());
@@ -225,27 +304,30 @@ fn replay(path: &str, cuts: &[Cut], keyed_turn: bool) -> Result<(), Box<dyn std:
                 }
             }
         }
-        // An epoch starts at half the window, so it has room to grow before the next turnover.
-        let budget = (window / 2).saturating_sub(cut.head.chars().count() + tail.chars().count());
-        let all_full = |claims: &[continuum_context::view::Claim]| allocate(claims, budget);
-        match view.as_mut() {
-            None => view = Some(View::start(vec![cut.head.clone()], &refs, all_full)?.0),
+        // What the window leaves her view's sources this act, and the view whole (head
+        // included) may grow to before it turns over: the core's `granted + room`.
+        let head_chars = cut.head.chars().count();
+        let available = window.saturating_sub(head_chars + tail_chars);
+        let whole = |claims: &[continuum_context::view::Claim]| claims.iter().map(|claim| claim.full_chars).collect();
+        let open = match view.as_mut() {
+            None => view.insert(View::start(vec![cut.head.clone()], &refs, whole)?.0),
             Some(open) => {
                 open.advance(&refs);
-                let reserve = open.appended_per_act().unwrap_or(0);
-                if open.chars() + tail.chars().count() + reserve > window {
-                    open.turn_over(vec![cut.head.clone()], &refs, all_full)?;
-                    turnovers += 1;
-                }
+                open
             }
-        }
-        let rendered = match view.as_ref() {
-            Some(open) => format!("{}\n{tail}", open.render().cloned().collect::<Vec<_>>().join("\n")),
-            None => tail.clone(),
         };
+        if trace {
+            let whole: usize = continuum_context::view::claims(&refs).iter().map(|c| c.full_chars).sum();
+            eprintln!("  act: view {} chars (head included) of {} it may hold; sources whole {whole}, tail {tail_chars}", open.chars(), head_chars + available);
+        }
+        if open.chars() > head_chars + available {
+            let per_act = open.appended_per_act();
+            open.turn_over(vec![cut.head.clone()], &refs, |claims| start(rule, claims, available, per_act))?;
+            turnovers += 1;
+        }
+        let rendered = format!("{}\n{tail}", open.render().cloned().collect::<Vec<_>>().join("\n"));
         if let Some(before) = previous_sent {
-            let sent = cut.sent.chars().count();
-            sent_prefill.push((sent - shared(before, &cut.sent)) as f64);
+            sent_share.push(shared(before, &cut.sent) as f64 / cut.sent.chars().count().max(1) as f64);
             let length = rendered.chars().count();
             let kept = shared(&previous_view, &rendered);
             view_prefill.push((length - kept) as f64);
@@ -255,14 +337,17 @@ fn replay(path: &str, cuts: &[Cut], keyed_turn: bool) -> Result<(), Box<dyn std:
         previous_view = rendered;
     }
     println!(
-        "{path} [{}]\n  {} requests, window {window} chars, {turnovers} turnovers\n  prefill per act, chars: as sent median {:.0} mean {:.0}; the view median {:.0} mean {:.0} ({:.0}% of the request matched)\n  fresh tail median {:.0} chars",
-        if keyed_turn { "standing turn text keyed into the epoch" } else { "turn text as fresh tail" },
+        "{label} [{rule:?}{}]\n  {} requests, window {window} chars, {turnovers} turnovers\n  shared prefix per act, %: as sent [{}] mean {:.0} median {:.0}\n  shared prefix per act, %: the view [{}] mean {:.0} median {:.0}\n  the view's prefill per act, chars: median {:.0} mean {:.0}; fresh tail median {:.0} chars",
+        if keyed_turn { ", standing turn text keyed into the epoch" } else { "" },
         cuts.len(),
-        median(sent_prefill.clone()),
-        mean(&sent_prefill),
+        percent(&sent_share),
+        100.0 * mean(&sent_share),
+        100.0 * median(sent_share.clone()),
+        percent(&view_share),
+        100.0 * mean(&view_share),
+        100.0 * median(view_share.clone()),
         median(view_prefill.clone()),
         mean(&view_prefill),
-        100.0 * median(view_share),
         median(tails),
     );
     let acts = cuts.len().max(1);
@@ -271,19 +356,81 @@ fn replay(path: &str, cuts: &[Cut], keyed_turn: bool) -> Result<(), Box<dyn std:
     Ok(())
 }
 
+/// Characters a request sends: the system prompt, every message, and the tool schemas.
+fn request_chars(request: &serde_json::Value) -> usize {
+    let messages: usize = request["messages"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|message| match &message["content"] {
+            serde_json::Value::String(text) => text.chars().count(),
+            other => other.to_string().chars().count(),
+        })
+        .sum();
+    request["systemPrompt"].as_str().map_or(0, |text| text.chars().count()) + messages + request["tools"].to_string().chars().count()
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    for path in std::env::args().skip(1) {
-        let mut requests = Vec::new();
-        for line in std::fs::read_to_string(&path)?.lines() {
+    let (mut room, mut purpose, mut keyed_turn, mut trace, mut paths) = (String::new(), String::from("deliberation"), false, false, Vec::new());
+    let mut priced: Option<f64> = None;
+    let mut args = std::env::args().skip(1);
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "--room" => room = args.next().ok_or("--room needs an id prefix")?,
+            "--purpose" => purpose = args.next().ok_or("--purpose needs a suffix")?,
+            "--keyed-turn" => keyed_turn = true,
+            "--trace" => trace = true,
+            "--chars-per-token" => priced = Some(args.next().ok_or("--chars-per-token needs a number")?.parse()?),
+            _ => paths.push(arg),
+        }
+    }
+    let mut rows = Vec::new();
+    let mut billed: BTreeMap<String, u64> = BTreeMap::new();
+    for path in &paths {
+        for line in std::fs::read_to_string(path)?.lines() {
             let Ok(event) = serde_json::from_str::<serde_json::Value>(line) else { continue };
-            if event["event"] == "submitted" {
-                requests.push(event["request"].clone());
+            match event["event"].as_str() {
+                Some("submitted") => rows.push(event),
+                Some("completed") => {
+                    if let (Some(id), Some(tokens)) = (event["request_id"].as_str(), event["response"]["usage"]["inputTokens"].as_u64()) {
+                        billed.insert(id.to_owned(), tokens);
+                    }
+                }
+                _ => {}
             }
         }
-        for keyed_turn in [false, true] {
-            let cuts: Vec<Cut> = requests.iter().map(|request| cut(request, keyed_turn)).collect();
-            replay(&path, &cuts, keyed_turn)?;
-        }
+    }
+    // Chars per token as the engine billed this resident's own requests.
+    let per_token: Vec<f64> = rows
+        .iter()
+        .filter_map(|row| {
+            let tokens = billed.get(row["request_id"].as_str()?)?;
+            Some(request_chars(&row["request"]) as f64 / *tokens.max(&1) as f64)
+        })
+        .collect();
+    // The core prices its claims with its own estimator, not the engine's bill: pass its
+    // ratio (`delib.view.sized` view_chars / view_tokens) to fit the view the way it does.
+    let chars_per_token = match priced {
+        Some(ratio) => ratio,
+        None => median(per_token.clone()),
+    };
+    rows.retain(|row| {
+        row["room_id"].as_str().is_some_and(|id| id.starts_with(&room))
+            && row["request"]["purpose"].as_str().is_some_and(|p| p.ends_with(&purpose))
+    });
+    rows.sort_by_key(|row| row["captured_at_ms"].as_u64());
+    let context_window = rows.iter().filter_map(|row| row["context_window"].as_u64()).max().unwrap_or(0); // unwrap_or: no rows in the room, nothing replays
+    let reply = rows.iter().filter_map(|row| row["request"]["maxTokens"].as_u64()).max().unwrap_or(0); // unwrap_or: no rows in the room, nothing replays
+    let tools = median(rows.iter().map(|row| row["request"]["tools"].to_string().chars().count() as f64).collect());
+    let window = (context_window.saturating_sub(reply) as f64 * chars_per_token - tools).max(0.0) as usize;
+    let label = format!(
+        "{} room {room} purpose {purpose}: window {context_window} - reply {reply} tokens at {chars_per_token:.2} chars/token ({} billed rows), tools {tools:.0} chars",
+        paths.join(" "),
+        per_token.len()
+    );
+    let cuts: Vec<Cut> = rows.iter().map(|row| cut(&row["request"], keyed_turn)).collect();
+    for rule in [Rule::Whole, Rule::Reserved] {
+        replay(&label, &cuts, window, rule, keyed_turn, trace)?;
     }
     Ok(())
 }
