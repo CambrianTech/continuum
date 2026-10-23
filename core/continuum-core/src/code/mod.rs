@@ -13,6 +13,7 @@
 //! - `git_bridge` — Git status, diff, and branch operations
 //! - `hands` — whose hands a call acts with: caller + acting context (the hands-map key)
 
+pub mod card_branch;
 pub mod change_graph;
 pub mod citizen_layer;
 pub mod diff_engine;

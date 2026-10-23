@@ -31,6 +31,7 @@ pub mod frame_analysis;
 #[cfg(feature = "livekit-webrtc")]
 pub mod frame_publisher;
 pub mod gender;
+pub mod names;
 pub mod hash;
 pub mod publishers;
 pub mod registry;

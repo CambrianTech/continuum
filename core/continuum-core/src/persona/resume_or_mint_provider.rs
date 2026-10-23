@@ -43,7 +43,7 @@ use async_trait::async_trait;
 use uuid::Uuid;
 
 use crate::persona::identity_provider::{PersonaIdentityError, PersonaIdentityIntent, PersonaIdentityProvider, PersonaIdentitySource};
-use crate::persona::name_generator::agent_name_from_identity;
+use crate::live::avatar::names::agent_name_from_identity;
 use crate::persona::seed::{read_seed, PersonaSeedError};
 
 /// Yields resumed intents first (scanned at construction), then

@@ -509,7 +509,7 @@ pub(crate) async fn bind_card(
         // career-wrangler/docs/... failed with no word of why. Recorded as told only AFTER
         // the line is pinned (Cormac on #4555).
         if !already_told(peer_id, &ws) {
-            let branch = crate::persona::card_checkout::card_branch(focus);
+            let branch = crate::code::card_branch::card_branch(focus);
             body.working_memory.pin_fact_for_turns("rooted", &rooted_notice(&focus.repo.to_string(), &ws, &branch), 3);
             mark_told(peer_id, &ws);
             continuum_base::probe!(

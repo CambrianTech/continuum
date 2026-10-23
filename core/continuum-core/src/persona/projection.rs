@@ -17,7 +17,7 @@ use crate::live::avatar::gender::{gender_from_identity, pronouns_for_gender, Pro
 use crate::live::avatar::selection::select_avatar_by_identity;
 use crate::live::avatar::types::AvatarGender;
 
-use super::name_generator::agent_name_from_identity;
+use crate::live::avatar::names::agent_name_from_identity;
 
 /// The coherent identity bundle for a persona. Every field is a deterministic
 /// projection from `persona_id`, drawn so they all agree by construction.

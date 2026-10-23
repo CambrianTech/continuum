@@ -18,7 +18,7 @@
 //! derive from a single conceptual seed. The keypair derives the
 //! cryptographic peer_id; the seed.json carries the
 //! continuum-allocated persona_id that drives name + avatar + voice
-//! + genome facet derivation via [[crate::persona::name_generator]].
+//! + genome facet derivation via [[crate::live::avatar::names]].
 //!
 //! ### Atomic writes (crash-safe)
 //!
@@ -582,7 +582,7 @@ mod tests {
     #[tokio::test]
     async fn ensure_seed_upgrades_v1_to_v2_without_shifting() {
         use crate::live::avatar::types::AvatarGender;
-        use crate::persona::name_generator::gender_from_name;
+        use crate::live::avatar::names::gender_from_name;
 
         let temp = TempDir::new().unwrap();
         let path = temp.path().join("seed.json");
@@ -631,7 +631,7 @@ mod tests {
     #[tokio::test]
     async fn ensure_seed_preserves_a_v2_card_gender_across_respawn() {
         use crate::live::avatar::types::AvatarGender;
-        use crate::persona::name_generator::gender_from_name;
+        use crate::live::avatar::names::gender_from_name;
 
         let temp = TempDir::new().unwrap();
         let path = temp.path().join("seed.json");

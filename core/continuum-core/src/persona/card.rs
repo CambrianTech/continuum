@@ -48,7 +48,7 @@ use uuid::Uuid;
 
 use crate::live::avatar::gender::{gender_from_identity, pronouns_for_gender, PronounSet};
 use crate::live::avatar::types::AvatarGender;
-use crate::persona::name_generator::gender_from_name;
+use crate::live::avatar::names::gender_from_name;
 use crate::persona::role_template::RoleId;
 
 /// The coherent identity card. Every field agrees with `gender`, the presentation
@@ -138,6 +138,7 @@ static CARD_REGISTRY: Mutex<Option<HashMap<String, PersonaCard>>> = Mutex::new(N
 /// is what replaces the name-re-derivation for our OWN personas.
 pub fn register(card: PersonaCard) {
     let key = card.persona_id.to_string();
+    crate::live::avatar::selection::register_card_gender(&key, card.gender);
     CARD_REGISTRY
         .lock()
         .unwrap()
@@ -168,23 +169,13 @@ pub fn ids() -> Vec<Uuid> {
         .unwrap_or_default()
 }
 
-/// The registered card's gender for an identity, if present. The seam
-/// `registered_gender` calls before falling back to the remote-participant
-/// name-anchor and finally the id-hash.
-pub fn gender_of(identity: &str) -> Option<AvatarGender> {
-    CARD_REGISTRY
-        .lock()
-        .unwrap()
-        .as_ref()
-        .and_then(|m| m.get(identity).map(|c| c.gender))
-}
-
 /// Drop a persona's card from the live registry (test isolation + despawn).
 #[cfg(test)]
 pub fn remove(identity: &str) {
     if let Some(m) = CARD_REGISTRY.lock().unwrap().as_mut() {
         m.remove(identity);
     }
+    crate::live::avatar::selection::forget_card_gender(identity);
 }
 
 #[cfg(test)]
@@ -264,23 +255,26 @@ mod tests {
         );
     }
 
-    // what this catches: the live registry round-trips a card and answers gender_of
-    // — the exact lookup the avatar/voice seams depend on. A missing id returns None
-    // (so the seam falls through to the name-anchor / id-hash), never a wrong gender.
+    // what this catches: the live registry round-trips a card and PUBLISHES its gender
+    // to the avatar/voice seam (`registered_gender`), and removal retracts it. A missing
+    // id returns None (so the seam falls through to the name-anchor / id-hash), never a
+    // wrong gender.
     #[test]
-    fn registry_round_trips_and_gender_of_resolves() {
+    fn registry_round_trips_and_publishes_the_card_gender() {
+        use crate::live::avatar::selection::registered_gender;
         let id = Uuid::new_v4();
         let card = PersonaCard::genesis(id, "Niko", 0, None); // Niko ∈ MALE_NAMES
         let key = id.to_string();
         register(card.clone());
         assert_eq!(get(&key), Some(card));
-        assert_eq!(gender_of(&key), Some(AvatarGender::Male));
+        assert_eq!(registered_gender(&key), Some(AvatarGender::Male));
         assert_eq!(
-            gender_of(&Uuid::new_v4().to_string()),
+            registered_gender(&Uuid::new_v4().to_string()),
             None,
             "unknown id → None"
         );
         remove(&key);
         assert_eq!(get(&key), None, "removed card is gone");
+        assert_eq!(registered_gender(&key), None, "removal retracts the published gender");
     }
 }

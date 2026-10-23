@@ -39,7 +39,7 @@ use ts_rs::TS;
 use uuid::Uuid;
 
 use crate::persona::instance_manager::PersonaBirth;
-use crate::persona::agent_name_from_identity;
+use crate::live::avatar::names::agent_name_from_identity;
 use crate::persona::identity_provider::{PersonaIdentityIntent, PersonaIdentitySource};
 
 /// Optional inputs to a spawn. All optional — the zero-arg call births ONE persona
