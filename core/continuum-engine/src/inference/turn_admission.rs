@@ -411,6 +411,7 @@ async fn admit(
                 }
 
                 if pg.save_first.is_some() || pg.restore {
+                    admission._mind = mind.take();
                     let pool = Arc::clone(pool);
                     let client = client.clone();
                     let paging_root = root.to_owned();
@@ -489,7 +490,9 @@ async fn admit(
             admission._endpoint.check_ready()?;
         }
 
-        admission._mind = mind.take();
+        if admission._mind.is_none() {
+            admission._mind = mind.take();
+        }
         return Ok(admission);
     }
 }

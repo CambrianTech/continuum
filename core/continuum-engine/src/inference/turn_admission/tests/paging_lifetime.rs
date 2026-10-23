@@ -176,6 +176,7 @@ async fn abandoned_restore_retains_slot_lane_and_generation_until_terminal_recei
                 tokio::time::resume();
             }
             drop(admitting);
+            assert!(MindTurn::try_begin(key).is_none(), "paging retains the mind gate");
             assert_eq!(
                 sem.available_permits(),
                 0,
