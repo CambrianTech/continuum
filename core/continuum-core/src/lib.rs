@@ -24,6 +24,9 @@ extern crate self as continuum_core;
 pub use continuum_engine::{ai, capacity, inference, inference_capability, model_registry, sensory};
 pub use continuum_hands::code;
 pub use continuum_live::{live, media};
+pub use continuum_mind::{
+    cognition, context, experience, genome, memory, perception, persona, rag, recipe, vdd,
+};
 pub use continuum_kernel::{
     concurrency, governor, gpu, identity, logging, orm, paging, paths, resources, routing, runtime,
     sdk_codegen, system_resources,
@@ -34,28 +37,18 @@ pub use continuum_kernel::{
     time_async, time_section,
 };
 pub mod airc;
-pub mod cognition;
 pub mod commands;
 pub mod comms;
-pub mod context;
 pub mod contracts;
-pub mod experience;
 pub mod forge;
-pub mod genome;
 pub mod http;
 pub mod boot_plan;
 pub mod interface;
 pub mod ipc;
-pub mod memory;
 pub mod modules;
-pub mod perception;
-pub mod persona;
 pub mod provisioning;
-pub mod rag;
-pub mod recipe;
 #[cfg(test)]
 pub(crate) mod test_env;
-pub mod vdd;
 
 
 pub use continuum_kernel::concurrency::*;

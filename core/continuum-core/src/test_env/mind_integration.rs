@@ -7,6 +7,8 @@
 
 mod airc_conversation;
 mod eval;
+mod recipe;
+mod registry;
 mod hands_isolation;
 mod remote_lane;
 mod source_guards;

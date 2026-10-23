@@ -78,9 +78,8 @@ use super::*;
     pub(super) async fn reviewed_credit_replays_exact_authority_and_recovers_after_replacement() {
         use airc_work::{WorkEvent, WorkReviewOutcome, WorkSubmissionReview};
         use reviewed::ReviewedCreditState as State;
-        use crate::cognition::dream_consolidation::tests::{
-            episodic,
-            region::{drain, region_over_with_store, seeded_admission},
+        use crate::cognition::dream_consolidation::test_support::{
+            drain, episodic, region_over_with_store, seeded_admission,
         };
         use crate::runtime::brain_region::{BrainRegion, RegionContext};
         let (fx, mut capture) = exact_review().await;

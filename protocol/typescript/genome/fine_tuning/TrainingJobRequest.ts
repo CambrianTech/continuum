@@ -49,7 +49,7 @@ dataset: TrainingDataset,
 /**
  * A JSONL eval-set path (the `cognition/eval` `eval_set`) for a MANUAL
  * spot-check of this trait. It decides nothing: the automatic adoption
- * path ([`crate::modules::training_completion_sentinel`]) no longer runs
+ * path (`modules::training_completion_sentinel`) no longer runs
  * an eval copy of her mind (Joel, 2026-09-27: integrated, not parallel).
  * It registers the gene dormant and opens an in-room
  * [`GeneTrial`](crate::genome::gene_trial::GeneTrial), whose card

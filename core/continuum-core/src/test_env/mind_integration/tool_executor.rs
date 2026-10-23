@@ -5,13 +5,13 @@
 
 use std::sync::Arc;
 
-use serde_json::{json, Value};
+use serde_json::json;
 use uuid::Uuid;
 
-use crate::cognition::tool_executor::types::PersonaMediaConfigLite;
 use crate::ai::types::ToolCall as NativeToolCall;
-use crate::cognition::tool_executor::{CommandToolExecutor, ToolExecutionContext, ToolExecutor};
-use crate::runtime::{CommandExecutor, ModuleRegistry};
+use crate::cognition::tool_executor::command_executor::test_support::{ctx, exec_over};
+use crate::cognition::tool_executor::ToolExecutor;
+use crate::runtime::ModuleRegistry;
 
 // what this catches: a WORKING PERSONA on the clean command infra — a persona's
 // hands route a tool call to `ping`, which is migrated to the self-routing
@@ -25,24 +25,15 @@ use crate::runtime::{CommandExecutor, ModuleRegistry};
 async fn persona_executes_ping_via_typed_object_path() {
     let registry = Arc::new(ModuleRegistry::new());
     registry.register(Arc::new(crate::modules::health::HealthModule::new()));
-    // The SAME production factory the spawn path uses, over an executor built from this registry.
-    let exec = CommandToolExecutor::for_persona(Arc::new(CommandExecutor::new(registry)), Uuid::new_v4());
+    let exec = exec_over(registry, Uuid::new_v4());
 
-    let ctx = ToolExecutionContext {
-        persona_id: Uuid::new_v4(),
-        persona_name: "Ivar".to_string(),
-        session_id: Uuid::new_v4(),
-        context_id: Uuid::new_v4(),
-        caller_context: Value::Null,
-        persona_config: PersonaMediaConfigLite { auto_load_media: false, supported_media_types: vec![] },
-    };
     let calls = vec![NativeToolCall {
         id: "p1".to_string(),
         name: "ping".to_string(),
         input: json!({}),
     }];
     let out = exec
-        .execute_native_batch(&calls, &ctx, 8000)
+        .execute_native_batch(&calls, &ctx(), 8000)
         .await
         .expect("batch ok");
 

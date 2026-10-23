@@ -1,0 +1,258 @@
+#![cfg(test)]
+use super::*;
+
+// what this catches: Benchy's first write cut mid-call (2026-10-18 02:10Z). Three
+// read-only turns landed at 2,702; the reply's reserve was twice that peak, 5,404;
+// the write cut mid-answer at 5,404 — and the retry was sized by the same carve-off.
+// Now the cut's doubled answer is in her need and the pending cut raises the act to
+// priority 10: on her 46,848 window the retry's REQUEST carries at least the doubled
+// cut and never past the act's runaway bound, and prompt + reply fit the window.
+#[tokio::test]
+async fn a_writing_turn_after_a_cut_gets_its_reply_on_a_46848_window() {
+    use crate::cognition::working_memory::WorkingMemory;
+    use crate::cognition::working_set::{EmissionStop, WorkingSetRegistry};
+    let home = tempfile::tempdir().expect("isolated fixture emission storage");
+    let _native = crate::paths::NativeHomeOverride::install(home.path());
+    let window = 46_848u32;
+    let persona = Uuid::new_v4();
+    let reg = WorkingSetRegistry::new();
+    for tick in 1..=3 {
+        reg.record_emission_in_memory(persona, 2_702, 0, EmissionStop::Landed, tick);
+    }
+    let cut = reg.record_emission_in_memory(persona, 5_404, 0, EmissionStop::CutMidAnswer, 4);
+    assert_eq!(cut.peak_tokens, 10_808, "a cut mid-answer records the answer at double");
+    let wm = Arc::new(WorkingMemory::new(8));
+    wm.set_served_window(window);
+    let adapter = Arc::new(ScriptedAdapter::new(vec![make_response(FinishReason::Stop, "PASS", None)]));
+    let faculty = LlmDeliberationFaculty::new(persona, "Benchy", "You are Benchy.", adapter.clone())
+        .with_context_window(window)
+        .with_tools(persona_tools::native_tool_specs())
+        .with_working_set(reg)
+        .with_working_memory(Arc::clone(&wm));
+    let ws = writing_workspace(crate::identity::ActivityRoom::mint(), 120, true);
+    assert_eq!(faculty.turn_kind(&ws), TurnKind::Act);
+    wm.retain_truncated_emission(ws.activity_room_id, cut.peak_tokens);
+
+    let contribution = faculty.contribute(&ws).await.expect("a verdict or named fault");
+    assert!(contribution.fault.is_none(), "{:?}", contribution.fault);
+    let seen = adapter.seen.lock().unwrap();
+    let request = &seen[0];
+    let reply = request.max_tokens.expect("the reply is bounded");
+    assert!(
+        (10_808..=LlmDeliberationFaculty::ACT_OUTPUT_CAP).contains(&reply),
+        "the retried write gets at least the doubled cut, under the act's bound: {reply}"
+    );
+    let wire_tokens =
+        LlmDeliberationFaculty::framing_cost(request.system_prompt.as_ref().unwrap())
+            + LlmDeliberationFaculty::messages_cost(&request.messages)
+            + LlmDeliberationFaculty::tool_surface_tokens_of(request.tools.as_ref().unwrap())
+            + reply as usize;
+    assert!(wire_tokens <= window as usize, "prompt + reply {wire_tokens} > window {window}");
+    assert!(
+        request.messages.iter().any(|m| m.content_text().contains("Write the migration file now")),
+        "the ask rides the wire"
+    );
+}
+
+// what this catches: priority not deciding. One workspace, one measured want (a
+// pending cut doubled), two turns: an ambient pass (priority 4) and an act after the
+// cut (priority 10). The act's reply grows at history's expense; the required input
+// is identical in both (never part of the trade); and the plan is deterministic —
+// two runs of the act are byte-identical.
+#[test]
+fn reply_priority_trades_history_not_required_input() {
+    use crate::cognition::working_memory::WorkingMemory;
+    let window = 16_384u32;
+    let persona = Uuid::new_v4();
+    let wm = Arc::new(WorkingMemory::new(8));
+    let faculty = LlmDeliberationFaculty::new(
+        persona,
+        "Benchy",
+        "You are Benchy.",
+        Arc::new(ScriptedAdapter::new(vec![])),
+    )
+    .with_context_window(window)
+    .with_tools(vec![read_tool()])
+    .with_working_memory(Arc::clone(&wm));
+    let room = crate::identity::ActivityRoom::mint();
+    let pass = writing_workspace(room, 200, false);
+    let act = writing_workspace(room, 200, true);
+    assert_eq!((faculty.turn_kind(&pass), faculty.turn_kind(&act)), (TurnKind::Pass, TurnKind::Act));
+    wm.retain_truncated_emission(act.activity_room_id, 5_404);
+
+    let required = |ws: &Workspace| faculty.messages_unfitted(ws, None).required_tokens();
+    assert_eq!(required(&pass), required(&act), "the same required input on both turns");
+    let history = |view: &DeliberationPromptView| {
+        view.messages.iter().filter(|m| m.content_text().contains("distinct_history_")).count()
+    };
+    // Each turn on its own faculty: her view carries an epoch from one prompt to the next,
+    // so the act on the pass's faculty would inherit the pass's epoch. What this test
+    // pins is the allocation, which each turn makes from its own state.
+    let fresh = || {
+        LlmDeliberationFaculty::new(persona, "Benchy", "You are Benchy.", Arc::new(ScriptedAdapter::new(vec![])))
+            .with_context_window(window)
+            .with_tools(vec![read_tool()])
+            .with_working_memory(Arc::clone(&wm))
+    };
+    let pass_view = fresh().prompt_view_within(&pass, window);
+    // Working memory keeps her view for her checkpoint; this act starts its own.
+    wm.take_view();
+    let act_faculty = fresh();
+    let act_view = act_faculty.prompt_view_within(&act, window);
+    for view in [&pass_view, &act_view] {
+        assert!(view.capacity_error.is_none(), "{:?}", view.capacity_error);
+        assert!(
+            view.messages.iter().any(|m| m.content_text().contains("Write the migration file now")),
+            "required input is never traded"
+        );
+    }
+    assert!(
+        act_view.completion_reserve > pass_view.completion_reserve,
+        "the act's reply outranks the ambient pass's: {} vs {}",
+        act_view.completion_reserve,
+        pass_view.completion_reserve
+    );
+    assert!(
+        history(&act_view) < history(&pass_view),
+        "history pays for the act's reply: {} vs {} messages",
+        history(&act_view),
+        history(&pass_view)
+    );
+    let again = act_faculty.prompt_view_within(&act, window);
+    assert_eq!(
+        format!("{:?} {:?} {}", again.system, again.messages, again.completion_reserve),
+        format!("{:?} {:?} {}", act_view.system, act_view.messages, act_view.completion_reserve),
+        "one plan for one input, byte for byte"
+    );
+}
+
+// what this catches: repeated rejection is bounded, the next tick uses
+// observed density, and unrelated small prompts do not pay a fixed excess.
+#[tokio::test]
+async fn provider_context_feedback_bounds_replay_and_scales_next_turn() {
+    use crate::ai::inference_error::InferenceError;
+    use crate::cognition::working_set::WorkingSetRegistry;
+    use crate::cognition::workspace::Burst;
+
+    let home = tempfile::tempdir().expect("isolated demand storage");
+    let _native = crate::paths::NativeHomeOverride::install(home.path());
+    let persona = Uuid::new_v4();
+    let window = 29_440;
+    let adapter = Arc::new(ScriptedAdapter::new(vec![
+        make_response(FinishReason::Stop, "PASS", None),
+        make_response(FinishReason::Stop, "PASS", None),
+    ]));
+    adapter
+        .rejections
+        .lock()
+        .expect("fixture rejection queue")
+        .extend([
+            InferenceError::ContextExceeded {
+                requested: 29_722,
+                available: window,
+            },
+            InferenceError::ContextExceeded {
+                requested: 29_722,
+                available: window,
+            },
+        ]);
+    let registry = WorkingSetRegistry::new();
+    for tick in 0..3 {
+        registry.record_emission_in_memory(persona, 834, 0, crate::cognition::working_set::EmissionStop::Landed, tick);
+    }
+    let faculty =
+        LlmDeliberationFaculty::new(persona, "Ivar", "You are Ivar.", adapter.clone())
+            .with_context_window(window)
+            .with_tools(vec![read_tool()])
+            .with_working_set(registry);
+    let mut turns: Vec<_> = (0..160)
+        .map(|i| {
+            BurstTurn::attributed(
+                i % 2 == 0,
+                if i % 2 == 0 { "Ivar" } else { "Peer" },
+                format!("distinct_history_{i} ").repeat(100),
+                Some(i),
+            )
+        })
+        .collect();
+    turns.push(BurstTurn::attributed(
+        false,
+        "Peer",
+        "Review the current artifact.",
+        Some(161),
+    ));
+    let ws = Workspace::new(Burst::from_turns(
+        crate::identity::ActivityRoom::mint(),
+        turns,
+    ));
+    assert_eq!(
+        faculty
+            .messages_unfitted(&ws, None)
+            .history
+            .iter()
+            .filter(|m| m.content_text().contains("distinct_history_"))
+            .count(),
+        160
+    );
+    let fault = faculty.contribute(&ws).await.expect("bounded refusal");
+    assert!(fault.fault.is_some());
+    assert_eq!(
+        adapter.call_count(),
+        2,
+        "unchanged exact measurement terminates corrective replay"
+    );
+    let next = faculty.contribute(&ws).await.expect("next tick");
+    assert!(next.fault.is_none(), "{:?}", next.fault);
+    {
+        let seen = adapter.seen.lock().expect("actual requests");
+        assert_eq!(seen.len(), 3);
+        assert!(
+            LlmDeliberationFaculty::messages_cost(&seen[2].messages)
+                < LlmDeliberationFaculty::messages_cost(&seen[1].messages),
+            "the previously rejected prompt must not be sent unchanged next tick"
+        );
+    }
+    let small = Workspace::in_room("What changed?", ws.room_id);
+    let (effective, calibration) = faculty.prompt_fit(&faculty.binding.load());
+    let small_view = faculty.prompt_view(&small);
+    assert!(
+        small_view.capacity_error.is_none(),
+        "{:?}",
+        small_view.capacity_error
+    );
+    assert!(
+        calibration.charge(small_view.estimated_prompt_tokens)
+            + small_view.completion_reserve as usize
+            <= effective as usize
+    );
+    let outcome = faculty
+        .contribute(&small)
+        .await
+        .expect("small unrelated turn");
+    assert!(outcome.fault.is_none(), "{:?}", outcome.fault);
+    assert_eq!(adapter.call_count(), 4);
+
+    // Re-home to a distinct provider, even at the same declared capacity.
+    let replacement = Arc::new(ScriptedAdapter::new(vec![make_response(
+        FinishReason::Stop,
+        "PASS",
+        None,
+    )]));
+    faculty.binding.store(Arc::new(ModelBinding {
+        adapter: replacement.clone(),
+        model: None,
+        context_window: window,
+    }));
+    let pristine = faculty.prompt_view_within(&ws, window);
+    assert_eq!(
+        faculty.prompt_view(&ws).estimated_prompt_tokens,
+        pristine.estimated_prompt_tokens
+    );
+    assert!(faculty
+        .contribute(&ws)
+        .await
+        .expect("new route")
+        .fault
+        .is_none());
+    assert_eq!(replacement.call_count(), 1);
+}
