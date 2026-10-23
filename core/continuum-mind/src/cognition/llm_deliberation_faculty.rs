@@ -459,7 +459,7 @@ impl LlmDeliberationFaculty {
     /// after that would be measured against a stale floor. Deriving it means the requirement
     /// tracks reality for free. (#124 — de-hardcode the dynamic system.)
     pub fn framing_floor_tokens(&self) -> u32 {
-        let bare = self.compose_system("", &std::collections::BTreeSet::new(), false, false, None);
+        let bare = self.compose_system(&std::collections::BTreeSet::new(), false, false, None);
         estimate_guard_tokens(&bare) as u32
     }
 

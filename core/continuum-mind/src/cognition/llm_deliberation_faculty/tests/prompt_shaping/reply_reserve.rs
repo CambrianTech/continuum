@@ -126,7 +126,11 @@ fn an_unmeasured_mind_reserves_a_reply_not_a_fraction_of_her_window() {
                 "window {window} left only {prompt_room} tokens of world — this is \
                          the 297-token prompt that made a citizen answer as a stranger"
             );
-            assert!(view.system.contains("a remembered detail"), "and the world got that room");
+            // The world rides her messages (after her view), never the system message.
+            assert!(
+                view.messages.iter().any(|m| m.content_text().contains("a remembered detail")),
+                "and the world got that room"
+            );
         }
     }
 }
@@ -467,11 +471,13 @@ fn a_long_conversation_cannot_starve_grounding_to_zero() {
         .push(board_like(60).with_expand_command(Some("work/list")));
 
     let view = faculty.prompt_view_within(&ws, 24_128);
+    // The board rides her messages (after her view), never the system message.
+    let text = view.user_text();
     assert!(
-        view.system.contains("[room-kanban]"),
+        view.messages.iter().any(|m| m.content_text().contains("[room-kanban]")),
         "grounding must survive a conversation that would otherwise take every \
                  token — this is the exact live failure: window grew, board still gone\n{}",
-        &view.system[..view.system.len().min(1200)]
+        &text[text.len().saturating_sub(1200)..]
     );
 }
 
@@ -801,7 +807,7 @@ fn trailing_proprioception_renders_in_the_tail_not_the_system_prefix() {
         .with_context_window(8192);
 
     let mut ws = Workspace::new("build me a login form");
-    // Standing framing belongs in the system message.
+    // Standing framing is the room's: it rides her messages, never the system message.
     ws.broadcast.push(
         Contribution::context(
             FacultyId::Custom("room-roster".to_string()),
@@ -823,11 +829,17 @@ fn trailing_proprioception_renders_in_the_tail_not_the_system_prefix() {
         .trailing(),
     );
     let v1 = faculty.prompt_view(&ws);
+    let in_tail = |v: &DeliberationPromptView, needle: &str| {
+        v.messages
+            .iter()
+            .any(|m| matches!(&m.content, MessageContent::Text(t) if t.contains(needle)))
+    };
 
-    // The framing IS in the system message; the trailing proprioception is NOT.
+    // Neither the room's framing nor the trailing proprioception sits in the system
+    // message (2026-10-23 and #205); both render as messages.
     assert!(
-        v1.system.contains("ROSTER: alice, bob"),
-        "stable framing must stay in the system prefix:\n{}",
+        !v1.system.contains("ROSTER: alice, bob") && in_tail(&v1, "ROSTER: alice, bob"),
+        "the room's framing rides the messages, never the system prefix:\n{}",
         v1.system
     );
     assert!(
@@ -836,11 +848,6 @@ fn trailing_proprioception_renders_in_the_tail_not_the_system_prefix() {
         v1.system
     );
     // …it renders as a trailing user turn.
-    let in_tail = |v: &DeliberationPromptView, needle: &str| {
-        v.messages
-            .iter()
-            .any(|m| matches!(&m.content, MessageContent::Text(t) if t.contains(needle)))
-    };
     assert!(
         in_tail(&v1, "I wrote login.html first"),
         "trailing proprioception must render as a conversation turn"

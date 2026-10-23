@@ -133,11 +133,10 @@ pub struct RagSourceFaculty {
     source: Arc<dyn RagSource>,
     faculty_id: FacultyId,
     salience: f32,
-    /// `true` for [`SaliencePolicy::StandingFraming`] sources (roster, doctrine,
-    /// map) — propagated onto the [`Contribution`] so the deliberation serializer
-    /// hoists this grounding into the cacheable KV-prefix region (standing framing
-    /// is "like the system prompt"; it belongs adjacent to it). Volatile retrieved
-    /// sources stay `false` and serialize last, nearest the generation point.
+    /// `true` for [`SaliencePolicy::StandingFraming`] sources of Standing churn whose
+    /// bytes do not mutate per turn (doctrine, mission) — propagated onto the
+    /// [`Contribution`] as a fact about the bytes. It no longer decides placement:
+    /// every grounding bid is a block of her view (see `contribute`).
     stable: bool,
     /// Importance survives moving volatile grounding out of the system prefix.
     standing_grounding: bool,
@@ -180,7 +179,8 @@ impl RagSourceFaculty {
         // identity head), and the turns where it did not reused 65-78% WITH THE SAME
         // CONVERSATION BEHIND IT — which is only possible if the conversation is the more
         // stable of the two. So placement is not left to whoever registers a source:
-        // Board- and Turn-churn grounding renders after the conversation, always.
+        // Board- and Turn-churn grounding is never `stable`, and since 2026-10-23 no
+        // grounding is placed in the system message at all (`contribute`).
         let stable = matches!(policy, SaliencePolicy::StandingFraming)
             && matches!(
                 super::deliberation_prompt::churn_of(&source_id),
@@ -419,21 +419,17 @@ impl Faculty for RagSourceFaculty {
         } else {
             c
         };
-        // Volatile-content grounding rides the TRAILING-turn mechanism (#205),
-        // never the system message. The volatile tier of the system context
-        // block was a half-measure: demoted out of the cacheable stable head,
-        // but still rendered BEFORE the entire conversation — so a kanban
-        // claim-flap or a workspace-map change (her own write!) re-prefilled
-        // every conversation token after it. Measured 2026-08-23 from her own
-        // captures on the MirrorCode round: workspace-map content changed
-        // act-over-act and live KV reuse pinned at 18-33% while acts paid
-        // ~35-45k re-prefill (~2 min) each. As a trailing turn the same churn
-        // costs exactly its own tokens.
-        Some(if self.stable {
-            c.session_stable()
-        } else {
-            c.trailing()
-        })
+        // EVERY grounding bid is a block of her view (`.trailing()`), never the system
+        // message. Volatile content moved first: rendered before the conversation, a
+        // kanban claim-flap or a workspace-map change (her own write!) re-prefilled
+        // every token after it (2026-08-23, live KV reuse 18-33%). Standing content
+        // followed on 2026-10-23: grounding is the ROOM's, the system message is hers in
+        // every room, and doctrine/mission/media in it rewrote its end on each room
+        // switch. In her view a block appends when it changes and the turnover sizes it.
+        // `stable` stays a fact about the bytes (how rarely they change), which the
+        // deferred reprojection reads; it no longer decides placement.
+        let c = if self.stable { c.session_stable() } else { c };
+        Some(c.trailing())
     }
 }
 

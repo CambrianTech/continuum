@@ -17,10 +17,14 @@ impl LlmDeliberationFaculty {
         (faculty.len() + body_bytes + "\n[]\n\n".len()).div_ceil(GUARD_CHARS_PER_TOKEN)
     }
 
+    /// What wrapping a non-empty assembled context costs: its header, and the chat-template
+    /// wrapper of the message it now is (it rides the tail after her view, never the system
+    /// message; `deliberation_prompt::working_context_message`).
     pub(in super::super) fn working_context_header_cost() -> usize {
         deliberation_prompt::WORKING_CONTEXT_HEADER
             .len()
             .div_ceil(GUARD_CHARS_PER_TOKEN)
+            + Self::PER_MESSAGE_TEMPLATE_TOKENS
     }
 
     pub fn framing_cost(system: &str) -> usize {

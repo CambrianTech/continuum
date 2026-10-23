@@ -362,7 +362,6 @@ async fn standing_activity_grounding_survives_history_on_the_wire() {
         };
         if history_count > 0 {
             let framing = faculty.compose_system_split(
-                "",
                 &faculty.expanded_categories(&ws),
                 ws.directed_at_self(),
                 ws.self_initiated,
