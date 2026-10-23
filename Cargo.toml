@@ -21,6 +21,7 @@ members = [
     "core/continuum-context",
     "core/continuum-core",
     "core/continuum-kernel",
+    "core/continuum-mind",
     "core/continuum-live",
     "core/continuum-hands",
     "core/continuum-engine",

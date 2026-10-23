@@ -112,7 +112,7 @@ jobs:
           bash tools/scripts/tests/start-server-airc-recovery.test.sh
           bash tools/scripts/tests/install-llama-server-slots.test.sh
           python3 tools/scripts/tests/test_ci_lib_test_artifact.py
-          python3 -m unittest discover -s core/continuum-core/src/genome/fine_tuning -p cuda_train_test.py -v
+          python3 -m unittest discover -s core/continuum-mind/src/genome/fine_tuning -p cuda_train_test.py -v
           export CONTINUUM_NATIVE_CONTAINER_LEASE_TEST="$RUNNER_TEMP/continuum-container-custody-test"
           c++ -std=c++17 -O1 -pthread -I core/vendor/llama.cpp/ggml/src -I core/vendor/llama.cpp/ggml/include \
             core/vendor/llama.cpp/tests/test-moe-residency.cpp -o "$CONTINUUM_NATIVE_CONTAINER_LEASE_TEST"
@@ -133,8 +133,7 @@ jobs:
           LD_LIBRARY_PATH="$CONTINUUM_LIB_TEST_LD_LIBRARY_PATH" "$CONTINUUM_LIB_TEST" \
             --skip 'gpu::memory_manager::' \
             --skip 'modules::gpu::' \
-            --skip 'modules::persona_allocator::' \
-            --skip 'persona::allocator::tests::test_allocate'
+            --skip 'modules::persona_allocator::'
           # The microkernel is its own crate (core/continuum-kernel): its unit tests moved out of
           # continuum-core's run above, so they run here, same profile and fixtures (seconds).
           cd ../..
@@ -146,6 +145,10 @@ jobs:
           cargo test -p continuum-engine --lib --profile dev-fast --features test-fixtures
           cargo test -p continuum-hands --lib --profile dev-fast --features test-fixtures
           cargo test -p continuum-live --lib --profile dev-fast --features test-fixtures
+          # The mind (core/continuum-mind: cognition, persona, genome, memory, rag, perception,
+          # experience, recipe, context, vdd); the allocator skip moved here with persona.
+          cargo test -p continuum-mind --lib --profile dev-fast --features test-fixtures -- \
+            --skip 'persona::allocator::tests::test_allocate'
           interop_output=$(cargo test -p continuum-engine --lib --profile dev-fast --features test-fixtures \
             model_registry::artifacts::expert_placement::tests::fs2_and_native_container_locks_interoperate_across_processes \
             -- --exact --ignored --nocapture 2>&1)
@@ -183,20 +186,21 @@ jobs:
             fi
           done
 
-      # The CLI step already builds the normal core rlib in this profile.
+      # The --lib step already builds the mind rlib (test-fixtures) in this profile.
       # Reuse it here instead of recompiling it in a separate runner. --lib
       # cannot exercise compile-fail doctests; preserve their exact count.
-      - name: cargo test -p continuum-core --doc (compile-fail guards)
+      - name: cargo test -p continuum-mind --doc (compile-fail guards)
         if: needs.changes.outputs.rust != 'false'
         run: |
           set -o pipefail
           # Same profile as the --lib build above, deliberately: a different profile
           # here would be a SECOND full codegen of a 625k-line crate, not a cheap extra step.
-          cargo test -p continuum-core --doc --profile dev-fast --features "$CORE_FEATURES" BindingIsUnstatable 2>&1 | tee doc-guard.log
+          # The guard lives in the mind crate (persona::viewstate_rag) since the mind cut.
+          cargo test -p continuum-mind --doc --profile dev-fast --features test-fixtures BindingIsUnstatable 2>&1 | tee doc-guard.log
           if ! grep -q 'test result: ok. 2 passed' doc-guard.log; then
             echo "::error::expected exactly 2 BindingIsUnstatable doctests to pass."
             echo "A zero-match filter exits 0, so this is how a renamed or deleted"
-            echo "guard is caught. Check core/continuum-core/src/persona/viewstate_rag.rs."
+            echo "guard is caught. Check core/continuum-mind/src/persona/viewstate_rag.rs."
             exit 1
           fi
 

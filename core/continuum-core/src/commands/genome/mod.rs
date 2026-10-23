@@ -40,7 +40,6 @@ use crate::genome::fine_tuning::{
 use crate::sdk_codegen::DynCommand;
 use job_create::ERROR_KIND_CAPACITY_PARKED;
 
-pub mod curriculum;
 pub mod job_cancel;
 pub mod job_create;
 pub mod job_pause;
