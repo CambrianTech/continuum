@@ -485,6 +485,7 @@ impl OpenAICompatibleAdapter {
             body_bytes,
             request.turn_bound,
             crate::inference::lane_send::FillReceipt {
+                local_engine_root: self.targets_local_serving_lane().then_some(endpoints.root()),
                 model,
                 prompt_tokens,
                 prompt_quote: exact_prompt_quote
