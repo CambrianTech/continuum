@@ -16,3 +16,5 @@ pub mod persona;
 pub mod rag;
 pub mod recipe;
 pub mod vdd;
+
+// CI scope trial (b), reverted before merge.
