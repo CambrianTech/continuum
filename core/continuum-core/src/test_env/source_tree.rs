@@ -98,9 +98,9 @@ pub(crate) fn code_only(line: &str) -> &str {
 
 /// The crates cut out of continuum-core whose modules core re-exports under their old
 /// paths (`crate::runtime`, `crate::inference`, `crate::code`…). Their sources keep those
-/// relative paths here, so every guard that walks the tree still sees them. A new cut adds
-/// its directory here.
-const CUT_CRATES: &[&str] = &["continuum-kernel", "continuum-engine", "continuum-hands", "continuum-live", "continuum-mind", "continuum-perception", "continuum-genome"];
+/// relative paths here, so every guard that walks the tree still sees them. One owner:
+/// source-hygiene's list, which the ratchets audit the same way (card 03e2a1c8).
+use source_hygiene::MODULE_CRATES as CUT_CRATES;
 
 /// Every `.rs` file under this crate's `src/` and each [`CUT_CRATES`] `src/` (their own
 /// `lib.rs` files are crate roots, not modules core has, so they are left out).
