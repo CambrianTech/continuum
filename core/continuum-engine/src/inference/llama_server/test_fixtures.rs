@@ -3,6 +3,13 @@
 #[cfg(any(test, windows))]
 use super::*;
 
+/// Observe the real generation's exit without exporting engine internals in production.
+#[cfg(any(test, feature = "test-fixtures"))]
+#[cfg(windows)]
+pub fn generation_has_exited(generation: &crate::inference::slots::EngineGeneration) -> bool {
+    generation.has_exited()
+}
+
 #[cfg(any(test, feature = "test-fixtures"))]
 #[cfg(any(test, windows))]
 pub(super) fn target(id: &str) -> ServingTarget {

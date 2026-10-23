@@ -321,7 +321,7 @@ pub(crate) async fn exercise_cancelled_exclusive_teacher(
     });
     tokio::time::timeout(Duration::from_secs(15), async {
         let mut tick = tokio::time::interval(Duration::from_millis(10));
-        while !generation.has_exited() {
+        while !crate::inference::llama_server::test_fixtures::generation_has_exited(&generation) {
             assert!(
                 !caller.is_finished(),
                 "checkpoint/retirement must be reached through the owner"

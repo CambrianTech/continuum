@@ -70,3 +70,12 @@ compilation or silently dropping it. Fixture-only tempfile/bin selection remain
 behind test configuration; production dependency layering is unchanged. Locked
 metadata and diff checks passed locally without compiling beside serving. The
 corrected Windows execution and installed maintenance remain pending.
+
+The next Windows run 39897438958 compiled the engine fixture but exposed E0624
+in the preserved core callback: its generation-exit observation was still
+crate-private after the split. A test-fixtures-only observer now delegates to the
+same engine method; no production method visibility changes. The remaining core
+callback calls were inspected against the public engine/resource interfaces; the
+compiler reported only this access error. Raw failure is retained as
+`b705-windows-42eb-failure.log`. Unix and standalone lifecycle passed on 42eb;
+connected Windows execution still requires the corrected CI run.
