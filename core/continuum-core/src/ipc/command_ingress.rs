@@ -96,7 +96,16 @@ pub struct CommandRequestHandler {
     /// conferred capabilities ride into the gate via
     /// [`CallerIdentity::with_granted_capabilities`].
     grant_authorizer: Option<Arc<GrantAuthorizer>>,
+    /// Generations this seat is serving concurrently ([`served_generations`]). `None` on
+    /// a task's detached copy: only the pump's handler owns the registry, so a stopped
+    /// pump drops it and aborts what it was serving.
+    generations: Option<Arc<served_generations::ServedGenerations>>,
+    /// The admission bound for served generations, read per request
+    /// ([`served_generations::admission_bound`]; a test pins it).
+    generation_bound: fn() -> usize,
 }
+
+mod served_generations;
 
 /// Parsed pieces of an incoming envelope. Pure data; the rest of
 /// the handler operates on this struct so the parse step is testable
@@ -142,6 +151,8 @@ impl CommandRequestHandler {
             airc,
             executor,
             grant_authorizer: None,
+            generations: Some(Arc::default()),
+            generation_bound: served_generations::admission_bound,
         })
     }
 
@@ -158,6 +169,8 @@ impl CommandRequestHandler {
             airc,
             executor,
             grant_authorizer: Some(grant_authorizer),
+            generations: Some(Arc::default()),
+            generation_bound: served_generations::admission_bound,
         })
     }
 
@@ -586,6 +599,76 @@ impl ConsumerAdapter for CommandRequestHandler {
             correlation = %parsed.correlation_id,
             "peer command request ACCEPTED — this node answers it"
         );
+        // A served generation holds a lane for minutes: it runs as its own task so the
+        // pump keeps reading (card b3e5b582). Classified from the parsed body, the path
+        // that executes, never from a header. Over the bound it is refused at once with a
+        // typed overload reply instead of queueing an unbounded population of handlers.
+        if parsed.request.path == STREAMED_GENERATE_PATH {
+            if let Some(generations) = &self.generations {
+                let bound = (self.generation_bound)();
+                match generations.admit(parsed.correlation_id, bound) {
+                    Ok(admission) => {
+                        let correlation = parsed.correlation_id;
+                        let answerer = self.detached();
+                        let task = tokio::spawn(async move {
+                            let _admission = admission;
+                            if let Err(e) = answerer.answer(parsed).await {
+                                warn!(error = %e, "served generation could not send its reply");
+                            }
+                        });
+                        generations.attach(correlation, task.abort_handle());
+                        continuum_base::probe!(
+                            class = "airc.command.generation_dispatched",
+                            correlation = %correlation,
+                            outstanding = generations.outstanding() as u64,
+                            bound = bound as u64,
+                            "a served generation runs as its own task; the pump keeps reading"
+                        );
+                        return Ok(());
+                    }
+                    Err(refusal) => {
+                        continuum_base::probe!(
+                            class = "airc.command.generation_refused",
+                            correlation = %parsed.correlation_id,
+                            caller = %parsed.caller_peer_id.0,
+                            reason = %refusal,
+                            "a served generation was refused at admission and answered at once"
+                        );
+                        let response = AircCommandResponse::Error { message: refusal.to_string() };
+                        self.send_reply(&parsed, &response).await?;
+                        return Ok(());
+                    }
+                }
+            }
+        }
+        self.answer(parsed).await
+    }
+}
+
+impl CommandRequestHandler {
+    /// A copy for one served generation's task: the same peer, executor and grants, and
+    /// no registry (only the pump's handler owns it).
+    fn detached(&self) -> Self {
+        Self {
+            airc: Arc::clone(&self.airc),
+            executor: Arc::clone(&self.executor),
+            grant_authorizer: self.grant_authorizer.clone(),
+            generations: None,
+            generation_bound: self.generation_bound,
+        }
+    }
+
+    /// Pin the generation admission bound (tests: the live lane count is process-global).
+    #[cfg(test)]
+    pub(crate) fn with_generation_bound(mut this: Arc<Self>, bound: fn() -> usize) -> Arc<Self> {
+        if let Some(handler) = Arc::get_mut(&mut this) {
+            handler.generation_bound = bound;
+        }
+        this
+    }
+
+    /// Execute an accepted request and send its reply.
+    async fn answer(&self, parsed: ParsedEnvelope) -> Result<(), AdapterError> {
         let started = std::time::Instant::now();
         // WORK SIZE, or elapsed_ms is uninterpretable. Measured 2026-09-06: nine
         // successful cross-grid generations split cleanly bimodal — two at ~32s, six
@@ -657,8 +740,9 @@ impl ConsumerAdapter for CommandRequestHandler {
     }
 }
 
-/// The one command whose answer is streamed on the wire.
-const STREAMED_GENERATE_PATH: &str = "ai/generate";
+/// The one command whose answer is streamed on the wire, and the one a seat serves
+/// concurrently: one owner for the wire literal (`continuum-airc-protocol`).
+const STREAMED_GENERATE_PATH: &str = continuum_airc_protocol::COMMAND_PATH_AI_GENERATE;
 
 /// Tokens are coalesced and flushed at most this often — the same cadence the local
 /// persona turn uses into a room; one frame per token would be 35 frames/s on a 27B.
