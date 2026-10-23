@@ -79,3 +79,12 @@ callback calls were inspected against the public engine/resource interfaces; the
 compiler reported only this access error. Raw failure is retained as
 `b705-windows-42eb-failure.log`. Unix and standalone lifecycle passed on 42eb;
 connected Windows execution still requires the corrected CI run.
+
+The connected Windows test then executed (4.64s) and exposed a stale HTTP fixture:
+its checkpoint server had only POST `/slots`, while the existing checkpoint owner
+now discovers GET `/props` and verifies `total_slots` before retiring anything.
+The fixture now reports its actual four-slot pool through that endpoint, explicitly
+modeling the supported legacy engine without the optional size protocol. No
+admission guard is bypassed. Early caller failures now retain their actual Result
+in the assertion diagnostic. This is a source-identified fixture omission; the
+corrected end-to-end Windows result remains pending, not inferred from source.

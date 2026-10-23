@@ -357,7 +357,13 @@ where
     turn.generation_completed();
     drop(turn);
     let saves = Arc::new(AtomicUsize::new(0));
-    let app = axum::Router::new().route("/slots/{slot}", axum::routing::post({
+    let app = axum::Router::new()
+        // Checkpoint admission discovers the same physical pool before saving.
+        // This fixture models a legacy engine without the optional size protocol.
+        .route("/props", axum::routing::get(|| async {
+            axum::Json(serde_json::json!({"total_slots": 4}))
+        }))
+        .route("/slots/{slot}", axum::routing::post({
         let saves = saves.clone();
         move |axum::extract::Path(slot): axum::extract::Path<u32>,
             axum::extract::Query(query): axum::extract::Query<std::collections::HashMap<String, String>>,
