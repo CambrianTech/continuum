@@ -285,7 +285,7 @@ async fn admit(
             _slot_permit: None,
             released: None,
             page_confirmed: false,
-        page_in: PageIn::None,
+            page_in: PageIn::None,
             saved_evictee: false,
             paging_in_flight: false,
             _permit: Some(_permit),
@@ -363,9 +363,9 @@ async fn admit(
                 admission._endpoint.check_ready()?;
                 let pg = pool.plan_paging(slot, k);
                 admission.page_confirmed = pg.already_resident;
-            if pg.already_resident {
-                admission.page_in = PageIn::Resident;
-            }
+                if pg.already_resident {
+                    admission.page_in = PageIn::Resident;
+                }
                 admission.uncommitted = Some((Arc::clone(pool), k, pg.slot));
 
                 // 3. The context switch onto a now-free slot: page the evictee out,
@@ -384,30 +384,30 @@ async fn admit(
                     }
                 }
                 if pg.restore {
-                let restored = admission
+                    let restored = admission
                         .page_action(client, root, pg.slot, &k, "restore")
                         .await?;
-                admission.page_confirmed = restored;
-                admission.page_in = if restored {
-                    PageIn::Restored
-                } else {
-                    PageIn::RestoreRejected
-                };
-                if !restored {
+                    admission.page_confirmed = restored;
+                    admission.page_in = if restored {
+                        PageIn::Restored
+                    } else {
+                        PageIn::RestoreRejected
+                    };
+                    if !restored {
                         pool.note_page_lost(&k);
-                    // Reported HERE, at the decision, so a refused restore counts even when
-                    // the turn is then cancelled, fails, or reports no timing (Astra on #5190).
-                    // The same class and outcome the deploy self-check reads; the completion
-                    // probe reports only restores that happened, so nothing counts twice.
-                    continuum_base::probe!(
-                        class = "inference.restored_turn",
-                        persona = %k.persona,
-                        room = %k.room,
-                        slot = pg.slot as u64,
-                        outcome = "restore_rejected",
-                        "the engine refused this turn's KV restore: it re-prefills in full"
-                    );
-                    }
+                        // Reported HERE, at the decision, so a refused restore counts even when
+                        // the turn is then cancelled, fails, or reports no timing (Astra on #5190).
+                        // The same class and outcome the deploy self-check reads; the completion
+                        // probe reports only restores that happened, so nothing counts twice.
+                        continuum_base::probe!(
+                            class = "inference.restored_turn",
+                            persona = %k.persona,
+                            room = %k.room,
+                            slot = pg.slot as u64,
+                            outcome = "restore_rejected",
+                            "the engine refused this turn's KV restore: it re-prefills in full"
+                        );
+                        }
                 }
                 // Price basis for the eviction policy (B5): this activity's current
                 // prompt size — comparable across slots, which is all eviction needs.
