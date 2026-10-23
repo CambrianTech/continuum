@@ -497,6 +497,20 @@ impl SlotDirectory {
         self.endpoint(root).state.lock().generation.as_ref().map(|generation| generation.id)
     }
 
+    /// Attribute a synchronous observation before this engine can be replaced.
+    /// `record` must not await or re-enter endpoint state (logging belongs after
+    /// return). A separate snapshot check would let a successor inherit old work.
+    pub(crate) fn record_for_generation(&self, root: &str, expected: Uuid, record: impl FnOnce()) -> bool {
+        let endpoint = self.endpoint(root);
+        let state = endpoint.state.lock();
+        if !state.generation.as_ref().is_some_and(|g| g.id == expected && !g.has_exited()) {
+            return false;
+        }
+        record();
+        drop(state);
+        true
+    }
+
     pub(crate) fn page_admission_path(&self, root: &str) -> Result<Option<std::path::PathBuf>, String> {
         self.endpoint(root).state.lock().page_admission.clone()
             .unwrap_or_else(|| Err("page-write capability has not been negotiated".into()))
@@ -655,4 +669,33 @@ pub fn directory() -> &'static SlotDirectory {
     DIR.get_or_init(|| SlotDirectory {
         endpoints: dashmap::DashMap::new(),
     })
+}
+
+#[cfg(test)]
+mod observation_tests {
+    use super::*;
+
+    // what this catches: unlocking after identity check but before the stamp lets
+    // start_generation replace the engine and charge its fresh failure record.
+    #[tokio::test]
+    async fn observation_keeps_replacement_lock_until_stamp() -> Result<(), String> {
+        let directory = SlotDirectory { endpoints: dashmap::DashMap::new() };
+        let root = "http://isolated-health-observation";
+        let endpoint = directory.endpoint(root);
+        let transition = endpoint.transition().await;
+        let old = transition.start_generation()?;
+        let mut stamped = 0;
+        assert!(directory.record_for_generation(root, old.id, || {
+            assert!(endpoint.state.try_lock().is_none(),
+                "replacement must not enter between the identity check and stamp");
+            stamped += 1;
+        }));
+        assert!(endpoint.state.try_lock().is_some(), "observation releases owner lock");
+        old.observed_exit();
+        let new = transition.start_generation()?;
+        assert!(!directory.record_for_generation(root, old.id, || stamped += 1));
+        assert!(directory.record_for_generation(root, new.id, || stamped += 1));
+        assert_eq!(stamped, 2);
+        Ok(())
+    }
 }
