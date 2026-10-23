@@ -22,6 +22,7 @@
 //! its `send` takes `&self`. cbar's pipeline-stage pattern in Rust dress.
 
 pub(crate) mod academy_batch;
+pub mod commands;
 mod footprint;
 
 use super::serving_consumer::{FootprintFn, ServingConsumer, SERVING_CONSUMER_ID};
