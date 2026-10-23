@@ -430,10 +430,14 @@ async fn partial_disable_restores_only_generic_custody_and_keeps_both_errors() {
     assert_eq!(result, Ok(42));
 }
 
-#[test]
-fn deploy_permit_obeys_exclusion_and_recovery_evidence() -> Result<(), Box<dyn std::error::Error>> {
+#[tokio::test]
+async fn deploy_permit_obeys_exclusion_and_recovery_evidence() -> Result<(), Box<dyn std::error::Error>> {
     let root = tempfile::tempdir()?;
     let permit = StartupPermit::acquire_deploy(root.path())?;
+    // Reboot and installed-service take shared startup custody, not exclusive
+    // maintenance custody, while the consumer still owns its permit.
+    let handoff = StartupPermit::acquire(root.path()).await?;
+    drop(handoff);
     assert!(launch_gate(root.path(), true).is_err());
     drop(permit);
     let held = launch_gate(root.path(), true)?;
