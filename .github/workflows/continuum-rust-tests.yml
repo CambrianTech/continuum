@@ -145,6 +145,7 @@ jobs:
           export LD_LIBRARY_PATH="$CONTINUUM_LIB_TEST_LD_LIBRARY_PATH"
           cargo test -p continuum-engine --lib --profile dev-fast --features test-fixtures
           cargo test -p continuum-hands --lib --profile dev-fast --features test-fixtures
+          cargo test -p continuum-live --lib --profile dev-fast --features test-fixtures
           interop_output=$(cargo test -p continuum-engine --lib --profile dev-fast --features test-fixtures \
             model_registry::artifacts::expert_placement::tests::fs2_and_native_container_locks_interoperate_across_processes \
             -- --exact --ignored --nocapture 2>&1)
