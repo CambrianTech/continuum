@@ -1,0 +1,9 @@
+# Identity-bound lane termination and exit deadline
+
+Card 6c0e3b1f-eb20-44ea-ac62-d59a64e8623b advances stabilization: maintenance must end the actual owned serving generation before claiming capacity for resident recovery.
+
+The published b97 maintenance attempt drained 65 modules durably but could not confirm lane PID600 exit. Its old generic orphan reaper and registry both discarded native termination results. The registry also used the shell's 100ms polling cadence as its entire exit budget. The original failure cannot establish whether termination was denied or delayed. Raw receipt: `C:/Users/joelt/.continuum/state/team-proof-20260921/cde631d4-installed-maintenance.log`. Original core/model/adapters were restored; no capacity observation completed.
+
+Registered lanes now have one termination owner, excluded from the generic tree/orphan pass. The registry preserves native errors with stamped identity and uses the remainder of the existing 30-second teardown deadline for collective exit confirmation, not a fresh allowance per lane. Windows termination holds an OS process handle, checks its creation time, and signals that handle; inaccessible identity is an error, not proof of exit. Unstamped legacy records are retained rather than authorizing an unbound PID. Successful signalling is still not exit evidence; only confirmed exact-record reconciliation removes ownership.
+
+The existing subprocess fixture covers a 250ms delayed exit, true survivor, injected denied-termination result, reused identity refusal, replacement-record retention and actual native termination of a disposable owned child. The existing Windows exact-test execution gate is retained. Local native testing is deferred to CI while residents are serving. CI, publication and installed maintenance acceptance remain required; this change does not claim disk contraction or diagnose the old discarded OS result retroactively.
