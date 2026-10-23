@@ -75,7 +75,7 @@ pub fn stable_local_id(name: &str) -> ArtifactId {
     use sha2::{Digest, Sha256};
     let digest = Sha256::digest(name.as_bytes());
     let mut bytes = [0u8; 16];
-    bytes.copy_from_slice(&digest[..16]);
+    bytes.copy_from_slice(&digest[..16]); // head-cut-ok: an id is the digest's first 16 bytes, not a cut of prompt text
     ArtifactId(uuid::Uuid::from_bytes(bytes))
 }
 
