@@ -251,6 +251,11 @@ pub struct TurnFraming {
     /// output. It widens a work turn's hands by the reviewer verbs; see
     /// [`Workspace::reviewing`].
     pub reviewing: bool,
+    /// An INITIATIVE turn: she holds nothing and her own heartbeat offers her a turn with
+    /// her hands (`persona::initiative_turn`). It takes the act surface and allowance a
+    /// work turn takes, and NONE of its deliverable contract: nothing is due, so no
+    /// workspace change is expected of it. See [`Workspace::initiative`].
+    pub initiative: bool,
 }
 
 impl TurnFraming {
@@ -287,6 +292,15 @@ impl TurnFraming {
             attention: TurnAttention::for_message(directed, false),
             self_initiated: true,
             ..Self::default()
+        }
+    }
+
+    /// Her own heartbeat's turn with her hands when she holds nothing: self-initiated,
+    /// never directed, and an initiative (see [`Self::initiative`]).
+    pub fn initiative() -> Self {
+        Self {
+            initiative: true,
+            ..Self::self_thread(false)
         }
     }
 
@@ -393,6 +407,9 @@ pub struct Workspace {
     /// reviewer verbs (`work/review`, `work/submission`) that every other holder's
     /// hands withhold; see `tool_dialect::reviewer_hand`.
     pub reviewing: bool,
+    /// An initiative turn ([`TurnFraming::initiative`]): her hands and the act allowance,
+    /// with no deliverable. Read by the deliberation faculty's act-turn test only.
+    pub initiative: bool,
     /// The verbs this turn's ROOM authorizes, by command name, as its recipe declares
     /// them (`affordances[].command`). Stamped by the cycle from the node's experience
     /// source on every tick (S1). Empty = the recipe declares none, and the
@@ -458,6 +475,7 @@ impl Workspace {
             self_initiated: false,
             workspace_deliverable: false,
             reviewing: false,
+            initiative: false,
             room_affordances: Vec::new(),
             now_ms: burst_now,
             token_sink: None,
@@ -521,6 +539,11 @@ impl Workspace {
 
     pub fn reviewing(mut self, reviewing: bool) -> Self {
         self.reviewing = reviewing;
+        self
+    }
+
+    pub fn initiative(mut self, initiative: bool) -> Self {
+        self.initiative = initiative;
         self
     }
 

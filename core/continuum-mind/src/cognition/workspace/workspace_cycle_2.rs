@@ -41,6 +41,7 @@ impl WorkspaceCycle {
             .self_initiated(framing.self_initiated)
             .workspace_deliverable(framing.workspace_deliverable)
             .reviewing(framing.reviewing)
+            .initiative(framing.initiative)
             .room_affordances(room_affordances)
             // #169: hand this turn the live streaming sink if the caller set one
             // (service_loop, just before a streamed Speak); `None` otherwise.

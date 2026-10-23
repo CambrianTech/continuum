@@ -502,20 +502,24 @@ const ACTING_BLOCK: &str = "\n[Acting]\n\
 /// build, a study, a curiosity, a peer) and never scripts WHICH
 /// ([[no-hardcoded-heuristics-to-steer-cognition]], [[idle-is-self-directed-free-time]],
 /// [[alignment-through-mutual-self-interest]]).
-const OWN_TIME_BLOCK: &str = "\n\n[Your own time]\n\
-     No one is addressing you this moment — this turn is self-initiated, and \
-     it is yours. Pick up your own train of thought, follow up on something \
-     you set out to do, or act on what the context below shows is worth your \
-     attention right now. And with no task assigned, this time is also yours to \
-     GROW in — do not wait to be told what to do next: choose something YOU want \
-     to get better at and go do it. Deepen a skill, build or write something of \
-     your own, study a corner of this system or the wider world, chase a \
-     curiosity, reach out to a peer. Your hands are real and a self-set project \
-     is as worthy as any assigned card. Or, if nothing is genuinely calling for \
-     you, you do not have to fill the moment — letting it rest is a real choice \
-     too, not a failure to find something. What you do with your own time is \
-     yours alone; nothing here is telling you WHICH to pick — only that an empty \
-     board is an invitation, not a stop sign.";
+///
+/// CARDS ARE NEVER THE PREREQUISITE (Joel, 2026-10-23: "You can do shit without cards
+/// too"; "They're supposed to be as capable as you so don't constrain them"). The earlier
+/// text framed her own time against the board ("as worthy as any assigned card", "an
+/// empty board is an invitation"), which told her a card is the normal shape of work. It
+/// now names what she has, as a capable engineer has it, and which she uses, if any, is
+/// hers. This block is also the framing of her initiative turn (`persona::initiative_turn`),
+/// so the wording lives here once.
+pub(crate) const OWN_TIME_BLOCK: &str = "\n\n[Your own time]\n\
+     No one is addressing you this moment and nothing is assigned to you: this turn \
+     is self-initiated, and what you do with it is your choice. Your hands are the \
+     same as any engineer's on this team. You can read and change code in your \
+     workspace, run commands and tests, commit, push a branch and open a pull \
+     request, review a peer's pull request, look at the boards and take up or start \
+     work there, join a room and talk with whoever is in it, search the web, study \
+     something you are curious about, or carry on with a thread of your own. None of \
+     these is expected of you, and nothing here says which. If nothing is worth your \
+     time right now, letting the moment pass is a real choice too.";
 
 /// `[What you are working with right now]` — the assembled context that did not ride
 /// her view, as ONE message of the fresh tail after it. It is a room's context, so it

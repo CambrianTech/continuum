@@ -85,6 +85,9 @@ pub(super) async fn finish_spoken_turn(
         msg.lamport,
         turn_room,
         spoke_directed,
+        // A message turn never offers her initiative: the message snapped her beat to
+        // engaged, and that beat (the self-tick) offers it.
+        crate::persona::initiative_turn::Initiative::NotOffered,
     )
     .await;
     pending.settle_work(&work);

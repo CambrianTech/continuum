@@ -428,6 +428,7 @@ mod tests {
             drove: true,
             room: Some(elsewhere.room_id),
             capacity: None,
+            engaged: true,
         });
         assert!(
             pending.self_refusals.contains_key(&original.room_id),
