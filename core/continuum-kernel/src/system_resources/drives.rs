@@ -66,13 +66,27 @@ pub fn detect_drives() -> Vec<DriveInfo> {
     let system_path = std::env::var_os("SystemRoot").map(PathBuf::from);
     #[cfg(not(windows))]
     let system_path = Some(PathBuf::from("/"));
-    assign_cold_role(&mut infos, system_path.as_deref());
+    assign_cold_role(&mut infos, system_path.as_deref(), |index| {
+        // APFS volumes can share one capacity container despite distinct mounts
+        // (including the root snapshot and writable Data volume). sysinfo exposes
+        // no container identity. Do not advertise unproven capacity separation;
+        // external APFS offload awaits a container-aware storage identity adapter.
+        cold_capacity_is_resolved(disks.list()[index].file_system())
+    });
     infos
+}
+
+fn cold_capacity_is_resolved(file_system: &std::ffi::OsStr) -> bool {
+    !file_system.is_empty() && file_system != std::ffi::OsStr::new("apfs")
 }
 
 // Free space does not identify the OS volume. Resolve its actual path through the
 // same mount selector used by consumers; uncertain identity offers no cold tier.
-fn assign_cold_role(drives: &mut [DriveInfo], system_path: Option<&Path>) {
+fn assign_cold_role(
+    drives: &mut [DriveInfo],
+    system_path: Option<&Path>,
+    eligible: impl Fn(usize) -> bool,
+) {
     for drive in drives.iter_mut() {
         drive.role = DriveRole::System;
     }
@@ -86,8 +100,9 @@ fn assign_cold_role(drives: &mut [DriveInfo], system_path: Option<&Path>) {
     if let Some((index, _)) = drives
         .iter()
         .enumerate()
-        .filter(|(_, drive)| {
-            mount_comparison_path(&drive.mount) != system_mount
+        .filter(|(index, drive)| {
+            eligible(*index)
+                && mount_comparison_path(&drive.mount) != system_mount
                 && drive.available_bytes >= MIN_COLD_TIER_BYTES
         })
         .max_by_key(|(_, drive)| drive.available_bytes)
@@ -165,24 +180,35 @@ mod tests {
             drive(secondary, 2 * MIN_COLD_TIER_BYTES),
         ];
         let os_path = Some(Path::new(system_path));
-        assign_cold_role(&mut drives, os_path);
+        assign_cold_role(&mut drives, os_path, |_| true);
         assert_eq!(drives[0].role, DriveRole::System);
         assert_eq!(drives[1].role, DriveRole::Cold);
         drives[1].available_bytes = MIN_COLD_TIER_BYTES - 1;
-        assign_cold_role(&mut drives, os_path);
+        assign_cold_role(&mut drives, os_path, |_| true);
         assert!(drives.iter().all(|drive| drive.role == DriveRole::System));
         drives[1].available_bytes = MIN_COLD_TIER_BYTES;
-        assign_cold_role(&mut drives, os_path);
+        assign_cold_role(&mut drives, os_path, |_| true);
         assert_eq!(drives[1].role, DriveRole::Cold);
-        assign_cold_role(&mut drives, None);
+        // A distinct mount is insufficient when shared capacity identity is
+        // unresolved, as with APFS root and Data in one container.
+        assign_cold_role(&mut drives, os_path, |_| {
+            cold_capacity_is_resolved(std::ffi::OsStr::new("apfs"))
+        });
         assert!(drives.iter().all(|drive| drive.role == DriveRole::System));
-        assign_cold_role(&mut drives, Some(Path::new("relative/unknown")));
+        assert!(!cold_capacity_is_resolved(std::ffi::OsStr::new("")));
+        assign_cold_role(&mut drives, os_path, |_| {
+            cold_capacity_is_resolved(std::ffi::OsStr::new("exfat"))
+        });
+        assert_eq!(drives[1].role, DriveRole::Cold);
+        assign_cold_role(&mut drives, None, |_| true);
+        assert!(drives.iter().all(|drive| drive.role == DriveRole::System));
+        assign_cold_role(&mut drives, Some(Path::new("relative/unknown")), |_| true);
         assert!(drives.iter().all(|drive| drive.role == DriveRole::System));
         let mut single = [drives[0].clone()];
-        assign_cold_role(&mut single, os_path);
+        assign_cold_role(&mut single, os_path, |_| true);
         assert_eq!(single[0].role, DriveRole::System);
         let mut missing_system = [drives[1].clone()];
-        assign_cold_role(&mut missing_system, os_path);
+        assign_cold_role(&mut missing_system, os_path, |_| true);
         assert_eq!(missing_system[0].role, DriveRole::System);
     }
 
