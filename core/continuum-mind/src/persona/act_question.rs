@@ -27,6 +27,8 @@
 //! - It is a QUESTION, never an instruction. She may pass, exactly as before
 //!   ([[no-hardcoded-heuristics-to-steer-cognition]]).
 //! - It NEVER decides when to ask. The caller owns that; this module only asks.
+//! - With nothing held it offers her INITIATIVE turn (`initiative_turn.rs`) when the
+//!   caller's cadence offers one: her hands, nothing assigned, the choice hers.
 //! - It reports on EVERY path, including every decline — `persona.work.gate` carries
 //!   the decision and its inputs whether or not a work turn follows. A gate whose
 //!   refusal is invisible is a gate nobody can debug.
@@ -64,6 +66,10 @@ pub(crate) struct WorkQuestionOutcome {
     pub drove: bool,
     pub room: Option<uuid::Uuid>,
     pub capacity: Option<crate::cognition::workspace::CapacityRefusal>,
+    /// The driven turn was engagement, so her beat stays engaged: always for held work
+    /// (a card in her hands is progress-driven), and for an initiative turn only when she
+    /// acted or spoke (a pass rests her beat).
+    pub engaged: bool,
 }
 
 pub(crate) async fn ask_the_act_question(
@@ -72,6 +78,7 @@ pub(crate) async fn ask_the_act_question(
     lamport: u64,
     turn_room: uuid::Uuid,
     directed: bool,
+    initiative: crate::persona::initiative_turn::Initiative,
 ) -> WorkQuestionOutcome {
     // Her cognition cycle, fetched the same way the turn loop fetches it — passing it
     // in would thread a borrow through the whole turn for one optional branch.
@@ -145,10 +152,22 @@ pub(crate) async fn ask_the_act_question(
             let held: Vec<&airc_lib::WorkCard> = crate::persona::work_focus::focus_actionable_card(claims.iter())
                 .into_iter()
                 .collect();
+            // HER INITIATIVE (Joel, 2026-10-23: "They're supposed to be as capable as you so
+            // don't constrain them"). Holding nothing used to end her moment here, so she
+            // could act only once something had handed her a card. Offered when the board
+            // answered (an unreadable board may hide a hold; the next beat asks again), the
+            // caller's cadence offers it, and she has hands to act with.
+            let hands = cycle.acting().is_some();
+            let initiative_due = held.is_empty()
+                && claims_err.is_none()
+                && hands
+                && initiative == crate::persona::initiative_turn::Initiative::Offered;
             continuum_base::probe!(
                 class = "persona.work.gate",
                 persona = %ctx.identity.agent_name,
                 directed = directed,
+                initiative = ?initiative,
+                hands = hands,
                 active_claims = claims.len(),
                 held = held.len(),
                 claims_error = claims_err.as_deref().unwrap_or(""),
@@ -157,7 +176,13 @@ pub(crate) async fn ask_the_act_question(
                     .map(|c| format!("{:?}", c.state))
                     .collect::<Vec<_>>()
                     .join(","),
-                decision = if held.is_empty() { "no_held_work" } else { "work_turn" },
+                decision = if !held.is_empty() {
+                    "work_turn"
+                } else if initiative_due {
+                    "initiative_turn"
+                } else {
+                    "no_held_work"
+                },
                 "held-work gate evaluated after a speak-pass — this row is \
                  the ONLY place the act-question's inputs are visible"
             );
@@ -579,13 +604,26 @@ pub(crate) async fn ask_the_act_question(
                         drove: true,
                         room: Some(turn_room),
                         capacity,
+                        engaged: true,
                     };
                 }
             }
+            if initiative_due {
+                // Boxed: the settle drive is the largest future here, and nesting it by
+                // value inside this one is the layout-depth overflow CI has hit before.
+                return Box::pin(crate::persona::initiative_turn::drive_initiative_turn(
+                    ctx,
+                    &cycle,
+                    conversation,
+                    lamport,
+                    turn_room,
+                ))
+                .await;
+            }
         }
     }
-    // Reached only when she held no work (or no citizen was present) — nothing
-    // was driven this call.
+    // Reached only when she held no work and no initiative was offered (or no citizen
+    // was present) — nothing was driven this call.
     WorkQuestionOutcome::default()
 }
 

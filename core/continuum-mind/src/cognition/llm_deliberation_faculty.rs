@@ -389,13 +389,11 @@ impl LlmDeliberationFaculty {
         self
     }
 
-    /// Is this turn an ACT on a deliverable, rather than a message turn?
-    ///
-    /// Asked by two independent concerns — the surface selection (a work turn takes
-    /// her hands, for focus) and the ACT output cap — so it lives in one place
-    /// rather than being spelled twice and drifting.
+    /// Is this turn an ACT with her hands (a deliverable, or her own initiative) rather
+    /// than a message turn? Asked by the surface selection, the ACT output cap and the
+    /// lane priority, so it lives in one place rather than being spelled thrice.
     fn is_work_turn(&self, ws: &Workspace) -> bool {
-        ws.workspace_deliverable && !self.hands_specs.is_empty()
+        (ws.workspace_deliverable || ws.initiative) && !self.hands_specs.is_empty()
     }
 
     /// What kind of turn this is, for its allowance: a work turn is an ACT; anything

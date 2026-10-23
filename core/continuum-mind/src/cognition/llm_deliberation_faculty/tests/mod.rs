@@ -101,6 +101,67 @@ fn hands_surface_is_chosen_on_command_names_and_keeps_the_discovery_pair() {
 
 use crate::ai::heuristic_adapter::HeuristicInferenceAdapter;
 
+// what this catches: her INITIATIVE turn (holding nothing, offered by her own heartbeat)
+// going out as a message turn: the message surface and the PASS allowance, so she could
+// talk about work but never do it. It must take exactly a work turn's surface, reason and
+// ACT kind without being a deliverable turn, and those hands must keep the verbs that let
+// her choose work for herself: find it, take it, start it, write it, land it.
+#[test]
+fn an_initiative_turn_takes_a_work_turns_hands_and_act_kind() {
+    let own_work = [
+        "work/list",
+        "work/claim",
+        "work/create",
+        "code/write",
+        "code/edit",
+        "code/git/commit",
+        "code/git/push",
+        "code/github/pr-create",
+        "room/join",
+        "chat/send",
+    ];
+    let raw: Vec<NativeToolSpec> = own_work
+        .iter()
+        .map(|n| NativeToolSpec {
+            name: (*n).to_string(),
+            description: String::new(),
+            input_schema: crate::ai::types::ToolInputSchema {
+                schema_type: "object".to_string(),
+                properties: serde_json::json!({}),
+                required: None,
+                definitions: None,
+            },
+        })
+        .collect();
+    let hands: Vec<String> = hands_surface(&raw).into_iter().map(|s| s.name).collect();
+    assert_eq!(hands, own_work, "every verb of choosing and doing her own work is in her hands");
+
+    let window = 65_536;
+    let faculty = LlmDeliberationFaculty::new(
+        uuid::Uuid::new_v4(),
+        "Aris",
+        "You are Aris.",
+        std::sync::Arc::new(HeuristicInferenceAdapter::new()),
+    )
+    .with_context_window(window)
+    .with_tools(vec![super::test_support::read_tool()]);
+    let room = crate::identity::ActivityRoom::mint();
+    let work = super::test_support::writing_workspace(room, 0, true);
+    let mut initiative = super::test_support::writing_workspace(room, 0, false);
+    initiative.initiative = true;
+    assert!(!initiative.workspace_deliverable, "an initiative is not a deliverable turn");
+    assert_eq!(faculty.turn_kind(&initiative), faculty.turn_kind(&work), "the act allowance");
+    let (i, w) = (
+        faculty.select_tool_surface(&initiative, window),
+        faculty.select_tool_surface(&work, window),
+    );
+    assert_eq!((i.reason, i.tokens), (w.reason, w.tokens), "the work turn's hands");
+    if !faculty.hands_specs.is_empty() {
+        assert_eq!(faculty.turn_kind(&initiative), TurnKind::Act);
+        assert_eq!(i.reason, SurfaceReason::HandsForWork);
+    }
+}
+
 use crate::ai::types::{ToolCall, ToolInputSchema};
 
 use crate::cognition::workspace::BurstTurn;

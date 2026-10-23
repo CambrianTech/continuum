@@ -271,23 +271,37 @@ pub(super) async fn run_self_cycle(
     // deck for an idle citizen; that is how ac49a7d5 landed in her hands without her
     // choosing it. Boards are in her perception; claiming is her act, with her hands.
     let work_room = focus_room.unwrap_or(ctx.identity.default_room); // unwrap_or: no held claim = home room
+    // HER INITIATIVE rides this beat (`persona::initiative_turn`): with nothing held, the
+    // gate offers her a turn with her hands, paced by THIS heartbeat and no timer of its
+    // own. Not on a wake her own mind raised (a continuation, a perceive): that wake is
+    // already her choice of what to attend to, and the turn below serves it.
+    let initiative = if wake_room.is_none() {
+        crate::persona::initiative_turn::Initiative::Offered
+    } else {
+        crate::persona::initiative_turn::Initiative::NotOffered
+    };
     let work = crate::persona::act_question::ask_the_act_question(
         ctx,
         conversation,
         now_ms, // no triggering message — the tick clock stands in for lamport
         work_room,
         false, // a self-tick is never a directed address
+        initiative,
     )
     .await;
     pending.settle_work(&work);
     if work.drove {
-        // She WORKED her claim this tick — that is engagement, so the caller must
-        // keep her at the fast beat, not rest her. The caller reads BeatOutcome from
-        // whether `last_burst_fp` changed; bump it so a work turn always counts as
-        // Engaged. Without this she works one tick, is judged "nothing new", and
+        // She WORKED this tick (her claim, or her own initiative) — that is engagement, so
+        // the caller must keep her at the fast beat, not rest her. The caller reads
+        // BeatOutcome from whether `last_burst_fp` changed; bump it so a work turn always
+        // counts as Engaged. Without this she works one tick, is judged "nothing new", and
         // backs off toward the rest cap — the opposite of "virtually no time between
         // contexts" while a card is in her hands. (LATENCY LAW / #the-build-order.)
-        *last_burst_fp = last_burst_fp.wrapping_add(1);
+        // An initiative turn she PASSED is not engagement: the beat rests, as a fruitless
+        // musing did, so an idle mind is not offered a turn every engaged beat.
+        if work.engaged {
+            *last_burst_fp = last_burst_fp.wrapping_add(1);
+        }
         return false;
     }
     // Only the MUSING tail below is ambient inference: it pays for an ambient permit

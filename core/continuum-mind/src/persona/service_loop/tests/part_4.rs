@@ -151,12 +151,15 @@ use super::*;
 
         // A non-nil room (the burst witness refuses nil).
         let room = Uuid::from_u128(0xABCD);
+        // Offered, on purpose: a card in her hands takes the held-work turn exactly as
+        // before, whatever the cadence offers (her initiative is for holding nothing).
         let drove = crate::persona::act_question::ask_the_act_question(
             &hosted,
             &mut conversation,
             1,
             room,
             false,
+            crate::persona::initiative_turn::Initiative::Offered,
         )
         .await;
 
@@ -164,6 +167,7 @@ use super::*;
         drove.drove,
             "she held a card, so a held-work turn must have been driven"
         );
+        assert!(drove.engaged, "held work is always engagement: her beat stays engaged");
         let advanced = recorder.lock().unwrap_or_else(|p| p.into_inner()).clone(); // test: poisoned recorder lock still holds the pushes
         assert_eq!(
             advanced.len(),
@@ -226,6 +230,7 @@ use super::*;
                     1,
                     room,
                     false,
+                    crate::persona::initiative_turn::Initiative::NotOffered,
                 )
                 .await
             .drove
@@ -453,4 +458,68 @@ async fn capacity_ready_self_waits_without_spinning_during_quiescence() {
     let (wake, _) = await_wake(&ctx, &mut conversation, &mut outcome, &opts,
         &pending, &mut mind, beat).await;
     assert!(matches!(wake, Wake::Stop));
+}
+
+// what this catches: the constraint that kept residents from working (M5, 2026-10-23:
+// four residents, ~7 acts and 0 writes an hour, every gate `no_held_work`). With nothing
+// held, her own heartbeat must give her a turn with her hands; a message turn must not
+// (the beat paces it), and a pass must not count as engagement (her beat rests). The
+// turn claims, advances and says nothing on her behalf: anything it does is her act.
+#[tokio::test(flavor = "current_thread")]
+async fn holding_nothing_her_heartbeat_offers_an_initiative_turn_with_her_hands() {
+    use crate::persona::initiative_turn::Initiative;
+    let native = tempfile::tempdir().expect("test: isolated cognition storage");
+    let _native_home = crate::paths::NativeHomeOverride::install(native.path());
+    let peer = Uuid::new_v4();
+    let hosted = hosted_with_heuristic(peer);
+    let cfg = crate::cognition::persona_workspace::PersonaBrainConfig {
+        persona_id: peer,
+        persona_name: "Aris".into(),
+        system_prompt: "You are Aris.".into(),
+        admission: Arc::new(crate::persona::admission_state::AdmissionState::new(Arc::new(
+            crate::persona::recall_metadata::RecallMetadataRegistry::new(),
+        ))),
+        adapter: Arc::new(
+            HeuristicInferenceAdapter::new().with_canned_response("PASS: nothing calls me right now"),
+        ),
+        capacity: None,
+        grounding_sources: Vec::new(),
+        embedder: None,
+        // Her hands: an initiative turn is offered only to a mind that can act.
+        tool_executor: Some(Arc::new(
+            crate::cognition::act_observe::test_support::ScriptedExecutor::new(["ok"]),
+        )),
+        experience: None,
+        // Roomy enough for framing + tools + a reply: a refused prompt is not what this tests.
+        context_window: 65_536,
+        defer_recall: false,
+        defer_grounding: false,
+        suppress_recall: false,
+        forked: false,
+    };
+    crate::cognition::persona_workspace::global()
+        .register_from_cfg(cfg)
+        .expect("test: register the initiative fixture");
+    let room = Uuid::new_v4();
+    for (offer, expect_turn) in [(Initiative::NotOffered, false), (Initiative::Offered, true)] {
+        let stub = StubAircCitizen::new(peer); // holds nothing
+        let advanced = stub.advance_recorder();
+        let mut conversation = ScriptedConversation::new().with_citizen(Arc::new(stub));
+        let outcome = crate::persona::act_question::ask_the_act_question(
+            &hosted,
+            &mut conversation,
+            1,
+            room,
+            false,
+            offer,
+        )
+        .await;
+        assert_eq!(outcome.drove, expect_turn, "{offer:?}: an initiative turn iff her beat offered it");
+        assert!(!outcome.engaged, "{offer:?}: a pass (or no turn) never holds her beat engaged");
+        assert!(
+            advanced.lock().unwrap_or_else(|p| p.into_inner()).is_empty(), // test: poisoned recorder lock still holds the pushes
+            "{offer:?}: no card is moved on her behalf"
+        );
+        assert!(conversation.said_in().is_empty(), "{offer:?}: she passed, so nothing is said for her");
+    }
 }
