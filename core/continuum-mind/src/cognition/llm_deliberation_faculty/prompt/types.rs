@@ -7,6 +7,7 @@ use super::*;
 pub struct PromptCalibration {
     pub(in super::super) estimated: std::num::NonZeroUsize,
     pub(in super::super) measured: std::num::NonZeroU32,
+    /// The input a refusal measured, when it came from one.
     pub(in super::super) input_identity: Option<[u8; 32]>,
 }
 
@@ -31,6 +32,26 @@ impl PromptCalibration {
             measured: std::num::NonZeroU32::new(measured)?,
             input_identity,
         })
+    }
+
+    /// This calibration as it prices `input`.
+    ///
+    /// A ratio any text can have is the binding's density, for every input: the estimate is
+    /// bytes / [`continuum_base::token_estimate::GUARD_CHARS_PER_TOKEN`] and a tokenizer
+    /// emits at most one token per byte, so text measures at most that many times its
+    /// estimate. Her framing, tools and view are the same bytes on the next turn whatever
+    /// its input; priced at 1.0 there, the turn after a refusal (29,722 measured for 15,603
+    /// estimated) was allocated at half its cost and its charged prompt plus reserve overran
+    /// the window by 4,326 (2026-10-23). A larger ratio is no text density (an image the
+    /// estimate does not count, or a count of something else), so it prices only the input
+    /// it measured, and a changed input is not locked out by it.
+    pub(in super::super) fn for_input(self, input: [u8; 32]) -> Self {
+        let text_density = u128::from(self.measured.get())
+            <= self.estimated.get() as u128 * continuum_base::token_estimate::GUARD_CHARS_PER_TOKEN as u128;
+        match self.input_identity {
+            Some(key) if key != input && !text_density => Self::default(),
+            _ => self,
+        }
     }
 
     pub fn charge(self, estimate: usize) -> usize {
@@ -351,6 +372,9 @@ pub struct DeliberationPromptView {
     /// verbatim as the wire request's `max_tokens`.
     pub completion_reserve: u32,
     pub capacity_error: Option<PromptCapacityError>,
+    /// The assembled prompt broke the one budget (`prompt/budget.rs`): the act fails and
+    /// this prompt is never sent.
+    pub budget_fault: Option<String>,
     pub protocol_error: Option<String>,
     /// The role-attributed conversation thread sent to the model — the persona's
     /// OWN posts as `assistant`, peers' as `user` (PERSONA-COGNITION-PIPELINE §7.5).

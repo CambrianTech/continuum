@@ -6,6 +6,8 @@ mod view;
 mod system;
 mod messages;
 mod epoch;
+mod budget;
+pub(super) use self::budget::BudgetLedger;
 #[cfg(test)]
 pub(super) use self::epoch::start_grants;
 pub(super) mod fit;
