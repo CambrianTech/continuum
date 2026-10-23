@@ -41,7 +41,7 @@ pub enum FieldType {
 /// What to do to a referencing row when its target row changes.
 ///
 /// SQL-standard semantics. The substrate names these explicitly so
-/// every backend (sqlite, postgres, future grid-replicated) emits
+/// every backend (sqlite, future grid-replicated) emits
 /// the same intent rather than inheriting whatever default the
 /// backend has.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, TS, PartialEq, Eq)]
@@ -78,7 +78,7 @@ impl Default for CascadeRule {
 ///
 /// Per Joel 2026-06-03 ("provide a relational db this time"): FK is
 /// a first-class schema concept, not application-level convention.
-/// Both sqlite + postgres adapters emit the constraint at CREATE
+/// The sqlite adapter emits the constraint at CREATE
 /// TABLE time; queries can JOIN through it; the row-deletion
 /// semantics are enforced by the DB, not by hand-coded cleanup.
 #[derive(Debug, Clone, Serialize, Deserialize, TS, PartialEq, Eq)]

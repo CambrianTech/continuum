@@ -58,7 +58,6 @@ jobs:
     # 52.9 MB from apt), then hit the old job limit after all crate suites passed.
     timeout-minutes: 70
     env:
-      DATABASE_URL: postgres://continuum:continuum@localhost:5432/continuum_test
       # The crate builds headless by default (`default = []`); THIS job is the one that
       # compiles and tests the call (livekit-webrtc) and 3D-avatar (avatar-3d) paths a
       # node's profile turns on. Every cargo line in the job names the same set, so the
@@ -205,35 +204,6 @@ jobs:
             echo "::error::expected exactly 2 BindingIsUnstatable doctests to pass."
             echo "A zero-match filter exits 0, so this is how a renamed or deleted"
             echo "guard is caught. Check core/continuum-mind/src/persona/viewstate_rag.rs."
-            exit 1
-          fi
-
-      # These tests share a database schema; run serially and reject zero matches.
-      # The runner image's own PostgreSQL, started where the only Postgres tests run: no image
-      # pull. The service container pulled postgres:17-alpine from ECR Public on every lane,
-      # about 20 s per job (02:34:33-02:34:53Z, run 38501706412), and ECR Public's anonymous
-      # quota is not unlimited: "toomanyrequests: Data limit exceeded" failed cargo test before
-      # any build in runs 38439777300, 38471521888 and 38485397956 (card de864f39).
-      - name: Start the runner's PostgreSQL
-        if: needs.changes.outputs.rust != 'false'
-        run: |
-          psql --version
-          sudo systemctl start postgresql.service
-          sudo -u postgres psql -v ON_ERROR_STOP=1 -c "CREATE ROLE continuum WITH LOGIN SUPERUSER PASSWORD 'continuum';"
-          sudo -u postgres createdb -O continuum continuum_test
-          pg_isready -h localhost -p 5432
-
-      - name: cargo test -p continuum-kernel --lib (Postgres, --ignored)
-        if: needs.changes.outputs.rust != 'false'
-        run: |
-          set -o pipefail
-          # The ORM lives in the kernel crate; its test binary was built by the step above.
-          cargo test -p continuum-kernel --lib --profile dev-fast --features test-fixtures \
-            orm::postgres -- --ignored --test-threads=1 2>&1 | tee pg.log
-          passed=$(grep -oE 'test result: ok\. [0-9]+ passed' pg.log | grep -oE '[0-9]+' | head -1)
-          echo "postgres tests passed: ${passed:-0}"
-          if [ "${passed:-0}" -lt 1 ]; then
-            echo "::error::No Postgres tests ran. The service, the filter or the #[ignore] markers disagree — a green step here would be a lie about an unverified adapter."
             exit 1
           fi
 

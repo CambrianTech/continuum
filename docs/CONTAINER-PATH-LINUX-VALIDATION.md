@@ -43,19 +43,13 @@ expose the core's WS port in the container + add a Tailscale serve handler for i
 machine.
 
 ## 5. `install.sh` on a fresh Ubuntu / WSL2 — ~2–3h, iterate
-Run the 9-step installer end-to-end on a clean box: system deps → node → rust → python ML → (postgres
-opt-in) → livekit → native engine note (now: llama-server + mlx) → (tailscale opt-in). Confirm
+Run the 9-step installer end-to-end on a clean box: system deps → node → rust → python ML → livekit → native engine note (now: llama-server + mlx) → (tailscale opt-in). Confirm
 the final `npm start` + `continuum ping` actually work (the message this PR fixed). WSL2 additionally exercises the
 `install.ps1` → `bootstrap.sh` handoff.
 
-## 6. postgres profile — ~1h
-Verify `docker compose --profile postgres up` + the core's `DATABASE_URL=postgres://…` path still works for
-the multi-writer grid case (default is SQLite; postgres is opt-in).
-
 ## Rough total
 The blocking item (1) is gone. What's left is a real `up` on a Linux+NVIDIA box (item 3) with GPU
-passthrough, the model-init build (2), the grid desktop→core-WS proxy (4), a fresh-box `install.sh` (5), and
-the postgres profile (6) — none of which can be exercised from a Mac with no Docker GPU. Call it a focused
+passthrough, the model-init build (2), the grid desktop→core-WS proxy (4), and a fresh-box `install.sh` (5) — none of which can be exercised from a Mac with no Docker GPU. Call it a focused
 afternoon of iterating against real container failures once the box is available, plus a WSL2 pass for the
 Windows install path.
 

@@ -22,33 +22,6 @@
 
 services:
 
-  # ── PostgreSQL (OPT-IN, grid deployments only) ────────────
-  # Default install uses SQLite at ~/.continuum/database/main.db — zero-dep,
-  # portable, works offline. Postgres is only needed for multi-writer grid
-  # setups where multiple continuum-core nodes share state over Tailscale.
-  #
-  # Enable with:    docker compose --profile postgres up
-  # And tell Rust to use it: DATABASE_URL=postgres://continuum:continuum@postgres:5432/continuum
-  #
-  # When this profile is inactive, `depends_on: postgres` entries on other
-  # services are auto-skipped by compose — postgres simply doesn't run.
-  postgres:
-    profiles: [postgres]
-    image: postgres:17-alpine
-    restart: unless-stopped
-    mem_limit: 512m
-    environment:
-      POSTGRES_DB: continuum
-      POSTGRES_USER: ${POSTGRES_USER:-continuum}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-continuum}
-    volumes:
-      - pgdata:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U continuum"]
-      interval: 5s
-      timeout: 3s
-      retries: 5
-
   # ── Model Init (downloads voice/avatar/scene models on first run) ──
   model-init:
     build:
@@ -111,9 +84,8 @@ services:
     # cuda / continuum-core-vulkan overlays) it's the actual ceiling.
     mem_limit: ${CONTINUUM_CORE_MEM:-16g}
     working_dir: /app
-    # No depends_on for services behind profiles (postgres, livekit-bridge).
-    # Core starts independently; connections to optional services (postgres
-    # pool, livekit bridge socket) retry on demand. Text chat works without
+    # No depends_on for services behind profiles (livekit-bridge).
+    # Core starts independently; connections to optional services (livekit bridge socket) retry on demand. Text chat works without
     # any profile active — voice/video requires `--profile live`.
     volumes:
       - voice-models:/app/models:ro
@@ -131,9 +103,8 @@ services:
     environment:
       # DATABASE_URL is OPTIONAL. Unset → Rust defaults to SQLite at
       # ~/.continuum/database/main.db (mounted from host via the
-      # ~/.continuum volume). Set to `postgres://continuum:continuum@postgres:5432/continuum`
-      # only when running the `postgres` compose profile. Rust's
-      # resolve_handle('main') reads this env to pick the adapter.
+      # ~/.continuum volume). Set it only to a SQLite file path; a postgres://
+      # URL is refused. Rust's resolve_handle('main') reads this env.
       - DATABASE_URL=${DATABASE_URL:-}
       - AVATAR_MODELS_DIR=/app/avatars
       - LIVEKIT_URL=${LIVEKIT_URL:-ws://livekit:7880}
@@ -309,7 +280,6 @@ services:
     command: ["-m", "/models/current.gguf", "-c", "4096", "-ngl", "99", "--port", "8090", "--host", "0.0.0.0"]
 
 volumes:
-  pgdata:
   hf-cache:
   forge-output:
   models:

@@ -5,7 +5,6 @@
 //!
 //! Supported backends:
 //! - SQLite (implemented)
-//! - PostgreSQL (future)
 //! - MySQL (future)
 //! - Oracle (future)
 //! - REST (future)
@@ -67,7 +66,7 @@ pub struct AdapterCapabilities {
 /// these methods; adapters translate to native database operations.
 #[async_trait]
 pub trait StorageAdapter: Send + Sync {
-    /// Get adapter name (e.g., "sqlite", "postgres")
+    /// Get adapter name (e.g., "sqlite")
     fn name(&self) -> &'static str;
 
     /// Get adapter capabilities

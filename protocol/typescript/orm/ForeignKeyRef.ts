@@ -8,7 +8,7 @@ import type { CascadeRule } from "./CascadeRule";
  *
  * Per Joel 2026-06-03 ("provide a relational db this time"): FK is
  * a first-class schema concept, not application-level convention.
- * Both sqlite + postgres adapters emit the constraint at CREATE
+ * The sqlite adapter emits the constraint at CREATE
  * TABLE time; queries can JOIN through it; the row-deletion
  * semantics are enforced by the DB, not by hand-coded cleanup.
  */

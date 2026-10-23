@@ -625,7 +625,7 @@ pub(super) fn do_batch(
     StorageResult::ok(results)
 }
 
-/// SQL keyword for a CascadeRule. Same mapping for sqlite + postgres
+/// SQL keyword for a CascadeRule. Same mapping for sqlite
 /// (both speak SQL-standard cascade keywords).
 pub(super) fn cascade_rule_sql(rule: super::super::types::CascadeRule) -> &'static str {
     use super::super::types::CascadeRule;

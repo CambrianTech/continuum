@@ -238,10 +238,6 @@ regex = "1"                      # Regex search for code search
 # Windows incremental cache masked it.
 scraper = "0.21"
 
-# ORM module — database-agnostic storage with adapter traits
-rusqlite = { version = "0.32", features = ["bundled"] }  # SQLite adapter
-deadpool-postgres.workspace = true                        # Postgres connection pool
-tokio-postgres.workspace = true                           # Postgres async driver
 rustpython-parser = "0.4.0"
 
 # jemalloc EVERYWHERE EXCEPT windows-msvc. jemalloc-sys builds its vendored
