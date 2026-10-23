@@ -766,9 +766,9 @@ fn a_budget_too_small_for_even_one_unit_emits_no_header_at_all() {
 // act-over-act leaves the cacheable system prefix BYTE-IDENTICAL and only the
 // appended tail re-prefills. Before this the working-memory block lived in the
 // system message's volatile tail, so each act shifted every conversation token
-// after it (~4000 tokens / ~30s of pure re-prefill — the eval-lane crawl). The
-// stable framing stays in the system message; the trailing proprioception does
-// not. regression for #205
+// after it (~4000 tokens / ~30s of pure re-prefill — the eval-lane crawl). Since
+// 2026-10-23 the room's standing framing leaves the system message too: the system
+// message is hers in every room. regression for #205
 // what this catches: churning grounding ahead of the append-only results ring. On the
 // M5 (2026-10-18) recall (Turn churn) and the kanban (Claims churn) led the messages,
 // every turn's reuse broke there, and the ~30k-token ring behind them re-prefilled at

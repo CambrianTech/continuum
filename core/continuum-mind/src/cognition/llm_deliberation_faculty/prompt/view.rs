@@ -244,7 +244,7 @@ impl LlmDeliberationFaculty {
                     persona = %self.persona_name,
                     wanted_tokens = wanted,
                     budget_tokens = grounding_budget,
-                    kept_tokens = plan.system_reserve() + plan.trailing_tokens(),
+                    kept_tokens = plan.context_reserve() + plan.trailing_tokens(),
                     "standing grounding did not fit its budget — thinking with less                      enrichment rather than refusing the turn"
                 );
                 plan
@@ -276,7 +276,7 @@ impl LlmDeliberationFaculty {
                 .unwrap_or(0) // No optional source bid means no enrichment reservation.
                 .min(after_framing / 2)
         } else {
-            grounding.system_reserve()
+            grounding.context_reserve()
         };
 
         // ONE ALLOCATION FOR THE WHOLE WINDOW. Owner's rule: "Flexbox is the right way.

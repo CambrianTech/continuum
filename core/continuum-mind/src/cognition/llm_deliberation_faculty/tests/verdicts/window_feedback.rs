@@ -328,10 +328,17 @@ async fn provider_context_feedback_refits_and_captures_each_attempt() {
                 .messages
                 .iter()
                 .any(|m| m.content_text().contains(stimulus)));
+            // The held card's context survives the re-fit as the assembled-context
+            // message after her view (frozen with the grounding the re-fit keeps), never
+            // the system message, which is hers in every room (2026-10-23).
             assert!(second
+                .messages
+                .iter()
+                .any(|m| m.content_text().contains("selected card, owner and teammate review")));
+            assert!(!second
                 .system_prompt
                 .as_deref()
-                .expect("required system context")
+                .expect("system framing")
                 .contains("selected card, owner and teammate review"));
             let cost = |r: &TextGenerationRequest| {
                 LlmDeliberationFaculty::framing_cost(

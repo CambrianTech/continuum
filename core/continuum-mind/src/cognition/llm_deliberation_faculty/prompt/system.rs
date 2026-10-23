@@ -146,7 +146,7 @@ impl LlmDeliberationFaculty {
         // sensor starts lying the first time the format changes).
         let mut dropped_salience: Vec<(String, f32)> = Vec::new();
         let mut partial: Vec<String> = Vec::new();
-        let mut used = plan.system_tokens();
+        let mut used = plan.context_tokens();
         for c in ctx {
             if c.standing_grounding {
                 continue; // This exact source already owns its selected units above.
