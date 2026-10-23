@@ -53,3 +53,8 @@ partial-disable recovery routing, legacy journal retention, and combined errors;
 it injects restoration results rather than mutating OS tasks. Existing lifecycle tests retain task
 identity, recovery and durable-drain contracts. Local native build and live
 maintenance were not run on the serving node. CI and installed acceptance pending.
+
+Windows CI selection is explicit: PR #5302 carries the existing workflow's `windows`
+label. Its initial unlabeled run skipped both Windows jobs, so the aggregate wrapper
+was not platform validation. The subsequent push with that label must execute the
+actual core CLI and lifecycle fixtures before merge; a skipped wrapper is insufficient.
