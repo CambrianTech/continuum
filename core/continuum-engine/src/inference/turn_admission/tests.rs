@@ -468,6 +468,43 @@
         Ok(())
     }
 
+    // what this catches (10417f6d): restarting admission after a slot wake must
+    // spend the original readiness budget, not buy another full hold.
+    #[tokio::test(start_paused = true)]
+    async fn slot_waits_spend_readiness_patience_and_cancellation_releases_admission()
+        -> Result<(), Box<dyn std::error::Error>>
+    {
+        let root = format!("test://admission-patience-{}", Uuid::new_v4());
+        let pool = Arc::new(KvSlotPool::new(&root, 1));
+        let sem = Arc::new(Semaphore::new(2));
+        let client = reqwest::Client::new();
+        let first_key = ActivityKey::new(Uuid::new_v4(), Uuid::new_v4()).ok_or("first key")?;
+        let waiting_key = ActivityKey::new(Uuid::new_v4(), Uuid::new_v4()).ok_or("waiting key")?;
+        let first = admit_turn(&sem, Some(first_key), Some(pool.clone()), &client, &root,
+            100, std::time::Duration::ZERO).await?;
+        let started = tokio::time::Instant::now();
+        let mut waiting = Box::pin(admit_turn(&sem, Some(waiting_key), Some(pool.clone()),
+            &client, &root, 100, std::time::Duration::from_secs(10)));
+        assert!(futures::poll!(&mut waiting).is_pending());
+        let mut cancelled = Box::pin(admit_turn(&sem, Some(waiting_key), Some(pool.clone()),
+            &client, &root, 100, std::time::Duration::from_secs(10)));
+        assert!(futures::poll!(&mut cancelled).is_pending());
+        drop(cancelled);
+        assert_eq!(sem.available_permits(), 1);
+        tokio::time::advance(std::time::Duration::from_secs(8)).await;
+        let endpoint = crate::inference::slots::directory().endpoint(&root);
+        let mut transition = Box::pin(endpoint.transition());
+        assert!(futures::poll!(&mut transition).is_pending());
+        drop(first);
+        drop(tokio::time::timeout(std::time::Duration::from_secs(1), &mut transition)
+            .await.map_err(|_| "cancelled or waiting turn retained endpoint reader")?);
+        assert!(waiting.as_mut().await.is_err(), "closed endpoint must exhaust patience");
+        assert_eq!(started.elapsed(), std::time::Duration::from_secs(10));
+        drop(waiting);
+        assert_eq!(sem.available_permits(), 2);
+        Ok(())
+    }
+
     // what this catches (Codex on #4515): a turn that pinned its slot and is then CANCELLED
     // while awaiting the slot's operation permit (pin held, no permit) frees an evictable lease,
     // and no SlotPermit drop will ever announce it; a turn parked on the all-pinned pool must
