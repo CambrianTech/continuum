@@ -94,6 +94,7 @@ mod prompt;
 pub use self::prompt::*;
 mod request;
 mod admission;
+pub(crate) mod admission_clock;
 use self::request::*;
 mod reply_claim;
 use self::reply_claim::*;
