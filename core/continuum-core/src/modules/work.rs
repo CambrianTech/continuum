@@ -45,6 +45,8 @@ use crate::persona::work_board::horizon::*;
 mod work_card_state_changed;
 pub use work_card_state_changed::*;
 mod work_claim;
+mod claim_workspace;
+pub use claim_workspace::ClaimWorkspace;
 mod work_create_command;
 pub use work_create_command::*;
 mod work_create;
