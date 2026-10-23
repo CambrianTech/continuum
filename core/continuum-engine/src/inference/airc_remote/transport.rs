@@ -409,8 +409,30 @@ impl AircInferenceTransport for AircLiveTransport {
         // measured bound above it (card ba82d0a0). The peer's own lane reads the same
         // field off the wire, so both ends wait out the same prefill.
         let turn_bound = request.text_request.turn_bound;
-        let (deadline, deadline_source) =
-            crate::inference::turn_bound::effective_bound_with_source(self.deadline, turn_bound);
+        // ...and the SEAT's own measured service time above both (card b3e5b582): a slow
+        // seat's beacon says how long this decode takes there, so the requester waits for
+        // the answer it asked for instead of abandoning it at a floor sized for fast seats.
+        let seat_estimate = super::seat_deadline::heard_seat_offer(
+            target.0,
+            request.text_request.model.as_deref(),
+            continuum_base::time::EpochMs::now().millis(),
+        )
+        .and_then(|offer| {
+            super::seat_deadline::seat_service_estimate(&offer, request.text_request.max_tokens)
+        });
+        let (deadline, deadline_source) = super::seat_deadline::raise_to_seat(
+            crate::inference::turn_bound::effective_bound_with_source(self.deadline, turn_bound),
+            seat_estimate,
+        );
+        if deadline_source == crate::inference::turn_bound::BoundSource::SeatMeasured {
+            continuum_base::probe!(
+                class = "remote_lane.deadline_from_seat",
+                peer = %target.0,
+                deadline_s = deadline.as_secs(),
+                max_tokens = u64::from(request.text_request.max_tokens.unwrap_or(0)), // probe field: 0 = no cap stated
+                "the seat's measured lane wait plus decode raised this request's deadline above the floor and the turn bound"
+            );
+        }
         let bound_name = format!(
             "{}@{}",
             request.text_request.model.as_deref().unwrap_or("unspecified-model"), // unwrap_or: a request without a model is routed by the peer; the receipt still names the peer

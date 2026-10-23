@@ -265,11 +265,8 @@ pub(crate) struct StreamOutcome {
 
 /// Consume `response`'s SSE stream to completion (or a watchdog failure).
 /// The longest a stalled stream waits on a lane that is working for others: the act's own
-/// ceiling (the act bound's floor times its checkpoint extensions, 25 min x 3), so a caller
-/// without an act bound above it (a probe, an eval) still ends. Every hold is bounded.
-// derived-or-floor: a ceiling — the act bound's own 3x ceiling (card 6f3218ed); it only ENDS a wait.
-const STARVED_WAIT_CEILING: std::time::Duration =
-    std::time::Duration::from_secs(crate::inference::turn_bound::TICK_DEADLINE.as_secs() * 3);
+/// ceiling, so a caller without an act bound above it (a probe, an eval) still ends.
+const STARVED_WAIT_CEILING: std::time::Duration = crate::inference::turn_bound::ACT_CEILING;
 
 /// Whether a stream that has been silent (or stalled) for `idle` sits on a lane that did real
 /// work, prefill or decode, for ANYONE within that window, and has been open less than the
