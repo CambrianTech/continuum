@@ -139,21 +139,6 @@ impl EndpointSlots {
         }
     }
 
-    /// The patience a TURN brings to a closed endpoint: [`Self::TURN_READINESS_PATIENCE`],
-    /// but never more than the turn has left on its own bound, counted from the request's
-    /// start — so the hold SPENDS the turn bound and never stacks 240 s on top of it
-    /// (Cormac and Fable's review of #4411). A turn with no bound of its own gets the
-    /// full patience; one that is already out of time gets the instant answer. PURE.
-    pub fn turn_patience(
-        turn_bound: Option<std::time::Duration>,
-        elapsed: std::time::Duration,
-    ) -> std::time::Duration {
-        match turn_bound {
-            Some(bound) => Self::TURN_READINESS_PATIENCE.min(bound.saturating_sub(elapsed)),
-            None => Self::TURN_READINESS_PATIENCE,
-        }
-    }
-
     pub async fn admit(self: &Arc<Self>) -> Result<EndpointAdmission, String> {
         if !*self.state.lock().ready.borrow() {
             return Err("serving endpoint is suspended pending engine readiness".into());
