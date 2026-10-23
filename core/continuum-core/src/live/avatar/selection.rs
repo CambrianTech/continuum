@@ -135,7 +135,7 @@ static CARD_GENDER: std::sync::Mutex<Option<HashMap<String, AvatarGender>>> =
 pub fn register_card_gender(identity: &str, gender: AvatarGender) {
     CARD_GENDER
         .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .unwrap_or_else(|poisoned| poisoned.into_inner()) // poison: a panicked writer leaves a whole map (insert/remove are single ops); keep serving it
         .get_or_insert_with(HashMap::new)
         .insert(identity.to_string(), gender);
 }
@@ -144,7 +144,7 @@ pub fn register_card_gender(identity: &str, gender: AvatarGender) {
 pub fn forget_card_gender(identity: &str) {
     if let Some(m) = CARD_GENDER
         .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .unwrap_or_else(|poisoned| poisoned.into_inner()) // poison: a panicked writer leaves a whole map (insert/remove are single ops); keep serving it
         .as_mut()
     {
         m.remove(identity);
@@ -187,7 +187,7 @@ pub fn registered_gender(identity: &str) -> Option<AvatarGender> {
     // (1) Local persona's durable card wins.
     if let Some(gender) = CARD_GENDER
         .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .unwrap_or_else(|poisoned| poisoned.into_inner()) // poison: a panicked writer leaves a whole map (insert/remove are single ops); keep serving it
         .as_ref()
         .and_then(|m| m.get(identity).copied())
     {
