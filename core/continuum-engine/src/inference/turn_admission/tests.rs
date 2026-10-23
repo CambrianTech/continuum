@@ -15,6 +15,8 @@
     use super::*;
     use uuid::Uuid;
 
+    mod one_act_per_mind;
+
     // what this catches (M5, 2026-09-25 and 2026-09-26): a slow switch on a moving engine
     // must wait; a save on a QUIET engine (no slot processing, so no counter moves) must
     // also wait, up to the quiet cap; a switch on an engine whose slots claim to process
@@ -168,8 +170,8 @@
         assert!(pool.scratch_slot().is_none(), "two lanes reserve no scratch slot");
         let sem = Arc::new(Semaphore::new(4));
         let client = reqwest::Client::new();
-        let a = ActivityKey::new(Uuid::from_u128(1), Uuid::from_u128(2)).expect("test: non-nil ids");
-        let b = ActivityKey::new(Uuid::from_u128(3), Uuid::from_u128(4)).expect("test: non-nil ids");
+        let a = PageKey::mind(Uuid::from_u128(1)).expect("test: non-nil ids");
+        let b = PageKey::mind(Uuid::from_u128(3)).expect("test: non-nil ids");
         // Exact pre-write admission uses the same HTTP boundary and policy, with
         // supplied volume evidence instead of mutating the process-wide monitor.
         assert_eq!(kv_page_action_with_capacity(&client, &root, 0, &a, "save", true, |bytes| {
@@ -226,8 +228,8 @@
         let pool = Arc::new(KvSlotPool::new("test://admit", 1)); // ONE citizen slot
         let sem = Arc::new(Semaphore::new(1));
         let client = reqwest::Client::new();
-        let a = ActivityKey::new(Uuid::from_u128(1), Uuid::from_u128(2)).unwrap();  // test: non-nil ids
-        let b = ActivityKey::new(Uuid::from_u128(3), Uuid::from_u128(4)).unwrap();  // test: non-nil ids
+        let a = PageKey::mind(Uuid::from_u128(1)).unwrap();  // test: non-nil ids
+        let b = PageKey::mind(Uuid::from_u128(3)).unwrap();  // test: non-nil ids
 
         // A is admitted: holds the permit and pins the one slot.
         let adm_a = admit_turn(
@@ -302,8 +304,8 @@
         let pool = Arc::new(KvSlotPool::new(root, 1)); // ONE citizen slot
         let sem = Arc::new(Semaphore::new(2)); // lanes free: only the slot is contended
         let client = reqwest::Client::new();
-        let a = ActivityKey::new(Uuid::from_u128(11), Uuid::from_u128(12)).unwrap(); // test: non-nil ids
-        let b = ActivityKey::new(Uuid::from_u128(13), Uuid::from_u128(14)).unwrap(); // test: non-nil ids
+        let a = PageKey::mind(Uuid::from_u128(11)).unwrap(); // test: non-nil ids
+        let b = PageKey::mind(Uuid::from_u128(13)).unwrap(); // test: non-nil ids
         let adm_a = admit_turn(&sem, Some(a), Some(pool.clone()), &client, root, 100, std::time::Duration::ZERO)
             .await
             .expect("test: A admitted");
@@ -335,8 +337,8 @@
         let first_adapter = Arc::new(Semaphore::new(1));
         let waiting_adapter = Arc::new(Semaphore::new(1));
         let client = reqwest::Client::new();
-        let first_key = ActivityKey::new(Uuid::new_v4(), Uuid::new_v4()).ok_or("first key")?;
-        let waiting_key = ActivityKey::new(Uuid::new_v4(), Uuid::new_v4()).ok_or("waiting key")?;
+        let first_key = PageKey::mind(Uuid::new_v4()).ok_or("first key")?;
+        let waiting_key = PageKey::mind(Uuid::new_v4()).ok_or("waiting key")?;
         let first = admit_turn(
             &first_adapter, Some(first_key), Some(pool.clone()), &client, &root,
             100, std::time::Duration::ZERO,
@@ -438,8 +440,8 @@
         let old_pool = endpoint.admit().await?.pool.ok_or("initial pool")?;
         let sem = Arc::new(Semaphore::new(2));
         let client = reqwest::Client::new();
-        let first_key = ActivityKey::new(Uuid::new_v4(), Uuid::new_v4()).ok_or("first key")?;
-        let waiting_key = ActivityKey::new(Uuid::new_v4(), Uuid::new_v4()).ok_or("waiting key")?;
+        let first_key = PageKey::mind(Uuid::new_v4()).ok_or("first key")?;
+        let waiting_key = PageKey::mind(Uuid::new_v4()).ok_or("waiting key")?;
         let first = admit_turn(&sem, Some(first_key), Some(old_pool.clone()), &client, &root,
             100, std::time::Duration::ZERO).await?;
         let mut waiting = Box::pin(admit_turn(&sem, Some(waiting_key), Some(old_pool.clone()),
@@ -483,8 +485,8 @@
         let pool = Arc::new(KvSlotPool::new(&root, 1));
         let sem = Arc::new(Semaphore::new(2));
         let client = reqwest::Client::new();
-        let first_key = ActivityKey::new(Uuid::new_v4(), Uuid::new_v4()).ok_or("first key")?;
-        let waiting_key = ActivityKey::new(Uuid::new_v4(), Uuid::new_v4()).ok_or("waiting key")?;
+        let first_key = PageKey::mind(Uuid::new_v4()).ok_or("first key")?;
+        let waiting_key = PageKey::mind(Uuid::new_v4()).ok_or("waiting key")?;
         let first = admit_turn(&sem, Some(first_key), Some(pool.clone()), &client, &root,
             100, std::time::Duration::ZERO).await?;
         let started = tokio::time::Instant::now();
@@ -521,8 +523,8 @@
             let sem = Arc::new(Semaphore::new(permits));
             let pool = Arc::new(KvSlotPool::new(&root, 1));
             let client = reqwest::Client::new();
-            let first_key = ActivityKey::new(Uuid::new_v4(), Uuid::new_v4()).ok_or("first key")?;
-            let next_key = ActivityKey::new(Uuid::new_v4(), Uuid::new_v4()).ok_or("next key")?;
+            let first_key = PageKey::mind(Uuid::new_v4()).ok_or("first key")?;
+            let next_key = PageKey::mind(Uuid::new_v4()).ok_or("next key")?;
             let running = admit_turn(&sem, Some(first_key), Some(pool.clone()), &client, &root,
                 100, std::time::Duration::ZERO).await?;
             let started = tokio::time::Instant::now();
@@ -549,8 +551,8 @@
         let pool = Arc::new(KvSlotPool::new(root, 1)); // ONE citizen slot, index 0
         let sem = Arc::new(Semaphore::new(3));
         let client = reqwest::Client::new();
-        let a = ActivityKey::new(Uuid::from_u128(21), Uuid::from_u128(22)).unwrap(); // test: non-nil ids
-        let b = ActivityKey::new(Uuid::from_u128(23), Uuid::from_u128(24)).unwrap(); // test: non-nil ids
+        let a = PageKey::mind(Uuid::from_u128(21)).unwrap(); // test: non-nil ids
+        let b = PageKey::mind(Uuid::from_u128(23)).unwrap(); // test: non-nil ids
         // A decode is in flight on slot 0, so A leases and pins, then waits for the permit.
         let busy = pool.acquire_slot(0).await.expect("test: the stand-in decode holds slot 0");
         let mut turn_a = Box::pin(admit_turn(&sem, Some(a), Some(pool.clone()), &client, root, 100, std::time::Duration::ZERO));
@@ -668,7 +670,7 @@
             .expect("managed pool");
         let sem = Arc::new(Semaphore::new(2));
         let client = reqwest::Client::new();
-        let key = ActivityKey::new(Uuid::new_v4(), Uuid::new_v4()).expect("fixture activity");
+        let key = PageKey::mind(Uuid::new_v4()).expect("fixture activity");
 
         // A discovered multi-slot pool is not sufficient: without reserved
         // scratch, anonymous traffic can still select a speculative restore slot.
@@ -795,21 +797,21 @@
         );
         assert_eq!(pool.take_resident(slot).0, Some(key));
 
-        // Same-key admission uses the same physical-slot permit even across
-        // adapters. It cannot see or erase a prior owner's provisional holder.
+        // A warm-ahead while her act runs, even from another adapter, is a no-op: her KV is
+        // already in her slot, and it never queues behind her act (`slots::mind_gate`). It
+        // cannot see or erase her act's provisional holder.
         let mut turn = admit_turn(&sem, Some(key), Some(pool.clone()), &client, &root, 100, std::time::Duration::ZERO)
             .await
             .expect("turn restore");
         let other_adapter = Arc::new(Semaphore::new(2));
-        let warming = warm_ahead(&other_adapter, key, pool.clone(), &client, &root);
-        tokio::pin!(warming);
-        assert!(futures::poll!(&mut warming).is_pending());
+        let before = calls.load(Ordering::SeqCst);
+        tokio::time::timeout(std::time::Duration::from_secs(5), warm_ahead(&other_adapter, key, pool.clone(), &client, &root))
+            .await
+            .expect("a mid-act warm-ahead returns at once")
+            .expect("skipped, not failed");
+        assert_eq!(calls.load(Ordering::SeqCst), before, "no paging while she acts");
         turn.generation_completed();
         drop(turn);
-        tokio::time::timeout(std::time::Duration::from_secs(5), &mut warming)
-            .await
-            .expect("slot released")
-            .expect("warm resident");
         assert_eq!(pool.take_resident(slot).0, Some(key));
         mode.store(3, Ordering::SeqCst);
         assert!(
@@ -823,7 +825,7 @@
         // What this catches: a drained checkpoint must confirm every resident,
         // never carry an old saved bit across a failed write or let cancellation
         // reopen a backend request whose completion is unknown.
-        let other = ActivityKey::new(Uuid::new_v4(), Uuid::new_v4()).expect("second resident");
+        let other = PageKey::mind(Uuid::new_v4()).expect("second resident");
         let unknown_root = format!("test://checkpoint-unknown-{}", Uuid::new_v4());
         let unknown = crate::inference::slots::directory().endpoint(&unknown_root);
         let mut unowned = unknown.transition().await;

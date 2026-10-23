@@ -44,3 +44,27 @@ fn a_fresh_mind_carries_no_bound_and_the_floors_govern() {
         "…so the floor governs"
     );
 }
+
+// what this catches: the mind's and the engine's page disagreeing. A resident faculty's
+// turns, in any room, must announce purposes the engine keys onto her ONE mind page
+// (`warm_ahead` warms that same page); a fork's (`fork_eval_cycle`) must key its own page
+// per room, or an eval exam would overwrite her warm view and wait behind her act.
+#[test]
+fn a_residents_turns_warm_her_one_page_and_a_forks_never_do() {
+    use crate::inference::slots::class_for;
+    let adapter: Arc<dyn AIProviderAdapter> = Arc::new(HeuristicInferenceAdapter::new());
+    let her = Uuid::new_v4();
+    let (general, academy) = (Uuid::new_v4(), Uuid::new_v4());
+    let resident = LlmDeliberationFaculty::new(her, "Ivar", "You are Ivar.", adapter.clone());
+    let fork = LlmDeliberationFaculty::new(her, "Ivar", "You are Ivar.", adapter).forked();
+    for kind in [TurnKind::Act, TurnKind::Pass] {
+        for room in [general, academy] {
+            let engine = |f: &LlmDeliberationFaculty| class_for(Some(f.turn_purpose(kind))).page_key(Some(her), Some(room));
+            assert_eq!(engine(&resident), resident.page(room), "the engine keys the page the mind warms ahead");
+            assert_eq!(engine(&fork), fork.page(room));
+            assert_ne!(fork.page(room), resident.page(room), "a fork never warms her page");
+        }
+    }
+    assert_eq!(resident.page(general), resident.page(academy), "one page across her rooms");
+    assert_ne!(fork.page(general), fork.page(academy), "a fork's page is per room");
+}

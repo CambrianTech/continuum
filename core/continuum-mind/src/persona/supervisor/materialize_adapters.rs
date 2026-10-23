@@ -582,6 +582,7 @@ pub async fn materialize_adapters(
             // The LIVING persona always keeps her memories — suppression is a
             // benchmark-reproducibility knob, never a life-path setting (#207).
             suppress_recall: false,
+            forked: false,
         };
         // A checkpoint can be locked by offline adoption. Waiting and reading
         // belong off the async runtime workers; registration publishes nothing

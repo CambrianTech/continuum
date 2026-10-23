@@ -444,12 +444,12 @@ async fn single_slot_background_use_preserves_only_successfully_saved_activity_p
     let observed_service = || crate::inference::resource_admission::leased_in_sent_samples()
         .iter().filter_map(|sample| sample.served(&root, Some("test-model"))).collect::<Vec<_>>();
     let activity =
-        crate::inference::slots::ActivityKey::new(uuid::Uuid::new_v4(), uuid::Uuid::new_v4())
+        crate::inference::slots::PageKey::mind(uuid::Uuid::new_v4())
             .expect("non-nil fixture activity");
     let turn = TextGenerationRequest {
         messages: vec![ChatMessage::text("user", "activity")],
-        persona_id: Some(activity.persona.to_string()),
-        room_id: Some(activity.room.to_string()),
+        persona_id: Some(activity.persona().to_string()),
+        room_id: Some(uuid::Uuid::new_v4().to_string()),
         purpose: Some("cognition/deliberation".into()),
         ..Default::default()
     };
@@ -474,8 +474,9 @@ async fn single_slot_background_use_preserves_only_successfully_saved_activity_p
         .expect("bounded adapter fixture")
         .expect("fixture generation");
     }
+    // Another MIND's turn: hers in another room would be her own page (one page per mind).
     let failed_turn = TextGenerationRequest {
-        room_id: Some(uuid::Uuid::new_v4().to_string()),
+        persona_id: Some(uuid::Uuid::new_v4().to_string()),
         ..turn.clone()
     };
     assert!(!observed_service().is_empty(), "real adapter terminal records owned service");

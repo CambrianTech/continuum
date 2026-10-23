@@ -29,14 +29,14 @@ use serde_json::json;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 use crate::inference::llama_server::EngineProbe;
-use crate::inference::slots::{ActivityKey, KvSlotPool, SlotPermit, SlotPin};
+use crate::inference::slots::{KvSlotPool, MindTurn, PageKey, SlotPermit, SlotPin};
 
 /// How this turn's KV reached its slot: the evidence the restore economy is judged by
 /// (`inference.restored_turn`). A restore the engine refused is a fast-path MISS, recorded
 /// as one, never folded into "nothing to restore" (card f3ba3b56).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum PageIn {
-    /// No page was due: the activity prefills by design (its first turn, or no pool).
+    /// No page was due: the page prefills by design (its first turn, or no pool).
     None,
     /// Its KV was already resident in the leased slot.
     Resident,
@@ -51,7 +51,7 @@ pub(crate) enum PageIn {
 /// attribution; dropping this guard is not an acknowledgement of backend stop.
 pub struct TurnAdmission {
     /// The slot to pin the request to (`id_slot`), or `None` to stay unpinned
-    /// (traffic using separate scratch, or a Turn whose activity could not be leased).
+    /// (traffic using separate scratch, or a Turn whose page could not be leased).
     slot: Option<u32>,
     /// The slot pin — held so eviction cannot reassign this turn's slot mid-decode.
     _pin: Option<SlotPin>,
@@ -66,13 +66,17 @@ pub struct TurnAdmission {
     paging_in_flight: bool,
     /// Released after the pin so the next permit holder can lease the free slot.
     /// `None` only for [`admit_transient`], which holds its slot's operation permit
-    /// instead of a lane (it serves no activity, so it takes no lane from one).
+    /// instead of a lane (it serves no page, so it takes no lane from one).
     _permit: Option<OwnedSemaphorePermit>,
     /// A lease is provisional until the adapter observes successful generation.
     /// Cancellation during paging or generation must not save foreign KV later.
-    uncommitted: Option<(Arc<KvSlotPool>, ActivityKey, u32)>,
+    uncommitted: Option<(Arc<KvSlotPool>, PageKey, u32)>,
     _endpoint: crate::inference::slots::EndpointAdmission,
     scratch: Option<u32>,
+    /// The mind's act gate ([`crate::inference::slots::MindTurn`]), held for the whole
+    /// generation. Declared LAST so it drops after the pin and permits: the mind's next
+    /// act, woken by it, finds her slot already released.
+    _mind: Option<MindTurn>,
 }
 
 impl TurnAdmission {
@@ -95,7 +99,7 @@ impl TurnAdmission {
         client: &reqwest::Client,
         root: &str,
         slot: u32,
-        key: &ActivityKey,
+        key: &PageKey,
         action: &str,
     ) -> Result<bool, String> {
         self.paging_in_flight = true;
@@ -173,9 +177,10 @@ impl From<std::time::Duration> for AdmissionPatience {
     }
 }
 
-/// Admit a turn: acquire the concurrency permit (always), then — for a Turn with a
-/// resolvable `(persona, room)` key and a live slot pool — lease + pin its slot and
-/// page its KV (save the evictee, restore this activity). Returns the guard the
+/// Admit a turn: wait for the mind's running act (a keyed turn only; see
+/// `slots::mind_gate`), acquire the concurrency permit (always), then — for a turn with a
+/// [`PageKey`] and a live slot pool — lease + pin its slot and page its KV (save the
+/// evictee, restore this mind's page). Returns the guard the
 /// caller must hold across the generation.
 ///
 /// `key`/`pool` are `None` for non-Turn traffic (or a cloud provider with no slots):
@@ -192,7 +197,7 @@ impl From<std::time::Duration> for AdmissionPatience {
 /// for the boot window that cost Kimi 16 turns.
 pub async fn admit_turn(
     concurrency: &Arc<Semaphore>,
-    key: Option<ActivityKey>,
+    key: Option<PageKey>,
     pool: Option<Arc<KvSlotPool>>,
     client: &reqwest::Client,
     root: &str,
@@ -217,12 +222,23 @@ pub async fn admit_turn(
 /// as a turn. No generation follows, so only proven physical warmth is committed.
 pub(crate) async fn warm_ahead(
     concurrency: &Arc<Semaphore>,
-    key: ActivityKey,
+    key: PageKey,
     pool: Arc<KvSlotPool>,
     client: &reqwest::Client,
     root: &str,
 ) -> Result<(), String> {
     let started = std::time::Instant::now();
+    // Best-effort: a mind mid-act already has her KV in a slot, and her act queued behind
+    // it must not wait on this; held until the warm-ahead's paging is done.
+    let Some(_mind) = MindTurn::try_begin(key) else {
+        continuum_base::probe!(
+            class = "inference.kv_warm_ahead.skipped",
+            page = %key,
+            reason = "mind_mid_act",
+            "warm-ahead skipped: this mind is mid-act, so her KV is already in a slot"
+        );
+        return Ok(());
+    };
     // Best-effort: a closed endpoint is an instant no, never a held permit.
     let mut admission = admit(concurrency, Some(key), Some(pool), client, root, 0, true, std::time::Duration::ZERO).await?;
     if admission.page_confirmed {
@@ -231,8 +247,7 @@ pub(crate) async fn warm_ahead(
     if let Some(slot) = admission.slot {
         continuum_base::probe!(
             class = "inference.kv_warm_ahead",
-            persona = %key.persona,
-            room = %key.room,
+            page = %key,
             slot = slot as u64,
             saved_evictee = admission.saved_evictee,
             restored = admission.page_in == PageIn::Restored,
@@ -246,7 +261,7 @@ pub(crate) async fn warm_ahead(
 
 async fn admit(
     concurrency: &Arc<Semaphore>,
-    key: Option<ActivityKey>,
+    key: Option<PageKey>,
     pool: Option<Arc<KvSlotPool>>,
     client: &reqwest::Client,
     root: &str,
@@ -257,6 +272,12 @@ async fn admit(
     let started = tokio::time::Instant::now();
     let mut readiness_left = patience;
     let mut waited = false;
+    // 0. ONE ACT AT A TIME PER MIND — queued here, before the lane, holding nothing
+    //    (`slots::mind_gate`). Warm-ahead took its gate itself, without waiting.
+    let mut mind = match key {
+        Some(k) if !warm_only => Some(MindTurn::begin(k).await?),
+        _ => None,
+    };
     'admit: loop {
         // 1. PERMIT FIRST — event-driven wait for a free lane. Cannot fail: the
         //    semaphore is never closed over the adapter's lifetime.
@@ -292,6 +313,7 @@ async fn admit(
             uncommitted: None,
             scratch: pool.as_ref().and_then(|pool| pool.scratch_slot()),
             _endpoint: endpoint,
+            _mind: None,
         };
 
         if warm_only
@@ -318,7 +340,7 @@ async fn admit(
                 // never missed.
                 notified.as_mut().enable();
                 if pool.lease(k).await.is_some() {
-                    // Pin before waiting for the physical-slot permit: a same-activity
+                    // Pin before waiting for the physical-slot permit: a same-page
                     // returner must await the prior owner without permitting eviction.
                     if let Some(pinned) = pool.pin_slot(&k) {
                         break Some(pinned);
@@ -350,8 +372,7 @@ async fn admit(
             if waited {
                 continuum_base::probe!(
                     class = "inference.slot_affinity.waited",
-                    persona = %k.persona,
-                    room = %k.room,
+                    page = %k,
                     ms = started.elapsed().as_millis() as u64,
                     "every slot was pinned: the turn waited for a release instead of running unpinned over a resident"
                 );
@@ -375,8 +396,7 @@ async fn admit(
                     let on_disk = pool.page_on_disk(&k);
                     continuum_base::probe!(
                         class = "inference.kv_page.cold_turn",
-                        persona = %k.persona,
-                        room = %k.room,
+                        page = %k,
                         slot = pg.slot as u64,
                         warm_only,
                         cause = match on_disk {
@@ -384,12 +404,12 @@ async fn admit(
                             Some(false) => "no_page",
                             None => "no_page_dir",
                         },
-                        "this activity's slot holds none of its KV and no restorable page exists: it prefills in full"
+                        "this page's slot holds none of its KV and no restorable page exists: it prefills in full"
                     );
                 }
 
                 // 3. The context switch onto a now-free slot: page the evictee out,
-                //    page this activity in. Lands immediately (no defer) because the slot
+                //    page this page in. Lands immediately (no defer) because the slot
                 //    is not decoding.
                 if let Some(prev) = pg.save_first {
                     // A failed or cancelled save may have replaced an older file.
@@ -421,15 +441,14 @@ async fn admit(
                         // probe reports only restores that happened, so nothing counts twice.
                         continuum_base::probe!(
                             class = "inference.restored_turn",
-                            persona = %k.persona,
-                            room = %k.room,
+                            page = %k,
                             slot = pg.slot as u64,
                             outcome = "restore_rejected",
                             "the engine refused this turn's KV restore: it re-prefills in full"
                         );
                     }
                 }
-                // Price basis for the eviction policy (B5): this activity's current
+                // Price basis for the eviction policy (B5): this page's current
                 // prompt size — comparable across slots, which is all eviction needs.
                 if !warm_only {
                     pool.note_tail(&k, approx_tokens);
@@ -443,7 +462,7 @@ async fn admit(
             // server's own placement. The two-lane case used to fall through here
             // unpinned (card 4deaed09: the server put it on a resident's slot by
             // similarity and overwrote her page every turn). Remove attribution
-            // BEFORE the await so cancellation cannot leave the next activity treating
+            // BEFORE the await so cancellation cannot leave the next page treating
             // transient KV as its own warm tail.
             let slot = pool.transient_slot();
             admission.borrow_slot_for_transient(pool, slot, client, root).await?;
@@ -460,15 +479,16 @@ async fn admit(
             admission._endpoint.check_ready()?;
         }
 
+        admission._mind = mind.take();
         return Ok(admission);
     }
 }
 
 impl TurnAdmission {
-    /// Borrow physical `slot` for traffic that serves no activity: wait for the slot's
+    /// Borrow physical `slot` for traffic that serves no page: wait for the slot's
     /// operation permit (event-driven, behind any live decode), detach its resident and
     /// SAVE the resident's page so its warmth survives, and leave the slot unattributed
-    /// so no activity later mistakes this traffic's KV for its own.
+    /// so no page later mistakes this traffic's KV for its own.
     async fn borrow_slot_for_transient(
         &mut self,
         pool: &Arc<KvSlotPool>,
@@ -493,7 +513,7 @@ impl TurnAdmission {
 }
 
 /// Admit operator traffic — `serving/cache-probe` — onto one physical slot through the
-/// same owner as every turn, never around it. It holds no lane (it serves no activity);
+/// same owner as every turn, never around it. It holds no lane (it serves no page);
 /// it holds the slot's operation permit, so it waits behind a live decode instead of
 /// queueing inside the server, and it saves and detaches the resident first.
 ///
@@ -505,7 +525,7 @@ impl TurnAdmission {
 /// cloud) has no resident to protect; `slot()` is then `None`.
 ///
 /// `slot: None` asks for the pool's SCRATCH slot when the server has one: a slot no
-/// activity holds, so the probe waits behind nobody and evicts nobody (Cormac's review
+/// page holds, so the probe waits behind nobody and evicts nobody (Cormac's review
 /// of #4388: behind a 7-minute turn even an admitted probe on slot 0 outwaits a 280 s
 /// caller). Without a scratch slot it borrows slot 0 and saves its resident first.
 pub async fn admit_transient(
@@ -531,6 +551,7 @@ pub async fn admit_transient(
         uncommitted: None,
         scratch: pool.as_ref().and_then(|pool| pool.scratch_slot()),
         _endpoint: endpoint,
+        _mind: None,
     };
     let Some(pool) = pool else {
         return Ok(admission);
@@ -625,7 +646,7 @@ pub(crate) async fn kv_page_action(
     client: &reqwest::Client,
     root: &str,
     slot: u32,
-    key: &ActivityKey,
+    key: &PageKey,
     action: &str,
 ) -> PageOutcome {
     let path = if action == "save" {
@@ -655,7 +676,7 @@ async fn kv_page_action_with_capacity(
     client: &reqwest::Client,
     root: &str,
     slot: u32,
-    key: &ActivityKey,
+    key: &PageKey,
     action: &str,
     governed: bool,
     admit_bytes: impl FnOnce(u64) -> Result<(), String>,
@@ -785,8 +806,7 @@ async fn kv_page_action_with_capacity(
         class = "inference.kv_page.action",
         action = %action,
         slot = slot as u64,
-        persona = %key.persona,
-        room = %key.room,
+        page = %key,
         ok,
         terminal = outcome != PageOutcome::Uncertain,
         status = status as u64,

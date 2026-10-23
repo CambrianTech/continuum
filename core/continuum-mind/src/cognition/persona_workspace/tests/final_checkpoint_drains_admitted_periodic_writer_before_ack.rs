@@ -178,6 +178,7 @@ use super::*;
             // Harness/test cycles keep recall (they assert on its bids); suppression is a
             // benchmark-reproducibility knob set only by the eval fork.
             suppress_recall: false,
+            forked: false,
         }
     }
 

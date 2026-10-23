@@ -79,6 +79,39 @@ pub(super) fn output_allowance(
 }
 
 impl LlmDeliberationFaculty {
+    /// This faculty thinks for a measurement FORK of the mind (an eval exam beside her):
+    /// its turns warm their own page per room and never queue behind her act
+    /// (`slots::PageKey::Fork`). Set only by `fork_eval_cycle`.
+    pub fn forked(mut self) -> Self {
+        self.forked = true;
+        self
+    }
+
+    /// The page this faculty's turns in `room` warm: the mind's ONE page, or a fork's own.
+    /// Must agree with the engine's `SlotClass::page_key` over [`Self::turn_purpose`].
+    pub(super) fn page(&self, room: Uuid) -> Option<crate::inference::slots::PageKey> {
+        use crate::inference::slots::PageKey;
+        if self.forked {
+            PageKey::fork(self.persona_id, room)
+        } else {
+            PageKey::mind(self.persona_id)
+        }
+    }
+
+    /// The purpose a turn of `kind` announces: its reasoning budget, and (mind or fork)
+    /// which page the engine warms for it.
+    pub(super) fn turn_purpose(&self, kind: TurnKind) -> &'static str {
+        use crate::inference::request_body::{
+            ACT_PURPOSE, DELIBERATION_PURPOSE, FORK_ACT_PURPOSE, FORK_DELIBERATION_PURPOSE,
+        };
+        match (kind, self.forked) {
+            (TurnKind::Act, false) => ACT_PURPOSE,
+            (TurnKind::Pass, false) => DELIBERATION_PURPOSE,
+            (TurnKind::Act, true) => FORK_ACT_PURPOSE,
+            (TurnKind::Pass, true) => FORK_DELIBERATION_PURPOSE,
+        }
+    }
+
     /// Build a generation request for the message thread. Centralized so the
     /// first prompt and any future re-prompt share one shape. Takes the model
     /// binding as an already-loaded snapshot (`contribute` loads it ONCE per turn)
@@ -372,13 +405,7 @@ impl LlmDeliberationFaculty {
             // class stays Turn. A PASS keeps the model's own thinking policy — there
             // is no per-request thinking switch on this type; its allowance holds the
             // measured think instead ([`output_allowance`]).
-            purpose: Some(
-                match kind {
-                    TurnKind::Act => crate::inference::request_body::ACT_PURPOSE,
-                    TurnKind::Pass => crate::inference::request_body::DELIBERATION_PURPOSE,
-                }
-                .to_string(),
-            ),
+            purpose: Some(self.turn_purpose(kind).to_string()),
             persona_id: Some(self.persona_id.to_string()),
             // The turn's bound on the wire: her measured expectation with headroom
             // (card ba82d0a0). Every waiting seam takes max(its floor, this).
