@@ -654,23 +654,25 @@ async fn an_overload_refusal_sends_her_next_act_home_without_a_breaker_strike(
 // what this catches (Codex review of 9b3ad4f4a): the refusal is never erased by a move
 // that did not happen. With no home lane she is parked on the seat and the refusal stands;
 // with the move dropped mid-build (the act cancelled) it stands too, for her next act.
+// That the parked lane then makes no round trip to the full seat is pinned at the lane
+// (`capacity_tests::a_lane_refused_as_overloaded_does_not_ask_again_until_the_seat_offers_a_slot`).
 #[tokio::test]
 async fn an_overload_refusal_stands_until_she_has_actually_moved() {
     let no_home = Arc::new(ScriptedPersonaAdapterFactory::always_fails("no home lane"));
     let remote = refused_as_overloaded().await;
-    let switch = switch(Arc::clone(&no_home), Arc::clone(&remote));
-    switch.prepare_generation().await;
-    assert_eq!(switch.seat(), Seat::Remote, "no home: parked, not moved");
+    let parked = switch(Arc::clone(&no_home), Arc::clone(&remote));
+    parked.prepare_generation().await;
+    assert_eq!(parked.seat(), Seat::Remote, "no home: parked, not moved");
     assert!(remote.seat_overloaded(), "no move happened, so the refusal stands");
 
     let held = Arc::new(ScriptedPersonaAdapterFactory::held());
     let remote = refused_as_overloaded().await;
-    let switch = switch(Arc::clone(&held), Arc::clone(&remote));
-    let mut preparing = Box::pin(switch.prepare_generation());
+    let building = switch(Arc::clone(&held), Arc::clone(&remote));
+    let mut preparing = Box::pin(building.prepare_generation());
     assert!(futures::poll!(&mut preparing).is_pending(), "building her home lane");
     assert_eq!(held.build_count(), 1, "the build started");
     drop(preparing);
-    assert_eq!(switch.seat(), Seat::Remote);
+    assert_eq!(building.seat(), Seat::Remote);
     assert!(remote.seat_overloaded(), "a cancelled move leaves the refusal for her next act");
 }
 
