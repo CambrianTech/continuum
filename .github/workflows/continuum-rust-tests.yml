@@ -370,6 +370,15 @@ jobs:
             if ($result -ne 0) { exit $result }
             if (($output -join "`n") -notmatch '1 passed;') { throw "Maintenance CLI fixture did not execute: $test" }
           }
+      - name: Windows deploy maintenance custody regression
+        if: needs.changes.outputs.rust != 'false'
+        run: |
+          $output = & cargo test -p continuum-core --lib --profile dev-fast --features test-fixtures 'modules::deploy_actuator::tests::maintenance_blocks_real_spawner_before_scheduler_or_detached_child' -- --exact 2>&1
+          $result = $LASTEXITCODE
+          $output | Write-Output
+          if ($result -ne 0) { exit $result }
+          if (($output -join "`n") -notmatch '1 passed;') { throw 'Deploy custody fixture did not execute' }
+
       - name: Windows connected teacher restoration regression
         if: needs.changes.outputs.rust != 'false'
         run: |
