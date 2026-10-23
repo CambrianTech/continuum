@@ -3205,7 +3205,9 @@ dependencies = [
 name = "continuum-perception"
 version = "0.1.0"
 dependencies = [
+ "airc-blobs",
  "async-trait",
+ "base64 0.22.1",
  "continuum-base",
  "continuum-live",
  "image",

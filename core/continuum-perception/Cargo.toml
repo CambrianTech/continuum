@@ -23,7 +23,9 @@ ts-rs.workspace = true  # TypeScript type generation
 inventory = "0.3"  # register_command! submits into the kernel's command registry
 image = "0.25"
 scraper = "0.21"
+base64 = "0.22"  # perception/look encodes a captured frame as a data URL
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util"] }
 tempfile = "3"
+airc-blobs.workspace = true  # tests: frames retained into a real blob store
