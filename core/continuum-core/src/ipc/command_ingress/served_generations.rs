@@ -132,6 +132,20 @@ impl std::fmt::Display for Refusal {
     }
 }
 
+impl Refusal {
+    /// The typed reason the requester receives beside the text (card 03660a77).
+    pub(super) fn wire(&self) -> continuum_airc_protocol::GenerateRefusal {
+        use continuum_airc_protocol::GenerateRefusal as Wire;
+        match self {
+            Self::Overloaded { .. } => Wire::Overloaded,
+            Self::Duplicate { .. } => Wire::Duplicate,
+            Self::CancelledByRequester { .. } => Wire::CancelledByRequester,
+            Self::Fenced { .. } => Wire::Fenced,
+            Self::Expired { .. } => Wire::Expired,
+        }
+    }
+}
+
 /// One admitted generation's hold on its slot. Dropping it (the task ends, by any path)
 /// releases the slot. It holds the registry weakly, so it never keeps a stopped pump's
 /// registry alive.

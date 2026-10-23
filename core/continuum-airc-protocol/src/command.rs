@@ -135,7 +135,32 @@ pub enum AircCommandResponse {
     },
     Error {
         message: String,
+        // Set when a seat refused an `ai/generate` at admission, so the requester acts
+        // on the reason instead of parsing `message` (card 03660a77). Absent on every
+        // other error, and from a seat that predates it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        refusal: Option<GenerateRefusal>,
     },
+}
+
+/// Why a seat refused an `ai/generate` before running it. The seat's admission owner
+/// (continuum-core `served_generations::Refusal`) projects onto this; the requester maps
+/// it to a typed error, so a full seat sends her mind home instead of being asked again.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../../protocol/typescript/transport/GenerateRefusal.ts")]
+#[serde(rename_all = "snake_case")]
+pub enum GenerateRefusal {
+    /// Every served lane already holds a generation.
+    Overloaded,
+    /// A generation with this id is already outstanding.
+    Duplicate,
+    /// The requester cancelled it before it arrived.
+    CancelledByRequester,
+    /// The requester overflowed the seat's early-cancel memory and is fenced.
+    Fenced,
+    /// It arrived after its own stated validity.
+    Expired,
 }
 
 impl AircCommandResponse {
@@ -146,6 +171,23 @@ impl AircCommandResponse {
     pub fn error(message: impl Into<String>) -> Self {
         Self::Error {
             message: message.into(),
+            refusal: None,
+        }
+    }
+
+    /// A seat's admission refusal of an `ai/generate`, with its typed reason.
+    pub fn refused(message: impl Into<String>, refusal: GenerateRefusal) -> Self {
+        Self::Error {
+            message: message.into(),
+            refusal: Some(refusal),
+        }
+    }
+
+    /// The typed admission refusal this reply carries, if any.
+    pub fn refusal(&self) -> Option<GenerateRefusal> {
+        match self {
+            Self::Error { refusal, .. } => *refusal,
+            Self::Ok { .. } => None,
         }
     }
 
@@ -153,7 +195,7 @@ impl AircCommandResponse {
     pub fn into_result(self) -> Result<Value, String> {
         match self {
             Self::Ok { result } => Ok(result),
-            Self::Error { message } => Err(message),
+            Self::Error { message, .. } => Err(message),
         }
     }
 

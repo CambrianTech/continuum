@@ -614,6 +614,37 @@ async fn cold_route_prepares_home_once_and_preserves_breaker(
     Ok(())
 }
 
+// what this catches (card 03660a77, IntelMac 10-23): a seat that refuses her as
+// overloaded answered at once, so it is no breaker strike, but her NEXT act must go home
+// instead of asking the full seat again (Paige asked 13 times). The signal is consumed:
+// one refusal moves her once.
+#[tokio::test]
+async fn an_overload_refusal_sends_her_next_act_home_once_without_a_breaker_strike(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let home: Arc<dyn AIProviderAdapter> = Arc::new(HomeLane(4096));
+    let home_for_factory = Arc::clone(&home);
+    let factory = Arc::new(ScriptedPersonaAdapterFactory::custom(move |_| {
+        Ok(Arc::clone(&home_for_factory))
+    }));
+    let remote = Arc::new(AircRemoteInferenceAdapter::new(
+        StubInferenceTransport::always_failing(RemoteInferenceError::SeatOverloaded {
+            message: "2 generations outstanding for 2 served lanes".to_string(),
+        }),
+    ));
+    let switch = switch(Arc::clone(&factory), Arc::clone(&remote));
+    assert!(remote
+        .generate_text(TextGenerationRequest::default())
+        .await
+        .is_err());
+    assert!(!remote.is_cold(), "a refusal is an answer, not a deadline miss");
+    switch.prepare_generation().await;
+    assert_eq!(switch.seat(), Seat::Home);
+    let target = switch.generation_target().ok_or("missing home target")?;
+    assert!(Arc::ptr_eq(&target, &home));
+    assert!(!remote.take_seat_overloaded(), "consumed by the move");
+    Ok(())
+}
+
 #[tokio::test]
 async fn warm_route_does_not_materialize_home() {
     let factory = Arc::new(ScriptedPersonaAdapterFactory::heuristic());

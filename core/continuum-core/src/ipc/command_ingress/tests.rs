@@ -328,7 +328,7 @@
 
         let response = CommandRequestHandler::process_request_via(&executor, &parsed).await;
         match response {
-            AircCommandResponse::Error { message } => {
+            AircCommandResponse::Error { message, .. } => {
                 assert!(
                     message.contains("kind=\"room\""),
                     "error must name the rejected kind, got: {message}"
@@ -379,7 +379,7 @@
 
         let response = CommandRequestHandler::process_request_via(&executor, &parsed).await;
         match response {
-            AircCommandResponse::Error { message } => {
+            AircCommandResponse::Error { message, .. } => {
                 assert!(
                     message.contains("env=\"vr\""),
                     "error must name the rejected env, got: {message}"
@@ -595,7 +595,7 @@
 
         let response = CommandRequestHandler::process_request_via(&executor, &parsed).await;
         match response {
-            AircCommandResponse::Error { message } => {
+            AircCommandResponse::Error { message, .. } => {
                 assert!(
                     message.contains("non-Json"),
                     "error must name the non-Json variant, got: {message}"
@@ -765,8 +765,9 @@
             }
         }
 
+        // Typed on the wire (card 03660a77): the requester acts on the reason, not the text.
         fn overloaded(response: &AircCommandResponse) -> bool {
-            matches!(response, AircCommandResponse::Error { message } if message.contains("seat overloaded"))
+            response.refusal() == Some(continuum_airc_protocol::GenerateRefusal::Overloaded)
         }
 
         // what this catches (card b3e5b582, IntelMac -> M5 2026-10-23): one served

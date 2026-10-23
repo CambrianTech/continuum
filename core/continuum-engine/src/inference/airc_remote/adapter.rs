@@ -94,6 +94,11 @@ pub struct AircRemoteInferenceAdapter {
     /// fault is learned once for ALL its personas instead of once each (card
     /// ad96f5d1). A peer-less adapter (a dream, a test) holds a private one.
     breaker: Arc<PeerBreaker>,
+    /// The seat refused this mind's last request because every lane it serves was busy
+    /// (`SeatOverloaded`, card 03660a77). Per adapter, so per mind: only the mind that was
+    /// refused goes home, never every mind on the peer. Read once, by her placement
+    /// switch before her next act ([`Self::take_seat_overloaded`]); an answer clears it.
+    seat_overloaded: AtomicBool,
 }
 
 impl AircRemoteInferenceAdapter {
@@ -118,7 +123,15 @@ impl AircRemoteInferenceAdapter {
             window_changed: tokio::sync::watch::channel(()).0,
             has_observed_success: AtomicBool::new(false),
             breaker: Arc::new(PeerBreaker::default()),
+            seat_overloaded: AtomicBool::new(false),
         }
+    }
+
+    /// Whether the seat refused this mind's last request as overloaded, consuming the
+    /// signal: the switch that reads it moves her home once, and a later return to the
+    /// seat starts clean.
+    pub fn take_seat_overloaded(&self) -> bool {
+        self.seat_overloaded.swap(false, Ordering::Relaxed)
     }
 
     /// Whether the lane currently refuses requests without a round trip.
@@ -303,6 +316,10 @@ impl AIProviderAdapter for AircRemoteInferenceAdapter {
         let started = std::time::Instant::now();
         let sent = self.transport.send_request_streaming(envelope, sink).await;
         self.observe(&sent.as_ref().map(|_| ()));
+        self.seat_overloaded.store(
+            matches!(sent, Err(RemoteInferenceError::SeatOverloaded { .. })),
+            Ordering::Relaxed,
+        );
         // Every request ends in exactly one row. Before this the only remote
         // rows were the breaker's — a turn that timed out, errored, or answered
         // was invisible here, and 9 misses in 200 s could not be told from 3

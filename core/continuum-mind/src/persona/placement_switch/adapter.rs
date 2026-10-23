@@ -440,25 +440,38 @@ impl AIProviderAdapter for NoSeat {
 #[async_trait]
 impl AIProviderAdapter for PlacementSwitch {
     async fn prepare_generation(&self) {
-        if self.seat() == Seat::Remote && self.lane_cold() {
-            // A cold breaker is typed, pre-dispatch evidence. Do not spend another
-            // act asking the same peer, or wait for the next placement beacon.
-            // FallHome retains the remote adapter and its breaker; ordinary
-            // placement policy still owns returning to that peer later.
-            // This changes inference routing only: RemoteInferenceRequest carries
-            // a prompt and returns text, while residency, hands and workspace
-            // remain here. It therefore does not require workspace migration.
-            // The synchronous request path records the existing fell_home probe;
-            // unlike the grid tick, it does not publish an org-room announcement.
-            let _ = self
-                .apply(
-                    &PlacementMove::FallHome {
-                        reason: "remote circuit breaker cold before generation",
-                    },
+        if self.seat() != Seat::Remote {
+            return;
+        }
+        // Typed, pre-dispatch evidence that the seat cannot serve this act. Do not spend
+        // another act asking the same peer, or wait for the next placement beacon:
+        // - a cold breaker (deadline misses in a row);
+        // - the seat refused her last request with every lane busy (card 03660a77:
+        //   IntelMac 10-23, Paige asked a full M5 13 times before the placement tick
+        //   moved her). Consumed here, so it moves her once.
+        // FallHome retains the remote adapter and its breaker; ordinary placement policy
+        // (a beacon offering a slot, the move cooldown) still owns returning her. This
+        // changes inference routing only: RemoteInferenceRequest carries a prompt and
+        // returns text, while residency, hands and workspace remain here, so it needs no
+        // workspace migration. The synchronous request path records the existing
+        // fell_home probe; unlike the grid tick, it does not publish an org-room line.
+        let reason = if self.lane_cold() {
+            "remote circuit breaker cold before generation"
+        } else if self
+            .remote_adapter()
+            .is_some_and(|remote| remote.take_seat_overloaded())
+        {
+            "remote seat refused her last request: every lane busy"
+        } else {
+            return;
+        };
+        let _ = self
+            .apply(
+                &PlacementMove::FallHome { reason },
                 continuum_base::time::EpochMs::now().millis(),
                 SeatFit::default(),
-            ).await;
-        }
+            )
+            .await;
     }
 
     fn generation_target(&self) -> Option<Arc<dyn AIProviderAdapter>> {
