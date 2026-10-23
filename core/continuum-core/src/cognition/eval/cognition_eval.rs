@@ -388,7 +388,7 @@ impl CognitionEval {
                     metadata: serde_json::json!({ "peer_id": "peer", "occurred_at_ms": EVAL_EPOCH_MS }),
                 }],
                 tokens_used: 0,
-                continuation: None,
+                truncated: false,
                 resolution_used: crate::persona::rag_budget::ResolutionPreference::Raw,
             };
             let mut warm = false;

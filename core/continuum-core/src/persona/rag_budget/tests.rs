@@ -234,12 +234,14 @@
         // a (10) + b (20) = 30 fits, c (100) doesn't.
         assert_eq!(delivery.items.len(), 2);
         assert_eq!(delivery.tokens_used, 30);
-        assert!(delivery.continuation.is_some());
-        assert_eq!(delivery.continuation.unwrap().persona_id, persona());
+        assert!(delivery.truncated);
     }
 
     #[tokio::test]
-    async fn stub_source_continuation_resumes() {
+    async fn stub_source_truncation_flag_and_fresh_rederive() {
+        // Ruling a: no resumable handle — the flag says "more exists",
+        // and the next deliver re-derives from scratch, so a larger
+        // budget simply fits more.
         let source = StubRagSource::new(
             "stub",
             persona(),
@@ -247,29 +249,20 @@
         );
         let first = source.deliver(&ctx(), 20, ResolutionPreference::Raw).await;
         assert_eq!(first.items.len(), 2);
-        let cursor = first.continuation.unwrap();
-        let second = source
-            .deliver_continuation(&ctx(), cursor, 100)
-            .await
-            .unwrap();
-        assert_eq!(second.items.len(), 2);
-        assert!(second.continuation.is_none());
+        assert!(first.truncated, "two items left undelivered");
+
+        // Fresh re-derive with a budget that fits everything.
+        let second = source.deliver(&ctx(), 100, ResolutionPreference::Raw).await;
+        assert_eq!(second.items.len(), 4);
+        assert!(!second.truncated);
     }
 
     #[tokio::test]
-    async fn stub_source_returns_none_when_exhausted() {
+    async fn stub_source_not_truncated_when_all_fit() {
         let source = StubRagSource::new("stub", persona(), vec![item("a", 10)]);
         let first = source.deliver(&ctx(), 100, ResolutionPreference::Raw).await;
         assert_eq!(first.items.len(), 1);
-        assert!(first.continuation.is_none());
-
-        let stale = ContinuationCursor {
-            persona_id: persona(),
-            source_id: "stub".to_string(),
-            opaque: serde_json::json!({ "next": 99 }),
-        };
-        let exhausted = source.deliver_continuation(&ctx(), stale, 100).await;
-        assert!(exhausted.is_none());
+        assert!(!first.truncated, "everything fit — nothing omitted");
     }
 
     #[tokio::test]
@@ -280,49 +273,12 @@
         let delivery = source.deliver(&ctx(), 100, ResolutionPreference::Raw).await;
         assert_eq!(delivery.items.len(), 0);
         assert_eq!(delivery.tokens_used, 0);
-        // Continuation set because the item still exists, just didn't
+        // Truncated set because the item still exists, just didn't
         // fit at this budget.
-        assert!(delivery.continuation.is_some());
+        assert!(delivery.truncated);
     }
 
-    #[tokio::test]
-    async fn stub_source_refuses_cross_persona_cursor() {
-        // Joel's substrate-side identity check: cursors from another
-        // citizen MUST be refused. "We know who is who, have to use
-        // handles" — handles enforce persona scoping.
-        let pax = uuid::Uuid::parse_str("00000000-0000-0000-0000-000000000abc").unwrap();
-        let maya = uuid::Uuid::parse_str("00000000-0000-0000-0000-000000000def").unwrap();
-        let pax_ctx = RagContext::for_persona(pax, 1_000_000);
-        let maya_ctx = RagContext::for_persona(maya, 1_000_000);
 
-        let pax_source = StubRagSource::new("stub", pax, vec![item("a", 10), item("b", 10)]);
-        let pax_first = pax_source
-            .deliver(&pax_ctx, 15, ResolutionPreference::Raw)
-            .await;
-        let pax_cursor = pax_first.continuation.unwrap();
-        assert_eq!(pax_cursor.persona_id, pax);
-
-        // Maya's source must refuse Pax's cursor — both because the
-        // cursor's persona_id doesn't match Maya's binding AND because
-        // the source verifies its own persona_id against ctx.persona_id.
-        let maya_source = StubRagSource::new("stub", maya, vec![item("x", 10), item("y", 10)]);
-        let cross = maya_source
-            .deliver_continuation(&maya_ctx, pax_cursor, 100)
-            .await;
-        assert!(cross.is_none(), "cross-persona cursor must be refused");
-    }
-
-    #[tokio::test]
-    async fn stub_source_refuses_wrong_source_id_cursor() {
-        let source = StubRagSource::new("conversation", persona(), vec![item("a", 10)]);
-        let alien_cursor = ContinuationCursor {
-            persona_id: persona(),
-            source_id: "memories".to_string(),
-            opaque: serde_json::json!({ "next": 0 }),
-        };
-        let cross = source.deliver_continuation(&ctx(), alien_cursor, 100).await;
-        assert!(cross.is_none(), "wrong-source cursor must be refused");
-    }
 
     #[tokio::test]
     async fn stub_source_refuses_wrong_persona_ctx() {

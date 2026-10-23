@@ -7,7 +7,7 @@
 use std::sync::Arc;
 
 use crate::persona::active_work_source::AircWorkReader;
-use crate::persona::rag_budget::{ContinuationCursor, RagContext, RagDelivery, RagItem, RagSource, ResolutionPreference};
+use crate::persona::rag_budget::{ RagContext, RagDelivery, RagItem, RagSource, ResolutionPreference};
 use crate::persona::viewstate_rag::estimate_tokens;
 
 pub(crate) const SOURCE_ID: &str = "awareness";
@@ -118,7 +118,7 @@ impl RagSource for AwarenessRagSource {
             source_id: SOURCE_ID.to_string(),
             items: Vec::new(),
             tokens_used: 0,
-            continuation: None,
+            truncated: false,
             resolution_used: res,
         };
         if ctx.persona_id != self.persona_id {
@@ -163,15 +163,11 @@ impl RagSource for AwarenessRagSource {
                 }),
             }],
             tokens_used: tokens,
-            continuation: None,
+            truncated: false,
             resolution_used: resolution,
         }
     }
 
-    async fn deliver_continuation(&self, _ctx: &RagContext, _cursor: ContinuationCursor, _budget: u32) -> Option<RagDelivery> {
-        // One current snapshot; any cursor is stale.
-        None
-    }
 }
 
 #[cfg(test)]

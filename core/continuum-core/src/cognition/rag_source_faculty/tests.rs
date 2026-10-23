@@ -1,6 +1,6 @@
 #![cfg(test)]
     use super::*;
-    use crate::persona::rag_budget::{ContinuationCursor, RagDelivery, RagItem, ResolutionPreference};
+    use crate::persona::rag_budget::{ RagDelivery, RagItem, ResolutionPreference};
     use std::sync::Mutex;
 
     fn persona() -> Uuid {
@@ -66,17 +66,9 @@
                 source_id: self.id.to_string(),
                 items: self.items.clone(),
                 tokens_used,
-                continuation: None,
+                truncated: false,
                 resolution_used: resolution,
             }
-        }
-        async fn deliver_continuation(
-            &self,
-            _ctx: &RagContext,
-            _cursor: ContinuationCursor,
-            _budget: u32,
-        ) -> Option<RagDelivery> {
-            None
         }
     }
 

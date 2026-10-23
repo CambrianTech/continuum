@@ -93,13 +93,13 @@ use serde::de::DeserializeOwned;
 use continuum_positron::Substrate;
 
 use super::rag_budget::{
-    room_scope_allows, ContinuationCursor, RagContext, RagDelivery, RagItem, RagSource,
+    room_scope_allows, RagContext, RagDelivery, RagItem, RagSource,
     ResolutionPreference,
 };
 
 /// One atomic projection: visible text and its machine-readable provenance are
 /// admitted together. Metadata must describe this unit, not smuggle omitted rows
-/// past packing. The adapter alone computes token costs and continuation offsets.
+/// past packing. The adapter alone computes token costs and the truncation stamp.
 #[derive(Debug)]
 pub struct RagRenderUnit {
     pub content: String,
@@ -343,28 +343,9 @@ impl<V: RagRenderable> ViewStateRagSource<V> {
         serde_json::from_value(envelope.payload.clone()).ok()
     }
 
-    /// The turn's room as a cursor-stampable value (`null` for a roomless turn).
-    ///
-    /// A continuation offset is an index into ONE room's unit list. Before the
-    /// per-room binding (#3862) that was safe by accident: the source always read
-    /// the same room, so any cursor indexed the same list. Now the list depends on
-    /// the turn's room, so a cursor issued in room A and resumed in room B would
-    /// apply A's offset to B's roster and silently skip its first N people — the
-    /// same class of harm the per-room fix exists to end.
-    ///
-    /// It cannot ride `ContinuationCursor`'s typed fields (those are persona +
-    /// source by contract), so it rides `opaque`, which the trait defines as
-    /// source-private resume state.
-    fn cursor_room(ctx: &RagContext) -> serde_json::Value {
-        match ctx.airc_room.as_ref() {
-            Some(r) => serde_json::Value::String(r.as_uuid().to_string()),
-            None => serde_json::Value::Null,
-        }
-    }
-
-    /// Pack as many whole units as fit. Shared by `deliver` and the continuation
-    /// path so a resumed delivery can never use different packing rules than the
-    /// first one.
+    /// Pack as many whole units as fit starting at index `from`. Ruling-a:
+    /// only `deliver` calls this now, always from zero — every turn
+    /// re-derives fresh, so packing rules can never diverge between calls.
     fn pack(
         &self,
         units: Vec<RagRenderUnit>,
@@ -419,22 +400,6 @@ impl<V: RagRenderable + RoomScopedView> ViewStateRagSource<V> {
     }
 }
 
-/// Fingerprint of a unit list — the sequence identity a continuation offset
-/// indexes into. Each unit is length-prefixed before hashing so the encoding is
-/// injective over arbitrary rendered text: `["ab","c"]` and `["a","bc"]` join to
-/// the same bytes but must not hash equal, because an offset valid for one list
-/// is NOT valid for the other. The identity is each unit's rendered `content`, the
-/// text the offset counts over; metadata rides along and does not move an offset.
-fn list_fingerprint(units: &[RagRenderUnit]) -> String {
-    use sha2::Digest;
-    let mut hasher = sha2::Sha256::new();
-    for unit in units {
-        hasher.update(unit.content.len().to_be_bytes());
-        hasher.update(unit.content.as_bytes());
-    }
-    format!("{:x}", hasher.finalize())
-}
-
 #[async_trait]
 impl<V: RagRenderable> RagSource for ViewStateRagSource<V> {
     fn source_id(&self) -> &'static str {
@@ -469,119 +434,19 @@ impl<V: RagRenderable> RagSource for ViewStateRagSource<V> {
             _ => Vec::new(),
         };
         let total = units.len();
-        // The identity of the list this offset indexes into, stamped onto the
-        // cursor so a resume can tell an unchanged list from one that churned
-        // (see `deliver_continuation`). Computed before `pack` moves `units`.
-        let list_fp = list_fingerprint(&units);
         let (items, tokens_used, next) = self.pack(units, budget, 0);
         RagDelivery {
             source_id: V::KIND.to_string(),
             items,
             tokens_used,
-            // A cursor ONLY when there is genuinely more — an unconditional cursor
-            // would have the allocator resume a source with nothing left, spending
-            // a future turn's budget on an empty delivery.
-            continuation: (next < total).then(|| ContinuationCursor {
-                persona_id: _ctx.persona_id,
-                source_id: V::KIND.to_string(),
-                // The resume state is the next unit index PLUS the room it indexes
-                // into PLUS a fingerprint of the list itself — an offset without its
-                // room is only meaningful while the source reads one room forever
-                // (the assumption #3862 removed), and one without its list's identity
-                // silently skips a peer when the roster churns between mint and resume
-                // (bc66becf; db0aa5b2 was this shape on the wall).
-                opaque: serde_json::json!({ "next": next, "room": Self::cursor_room(_ctx), "list": list_fp }),
-            }),
+            // Ruling a: no resumable handle — the flag says "more exists" and
+            // the next deliver re-derives from scratch (a larger budget simply
+            // fits more). See rag_budget for the two readers of this flag.
+            truncated: next < total,
             resolution_used: resolution,
         }
     }
 
-    async fn deliver_continuation(
-        &self,
-        _ctx: &RagContext,
-        cursor: ContinuationCursor,
-        budget: u32,
-    ) -> Option<RagDelivery> {
-        // A cursor from a DIFFERENT source is not ours to interpret — the trait
-        // documents this as a stale-cursor case, and guessing would render one
-        // kind's content under another's label.
-        if cursor.source_id != V::KIND {
-            return None;
-        }
-        // Substrate-side identity check the trait REQUIRES: a cursor issued for
-        // another persona must never resume here.
-        if cursor.persona_id != _ctx.persona_id {
-            return None;
-        }
-        // A cursor is an offset into ONE room's list. Refuse to resume it in a
-        // different room — the offset would silently skip that room's first N
-        // units. An absent stamp (a cursor minted before this field existed, or
-        // across a restart) is treated as a MISMATCH unless the turn is equally
-        // roomless: dropping one continuation costs a few units on one turn,
-        // resuming into the wrong room drops people from the grounding and says
-        // nothing. Note this is NOT redundant with the `room_scope_allows` check
-        // below, which the per-room binding made vacuous — `view.room()` now
-        // always equals the turn's room, so that gate can no longer fire here.
-        let stamped = cursor.opaque.get("room").cloned().unwrap_or(serde_json::Value::Null); // the default IS the answer, not a stand-in: no stamp means a cursor minted before this field existed, and Null makes it MISMATCH every roomed turn — which is the refusal we want
-        if stamped != Self::cursor_room(_ctx) {
-            continuum_base::probe!(
-                class = "rag.continuation.room_mismatch",
-                source = %V::KIND,
-                persona_id = %_ctx.persona_id,
-                cursor_room = %stamped,
-                turn_room = %Self::cursor_room(_ctx),
-                "refused to resume a continuation minted for a different room — the                  offset indexes another room's units"
-            );
-            return None;
-        }
-        let from = cursor.opaque.get("next")?.as_u64()? as usize;
-        let view = self.current(_ctx)?;
-        if !room_scope_allows(view.room(), _ctx, V::KIND) {
-            return None;
-        }
-        let units = view.units(_ctx.persona_id);
-        let total = units.len();
-        if from >= total {
-            return None;
-        }
-        // The offset indexes THIS list only if the list is unchanged since mint.
-        // Roster churn between mint and resume — a peer leaving, a row
-        // dropping out before `from` — shifts every later unit left by one and the
-        // same offset skips exactly one person who is still in the room (bc66becf;
-        // db0aa5b2 was this shape on the wall). Refusal costs one re-read cycle from
-        // the top: bounded, self-healing, never skips. A cursor without a `list`
-        // stamp predates this field and is refused once — migration by refusal,
-        // not guessing, exactly as an unstamped room is treated above.
-        let turn_fp = list_fingerprint(&units);
-        let stamped_fp =
-            cursor.opaque.get("list").cloned().unwrap_or(serde_json::Value::Null); // unwrap_or: an unstamped cursor is Null, never a fingerprint, so it is refused below by design
-        if stamped_fp != serde_json::Value::String(turn_fp.clone()) {
-            continuum_base::probe!(
-                class = "rag.continuation.list_changed",
-                source = %V::KIND,
-                persona_id = %_ctx.persona_id,
-                cursor_list = %stamped_fp,
-                turn_list = %turn_fp,
-                "refused to resume a continuation whose unit list churned — the offset would skip one"
-            );
-            return None;
-        }
-        let (items, tokens_used, next) = self.pack(units, budget, from);
-        if items.is_empty() {
-            return None;
-        }
-        Some(RagDelivery {
-            source_id: V::KIND.to_string(),
-            items,
-            tokens_used,
-            continuation: (next < total).then(|| ContinuationCursor {
-                persona_id: _ctx.persona_id,
-                source_id: V::KIND.to_string(),
-                opaque: serde_json::json!({ "next": next, "room": Self::cursor_room(_ctx), "list": turn_fp }),
-            }),
-            resolution_used: ResolutionPreference::Raw,
-        })
-    }
 }
 
 // ─────────────────────── OUTLIER A: the roster (people) ───────────────────────

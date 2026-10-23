@@ -32,10 +32,6 @@
 //!   delivery that matches THIS ctx") is slice 12+ territory.
 //!   Legacy events without turn IDs remain sequential: interleaved anonymous
 //!   turns cannot be distinguished when associating recorded budget claims.
-//! - Continuation matching is by FIFO order, not by cursor
-//!   equality. The replay assumes the caller exercises the source
-//!   in the same shape that produced the capture. Good for golden-
-//!   trace replay; not yet ideal for free-form interactive replay.
 
 use std::collections::{HashMap, VecDeque};
 use std::path::Path;
@@ -44,7 +40,7 @@ use std::sync::Mutex;
 use async_trait::async_trait;
 
 use crate::persona::rag_budget::{
-    ContinuationCursor, RagContext, RagDelivery, RagSource, RagSourceBudget, ResolutionPreference,
+     RagContext, RagDelivery, RagSource, RagSourceBudget, ResolutionPreference,
 };
 use crate::persona::rag_capture::RagCaptureEvent;
 
@@ -57,20 +53,16 @@ pub struct ReplayRagSource {
     /// Each delivery retains its captured claim; observation does not advance
     /// either, and delivery consumes both atomically in the existing FIFO.
     initial: Mutex<VecDeque<(RagDelivery, Option<RagSourceBudget>)>>,
-    /// Deliveries from `deliver_continuation()` calls — popped FIFO.
-    continuations: Mutex<VecDeque<RagDelivery>>,
 }
 
 impl ReplayRagSource {
-    /// Construct from a set of pre-built deliveries. `initial` are
-    /// the ones returned from `deliver()`; `continuations` from
-    /// `deliver_continuation()`. Useful for tests that don't want
-    /// to round-trip through serde.
+    /// Construct from a set of pre-built deliveries returned by
+    /// `deliver()`, replayed FIFO in capture order. Useful for tests that
+    /// don't want to round-trip through serde.
     pub fn from_deliveries(
         source_id: &'static str,
         persona_id: uuid::Uuid,
         initial: Vec<RagDelivery>,
-        continuations: Vec<RagDelivery>,
     ) -> Self {
         Self {
             source_id,
@@ -81,15 +73,14 @@ impl ReplayRagSource {
                     .map(|delivery| (delivery, None))
                     .collect(),
             ),
-            continuations: Mutex::new(continuations.into()),
         }
     }
 
     /// Construct from a captured event stream. Filters by
     /// `source_id` and `persona_id`; events from other sources or
-    /// other personas are dropped on the floor. Events with a
-    /// `cursor` field set go into the continuation queue; events
-    /// without go into the initial queue. Matching TurnStart claims travel with
+    /// other personas are dropped on the floor. Every SourceDelivered
+    /// event goes into the initial FIFO in capture order (ruling-a: no
+    /// resumable handle). Matching TurnStart claims travel with
     /// that delivery, even when different turns are interleaved in the trace.
     /// Source-only/older traces without a claim use the ordinary default claim;
     /// their identity never selects an invented historical policy.
@@ -99,7 +90,6 @@ impl ReplayRagSource {
         events: impl IntoIterator<Item = RagCaptureEvent>,
     ) -> Self {
         let mut initial = VecDeque::new();
-        let mut continuations: Vec<RagDelivery> = Vec::new();
         let mut claims = HashMap::new();
         for event in events {
             match event {
@@ -120,15 +110,10 @@ impl ReplayRagSource {
                     source_id: captured_source_id,
                     persona_id: captured_persona_id,
                     turn_id,
-                    cursor,
                     delivery,
                     ..
                 } if captured_source_id == source_id && captured_persona_id == persona_id => {
-                    if cursor.is_some() {
-                        continuations.push(delivery);
-                    } else {
-                        initial.push_back((delivery, claims.get(&turn_id).cloned().flatten()));
-                    }
+                    initial.push_back((delivery, claims.get(&turn_id).cloned().flatten()));
                 }
                 RagCaptureEvent::TurnEnd {
                     persona_id: captured_persona_id,
@@ -144,7 +129,6 @@ impl ReplayRagSource {
             source_id,
             persona_id,
             initial: Mutex::new(initial),
-            continuations: Mutex::new(continuations.into()),
         }
     }
 
@@ -154,10 +138,6 @@ impl ReplayRagSource {
         self.initial.lock().unwrap().len()
     }
 
-    /// How many deliveries remain in the continuation queue.
-    pub fn remaining_continuations(&self) -> usize {
-        self.continuations.lock().unwrap().len()
-    }
 }
 
 #[async_trait]
@@ -200,7 +180,7 @@ impl RagSource for ReplayRagSource {
                 source_id: self.source_id.to_string(),
                 items: Vec::new(),
                 tokens_used: 0,
-                continuation: None,
+                truncated: false,
                 resolution_used: ResolutionPreference::Placeholder,
             };
         }
@@ -210,29 +190,12 @@ impl RagSource for ReplayRagSource {
                 source_id: self.source_id.to_string(),
                 items: Vec::new(),
                 tokens_used: 0,
-                continuation: None,
+                truncated: false,
                 resolution_used: ResolutionPreference::Placeholder,
             },
         }
     }
 
-    async fn deliver_continuation(
-        &self,
-        ctx: &RagContext,
-        cursor: ContinuationCursor,
-        _budget: u32,
-    ) -> Option<RagDelivery> {
-        if ctx.persona_id != self.persona_id {
-            return None;
-        }
-        if cursor.persona_id != self.persona_id {
-            return None;
-        }
-        if cursor.source_id != self.source_id {
-            return None;
-        }
-        self.continuations.lock().unwrap().pop_front()
-    }
 }
 
 //=============================================================================
@@ -311,7 +274,7 @@ mod tests {
             source_id: source_id.to_string(),
             items,
             tokens_used,
-            continuation: None,
+            truncated: false,
             resolution_used: ResolutionPreference::Raw,
         }
     }
@@ -322,7 +285,7 @@ mod tests {
     async fn replay_returns_canned_delivery_on_deliver() {
         let canned = delivery("stub", vec![item("hello", 5)]);
         let source =
-            ReplayRagSource::from_deliveries("stub", persona(), vec![canned.clone()], Vec::new());
+            ReplayRagSource::from_deliveries("stub", persona(), vec![canned.clone()]);
         assert_eq!(
             source.budget_claim(2048, 512),
             RagSourceBudget::retrieval("stub", 0, 2048, 512),
@@ -337,7 +300,7 @@ mod tests {
 
     #[tokio::test]
     async fn replay_exhausted_returns_empty_not_panic() {
-        let source = ReplayRagSource::from_deliveries("stub", persona(), Vec::new(), Vec::new());
+        let source = ReplayRagSource::from_deliveries("stub", persona(), Vec::new());
         let result = source.deliver(&ctx(), 100, ResolutionPreference::Raw).await;
         assert_eq!(result.items.len(), 0);
         assert_eq!(result.resolution_used, ResolutionPreference::Placeholder);
@@ -346,7 +309,7 @@ mod tests {
     #[tokio::test]
     async fn replay_cross_persona_ctx_returns_empty() {
         let canned = delivery("stub", vec![item("a", 5)]);
-        let source = ReplayRagSource::from_deliveries("stub", persona(), vec![canned], Vec::new());
+        let source = ReplayRagSource::from_deliveries("stub", persona(), vec![canned]);
         let other = Uuid::parse_str("00000000-0000-0000-0000-000000000bbb").unwrap();
         let result = source
             .deliver(
@@ -362,65 +325,11 @@ mod tests {
     async fn replay_serves_deliveries_in_capture_order() {
         let d1 = delivery("stub", vec![item("first", 5)]);
         let d2 = delivery("stub", vec![item("second", 5)]);
-        let source = ReplayRagSource::from_deliveries("stub", persona(), vec![d1, d2], Vec::new());
+        let source = ReplayRagSource::from_deliveries("stub", persona(), vec![d1, d2]);
         let r1 = source.deliver(&ctx(), 100, ResolutionPreference::Raw).await;
         let r2 = source.deliver(&ctx(), 100, ResolutionPreference::Raw).await;
         assert_eq!(r1.items[0].content, "first");
         assert_eq!(r2.items[0].content, "second");
-    }
-
-    #[tokio::test]
-    async fn replay_continuation_pops_from_continuation_queue() {
-        let canned_continuation = delivery("stub", vec![item("paged", 5)]);
-        let source = ReplayRagSource::from_deliveries(
-            "stub",
-            persona(),
-            Vec::new(),
-            vec![canned_continuation],
-        );
-        let cursor = ContinuationCursor {
-            persona_id: persona(),
-            source_id: "stub".to_string(),
-            opaque: serde_json::json!({ "next": 1 }),
-        };
-        let result = source
-            .deliver_continuation(&ctx(), cursor, 100)
-            .await
-            .expect("continuation queue had one entry");
-        assert_eq!(result.items.len(), 1);
-        assert_eq!(result.items[0].content, "paged");
-        // Exhausted now.
-        assert_eq!(source.remaining_continuations(), 0);
-    }
-
-    #[tokio::test]
-    async fn replay_continuation_refuses_wrong_persona_cursor() {
-        let canned = delivery("stub", vec![item("a", 5)]);
-        let source = ReplayRagSource::from_deliveries("stub", persona(), Vec::new(), vec![canned]);
-        let other = Uuid::parse_str("00000000-0000-0000-0000-000000000bbb").unwrap();
-        let alien_cursor = ContinuationCursor {
-            persona_id: other,
-            source_id: "stub".to_string(),
-            opaque: serde_json::json!({}),
-        };
-        let result = source.deliver_continuation(&ctx(), alien_cursor, 100).await;
-        assert!(result.is_none());
-        // Queue NOT consumed.
-        assert_eq!(source.remaining_continuations(), 1);
-    }
-
-    #[tokio::test]
-    async fn replay_continuation_refuses_wrong_source_id_cursor() {
-        let canned = delivery("stub", vec![item("a", 5)]);
-        let source = ReplayRagSource::from_deliveries("stub", persona(), Vec::new(), vec![canned]);
-        let alien_cursor = ContinuationCursor {
-            persona_id: persona(),
-            source_id: "memories".to_string(),
-            opaque: serde_json::json!({}),
-        };
-        let result = source.deliver_continuation(&ctx(), alien_cursor, 100).await;
-        assert!(result.is_none());
-        assert_eq!(source.remaining_continuations(), 1);
     }
 
     // ---- Capture → Replay roundtrip via InMemoryRagCaptureSink ----
@@ -486,7 +395,7 @@ mod tests {
             .await; // packs 1 item
         recorder
             .deliver(&second_ctx, 100, ResolutionPreference::Raw)
-            .await; // packs the rest
+            .await; // re-derives from scratch — full budget fits both items
 
         // Now replay the captured events through ReplayRagSource.
         let captured = sink.events();
@@ -518,8 +427,12 @@ mod tests {
         assert_eq!(replay.budget_claim(1, 1), second_claim);
 
         let second = replay.deliver(&ctx(), 999, ResolutionPreference::Raw).await;
-        assert_eq!(second.items.len(), 1);
-        assert_eq!(second.items[0].content, "beta");
+        // Ruling a: the live stub re-derives from scratch on each call (no
+        // positional cursor), so the captured second delivery holds both items —
+        // and the replay returns it verbatim.
+        assert_eq!(second.items.len(), 2);
+        assert_eq!(second.items[0].content, "alpha");
+        assert_eq!(second.items[1].content, "beta");
 
         // Trace exhausted now.
         let third = replay.deliver(&ctx(), 999, ResolutionPreference::Raw).await;
@@ -616,5 +529,137 @@ mod tests {
         assert_eq!(result.items.len(), 2);
         assert_eq!(result.items[0].content, "hello");
         assert_eq!(result.items[1].content, "world");
+    }
+    // ---- Wire forms of a delivered pack: current `truncated`, legacy (pre-ruling-a)
+    //      `continuation` null/object, and lines carrying both or neither ----
+
+    /// Build one SourceDelivered capture line with an arbitrary combination of the
+    /// two truncation keys. `None` removes the key entirely; a value inserts it — so
+    /// old JSONL shapes (no `truncated`, legacy `continuation`) and precedence lines
+    /// (both present) are constructed exactly as they would appear on disk.
+    fn source_delivered_wire(
+        items: Vec<crate::persona::rag_budget::RagItem>,
+        truncated: Option<bool>,
+        continuation: Option<serde_json::Value>,
+    ) -> String {
+        let mut v = serde_json::to_value(RagCaptureEvent::SourceDelivered {
+            captured_at_ms: 1_000,
+            persona_id: persona(),
+            turn_id: None,
+            source_id: "stub".to_string(),
+            budget_requested: 100,
+            resolution_requested: ResolutionPreference::Raw,
+            delivery: crate::persona::rag_budget::RagDelivery {
+                source_id: "stub".to_string(),
+                items,
+                tokens_used: 5,
+                truncated: truncated.unwrap_or(false),
+                resolution_used: ResolutionPreference::Raw,
+            },
+        })
+        .unwrap();
+        let d = v
+            .get_mut("delivery")
+            .expect("event carries a delivery object")
+            .as_object_mut()
+            .expect("delivery is a JSON object");
+        match truncated {
+            Some(t) => d.insert("truncated".to_string(), serde_json::Value::Bool(t)),
+            None => d.remove("truncated"),
+        };
+        match continuation {
+            Some(c) => d.insert("continuation".to_string(), c),
+            None => d.remove("continuation"),
+        };
+        serde_json::to_string(&v).unwrap()
+    }
+
+    /// Decode capture lines through the real JSONL reader (not direct serde), so
+    /// assertions ride the path replay actually uses.
+    fn decode_capture_lines(lines: &[String]) -> Vec<RagCaptureEvent> {
+        let temp = TempDir::new().unwrap();
+        let path = temp.path().join("captures.jsonl");
+        std::fs::write(&path, lines.join("\n")).unwrap();
+        read_jsonl_captures(&path).expect("JSONL reader must not fail on these lines")
+    }
+
+    #[test]
+    fn legacy_capture_lines_decode_without_dropping_or_losing_truncation() {
+        // Old-schema shapes: complete (continuation null), nonempty partial
+        // (object), empty partial (object, nothing fit); plus missing-key and
+        // explicit-bool precedence lines. None may be skipped as a parse
+        // failure; the truncation truth must survive decode.
+        let object = serde_json::json!({ "opaque": {} });
+        let lines = [
+            source_delivered_wire(vec![item("alpha", 5)], None, Some(serde_json::Value::Null)),
+            source_delivered_wire(vec![item("beta", 5)], None, Some(object.clone())),
+            source_delivered_wire(Vec::new(), None, Some(object.clone())),
+            // No truncation record at all: neither key present -> complete.
+            source_delivered_wire(vec![item("gamma", 5)], None, None),
+            // An explicit bool wins over the legacy continuation either way.
+            source_delivered_wire(
+                vec![item("delta", 5)],
+                Some(true),
+                Some(serde_json::Value::Null),
+            ),
+            source_delivered_wire(Vec::new(), Some(false), Some(object.clone())),
+        ];
+        let events = decode_capture_lines(&lines);
+        assert_eq!(events.len(), 6, "no line may be dropped as a parse failure");
+
+        let flags: Vec<bool> = events
+            .iter()
+            .map(|e| match e {
+                RagCaptureEvent::SourceDelivered { delivery, .. } => delivery.truncated,
+                _ => panic!("expected SourceDelivered events"),
+            })
+            .collect();
+        assert_eq!(flags, vec![false, true, true, false, true, false]);
+    }
+
+    #[tokio::test]
+    async fn legacy_replay_reaches_the_faculty_notice_with_source_cut() {
+        use crate::cognition::rag_source_faculty::{RagSourceFaculty, SaliencePolicy};
+        use crate::cognition::workspace::{Faculty as _, Workspace};
+
+        let ws = Workspace::new("legacy-notice");
+
+        // One pass per old-schema shape: (expected truncation, item content).
+        for (want_truncated, content) in [
+            (false, Some("roster")),
+            (true, Some("board")),
+            (true, None), // empty partial: nothing fit, but the source has more
+        ] {
+            let items = match content {
+                Some(c) => vec![item(c, 4)],
+                None => Vec::new(),
+            };
+            let line = source_delivered_wire(
+                items,
+                None,
+                Some(if want_truncated {
+                    serde_json::json!({ "opaque": {} })
+                } else {
+                    serde_json::Value::Null
+                }),
+            );
+            // Ride the real JSONL reader path, not a direct serde parse: the
+            // cut-truth assertion must hold through what replay actually loads.
+            let ev = decode_capture_lines(&[line])
+                .into_iter()
+                .next()
+                .expect("the reader returns the line it was given");
+            let replay = ReplayRagSource::from_captures("stub", persona(), vec![ev]);
+            let faculty =
+                RagSourceFaculty::new(persona(), Arc::new(replay), SaliencePolicy::Retrieved);
+            let c = faculty
+                .contribute(&ws)
+                .await
+                .expect("an empty PARTIAL delivery still contributes its notice (card e049aa82)");
+            assert_eq!(
+                c.source_truncated, want_truncated,
+                "notice must carry the source-cut truth through JSONL -> replay -> faculty"
+            );
+        }
     }
 }

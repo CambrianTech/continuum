@@ -201,7 +201,7 @@ crate::action_command! {
             source_id: "airc".to_string(),
             items,
             tokens_used: 0,
-            continuation: None,
+            truncated: false,
             resolution_used: crate::persona::rag_budget::ResolutionPreference::Raw,
         };
         // own_peer attributes the persona's OWN past posts (is_self → assistant role); a

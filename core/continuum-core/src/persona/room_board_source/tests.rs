@@ -279,7 +279,7 @@
         assert!(cards[1].content.contains("unclaimed"));
         // serde, not Debug — one canonical wire form for the enum (see the json! above).
         assert_eq!(cards[1].metadata["state"], "open");
-        assert!(delivery.continuation.is_none());
+        assert!(!delivery.truncated);
     }
 
     // what this catches: the board's two facts getting SEVERED by a prefix-take.
@@ -478,7 +478,7 @@
             .await;
         assert!(delivery.items.is_empty());
         assert_eq!(delivery.tokens_used, 0);
-        assert!(delivery.continuation.is_none());
+        assert!(!delivery.truncated);
     }
 
     // what this catches: a read failure degrades to empty, never panics —
@@ -751,7 +751,7 @@
             delivery.tokens_used
         );
         assert!(delivery.items.len() < 50, "truncated below the full board");
-        assert!(delivery.continuation.is_none());
+        assert!(!delivery.truncated);
     }
 
     // what this catches: the exam-bleed regression (glass-boxed live 2026-07-10,

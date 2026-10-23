@@ -48,7 +48,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 
 use crate::persona::rag_budget::{
-    ContinuationCursor, RagContext, RagDelivery, RagItem, RagSource, ResolutionPreference,
+     RagContext, RagDelivery, RagItem, RagSource, ResolutionPreference,
 };
 
 /// Source identifier — the deliberation faculty renders this delivery under a
@@ -375,7 +375,7 @@ impl RagSource for WorkspaceMapSource {
             source_id: SOURCE_ID.to_string(),
             items: Vec::new(),
             tokens_used: 0,
-            continuation: None,
+            truncated: false,
             resolution_used: res,
         };
 
@@ -436,20 +436,11 @@ impl RagSource for WorkspaceMapSource {
             }],
             tokens_used: tokens,
             // One current layout snapshot per turn; no pagination.
-            continuation: None,
+            truncated: false,
             resolution_used: resolution,
         }
     }
 
-    async fn deliver_continuation(
-        &self,
-        _ctx: &RagContext,
-        _cursor: ContinuationCursor,
-        _budget: u32,
-    ) -> Option<RagDelivery> {
-        // The layout is a single current snapshot; any cursor is stale.
-        None
-    }
 }
 
 #[cfg(test)]

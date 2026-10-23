@@ -347,39 +347,6 @@ pub enum ResolutionPreference {
     Placeholder,
 }
 
-/// Continuation cursor — a persona-scoped handle to "where this
-/// source left off." Per Joel's "we know who is who, have to use
-/// handles as we do" framing, this is shaped like the substrate's
-/// existing Handle pattern (cell-processor-command-runtime memory):
-/// every cursor carries its persona scope, its source scope, and
-/// an opaque source-specific resume payload.
-///
-/// The persona_id guarantees the cursor can't be accidentally
-/// applied to a different citizen's recall state. The source_id
-/// guarantees the cursor can only resume the source that produced
-/// it. The opaque field is the source's private resume state —
-/// could be a row offset, an embedding-similarity threshold, a
-/// merkle hash of what was already delivered, anything the source
-/// needs to pick up where it left off.
-///
-/// Future substrate-side extensions may add: turn_id (which
-/// cognition turn produced this), room_id (which activity scope),
-/// budget_used (so the resume can decide whether more is now
-/// affordable). All extensions go on this struct, NOT inside
-/// `opaque` — keep substrate concerns substrate-visible.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ContinuationCursor {
-    /// Persona this cursor belongs to. Sources MUST validate that
-    /// `deliver_continuation` is being called for the same persona
-    /// that produced the cursor — substrate-side identity check.
-    pub persona_id: uuid::Uuid,
-    /// Source that produced the cursor. Sources MUST refuse to
-    /// resume cursors from a different source_id.
-    pub source_id: String,
-    /// Source-private resume state. Allocator does not inspect.
-    pub opaque: serde_json::Value,
-}
-
 /// One delivered item — already a complete atomic unit by the
 /// source's definition.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -397,7 +364,7 @@ pub struct RagItem {
 }
 
 /// What a source returns when asked to deliver.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct RagDelivery {
     pub source_id: String,
     /// Items already pre-validated as complete atomic units. Never
@@ -406,17 +373,58 @@ pub struct RagDelivery {
     pub items: Vec<RagItem>,
     /// Actual tokens consumed across all items.
     pub tokens_used: u32,
-    /// Some(cursor) → the source has more than it delivered. The remainder
-    /// reaches the reader as a HANDLE: the workspace marks the block
-    /// `source_truncated` and its notice names the source's `expand_command`
-    /// (whole-or-handle). No production allocator resumes a cursor today
-    /// (card e049aa82). None → the source delivered everything it had, or
-    /// doesn't support pagination.
-    pub continuation: Option<ContinuationCursor>,
+    /// True → the source has more than it delivered; the remainder reaches
+    /// the reader through the source's `expand_command` (whole-or-handle).
+    /// No production allocator resumes a position today — truncation is
+    /// notice metadata, not a resumable handle (ruling a; card e049aa82).
+    pub truncated: bool,
     /// What resolution the source actually used. May differ from
     /// the requested resolution if the source's content can't fit
     /// at the requested resolution.
     pub resolution_used: ResolutionPreference,
+}
+
+/// Deserializes both wire forms of a delivered RAG pack. Current captures carry
+/// `truncated`; pre-ruling-a JSONL (still on disk) carries legacy
+/// `continuation` instead — `null` means the source delivered everything, an
+/// object means it stopped short and more remained. Decoding recovers that
+/// truth rather than dropping the line or defaulting it away: old captures must
+/// replay with their source-cut notice intact (ruling a deletes the resumable
+/// cursor, not the record). An explicit `truncated` always wins if both keys
+/// are ever present.
+impl<'de> Deserialize<'de> for RagDelivery {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        struct Wire {
+            source_id: String,
+            items: Vec<RagItem>,
+            tokens_used: u32,
+            /// Current form; absent on pre-ruling-a lines.
+            truncated: Option<bool>,
+            resolution_used: ResolutionPreference,
+            /// Legacy form; never emitted today — read only for old JSONL.
+            continuation: Option<serde_json::Value>,
+        }
+
+        let w = Wire::deserialize(deserializer)?;
+        let truncated = match (w.truncated, w.continuation) {
+            (Some(t), _) => t,
+            // No explicit flag: a non-null legacy object is the source saying
+            // "more remained"; null or absence means it did not.
+            (None, Some(_)) => true,
+            (None, None) => false,
+        };
+        Ok(Self {
+            source_id: w.source_id,
+            items: w.items,
+            tokens_used: w.tokens_used,
+            truncated,
+            resolution_used: w.resolution_used,
+        })
+    }
 }
 
 //=============================================================================
@@ -521,17 +529,6 @@ pub trait RagSource: Send + Sync {
         budget: u32,
         resolution: ResolutionPreference,
     ) -> RagDelivery;
-
-    /// Resume delivery from a prior cursor. Returns None if the
-    /// cursor is stale, the source doesn't support pagination, the
-    /// cursor was issued for a different persona / source, or the
-    /// source has no more content.
-    async fn deliver_continuation(
-        &self,
-        ctx: &RagContext,
-        cursor: ContinuationCursor,
-        budget: u32,
-    ) -> Option<RagDelivery>;
 }
 
 //=============================================================================
