@@ -26,8 +26,8 @@ pub struct RoomTurn {
 pub enum RoomWork {
     Reviewed { card_id: uuid::Uuid, outcome: crate::persona::salience::ObservedVerdict, reviewer: uuid::Uuid, review: uuid::Uuid },
     StateChanged { card_id: uuid::Uuid, state: airc_work::CardState, by: uuid::Uuid },
-    Submitted { card_id: uuid::Uuid, publisher: uuid::Uuid },
-    Claimed { card_id: uuid::Uuid, owner: uuid::Uuid },
+    Submitted { card_id: uuid::Uuid, publisher: uuid::Uuid, #[serde(default)] submission: Option<uuid::Uuid> },
+    Claimed { card_id: uuid::Uuid, owner: uuid::Uuid, #[serde(default)] claim: Option<uuid::Uuid> },
     /// A work event the mind does not yet render; counted, never dropped silently.
     Other { kind: String },
 }
@@ -64,8 +64,8 @@ pub fn room_work_from_event(event: &TranscriptEvent) -> Result<Option<RoomWork>,
             reviewer: r.reviewer.as_uuid(),
         },
         W::CardStateChanged(c) => RoomWork::StateChanged { card_id: c.card_id.as_uuid(), state: c.state, by: c.changed_by.as_uuid() },
-        W::WorkSubmitted(s) => RoomWork::Submitted { card_id: s.card_id.as_uuid(), publisher: s.publisher.as_uuid() },
-        W::CardClaimed(c) => RoomWork::Claimed { card_id: c.card_id.as_uuid(), owner: c.owner.as_uuid() },
+        W::WorkSubmitted(s) => RoomWork::Submitted { card_id: s.card_id.as_uuid(), publisher: s.publisher.as_uuid(), submission: Some(s.submission_id.as_uuid()) },
+        W::CardClaimed(c) => RoomWork::Claimed { card_id: c.card_id.as_uuid(), owner: c.owner.as_uuid(), claim: Some(c.claim_id.as_uuid()) },
         _ => RoomWork::Other {
             // Project the decoded variant through the SDK owner, never trust an
             // optional (or contradictory) routing hint as the board fact.
@@ -111,11 +111,11 @@ pub fn render_room_work(work: &RoomWork, actor: uuid::Uuid) -> String {
             "[board fact] card {} moved to {:?} (by {})",
             short(*card_id), state, short(*by)
         ),
-        RoomWork::Submitted { card_id, publisher } => format!(
+        RoomWork::Submitted { card_id, publisher, .. } => format!(
             "[board fact] submission published on card {} (by {})",
             short(*card_id), short(*publisher)
         ),
-        RoomWork::Claimed { card_id, owner } => format!(
+        RoomWork::Claimed { card_id, owner, .. } => format!(
             "[board fact] card {} claimed (by {})",
             short(*card_id), short(*owner)
         ),

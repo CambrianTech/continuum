@@ -116,7 +116,7 @@ pub struct ActiveVisualFeedback {
 /// next generation reads it, and the genome + working memory + admission are
 /// carried across untouched (no cycle rebuild). See
 /// [[seamless-persona-failover-model-and-genome]].
-pub type ModelBindingHandle = Arc<ArcSwap<ModelBinding>>;
+pub use super::model_binding::ModelBindingHandle;
 
 /// Build a shared model-binding handle from its parts.
 pub fn model_binding(
@@ -131,7 +131,7 @@ pub fn model_binding(
     // fell to the unmeasured floor, five times the latency target. Resolve it HERE, the
     // one owner of the binding, never at each reader.
     let model = Some(model.unwrap_or_else(|| adapter.default_model().to_owned())); // unwrap_or_else: `None` = the adapter's own model, resolved at bind time
-    Arc::new(ArcSwap::from_pointee(ModelBinding {
+    Arc::new(super::model_binding::ModelBindingState::new(ModelBinding {
         adapter,
         model,
         context_window,
@@ -862,6 +862,7 @@ pub mod test_support {
         pub seen: Mutex<Vec<TextGenerationRequest>>,
         pub rejections: Mutex<VecDeque<crate::ai::inference_error::InferenceError>>,
         pub live_window: Option<u32>,
+        pub window_sequence: Mutex<VecDeque<u32>>,
         pub on_window_read: Mutex<Option<WindowReadHook>>,
         pub on_request: Mutex<Option<RequestHook>>,
     }
@@ -873,6 +874,7 @@ pub mod test_support {
                 seen: Mutex::new(Vec::new()),
                 rejections: Mutex::new(VecDeque::new()),
                 live_window: None,
+                window_sequence: Mutex::new(VecDeque::new()),
                 on_window_read: Mutex::new(None),
                 on_request: Mutex::new(None),
             }
@@ -904,7 +906,10 @@ pub mod test_support {
             if let Some(hook) = hook {
                 hook();
             }
-            self.live_window
+            let mut sequence = self.window_sequence.lock().expect("fixture window sequence");
+            if sequence.len() > 1 { sequence.pop_front() } else {
+                sequence.front().copied().or(self.live_window)
+            }
         }
         async fn generate_stream_checked(
             &self,

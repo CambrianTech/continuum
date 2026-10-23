@@ -38,6 +38,12 @@ impl LlmDeliberationFaculty {
         // A 0/not-ready snapshot (mid-relaunch) leaves the
         // provisioned window; the next ready tick re-reads. Model + adapter stay the same atomic
         // triple. [[fallbacks-are-illegal-fail-loud]] [[never-thrash-sticky-hysteresis-on-every-lane]]
+        // Retain the capacity observation that precedes assembly. Sampling again
+        // after an await could mistake newly grown capacity for the refused one.
+        let capacity_readiness = Arc::new(crate::cognition::workspace::CapacityReadiness::new(
+            self.binding.clone(),
+            loaded.clone(),
+        ));
         let binding = {
             // ONE live source, no clamp. The window this turn budgets to is the live
             // served window of the lane THIS persona is actually on — and the ADAPTER
@@ -49,10 +55,7 @@ impl LlmDeliberationFaculty {
             // The prompt is BUILT to this at assembly — never generated large then
             // truncated. [[budget-at-assembly-never-clamp-the-prompt]]
             // [[no-hardcoded-context-numbers-derive-from-the-live-window]]
-            let effective = loaded
-                .adapter
-                .live_served_window()
-                .unwrap_or(loaded.context_window);
+            let effective = capacity_readiness.observed_window();
             // Preserve KV stability through small GROWTH fluctuations. Every
             // reduction is authoritative immediately: reply reserve is requested
             // output, not spare capacity that can absorb a smaller served window.
@@ -106,6 +109,9 @@ impl LlmDeliberationFaculty {
             }
         };
         let (mut fit_window, mut calibration) = self.prompt_fit(&binding);
+        let capacity_readiness = Arc::new(
+            capacity_readiness.as_ref().clone().with_fit_window(fit_window),
+        );
         let visual = match self.active_visual_feedback(&binding).await {
             Ok(visual) => visual,
             Err(error) => return Some(Contribution::deliberation_fault(error)),
@@ -113,9 +119,8 @@ impl LlmDeliberationFaculty {
         let mut rejected_prompt_tokens = None;
         let mut rejected_measured_tokens = None;
         let mut request_template: Option<TextGenerationRequest> = None;
-        let mut view = self.prompt_view_with_visual_feedback(
-            ws, fit_window, calibration, visual.as_ref(),
-        );
+        let mut view =
+            self.prompt_view_with_visual_feedback(ws, fit_window, calibration, visual.as_ref());
         let mut gen_await_ms = 0u64;
         // The allowance the request actually carried (set where it is built, read at the seam).
         let mut sent_allowance: Option<u32> = None;
@@ -135,7 +140,10 @@ impl LlmDeliberationFaculty {
                     context_window = fit_window,
                     "required prompt input cannot fit; refusing an incomplete prompt"
                 );
-                return Some(Contribution::deliberation_fault(error.to_string()));
+                return Some(
+                    Contribution::prompt_capacity_refused(error)
+                        .with_capacity_readiness(capacity_readiness.clone()),
+                );
             }
             // FAIL LOUD, never a blank mind (companion to the `delib.prompt.empty`
             // probe in the fitter): a view with NO conversation from a room that HAS
@@ -340,7 +348,14 @@ impl LlmDeliberationFaculty {
                         view, requested, available, sent_allowance.unwrap_or(0),
                     ) {
                         Ok(view) => view,
-                        Err(error) => return Some(Contribution::deliberation_fault(error.to_string())),
+                        Err(error) => {
+                            return Some(
+                                Contribution::prompt_capacity_refused(error)
+                                    .with_capacity_readiness(Arc::new(
+                                        capacity_readiness.as_ref().clone().with_fit_window(fit_window),
+                                    )),
+                            )
+                        }
                     };
                 }
                 Err(error) => {
@@ -460,7 +475,11 @@ impl LlmDeliberationFaculty {
             // Her last turn's shape — what the next work call's occupancy bound is read from.
             LAST_TURN_SHAPE.insert(
                 self.persona_id,
-                TurnShape { input: resp.usage.input_tokens, cached, output: resp.usage.output_tokens },
+                TurnShape {
+                    input: resp.usage.input_tokens,
+                    cached,
+                    output: resp.usage.output_tokens,
+                },
             );
             let frontier = view
                 .segments

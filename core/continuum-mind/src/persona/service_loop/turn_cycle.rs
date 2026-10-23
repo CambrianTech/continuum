@@ -37,8 +37,15 @@ pub(super) async fn run_turn_cycle(
     trigger: TurnTrigger<'_>,
     input: CycleInput,
 ) -> CycleVerdict {
-    let TurnTrigger { msg, turn_room, admitted_retry } = trigger;
-    let CycleInput { workspace_burst, wake_engram } = input;
+    let TurnTrigger {
+        msg,
+        turn_room,
+        admitted_retry,
+    } = trigger;
+    let CycleInput {
+        workspace_burst,
+        wake_engram,
+    } = input;
     let respond_started = std::time::Instant::now();
     // A turn in her mind room runs on her MIND cycle (PRIVACY-OF-THOUGHT.md §4).
     match crate::cognition::persona_workspace::global()
@@ -51,8 +58,12 @@ pub(super) async fn run_turn_cycle(
             // so the genome never changes beneath a request. Unreadable: the genome she
             // has. The receipt names the genes that ran (GenerationReceipt::genes).
             let _genome_pin = {
-                let pin = crate::genome::gene_trial::GenomeRestore::snapshot(std::sync::Arc::clone(&cycle));
-                if let Some(genes) = crate::genome::gene_trial::live_genes(ctx.identity.peer_id.as_uuid()) {
+                let pin = crate::genome::gene_trial::GenomeRestore::snapshot(
+                    std::sync::Arc::clone(&cycle),
+                );
+                if let Some(genes) =
+                    crate::genome::gene_trial::live_genes(ctx.identity.peer_id.as_uuid())
+                {
                     continuum_base::probe!(
                         class = "persona.genome.turn_genes",
                         persona = %ctx.identity.agent_name,
@@ -106,11 +117,15 @@ pub(super) async fn run_turn_cycle(
             // store (#89); this is the addressing half, unblocked today.
             // Human opportunity retains priority, but sender kind can be stale
             // or shared across clients: it cannot assert that she was named.
-            let attention = admitted_retry.then(|| deferred_input.attention()).flatten()
-                .unwrap_or_else(|| crate::cognition::workspace::TurnAttention::for_message(
+            let attention = admitted_retry
+                .then(|| deferred_input.attention_for(msg))
+                .flatten()
+                .unwrap_or_else(|| { // A new message has no retained attention; derive it from its actual sender and mentions.
+                    crate::cognition::workspace::TurnAttention::for_message(
                     ctx.identity.persona_identity().mentions(&msg.text),
                     crate::persona::room_directory::is_human_peer(msg.peer_id),
-                ));
+                    )
+                });
             if attention.requires_priority() {
                 // Focus = she is TAKING the turn on it; the heard receipt
                 // already fired at the drain (`wake_backlog::publish_heard`).
@@ -319,14 +334,17 @@ pub(super) async fn run_turn_cycle(
             }
             deferred_input.settle(msg, wake_engram, attention, &step);
             match step {
-                crate::cognition::act_observe::SettleStep::DeferredBeforeDispatch => {
+                crate::cognition::act_observe::SettleStep::CapacityRefused { .. }
+                | crate::cognition::act_observe::SettleStep::DeferredBeforeDispatch => {
                     return CycleVerdict::Skip;
                 }
-                crate::cognition::act_observe::SettleStep::Spoke(text) => CycleVerdict::Spoke(SpokenTurn {
+                crate::cognition::act_observe::SettleStep::Spoke(text) => {
+                    CycleVerdict::Spoke(SpokenTurn {
                     response_text: text,
                     turn_credit,
                     turn_generation_receipts,
-                }),
+                    })
+                }
                 crate::cognition::act_observe::SettleStep::Acted { calls, intent } => {
                     continuum_base::probe!(
                         class = "persona.turn.acted",
@@ -361,7 +379,9 @@ pub(super) async fn run_turn_cycle(
                     // act is executed (→ Acted/ActUnfulfilled), never deferred.
                     unreachable!("live settle_step always permits its one act");
                 }
-                crate::cognition::act_observe::SettleStep::Passed { reason: pass_reason } => {
+                crate::cognition::act_observe::SettleStep::Passed {
+                    reason: pass_reason,
+                } => {
                     tracing::info!(
                         lamport = msg.lamport,
                         "persona chose silence (workspace) — substrate honors decision"
@@ -372,7 +392,10 @@ pub(super) async fn run_turn_cycle(
                     // or from no decision at all). The reason is the brain's; this line
                     // only reports it.
                     let (gated, pass_detail) = match pass_reason.as_deref() {
-                        Some(r) => (r.starts_with(crate::cognition::workspace::GATE_REFUSAL_PREFIX), r),
+                        Some(r) => (
+                            r.starts_with(crate::cognition::workspace::GATE_REFUSAL_PREFIX),
+                            r,
+                        ),
                         None => (false, "no-decision"),
                     };
                     continuum_base::probe!(
@@ -389,7 +412,7 @@ pub(super) async fn run_turn_cycle(
                     // `directed` is recomputed here rather than threaded: it is a pure function of
                     // (identity, msg.text) and the binding above lives inside the cycle branch.
                     let spoke_directed = ctx.identity.persona_identity().mentions(&msg.text);
-                    crate::persona::act_question::ask_the_act_question(
+                    let work = crate::persona::act_question::ask_the_act_question(
                         ctx,
                         conversation,
                         msg.lamport,
@@ -397,6 +420,7 @@ pub(super) async fn run_turn_cycle(
                         spoke_directed,
                     )
                     .await;
+                    deferred_input.settle_work(&work);
                     outcome.turns_skipped += 1;
                     return CycleVerdict::Skip;
                 }

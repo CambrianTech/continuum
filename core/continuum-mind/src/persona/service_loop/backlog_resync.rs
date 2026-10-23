@@ -53,6 +53,7 @@ pub(super) async fn resync_to_now(
     outcome: &mut ServeOutcome,
     seen_ids: &mut crate::persona::wake_backlog::SeenIds,
     high_water: &mut u64,
+    pending: &mut crate::persona::wake_backlog::PendingInput,
     admitted_retry: bool,
     msg: IncomingMessage,
 ) -> Resync {
@@ -109,6 +110,7 @@ pub(super) async fn resync_to_now(
             if stale || m.peer_id == self_id {
                 outcome.turns_skipped += 1;
             } else {
+                pending.observe_work(&m);
                 qualifying.push(m);
             }
         }

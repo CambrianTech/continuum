@@ -49,6 +49,7 @@ pub struct SettleOutcome {
     /// The entire turn stopped at admission before any generation or action.
     /// Callers retain its inbound delivery obligation; this is not a chosen Pass.
     pub deferred_before_dispatch: bool,
+    pub capacity_refusal: Option<crate::cognition::workspace::CapacityRefusal>,
     /// File paths her acts NAMED (any `file_path`/`path` string arg on an executed
     /// call), in first-touch order, deduped. This is the turn's investigation trail
     /// as STATE — distinct from `files_changed` (what git saw): a failed edit or a
@@ -100,6 +101,7 @@ impl SettleOutcome {
             metrics: TurnMetrics::default(),
             inference_error: Some(cause.into()),
             deferred_before_dispatch: false,
+            capacity_refusal: None,
             touched_paths: Vec::new(),
             // Empty, and truthfully so: this constructor is for a turn where the
             // deliberation call failed or was killed by a watchdog BEFORE any
@@ -140,6 +142,12 @@ pub enum SettleStep {
     Passed { reason: Option<String> },
     /// No generation or action occurred; the admitted input remains pending.
     DeferredBeforeDispatch,
+    /// Required input exceeds the prompt budget. Prior acts remain committed;
+    /// only a wholly undispatched input may be replayed after capacity changes.
+    CapacityRefused {
+        error: crate::cognition::workspace::CapacityRefusal,
+        replay_input: bool,
+    },
     /// She reached for an act that could NOT be carried out (no hands / executor
     /// error). No utterance; the intent rides along for honest logging/grading.
     ActUnfulfilled {
@@ -189,6 +197,16 @@ impl SettleStep {
         // the receipts are the one thing the credit record cannot reconstruct
         // afterwards (card 0d51573a).
         let generation_receipts = outcome.generation_receipts;
+        if let Some(error) = outcome.capacity_refusal {
+            return (
+                SettleStep::CapacityRefused {
+                    error,
+                    replay_input: outcome.deferred_before_dispatch,
+                },
+                metrics,
+                generation_receipts,
+            );
+        }
         if let Some(error) = outcome.inference_error {
             // The fault path keeps them too: a turn whose deliberation failed still
             // dispatched generations, and that is precisely when provenance matters.
@@ -199,7 +217,11 @@ impl SettleStep {
             );
         }
         if outcome.deferred_before_dispatch {
-            return (SettleStep::DeferredBeforeDispatch, metrics, generation_receipts);
+            return (
+                SettleStep::DeferredBeforeDispatch,
+                metrics,
+                generation_receipts,
+            );
         }
         let step = match outcome.decision {
             Decision::Speak { text } | Decision::RaiseUnprompted { text } => {
@@ -222,6 +244,24 @@ mod tests {
     /// handler). A regression here would route a settled Speak to silence, hide an
     /// inference failure behind a serene Pass ([[fallbacks-are-illegal-fail-loud]]),
     /// or drop an over-budget Act instead of re-perceiving next tick.
+    #[test]
+    fn capacity_refusal_survives_projection_without_replaying_prior_work() {
+        let error = crate::cognition::workspace::PromptCapacityError {
+            required_tokens: 8192,
+            budget_tokens: 4096,
+        };
+        for replay_input in [true, false] {
+            let mut outcome = outcome_with(Decision::pass(), None);
+            outcome.capacity_refusal = Some(error.into());
+            outcome.deferred_before_dispatch = replay_input;
+            let (step, _, receipts) = SettleStep::from_settled(outcome);
+            assert!(
+                matches!(step, SettleStep::CapacityRefused { error: actual, replay_input: replay } if actual.error == error && replay == replay_input)
+            );
+            assert!(receipts.is_empty());
+        }
+    }
+
     fn outcome_with(decision: Decision, inference_error: Option<String>) -> SettleOutcome {
         SettleOutcome {
             spoken: match &decision {
@@ -235,6 +275,7 @@ mod tests {
             metrics: TurnMetrics::default(),
             inference_error,
             deferred_before_dispatch: false,
+            capacity_refusal: None,
             touched_paths: Vec::new(),
             room: uuid::Uuid::from_u128(7),
             generation_receipts: Vec::new(),

@@ -21,7 +21,11 @@ impl Default for PromptCalibration {
 }
 
 impl PromptCalibration {
-    pub(in super::super) fn observed(estimated: usize, measured: u32, input_identity: Option<[u8; 32]>) -> Option<Self> {
+    pub(in super::super) fn observed(
+        estimated: usize,
+        measured: u32,
+        input_identity: Option<[u8; 32]>,
+    ) -> Option<Self> {
         Some(Self {
             estimated: std::num::NonZeroUsize::new(estimated)?,
             measured: std::num::NonZeroU32::new(measured)?,
@@ -252,7 +256,9 @@ impl PromptMessages {
                 for part in parts {
                     match part {
                         ContentPart::ToolUse { id, .. } => calls.push(id.as_str()),
-                        ContentPart::ToolResult { tool_use_id, .. } => results.push(tool_use_id.as_str()),
+                        ContentPart::ToolResult { tool_use_id, .. } => {
+                            results.push(tool_use_id.as_str())
+                        }
                         _ => {}
                     }
                 }
@@ -327,24 +333,7 @@ impl FitReceipt {
     }
 }
 
-/// The required prompt input cannot be represented in this window.
-/// No partial payload is submitted: the existing fault and demand paths expose
-/// the capacity problem without recording it as a citizen's decision to pass.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct PromptCapacityError {
-    pub required_tokens: usize,
-    pub budget_tokens: usize,
-}
-
-impl std::fmt::Display for PromptCapacityError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "complete prompt input requires {} tokens, but only {} are available",
-            self.required_tokens, self.budget_tokens
-        )
-    }
-}
+pub use crate::cognition::workspace::PromptCapacityError;
 
 /// A snapshot of exactly what the deliberation faculty sends the model — the
 /// glass box over the RAG/prompt. Print it, capture it, diff it across turns.

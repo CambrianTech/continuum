@@ -51,11 +51,12 @@ pub(super) async fn await_wake(
     let pending_before_wake = crate::cognition::directed_pending::observe(ctx.identity.peer_id.as_uuid());
     let wake = tokio::select! {
         biased;
-        ev = next_event(conversation, &mut *outcome), if deferred_input.message().is_none() => match ev {
+        ev = next_event(conversation, &mut *outcome) => match ev {
             Some(m) => Wake::Msg(m),
             None => Wake::Stop,
         },
-        w = next_mind_wake(&mut mind.wakes), if deferred_input.message().is_none() => match w {
+        room = deferred_input.ready_self_room(), if !opts.quiesced.load(std::sync::atomic::Ordering::Relaxed) => Wake::Mind { why: "capacity", room: Some(room) },
+        w = next_mind_wake(&mut mind.wakes), if deferred_input.permits_self_tick() => match w {
             crate::persona::perception_region::Wake::Perceive { activity, .. } => {
                 mind.perceive_recheck = Some((tokio::time::Instant::now() + PERCEIVE_SETTLE, activity));
                 Wake::Idle
@@ -63,7 +64,7 @@ pub(super) async fn await_wake(
             crate::persona::perception_region::Wake::Continuation => Wake::Mind { why: "continuation", room: her_continuation_room(me) },
             crate::persona::perception_region::Wake::Resume => Wake::Mind { why: "resume", room: her_continuation_room(me) },
         },
-        _ = sleep_until_some(mind.perceive_recheck.map(|(at, _)| at)), if deferred_input.message().is_none() => {
+        _ = sleep_until_some(mind.perceive_recheck.map(|(at, _)| at)), if deferred_input.permits_self_tick() => {
             let activity = mind.perceive_recheck.take().map(|(_, a)| a);
             match activity {
                 Some(a) if crate::persona::perception_feed::with_region(me, |r| r.is_pending(a)).unwrap_or(false) => {
@@ -72,7 +73,7 @@ pub(super) async fn await_wake(
                 _ => Wake::Idle,
             }
         },
-        _ = sleep_until_some(mind.next_mind_check), if deferred_input.message().is_none() => {
+        _ = sleep_until_some(mind.next_mind_check), if deferred_input.permits_self_tick() => {
             let now = (opts.now_ms)();
             let looked = crate::persona::perception_feed::with_region(me, |r| {
                 let wake = r.wake_for(now);
@@ -101,6 +102,9 @@ pub(super) async fn await_wake(
                 }
             }
         },
+        // Reuse the existing beat only to notice lease release. No parked
+        // cognition is retried while quiesced, and ready custody stays intact.
+        _ = tokio::time::sleep(next_beat), if opts.quiesced.load(std::sync::atomic::Ordering::Relaxed) => Wake::Idle,
         retry = deferred_input.at_next_beat(next_beat) => match retry {
             Some(message) => Wake::Retry(message),
             None => Wake::Tick,

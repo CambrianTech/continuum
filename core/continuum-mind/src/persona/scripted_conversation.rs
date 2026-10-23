@@ -82,6 +82,7 @@ pub struct ScriptedConversation {
     /// When set, `next_message` returns Err if called before `prime`
     /// — mirrors `AircPersonaConversation`'s caller-primes contract.
     require_prime: bool,
+    idle_when_empty: bool,
     /// The citizen `stream_citizen()` hands back — `None` by default (most
     /// tests don't drive the citizen handle). A held-work test seeds a
     /// `StubAircCitizen::with_claims` so the act-question can read her claims
@@ -108,6 +109,7 @@ impl ScriptedConversation {
             primed: AtomicUsize::new(0),
             prime_result: Mutex::new(Ok(())),
             require_prime: false,
+            idle_when_empty: false,
             citizen: None,
         }
     }
@@ -133,6 +135,13 @@ impl ScriptedConversation {
     /// `Ok(None)` so the loop never hangs.
     pub fn with_events(self, events: Vec<Result<Option<IncomingMessage>, String>>) -> Self {
         *self.events.lock().unwrap() = VecDeque::from(events);
+        self
+    }
+
+    /// Keep an empty fixture inbox online while exercising the real wake select.
+    #[cfg(any(test, feature = "test-fixtures"))]
+    pub fn with_idle_inbox(mut self) -> Self {
+        self.idle_when_empty = true;
         self
     }
 
@@ -237,7 +246,12 @@ impl PersonaConversation for ScriptedConversation {
         if let Some(message) = self.perceived_backlog.pop_front() {
             return Ok(Some(Arc::unwrap_or_clone(message)));
         }
-        self.events.lock().unwrap().pop_front().unwrap_or(Ok(None))
+        let event = self.events.lock().unwrap().pop_front();
+        match event {
+            Some(event) => event,
+            None if self.idle_when_empty => std::future::pending().await,
+            None => Ok(None),
+        }
     }
 
     async fn perceive_ready(

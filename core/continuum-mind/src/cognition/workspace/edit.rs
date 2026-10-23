@@ -111,7 +111,11 @@ impl Decision {
     /// [`Self::gate_refusal`] is the one reader — the mindless receipt (card aed15611)
     /// and the gate-as-lesson (card 657e74de) decide on this, never on a prose prefix
     /// written for the glass box (Cormac's block on #4081).
-    pub fn gate_refused(gate: &'static str, marker: &'static str, why: impl std::fmt::Display) -> Self {
+    pub fn gate_refused(
+        gate: &'static str,
+        marker: &'static str,
+        why: impl std::fmt::Display,
+    ) -> Self {
         Decision::Pass {
             reason: Some(format!("{GATE_REFUSAL_PREFIX}{gate}:{marker}: {why}")),
         }
@@ -283,6 +287,8 @@ pub struct Contribution {
     /// distinct `InferenceFailed` outcome instead of a lying `Passed`. `None` on
     /// every healthy contribution.
     pub fault: Option<String>,
+    /// Required prompt input did not fit; kept separate from inference failures.
+    pub capacity_refusal: Option<CapacityRefusal>,
     /// Every generation THIS contribution dispatched, in dispatch order, faults
     /// included (card 0d51573a).
     ///
@@ -397,6 +403,7 @@ impl Contribution {
             stable: false,
             standing_grounding: false,
             fault: None,
+            capacity_refusal: None,
             receipts: Vec::new(),
             raw_generation: None,
             trailing: false,
@@ -464,10 +471,27 @@ impl Contribution {
             stable: false,
             standing_grounding: false,
             fault: None,
+            capacity_refusal: None,
             receipts: Vec::new(),
             raw_generation: None,
             trailing: false,
         }
+    }
+
+    /// Complete input cannot fit this serving window; retain its typed cause.
+    pub fn prompt_capacity_refused(error: PromptCapacityError) -> Self {
+        let mut contribution = Self::deliberation_fault(error.to_string());
+        contribution.fault = None;
+        contribution.reasoning = "complete prompt input does not fit the serving window".into();
+        contribution.capacity_refusal = Some(error.into());
+        contribution
+    }
+
+    pub fn with_capacity_readiness(mut self, readiness: Arc<CapacityReadiness>) -> Self {
+        if let Some(refusal) = &mut self.capacity_refusal {
+            refusal.readiness = Some(readiness);
+        }
+        self
     }
 
     /// A **deliberation fault** — the model call FAILED and produced no verdict.
@@ -495,6 +519,7 @@ impl Contribution {
             stable: false,
             standing_grounding: false,
             fault: Some(error),
+            capacity_refusal: None,
             receipts: Vec::new(),
             raw_generation: None,
             trailing: false,

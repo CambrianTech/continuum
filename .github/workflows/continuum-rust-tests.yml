@@ -53,7 +53,10 @@ jobs:
     # A failed selector must not turn required checks into successful skips.
     if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
-    timeout-minutes: 45  # a PR that changes Cargo.lock builds from a cold cache (PR runs never save it): #5278 measured 30m15s, cancelled after every test had passed; warm runs take 16-22 min
+    # Keep the 45-minute cold build/test allowance after bounded dependency setup.
+    # Run 39965839086 spent ~20 minutes before compilation (15 minutes downloading
+    # 52.9 MB from apt), then hit the old job limit after all crate suites passed.
+    timeout-minutes: 70
     env:
       DATABASE_URL: postgres://continuum:continuum@localhost:5432/continuum_test
       # The crate builds headless by default (`default = []`); THIS job is the one that
@@ -76,6 +79,7 @@ jobs:
 
       - name: System deps (mirrors docker/continuum-core.Dockerfile builder stage)
         if: needs.changes.outputs.rust != 'false'
+        timeout-minutes: 25
         run: |
           # A THIRD-PARTY REPO WE NEVER INSTALL FROM MUST NOT FAIL OUR BUILD.
           # The GitHub runner image ships vendor apt repos (Chrome, Microsoft, …).

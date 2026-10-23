@@ -41,3 +41,53 @@ impl ModelBinding {
         self.model.as_deref().unwrap_or_else(|| self.adapter.default_model()) // unwrap_or_else: an omitted model selects the adapter default, the same one request construction sends
     }
 }
+
+/// Atomic binding plus a wake edge. Notifications carry no policy: consumers
+/// subscribe before rechecking the binding and compare the semantic facts.
+pub struct ModelBindingState {
+    value: arc_swap::ArcSwap<ModelBinding>,
+    changed: tokio::sync::watch::Sender<()>,
+}
+
+pub type ModelBindingHandle = Arc<ModelBindingState>;
+
+impl ModelBindingState {
+    pub fn new(binding: ModelBinding) -> Self {
+        Self {
+            value: arc_swap::ArcSwap::from_pointee(binding),
+            changed: tokio::sync::watch::channel(()).0,
+        }
+    }
+    pub fn load(&self) -> arc_swap::Guard<Arc<ModelBinding>> {
+        self.value.load()
+    }
+    pub fn load_full(&self) -> Arc<ModelBinding> {
+        self.value.load_full()
+    }
+    pub fn store(&self, binding: Arc<ModelBinding>) {
+        self.value.store(binding);
+        self.changed.send_replace(());
+    }
+    pub fn compare_and_swap(
+        &self,
+        current: &Arc<ModelBinding>,
+        next: Arc<ModelBinding>,
+    ) -> arc_swap::Guard<Arc<ModelBinding>> {
+        let previous = self.value.compare_and_swap(current, next);
+        if Arc::ptr_eq(&previous, current) {
+            self.changed.send_replace(());
+        }
+        previous
+    }
+    pub fn rcu<F>(&self, update: F) -> Arc<ModelBinding>
+    where
+        F: FnMut(&Arc<ModelBinding>) -> ModelBinding,
+    {
+        let previous = self.value.rcu(update);
+        self.changed.send_replace(());
+        previous
+    }
+    pub fn subscribe(&self) -> tokio::sync::watch::Receiver<()> {
+        self.changed.subscribe()
+    }
+}

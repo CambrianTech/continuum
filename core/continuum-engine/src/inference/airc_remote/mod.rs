@@ -69,3 +69,6 @@ pub use protocol::{RemoteInferenceError, RemoteInferenceRequest, RemoteInference
 pub use transport::{
     AircInferenceTransport, AircLiveTransport, LocalAdapterTransport, StubInferenceTransport,
 };
+
+#[cfg(test)]
+mod capacity_tests;

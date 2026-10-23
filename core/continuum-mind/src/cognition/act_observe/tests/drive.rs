@@ -1,23 +1,22 @@
 #![cfg(test)]
 
 use super::*;
-use crate::cognition::workspace::Decision;
-use crate::cognition::workspace::Situation;
-use crate::cognition::workspace::TurnFraming;
-use crate::cognition::workspace::WorkspaceCycle;
+use crate::ai::types::ToolCall;
+use crate::cognition::working_memory::WorkingMemory;
+use crate::cognition::working_memory::WorkingMemoryFaculty;
 use crate::cognition::workspace::Contribution;
+use crate::cognition::workspace::Decision;
 use crate::cognition::workspace::Faculty;
 use crate::cognition::workspace::FacultyId;
 use crate::cognition::workspace::SalienceArbiter;
+use crate::cognition::workspace::Situation;
+use crate::cognition::workspace::TurnFraming;
 use crate::cognition::workspace::Workspace;
-use crate::ai::types::ToolCall;
-use uuid::Uuid;
+use crate::cognition::workspace::WorkspaceCycle;
 use async_trait::async_trait;
 use std::sync::Arc;
 use std::sync::Mutex;
-use crate::cognition::working_memory::WorkingMemory;
-use crate::cognition::working_memory::WorkingMemoryFaculty;
-
+use uuid::Uuid;
 
 /// what this catches: the no-deliverable nudge going back to ONE-SHOT. The first version
 /// latched on a bool, and the probe trail proved the cost — `persona.settle.no_deliverable`
@@ -82,14 +81,115 @@ async fn drive_to_settle_acts_then_settles_on_speak() {
     assert!(matches!(outcome.decision, Decision::Speak { .. }));
 }
 
+// Refusal after a real act retains its observed work and cannot replay input.
+#[tokio::test]
+async fn acted_then_capacity_refused_retains_work_without_replay() {
+    struct ActThenRefuse;
+    #[async_trait]
+    impl Faculty for ActThenRefuse {
+        fn id(&self) -> FacultyId {
+            FacultyId::Deliberation
+        }
+        fn reacts_to_broadcast(&self) -> bool {
+            true
+        }
+        async fn contribute(&self, ws: &Workspace) -> Option<Contribution> {
+            if latest_action_seq(&ws.perceived()) > 0 {
+                Some(Contribution::prompt_capacity_refused(
+                    crate::cognition::workspace::PromptCapacityError {
+                        required_tokens: 8192,
+                        budget_tokens: 4096,
+                    },
+                ))
+            } else {
+                let mut contribution = AlwaysAct.contribute(ws).await?;
+                contribution.metrics = Some(crate::cognition::workspace::TurnMetrics {
+                    input_tokens: 700,
+                    output_tokens: 40,
+                    latency_ms: 1200,
+                    ..Default::default()
+                });
+                Some(contribution)
+            }
+        }
+    }
+    let wm = Arc::new(WorkingMemory::new(3));
+    let exec = Arc::new(ScriptedExecutor::new(["real observed result"]));
+    let cycle = WorkspaceCycle::new(
+        vec![
+            Arc::new(WorkingMemoryFaculty::new(wm.clone())),
+            Arc::new(ActThenRefuse),
+        ],
+        Arc::new(SalienceArbiter),
+        8,
+    )
+    .with_acting(body_with_wm(exec, admission(), wm));
+    let outcome = drive_to_settle(&cycle, "perform the task", 8, TurnFraming::ambient()).await;
+    assert_eq!(outcome.acts, 1);
+    assert_eq!(outcome.turn_acts.len(), 1);
+    assert_eq!(outcome.metrics.input_tokens, 700);
+    assert_eq!(outcome.metrics.output_tokens, 40);
+    assert_eq!(outcome.metrics.latency_ms, 1200);
+    assert!(!outcome.deferred_before_dispatch);
+    assert!(outcome.inference_error.is_none());
+    assert!(matches!(
+        SettleStep::from_settled(outcome).0,
+        SettleStep::CapacityRefused {
+            replay_input: false,
+            ..
+        }
+    ));
+}
+
+// Capacity refusal is not a zero-generation lane wait. Exercise the actual
+// full driver, including its retry loop, rather than only projecting a result.
+#[tokio::test]
+async fn capacity_refusal_leaves_the_driver_once_with_typed_custody() {
+    struct Refusing(std::sync::atomic::AtomicUsize);
+    #[async_trait]
+    impl Faculty for Refusing {
+        fn id(&self) -> FacultyId {
+            FacultyId::Deliberation
+        }
+        fn reacts_to_broadcast(&self) -> bool {
+            true
+        }
+        async fn contribute(&self, _: &Workspace) -> Option<Contribution> {
+            self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Some(Contribution::prompt_capacity_refused(
+                crate::cognition::workspace::PromptCapacityError {
+                    required_tokens: 8192,
+                    budget_tokens: 4096,
+                },
+            ))
+        }
+    }
+    let faculty = Arc::new(Refusing(std::sync::atomic::AtomicUsize::new(0)));
+    let cycle = WorkspaceCycle::new(vec![faculty.clone()], Arc::new(SalienceArbiter), 8);
+    let outcome =
+        drive_to_settle(&cycle, "keep the complete input", 8, TurnFraming::ambient()).await;
+    assert_eq!(faculty.0.load(std::sync::atomic::Ordering::SeqCst), 1);
+    assert!(outcome.inference_error.is_none());
+    assert!(outcome.deferred_before_dispatch);
+    assert_eq!(outcome.acts, 0);
+    assert!(outcome.generation_receipts.is_empty());
+    assert!(matches!(
+        SettleStep::from_settled(outcome).0,
+        SettleStep::CapacityRefused {
+            replay_input: true,
+            ..
+        }
+    ));
+}
+
 // Regression 2e3f0eab: admission refusal must retain the original directed
 // input, even when a newer directed input arrives before the admitted retry.
 #[tokio::test]
 async fn starved_priority_input_survives_until_dispatch_without_replaying_actions() {
-    use crate::persona::service_loop::{IncomingMessage, PersonaConversation};
-    use crate::persona::scripted_conversation::ScriptedConversation;
-    use crate::persona::wake_backlog::PendingInput;
     use crate::cognition::workspace::{Burst, TurnAttention};
+    use crate::persona::scripted_conversation::ScriptedConversation;
+    use crate::persona::service_loop::{IncomingMessage, PersonaConversation};
+    use crate::persona::wake_backlog::PendingInput;
     use std::sync::atomic::{AtomicBool, Ordering};
 
     let gate = Arc::new(AtomicBool::new(false));
@@ -101,9 +201,14 @@ async fn starved_priority_input_survives_until_dispatch_without_replaying_action
     });
     let wm = Arc::new(WorkingMemory::new(8));
     let cycle = WorkspaceCycle::new(
-        vec![Arc::new(WorkingMemoryFaculty::new(Arc::clone(&wm))) as Arc<dyn Faculty>, Arc::new(faculty)],
-        Arc::new(SalienceArbiter), 8,
-    ).with_acting(body_with_wm(exec.clone(), admission(), wm));
+        vec![
+            Arc::new(WorkingMemoryFaculty::new(Arc::clone(&wm))) as Arc<dyn Faculty>,
+            Arc::new(faculty),
+        ],
+        Arc::new(SalienceArbiter),
+        8,
+    )
+    .with_acting(body_with_wm(exec.clone(), admission(), wm));
     let original = IncomingMessage {
         event_id: Uuid::new_v4(), lamport: 10, peer_id: Uuid::new_v4(),
         room_id: Uuid::new_v4(), text: "Asha, inspect this exact input".into(), work: None,
@@ -123,11 +228,14 @@ async fn starved_priority_input_survives_until_dispatch_without_replaying_action
     let mut pending = PendingInput::default();
     let cause = Some(Uuid::new_v4());
     let framing = TurnFraming::message(TurnAttention::for_message(true, false));
-    let burst = |message: &IncomingMessage| Burst::raw_in(
+    let burst = |message: &IncomingMessage| {
+        Burst::raw_in(
         crate::identity::ActivityRoom::from_uuid(message.room_id).unwrap(),
         message.render_content(),
-    );
-    let refused = drive_to_settle_with_input(&cycle, burst(&original), 8, framing, &mut conversation).await;
+        )
+    };
+    let refused =
+        drive_to_settle_with_input(&cycle, burst(&original), 8, framing, &mut conversation).await;
     assert!(refused.deferred_before_dispatch);
     assert_eq!(refused.acts, 0);
     assert!(exec.seen_context.lock().unwrap().is_none());
@@ -135,7 +243,7 @@ async fn starved_priority_input_survives_until_dispatch_without_replaying_action
     pending.settle(&original, cause, framing.attention, &step);
     conversation.event_feed().push(Ok(Some(newer.clone())));
     assert_eq!(pending.message(), Some(&original));
-    assert_eq!(pending.wake_engram(), cause);
+    assert_eq!(pending.wake_engram_for(&original), cause);
 
     // A second failed admission neither consumes nor replaces the original.
     let retried = pending.message().unwrap().clone();
@@ -146,7 +254,14 @@ async fn starved_priority_input_survives_until_dispatch_without_replaying_action
     assert!(conversation.perceive_ready().await.unwrap().iter().any(|m| **m == newer));
 
     gate.store(true, Ordering::SeqCst);
-    let completed = drive_to_settle_with_input(&cycle, burst(pending.message().unwrap()), 8, framing, &mut conversation).await;
+    let completed = drive_to_settle_with_input(
+        &cycle,
+        burst(pending.message().unwrap()),
+        8,
+        framing,
+        &mut conversation,
+    )
+    .await;
     assert!(!completed.deferred_before_dispatch);
     assert_eq!(completed.acts, 1, "only the admitted retry executes an action");
     assert!(completed.room_updates.iter().any(|m| **m == newer));
@@ -455,7 +570,17 @@ async fn drive_to_settle_returns_unsettled_act_when_budget_exhausted() {
 async fn repeated_calls_respect_the_callers_budget() {
     for (results, expected_acts) in [
         (["unchanged"; 6], 4),
-        (["pending 1", "pending 2", "running", "written", "tested", "done"], 6),
+        (
+            [
+                "pending 1",
+                "pending 2",
+                "running",
+                "written",
+                "tested",
+                "done",
+            ],
+            6,
+        ),
     ] {
         let exec = Arc::new(ScriptedExecutor::new(results));
         let cycle = WorkspaceCycle::new(vec![Arc::new(AlwaysAct)], Arc::new(SalienceArbiter), 8)
@@ -481,7 +606,9 @@ async fn fixed_point_requires_available_finished_result_evidence() {
     let mut acts = acts_of(apply_act(
         &cycle, &[call.clone()], "inspect", Uuid::new_v4(), &ActChain::new(),
         None,
-    ).await);
+        )
+        .await,
+    );
     let original = batch_evidence(&[call.clone()], &acts);
     assert!(original.is_some());
     call.id = "new-attempt".into();
@@ -493,7 +620,9 @@ async fn fixed_point_requires_available_finished_result_evidence() {
     acts[0].output.verdict = ActVerdict::Declared(ToolVerdict::Running);
     assert!(batch_evidence(&[call.clone()], &acts).is_none());
     acts[0].output.verdict = ActVerdict::Unprojected;
-    acts[0].output.result.custody = crate::ai::types::ResultCustody::Pointer { handle: "full-result".into() };
+    acts[0].output.result.custody = crate::ai::types::ResultCustody::Pointer {
+        handle: "full-result".into(),
+    };
     assert!(batch_evidence(&[call.clone()], &acts).is_none());
     assert!(batch_evidence(&[call], &[]).is_none());
 }

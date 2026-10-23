@@ -297,6 +297,13 @@ fn settle_step_to_json(
         SettleStep::ActUnfulfilled { calls, intent } => serde_json::json!({
             "outcome": "actUnfulfilled", "intent": intent, "calls": calls.len(),
         }),
+        SettleStep::CapacityRefused {
+            error,
+            replay_input,
+        } => serde_json::json!({
+            "outcome": "capacityRefused", "requiredTokens": error.required_tokens,
+            "budgetTokens": error.budget_tokens, "replayInput": replay_input,
+        }),
         SettleStep::DeferredBeforeDispatch => serde_json::json!({
             "outcome": "deferredBeforeDispatch",
         }),

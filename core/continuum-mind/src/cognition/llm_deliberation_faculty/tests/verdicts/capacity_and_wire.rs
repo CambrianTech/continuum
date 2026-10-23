@@ -245,8 +245,13 @@ async fn an_8192_window_keeps_required_content_under_a_large_measured_need() {
     wm.set_served_window(window);
     let result = format!("src/schema.rs:7: accounts_table_defined\n{}", "column detail ".repeat(40));
     wm.record_receipt(&result);
-    let adapter = Arc::new(ScriptedAdapter::new(vec![make_response(FinishReason::Stop, "PASS", None)]));
-    let faculty = LlmDeliberationFaculty::new(persona, "Benchy", "You are Benchy.", adapter.clone())
+    let adapter = Arc::new(ScriptedAdapter::new(vec![make_response(
+        FinishReason::Stop,
+        "PASS",
+        None,
+    )]));
+    let faculty =
+        LlmDeliberationFaculty::new(persona, "Benchy", "You are Benchy.", adapter.clone())
         .with_context_window(window)
         .with_tools(vec![read_tool()])
         .with_working_set(reg)
@@ -391,7 +396,11 @@ async fn prompt_capacity_fault_keeps_demand_and_never_calls_the_adapter() {
                 "she reached the model — that IS the fix (part {oversized_part})"
             );
         } else {
-            assert!(outcome.fault.is_some());
+            assert!(
+                outcome.fault.is_none(),
+                "capacity is not a failed generation"
+            );
+            assert!(outcome.capacity_refusal.is_some());
             assert!(
                 outcome.decision.is_none(),
                 "capacity refusal is not a citizen choosing Pass"
@@ -464,11 +473,14 @@ async fn tool_use_response_becomes_an_act_verdict() {
     let fitted = faculty
         .fit_messages(prompt, required)
         .expect("required continuity fits");
+    assert!(fitted
+        .messages
+        .iter()
+        .any(|message| { message.role == "assistant" && message.content_text() == public }));
     assert!(fitted.messages.iter().any(|message| {
-        message.role == "assistant" && message.content_text() == public
-    }));
-    assert!(fitted.messages.iter().any(|message| {
-        message.content_text().contains("cursor declaration and its callers")
+        message
+            .content_text()
+            .contains("cursor declaration and its callers")
     }));
     ws.activity_room_id = Uuid::new_v4();
     assert!(faculty.messages_unfitted(&ws, None).action_statement.is_none(), "another room cannot inherit it");

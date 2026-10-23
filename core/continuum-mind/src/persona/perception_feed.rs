@@ -162,8 +162,8 @@ pub fn classify(event: &TranscriptEvent) -> Fed {
             Fed::Board(BoardChange::Reviewed { card_id, outcome, reviewer, review })
         }
         Ok(Some(RoomWork::StateChanged { card_id, by, .. })) => Fed::Board(BoardChange::Moved { card_id, by }),
-        Ok(Some(RoomWork::Claimed { card_id, owner })) => Fed::Board(BoardChange::Moved { card_id, by: owner }),
-        Ok(Some(RoomWork::Submitted { card_id, publisher })) => Fed::Board(BoardChange::Moved { card_id, by: publisher }),
+        Ok(Some(RoomWork::Claimed { card_id, owner, .. })) => Fed::Board(BoardChange::Moved { card_id, by: owner }),
+        Ok(Some(RoomWork::Submitted { card_id, publisher, .. })) => Fed::Board(BoardChange::Moved { card_id, by: publisher }),
         Ok(Some(RoomWork::Other { kind })) => Fed::OtherWork(kind),
         Err(reason) => Fed::NotPerception(reason),
         Ok(None) => match crate::persona::room_event::room_content_from_event(event) {
