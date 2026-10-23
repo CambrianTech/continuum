@@ -302,3 +302,77 @@ async fn paging_progress_watchdog_covers_the_complete_response_body() {
     server.abort();
     let _ = server.await;
 }
+
+// A task panic must close the waiter, release the exact lifecycle reader, and
+// retain fail-closed uncertainty. A retained task is not a detached success path.
+#[tokio::test]
+async fn paging_owner_panic_releases_guards_and_quarantines_uncertain_io() {
+    let root = format!("http://paging-panic-{}", Uuid::new_v4());
+    let directory = crate::inference::slots::directory();
+    let endpoint = directory.endpoint(&root);
+    let pool = directory.ensure_pool(&root, 1);
+    assert!(
+        directory
+            .negotiate_page_admission(&root, &pool, None, None)
+            .await
+    );
+    let key = ActivityKey::new(Uuid::new_v4(), Uuid::new_v4()).expect("test: activity");
+    let sem = Arc::new(Semaphore::new(1));
+    let client = reqwest::Client::new();
+    let admission = admit_turn(
+        &sem,
+        Some(key),
+        Some(pool.clone()),
+        &client,
+        &root,
+        100,
+        Duration::ZERO,
+    )
+    .await
+    .expect("test: cold admission");
+    let slot = admission.slot().expect("test: physical slot");
+    let entered = Arc::new(tokio::sync::Notify::new());
+    let release = Arc::new(tokio::sync::Notify::new());
+    let task_entered = entered.clone();
+    let task_release = release.clone();
+    let mut waiter = Box::pin(
+        admission.retain_paging(&root, move |mut admission, _| async move {
+            admission.paging_in_flight = true;
+            task_entered.notify_one();
+            task_release.notified().await;
+            // Keep the actual production admission in the unwinding task.
+            assert!(admission.paging_in_flight);
+            panic!("test: paging owner fault after dispatch");
+        }),
+    );
+    tokio::time::timeout(Duration::from_secs(5), async {
+        tokio::select! {
+            _ = &mut waiter => panic!("test: owner ended before injected fault"),
+            _ = entered.notified() => {}
+        }
+    })
+    .await
+    .expect("test: owner entered");
+    let mut transition = Box::pin(endpoint.transition());
+    assert!(futures::poll!(&mut transition).is_pending());
+    assert_eq!(sem.available_permits(), 0);
+    release.notify_one();
+    let result = tokio::time::timeout(Duration::from_secs(5), waiter)
+        .await
+        .expect("test: panic closes waiter");
+    assert!(
+        matches!(result, Err(ref error) if error == "endpoint paging owner ended without a result")
+    );
+    let drained = tokio::time::timeout(Duration::from_secs(5), transition)
+        .await
+        .expect("test: panic drains reader rather than retaining an ownership cycle");
+    assert!(endpoint.paging_recovery_required());
+    assert_eq!(sem.available_permits(), 1);
+    let permit = tokio::time::timeout(Duration::from_secs(5), pool.acquire_slot(slot))
+        .await
+        .expect("test: physical guard released")
+        .expect("test: physical permit");
+    assert!(!pool.plan_paging(slot, key).already_resident);
+    drop(permit);
+    drop(drained);
+}
