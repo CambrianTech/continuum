@@ -59,6 +59,7 @@
 //!    `PageFault` / `AccessDenied` shapes. PR-1's types are the
 //!    coordination substrate.
 
+pub mod adapter_manifest;
 pub mod blob;
 pub mod bus;
 pub mod candidate_source_store;
@@ -68,6 +69,7 @@ pub mod fine_tuning;
 pub mod fitness;
 pub mod commons_ranking;
 pub mod competence;
+pub mod corpus_ref;
 pub mod recall_select;
 pub mod fitness_ledger;
 pub mod gene_trial;
@@ -78,7 +80,9 @@ pub mod recall;
 pub mod recall_trait;
 pub mod residency;
 pub mod store;
+pub mod teach;
 pub mod tier;
+pub mod training_outcome;
 pub mod working_set;
 
 pub use blob::{ArtifactBlob, Provenance};

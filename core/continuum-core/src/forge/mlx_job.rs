@@ -1,5 +1,5 @@
 //! `forge::mlx_job` — the event-driven training JOB around the proven, synchronous
-//! mlx_lm.lora path ([`crate::forge::mlx_train::run_mlx_train`], task #32's owned
+//! mlx_lm.lora path ([`crate::genome::fine_tuning::mlx_train::run_mlx_train`], task #32's owned
 //! loop, +5.1pts).
 //!
 //! ## Fire-and-EMIT, never poll (Joel: "not a fan of polling")
@@ -27,7 +27,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 use tokio::sync::watch;
 
-use crate::forge::mlx_train::MlxTrainOutput;
+use crate::genome::fine_tuning::mlx_train::MlxTrainOutput;
 use crate::forge::protocol::{TrainProgress, TrainStatus};
 use crate::runtime::MessageBus;
 

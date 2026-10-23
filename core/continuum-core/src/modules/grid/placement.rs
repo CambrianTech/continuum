@@ -40,7 +40,7 @@ pub async fn follow_the_fleet(
         let Some(peer) = sw.peer() else {
             // Home-born, never bound: a candidate for an offload when eligible.
             if cooled {
-                at_home.push((sw.persona_id(), crate::modules::citizen_health::lane_grants_of(sw.persona_id())));
+                at_home.push((sw.persona_id(), crate::persona::health_ledger::lane_grants_of(sw.persona_id())));
             }
             continue;
         };
@@ -180,7 +180,7 @@ pub async fn follow_the_fleet(
         // the chooser may bind her to a seat that is capacity now (S1b). Her old seat is
         // only re-chosen if it is; `decide` above already refused a queued return.
         if mv == PlacementMove::Stay && sw.seat() == Seat::Home && cooled {
-            at_home.push((sw.persona_id(), crate::modules::citizen_health::lane_grants_of(sw.persona_id())));
+            at_home.push((sw.persona_id(), crate::persona::health_ledger::lane_grants_of(sw.persona_id())));
         }
     }
     for (peer, minds) in withheld {
@@ -264,7 +264,7 @@ pub async fn follow_the_fleet(
             );
             match sw.go_remote(peer, &model, now_ms) {
                 Ok(()) => {
-                    crate::modules::citizen_health::note_move(false);
+                    crate::persona::health_ledger::note_move(false);
                     continuum_base::probe!(
                         class = "persona.placement.offloaded",
                         persona = %sw.persona_name(),

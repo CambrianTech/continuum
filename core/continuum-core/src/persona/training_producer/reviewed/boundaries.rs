@@ -94,7 +94,7 @@ impl ReviewBoundaryStore {
                 }),
             )
             .await?;
-        let result: crate::modules::data::DataListResult = serde_json::from_value(value)?; // Decode the ORM command envelope at this storage boundary.
+        let result: crate::orm::list_result::DataListResult = serde_json::from_value(value)?; // Decode the ORM command envelope at this storage boundary.
         let mut pending = Vec::new();
         let mut last = None;
         let count = result.items.len();

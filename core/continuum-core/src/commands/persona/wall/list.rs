@@ -190,7 +190,7 @@ crate::action_command! {
             ));
         }
         let airc = crate::modules::work::persona_airc(&this.registry, ctx, "wall commands")?;
-        let room = crate::modules::room_resolve::resolve_room(&airc, Some(&p.room)).await?;
+        let room = crate::persona::room_resolve::resolve_room(&airc, Some(&p.room)).await?;
         let posts = airc_lib::Airc::wall_posts_in(&airc, &room, None)
             .await
             .map_err(|e| CommandError::Internal(format!("wall read failed: {e}")))?;

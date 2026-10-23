@@ -4,7 +4,7 @@
 //! …) reimplemented as [`ActionCommand`]s so they live on the SINGLE command
 //! surface every interface reads — the persona tool surface
 //! ([`authorized_tool_specs`](crate::cognition::persona_tools::authorized_tool_specs)),
-//! the grid ACL ([`ai_safe_commands`](crate::modules::grid::acl)), codegen, and
+//! the grid ACL ([`ai_safe_commands`](crate::routing::command_acl)), codegen, and
 //! runtime dispatch — all from ONE `CommandSpec` declaration per command. No
 //! second list, no parallel allow-table. A command becomes a persona tool simply
 //! by being an `AiSafe` `ActionCommand`; the descriptor flows everywhere.
@@ -46,7 +46,6 @@ use crate::code::types::{
     DirEntry, ExistsResult, FsEntryKind, GlobResult, ListResult, ReadResult, SearchMatch,
     SearchResult, TreeResult, WriteResult,
 };
-use crate::code::git_bridge::{run_git, run_git_with_env};
 use crate::code::hands::HandsKey;
 use crate::code::{search, tree, EditMode, FileEngine, PathSecurity, ShellSession};
 use crate::sdk_codegen::{AccessLevel, ActionCommand, CommandError, Ctx, DynCommand, ToolVerdict};
@@ -64,6 +63,9 @@ macro_rules! engine {
             .ok_or_else(|| CommandError::Internal("workspace vanished after provisioning".into()))?
     }};
 }
+
+use crate::code::citizen_layer::*;
+use crate::code::hands::ReleaseHandsResult;
 
 mod engine_err;
 pub use engine_err::*;

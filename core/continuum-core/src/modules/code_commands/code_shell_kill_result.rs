@@ -199,24 +199,6 @@ pub struct CodeReleaseHands {
 #[derive(Debug, Clone, Default, Serialize, Deserialize, TS, JsonSchema)]
 pub struct CodeReleaseHandsParams {}
 
-/// What `code/release-hands` ended, and what it could confirm.
-#[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
-pub struct ReleaseHandsResult {
-    /// The acting context that ended.
-    pub context: String,
-    /// Pids of executions that hadn't been proven ended: killed now, or killed earlier and
-    /// not yet reaped.
-    pub killed: Vec<u32>,
-    /// Of those, the pids NOT confirmed gone: their exit couldn't be awaited, or the kernel
-    /// still shows them or can't be read. Reported by name, never assumed dead.
-    pub unconfirmed: Vec<u32>,
-    /// Why an exit couldn't be awaited, one line per execution.
-    pub errors: Vec<String>,
-    /// True only when every execution was confirmed gone and the context's engine and shells
-    /// were dropped. False keeps them, so the caller can retry and the acting place stays known.
-    pub released: bool,
-}
-
 /// Whether a release may drop the context's handles: only when nothing is left unconfirmed
 /// and no exit failed to be awaited. One place, so the command and its test agree.
 pub(crate) fn release_confirmed(unconfirmed: &[u32], errors: &[String]) -> bool {

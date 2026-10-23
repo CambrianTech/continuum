@@ -238,7 +238,7 @@ impl LlmDeliberationFaculty {
         // THE MINDLESS RECEIPT (card aed15611) and THE GATE BECOMES A LESSON (card
         // 657e74de) read the SAME typed fact: a pass the substrate decided, not her.
         let refusal = decision.gate_refusal().map(|(g, m)| (g.to_string(), m.to_string()));
-        crate::modules::citizen_health::note_verdict_of(
+        crate::persona::health_ledger::note_verdict_of(
             self.persona_id,
             &self.persona_name,
             refusal.is_some(),

@@ -53,7 +53,7 @@ use airc_core::RoomId;
 use airc_lib::Airc;
 
 use crate::experience::standing::{project_standing, RoomStanding, STANDING_WALL_CATEGORY};
-use crate::modules::room_resolve::resolve_room;
+use crate::persona::room_resolve::resolve_room;
 use crate::persona::PersonaAircRuntimeRegistry;
 use crate::runtime::{CommandResult, ModuleConfig, ModuleContext, ModulePriority, ServiceModule};
 use crate::sdk_codegen::{AccessLevel, ActionCommand, CommandError, Ctx, DynCommand};

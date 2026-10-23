@@ -73,7 +73,7 @@ pub(crate) async fn follow_the_allocation(now_ms: u64) -> Vec<String> {
                 continue;
             }
             sw.come_home_for_good(now_ms);
-            crate::modules::citizen_health::note_move(true);
+            crate::persona::health_ledger::note_move(true);
             continuum_base::probe!(
                 class = "placement.move.opportunity",
                 persona = %sw.persona_name(),
@@ -123,7 +123,7 @@ pub(crate) async fn follow_the_allocation(now_ms: u64) -> Vec<String> {
         }
         match sw.go_remote(seat.node, &target_plan.model_id, now_ms) {
             Ok(()) => {
-                crate::modules::citizen_health::note_move(true);
+                crate::persona::health_ledger::note_move(true);
                 continuum_base::probe!(
                     class = "placement.move.opportunity",
                     persona = %sw.persona_name(),

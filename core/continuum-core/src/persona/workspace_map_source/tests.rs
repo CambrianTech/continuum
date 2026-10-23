@@ -295,7 +295,7 @@
         // recording it must never touch the developer's real ~/.continuum
         let home = tempfile::tempdir().expect("tempdir");
         let _home = crate::paths::test_home::HomeGuard::set(home.path()).await;
-        let checkout = crate::modules::repo_registry::record_own_checkout_for_test();
+        let checkout = crate::code::repo_registry::record_own_checkout_for_test();
         let layout = OwnCheckoutWorkspaceLayoutReader::default()
             .layout()
             .await
@@ -554,7 +554,7 @@
         // `~/.continuum/citizens/`.
         let home = tempfile::tempdir().expect("tempdir");
         let _home = crate::paths::test_home::HomeGuard::set(home.path()).await;
-        crate::modules::repo_registry::record_own_checkout_for_test(); // the shared base the layer clones from
+        crate::code::repo_registry::record_own_checkout_for_test(); // the shared base the layer clones from
         let layout = reader.layout().await.expect("reader provisions the layer");
         let cwd = std::env::current_dir().expect("cwd");
         assert_ne!(

@@ -25,7 +25,8 @@ use serde::Deserialize;
 use ts_rs::TS;
 use uuid::Uuid;
 
-use super::submit::{return_request, ReturnScope, SubmitOutcome};
+use super::submit::{return_request, ReturnScope};
+use crate::genome::training_outcome::SubmitOutcome;
 use crate::genome::fine_tuning::TrainingJobBoard;
 use crate::genome::fine_tuning::engine_lora_adapter::read_partition;
 use crate::genome::fine_tuning::job_dir::{genome_root, job_dir_under, read_job_request};

@@ -303,7 +303,7 @@ impl crate::persona::active_work_source::AircWorkReader for PersonaAircRuntime {
     /// `card_in_subscribed_rooms` makes for claim staging, so a wake's "what became of my
     /// card" reads the truth the renewal loop reads.
     async fn card(&self, card_id: uuid::Uuid) -> Option<airc_lib::WorkCard> {
-        crate::modules::work::card_in_subscribed_rooms(
+        crate::persona::work_board::horizon::card_in_subscribed_rooms(
             self.airc(),
             airc_work::WorkCardId::from_uuid(card_id),
         )
@@ -377,7 +377,7 @@ impl crate::persona::airc_citizen::AircCitizen for PersonaAircRuntime {
         card_id: airc_lib::WorkCardId,
         state: airc_lib::CardState,
     ) -> Result<(), String> {
-        crate::modules::work::advance_card_state(
+        crate::persona::work_board::advance::advance_card_state(
             &self.airc,
             card_id,
             state,

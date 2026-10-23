@@ -149,6 +149,11 @@ pub fn live_host_budget(
     })
 }
 
+/// The serving host budget from the GOVERNED board ALONE — the memory authority's
+/// pre-staged snapshot (Vram `available`, netted over every measured consumer + external
+/// pressure), never a raw GPU probe. This is the ONE budget an ephemeral eval/train lane
+/// sizes against at spawn (MEMORY-AUTHORITY-DAEMON slice 2): reading the board is reading a
+/// snapshot the authority maintains on ITS tick, not sampling memory on the spawn hot path.
 pub fn governed_host_budget(resource_daemon: &ResourceDaemon) -> HostBudget {
     let available = governed_vram_ceiling_or_report(resource_daemon, "governed_host_budget");
     host_budget_from(&HostBudgetInputs {

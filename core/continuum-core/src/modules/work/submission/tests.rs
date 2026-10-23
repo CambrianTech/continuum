@@ -7,7 +7,7 @@
     #[test]
     fn her_own_review_publishes_only_on_a_readable_policy_that_admits_it() {
         use crate::experience::binding::ReviewPolicy;
-        use crate::modules::work::review_gate::PolicyRead;
+        use crate::persona::work_board::review::PolicyRead;
         use crate::sdk_codegen::CommandError;
         let card = airc_work::WorkCardId::new();
         assert!(super::own_review_publishable(&PolicyRead::Absent, &card).is_ok(), "no policy keeps today's behaviour");

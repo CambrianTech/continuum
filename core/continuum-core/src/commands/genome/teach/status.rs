@@ -1,6 +1,5 @@
 //! `genome/teach-status` — the poll half of a detached teach run.
 
-use super::progress::read_teach_ledger;
 use super::*;
 
 /// `genome/teach-status` — the poll half of a long corpus-gen run. `genome/teach` runs

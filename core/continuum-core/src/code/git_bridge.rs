@@ -300,7 +300,7 @@ pub async fn git_sync_from_shared(
         .unwrap_or_default()
         .trim()
         .to_string();
-    if crate::modules::card_staging::is_card_branch(&branch) {
+    if crate::persona::card_checkout::is_card_branch(&branch) {
         continuum_base::probe!(
             class = "workspace.sync.skipped_card_branch",
             root = %workspace_root.display(),

@@ -345,7 +345,7 @@ impl PlacementSwitch {
                     return None;
                 }
                 self.set_seat(Seat::Home, now_ms);
-                crate::modules::citizen_health::note_move(false);
+                crate::persona::health_ledger::note_move(false);
                 continuum_base::probe!(
                     class = "persona.placement.fell_home",
                     persona = %self.persona_name,
@@ -372,7 +372,7 @@ impl PlacementSwitch {
             }
             PlacementMove::ReturnRemote => {
                 self.set_seat(Seat::Remote, now_ms);
-                crate::modules::citizen_health::note_move(false);
+                crate::persona::health_ledger::note_move(false);
                 continuum_base::probe!(
                     class = "persona.placement.returned",
                     persona = %self.persona_name,

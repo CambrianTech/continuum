@@ -251,7 +251,7 @@ async fn handle_ws_connection(
     // ABORTED at teardown (below), not drained.
     let stream_tx = tx.clone();
     let stream_task = tokio::spawn(async move {
-        let mut rail = crate::ipc::stream_rail::subscribe();
+        let mut rail = crate::persona::stream_rail::subscribe();
         loop {
             match rail.recv().await {
                 Ok(d) => {

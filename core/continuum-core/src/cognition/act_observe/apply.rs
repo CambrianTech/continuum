@@ -433,7 +433,7 @@ pub async fn apply_act(
                         .map(|c| c.chars().take(80).collect::<String>())
                 })
                 .unwrap_or_default();
-            let update = crate::ipc::positron_source::PersonaActUpdate {
+            let update = crate::persona::mind_events::PersonaActUpdate {
                 act_id: Uuid::new_v4(),
                 room_id,
                 actor_id: body.persona_id,
@@ -451,7 +451,7 @@ pub async fn apply_act(
                 timestamp: now_ms,
             };
             match serde_json::to_value(&update) {
-                Ok(payload) => bus.publish_async_only("persona:act", payload),
+                Ok(payload) => bus.publish_async_only(crate::persona::mind_events::PERSONA_ACT, payload),
                 Err(e) => {
                     tracing::warn!(error = %e, "persona:act receipt failed to serialize — receipt dropped, act unaffected")
                 }
@@ -512,7 +512,7 @@ pub async fn apply_act(
             }));
         // The vitals ACT PULSE: executed acts are the thinking-right-now
         // signal during a held-work turn (the cycle-delta is blind inside one).
-        crate::ipc::vitals_emitter::record_acts(body.persona_id, acts.len() as u64);
+        crate::cognition::vitals_pulse::record_acts(body.persona_id, acts.len() as u64);
         // Receipts radiate into the CARD's activity room when a held card
         // rooted her hands — the room her reviewer and teammates watch — not
         // the room whose line triggered the turn (`acting_card_of`).
@@ -720,13 +720,13 @@ pub async fn apply_act(
         chars = observation.len(),
         "acted and observed the result"
     );
-    crate::modules::citizen_health::note_act(wrote);
-    crate::modules::citizen_health::note_act_of(body.persona_id, wrote);
+    crate::persona::health_ledger::note_act(wrote);
+    crate::persona::health_ledger::note_act_of(body.persona_id, wrote);
 
     // An act that changed a checkout wakes the one carry owner (modules::card_carry), which
     // carries every resident's committed card work; a turn's end is no longer the only push.
     if disk == super::disk_change::DiskChange::Changed {
-        crate::modules::card_carry::request();
+        crate::persona::card_carry::request();
     }
 
     ActOutcome::Acted { acts }

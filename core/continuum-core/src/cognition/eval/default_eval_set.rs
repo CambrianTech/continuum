@@ -57,7 +57,7 @@ pub(crate) struct EvalLaneInner {
     /// Where + why the lane landed (GPU/CPU), surfaced on the eval result.
     pub(super) placement: crate::cognition::single_purpose_lane::PlacementEvidence,
     /// Manifest identity captured when this lane loaded its gene; never re-resolved after evaluation.
-    pub(super) measured_gene: Option<crate::forge::adapter_manifest::TrainedAdapter>,
+    pub(super) measured_gene: Option<crate::genome::adapter_manifest::TrainedAdapter>,
 }
 
 /// A cheap, cloneable handle to a (possibly shared) [`EvalLaneInner`]. Field reads

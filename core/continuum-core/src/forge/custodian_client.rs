@@ -63,7 +63,7 @@ pub trait ForgeCustodian: Send + Sync {
     /// Convert a trained MLX checkpoint into a pageable GGUF LoRA gene. Stateless:
     /// the request names the checkpoint directly. The produced bytes land under
     /// `req.save_directory` (custodian-owned); the caller records the resulting
-    /// handle (see `forge::adapter_manifest`).
+    /// handle (see `genome::adapter_manifest`).
     async fn export_gguf_lora(
         &self,
         req: &GgufLoraRequest,

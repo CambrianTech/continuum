@@ -1,12 +1,5 @@
 use super::*;
 
-/// Latest accepted candidate in the board's transcript order. AIRC projects submissions
-/// newest first; publisher wall clocks do not define recency. Keep handoff and review
-/// consumers on this contract so a resumed citizen sees the candidate being reviewed.
-pub(crate) fn latest_submission(card: &airc_lib::WorkCard) -> Option<&airc_work::WorkSubmission> {
-    card.submissions.first()
-}
-
 /// How a room is NAMED in a refusal (Kimi's `work/submit`, 2026-09-21).
 ///
 /// "card 31c241e2 is absent from this room" is TRUE and USELESS: she asked for one room
@@ -213,7 +206,7 @@ pub(super) async fn room_of_card(
             // the id is whole but on no READABLE board: named, that room answers for itself;
             // unnamed, an unreadable board is a read failure (horizon's own story), never "absent"
             match named {
-                Some(asked) => crate::modules::room_resolve::resolve_room(airc, Some(asked)).await,
+                Some(asked) => crate::persona::room_resolve::resolve_room(airc, Some(asked)).await,
                 None if !horizon.unreadable.is_empty() => Err(horizon.not_found("card", raw_card)),
                 None => Err(CommandError::Invalid(format!(
                     "{verb}: the card you named is on no board of a room you are in, so it cannot say its room: \
@@ -231,7 +224,7 @@ pub(super) async fn room_of_card(
                 return Ok(room);
             }
             match named {
-                Some(asked) => crate::modules::room_resolve::resolve_room(airc, Some(asked)).await,
+                Some(asked) => crate::persona::room_resolve::resolve_room(airc, Some(asked)).await,
                 None => Err(refusal),
             }
         }
@@ -537,8 +530,8 @@ pub(super) fn past_upstream(checkout: &std::path::Path, created: &str, repo: Opt
             && remote_branch.is_some_and(|(remote, b)| {
                 integration.as_deref() == Some(b) && repo.is_some_and(|repo| {
                     git(&["remote", "get-url", remote]).is_some_and(|url| {
-                        let identity = crate::modules::repo_registry::network_repo_identity(&url);
-                        let authority = repository_url.and_then(crate::modules::repo_registry::network_repo_identity);
+                        let identity = crate::code::repo_registry::network_repo_identity(&url);
+                        let authority = repository_url.and_then(crate::code::repo_registry::network_repo_identity);
                         identity.as_ref().is_some_and(|(_, _, name)| name == repo.as_str())
                             && identity.is_some() && identity == authority
                     })
@@ -611,7 +604,7 @@ pub(super) async fn submission_repository_url(checkout: &std::path::Path, repo: 
     let args = vec!["repo".into(), "view".into(), repo.to_string(), "--json".into(), "url".into(), "--jq".into(), ".url".into()];
     let url = crate::commands::code::github::run_gh_within(checkout, &args, std::time::Duration::from_secs(30))
         .await.map_err(CommandError::from)?;
-    if !crate::modules::repo_registry::network_repo_identity(&url).is_some_and(|(_, _, name)| name == repo.as_str()) {
+    if !crate::code::repo_registry::network_repo_identity(&url).is_some_and(|(_, _, name)| name == repo.as_str()) {
         return Err(CommandError::Invalid("GitHub repository authority returned an invalid or mismatched URL".into()));
     }
     Ok(Some(url))

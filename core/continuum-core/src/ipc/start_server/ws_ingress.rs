@@ -83,7 +83,7 @@ pub(super) fn spawn_ws_ingress(
                     // citizen's grounding) reads THAT room instead of whichever room
                     // wrote last. The node substrate above still receives everything,
                     // so the focused-room web session is unchanged.
-                    Some(global_room_substrates()),
+                    Some(crate::persona::room_substrates::global_room_substrates()),
                 );
 
                 // Per-citizen substrates for per-user views (nav): each connecting
@@ -183,7 +183,7 @@ fn resolve_room_purpose(
     projection_bus: &Arc<crate::runtime::MessageBus>,
     node_presence_deps: &Option<(std::path::PathBuf, airc_core::RoomId)>,
     persona_bootstrap_room_name: &Option<String>,
-) -> crate::ipc::room_purpose::SharedRoomPurpose {
+) -> crate::experience::room_purpose::SharedRoomPurpose {
     // Activity-purpose index (#6/#274/#329): resolve each room to the
     // recipe it was spawned from, by READING the binding `activity/spawn`
     // publishes to the room's wall. Until this existed, that binding had
@@ -191,7 +191,7 @@ fn resolve_room_purpose(
     // — projected as a plain chat room to every renderer AND to the
     // citizen standing inside it. Without a daemon (headless / no
     // bootstrap room) the honest default stands: everything is chat.
-    let room_purpose: crate::ipc::room_purpose::SharedRoomPurpose = match node_presence_deps
+    let room_purpose: crate::experience::room_purpose::SharedRoomPurpose = match node_presence_deps
         .clone()
         .zip(persona_bootstrap_room_name.clone())
     {
@@ -208,12 +208,12 @@ fn resolve_room_purpose(
                 room_name,
             ))
         }
-        None => crate::ipc::room_purpose::default_source(),
+        None => crate::experience::room_purpose::default_source(),
     };
     room_purpose
 }
 
-fn install_persona_experience_source(room_purpose: &crate::ipc::room_purpose::SharedRoomPurpose) {
+fn install_persona_experience_source(room_purpose: &crate::experience::room_purpose::SharedRoomPurpose) {
     // S1: the SAME recipe registry the projection resolves from, handed
     // to the persona spawn path — so a room's authored affordances select
     // the citizen's tool surface, not only what the renderer draws. One

@@ -50,7 +50,7 @@ pub struct PipelineExecutor {
 
 impl PipelineExecutor {
     pub fn new(executor: Arc<CommandExecutor>) -> Self {
-        let journal = match crate::modules::recipe::RecipeModule::runs_in(executor.registry()) {
+        let journal = match crate::recipe::runs_owner::RecipeModule::runs_in(executor.registry()) {
             Some(runs) => Journal::Store(runs),
             None => Journal::Missing,
         };

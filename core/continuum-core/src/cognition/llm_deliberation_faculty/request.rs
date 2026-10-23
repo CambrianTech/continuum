@@ -197,7 +197,7 @@ impl LlmDeliberationFaculty {
                 self.persona_id,
                 continuum_base::time::EpochMs::now().millis(), // pre-1970 reads 0: a pre-1970 clock stamps 0, which DENIES renewal — the conservative direction, same as no stamp
             );
-            crate::ipc::vitals_emitter::record_reasoning(self.persona_id);
+            crate::cognition::vitals_pulse::record_reasoning(self.persona_id);
             let turn_bound =
                 crate::inference::turn_bound::from_expectation(self.expected_occupancy());
             // THE DROP WITNESS (card ebce2ba0). From here the model IS producing, and

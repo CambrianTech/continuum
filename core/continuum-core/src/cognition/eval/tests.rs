@@ -2,7 +2,7 @@
     #[test]
     fn eval_gene_path_wins_over_reused_alias_and_ambiguity_refuses() {
         // Regression for #4504: never credit a different base selected by an alias collision.
-        use crate::forge::adapter_manifest::TrainedAdapter;
+        use crate::genome::adapter_manifest::TrainedAdapter;
         let manifest = vec![
             TrainedAdapter { alias: "same".into(), path: "/old".into(), base_model_id: "a".into() },
             TrainedAdapter { alias: "same".into(), path: "/new".into(), base_model_id: "b".into() },

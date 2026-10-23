@@ -119,7 +119,7 @@ pub struct OwnCheckoutWorkspaceLayoutReader(LayoutReader);
 #[async_trait::async_trait]
 impl WorkspaceLayoutReader for OwnCheckoutWorkspaceLayoutReader {
     async fn layout(&self) -> Result<WorkspaceLayout, String> {
-        let root = crate::modules::repo_registry::own_checkout()
+        let root = crate::code::repo_registry::own_checkout()
             .await
             .map_err(|e| format!("workspace root unavailable: {e}"))?;
         self.0.read_layout(root).await
@@ -241,7 +241,7 @@ impl WorkspaceLayoutReader for CitizenLayerWorkspaceLayoutReader {
         let acting_root_present = acting.is_some();
         let root = match acting {
             Some(r) => r,
-            None => crate::modules::code_commands::ensure_citizen_layer(&self.peer)
+            None => crate::code::citizen_layer::ensure_citizen_layer(&self.peer)
                 .await
                 .map_err(|e| format!("citizen layer unavailable: {e}"))?,
         };

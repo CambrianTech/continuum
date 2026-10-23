@@ -24,10 +24,8 @@ use parking_lot::Mutex;
 use serde_json::json;
 use uuid::Uuid;
 
-use crate::airc::{
-    default_socket_path_in, AircRealtimeEnvelope, AircRealtimePayload, AircRealtimePayloadRef,
-    AircRealtimeSchema,
-};
+use crate::airc::default_socket_path_in;
+use crate::routing::airc_realtime::{AircRealtimeEnvelope, AircRealtimePayload, AircRealtimePayloadRef, AircRealtimeSchema};
 use crate::modules::airc::AircModule;
 use crate::runtime::{
     CommandResult, MessageBus, ModuleContext, ModuleRegistry, ServiceModule, SharedCompute,

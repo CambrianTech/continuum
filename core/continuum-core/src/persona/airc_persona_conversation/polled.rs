@@ -137,12 +137,12 @@ pub(super) struct AttentionEvent {
 impl AttentionEvent {
     pub(super) fn classify(event: Arc<TranscriptEvent>) -> Option<Self> {
         if crate::persona::airc_citizen::is_heartbeat(&event)
-            || crate::airc::realtime_wire::is_stream_chunk(&event)
-            || crate::airc::realtime_wire::is_command_frame(&event)
+            || crate::routing::airc_realtime_wire::is_stream_chunk(&event)
+            || crate::routing::airc_realtime_wire::is_command_frame(&event)
         {
             return None;
         }
-        let perception = match crate::airc::realtime_wire::room_work_from_event(&event) {
+        let perception = match crate::persona::room_event::room_work_from_event(&event) {
             Ok(Some(work)) => Ok(IncomingMessage {
                 event_id: event.event_id.as_uuid(), lamport: event.lamport,
                 peer_id: event.peer_id.as_uuid(), room_id: event.room_id.as_uuid(),
@@ -190,7 +190,7 @@ pub(super) fn signal_if_directed(own: uuid::Uuid, attention: &AttentionEvent) {
             crate::persona::persona_identity::PersonaIdentity::new(own, rt.agent_name().to_string())
         })
         .is_some_and(|me| me.mentions(&message.text));
-    let sender_is_human = crate::ipc::positron_presence::is_human_peer(peer);
+    let sender_is_human = crate::persona::room_directory::is_human_peer(peer);
     if crate::cognition::workspace::TurnAttention::for_message(mentioned, sender_is_human)
         .requires_priority()
     {

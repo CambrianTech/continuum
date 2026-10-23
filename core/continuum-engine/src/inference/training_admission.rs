@@ -1,5 +1,7 @@
-//! Training leases share the resource authority used by live serving.
-use crate::modules::serving_daemon::LifecycleGate;
+//! Training leases share the resource authority used by live serving: an engine concern
+//! (the lease and the serving gate it reads under), so the genome's trainers and the forge
+//! both admit through it here.
+use crate::inference::serving_lifecycle::LifecycleGate;
 use crate::resources::{
     LeaseError, LeaseGuard, LeaseRequest, ReclaimPolicy, ResourceDaemon, ResourceKind,
 };
@@ -7,7 +9,7 @@ use std::time::Duration;
 
 /// A training lease of `bytes` in `kind`: the memory the lane it trains in holds its weights
 /// in (a GPU lane's VRAM, a CPU lane's host RAM).
-pub(crate) fn request(consumer: &str, kind: ResourceKind, bytes: u64) -> LeaseRequest {
+pub fn request(consumer: &str, kind: ResourceKind, bytes: u64) -> LeaseRequest {
     LeaseRequest {
         consumer_id: consumer.to_owned(),
         kind,
@@ -24,7 +26,7 @@ const CALIBRATION_GRANT_MIN: u64 = 1024 * 1024;
 
 /// What a training run asks the governor for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum TrainingNeed {
+pub enum TrainingNeed {
     /// A footprint measured for this shape: exactly these bytes.
     Measured(u64),
     /// An unmeasured shape: a calibration run leases everything governed and free, READ AT
@@ -52,7 +54,7 @@ const SERVING_BUSY_RETRY: Duration = Duration::from_secs(1);
 /// called; and nothing is admitted before serving's first plan on this core, when the
 /// authority may still read a card with no physical reading as wholly free. The gate is released as soon as the attempt decides; the granted lease is
 /// what keeps serving out of the trainer's memory for the run.
-pub(crate) async fn wait_for_training_memory(
+pub async fn wait_for_training_memory(
     daemon: std::sync::Arc<ResourceDaemon>,
     serving: &LifecycleGate,
     consumer: &str,
@@ -71,7 +73,7 @@ pub(crate) async fn wait_for_training_memory(
 /// In-engine training binds its run to the engine incarnation here. A `bind` error refuses
 /// the admission: the lease is released and the error returned, so a lane replaced while the
 /// job waited is never trained on.
-pub(crate) async fn wait_for_training_memory_bound(
+pub async fn wait_for_training_memory_bound(
     daemon: std::sync::Arc<ResourceDaemon>,
     serving: &LifecycleGate,
     consumer: &str,
@@ -186,7 +188,7 @@ pub(crate) async fn wait_for_training_memory_bound(
 
 /// The caller retains this guard through child exit/reap. This non-expiring, pinned lease cannot be
 /// reclaimed while the child runs: the lifetime of the process, not a timer, owns release.
-pub(crate) fn acquire_training_memory(consumer: &str, kind: ResourceKind, bytes: u64) -> Result<LeaseGuard, String> {
+pub fn acquire_training_memory(consumer: &str, kind: ResourceKind, bytes: u64) -> Result<LeaseGuard, String> {
     if bytes == 0 {
         return Err("training memory requirement must be measured before admission".into());
     }

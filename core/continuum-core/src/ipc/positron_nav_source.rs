@@ -470,7 +470,7 @@ pub struct ChannelBookmarksNavReader {
     /// tab's description/facet line. Same default the chat projection uses
     /// (`room_purpose::default_source()`): every room honestly "chat" until
     /// the recipe store answers richer.
-    purpose: crate::ipc::room_purpose::SharedRoomPurpose,
+    purpose: crate::experience::room_purpose::SharedRoomPurpose,
 }
 
 impl ChannelBookmarksNavReader {
@@ -478,7 +478,7 @@ impl ChannelBookmarksNavReader {
         Self {
             rooms,
             members,
-            purpose: crate::ipc::room_purpose::default_source(),
+            purpose: crate::experience::room_purpose::default_source(),
         }
     }
 
@@ -496,7 +496,7 @@ impl ChannelBookmarksNavReader {
         Self {
             rooms: rrx,
             members: mrx,
-            purpose: crate::ipc::room_purpose::default_source(),
+            purpose: crate::experience::room_purpose::default_source(),
         }
     }
 }

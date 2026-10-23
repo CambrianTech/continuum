@@ -346,15 +346,15 @@ impl RoomBoardSource {
     /// Current signed candidate state is independent of a potentially long title.
     /// Reuse the submission owner's next-action semantics and evidence address.
     fn submission_guidance(card: &airc_work::WorkCard, board: &BoardSnapshot) -> Option<String> {
-        let candidate = crate::modules::work::submission::latest_submission(card)?;
+        let candidate = crate::persona::work_board::submissions::latest_submission(card)?;
         let reviews: Vec<_> = board.submission_reviews.iter().filter(|review| {
             review.card_id == card.card_id && review.submission_id == candidate.submission_id
         }).collect();
         let review = reviews.first()?;
         let outcomes: Vec<_> = reviews.iter().map(|review| review.outcome).collect();
-        let next = crate::modules::work::submission::next_after_submission(
+        let next = crate::persona::work_board::submissions::next_after_submission(
             Some(candidate.submission_id.as_uuid()), &outcomes,
-            crate::modules::benchmark_grade::graded_at_submit(&card.title),
+            crate::recipe::benchmark_catalog::graded_at_submit(&card.title),
             Some(review.review_card_id),
         )?;
         Some(format!("{next} Read work/submission card_id={} submission_id={} for all {} signed verdicts, reviewers, and evidence.", card.card_id, candidate.submission_id, reviews.len()))
@@ -381,7 +381,7 @@ fn claim_is_live(card: &airc_work::WorkCard, now_ms: u64) -> bool {
 }
 
 /// One held card in the `[your work]` lead: its id, title and state, and the absolute path
-/// its work lives at on this node when there is one ([`crate::modules::card_staging::checkout_path_for`],
+/// its work lives at on this node when there is one ([`crate::persona::card_checkout::checkout_path_for`],
 /// the one answer to "where does this card's work live").
 ///
 /// WHY (card 31a9fe2b; the M5, 2026-10-08/09): the card and the round's kickoff name only
@@ -643,7 +643,7 @@ impl RoomBoardSource {
                 .iter()
                 .take(5)
                 .map(|c| {
-                    let checkout = crate::modules::card_staging::checkout_path_for(&self.persona_id, c);
+                    let checkout = crate::persona::card_checkout::checkout_path_for(&self.persona_id, c);
                     held_card_line(c, checkout.as_deref())
                 })
                 .collect::<Vec<_>>()

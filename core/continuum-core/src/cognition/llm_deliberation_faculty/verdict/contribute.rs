@@ -807,7 +807,7 @@ impl LlmDeliberationFaculty {
                         );
                         // The hour's receipt counts it (`[health] … think-only N`): two of
                         // these in an hour on the M5 were the whole story of #4194.
-                        crate::modules::citizen_health::note_think_only();
+                        crate::persona::health_ledger::note_think_only();
                         let call = crate::ai::types::ToolCall {
                             id: "tool-attempt-think-only".to_string(),
                             name: crate::cognition::tool_executor::command_executor::THINK_ONLY_SENTINEL

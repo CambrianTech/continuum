@@ -179,7 +179,7 @@ impl FineTuningAdapter for MlxLoraFineTuner {
                 local_id,
                 &progress,
                 crate::resources::ResourceDaemon::global(),
-                crate::modules::serving_daemon::LifecycleGate::global(),
+                crate::inference::serving_lifecycle::LifecycleGate::global(),
             )
             .await?;
             let footprint = reservation.bytes();
@@ -221,7 +221,7 @@ impl FineTuningAdapter for MlxLoraFineTuner {
             })?;
 
             let mut cmd = tokio::process::Command::new(&python);
-            cmd.args(crate::forge::mlx_train::capped_lora_entrypoint(footprint))
+            cmd.args(crate::genome::fine_tuning::mlx_train::capped_lora_entrypoint(footprint))
                 .arg("--model")
                 .arg(&train_base)
                 .arg("--train")
@@ -313,17 +313,17 @@ pub(super) async fn admit_training(
     local_id: Uuid,
     progress: &super::native_jobs::PreparationProgress,
     daemon: Option<std::sync::Arc<crate::resources::ResourceDaemon>>,
-    serving: Option<crate::modules::serving_daemon::LifecycleGate>,
+    serving: Option<crate::inference::serving_lifecycle::LifecycleGate>,
 ) -> Result<crate::resources::LeaseGuard, FineTuningError> {
     let footprint = tokio::task::spawn_blocking(move || {
-        crate::forge::mlx_train::derive_train_footprint_bytes(&model_dir, batch, sequence)
+        crate::genome::fine_tuning::mlx_train::derive_train_footprint_bytes(&model_dir, batch, sequence)
     })
     .await
     .map_err(|error| FineTuningError::LocalTrainerFailed(error.to_string()))?
     .ok_or_else(|| FineTuningError::InvalidRequest(
         "MLX training requires a local base with readable safetensors and vocab_size for admission".into(),
     ))?;
-    crate::forge::training_admission::wait_for_training_memory(
+    crate::inference::training_admission::wait_for_training_memory(
         daemon.ok_or_else(|| {
             FineTuningError::LocalTrainerFailed(
                 "MLX training requires the resource governor".into(),
@@ -506,7 +506,7 @@ fn iters_for(request: &TrainingJobRequest, schedule: &ScheduleParams) -> u32 {
 /// variable and changes nothing else about what the trainer touches.
 fn lora_config_yaml(lora: &LoRAHyperparams) -> String {
     let scale = lora.alpha as f64 / (lora.rank.max(1) as f64);
-    crate::forge::mlx_train::render_lora_parameters_yaml(lora.rank, scale, lora.dropout as f64, &[])
+    crate::genome::fine_tuning::mlx_train::render_lora_parameters_yaml(lora.rank, scale, lora.dropout as f64, &[])
 }
 
 #[cfg(test)]

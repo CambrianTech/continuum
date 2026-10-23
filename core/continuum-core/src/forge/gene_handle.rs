@@ -4,7 +4,7 @@
 //! produced gene is referenced by a handle the *producer records*, never guessed
 //! from disk (the PEFT `adapter_config.json:base_model_name_or_path` is an HF id
 //! that never string-matches the served continuum registry id — see
-//! `adapter_manifest`). [`TrainedAdapter`](super::adapter_manifest::TrainedAdapter)
+//! `adapter_manifest`). [`TrainedAdapter`](crate::genome::adapter_manifest::TrainedAdapter)
 //! is that record *locally*. [`GeneHandle`] is its **grid extension**: the same
 //! honest gene→served-model record, plus enough to locate, attribute, and
 //! trust-gate the gene when it crosses node boundaries.
@@ -47,9 +47,9 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use ts_rs::TS;
 
-use super::adapter_manifest::TrainedAdapter;
+use crate::genome::adapter_manifest::TrainedAdapter;
 use crate::identity::PeerId;
-use crate::modules::grid::node::TrustLevel;
+use crate::routing::trust_level::TrustLevel;
 
 /// Content-addressed provenance of a gene — the forge-alloy `sha256:…` hash of
 /// the populated artifact (FORGE-ALLOY-SPEC: *what it is, how it was made*). A

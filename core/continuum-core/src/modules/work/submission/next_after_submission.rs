@@ -1,49 +1,5 @@
 use super::*;
 
-/// PURE: what happens next for the holder of a card whose latest submission is `latest`, given
-/// the outcomes its reviews have reached and whether it is a bench card. The ONE place this is
-/// said, read by `work/submit`'s receipt, `work/get` and `work/submission`. `None` before anything
-/// is submitted.
-///
-/// What this exists for (card aff659aa; the 5090 2026-10-11): Kimi spent ~5 h of work turns on an
-/// already-submitted card asking which state transition triggers grading. The answer differs by
-/// card, and this says the right one:
-/// - a card graded at submit (`benchmark_grade::graded_at_submit`: a known SWE bench card) is graded
-///   by its test oracle the moment it is submitted (`work/submit` spawns `grade_submission`, which
-///   grades by the same predicate), and marking it done (`work/state <id> done`) also
-///   runs the grade (grade-on-done). The verdict posts to the room. The bench card's own text says
-///   the same, so this must never contradict it (#4954: the first wording said "no state you set
-///   triggers it", which is false here);
-/// - any other card is ordinary work, never graded: it is done when a peer's review passes it.
-/// A `Failed` review sends either kind back. An oracle FAIL is not yet a WorkReview (card
-/// 2c756670), so for a bench card the room's grade line is named as the verdict to read.
-pub(crate) fn next_after_submission(latest: Option<Uuid>, outcomes: &[airc_work::WorkReviewOutcome], graded_at_submit: bool, review: Option<WorkCardId>) -> Option<String> {
-    let submission = short8(latest?);
-    Some(if outcomes.contains(&airc_work::WorkReviewOutcome::Passed) {
-        format!("Submission {submission} passed review: the card is done. Nothing more to do on it.")
-    } else if outcomes.contains(&airc_work::WorkReviewOutcome::Failed) {
-        format!("A reviewer sent submission {submission} back (see reviews). Revise the work and work/submit again.")
-    } else if graded_at_submit {
-        format!(
-            "Submitted as {submission}. The test oracle grades it now and posts the verdict in the room \
-             (marking the card done runs the same grade). A failed grade: revise and work/submit again. \
-             A passed grade: nothing more to do."
-        )
-    } else if let Some(review) = review {
-        format!(
-            "Submitted as {submission}. Review card {review} is available to its reviewer. Await the review: a pass \
-             completes it; a send-back appears in its reviews. Do not submit again unless it is sent back."
-        )
-    } else {
-        format!("Submission {submission} is retained, but no review handoff is recorded. Retry work/submit with this same submission_id to establish review; do not publish a new candidate just to retry handoff.")
-    })
-}
-
-pub(crate) fn submission_review_handoff(board: &airc_work::WorkBoardProjection, parent: WorkCardId, submission: Option<airc_work::SubmissionId>) -> Option<WorkCardId> {
-    let id = airc_work::submission_review_card_id(parent, submission?);
-    board.review_request(id).map(|_| id)
-}
-
 #[async_trait]
 impl ActionCommand for WorkSubmit {
     const NAME: &'static str = "work/submit";
@@ -153,7 +109,7 @@ impl ActionCommand for WorkSubmit {
             // submit refusals, 3 claim refusals, 29 of 42 board calls failed). The
             // owner's submit stages the same way her claim does; staging is the
             // substrate's job whenever she needs her hands, never a verb she must find.
-            let checkout = match crate::modules::card_staging::checkout_path_for(&runtime.persona_id(), card) {
+            let checkout = match crate::persona::card_checkout::checkout_path_for(&runtime.persona_id(), card) {
                 Some(path) => path,
                 None => stage_for_owner_on_demand(&runtime, card).await?,
             };
@@ -294,7 +250,7 @@ impl ActionCommand for WorkSubmit {
             bound_staged_revision_id = Some(binding.selection.staged_revision_id);
         }
         let grade_title = card.title.clone();
-        let bench = crate::modules::benchmark_grade::graded_at_submit(&grade_title);
+        let bench = crate::recipe::benchmark_catalog::graded_at_submit(&grade_title);
         let grade_patch = candidate.artifact.clone();
         let published = airc.submit_work_in(&room, airc_lib::SubmitWork {
             submission_id: candidate.submission_id, card_id, claim_id: candidate.claim_id,
@@ -546,7 +502,7 @@ impl ActionCommand for WorkReview {
         // declares no policy keeps today's behaviour. Refused up front, by name, rather
         // than counted as nothing after the fact.
         if submission.publisher == airc.peer_id() {
-            let policy = crate::modules::work::review_gate::room_policy(airc, &room).await;
+            let policy = crate::persona::work_board::review::room_policy(airc, &room).await;
             own_review_publishable(&policy, &card_id)?;
         }
         let artifact = match p.artifact.clone() {
@@ -628,10 +584,10 @@ crate::register_command!(WorkReview);
 /// (it was admitted on a read failure); a room that declares none keeps today's behaviour.
 /// Whether that review then earns credit is the exact path's `SelfReview`, a different question.
 pub(super) fn own_review_publishable(
-    policy: &crate::modules::work::review_gate::PolicyRead,
+    policy: &crate::persona::work_board::review::PolicyRead,
     card_id: &WorkCardId,
 ) -> Result<(), CommandError> {
-    use crate::modules::work::review_gate::PolicyRead;
+    use crate::persona::work_board::review::PolicyRead;
     match policy {
         PolicyRead::Absent => Ok(()),
         PolicyRead::Declared(policy) if policy.self_review => Ok(()),

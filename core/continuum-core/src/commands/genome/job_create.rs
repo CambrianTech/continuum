@@ -12,6 +12,7 @@ use crate::genome::fine_tuning::{
 };
 
 use super::fine_tuning_error_kind;
+use crate::genome::training_outcome::Took;
 use crate::genome::competence::{Decision, GeneRef};
 use crate::genome::gene_trial::{Adoption, TrialState};
 
@@ -95,88 +96,6 @@ pub struct JobCreateOutcome {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub capacity_wait: Option<crate::genome::fine_tuning::types::CapacityWait>,
-}
-
-/// A decision's action that creates no job. The caller (the trigger) keeps the
-/// examples in her bucket for every arm: they are the competence's evidence, no gene
-/// was trained on them, and the fill after the pending thing settles decides again.
-///
-/// Deserialize is written by hand ([`TookWire`]): before #4794 (2026-10-05) this was the
-/// bare id of the job she joined, and the trigger's durable dispatches
-/// (`DispatchPhase::Held { took }`, collection `training_trigger_dispatches`) still hold
-/// rows in that shape. Read as the tagged enum alone, every one of them failed with
-/// `invalid type: string "cc4f33b7-…", expected internally tagged enum Took`, and on the
-/// 5090 (2026-10-10, BigMama) Kimi's credit settlement refused all 13 staged revisions
-/// behind it. A bare id reads as [`Took::Joined`], which is what it meant.
-#[derive(Debug, Clone, PartialEq, Serialize, TS, JsonSchema)]
-#[ts(export, export_to = "../../../protocol/typescript/genome/Took.ts")]
-#[serde(tag = "kind", rename_all = "camelCase")]
-pub enum Took {
-    /// `Decision::Join`: a job of hers already trains this competence (its local id).
-    Joined {
-        #[ts(type = "string")]
-        job: uuid::Uuid,
-    },
-    /// `Decision::Await`: a gene for this competence is on trial in her work; her cards
-    /// decide it.
-    Awaited {
-        #[ts(type = "string")]
-        trial: uuid::Uuid,
-    },
-    /// `Decision::Reuse`: a gene that already existed was adopted for trial, no training.
-    Reused {
-        #[ts(type = "string")]
-        trial: uuid::Uuid,
-        gene: GeneRef,
-    },
-    /// Her trial file could not be read: the bucket holds until it can, since nothing may
-    /// dispatch beside a trial nobody can see. Set by the trigger's gate, never by a
-    /// decision (job-create refuses with `TrialFileUnreadable` instead).
-    TrialFileUnreadable,
-
-    /// `Decision::Nothing { SurpriseLow }`: the room confirms her expectations here; her
-    /// memories suffice and no gene is minted while that holds. The bucket keeps filling
-    /// and decides again when her surprise rises.
-    Unsurprised { s: f32 },
-}
-
-/// The wire shapes a [`Took`] is read from: the tagged enum it serializes as, and the
-/// bare job id it was before #4794. The tagged half mirrors [`Took`] variant for variant
-/// (serde's `remote`-style idiom: the one place the legacy shape is admitted).
-#[derive(Deserialize)]
-#[serde(untagged)]
-enum TookWire {
-    Tagged(TookTagged),
-    LegacyJoinedJob(uuid::Uuid),
-}
-
-#[derive(Deserialize)]
-#[serde(tag = "kind", rename_all = "camelCase")]
-enum TookTagged {
-    Joined { job: uuid::Uuid },
-    Awaited { trial: uuid::Uuid },
-    Reused { trial: uuid::Uuid, gene: GeneRef },
-    TrialFileUnreadable,
-    Unsurprised { s: f32 },
-}
-
-impl From<TookWire> for Took {
-    fn from(wire: TookWire) -> Self {
-        match wire {
-            TookWire::LegacyJoinedJob(job) => Took::Joined { job },
-            TookWire::Tagged(TookTagged::Joined { job }) => Took::Joined { job },
-            TookWire::Tagged(TookTagged::Awaited { trial }) => Took::Awaited { trial },
-            TookWire::Tagged(TookTagged::Reused { trial, gene }) => Took::Reused { trial, gene },
-            TookWire::Tagged(TookTagged::TrialFileUnreadable) => Took::TrialFileUnreadable,
-            TookWire::Tagged(TookTagged::Unsurprised { s }) => Took::Unsurprised { s },
-        }
-    }
-}
-
-impl<'de> Deserialize<'de> for Took {
-    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        TookWire::deserialize(deserializer).map(Took::from)
-    }
 }
 
 /// A reuse that could not pull its gene: no job, the bucket keeps its examples, the next
@@ -341,7 +260,7 @@ crate::action_command! {
                 .map(|ex| format!("{}\n{}", ex.prompt, ex.completion))
                 .collect();
             let joined = texts.join("\n");
-            let corpus = crate::forge::recipe::CorpusRef {
+            let corpus = crate::genome::corpus_ref::CorpusRef {
                 name: p
                     .dataset_name
                     .clone()

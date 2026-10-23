@@ -92,6 +92,7 @@ pub mod job_dir;
 pub mod local_candle_adapter;
 pub mod lora_module;
 pub mod mlx_lora_adapter;
+pub mod mlx_train;
 mod native_jobs;
 pub(crate) use native_jobs::materialized_defaults;
 pub mod cuda_lora_adapter;

@@ -47,25 +47,6 @@ impl IpcStream for TcpStream {
     }
 }
 
-/// THE per-room substrate registry for this process (#408).
-///
-/// A process-global `OnceLock`, the same shape as
-/// [`positron_nav_source::global_nav_focus`] and the channel-bookmarks singleton —
-/// because the WRITER (the chat projection, in the WS boot block) and the READERS
-/// (a persona's grounding, bound at spawn in `persona::supervisor`) are constructed
-/// in different places and must land on ONE registry. Two registries would be two
-/// stores, which is the exact defect this repair exists to remove.
-///
-/// It is a registry of `Arc`-shared substrates, so this is a handle lookup, not a
-/// cache: cloning it clones `Arc`s.
-pub fn global_room_substrates() -> std::sync::Arc<continuum_positron::scoping::PerRoomSubstrates> {
-    use std::sync::OnceLock;
-    static G: OnceLock<std::sync::Arc<continuum_positron::scoping::PerRoomSubstrates>> =
-        OnceLock::new();
-    G.get_or_init(|| std::sync::Arc::new(continuum_positron::scoping::PerRoomSubstrates::new()))
-        .clone()
-}
-
 // ============================================================================
 // IPC Server State
 // ============================================================================
@@ -440,7 +421,7 @@ pub(super) fn handle_client<S: IpcStream>(
                 // Local (caller == None) skips this — the operator on the box is owner.
                 if let Some(ref c) = caller {
                     let trust = crate::modules::grid::caller_trust(Some(c));
-                    if !crate::modules::grid::acl::is_command_authorized(cmd, trust) {
+                    if !crate::routing::command_acl::is_command_authorized(cmd, trust) {
                         let _ = tx.send(Outbound::Response {
                             request_id,
                             result: HandleResult::Json(Response::error(format!(
@@ -525,11 +506,11 @@ pub(super) fn handle_client<S: IpcStream>(
                         let names: Vec<&str> = crate::sdk_codegen::command_registry()
                             .into_iter()
                             .filter(|d| {
-                                crate::modules::grid::acl::is_command_authorized(d.name, caller_trust)
+                                crate::routing::command_acl::is_command_authorized(d.name, caller_trust)
                             })
                             .map(|d| d.name)
                             .collect();
-                        let suggestions = crate::commands::help::did_you_mean(cmd, &names);
+                        let suggestions = crate::sdk_codegen::ai_help::did_you_mean(cmd, &names);
                         let hint = if suggestions.is_empty() {
                             "Call `commands/help` with no arguments to list every command you can run."
                                 .to_string()

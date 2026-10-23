@@ -9,8 +9,9 @@
 //!   writer ([`prepare_cards`]). No side effects: no room, no board, no env pre-warm.
 //! - `coursework/import` — a coursework lesson set, projected the same way.
 
+use crate::recipe::benchmark_catalog::known_benchmarks;
 use crate::commands::benchmark::{
-    known_benchmarks, prepare_cards, CardSelection, CardWork, PreparedCard,
+    prepare_cards, CardSelection, CardWork, PreparedCard,
 };
 use crate::cognition::bench_title::parse_card_title;
 use crate::sdk_codegen::{AccessLevel, ActionCommand, CommandError, Ctx};

@@ -753,7 +753,7 @@ impl RagSource for AircRagSource {
                             .iter()
                             .filter(|e| e.room_id.as_uuid() == room_id)
                             .filter_map(|e| {
-                                crate::airc::realtime_wire::room_content_from_event(e)
+                                crate::persona::room_event::room_content_from_event(e)
                                     .ok()
                                     .map(|turn| (turn.sender, turn.text, turn.media))
                             })

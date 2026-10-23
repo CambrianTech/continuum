@@ -400,8 +400,8 @@ use super::*;
                 created_at_ms: 0, updated_at_ms: 0, reviews: None,
                 submissions: Vec::new(), last_submission_rejection: None,
             };
-            let workspace = card_staging::gym_workspace(home.path(), persona);
-            assert!(card_staging::checkout_path_for(&persona, &gym_card).is_none());
+            let workspace = crate::persona::card_checkout::gym_workspace(home.path(), persona);
+            assert!(crate::persona::card_checkout::checkout_path_for(&persona, &gym_card).is_none());
             assert_eq!(
                 card_staging::stage_for_card(home.path(), persona, &gym_card).await,
                 card_staging::Staging::Ready { path: workspace.clone() },

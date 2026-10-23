@@ -36,7 +36,7 @@
 //! commit reviewable and testable without an airc fixture.
 
 use crate::cognition::model_resolver::types::HwCapabilityTier;
-use crate::modules::persona_instance_manager::{PersonaInstanceInfo, PersonaInstanceManagerModule};
+use crate::persona::instance_manager::{PersonaInstanceInfo, PersonaInstanceManagerModule};
 use crate::persona::hw_tier_descriptor::HwTierCategory;
 use crate::persona::identity_provider::PersonaIdentityIntent;
 use crate::persona::inference_profile::{InferenceProfileError, PersonaInferenceProfile};
@@ -442,7 +442,7 @@ impl PersonaSpawnerModule {
                 population = unbounded as u64,
                 lanes = lanes.unwrap_or(0) as u64, // unwrap_or: 0 = no lane known (then nothing is bounded; unreachable here)
                 seats = seats as u64,
-                minds_per_lane = crate::modules::citizen_health::MINDS_PER_LANE_STARVED_ABOVE,
+                minds_per_lane = crate::persona::health_ledger::MINDS_PER_LANE_STARVED_ABOVE,
                 "the draw is bounded by the warm slots — the rest of the roster stays dormant until the lanes grow"
             );
         }
@@ -737,8 +737,8 @@ pub fn seats_under(population: usize, hold: Option<&crate::persona::roster_hold:
 pub fn bounded_by_warm_slots(seats: usize, lanes: Option<u32>) -> usize {
     match lanes {
         Some(l) if l > 0 => {
-            let edge = (l as usize).saturating_mul(crate::modules::citizen_health::MINDS_PER_LANE_STARVED_ABOVE as usize);
-            seats.min(edge.max(crate::modules::citizen_health::MINDLESS_RESIDENT_FLOOR as usize))
+            let edge = (l as usize).saturating_mul(crate::persona::health_ledger::MINDS_PER_LANE_STARVED_ABOVE as usize);
+            seats.min(edge.max(crate::persona::health_ledger::MINDLESS_RESIDENT_FLOOR as usize))
         }
         _ => seats,
     }

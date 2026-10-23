@@ -6,7 +6,8 @@
 use continuum_base::time::EpochMs;
 use super::audit::{AuditDirection, AuditEntry, AuditOutcome};
 use super::frame::{GridFrame, GridPayload};
-use super::node::{GridNode, TransportAddress, TrustLevel};
+use super::node::{GridNode, TransportAddress};
+use crate::routing::trust_level::TrustLevel;
 mod routing;
 pub(crate) mod nodes;
 pub use nodes::handle_nodes;

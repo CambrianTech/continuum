@@ -74,8 +74,7 @@ pub(crate) fn lane_fit_window(base: &crate::model_registry::Model) -> Option<u32
     if fp.kv_per_token == 0 {
         return None;
     }
-    let budget = crate::resources::ResourceDaemon::global()
-        .map(|d| crate::modules::serving_daemon::governed_host_budget(&d).usable_bytes)
+    let budget = crate::inference::governed_budget::usable_bytes()
         .filter(|b| *b > 0)?;
     let kv_budget = budget
         .checked_sub(fp.weights_bytes)?

@@ -47,7 +47,7 @@
         // directed room message still passes below.
         let mut rpc = event("RPC result, not speech");
         rpc.headers.insert(airc_protocol::HEADER_AIRC_CORRELATION_ID.into(), Uuid::new_v4().to_string());
-        assert_eq!(crate::airc::realtime_wire::room_turn_from_event(&rpc), Err("command_frame"));
+        assert_eq!(crate::persona::room_event::room_turn_from_event(&rpc), Err("command_frame"));
         for _ in 0..CATCH_UP_PAGE * 2 {
             let mut telemetry = event("");
             telemetry.kind = airc_core::TranscriptKind::System;
@@ -59,8 +59,8 @@
                     "schema": "grid_capacity", "inline": {} }
                 }
             })).unwrap();
-            telemetry.headers = crate::airc::realtime_wire::headers_for_envelope(&envelope);
-            telemetry.body = Some(crate::airc::realtime_wire::body_for_envelope(&envelope).unwrap());
+            telemetry.headers = crate::routing::airc_realtime_wire::headers_for_envelope(&envelope);
+            telemetry.body = Some(crate::routing::airc_realtime_wire::body_for_envelope(&envelope).unwrap());
             assert!(matches!(perceptual_from_event(&telemetry), Err("non_chat_schema")));
             frames.push(Ok(Arc::new(telemetry)));
         }
@@ -138,7 +138,7 @@
         review_event.headers = headers;
         review_event.body = Some(body);
         assert!(matches!(AttentionEvent::classify(Arc::new(review_event)).unwrap().perception.unwrap().work,
-            Some(crate::airc::realtime_wire::RoomWork::Reviewed { .. })));
+            Some(crate::persona::room_event::RoomWork::Reviewed { .. })));
         let work_id = work.event_id.as_uuid();
         frames.push(Ok(Arc::new(work)));
         let mut directed = event("@citizen Shared Cargo owner: please wait");
@@ -171,7 +171,7 @@
         let perceived = conversation.perceive_ready().await.unwrap();
         assert_eq!(perceived.len(), 2);
         assert_eq!(perceived[0].event_id, work_id);
-        assert!(matches!(perceived[0].work, Some(crate::airc::realtime_wire::RoomWork::StateChanged { .. })));
+        assert!(matches!(perceived[0].work, Some(crate::persona::room_event::RoomWork::StateChanged { .. })));
         assert_eq!(perceived[1].event_id, directed.event_id.as_uuid());
         assert_eq!(perceived[1].room_id, room);
         assert_eq!(perceived[1].peer_id, peer);

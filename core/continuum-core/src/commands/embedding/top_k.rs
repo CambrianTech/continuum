@@ -6,7 +6,7 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
-use crate::modules::embedding::top_k_similar;
+use crate::cognition::embedding::vector_math::top_k_similar;
 use crate::sdk_codegen::{AccessLevel, ActionCommand, CommandError, Ctx};
 
 fn default_k() -> usize {

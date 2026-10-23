@@ -20,6 +20,7 @@
 //! - camelCase ↔ snake_case: Automatic field name conversion
 //! - JSON hydration: Automatically parse JSON fields
 
+pub mod list_result;
 pub mod adapter;
 pub mod connection_manager;
 pub mod entity;

@@ -4,7 +4,8 @@
 //! Updated by discovery, manual pairing, and periodic health checks.
 
 use continuum_base::time::EpochMs;
-use super::node::{DiscoveredNode, GridNode, TransportAddress, TrustLevel};
+use super::node::{DiscoveredNode, GridNode, TransportAddress};
+use crate::routing::trust_level::TrustLevel;
 use crate::identity::PeerId;
 use dashmap::DashMap;
 use serde::{Deserialize, Serialize};

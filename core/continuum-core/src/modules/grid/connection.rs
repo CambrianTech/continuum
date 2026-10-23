@@ -7,10 +7,10 @@
 //! - Stream frames: (future) large data transfer
 
 use continuum_base::time::EpochMs;
-use super::acl::is_command_authorized;
+use crate::routing::command_acl::is_command_authorized;
 use super::audit::{AuditDirection, AuditEntry, AuditOutcome};
 use super::frame::{FrameType, GridFrame, GridPayload};
-use super::node::TrustLevel;
+use crate::routing::trust_level::TrustLevel;
 use super::transport::{GridTransport, TransportError};
 use super::GridState;
 use std::sync::Arc;

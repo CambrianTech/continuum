@@ -35,7 +35,7 @@ use super::custodian_client::{
 };
 use super::protocol::{HealthResponse, CAPABILITY_GGUF_LORA};
 use crate::identity::PeerId;
-use crate::modules::grid::node::TrustLevel;
+use crate::routing::trust_level::TrustLevel;
 
 /// How to reach a forge custodian *service* (distinct from gene byte-custody —
 /// see [`GeneLocator`](super::gene_handle::GeneLocator)).

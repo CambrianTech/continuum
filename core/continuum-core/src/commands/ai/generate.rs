@@ -28,7 +28,7 @@ use crate::ai::{
     TextGenerationResponse, ToolCall, UsageMetrics,
 };
 use crate::logging::TimingGuard;
-use crate::modules::ai_provider::select_failure_message;
+use crate::ai::adapter::select_failure_message;
 use crate::runtime::params::Params;
 
 /// Result of `ai/generate` — the exact camelCase shape the inference seam has always

@@ -75,10 +75,10 @@ pub(super) async fn run_export_gguf_lora(
     // `llama-server --lora`, so without this the catalog stays empty and every
     // page-in fails (LIFT structurally unreachable). The producer is the only
     // place that knows BOTH the on-disk path AND the continuum base_model_id the
-    // serving daemon filters on (forge::adapter_manifest docs). Fail LOUD if the
+    // serving daemon filters on (genome::adapter_manifest docs). Fail LOUD if the
     // gene can't be registered — never return success for an unloadable gene.
     let adapter = trained_adapter_from_export(&result.details, &base_model_id)?;
-    crate::forge::adapter_manifest::register_at(manifest_path, adapter.clone())
+    crate::genome::adapter_manifest::register_at(manifest_path, adapter.clone())
         .map_err(|e| format!("gene exported but manifest registration failed: {e}"))?;
 
     Ok(CommandResult::Json(json!({
@@ -164,7 +164,7 @@ pub(super) async fn run_publish(p: ForgePublishParams) -> Result<CommandResult, 
 }
 
 /// Project the custodian's success `details` + the continuum `base_model_id` into a
-/// [`TrainedAdapter`](crate::forge::adapter_manifest::TrainedAdapter) ready to
+/// [`TrainedAdapter`](crate::genome::adapter_manifest::TrainedAdapter) ready to
 /// register. Pure (no IO) so the extraction is unit-testable without a custodian.
 /// Fail LOUD if `details.output` is absent/empty — the custodian ALWAYS reports the
 /// produced path on success (forge_custodian.rs), so a missing one is a contract
@@ -173,7 +173,7 @@ pub(super) async fn run_publish(p: ForgePublishParams) -> Result<CommandResult, 
 pub(super) fn trained_adapter_from_export(
     details: &Value,
     base_model_id: &str,
-) -> Result<crate::forge::adapter_manifest::TrainedAdapter, String> {
+) -> Result<crate::genome::adapter_manifest::TrainedAdapter, String> {
     let output = details
         .get("output")
         .and_then(Value::as_str)
@@ -188,7 +188,7 @@ pub(super) fn trained_adapter_from_export(
         .file_stem()
         .map(|s| s.to_string_lossy().into_owned())
         .unwrap_or_else(|| "gene".to_string());
-    Ok(crate::forge::adapter_manifest::TrainedAdapter {
+    Ok(crate::genome::adapter_manifest::TrainedAdapter {
         alias,
         path,
         base_model_id: base_model_id.to_string(),

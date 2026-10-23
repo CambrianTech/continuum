@@ -1,7 +1,7 @@
 //! Event-driven SWE grade-on-done — closes the kanban benchmark loop.
 //!
 //! Subscribes to `work.card.state_changed` (emitted by `work/state`, see
-//! [`crate::modules::work::WORK_CARD_STATE_CHANGED`]) and, when a benchmark SWE card
+//! [`crate::persona::work_board::events::WORK_CARD_STATE_CHANGED`]) and, when a benchmark SWE card
 //! (`[bench swe-*]`) reaches a terminal state, grades the citizen's workspace diff against
 //! the HELD-OUT oracle and posts the verdict into the room. The whole system is
 //! event-based, never polling ([[the-whole-system-is-event-based-not-polling]]): nothing
@@ -19,8 +19,9 @@ use std::any::Any;
 use async_trait::async_trait;
 use serde_json::Value;
 
-use crate::commands::benchmark::{grade_swe, known_benchmarks, SweGradeParams};
-use crate::modules::work::WORK_CARD_STATE_CHANGED;
+use crate::commands::benchmark::{grade_swe, SweGradeParams};
+use crate::recipe::benchmark_catalog::known_benchmarks;
+use crate::persona::work_board::events::WORK_CARD_STATE_CHANGED;
 use crate::persona::PersonaAircRuntimeRegistry;
 use crate::runtime::{CommandResult, ModuleConfig, ModuleContext, ModulePriority, ServiceModule};
 
@@ -305,22 +306,6 @@ async fn grade_card(
 /// is exactly her submission even if her checkout moved on. `grade_swe` grades it in a
 /// fresh clone at the base, records the verdict and follows it onto the board, as every
 /// grade path does. Not a bench card, or not a SWE one: nothing to grade, returns quietly.
-/// The bench and SWE dataset a hand-in on this card is graded against at submit, or `None` when a submit
-/// grades nothing (not a bench card, or a bench that is not a known SWE one). THE one predicate:
-/// [`grade_submission`] grades by it, and `work`'s after-submit line promises an oracle grade only
-/// when it holds (BigMama on #4954: a `[bench <non-swe>]` card would be promised a grade that never
-/// comes).
-pub(crate) fn submission_oracle_dataset(card_title: &str) -> Option<(String, &'static str)> {
-    let (bench, _) = parse_bench_title(card_title)?;
-    let dataset = known_benchmarks().iter().find(|b| b.name == bench).and_then(|s| s.swe_dataset())?;
-    Some((bench, dataset))
-}
-
-/// Whether a submit on this card is graded by the test oracle at once ([`submission_oracle_dataset`]).
-pub(crate) fn graded_at_submit(card_title: &str) -> bool {
-    submission_oracle_dataset(card_title).is_some()
-}
-
 pub(crate) async fn grade_submission(
     airc: std::sync::Arc<airc_lib::Airc>,
     room_id: uuid::Uuid,
@@ -328,7 +313,7 @@ pub(crate) async fn grade_submission(
     instance: String,
     patch: airc_blobs::MediaRef,
 ) {
-    let Some((bench, dataset)) = submission_oracle_dataset(&card_title) else {
+    let Some((bench, dataset)) = crate::recipe::benchmark_catalog::submission_oracle_dataset(&card_title) else {
         return;
     };
     let patch_hash = patch.hash.to_hex();
@@ -466,7 +451,7 @@ async fn grade_gym_card(
         .to_string();
     let task = normalized_gym_task(reference, task_id)?;
     // Her workspace root — the same layout every other per-citizen path uses.
-    let workspace = crate::modules::card_staging::gym_workspace(
+    let workspace = crate::persona::card_checkout::gym_workspace(
         &crate::paths::continuum_home().map_err(|e| format!("{e:?}"))?,
         owner.parse().map_err(|e| format!("invalid gym owner {owner}: {e}"))?,
     );
@@ -572,16 +557,6 @@ async fn grade_gym_card(
 #[cfg(test)]
 mod tests {
 
-    // what this catches (BigMama on #4954): the after-submit line promising an oracle grade on a
-    // card whose submit grades nothing. One predicate decides both: a known SWE bench card is
-    // graded at submit; a known bench that is not SWE, an unknown bench, and an ordinary card are not.
-    #[test]
-    fn only_a_known_swe_bench_card_is_graded_at_submit() {
-        assert!(super::graded_at_submit("[bench swe-bench-verified] django__django-15695: RenameIndex crashes"));
-        assert!(!super::graded_at_submit("[bench humaneval-rs] task_7: sum the list"), "a known bench that is not SWE");
-        assert!(!super::graded_at_submit("[bench no-such-bench] task_1: anything"), "an unknown bench");
-        assert!(!super::graded_at_submit("fix the deploy script"), "an ordinary card");
-    }
     use super::*;
 
     // what this catches: the title parse must extract (bench, instance) from the EXACT

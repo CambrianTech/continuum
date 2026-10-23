@@ -1,6 +1,6 @@
 //! Native Apple-Silicon LoRA training — the OWNED train step of the genome loop
 //! (#52, converging with #32). The downstream half of the pipeline already lives
-//! in [`super::lora_convert`] (`mlx_to_gguf_lora`: MLX adapter → PEFT transpose →
+//! in `forge::lora_convert` (`mlx_to_gguf_lora`: MLX adapter → PEFT transpose →
 //! GGUF-lora). This module owns the UPSTREAM half: producing that MLX adapter by
 //! running Apple's `mlx_lm.lora` trainer as a Rust-owned subprocess.
 //!
@@ -28,7 +28,7 @@
 //! 2. **scale ~2, not 20.** The prior checkpoints hardcoded `scale: 20.0`
 //!    (PEFT `lora_alpha = rank * 20`), which over-amplifies the adapter and
 //!    destabilises coherence. MLX stores `lora_parameters.scale` (== alpha/rank);
-//!    [`read_mlx_lora_hparams`](super::lora_convert::read_mlx_lora_hparams) reads
+//!    [`read_mlx_lora_hparams`](crate::forge::lora_convert::read_mlx_lora_hparams) reads
 //!    it back as `alpha = rank * scale`. So writing `scale: 2.0` here is exactly
 //!    the sane amplification the convert step then carries into the GGUF-lora.
 //!
@@ -42,7 +42,7 @@ use std::path::{Path, PathBuf};
 
 /// Where the MLX trainer interpreter lives. Explicit (no hidden default): the
 /// interpreter must be able to `import mlx_lm`, and guessing one would be a silent
-/// locality fallback. Mirrors [`super::lora_convert::ConvertEnv`]'s discipline.
+/// locality fallback. Mirrors `forge::lora_convert::ConvertEnv`'s discipline.
 #[derive(Debug, Clone)]
 pub struct MlxTrainEnv {
     /// Interpreter with `mlx_lm` importable (the Apple MLX env). Invoked as
@@ -368,7 +368,7 @@ fn acquire_train_slot(
             base_model_dir.display()
         )
     })?;
-    super::training_admission::acquire_training_memory("forge-train", crate::resources::ResourceKind::Vram, footprint)
+    crate::inference::training_admission::acquire_training_memory("forge-train", crate::resources::ResourceKind::Vram, footprint)
 }
 
 /// Run the native MLX LoRA trainer end-to-end: validate the env + IO contract,

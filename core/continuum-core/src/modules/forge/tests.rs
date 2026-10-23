@@ -1,6 +1,7 @@
 #![cfg(test)]
     use super::*;
-    use crate::forge::{AlloyHardware, AlloySource, CorpusRef};
+    use crate::forge::{AlloyHardware, AlloySource};
+    use crate::genome::corpus_ref::CorpusRef;
     use uuid::Uuid;
 
     /// A process+tag-unique manifest path so parallel gguf-lora export tests never
@@ -467,8 +468,8 @@
             .await
             .unwrap();
 
-        let all = crate::forge::adapter_manifest::load_from(&path).unwrap();
-        let matched = crate::forge::adapter_manifest::for_base(
+        let all = crate::genome::adapter_manifest::load_from(&path).unwrap();
+        let matched = crate::genome::adapter_manifest::for_base(
             &all,
             "continuum-ai/qwen3.5-4b-code-forged-GGUF",
         );

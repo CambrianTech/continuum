@@ -4,7 +4,7 @@
 //! is attached. It keeps hot-path behavior Rust-owned: delivery validation,
 //! bounded replay, receipt suppression, and coalesced ephemeral presence.
 
-use crate::airc::realtime::{
+use crate::routing::airc_realtime::{
     AircPeerManifest, AircPresenceEvent, AircRealtimeDelivery, AircRealtimeEnvelope,
     AircRealtimePayload, AircReplayCursor, AircSubscriptionAction, AircSubscriptionEvent,
 };

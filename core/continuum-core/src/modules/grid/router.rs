@@ -33,7 +33,8 @@
 //! they are too small, which is what collapses the cross-class hiding place; it
 //! does not yet catch a node that lies about its size.
 
-use super::node::{GridNode, NodeCapability, TrustLevel};
+use super::node::{GridNode, NodeCapability};
+use crate::routing::trust_level::TrustLevel;
 use super::registry::NodeRegistry;
 use crate::capacity::eligibility::{
     eligible, Capability, CapabilitySet, Offer, Requirement, WorkShape,

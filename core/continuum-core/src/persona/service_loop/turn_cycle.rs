@@ -109,12 +109,12 @@ pub(super) async fn run_turn_cycle(
             let attention = admitted_retry.then(|| deferred_input.attention()).flatten()
                 .unwrap_or_else(|| crate::cognition::workspace::TurnAttention::for_message(
                     ctx.identity.persona_identity().mentions(&msg.text),
-                    crate::ipc::positron_presence::is_human_peer(msg.peer_id),
+                    crate::persona::room_directory::is_human_peer(msg.peer_id),
                 ));
             if attention.requires_priority() {
                 // Focus = she is TAKING the turn on it; the heard receipt
                 // already fired at the drain (`wake_backlog::publish_heard`).
-                crate::ipc::vitals_emitter::record_focus(ctx.identity.peer_id.as_uuid());
+                crate::cognition::vitals_pulse::record_focus(ctx.identity.peer_id.as_uuid());
             }
             let framing = crate::cognition::workspace::TurnFraming::message(attention);
 

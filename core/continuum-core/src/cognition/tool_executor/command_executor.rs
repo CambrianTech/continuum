@@ -103,7 +103,7 @@ impl Drop for ContextRelease {
                     .execute_with_caller("code/release-hands", serde_json::json!({}), Some(identity.releasing_hands()))
                     .await
                     .and_then(|r| match r {
-                        crate::runtime::CommandResult::Json(v) => serde_json::from_value::<crate::modules::code_commands::ReleaseHandsResult>(v)
+                        crate::runtime::CommandResult::Json(v) => serde_json::from_value::<crate::code::hands::ReleaseHandsResult>(v)
                             .map_err(|e| format!("the release's result isn't its own shape: {e}")),
                         _ => Err("the release answered in a shape other than its own JSON".to_string()),
                     });
@@ -326,7 +326,7 @@ pub(crate) fn persona_tool_error(attempted: &str, raw: String) -> String {
         command_registry()
             .into_iter()
             .find(|d| d.name == name && d.access_level == AccessLevel::AiSafe)
-            .map(|d| crate::commands::help::render_ai_help(d.name, d.description, &d.params_schema))
+            .map(|d| crate::sdk_codegen::ai_help::render_ai_help(d.name, d.description, &d.params_schema))
     };
 
     // Unknown command: the substrate's dev-facing message is useless to her. Suggest
@@ -350,7 +350,7 @@ pub(crate) fn persona_tool_error(attempted: &str, raw: String) -> String {
         candidates.extend_from_slice(crate::ai::tool_dialect::ai_safe_aliases());
         let mut seen = std::collections::HashSet::new();
         let suggestions: Vec<String> =
-            crate::commands::help::did_you_mean(&normalized, &candidates)
+            crate::sdk_codegen::ai_help::did_you_mean(&normalized, &candidates)
                 .into_iter()
                 .map(crate::ai::tool_dialect::resolve_wire_name)
                 .filter(|canonical| seen.insert(canonical.clone()))
@@ -622,9 +622,7 @@ impl ToolExecutor for CommandToolExecutor {
                     }
                     // The human canvas consumes the original capture once; the
                     // persona history consumes a durable reference to those bytes.
-                    crate::ipc::positron_canvas_source::maybe_publish_observation(
-                        &ctx.persona_name, &canonical, &value.to_string(),
-                    );
+                    super::result_tap::tap(&ctx.persona_name, &canonical, &value);
                     let images = match crate::media::artifact::retain_captures(&canonical, &mut value) {
                         Ok(images) => images,
                         Err(error) => {

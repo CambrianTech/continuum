@@ -133,7 +133,7 @@ impl InFlight {
     /// Both are outcomes the substrate can read; neither is a drop.
     pub fn disarm(&mut self) {
         if std::mem::take(&mut self.armed) {
-            crate::modules::citizen_health::note_generation_outcome(false);
+            crate::persona::health_ledger::note_generation_outcome(false);
         }
     }
 }
@@ -143,7 +143,7 @@ impl Drop for InFlight {
         if !std::mem::take(&mut self.armed) {
             return;
         }
-        crate::modules::citizen_health::note_generation_outcome(true);
+        crate::persona::health_ledger::note_generation_outcome(true);
         let observed = self.chunks.is_some();
         let partial = match self.chunks.take() {
             Some(mut rx) => {

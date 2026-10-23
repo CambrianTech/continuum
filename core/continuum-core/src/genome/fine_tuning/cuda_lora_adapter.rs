@@ -181,10 +181,10 @@ impl FineTuningAdapter for CudaLoraFineTuner {
                 micro_batch = plan.micro_batch_size as u64,
                 "CUDA training plan: memory asked vs governed VRAM available before admission"
             );
-            let reservation = crate::forge::training_admission::wait_for_training_memory(
+            let reservation = crate::inference::training_admission::wait_for_training_memory(
                 crate::resources::ResourceDaemon::global()
                     .ok_or_else(|| failure("CUDA training requires the resource governor"))?,
-                &crate::modules::serving_daemon::LifecycleGate::global().ok_or_else(|| {
+                &crate::inference::serving_lifecycle::LifecycleGate::global().ok_or_else(|| {
                     failure("CUDA training requires the serving lifecycle gate")
                 })?,
                 &format!("genome-train:{id}"),

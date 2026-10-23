@@ -227,7 +227,7 @@ pub async fn materialize_adapters(
         let roster_source: Arc<dyn crate::persona::rag_budget::RagSource> =
             Arc::new(crate::persona::viewstate_rag::ViewStateRagSource::<
                 continuum_positron::RosterViewState,
-            >::per_room(crate::ipc::global_room_substrates()));
+            >::per_room(crate::persona::room_substrates::global_room_substrates()));
         cognition.set_roster_source(roster_source.clone());
 
 

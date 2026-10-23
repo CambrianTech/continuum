@@ -8,7 +8,6 @@
 //! `IntegrityAttestation` (currently `serde_json::Value` blobs). Phase 3:
 //! entity registry registration plus the `forge/run` IPC.
 
-pub mod adapter_manifest;
 pub mod artifact;
 pub mod custodian_client;
 pub mod custodian_supervisor;
@@ -20,8 +19,6 @@ pub mod gh_publisher;
 pub mod hf_publisher;
 pub mod lora_convert;
 pub mod mlx_job;
-pub mod mlx_train;
-pub(crate) mod training_admission;
 pub mod protocol;
 pub mod publish_request;
 pub mod publish_tags;
@@ -34,5 +31,5 @@ pub use endpoint::{can_accept_gguf_lora, ForgeEndpoint, ForgeHealth, ForgeLocato
 pub use gene_handle::{AlloyHash, GeneHandle, GeneLocator};
 pub use grid_custodian::{GridDispatch, GridDispatchError, GridForgeCustodian};
 pub use recipe::{
-    AlloyHardware, AlloySource, BenchmarkDef, CorpusRef, ForgeRecipe, PriorBaseline, QuantTier,
+    AlloyHardware, AlloySource, BenchmarkDef, ForgeRecipe, PriorBaseline, QuantTier,
 };

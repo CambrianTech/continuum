@@ -50,7 +50,7 @@ use crate::routing::CallerIdentity;
 use crate::runtime::{CommandExecutor, InProcessTransport, LateBound};
 use continuum_client::{ClientError, Connection, Transport};
 
-use crate::commands::training_trigger::submit::SubmitOutcome;
+use crate::genome::training_outcome::SubmitOutcome;
 use crate::orm::types::{BatchOperation, BatchOperationType};
 // `COLLECTION` is an associated const on the OrmEntity trait; the derive puts it
 // there, so the trait must be in scope to name it.

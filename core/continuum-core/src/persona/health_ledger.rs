@@ -1,28 +1,35 @@
-use super::*;
+//! The citizens' health LEDGER: what each mind did this hour (acts, writes, verdicts, lane
+//! grants, settles, moves), fed at the mind's own seams and read by the hourly health tick
+//! (`modules::citizen_health`). The facts are the mind's, so they live in the mind ring; the
+//! service module that snapshots, judges and speaks them stays in the surface.
+
+use continuum_base::time::EpochMs;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Duration;
 
 /// One hour: long enough for a fair sample of a roster that gets a lane every few
 /// minutes, short enough that a starved evening is caught before it is a night.
 pub const HEALTH_WINDOW: Duration = Duration::from_secs(3600);
 
 #[derive(Default)]
-pub(super) struct Ledger {
-    pub(super) acts: AtomicU64,
-    pub(super) writes: AtomicU64,
-    pub(super) lanes_granted: AtomicU64,
-    pub(super) settles: AtomicU64,
-    pub(super) credits_staged: AtomicU64,
-    pub(super) credits_settled: AtomicU64,
+pub(crate) struct Ledger {
+    pub(crate) acts: AtomicU64,
+    pub(crate) writes: AtomicU64,
+    pub(crate) lanes_granted: AtomicU64,
+    pub(crate) settles: AtomicU64,
+    pub(crate) credits_staged: AtomicU64,
+    pub(crate) credits_settled: AtomicU64,
     /// Turns that ended INSIDE the reasoning channel — no answer, no act (the
     /// `persona.act.think_only` seam). Two in an hour on the M5 (2026-09-20) were the
     /// whole story of #4194's allowance floor; on the hour line a regression is one number.
-    pub(super) think_only: AtomicU64,
+    pub(crate) think_only: AtomicU64,
     /// Turn iterations that NEVER REACHED THE MODEL — she waited at the serving gate and
     /// produced nothing (the `persona.act.lane_starved` seam, card cff534ba). The sibling
     /// of `think_only` and NOT the same failure: a think-only turn GOT a lane and ended
     /// inside the reasoning channel; a lane-starved turn never got one. On the M5
     /// 2026-09-20 ~21:55Z two of the hour's turns were `model_ms=0` waits of 6 and 25
     /// minutes at `lanes_available=0`, and the line called them acts.
-    pub(super) lane_starved: AtomicU64,
+    pub(crate) lane_starved: AtomicU64,
     /// THE HOUR'S LANES, not the tick's (Cormac's condition on #4244): the most lanes the
     /// node served at any fold point this window. The lane-bound rest is destructive and
     /// now rests the whole overage in one tick, so it must not stand on a point sample —
@@ -30,15 +37,15 @@ pub(super) struct Ledger {
     /// is the right fold for a destructive act: a lane truly lost rests one hour later; a
     /// lane momentarily absent rests nobody. Folded at the geometry settle and at every
     /// lane grant, read and reset by the tick.
-    pub(super) lanes_max: AtomicU64,
+    pub(crate) lanes_max: AtomicU64,
     /// THE HOUR'S PREFIX REUSE (card c119ace7): prompt tokens the lanes served from the
     /// KV cache vs. prompt tokens they had to prefill, summed over every generation
     /// that reported timings. The ratio is the fraction of every prompt the engine did
     /// NOT re-read — on the M5 at ~90 tok/s prefill, a 30k prompt at 0% reuse is six
     /// minutes of silence per act, at 75% it is ninety seconds. Separate totals, ratio
     /// derived on read (averaging rates lies — `TurnMetrics::accumulate`'s rule).
-    pub(super) prompt_cached: AtomicU64,
-    pub(super) prompt_prefilled: AtomicU64,
+    pub(crate) prompt_cached: AtomicU64,
+    pub(crate) prompt_prefilled: AtomicU64,
     /// GENERATIONS THIS HOUR AND THE ONES THROWN AWAY (card ebce2ba0). A generation is
     /// counted once it has a terminal answer — a response OR a typed adapter refusal,
     /// both of which reached the model — and `generations_dropped` counts the ones the
@@ -48,14 +55,14 @@ pub(super) struct Ledger {
     /// discarded. On the M5 2026-09-20 five of an evening's generations died this way at
     /// 1,207,290–1,492,456 ms — the act deadline reaping work that was still inside its
     /// own stated bound, and the hour line called it READING (lazy personas).
-    pub(super) generations: AtomicU64,
-    pub(super) generations_dropped: AtomicU64,
+    pub(crate) generations: AtomicU64,
+    pub(crate) generations_dropped: AtomicU64,
     /// Placement moves this hour, by cause (card 10bba591): ON OPPORTUNITY — the grid
     /// allocation seated her on a strictly better seat and the switch took it between
     /// turns; ON FAILURE — a seat went dark, cold, queued or too narrow and she fell
     /// home, returned, or spilled off a starved node.
-    pub(super) moves_opportunity: AtomicU64,
-    pub(super) moves_failure: AtomicU64,
+    pub(crate) moves_opportunity: AtomicU64,
+    pub(crate) moves_failure: AtomicU64,
     /// THE HOUR'S LANE DISTRIBUTION, bucketed by lane count (card `6d444769`). Sampled at
     /// the LANE ASK — the moment the capacity is actually spent — so the shape is the
     /// one the queueing minds met, not the one the node touched once. Read by
@@ -65,12 +72,12 @@ pub(super) struct Ledger {
     /// decides the median (Astra's second review of #4356 — a count floor AND a
     /// first-to-last span floor are both cleared by one stray early sample plus a burst).
     /// Each bucket contributes exactly once, so an hour is judged by its MINUTES.
-    pub(super) lane_bucket_max: [AtomicU64; LANE_BUCKETS],
+    pub(crate) lane_bucket_max: [AtomicU64; LANE_BUCKETS],
     /// When this window's bucketing began. 0 = no sample yet this window.
-    pub(super) lane_window_start_ms: AtomicU64,
+    pub(crate) lane_window_start_ms: AtomicU64,
 }
 
-pub(super) static LEDGER: Ledger = Ledger {
+pub(crate) static LEDGER: Ledger = Ledger {
     acts: AtomicU64::new(0),
     writes: AtomicU64::new(0),
     lanes_granted: AtomicU64::new(0),
@@ -106,14 +113,8 @@ pub(crate) fn note_move(opportunity: bool) {
     }
 }
 
-pub(super) fn snapshot_moves_and_reset() -> (u64, u64) {
+pub(crate) fn snapshot_moves_and_reset() -> (u64, u64) {
     (LEDGER.moves_opportunity.swap(0, Ordering::Relaxed), LEDGER.moves_failure.swap(0, Ordering::Relaxed))
-}
-
-/// What the grid allocator last published about THIS hour's placement: the oldest
-/// dormant mind's turn age. `None` = nothing published yet or nobody dormant.
-pub(super) fn oldest_dormant_turn_age_ms() -> Option<u64> {
-    crate::modules::grid_allocator::current().and_then(|p| p.oldest_dormant_turn_age_ms())
 }
 
 /// The node served `lanes` lanes just now — fold into the hour's maximum (see
@@ -130,14 +131,16 @@ pub fn note_lanes(lanes: u64) {
 /// also comfortably longer than any relaunch this substrate performs, which is what
 /// makes the per-bucket MAXIMUM absorb one — a bucket that contained a relaunch and
 /// also served normally reports the normal value.
-pub(super) const LANE_BUCKETS: usize = 30;
+pub(crate) const LANE_BUCKETS: usize = 30;
 
-pub(super) const LANE_BUCKET_MS: u64 = 2 * 60 * 1_000;
+pub(crate) const LANE_BUCKET_MS: u64 = 2 * 60 * 1_000;
 
 /// How many DISTINCT buckets must carry a sample before the hour has a shape. Ten
 /// buckets is twenty minutes of separate two-minute periods — not twenty minutes of
 /// elapsed time between two samples, which is the guard Astra broke: one stray early
 /// sample plus a burst cleared both a count floor and a first-to-last span.
+// derived-or-floor: a sample-sufficiency floor over the hour's own 30 buckets (a third of them),
+// not a stand-in for any rate or duration the substrate measures.
 pub const LANE_MIN_BUCKETS: usize = 10;
 
 /// The node had `lanes` lanes at a moment work was actually asked of them — fold into
@@ -149,7 +152,7 @@ pub const LANE_MIN_BUCKETS: usize = 10;
 /// all read the launch's single lane; if any ask in the same two minutes saw the real
 /// lane count, that is what the bucket reports. The bias is AGAINST resting the roster, which
 /// is the direction an error should take (Cormac's condition on #4244).
-pub(super) fn note_lane_sample(lanes: u64) {
+pub(crate) fn note_lane_sample(lanes: u64) {
     let now = EpochMs::now().millis();
     // First sample of the window opens the bucketing clock.
     let _ = LEDGER
@@ -179,7 +182,7 @@ pub(super) fn note_lane_sample(lanes: u64) {
 /// thirty-two 1-lane samples during a relaunch ten minutes later — touches exactly TWO
 /// buckets, so it is below [`LANE_MIN_BUCKETS`] and yields `None`. Volume buys nothing;
 /// only MINUTES do.
-pub(super) fn lanes_sustained_of(buckets: &[u64; LANE_BUCKETS]) -> Option<u64> {
+pub(crate) fn lanes_sustained_of(buckets: &[u64; LANE_BUCKETS]) -> Option<u64> {
     let mut seen: Vec<u64> = buckets.iter().copied().filter(|&v| v > 0).collect();
     if seen.len() < LANE_MIN_BUCKETS {
         return None;
@@ -189,7 +192,7 @@ pub(super) fn lanes_sustained_of(buckets: &[u64; LANE_BUCKETS]) -> Option<u64> {
 }
 
 /// The hour's buckets, read and reset by the tick.
-pub(super) fn snapshot_lane_buckets_and_reset() -> [u64; LANE_BUCKETS] {
+pub(crate) fn snapshot_lane_buckets_and_reset() -> [u64; LANE_BUCKETS] {
     let mut out = [0u64; LANE_BUCKETS];
     for (i, slot) in LEDGER.lane_bucket_max.iter().enumerate() {
         out[i] = slot.swap(0, Ordering::Relaxed);
@@ -199,7 +202,7 @@ pub(super) fn snapshot_lane_buckets_and_reset() -> [u64; LANE_BUCKETS] {
 }
 
 /// The same buckets WITHOUT reset, for the read-only `citizen/health` command.
-pub(super) fn read_lane_buckets() -> [u64; LANE_BUCKETS] {
+pub(crate) fn read_lane_buckets() -> [u64; LANE_BUCKETS] {
     let mut out = [0u64; LANE_BUCKETS];
     for (i, slot) in LEDGER.lane_bucket_max.iter().enumerate() {
         out[i] = slot.load(Ordering::Relaxed);
@@ -283,7 +286,7 @@ pub struct MindHour {
     pub lane_grants: u64,
 }
 
-pub(super) static MINDS: std::sync::LazyLock<dashmap::DashMap<uuid::Uuid, MindHour>> = std::sync::LazyLock::new(dashmap::DashMap::new);
+pub(crate) static MINDS: std::sync::LazyLock<dashmap::DashMap<uuid::Uuid, MindHour>> = std::sync::LazyLock::new(dashmap::DashMap::new);
 
 /// A Speak verdict was decided for a mind (the faculty's `verdict` seam).
 pub fn note_verdict_of(persona: uuid::Uuid, agent_name: &str, gate_refused: bool) {
@@ -310,8 +313,12 @@ pub fn note_act_of(persona: uuid::Uuid, wrote: bool) {
 /// verdicts were decided and at least [`MINDLESS_GATE_SHARE`] of them were the
 /// substrate refusing what she said (a recital, an envelope), and she changed no
 /// file. Pure — the rule the tick applies and a test can read.
+// derived-or-floor: an evidence floor (how many decided verdicts before a pattern is judged), a
+// count of her own acts, not a measured quantity.
 pub const MINDLESS_MIN_VERDICTS: u64 = 6;
 
+// derived-or-floor: a policy share of her own verdicts (four in five refused), a ratio of counts
+// the ledger keeps, not a rate, a size or a time.
 pub const MINDLESS_GATE_SHARE: f64 = 0.8;
 
 pub fn is_mindless(m: &MindHour) -> bool {
@@ -322,8 +329,12 @@ pub fn is_mindless(m: &MindHour) -> bool {
 
 /// Never page the roster below this many resident minds, and never more than this
 /// many seats in one tick — a page-out is a considered act, not a purge.
+// derived-or-floor: a floor that only ever keeps minds resident (never pages below two), a
+// roster policy, not a measurement.
 pub const MINDLESS_RESIDENT_FLOOR: u64 = 2;
 
+// derived-or-floor: a pacing cap on a considered act (at most three page-outs a tick), so a
+// rest is never a purge; nothing measured stands behind it.
 pub const MINDLESS_MAX_PER_TICK: usize = 3;
 
 /// The pure choice: which minds to page out this tick, worst first, bounded.
@@ -370,7 +381,7 @@ pub fn rotation_candidates(
     out
 }
 
-pub(super) fn snapshot_minds_and_reset() -> Vec<(uuid::Uuid, MindHour)> {
+pub(crate) fn snapshot_minds_and_reset() -> Vec<(uuid::Uuid, MindHour)> {
     let out: Vec<(uuid::Uuid, MindHour)> = MINDS.iter().map(|e| (*e.key(), e.value().clone())).collect();
     MINDS.clear();
     out
@@ -531,6 +542,8 @@ impl Verdict {
 /// minutes each; three was a lane every ~12, and the hour it produced (16 on 3, acts 5,
 /// every lane ask deferred) was not useful. Minds past the edge rest — dormant, not
 /// resident, not polling — and return on a change.
+// derived-or-floor: the roster shape Joel set (one mind turning, one prefilled per slot, above),
+// a policy on the count of minds per lane, not a stand-in for a measured rate.
 pub const MINDS_PER_LANE_STARVED_ABOVE: u64 = 2;
 
 /// A node is DROPPING above this share of its generations thrown away in flight. One
@@ -699,7 +712,7 @@ pub fn line(h: &CitizenHealth, v: &Verdict) -> String {
 /// already nine positional `u64`s, and on 2026-09-20 two PRs each widening it by one
 /// landed a TENTH value behind a nine-wide signature — the arity was the only thing
 /// that noticed. A separable counter cannot be mis-positioned by a merge.
-pub(super) fn snapshot_lane_starved_and_reset() -> u64 {
+pub(crate) fn snapshot_lane_starved_and_reset() -> u64 {
     LEDGER.lane_starved.swap(0, Ordering::Relaxed)
 }
 
@@ -707,7 +720,7 @@ pub(super) fn snapshot_lane_starved_and_reset() -> u64 {
 /// Its own reader for the reason [`snapshot_lane_starved_and_reset`] is: the main tuple
 /// is already nine positional `u64`s and a tenth cannot be mis-positioned by a merge if
 /// it never joins the tuple.
-pub(super) fn snapshot_generations_and_reset() -> (u64, u64) {
+pub(crate) fn snapshot_generations_and_reset() -> (u64, u64) {
     (
         LEDGER.generations.swap(0, Ordering::Relaxed),
         LEDGER.generations_dropped.swap(0, Ordering::Relaxed),
@@ -718,14 +731,14 @@ pub(super) fn snapshot_generations_and_reset() -> (u64, u64) {
 /// Its own reader, not a tenth slot on [`snapshot_and_reset`]'s tuple: the two are read
 /// at the same tick but they are different ledgers, and a tuple that long stops being
 /// legible at the call site.
-pub(super) fn snapshot_prompt_and_reset() -> (u64, u64) {
+pub(crate) fn snapshot_prompt_and_reset() -> (u64, u64) {
     (
         LEDGER.prompt_cached.swap(0, Ordering::Relaxed),
         LEDGER.prompt_prefilled.swap(0, Ordering::Relaxed),
     )
 }
 
-pub(super) fn snapshot_and_reset() -> (u64, u64, u64, u64, u64, u64, u64) {
+pub(crate) fn snapshot_and_reset() -> (u64, u64, u64, u64, u64, u64, u64) {
     (
         LEDGER.acts.swap(0, Ordering::Relaxed),
         LEDGER.writes.swap(0, Ordering::Relaxed),
@@ -735,16 +748,4 @@ pub(super) fn snapshot_and_reset() -> (u64, u64, u64, u64, u64, u64, u64) {
         LEDGER.credits_settled.swap(0, Ordering::Relaxed),
         LEDGER.think_only.swap(0, Ordering::Relaxed),
     )
-}
-
-/// Page out this hour's mindless seats: flush every resident's working memory (her
-/// checkpoint), take each chosen seat off the grid (the same orderly teardown as
-/// `persona/instances/despawn`), and record the rest so the reconciler does not
-/// re-draw her. Returns the names paged out, for the line.
-/// Why a seat rests — each rule that pages out, with its own receipt.
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub(super) enum RestCause {
-    Mindless,
-    /// The slow clip: a dormant mind is waiting and this seat's hour held nothing.
-    Rotation,
 }

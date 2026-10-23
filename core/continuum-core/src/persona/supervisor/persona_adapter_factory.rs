@@ -199,7 +199,7 @@ pub struct PersonaContext {
     /// `[[personas-are-citizens-airc-is-identity-provider]]`. Same
     /// type for personas, humans, browsers — everyone has a
     /// `.identity`. Token/auth state lives inside.
-    pub identity: crate::modules::persona_instance_manager::PersonaInstanceInfo,
+    pub identity: crate::persona::instance_manager::PersonaInstanceInfo,
     /// The single source of truth for this persona's inference
     /// shape — context window, ubatch, sampling, model id, stop
     /// sequences, etc. Produced by slice-5 `build_profile`. Every

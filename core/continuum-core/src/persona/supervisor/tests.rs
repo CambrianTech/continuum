@@ -1,6 +1,6 @@
 #![cfg(test)]
     use super::*;
-    use crate::modules::persona_instance_manager::PersonaInstanceInfo;
+    use crate::persona::instance_manager::PersonaInstanceInfo;
     use crate::persona::airc_citizen::StubAircCitizen;
     use crate::persona::hw_tier_descriptor::HwTierCategory;
     use crate::persona::identity_provider::PersonaIdentitySource;

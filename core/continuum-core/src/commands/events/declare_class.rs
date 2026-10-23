@@ -7,7 +7,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
-use crate::events::{declare_event_class, EventClassConfig};
+use crate::runtime::event_classes::{declare_event_class, EventClassConfig};
 use crate::sdk_codegen::CommandError;
 
 /// Inputs to `events/declare-class`: the class name plus the (flattened) config
@@ -35,7 +35,7 @@ crate::action_command! {
     name: "events/declare-class",
     access: Internal,
     params: DeclareEventClassParams,
-    output: crate::events::ResolvedEventClassConfig,
+    output: crate::runtime::event_classes::ResolvedEventClassConfig,
     run(_this, _ctx, p) => {
         declare_event_class(&p.name, &p.config)
             .map_err(|e| CommandError::Invalid(e.to_string()))

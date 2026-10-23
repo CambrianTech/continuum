@@ -20,13 +20,13 @@ use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 use uuid::Uuid;
 
-use crate::commands::genome::job_create::Took;
+use crate::genome::training_outcome::SubmitOutcome;
 
 use crate::genome::fine_tuning::types::{
-    JobHandle, LoRAHyperparams, ScheduleParams, TrainingExample, TrainingSource,
+    LoRAHyperparams, ScheduleParams, TrainingExample, TrainingSource,
 };
 use crate::modules::training_trigger::{
-    AcceptanceReceipt, BucketKey, DispatchResult, PendingBatch, TrainingTriggerState,
+    BucketKey, DispatchResult, PendingBatch, TrainingTriggerState,
     DEFAULT_MIN_EXAMPLES, DEFAULT_VALIDATION_SPLIT,
 };
 use crate::sdk_codegen::CommandError;
@@ -243,118 +243,6 @@ async fn return_chunk(
         None => params,
     };
     submit_batch_inner(state, params, Some(job)).await
-}
-
-/// Outcome-as-data extends the legacy envelope with an acceptance receipt.
-/// Receipt presence proves destination ownership independently of dispatch success;
-/// expected domain/storage refusals retain their typed discriminator.
-#[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
-#[serde(rename_all = "camelCase")]
-#[ts(
-    export,
-    export_to = "../../../protocol/typescript/training_trigger/SubmitOutcome.ts"
-)]
-pub struct SubmitOutcome {
-    pub success: bool,
-    /// Durable ownership receipt, independent of later dispatch success. Absent
-    /// on persistence refusal. It attests neither training completion nor cross-node dedupe.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
-    pub acceptance: Option<AcceptanceReceipt>,
-    /// BatchAppended, JobDispatched, or AlreadyAccepted (absent on rejections).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
-    pub outcome: Option<String>,
-    /// BatchAppended: examples now pending in the bucket.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
-    pub current_count: Option<u32>,
-    /// BatchAppended: the bucket's fire threshold.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
-    pub threshold: Option<u32>,
-    /// JobDispatched: examples carried into the dispatched job.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
-    pub examples_used: Option<u32>,
-    /// JobDispatched: the provider the coordinator selected.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
-    pub selected_provider: Option<String>,
-    /// JobDispatched: the created job's handle.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
-    pub job_handle: Option<JobHandle>,
-    /// BatchAppended after a fill that was HELD: what the examples wait for (a job of
-    /// hers already training this competence, a trial judging a gene for it, or the
-    /// gene this fill adopted for trial).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
-    pub held_by: Option<Took>,
-    /// Rejections: the diagnostic message.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
-    pub error: Option<String>,
-    /// InconsistentBucket, SubmissionConflict, PersistenceUnavailable,
-    /// PersistenceFailed, DispatchFailed, or RecoveryRequired.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
-    pub error_kind: Option<String>,
-}
-
-impl SubmitOutcome {
-    fn base(success: bool) -> Self {
-        Self {
-            success,
-            acceptance: None,
-            outcome: None,
-            current_count: None,
-            threshold: None,
-            examples_used: None,
-            selected_provider: None,
-            job_handle: None,
-            held_by: None,
-            error: None,
-            error_kind: None,
-        }
-    }
-
-    fn batch_appended(current_count: u32, threshold: u32) -> Self {
-        Self {
-            outcome: Some("BatchAppended".into()),
-            current_count: Some(current_count),
-            threshold: Some(threshold),
-            ..Self::base(true)
-        }
-    }
-
-    /// A fill held without a job of its own: appended, and the outcome names what the
-    /// examples wait for.
-    fn batch_held(current_count: u32, threshold: u32, took: Took) -> Self {
-        Self { held_by: Some(took), ..Self::batch_appended(current_count, threshold) }
-    }
-
-    fn job_dispatched(
-        examples_used: u32,
-        selected_provider: String,
-        job_handle: JobHandle,
-    ) -> Self {
-        Self {
-            outcome: Some("JobDispatched".into()),
-            examples_used: Some(examples_used),
-            selected_provider: Some(selected_provider),
-            job_handle: Some(job_handle),
-            ..Self::base(true)
-        }
-    }
-
-    pub(crate) fn refused(kind: &str, error: String) -> Self {
-        Self {
-            error: Some(error),
-            error_kind: Some(kind.into()),
-            ..Self::base(false)
-        }
-    }
 }
 
 crate::action_command! {

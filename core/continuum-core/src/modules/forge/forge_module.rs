@@ -98,7 +98,7 @@ impl ServiceModule for ForgeModule {
                     // The default manifest path — the same file the serving daemon
                     // reads at (re)spawn. Resolve loud (a pathological missing HOME
                     // with no override fails here, not by writing to a surprise loc).
-                    let manifest = crate::forge::adapter_manifest::manifest_path()?;
+                    let manifest = crate::genome::adapter_manifest::manifest_path()?;
                     // The trinity split: the canonical base_model_id (→ manifest, eval)
                     // resolves IN-CORE to the safetensors hf_source (→ custodian convert).
                     let base_model_id = parsed.base_model_id.clone().ok_or_else(|| {
@@ -454,7 +454,7 @@ pub(super) fn run_train_native_mlx(
     p: ForgeTrainParams,
     bus: Option<Arc<MessageBus>>,
 ) -> Result<CommandResult, String> {
-    use crate::forge::mlx_train::{run_mlx_train, MlxBasePrep, MlxTrainEnv, MlxTrainSpec};
+    use crate::genome::fine_tuning::mlx_train::{run_mlx_train, MlxBasePrep, MlxTrainEnv, MlxTrainSpec};
 
     // --- train base: explicit + asserted to equal the served weights ---
     let base_model_dir = p

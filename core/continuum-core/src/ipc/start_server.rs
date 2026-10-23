@@ -40,6 +40,17 @@ pub(crate) fn install_kernel_extensions() {
     crate::runtime::extensions::install_command_name_resolver(crate::ai::tool_dialect::resolve_wire_name);
     crate::runtime::extensions::install_settle_before_stop(Arc::new(crate::cognition::turn_ingress::TurnsSettle));
     crate::runtime::extensions::install_turns_in_flight(crate::cognition::turn_ingress::in_flight);
+    crate::persona::command_inbound_pump::install_command_handler(|airc, executor, grants| {
+        crate::ipc::command_ingress::CommandRequestHandler::with_grant_authorizer(airc, executor, grants)
+    });
+    crate::persona::card_checkout::install_card_stager(|home, peer, card| {
+        Box::pin(async move {
+            crate::modules::card_staging::stage_for_card(&home, peer, &card).await;
+        })
+    });
+    crate::inference::governed_budget::install(|daemon| {
+        crate::modules::serving_daemon::governed_host_budget(daemon).usable_bytes
+    });
     crate::inference::resource_admission::install_directed_pending(crate::cognition::directed_pending::any_pending);
     crate::runtime::extensions::install_roster(|| {
         crate::persona::PersonaAircRuntimeRegistry::try_global()

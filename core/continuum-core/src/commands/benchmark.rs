@@ -36,6 +36,8 @@ pub(crate) mod credit_recovery;
 // ---------------------------------------------------------------------------------------
 use crate::cognition::swe_bench::{self, SweVerdict};
 
+use crate::recipe::benchmark_catalog::{known_benchmarks, BenchmarkSpec};
+
 mod grader;
 pub use grader::*;
 mod benchmark_dispatch_params;

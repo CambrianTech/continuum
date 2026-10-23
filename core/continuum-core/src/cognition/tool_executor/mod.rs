@@ -29,13 +29,9 @@
 //!   already laid here — no caller-code changes
 
 pub mod command_executor;
+pub mod result_tap;
 pub mod spill;
 pub mod types;
-
-/// Realistic 50-persona load/profiling harness (real CodeModule, real payloads).
-/// Gated `stress-tests` per the test doctrine; compiled only for profiling runs.
-#[cfg(all(test, feature = "stress-tests"))]
-mod load_harness;
 
 pub use command_executor::CommandToolExecutor;
 pub use types::{

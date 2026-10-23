@@ -20,7 +20,7 @@ use uuid::Uuid;
 
 use super::DatasetService;
 use crate::commands::training_trigger::submit::SubmitParams;
-use crate::forge::recipe::CorpusRef;
+use crate::genome::corpus_ref::CorpusRef;
 use crate::persona::inbox_admission::content_hash_sha256;
 
 const SCHEMA_VERSION: u32 = 1;

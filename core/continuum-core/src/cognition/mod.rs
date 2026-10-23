@@ -69,6 +69,7 @@ pub mod eval;
 pub mod exam_serving;
 pub mod experience;
 pub mod faculty_pulse;
+pub mod vitals_pulse;
 pub mod focus_policy;
 pub mod generate_recipe;
 pub mod generate_response;

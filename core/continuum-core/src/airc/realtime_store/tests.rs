@@ -1,6 +1,6 @@
 #![cfg(test)]
     use super::*;
-    use crate::airc::realtime::{
+    use crate::routing::airc_realtime::{
         AircPeerCapability, AircPresenceState, AircRealtimePayloadRef, AircRealtimeSchema,
         AircSubscriptionAction, AircSubscriptionEvent,
     };
@@ -315,7 +315,7 @@
             "peer-1".to_string(),
             10,
             AircRealtimePayload::Receipt {
-                receipt: crate::airc::realtime::AircReceipt {
+                receipt: crate::routing::airc_realtime::AircReceipt {
                     event_id: "evt-1".to_string(),
                     peer_id: PeerId::from_uuid(uuid::Uuid::new_v5(
                         &uuid::Uuid::NAMESPACE_OID,

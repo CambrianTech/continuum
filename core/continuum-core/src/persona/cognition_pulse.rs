@@ -162,7 +162,7 @@ impl CommandWork {
         work.retain(|_, p| {
             p.active > 0
                 || p.completed_at.is_some_and(|t| {
-                    now_ms.saturating_sub(t) <= crate::modules::work::DEFAULT_CLAIM_TTL_MS
+                    now_ms.saturating_sub(t) <= crate::persona::work_board::facts::DEFAULT_CLAIM_TTL_MS
                 })
         });
     }
@@ -280,7 +280,7 @@ mod tests {
     fn command_work_protects_only_its_card_and_ends_on_drop() {
         let persona = Uuid::new_v4();
         let (card, other) = (Uuid::new_v4(), Uuid::new_v4());
-        let ttl = crate::modules::work::DEFAULT_CLAIM_TTL_MS;
+        let ttl = crate::persona::work_board::facts::DEFAULT_CLAIM_TTL_MS;
         let now = EpochMs::now().millis();
         touch(persona, now.saturating_sub(ttl * 3));
         let captured = || CommandWork {
@@ -319,7 +319,7 @@ mod tests {
     // structurally unreachable (the 2026-08-16 stalemate).
     #[test]
     fn renewal_is_earned_only_by_recent_cognition() {
-        let ttl = crate::modules::work::DEFAULT_CLAIM_TTL_MS;
+        let ttl = crate::persona::work_board::facts::DEFAULT_CLAIM_TTL_MS;
         let persona = Uuid::from_u128(7);
         // never stamped → not earned
         assert!(!renewal_earned(idle_ms(persona, 1_000), ttl));

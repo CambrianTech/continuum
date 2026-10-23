@@ -55,7 +55,7 @@ use uuid::Uuid;
 use airc_core::doctrine::WallPostPublished;
 
 use crate::experience::binding::{project_binding, RECIPE_WALL_CATEGORY};
-use crate::ipc::room_purpose::RoomPurposeSource;
+use crate::experience::room_purpose::RoomPurposeSource;
 use crate::runtime::MessageBus;
 
 /// The purpose an unbound room reports — the honest default the
