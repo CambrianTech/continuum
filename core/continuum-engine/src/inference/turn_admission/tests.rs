@@ -428,7 +428,7 @@
         let mut contract = crate::inference::slots::KvPageContract {
             model_id: "fixture".into(), model: "fixture.gguf".into(), adapters: vec![],
             page_dir: Some("fixture-pages".into()), context: 8192, slots: 1,
-            cache_type: Some("q8_0".into()), engine: "fixture-engine".into(),
+            cache_type: Some("q8_0".into()), flash_attn: Some(true), engine_build: None, engine: "fixture-engine".into(),
             revisions: Some(vec![("fixture.gguf".into(), 73, std::time::SystemTime::UNIX_EPOCH)]),
         };
         let initial = endpoint.transition().await;
@@ -645,6 +645,8 @@
             context: 8192,
             slots: 3,
             cache_type: Some("q8_0".into()),
+            flash_attn: Some(true),
+            engine_build: None,
             engine: "fixture-engine".into(),
             revisions: Some(vec![(
                 "fixture.gguf".into(),

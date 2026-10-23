@@ -90,9 +90,9 @@ pub struct LaneRecord {
     #[serde(default)]
     pub lanes: u32,
     /// The KV page directory this lane was launched with (`--slot-save-path`) — the
-    /// live-lane inventory the stale-generation sweep protects. `None` for lanes
-    /// recorded before this field existed (their dir is unknown → the sweep stays
-    /// its hand, see `sweep_stale_page_generations`).
+    /// live-lane inventory the legacy page-dir migration protects. `None` for lanes
+    /// recorded before this field existed (their dir is unknown → the migration stays
+    /// its hand, see `migrate_legacy_page_dir`).
     #[serde(default)]
     pub page_dir: Option<PathBuf>,
     /// The engine binary this lane was launched from: how a deploy knows which engine slot a

@@ -1,0 +1,277 @@
+//! The confirmed-save ledger of one page dir, and the page-format identity it is keyed by.
+use super::*;
+
+/// The confirmed-save set of one page dir, on disk, so it outlives the process
+/// (a deploy). Before this, eligibility lived only in [`KvSlotPool::saved`], which
+/// starts empty in every core: on the M5 2026-10-10 the first turns after the 18:49Z
+/// deploy reused nothing (turn_cached 0 of 31,811 and 27,250) while their pages sat on
+/// disk. The file holds exactly the in-memory set: a key enters only after the engine
+/// confirms its save and leaves before any save overwrites it, so a timed-out or
+/// interrupted save is never in it. It is read back only under the same page-format
+/// identity it was written with ([`KvPageContract::fingerprint`]).
+pub(crate) struct SavedLedger {
+    pub(super) path: std::path::PathBuf,
+    pub(super) fingerprint: String,
+    /// What the fingerprint means ([`LEDGER_FORMAT`]); an adopter keeps the format of the
+    /// file it adopted, so it never relabels another format's fingerprint as this one's.
+    pub(super) format: u32,
+    /// For a ledger written before [`LEDGER_FORMAT`]: the newest modification time of the
+    /// files whose identity the page format rests on (model, adapters, draft). A legacy page
+    /// written before it may hold another model's KV under the same name, so it is dropped.
+    pub(super) identity_floor: Option<std::time::SystemTime>,
+    /// The generation of the snapshot on disk; a write serializes on this and skips a
+    /// snapshot older than it.
+    pub(super) written: Mutex<u64>,
+    /// The engine process these pages belong to, stamped by the spawn once the engine is
+    /// ready ([`stamp_engine_incarnation`]) or carried over by an adoption.
+    pub(super) incarnation: std::sync::OnceLock<(u32, u64)>,
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+pub(super) struct SavedLedgerFile {
+    /// 0 (absent) = written before the page-format identity: its fingerprint digested the
+    /// exact window, slot count and engine file, so it changed on every relaunch.
+    #[serde(default)]
+    pub(super) format: u32,
+    pub(super) fingerprint: String,
+    pub(super) keys: Vec<(Uuid, Uuid)>,
+    /// The engine process that wrote these pages: (pid, OS start time). A core that
+    /// ADOPTS a running engine has no launch contract of its own; this is how it proves
+    /// the ledger is that very process's, and so under its contract. Absent on a ledger
+    /// written before the spawn stamped it: such a ledger is never adopted.
+    #[serde(default)]
+    pub(super) incarnation: Option<(u32, u64)>,
+    /// Which activity's KV each physical slot of that process holds: (slot, persona, room).
+    /// A core that adopts the same process resumes them in place instead of overwriting a
+    /// resident's warm KV with an older page (or with another mind's prefill, unsaved).
+    #[serde(default)]
+    pub(super) residents: Vec<(u32, Uuid, Uuid)>,
+}
+
+/// What a ledger fingerprint digests: 2 = the page-format identity (model, adapters and
+/// draft by revision, KV cache type, flash attention, engine build), never the window or
+/// the slot count, which the engine checks itself on every restore.
+pub(super) const LEDGER_FORMAT: u32 = 2;
+
+/// The ledger's file name inside a page dir. Not an `a-*.bin` page, so the page
+/// store's trim never counts or removes it.
+pub(super) const SAVED_LEDGER_FILE: &str = "saved-ledger.json";
+
+/// One numbered state of the pool's ledger, taken under the lock that changed it.
+pub(super) struct LedgerSnapshot {
+    pub(super) generation: u64,
+    pub(super) keys: Vec<(Uuid, Uuid)>,
+    pub(super) residents: Vec<(u32, Uuid, Uuid)>,
+}
+
+/// What a ledger restores: the restorable keys, and (for the same engine process only)
+/// which slot each resident occupies.
+#[derive(Default)]
+pub(super) struct LoadedLedger {
+    pub(super) keys: std::collections::HashSet<ActivityKey>,
+    pub(super) residents: Vec<(u32, ActivityKey)>,
+}
+
+impl SavedLedger {
+    pub(crate) fn in_dir(page_dir: &std::path::Path, fingerprint: String) -> Self {
+        Self {
+            path: page_dir.join(SAVED_LEDGER_FILE),
+            fingerprint,
+            format: LEDGER_FORMAT,
+            identity_floor: None,
+            written: Mutex::new(0),
+            incarnation: std::sync::OnceLock::new(),
+        }
+    }
+
+    /// Adopt a legacy (pre-[`LEDGER_FORMAT`]) ledger's pages written after `floor`.
+    pub(crate) fn with_identity_floor(mut self, floor: Option<std::time::SystemTime>) -> Self {
+        self.identity_floor = floor;
+        self
+    }
+
+    /// The ledger a running engine left in `page_dir`, if that engine is the process
+    /// `incarnation` names: the fingerprint it was written under becomes this ledger's
+    /// own, because it is the same process under the same launch contract. Any other
+    /// ledger (another process, an unstamped one, none) is not this engine's.
+    pub(super) fn of_running_engine(page_dir: &std::path::Path, incarnation: (u32, u64)) -> Result<Self, AdoptRefusal> {
+        let bytes = match std::fs::read(page_dir.join(SAVED_LEDGER_FILE)) {
+            Ok(bytes) => bytes,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Err(AdoptRefusal::NoLedger),
+            Err(_) => return Err(AdoptRefusal::Unreadable),
+        };
+        let file = serde_json::from_slice::<SavedLedgerFile>(&bytes).map_err(|_| AdoptRefusal::Unreadable)?;
+        match file.incarnation {
+            None => return Err(AdoptRefusal::Unstamped),
+            Some(written_by) if written_by != incarnation => return Err(AdoptRefusal::AnotherProcess),
+            Some(_) => {}
+        }
+        let mut ledger = Self::in_dir(page_dir, file.fingerprint);
+        ledger.format = file.format;
+        let _ = ledger.incarnation.set(incarnation);
+        Ok(ledger)
+    }
+
+    /// Atomic replace (write a sibling, then `replace_file`) into a dir that must already
+    /// exist: the lane creates its page dir; the ledger never creates one. Writes are
+    /// serialized and a snapshot older than the one on disk is dropped, so the file is
+    /// always the newest set even when writers race.
+    pub(super) fn write(&self, snapshot: LedgerSnapshot) -> std::io::Result<()> {
+        let mut written = self.written.lock();
+        if snapshot.generation <= *written {
+            return Ok(());
+        }
+        let file = SavedLedgerFile {
+            format: self.format,
+            fingerprint: self.fingerprint.clone(),
+            keys: snapshot.keys,
+            incarnation: self.incarnation.get().copied(),
+            residents: snapshot.residents,
+        };
+        let bytes = serde_json::to_vec(&file)?; // file on disk: the page dir's confirmed-save ledger, read back by `load`
+        let tmp = self.path.with_extension("json.tmp");
+        std::fs::write(&tmp, bytes)?;
+        continuum_base::fs_portable::replace::replace_file(&tmp, &self.path)?;
+        *written = snapshot.generation;
+        Ok(())
+    }
+
+    /// The keys this ledger may restore: written under the same fingerprint (or a legacy
+    /// ledger's pages newer than every identity file), with their page file still present.
+    /// Anything else is no eligibility, never a guess: a missing file, another format's
+    /// ledger, a malformed one. Residents come back only for the same engine process.
+    pub(super) fn load(&self) -> LoadedLedger {
+        let Some(dir) = self.path.parent() else {
+            return LoadedLedger::default();
+        };
+        let unread = |why: &str| {
+            continuum_base::probe!(
+                class = "inference.kv_page.ledger_unread",
+                path = %self.path.display(),
+                why = why,
+                "no confirmed-save ledger restored: the pages in this dir re-prefill once"
+            );
+            LoadedLedger::default()
+        };
+        let bytes = match std::fs::read(&self.path) {
+            Ok(bytes) => bytes,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return LoadedLedger::default(),
+            Err(_) => return unread("unreadable"),
+        };
+        let Ok(file) = serde_json::from_slice::<SavedLedgerFile>(&bytes) else {
+            return unread("malformed");
+        };
+        let legacy = file.format < LEDGER_FORMAT && self.format == LEDGER_FORMAT;
+        if legacy && self.identity_floor.is_none() {
+            return unread("written before the page-format identity, and no identity files to date it against");
+        }
+        if !legacy && (file.format != self.format || file.fingerprint != self.fingerprint) {
+            return unread("written under another page format");
+        }
+        let listed = file.keys.len();
+        let keys: Vec<ActivityKey> = file.keys.into_iter().filter_map(|(persona, room)| ActivityKey::new(persona, room)).collect();
+        if keys.len() < listed {
+            // A key with a nil persona or room names no activity: its page re-prefills once.
+            continuum_base::probe!(
+                class = "inference.kv_page.ledger_keys_dropped",
+                path = %self.path.display(),
+                dropped = (listed - keys.len()) as u64,
+                "confirmed-save ledger entries without an activity were dropped: their pages re-prefill once"
+            );
+        }
+        let present: Vec<ActivityKey> = keys.into_iter().filter(|k| dir.join(page_filename(k)).is_file()).collect();
+        let keys: std::collections::HashSet<ActivityKey> = if legacy {
+            self.adopt_legacy(dir, present)
+        } else {
+            present.into_iter().collect()
+        };
+        // The residents were in THIS process's slots only if it is the process that wrote them.
+        let same_process = self.incarnation.get().is_some() && self.incarnation.get().copied() == file.incarnation;
+        let residents = if same_process && !legacy {
+            file.residents.into_iter().filter_map(|(slot, persona, room)| ActivityKey::new(persona, room).map(|k| (slot, k))).collect()
+        } else {
+            Vec::new()
+        };
+        LoadedLedger { keys, residents }
+    }
+
+    /// A legacy ledger's fingerprint cannot be recomputed (it digested the exact window,
+    /// slot count and engine file of a launch that no longer exists), so its pages are
+    /// dated instead: a page written after every identity file last changed was computed by
+    /// those files. The engine still refuses, loudly, a page whose cache type, attention
+    /// layout, layer shapes, window fit or adapters differ.
+    fn adopt_legacy(&self, dir: &std::path::Path, present: Vec<ActivityKey>) -> std::collections::HashSet<ActivityKey> {
+        let floor = self.identity_floor.unwrap_or(std::time::SystemTime::UNIX_EPOCH); // unwrap_or: load() refuses a legacy ledger with no floor before reaching here
+        let listed = present.len();
+        let adopted: std::collections::HashSet<ActivityKey> = present
+            .into_iter()
+            .filter(|k| {
+                std::fs::metadata(dir.join(page_filename(k)))
+                    .and_then(|m| m.modified())
+                    .is_ok_and(|written| written >= floor)
+            })
+            .collect();
+        continuum_base::probe!(
+            class = "inference.kv_page.ledger_migrated",
+            path = %self.path.display(),
+            adopted = adopted.len() as u64,
+            dropped = (listed - adopted.len()) as u64,
+            "a ledger written before the page-format identity was adopted for the pages written after the model's files last changed; the rest re-prefill once"
+        );
+        adopted
+    }
+}
+
+impl KvPageContract {
+    /// A stable digest of what makes a saved page's KV valid for this engine: the model,
+    /// adapters and draft (by path, size and mtime), the KV cache type, flash attention,
+    /// and the engine build (its commit, or its file revision when the build is unknown).
+    /// NOT the window or the slot count: the engine refuses a page that does not fit its
+    /// slot (`Restored prompt does not fit`, `not enough cells`), loudly, and keying on
+    /// them made every relaunch's few-hundred-token window jitter a new ledger (the M5,
+    /// 2026-10-23 04:39Z: `written under another contract`, every resident cold). `None`
+    /// when any part is unknown: what cannot be compared exactly is never persisted.
+    pub(crate) fn fingerprint(&self) -> Option<String> {
+        use sha2::Digest;
+        self.page_dir.as_ref()?;
+        let cache_type = self.cache_type.as_ref()?;
+        let flash_attn = self.flash_attn?;
+        let revisions = self.revisions.as_ref()?;
+        let mut h = sha2::Sha256::new();
+        let mut field = |label: &str, value: &[u8]| {
+            h.update(label.as_bytes());
+            h.update((value.len() as u64).to_le_bytes());
+            h.update(value);
+        };
+        field("format", &LEDGER_FORMAT.to_le_bytes());
+        field("model_id", self.model_id.as_bytes());
+        field("model", self.model.as_os_str().as_encoded_bytes());
+        for a in &self.adapters {
+            field("adapter", a.as_bytes());
+        }
+        field("cache_type", cache_type.as_bytes());
+        field("flash_attn", &[u8::from(flash_attn)]);
+        if let Some(build) = &self.engine_build {
+            field("engine_build", build.as_bytes());
+        }
+        for (path, size, modified) in revisions {
+            field("revision", path.as_os_str().as_encoded_bytes());
+            field("size", &size.to_le_bytes());
+            let nanos = modified.duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).ok()?;
+            field("modified", &nanos.to_le_bytes());
+        }
+        Some(format!("{:x}", h.finalize()))
+    }
+
+    /// The newest modification among the identity files (model, adapters, draft): the date
+    /// a legacy ledger's pages must postdate. The engine binary is not one of them.
+    pub(crate) fn identity_floor(&self) -> Option<std::time::SystemTime> {
+        let engine = std::path::Path::new(&self.engine);
+        self.revisions
+            .as_ref()?
+            .iter()
+            .filter(|(path, _, _)| path.as_path() != engine)
+            .map(|(_, _, modified)| *modified)
+            .max()
+    }
+}

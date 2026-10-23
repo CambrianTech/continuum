@@ -1,60 +1,62 @@
 //! Pages regression fixtures.
 #![cfg(test)]
 use super::*;
-// what this catches (2026-09-15, the M5): the page dir keyed on the EXACT per-slot
-// window minted a new generation on every relaunch (59171 → 58997 → … in five
-// hours) and the spawn-time sweep deleted the live lane's pages — every eviction a
-// 24–66 s re-prefill against a 0.36 s restore. (a) windows within one step share a
-// key; (b) the sweep leaves the previous live lane's dir alone.
+// what this catches (the M5, 2026-10-23 04:06Z): a relaunch from a 112,384- to a
+// 129,024-token window crossed a page-dir step and the spawn swept the old dir, 98 GB,
+// every resident's page. (a) the page dir names the model only, never the window; (b) the
+// newest legacy per-window dir moves INTO it once, by rename, and nothing is deleted: an
+// older legacy dir, another model's dir and a live lane's dir (protected by NAME, however
+// the registry spelled its path) stay where they are; (c) it moves only into a dir with no
+// pages yet.
 #[test]
-fn relaunch_jitter_shares_a_page_generation_and_the_live_dir_survives_the_sweep() {
-    assert_eq!(page_geometry_key(59_171), page_geometry_key(57_112), "the measured band is one key");
-    assert_eq!(page_geometry_key(59_171), 49_152);
-    assert_eq!(page_geometry_key(25_104), page_geometry_key(26_531));
-    assert_ne!(page_geometry_key(59_171), page_geometry_key(25_104));
-    assert_eq!(page_geometry_key(100), PAGE_GEOMETRY_STEP, "never a zero key");
-
+fn one_page_dir_per_model_and_the_newest_legacy_window_dir_moves_in_once() {
+    assert_eq!(kv_page_dir("org/some model"), kv_pages_root().join("org_some_model"), "no window in the name");
     let root = tempfile::tempdir().expect("tempdir");
-    let mk = |k: &str| {
-        let d = root.path().join(format!("some-model--c{k}"));
-        std::fs::create_dir_all(&d).unwrap(); // JUSTIFIED unwrap: test scaffolding
-        std::fs::write(d.join("a-page.bin"), b"kv").unwrap(); // JUSTIFIED unwrap: test scaffolding
+    let at = |secs: u64| std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_800_000_000 + secs);
+    let mk = |name: &str, written: std::time::SystemTime| {
+        let d = root.path().join(name);
+        std::fs::create_dir_all(&d).expect("test: legacy dir");
+        std::fs::write(d.join("a-page.bin"), name.as_bytes()).expect("test: page");
+        std::fs::write(d.join("a-page.bin.ckpt"), b"ckpt").expect("test: sidecar");
+        std::fs::write(d.join("saved-ledger.json"), b"{}").expect("test: ledger");
+        std::fs::File::options().write(true).open(d.join("saved-ledger.json")).and_then(|f| f.set_modified(written)).expect("test: mtime");
         d
     };
-    let live_previous = mk("57344");
-    let stale = mk("24576");
-    let other_model = root.path().join("other-model--c57344");
-    std::fs::create_dir_all(&other_model).unwrap(); // JUSTIFIED unwrap: test scaffolding
-    let current = root.path().join("some-model--c61440");
-    std::fs::create_dir_all(&current).unwrap(); // JUSTIFIED unwrap: test scaffolding
+    let older = mk("some-model--c24576", at(1));
+    let newest = mk("some-model--c57344", at(2));
+    let live = mk("some-model--c98304", at(3)); // the newest of all, but a live lane's
+    let other_model = mk("other-model--c57344", at(4));
+    let not_legacy = mk("some-model--cache", at(5));
+    let current = root.path().join("some-model");
+    std::fs::create_dir_all(&current).expect("test: current");
 
-    // The registry's copy of the path may differ textually from what read_dir yields
-    // (an older core's HOME resolution, /Users vs /private/var on macOS, `./`) —
-    // protection is by directory NAME (Cormac, finding 1).
-    let other_form = PathBuf::from("/some/other/root/./").join(live_previous.file_name().unwrap()); // JUSTIFIED unwrap: a dir we just made has a name
-    sweep_stale_page_generations(&current, &[other_form]);
-    assert!(live_previous.join("a-page.bin").exists(), "the previous live lane's pages survive");
-    assert!(!stale.exists(), "an unprotected stale generation is swept");
-    assert!(other_model.exists(), "another model's dir is not this lane's to sweep");
-    assert!(current.exists());
+    let other_form = PathBuf::from("/some/other/root/./").join(live.file_name().expect("test: named"));
+    assert_eq!(migrate_legacy_page_dir(&current, &[other_form.clone()]), 3, "page, sidecar and ledger moved");
+    assert_eq!(std::fs::read(current.join("a-page.bin")).expect("test: moved"), b"some-model--c57344", "the newest unprotected dir");
+    assert!(!newest.exists(), "the emptied legacy dir is removed");
+    assert!(older.join("a-page.bin").is_file(), "an older legacy dir stays for the operator");
+    assert!(live.join("a-page.bin").is_file(), "a live lane's dir is never touched");
+    assert!(other_model.join("a-page.bin").is_file() && not_legacy.join("a-page.bin").is_file());
+    assert_eq!(migrate_legacy_page_dir(&current, &[other_form]), 0, "only into a dir with no pages yet");
+    assert!(older.join("a-page.bin").is_file());
 }
 
 // what this catches (Astra's block, re-block and third review on #4069), with
 // deterministic barriers and the PRODUCTION ordering (reserve, THEN mkdir):
-//  (a) B tries to reserve+create while A holds the guard mid-sweep (after census,
-//      before deletion): B blocks until A's sweep is done, so B's insert can never
-//      land between A's census and A's deletion — and because B creates its dir
-//      only AFTER its reservation, A's sweep cannot delete a dir B has made.
+//  (a) B tries to reserve+create while A holds the guard mid-migration (after census,
+//      before the move): B blocks until A is done, so B's insert can never land
+//      between A's census and A's move — and because B creates its dir only AFTER
+//      its reservation, A cannot move pages out of a dir B has made.
 #[test]
-fn a_reservation_cannot_slip_between_a_siblings_census_and_deletion() {
+fn a_reservation_cannot_slip_between_a_siblings_census_and_move() {
     use std::sync::{mpsc, Arc, Barrier};
     let root = tempfile::tempdir().expect("tempdir");
-    // a STALE generation of B's geometry from an earlier run: unowned at A's census
+    // a legacy dir from an earlier run: unowned at A's census
     let stale = root.path().join("race-model--c32768");
     std::fs::create_dir_all(&stale).unwrap(); // JUSTIFIED unwrap: test scaffolding
     std::fs::write(stale.join("old-page.bin"), b"kv").unwrap(); // JUSTIFIED unwrap: test scaffolding
-    let b_dir = stale.clone(); // B relaunches into the same geometry
-    let a_dir = root.path().join("race-model--c49152");
+    let b_dir = stale.clone(); // B launches into that same dir
+    let a_dir = root.path().join("race-model");
     std::fs::create_dir_all(&a_dir).unwrap(); // JUSTIFIED unwrap: test scaffolding
 
     let at_census = Arc::new(Barrier::new(2));
@@ -62,23 +64,24 @@ fn a_reservation_cannot_slip_between_a_siblings_census_and_deletion() {
     let b_dir2 = b_dir.clone();
     let at_census_b = Arc::clone(&at_census);
     let b = std::thread::spawn(move || {
-        at_census_b.wait(); // A is mid-sweep now
+        at_census_b.wait(); // A is mid-migration now
         // THE PRODUCTION ORDERING: reserve first, create second. Must BLOCK on the guard.
         let (r, ready) = PageDirReservation::take_and_create(&b_dir2);
         let _ = b_reserved_tx.send(ready);
         r
     });
     {
-        let guard = PAGE_DIR_GUARD.lock(); // A's census+deletion critical section
+        let guard = PAGE_DIR_GUARD.lock(); // A's census+move critical section
         at_census.wait();
         assert!(
             b_reserved_rx.recv_timeout(std::time::Duration::from_millis(300)).is_err(),
             "B's reservation must not land while A holds the guard"
         );
-        // A's census saw no reservation for B's dir → A deletes it under the guard.
+        // A's census saw no reservation for B's dir → A moves its page under the guard.
         let protect: Vec<PathBuf> = guard.reservations.iter().cloned().collect();
-        assert_eq!(sweep_stale_page_generations(&a_dir, &protect), 1);
-        assert!(!b_dir.exists(), "the stale generation is gone");
+        assert_eq!(migrate_legacy_page_dir(&a_dir, &protect), 1);
+        assert!(!b_dir.exists(), "the emptied legacy dir is gone");
+        assert!(a_dir.join("old-page.bin").is_file(), "its page moved, never deleted");
     }
     // Guard released → B's reservation lands, THEN B creates its dir: it exists,
     // it is protected, and nothing A did could have touched it.
@@ -96,10 +99,13 @@ fn a_reservation_cannot_slip_between_a_siblings_census_and_deletion() {
             .any(|d| d == &b_dir),
         "B is protected from here on"
     );
-    // A second sweep now, with the guard's contents as the protect set, keeps B's dir.
+    // A later migration with the guard's contents as the protect set never moves B's pages,
+    // even once A's dir is empty again.
+    std::fs::write(b_dir.join("b-page.bin"), b"kv").unwrap(); // JUSTIFIED unwrap: test scaffolding
+    std::fs::remove_file(a_dir.join("old-page.bin")).unwrap(); // JUSTIFIED unwrap: test scaffolding
     let protect: Vec<PathBuf> = PAGE_DIR_GUARD.lock().reservations.iter().cloned().collect();
-    assert_eq!(sweep_stale_page_generations(&a_dir, &protect), 0);
-    assert!(b_dir.is_dir());
+    assert_eq!(migrate_legacy_page_dir(&a_dir, &protect), 0);
+    assert!(b_dir.join("b-page.bin").is_file());
 }
 
 //  (b) the handoff (record written + reservation dropped) is ONE critical section:
@@ -180,28 +186,29 @@ fn a_census_under_the_guard_never_finds_a_lane_in_neither_list_during_handoff() 
     assert!(res2.is_held(), "a failed record write keeps the dir protected");
 }
 
-// what this catches (Astra's third review): a destructive census fails CLOSED. With
-// a malformed `.lane` file in the registry the guarded sweep deletes NOTHING, even
-// though a stale sibling generation is right there.
+// what this catches (Astra's third review): the census fails CLOSED. With a malformed
+// `.lane` file in the registry the guarded migration moves NOTHING, even though a legacy
+// dir is right there.
 #[test]
-fn an_unreadable_registry_skips_the_sweep_entirely() {
+fn an_unreadable_registry_skips_the_migration_entirely() {
     let root = tempfile::tempdir().expect("tempdir");
     let registry = tempfile::tempdir().expect("tempdir");
     let stale = root.path().join("closed-model--c32768");
     std::fs::create_dir_all(&stale).unwrap(); // JUSTIFIED unwrap: test scaffolding
-    let current = root.path().join("closed-model--c49152");
+    std::fs::write(stale.join("a-page.bin"), b"kv").unwrap(); // JUSTIFIED unwrap: test scaffolding
+    let current = root.path().join("closed-model");
     std::fs::create_dir_all(&current).unwrap(); // JUSTIFIED unwrap: test scaffolding
     std::fs::write(registry.path().join("garbage.lane"), "{not json").unwrap(); // JUSTIFIED unwrap: test scaffolding
-    assert_eq!(sweep_stale_page_generations_guarded_in(&current, registry.path()), None);
-    assert!(stale.is_dir(), "nothing deleted on an unreadable inventory");
+    assert_eq!(migrate_legacy_page_dir_guarded_in(&current, registry.path()), None);
+    assert!(stale.join("a-page.bin").is_file(), "nothing moved on an unreadable inventory");
     std::fs::remove_file(registry.path().join("garbage.lane")).unwrap(); // JUSTIFIED unwrap: test scaffolding
-    assert_eq!(sweep_stale_page_generations_guarded_in(&current, registry.path()), Some(1));
-    assert!(!stale.exists());
+    assert_eq!(migrate_legacy_page_dir_guarded_in(&current, registry.path()), Some(1));
+    assert!(current.join("a-page.bin").is_file() && !stale.exists());
 }
 
 // what this catches: the live-lane inventory — a live record contributes its dir, a
 // live record without one (written before the field existed) makes the inventory
-// INCOMPLETE so the sweep stays its hand, and a dead record is ignored either way.
+// INCOMPLETE so the migration stays its hand, and a dead record is ignored either way.
 #[test]
 fn the_live_lane_inventory_is_complete_only_when_every_live_record_names_its_dir() {
     use crate::inference::lane_registry::{LaneRecord, LaneRole};
@@ -223,7 +230,7 @@ fn the_live_lane_inventory_is_complete_only_when_every_live_record_names_its_dir
     assert!(complete, "a DEAD record without a dir does not spoil the inventory");
     let (dirs, complete) = page_dirs_of(vec![rec(1, Some("/p/a")), rec(2, None)], alive);
     assert_eq!(dirs, vec![PathBuf::from("/p/a")]);
-    assert!(!complete, "a LIVE record without a dir → incomplete → no sweep");
+    assert!(!complete, "a LIVE record without a dir → incomplete → no migration");
 }
 
 // what this catches (card 689084e7): one unreadable launch revision (a deleted adapter, a
