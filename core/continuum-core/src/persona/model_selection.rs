@@ -547,7 +547,7 @@ mod tests {
         let embedder: Arc<dyn EmbeddingProvider> = Arc::new(LexicalEmbedder::default());
         let corpus: Vec<String> =
             vec!["fold the list recursively".into(), "map over the vector".into()];
-        let corpus_ref = crate::forge::recipe::CorpusRef {
+        let corpus_ref = crate::genome::corpus_ref::CorpusRef {
             name: "fp-corpus".into(),
             content_hash: "sha256:00".into(),
             size_bytes: 1,

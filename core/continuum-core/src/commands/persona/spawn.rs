@@ -20,7 +20,7 @@
 //! command does NOT block on it. It mints each identity (fast — a uuid + a pooled
 //! name), returns the names IMMEDIATELY as a receipt, and completes the births in a
 //! detached task. Each completed birth announces itself as `persona:born` (payload
-//! [`PersonaInstanceInfo`](crate::modules::persona_instance_manager::PersonaInstanceInfo))
+//! [`PersonaInstanceInfo`](crate::persona::instance_manager::PersonaInstanceInfo))
 //! — the event-driven half of the handle shape. Subscribe to `persona:born`, or poll
 //! `persona/instances/list`, to see them arrive.
 //!
@@ -38,8 +38,8 @@ use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 use uuid::Uuid;
 
-use crate::modules::persona_instance_manager::PersonaBirth;
-use crate::persona::agent_name_from_identity;
+use crate::persona::instance_manager::PersonaBirth;
+use crate::live::avatar::names::agent_name_from_identity;
 use crate::persona::identity_provider::{PersonaIdentityIntent, PersonaIdentitySource};
 
 /// Optional inputs to a spawn. All optional — the zero-arg call births ONE persona

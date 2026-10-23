@@ -4,17 +4,15 @@
 //! that CALLS them. Hand-duplicating the request/response on each side (the
 //! state before this module) let the two drift silently — and they already HAD:
 //! the custodian required `checkpoint` in the gguf-lora body while the core's
-//! copy (`inference/unsloth_forge.rs::ExportGgufLoraRequest`) omitted it and
-//! carried `push_to_hub`/`repo_id` the custodian never reads. A POST from that
-//! client would fail the custodian's deserialization. One type, two importers,
+//! copy omitted it. A POST from that client would fail the custodian's
+//! deserialization. One type, two importers,
 //! compile-time drift protection — the daemon contract the hardening pass exists
 //! to establish.
 //!
 //! ## The contract is STATELESS
 //! The request names the trained MLX checkpoint directly; there is no prior
-//! `load-checkpoint` call (that was unsloth's stateful exporter shape, retired
-//! with `[[unsloth-universal-model-gateway]]` / task #52). A custodian holds no
-//! per-session state between requests.
+//! `load-checkpoint` call. A custodian holds no per-session state between
+//! requests.
 //!
 //! ## Contract versioning
 //! [`CONTRACT_VERSION`] rides [`HealthResponse`] so a client can refuse — loudly
@@ -109,12 +107,10 @@ pub struct ExportResult {
     pub details: Value,
 }
 
-// ── Genome training-lifecycle types (relocated from the retired
-// inference/unsloth_forge.rs — task #52). The organism-facing contract for
+// ── Genome training-lifecycle types. The organism-facing contract for
 // train/status/package/probe, home'd HERE beside the export contract so the ONE
 // forge protocol module is the single source of truth every custodian impl
-// (NativeMlxCustodian, ForgeCustodianHttp) speaks. Engine-neutral; not Unsloth-
-// specific (the Unsloth wire bodies died with the module). ────────────────────
+// (NativeMlxCustodian, ForgeCustodianHttp) speaks. Engine-neutral. ────────────────────
 
 /// A training run the organism kicks off on a custodian. The recipe
 /// (`ForgeRecipe`) fills these; the organism never picks the engine — the
@@ -208,20 +204,6 @@ pub enum GenomeFormat {
         base_model_id: String,
         outtype: String,
     },
-}
-
-/// Package a trained checkpoint into a genome artifact — the ONE export surface.
-/// `checkpoint`/`save_directory` are custodian-owned handles; the organism never
-/// touches the bytes. `push_to_hub`/`repo_id` ride the genome-market publish path.
-#[derive(Debug, Clone)]
-pub struct PackageRequest {
-    pub checkpoint: String,
-    pub save_directory: String,
-    pub format: GenomeFormat,
-    pub max_seq_length: u32,
-    pub load_in_4bit: bool,
-    pub push_to_hub: bool,
-    pub repo_id: Option<String>,
 }
 
 /// The LoRA catalog a custodian owns. `outputs_dir` is the byte-custody root —

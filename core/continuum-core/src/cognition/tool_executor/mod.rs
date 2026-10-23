@@ -29,13 +29,9 @@
 //!   already laid here — no caller-code changes
 
 pub mod command_executor;
+pub mod result_tap;
 pub mod spill;
 pub mod types;
-
-/// Realistic 50-persona load/profiling harness (real CodeModule, real payloads).
-/// Gated `stress-tests` per the test doctrine; compiled only for profiling runs.
-#[cfg(all(test, feature = "stress-tests"))]
-mod load_harness;
 
 pub use command_executor::CommandToolExecutor;
 pub use types::{
@@ -104,7 +100,7 @@ pub trait ToolExecutor: Send + Sync {
 
     /// The acting context these hands are bound to; `None` is the caller's default (live)
     /// context. See [`crate::code::hands`].
-    fn hands_context(&self) -> Option<crate::code::hands::HandsContext> {
+    fn hands_context(&self) -> Option<crate::identity::hands_context::HandsContext> {
         None
     }
 
@@ -121,7 +117,7 @@ pub trait ToolExecutor: Send + Sync {
     /// executor never releases the context when dropped, because the context lives as long
     /// as the claim, not as long as one act's executor. `None` when these hands can't act in
     /// a context; the turn then runs without hands and never borrows hers.
-    fn in_hands(&self, _persona: uuid::Uuid, _context: crate::code::hands::HandsContext) -> Option<std::sync::Arc<dyn ToolExecutor>> {
+    fn in_hands(&self, _persona: uuid::Uuid, _context: crate::identity::hands_context::HandsContext) -> Option<std::sync::Arc<dyn ToolExecutor>> {
         None
     }
 

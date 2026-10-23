@@ -228,11 +228,11 @@ pub(super) fn record_repo_checkout() {
     ) else {
         return;
     };
-    let Some(root) = continuum_core::modules::repo_registry::clone_root_from_common_dir(&common)
+    let Some(root) = continuum_core::code::repo_registry::clone_root_from_common_dir(&common)
     else {
         return;
     };
-    if let Some(repo) = continuum_core::modules::repo_registry::repo_id_from_remote(&url) {
-        continuum_core::modules::repo_registry::record(&repo, &root);
+    if let Some(repo) = continuum_core::code::repo_registry::repo_id_from_remote(&url) {
+        continuum_core::code::repo_registry::record(&repo, &root);
     }
 }

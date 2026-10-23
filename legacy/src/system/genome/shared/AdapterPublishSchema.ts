@@ -79,10 +79,10 @@ export function normalizeTagValue(value: string): string {
  * Normalize a base model name for consistent tagging.
  * Strips org prefix, lowercases, keeps version identifiers.
  * "Qwen/Qwen2.5-Coder-14B-Instruct" → "qwen2.5-coder-14b-instruct"
- * "unsloth/Llama-3.2-3B-Instruct" → "llama-3.2-3b-instruct"
+ * "meta-llama/Llama-3.2-3B-Instruct" → "llama-3.2-3b-instruct"
  */
 export function normalizeBaseModel(modelId: string): string {
-  // Strip org prefix (Qwen/, unsloth/, meta-llama/)
+  // Strip org prefix (Qwen/, meta-llama/)
   const name = modelId.includes('/') ? modelId.split('/').pop()! : modelId;
   return normalizeTagValue(name);
 }

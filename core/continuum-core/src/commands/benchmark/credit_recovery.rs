@@ -50,8 +50,8 @@ impl ActionCommand for BenchmarkCreditRecover {
     type Output = CreditRecoveryResult;
 
     async fn run(&self, ctx: &Ctx, params: Self::Params) -> Result<Self::Output, CommandError> {
-        if crate::routing::grid_trust_policy::caller_trust(ctx.caller.as_ref())
-            != crate::modules::grid::node::TrustLevel::Owner
+        if crate::modules::grid::trust_policy::caller_trust(ctx.caller.as_ref())
+            != crate::routing::trust_level::TrustLevel::Owner
         {
             return Err(CommandError::Denied(
                 "legacy grade attestation requires the operator".into(),
@@ -167,7 +167,7 @@ async fn verify_evidence(
     evidence: &LegacyGradeEvidence,
 ) -> Result<crate::cognition::swe_bench::SweVerdict, CommandError> {
     let room =
-        crate::modules::room_resolve::resolve_room(airc, Some(&evidence.room.to_string())).await?;
+        crate::persona::room_resolve::resolve_room(airc, Some(&evidence.room.to_string())).await?;
     let board = airc.work_board_in(&room).await.map_err(invalid)?;
     let card = board
         .card(airc_work::WorkCardId::from_uuid(evidence.card))
@@ -205,7 +205,7 @@ async fn verify_evidence(
             "gym artifact must remain inside its existing workspace",
         ));
     }
-    let workspace = crate::modules::card_staging::gym_workspace(
+    let workspace = crate::persona::card_checkout::gym_workspace(
         &crate::paths::continuum_home().map_err(invalid)?,
         evidence.owner,
     );

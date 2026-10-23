@@ -27,7 +27,6 @@ use crate::modules::persona_allocator::PersonaAllocatorModule;
 use crate::modules::rag::{RagModule, RagState};
 use crate::modules::sentinel::SentinelModule;
 use crate::modules::system_resources::SystemResourceModule;
-use crate::modules::tool_parsing::ToolParsingModule;
 use crate::modules::vision::VisionModule;
 /// IPC server for continuum-core
 ///
@@ -63,13 +62,13 @@ use uuid::Uuid;
 // Split out of this file 2026-05-18 — see ipc/protocol.rs (InboxMessageRequest,
 // Response) and ipc/diagnostics.rs (per-command RSS tracking). Re-exported
 // here so existing call sites resolve unchanged.
+pub mod command_ingress;
 pub mod diagnostics;
 
 pub mod endpoint_paths;
 
 pub mod experience_resolver;
 
-pub mod positron_bench_source;
 
 pub mod positron_canvas_source;
 
@@ -99,9 +98,7 @@ pub mod provider_bridge;
 
 pub mod recipe_room_purpose;
 
-pub mod room_purpose;
 
-pub mod stream_rail;
 
 pub mod vitals_emitter;
 
@@ -117,8 +114,10 @@ use protocol::Response;
 // models.rs, data.rs, logger.rs, search.rs, embedding.rs, rag.rs for command handlers.
 
 mod prepare_unix_socket_path;
-pub use prepare_unix_socket_path::*;
+use prepare_unix_socket_path::*;
 mod start_server;
+#[cfg(test)]
+pub(crate) use start_server::install_kernel_extensions;
 pub use start_server::*;
 
 #[cfg(test)]

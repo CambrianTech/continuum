@@ -148,7 +148,7 @@ fn tool_surface_is_a_category_index_plus_discovery_pair() {
     let view = faculty.prompt_view(&ws);
     let reserve = view.completion_reserve as usize;
     let prompt =
-        est_tokens(&view.system) + LlmDeliberationFaculty::messages_cost(&view.messages);
+        estimate_guard_tokens(&view.system) + LlmDeliberationFaculty::messages_cost(&view.messages);
 
     // This assertion used to demand that framing + the FULL tool surface + the
     // reply reserve all fit an 8192 window. That is arithmetically impossible and
@@ -576,6 +576,7 @@ fn fit_receipt_names_what_it_dropped_and_when_it_emptied_the_history() {
         .collect();
     let stimulus = ChatMessage::text("user", "operator: do the thing ".repeat(40));
     let prompt = |history: Vec<ChatMessage>| PromptMessages {
+        streams: Default::default(),
         result_pointers: Vec::new(),
         input_identity: [0; 32],
         grounding_tokens: 0,
@@ -583,7 +584,7 @@ fn fit_receipt_names_what_it_dropped_and_when_it_emptied_the_history() {
         history,
         stimulus: Some(stimulus.clone()),
         latest_result: Vec::new(), action_statement: None,
-        room_updates: Vec::new(), ledger: None, notices: Vec::new(),
+        room_updates: Vec::new(), notices: Vec::new(),
     };
     let required = prompt(Vec::new()).required_tokens();
     let total: usize = history.iter().map(LlmDeliberationFaculty::message_cost).sum();
@@ -638,6 +639,7 @@ fn fit_front_advances_in_quanta_not_per_act() {
         let fit = faculty
             .fit_messages(
                 PromptMessages {
+                    streams: Default::default(),
                     result_pointers: Vec::new(),
                     input_identity: [0; 32],
                     grounding_tokens: 0,
@@ -645,7 +647,7 @@ fn fit_front_advances_in_quanta_not_per_act() {
                     history: msgs[..n].to_vec(),
                     stimulus: None,
                     latest_result: Vec::new(), action_statement: None,
-                    room_updates: Vec::new(), ledger: None, notices: Vec::new(),
+                    room_updates: Vec::new(), notices: Vec::new(),
                 },
                 budget,
             )
@@ -689,6 +691,7 @@ fn fit_front_advances_in_quanta_not_per_act() {
     let fit = faculty
         .fit_messages(
             PromptMessages {
+                streams: Default::default(),
                 result_pointers: Vec::new(),
                 input_identity: [0; 32],
                 grounding_tokens: 0,
@@ -696,7 +699,7 @@ fn fit_front_advances_in_quanta_not_per_act() {
                 history: clustered,
                 stimulus: None,
                 latest_result: Vec::new(), action_statement: None,
-                room_updates: Vec::new(), ledger: None, notices: Vec::new(),
+                room_updates: Vec::new(), notices: Vec::new(),
             },
             budget,
         )
@@ -716,6 +719,7 @@ fn fit_front_advances_in_quanta_not_per_act() {
     // A quantum larger than the optional history must not evict every
     // message on a quiet self-tick with no external stimulus or result.
     let ambient = || PromptMessages {
+        streams: Default::default(),
         result_pointers: Vec::new(),
         input_identity: [0; 32],
         grounding_tokens: 0,
@@ -726,7 +730,7 @@ fn fit_front_advances_in_quanta_not_per_act() {
         ],
         stimulus: None,
         latest_result: Vec::new(), action_statement: None,
-        room_updates: Vec::new(), ledger: None, notices: Vec::new(),
+        room_updates: Vec::new(), notices: Vec::new(),
     };
     let ambient_cost =
         LlmDeliberationFaculty::message_cost(ambient().history.last().unwrap());
@@ -739,23 +743,22 @@ fn fit_front_advances_in_quanta_not_per_act() {
     assert!(faculty.fit_messages(ambient(), ambient_cost - 1).is_err());
 }
 
-// what this catches: the steps ledger placed where its per-act change forfeits the
-// stable prefix (card 5b09111e), or placed after the ask where it gets parroted (the
-// 2026-07-20 humaneval fix). With a pinned result it rides after the room updates and
-// the result stays last; with none it keeps its place ahead of the ask.
+// what this catches: the required notices placed after the ask, where bracketed meta gets
+// answered and parroted in its place (the 2026-07-20 humaneval fix), or behind the pinned
+// result, which stays last.
 #[test]
-fn the_steps_ledger_rides_before_the_pinned_result_and_never_after_the_ask() {
+fn notices_ride_before_the_pinned_result_and_never_after_the_ask() {
     let adapter: Arc<dyn AIProviderAdapter> = Arc::new(HeuristicInferenceAdapter::new());
     let faculty = LlmDeliberationFaculty::new(Uuid::new_v4(), "T", "You are T.", adapter);
     let prompt = |result: bool| PromptMessages {
+        streams: Default::default(),
         result_pointers: Vec::new(),
         input_identity: [0; 32], grounding_tokens: 0, grounding_at: 0,
         history: vec![ChatMessage::text("user", "[work turn] fix the bug")],
         stimulus: Some(ChatMessage::text("user", "the ask")),
         latest_result: result.then(|| ChatMessage::text("user", "Full result of your most recent action")).into_iter().collect(), action_statement: None,
         room_updates: vec![ChatMessage::text("user", "[Room message received during this turn] hi")],
-        notices: Vec::new(),
-        ledger: Some(ChatMessage::text("user", "[steps taken this session]\n[action #1832] code/read")),
+        notices: vec![ChatMessage::text("user", "Notices my substrate posted into my window")],
     };
     let order = |result: bool| -> Vec<String> {
         faculty.fit_messages(prompt(result), 100_000).expect("test: fits").messages.iter()
@@ -763,10 +766,10 @@ fn the_steps_ledger_rides_before_the_pinned_result_and_never_after_the_ask() {
     };
     assert_eq!(order(true), vec![
         "[work turn] fix the bug", "the ask", "[Room message received during this turn] hi",
-        "[steps taken this session]", "Full result of your most recent action",
+        "Notices my substrate posted into my window", "Full result of your most recent action",
     ]);
     assert_eq!(order(false), vec![
-        "[work turn] fix the bug", "[steps taken this session]", "the ask",
+        "[work turn] fix the bug", "Notices my substrate posted into my window", "the ask",
         "[Room message received during this turn] hi",
     ]);
 }
@@ -782,9 +785,10 @@ fn continuity_followup_keeps_completed_action_evidence() {
     ];
     let expected = LlmDeliberationFaculty::messages_cost(&history);
     let prompt = PromptMessages {
+        streams: Default::default(),
         result_pointers: Vec::new(),
         input_identity: [0; 32], grounding_tokens: 0, grounding_at: 0,
-        history, stimulus: None, latest_result: Vec::new(), action_statement: None, room_updates: Vec::new(), ledger: None, notices: Vec::new(),
+        history, stimulus: None, latest_result: Vec::new(), action_statement: None, room_updates: Vec::new(), notices: Vec::new(),
     };
     assert!(prompt.recent_move_evidence().tokens >= expected,
         "a new follow-up cannot make the preceding action and result disposable");
@@ -796,6 +800,7 @@ fn continuity_insufficient_capacity_refuses_instead_of_dropping_evidence() {
     let adapter: Arc<dyn AIProviderAdapter> = Arc::new(HeuristicInferenceAdapter::new());
     let faculty = LlmDeliberationFaculty::new(Uuid::new_v4(), "T", "You are T.", adapter);
     let prompt = PromptMessages {
+        streams: Default::default(),
         result_pointers: Vec::new(),
         input_identity: [0; 32], grounding_tokens: 0, grounding_at: 0,
         history: vec![
@@ -803,7 +808,7 @@ fn continuity_insufficient_capacity_refuses_instead_of_dropping_evidence() {
             ChatMessage::text("assistant", "calling code/write: completed.py ".repeat(30)),
             ChatMessage::text("user", "Full result of code/write: file written successfully."),
         ],
-        stimulus: None, latest_result: Vec::new(), action_statement: None, room_updates: Vec::new(), ledger: None, notices: Vec::new(),
+        stimulus: None, latest_result: Vec::new(), action_statement: None, room_updates: Vec::new(), notices: Vec::new(),
     };
     let insufficient = prompt.recent_move_evidence().tokens - 1;
     assert!(faculty.fit_messages(prompt, insufficient).is_err(),
@@ -821,33 +826,4 @@ fn a_binding_without_a_model_name_carries_the_adapters_served_model() {
     let faculty = LlmDeliberationFaculty::new(Uuid::new_v4(), "T", "You are T.", adapter);
     assert_eq!(faculty.binding.load().model.as_deref(), Some(served.as_str()),
         "a bound faculty always names the model it is bound to");
-}
-
-// what this catches: the latency cap charging her slot's CACHED prefix as fresh
-// prefill. On the M5 (2026-10-18 09:46-10:00Z) history was granted exactly 16,384
-// tokens every turn with 15-29k of the window unallocated; the squeezed fit folded
-// results and dropped grounding differently each turn, the engine matched 40-574
-// tokens of a 15-20k prompt, and re-prefilled the rest at 75-111 tokens/s. What her
-// last answered prompt carried rides free; only new history is latency-capped.
-#[test]
-fn the_latency_cap_bounds_new_history_and_her_cached_prefix_rides_free() {
-    assert_eq!(LlmDeliberationFaculty::history_fill_cap(16_384, 900, 0), 16_384,
-        "a cold slot: the latency target alone");
-    assert_eq!(LlmDeliberationFaculty::history_fill_cap(16_384, 900, 20_000), 36_384,
-        "a warm slot: her last prompt's history plus the target's worth of new");
-    assert_eq!(LlmDeliberationFaculty::history_fill_cap(10, 900, 20_000), 20_900,
-        "her own last move still floors the new part");
-    let adapter: Arc<dyn AIProviderAdapter> = Arc::new(HeuristicInferenceAdapter::new());
-    let faculty = LlmDeliberationFaculty::new(Uuid::new_v4(), "T", "You are T.", adapter);
-    let binding = faculty.binding.load_full();
-    let mut view = faculty.prompt_view_within(&Workspace::new("continue"), 16_384);
-    view.history_tokens = 12_345;
-    let engine_prompt = view.estimated_prompt_tokens as u32 + 1;
-    let credited = |faculty: &LlmDeliberationFaculty| faculty.cached_prefix_tokens.load(std::sync::atomic::Ordering::Relaxed);
-    faculty.learn_prompt_density(&binding, &view, engine_prompt, 0, 16_384);
-    assert_eq!(credited(&faculty), 0, "the engine reused nothing: nothing rides free, the cap is the latency target");
-    faculty.learn_prompt_density(&binding, &view, engine_prompt, 5_000, 16_384);
-    assert_eq!(credited(&faculty), 5_000, "only what the engine measured as reused is credited");
-    faculty.learn_prompt_density(&binding, &view, engine_prompt, 40_000, 16_384);
-    assert_eq!(credited(&faculty), 12_345, "never more than the conversation that prompt carried");
 }

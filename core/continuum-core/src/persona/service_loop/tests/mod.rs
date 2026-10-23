@@ -2,7 +2,7 @@
 
     use super::*;
     use crate::ai::HeuristicInferenceAdapter;
-    use crate::modules::persona_instance_manager::PersonaInstanceInfo;
+    use crate::persona::instance_manager::PersonaInstanceInfo;
     use crate::persona::airc_citizen::StubAircCitizen;
     use crate::persona::identity_provider::PersonaIdentitySource;
     use crate::persona::role_template::RoleId;
@@ -15,7 +15,7 @@
     #[tokio::test]
     pub(super) async fn token_forwarder_flushes_during_pause_and_closes_in_order() {
         use crate::ai::adapter::GenerationChunk;
-        use crate::ipc::stream_rail;
+        use crate::persona::stream_rail;
         use std::time::Duration;
 
         async fn next_for_room(
@@ -76,7 +76,7 @@
     #[tokio::test]
     pub(super) async fn a_turn_in_her_mind_room_streams_no_tokens() {
         use crate::ai::adapter::GenerationChunk;
-        use crate::ipc::stream_rail;
+        use crate::persona::stream_rail;
         let her = Uuid::new_v4();
         let mind = crate::persona::mind_room::mind_room_id(her).to_string();
         let mut output = stream_rail::subscribe();
@@ -467,7 +467,7 @@
             source_id: source_id.to_string(),
             items,
             tokens_used: 0,
-            continuation: None,
+            truncated: false,
             resolution_used: ResolutionPreference::Raw,
         };
         // The ENUM, not a spelling. If the wire form ever changes, this fixture changes
@@ -538,7 +538,7 @@
                 metadata: serde_json::json!({ "peer_id": "peer-2" }),
             }],
             tokens_used: 0,
-            continuation: None,
+            truncated: false,
             resolution_used: crate::persona::rag_budget::ResolutionPreference::Raw,
         };
         let turns = build_workspace_turns(&[delivery], "peer-1", "Asha", None);
@@ -573,7 +573,7 @@
                 },
             ],
             tokens_used: 0,
-            continuation: None,
+            truncated: false,
             resolution_used: crate::persona::rag_budget::ResolutionPreference::Raw,
         };
         let turns = build_workspace_turns(&[work], "peer-1", "Asha", None);
@@ -612,7 +612,7 @@
                 source_id: source_id.to_string(),
                 items,
                 tokens_used: 0,
-                continuation: None,
+                truncated: false,
                 resolution_used: ResolutionPreference::Raw,
             }
         }

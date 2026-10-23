@@ -23,7 +23,7 @@ use super::recall::ResidencyHint;
 use super::recall_impl::{CandidateArtifact, CandidateSource};
 use super::recall_trait::{CapabilityQuery, RecallContext};
 use super::tier::TierRole;
-use super::working_set::{ArtifactId, PageKind};
+use crate::inference::page_ref::{ArtifactId, PageKind};
 use crate::cognition::embedding::{cosine_similarity, EmbeddingProvider};
 
 /// One local genome layer as the recall source sees it — content-addressed
@@ -84,7 +84,7 @@ pub fn stable_local_id(name: &str) -> ArtifactId {
 
 /// Qualified local identity for a manifest entry. Alias changes do not change
 /// identity; different bases or paths do. This is not a digest of adapter bytes.
-pub fn manifest_local_id(adapter: &crate::forge::adapter_manifest::TrainedAdapter) -> ArtifactId {
+pub fn manifest_local_id(adapter: &crate::genome::adapter_manifest::TrainedAdapter) -> ArtifactId {
     let path = adapter.path.to_string_lossy();
     // Length-prefix the base so separators inside either component cannot collide.
     stable_local_id(&format!("manifest:{}:{}{}", adapter.base_model_id.len(), adapter.base_model_id, path))
@@ -95,42 +95,13 @@ impl GenomeStoreCandidateSource {
         Self { layers, embedder }
     }
 
-    /// Build the source from the persona's LIVE paging-engine adapters — the LOCAL
-    /// LoRA intelligence, no network, no HF. Each known adapter becomes a rankable
-    /// candidate (stable id from its name, match text from its domain), so recall
-    /// can cosine-pick the best-fitting local layer for a task entirely on-machine.
-    /// HF/grid are just additional sources layered in later; the intelligence is
-    /// here now ([[dynamic-lora-by-project-directory-scope]]).
-    pub fn from_local_adapters(
-        adapters: &[crate::persona::genome_paging::GenomeAdapterInfo],
-        embedder: Arc<dyn EmbeddingProvider>,
-    ) -> Self {
-        let layers = adapters
-            .iter()
-            .map(|a| LocalGenomeLayer {
-                artifact_id: stable_local_id(&a.name),
-                match_text: a.domain.clone(),
-                last_used_ms: a.last_used_ms,
-                // Local, persona-owned layers are trusted; a refined layer scores
-                // higher still once the sentinel-attribution slice lands.
-                trust_factor: 0.9,
-                // The paging-engine view carries no path to join the sidecar on;
-                // signatures arrive via `from_manifest` (the manifest IS keyed by
-                // path). This constructor stays the signature-less fallback.
-                signature: None,
-                outcome_factor: 0.0, // no index consulted — the pre-fitness hardcode, weighted 0 by the ranker
-            })
-            .collect();
-        Self::new(layers, embedder)
-    }
-
     /// Build the source from the durable adapter MANIFEST joined with the
     /// signature sidecar — the store the adoption chain stamps
     /// ([`crate::genome::signature::SignatureStore`]). Every registered gene
     /// becomes a candidate; the ones the sentinel adopted since the signature
     /// slice landed carry their minted identity and rank by it.
     pub fn from_manifest(
-        manifest: &[crate::forge::adapter_manifest::TrainedAdapter],
+        manifest: &[crate::genome::adapter_manifest::TrainedAdapter],
         signatures: &crate::genome::signature::SignatureStore,
         fitness: &crate::genome::fitness_ledger::GeneFitnessIndex,
         embedder: Arc<dyn EmbeddingProvider>,
@@ -228,7 +199,7 @@ mod tests {
     // renaming one artifact must not create a second identity.
     #[test]
     fn manifest_identity_separates_artifacts_and_bases_not_aliases() {
-        let mut a = crate::forge::adapter_manifest::TrainedAdapter {
+        let mut a = crate::genome::adapter_manifest::TrainedAdapter {
             alias: "code".into(), path: "/genes/one.gguf".into(), base_model_id: "base-a".into(),
         };
         let original = manifest_local_id(&a);
@@ -262,7 +233,7 @@ mod tests {
         let embedder: Arc<dyn EmbeddingProvider> = Arc::new(LexicalEmbedder::default());
         let corpus: Vec<String> =
             vec!["parse tokens into an ast".into(), "lex the source stream".into()];
-        let corpus_ref = crate::forge::recipe::CorpusRef {
+        let corpus_ref = crate::genome::corpus_ref::CorpusRef {
             name: "parser-corpus".into(),
             content_hash: "sha256:00".into(),
             size_bytes: 1,
@@ -362,55 +333,6 @@ mod tests {
         assert!(cands
             .iter()
             .all(|c| matches!(c.residency, ResidencyHint::Local { .. })));
-    }
-
-    // what this catches: the LOCAL LoRA intelligence — projecting the persona's live
-    // paging-engine adapters into cosine-rankable candidates, no network. The layer
-    // whose DOMAIN matches the task ranks higher; ids are stable + deterministic.
-    #[tokio::test]
-    async fn from_local_adapters_ranks_the_matching_skill_no_network() {
-        use crate::persona::genome_paging::GenomeAdapterInfo;
-        let mk = |name: &str, domain: &str| GenomeAdapterInfo {
-            name: name.to_string(),
-            domain: domain.to_string(),
-            size_mb: 50.0,
-            priority: 0.5,
-            is_loaded: false,
-            last_used_ms: 1000,
-            trained_model_name: None,
-            compaction: None,
-        };
-        let adapters = vec![
-            mk("code-expert", "rust code editing and refactoring"),
-            mk("poet", "lyrical poetry and creative verse"),
-        ];
-        let source = GenomeStoreCandidateSource::from_local_adapters(
-            &adapters,
-            Arc::new(LexicalEmbedder::new()),
-        );
-        let cands = source
-            .fetch(
-                &query_for("rust code refactoring"),
-                &RecallContext::cold_start(crate::identity::PeerId::from_uuid(Uuid::nil())),
-            )
-            .await;
-        assert_eq!(cands.len(), 2);
-        let sem = |id: ArtifactId| {
-            cands
-                .iter()
-                .find(|c| c.artifact_id == id)
-                .unwrap()
-                .semantic_factor
-        };
-        assert!(
-            sem(stable_local_id("code-expert")) > sem(stable_local_id("poet")),
-            "the code skill matches the code task more closely"
-        );
-        assert_eq!(
-            stable_local_id("code-expert"),
-            stable_local_id("code-expert"),
-            "the local id is deterministic across calls/boots"
-        );
     }
 
     // what this catches: an empty store yields no candidates (recall then falls

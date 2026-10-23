@@ -5,7 +5,7 @@
 //! the SAME embedding space engram recall uses — gene recall and memory recall
 //! are one problem, so this module reuses the one embedding lane
 //! ([`crate::cognition::embedding`]) and the one clustering kernel
-//! ([`crate::modules::embedding::detect_clusters`]), never a parallel space.
+//! ([`crate::cognition::embedding::vector_math::detect_clusters`]), never a parallel space.
 //!
 //! # Where signatures come from and where they live
 //!
@@ -42,7 +42,7 @@ use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 
 use crate::cognition::embedding::{cosine_similarity, EmbeddingProvider};
-use crate::forge::recipe::CorpusRef;
+use crate::genome::corpus_ref::CorpusRef;
 
 /// Cluster admission floor for subspace detection. The recall space is
 /// anisotropic (unrelated pairs sit ~0.25–0.30, see `recall_faculty`'s war
@@ -147,7 +147,7 @@ impl GeneSignature {
         normalize(&mut centroid);
 
         // Subspaces: the shared clustering kernel, largest themes first.
-        let mut clusters = crate::modules::embedding::detect_clusters(
+        let mut clusters = crate::cognition::embedding::vector_math::detect_clusters(
             &embeddings,
             SUBSPACE_MIN_SIMILARITY,
             SUBSPACE_MIN_CLUSTER_SIZE,
@@ -212,7 +212,7 @@ pub struct SignatureStore {
 
 /// Where the sidecar lives: next to the manifest, same override semantics.
 pub fn signature_store_path() -> Result<PathBuf, String> {
-    Ok(crate::forge::adapter_manifest::manifest_path()?.with_file_name("signatures.json"))
+    Ok(crate::genome::adapter_manifest::manifest_path()?.with_file_name("signatures.json"))
 }
 
 impl SignatureStore {

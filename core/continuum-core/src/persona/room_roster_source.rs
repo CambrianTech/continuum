@@ -56,9 +56,9 @@ use airc_lib::{AircError, RoomMember};
 use async_trait::async_trait;
 use continuum_positron::RosterSlotView;
 
-use crate::ipc::positron_source::roster_slot_from_member;
+use crate::persona::roster_slot::roster_slot_from_member;
 use crate::persona::rag_budget::{
-    ContinuationCursor, RagContext, RagDelivery, RagItem, RagSource, ResolutionPreference,
+     RagContext, RagDelivery, RagItem, RagSource, ResolutionPreference,
 };
 
 /// Both roster adapters share the existing task-124 allowance (256 at 16k).
@@ -95,7 +95,7 @@ pub(crate) const ROSTER_SCAN: usize = 200;
 /// Token estimate — the ONE canonical chars/4 estimator (`cognition::token_budget`),
 /// shared by every RAG source so the replay ledger's numbers match. (Was a private
 /// copy — converged.)
-use crate::cognition::token_budget::estimate_prompt_tokens as estimate_tokens;
+use continuum_base::token_estimate::estimate_prompt_tokens as estimate_tokens;
 
 /// Abstract reader over airc room membership. Production impl rides on
 /// `airc_lib::Airc::room_roster`; tests use a stub that returns canned
@@ -359,7 +359,7 @@ impl RagSource for RoomRosterSource {
                 source_id: SOURCE_ID.to_string(),
                 items: Vec::new(),
                 tokens_used: 0,
-                continuation: None,
+                truncated: false,
                 resolution_used: ResolutionPreference::Placeholder,
             };
         }
@@ -382,7 +382,7 @@ impl RagSource for RoomRosterSource {
                     source_id: SOURCE_ID.to_string(),
                     items: Vec::new(),
                     tokens_used: 0,
-                    continuation: None,
+                    truncated: false,
                     resolution_used: ResolutionPreference::Placeholder,
                 };
             }
@@ -409,7 +409,7 @@ impl RagSource for RoomRosterSource {
                     source_id: SOURCE_ID.to_string(),
                     items: Vec::new(),
                     tokens_used: 0,
-                    continuation: None,
+                    truncated: false,
                     resolution_used: ResolutionPreference::Placeholder,
                 };
             }
@@ -484,21 +484,11 @@ impl RagSource for RoomRosterSource {
             items,
             tokens_used,
             // Presence is always-current and small; no pagination.
-            continuation: None,
+            truncated: false,
             resolution_used: resolution,
         }
     }
 
-    async fn deliver_continuation(
-        &self,
-        _ctx: &RagContext,
-        _cursor: ContinuationCursor,
-        _budget: u32,
-    ) -> Option<RagDelivery> {
-        // Roster does not paginate — it's a small, always-current
-        // snapshot. Any cursor is stale by construction.
-        None
-    }
 }
 
 #[cfg(test)]
@@ -654,7 +644,7 @@ mod tests {
         // that contract: the bare name must be present and match the
         // transcript sender name, not the formatted line.
         assert_eq!(delivery.items[1].metadata["display_name"], "win-claude");
-        assert!(delivery.continuation.is_none());
+        assert!(!delivery.truncated);
     }
 
     // what this catches: THE convergence guarantee — the persona grounding now

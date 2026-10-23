@@ -57,6 +57,7 @@ use std::time::Duration;
 use uuid::Uuid;
 
 use crate::ipc::positron_source::{AircPresenceUpdate, PRESENCE_UPDATED};
+use crate::persona::room_directory::{load_directory, persist_directory};
 use crate::persona::room_roster_source::AircRosterReader;
 use crate::persona::room_roster_source::{PRESENCE_WINDOW, ROSTER_SCAN};
 use crate::runtime::MessageBus;
@@ -85,105 +86,6 @@ const EMIT_INTERVAL: Duration = Duration::from_secs(2);
 const MEMBERSHIP_WINDOW: Duration = Duration::from_secs(14 * 24 * 3600);
 const MEMBERSHIP_SCAN: usize = 4000;
 
-/// On-disk room directory: every `RosterSlotView` this node has ever
-/// projected for the room, keyed by member id. The sibling of the airc
-/// attach-cursor file — node-local durable state under `~/.continuum/state/`.
-fn directory_path(room_id: &Uuid) -> Option<PathBuf> {
-    dirs::home_dir().map(|h| {
-        h.join(".continuum")
-            .join("state")
-            .join(format!("room-directory-{room_id}.json"))
-    })
-}
-
-/// Every slot in EVERY room directory on this node — the scope-wide "who
-/// exists" read `presence/directory` unions (duplicates across rooms
-/// included; the caller merges by member id, newest sighting winning).
-/// Files, not daemon paging: existence must survive restarts and benchmark
-/// bursts, and the recent-events page provably doesn't (2026-08-31: a
-/// 4000-event page during a solve burst hid every quiet peer).
-pub fn scope_directory_slots() -> Vec<RosterSlotView> {
-    let Some(state) = dirs::home_dir().map(|h| h.join(".continuum").join("state")) else {
-        return Vec::new();
-    };
-    let Ok(entries) = std::fs::read_dir(&state) else {
-        return Vec::new();
-    };
-    let mut slots = Vec::new();
-    for entry in entries.flatten() {
-        let name = entry.file_name();
-        let Some(name) = name.to_str() else { continue };
-        let Some(room) = name
-            .strip_prefix("room-directory-")
-            .and_then(|r| r.strip_suffix(".json"))
-        else {
-            continue;
-        };
-        let Ok(room_id) = Uuid::parse_str(room) else {
-            continue;
-        };
-        slots.extend(load_directory(&room_id).into_values());
-    }
-    slots
-}
-
-/// Is this peer a HUMAN on this node — a directory slot whose runtime is the
-/// interactive client (`SenderKind::from_runtime`)? The ONE directory
-/// (`scope_directory_slots`), memoised for a minute: the persona loop head
-/// asks it per drained line, and a work-holding citizen wakes for a human
-/// line or an @mention, never for agent status traffic (2026-09-04: every
-/// agent line in #academy woke all twelve holders — 8 work turns an hour).
-pub fn is_human_peer(peer: Uuid) -> bool {
-    static HUMANS: std::sync::LazyLock<std::sync::Mutex<(Option<std::time::Instant>, std::collections::HashSet<Uuid>)>> =
-        std::sync::LazyLock::new(|| std::sync::Mutex::new((None, std::collections::HashSet::new())));
-    let mut memo = HUMANS.lock().unwrap_or_else(|e| e.into_inner()); // poisoned lock = read the last state, same policy as every lock in this crate
-    let stale = memo.0.is_none_or(|at| at.elapsed() > Duration::from_secs(60));
-    if stale {
-        memo.1 = scope_directory_slots()
-            .into_iter()
-            .filter(|s| matches!(s.kind, continuum_positron::SenderKind::Human))
-            .map(|s| s.member_id)
-            .collect();
-        memo.0 = Some(std::time::Instant::now());
-    }
-    memo.1.contains(&peer)
-}
-
-fn load_directory(room_id: &Uuid) -> HashMap<Uuid, RosterSlotView> {
-    let Some(path) = directory_path(room_id) else {
-        return HashMap::new();
-    };
-    let Ok(bytes) = std::fs::read(&path) else {
-        return HashMap::new(); // first boot — honest empty, filled by the deep scan
-    };
-    match serde_json::from_slice::<Vec<RosterSlotView>>(&bytes) {
-        Ok(slots) => slots.into_iter().map(|s| (s.member_id, s)).collect(),
-        Err(err) => {
-            tracing::warn!(%err, ?path, "room directory unreadable — starting fresh (will re-seed from the deep scan)");
-            HashMap::new()
-        }
-    }
-}
-
-fn persist_directory(room_id: &Uuid, dir: &HashMap<Uuid, RosterSlotView>) {
-    let Some(path) = directory_path(room_id) else {
-        return;
-    };
-    if let Some(parent) = path.parent() {
-        let _ = std::fs::create_dir_all(parent);
-    }
-    let mut slots: Vec<&RosterSlotView> = dir.values().collect();
-    slots.sort_by_key(|s| s.member_id); // deterministic file → clean diffs
-    match serde_json::to_vec_pretty(&slots) {
-        Ok(bytes) => {
-            if let Err(err) = std::fs::write(&path, bytes) {
-                tracing::warn!(%err, ?path, "room directory persist failed — membership survives in memory only this session");
-            }
-        }
-        Err(err) => tracing::warn!(%err, "room directory serialize failed"),
-    }
-}
-
 /// Fold freshly-projected live slots into the directory. Newest sighting
 /// wins wholesale — EXCEPT a real display name never regresses to the
 /// provisional `peer-xxxx` label (identity is adopted once; a card that
@@ -196,7 +98,7 @@ fn fold_into_directory(dir: &mut HashMap<Uuid, RosterSlotView>, live: &[RosterSl
             Some(existing) => {
                 let mut incoming = slot.clone();
                 let provisional =
-                    crate::ipc::positron_source::provisional_sender_name(slot.member_id);
+                    crate::persona::roster_slot::provisional_sender_name(slot.member_id);
                 if incoming.display_name == provisional && existing.display_name != provisional {
                     incoming.display_name = existing.display_name.clone();
                 }
@@ -368,7 +270,7 @@ pub(crate) fn project_presence(
         .map(|m| {
             // #262: the CARDS projection — pronouns/role/bio/integrations
             // from each peer's published identity card ride into every slot.
-            let mut slot = crate::ipc::positron_source::roster_slot_from_card(m);
+            let mut slot = crate::persona::roster_slot::roster_slot_from_card(m);
             // Enrich with the node's stored avatar image, when one exists for
             // this peer — the URL only; absent stays honestly absent.
             slot.avatar_url = avatars.get(&slot.member_id).cloned();

@@ -21,7 +21,7 @@
 //! **Identity + scope come from the connection, not per call.** The connection
 //! carries the persona's [`CallerIdentity`] (set where it is built), so the SAME
 //! `AuthPolicy` gate that protects every command (incl.
-//! [`crate::routing::GridTrustAuthPolicy`]) gates the persona too. Per batch we
+//! [`crate::modules::grid::GridTrustAuthPolicy`]) gates the persona too. Per batch we
 //! `scoped(ctx.context_id)` so each tool call is stamped with the room it acts in
 //! (the third ID tier), exactly as a browser tab scopes to its room.
 //!
@@ -73,7 +73,7 @@ pub struct CommandToolExecutor {
     core: Option<Arc<CommandExecutor>>,
     /// The acting context these hands are bound to (bound into the connection's identity,
     /// so the kernel keys her code tools by it). `None` = her default (live) context.
-    hands: Option<crate::code::hands::HandsContext>,
+    hands: Option<crate::identity::hands_context::HandsContext>,
     /// For a context's hands: ends the context when the last clone of these hands drops (the
     /// fork is over, on any exit path). `None` for her live hands, which never end.
     _release: Option<Arc<ContextRelease>>,
@@ -87,7 +87,7 @@ struct ContextRelease {
     core: Arc<CommandExecutor>,
     identity: CallerIdentity,
     persona: Uuid,
-    context: crate::code::hands::HandsContext,
+    context: crate::identity::hands_context::HandsContext,
 }
 
 impl Drop for ContextRelease {
@@ -103,7 +103,7 @@ impl Drop for ContextRelease {
                     .execute_with_caller("code/release-hands", serde_json::json!({}), Some(identity.releasing_hands()))
                     .await
                     .and_then(|r| match r {
-                        crate::runtime::CommandResult::Json(v) => serde_json::from_value::<crate::modules::code_commands::ReleaseHandsResult>(v)
+                        crate::runtime::CommandResult::Json(v) => serde_json::from_value::<crate::code::hands::ReleaseHandsResult>(v)
                             .map_err(|e| format!("the release's result isn't its own shape: {e}")),
                         _ => Err("the release answered in a shape other than its own JSON".to_string()),
                     });
@@ -131,7 +131,7 @@ impl CommandToolExecutor {
     /// `Connection<InProcessTransport>` carrying the persona's OWN
     /// [`CallerIdentity`], dispatching through the **substrate's wired**
     /// [`CommandExecutor`] (the one `start_server` built with the
-    /// [`GridTrustAuthPolicy`](crate::routing::GridTrustAuthPolicy) + interceptors).
+    /// [`GridTrustAuthPolicy`](crate::modules::grid::GridTrustAuthPolicy) + interceptors).
     ///
     /// Taking the wired executor — NOT a fresh `CommandExecutor::new(registry)`,
     /// which has an AllowAll default policy and no interceptors — is the
@@ -148,7 +148,7 @@ impl CommandToolExecutor {
     pub fn for_persona_in(
         executor: Arc<CommandExecutor>,
         persona: Uuid,
-        hands: Option<crate::code::hands::HandsContext>,
+        hands: Option<crate::identity::hands_context::HandsContext>,
     ) -> Self {
         // A local persona is the owner's own in-process agent, not a cross-grid
         // peer: it carries `LocalPersona` identity → resolves to `Trusted` at the
@@ -175,7 +175,7 @@ impl CommandToolExecutor {
     /// The core executor behind these hands, if any (a live persona's; not a harness's).
     /// Act in an EXISTING context this executor does not own: no release on drop. The
     /// context's owner (a card claim's lifetime) releases it (card fc9e9fd7).
-    pub fn for_persona_bound(executor: Arc<CommandExecutor>, persona: Uuid, context: crate::code::hands::HandsContext) -> Self {
+    pub fn for_persona_bound(executor: Arc<CommandExecutor>, persona: Uuid, context: crate::identity::hands_context::HandsContext) -> Self {
         let identity = CallerIdentity::local_persona(crate::identity::PeerId::from_uuid(persona)).in_hands(context);
         let transport = InProcessTransport::new(executor.clone(), Some(identity));
         Self {
@@ -311,7 +311,7 @@ pub(crate) fn persona_tool_error(attempted: &str, raw: String) -> String {
     // Omission from the default menu is not an authorization failure. These verbs
     // remain discoverable; preserve the actual refusal (or transport failure) so
     // a legitimate reviewer can recover, alongside purpose/own-work guidance.
-    if let Some(withheld) = crate::cognition::tool_dialect::withheld_from_hands(&normalized) {
+    if let Some(withheld) = crate::ai::tool_dialect::withheld_from_hands(&normalized) {
         return format!(
             "`{normalized}` failed: {raw}\n{}\n{}",
             withheld.why, withheld.instead
@@ -326,7 +326,7 @@ pub(crate) fn persona_tool_error(attempted: &str, raw: String) -> String {
         command_registry()
             .into_iter()
             .find(|d| d.name == name && d.access_level == AccessLevel::AiSafe)
-            .map(|d| crate::commands::help::render_ai_help(d.name, d.description, &d.params_schema))
+            .map(|d| crate::sdk_codegen::ai_help::render_ai_help(d.name, d.description, &d.params_schema))
     };
 
     // Unknown command: the substrate's dev-facing message is useless to her. Suggest
@@ -347,12 +347,12 @@ pub(crate) fn persona_tool_error(attempted: &str, raw: String) -> String {
         // the teach message names what actually runs. This is the alias-aware face of
         // the ONE tool_dialect section [[tool-naming-meet-their-training-alias-or-redirect]].
         let mut candidates = ai_names.clone();
-        candidates.extend_from_slice(crate::cognition::tool_dialect::ai_safe_aliases());
+        candidates.extend_from_slice(crate::ai::tool_dialect::ai_safe_aliases());
         let mut seen = std::collections::HashSet::new();
         let suggestions: Vec<String> =
-            crate::commands::help::did_you_mean(&normalized, &candidates)
+            crate::sdk_codegen::ai_help::did_you_mean(&normalized, &candidates)
                 .into_iter()
-                .map(crate::cognition::tool_dialect::resolve_wire_name)
+                .map(crate::ai::tool_dialect::resolve_wire_name)
                 .filter(|canonical| seen.insert(canonical.clone()))
                 .collect();
         // Not a wrong verb — not a verb at all. A path or a bare symbol in the name
@@ -360,7 +360,7 @@ pub(crate) fn persona_tool_error(attempted: &str, raw: String) -> String {
         // has nothing near it, and "call `commands/help`" was the whole receipt
         // (card b579a9c7). Name the slip and put her own arguments back in front of
         // her, the way the nameless-args sentinel does.
-        if let Some(slip) = crate::cognition::tool_dialect::not_a_verb(attempted, !suggestions.is_empty()) {
+        if let Some(slip) = crate::ai::tool_dialect::not_a_verb(attempted, !suggestions.is_empty()) {
             continuum_base::probe!(
                 class = "tool.name.not_a_verb",
                 slip = ?slip,
@@ -368,14 +368,14 @@ pub(crate) fn persona_tool_error(attempted: &str, raw: String) -> String {
                 "the tool NAME field held something that is not a verb; the receipt names the slip"
             );
             return match slip {
-                crate::cognition::tool_dialect::NotAVerb::Path => format!(
+                crate::ai::tool_dialect::NotAVerb::Path => format!(
                     "`{attempted}` is a PATH, not a tool — you put the path where the tool \
                      NAME goes, so nothing ran. A path is an argument; the verb goes first:\n\
                      `code/read({{\"file_path\": \"{attempted}\"}})` to read it, `code/write` or \
                      `code/edit` to change it, `code/list` for a directory, `code/shell` with \
                      `cwd` to run a command there. Retry with the verb in front."
                 ),
-                crate::cognition::tool_dialect::NotAVerb::Identifier => format!(
+                crate::ai::tool_dialect::NotAVerb::Identifier => format!(
                     "`{attempted}` is not a tool, and is not near one — it reads like a symbol \
                      from what you were working on (a field, a variable, a name) put where the \
                      tool NAME goes, so nothing ran. The verb goes first: \
@@ -481,16 +481,16 @@ impl ToolExecutor for CommandToolExecutor {
         self.core_executor()
     }
 
-    fn hands_context(&self) -> Option<crate::code::hands::HandsContext> {
+    fn hands_context(&self) -> Option<crate::identity::hands_context::HandsContext> {
         self.hands
     }
 
     fn in_fresh_hands(&self, persona: Uuid) -> Option<Arc<dyn ToolExecutor>> {
         let core = self.core.clone()?;
-        Some(Arc::new(Self::for_persona_in(core, persona, Some(crate::code::hands::HandsContext::fresh()))))
+        Some(Arc::new(Self::for_persona_in(core, persona, Some(crate::identity::hands_context::HandsContext::fresh()))))
     }
 
-    fn in_hands(&self, persona: Uuid, context: crate::code::hands::HandsContext) -> Option<Arc<dyn ToolExecutor>> {
+    fn in_hands(&self, persona: Uuid, context: crate::identity::hands_context::HandsContext) -> Option<Arc<dyn ToolExecutor>> {
         let core = self.core.clone()?;
         Some(Arc::new(Self::for_persona_bound(core, persona, context)))
     }
@@ -609,7 +609,7 @@ impl ToolExecutor for CommandToolExecutor {
                     // longer decodes projects `Undecodable` — schema drift, a defect,
                     // and never silently a success (Astra, #4352 review).
                     let canonical =
-                        crate::cognition::tool_dialect::resolve_wire_name(&calls[i].name);
+                        crate::ai::tool_dialect::resolve_wire_name(&calls[i].name);
                     let (verdict, dispatch_handle) =
                         crate::sdk_codegen::project_result(&canonical, &value);
                     if verdict == ActVerdict::Undecodable {
@@ -622,9 +622,7 @@ impl ToolExecutor for CommandToolExecutor {
                     }
                     // The human canvas consumes the original capture once; the
                     // persona history consumes a durable reference to those bytes.
-                    crate::ipc::positron_canvas_source::maybe_publish_observation(
-                        &ctx.persona_name, &canonical, &value.to_string(),
-                    );
+                    super::result_tap::tap(&ctx.persona_name, &canonical, &value);
                     let images = match crate::media::artifact::retain_captures(&canonical, &mut value) {
                         Ok(images) => images,
                         Err(error) => {

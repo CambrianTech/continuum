@@ -878,7 +878,7 @@ export class GenomeProfileWidget extends ReactiveWidget {
 
   private _shortModel(model: string): string {
     if (!model) return '-';
-    // "unsloth/Llama-3.2-3B-Instruct" → "Llama-3.2-3B"
+    // "meta-llama/Llama-3.2-3B-Instruct" → "Llama-3.2-3B"
     const parts = model.split('/');
     const name = parts[parts.length - 1];
     return name.replace('-Instruct', '').replace('-Chat', '');

@@ -141,12 +141,9 @@ pub(super) async fn shared_in_process_embedder(model: &str) -> Option<(Arc<dyn E
 pub async fn resolve_recall_embedder(
     adapter: Arc<dyn AIProviderAdapter>,
 ) -> Arc<dyn EmbeddingProvider> {
-    // The embedding-SPACE identity (cache key). Defaults to the canonical grid
-    // embedder; an operator standardizing on a different embed model overrides it
-    // so in-process and gateway vectors stay in one comparable space.
-    let model = continuum_base::config_env::read("UNSLOTH_EMBED_MODEL")
-        .filter(|m| !m.trim().is_empty())
-        .unwrap_or_else(|| CANONICAL_EMBED_MODEL.to_string());
+    // The embedding-SPACE identity (cache key): the canonical grid embedder, so
+    // in-process and gateway vectors stay in one comparable space.
+    let model = CANONICAL_EMBED_MODEL.to_string();
 
     // 1. Preferred: the dedicated in-process embed model. Pinned independently of
     //    the chat model, so changing Asha's brain never disturbs recall. ONE
@@ -164,7 +161,7 @@ pub async fn resolve_recall_embedder(
     }
 
     // 2. Fallback: the chat adapter's embeddings endpoint, for a gateway that
-    //    serves an embedding lane (e.g. unsloth/llama-server started --embeddings).
+    //    serves an embedding lane (e.g. llama-server started --embeddings).
     if adapter
         .capabilities()
         .has(crate::model_registry::Capability::Embedding)
@@ -203,9 +200,7 @@ pub async fn resolve_recall_embedder(
 /// chat-adapter `/v1/embeddings` rung (rung 2) that only a persona's own adapter
 /// can provide. Always returns a usable embedder — never errors, never panics.
 pub async fn resolve_recall_embedder_local() -> Arc<dyn EmbeddingProvider> {
-    let model = continuum_base::config_env::read("UNSLOTH_EMBED_MODEL")
-        .filter(|m| !m.trim().is_empty())
-        .unwrap_or_else(|| CANONICAL_EMBED_MODEL.to_string());
+    let model = CANONICAL_EMBED_MODEL.to_string();
 
     if let Some((provider, gguf_id)) = shared_in_process_embedder(&model).await {
         continuum_base::probe!(

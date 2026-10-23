@@ -34,7 +34,8 @@ use sha2::{Digest, Sha256};
 use std::collections::BTreeSet;
 use uuid::Uuid;
 
-use super::deliberation_budget::{est_tokens, turn_message_line_addressed, GUARD_CHARS_PER_TOKEN};
+use super::deliberation_budget::turn_message_line_addressed;
+use continuum_base::token_estimate::{estimate_guard_tokens, GUARD_CHARS_PER_TOKEN};
 use super::deliberation_parse::decision_from_response;
 use super::deliberation_prompt;
 use super::persona_tools;
@@ -92,6 +93,8 @@ pub use super::model_binding::ModelBinding;
 mod prompt;
 pub use self::prompt::*;
 mod request;
+mod admission;
+pub(crate) mod admission_clock;
 use self::request::*;
 mod reply_claim;
 use self::reply_claim::*;
@@ -262,18 +265,11 @@ pub struct LlmDeliberationFaculty {
     /// the ceiling; deliberately NOT a process global, because that value feeds a
     /// decision and a global read inside a decision makes tests order-dependent.
     working_set: Option<super::working_set::WorkingSetRegistry>,
-    /// The prefix the engine REPORTED it reused on her last answered prompt (`cache_n`),
-    /// bounded by the conversation that prompt carried. That much rides free on the next
-    /// turn; the act-latency cap bounds only what is new beyond it. MEASURED, never
-    /// assumed: the first cut of this credited her whole last conversation on the premise
-    /// that her slot held it, and on the M5 (2026-10-18) it did not (reuse 13-18%), so the
-    /// prompt grew with the window (median 8.5k tokens at a 25.6k window to 50.6k at 74k)
-    /// and every act paid it cold: 76 s to 547 s per prefill at the same ~105 tokens/s.
-    /// Credited from the engine's own count, the cap grows when reuse works and falls back
-    /// to the latency target when it does not.
-    cached_prefix_tokens: std::sync::atomic::AtomicUsize,
-    /// This resident's ring results collapsed to pointers (`ring_collapse`).
-    collapsed_results: parking_lot::Mutex<super::ring_collapse::StickyCollapse>,
+    /// Her context view across acts (`prompt/epoch.rs`): one epoch that only appends, turned
+    /// over when it outgrows her history's grant.
+    context_view: parking_lot::Mutex<
+        Option<continuum_context::view::View<crate::cognition::context_streams::ContextMessage>>,
+    >,
 }
 
 impl LlmDeliberationFaculty {
@@ -308,8 +304,7 @@ impl LlmDeliberationFaculty {
             genome: empty_genome(),
             decoding: relaxed_decoding(),
             working_set: None,
-            cached_prefix_tokens: std::sync::atomic::AtomicUsize::new(0),
-            collapsed_results: parking_lot::Mutex::new(super::ring_collapse::StickyCollapse::default()),
+            context_view: parking_lot::Mutex::new(None),
         }
     }
 
@@ -379,11 +374,6 @@ impl LlmDeliberationFaculty {
             model: Some(model.clone()),
             context_window: cur.context_window,
         });
-        self
-    }
-
-    pub fn with_temperature(mut self, temperature: f32) -> Self {
-        self.temperature = temperature;
         self
     }
 
@@ -472,7 +462,7 @@ impl LlmDeliberationFaculty {
     /// tracks reality for free. (#124 — de-hardcode the dynamic system.)
     fn framing_floor_tokens(&self) -> u32 {
         let bare = self.compose_system("", &std::collections::BTreeSet::new(), false, false, None);
-        est_tokens(&bare) as u32
+        estimate_guard_tokens(&bare) as u32
     }
 
     /// What an UNMEASURED mind's reply wants ([`reply_claim`]'s max): a reply-sized

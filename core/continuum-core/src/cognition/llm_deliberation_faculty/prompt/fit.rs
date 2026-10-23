@@ -26,7 +26,7 @@ impl LlmDeliberationFaculty {
     pub(in super::super) fn framing_cost(system: &str) -> usize {
         // System is a message too; the template also opens the assistant's
         // generation turn. Charge both wrappers using the same format allowance.
-        est_tokens(system) + 2 * Self::PER_MESSAGE_TEMPLATE_TOKENS
+        estimate_guard_tokens(system) + 2 * Self::PER_MESSAGE_TEMPLATE_TOKENS
     }
 
     /// How many MESSAGES a cluster walk may cross — how far the front may advance past a
@@ -63,7 +63,7 @@ impl LlmDeliberationFaculty {
         // Text-only lower bound, calibrated by the provider's measured prompt
         // count. Never count base64 characters as image tokens. Native images
         // require the finalized-body image quote before local generation.
-        let tokens = super::super::super::token_budget::estimate_message_content_tokens(&message.content, est_tokens);
+        let tokens = super::super::super::token_budget::estimate_message_content_tokens(&message.content, estimate_guard_tokens);
         tokens + Self::PER_MESSAGE_TEMPLATE_TOKENS
     }
 
@@ -119,16 +119,8 @@ impl LlmDeliberationFaculty {
             });
         }
         let history_budget = budget_tokens - required_tokens;
-        // 82416bb1: before dropping a saved result, price its pointer; custody stays with WM.
-        // Sticky and all at once: `ring_collapse` owns the rule and its receipt.
-        let mut history_tokens = Self::messages_cost(&prompt.history);
-        prompt.result_pointers = self.collapsed_results.lock().apply(
-            &mut prompt.history,
-            std::mem::take(&mut prompt.result_pointers),
-            &mut history_tokens,
-            history_budget,
-            Self::message_cost,
-        );
+        // Nothing collapses here: her view collapses once, at an epoch start (`epoch.rs`),
+        // and arrives within the history budget. This drop is the guard behind it.
         // Read BEFORE the history is borrowed for costing: what her own last move and its
         // outcome cost, so the drop below can refuse to reach them.
         let evidence = prompt.recent_move_evidence();
@@ -274,23 +266,17 @@ impl LlmDeliberationFaculty {
                 .filter_map(|(index, pointer)| index.checked_sub(start).map(|i| (i, pointer)))
                 .collect(),
         };
-        // The steps ledger changes on every act (a new action at its tail, an old one aged
-        // out at its head). In a multi-act turn it rides after everything append-only
-        // across the acts and just before the pinned result, which stays last (card
-        // 5b09111e: on the M5 it sat ahead of the framing, the ask and 18 room updates that
-        // were byte-identical between acts, and forfeited all of them). With no pinned
-        // result it keeps its place ahead of the ask: bracketed meta after the ask gets
-        // answered and parroted in its place (the 2026-07-20 humaneval fix).
+        // The pinned result stays last. With none, the notices keep their place ahead of
+        // the ask: bracketed meta after the ask gets answered and parroted in its place
+        // (the 2026-07-20 humaneval fix).
         if !prompt.latest_result.is_empty() {
             prompt.history.extend(prompt.stimulus);
             prompt.history.extend(prompt.room_updates);
-            prompt.history.extend(prompt.ledger);
             prompt.history.extend(prompt.notices);
             prompt.history.extend(prompt.action_statement);
             prompt.history.extend(prompt.latest_result);
         } else {
             prompt.history.extend(prompt.action_statement);
-            prompt.history.extend(prompt.ledger);
             prompt.history.extend(prompt.notices);
             prompt.history.extend(prompt.stimulus);
             prompt.history.extend(prompt.room_updates);
@@ -338,6 +324,7 @@ impl LlmDeliberationFaculty {
         let required = view.messages.split_off(view.refit.history_len);
         let frozen_grounding_tokens = Self::messages_cost(&grounding);
         let prompt = PromptMessages {
+            streams: Default::default(),
             input_identity: view.input_identity,
             history: view.messages,
             result_pointers: view.refit.result_pointers,
@@ -347,7 +334,6 @@ impl LlmDeliberationFaculty {
             latest_result: required,
             action_statement: None,
             room_updates: Vec::new(),
-            ledger: None,
             notices: Vec::new(),
         };
         let mut fitted = self.fit_messages(prompt, input_budget
@@ -549,13 +535,15 @@ pub(in super::super) enum Fitted<T> {
 
 impl<'a> GroundingPlan<'a> {
     /// The standing sources' truthful minimums, whatever the budget — the plan the
-    /// caller WANTS. Fitting it is [`GroundingPlan::within_budget`]'s job.
+    /// caller WANTS. Fitting it is [`GroundingPlan::within_budget`]'s job. Only the
+    /// system half: a block that rides the conversation is a source of her view
+    /// (`prompt/epoch.rs`), budgeted by its epoch.
     pub(in super::super) fn minimum(ws: &'a Workspace) -> Self {
         Self {
             pieces: ws
                 .broadcast
                 .iter()
-                .filter(|c| c.decision.is_none() && c.standing_grounding)
+                .filter(|c| c.decision.is_none() && c.standing_grounding && !c.trailing)
                 .map(GroundingPiece::minimum)
                 .collect(),
         }

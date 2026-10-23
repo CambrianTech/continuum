@@ -20,7 +20,7 @@
 
 use crate::capacity::grid::GridSnapshot;
 use crate::capacity::SystemProfile;
-use crate::cognition::serving_plan::{plan_serving, HostBudget, ModelFootprint, ServingDemand};
+use crate::inference::planning::serving_plan::{plan_serving, HostBudget, ModelFootprint, ServingDemand};
 use crate::identity::PeerId;
 use crate::model_registry::types::Model;
 
@@ -127,20 +127,20 @@ pub fn resolve_from_footprint(
 ///
 /// `is_moe` is the caller's GGUF-derived verdict — MoE-ness is a FACT the GGUF
 /// carries (`{arch}.expert_count`), read via
-/// [`locate_layer_sets`](crate::genome::expert_layout::locate_layer_sets) /
+/// [`locate_layer_sets`](crate::inference_capability::expert_layout::locate_layer_sets) /
 /// `gguf_keys::expert_count` at the site that already loads the header — NOT a
 /// hand-authored catalog field (the catalog's "ask the GGUF" discipline). `grid` is
 /// the live [`GridSnapshot`] (`None` on a solo box); the grid verdict is derived from
 /// it via [`grid_has_fit`].
 ///
-/// [`footprint_for`]: crate::cognition::serving_plan::footprint::footprint_for
+/// [`footprint_for`]: crate::inference::planning::serving_plan::footprint::footprint_for
 pub fn resolve_placement(
     profile: &SystemProfile,
     model: &Model,
     is_moe: bool,
     grid: Option<&GridSnapshot>,
 ) -> PlacementResolution {
-    let fp = crate::cognition::serving_plan::footprint::footprint_for(model);
+    let fp = crate::inference::planning::serving_plan::footprint::footprint_for(model);
     let grid_fit = match (grid, fp.as_ref()) {
         (Some(snapshot), Some(f)) => grid_has_fit(snapshot, f),
         _ => false,
@@ -193,7 +193,8 @@ pub fn grid_has_fit(snapshot: &GridSnapshot, footprint: &ModelFootprint) -> bool
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::capacity::{DeviceCapacity, DriveInfo, DriveRole};
+    use crate::capacity::DeviceCapacity;
+    use crate::system_resources::drives::{DriveInfo, DriveRole};
 
     const GB: u64 = 1024 * 1024 * 1024;
 

@@ -144,9 +144,8 @@ mod tests {
     };
     use crate::genome::store::TierStore;
     use crate::genome::tier::{EvictionRecord, TierCapacity, TierError, TierRole};
-    use crate::genome::working_set::{
-        ArtifactId, PageHandle, PageKind, PageOffset, PageRef, WorkingSetCapacity,
-    };
+    use crate::genome::working_set::{PageHandle, WorkingSetCapacity};
+    use crate::inference::page_ref::{ArtifactId, PageKind, PageOffset, PageRef};
     use crate::identity::PeerId;
     use parking_lot::Mutex;
     use uuid::Uuid;

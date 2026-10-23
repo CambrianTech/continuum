@@ -214,7 +214,7 @@ pub(super) async fn settle_to_outcome(
                         framing.attention = framing.attention.with_input(
                             crate::cognition::workspace::TurnAttention::for_message(
                                 recipient.mentions(&message.text),
-                                crate::ipc::positron_presence::is_human_peer(message.peer_id),
+                                crate::persona::room_directory::is_human_peer(message.peer_id),
                             ),
                         );
                         continuum_base::probe!(
@@ -476,12 +476,12 @@ pub(super) async fn settle_to_outcome(
                     room_id = %room_id,
                     act = acts,
                     waited_secs = act_secs as u64,
-                    lanes_available = crate::cognition::resource_admission::serving_lane_permits_available() as u64,
+                    lanes_available = crate::inference::resource_admission::serving_lane_permits_available() as u64,
                     model_ms = act_model_ms,
                     generations = act_generations as u64,
                     "this iteration never reached the model — she waited and produced nothing; it is NOT counted as an act"
                 );
-                crate::modules::citizen_health::note_lane_starved();
+                crate::persona::health_ledger::note_lane_starved();
             }
             continuum_base::probe!(
                 class = "persona.act.pace",

@@ -179,7 +179,7 @@ fn a_receipt_s_per_call_results_stay_reachable_as_long_as_the_receipt() {
     assert!(live(&receipt) && children.iter().all(|c| live(c)), "the pointer holds the receipt and its children");
 
     let snapshot = wm.snapshot();
-    let checkpointed = reachable_handles(&snapshot.recent_results, &snapshot.evicted_pointers, &snapshot.receipt_children, &snapshot.open_views);
+    let checkpointed = snapshot.reachable_handles();
     assert!(children.iter().all(|c| checkpointed.contains(c)), "the checkpoint names each child");
     // Through the checkpoint's own encoding, not just in memory.
     let written = serde_json::to_string(&snapshot).expect("test: encode");
@@ -221,9 +221,10 @@ fn a_restored_legacy_receipt_keeps_its_children_under_its_new_handle() {
     let mut snapshot = WorkingMemory::new(8).snapshot();
     snapshot.recent_results.push((7, None, "a legacy receipt".into(), "code/read".into(), None));
     snapshot.receipt_children.insert(receipt_key(7, None), vec![child.clone()]);
+    snapshot.actions = snapshot.action_records(); // what retain_handleless does first
     let unsaved = snapshot.unsaved_receipts();
     let handle = format!("{:016x}", Uuid::new_v4().as_u128() as u64);
-    snapshot.recent_results[0].4 = Some(handle.clone()); // what a successful save sets
+    snapshot.actions[0].handle = Some(handle.clone()); // what a successful save sets
     snapshot.refile_children(&unsaved);
     assert_eq!(snapshot.receipt_children.get(&handle), Some(&vec![child.clone()]), "re-filed under its handle");
     assert!(!snapshot.receipt_children.contains_key("seq:7"));

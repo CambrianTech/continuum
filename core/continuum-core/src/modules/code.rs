@@ -213,6 +213,11 @@ impl ServiceModule for CodeModule {
     }
 }
 
+/// Realistic 50-persona load/profiling harness (real CodeModule, real payloads, through a
+/// mind's tool executor). Gated `stress-tests` per the test doctrine; profiling runs only.
+#[cfg(all(test, feature = "stress-tests"))]
+mod load_harness;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -227,7 +232,8 @@ mod tests {
     #[tokio::test]
     async fn a_running_command_stays_reachable_by_its_handle_in_any_of_her_hands() {
         crate::system_resources::disk_reporters::prepare_writer_fixture().await;
-        use crate::code::hands::{HandsContext, HandsKey};
+        use crate::code::hands::HandsKey;
+        use crate::identity::hands_context::HandsContext;
         let rt = tokio::runtime::Handle::current();
         let root = tempfile::tempdir().unwrap();
         let state = CodeState::new(Arc::new(DashMap::new()), Arc::new(DashMap::new()), rt.clone());
@@ -301,7 +307,7 @@ mod tests {
         for exec in &pending {
             while !exec.lock().unwrap().process_ended {
                 assert!(exec.lock().unwrap().process_end_error.is_none(), "a direct child's reap succeeds");
-                tokio::time::sleep(crate::code::shell_session::KILL_POLL).await;
+                tokio::time::sleep(crate::inference::lane_process::KILL_POLL).await;
             }
         }
         assert!(state.begin_release(who).is_empty(), "once reaped, nothing is left to wait out");

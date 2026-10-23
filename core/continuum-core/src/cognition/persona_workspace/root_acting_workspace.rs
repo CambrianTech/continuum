@@ -11,8 +11,8 @@ use super::*;
 /// ([[fallbacks-are-illegal-fail-loud]]). Fails LOUD if the cycle has no hands or the
 /// executor rejects the root; never silently no-ops.
 ///
-/// Callers root an acting context they opened (a fork's own hands) and end it with
-/// [`end_acting_context`]; her own hands are never rooted here.
+/// Callers root an acting context they opened (a fork's own hands); her own hands are
+/// never rooted here.
 pub(crate) async fn root_acting_workspace(
     cycle: &WorkspaceCycle,
     root: &str,
@@ -54,50 +54,9 @@ pub(crate) async fn root_acting_workspace(
     Ok(())
 }
 
-/// End an acting context a measurement, a solve or a replay opened (its own hands, never
-/// hers): the act's work is WIP-committed on its card's branch when a card rooted it, then
-/// the context closes, awaited, before its caller removes the directory it stood in. Her own
-/// hands are never moved by any of these, so there is nothing to put back (card fc9e9fd7:
-/// the move-home this replaced is gone with the moves).
-pub(crate) async fn end_acting_context(
-    hands: &ActingHands,
-) -> Result<(), crate::sdk_codegen::CommandError> {
-    // THE WORKSPACE MOVES WITH THE MIND (card 73eefbbb): this is the one restore every
-    // acting path goes through, and the last moment both facts still stand — WHERE her
-    // hands acted and WHICH card rooted them. Before her hands leave the checkout, the
-    // act's work is WIP-committed on the card's branch and pushed to origin, so a node she
-    // is next staged on fetches it (`workspace_transfer::arrive`) and a seat change waits
-    // on it (`move_blocker`). Bounded, probed, never the turn's failure. A root with no
-    // card (an eval sandbox rooted directly) carries nothing: nothing to push.
-    let Some(context) = hands.context else {
-        return Err(crate::sdk_codegen::CommandError::Internal(
-            "refusing to end her default hands: only an acting context a measurement, solve or replay opened ends".to_string(),
-        ));
-    };
-    if let (Some(root), Some(card)) = (acting_root_in(hands.persona_id, hands.context), acting_card_in(hands.persona_id, hands.context)) {
-        // Admitted to the context it syncs: the close below waits for the git work itself,
-        // even when the sync's own timeout already returned (Astra on #5026). Hands already
-        // closing admit nothing, and nothing runs in them unleased (Codex root on #5026): the
-        // sync is skipped, named, and the work stays committed-or-not where it stands.
-        match crate::code::hands::admit(context) {
-            Ok(lease) => {
-                crate::persona::workspace_transfer::sync_after_act_for(std::sync::Arc::new(lease), hands.persona_id, &hands.persona_name, root, card).await;
-            }
-            Err(why) => continuum_base::probe!(
-                class = "workspace.sync_refused",
-                persona = %hands.persona_name,
-                card = %card,
-                why = %why,
-                "the acting context's hands are already closing, so its end-of-act sync does not run"
-            ),
-        }
-    }
-    close_acting_context(hands).await.map_err(Into::into)
-}
-
 /// Forget where an acting context stood: what a context's release on drop (the abnormal-exit
 /// fallback) does once its release CONFIRMED, so no bookkeeping outlives it.
-pub(crate) fn forget_acting_context(persona_id: Uuid, context: crate::code::hands::HandsContext) {
+pub(crate) fn forget_acting_context(persona_id: Uuid, context: crate::identity::hands_context::HandsContext) {
     note_acting_root_in(persona_id, Some(context), None);
 }
 
@@ -147,7 +106,7 @@ pub(crate) async fn close_acting_context(hands: &ActingHands) -> Result<(), Cont
     let releasing = crate::routing::CallerIdentity::local_persona(crate::identity::PeerId::from_uuid(hands.persona_id))
         .in_hands(context)
         .releasing_hands();
-    let release: crate::modules::code_commands::ReleaseHandsResult = match core
+    let release: crate::code::hands::ReleaseHandsResult = match core
         .execute_with_caller("code/release-hands", serde_json::json!({}), Some(releasing))
         .await
     {
@@ -665,7 +624,7 @@ impl PersonaWorkspaceRegistry {
         context_window: u32,
     ) -> usize {
         self.re_home_all_at(
-            &crate::modules::persona_instance_manager::resolve_continuum_root(),
+            &crate::paths::continuum_root(),
             adapter,
             model,
             context_window,
@@ -685,7 +644,7 @@ impl PersonaWorkspaceRegistry {
 /// Process-global persona-workspace registry. One per process; persona minds are
 /// assembled into it at spawn (`supervisor::materialize_adapters`) and resolved
 /// from it by the `ai/should-respond` ServiceModule. Same pattern as
-/// `modules::ai_provider::global_registry()` — the shared seam between the spawn
+/// `ai::adapter::global_registry()` — the shared seam between the spawn
 /// path that builds minds and the command path that runs them.
 pub fn global() -> Arc<PersonaWorkspaceRegistry> {
     static GLOBAL: OnceLock<Arc<PersonaWorkspaceRegistry>> = OnceLock::new();

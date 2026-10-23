@@ -47,25 +47,6 @@ impl IpcStream for TcpStream {
     }
 }
 
-/// THE per-room substrate registry for this process (#408).
-///
-/// A process-global `OnceLock`, the same shape as
-/// [`positron_nav_source::global_nav_focus`] and the channel-bookmarks singleton —
-/// because the WRITER (the chat projection, in the WS boot block) and the READERS
-/// (a persona's grounding, bound at spawn in `persona::supervisor`) are constructed
-/// in different places and must land on ONE registry. Two registries would be two
-/// stores, which is the exact defect this repair exists to remove.
-///
-/// It is a registry of `Arc`-shared substrates, so this is a handle lookup, not a
-/// cache: cloning it clones `Arc`s.
-pub fn global_room_substrates() -> std::sync::Arc<continuum_positron::scoping::PerRoomSubstrates> {
-    use std::sync::OnceLock;
-    static G: OnceLock<std::sync::Arc<continuum_positron::scoping::PerRoomSubstrates>> =
-        OnceLock::new();
-    G.get_or_init(|| std::sync::Arc::new(continuum_positron::scoping::PerRoomSubstrates::new()))
-        .clone()
-}
-
 // ============================================================================
 // IPC Server State
 // ============================================================================
@@ -439,8 +420,8 @@ pub(super) fn handle_client<S: IpcStream>(
                 // commands are refused; no unauthenticated Owner execution over TCP.
                 // Local (caller == None) skips this — the operator on the box is owner.
                 if let Some(ref c) = caller {
-                    let trust = crate::routing::caller_trust(Some(c));
-                    if !crate::modules::grid::acl::is_command_authorized(cmd, trust) {
+                    let trust = crate::modules::grid::caller_trust(Some(c));
+                    if !crate::routing::command_acl::is_command_authorized(cmd, trust) {
                         let _ = tx.send(Outbound::Response {
                             request_id,
                             result: HandleResult::Json(Response::error(format!(
@@ -521,15 +502,15 @@ pub(super) fn handle_client<S: IpcStream>(
                         // (the discoverability lie): suggest the nearest commands the
                         // caller can actually run, via the shared matcher — same PX every
                         // caller gets, persona or CLI or MCP.
-                        let caller_trust = crate::routing::caller_trust(caller.as_ref());
+                        let caller_trust = crate::modules::grid::caller_trust(caller.as_ref());
                         let names: Vec<&str> = crate::sdk_codegen::command_registry()
                             .into_iter()
                             .filter(|d| {
-                                crate::modules::grid::acl::is_command_authorized(d.name, caller_trust)
+                                crate::routing::command_acl::is_command_authorized(d.name, caller_trust)
                             })
                             .map(|d| d.name)
                             .collect();
-                        let suggestions = crate::commands::help::did_you_mean(cmd, &names);
+                        let suggestions = crate::sdk_codegen::ai_help::did_you_mean(cmd, &names);
                         let hint = if suggestions.is_empty() {
                             "Call `commands/help` with no arguments to list every command you can run."
                                 .to_string()
@@ -605,26 +586,4 @@ pub(super) fn handle_client<S: IpcStream>(
 // ============================================================================
 // Server Main Loop
 // ============================================================================
-/// Ready-edge watch for the IPC server — flips `false → true` exactly
-/// once when the Unix socket is bound + chmod'd. Any consumer can
-/// `subscribe_ready()` to get a `watch::Receiver<bool>` and await the
-/// transition; subscribers added after the flip see the current `true`
-/// value on first `borrow_and_update`. Per the substrate concurrency
-/// doctrine: signals replace races. Same shape as
-/// `bevy_renderer::subscribe_ready` and `ServiceModule::ready_edge`.
-pub(super) static IPC_READY: std::sync::OnceLock<tokio::sync::watch::Sender<bool>> =
-    std::sync::OnceLock::new();
-
-pub(super) fn ipc_ready_tx() -> &'static tokio::sync::watch::Sender<bool> {
-    IPC_READY.get_or_init(|| tokio::sync::watch::channel(false).0)
-}
-
-/// Subscribe to the IPC server's ready edge. Returns a receiver that
-/// starts at `false` and flips to `true` exactly once when the Unix
-/// socket is bound + world-rw chmod'd. Replaces the prior oneshot
-/// parameter that had to be threaded through `start_server` — now any
-/// number of consumers can await the same edge without coordination
-/// at the call site.
-pub fn subscribe_ready() -> tokio::sync::watch::Receiver<bool> {
-    ipc_ready_tx().subscribe()
-}
+use crate::runtime::ipc_ready::ipc_ready_tx;

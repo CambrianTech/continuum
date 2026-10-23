@@ -146,16 +146,6 @@ impl PersonaAircRuntime {
         Ok(())
     }
 
-    /// Whether this runtime currently has the command inbound pump
-    /// installed. `true` after `bootstrap` (always) or after a
-    /// successful `install_command_pump` call. Useful for tests +
-    /// telemetry to confirm the persona is addressable.
-    /// Whether the citizen is addressable for cross-grid commands RIGHT NOW:
-    /// a pump whose task is still running, not merely a handle.
-    pub fn has_command_pump(&self) -> bool {
-        self.command_pump.as_ref().is_some_and(|p| p.is_alive())
-    }
-
     /// The persona's stable continuum identifier.
     pub fn persona_id(&self) -> Uuid {
         self.persona_id
@@ -313,7 +303,7 @@ impl crate::persona::active_work_source::AircWorkReader for PersonaAircRuntime {
     /// `card_in_subscribed_rooms` makes for claim staging, so a wake's "what became of my
     /// card" reads the truth the renewal loop reads.
     async fn card(&self, card_id: uuid::Uuid) -> Option<airc_lib::WorkCard> {
-        crate::modules::work::card_in_subscribed_rooms(
+        crate::persona::work_board::horizon::card_in_subscribed_rooms(
             self.airc(),
             airc_work::WorkCardId::from_uuid(card_id),
         )
@@ -362,7 +352,7 @@ impl crate::persona::airc_citizen::AircCitizen for PersonaAircRuntime {
     }
 
     async fn subscribe_all_rooms(&self) -> Result<airc_lib::FilteredEventStream, AircError> {
-        crate::persona::airc_citizen::subscribe_every_room(&self.airc).await
+        crate::routing::airc_subscription::subscribe_every_room(&self.airc).await
     }
 
     fn membership_epoch(&self) -> tokio::sync::watch::Receiver<u64> {
@@ -387,7 +377,7 @@ impl crate::persona::airc_citizen::AircCitizen for PersonaAircRuntime {
         card_id: airc_lib::WorkCardId,
         state: airc_lib::CardState,
     ) -> Result<(), String> {
-        crate::modules::work::advance_card_state(
+        crate::persona::work_board::advance::advance_card_state(
             &self.airc,
             card_id,
             state,

@@ -302,6 +302,26 @@ pub struct PersonaInferenceProfile {
     pub stop_sequences: Vec<String>,
 }
 
+impl PersonaInferenceProfile {
+    /// The local llama.cpp launch this profile resolves to. Refuses a profile with no local
+    /// GGUF per [[no-fallbacks-ever]]: cloud-only profiles route through the Anthropic/OpenAI
+    /// adapters, never a local launch with a "default" model.
+    pub fn llamacpp_launch(&self) -> Result<crate::inference::llamacpp_adapter::LlamaCppLaunch, InferenceProfileError> {
+        let gguf_path = self.gguf_local_path.clone().ok_or_else(|| InferenceProfileError::NoLocalGguf {
+            model_id: self.model_id.clone(),
+            gguf_hint: None,
+        })?;
+        Ok(crate::inference::llamacpp_adapter::LlamaCppLaunch {
+            model_id: self.model_id.clone(),
+            gguf_path,
+            context_length: self.context_length,
+            n_seq_max: self.n_seq_max,
+            n_ubatch: self.n_ubatch,
+            n_gpu_layers: self.n_gpu_layers,
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -419,4 +439,40 @@ mod tests {
         assert!(msg.contains("1.5"));
         assert!(msg.contains("grid inference"));
     }
+
+    /// A profile with no `gguf_local_path` is invalid for local inference: its launch is
+    /// refused loud per [[no-fallbacks-ever]], naming the model, never a silent fallback to a
+    /// "default" model (moved from the adapter's `for_persona` test when the adapter began
+    /// taking an engine launch instead of the profile).
+    #[test]
+    fn a_profile_without_a_local_gguf_has_no_llamacpp_launch() {
+        let profile = PersonaInferenceProfile {
+            persona_id: Uuid::nil(),
+            persona_name: "Paige".to_string(),
+            model_id: "continuum-ai/qwen2.5-0.5b-instruct-GGUF".to_string(),
+            gguf_local_path: None,
+            tier_category: HwTierCategory::Compat,
+            tier_id: "mac_intel_metal_discrete".to_string(),
+            context_length: 2048,
+            n_ubatch: 512,
+            n_batch: 2048,
+            n_seq_max: 1,
+            n_gpu_layers: 0,
+            sampling: SamplingProfile::chat_defaults(),
+            chat_template: None,
+            stop_sequences: vec!["<|im_end|>".to_string()],
+        };
+        match profile.llamacpp_launch() {
+            Ok(_) => panic!("missing gguf_local_path must error per no-fallbacks doctrine"),
+            Err(InferenceProfileError::NoLocalGguf { model_id, .. }) => {
+                assert_eq!(model_id, "continuum-ai/qwen2.5-0.5b-instruct-GGUF");
+            }
+            Err(other) => panic!("unexpected error variant: {other:?}"),
+        }
+        let launch = PersonaInferenceProfile { gguf_local_path: Some(PathBuf::from("/tmp/q.gguf")), ..profile }
+            .llamacpp_launch()
+            .expect("a local profile launches");
+        assert_eq!((launch.context_length, launch.n_seq_max, launch.n_ubatch, launch.n_gpu_layers), (2048, 1, 512, 0), "every knob carried from the profile");
+    }
+
 }

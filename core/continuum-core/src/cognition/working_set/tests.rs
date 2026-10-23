@@ -3,7 +3,8 @@
     // geometry while refusal samples also masqueraded as successful service.
     #[test]
     fn requested_growth_and_observed_service_remain_distinct_across_restart() {
-        use crate::cognition::serving_plan::ServingDemand;
+        use crate::inference::planning::serving_plan::ServingDemand;
+        use crate::inference::resource_admission::PromptSample;
 
         let local = Uuid::new_v4();
         let registry = WorkingSetRegistry::new();
@@ -13,8 +14,8 @@
         registry.observed.insert(local, legacy);
         let samples = [
             PromptSample::Requested(56_057),
-            PromptSample::Served { endpoint: "seat".into(), tokens: 828, geometry: crate::modules::served_window_store::ServedGeometry { model_id: "m".into(), generation: Uuid::new_v4(), per_slot_window: 62_720, lanes: 1 } },
-            PromptSample::Served { endpoint: "seat".into(), tokens: 120_000, geometry: crate::modules::served_window_store::ServedGeometry { model_id: "other".into(), generation: Uuid::new_v4(), per_slot_window: 128_000, lanes: 1 } },
+            PromptSample::Served { endpoint: "seat".into(), tokens: 828, geometry: crate::inference::served_window_store::ServedGeometry { model_id: "m".into(), generation: Uuid::new_v4(), per_slot_window: 62_720, lanes: 1 } },
+            PromptSample::Served { endpoint: "seat".into(), tokens: 120_000, geometry: crate::inference::served_window_store::ServedGeometry { model_id: "other".into(), generation: Uuid::new_v4(), per_slot_window: 128_000, lanes: 1 } },
         ];
         let requested: Vec<_> = samples.iter().filter_map(PromptSample::requested).collect();
         let growth = registry.sent_median_with(&[local], &requested).expect("requested demand");
@@ -25,7 +26,7 @@
         let PromptSample::Served { geometry, .. } = &samples[1] else { unreachable!() };
         assert_eq!(PromptSample::geometry_median(&samples, "seat", geometry), Some(828));
         assert_eq!(PromptSample::geometry_median(&samples, "neighbor-seat", geometry), None);
-        let rebound = crate::modules::served_window_store::ServedGeometry {
+        let rebound = crate::inference::served_window_store::ServedGeometry {
             generation: Uuid::new_v4(), ..geometry.clone()
         };
         assert_eq!(PromptSample::geometry_median(&samples, "seat", &rebound), None,

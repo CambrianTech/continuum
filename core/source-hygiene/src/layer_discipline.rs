@@ -23,11 +23,11 @@ use super::{SourceFile, SourceRule, Violation};
 /// Ring 0, the kernel: the machine. Nothing about models, minds, rooms or commands.
 const KERNEL: &[&str] = &[
     "time", "identity", "fs_portable", "paths", "concurrency", "paging", "logging", "orm",
-    "system_resources", "runtime", "governor", "capacity", "resources", "gpu",
+    "system_resources", "runtime", "governor", "routing", "sdk_codegen", "resources", "gpu",
 ];
 /// Ring 1, the engine: serving. Knows the kernel.
 const ENGINE: &[&str] = &[
-    "inference", "inference_capability", "model_registry", "ai", "live", "media", "sensory",
+    "inference", "inference_capability", "model_registry", "capacity", "ai", "live", "media", "sensory",
     "tool_parsing",
 ];
 /// Ring 2, the mind: the citizen. Knows the engine and the kernel.
@@ -37,7 +37,7 @@ const MIND: &[&str] = &[
 ];
 /// Ring 3, the surface: how the outside reaches in. Knows everything below.
 const SURFACE: &[&str] = &[
-    "commands", "ipc", "routing", "sdk_codegen", "airc", "http", "modules", "interface",
+    "commands", "ipc", "airc", "http", "modules", "interface",
     "contracts", "events", "forge", "provisioning", "comms", "ffi", "bin",
 ];
 
@@ -49,15 +49,6 @@ pub fn ring_of(module: &str) -> Option<u8> {
         .position(|ring| ring.contains(&module))
         .map(|r| r as u8)
 }
-
-/// Upward imports when the ratchet landed (canary `bc42092af`, 2026-10-18): 256 across 73
-/// module pairs. **This number may only ever go DOWN.** Each cut in the decomposition plan
-/// lowers it; raising it to green a build is defeating the invariant.
-#[cfg(test)]
-// 674 coupling LINES across 73 module pairs, re-measured in CI on canary a85454889 when
-// the unit changed from files to lines (2026-10-20); 253 was the same coupling counted per file.
-// 672 with both splits: resource_admission's test names ServedGeometry through an import, and openai_adapter's rustdoc link to crate::cognition became prose. Neither is a decoupling.
-const BASELINE_UPWARD_IMPORTS: usize = 658; // 672 -> 671: harness removal 1 deleted competitor/resolution_bench
 
 /// The top-level module of a scanned file: the first path component under `src/`.
 fn module_of(file: &SourceFile) -> Option<&str> {
@@ -148,20 +139,20 @@ mod tests {
     fn a_lower_ring_importing_a_higher_ring_is_one_violation_per_line_and_module() {
         let f = SourceFile::for_test(
             "runtime/registry.rs",
-            "use crate::sdk_codegen::input_schema;\nfn f() { crate::routing::x(); crate::routing::y(); crate::time::now(); }\n",
+            "use crate::cognition::input_schema;\nfn f() { crate::modules::x(); crate::modules::y(); crate::time::now(); }\n",
         );
         let v = LayerDiscipline.check(&f);
         let named: Vec<&str> = v.iter().map(|x| x.source.as_str()).collect();
-        assert_eq!(v.len(), 2, "sdk_codegen and routing once per line, never time: {named:?}");
+        assert_eq!(v.len(), 2, "cognition and modules once per line, never time: {named:?}");
         // Two coupling sites are two violations, and moving one of them to a sibling file
         // (a split by owner) leaves the total unchanged.
-        let two = SourceFile::for_test("runtime/a.rs", "use crate::routing::x;\nfn f() { crate::routing::y(); }\n");
-        let one = SourceFile::for_test("runtime/a.rs", "use crate::routing::x;\n");
-        let moved = SourceFile::for_test("runtime/a/tests.rs", "fn f() { crate::routing::y(); }\n");
+        let two = SourceFile::for_test("runtime/a.rs", "use crate::modules::x;\nfn f() { crate::modules::y(); }\n");
+        let one = SourceFile::for_test("runtime/a.rs", "use crate::modules::x;\n");
+        let moved = SourceFile::for_test("runtime/a/tests.rs", "fn f() { crate::modules::y(); }\n");
         assert_eq!(LayerDiscipline.check(&two).len(), 2);
         assert_eq!(LayerDiscipline.check(&one).len() + LayerDiscipline.check(&moved).len(), 2);
-        assert!(named.iter().any(|s| s.contains("`crate::sdk_codegen::`")));
-        assert!(named.iter().any(|s| s.contains("`crate::routing::`")));
+        assert!(named.iter().any(|s| s.contains("`crate::cognition::`")));
+        assert!(named.iter().any(|s| s.contains("`crate::modules::`")));
         // A grouped import names each head, across lines, nested groups included.
         let grouped = SourceFile::for_test(
             "inference/x.rs",
@@ -180,8 +171,7 @@ mod tests {
 
     // what this catches: the invariant moving the wrong way. Every cut in
     // MICROKERNEL-DECOMPOSITION.md lowers this count; a PR that raises it has put a fact
-    // or a verb in a ring above its owner. If this fails because you lowered the count,
-    // lower `BASELINE_UPWARD_IMPORTS` and take the win.
+    // or a verb in a ring above its owner. The ratchet holds the base tree's count.
     #[test]
     fn upward_imports_never_rise() {
         let violations = scan(&[&LayerDiscipline]);
@@ -192,18 +182,16 @@ mod tests {
             let to = v.source.split('`').nth(1).unwrap_or("?").to_string(); // unwrap_or: the source line is built by `check` with the backticked path
             *pairs.entry((from, to)).or_default() += 1;
         }
-        eprintln!("upward imports: {count} across {} module pairs (baseline {BASELINE_UPWARD_IMPORTS})", pairs.len());
+        eprintln!("upward imports: {count} across {} module pairs", pairs.len());
         let mut worst: Vec<_> = pairs.into_iter().collect();
         worst.sort_by(|a, b| b.1.cmp(&a.1));
         for ((from, to), n) in worst.iter().take(8) {
             eprintln!("  {from} -> {to}: {n} lines");
         }
-        assert!(
-            count <= BASELINE_UPWARD_IMPORTS,
-            "upward imports rose to {count} (baseline {BASELINE_UPWARD_IMPORTS}). A lower ring now \
-             names a higher ring: move the fact or verb down to its owner, or place the module \
-             in its ring. Never raise the baseline."
-        );
-        crate::assert_baseline_is_current("BASELINE_UPWARD_IMPORTS", count, BASELINE_UPWARD_IMPORTS);
+        crate::ratchet::hold("upward_imports", count, || {
+            "upward imports rose. A lower ring now names a higher ring: move the fact or verb \
+             down to its owner, or place the module in its ring."
+                .to_string()
+        });
     }
 }

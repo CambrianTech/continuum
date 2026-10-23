@@ -4,7 +4,7 @@ impl ChatProjection {
     /// Test / headless constructor: every room resolves to `"chat"`.
     #[cfg(test)]
     pub(super) fn new(substrate: Substrate) -> Self {
-        Self::with_purpose(substrate, crate::ipc::room_purpose::default_source())
+        Self::with_purpose(substrate, crate::experience::room_purpose::default_source())
     }
 
     /// ONE shared purpose resolver feeds BOTH the chat view's `purpose` field and
@@ -19,7 +19,7 @@ impl ChatProjection {
     /// [`crate::ipc::recipe_room_purpose`] answer instead.
     pub(super) fn with_purpose(
         substrate: Substrate,
-        purpose_source: crate::ipc::room_purpose::SharedRoomPurpose,
+        purpose_source: crate::experience::room_purpose::SharedRoomPurpose,
     ) -> Self {
         Self::with_rooms(substrate, purpose_source, None)
     }
@@ -31,7 +31,7 @@ impl ChatProjection {
     /// (#432).
     pub(super) fn with_rooms(
         substrate: Substrate,
-        purpose_source: crate::ipc::room_purpose::SharedRoomPurpose,
+        purpose_source: crate::experience::room_purpose::SharedRoomPurpose,
         rooms: Option<std::sync::Arc<continuum_positron::scoping::PerRoomSubstrates>>,
     ) -> Self {
         let experience_source = RecipeExperienceSource::builtins(purpose_source.clone());
@@ -44,7 +44,7 @@ impl ChatProjection {
     /// a new recipe entry, zero code" promise, finally true in production.
     pub(super) fn with_experience(
         substrate: Substrate,
-        purpose_source: crate::ipc::room_purpose::SharedRoomPurpose,
+        purpose_source: crate::experience::room_purpose::SharedRoomPurpose,
         rooms: Option<std::sync::Arc<continuum_positron::scoping::PerRoomSubstrates>>,
         experience_source: RecipeExperienceSource,
     ) -> Self {
@@ -516,7 +516,7 @@ pub fn spawn(
     bus: Arc<MessageBus>,
     substrate: Substrate,
     seed: Option<(Arc<crate::runtime::CommandExecutor>, Uuid)>,
-    purpose: crate::ipc::room_purpose::SharedRoomPurpose,
+    purpose: crate::experience::room_purpose::SharedRoomPurpose,
     rooms: Option<Arc<continuum_positron::scoping::PerRoomSubstrates>>,
 ) {
     let mut rx = bus.receiver();
@@ -534,7 +534,7 @@ pub fn spawn(
     // second, harder surface at `activity/spawn`, whose validation reads the
     // SAME directory and returns the parse error naming the file.
     let overlay_dir = RecipeExperienceSource::overlay_dir(
-        &crate::modules::persona_instance_manager::resolve_continuum_root(),
+        &crate::paths::continuum_root(),
     );
     let experience_source = match RecipeExperienceSource::builtins_with_overlay(
         purpose.clone(),

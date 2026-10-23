@@ -91,18 +91,6 @@ impl ScriptedPersonaAdapterFactory {
         Self::custom(|_profile| Ok(Arc::new(HeuristicInferenceAdapter::new())))
     }
 
-    /// Heuristic adapter whose `generate_text` sleeps `delay_ms`
-    /// before returning. Used by per-turn latency regression tests
-    /// to verify the substrate's `turn_latency` metric reflects
-    /// actual wall-clock.
-    pub fn heuristic_with_delay_ms(delay_ms: u64) -> Self {
-        Self::custom(move |_profile| {
-            Ok(Arc::new(
-                HeuristicInferenceAdapter::new().with_delay_ms(delay_ms),
-            ))
-        })
-    }
-
     /// Heuristic adapter whose `warmup` returns Err. Used by
     /// supervisor tests to exercise the typed `AdapterWarmup` failure
     /// path per [[no-fallbacks-ever]].

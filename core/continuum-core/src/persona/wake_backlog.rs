@@ -164,7 +164,7 @@ pub(crate) fn publish_heard(persona: Uuid, msg: &IncomingMessage) {
     }
     if let Some(bus) = crate::runtime::MessageBus::global() {
         bus.publish_async_only(
-            crate::ipc::positron_source::CHAT_HEARD,
+            crate::persona::mind_events::CHAT_HEARD,
             serde_json::json!({
                 "message_id": msg.event_id,
                 "room_id": msg.room_id,

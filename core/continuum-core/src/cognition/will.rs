@@ -2,7 +2,7 @@
 //! expressed the way a camera SDK expresses a capture request.
 //!
 //! A persona never names a lane, a model, or a number of seconds (that is the
-//! hardcoding trap — see [`super::serving_plan`] and the de-hardcoding contract in
+//! hardcoding trap — see [`crate::inference::planning::serving_plan`] and the de-hardcoding contract in
 //! `docs/architecture/WILL-DRIVEN-RESOLUTION.md` §6). It expresses *intent + an
 //! acceptable range* on one normalized axis, exactly like
 //! `getUserMedia({ width: { min, ideal, max } })`, and the scheduler negotiates the
@@ -95,14 +95,6 @@ impl Will {
     pub fn start_point(&self) -> f32 {
         let pulled = self.target - self.uncertainty * HEADROOM;
         clamp_unit(pulled.max(self.floor))
-    }
-
-    /// The top of the persona's own confidence band: `target` plus the uncertainty
-    /// headroom. This is where the persona *guesses* the ceiling is — the escalator
-    /// may still be pushed ABOVE it by a verifier that keeps failing (necessity
-    /// overrides the guess), so this is a scheduling hint, not a cap.
-    pub fn confident_ceiling(&self) -> f32 {
-        clamp_unit((self.target + self.uncertainty * HEADROOM).max(self.floor))
     }
 
     /// Does an available operating point `res` satisfy this will's hard floor? The

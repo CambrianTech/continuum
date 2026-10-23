@@ -11,12 +11,14 @@ $folder=$scheduler.GetFolder('\')
 function Read-TaskSnapshot([string]$name) {
     $task=$folder.GetTask($name)
     $raw=[string]$task.Xml
-    $doc=New-Object System.Xml.XmlDocument; $doc.PreserveWhitespace=$true; $doc.LoadXml($raw)
+    $doc=New-Object System.Xml.XmlDocument; $doc.PreserveWhitespace=$false; $doc.LoadXml($raw)
     $ns=New-Object System.Xml.XmlNamespaceManager($doc.NameTable)
     $ns.AddNamespace('t','http://schemas.microsoft.com/windows/2004/02/mit/task')
     $enabled=$doc.SelectSingleNode('/t:Task/t:Settings/t:Enabled',$ns)
-    if ($null -eq $enabled) { throw 'Task enabled setting is absent; refusing maintenance' }
-    $enabled.InnerText='true'
+    # Scheduler omits Enabled when its value is the schema default (true).
+    # Exclude that mutable setting from registration identity in either spelling;
+    # the authoritative COM Enabled value and untouched raw XML remain evidence.
+    if ($null -ne $enabled) { [void]$enabled.ParentNode.RemoveChild($enabled) }
     [pscustomobject]@{name=$name;xml=$raw;identityXml=$doc.OuterXml;sddl=[string]$task.GetSecurityDescriptor(7);enabled=[bool]$task.Enabled;state=[int]$task.State}
 }
 "#;

@@ -9,7 +9,7 @@ use std::sync::Arc;
 
 use uuid::Uuid;
 
-use crate::ipc::room_purpose::{RoomPurposeSource, SharedRoomPurpose};
+use crate::experience::room_purpose::{RoomPurposeSource, SharedRoomPurpose};
 
 use super::recipe::{ExperienceRecipe, RecipeId};
 use super::Experience;
@@ -248,17 +248,6 @@ impl RecipeExperienceSource {
         continuum_root.join("recipes")
     }
 
-    /// Every purpose the FULL recipe set declares — embedded floor plus the
-    /// disk overlay under `dir` (#432). This is the validation list
-    /// `activity/spawn` refuses against, and it is the same union
-    /// [`Self::builtins_with_overlay`] builds its registry from, so an
-    /// authored on-disk recipe is spawnable the moment the file exists. A
-    /// malformed overlay recipe is an ERROR naming the file, not a silent
-    /// skip — the author believes it is live.
-    pub fn known_purposes(dir: &std::path::Path) -> Result<Vec<String>, RecipeLoadError> {
-        Ok(Self::known_recipes(dir)?.into_iter().map(|r| r.purpose).collect())
-    }
-
     /// The FULL known recipe set — embedded floor plus the disk overlay, in
     /// registry order (embedded first, overlay after, so later-wins-by-purpose
     /// resolution can be applied by any consumer). `activity/spawn` reads
@@ -330,7 +319,7 @@ impl RecipeExperienceSource {
         recipes: impl Iterator<Item = ExperienceRecipe>,
     ) -> Vec<crate::experience::recipe::CitizenRecipe> {
         let default_purpose = Self::shipped_purpose(shipped::CHAT)
-            .expect("embedded chat recipe must exist — build-time authoring bug");
+            .expect("embedded chat recipe must exist — build-time authoring bug"); // JUSTIFIED: embedded constant, build-time authoring property
         recipes
             .filter(|r| r.purpose == default_purpose)
             .last()
@@ -365,7 +354,7 @@ impl RecipeExperienceSource {
         .into_iter()
         .map(|json| {
             ExperienceRecipe::from_json(json)
-                .expect("embedded experience recipe must be valid JSON")
+                .expect("embedded experience recipe must be valid JSON") // JUSTIFIED: embedded constant; validity is a build-time authoring property covered by recipe tests
         })
     }
 
@@ -467,7 +456,7 @@ mod tests {
         // resolved from the recipe files. One registry, two readers: a purpose that
         // spawns a room is the same purpose that runs a pipeline, and an unknown
         // purpose is `None`, never a fabricated recipe.
-        let source = RecipeExperienceSource::builtins(crate::ipc::room_purpose::default_source());
+        let source = RecipeExperienceSource::builtins(crate::experience::room_purpose::default_source());
         let chat = source.recipe_for_purpose("chat").expect("chat ships");
         assert_eq!(chat.purpose, "chat");
         assert!(source.recipe_for_purpose("campaign/never-authored").is_none());
@@ -481,11 +470,10 @@ mod tests {
         // must be made only of verbs, so a recipe can be re-authored without a compiler.
         // The verbs an authored benchmark round is allowed to be made of. A new step
         // means a new verb, added here on purpose — never a Rust call the recipe cannot
-        // make. (S4a: the round is authored; dispatch remains the Rust door beside it.)
+        // make.
         // coursework/round is the same round with its own card source (ONE-RESIDENT §10.4).
         const ROUND_VERBS: &[&str] = &[
-            "benchmark/import", "coursework/import", "benchmark/round-open", "work/create",
-            "benchmark/round-track", "activity/invite", "chat/send",
+            "benchmark/import", "coursework/import", "work/create", "activity/invite", "chat/send",
         ];
         for recipe in RecipeExperienceSource::embedded() {
             if recipe.purpose == "benchmark/round" || recipe.purpose == "coursework/round" {
@@ -574,7 +562,7 @@ mod tests {
         assert_eq!(exp.regions.len(), 3);
     }
     use crate::experience::{RegionRole, RegionScope};
-    use crate::modules::grid::node::TrustLevel;
+    use crate::routing::trust_level::TrustLevel;
 
     /// A stub purpose source that reports one fixed purpose for every room — enough
     /// to drive the projection under test without a live room registry.

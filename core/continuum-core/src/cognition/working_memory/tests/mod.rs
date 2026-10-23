@@ -1,6 +1,7 @@
 #![cfg(test)]
 use super::*;
 
+mod action_log;
 mod actions;
 mod custody;
 mod faculty;

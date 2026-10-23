@@ -264,7 +264,7 @@ impl ActionCommand for GenomeList {
     type Output = GenomeListResult;
 
     async fn run(&self, _ctx: &Ctx, _p: GenomeListParams) -> Result<GenomeListResult, CommandError> {
-        let manifest = crate::forge::adapter_manifest::load().map_err(CommandError::Invalid)?;
+        let manifest = crate::genome::adapter_manifest::load().map_err(CommandError::Invalid)?;
         let sig_path =
             crate::genome::signature::signature_store_path().map_err(CommandError::Invalid)?;
         let signatures = crate::genome::signature::SignatureStore::load_at(&sig_path)
@@ -368,7 +368,7 @@ impl ActionCommand for GenomePush {
         if !sharing_enabled() {
             return Err(consent_refusal("genome/push"));
         }
-        let manifest = crate::forge::adapter_manifest::load().map_err(CommandError::Invalid)?;
+        let manifest = crate::genome::adapter_manifest::load().map_err(CommandError::Invalid)?;
         let adapter = manifest
             .iter()
             .find(|a| a.alias == p.gene)
@@ -519,7 +519,7 @@ pub struct GenomePullResult {
 /// commons genes can never collide with each other or with local forges.
 pub(crate) fn pulled_dir(repo: &str) -> Result<std::path::PathBuf, String> {
     let safe = repo.replace('/', "__");
-    Ok(crate::forge::adapter_manifest::manifest_path()?
+    Ok(crate::genome::adapter_manifest::manifest_path()?
         .with_file_name("pulled")
         .join(safe))
 }
@@ -599,10 +599,10 @@ pub(crate) async fn pull_gene(p: &GenomePullParams) -> Result<GenomePullResult, 
             .unwrap_or_else(|| p.repo.clone()); // a repo with no '/' names itself — display identity only
 
         let manifest_path =
-            crate::forge::adapter_manifest::manifest_path().map_err(CommandError::Invalid)?;
-        crate::forge::adapter_manifest::register_at(
+            crate::genome::adapter_manifest::manifest_path().map_err(CommandError::Invalid)?;
+        crate::genome::adapter_manifest::register_at(
             &manifest_path,
-            crate::forge::adapter_manifest::TrainedAdapter {
+            crate::genome::adapter_manifest::TrainedAdapter {
                 alias: alias.clone(),
                 path: gene_path.clone(),
                 base_model_id: p.base_model.clone(),
@@ -800,7 +800,7 @@ pub(crate) async fn bootstrap_for(
     }
     // Idempotence: a node that already carries ANY gene for this base is
     // seeded — bootstrap never overwrites a lived-in genome.
-    let manifest = crate::forge::adapter_manifest::load().map_err(CommandError::Invalid)?;
+    let manifest = crate::genome::adapter_manifest::load().map_err(CommandError::Invalid)?;
     if manifest.iter().any(|a| a.base_model_id == p.base_model) {
         continuum_base::probe!(
             class = "genome.bootstrap.already_seeded",

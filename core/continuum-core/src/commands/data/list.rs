@@ -2,7 +2,8 @@
 
 use std::sync::Arc;
 
-use crate::modules::data::{DataListParams, DataListResult, DataState};
+use crate::modules::data::{DataListParams, DataState};
+use crate::orm::list_result::DataListResult;
 
 crate::action_command! {
     /// List records from a data collection — rooms, users, messages, and any

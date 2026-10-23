@@ -78,32 +78,6 @@
         );
     }
 
-    // What this catches: from_eval retains the FULL trajectory the teacher needs —
-    // the untruncated answer, the world-state, and the effort count — precisely the
-    // rich episode the lean EvalTaskResult (200-char answer, no trajectory) throws
-    // away. This is the anti-truncation guarantee the whole synthesis path depends
-    // on (you cannot weave a curriculum from a 200-char stub).
-    #[test]
-    fn from_eval_retains_the_untruncated_episode() {
-        let long_answer = "x".repeat(500); // > the 200-char report cap
-        let settled = settled_speaking(&long_answer, 4, "ran code/run → thread 'main' panicked");
-        let task = eval_task("rev-2", true);
-
-        let record = ExperienceRecord::from_eval(&task, &settled, false, "assertion failed");
-
-        assert_eq!(
-            record.answer.len(),
-            500,
-            "the answer must survive whole — no 200-char truncation on the learning path"
-        );
-        assert_eq!(record.acts, 4, "the effort/struggle count is retained");
-        assert!(
-            record.world_state.contains("panicked"),
-            "the act→observe world-state is retained for forensics + expansion"
-        );
-        assert!(!record.ok);
-    }
-
     // What this catches: the afferent→efferent nerve projects ONLY salient,
     // test-graded episodes onto the remediation teach set — a passed task is
     // dropped (not a gap), and a failed-but-untestable task is dropped from

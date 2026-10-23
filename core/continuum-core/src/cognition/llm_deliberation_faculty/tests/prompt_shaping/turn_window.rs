@@ -278,12 +278,15 @@ async fn own_history_preserves_corrections_at_each_inference_step() {
         let recorded = calls.lock().expect("actual request recorder");
         assert_eq!(recorded.len(), step + 1);
         let request = recorded.last().expect("submitted request");
-        let history_block = &request.messages[0];
-        assert_eq!(history_block.role, "user");
-        assert!(
-            history_block.content_text().starts_with(dated_history),
-            "coalesced history retains event dates across later turns"
-        );
+        // One message per turn (her view keys each turn), each keeping its event date.
+        for (index, line) in dated_history.lines().enumerate() {
+            assert_eq!(request.messages[index].role, "user");
+            assert_eq!(
+                request.messages[index].content_text(),
+                line,
+                "history retains event dates across later turns"
+            );
+        }
         let history: Vec<_> = request
             .messages
             .iter()
@@ -624,7 +627,7 @@ fn prompt_view_stays_within_the_served_window() {
     ));
 
     let view = faculty.prompt_view(&ws);
-    let total = est_tokens(&view.system) + est_tokens(&view.user_text());
+    let total = estimate_guard_tokens(&view.system) + estimate_guard_tokens(&view.user_text());
     assert!(
         total <= window as usize,
         "prompt must fit the served window: {total} tokens > {window}"

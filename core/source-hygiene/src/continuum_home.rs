@@ -17,22 +17,6 @@ use super::{SourceFile, SourceRule, Violation};
 /// The module that owns the resolution.
 const OWNER: &str = "paths/";
 
-/// Hand-built continuum-home joins in production code when the rule landed. **May only
-/// fall.** Nine of them hold saved state or live-process records (roster hold, resting
-/// seats, lane pid/registry, presence, avatars, fitness ledger, floor models): moving
-/// those needs an explicit migration at the path owner, not a respelling (card 7df698b1).
-// Raised, not new debt: the shared production split cut at the first #[cfg(test)] anywhere,
-// so indented test helpers hid production code from this scan; at column zero it sees
-// them (2026-10-20). 72 -> 79.
-// 79 -> 103, not new debt: production_half now blanks only the #[cfg(test)]-gated item, so
-// production code BELOW a mid-file test mod or gated helper is scanned (measured on canary
-// a85454889 + this change, 2026-10-20).
-// 103 -> 98: genome's five derivable paths (cuda toolchain, mlx-q4 cache, engine footprints,
-// teach datasets and run ledgers) resolve through paths::continuum_home (card 26d0c110).
-// 98 -> 92: model_registry's storage_root/local_model_roots and forge's venv + mlx dataset dir
-// resolve through paths (card 20b4f33b).
-pub const BASELINE_HAND_BUILT_HOMES: usize = 92;
-
 pub struct ContinuumHomeResolvedOnce;
 
 /// The code of a line, strings intact: the scanner's one string-aware split, so a `//`
@@ -86,30 +70,20 @@ mod tests {
     use crate::scan;
 
     // what this catches: a new hand-built continuum home in production code. The count of
-    // existing ones may only fall; each migrated site lowers the baseline in its change.
+    // existing ones may only fall; the ratchet holds the base tree's count.
     #[test]
     fn hand_built_continuum_homes_only_fall() {
         let sites = scan(&[&ContinuumHomeResolvedOnce]);
-        eprintln!(
-            "hand-built continuum homes: {} (baseline {BASELINE_HAND_BUILT_HOMES})",
-            sites.len()
-        );
-        assert!(
-            sites.len() <= BASELINE_HAND_BUILT_HOMES,
-            "hand-built continuum homes rose to {} (baseline {BASELINE_HAND_BUILT_HOMES}). \
-             Resolve through crate::paths::continuum_home() instead:\n{}",
-            sites.len(),
-            sites
-                .iter()
-                .map(|v| format!("  {}:{}  {}", v.file, v.line, v.source))
-                .collect::<Vec<_>>()
-                .join("\n")
-        );
-        crate::assert_baseline_is_current(
-            "BASELINE_HAND_BUILT_HOMES",
-            sites.len(),
-            BASELINE_HAND_BUILT_HOMES,
-        );
+        crate::ratchet::hold("hand_built_homes", sites.len(), || {
+            format!(
+                "hand-built continuum homes rose. Resolve through crate::paths::continuum_home() instead:\n{}",
+                sites
+                    .iter()
+                    .map(|v| format!("  {}:{}  {}", v.file, v.line, v.source))
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            )
+        });
     }
 
     // what this catches: the predicate drifting. It must flag a join split across a call

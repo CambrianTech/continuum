@@ -15,7 +15,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
-use crate::cognition::bench_title::{bench_card_key, dispatch_card_title};
+use crate::cognition::bench_title::dispatch_card_title;
 use crate::sdk_codegen::{AccessLevel, ActionCommand, CommandError, Ctx};
 
 pub(crate) mod credit_recovery;
@@ -36,20 +36,18 @@ pub(crate) mod credit_recovery;
 // ---------------------------------------------------------------------------------------
 use crate::cognition::swe_bench::{self, SweVerdict};
 
+use crate::recipe::benchmark_catalog::{known_benchmarks, BenchmarkSpec};
+
 mod grader;
 pub use grader::*;
 mod benchmark_dispatch_params;
-pub use benchmark_dispatch_params::*;
+pub(crate) use benchmark_dispatch_params::*;
 mod prepare_gym_cards;
 pub(crate) use prepare_gym_cards::*;
-mod benchmark_dispatch;
-mod benchmark_dispatch_recipe;
 mod publish_citizen_deck;
 pub use publish_citizen_deck::*;
 mod resolve_solver_dir;
 pub use resolve_solver_dir::*;
-mod fold_run_card;
-pub use fold_run_card::*;
 mod scan_workspace_artifact_cards;
 pub use scan_workspace_artifact_cards::*;
 mod benchmark_fetch;

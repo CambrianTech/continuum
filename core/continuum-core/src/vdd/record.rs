@@ -67,6 +67,25 @@ pub struct StandardVddRecord {
 }
 
 impl StandardVddRecord {
+    /// Project a module harness bench into a record (execution_ms = p50) so the measurement
+    /// persists for cross-run baselining and the `cargo-continuum-vdd` report/replay. Status
+    /// reflects whether all runs succeeded. Lives with the record it builds, so the harness
+    /// (kernel) never names the VDD layer. Gated like the harness: a test fixture.
+    #[cfg(any(test, feature = "test-fixtures"))]
+    pub fn from_bench(
+        bench: &crate::runtime::module_harness::CommandBench,
+        scenario: impl Into<String>,
+        git_sha: impl Into<String>,
+    ) -> Self {
+        let mut rec = Self::minimal(scenario, bench.command.clone(), git_sha);
+        rec.execution_ms = Some(bench.p50().as_millis() as u64);
+        rec.error_count = bench.errors as u32;
+        rec.responses_expected = bench.runs as u32;
+        rec.responses_observed = bench.latencies.len() as u32;
+        rec.status = if bench.errors == 0 { HarnessStatus::Pass } else { HarnessStatus::Fail };
+        rec
+    }
+
     /// A minimal record for a single measured command (the per-module VDD case,
     /// e.g. `ModuleHarness::measure`). Latency/score fields start `None` and the
     /// caller fills what it measured (`execution_ms`, `tok_per_sec`, …). Hardware/

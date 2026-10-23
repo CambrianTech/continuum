@@ -82,7 +82,7 @@ impl LiveExperienceResolver {
 mod tests {
     use super::*;
     use crate::experience::RecipeExperienceSource;
-    use crate::ipc::room_purpose::{RoomPurposeSource, SharedRoomPurpose};
+    use crate::experience::room_purpose::{RoomPurposeSource, SharedRoomPurpose};
     use airc_core::PeerId;
     use airc_lib::RoomMember;
     use async_trait::async_trait;

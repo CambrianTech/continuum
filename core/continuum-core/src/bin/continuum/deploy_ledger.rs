@@ -154,6 +154,17 @@ pub(super) struct ConsumeLedger {
 }
 
 impl ConsumeLedger {
+    /// Only observed adoption resolves an incident. It never changes the newer
+    /// request's selected build or forgives failures belonging to another build.
+    pub(super) fn observe_running(&mut self, running: &str) -> bool {
+        if self.refusal.as_ref().is_some_and(|r| r.resolved_by(running)) {
+            self.refusal = None;
+            true
+        } else {
+            false
+        }
+    }
+
     pub(super) fn record_refusal(&mut self, request: &str, build: &str,
         kind: continuum_cli_lifecycle::deploy_health::RefusalKind, reason: &str) {
         self.refusal = Some(continuum_cli_lifecycle::deploy_health::DeployRefusal::observe(
@@ -281,9 +292,9 @@ impl ConsumeLedger {
 }
 
 pub(super) fn deploy_request_path() -> Result<PathBuf, String> {
-    // The same home the tracker writes under (`resolve_continuum_root`: CONTINUUM_HOME
+    // The same home the tracker writes under (`paths::continuum_root`: CONTINUUM_HOME
     // or ~/.continuum) — one resolver, so the consumer reads where the decision wrote.
-    Ok(continuum_core::modules::persona_instance_manager::resolve_continuum_root()
+    Ok(continuum_core::paths::continuum_root()
         .join("state")
         .join("deploy-request.json"))
 }

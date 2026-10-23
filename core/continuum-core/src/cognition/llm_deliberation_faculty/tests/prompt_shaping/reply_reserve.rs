@@ -56,7 +56,7 @@ fn prompt_plus_completion_cap_never_exceeds_the_served_window() {
         "the generation cap IS the reserved room — one source of truth"
     );
     // The closed invariant: prompt-at-ceiling + the generation cap fits n_ctx.
-    let prompt_tokens = est_tokens(&view.system) + est_tokens(&view.user_text());
+    let prompt_tokens = estimate_guard_tokens(&view.system) + estimate_guard_tokens(&view.user_text());
     assert!(
         prompt_tokens + cap as usize <= window as usize,
         "prompt ({prompt_tokens}) + completion cap ({cap}) must fit the served \
@@ -582,7 +582,7 @@ fn a_divisible_grounding_block_contributes_its_leads_when_the_whole_will_not_fit
     let faculty = LlmDeliberationFaculty::new(persona, "Ivar", "You are Ivar.", adapter);
     let mut ws = Workspace::new("anything open?");
     let board = board_like(60);
-    let whole = est_tokens(&board.content);
+    let whole = estimate_guard_tokens(&board.content);
     ws.broadcast.push(board);
 
     // A budget FAR under the whole board — the live shape (55 vs 5,364).
@@ -613,9 +613,9 @@ fn a_divisible_grounding_block_contributes_its_leads_when_the_whole_will_not_fit
                  the whole board and she reports work that isn't there\n{block}"
     );
     assert!(
-        est_tokens(&block) <= budget,
+        estimate_guard_tokens(&block) <= budget,
         "the prefix must respect the budget it was given (got {} for budget {budget})\n{block}",
-        est_tokens(&block)
+        estimate_guard_tokens(&block)
     );
 }
 
@@ -668,9 +668,9 @@ fn an_indivisible_top_salience_block_can_lose_its_slot_to_a_cheaper_lesser_one()
     // Budget affords the small one and nowhere near the map — the live ratio.
     let budget = 40;
     assert!(
-        est_tokens(&map_body) > budget * 5,
+        estimate_guard_tokens(&map_body) > budget * 5,
         "fixture must reproduce the live ratio (map {} tok vs budget {budget})",
-        est_tokens(&map_body)
+        estimate_guard_tokens(&map_body)
     );
     let block = faculty.render_assembled_context_within(
         &ws,
@@ -811,11 +811,11 @@ fn trailing_proprioception_renders_in_the_tail_not_the_system_prefix() {
         )
         .session_stable(),
     );
-    // Act #1: one working-memory trace, marked TRAILING (as the working-memory
-    // faculty now bids it).
+    // Act #1: one trace, marked TRAILING. (Not the working-memory faculty's own id: her
+    // thoughts reach the prompt from working memory itself, as a source of her view.)
     ws.broadcast.push(
         Contribution::context(
-            FacultyId::Custom("working-memory".to_string()),
+            FacultyId::Custom("scratchpad".to_string()),
             "Your recent thinking (working memory):\n- I wrote login.html first",
             0.7,
             "wm",
@@ -851,7 +851,7 @@ fn trailing_proprioception_renders_in_the_tail_not_the_system_prefix() {
     ws.broadcast.pop();
     ws.broadcast.push(
         Contribution::context(
-            FacultyId::Custom("working-memory".to_string()),
+            FacultyId::Custom("scratchpad".to_string()),
             "Your recent thinking (working memory):\n- I wrote login.html first\n- Then I read it back to verify",
             0.7,
             "wm",

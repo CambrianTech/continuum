@@ -67,16 +67,14 @@ fn legacy_claim_and_operation_refuse_ambiguous_recovery() {
         digest
     );
     assert_eq!(
-        LegacySchedulerWindow::recovery_expectation(temp.path(), temp.path()).unwrap()
-            ["build"],
+        LegacySchedulerWindow::recovery_expectation(temp.path(), temp.path()).unwrap()["build"],
         "original"
     );
     let mut oversized = snapshot.clone();
     oversized.legacy.as_mut().unwrap().serving_expectation = serde_json::json!({"schema": 1, "data": "x".repeat(crate::installed_release::MAX_RECEIPT_BYTES as usize)});
     assert!(oversized.validate().is_err());
     let mut unknown_schema = snapshot.clone();
-    unknown_schema.legacy.as_mut().unwrap().serving_expectation =
-        serde_json::json!({"schema": 2});
+    unknown_schema.legacy.as_mut().unwrap().serving_expectation = serde_json::json!({"schema": 2});
     assert!(unknown_schema.validate().is_err());
     let other = tempfile::tempdir().unwrap();
     assert!(LegacySchedulerWindow::recovery_binding(temp.path(), other.path()).is_err());
@@ -95,8 +93,7 @@ fn legacy_claim_and_operation_refuse_ambiguous_recovery() {
     let pin = publish_restoring(&journal, old_pin, &restoring).unwrap();
     assert!(LegacySchedulerWindow::restoration_pending(temp.path(), temp.path()).unwrap());
     assert_eq!(
-        LegacySchedulerWindow::recovery_expectation(temp.path(), temp.path()).unwrap()
-            ["build"],
+        LegacySchedulerWindow::recovery_expectation(temp.path(), temp.path()).unwrap()["build"],
         "original"
     );
     let mut staged_tasks = restoring.tasks.clone();
@@ -125,9 +122,7 @@ fn legacy_claim_and_operation_refuse_ambiguous_recovery() {
         LegacySchedulerWindow::recovery_binding(temp.path(), &retired_source).unwrap(),
         digest
     );
-    assert!(
-        LegacySchedulerWindow::restoration_pending(temp.path(), &retired_source).unwrap()
-    );
+    assert!(LegacySchedulerWindow::restoration_pending(temp.path(), &retired_source).unwrap());
     assert!(LegacySchedulerWindow::recovery_binding(
         temp.path(),
         &temp.path().join("other-missing")
@@ -247,15 +242,19 @@ async fn cancelled_waiter_retains_install_and_evidence_custody_until_worker_exit
 const SCHEDULER: &str = r#"
 $script:failDeploy=$false
 $script:tasks=@{}
+$definitions=New-Object -ComObject 'Schedule.Service'; $definitions.Connect()
 foreach ($name in @('ContinuumCore','ContinuumDeploy')) {
-    $task=[pscustomobject]@{Name=$name;Value=$true;State=4;Security='O:SYG:SYD:(A;;FA;;;SY)';Extra=''}
+    # Real unregistered task definitions retain Scheduler's default omission and
+    # formatting behavior. No OS task is registered, enabled or stopped here.
+    $task=[pscustomobject]@{Name=$name;Value=$true;State=4;Security='O:SYG:SYD:(A;;FA;;;SY)';Extra='';Definition=$definitions.NewTask(0)}
     $task | Add-Member ScriptProperty Enabled { $this.Value } {
         param($value)
         if ($script:failDeploy -and $this.Name -eq 'ContinuumDeploy') { throw 'injected interrupted mutation' }
         $this.Value=[bool]$value
     }
     $task | Add-Member ScriptProperty Xml {
-        '<Task xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task"><Settings><Enabled>' + $this.Value.ToString().ToLowerInvariant() + '</Enabled></Settings>' + $this.Extra + '</Task>'
+        $this.Definition.Settings.Enabled=$this.Value
+        $this.Definition.XmlText.Replace('</Task>', $this.Extra + '</Task>')
     }
     $task | Add-Member ScriptMethod GetSecurityDescriptor { param($flags) if ($flags -ne 7) { throw 'owner/group/DACL required' }; $this.Security }
     $script:tasks[$name]=$task
@@ -386,4 +385,47 @@ $finalJson=@((Read-TaskSnapshot 'ContinuumCore'),(Read-TaskSnapshot 'ContinuumDe
     drop(journal_pin);
     drop(lease);
     assert!(take_install_lease(temp.path()).is_ok());
+}
+
+#[tokio::test]
+async fn partial_disable_restores_only_generic_custody_and_keeps_both_errors() {
+    use std::cell::Cell;
+    for legacy in [false, true] {
+        for restore_ok in [false, true] {
+            let attempts = Cell::new(0);
+            let evidence_retained = Cell::new(true);
+            let result = scheduler_custody::settle_disable(
+                (),
+                legacy,
+                Err("second task refused after first disabled".into()),
+                |()| async {
+                    attempts.set(attempts.get() + 1);
+                    if restore_ok {
+                        evidence_retained.set(false);
+                        Ok(())
+                    } else {
+                        Err("identity changed; evidence retained".into())
+                    }
+                },
+            )
+            .await;
+            assert!(result
+                .as_ref()
+                .is_err_and(|error| error.contains("second task refused")));
+            assert_eq!(attempts.get(), usize::from(!legacy));
+            assert_eq!(evidence_retained.get(), legacy || !restore_ok);
+            if !legacy && !restore_ok {
+                assert!(result
+                    .as_ref()
+                    .is_err_and(|error| error.contains("identity changed")
+                        && error.contains("maintenance recover")));
+            }
+        }
+    }
+    // Successful disable transfers custody without invoking its restoration closure.
+    let result = scheduler_custody::settle_disable(42, false, Ok(()), |_| async {
+        Err("must not run".into())
+    })
+    .await;
+    assert_eq!(result, Ok(42));
 }

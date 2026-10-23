@@ -1,29 +1,5 @@
 use super::*;
 
-// Descriptor only — the CONSTRUCTOR comes from WorkModule::commands(), which
-// holds the airc registry this command needs. This is the dep-holding half of
-// the descriptor/constructor pair (`register_stateless_command!` is for
-// Default-constructible commands; this one is not).
-crate::register_command!(BenchmarkDispatch);
-
-/// Publish through the same caller authority that created the activity and its cards.
-pub(super) async fn publish_citizen_deck(
-    author: &airc_lib::Airc,
-    room: uuid::Uuid,
-    benchmark: &str,
-    cards: &[String],
-) -> Result<airc_core::EventId, airc_lib::AircError> {
-    let text = format!(
-        "{} cards are OPEN on this board ({}): {}. Whoever is free may claim one with \
-         claim_task <id>; the claim stages the work in YOUR workspace. Work it there; \
-         when your fix is verified green say `work/state <id> done` — that is what fires \
-         your grade. One card at a time; talk here when you are stuck or when you can \
-         review a teammate's diff.",
-        cards.len(), benchmark, cards.join(", ")
-    );
-    crate::persona::airc_citizen::publish_text_in_room(author, room, &text).await
-}
-
 /// Inputs to `benchmark/swe-grade`.
 #[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
 #[serde(rename_all = "camelCase")]
@@ -140,56 +116,6 @@ impl ActionCommand for BenchmarkSweGrade {
     }
 }
 
-/// Paths that are NEVER part of a solution — the ONE list, shared by every reading of
-/// "her work" ([`workspace_candidate_diff`] here and `agent::solve::workspace_patch`).
-///
-/// Two kinds, and the second is a SECURITY boundary, not tidiness:
-///
-/// 1. Build/cache byproducts. A `python3 -c ...` verify step left
-///    `__pycache__/calc.cpython-314.pyc` in a graded patch; real SWE-bench/aider patches are
-///    SOURCE-only. Anything a task might legitimately produce (`build`/`dist`/`target`) is kept.
-///
-/// 2. **Agent-scope state the SUBSTRATE writes into her tree.** airc creates its scope at the
-///    enclosing git root, so a citizen working inside a cloned bench repo gets `.airc/` —
-///    `events.sqlite`, a work-board cache, and **`identity.key`, a private keypair** — created
-///    under the repo she is being graded on. This has bitten twice: card b34f7eb5, where Atlas's
-///    first grade carried 91KB of staged `.airc` blobs and the fresh clone refused the WHOLE
-///    candidate (a real fix voided by files no solver wrote); and 2026-08-18, where
-///    sympy-22714's tree still held `.airc/identity.key` with git status `A` — already
-///    intent-added, because `workspace_patch` ran `git add -A -N` with an exclude list that
-///    lacked `.airc`. The grader was safe (it excluded `.airc` inline) but `workspace_patch`
-///    was not, and IT is the reading that feeds `files_changed` → `format_solve_lesson` →
-///    the curriculum. A credential could have been written into training data as
-///    "I changed: .airc/identity.key".
-///
-/// That divergence is exactly what [`workspace_candidate_diff`]'s own doc warned about — "a
-/// second inline `git diff` would drift on the exclude rules" — so the rule now lives in ONE
-/// place and both readings consume it ([[the-compression-principle]]).
-pub(crate) const SOLUTION_PATH_EXCLUDES: &[&str] = &[
-    // Agent/substrate scope — never authored by the solver, and credential-bearing.
-    ":(exclude,glob)**/.airc/**",
-    ":(exclude,glob)**/.continuum/**",
-    // Build + cache byproducts.
-    ":(exclude,glob)**/__pycache__/**",
-    ":(exclude,glob)**/*.pyc",
-    ":(exclude,glob)**/*.pyo",
-    ":(exclude,glob)**/.pytest_cache/**",
-    ":(exclude,glob)**/.mypy_cache/**",
-    ":(exclude,glob)**/.ruff_cache/**",
-    ":(exclude,glob)**/node_modules/**",
-    ":(exclude,glob)**/.DS_Store",
-];
-
-/// The candidate diff of a solver workspace — the ONE reading of "her work"
-/// (grade_swe's candidate arm and agent/solve's attempt-patch receipt both
-/// call this; a second inline `git diff` would drift on the exclude rules).
-/// `diff HEAD` (not bare `diff`) so STAGED edits count as her work too, and
-/// [`SOLUTION_PATH_EXCLUDES`] keeps substrate-authored files out — see its doc
-/// for the two incidents that make the `.airc` entry load-bearing.
-pub(crate) fn workspace_candidate_diff(ws: &str) -> Result<String, CommandError> {
-    workspace_candidate_diff_from(ws, None)
-}
-
 /// Her work is everything since the instance's BASE COMMIT — committed,
 /// staged, and unstaged alike. The old `diff HEAD` collector read only the
 /// dirty tree, so a citizen who COMMITTED her fix (sympy-12481, 2026-08-27:
@@ -202,6 +128,26 @@ pub(crate) fn workspace_candidate_diff_from(
     ws: &str,
     base: Option<&str>,
 ) -> Result<String, CommandError> {
+    // git diff BASE succeeds even with unmerged index entries, publishing conflict
+    // markers and unrelated reverse deltas as a candidate (card 8ae653b1).
+    // Same conservative local metadata read bound as work/checkout_change; this
+    // is a safety deadline, not a prediction of git latency. Truncation refuses.
+    let unmerged = crate::system_resources::bounded_command::probe(
+        "git",
+        &["-C", ws, "ls-files", "--unmerged", "-z"],
+        std::time::Duration::from_secs(10),
+    );
+    let Some(entries) = unmerged.stdout_if_ok() else {
+        return Err(CommandError::Internal(format!(
+            "could not inspect {ws}'s candidate index: {}",
+            unmerged.outcome()
+        )));
+    };
+    if !entries.is_empty() {
+        return Err(CommandError::Invalid(format!(
+            "candidate source {ws} has unresolved index conflicts; resolve or abort the merge/rebase in this card's checkout before submitting; work in another checkout is not this candidate"
+        )));
+    }
     let base = base.unwrap_or("HEAD"); // unwrap_or: the no-base caller explicitly requests working changes against HEAD
     if base.is_empty() || base.starts_with('-') {
         return Err(CommandError::Invalid(
@@ -239,7 +185,7 @@ pub(crate) fn workspace_candidate_diff_from(
         "--",
         ".",
     ];
-    args.extend_from_slice(SOLUTION_PATH_EXCLUDES);
+    args.extend_from_slice(crate::persona::staged_workspace::SOLUTION_PATH_EXCLUDES);
     let out = std::process::Command::new("git")
         .args(&args)
         .current_dir(ws)

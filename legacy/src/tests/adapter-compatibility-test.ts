@@ -36,11 +36,9 @@ async function testAdapter(client: InferenceGrpcClient, name: string, path: stri
   const issues: string[] = [];
 
   // Issue 1: Base model mismatch
-  if (!manifest.base_model.includes('unsloth/Llama-3.2-3B-Instruct')) {
+  if (!manifest.base_model.includes('meta-llama/Llama-3.2-3B-Instruct')) {
     if (manifest.base_model.includes('4bit') || manifest.base_model.includes('bnb')) {
       issues.push(`❌ QUANTIZED: Adapter trained on 4-bit model, we use BF16`);
-    } else if (manifest.base_model.includes('meta-llama')) {
-      issues.push(`⚠️  BASE MISMATCH: Trained on meta-llama, we use unsloth`);
     } else {
       issues.push(`❌ WRONG MODEL: ${manifest.base_model}`);
     }

@@ -4,7 +4,8 @@
 //! Updated by discovery, manual pairing, and periodic health checks.
 
 use continuum_base::time::EpochMs;
-use super::node::{DiscoveredNode, GridNode, TransportAddress, TrustLevel};
+use super::node::{DiscoveredNode, GridNode, TransportAddress};
+use crate::routing::trust_level::TrustLevel;
 use crate::identity::PeerId;
 use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
@@ -316,15 +317,6 @@ impl NodeRegistry {
             .collect()
     }
 
-    /// Find the best node for a given address (for routing).
-    /// Prefers: lower latency, higher trust, more recently seen.
-    pub fn find_by_address(&self, address: &TransportAddress) -> Option<GridNode> {
-        self.nodes
-            .iter()
-            .find(|r| r.value().addresses.contains(address))
-            .map(|r| r.value().clone())
-    }
-
     /// Persist the registry to disk.
     pub fn save_to_disk(&self) -> Result<(), String> {
         let nodes = self.all_nodes();
@@ -535,7 +527,7 @@ mod tests {
 
         // Address trust stays untouched; correlated aliases share ONE access decision.
         use super::super::handlers::nodes::GridNodeView;
-        use crate::routing::access_decision::{AccessDecision, AccessPolicy, LocalInboundAircAuthorization};
+        use crate::modules::grid::access_decision::{AccessDecision, AccessPolicy, LocalInboundAircAuthorization};
         let mut policy = AccessPolicy::default();
         let unrecorded = GridNodeView::from_policy(found.clone(), &policy);
         assert_eq!(unrecorded.node.trust_level, TrustLevel::Blocked);

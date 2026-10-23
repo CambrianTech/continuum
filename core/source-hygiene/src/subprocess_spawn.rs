@@ -15,7 +15,7 @@
 //! # The rule
 //!
 //! 1. The number of `Command::new(` sites in production code may never rise
-//!    ([`BASELINE_SPAWN_SITES`]).
+//!    (the `spawn_sites` ratchet).
 //! 2. For the programs in [`ANSWERED_BY_A_LIBRARY`] — a binary this process already
 //!    links, or a question `std`/`sysinfo` answers — the per-program count may never
 //!    rise, and each carries the replacement that retires it. New code reaches for the
@@ -37,27 +37,6 @@ pub const ANSWERED_BY_A_LIBRARY: &[(&str, &str)] = &[
     ("which", "walk PATH in-process: std::env::split_paths(PATH).find(|d| d.join(tool).is_file())"),
     ("tar", "the tar crate / std::fs — an archive is not a shell"),
     ("cp", "std::fs::copy / a recursive copy helper — a file is not a shell"),
-];
-
-/// Every `Command::new(` in production code on 2026-09-12 (canary 48fbbfd44). May only fall.
-// 122 -> 127, not new debt: the column-zero production split sees code that indented
-// test helpers hid (measured in CI on canary a85454889 + this change, 2026-10-20).
-// 127 -> 132, not new debt: production_half now blanks only the #[cfg(test)]-gated item, so
-// production code BELOW a mid-file test mod or gated helper is scanned (measured on canary
-// a85454889 + this change, 2026-10-20).
-pub const BASELINE_SPAWN_SITES: usize = 131; // 132 -> 131: harness removal 1 deleted competitor.rs (hermes subprocess arm)
-
-/// Per-program baselines for [`ANSWERED_BY_A_LIBRARY`] on the same day. May only fall.
-pub const BASELINE_BY_PROGRAM: &[(&str, usize)] = &[
-    ("airc", 6),
-    ("continuum", 0),
-    ("gh", 1),
-    ("curl", 1),
-    ("wget", 0),
-    ("ps", 7),
-    ("which", 3),
-    ("tar", 6),
-    ("cp", 4),
 ];
 
 /// The program a spawn names, when it names one as a string literal. `Command::new(&bin)`
@@ -115,30 +94,25 @@ mod tests {
                 per.entry(p).or_default().push(format!("  {}:{}  {}", v.file, v.line, v.source));
             }
         }
-        let mut report = String::new();
         for (program, why) in ANSWERED_BY_A_LIBRARY {
-            let n = per.get(program).map_or(0, Vec::len);
-            let baseline = BASELINE_BY_PROGRAM
-                .iter()
-                .find(|(p, _)| p == program)
-                .map_or(0, |(_, b)| *b);
-            if n > baseline {
-                report.push_str(&format!(
-                    "\n`{program}` spawned at {n} sites (baseline {baseline}) — {why}\n{}",
-                    per[program].join("\n")
-                ));
-            }
+            let found = per.get(program).map_or(&[][..], Vec::as_slice);
+            crate::ratchet::hold(&format!("spawn:{program}"), found.len(), || {
+                format!(
+                    "a program a library already answers for gained a spawn site: `{program}` \
+                     spawned at {} sites — {why}\n{}",
+                    found.len(),
+                    found.join("\n")
+                )
+            });
         }
-        assert!(report.is_empty(), "a program a library already answers for gained a spawn site:{report}");
-        assert!(
-            total <= BASELINE_SPAWN_SITES,
-            "production spawn sites rose to {total} (baseline {BASELINE_SPAWN_SITES}). A subprocess is a \
-             liability the caller inherits (fds, PATH, stdio, a hang) — reach for the library, or \
-             route a real subprocess through system_resources::bounded_command. Newest-looking:\n{}",
-            sites.iter().rev().take(8).map(|v| format!("  {}:{}  {}", v.file, v.line, v.source)).collect::<Vec<_>>().join("\n")
-        );
-        crate::assert_baseline_is_current("BASELINE_SPAWN_SITES", total, BASELINE_SPAWN_SITES);
-        // the calibration read: per-program counts, for the next baseline edit
+        crate::ratchet::hold("spawn_sites", total, || {
+            format!(
+                "production spawn sites rose to {total}. A subprocess is a liability the caller \
+                 inherits (fds, PATH, stdio, a hang) — reach for the library, or route a real \
+                 subprocess through system_resources::bounded_command. Newest-looking:\n{}",
+                sites.iter().rev().take(8).map(|v| format!("  {}:{}  {}", v.file, v.line, v.source)).collect::<Vec<_>>().join("\n")
+            )
+        });
         eprintln!("spawn sites: {total}; by program: {:?}", per.iter().map(|(p, v)| (*p, v.len())).collect::<Vec<_>>());
     }
 

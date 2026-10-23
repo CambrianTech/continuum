@@ -127,7 +127,7 @@ fn an_open_view_survives_checkpoint_and_restore() {
     let before = wm.open_views_block().expect("renders");
     let snapshot = wm.snapshot();
     assert!(
-        reachable_handles(&snapshot.recent_results, &snapshot.evicted_pointers, &snapshot.receipt_children, &snapshot.open_views)
+        snapshot.reachable_handles()
             .contains("feedface00000001"),
         "the checkpoint keeps the view's saved read reachable"
     );

@@ -208,7 +208,7 @@ pub struct BootSlotFailure {
 /// place, every per-slot failure path lands in [`BootSummary`].
 pub struct PersonaSpawnSupervisor {
     spawner: PersonaSpawnerModule,
-    instance_manager: Arc<crate::modules::persona_instance_manager::PersonaInstanceManagerModule>,
+    instance_manager: Arc<crate::persona::instance_manager::PersonaInstanceManagerModule>,
     registry: PersonaAircRuntimeRegistry,
     factory: Arc<dyn PersonaAdapterFactory>,
     tier_id: String,
@@ -226,7 +226,7 @@ impl PersonaSpawnSupervisor {
     pub fn new(
         spawner: PersonaSpawnerModule,
         instance_manager: Arc<
-            crate::modules::persona_instance_manager::PersonaInstanceManagerModule,
+            crate::persona::instance_manager::PersonaInstanceManagerModule,
         >,
         factory: Arc<dyn PersonaAdapterFactory>,
         tier_id: impl Into<String>,
@@ -258,7 +258,7 @@ impl PersonaSpawnSupervisor {
     /// Follow the LIVE serving plan (called on every reconciler pass): the roster
     /// seats at most the served lane count, so a swap to a bigger model with fewer
     /// lanes shrinks the roster instead of starving it.
-    pub fn refresh_serving(&mut self, plan: Option<&crate::cognition::serving_plan::ServingPlan>) {
+    pub fn refresh_serving(&mut self, plan: Option<&crate::inference::planning::serving_plan::ServingPlan>) {
         self.spawner.set_serving(plan);
     }
 
@@ -608,7 +608,7 @@ impl PersonaSpawnSupervisor {
                 |(rt, profile)| crate::persona::spawner_module::MaterializedPersonaPlan {
                     role: desired.role,
                     instance:
-                        crate::modules::persona_instance_manager::PersonaInstanceInfo::from_runtime(
+                        crate::persona::instance_manager::PersonaInstanceInfo::from_runtime(
                             rt,
                         ),
                     profile,

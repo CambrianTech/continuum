@@ -55,7 +55,7 @@ use uuid::Uuid;
 use airc_core::doctrine::WallPostPublished;
 
 use crate::experience::binding::{project_binding, RECIPE_WALL_CATEGORY};
-use crate::ipc::room_purpose::RoomPurposeSource;
+use crate::experience::room_purpose::RoomPurposeSource;
 use crate::runtime::MessageBus;
 
 /// The purpose an unbound room reports — the honest default the
@@ -170,27 +170,6 @@ impl RoomPurposeSource for RecipeRoomPurpose {
             .get(&room_id)
             .and_then(|(_, parent)| *parent)
     }
-}
-
-/// Spawn the purpose index's owner task over an already-built reader: seed every
-/// known room, then fold `wall:changed` forever.
-///
-/// Returns the index handle SYNCHRONOUSLY — it is a shared map, so the chat
-/// projection can hold it from boot while the seed reads are still in flight. A
-/// room resolves as chat until its binding lands, which is what it did before
-/// this module existed; no consumer has to wait on a daemon to come up.
-pub fn spawn_purpose_index(
-    rt: &tokio::runtime::Handle,
-    bus: Arc<MessageBus>,
-    reader: Arc<dyn RoomRecipeReader>,
-) -> RecipeRoomPurpose {
-    let purpose = RecipeRoomPurpose::new();
-    let owned = purpose.clone();
-    // Subscribe BEFORE spawning so no wall change can race ahead of the receiver
-    // — the same ordering discipline the chat projection uses.
-    let events = bus.receiver();
-    rt.spawn(async move { run_purpose_loop(owned, reader, events).await });
-    purpose
 }
 
 /// The node's purpose index: attach a reader of its own, then run the loop.

@@ -1,4 +1,4 @@
-//! Owning the model catalog — since unsloth is gone, WE decide which GGUF a repo offers
+//! Owning the model catalog — WE decide which GGUF a repo offers
 //! and which quantization fits THIS machine. This module is the pure selection heart:
 //! given the files a repo publishes + a VRAM budget, pick the highest-fidelity quant
 //! that fits, or fail loud that the machine can't host the model. The HF API query that

@@ -15,7 +15,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
-use crate::modules::persona_instance_manager::PersonaInstanceInfo;
+use crate::persona::instance_manager::PersonaInstanceInfo;
 use crate::persona::PersonaAircRuntimeRegistry;
 
 /// No inputs — listing the roster is unconditional. A named (empty) params type

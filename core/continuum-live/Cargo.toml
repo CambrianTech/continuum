@@ -1,0 +1,98 @@
+[package]
+name = "continuum-live"
+version = "0.1.0"
+edition = "2021"
+publish = false
+repository = "https://github.com/CambrianTech/continuum"
+
+[dependencies]
+continuum-kernel = { path = "../continuum-kernel" }
+continuum-engine = { path = "../continuum-engine" }
+tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+ron = "0.12"     # RON scene descriptions (Bevy-idiomatic on-disk format)
+uuid.workspace = true
+continuum-base = { path = "../continuum-base" }
+schemars = { version = "0.8", features = ["uuid1"] }
+thiserror.workspace = true
+inventory = "0.3"
+toml = "0.8"     # Avatar model manifest parsing
+base64 = "0.22"  # Base64 encoding for audio data
+sha2 = "0.10"   # SHA-256 for OAuth 2.0 PKCE code challenges (RFC 7636) + L1-6 contract canonical hash
+airc-core.workspace = true
+airc-blobs.workspace = true
+airc-lib.workspace = true
+async-trait.workspace = true
+parking_lot.workspace = true
+tokio-tungstenite.workspace = true  # WebSocket server for voice calls
+futures-util.workspace = true
+futures = "0.3"  # For VAD block_on in audio thread
+hound = "3.5"  # WAV file reading/writing
+once_cell.workspace = true
+rubato = "0.15"  # High-quality audio resampling
+ort.workspace = true  # ONNX Runtime for TTS
+ndarray.workspace = true
+num_cpus = "1.16"  # CPU count detection
+dirs = "5.0"  # User directories for model paths
+candle-core.workspace = true
+candle-transformers.workspace = true
+tokenizers = { workspace = true, features = ["onig"] }
+pocket-tts = { version = "0.6", default-features = false, optional = true }  # behind feature `pocket-tts`: 0.6 pulls intel-mkl-src even without its mkl feature
+earshot = "0.1"  # Fast VAD (WebRTC-style)
+tracing.workspace = true
+rand.workspace = true  # For test audio generation
+ts-rs.workspace = true  # TypeScript type generation
+livekit = { version = "0.7", features = ["native-tls"], optional = true }
+continuum-bridge-protocol = { path = "../livekit-protocol" }
+bevy = { version = "0.18", optional = true, default-features = false, features = [
+    "bevy_render",
+    "bevy_core_pipeline",
+    "bevy_asset",
+    "bevy_pbr",
+    "bevy_scene",
+    "bevy_gltf",
+    "bevy_animation",
+    "bevy_mesh",          # Split from bevy_render in 0.17 — MorphWeights, mesh types
+    "bevy_color",
+    "bevy_state",
+    "bevy_window",        # WindowPlugin (registers Events<WindowResized>) — NOT bevy_winit
+    "reflect_auto_register",  # Auto-register ALL Reflect types in TypeRegistry (scene spawning needs this)
+    "png",
+    "jpeg",                   # JPEG texture format — required by webaverse VRM models (wv-kanji, wv-ruike)
+    "ktx2",                   # KTX2 texture format — required for VRM 1.0 models
+    "basis-universal",        # Basis Universal decompression — KTX2 textures use this codec
+] }
+
+# wgpu HAL access — needed for Metal texture extraction (GPU→GPU pipeline)
+# Version matches Bevy 0.18's wgpu dependency. Reached ONLY through the Bevy
+# render path (live/video/{wgpu,metal}_gpu_convert.rs), so it is optional and
+# rides the `avatar-3d` feature with bevy.
+wgpu = { version = "27", optional = true }
+wgpu-hal = { version = "27", optional = true }
+crossbeam-channel = "0.5"  # Frame delivery from Bevy render thread to LiveKit
+image = "0.25"             # RGBA → PNG encoding for avatar snapshots
+
+[target.'cfg(target_os = "macos")'.dependencies]
+metal = "0.32"
+objc = "0.2"    # Objective-C runtime — for Metal APIs not wrapped by metal crate
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }
+tempfile = "3"                   # Temp directories for code module tests
+futures = "0.3"
+
+[features]
+default = []
+# 3D avatars (Bevy renderer, GPU frame conversion); enabled per node by deploy profile.
+avatar-3d = ["dep:bevy", "dep:wgpu", "dep:wgpu-hal"]
+coreml = []
+livekit-webrtc = ["dep:livekit"]
+metal = ["continuum-engine/metal"]
+pocket-tts = ["dep:pocket-tts"]
+test-fixtures = ["continuum-engine/test-fixtures"]
+
+[lints.rust]
+# objc 0.2's msg_send! macro (metal_gpu_convert) uses the deprecated cargo-clippy
+# cfg check; same allowance continuum-core carried before the move. Until objc2.
+unexpected_cfgs = "allow"

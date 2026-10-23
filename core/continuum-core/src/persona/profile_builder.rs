@@ -5,7 +5,7 @@
 //!
 //! Per [[intent-driven-api-not-hot-patches]]: ONE place derives the
 //! profile from (persona_id, persona_name, role_id, tier_id,
-//! model_id); MANY adapters consume the profile via `for_persona`.
+//! model_id); MANY adapters consume the profile via the launch it resolves to (`llamacpp_launch`).
 //! This is that one place. It replaces ad-hoc profile construction
 //! scattered across binaries with a centralized, testable derivation
 //! that the PersonaSpawnerModule (#121) will call on every persona
@@ -16,7 +16,7 @@
 //! - `persona_id` — UUID, typically derived from the persona's airc
 //!   peer_id per [[persona-identity-derives-from-source-id]].
 //! - `persona_name` — display name, derived from the same seed via
-//!   `name_generator::agent_name_from_identity`.
+//!   `live::avatar::names::agent_name_from_identity`.
 //! - `role_id` — Helper / Coder / Sentinel / Custom. Currently
 //!   informational (the model_id already picks the model); a future
 //!   refinement reads role_template.cognition_defaults to drive
@@ -33,8 +33,8 @@
 //! ## Output
 //!
 //! A complete [`PersonaInferenceProfile`] ready to pass to
-//! `LlamaCppAdapter::for_persona(profile)` — or, when the adapter
-//! family grows, to any future `Adapter::for_persona` impl.
+//! `LlamaCppAdapter::for_launch(&profile.llamacpp_launch()?)` — or, when the adapter
+//! family grows, to any future adapter constructor.
 //!
 //! ## Error modes
 //!
@@ -56,7 +56,7 @@ use crate::persona::inference_profile::{
 use uuid::Uuid;
 
 /// Serving-plan-derived knobs for ONE persona's backend, projected from the
-/// serving daemon's [`ServingPlan`](crate::cognition::serving_plan::ServingPlan).
+/// serving daemon's [`ServingPlan`](crate::inference::planning::serving_plan::ServingPlan).
 ///
 /// Grouped per [[pass-the-model-struct-no-param-hell]]: a new serving knob is a
 /// new field here, NOT a new positional param threaded through the whole

@@ -1,22 +1,5 @@
 use super::*;
 
-/// The FLOOR under one ACT — perceive, deliberate, act, observe — never the ceiling.
-/// A mind with a measured turn raises it (`turn_bound::act_bound_with_source`, card
-/// ebce2ba0); this constant governs alone until she has one, and no derived bound ever
-/// sinks below it.
-///
-/// The detached solve's stall watchdog derives its allowance from this
-/// (`commands::agent::solve::ACT_STALL_ALLOWANCE` = 3x): a run whose ledger has not
-/// advanced for several of these is wedged; one that advances at any pace is not.
-/// KNOWN BOUNDARY, recorded rather than half-fixed: that watchdog reads the CONSTANT, so
-/// once a box's measured turn passes ~19 minutes the derived act bound (4x the
-/// expectation) exceeds the 75-minute stall allowance and a single honest act could read
-/// as a stall. No box in the fleet's measured range is there today (the M5 measures ~7
-/// min a turn), and the attempt ceiling fires long before on one that slow. Making the
-/// watchdog per-persona is a change to `commands/agent/solve.rs`, which has its own
-/// required-read and belongs in its own card.
-pub(crate) const TICK_DEADLINE: std::time::Duration = std::time::Duration::from_secs(25 * 60);
-
 /// How many times an act's deadline may be extended while its generation advances: the
 /// ceiling is `1 + ACT_EXTENSIONS` bounds, so even a moving act cannot hold the lane past
 /// it (a slow clip still reaches every mind, card ef25bf6c).
@@ -32,21 +15,37 @@ pub(super) const ACT_EXTENSIONS: u32 = 2;
 /// checkpoint, or the same task with its work moved at a later one, extends by one bound,
 /// up to [`ACT_EXTENSIONS`]. No pinned slot, an idle or silent slot, or a new task on it
 /// ends the act exactly as before (`Err(Elapsed)`), so a request lost inside a busy engine
-/// still ends.
+/// still ends. Registered admission queue intervals are excluded from this
+/// step's watchdog clock: they retain FIFO ownership without a pinned engine
+/// slot while relevant grants or blocking holders advance at each act-bound
+/// checkpoint. A stalled/unknown queue ends the act. On grant the unspent budget
+/// resumes; no other await gets this exemption.
 pub(super) async fn until_act_stalls<F: std::future::Future>(
     deadline: tokio::time::Instant,
     bound: std::time::Duration,
     persona: Option<uuid::Uuid>,
     step: F,
 ) -> Result<F::Output, ()> {
+    use crate::cognition::llm_deliberation_faculty::admission_clock;
+    let (queue_tx, mut queue_rx) = tokio::sync::watch::channel(admission_clock::QueueTime::new(deadline, bound));
+    let step = admission_clock::scope(queue_tx.clone(), step);
     tokio::pin!(step);
-    let mut deadline = deadline;
     let mut extensions = 0u32;
     let mut previous = None;
     loop {
+        let state = *queue_rx.borrow_and_update();
+        let due = if state.stalled { Some(tokio::time::Instant::now()) } else { state.deadline() };
         tokio::select! {
+            biased;
             out = &mut step => return Ok(out),
-            _ = tokio::time::sleep_until(deadline) => {
+            _ = queue_rx.changed() => continue,
+            _ = async {
+                match due {
+                    Some(at) => tokio::time::sleep_until(at).await,
+                    None => std::future::pending::<()>().await,
+                }
+            } => {
+                if state.stalled { return Err(()); }
                 let pinned = persona.and_then(crate::inference::llama_server::in_flight_slot);
                 let now = match &pinned {
                     Some(p) => crate::inference::llama_server::slot_work(&p.root, p.slot, act_probe_client()).await,
@@ -62,7 +61,7 @@ pub(super) async fn until_act_stalls<F: std::future::Future>(
                 }
                 extensions += 1;
                 previous = now;
-                deadline += bound;
+                queue_tx.send_modify(|state| state.extend());
                 continuum_base::probe!(
                     class = "settle.tick.extended",
                     slot = pinned.as_ref().map(|p| p.slot as u64).unwrap_or(0), // probe field: extension implies a pinned slot
@@ -270,7 +269,7 @@ pub(super) async fn drive_with_input(
     }
     if let Some(body) = cycle.acting() {
         crate::cognition::experience::record_lived_turn(
-            &crate::modules::persona_instance_manager::resolve_continuum_root(),
+            &crate::paths::continuum_root(),
             crate::identity::PeerId::from_uuid(body.persona_id),
             &settled,
         );

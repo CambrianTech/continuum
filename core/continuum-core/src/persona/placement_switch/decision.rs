@@ -94,7 +94,7 @@ pub(crate) fn decide_opportunity(i: &OpportunityInputs<'_>) -> Option<crate::cog
 /// gap between her turn starts), never under her turn duration — so she completes at
 /// least one turn on the new seat before she may be moved again. Nothing measured yet =
 /// the failure rule's cooldown, the one number that already bounds a move. Pure.
-pub(crate) fn opportunity_cooldown_ms(shape: Option<crate::cognition::resource_admission::TurnShape>) -> u64 {
+pub(crate) fn opportunity_cooldown_ms(shape: Option<crate::cognition::turn_ledger::TurnShape>) -> u64 {
     match shape {
         Some(s) if s.cadence_ms.max(s.turn_ms) > 0 => s.cadence_ms.max(s.turn_ms),
         _ => MOVE_COOLDOWN_MS,
@@ -186,10 +186,10 @@ pub enum PlacementMove {
 /// 2026-09-21, 8 `fell_home` events against 0 returns ([[the-compression-principle]]).
 ///
 /// Unknown width (an older core's beacon, or a seat that has never published one) is NOT
-/// a refusal — an absence is not a number, and [`crate::cognition::serving_plan::persona_lane_holds`]
+/// a refusal — an absence is not a number, and [`crate::inference::planning::serving_plan::persona_lane_holds`]
 /// already answers the unmeasured-requirement case with the serve floor. Pure.
 pub(crate) fn seat_starves(seat_window: Option<u32>, requirement: Option<u32>) -> bool {
-    seat_window.is_some_and(|w| !crate::cognition::serving_plan::persona_lane_holds(w, requirement))
+    seat_window.is_some_and(|w| !crate::inference::planning::serving_plan::persona_lane_holds(w, requirement))
 }
 
 /// The rule. Pure so the four scenarios are hand-computed tests.
@@ -345,7 +345,7 @@ pub fn choose_offloads(
             continue;
         }
         // A seat that cannot hold one of our turns is not capacity, whatever it offers.
-        if p.served_context_window.is_some_and(|w| !crate::cognition::serving_plan::persona_lane_holds(w, local.requirement)) {
+        if p.served_context_window.is_some_and(|w| !crate::inference::planning::serving_plan::persona_lane_holds(w, local.requirement)) {
             continue;
         }
         // THE SEAT'S live grant-able count (lanes − in flight − already granted), not

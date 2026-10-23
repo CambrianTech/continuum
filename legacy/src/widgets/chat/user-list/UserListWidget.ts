@@ -34,7 +34,7 @@ const verbose = () => typeof window !== 'undefined' && window.JTAG_VERBOSE === t
 
 /**
  * Compact model identifier for the persona-tile badge. Strips publisher
- * prefixes (`continuum-ai/`, `unsloth/`, etc.) and trailing variant suffixes
+ * prefixes (`continuum-ai/`, `meta-llama/`, etc.) and trailing variant suffixes
  * (`-instruct`, `-Instruct`, `-GGUF`, `-forged`) so what's left is the part
  * the user recognizes. Falls back to the provider when no model is set.
  *

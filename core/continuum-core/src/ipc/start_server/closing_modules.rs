@@ -17,12 +17,6 @@ pub(super) fn register_closing_modules(
     runtime.register(sentinel_module.clone());
     crate::modules::sentinel::register_for_shutdown(sentinel_module);
 
-    // ToolParsingModule: Stateless tool call parsing + correction
-    // Provides tool-parsing/parse, tool-parsing/correct, tool-parsing/register-tools,
-    // tool-parsing/decode-name, tool-parsing/encode-name
-    // Replaces 784 lines of TypeScript ToolFormatAdapter hierarchy
-    runtime.register(Arc::new(ToolParsingModule::new()));
-
     // PlasticityModule: Adaptive neural plasticity optimization engine
     // Provides plasticity/analyze, plasticity/compact, plasticity/topology
     // Per-head utilization-aware pruning, mixed-precision quantization, GQA-aware

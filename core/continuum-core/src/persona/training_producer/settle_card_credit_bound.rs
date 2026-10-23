@@ -159,7 +159,7 @@ pub(crate) async fn settle_card_credit_bound(
             submitted = submitted as u64,
             "card verdict checked staged revisions; acknowledged transfers retain inspectable evidence"
         );
-        crate::modules::citizen_health::note_credit_settled();
+        crate::persona::health_ledger::note_credit_settled();
     }
     Ok(())
 }
@@ -167,7 +167,7 @@ pub(crate) async fn settle_card_credit_bound(
 /// `data/list` returns DataRecord envelopes, not bare entities. Validate the
 /// complete response before transferring any row; malformed evidence stays put.
 pub(crate) fn staged_credit_from_list(listed: serde_json::Value) -> Result<Vec<StagedCredit>, ClientError> {
-    let listed: crate::modules::data::DataListResult = serde_json::from_value(listed)?; // Decode the Value-native data/list response at its command boundary.
+    let listed: crate::orm::list_result::DataListResult = serde_json::from_value(listed)?; // Decode the Value-native data/list response at its command boundary.
     if listed.items.len() != listed.total as usize {
         return Err(ClientError::Transport(format!(
             "staged-credit list is incomplete: {} of {} rows",

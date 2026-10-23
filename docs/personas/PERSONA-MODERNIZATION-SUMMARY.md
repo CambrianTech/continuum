@@ -18,7 +18,6 @@
 3. PHASE-7-ROADMAP.md - Old roadmap
 4. TESTING-GENOME-TRAINING.md - Testing notes
 5. PERSONA_ENDTOEND_PLAN.md - Implementation plan
-6. UNSLOTH-SETUP.md - Setup guide
 7. SENTINEL-INTEGRATION-QUICKSTART.md - Quickstart guide
 8. REPRODUCIBLE-EXPERIMENTS-PLAN.md - Experiment plan
 9. PERSONA-SYSTEM-AUDIT.md - Audit from Nov 12

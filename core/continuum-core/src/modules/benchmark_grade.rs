@@ -1,7 +1,7 @@
 //! Event-driven SWE grade-on-done — closes the kanban benchmark loop.
 //!
 //! Subscribes to `work.card.state_changed` (emitted by `work/state`, see
-//! [`crate::modules::work::WORK_CARD_STATE_CHANGED`]) and, when a benchmark SWE card
+//! [`crate::persona::work_board::events::WORK_CARD_STATE_CHANGED`]) and, when a benchmark SWE card
 //! (`[bench swe-*]`) reaches a terminal state, grades the citizen's workspace diff against
 //! the HELD-OUT oracle and posts the verdict into the room. The whole system is
 //! event-based, never polling ([[the-whole-system-is-event-based-not-polling]]): nothing
@@ -19,8 +19,9 @@ use std::any::Any;
 use async_trait::async_trait;
 use serde_json::Value;
 
-use crate::commands::benchmark::{grade_swe, known_benchmarks, SweGradeParams};
-use crate::modules::work::WORK_CARD_STATE_CHANGED;
+use crate::commands::benchmark::{grade_swe, SweGradeParams};
+use crate::recipe::benchmark_catalog::known_benchmarks;
+use crate::persona::work_board::events::WORK_CARD_STATE_CHANGED;
 use crate::persona::PersonaAircRuntimeRegistry;
 use crate::runtime::{CommandResult, ModuleConfig, ModuleContext, ModulePriority, ServiceModule};
 
@@ -148,55 +149,6 @@ fn on_card_state_changed(registry: &PersonaAircRuntimeRegistry, payload: &Value)
         .to_string();
     if card_id.is_empty() {
         return;
-    }
-    // A4 FOLLOW-ON — the card-settled edge of the ONE driver decision
-    // (bench_round::next_unworked_after; dispatch and boot-resume are the other
-    // two edges). A settled card frees serving capacity; the round's next
-    // unworked card fires NOW instead of starving behind the initial
-    // solve_cap = lanes (dispatched − solves_fired stops being permanent).
-    // The in-flight guard inside dispatch_staged_swe_solve makes double-fire
-    // impossible even if two settle events race.
-    if let Ok(settled_uuid) = card_id.parse::<uuid::Uuid>() {
-        if let Some(next) = crate::cognition::bench_round::next_unworked_after(settled_uuid) {
-            let reg = registry.clone();
-            tokio::spawn(async move {
-                let airc = reg
-                    .get(next.assignee)
-                    .or_else(|| reg.any_live_citizen())
-                    .map(|rt| rt.airc().clone());
-                let Some(airc) = airc else {
-                    continuum_base::probe!(
-                        class = "bench.round.follow_on_blocked",
-                        card_id = %next.card,
-                        "next card is due but no live citizen can carry the dispatch —                          the boot-resume edge retries"
-                    );
-                    return;
-                };
-                continuum_base::probe!(
-                    class = "bench.round.follow_on",
-                    settled = %settled_uuid,
-                    next_card = %next.card,
-                    assignee = %next.assignee,
-                    "card settled — firing the round's next unworked card"
-                );
-                crate::modules::work::dispatch_staged_swe_solve(
-                    &Default::default(),
-                    &airc,
-                    crate::modules::work::StagedSolveDispatch {
-                        claimer: crate::identity::PeerId::from_uuid(next.assignee),
-                        card: airc_work::WorkCardId::from_uuid(next.card),
-                        room: airc_core::RoomId::from_u128(next.run_room.as_u128()),
-                        // The card's RECORDED team rides every driver edge (gap 3).
-                        teammates: next
-                            .teammates
-                            .iter()
-                            .map(|t| crate::identity::PeerId::from_uuid(*t))
-                            .collect(),
-                    },
-                )
-                .await;
-            });
-        }
     }
     // The card's room, from the wire event (bridge payload contract). Boards are
     // per-room: without this the grade read whatever room the grading citizen
@@ -354,22 +306,6 @@ async fn grade_card(
 /// is exactly her submission even if her checkout moved on. `grade_swe` grades it in a
 /// fresh clone at the base, records the verdict and follows it onto the board, as every
 /// grade path does. Not a bench card, or not a SWE one: nothing to grade, returns quietly.
-/// The bench and SWE dataset a hand-in on this card is graded against at submit, or `None` when a submit
-/// grades nothing (not a bench card, or a bench that is not a known SWE one). THE one predicate:
-/// [`grade_submission`] grades by it, and `work`'s after-submit line promises an oracle grade only
-/// when it holds (BigMama on #4954: a `[bench <non-swe>]` card would be promised a grade that never
-/// comes).
-pub(crate) fn submission_oracle_dataset(card_title: &str) -> Option<(String, &'static str)> {
-    let (bench, _) = parse_bench_title(card_title)?;
-    let dataset = known_benchmarks().iter().find(|b| b.name == bench).and_then(|s| s.swe_dataset())?;
-    Some((bench, dataset))
-}
-
-/// Whether a submit on this card is graded by the test oracle at once ([`submission_oracle_dataset`]).
-pub(crate) fn graded_at_submit(card_title: &str) -> bool {
-    submission_oracle_dataset(card_title).is_some()
-}
-
 pub(crate) async fn grade_submission(
     airc: std::sync::Arc<airc_lib::Airc>,
     room_id: uuid::Uuid,
@@ -377,7 +313,7 @@ pub(crate) async fn grade_submission(
     instance: String,
     patch: airc_blobs::MediaRef,
 ) {
-    let Some((bench, dataset)) = submission_oracle_dataset(&card_title) else {
+    let Some((bench, dataset)) = crate::recipe::benchmark_catalog::submission_oracle_dataset(&card_title) else {
         return;
     };
     let patch_hash = patch.hash.to_hex();
@@ -515,7 +451,7 @@ async fn grade_gym_card(
         .to_string();
     let task = normalized_gym_task(reference, task_id)?;
     // Her workspace root — the same layout every other per-citizen path uses.
-    let workspace = crate::modules::card_staging::gym_workspace(
+    let workspace = crate::persona::card_checkout::gym_workspace(
         &crate::paths::continuum_home().map_err(|e| format!("{e:?}"))?,
         owner.parse().map_err(|e| format!("invalid gym owner {owner}: {e}"))?,
     );
@@ -589,15 +525,9 @@ async fn grade_gym_card(
         return Ok(()); // expect-graded knowledge task — nothing file-shaped to grade
     };
 
-    // DURABLE, through the ONE seam every other verdict passes: `record_verdict` stamps
-    // harness build, served model and grade time, refuses to let a later failure erase a
-    // recorded resolve, and — the reason this call IS the fix — puts the row exactly where
-    // `scan_verdict_cards` already looks. Every consumer downstream (`benchmark/runs`, the
-    // positron bench board, the run-room scoreboard) projects the verdict store and never
-    // this module, so until the gym arm wrote here a graded gym round was invisible to all
-    // of them: rounds reached `done`, cards genuinely RESOLVED, and the board honestly
-    // reported `attempted=0 resolved=0` because nothing gym-shaped had ever been recorded
-    // ([[silently-unwired-capability]] — two correct halves, no join key).
+    // DURABLE, through the ONE seam every other verdict passes: the record stamps harness
+    // build, served model and grade time, refuses to let a later failure erase a recorded
+    // resolve, and settles the card's staged training credit.
     if let Some((passed, detail)) = &outcome {
         let verdict = gym_verdict(task_id, bench, &owner, *passed, detail);
         // A record that cannot be written is LOUD. Dropping it quietly would restore the
@@ -627,16 +557,6 @@ async fn grade_gym_card(
 #[cfg(test)]
 mod tests {
 
-    // what this catches (BigMama on #4954): the after-submit line promising an oracle grade on a
-    // card whose submit grades nothing. One predicate decides both: a known SWE bench card is
-    // graded at submit; a known bench that is not SWE, an unknown bench, and an ordinary card are not.
-    #[test]
-    fn only_a_known_swe_bench_card_is_graded_at_submit() {
-        assert!(super::graded_at_submit("[bench swe-bench-verified] django__django-15695: RenameIndex crashes"));
-        assert!(!super::graded_at_submit("[bench humaneval-rs] task_7: sum the list"), "a known bench that is not SWE");
-        assert!(!super::graded_at_submit("[bench no-such-bench] task_1: anything"), "an unknown bench");
-        assert!(!super::graded_at_submit("fix the deploy script"), "an ordinary card");
-    }
     use super::*;
 
     // what this catches: the title parse must extract (bench, instance) from the EXACT

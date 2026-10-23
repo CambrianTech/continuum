@@ -43,20 +43,6 @@ use uuid::Uuid;
 // TOOL DEFINITIONS - Simple structs, generated at runtime when needed
 // ============================================================================
 
-/// Available tool names - the source of truth
-pub const TOOL_NAMES: &[&str] = &[
-    "read_file",
-    "write_file",
-    "edit_file",
-    "search_files",
-    "list_files",
-    "run_command",
-    "git_status",
-    "git_diff",
-    "complete",
-    "give_up",
-];
-
 // ============================================================================
 // AGENT STATE
 // ============================================================================

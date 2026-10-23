@@ -37,7 +37,8 @@
 use async_trait::async_trait;
 
 use super::tier::{TierError, TierRole};
-use super::working_set::{AccessDenied, PageFault, PageHandle, PageRef, WorkingSet};
+use super::working_set::{AccessDenied, PageFault, PageHandle, WorkingSet};
+use crate::inference::page_ref::PageRef;
 use crate::identity::PeerId;
 
 /// The single trait every working-set implementation satisfies. The
@@ -111,7 +112,8 @@ mod tests {
     //! against real semantics; PR-2 only proves the seam.
 
     use super::*;
-    use crate::genome::working_set::{ArtifactId, PageKind, PageOffset, WorkingSetCapacity};
+    use crate::genome::working_set::WorkingSetCapacity;
+    use crate::inference::page_ref::{ArtifactId, PageKind, PageOffset};
     use std::collections::HashMap;
     use std::sync::Arc;
     use uuid::Uuid;

@@ -48,7 +48,7 @@ whole question is: **can we SERVE it, and does it WIN?**
 in coding and cowork," ~1/9 training cost vs Qwen3.7-Plus.
 
 - **Gate 1 (arch):** redesigned attention/residual/embedding → assume NOT day-1 llama.cpp.
-  Watch for a GGUF from Qwen/unsloth; if none, scope the fork-converter effort. **This is the
+  Watch for a GGUF from Qwen or a community quantizer; if none, scope the fork-converter effort. **This is the
   gating uncertainty.**
 - **Gate 2 (serve):** 125B @ Q4 ≈ ~63 GB weights alone — *over* 64 GB before KV. The 51B
   n-gram embeddings are the escape hatch IF pageable/mmap-able (likely) — resident hot experts

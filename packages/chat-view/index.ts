@@ -17,8 +17,6 @@ export { CHAT_KIND, chatStateFromEnvelope } from './ChatState';
 export { NAV_KIND, navStateFromEnvelope } from './NavState';
 export { SYSTEM_METRICS_KIND, systemMetricsFromEnvelope } from './SystemMetricsState';
 export { SERVING_KIND, servingFromEnvelope } from './ServingState';
-export { BENCH_KIND, benchFromEnvelope } from './BenchState';
-export { benchContentBody, benchWidget } from './benchProjections';
 export { KANBAN_KIND, kanbanStateFromEnvelope } from './KanbanState';
 export { PROJECT_PURPOSE, projectContentBody } from './projectProjections';
 export type { ProjectContentBody, ProjectBoardState } from './projectProjections';
@@ -65,8 +63,7 @@ export {
   roomInfoListing,
   chatWorkspace,
 } from './patternProjections';
-export type { AcademyContentBody, ChatContentBody, WorkspaceLive } from './patternProjections';
-export { ACADEMY_PURPOSE } from './patternProjections';
+export type { ChatContentBody, WorkspaceLive } from './patternProjections';
 
 // The persona HOME projections — the profile/brain surface as a purpose-
 // dispatched activity (PERSONA_PURPOSE), lit from the SAME live pulse the

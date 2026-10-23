@@ -1,6 +1,6 @@
 #![cfg(test)]
     use super::*;
-    use crate::modules::persona_instance_manager::PersonaInstanceInfo;
+    use crate::persona::instance_manager::PersonaInstanceInfo;
     use crate::persona::airc_citizen::StubAircCitizen;
     use crate::persona::hw_tier_descriptor::HwTierCategory;
     use crate::persona::identity_provider::PersonaIdentitySource;
@@ -188,7 +188,7 @@
         let sol = hosted[1].as_ref().expect("Sol hosted");
         assert_eq!(
             sol.profile.context_length,
-            crate::cognition::serving_plan::BOOTSTRAP_WORKING_SET,
+            crate::inference::planning::serving_plan::BOOTSTRAP_WORKING_SET,
             "unknown responder → the planner's floor, never the local lane"
         );
     }

@@ -25,11 +25,11 @@
 //!   https://github.com/CambrianTech/continuum/issues/1262#issuecomment-4461757997
 //!   https://github.com/CambrianTech/continuum/issues/1280#issuecomment-4462181316
 
-const LLAMACPP_BACKEND_SOURCE: &str = include_str!("../src/inference/backends/llamacpp/validate_embedding_model.rs");
+const LLAMACPP_BACKEND_SOURCE: &str = include_str!("../../continuum-engine/src/inference/backends/llamacpp/validate_embedding_model.rs");
 
-const ORT_PROVIDERS_SOURCE: &str = include_str!("../src/inference/ort_providers.rs");
+const ORT_PROVIDERS_SOURCE: &str = include_str!("../../continuum-engine/src/inference/ort_providers.rs");
 
-const LLAMACPP_ADAPTER_SOURCE: &str = include_str!("../src/inference/llamacpp_adapter.rs");
+const LLAMACPP_ADAPTER_SOURCE: &str = include_str!("../../continuum-engine/src/inference/llamacpp_adapter.rs");
 
 // Candle-side sources surfaced by #1316 ALPHA-GAP finding #5: the
 // no_cpu_fallback contract test originally covered only llama.cpp +
@@ -42,13 +42,13 @@ const LLAMACPP_ADAPTER_SOURCE: &str = include_str!("../src/inference/llamacpp_ad
 
 const INFERENCE_GRPC_MODEL_SOURCE: &str = include_str!("../../inference-grpc/src/model.rs");
 
-const ORPHEUS_TTS_SOURCE: &str = include_str!("../src/live/audio/tts/orpheus.rs");
+const ORPHEUS_TTS_SOURCE: &str = include_str!("../../continuum-live/src/live/audio/tts/orpheus.rs");
 
-const RESIDENCY_GATE_SOURCE: &str = include_str!("../src/inference_capability/residency.rs");
+const RESIDENCY_GATE_SOURCE: &str = include_str!("../../continuum-engine/src/inference_capability/residency.rs");
 
-const ENFORCEMENT_SOURCE: &str = include_str!("../src/inference_capability/enforcement.rs");
+const ENFORCEMENT_SOURCE: &str = include_str!("../../continuum-engine/src/inference_capability/enforcement.rs");
 
-const HW_PROBE_SOURCE: &str = include_str!("../src/inference_capability/hw_probe.rs");
+const HW_PROBE_SOURCE: &str = include_str!("../../continuum-engine/src/inference_capability/hw_probe.rs");
 
 // Cross-node (offload) GPU-first guardrail — the 9th path. "GPU-first
 // ALWAYS" promoted from per-node to ACROSS-node: a weak node offloading a
@@ -57,9 +57,9 @@ const HW_PROBE_SOURCE: &str = include_str!("../src/inference_capability/hw_probe
 // degrade a remote peer to CPU. These constants pin the eligibility
 // predicate so a future PR can't drop it (or route heavy offload through
 // the GPU-agnostic `find_capable`) without breaking this gate.
-const CAPABILITY_TYPES_SOURCE: &str = include_str!("../src/inference_capability/types.rs");
+const CAPABILITY_TYPES_SOURCE: &str = include_str!("../../continuum-engine/src/inference_capability/types.rs");
 
-const CAPABILITY_REGISTRY_SOURCE: &str = include_str!("../src/inference_capability/registry.rs");
+const CAPABILITY_REGISTRY_SOURCE: &str = include_str!("../../continuum-engine/src/inference_capability/registry.rs");
 
 #[test]
 fn llamacpp_default_config_requires_full_gpu_offload() {

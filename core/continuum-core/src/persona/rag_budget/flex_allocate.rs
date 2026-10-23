@@ -1,5 +1,14 @@
 use super::*;
 
+/// What one turn needs of a lane: the sum of its budget claims' FLOORS (framing and tools,
+/// required input, grounding floor, her last move and its outcome, the reply floor), never
+/// what the budget granted. The flexbox grows a turn into whatever window it is given, so a
+/// grant measured on a 102k lane reads as a 48.6k "need" and refuses a second lane at 46k
+/// (the M5, 2026-10-18: four residents queued on one slot, 13% reuse, 600 s lane waits).
+pub fn turn_need(claims: &[RagSourceBudget]) -> u32 {
+    claims.iter().map(|c| c.floor_tokens).fold(0, u32::saturating_add)
+}
+
 /// THE flexbox algorithm, pure: `available` tokens shared across `claims`.
 ///
 /// One algorithm for every budget in the persona. [`FlexboxRagBudgetAdapter`] runs it
@@ -234,15 +243,14 @@ pub(super) fn empty_allocation(
 // TEST STUB SOURCE — proves the trait shape compiles + composes
 //=============================================================================
 /// Stub source for tests. Holds a Vec of pre-built RagItems and
-/// delivers as many as fit. Demonstrates the interior-mutability
-/// pattern (Mutex<usize> cursor) without dragging in real engram
-/// store dependencies. Also demonstrates persona-scoped handles —
-/// cursors carry the persona_id this source was constructed for.
+/// delivers as many as fit, re-deriving from the start on every call
+/// (ruling a: no positional cursor — truncation is notification
+/// metadata, not a resumable handle). Also demonstrates persona-scoped
+/// delivery: calls with a mismatched ctx.persona_id return empty.
 pub struct StubRagSource {
     pub(super) source_id: &'static str,
     pub(super) persona_id: uuid::Uuid,
     pub(super) items: Vec<RagItem>,
-    pub(super) cursor: std::sync::Mutex<usize>,
 }
 
 impl StubRagSource {
@@ -251,7 +259,6 @@ impl StubRagSource {
             source_id,
             persona_id,
             items,
-            cursor: std::sync::Mutex::new(0),
         }
     }
 }
@@ -288,75 +295,31 @@ impl RagSource for StubRagSource {
                 source_id: self.source_id.to_string(),
                 items: Vec::new(),
                 tokens_used: 0,
-                continuation: None,
+                truncated: false,
                 resolution_used: ResolutionPreference::Placeholder,
             };
         }
 
         let mut taken = Vec::new();
         let mut used: u32 = 0;
-        let start = *self.cursor.lock().unwrap();
-        let mut end = start;
-        for item in &self.items[start..] {
+        for item in &self.items {
             if used.saturating_add(item.tokens) > budget {
                 break;
             }
             used += item.tokens;
             taken.push(item.clone());
-            end += 1;
         }
-        let continuation = if end < self.items.len() {
-            Some(ContinuationCursor {
-                persona_id: self.persona_id,
-                source_id: self.source_id.to_string(),
-                opaque: serde_json::json!({ "next": end }),
-            })
-        } else {
-            None
-        };
-        // Update cursor so subsequent deliver() calls resume — this
-        // is the state-maintenance pattern Joel asked about.
-        *self.cursor.lock().unwrap() = end;
+        // Ruling a: no positional cursor — truncation is notice metadata,
+        // and the next deliver re-derives from scratch (a larger budget
+        // simply fits more).
+        let truncated = taken.len() < self.items.len();
         RagDelivery {
             source_id: self.source_id.to_string(),
             items: taken,
             tokens_used: used,
-            continuation,
+            truncated,
             resolution_used: ResolutionPreference::Raw,
         }
     }
 
-    async fn deliver_continuation(
-        &self,
-        ctx: &RagContext,
-        cursor: ContinuationCursor,
-        budget: u32,
-    ) -> Option<RagDelivery> {
-        // Defense-in-depth identity checks: refuse cursors not
-        // scoped to this persona / this source, and refuse calls
-        // from a context for a different persona.
-        if ctx.persona_id != self.persona_id {
-            return None;
-        }
-        if cursor.persona_id != self.persona_id {
-            return None;
-        }
-        if cursor.source_id != self.source_id {
-            return None;
-        }
-        let next: usize = cursor.opaque.get("next")?.as_u64()? as usize;
-        if next >= self.items.len() {
-            return None;
-        }
-        *self.cursor.lock().unwrap() = next;
-        Some(self.deliver(ctx, budget, ResolutionPreference::Raw).await)
-    }
-}
-
-// Silence unused-Arc-import warning on builds where the type isn't
-// referenced outside docs. The Arc pattern is the expected runtime
-// shape for sharing sources across modules.
-#[allow(dead_code)]
-pub(super) fn _doc_arc_pattern_unused() -> Option<Arc<dyn RagSource>> {
-    None
 }

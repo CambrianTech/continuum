@@ -23,7 +23,7 @@ use super::*;
 /// The diagnostic record preserves these facts; it does not fix the sizing law.
 pub(super) fn derived_prompt_cache_mib(
     model_id: &str,
-    fp: Option<&crate::cognition::serving_plan::ModelFootprint>,
+    fp: Option<&crate::inference::planning::serving_plan::ModelFootprint>,
     served_ctx: u32,
     lanes: u32,
     physical_bytes: u64,
@@ -61,7 +61,7 @@ pub(super) fn derived_prompt_cache_mib(
             .unwrap_or_default();
     let planned: Vec<uuid::Uuid> =
         crate::persona::seed::persona_ids_with_seeds_in(&crate::context::citizens_kind_dir(
-            &crate::modules::persona_instance_manager::resolve_continuum_root(),
+            &crate::paths::continuum_root(),
             crate::identity::IdentityKind::Persona,
         ));
     let resident: std::collections::HashSet<uuid::Uuid> = live
@@ -107,7 +107,7 @@ pub(super) fn derived_prompt_cache_mib(
         rotating_minds(&seen, EpochMs::now().millis(), rotation_window_ms(&seen)).max(warm_floor);
     // the served model's own page dir: the same key the spawn writes its pages under
     let measured_state = crate::inference::slots::measured_state_bytes(
-        &crate::inference::llama_server::kv_page_dir(model_id, served_ctx),
+        &crate::inference::llama_server::kv_page_dir(model_id),
     );
     let estimated = active_cache_states(&population, served_ctx, active);
     let demands = with_measured_state(estimated.clone(), fp.map(|f| f.kv_per_token), measured_state);
@@ -323,7 +323,7 @@ pub fn active_cache_states(population: &[(u32, u32)], served_ctx: u32, active: u
     let keep = if active > 0 {
         active
     } else {
-        crate::modules::citizen_health::MINDLESS_RESIDENT_FLOOR as usize
+        crate::persona::health_ledger::MINDLESS_RESIDENT_FLOOR as usize
     };
     states.truncate(keep);
     states
@@ -338,7 +338,7 @@ pub fn active_cache_states(population: &[(u32, u32)], served_ctx: u32, active: u
 /// the one that cost 5 minutes a turn. That third state no longer produces an empty
 /// `demands` at all, because the caller now sizes from the resume set.
 pub(super) fn prompt_cache_decision(
-    fp: Option<&crate::cognition::serving_plan::ModelFootprint>,
+    fp: Option<&crate::inference::planning::serving_plan::ModelFootprint>,
     demands: &[u32],
     planned: usize,
     served_ctx: u32,
@@ -440,7 +440,7 @@ pub(super) fn prompt_cache_decision(
         // planner's window no longer does (the mode's fraction and the board's live
         // subtraction are its headroom — `CACHE_GRANT_HEADROOM`).
         let afford =
-            (afford as f64 * (1.0 - crate::cognition::serving_plan::CACHE_GRANT_HEADROOM)) as u64;
+            (afford as f64 * (1.0 - crate::inference::planning::serving_plan::CACHE_GRANT_HEADROOM)) as u64;
         decision.reason = "resident_demand_kv_estimate";
         decision.affordable_bytes = Some(afford);
         decision.desired_mib =

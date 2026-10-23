@@ -23,7 +23,7 @@ pub async fn follow_the_fleet(
         peers.iter().map(|p| (p.peer, p.beacon_age_ms)).collect();
     let offers: std::collections::HashMap<Uuid, &PeerOffer> = peers.iter().map(|p| (p.peer, p)).collect();
     let home_wait_p50_ms = {
-        let (p50, samples) = crate::cognition::resource_admission::local_lane_wait_p50_ms();
+        let (p50, samples) = crate::inference::resource_admission::local_lane_wait_p50_ms();
         (samples > 0).then_some(p50)
     };
     let mut lines = Vec::new();
@@ -40,7 +40,7 @@ pub async fn follow_the_fleet(
         let Some(peer) = sw.peer() else {
             // Home-born, never bound: a candidate for an offload when eligible.
             if cooled {
-                at_home.push((sw.persona_id(), crate::modules::citizen_health::lane_grants_of(sw.persona_id())));
+                at_home.push((sw.persona_id(), crate::persona::health_ledger::lane_grants_of(sw.persona_id())));
             }
             continue;
         };
@@ -84,7 +84,7 @@ pub async fn follow_the_fleet(
             // (`ServingDemand`), never ADMITTING one mind to a seat.
             requirement: working_set
                 .sent_median_of(&[sw.persona_id()])
-                .map(crate::cognition::serving_plan::prompt_floor_of),
+                .map(crate::inference::planning::serving_plan::prompt_floor_of),
         };
         // Withheld = she would have returned had the seat offered a slot. Pure and exact:
         // the same rule with the offer granted, so a cooldown or a queued seat is never
@@ -180,7 +180,7 @@ pub async fn follow_the_fleet(
         // the chooser may bind her to a seat that is capacity now (S1b). Her old seat is
         // only re-chosen if it is; `decide` above already refused a queued return.
         if mv == PlacementMove::Stay && sw.seat() == Seat::Home && cooled {
-            at_home.push((sw.persona_id(), crate::modules::citizen_health::lane_grants_of(sw.persona_id())));
+            at_home.push((sw.persona_id(), crate::persona::health_ledger::lane_grants_of(sw.persona_id())));
         }
     }
     for (peer, minds) in withheld {
@@ -264,7 +264,7 @@ pub async fn follow_the_fleet(
             );
             match sw.go_remote(peer, &model, now_ms) {
                 Ok(()) => {
-                    crate::modules::citizen_health::note_move(false);
+                    crate::persona::health_ledger::note_move(false);
                     continuum_base::probe!(
                         class = "persona.placement.offloaded",
                         persona = %sw.persona_name(),

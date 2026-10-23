@@ -14,6 +14,10 @@ impl LlmDeliberationFaculty {
         // `.await` below; a swap that happens after this load takes effect on the
         // NEXT turn. See [`ModelBinding`].
         let loaded = self.binding.load_full();
+        // Repair a cold remote route before sampling its window or building the
+        // prompt. The same act then acquires its selected home lane's admission;
+        // no remote-sized request is replayed on a smaller local window.
+        loaded.adapter.prepare_generation().await;
         // RESTORE-AHEAD (compression-ladder rung 1): tell the serving adapter
         // this activity generates NEXT, so her KV page pages in DURING the
         // prompt assembly below instead of racing the turn at pin time. Fire-
@@ -110,7 +114,7 @@ impl LlmDeliberationFaculty {
         let mut rejected_measured_tokens = None;
         let mut request_template: Option<TextGenerationRequest> = None;
         let mut view = self.prompt_view_with_visual_feedback(
-            ws, fit_window, calibration, visual.as_ref(), binding.requested_model(),
+            ws, fit_window, calibration, visual.as_ref(),
         );
         let mut gen_await_ms = 0u64;
         // The allowance the request actually carried (set where it is built, read at the seam).
@@ -668,7 +672,7 @@ impl LlmDeliberationFaculty {
                 // authorization gate and the executor ever see them (the
                 // reverse half of the offer-side rename above).
                 for c in &mut calls {
-                    crate::cognition::tool_dialect::normalize_call(c);
+                    crate::ai::tool_dialect::normalize_call(c);
                 }
                 if let Some(v) = self.yield_verdict(&calls) {
                     return Some(v);
@@ -687,7 +691,7 @@ impl LlmDeliberationFaculty {
                 // not silently no-op as an unknown name. The text-lift path skipped
                 // this, so narrated snake_case verbs died while the SAME name in a
                 // native tool_call worked. One mapping, both paths.
-                crate::cognition::tool_dialect::normalize_call(&mut call);
+                crate::ai::tool_dialect::normalize_call(&mut call);
                 return Some(self.act_verdict(vec![call], &resp, ws.activity_room_id));
             }
             // #159 fail-loud: she emitted the native `[TOOL_CALLS]` marker but named no
@@ -704,7 +708,7 @@ impl LlmDeliberationFaculty {
             {
                 let call = crate::ai::types::ToolCall {
                     id: "tool-attempt".to_string(),
-                    name: crate::cognition::tool_dialect::from_wire_name(&attempted).to_string(),
+                    name: crate::ai::tool_dialect::from_wire_name(&attempted).to_string(),
                     input: serde_json::json!({}),
                 };
                 return Some(self.act_verdict(vec![call], &resp, ws.activity_room_id));
@@ -774,7 +778,7 @@ impl LlmDeliberationFaculty {
                             .into_iter()
                             .last()
                     {
-                        crate::cognition::tool_dialect::normalize_call(&mut call);
+                        crate::ai::tool_dialect::normalize_call(&mut call);
                         continuum_base::probe!(
                             class = "persona.act.reasoning_lift",
                             persona = %self.persona_name,
@@ -807,7 +811,7 @@ impl LlmDeliberationFaculty {
                         );
                         // The hour's receipt counts it (`[health] … think-only N`): two of
                         // these in an hour on the M5 were the whole story of #4194.
-                        crate::modules::citizen_health::note_think_only();
+                        crate::persona::health_ledger::note_think_only();
                         let call = crate::ai::types::ToolCall {
                             id: "tool-attempt-think-only".to_string(),
                             name: crate::cognition::tool_executor::command_executor::THINK_ONLY_SENTINEL

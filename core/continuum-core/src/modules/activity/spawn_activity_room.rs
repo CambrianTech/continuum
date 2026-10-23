@@ -25,7 +25,7 @@ pub async fn spawn_activity_room(
     let recipe_def = resolve_recipe(
         recipe,
         &crate::experience::source::RecipeExperienceSource::overlay_dir(
-            &crate::modules::persona_instance_manager::resolve_continuum_root(),
+            &crate::paths::continuum_root(),
         ),
     )?;
     // THE SCHEMA GATE: a pipeline is checked against the command registry's own
@@ -48,10 +48,6 @@ pub async fn spawn_activity_room(
         resolved_params.iter().map(|(k, v)| (k.clone(), v.clone())).collect(),
     );
     // Read before `resolved_params` moves into the binding below.
-    let child_driver = resolved_params
-        .get("driver")
-        .and_then(|v| v.as_str())
-        .map(|s| s.to_string());
     let child_suite = resolved_params
         .get("suite")
         .and_then(|v| v.as_str())
@@ -169,7 +165,6 @@ pub async fn spawn_activity_room(
                         room_id: room.channel.as_uuid(),
                         name: name.to_string(),
                         recipe: recipe.to_string(),
-                        driver: child_driver,
                         suite: child_suite,
                         spawned_at_ms: continuum_base::time::EpochMs::now().millis(), // pre-1970 reads 0: a pre-epoch clock stamps 0 — the record still names the room
                     };

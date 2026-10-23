@@ -17,7 +17,7 @@
 //! # Honest proxy, stated on every result
 //!
 //! Char-level LCP is a PROXY for token-level reuse (≈4 chars/token, the same
-//! convention as `deliberation_budget::est_tokens`). It ranks assembly variants and
+//! convention as `continuum_base::token_estimate::estimate_guard_tokens`). It ranks assembly variants and
 //! pinpoints divergence; the ground truth for actual reuse stays the
 //! `inference.prefill.complete` probe (`cached` vs `fresh`). A high score here with
 //! a low live `cached` means the loss is BETWEEN assembly and the slot — routing,

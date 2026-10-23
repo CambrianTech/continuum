@@ -132,7 +132,7 @@ export class UserStateEntity extends BaseEntity {
   learningState?: {
     isLearning: boolean;
     domain?: string;              // Domain being trained (e.g., 'conversational', 'code')
-    provider?: string;            // Training provider (e.g., 'unsloth', 'deepseek')
+    provider?: string;            // Training provider (e.g., 'deepseek')
     startedAt?: number;          // Timestamp when training started
     exampleCount?: number;        // Number of training examples
     estimatedCompletion?: number; // Estimated completion timestamp

@@ -39,7 +39,8 @@ use tokio_tungstenite::tungstenite::Message;
 
 use crate::identity::PeerId;
 use crate::ipc::positron_dispatch::ExecutorDispatch;
-use crate::routing::{CallerIdentity, CommandRequestHandler};
+use crate::ipc::command_ingress::CommandRequestHandler;
+use crate::routing::CallerIdentity;
 use crate::runtime::CommandExecutor;
 
 /// Extract the connecting citizen's id from the WS connect URL query — the
@@ -250,7 +251,7 @@ async fn handle_ws_connection(
     // ABORTED at teardown (below), not drained.
     let stream_tx = tx.clone();
     let stream_task = tokio::spawn(async move {
-        let mut rail = crate::ipc::stream_rail::subscribe();
+        let mut rail = crate::persona::stream_rail::subscribe();
         loop {
             match rail.recv().await {
                 Ok(d) => {

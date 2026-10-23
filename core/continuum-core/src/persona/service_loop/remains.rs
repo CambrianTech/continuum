@@ -33,20 +33,20 @@ pub struct IncomingMessage {
     /// words but stood in no room (glass-boxed 2026-07-23, Anwen ACK test).
     pub room_id: Uuid,
     /// A typed work fact (a verdict, a card move, a submission, a claim) decoded
-    /// from the room by `realtime_wire::room_work_from_event`. `Some` means this
+    /// from the room by `persona::room_event::room_work_from_event`. `Some` means this
     /// turn is a BOARD FACT she perceives, rendered as such, never as the actor's
     /// speech; `peer_id` is the actor (the reviewer, the mover). Phase 1 wiring of
     /// EVENT-MIND.md: measured 2026-10-04, a PASS on her own card reached her node
     /// and was dropped as `non_chat_schema`; nothing on her board could wake her.
-    pub work: Option<crate::airc::realtime_wire::RoomWork>,
+    pub work: Option<crate::persona::room_event::RoomWork>,
 }
 
 impl IncomingMessage {
     pub(crate) fn render_content(&self) -> String {
         if let Some(work) = &self.work {
-            return crate::airc::realtime_wire::render_room_work(work, self.peer_id);
+            return crate::persona::room_event::render_room_work(work, self.peer_id);
         }
-        crate::airc::realtime_wire::render_room_content(&self.text, &self.media)
+        crate::persona::room_event::render_room_content(&self.text, &self.media)
     }
 
     /// The same source-labelled input at inference, replay and teaching boundaries.

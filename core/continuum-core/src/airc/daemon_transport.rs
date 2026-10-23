@@ -45,12 +45,12 @@ use async_trait::async_trait;
 use uuid::Uuid;
 
 use crate::airc::event_transport::AircEventTransport;
-use crate::airc::realtime::AircRealtimeDelivery;
+use crate::routing::airc_realtime::AircRealtimeDelivery;
 use crate::airc::realtime_store::{
     AircRealtimePublishParams, AircRealtimePublishResult, AircRealtimeReplayParams,
     AircRealtimeReplayResult, AircRealtimeStore, InMemoryAircRealtimeStore, MAX_ROOM_REPLAY_LIMIT,
 };
-use crate::airc::realtime_wire::{
+use crate::routing::airc_realtime_wire::{
     body_for_envelope, envelope_from_event, frame_kind_for_delivery, headers_for_envelope,
 };
 
@@ -248,7 +248,7 @@ impl AircEventTransport for DaemonAircEventTransport {
 
         // IpcCursor → TranscriptCursor via the airc#1096 From impl.
         let newest = response.newest.map(|cursor| {
-            crate::airc::realtime::AircReplayCursor::from_airc(params.room_id, cursor.into())
+            crate::routing::airc_realtime::AircReplayCursor::from_airc(params.room_id, cursor.into())
         });
 
         let projection = InMemoryAircRealtimeStore::new(MAX_ROOM_REPLAY_LIMIT);
@@ -304,10 +304,10 @@ fn ipc_delivery_for(delivery: AircRealtimeDelivery) -> IpcDelivery {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::airc::realtime::{
+    use crate::routing::airc_realtime::{
         AircRealtimeEnvelope, AircRealtimePayload, AircRealtimePayloadRef, AircRealtimeSchema,
     };
-    use crate::airc::realtime_wire::CONTINUUM_BODY_HINT;
+    use crate::routing::airc_realtime_wire::CONTINUUM_BODY_HINT;
     use airc_core::{Body, EventId};
     use airc_ipc::{IpcKind, IpcTarget};
     use airc_protocol::HEADER_FORGE_BODY_HINT;
@@ -443,7 +443,7 @@ mod tests {
         let replay = transport
             .replay(AircRealtimeReplayParams {
                 room_id: env.room_id,
-                after_cursor: Some(crate::airc::realtime::AircReplayCursor {
+                after_cursor: Some(crate::routing::airc_realtime::AircReplayCursor {
                     room_id: env.room_id,
                     lamport: 4,
                     event_id: since_event.to_string(),

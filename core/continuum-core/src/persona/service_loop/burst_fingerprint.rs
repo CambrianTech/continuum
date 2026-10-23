@@ -131,7 +131,7 @@ pub(super) fn spawn_token_forwarder(
         // room turn (room+sender Some) AND a browser is subscribed.
         let tee = |seq: u64, token: String, done: bool| {
             if let (Some(room), Some(sender)) = (&room_id, &sender_id) {
-                crate::ipc::stream_rail::publish(crate::ipc::stream_rail::StreamDelta {
+                crate::persona::stream_rail::publish(crate::persona::stream_rail::StreamDelta {
                     room_id: room.clone(),
                     sender_id: sender.clone(),
                     stream_id: stream_id.clone(),
@@ -287,7 +287,7 @@ pub(super) async fn run_self_cycle(
     // Only the MUSING tail below is ambient inference: it pays for an ambient permit
     // (lanes-1 pool, keeps the GPU for live speakers and held work). Nothing above
     // needed one.
-    let Some(_ambient_permit) = crate::cognition::resource_admission::hold_ambient_turn_for(
+    let Some(_ambient_permit) = crate::cognition::turn_ledger::hold_ambient_turn_for(
         ctx.identity.peer_id.as_uuid(),
         now_ms,
     )

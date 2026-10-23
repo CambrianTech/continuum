@@ -1,0 +1,70 @@
+[package]
+name = "continuum-engine"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+tempfile = { version = "3", optional = true }
+continuum-kernel = { path = "../continuum-kernel" }
+continuum-tool-protocol = { path = "../continuum-tool-protocol" }
+tokio.workspace = true
+expert-pager-policy = { path = "../expert-pager-policy" }
+serde.workspace = true
+serde_json.workspace = true
+uuid.workspace = true
+continuum-base = { path = "../continuum-base" }
+schemars = { version = "0.8", features = ["uuid1"] }
+continuum-airc-protocol = { path = "../continuum-airc-protocol" }
+reqwest = { version = "0.12", features = ["json", "multipart", "stream"] }
+thiserror.workspace = true
+dashmap = "6.1"  # Lock-free concurrent HashMap
+inventory = "0.3"
+libc = "0.2"     # Process group management (setsid, kill -pgid)
+fs2 = "0.4"      # Cross-platform advisory file locks (flock / LockFileEx)
+continuum-cli-lifecycle = { path = "../continuum-cli-lifecycle" }  # the CLI's platform lifecycle; its tests must not link this crate
+base64 = "0.22"  # Base64 encoding for audio data
+sha2 = "0.10"   # SHA-256 for OAuth 2.0 PKCE code challenges (RFC 7636) + L1-6 contract canonical hash
+airc-core.workspace = true
+airc-protocol.workspace = true
+airc-lib.workspace = true
+async-trait.workspace = true
+axum = "0.8"
+parking_lot.workspace = true
+futures = "0.3"  # For VAD block_on in audio thread
+ort.workspace = true  # ONNX Runtime for TTS
+num_cpus = "1.16"  # CPU count detection
+dirs = "5.0"  # User directories for model paths
+sysinfo = "0.33"  # Cross-platform CPU, memory, system resource monitoring
+llama = { path = "../llama" }
+candle-core.workspace = true
+candle-nn.workspace = true  # For VarBuilder
+candle-transformers.workspace = true
+safetensors.workspace = true  # Model weight files
+half = "2.4"                  # f16/bf16 handling for LoRA
+tracing.workspace = true
+ts-rs.workspace = true  # TypeScript type generation
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.60", features = ["Win32_System_SystemInformation", "Win32_System_ProcessStatus", "Win32_Storage_FileSystem", "Win32_Foundation", "Win32_Globalization", "Win32_Security", "Win32_Security_AppLocker", "Win32_System_Threading", "Win32_System_Pipes", "Win32_System_JobObjects", "Win32_System_Console", "Win32_System_Environment", "Win32_System_SystemServices"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+metal = "0.32"
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }
+tempfile = "3"                   # Temp directories for code module tests
+airc-protocol = { workspace = true }
+futures = "0.3"
+
+[features]
+default = []
+coreml = []
+cuda = ["candle-core/cuda", "candle-nn/cuda", "candle-transformers/cuda", "llama/cuda", "ort/cuda", "continuum-kernel/cuda"]
+directml = ["ort/directml"]
+metal = ["candle-core/metal", "candle-nn/metal", "candle-transformers/metal", "llama/metal", "ort/coreml"]
+mlx = []
+openvino = ["ort/openvino"]
+rocm = ["ort/rocm"]
+test-fixtures = ["continuum-base/test-fixtures", "continuum-kernel/test-fixtures", "dep:tempfile"]
+vulkan = ["llama/vulkan", "continuum-kernel/vulkan"]

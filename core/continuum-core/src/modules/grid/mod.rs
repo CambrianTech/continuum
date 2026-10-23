@@ -22,7 +22,10 @@
 #[cfg(test)]
 mod tests;
 
-pub mod acl;
+pub mod access_decision;
+pub mod interceptor;
+pub mod trust_policy;
+pub use trust_policy::{caller_trust, GridTrustAuthPolicy, PeerTrustSource};
 pub mod audit;
 pub mod commands;
 pub mod connection;
@@ -327,7 +330,7 @@ impl ServiceModule for GridModule {
                     if let node::TransportAddress::Tailscale { ip, .. } = addr {
                         // Skip blocked nodes
                         if let Some(existing) = self.state.registry.get(ip) {
-                            if existing.trust_level == node::TrustLevel::Blocked {
+                            if existing.trust_level == crate::routing::trust_level::TrustLevel::Blocked {
                                 continue;
                             }
                         }
@@ -402,11 +405,11 @@ impl ServiceModule for GridModule {
                 .unwrap_or_default(); // unwrap_or_default: no registry = no residents = no requirement yet
             let requirement = crate::cognition::working_set::global()
                 .sent_median_of(&residents)
-                .map(crate::cognition::serving_plan::prompt_floor_of);
+                .map(crate::inference::planning::serving_plan::prompt_floor_of);
             let local = crate::persona::placement_switch::LocalShape {
                 requirement,
                 lane_wait_p50_ms: {
-                    let (p50, samples) = crate::cognition::resource_admission::local_lane_wait_p50_ms();
+                    let (p50, samples) = crate::inference::resource_admission::local_lane_wait_p50_ms();
                     (samples > 0).then_some(p50)
                 },
                 resident: crate::persona::airc_runtime_registry::PersonaAircRuntimeRegistry::try_global()
@@ -417,7 +420,7 @@ impl ServiceModule for GridModule {
                     .active_model
                     .as_deref()
                     .and_then(rank_of)
-                    .unwrap_or(crate::cognition::serving_plan::footprint::UNMEASURED_RANK_CAP), // JUSTIFIED unwrap_or: an unmeasured local model ranks at the planner's proxy cap, the number the planner itself uses
+                    .unwrap_or(crate::inference::planning::serving_plan::footprint::UNMEASURED_RANK_CAP), // JUSTIFIED unwrap_or: an unmeasured local model ranks at the planner's proxy cap, the number the planner itself uses
             };
             for line in placement::follow_the_fleet(now, peers, local, &rank_of).await {
                 say_in_org_room(&line).await;
@@ -470,7 +473,7 @@ impl ServiceModule for GridModule {
         tokio::spawn(async move {
             let nodes = registry.all_nodes();
             for node in &nodes {
-                if node.trust_level == node::TrustLevel::Blocked {
+                if node.trust_level == crate::routing::trust_level::TrustLevel::Blocked {
                     continue;
                 }
                 for addr in &node.addresses {
@@ -488,7 +491,7 @@ impl ServiceModule for GridModule {
                             _ => {
                                 // Unreachable — only remove auto-discovered (default trust) nodes.
                                 // Owner/Trusted nodes stay but age out of online_nodes().
-                                if node.trust_level == node::TrustLevel::default() {
+                                if node.trust_level == crate::routing::trust_level::TrustLevel::default() {
                                     registry.remove(&node.node_id);
                                     eprintln!(
                                         "[grid] Removed unreachable node {} ({})",

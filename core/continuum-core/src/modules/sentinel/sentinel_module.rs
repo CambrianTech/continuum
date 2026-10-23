@@ -417,31 +417,6 @@ impl SentinelModule {
         }
     }
 
-    /// Reap completed/failed sentinels older than REAP_AGE_SECS from the registry.
-    /// Prevents the DashMap from growing forever.
-    pub fn reap_dead(&self) {
-        let now = continuum_base::time::EpochMs::now().millis();
-
-        let mut reaped = Vec::new();
-        for entry in self.sentinels.iter() {
-            if entry.handle.status != SentinelStatus::Running {
-                if let Some(end_time) = entry.handle.end_time {
-                    if now.saturating_sub(end_time) > REAP_AGE_SECS * 1000 {
-                        reaped.push(entry.key().clone());
-                    }
-                }
-            }
-        }
-
-        for handle_id in &reaped {
-            self.sentinels.remove(handle_id);
-        }
-
-        if !reaped.is_empty() {
-            let log = crate::runtime::logger("sentinel");
-            log.info(&format!("Reaped {} dead sentinels", reaped.len()));
-        }
-    }
 }
 
 impl Default for SentinelModule {

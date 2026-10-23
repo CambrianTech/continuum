@@ -27,7 +27,7 @@
 //!   `DesiredRole`, calls
 //!   `PersonaInstanceManagerModule::bootstrap_one` to get an airc
 //!   identity, then `spawner::derive_spawn_plan` to materialize the
-//!   inference profile, then `LlamaCppAdapter::for_persona` to
+//!   inference profile, then `LlamaCppAdapter::for_launch` to
 //!   construct the adapter.
 //! - Per-persona subscribe-and-respond tokio task (the demo binary's
 //!   main loop, factored as a reusable function).
@@ -36,7 +36,7 @@
 //! commit reviewable and testable without an airc fixture.
 
 use crate::cognition::model_resolver::types::HwCapabilityTier;
-use crate::modules::persona_instance_manager::{PersonaInstanceInfo, PersonaInstanceManagerModule};
+use crate::persona::instance_manager::{PersonaInstanceInfo, PersonaInstanceManagerModule};
 use crate::persona::hw_tier_descriptor::HwTierCategory;
 use crate::persona::identity_provider::PersonaIdentityIntent;
 use crate::persona::inference_profile::{InferenceProfileError, PersonaInferenceProfile};
@@ -331,7 +331,7 @@ impl PersonaSpawnerModule {
         self.population = population;
     }
 
-    /// Apply the serving daemon's [`ServingPlan`](crate::cognition::serving_plan::ServingPlan):
+    /// Apply the serving daemon's [`ServingPlan`](crate::inference::planning::serving_plan::ServingPlan):
     /// every desired role runs the plan's base model, lane count, and host-fit
     /// served context window. The daemon makes the honest per-host decision
     /// (budget + footprints, GPU-residency, served window); the spawner obeys
@@ -341,7 +341,7 @@ impl PersonaSpawnerModule {
     /// `plan_for_tier` defaults.
     pub fn with_serving(
         mut self,
-        plan: Option<&crate::cognition::serving_plan::ServingPlan>,
+        plan: Option<&crate::inference::planning::serving_plan::ServingPlan>,
     ) -> Self {
         if let Some(p) = plan.filter(|p| p.fits_on_gpu) {
             self.serving_base_model = Some(p.base_model.model_id.clone());
@@ -356,7 +356,7 @@ impl PersonaSpawnerModule {
     /// Mutating twin of [`Self::with_serving`] for the resident reconciler: the
     /// serving plan changes at runtime (a pin, a tier swap, a lane relaunch) and the
     /// roster's seat count follows the LIVE lane count, never the boot-time one.
-    pub fn set_serving(&mut self, plan: Option<&crate::cognition::serving_plan::ServingPlan>) {
+    pub fn set_serving(&mut self, plan: Option<&crate::inference::planning::serving_plan::ServingPlan>) {
         match plan {
             Some(p) if p.fits_on_gpu => {
                 self.serving_base_model = Some(p.base_model.model_id.clone());
@@ -442,7 +442,7 @@ impl PersonaSpawnerModule {
                 population = unbounded as u64,
                 lanes = lanes.unwrap_or(0) as u64, // unwrap_or: 0 = no lane known (then nothing is bounded; unreachable here)
                 seats = seats as u64,
-                minds_per_lane = crate::modules::citizen_health::MINDS_PER_LANE_STARVED_ABOVE,
+                minds_per_lane = crate::persona::health_ledger::MINDS_PER_LANE_STARVED_ABOVE,
                 "the draw is bounded by the warm slots — the rest of the roster stays dormant until the lanes grow"
             );
         }
@@ -737,8 +737,8 @@ pub fn seats_under(population: usize, hold: Option<&crate::persona::roster_hold:
 pub fn bounded_by_warm_slots(seats: usize, lanes: Option<u32>) -> usize {
     match lanes {
         Some(l) if l > 0 => {
-            let edge = (l as usize).saturating_mul(crate::modules::citizen_health::MINDS_PER_LANE_STARVED_ABOVE as usize);
-            seats.min(edge.max(crate::modules::citizen_health::MINDLESS_RESIDENT_FLOOR as usize))
+            let edge = (l as usize).saturating_mul(crate::persona::health_ledger::MINDS_PER_LANE_STARVED_ABOVE as usize);
+            seats.min(edge.max(crate::persona::health_ledger::MINDLESS_RESIDENT_FLOOR as usize))
         }
         _ => seats,
     }

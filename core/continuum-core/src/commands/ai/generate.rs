@@ -28,7 +28,7 @@ use crate::ai::{
     TextGenerationResponse, ToolCall, UsageMetrics,
 };
 use crate::logging::TimingGuard;
-use crate::modules::ai_provider::select_failure_message;
+use crate::ai::adapter::select_failure_message;
 use crate::runtime::params::Params;
 
 /// Result of `ai/generate` — the exact camelCase shape the inference seam has always
@@ -205,7 +205,7 @@ crate::action_command! {
             .as_ref()
             .is_some_and(|c| matches!(c.source, crate::routing::CallerSource::Airc))
         {
-            crate::cognition::resource_admission::note_leased_in_sent(response.usage.input_tokens);
+            crate::inference::resource_admission::note_leased_in_sent(response.usage.input_tokens);
         }
 
         // Preserve the serving node's receipt, model mapping and adapter metadata.

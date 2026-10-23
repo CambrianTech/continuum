@@ -112,8 +112,8 @@ pub enum SelfReview {
 /// THE self-review rule, read from the room's policy. Every entry (the live bridge,
 /// `work/review`, registration replay) passes its answer to the exact path.
 pub(crate) async fn self_review(airc: &airc_lib::Airc, room: &airc_lib::Room) -> SelfReview {
-    use crate::modules::work::review_gate::PolicyRead;
-    match crate::modules::work::review_gate::room_policy(airc, room).await {
+    use crate::persona::work_board::review::PolicyRead;
+    match crate::persona::work_board::review::room_policy(airc, room).await {
         PolicyRead::Declared(policy) if policy.self_review => SelfReview::Admitted,
         PolicyRead::Declared(_) | PolicyRead::Absent => SelfReview::NotAdmitted,
         PolicyRead::Unavailable(why) => SelfReview::Unknown(why),
@@ -131,7 +131,7 @@ pub(crate) async fn verified_review(
     let airc_work::WorkEvent::WorkSubmissionReviewed(review) = item.event else {
         return Ok(None);
     };
-    let room = crate::modules::room_resolve::resolve_room(airc, Some(&event.room_id.as_uuid().to_string())).await?;
+    let room = crate::persona::room_resolve::resolve_room(airc, Some(&event.room_id.as_uuid().to_string())).await?;
     let board = airc
         .work_board_in(&room)
         .await
@@ -249,7 +249,7 @@ pub(crate) async fn consume_as_publisher(
         ));
     }
     // The publisher must actually inhabit this activity; never substitute focus.
-    let room = crate::modules::room_resolve::resolve_room(runtime.airc(), Some(&room_id.to_string())).await?;
+    let room = crate::persona::room_resolve::resolve_room(runtime.airc(), Some(&room_id.to_string())).await?;
     let admission = self_review(runtime.airc(), &room).await;
     let conn = Connection::new(InProcessTransport::new(
         executor,

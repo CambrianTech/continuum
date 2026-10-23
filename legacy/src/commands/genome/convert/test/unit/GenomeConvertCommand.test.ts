@@ -198,9 +198,9 @@ async function testDefaultOutputPath(): Promise<void> {
   assert(quantizePath.includes('q4'), 'merge-and-quantize path includes q4 suffix (default)');
 
   // quantize-base with bits=8 → q8 suffix
-  const q8Path = defaultOutputPath('quantize-base', { baseModel: 'unsloth/Llama-3.2-3B', bits: 8 });
+  const q8Path = defaultOutputPath('quantize-base', { baseModel: 'meta-llama/Llama-3.2-3B', bits: 8 });
   assert(q8Path.includes('q8'), 'quantize-base with bits=8 includes q8 suffix');
-  assert(q8Path.includes('unsloth-Llama-3-2-3B'), 'quantize-base path sanitizes model name');
+  assert(q8Path.includes('meta-llama-Llama-3-2-3B'), 'quantize-base path sanitizes model name');
 
   // All paths rooted in .continuum/genome/converted/
   assert(mergePath.startsWith(path.join('.continuum', 'genome', 'converted')),

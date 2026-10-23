@@ -39,7 +39,7 @@ pub(super) fn register_serving_daemon(
         pin_store,
     ));
     // Training admission reads governed memory under this gate (aae8af55).
-    crate::modules::serving_daemon::LifecycleGate::set_global(serving_daemon.lifecycle_gate());
+    crate::inference::serving_lifecycle::LifecycleGate::set_global(serving_daemon.lifecycle_gate());
     continuum_base::probe!(
         class = "boot.stretch",
         stretch = "serving_span",

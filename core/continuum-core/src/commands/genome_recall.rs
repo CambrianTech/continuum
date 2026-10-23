@@ -21,7 +21,7 @@ use ts_rs::TS;
 
 use crate::genome::recall_impl::{RecallDecision, RecallTraceStore};
 use crate::genome::recall_trait::{RankedPool, RecallScoreWeights, RecallTrace};
-use crate::genome::working_set::ArtifactId;
+use crate::inference::page_ref::ArtifactId;
 use crate::orm::OrmStore;
 use crate::runtime::LateBound;
 use crate::sdk_codegen::{AccessLevel, ActionCommand, CommandError, Ctx};
@@ -144,7 +144,7 @@ impl ActionCommand for GenomeRecall {
             .map(GenomeRecallPolicy::validated)
             .transpose()?;
         let decisions = Arc::clone(self.decisions.require().map_err(CommandError::Internal)?);
-        let manifest = crate::forge::adapter_manifest::load().map_err(CommandError::Invalid)?;
+        let manifest = crate::genome::adapter_manifest::load().map_err(CommandError::Invalid)?;
         let sig_path =
             crate::genome::signature::signature_store_path().map_err(CommandError::Invalid)?;
         let signatures = crate::genome::signature::SignatureStore::load_at(&sig_path)
@@ -318,8 +318,8 @@ impl ActionCommand for GenomeRecallReplay {
             .map_err(|e| CommandError::Invalid(e.to_string()))?;
         // Capture includes the caller's need/context. Verified peers can inspect
         // their own decisions; local substrate/operator retains mechanic access.
-        if crate::routing::grid_trust_policy::caller_trust(ctx.caller.as_ref())
-            != crate::modules::grid::node::TrustLevel::Owner
+        if crate::modules::grid::trust_policy::caller_trust(ctx.caller.as_ref())
+            != crate::routing::trust_level::TrustLevel::Owner
             && ctx
                 .caller
                 .as_ref()

@@ -1,0 +1,131 @@
+//! Shared AIRC wire contract for Continuum realtime envelopes: the body hint and headers,
+//! encode and decode, the bus bridge, and the header predicates a receiver checks before
+//! decoding. Publish, replay, live attach and a mind's perception all use these, so the
+//! `forge.body_hint` contract has one definition, below every reader.
+
+use airc_core::{Body, Headers, TranscriptEvent};
+use serde::Deserialize;
+use airc_protocol::{FrameKind, HEADER_FORGE_BODY_HINT};
+
+use super::airc_realtime::{
+    AircRealtimeDelivery, AircRealtimeEnvelope, AircRealtimePayload, AircRealtimeSchema,
+};
+use crate::runtime::message_bus::BusEvent;
+
+pub const CONTINUUM_BODY_HINT: &str = "continuum.airc.realtime.envelope.v1";
+pub const HEADER_CONTINUUM_EVENT_ID: &str = "continuum.event_id";
+pub const HEADER_CONTINUUM_SOURCE_ID: &str = "continuum.source_id";
+pub const HEADER_CONTINUUM_DELIVERY: &str = "continuum.delivery";
+pub const HEADER_CONTINUUM_TRACE_ID: &str = "continuum.trace_id";
+
+pub fn frame_kind_for_delivery(delivery: AircRealtimeDelivery) -> FrameKind {
+    match delivery {
+        AircRealtimeDelivery::Durable => FrameKind::Message,
+        AircRealtimeDelivery::EphemeralCoalesced => FrameKind::Event,
+        AircRealtimeDelivery::Control | AircRealtimeDelivery::ReceiptOnly => FrameKind::Control,
+    }
+}
+
+pub fn headers_for_envelope(envelope: &AircRealtimeEnvelope) -> Headers {
+    let mut headers = Headers::new();
+    headers.insert(
+        HEADER_FORGE_BODY_HINT.to_string(),
+        CONTINUUM_BODY_HINT.to_string(),
+    );
+    headers.insert(
+        HEADER_CONTINUUM_EVENT_ID.to_string(),
+        envelope.event_id.clone(),
+    );
+    headers.insert(
+        HEADER_CONTINUUM_SOURCE_ID.to_string(),
+        envelope.source_id.clone(),
+    );
+    headers.insert(
+        HEADER_CONTINUUM_DELIVERY.to_string(),
+        format!("{:?}", envelope.delivery),
+    );
+    if let Some(trace_id) = &envelope.trace_id {
+        headers.insert(HEADER_CONTINUUM_TRACE_ID.to_string(), trace_id.clone());
+    }
+    headers
+}
+
+pub fn body_for_envelope(envelope: &AircRealtimeEnvelope) -> Result<Body, String> {
+    serde_json::to_value(envelope)
+        .map(Body::Json)
+        .map_err(|error| format!("failed to encode continuum airc envelope: {error}"))
+}
+
+pub fn envelope_from_event(
+    event: &TranscriptEvent,
+) -> Result<Option<AircRealtimeEnvelope>, String> {
+    if event
+        .headers
+        .get(HEADER_FORGE_BODY_HINT)
+        .map(String::as_str)
+        != Some(CONTINUUM_BODY_HINT)
+    {
+        return Ok(None);
+    }
+
+    let Some(body) = event.body.as_ref() else {
+        return Ok(None);
+    };
+    let Body::Json(value) = body else {
+        return Ok(None);
+    };
+
+    // Borrow-decode: `&Value` is itself a Deserializer, so the envelope is read
+    // in place. The previous `from_value(value.clone())` deep-copied the WHOLE
+    // body first (`from_value` consumes by value, so the clone was reflexive) —
+    // paid per event PER PERSONA, since every citizen's subscribe stream sees
+    // every event. That is the same O(personas x payload) waste the stream-chunk
+    // header guard above exists to avoid; the header decides, the body is never
+    // copied to find out.
+    AircRealtimeEnvelope::deserialize(value)
+        .map(Some)
+        .map_err(|error| format!("failed to decode continuum airc envelope: {error}"))
+}
+
+pub fn bus_event_from_envelope(envelope: &AircRealtimeEnvelope) -> Option<BusEvent> {
+    let AircRealtimePayload::ExistingSchema { payload } = &envelope.payload else {
+        return None;
+    };
+    if payload.schema != AircRealtimeSchema::EventBridgePayload {
+        return None;
+    }
+    let inline = payload.inline.as_ref()?;
+    let event_name = inline
+        .get("eventName")
+        .or_else(|| inline.get("event"))
+        .or_else(|| inline.get("name"))
+        .and_then(serde_json::Value::as_str)?;
+
+    Some(BusEvent {
+        name: event_name.to_string(),
+        payload: std::sync::Arc::new(inline.clone()),
+    })
+}
+
+/// Is this event a live streaming token fragment rather than a settled room line?
+///
+/// THE predicate for the stream-chunk contract, in one place, so a caller that needs to
+/// skip chunks BEFORE paying for a decode uses the same rule the decoder does. A chunk is
+/// never a spoken line: the settled utterance arrives separately via `say()`.
+///
+/// Why a caller would want it early: every persona's subscribe stream receives every OTHER
+/// persona's chunks. Measured live 2026-08-04 during a SWE solve — 2644 of 4776 filtered
+/// inbound events (55%) were stream chunks, fanned out identically to all four personas
+/// (1195 each) and decoded-then-discarded by each one independently. That is
+/// O(personas x tokens) of decode work in the attention path, and it made 65% of the probe
+/// stream noise. The earlier response to the same flood was to lower the LOG LEVEL, which
+/// hid it without stopping it ([[persona-cognition-symptoms-are-not-noise-to-suppress-fix-the-mind-or-ask]]).
+pub fn is_stream_chunk(event: &TranscriptEvent) -> bool {
+    event.headers.get(airc_lib::HEADER_STREAM_ID).is_some()
+}
+
+/// Correlated command traffic belongs to the request/reply dispatcher, not room
+/// attention. Inspect the routing header before decoding or queueing its body.
+pub fn is_command_frame(event: &TranscriptEvent) -> bool {
+    event.headers.get(airc_protocol::HEADER_AIRC_CORRELATION_ID).is_some()
+}

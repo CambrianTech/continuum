@@ -39,8 +39,8 @@
 
 use async_trait::async_trait;
 
-use super::teach::{synthesize_remediation, RemediationCorpus};
-use super::teach::{DEFAULT_MAX_FIX_ITERS, DEFAULT_TEMPERATURE};
+use crate::genome::teach::{synthesize_remediation, RemediationCorpus};
+use crate::genome::teach::{DEFAULT_MAX_FIX_ITERS, DEFAULT_TEMPERATURE};
 use crate::cognition::eval::EvalTask;
 use crate::cognition::experience::{
     salient_teach_set, ErrorSalience, ExperienceRecord, ExperienceSource, SalienceDetector,
@@ -311,7 +311,7 @@ impl LivedExpansionSynthesizer {
                 CommandError::Internal(format!("teacher model resolve failed: {e:?}"))
             })?,
         };
-        super::teach::synthesize_lived_expansion(&stimuli, &teacher_model, self.temperature).await
+        crate::genome::teach::synthesize_lived_expansion(&stimuli, &teacher_model, self.temperature).await
     }
 }
 

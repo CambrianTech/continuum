@@ -29,10 +29,8 @@ crate::action_command! {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::airc::{
-        AircPresenceEvent, AircPresenceState, AircRealtimeEnvelope, AircRealtimePayload,
-        InMemoryAircRealtimeStore, StoreAircEventTransport,
-    };
+    use crate::airc::{InMemoryAircRealtimeStore, StoreAircEventTransport};
+    use crate::routing::airc_realtime::{AircPresenceEvent, AircPresenceState, AircRealtimeEnvelope, AircRealtimePayload};
     use crate::sdk_codegen::{ActionCommand, Ctx};
     use uuid::Uuid;
 

@@ -77,7 +77,7 @@ pub(super) async fn serve_self_tick(
     .await;
     if starved {
         if let Some(yields) =
-            crate::cognition::resource_admission::take_ambient_yield_report(
+            crate::inference::resource_admission::take_ambient_yield_report(
                 EpochMs::now().millis(), // pre-1970 reads 0: clock before the epoch = 0
             )
         {
@@ -85,7 +85,7 @@ pub(super) async fn serve_self_tick(
                 class = "persona.selftick.starved",
                 yields_since_last_report = yields,
                 total_yields =
-                    crate::cognition::resource_admission::ambient_yields(),
+                    crate::inference::resource_admission::ambient_yields(),
                 "ambient MUSING yielded — the pool was full. NOT a fault: this is \
                  what contention looks like when citizens outnumber non-directed \
                  lanes; held work and the pull already ran. Rate-limited to ≤1 row/min."

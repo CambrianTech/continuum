@@ -181,45 +181,6 @@ pub fn validate_utilization_data(data: &UtilizationData) -> Result<(), String> {
     Ok(())
 }
 
-/// Check if a topology is compatible with a given base model config.
-pub fn check_compatibility(
-    topology: &HeadTopology,
-    model_name: &str,
-    expected_num_heads: usize,
-    expected_num_kv_heads: usize,
-    expected_head_dim: usize,
-) -> Result<(), String> {
-    if topology.base_model != model_name {
-        return Err(format!(
-            "Topology was created for '{}', but loading '{}'",
-            topology.base_model, model_name
-        ));
-    }
-
-    if topology.original_num_heads != expected_num_heads {
-        return Err(format!(
-            "Topology original_num_heads ({}) != model num_heads ({})",
-            topology.original_num_heads, expected_num_heads
-        ));
-    }
-
-    if topology.original_num_kv_heads != expected_num_kv_heads {
-        return Err(format!(
-            "Topology original_num_kv_heads ({}) != model num_kv_heads ({})",
-            topology.original_num_kv_heads, expected_num_kv_heads
-        ));
-    }
-
-    if topology.head_dim != expected_head_dim {
-        return Err(format!(
-            "Topology head_dim ({}) != model head_dim ({})",
-            topology.head_dim, expected_head_dim
-        ));
-    }
-
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -380,21 +341,4 @@ mod tests {
         assert!(result.is_err());
     }
 
-    #[test]
-    fn test_check_compatibility_ok() {
-        let topology = make_valid_topology();
-        assert!(check_compatibility(&topology, "test-model", 4, 4, 64).is_ok());
-    }
-
-    #[test]
-    fn test_check_compatibility_wrong_model() {
-        let topology = make_valid_topology();
-        assert!(check_compatibility(&topology, "other-model", 4, 4, 64).is_err());
-    }
-
-    #[test]
-    fn test_check_compatibility_wrong_heads() {
-        let topology = make_valid_topology();
-        assert!(check_compatibility(&topology, "test-model", 8, 4, 64).is_err());
-    }
 }

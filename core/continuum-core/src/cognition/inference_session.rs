@@ -24,7 +24,7 @@ use ts_rs::TS;
 use uuid::Uuid;
 
 use crate::ai::types::ChatMessage;
-use crate::modules::ai_provider::{generate_text, global_registry};
+use crate::ai::adapter::{generate_text, global_registry};
 use crate::sdk_codegen::{AccessLevel, ActionCommand, CommandError, Ctx};
 
 /// A live inference lease: a handle bound to a concrete model. Held in the global
@@ -35,7 +35,7 @@ use crate::sdk_codegen::{AccessLevel, ActionCommand, CommandError, Ctx};
 pub struct InferenceSession {
     #[ts(type = "string")]
     pub id: Uuid,
-    /// The concrete model this lease is bound to (what unsloth serves).
+    /// The concrete model this lease is bound to (what the engine serves).
     pub model: String,
     #[ts(type = "number")]
     pub opened_at_ms: u64,
@@ -163,7 +163,7 @@ pub struct InferenceOpenCommand;
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, TS, JsonSchema)]
 pub struct InferenceOpenParams {
-    /// Bind to this model id; omit to bind to whatever unsloth currently serves.
+    /// Bind to this model id; omit to bind to whatever the engine currently serves.
     #[serde(default)]
     pub model: Option<String>,
 }
@@ -182,7 +182,7 @@ impl ActionCommand for InferenceOpenCommand {
     const NAME: &'static str = "ai/inference/open";
     const ACCESS: AccessLevel = AccessLevel::AiSafe;
     const DESCRIPTION: &'static str =
-        "Open an inference lease: mint a handle bound to a model (the one unsloth serves, \
+        "Open an inference lease: mint a handle bound to a model (the one the engine serves, \
          or an explicit `model`). Use the handle to generate; close it when done. Fails \
          loud if no model is available — no local fallback.";
     type Params = InferenceOpenParams;
@@ -287,7 +287,7 @@ impl ActionCommand for InferenceCloseCommand {
 
 /// Generate OVER a live handle: the "use the handle to infer" step. Looks up the
 /// lease (NotFound if lost — the caller re-opens), binds the request to the
-/// session's model, and delegates to the registered provider (unsloth) via the one
+/// session's model, and delegates to the registered provider via the one
 /// `generate_text` path — no parallel inference path, no one-shot bypass.
 pub struct InferenceGenerateCommand;
 

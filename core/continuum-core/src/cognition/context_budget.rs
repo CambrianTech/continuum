@@ -56,7 +56,7 @@
 //! window must never become an invented one; that is precisely how a guess turns into a
 //! clamp that outlives the guess.
 
-use super::deliberation_budget::GUARD_CHARS_PER_TOKEN;
+use continuum_base::token_estimate::GUARD_CHARS_PER_TOKEN;
 
 /// Per-step size of the rolling trail: `1/64` of the window (the calibrated trail-head
 /// fraction from the table above). Named so the COUNT below cannot drift from the SIZE.
@@ -512,16 +512,6 @@ const RECALL_DENOM: usize = 10;
                 Self::from_window(crate::inference::planning::MIN_SERVE_CTX).fraction(16)
             }
         }
-    }
-
-    /// The steps-taken LEDGER's rendered share — how much of the receipt archive the
-    /// perception fact re-injects per turn. One trail-head-equivalent (`1/64`): head
-    /// lines only, newest first to fit, so the ledger shows a citizen her recent act
-    /// HISTORY without re-creating the double-payment the #324 dedup removed. Render
-    /// bound, not storage: unknown window keeps the honest no-bound (the deliberation
-    /// guard trims downstream), same contract as [`Self::trail_head_chars`].
-    pub fn steps_ledger_chars(&self) -> usize {
-        self.fraction(TRAIL_HEAD_DENOM)
     }
 
     /// The RECENT-RESULTS share: the last few acts' results kept WHOLE across subsequent acts

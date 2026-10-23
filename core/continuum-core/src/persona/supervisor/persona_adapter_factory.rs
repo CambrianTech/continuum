@@ -21,8 +21,8 @@ pub trait PersonaAdapterFactory: Send + Sync {
     ) -> Result<Arc<dyn AIProviderAdapter>, String>;
 }
 
-/// Production factory: hands every profile to
-/// `LlamaCppAdapter::for_persona`. Stateless — safe to share via
+/// Production factory: resolves every profile to its launch and hands it to
+/// `LlamaCppAdapter::for_launch`. Stateless — safe to share via
 /// `Arc` across the supervisor's persona materialization loop.
 pub struct LlamaCppPersonaAdapterFactory;
 
@@ -32,9 +32,10 @@ impl PersonaAdapterFactory for LlamaCppPersonaAdapterFactory {
         &self,
         profile: &PersonaInferenceProfile,
     ) -> Result<Arc<dyn AIProviderAdapter>, String> {
-        let adapter = crate::inference::llamacpp_adapter::LlamaCppAdapter::for_persona(profile)
-            .map_err(|e| format!("LlamaCppAdapter::for_persona failed: {e}"))?;
-        Ok(Arc::new(adapter))
+        let launch = profile
+            .llamacpp_launch()
+            .map_err(|e| format!("LlamaCppAdapter launch failed: {e}"))?;
+        Ok(Arc::new(crate::inference::llamacpp_adapter::LlamaCppAdapter::for_launch(&launch)))
     }
 }
 
@@ -198,7 +199,7 @@ pub struct PersonaContext {
     /// `[[personas-are-citizens-airc-is-identity-provider]]`. Same
     /// type for personas, humans, browsers — everyone has a
     /// `.identity`. Token/auth state lives inside.
-    pub identity: crate::modules::persona_instance_manager::PersonaInstanceInfo,
+    pub identity: crate::persona::instance_manager::PersonaInstanceInfo,
     /// The single source of truth for this persona's inference
     /// shape — context window, ubatch, sampling, model id, stop
     /// sequences, etc. Produced by slice-5 `build_profile`. Every
@@ -469,7 +470,7 @@ pub(super) fn remote_override_for(
     identity_home: &std::path::Path,
 ) -> Option<crate::persona::model_override::PersonaModelOverride> {
     let by_name = crate::context::citizen_home_path(
-        &crate::modules::persona_instance_manager::resolve_continuum_root(),
+        &crate::paths::continuum_root(),
         crate::identity::IdentityKind::Persona,
         None,
         persona_name,

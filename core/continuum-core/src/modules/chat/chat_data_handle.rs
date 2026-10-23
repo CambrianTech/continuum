@@ -341,37 +341,6 @@ impl ChatModule {
         Ok((message_id, now_ms))
     }
 
-    /// One envelope shape for operator publication and caller-owned publication.
-    pub(crate) fn transcript_envelope(
-        message_id: Uuid,
-        params: &ChatSendParams,
-        now_ms: u64,
-    ) -> Value {
-        json!({
-            "eventId": Uuid::new_v4().to_string(),
-            "roomId": params.room_id.to_string(),
-            "sourceId": params.sender_id.to_string(),
-            "createdAtMs": now_ms,
-            // Delivery must match the payload's semantics — see
-            // `AircRealtimePayload::delivery()`. ExistingSchema/
-            // ChatTranscript → Durable.
-            "delivery": "durable",
-            "payload": {
-                "kind": "existing_schema",
-                "payload": {
-                    "schema": "chat_transcript",
-                    "inline": {
-                        "messageId": message_id.to_string(),
-                        "text": params.text,
-                        "media": params.media,
-                        "senderId": params.sender_id.to_string(),
-                        "replyToId": params.reply_to_id.map(|u| u.to_string()),
-                    }
-                }
-            },
-        })
-    }
-
     /// Step 2 of a send: the ENVELOPE wire leg — the chat transcript schema
     /// published as an airc realtime envelope through `airc/realtime-publish`
     /// (best-effort; a miss is named in `warning`, never silent). Public so
@@ -395,7 +364,11 @@ impl ChatModule {
         // surface a parse error and the test
         // `send_envelope_matches_airc_publish_wire_shape` will
         // catch the drift.
-        let publish_envelope = Self::transcript_envelope(message_id, params, now_ms);
+        let publish_envelope = crate::persona::room_event::chat_transcript_envelope(
+            message_id,
+            &params.transcript_line(),
+            now_ms,
+        );
 
         let publish_params = json!({ "envelope": publish_envelope });
 

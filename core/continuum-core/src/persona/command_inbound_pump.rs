@@ -82,9 +82,8 @@ use tokio::task::JoinHandle;
 use tracing::{debug, warn};
 use uuid::Uuid;
 
-use crate::routing::epoch_watermark::{SqliteEpochWatermark, WatermarkError};
+use crate::routing::epoch_watermark::{OrmEpochWatermark, WatermarkError};
 use crate::routing::grid_capability::GrantAuthorizer;
-use crate::routing::CommandRequestHandler;
 use crate::runtime::command_executor::CommandExecutor;
 
 /// Why constructing a persona's [`GrantAuthorizer`] failed at boot. Distinct from
@@ -110,7 +109,7 @@ pub enum GrantAuthorizerBuildError {
 /// grants visiting peers present. "This node is the owner": the trusted issuer key
 /// is the node's OWN enrolled ed25519 key (it self-signs the grants it hands out),
 /// the expected mesh is the node's own mesh, and the anti-replay watermark is a
-/// DURABLE SQLite store under the persona home (survives restart — the review hard
+/// DURABLE ORM store under the persona home (survives restart — the review hard
 /// gate). Provider≠owner (verifying grants the owner signed on a different box) is
 /// a later generalization needing pinned-issuer-key distribution.
 pub async fn build_grant_authorizer(
@@ -125,7 +124,8 @@ pub async fn build_grant_authorizer(
         .mesh_identity()
         .await
         .map_err(GrantAuthorizerBuildError::Mesh)?;
-    let watermark = SqliteEpochWatermark::open(&home.join("grant_watermark.sqlite"))
+    let watermark = OrmEpochWatermark::open(&home.join("grant_watermark.sqlite"))
+        .await
         .map_err(GrantAuthorizerBuildError::Watermark)?;
     Ok(Arc::new(GrantAuthorizer::with_watermark(
         owner_pubkey,
@@ -201,11 +201,6 @@ pub async fn spawn_node_pump(
     Ok(peer)
 }
 
-/// Whether the node pump TASK is running (liveness is the task, not the handle).
-pub fn node_pump_alive() -> bool {
-    NODE_PUMP.get().is_some_and(|(p, _)| p.is_alive())
-}
-
 static NODE_PUMP: std::sync::OnceLock<(PersonaCommandInboundPump, watch::Sender<u64>)> =
     std::sync::OnceLock::new();
 
@@ -221,10 +216,34 @@ pub enum NodePumpError {
     },
     #[error("node pump grant authorizer: {0}")]
     GrantAuthorizer(#[source] GrantAuthorizerBuildError),
-    #[error("node pump subscribe: {0}")]
-    Subscribe(#[source] AircError),
+    #[error("node pump: {0}")]
+    Subscribe(#[source] PumpSpawnError),
     #[error("the node command pump is already installed")]
     AlreadyInstalled,
+}
+
+/// Builds the envelope handler a pump runs: the command-ingress responder, which the socket
+/// layer owns (`ipc::command_ingress`) and installs here at boot. The persona owns its pump
+/// and the seam; it never names the layer that answers commands.
+pub type CommandHandlerFactory =
+    fn(Arc<Airc>, Arc<CommandExecutor>, Arc<GrantAuthorizer>) -> Arc<dyn ConsumerAdapter>;
+
+static HANDLER_FACTORY: parking_lot::RwLock<Option<CommandHandlerFactory>> = parking_lot::RwLock::new(None);
+
+/// Install the one command-handler factory. A second install replaces the first.
+pub fn install_command_handler(factory: CommandHandlerFactory) {
+    *HANDLER_FACTORY.write() = Some(factory);
+}
+
+/// Why a pump could not start.
+#[derive(Debug, thiserror::Error)]
+pub enum PumpSpawnError {
+    #[error("subscribe the persona's rooms: {0}")]
+    Subscribe(#[source] AircError),
+    /// Boot never installed the command handler, so a pump would hear envelopes and answer
+    /// none; refused rather than pretend the persona is addressable.
+    #[error("no command handler installed (boot installs it before any pump starts)")]
+    NoHandler,
 }
 
 /// One persona's command inbound pump. Holds the JoinHandle so the
@@ -263,7 +282,8 @@ impl PersonaCommandInboundPump {
         executor: Arc<CommandExecutor>,
         grant_authorizer: Arc<GrantAuthorizer>,
         membership: watch::Receiver<u64>,
-    ) -> Result<Self, AircError> {
+    ) -> Result<Self, PumpSpawnError> {
+        let factory = (*HANDLER_FACTORY.read()).ok_or(PumpSpawnError::NoHandler)?;
         // Subscribe BEFORE spawning so failure surfaces at the call
         // site. The stream moves into the spawned task; subsequent
         // stream errors (lag, end-of-stream) are runtime concerns,
@@ -273,16 +293,14 @@ impl PersonaCommandInboundPump {
         // narrowing it by room made her un-callable from anywhere she
         // was not currently parked — the same one-channel narrowing
         // that made operator chat structurally invisible (task #64).
-        let stream = crate::persona::airc_citizen::subscribe_every_room(&airc).await?;
+        let stream = crate::routing::airc_subscription::subscribe_every_room(&airc)
+            .await
+            .map_err(PumpSpawnError::Subscribe)?;
         // The handler VERIFIES presented capability grants against the authorizer
         // (built from this node's own key + mesh + durable watermark). A peer
         // presenting an owner-signed grant gets the conferred command past its tier
         // ceiling; absent/invalid grants fall back to tier gating.
-        let handler = CommandRequestHandler::with_grant_authorizer(
-            Arc::clone(&airc),
-            executor,
-            grant_authorizer,
-        );
+        let handler = factory(Arc::clone(&airc), executor, grant_authorizer);
         // The pump is SUPERVISED on the persona: `run` re-opens its own stream
         // and only returns when the runtime drops its epoch sender, so the one
         // exit it cannot cover is a panic inside the task. The supervisor task
@@ -363,7 +381,7 @@ enum Reopen {
 async fn supervise(
     persona_id: Uuid,
     airc: Arc<Airc>,
-    handler: Arc<CommandRequestHandler>,
+    handler: Arc<dyn ConsumerAdapter>,
     first_stream: FilteredEventStream,
     membership: watch::Receiver<u64>,
 ) {
@@ -372,7 +390,7 @@ async fn supervise(
     loop {
         let this_stream = match stream.take() {
             Some(s) => s,
-            None => match crate::persona::airc_citizen::subscribe_every_room(&airc).await {
+            None => match crate::routing::airc_subscription::subscribe_every_room(&airc).await {
                 Ok(s) => s,
                 Err(e) => {
                     continuum_base::probe!(
@@ -416,7 +434,7 @@ async fn supervise(
 async fn run(
     persona_id: Uuid,
     airc: Arc<Airc>,
-    handler: Arc<CommandRequestHandler>,
+    handler: Arc<dyn ConsumerAdapter>,
     mut stream: FilteredEventStream,
     mut membership: watch::Receiver<u64>,
 ) {
@@ -516,7 +534,7 @@ async fn run(
             // Joins arrive in bursts at boot (one per room). Every bump that
             // landed during the sleep is folded into this one re-open.
             let _ = membership.borrow_and_update();
-            match crate::persona::airc_citizen::subscribe_every_room(&airc).await {
+            match crate::routing::airc_subscription::subscribe_every_room(&airc).await {
                 Ok(next) => {
                     stream = next;
                     opened_with = subscribed_set(&airc).await;

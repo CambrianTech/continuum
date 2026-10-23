@@ -83,7 +83,7 @@ pub(super) fn spawn_ws_ingress(
                     // citizen's grounding) reads THAT room instead of whichever room
                     // wrote last. The node substrate above still receives everything,
                     // so the focused-room web session is unchanged.
-                    Some(global_room_substrates()),
+                    Some(crate::persona::room_substrates::global_room_substrates()),
                 );
 
                 // Per-citizen substrates for per-user views (nav): each connecting
@@ -142,20 +142,6 @@ pub(super) fn spawn_ws_ingress(
                     ws_substrate.clone(),
                 );
 
-                // Benchmark board (#329): fold the run-ledger projection into
-                // kind="bench" — the academy right-rail's live rows (who is
-                // solving what, attempt N/M, patch forming, verdicts). Two
-                // targets from one fold: the node-wide board on the websocket
-                // substrate for human eyes, and ONE VIEW PER ROOM in the room
-                // registry for citizen minds (#426, per room since 2026-10-04,
-                // HER-LOOP-IS-HER-OWN.md rule 5: she reads the board of the
-                // activity she is in, never the node's).
-                positron_bench_source::spawn_bench_emitter(
-                    &state.rt_handle,
-                    ws_substrate.clone(),
-                    global_room_substrates(),
-                );
-
                 // Canvas feed (ninth ViewState, 2026-08-23): EVENT-driven — a
                 // persona's own observe/hot-edit results publish frames at the
                 // act seam; no tick, no scan. Install-only here; the act loop
@@ -197,7 +183,7 @@ fn resolve_room_purpose(
     projection_bus: &Arc<crate::runtime::MessageBus>,
     node_presence_deps: &Option<(std::path::PathBuf, airc_core::RoomId)>,
     persona_bootstrap_room_name: &Option<String>,
-) -> crate::ipc::room_purpose::SharedRoomPurpose {
+) -> crate::experience::room_purpose::SharedRoomPurpose {
     // Activity-purpose index (#6/#274/#329): resolve each room to the
     // recipe it was spawned from, by READING the binding `activity/spawn`
     // publishes to the room's wall. Until this existed, that binding had
@@ -205,7 +191,7 @@ fn resolve_room_purpose(
     // — projected as a plain chat room to every renderer AND to the
     // citizen standing inside it. Without a daemon (headless / no
     // bootstrap room) the honest default stands: everything is chat.
-    let room_purpose: crate::ipc::room_purpose::SharedRoomPurpose = match node_presence_deps
+    let room_purpose: crate::experience::room_purpose::SharedRoomPurpose = match node_presence_deps
         .clone()
         .zip(persona_bootstrap_room_name.clone())
     {
@@ -214,7 +200,7 @@ fn resolve_room_purpose(
                 &state.rt_handle,
                 projection_bus.clone(),
                 socket,
-                crate::modules::persona_instance_manager::resolve_continuum_root()
+                crate::paths::continuum_root()
                     .join("citizens")
                     .join("node")
                     .join("purpose")
@@ -222,12 +208,12 @@ fn resolve_room_purpose(
                 room_name,
             ))
         }
-        None => crate::ipc::room_purpose::default_source(),
+        None => crate::experience::room_purpose::default_source(),
     };
     room_purpose
 }
 
-fn install_persona_experience_source(room_purpose: &crate::ipc::room_purpose::SharedRoomPurpose) {
+fn install_persona_experience_source(room_purpose: &crate::experience::room_purpose::SharedRoomPurpose) {
     // S1: the SAME recipe registry the projection resolves from, handed
     // to the persona spawn path — so a room's authored affordances select
     // the citizen's tool surface, not only what the renderer draws. One
@@ -237,7 +223,7 @@ fn install_persona_experience_source(room_purpose: &crate::ipc::room_purpose::Sh
     {
         use crate::experience::source::RecipeExperienceSource;
         let overlay_dir = RecipeExperienceSource::overlay_dir(
-            &crate::modules::persona_instance_manager::resolve_continuum_root(),
+            &crate::paths::continuum_root(),
         );
         let source =
             match RecipeExperienceSource::builtins_with_overlay(room_purpose.clone(), &overlay_dir)
@@ -278,7 +264,7 @@ fn spawn_node_projectors(
         .zip(persona_bootstrap_room_name.clone())
     {
         Some(((daemon_socket, room_id), room_name)) => {
-            let continuum_root = crate::modules::persona_instance_manager::resolve_continuum_root();
+            let continuum_root = crate::paths::continuum_root();
             let node_home = continuum_root
                 .join("citizens")
                 .join("node")

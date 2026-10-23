@@ -170,13 +170,16 @@ pub async fn follow_with(verdict: &SweVerdict, mode: FollowMode) -> FollowTally 
     // cards for the same instance — other holders' work — and could not even say so in their
     // rooms). The verdict MOVES the card the graded copy belongs to (the solver's live hold on
     // the board, or the only card when there is one) and only INFORMS the rest.
-    let owners: Vec<(Uuid, Option<Uuid>)> = match airc
+    // Each card's live owner and its open review card (airc's native `reviews` link), read
+    // from one board snapshot.
+    let (owners, open_reviews): (Vec<(Uuid, Option<Uuid>)>, Vec<(Uuid, Uuid)>) = match airc
         .work_board_complete(airc_lib::WORK_BOARD_PROJECTION_PAGE_SIZE)
         .await
     {
         Ok(board) => {
             let snap = board.snapshot();
-            all.iter()
+            let owners = all
+                .iter()
                 .map(|c| {
                     let owner = snap
                         .cards
@@ -185,9 +188,17 @@ pub async fn follow_with(verdict: &SweVerdict, mode: FollowMode) -> FollowTally 
                         .and_then(|k| k.owner.map(|o| o.as_uuid()));
                     (*c, owner)
                 })
-                .collect()
+                .collect();
+            let open_reviews = snap
+                .cards
+                .iter()
+                .filter(|k| !crate::persona::work_board::facts::is_concluded(&k.state))
+                .filter_map(|k| k.reviews.map(|parent| (parent.as_uuid(), k.card_id.as_uuid())))
+                .filter(|(parent, _)| all.contains(parent))
+                .collect();
+            (owners, open_reviews)
         }
-        Err(_) => all.iter().map(|c| (*c, None)).collect(),
+        Err(_) => (all.iter().map(|c| (*c, None)).collect(), Vec::new()),
     };
     let solver = Uuid::parse_str(&verdict.solver).ok();
     let (settle, inform) = cards_to_settle(&owners, solver, verdict.resolved);
@@ -212,12 +223,12 @@ pub async fn follow_with(verdict: &SweVerdict, mode: FollowMode) -> FollowTally 
         // review 18 h; the operator's close was a no-op; closing the review card
         // settled parent and round within a second).
         if verdict.resolved {
-            if let Some(review) = crate::cognition::bench_round::review_card_of(card) {
-                match crate::modules::work::advance_card_state(
+            if let Some(review) = open_reviews.iter().find(|(parent, _)| *parent == card).map(|(_, review)| *review) {
+                match crate::persona::work_board::advance::advance_card_state(
                     &airc,
                     airc_lib::WorkCardId::from_uuid(review),
                     airc_lib::CardState::Closed,
-                    crate::modules::work::VIA_VERDICT,
+                    crate::persona::work_board::advance::VIA_VERDICT,
                     None,
                 )
                 .await
@@ -251,11 +262,11 @@ pub async fn follow_with(verdict: &SweVerdict, mode: FollowMode) -> FollowTally 
         } else {
             airc_lib::CardState::InProgress
         };
-        let moved = match crate::modules::work::advance_card_state(
+        let moved = match crate::persona::work_board::advance::advance_card_state(
             &airc,
             card_id,
             next,
-            crate::modules::work::VIA_VERDICT,
+            crate::persona::work_board::advance::VIA_VERDICT,
             None,
         )
         .await
@@ -327,9 +338,8 @@ async fn say_in_card_room(
     };
     let registry = crate::persona::PersonaAircRuntimeRegistry::try_global();
     // Three answers, kept apart (Astra's review): the board says WHO holds it, the board
-    // says NOBODY holds it (a lapsed or unclaimed card — do not resurrect the dispatch
-    // assignee over the board's word), or the board could not be read at all (then the
-    // dispatch-time assignee is the best historical guess, and is labelled so).
+    // says NOBODY holds it (a lapsed or unclaimed card), or the board could not be read
+    // at all (then nobody is addressed, and the line says the holder is unknown).
     let (holder, historical) = match holder_of(card, room, registry.as_ref()).await {
         HolderRead::Held(h) => (Some(h), false),
         HolderRead::Unheld => (None, false),
@@ -339,9 +349,9 @@ async fn say_in_card_room(
                 instance = verdict.instance_id.as_str(),
                 card = %short,
                 why = %why,
-                "the live board could not be read — addressing the dispatch-time assignee as a historical guess"
+                "the live board could not be read — the verdict line addresses nobody"
             );
-            (crate::cognition::bench_round::card_assignee(card), true)
+            (None, true)
         }
     };
     // A holder is a mesh citizen, not necessarily a runtime on this node.

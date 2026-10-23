@@ -2,7 +2,7 @@
 //!
 //! There is exactly ONE embedding trait in the substrate:
 //! [`crate::cognition::embedding::EmbeddingProvider`] — async, adapter-routed
-//! (unsloth / llama-server `/v1/embeddings` via `AIProviderAdapter`), with the
+//! (llama-server `/v1/embeddings` via `AIProviderAdapter`), with the
 //! lexical bootstrap and the content-addressed cache behind the same interface
 //! (task #40). The old synchronous fastembed/ONNX providers that used to live
 //! here (`FastEmbedProvider`, `ModuleBackedEmbeddingProvider`) are deleted —

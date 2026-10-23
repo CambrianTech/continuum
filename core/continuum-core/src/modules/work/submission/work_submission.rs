@@ -129,7 +129,7 @@ impl ActionCommand for WorkSubmission {
                 artifact: (&submitted.artifact).into(),
                 submitted_at_ms: submitted.submitted_at_ms,
                 bound_staged_revision_id: credit.as_ref().and_then(|c| c.staged_revision_id),
-                next: next_after_submission(Some(submission_uuid), &outcomes, crate::modules::benchmark_grade::graded_at_submit(&card.title), submission_review_handoff(&board, card.card_id, Some(submitted.submission_id))).unwrap_or_default(), // unwrap_or_default: Some(..) in, so always Some
+                next: next_after_submission(Some(submission_uuid), &outcomes, crate::recipe::benchmark_catalog::graded_at_submit(&card.title), submission_review_handoff(&board, card.card_id, Some(submitted.submission_id))).unwrap_or_default(), // unwrap_or_default: Some(..) in, so always Some
             },
             claim_id: submitted.claim_id.as_uuid(),
             base_sha: submitted.base_sha.to_string(),

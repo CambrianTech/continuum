@@ -9,7 +9,7 @@ use crate::persona::placement_switch::{
 /// home seat retires her override. Returns the org-room lines. No allocation published
 /// = nothing to follow.
 pub(crate) async fn follow_the_allocation(now_ms: u64) -> Vec<String> {
-    use crate::cognition::resource_admission::{turn_in_flight, turn_shape_of};
+    use crate::cognition::turn_ledger::{turn_in_flight, turn_shape_of};
     let mut lines = Vec::new();
     let Some(p) = crate::modules::grid_allocator::current() else {
         return lines;
@@ -45,7 +45,7 @@ pub(crate) async fn follow_the_allocation(now_ms: u64) -> Vec<String> {
             home_capability: sw.home_capability(),
             turn_requirement: working_set
                 .sent_median_of(&[mind])
-                .map(crate::cognition::serving_plan::prompt_floor_of),
+                .map(crate::inference::planning::serving_plan::prompt_floor_of),
         };
         let Some(why) = decide_opportunity(&inputs) else {
             continue;
@@ -73,7 +73,7 @@ pub(crate) async fn follow_the_allocation(now_ms: u64) -> Vec<String> {
                 continue;
             }
             sw.come_home_for_good(now_ms);
-            crate::modules::citizen_health::note_move(true);
+            crate::persona::health_ledger::note_move(true);
             continuum_base::probe!(
                 class = "placement.move.opportunity",
                 persona = %sw.persona_name(),
@@ -123,7 +123,7 @@ pub(crate) async fn follow_the_allocation(now_ms: u64) -> Vec<String> {
         }
         match sw.go_remote(seat.node, &target_plan.model_id, now_ms) {
             Ok(()) => {
-                crate::modules::citizen_health::note_move(true);
+                crate::persona::health_ledger::note_move(true);
                 continuum_base::probe!(
                     class = "placement.move.opportunity",
                     persona = %sw.persona_name(),

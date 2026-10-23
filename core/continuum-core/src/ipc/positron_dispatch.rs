@@ -34,7 +34,8 @@ use continuum_airc_protocol::AircCommandRequest;
 use continuum_positron::{CommandDispatch, CommandEnvelope, CommandSource};
 
 use crate::identity::PeerId;
-use crate::routing::{CallerIdentity, CommandRequestHandler};
+use crate::ipc::command_ingress::CommandRequestHandler;
+use crate::routing::CallerIdentity;
 use crate::runtime::CommandExecutor;
 
 /// Map a positron [`CommandSource`] onto the [`CallerIdentity`] the dispatch

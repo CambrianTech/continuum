@@ -133,7 +133,7 @@ impl CitizenHealthModule {
         // hour is not evidence of a shortage.
         let lanes_sustained = lanes_sustained_of(&snapshot_lane_buckets_and_reset()).unwrap_or(lanes); // JUSTIFIED unwrap_or: too few distinct buckets = the hour has no shape, and the peak is the read that rests nobody
         let (directed_wait_p50_ms, directed_wait_p90_ms, directed_waits) =
-            crate::cognition::resource_admission::directed_lane_wait_ms();
+            crate::inference::resource_admission::directed_lane_wait_ms();
         let (prompt_cached_tokens, prompt_prefill_tokens) = snapshot_prompt_and_reset();
         let lane_starved = snapshot_lane_starved_and_reset();
         let (generations, generations_dropped) = snapshot_generations_and_reset();
@@ -239,7 +239,7 @@ impl ServiceModule for CitizenHealthModule {
         );
         let mut said = line(&h, &v);
         said.push_str(&continuum_cli_lifecycle::deploy_health::read(
-            &crate::modules::persona_instance_manager::resolve_continuum_root(),
+            &crate::paths::continuum_root(),
             env!("CONTINUUM_BUILD_GIT_SHA"),
         ).line(EpochMs::now().millis()));
         if !paged_out.is_empty() {
@@ -263,9 +263,9 @@ impl ServiceModule for CitizenHealthModule {
                     lanes_sustained: lanes_sustained_of(&read_lane_buckets()).unwrap_or_else(|| { // JUSTIFIED unwrap_or_else: same thin-window fallback as the tick's read — the peak, which rests nobody
                         LEDGER.lanes_max.load(Ordering::Relaxed).max(crate::inference::llama_server::current_serving().lanes as u64)
                     }),
-                    directed_wait_p50_ms: crate::cognition::resource_admission::directed_lane_wait_ms().0,
-                    directed_wait_p90_ms: crate::cognition::resource_admission::directed_lane_wait_ms().1,
-                    directed_waits: crate::cognition::resource_admission::directed_lane_wait_ms().2 as u64,
+                    directed_wait_p50_ms: crate::inference::resource_admission::directed_lane_wait_ms().0,
+                    directed_wait_p90_ms: crate::inference::resource_admission::directed_lane_wait_ms().1,
+                    directed_waits: crate::inference::resource_admission::directed_lane_wait_ms().2 as u64,
                     served_window: crate::inference::llama_server::current_serving().served_context_window as u64,
                     acts: LEDGER.acts.load(Ordering::Relaxed),
                     writes: LEDGER.writes.load(Ordering::Relaxed),
@@ -286,7 +286,7 @@ impl ServiceModule for CitizenHealthModule {
                 };
                 let v = verdict(&h);
                 let deploy = continuum_cli_lifecycle::deploy_health::read(
-                    &crate::modules::persona_instance_manager::resolve_continuum_root(),
+                    &crate::paths::continuum_root(),
                     env!("CONTINUUM_BUILD_GIT_SHA"),
                 );
                 CommandResult::json(&serde_json::json!({

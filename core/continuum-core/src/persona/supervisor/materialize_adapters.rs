@@ -137,7 +137,7 @@ pub async fn materialize_adapters(
                     // budgeted costs context; over-budgeted costs every answer.
                     // The planner's own full-turn window floor — the one substrate-owned
                     // minimum every other bound derives from; never a number of our own.
-                    let floor = crate::cognition::serving_plan::BOOTSTRAP_WORKING_SET
+                    let floor = crate::inference::planning::serving_plan::BOOTSTRAP_WORKING_SET
                         .min(profile.context_length);
                     continuum_base::probe!(
                         class = "persona.upstart.window",
@@ -182,7 +182,7 @@ pub async fn materialize_adapters(
         // factory + warmup above already paid the init cost per
         // [[init-once-handle-then-lease-zero-copy-refs]].
         {
-            let registry_arc = crate::modules::ai_provider::global_registry();
+            let registry_arc = crate::ai::adapter::global_registry();
             let mut registry = registry_arc.write().await;
             registry.register(adapter.clone(), slot_index);
         }
@@ -227,26 +227,9 @@ pub async fn materialize_adapters(
         let roster_source: Arc<dyn crate::persona::rag_budget::RagSource> =
             Arc::new(crate::persona::viewstate_rag::ViewStateRagSource::<
                 continuum_positron::RosterViewState,
-            >::per_room(crate::ipc::global_room_substrates()));
+            >::per_room(crate::persona::room_substrates::global_room_substrates()));
         cognition.set_roster_source(roster_source.clone());
 
-        // The benchmark board, read from the SAME `BenchViewState` fold the
-        // academy rail renders (#426) — the second RenderTarget of the bench
-        // outlier. The renderable existed with a comment promising exactly
-        // this and was never bound; without it a citizen's only route to run
-        // state was a command that scrapes the progress dir, which fails the
-        // doctrine's acceptance test
-        // ([[benchmarks-must-be-positronic-activities-not-a-parallel-subsystem]]).
-        // The board is ONE global fold (unlike the per-room roster), so the
-        // handle is the global bench substrate the emitter dual-publishes into.
-        // Per ROOM since 2026-10-04 (HER-LOOP-IS-HER-OWN.md rule 5): she reads the
-        // board of the activity she is in, the way she reads its roster. The
-        // node-wide fold stays on the human rail; it is no longer in her head.
-        let bench_source: Arc<dyn crate::persona::rag_budget::RagSource> =
-            Arc::new(crate::persona::viewstate_rag::ViewStateRagSource::<
-                continuum_positron::bench::BenchViewState,
-            >::per_room(crate::ipc::global_room_substrates()));
-        cognition.set_bench_source(bench_source);
 
         // Her awareness across ALL her activities (EVENT-MIND §6, the strip): one block,
         // loudest first, with her continuation and her dial, read from her perception

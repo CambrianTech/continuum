@@ -41,8 +41,8 @@ shrinking as the genome learns canonical emission. Each miss row links to the ca
 that becomes a training pair — the widget IS the corpus-mining view
 ([[tool-defect-ledger-mined-from-captures]], [[weakness-becomes-a-generator-in-the-library]]).
 
-- **Data source (exists):** `cognition/tool_dialect.rs` already TALLIES every resolution
-  (`from_wire_name` → `record(wire, outcome)` → `cognition::tool_usage` snapshot).
+- **Data source (exists):** `ai/tool_dialect.rs` already TALLIES every resolution
+  (`from_wire_name` → `record(wire, outcome)` → `ai::tool_usage` snapshot).
   Parser format-id telemetry (`ToolCallFormat::id`) says WHICH idiom lifted each call.
 - **The story it tells:** the 2026-07-22 session met three live idioms (hash-commented
   fence calls, fake `[Action #N]` transcripts, assignment-bound script calls) in the

@@ -219,39 +219,8 @@ pub struct CognitionEvalResult {
 pub(super) static DETACHED_IN_FLIGHT: std::sync::Mutex<Vec<(String, String, String)>> =
     std::sync::Mutex::new(Vec::new());
 
-/// Cancel requests by run_id — the iteration primitive a reboot used to stand in
-/// for (2026-08-24, Joel: "can't iterate to put the new one in place"). The task
-/// loop checks between tasks; a cancelled run stops cleanly, keeps every grade
-/// row already streamed, and writes its terminal row with `cancelled:true` so
-/// resume treats it as PAUSED (the same command continues it later).
-pub(super) static CANCELLED_RUNS: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
-
-/// Request cancellation of a run. Effective at the next task boundary.
-pub(crate) fn cancel_eval_run(run_id: &str) {
-    if let Ok(mut g) = CANCELLED_RUNS.lock() {
-        if !g.iter().any(|r| r == run_id) {
-            g.push(run_id.to_string());
-        }
-    }
-}
-
-/// Has this run been asked to stop? Checked between tasks (and cleared when the
-/// run exits).
-pub(crate) fn eval_run_cancelled(run_id: &str) -> bool {
-    CANCELLED_RUNS
-        .lock()
-        .map(|g| g.iter().any(|r| r == run_id))
-        .unwrap_or(false) // poisoned = a panicked writer; run to completion rather than wedge
-}
-
-pub(crate) fn clear_eval_cancel(run_id: &str) {
-    if let Ok(mut g) = CANCELLED_RUNS.lock() {
-        g.retain(|r| r != run_id);
-    }
-}
-
-/// Snapshot of the detached evals dispatched and not yet finished. For
-/// `benchmark/round`'s idempotence gate.
+/// Snapshot of the detached evals dispatched and not yet finished — the dream
+/// consolidation's quiet gate reads it.
 pub(crate) fn detached_evals_in_flight() -> Vec<(String, String, String)> {
     DETACHED_IN_FLIGHT
         .lock()
@@ -314,7 +283,6 @@ impl ActionCommand for CognitionEval {
                 if let Ok(mut g) = DETACHED_IN_FLIGHT.lock() {
                     g.retain(|(rid, _, _)| rid != &ledger_run);
                 }
-                clear_eval_cancel(&ledger_run); // after the ledger row stamped `cancelled` — flag consumed, next run of this id starts clean
                 match outcome {
                     Ok(r) => tracing::info!(
                         note = %note,

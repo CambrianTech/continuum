@@ -96,7 +96,14 @@ pub(crate) fn code_only(line: &str) -> &str {
     source_hygiene::split_code_and_comment(line).0
 }
 
-/// Every `.rs` file under this crate's `src/`.
+/// The crates cut out of continuum-core whose modules core re-exports under their old
+/// paths (`crate::runtime`, `crate::inference`, `crate::code`…). Their sources keep those
+/// relative paths here, so every guard that walks the tree still sees them. A new cut adds
+/// its directory here.
+const CUT_CRATES: &[&str] = &["continuum-kernel", "continuum-engine", "continuum-hands", "continuum-live"];
+
+/// Every `.rs` file under this crate's `src/` and each [`CUT_CRATES`] `src/` (their own
+/// `lib.rs` files are crate roots, not modules core has, so they are left out).
 pub(crate) fn crate_sources() -> Vec<SourceFile> {
     fn walk(dir: &Path, root: &Path, out: &mut Vec<SourceFile>) {
         let Ok(entries) = std::fs::read_dir(dir) else {
@@ -118,9 +125,16 @@ pub(crate) fn crate_sources() -> Vec<SourceFile> {
             }
         }
     }
-    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
     let mut out = Vec::new();
-    walk(&root, &root, &mut out);
+    walk(&manifest.join("src"), &manifest.join("src"), &mut out);
+    for cut in CUT_CRATES {
+        let root = manifest.join("..").join(cut).join("src");
+        let before = out.len();
+        walk(&root, &root, &mut out);
+        let walked = out.split_off(before);
+        out.extend(walked.into_iter().filter(|f| f.rel != "lib.rs"));
+    }
     out
 }
 

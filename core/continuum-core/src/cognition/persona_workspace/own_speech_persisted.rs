@@ -134,15 +134,7 @@ pub(super) fn result_handles_at(
     }
     let handles: std::sync::Arc<std::collections::HashSet<String>> = std::sync::Arc::new(
         load_volatile_at(path)?
-            .map(|persisted| {
-                let wm = persisted.wm;
-                crate::cognition::working_memory::reachable_handles(
-                    &wm.recent_results,
-                    &wm.evicted_pointers,
-                    &wm.receipt_children,
-                    &wm.open_views,
-                )
-            })
+            .map(|persisted| persisted.wm.reachable_handles())
             .unwrap_or_default(),
     );
     cache.lock().insert(path.to_path_buf(), (modified, std::sync::Arc::clone(&handles)));

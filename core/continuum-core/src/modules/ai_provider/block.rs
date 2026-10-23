@@ -90,11 +90,11 @@ impl AIProviderModule {
         });
     }
 
-    /// Get logger (panics if called before initialize)
+    /// Module logger: the context-scoped one once `initialize` ran, the
+    /// process-wide component logger if something logs before that.
     pub(super) fn log(&self) -> &ModuleLogger {
         self.log
-            .get()
-            .expect("AIProviderModule not initialized")
+            .get_or_init(|| crate::runtime::logger("ai_provider"))
             .as_ref()
     }
 
@@ -342,7 +342,7 @@ impl AIProviderModule {
         // where qwen3.5 got registered twice and qwen2-vl was skipped.
         // Now we iterate ALL rows uniformly.
         // NO silent local-inference fallback. Our OWN llama-server is THE inference
-        // path (Unsloth excised); it serves our forged GGUF over /v1. The in-process
+        // path; it serves our forged GGUF over /v1. The in-process
         // llama.cpp adapter is OPT-IN ONLY (CONTINUUM_LOCAL_LLAMA=1) so the core never
         // registers a local backend by default and never silently REVERTS to local when
         // the gateway is absent — a missing gateway fails loud at select(), it does not
@@ -558,7 +558,7 @@ impl AIProviderModule {
         // parity (re-register when it appears, deregister when it dies)
         // follows once the lifecycle is governed.
         let ds4_up = std::net::TcpStream::connect_timeout(
-            &"127.0.0.1:8901".parse().unwrap(),
+            &std::net::SocketAddr::from(([127, 0, 0, 1], 8901)),
             Duration::from_secs(1),
         )
         .is_ok();
@@ -678,7 +678,7 @@ impl AIProviderModule {
                         BootStatusKind::Failed,
                         &format!(
                             "serving daemon brought up NO ready model within {secs}s — load one \
-                             (UNSLOTH_MODEL / unsloth Studio) or check the serving plan. \
+                             or check the serving plan. \
                              Inference gateway REQUIRED; no local fallback.{local_note}",
                             secs = crate::inference::llama_server::DEFAULT_SERVING_WAIT.as_secs()
                         ),

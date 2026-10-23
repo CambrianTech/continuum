@@ -262,7 +262,7 @@ impl DeploySource for GitGhDeploySource {
 
     async fn tip(&self) -> Result<Option<(String, Checks)>, String> {
         let branch = self.branch.clone();
-        tokio::task::spawn_blocking(move || {
+        let (repo_dir, tip) = tokio::task::spawn_blocking(move || {
             use crate::system_resources::bounded_command::probe;
             // The checkout, resolved for THIS tick: gone or not a repo is said by path.
             let repo_dir = checkout_now()?;
@@ -276,11 +276,23 @@ impl DeploySource for GitGhDeploySource {
             let Some(tip) = tip_out.stdout_if_ok().map(|s| s.trim().to_string()).filter(|s| !s.is_empty()) else {
                 return Err(format!("git rev-parse origin/{branch} {}", tip_out.outcome()));
             };
-            let checks = revision_checks(&repo_dir, &tip)?;
-            Ok(Some((tip, checks)))
+            Ok::<_, String>((repo_dir, tip))
         })
         .await
-        .map_err(|e| format!("deploy-source task join error: {e}"))?
+        .map_err(|e| format!("deploy-source task join error: {e}"))??;
+        let newest_key = self.build_key(&tip).await.unwrap_or_else(|| tip.clone()); // unwrap_or_else: unresolved build key names only the fetched tip
+        if continuum_cli_lifecycle::deploy_tracker::running_satisfies(running_sha(), &tip, Some(&newest_key)) {
+            return Ok(Some((tip, Checks::Unknown))); // equality satisfies without authorizing a different revision
+        }
+        let repo = repo_dir.clone();
+        let target = tip.clone();
+        let candidates = tokio::task::spawn_blocking(move ||
+            super::deploy_candidate::deploy_candidates(&repo, Some(running_sha()), &target, &newest_key))
+            .await.map_err(|e| format!("deploy-candidates task join error: {e}"))?;
+        match super::deploy_candidate::deployable_candidate(&repo_dir, &candidates).await? {
+            Some(candidate) => Ok(Some((candidate, Checks::Green))),
+            None => Ok(Some((tip, Checks::Unknown))), // no platform publication: wait
+        }
     }
 }
 

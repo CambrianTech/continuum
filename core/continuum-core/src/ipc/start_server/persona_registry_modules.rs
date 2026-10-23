@@ -11,7 +11,7 @@ pub(super) fn register_persona_registry_modules(
     pressure_monitor: &Arc<crate::system_resources::MemoryPressureMonitor>,
     daemon_socket: std::path::PathBuf,
     discovered_default_room: Option<airc_core::RoomId>,
-) -> Arc<crate::modules::persona_instance_manager::PersonaInstanceManagerModule> {
+) -> Arc<crate::persona::instance_manager::PersonaInstanceManagerModule> {
     // Grid capacity gossip (#56 step 4): this node offers its live capacity to
     // the grid on the module tick and hears every peer's offers (its own echo
     // included — the loopback proof) via inbound_attach → gossip::global_ledger.
@@ -34,7 +34,7 @@ pub(super) fn register_persona_registry_modules(
             );
         }
     }
-    let continuum_root = crate::modules::persona_instance_manager::resolve_continuum_root();
+    let continuum_root = crate::paths::continuum_root();
     let daemon_socket_for_rag_inspect = daemon_socket.clone();
     let registry = crate::persona::PersonaAircRuntimeRegistry::new();
     // Publish the live roster process-globally so host-independent callers — the
@@ -124,11 +124,11 @@ pub(super) fn register_persona_registry_modules(
     // region runs under today (the digest runs no inference; the consolidation
     // region is the first InferenceHeavy tenant under this floor).
     runtime.register(Arc::new(
-        crate::runtime::SubstrateGovernor::new(vec![digest_region, dream_region], registry.clone())
+        crate::persona::substrate_governor::SubstrateGovernor::new(vec![digest_region, dream_region], registry.clone())
             .with_pressure_gate(pressure_monitor.subscribe()),
     ));
     let instance_manager = Arc::new(
-        crate::modules::persona_instance_manager::PersonaInstanceManagerModule::new(
+        crate::persona::instance_manager::PersonaInstanceManagerModule::new(
             registry,
             daemon_socket,
             continuum_root,
@@ -197,7 +197,7 @@ pub(super) fn register_persona_registry_modules(
     // persona's own last generations, which is what an inspector reads).
     let rag_inspect_resolver = std::sync::Arc::new(
         crate::modules::persona_rag_inspect_filesystem::FilesystemPersonaResolver::new(
-            crate::modules::persona_instance_manager::resolve_continuum_root(),
+            crate::paths::continuum_root(),
             daemon_socket_for_rag_inspect,
         ),
     );

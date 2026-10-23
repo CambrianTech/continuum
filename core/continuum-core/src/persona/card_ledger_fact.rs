@@ -16,7 +16,7 @@ pub async fn ledger_fact_for(peer: uuid::Uuid, held: &[&airc_lib::WorkCard]) -> 
     // card held (WIP = 1 makes that the card).
     let target = held.iter().find_map(|c| {
         crate::cognition::bench_title::parse_review_title(&c.title)
-            .and_then(|_| crate::cognition::bench_round::review_parent(c.card_id.as_uuid()))
+            .and_then(|_| c.reviews.map(|parent| parent.as_uuid()))
     });
     let (card, room) = match target {
         Some(parent) => (parent, room_of_card(rt.airc(), parent).await),
@@ -53,7 +53,7 @@ async fn room_of_card(
     airc: &std::sync::Arc<airc_lib::Airc>,
     card: uuid::Uuid,
 ) -> Option<airc_lib::Room> {
-    crate::modules::work::card_in_subscribed_rooms(airc, airc_lib::WorkCardId::from_uuid(card))
+    crate::persona::work_board::horizon::card_in_subscribed_rooms(airc, airc_lib::WorkCardId::from_uuid(card))
         .await
         .map(|(room, _)| room)
 }

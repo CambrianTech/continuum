@@ -356,8 +356,20 @@ fn reply_priority_trades_history_not_required_input() {
     let history = |view: &DeliberationPromptView| {
         view.messages.iter().filter(|m| m.content_text().contains("distinct_history_")).count()
     };
-    let pass_view = faculty.prompt_view_within(&pass, window);
-    let act_view = faculty.prompt_view_within(&act, window);
+    // Each turn on its own faculty: her view carries an epoch from one prompt to the next,
+    // so the act on the pass's faculty would inherit the pass's epoch. What this test
+    // pins is the allocation, which each turn makes from its own state.
+    let fresh = || {
+        LlmDeliberationFaculty::new(persona, "Benchy", "You are Benchy.", Arc::new(ScriptedAdapter::new(vec![])))
+            .with_context_window(window)
+            .with_tools(vec![read_tool()])
+            .with_working_memory(Arc::clone(&wm))
+    };
+    let pass_view = fresh().prompt_view_within(&pass, window);
+    // Working memory keeps her view for her checkpoint; this act starts its own.
+    wm.take_view();
+    let act_faculty = fresh();
+    let act_view = act_faculty.prompt_view_within(&act, window);
     for view in [&pass_view, &act_view] {
         assert!(view.capacity_error.is_none(), "{:?}", view.capacity_error);
         assert!(
@@ -377,7 +389,7 @@ fn reply_priority_trades_history_not_required_input() {
         history(&act_view),
         history(&pass_view)
     );
-    let again = faculty.prompt_view_within(&act, window);
+    let again = act_faculty.prompt_view_within(&act, window);
     assert_eq!(
         format!("{:?} {:?} {}", again.system, again.messages, again.completion_reserve),
         format!("{:?} {:?} {}", act_view.system, act_view.messages, act_view.completion_reserve),

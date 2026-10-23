@@ -24,13 +24,25 @@
 use continuum_base::time::EpochMs;
 use crate::runtime::{CommandResult, CommandSchema, ModuleConfig, ModulePriority, ServiceModule};
 use std::any::Any;
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::Duration;
+use std::sync::atomic::Ordering;
 
-mod health_window;
-pub use health_window::*;
+use crate::persona::health_ledger::*;
 mod rest_seats;
 pub use rest_seats::*;
 
 #[cfg(test)]
 mod tests;
+
+/// What the grid allocator last published about THIS hour's placement: the oldest
+/// dormant mind's turn age. `None` = nothing published yet or nobody dormant.
+pub(super) fn oldest_dormant_turn_age_ms() -> Option<u64> {
+    crate::modules::grid_allocator::current().and_then(|p| p.oldest_dormant_turn_age_ms())
+}
+
+/// Why a seat rests — each rule that pages out, with its own receipt.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum RestCause {
+    Mindless,
+    /// The slow clip: a dormant mind is waiting and this seat's hour held nothing.
+    Rotation,
+}

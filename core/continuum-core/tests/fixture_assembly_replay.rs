@@ -485,7 +485,7 @@ async fn ensure_llamacpp_qwen2vl_registered() -> Option<()> {
     }
 
     REGISTER_ONCE.call_once(|| {});
-    let registry_arc = continuum_core::modules::ai_provider::global_registry();
+    let registry_arc = continuum_core::ai::adapter::global_registry();
     let mut registry_lock = registry_arc.write().await;
 
     // Mirror production registration: walk every llamacpp-local row whose

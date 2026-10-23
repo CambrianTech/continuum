@@ -1,7 +1,6 @@
 #![cfg(test)]
 
 use super::*;
-use continuum_positron::bench::{BenchRunRow, BenchViewState};
 use continuum_positron::{RosterViewState, SenderKind, StateBuilder};
 use uuid::Uuid;
 
@@ -189,7 +188,7 @@ async fn a_tight_budget_yields_fewer_units_never_a_chopped_one() {
         delivery.tokens_used
     );
     assert!(
-        delivery.continuation.is_some(),
+        delivery.truncated,
         "undelivered members must be resumable, not silently dropped"
     );
     // Regression for card 84dee23e: live roster atoms must feed the actual
@@ -231,7 +230,7 @@ async fn a_tight_budget_yields_fewer_units_never_a_chopped_one() {
             })
             .collect(),
         tokens_used: 12,
-        continuation: None,
+        truncated: false,
         resolution_used: ResolutionPreference::Raw,
     };
     let own = Uuid::from_u128(3).to_string();
@@ -263,7 +262,7 @@ async fn a_complete_delivery_offers_no_continuation() {
         ViewStateRagSource::per_room(roster_registry(&["Anwen"]));
     let delivery = source.deliver(&ctx(), 500, ResolutionPreference::Raw).await;
     assert_eq!(delivery.items.len(), 1);
-    assert!(delivery.continuation.is_none());
+    assert!(!delivery.truncated);
 }
 
 /// what this catches (regression for #3862): a room-scoped source that binds ONE
@@ -319,173 +318,6 @@ async fn the_roster_follows_the_turn_into_a_room_that_is_not_the_first_one() {
     );
 }
 
-/// what this catches: a continuation resumed in the WRONG ROOM. A cursor is an
-/// offset into one room's unit list. Before the per-room binding this was safe
-/// by accident — the source read the same room forever, so every cursor
-/// indexed the same list. Per-room resolution makes an A-issued cursor
-/// resumable in B, where the offset would silently skip B's first N people.
-///
-/// The `room_scope_allows` call in `deliver_continuation` does NOT catch it:
-/// per-room resolution makes `view.room()` equal the turn's room by
-/// construction, so that gate is now vacuous there. This is the guard that
-/// replaced its teeth.
-///
-/// FIXTURE NOTE, and it is the point: the other room must hold MORE members
-/// than the cursor's offset. The first version of this test gave it one, and
-/// it passed with the guard disabled — `from >= total` returned `None` for the
-/// wrong reason, so the test could not tell a working guard from a missing
-/// one. Caught by mutation-testing it. A fixture with fewer degrees of freedom
-/// than the bug cannot fail, which is the same lesson as the single-`Substrate`
-/// roster tests this PR replaced.
-#[tokio::test]
-async fn a_continuation_minted_in_one_room_is_refused_in_another() {
-    const OTHER: u128 = 0xbb;
-    let rooms = roster_registry(&["Anwen", "Asha", "Anon"]);
-    let builder = StateBuilder::standalone();
-    let other_roster: Vec<_> = ["Saoirse", "Solenne", "Sorcha", "Sinead", "Siofra"]
-        .iter()
-        .enumerate()
-        .map(|(i, name)| {
-            crate::ipc::positron_source::test_roster_slot(
-                Uuid::from_u128(40 + i as u128),
-                name,
-                SenderKind::Agent,
-            )
-        })
-        .collect();
-    let other_len = other_roster.len();
-    rooms
-        .for_room(Uuid::from_u128(OTHER))
-        .store(builder.session(RosterViewState {
-            room_id: Uuid::from_u128(OTHER),
-            roster: other_roster,
-        }));
-    let source: ViewStateRagSource<RosterViewState> = ViewStateRagSource::per_room(rooms);
-
-    // A tight budget in ROOM yields a cursor with units left over.
-    let first = source.deliver(&ctx(), 8, ResolutionPreference::Raw).await;
-    let cursor = first
-        .continuation
-        .expect("a partial delivery must offer a cursor");
-
-    // The offset MUST land inside the other room's list, or the `from >= total`
-    // check refuses for an unrelated reason and this test proves nothing.
-    let offset = cursor.opaque["next"].as_u64().expect("cursor carries next") as usize;
-    assert!(
-        offset < other_len,
-        "fixture is degenerate: offset {offset} is past the other room's              {other_len} members, so a MISSING guard would also return None"
-    );
-
-    // Same persona, same source, DIFFERENT room: must refuse rather than index
-    // into the other room's roster.
-    let in_other =
-        RagContext::for_persona_in_room(Uuid::from_u128(0x9), 0, Uuid::from_u128(OTHER));
-    assert!(
-        source
-            .deliver_continuation(&in_other, cursor.clone(), 500)
-            .await
-            .is_none(),
-        "a cursor from another room must not resume here"
-    );
-
-    // ...and the SAME room still resumes, so the guard is not just refusing
-    // everything (a guard that never lets anything through is not a guard).
-    let resumed = source
-        .deliver_continuation(&ctx(), cursor, 500)
-        .await
-        .expect("same-room resume must still work");
-    assert!(!resumed.items.is_empty());
-}
-
-/// what this catches (bc66becf; sibling of db0aa5b2 on the wall): a continuation
-/// resumed positionally into a list that CHURNED between mint and resume. The
-/// offset `next` indexes whatever unit list is re-computed at resume time — if a
-/// peer left (or a row dropped out) before it, every later unit shifts left by one
-/// and the same offset skips exactly one person who is still in the room. The
-/// cursor therefore carries a fingerprint of the list it indexes into
-/// (`list_fingerprint`), and resuming into a churned list is refused: dropping one
-/// continuation costs a re-read from the top — bounded, self-healing, never skips.
-///
-/// Fixture note, same lesson as the cross-room test above: for a positional resume
-/// to skip someone, the removal must sit at or before the offset. The list is
-/// name-ordered (units sorts by display_name), so the peer dropped here — Anwen —
-/// sits at index 1, ahead of this fixture's offset (k=2 under an 8-token budget):
-/// pre-fix the same index resumed past Aoife and she was never delivered; now it
-/// must refuse.
-#[tokio::test]
-async fn a_continuation_is_refused_when_the_roster_churns_before_its_offset() {
-    let rooms = roster_registry(&["Anwen", "Asha", "Anon", "Aoife"]);
-    let source: ViewStateRagSource<RosterViewState> =
-        ViewStateRagSource::per_room(Arc::clone(&rooms));
-
-    // A tight budget yields a cursor with units left over; the offset is read from
-    // it, so the test holds for whatever `pack` decides fits under 8 tokens.
-    let first = source.deliver(&ctx(), 8, ResolutionPreference::Raw).await;
-    let cursor = first.continuation.expect("a partial delivery must offer a cursor");
-
-    // Churn: one peer leaves before the offset. Re-storing the room's view without
-    // her is exactly what `positron_source::sink` does on every roster update.
-    let builder = StateBuilder::standalone();
-    rooms.for_room(Uuid::from_u128(ROOM)).store(builder.session(RosterViewState {
-        room_id: Uuid::from_u128(ROOM),
-        roster: vec![
-            crate::ipc::positron_source::test_roster_slot(
-                Uuid::from_u128(2),
-                "Asha",
-                SenderKind::Agent,
-            ),
-            crate::ipc::positron_source::test_roster_slot(Uuid::from_u128(3), "Anon", SenderKind::Agent),
-            crate::ipc::positron_source::test_roster_slot(
-                Uuid::from_u128(4),
-                "Aoife",
-                SenderKind::Agent,
-            ),
-        ],
-    }));
-
-    // Pre-fix this resumed from the same index into [Asha, Anon, Aoife] and
-    // silently dropped whoever sat at that position; now it must refuse.
-    assert!(
-        source.deliver_continuation(&ctx(), cursor, 500).await.is_none(),
-        "a churned list must not be indexed positionally — the offset would skip one"
-    );
-}
-
-/// what this catches: the other direction of the fingerprint guard. A continuation
-/// resumed into an UNCHANGED list must land exactly where it left off — everyone at
-/// or after the offset present, nobody before it re-appearing (resuming from zero
-/// would re-ground peers the first delivery already spent). A guard that also
-/// refused stable resumes would cost a re-read every turn and starve long rosters.
-#[tokio::test]
-async fn a_continuation_resumes_exactly_where_it_left_off_when_the_list_is_stable() {
-    let names = ["Anwen", "Asha", "Anon", "Aoife"];
-    let source: ViewStateRagSource<RosterViewState> =
-        ViewStateRagSource::per_room(roster_registry(&names));
-
-    let first = source.deliver(&ctx(), 8, ResolutionPreference::Raw).await;
-    let cursor = first.continuation.expect("a partial delivery must offer a cursor");
-    let k = cursor.opaque["next"].as_u64().expect("cursor carries next") as usize;
-
-    let resumed = source
-        .deliver_continuation(&ctx(), cursor, 500)
-        .await
-        .expect("an unchanged list must still resume");
-    let joined: String = resumed.items.iter().map(|i| i.content.clone()).collect::<Vec<_>>().join("\n");
-
-    // `units` renders name-ordered — it sorts by display_name so the prompt's line
-    // order stays stable for KV reuse — so the expectation must come from THAT
-    // order, not fixture insertion order (which put Anon after this offset and
-    // failed CI; the resumed tail was correctly Aoife, Asha).
-    let mut ordered = names.to_vec();
-    ordered.sort_unstable();
-    for name in &ordered[k..] {
-        assert!(joined.contains(name), "a peer at or after the offset must resume: {joined}");
-    }
-    for name in &ordered[..k] {
-        assert!(!joined.contains(name), "a peer before the offset must not re-appear: {joined}");
-    }
-}
-
 /// what this catches (review of #3879): an INSERTING read. `for_room` creates
 /// the entry it is asked about; this source now looks up a room on EVERY
 /// delivery, so using it here would let a citizen wandering rooms accrete a
@@ -526,7 +358,7 @@ async fn a_roomless_turn_gets_no_roster_rather_than_an_arbitrary_rooms() {
     let delivery = source.deliver(&roomless, 500, ResolutionPreference::Raw).await;
     assert!(delivery.items.is_empty(), "{:?}", delivery.items);
     assert_eq!(delivery.tokens_used, 0);
-    assert!(delivery.continuation.is_none());
+    assert!(!delivery.truncated);
 }
 
 /// what this catches: a fabricated block. An empty room must render NOTHING —
@@ -539,149 +371,6 @@ async fn an_empty_view_renders_no_block_rather_than_an_empty_header() {
     let delivery = source.deliver(&ctx(), 500, ResolutionPreference::Raw).await;
     assert!(delivery.items.is_empty());
     assert_eq!(delivery.tokens_used, 0);
-    assert!(delivery.continuation.is_none());
+    assert!(!delivery.truncated);
 }
 
-/// what this catches (THE OUTLIER TEST): one adapter serving a maximally
-/// different kind. The bench board has no identity, no presence, and numeric
-/// per-row verdicts. If this needed ANY change to the adapter, the abstraction
-/// was wrong and every later kind would need one too.
-#[tokio::test]
-async fn the_same_adapter_renders_a_benchmark_board_without_forcing() {
-    let substrate = Substrate::new();
-    let builder = StateBuilder::standalone();
-    substrate.store(builder.session(BenchViewState {
-        room_id: Some(Uuid::from_u128(ROOM).to_string()),
-        sample_interval_ms: 5000,
-        rounds: vec![],
-        runs: vec![
-            BenchRunRow {
-            round_id: None,
-            solve_room: None,
-            solve_room_name: None,
-                run_id: "r1".into(),
-                instance: Some("sympy__sympy-21055".into()),
-                solver: Some("Asha".into()),
-                phase: "active".into(),
-                stalled: false,
-                attempt: Some(2),
-                max_attempts: Some(3),
-                age_secs: 42,
-                acts: Some(10),
-                patch_bytes: Some(1295),
-                resolved: Some(false),
-                fail_to_pass: Some("0/1".into()),
-                pass_to_pass: Some("13/13".into()),
-                failed_tests: vec![],
-                infra_error: None,
-            },
-            BenchRunRow {
-            round_id: None,
-            solve_room: None,
-            solve_room_name: None,
-                run_id: "r2".into(),
-                instance: Some("requests__requests-863".into()),
-                solver: Some("Atlas".into()),
-                phase: "ungradeable".into(),
-                stalled: false,
-                attempt: Some(1),
-                max_attempts: Some(3),
-                age_secs: 90,
-                acts: Some(4),
-                patch_bytes: Some(402),
-                resolved: None,
-                fail_to_pass: None,
-                pass_to_pass: None,
-                failed_tests: vec![],
-                infra_error: Some("era pytest cannot run".into()),
-            },
-        ],
-    }));
-
-    // Per room since 2026-10-04 (HER-LOOP-IS-HER-OWN.md rule 5): the view is
-    // the round room's own, read through the same registry as the roster.
-    let rooms = Arc::new(PerRoomSubstrates::new());
-    rooms.for_room(Uuid::from_u128(ROOM)).store_shared(
-        substrate.cache().get(BenchViewState::KIND).expect("stored above"),
-    );
-    let source: ViewStateRagSource<BenchViewState> = ViewStateRagSource::per_room(rooms);
-    let delivery = source.deliver(&ctx(), 500, ResolutionPreference::Raw).await;
-    let rendered = delivery
-        .items
-        .iter()
-        .map(|i| i.content.clone())
-        .collect::<Vec<_>>()
-        .join("\n");
-    assert!(rendered.contains("sympy__sympy-21055"), "{rendered}");
-    assert!(rendered.contains("Asha"), "{rendered}");
-    // An infra failure must read as ABSENCE, never as a capability zero.
-    assert!(rendered.contains("UNGRADEABLE"), "{rendered}");
-    assert!(
-        !rendered.contains("r2 · unresolved"),
-        "an ungradeable run must not also read as an unresolved attempt: {rendered}"
-    );
-}
-
-// what this catches: HER-LOOP-IS-HER-OWN.md rule 5, from the mind's side. A
-// citizen whose turn is in room B is handed nothing from room A's board, and a
-// citizen in a room with no board is handed nothing at all: the node-wide fold
-// that used to ride every turn in every room never reaches her through this
-// source. If the binding regresses to the node constructor, or the emitter
-// stores an unscoped (`room_id: None`) view in the registry, this fails.
-#[tokio::test]
-async fn a_citizen_sees_only_the_board_of_the_room_she_is_in() {
-    use continuum_positron::bench::{BenchRunRow, BenchViewState};
-    let room_a = Uuid::from_u128(ROOM);
-    let room_b = Uuid::from_u128(ROOM + 1);
-    let rooms = Arc::new(PerRoomSubstrates::new());
-    let builder = StateBuilder::standalone();
-    let row = |id: &str| BenchRunRow {
-        run_id: id.into(), instance: Some("sympy__sympy-1".into()), solver: Some("Asha".into()),
-        phase: "solving".into(), stalled: false, attempt: Some(1), max_attempts: Some(3),
-        age_secs: 1, acts: Some(1), patch_bytes: None, resolved: None, fail_to_pass: None,
-        pass_to_pass: None, failed_tests: vec![], infra_error: None,
-        round_id: Some(room_a.to_string()), solve_room: None, solve_room_name: None,
-    };
-    rooms.for_room(room_a).store(builder.session(BenchViewState {
-        room_id: Some(room_a.to_string()),
-        runs: vec![row("only-in-a")],
-        rounds: vec![],
-        sample_interval_ms: 5000,
-    }));
-    let source: ViewStateRagSource<BenchViewState> = ViewStateRagSource::per_room(rooms.clone());
-
-    let in_a = source
-        .deliver(
-            &RagContext::for_persona_in_room(Uuid::from_u128(0x9), 0, room_a),
-            500,
-            ResolutionPreference::Raw,
-        )
-        .await;
-    assert!(in_a.items.iter().any(|i| i.content.contains("only-in-a")), "{in_a:?}");
-
-    let in_b = source
-        .deliver(
-            &RagContext::for_persona_in_room(Uuid::from_u128(0x9), 0, room_b),
-            500,
-            ResolutionPreference::Raw,
-        )
-        .await;
-    assert!(in_b.items.is_empty(), "room B has no board; she is handed nothing: {in_b:?}");
-
-    // An unscoped view stored under room B is a mismatch for room B's gate too:
-    // the only way a board reaches her is as that room's own view.
-    rooms.for_room(room_b).store(builder.session(BenchViewState {
-        room_id: Some(room_a.to_string()),
-        runs: vec![row("mislabelled")],
-        rounds: vec![],
-        sample_interval_ms: 5000,
-    }));
-    let in_b = source
-        .deliver(
-            &RagContext::for_persona_in_room(Uuid::from_u128(0x9), 0, room_b),
-            500,
-            ResolutionPreference::Raw,
-        )
-        .await;
-    assert!(in_b.items.is_empty(), "a view of another room abstains: {in_b:?}");
-}

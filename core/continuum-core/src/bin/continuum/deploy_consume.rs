@@ -178,7 +178,7 @@ pub(super) enum PassEnd {
 pub(super) async fn deploy_consume_pass() -> Result<PassEnd, String> {
     let request_path = deploy_request_path()?;
     let _ = DEPLOY_LOG.set(
-        continuum_core::modules::persona_instance_manager::resolve_continuum_root()
+        continuum_core::paths::continuum_root()
             .join("logs")
             .join("deploy-consume.log"),
     );
@@ -212,8 +212,7 @@ pub(super) async fn deploy_consume_pass() -> Result<PassEnd, String> {
     let build_in_flight = gate.as_ref().is_some_and(|g| g.excludes_deploy());
     let attempts_path = consume_attempts_path()?;
     let mut ledger = ConsumeLedger::read(&attempts_path)?;
-    if running.as_deref().is_some_and(|sha| ledger.refusal.as_ref().is_some_and(|r| r.resolved_by(sha))) {
-        ledger.refusal = None;
+    if running.as_deref().is_some_and(|sha| ledger.observe_running(sha)) {
         ledger.save(&attempts_path)?;
     }
     // The tip's build key, read from the same checkout the tracker fetched into.
@@ -389,7 +388,7 @@ pub(super) async fn deploy_consume_pass() -> Result<PassEnd, String> {
                         if let Err(reason) = ledger.save(&attempts_path) { return Ok(PassEnd::ResourceBlocked(reason)); }
                         return Ok(PassEnd::ResourceBlocked(reason));
                     }
-                    Err(PublishedCoreError::CapabilityDeferred(reason) | PublishedCoreError::OperationalBlocked(reason)) => return Ok(PassEnd::ResourceBlocked(reason)),
+                    Err(PublishedCoreError::SourcePending(reason) | PublishedCoreError::CapabilityDeferred(reason) | PublishedCoreError::OperationalBlocked(reason)) => return Ok(PassEnd::ResourceBlocked(reason)),
                     Err(PublishedCoreError::Artifact(reason)) => return Err(reason),
                 }
                 Ok(PassEnd::Done)
@@ -505,6 +504,18 @@ pub(super) async fn ci_core_for(repo: &Path, candidates: &[String], request_path
                             }
                             MissingArtifact::AdmissionWait(why)
                         }
+                        // Source reads can disagree during GitHub's suite propagation.
+                        // Keep this consumer's custody and recheck; exiting here strands
+                        // the actuation even after the same candidate becomes green.
+                        Err(PublishedCoreError::SourcePending(why)) => {
+                            // The candidate is known even though fetch was not authorized.
+                            // Keep its identity: attributing this to requested_tip strands
+                            // the incident after this older candidate subsequently runs.
+                            ledger.record_refusal(requested_tip, &key,
+                                continuum_cli_lifecycle::deploy_health::RefusalKind::SourceAuthorization, &why);
+                            if let Err(error) = ledger.save(ledger_path) { return CiCore::ResourceBlocked(error); }
+                            MissingArtifact::AdmissionWait(why)
+                        },
                         Err(PublishedCoreError::CapabilityDeferred(why) | PublishedCoreError::OperationalBlocked(why)) => return CiCore::ResourceBlocked(why),
                         Err(PublishedCoreError::Artifact(why)) if key == newest.as_str() => MissingArtifact::Refuse(format!(
                             "the CI build for {key} was refused: {why}; repair the prebuilt artifact before retrying; running core preserved"

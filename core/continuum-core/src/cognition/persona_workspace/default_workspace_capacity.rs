@@ -514,7 +514,7 @@ pub(super) fn assemble_workspace_cycle(
         // this surface (no second list to keep in sync); offer matches the gate so
         // the persona is never shown a tool it can't actually run.
         deliberation = deliberation.with_tools(super::super::persona_tools::authorized_tool_specs(
-            crate::modules::grid::node::TrustLevel::Trusted,
+            crate::routing::trust_level::TrustLevel::Trusted,
         ));
     }
 

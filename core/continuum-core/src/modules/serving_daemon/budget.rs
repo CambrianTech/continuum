@@ -2,45 +2,6 @@
 
 use super::*;
 
-/// The live host readings a serving budget is derived from. A NAMED struct, not
-/// three positional args, so the two byte counts (`available_bytes` and
-/// `total_vram_bytes` are both `u64`) can never be silently transposed at a call
-/// site — the compiler cannot catch `host_budget_from(total, available, ..)` on
-/// positionals, but `HostBudgetInputs { available_bytes, total_vram_bytes, .. }`
-/// names each ([[structs-by-reference-not-massive-param-lists]]). A new input
-/// (e.g. a device-tier hint) becomes ONE added field with a default, not a fourth
-/// positional every caller must thread.
-#[derive(Debug, Clone, Copy)]
-pub struct HostBudgetInputs {
-    /// Monitor's current free memory (already net of everything else running);
-    /// we never plan above what's free.
-    pub available_bytes: u64,
-    /// Physical VRAM ceiling — we never plan above what the device has.
-    pub total_vram_bytes: u64,
-    /// Performance-core proxy for the lane cap (floored at 1 inside).
-    pub perf_cores: u32,
-    /// Fraction of the board this host treats as ours to serve from (`usable =
-    /// live × this`). The operator VRAM-headroom policy: default 0.80 (leave 20%
-    /// for the OS + Bevy + embeddings), a dedicated foundry sets 1.0. Live callers
-    /// pass `config_env::vram_headroom()`; tests pass an explicit fraction so
-    /// `host_budget_from` stays pure + environment-independent.
-    pub budget_fraction: f64,
-}
-
-/// Serving budget from LIVE free memory, capped at physical VRAM, minus headroom.
-/// Pure for tests — the headroom fraction is an INPUT (`budget_fraction`), never
-/// read from config here, so a test can't go environment-dependent. Takes
-/// [`HostBudgetInputs`] by reference so the byte-count fields are named at every
-/// call site (never transposable).
-pub fn host_budget_from(inputs: &HostBudgetInputs) -> HostBudget {
-    let live = inputs.available_bytes.min(inputs.total_vram_bytes);
-    let usable = (live as f64 * inputs.budget_fraction) as u64;
-    HostBudget {
-        usable_bytes: usable,
-        perf_cores: inputs.perf_cores.max(1),
-    }
-}
-
 /// The host's PHYSICAL serving capacity — sized against wherever the KV will
 /// actually live, which is a function of the PLACEMENT DECISION and never of the
 /// device that happens to be installed.
@@ -188,6 +149,11 @@ pub fn live_host_budget(
     })
 }
 
+/// The serving host budget from the GOVERNED board ALONE — the memory authority's
+/// pre-staged snapshot (Vram `available`, netted over every measured consumer + external
+/// pressure), never a raw GPU probe. This is the ONE budget an ephemeral eval/train lane
+/// sizes against at spawn (MEMORY-AUTHORITY-DAEMON slice 2): reading the board is reading a
+/// snapshot the authority maintains on ITS tick, not sampling memory on the spawn hot path.
 pub fn governed_host_budget(resource_daemon: &ResourceDaemon) -> HostBudget {
     let available = governed_vram_ceiling_or_report(resource_daemon, "governed_host_budget");
     host_budget_from(&HostBudgetInputs {

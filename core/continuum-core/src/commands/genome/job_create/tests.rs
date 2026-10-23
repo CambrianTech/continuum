@@ -104,7 +104,7 @@
         let embedder = crate::cognition::embedding::resolve_recall_embedder_local().await;
         let sig = crate::genome::signature::GeneSignature::mint(
             &texts,
-            crate::forge::recipe::CorpusRef { name: "near".into(), content_hash: "sha256:near".into(), size_bytes: 1, source_url: None },
+            crate::genome::corpus_ref::CorpusRef { name: "near".into(), content_hash: "sha256:near".into(), size_bytes: 1, source_url: None },
             &embedder,
             1,
         )
@@ -158,7 +158,7 @@
         let rows = w.trials().load().unwrap();
         assert_eq!(rows.len(), 1);
         assert_eq!((rows[0].id, rows[0].persona_id, rows[0].state), (trial, w.persona, crate::genome::gene_trial::TrialState::Trial));
-        let registered = crate::forge::adapter_manifest::load_from(&w.manifest()).unwrap();
+        let registered = crate::genome::adapter_manifest::load_from(&w.manifest()).unwrap();
         assert!(registered.iter().any(|a| a.path == w.gene_path), "the gene serves, dormant: {registered:?}");
         assert_eq!(w.adapter.captured_job_count(), 0, "a reuse trains nothing");
         assert!(w.board.snapshot().is_empty());

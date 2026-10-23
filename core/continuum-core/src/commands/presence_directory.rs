@@ -135,7 +135,7 @@ impl ActionCommand for PresenceDirectory {
         // (measured 2026-08-31). Files, not paging — existence is durable.
         let mut merged: std::collections::HashMap<uuid::Uuid, PresenceDirectoryEntry> =
             std::collections::HashMap::new();
-        for slot in crate::ipc::positron_presence::scope_directory_slots() {
+        for slot in crate::persona::room_directory::scope_directory_slots() {
             let peer_uuid = slot.member_id;
             let kind = slot
                 .integrations
@@ -197,7 +197,7 @@ impl ActionCommand for PresenceDirectory {
                         .as_ref()
                         .map(|i| i.name.clone())
                         .unwrap_or_else(|| { // JUSTIFIED unwrap_or_else: uncarded peer renders the deliberately-unmistakable provisional label ([[fallbacks-are-illegal-fail-loud]])
-                            crate::ipc::positron_source::provisional_sender_name(peer_uuid)
+                            crate::persona::roster_slot::provisional_sender_name(peer_uuid)
                         });
                     let kind = card
                         .identity

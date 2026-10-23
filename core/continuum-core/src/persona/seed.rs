@@ -18,7 +18,7 @@
 //! derive from a single conceptual seed. The keypair derives the
 //! cryptographic peer_id; the seed.json carries the
 //! continuum-allocated persona_id that drives name + avatar + voice
-//! + genome facet derivation via [[crate::persona::name_generator]].
+//! + genome facet derivation via [[crate::live::avatar::names]].
 //!
 //! ### Atomic writes (crash-safe)
 //!
@@ -230,9 +230,6 @@ pub enum PersonaSeedError {
 }
 
 impl PersonaSeedError {
-    pub fn is_not_found(&self) -> bool {
-        matches!(self, Self::NotFound { .. })
-    }
 }
 
 /// Read a seed file from the given path. Returns `Ok(seed)` if
@@ -518,14 +515,6 @@ mod tests {
         assert_eq!(after.created_at_ms(), 1_717_200_000_000);
     }
 
-    #[tokio::test]
-    async fn read_missing_returns_not_found() {
-        let temp = TempDir::new().unwrap();
-        let path = temp.path().join("nonexistent-seed.json");
-        let err = read_seed(&path).await.unwrap_err();
-        assert!(err.is_not_found(), "expected NotFound, got {err:?}");
-    }
-
     // what this catches: ensure_seed writes a missing seed from the live identity
     // (self-heal) using the fallback birth time — so a persona whose seed was lost
     // is NOT re-minted as a stranger next boot.
@@ -593,7 +582,7 @@ mod tests {
     #[tokio::test]
     async fn ensure_seed_upgrades_v1_to_v2_without_shifting() {
         use crate::live::avatar::types::AvatarGender;
-        use crate::persona::name_generator::gender_from_name;
+        use crate::live::avatar::names::gender_from_name;
 
         let temp = TempDir::new().unwrap();
         let path = temp.path().join("seed.json");
@@ -642,7 +631,7 @@ mod tests {
     #[tokio::test]
     async fn ensure_seed_preserves_a_v2_card_gender_across_respawn() {
         use crate::live::avatar::types::AvatarGender;
-        use crate::persona::name_generator::gender_from_name;
+        use crate::live::avatar::names::gender_from_name;
 
         let temp = TempDir::new().unwrap();
         let path = temp.path().join("seed.json");

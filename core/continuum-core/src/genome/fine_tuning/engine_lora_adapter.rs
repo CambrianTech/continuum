@@ -18,7 +18,7 @@
 //!   before is admitted by leasing ALL the governed VRAM free right now (nothing else can grow
 //!   into the run); the lease goes to the engine as its memory budget, the engine measures the
 //!   training graph before allocating it, and that measurement is recorded, so the next run of
-//!   that shape leases its number. Never a guess: [`crate::forge::training_admission`] refuses unmeasured bytes.
+//!   that shape leases its number. Never a guess: [`crate::inference::training_admission`] refuses unmeasured bytes.
 //! - the artifact leaves the lanes' `--train-dir` (`engine-train`, swept of every file whose job
 //!   is not live) for the job's own directory BEFORE the job goes terminal (Fable's invariant on
 //!   #4438), and is a [`ArtifactFormat::GgufLora`].

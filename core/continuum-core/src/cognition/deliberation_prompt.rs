@@ -531,7 +531,7 @@ fn working_context_block(context: &str) -> Option<String> {
 
 /// The wrapper the working-context block prepends to a NON-empty assembled
 /// context. `pub(super)` so the faculty's budget math can charge the ctx
-/// budget for it (est_tokens of this constant): the framing estimate is
+/// budget for it (estimate_guard_tokens of this constant): the framing estimate is
 /// taken with an EMPTY context — where this wrapper is absent — so without
 /// the explicit charge the final system prompt exceeds the estimate by
 /// exactly this header whenever any context renders (a systematic ~50-token

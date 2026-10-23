@@ -102,7 +102,7 @@ impl OpenViews {
         if act.output.verb == ToolVerb::Read {
             return self.note_file_read(act, seq, scope);
         }
-        let name = crate::cognition::tool_dialect::resolve_wire_name(&act.call.name);
+        let name = crate::ai::tool_dialect::resolve_wire_name(&act.call.name);
         if name == "tool/output" {
             return self.note_output_page(act, seq);
         }

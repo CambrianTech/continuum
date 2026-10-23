@@ -63,14 +63,15 @@
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
-use crate::modules::grid::acl::required_trust;
-use crate::modules::grid::node::TrustLevel;
+use crate::routing::command_acl::required_trust;
+use crate::routing::trust_level::TrustLevel;
 
 pub mod binding;
 pub mod children;
 pub mod spawned_rooms;
 pub mod membership;
 pub mod recipe;
+pub mod room_purpose;
 pub mod source;
 pub mod ledger;
 pub mod activity_state;
@@ -375,7 +376,7 @@ pub fn benchmark_experience(
     owner_peer_id: crate::identity::PeerId,
 ) -> Experience {
     recipe::ExperienceRecipe::from_json(include_str!("recipes/benchmark.json"))
-        .expect("embedded benchmark recipe must be valid JSON")
+        .expect("embedded benchmark recipe must be valid JSON") // JUSTIFIED: embedded constant; validity is a build-time authoring property covered by recipe tests
         .project(vec![
             Member {
                 peer_id: examinee_peer_id,
@@ -402,7 +403,7 @@ pub fn chat_experience(
     member_peer_id: crate::identity::PeerId,
 ) -> Experience {
     recipe::ExperienceRecipe::from_json(include_str!("recipes/chat.json"))
-        .expect("embedded chat recipe must be valid JSON")
+        .expect("embedded chat recipe must be valid JSON") // JUSTIFIED: embedded constant; validity is a build-time authoring property covered by recipe tests
         .project(vec![
             Member {
                 peer_id: owner_peer_id,

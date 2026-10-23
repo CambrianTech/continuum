@@ -92,7 +92,7 @@ pub(crate) async fn run_cargo(
     root: &Path,
     args: &[String],
     timeout: Duration,
-    confinement: Option<&crate::code::confinement::Confinement>,
+    confinement: Option<&crate::system_resources::confinement::Confinement>,
     who: &str,
 ) -> Result<CargoRun, CommandError> {
     let started = Instant::now();
@@ -103,13 +103,13 @@ pub(crate) async fn run_cargo(
     let cargo_grant = crate::system_resources::disk_reporters::admit_cargo_target(&target, root, confinement)
             .await
             .map_err(CommandError::Internal)?;
-    let mut cmd = crate::code::confinement::command_for(
+    let mut cmd = crate::system_resources::confinement::command_for(
         confinement,
         who, Path::new("cargo"), &args, Some(root), cargo_grant.grant(),
     );
     cmd.env("CARGO_TERM_COLOR", "never");
     cmd.env("CARGO_TARGET_DIR", target);
-    let out = crate::code::hands::scoped_admitted(crate::inference::lane_process::holding(
+    let out = crate::identity::hands_gate::scoped_admitted(crate::inference::lane_process::holding(
         cargo_grant.kept(),
         crate::inference::lane_process::run_owned(
             cmd,

@@ -11,7 +11,8 @@ use ts_rs::TS;
 use uuid::Uuid;
 
 use super::{EvalTask, GenomeTeach, GenomeTeachParams, GenomeTeachResult};
-use crate::commands::training_trigger::submit::{SubmitOutcome, SubmitParams};
+use crate::commands::training_trigger::submit::SubmitParams;
+use crate::genome::training_outcome::SubmitOutcome;
 use crate::genome::fine_tuning::{TrainingDataset, TrainingSource};
 use crate::identity::PersonaRef;
 use crate::modules::dataset::{CandidateReservation, DatasetCandidate, DatasetService};
@@ -536,7 +537,7 @@ mod tests {
             &conn,
             gym_cache.clone(),
             |reservation| async move {
-                let generated = super::super::teacher_generate(
+                let generated = crate::genome::teach::teacher_generate(
                     &adapter,
                     "requested-teacher",
                     vec![ChatMessage::text("user", &task.prompt)],
@@ -550,7 +551,7 @@ mod tests {
                 )
                 .await;
                 assert!(passed, "{grade}");
-                let row = super::super::build_sharegpt(
+                let row = crate::genome::teach::build_sharegpt(
                     &[
                         ChatMessage::text("user", &task.prompt),
                         ChatMessage::text("assistant", generated.text),

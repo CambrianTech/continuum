@@ -11,6 +11,7 @@
 //! are exposed through that module's `commands()`.
 
 pub mod access;
+mod tool_aliases;
 pub mod adapter;
 pub mod agent;
 pub mod ai;
@@ -18,10 +19,7 @@ pub mod airc;
 pub mod auth;
 pub mod avatar;
 pub mod benchmark;
-pub mod benchmark_pause;
-pub mod benchmark_round;
 pub mod benchmark_import;
-pub mod benchmark_round_report;
 pub mod benchmark_verify;
 pub mod genome_recall;
 pub mod genome_share;
@@ -67,10 +65,8 @@ pub mod search;
 pub mod serving;
 pub mod system;
 pub mod tool;
-pub mod tool_parsing;
 pub mod training_trigger;
 pub mod vdd;
 pub mod vector;
 pub mod vision;
 pub mod web;
-pub mod workspace_artifacts;

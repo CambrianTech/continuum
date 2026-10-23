@@ -45,7 +45,8 @@ use std::sync::Arc;
 use super::adapter::{ArcFineTuningAdapter, FineTuningCapabilities, TrainingPlace};
 use super::registry::FineTuningRegistry;
 use super::types::TrainingJobRequest;
-use crate::inference_capability::{probe_hardware_profile, HardwareProfile};
+use crate::inference_capability::probe_hardware_profile;
+use crate::system_resources::hardware_profile::HardwareProfile;
 
 /// Why the coordinator couldn't pick an adapter for a given request.
 /// Typed so the calling ServiceModule can map each variant to the
@@ -110,14 +111,6 @@ impl FineTuningCoordinator {
             registry,
             host: probe_hardware_profile(),
         }
-    }
-
-    /// Construct with an explicit host profile. Lets tests route as if
-    /// on an NVIDIA box (or any host) without that hardware present, and
-    /// lets a grid scheduler hand in a leased peer's advertised profile
-    /// (the cross-grid routing rail).
-    pub fn with_host(registry: Arc<FineTuningRegistry>, host: HardwareProfile) -> Self {
-        Self { registry, host }
     }
 
     /// Pick an adapter for this request. Returns the adapter +
@@ -244,7 +237,7 @@ mod tests {
     use crate::genome::fine_tuning::types::{
         JobHandle, TrainingDataset, TrainingSource, TrainingStatus,
     };
-    use crate::inference_capability::HardwareProfile;
+    use crate::system_resources::hardware_profile::HardwareProfile;
     use async_trait::async_trait;
     use uuid::Uuid;
 
@@ -260,24 +253,6 @@ mod tests {
             total_vram_bytes: 0,
             cpu_cores: 8,
             system_ram_bytes: 16 * 1024 * 1024 * 1024,
-        }
-    }
-
-    /// Like `caps` but with an explicit hardware requirement — for the
-    /// platform-routing tests.
-    fn caps_hw(
-        provider_id: &str,
-        produces_local_artifact: bool,
-        requires: TrainerHardware,
-    ) -> FineTuningCapabilities {
-        FineTuningCapabilities {
-            provider_id: provider_id.to_string(),
-            supports_lora: true,
-            supports_validation: true,
-            produces_local_artifact,
-            supported_base_model_prefixes: vec![],
-            requires,
-            place: if produces_local_artifact { TrainingPlace::SeparateCopyHere } else { TrainingPlace::Cloud },
         }
     }
 
@@ -526,128 +501,4 @@ mod tests {
         assert!(matches!(err, CoordinatorError::NoCapableAdapter { .. }));
     }
 
-    // what this catches: on an Apple-Silicon (Metal) host, the native
-    // Metal trainer (mlx-local) beats the accelerator-agnostic local
-    // Candle trainer even though both produce a local artifact. This is
-    // the bug the hardware tier fixes: without it, both sat at the same
-    // locality tier and alphabetical tie-break picked `local-candle`,
-    // so MLX never ran where it's the *right* trainer.
-    #[test]
-    fn metal_trainer_beats_generic_local_on_metal_host() {
-        let reg = registry_with(vec![
-            (
-                "local-candle",
-                caps_hw("local-candle", true, TrainerHardware::Any),
-            ),
-            (
-                "mlx-local",
-                caps_hw("mlx-local", true, TrainerHardware::AppleSilicon),
-            ),
-        ]);
-        let coord = FineTuningCoordinator::with_host(reg, host(true, false, false));
-        let (id, _) = coord
-            .select(&base_request("Qwen/Qwen2.5-Coder-3B"), None)
-            .unwrap();
-        assert_eq!(id, "mlx-local");
-    }
-
-    // what this catches (card d67fd801): a separate trainer process winning over our own engine.
-    // On Apple Silicon the MLX copy is native and its place is SeparateCopyHere; a lane of our
-    // engine stood up for the run is EngineLaneHere and must outrank it whatever the
-    // accelerator, and the resident lane must still outrank both.
-    #[test]
-    fn an_engine_lane_beats_a_native_separate_trainer_and_the_resident_lane_beats_it() {
-        let engine_lane = FineTuningCapabilities {
-            place: TrainingPlace::EngineLaneHere,
-            ..caps_hw("engine-lane", true, TrainerHardware::Any)
-        };
-        let reg = registry_with(vec![
-            ("mlx-local", caps_hw("mlx-local", true, TrainerHardware::AppleSilicon)),
-            ("engine-lane", engine_lane.clone()),
-        ]);
-        let apple = HardwareProfile { platform: "macos-arm64-m5pro".into(), ..host(true, false, false) };
-        let coord = FineTuningCoordinator::with_host(reg, apple.clone());
-        let (id, _) = coord.select(&base_request("Qwen/Qwen2.5-Coder-3B"), None).unwrap();
-        assert_eq!(id, "engine-lane");
-        let reg = registry_with(vec![
-            ("engine-lane", engine_lane),
-            (
-                "engine-local",
-                FineTuningCapabilities {
-                    place: TrainingPlace::ResidentHere,
-                    ..caps_hw("engine-local", true, TrainerHardware::Any)
-                },
-            ),
-        ]);
-        let coord = FineTuningCoordinator::with_host(reg, apple);
-        let (id, _) = coord.select(&base_request("Qwen/Qwen2.5-Coder-3B"), None).unwrap();
-        assert_eq!(id, "engine-local");
-    }
-
-    // what this catches: "the same for CUDA or other varieties" made
-    // real — a CUDA trainer advertising TrainerHardware::Cuda lands in
-    // the native-accelerator tier on an NVIDIA host and beats Candle,
-    // with ZERO coordinator change beyond registering the adapter. This
-    // test stands in for that future adapter via a Cuda-requiring stub.
-    #[test]
-    fn cuda_trainer_beats_generic_local_on_cuda_host() {
-        let reg = registry_with(vec![
-            (
-                "local-candle",
-                caps_hw("local-candle", true, TrainerHardware::Any),
-            ),
-            (
-                "cuda-trainer",
-                caps_hw("cuda-trainer", true, TrainerHardware::Cuda),
-            ),
-        ]);
-        let coord = FineTuningCoordinator::with_host(reg, host(false, true, false));
-        let (id, _) = coord
-            .select(&base_request("Qwen/Qwen2.5-Coder-3B"), None)
-            .unwrap();
-        assert_eq!(id, "cuda-trainer");
-    }
-
-    // what this catches: an adapter whose required accelerator the host
-    // lacks is FILTERED OUT, never selected. A Metal trainer on a
-    // CUDA-only host falls back to nothing-of-its-kind; the generic
-    // Candle trainer wins instead. Without the hardware gate the
-    // coordinator would route a job to mlx-local that create_job would
-    // then reject — fail-loud at routing beats fail-late at spawn.
-    #[test]
-    fn metal_trainer_filtered_out_on_non_metal_host() {
-        let reg = registry_with(vec![
-            (
-                "local-candle",
-                caps_hw("local-candle", true, TrainerHardware::Any),
-            ),
-            (
-                "mlx-local",
-                caps_hw("mlx-local", true, TrainerHardware::AppleSilicon),
-            ),
-        ]);
-        let coord = FineTuningCoordinator::with_host(reg, host(false, true, false));
-        let (id, _) = coord
-            .select(&base_request("Qwen/Qwen2.5-Coder-3B"), None)
-            .unwrap();
-        assert_eq!(id, "local-candle");
-    }
-
-    // what this catches: when the ONLY registered trainer needs an
-    // accelerator the host lacks, the coordinator returns the typed
-    // NoCapableAdapter rejection — not a silent no-op, not a panic.
-    // This is the no-fallbacks-ever invariant at the hardware gate.
-    #[test]
-    fn no_capable_adapter_when_host_lacks_required_accelerator() {
-        let reg = registry_with(vec![(
-            "mlx-local",
-            caps_hw("mlx-local", true, TrainerHardware::AppleSilicon),
-        )]);
-        let coord = FineTuningCoordinator::with_host(reg, host(false, true, false));
-        let err = coord
-            .select(&base_request("Qwen/Qwen2.5-Coder-3B"), None)
-            .err()
-            .expect("must reject");
-        assert!(matches!(err, CoordinatorError::NoCapableAdapter { .. }));
-    }
 }

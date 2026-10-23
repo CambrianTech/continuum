@@ -73,10 +73,10 @@ pub(super) fn build_and_install_executor(
             .with_remote_transport(Arc::new(crate::routing::LateBoundAircTransport::new(
                 airc_interceptor_cell.clone(),
             )))
-            .with_interceptor(Arc::new(crate::runtime::AircInterceptor::with_airc_cell(
+            .with_interceptor(Arc::new(crate::inference::airc_remote::interceptor::AircInterceptor::with_airc_cell(
                 airc_interceptor_cell,
             )))
-            .with_interceptor(Arc::new(crate::runtime::GridInterceptor::new(grid_state)))
+            .with_interceptor(Arc::new(crate::modules::grid::interceptor::GridInterceptor::new(grid_state)))
             // `provided` sits at the TAIL of the chain: airc/grid get first look
             // so an explicitly remote-targeted perception/observe still hops to a
             // peer's eye, but an ordinary (untargeted) Provided call — a persona
@@ -98,7 +98,7 @@ pub(super) fn build_and_install_executor(
             // authenticated-peer deny, and address trust must not promote AIRC callers.
             // grid/nodes exposes both facts separately. Unknown peers keep the existing
             // Provisional tier; enrollment alone grants no additional permissions.
-            .with_policy(Arc::new(crate::routing::GridTrustAuthPolicy::new())),
+            .with_policy(Arc::new(crate::modules::grid::GridTrustAuthPolicy::new())),
     );
     runtime
         .registry()
@@ -138,7 +138,7 @@ pub(super) fn release_executor_dependents(
     // identity ceremony does disk + daemon I/O, and boot must not block on it.
     if let Some(sock) = operator_peer_socket {
         let exec = Arc::clone(executor);
-        let root = crate::modules::persona_instance_manager::resolve_continuum_root();
+        let root = crate::paths::continuum_root();
         rt_handle.spawn(async move {
             crate::persona::operator_peer::ensure_operator_peer(&root, sock.clone(), exec.clone())
                 .await;

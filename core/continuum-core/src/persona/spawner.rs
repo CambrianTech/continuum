@@ -59,7 +59,7 @@ pub struct RosterEntry {
     /// `peer_id.as_uuid()`.
     pub persona_id: Uuid,
     /// Display name — typically derived deterministically from the
-    /// peer_id via `name_generator::agent_name_from_identity`. Used in
+    /// peer_id via `live::avatar::names::agent_name_from_identity`. Used in
     /// chat surface labels and inference traces.
     pub persona_name: String,
     /// Model registry id the substrate picked for this role at this

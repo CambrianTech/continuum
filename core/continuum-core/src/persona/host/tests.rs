@@ -24,7 +24,7 @@
     fn plan_named(name: &str) -> crate::persona::spawner_module::MaterializedPersonaPlan {
         crate::persona::spawner_module::MaterializedPersonaPlan {
             role: crate::persona::role_template::RoleId::Helper,
-            instance: crate::modules::persona_instance_manager::PersonaInstanceInfo {
+            instance: crate::persona::instance_manager::PersonaInstanceInfo {
                 agent_name: name.to_string(),
                 peer_id: crate::identity::PeerId::from_uuid(uuid::Uuid::new_v4()),
                 home: std::path::PathBuf::from("/tmp/unused"),
@@ -91,7 +91,7 @@
         let registry = crate::persona::airc_runtime_registry::PersonaAircRuntimeRegistry::new();
         let tmp = std::env::temp_dir().join("host-unattended-noop-test");
         let instance_manager = Arc::new(
-            crate::modules::persona_instance_manager::PersonaInstanceManagerModule::new(
+            crate::persona::instance_manager::PersonaInstanceManagerModule::new(
                 registry,
                 tmp.join("daemon.sock"),
                 tmp,

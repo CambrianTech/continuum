@@ -2,83 +2,6 @@
 
 use super::*;
 
-/// The lane-demand authority: one BASE (the boot-wired persona floor) plus a registry of
-/// measurement OVERRIDES, with the effective value recomputed on every change — never a
-/// swap/restore pair. The naive swap/restore version had a real interleaving bug: with two
-/// overlapping leases (eval's `quiesce_all` + a solve's `lease_measured_work`), the first drop
-/// restored the pre-lease value OVER the still-held second lease, and the second drop then
-/// restored the FIRST lease's override — leaving the whole fleet's demand stuck at 1 with
-/// nobody quiesced until the (boot-only) `set_lane_demand` ever ran again. Order-independent
-/// recompute makes overlap correct by construction: effective = max(overrides) while any are
-/// held (never starve a concurrent measurement below what it asked for), else base.
-pub(super) struct LaneDemandState {
-    /// The live cell the planner reads (`ServingDaemonModule::lane_demand`).
-    pub(super) cell: Arc<std::sync::atomic::AtomicU32>,
-    /// The boot-wired persona floor — restored whenever the last override releases.
-    pub(super) base: std::sync::Mutex<u32>,
-    /// Active measurement overrides as `(lease_id, active_minds)`.
-    pub(super) overrides: std::sync::Mutex<Vec<(u64, u32)>>,
-    pub(super) next_id: std::sync::atomic::AtomicU64,
-}
-
-impl LaneDemandState {
-    /// Recompute the effective demand from base + overrides and publish it to the cell.
-    pub(super) fn recompute(&self) {
-        let overrides = self
-            .overrides
-            .lock()
-            .expect("lane-demand overrides lock poisoned");
-        let effective = overrides
-            .iter()
-            .map(|(_, active)| *active)
-            .max()
-            .unwrap_or_else(|| *self.base.lock().expect("lane-demand base lock poisoned"));
-        drop(overrides);
-        self.cell.store(effective.max(1), Ordering::Relaxed);
-    }
-
-    /// Add an override and return its lease id.
-    pub(super) fn acquire(&self, active: u32) -> u64 {
-        let id = self.next_id.fetch_add(1, Ordering::Relaxed);
-        self.overrides
-            .lock()
-            .expect("lane-demand overrides lock poisoned")
-            .push((id, active.max(1)));
-        self.recompute();
-        id
-    }
-
-    /// Remove the override with `id` (unknown id = no-op) and recompute.
-    pub(super) fn release(&self, id: u64) {
-        self.overrides
-            .lock()
-            .expect("lane-demand overrides lock poisoned")
-            .retain(|(oid, _)| *oid != id);
-        self.recompute();
-    }
-}
-
-/// Registered by the first [`ServingDaemonModule::set_lane_demand`] at boot. `None` before
-/// boot (unit tests / tools that never stood a daemon) → every override is a no-op, so the
-/// quiesce lease stays pure and daemon-free-testable.
-/// [[measured-work-gets-an-exclusive-warm-slot-quiesce-others]]
-pub(super) static LANE_DEMAND: std::sync::OnceLock<LaneDemandState> = std::sync::OnceLock::new();
-/// Whether a measurement lease (`quiesce_*`) currently holds the lane demand down.
-/// While one does, the demand is the lease's ACTIVE count and the live roster must
-/// not raise it back — that is the lease's whole purpose.
-pub fn lane_demand_overridden() -> bool {
-    LANE_DEMAND
-        .get()
-        .map(|state| {
-            !state
-                .overrides
-                .lock()
-                .expect("lane-demand overrides lock poisoned")
-                .is_empty()
-        })
-        .unwrap_or(false) // JUSTIFIED unwrap_or: before boot registers the state there is no lease to honour
-}
-
 pub fn resident_lane_demand(boot_floor: u32, live_residents: usize, overridden: bool) -> u32 {
     if overridden {
         return boot_floor.max(1);
@@ -128,21 +51,6 @@ pub(super) fn note_leased_in_peak(peak: usize) -> usize {
     sustained_leased_in(ring.len(), floor as usize)
 }
 
-/// Add a measurement override: the fleet's warm-slot demand becomes `active` (minds that
-/// need a warm slot now; floored at 1 — a measurement still needs one lane) until released.
-/// Returns the lease id to pass to [`release_lane_demand`]; `None` before the daemon booted.
-pub fn quiesce_lane_demand(active: u32) -> Option<u64> {
-    LANE_DEMAND.get().map(|state| state.acquire(active))
-}
-
-/// Release the override acquired by [`quiesce_lane_demand`]. Idempotent (an unknown id is
-/// a no-op) and order-independent — the effective demand is recomputed from what remains.
-pub fn release_lane_demand(id: u64) {
-    if let Some(state) = LANE_DEMAND.get() {
-        state.release(id);
-    }
-}
-
 impl ServingDaemonModule {
     /// Set the lane DEMAND (how many minds need a concurrent lane — the
     /// persona floor). The boot wiring calls this before the first
@@ -153,14 +61,7 @@ impl ServingDaemonModule {
         // warm-slot demand to the ACTIVE (non-quiesced) count for its duration and
         // release on drop — without threading a ServingDaemon handle into the persona
         // registry. Idempotent: `set` after the first call is a no-op.
-        let state = LANE_DEMAND.get_or_init(|| LaneDemandState {
-            cell: self.lane_demand.clone(),
-            base: std::sync::Mutex::new(demand.max(1)),
-            overrides: std::sync::Mutex::new(Vec::new()),
-            next_id: std::sync::atomic::AtomicU64::new(1),
-        });
-        *state.base.lock().expect("lane-demand base lock poisoned") = demand.max(1);
-        state.recompute();
+        crate::inference::lane_demand::register(self.lane_demand.clone(), demand);
     }
 
     pub(super) fn lane_demand(&self) -> u32 {
@@ -194,7 +95,7 @@ impl ServingDaemonModule {
         let serving = crate::inference::llama_server::current_serving();
         let active_model = serving.active_model;
         let model_for_knee = knee_model(active_model, || {
-            crate::modules::served_window_store::load_geometry().map(|g| g.model_id)
+            crate::inference::served_window_store::load_geometry().map(|g| g.model_id)
         });
         // A remembered model with no curve answers with the most CONSERVATIVE knee this box
         // holds (2026-09-20: the record read "coder-14b", a harness fixture a local test run
@@ -310,13 +211,13 @@ impl ServingDaemonModule {
         // the very calls that raised it. Zero until the inbound-generate seam feeds the
         // gauge; never invented.
         let leased_in =
-            note_leased_in_peak(crate::cognition::resource_admission::take_leased_in_peak());
+            note_leased_in_peak(crate::inference::resource_admission::take_leased_in_peak());
         // Each live mind's REQUIREMENT: the untrimmed demand her turns assemble (never
         // what a window let her send), with headroom, floored at one real turn. Built
         // once here and carried on the demand by value into the one plan — the
         // allocator's input, the governed size (card 2eec3977).
         let requirements =
-            crate::cognition::window_allocator::requirements_for(&live, &self.working_set);
+            crate::cognition::working_set::requirements_for(&live, &self.working_set);
         ServingDemand::new(lanes, demand)
             .with_requirements(requirements)
             .with_sent_tokens(sent)

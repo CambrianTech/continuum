@@ -80,11 +80,11 @@ fn the_cache_holds_the_active_rosters_states_not_every_seed_on_disk() {
     // unknown is not "all 23 at their peaks" — that is the want this law deletes.
     assert_eq!(
         active_cache_states(&population, 67_072, 0).len(),
-        crate::modules::citizen_health::MINDLESS_RESIDENT_FLOOR as usize
+        crate::persona::health_ledger::MINDLESS_RESIDENT_FLOOR as usize
     );
     // Through the decision: the same population on a 2-lane serve asks for a
     // demand-sized cache, not the whole afford.
-    let fp = crate::cognition::serving_plan::ModelFootprint {
+    let fp = crate::inference::planning::serving_plan::ModelFootprint {
         model_id: "cache-fixture".into(),
         weights_bytes: 19 * 1024 * 1024 * 1024,
         kv_per_token: 32_888,
@@ -224,7 +224,7 @@ fn the_cache_counts_the_minds_that_rotate_not_the_seeds_on_disk() {
 #[test]
 fn prompt_cache_diagnostics_preserve_priors_and_distinguish_measurements() {
     use super::*;
-    let fp = crate::cognition::serving_plan::ModelFootprint {
+    let fp = crate::inference::planning::serving_plan::ModelFootprint {
         model_id: "cache-fixture".into(),
         weights_bytes: 1024 * 1024 * 1024,
         kv_per_token: 65536,
@@ -294,7 +294,7 @@ fn prompt_cache_diagnostics_preserve_priors_and_distinguish_measurements() {
     let mib = 1024u64 * 1024;
     for (kv_per_token, served_ctx) in [(16_384u64, 65_536u32), (27_360, 172_436), (65_536, 262_144)]
     {
-        let geo = crate::cognition::serving_plan::ModelFootprint {
+        let geo = crate::inference::planning::serving_plan::ModelFootprint {
             kv_per_token,
             context_window: served_ctx,
             ..fp.clone()
@@ -385,7 +385,7 @@ fn prompt_cache_diagnostics_preserve_priors_and_distinguish_measurements() {
     // grant, so a grant of everything above the floor ends at the floor (the M5,
     // 2026-09-19: 6 GB of swap under a 19.5 GB grant).
     let afford =
-        (above_floor as f64 * (1.0 - crate::cognition::serving_plan::CACHE_GRANT_HEADROOM)) as u64;
+        (above_floor as f64 * (1.0 - crate::inference::planning::serving_plan::CACHE_GRANT_HEADROOM)) as u64;
     assert!(
         afford < above_floor,
         "the cache never gets everything above the floor"
@@ -420,7 +420,7 @@ fn prompt_cache_diagnostics_preserve_priors_and_distinguish_measurements() {
 fn a_discrete_gpu_does_not_charge_vram_residency_against_host_ram() {
     use super::*;
     use crate::gpu::monitor::MemoryMode;
-    let fp = crate::cognition::serving_plan::ModelFootprint {
+    let fp = crate::inference::planning::serving_plan::ModelFootprint {
         model_id: "27b-on-a-5090".into(),
         weights_bytes: 17 << 30,
         kv_per_token: 262_144, // ~256 KiB/token: a 144k window is ~36 GiB of KV
@@ -538,7 +538,7 @@ fn the_discrete_footprint_arm_is_the_device_delta_beyond_the_weights() {
 #[test]
 fn a_full_cache_never_steps_the_serving_mode_down_by_itself() {
     use crate::provisioning::model_catalog::ECO_EXIT_BYTES;
-    let fp = crate::cognition::serving_plan::ModelFootprint {
+    let fp = crate::inference::planning::serving_plan::ModelFootprint {
         model_id: "eco-fixture".into(),
         weights_bytes: 16 << 30,
         kv_per_token: 32_768,
@@ -585,7 +585,7 @@ fn a_full_cache_never_steps_the_serving_mode_down_by_itself() {
 #[test]
 fn the_cache_never_promises_past_what_is_available_now() {
     use super::*;
-    let fp = crate::cognition::serving_plan::ModelFootprint {
+    let fp = crate::inference::planning::serving_plan::ModelFootprint {
         model_id: "27b-on-a-5090".into(),
         weights_bytes: 17 << 30,
         kv_per_token: 262_144,

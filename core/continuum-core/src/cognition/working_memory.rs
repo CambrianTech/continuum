@@ -32,7 +32,7 @@
 //!
 //! ## Pairs with the thinking toggle
 //!
-//! When thinking is suppressed (`ThinkingMode::Suppress`, the unsloth-gateway
+//! When thinking is suppressed (`ThinkingMode::Suppress`, the local llama-server
 //! default), `reasoning` is `None` → nothing is recorded → the faculty abstains. So
 //! working memory SELF-ACTIVATES only where thinking is enabled — "reason when it
 //! helps, remember what you reasoned." No config flag needed.
@@ -88,6 +88,10 @@ const WORKING_MEMORY_SALIENCE: f32 = 0.5;
 // behavior on a small machine is unchanged while a big window finally gets a big budget).
 // [[never-hardcode-a-context-window-4k-defaults-destroy-the-moe-thesis]]
 use crate::cognition::act_observe::Observation;
+
+/// Her context view, the type her working memory checkpoints.
+pub(crate) type ContextView =
+    continuum_context::view::View<crate::cognition::context_streams::ContextMessage>;
 use crate::cognition::context_budget::ContextBudget;
 
 /// Clip a full action-result body to [`WM_ACTION_FULL_MAX_CHARS`] for prompt inclusion.
@@ -140,6 +144,25 @@ impl std::fmt::Display for ResultAttribution<'_> {
             write!(f, "; output handle: tool/output {handle}")?;
         }
         Ok(())
+    }
+}
+
+impl<'a> ResultAttribution<'a> {
+    fn of(record: &'a action_log::ActionRecord) -> Self {
+        Self {
+            seq: record.seq,
+            room: record.room,
+            operation: Some(&record.operation),
+            spill_handle: record.handle.as_deref(),
+        }
+    }
+}
+
+/// The line a collapsed result leaves: what it was, and the handle that reopens it.
+fn collapsed_pointer(record: &action_log::ActionRecord) -> String {
+    match &record.written_pointer {
+        Some(pointer) => pointer.clone(),
+        None => format!("[result {}{} — collapsed]", ResultAttribution::of(record), workspace_label(record.scope.as_deref())),
     }
 }
 
@@ -274,46 +297,18 @@ pub struct WorkingMemory {
     /// per session are naturally modest (a persona issues dozens of distinct calls,
     /// not millions), so it is left unbounded within the per-spawn lifetime.
     action_fp_counts: Mutex<HashMap<String, usize>>,
-    /// The PROPRIOCEPTION RECEIPT ARCHIVE — receipts-ONLY, head lines only (#414 option b).
-    ///
-    /// `entries` above is a SHARED ring: thoughts, facts, settlements and receipts all
-    /// compete for the same `capacity` slots, and receipts are the RARE kind, so they age
-    /// out while the act counter climbs. Measured 2026-08-14: Asha had executed 2,863
-    /// acts and her window rendered ONE (`+2862 earlier steps aged out`) — and with her
-    /// history invisible she concluded she had nothing to contribute (the withdrawal
-    /// loop's deprivation mechanism). Tool-origin engrams hold the durable copy but are
-    /// deliberately gated OUT of semantic recall (#166), so there was NO persona-facing
-    /// path back to her own acts.
-    ///
-    /// This ring is that path: every receipt's `[action #n]` FIRST LINE, in order,
-    /// bounded by CHARS ([`ContextBudget::receipt_archive_chars`] — window-derived,
-    /// never a bare count) instead of sharing the chatty ring's entry slots. The
-    /// steps-taken ledger renders from here, so act history survives conversation.
-    /// Persisted in [`VolatileSnapshot`] like the ring itself
-    /// ([[act-results-need-a-recency-channel-not-semantic-recall]]).
-    /// Each head carries the room the act was FOR (`None` for legacy/unscoped
-    /// receipts) so the steps ledger can render this-room acts first — scope
-    /// is the activity boundary (CAUSAL-MEMORY-GRAPH.md slice B).
-    receipt_heads: Mutex<VecDeque<(Option<Uuid>, String)>>,
-    /// Recent act RESULT TAILS `(seq, room, tail)` — the feedback channel the
-    /// `last_action` slot cannot be. That slot keeps only the LATEST result and
-    /// any act overwrites it; the pinned block is settlement-gated. So a finding
-    /// survived exactly until the next trivial act or spoken turn (2026-08-16:
-    /// Anwen's compile error was overwritten by a `list_files` one act later —
-    /// her next three turns wandered discovery tools and she re-ran the same
-    /// unfixed code). Char-bounded by the window-derived
-    /// [`ContextBudget::recent_results_chars`] share. Each result is held WHOLE:
-    /// a tail of a code read is broken code (2026-10-12). What no longer fits
-    /// collapses to a pointer at settlement.
-    recent_results: Mutex<VecDeque<(u64, Option<Uuid>, String, String, Option<String>)>>,
-    /// Root attribution outlives the bounded entry trail; keyed by the receipt sequence.
-    result_scopes: Mutex<BTreeMap<u64, String>>,
-    /// One-line pointers for results EVICTED from the channel above — collapse,
-    /// never delete (2026-08-24): "[result #N (verb, Nk chars) — evicted; …]".
-    /// Bounded ring; when IT overflows, the oldest pointer drops silently (a
-    /// pointer to a pointer buys nothing). Rendered as one byte-append-only-ish
-    /// message ahead of the recent-results banner.
-    evicted_pointers: Mutex<VecDeque<(String, String)>>,
+    /// Her actions, one record each ([`action_log`]): the ledger line every act leaves
+    /// (#414: act history must survive the chatty `entries` ring, measured 2026-08-14 when
+    /// Asha's 2,863 acts rendered as one), the whole result while it fits her window's
+    /// share (2026-08-16: Anwen's compile error vanished one act later; 2026-10-12: a tail
+    /// of a code read is broken code), and the handle that reopens it once collapsed
+    /// (2026-08-24: collapse, never delete). One record per act, so one act has one key.
+    actions: Mutex<action_log::ActionLog>,
+    /// Her context view as her last act left it (`llm_deliberation_faculty/prompt/epoch.rs`),
+    /// kept here so it is checkpointed with the rest of her volatile mind: restored after a
+    /// restart it renders the same bytes, and the engine's saved page for them still matches,
+    /// where a view rebuilt from scratch cost every resident one cold turn per deploy.
+    view: Mutex<Option<ContextView>>,
     /// Each retained receipt's DEPENDENCIES: the per-call results its saved text shows as
     /// pointers, keyed by the receipt ([`receipt_key`]). They belong to the receipt, not to the
     /// entry that carried its acts: while the receipt is in the ring or collapsed to a pointer,
@@ -478,6 +473,15 @@ pub struct VolatileSnapshot {
     /// lost its only handle on restart). Empty on snapshots written before this field.
     #[serde(default)]
     pub evicted_pointers: Vec<(String, String)>,
+    /// Her actions, whole ([`action_log`]): what a restore reads. The ring, archive and
+    /// pointer fields above are the same acts in the shape the previous build reads, kept
+    /// so a rollback still restores her. Empty on snapshots written before it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(crate) actions: Vec<action_log::ActionRecord>,
+    /// Her context view ([`WorkingMemory`]'s `view`). Absent on snapshots written before it,
+    /// and then her first act after the restore starts a new one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) context_view: Option<ContextView>,
     /// Each retained receipt's per-call dependencies ([`WorkingMemory`]'s `receipt_children`),
     /// so a restart keeps what a restored receipt points at reachable. Empty on snapshots
     /// written before this field.
@@ -496,29 +500,114 @@ impl VolatileSnapshot {
     /// newly saved receipt's dependencies under its new key: from `seq:N` to its handle, or the
     /// next publish would prune them as belonging to no receipt (Codex on #4987).
     pub fn retain_handleless(&mut self, persona_id: Uuid) -> crate::cognition::tool_executor::spill::LivePin {
+        // One shape to save into: a checkpoint from before the records gets them here.
+        if self.actions.is_empty() {
+            self.actions = self.action_records();
+        }
         let unsaved = self.unsaved_receipts();
         let pin = crate::cognition::tool_executor::spill::retain_handleless(
             persona_id,
-            self.recent_results.iter_mut().map(|(_, _, text, _, handle)| (text.as_str(), handle)),
+            self.actions
+                .iter_mut()
+                .filter_map(|record| record.result.as_deref().map(|text| (text, &mut record.handle))),
         );
         self.refile_children(&unsaved);
         pin
     }
 
+    /// Her actions as records: the records it carries, or, for a checkpoint written before
+    /// them, the ring, archive and pointer index read back into records. Those older lines
+    /// are keyed by the `#n` this owner wrote at their head (one with none is dropped and
+    /// counted), and an older pointer keeps the exact text it was written with, since its
+    /// operation and workspace are not stored apart from it.
+    pub(crate) fn action_records(&self) -> Vec<action_log::ActionRecord> {
+        if !self.actions.is_empty() {
+            return self.actions.clone();
+        }
+        let blank = |seq: u64, room: Option<Uuid>| action_log::ActionRecord {
+            seq,
+            room,
+            scope: None,
+            operation: "unrecorded".into(),
+            head: None,
+            result: None,
+            handle: None,
+            written_pointer: None,
+        };
+        let mut records: BTreeMap<u64, action_log::ActionRecord> = BTreeMap::new();
+        let mut unkeyed = 0usize;
+        for (seq, room, result, operation, handle) in &self.recent_results {
+            let record = records.entry(*seq).or_insert_with(|| blank(*seq, *room));
+            record.scope = self.result_scopes.get(seq).cloned();
+            record.operation = operation.clone();
+            record.result = Some(result.clone());
+            record.handle = handle.clone();
+        }
+        let mut rooms = self.receipt_head_rooms.iter();
+        for head in &self.receipt_heads {
+            let room = rooms.next().copied().flatten();
+            let Some(seq) = written_seq(head, "[action #") else {
+                unkeyed += 1;
+                continue;
+            };
+            records.entry(seq).or_insert_with(|| blank(seq, room)).head = Some(head.clone());
+        }
+        for (pointer, handle) in &self.evicted_pointers {
+            let Some(seq) = written_seq(pointer, "[result #") else {
+                unkeyed += 1;
+                continue;
+            };
+            let record = records.entry(seq).or_insert_with(|| blank(seq, None));
+            record.handle.get_or_insert_with(|| handle.clone());
+            record.written_pointer = Some(pointer.clone());
+        }
+        if unkeyed > 0 {
+            continuum_base::probe!(
+                class = "wm.actions.unkeyed_on_restore",
+                unkeyed = %unkeyed,
+                "checkpoint lines without an action number were dropped on restore"
+            );
+        }
+        records.into_values().collect()
+    }
+
+    /// Every saved result this checkpoint still reaches; the persisted twin of what working
+    /// memory publishes live, through the same log and the same rule.
+    pub(crate) fn reachable_handles(&self) -> HashSet<String> {
+        let log = action_log::ActionLog::from_records(self.action_records(), usize::MAX);
+        reachable_handles(log.receipt_keys(), &self.receipt_children, &self.open_views)
+    }
+
+    /// Read through [`Self::action_records`], the one accessor that also converts a checkpoint
+    /// written before the action log; reading `actions` alone found nothing in those.
     fn unsaved_receipts(&self) -> Vec<u64> {
-        self.recent_results.iter().filter(|(.., handle)| handle.is_none()).map(|(seq, ..)| *seq).collect()
+        self.action_records()
+            .iter()
+            .filter(|record| record.result.is_some() && record.handle.is_none())
+            .map(|record| record.seq)
+            .collect()
     }
 
     /// Move each of `unsaved`'s dependencies from its `seq:N` key to the handle it now has.
     fn refile_children(&mut self, unsaved: &[u64]) {
-        for (seq, .., handle) in &self.recent_results {
-            if let (true, Some(handle)) = (unsaved.contains(seq), handle) {
-                if let Some(children) = self.receipt_children.remove(&receipt_key(*seq, None)) {
-                    self.receipt_children.insert(handle.clone(), children);
-                }
+        let saved: Vec<(u64, String)> = self
+            .action_records()
+            .into_iter()
+            .filter(|record| unsaved.contains(&record.seq))
+            .filter_map(|record| Some((record.seq, record.handle?)))
+            .collect();
+        for (seq, handle) in saved {
+            if let Some(children) = self.receipt_children.remove(&receipt_key(seq, None)) {
+                self.receipt_children.insert(handle, children);
             }
         }
     }
+}
+
+/// The `#n` this owner wrote right after `prefix` at the head of a line.
+fn written_seq(line: &str, prefix: &str) -> Option<u64> {
+    let digits: String = line.strip_prefix(prefix)?.chars().take_while(char::is_ascii_digit).collect();
+    digits.parse().ok()
 }
 
 /// "; workspace <dir>" for a result recorded under a root; empty for one recorded before.
@@ -541,21 +630,15 @@ fn receipt_key(seq: u64, handle: Option<&str>) -> String {
 /// collapsed pointer's, and the per-call results each of those receipts points at. The one
 /// owner of that set: working memory publishes it live, and eviction reads the same set from
 /// the persisted checkpoint (`persona_workspace::persisted_result_handles`).
-pub(crate) fn reachable_handles<'a>(
-    recent_results: impl IntoIterator<Item = &'a (u64, Option<Uuid>, String, String, Option<String>)>,
-    evicted_pointers: impl IntoIterator<Item = &'a (String, String)>,
+pub(crate) fn reachable_handles(
+    receipts: HashSet<String>,
     receipt_children: &BTreeMap<String, Vec<String>>,
     open_views: &[super::open_views::OpenView],
 ) -> HashSet<String> {
-    let mut roots: Vec<String> = recent_results
-        .into_iter()
-        .map(|(seq, _, _, _, handle)| receipt_key(*seq, handle.as_deref()))
-        .collect();
-    roots.extend(evicted_pointers.into_iter().map(|(_, handle)| handle.clone()));
     let mut reachable: HashSet<String> = HashSet::new();
     // An open view names the saved whole it pages: that handle must still resolve.
     reachable.extend(super::open_views::view_handles(open_views).map(str::to_owned));
-    for root in roots {
+    for root in receipts {
         if let Some(children) = receipt_children.get(&root) {
             reachable.extend(children.iter().cloned());
         }
@@ -600,12 +683,14 @@ pub struct WmEntry {
 }
 
 
+mod action_log;
 mod continuity;
 mod faculty;
 mod ledger;
 mod perception;
 
 pub use faculty::WorkingMemoryFaculty;
+pub(crate) use faculty::render_dispatched;
 
 impl Drop for WorkingMemory {
     /// A mind that is gone points at nothing: its saved results may be evicted again.

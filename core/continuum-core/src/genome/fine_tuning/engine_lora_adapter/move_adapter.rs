@@ -97,7 +97,7 @@ impl EngineLoraFineTuner {
                 continue;
             }
             let consumer = if work.consumer.is_empty() { format!("genome-train:{}", work.job) } else { work.consumer.clone() };
-            match daemon.acquire_guarded(&crate::forge::training_admission::request(&consumer, work.bound_memory(), work.reserved_bytes)) {
+            match daemon.acquire_guarded(&crate::inference::training_admission::request(&consumer, work.bound_memory(), work.reserved_bytes)) {
                 Ok(guard) => {
                     if let Ok(mut leases) = self.resident_leases.lock() {
                         leases.insert(work.job, guard);
@@ -178,8 +178,12 @@ impl EngineLoraFineTuner {
                 Ok(ReattachOutcome::Uncertain { reason })
             }
             Disposition::Attach => {
-                let Some(spec) = work.job_spec.clone() else {
+                let Some(held) = work.job_spec.as_ref() else {
                     return Ok(ReattachOutcome::Uncertain { reason: "the binding carries no job_spec".into() });
+                };
+                let spec: EngineRunSpec = match held.read() {
+                    Ok(spec) => spec,
+                    Err(e) => return Ok(ReattachOutcome::Uncertain { reason: format!("the binding's job_spec is not this build's run spec: {e}") }),
                 };
                 let lease = self.resident_leases.lock().ok().and_then(|mut leases| leases.remove(&job));
                 if lease.is_none() {

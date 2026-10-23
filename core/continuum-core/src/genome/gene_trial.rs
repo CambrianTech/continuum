@@ -355,7 +355,7 @@ pub fn credit_settled_card(persona: Uuid, card: Uuid, passed: bool, turns: &[Car
 /// ledger row records the loss. Either way the trial row, already written, is the receipt.
 fn apply_decision(t: &GeneTrial, now_ms: u64) {
     if matches!(t.state, TrialState::Retired | TrialState::Expired) {
-        if let Err(error) = crate::forge::adapter_manifest::unregister(&t.path) {
+        if let Err(error) = crate::genome::adapter_manifest::unregister(&t.path) {
             continuum_base::probe!(
                 class = "genome.trial.unregister_failed",
                 gene = t.alias.as_str(),
@@ -471,7 +471,7 @@ impl Adoption {
 
     /// The node's manifest and trial file; `Err` names which is unresolvable.
     pub fn default_paths() -> Result<Self, AdoptRefusal> {
-        let manifest = crate::forge::adapter_manifest::manifest_path().map_err(AdoptRefusal::NotRegistered)?;
+        let manifest = crate::genome::adapter_manifest::manifest_path().map_err(AdoptRefusal::NotRegistered)?;
         let trials = GeneTrials::default_store().ok_or(AdoptRefusal::NoHome)?;
         Ok(Self { manifest, trials })
     }
@@ -501,9 +501,9 @@ impl Adoption {
                 decided => Err(AdoptRefusal::AlreadyDecided(decided)),
             };
         }
-        crate::forge::adapter_manifest::register_at(
+        crate::genome::adapter_manifest::register_at(
             &self.manifest,
-            crate::forge::adapter_manifest::TrainedAdapter {
+            crate::genome::adapter_manifest::TrainedAdapter {
                 alias: alias.to_string(),
                 path: path.to_path_buf(),
                 base_model_id: base_model_id.to_string(),

@@ -18,7 +18,7 @@ pub(super) fn prepare_socket_and_load_model_registry(
         boot_mode.label()
     );
 
-    // (Removed the startup UNSLOTH_API_KEY boot check. The local llama-server
+    // (Removed the startup API-key boot check. The local llama-server
     // gateway has no credential — its catalog entry is `auth: None` — so there is
     // no key to resolve or self-heal. Gateway readiness is now expressed by the
     // serving daemon's snapshot, checked at adapter registration, not a key probe.)

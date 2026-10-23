@@ -67,7 +67,7 @@ impl LessonSink {
             ),
         )]);
         let peer_dir = crate::identity::citizen_peer_dir(
-            &crate::modules::persona_instance_manager::resolve_continuum_root(),
+            &crate::paths::continuum_root(),
             crate::identity::PeerId::from_uuid(*persona_uuid),
         );
         if let Err(e) = std::fs::create_dir_all(&peer_dir) {
@@ -506,14 +506,13 @@ pub(super) async fn acquire_exam_serving_context() -> crate::cognition::exam_ser
     else {
         return ExamServingContext::ludicrous_fallback().await;
     };
-    let Some(fp) = crate::cognition::serving_plan::footprint::footprint_for(&model) else {
+    let Some(fp) = crate::inference::planning::serving_plan::footprint::footprint_for(&model) else {
         return ExamServingContext::ludicrous_fallback().await;
     };
     // Capacity = the ONE memory authority's governed budget (VRAM netted over every measured
     // consumer + external pressure), the same source `plan_serving` sizes against — never a
     // raw GPU probe. No authority (ungoverned host) or a zero budget ⇒ fall back.
-    let Some(capacity) = crate::resources::ResourceDaemon::global()
-        .map(|d| crate::modules::serving_daemon::governed_host_budget(&d).usable_bytes)
+    let Some(capacity) = crate::inference::governed_budget::usable_bytes()
         .filter(|c| *c > 0)
     else {
         return ExamServingContext::ludicrous_fallback().await;
@@ -619,7 +618,7 @@ pub(super) fn append_progress_ledger(
     note: Option<&str>,
     eval_set: &str,
     clean_lane: Option<bool>,
-    measured_gene: Option<&crate::forge::adapter_manifest::TrainedAdapter>,
+    measured_gene: Option<&crate::genome::adapter_manifest::TrainedAdapter>,
 ) {
     let Some(dir) = progress_ledger_dir() else {
         return;
@@ -628,13 +627,7 @@ pub(super) fn append_progress_ledger(
         return;
     }
     let path = dir.join(format!("{}.jsonl", result.persona_id));
-    // A cancelled run's terminal row says so — resume reads it as PAUSED, never done.
-    let cancelled = result
-        .run_id
-        .as_deref()
-        .is_some_and(eval_run_cancelled);
     let row = serde_json::json!({
-        "cancelled": cancelled,
         "capturedAtMs": EpochMs::now().millis(),
         "personaId": result.persona_id,
         "evalSet": eval_set,

@@ -75,7 +75,7 @@ use crate::runtime::{CommandExecutor, CommandResult, LateBound, ModuleConfig, Mo
 use crate::sdk_codegen::DynCommand;
 
 mod durable;
-pub use durable::{AcceptanceReceipt, DispatchPhase};
+pub use durable::DispatchPhase;
 pub(crate) use durable::{DispatchFailure, DispatchResolution, DispatchResult, ResolveReport, RetireReport, RetireSelection};
 
 /// Default per-bucket fire threshold. 16 examples is a healthy
@@ -745,7 +745,7 @@ pub(crate) fn resumable_request(dir: &std::path::Path, provider: &str, dispatch_
     Ok(params)
 }
 
-use crate::commands::genome::job_create::Took;
+use crate::genome::training_outcome::Took;
 
 /// What `genome/job-create` did with a fill: created a job, or HELD the fill without one
 /// (`JobCreateOutcome::took`: joined a job of hers, awaited a trial, or adopted an

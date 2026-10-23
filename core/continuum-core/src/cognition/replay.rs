@@ -35,7 +35,7 @@ use ts_rs::TS;
 use uuid::Uuid;
 
 use crate::cognition::persona_workspace;
-use crate::cognition::token_budget::estimate_prompt_tokens;
+use continuum_base::token_estimate::estimate_prompt_tokens;
 use crate::cognition::workspace::{Contribution, FacultyId, Workspace};
 use crate::sdk_codegen::{AccessLevel, ActionCommand, CommandError, Ctx};
 
@@ -407,7 +407,7 @@ impl ActionCommand for CognitionReplay {
         if replay_hands.is_some() {
             let live_root = match persona_workspace::acting_root_of(persona_uuid) {
                 Some(root) => root,
-                None => crate::modules::code_commands::ensure_citizen_layer(&persona_uuid.to_string()).await?,
+                None => crate::code::citizen_layer::ensure_citizen_layer(&persona_uuid.to_string()).await?,
             };
             persona_workspace::root_acting_workspace(&cycle, &live_root.to_string_lossy(), &[], false).await?;
         }

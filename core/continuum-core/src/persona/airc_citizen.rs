@@ -50,7 +50,7 @@
 //!
 //! `agent_name`, `home`, `default_room`, `persona_id`, `source` —
 //! these are persona-substrate metadata, not airc-citizen surface.
-//! They live on [`PersonaInstanceInfo`](crate::modules::persona_instance_manager::PersonaInstanceInfo)
+//! They live on [`PersonaInstanceInfo`](crate::persona::instance_manager::PersonaInstanceInfo)
 //! and on `PersonaContext.identity`. The substrate carries metadata
 //! via the identity struct; AircCitizen carries the *live handle*.
 //! Two concerns, two types.
@@ -254,38 +254,6 @@ pub trait AircCitizen:
     }
 }
 
-/// THE implementation of [`AircCitizen::subscribe_all_rooms`] over a
-/// raw airc handle — every impl that wraps an `Airc` calls this one
-/// rather than re-deciding which subscribe shape to use.
-///
-/// The whole defect this fixes was two shapes existing and continuum
-/// picking the narrowing one at every call site independently. Making
-/// the choice ONCE is what stops it drifting back, so a future citizen
-/// impl inherits the right answer instead of re-choosing.
-pub(crate) async fn subscribe_every_room(
-    airc: &airc_lib::Airc,
-) -> Result<FilteredEventStream, AircError> {
-    // NO router-side header filter (2026-09-04). The `Not(Has(heartbeat))`
-    // filter this used to send (#445) arrived at the daemon INVERTED: every
-    // citizen received ONLY the presence heartbeats and never a message —
-    // measured in the daemon store (message rows lack the header, heartbeat
-    // rows carry it) and in the inbound probes (100% of live inbound =
-    // heartbeats, 0 messages) while an unfiltered `airc join` client on the
-    // same daemon got every message. Citizens had heard rooms only through
-    // the store page at turn time since the filter landed. Heartbeats are
-    // dropped on RECEIVE instead ([`is_heartbeat`]) — a header check per
-    // event, the same receive-side shape as the stream-chunk guard, correct
-    // regardless of how the daemon treats a negated filter.
-    // NO delivery filter either (2026-09-04, second cut): with `Some([Durable])`
-    // citizens received `event`-kind frames live but never a `message` — while an
-    // `airc join` client on the same daemon (no delivery filter) received every
-    // message. Subscribe exactly as the CLI does; stream chunks and heartbeats
-    // are dropped on receive (`is_stream_chunk`, `is_heartbeat`), where the
-    // guard is correct regardless of what the daemon does with a filter.
-    let filter = airc_lib::EventFilter::default();
-    airc.subscribe_subscribed_delivery(filter, None).await
-}
-
 /// Where a reply for `room_id` should be published — the ONE place
 /// that decision is made, extracted so it can be asserted without an
 /// airc daemon.
@@ -316,7 +284,7 @@ pub(crate) fn publish_target_for(room_id: Uuid) -> airc_lib::PublishTarget {
 }
 
 /// THE implementation of [`AircCitizen::say_in`] over a raw airc
-/// handle. Same reason as [`subscribe_every_room`]: the nil-room
+/// handle. Same reason as `routing::airc_subscription::subscribe_every_room`: the nil-room
 /// contract and the no-auto-join publish target are decided once.
 pub(crate) async fn publish_text_in_room(
     airc: &airc_lib::Airc,
@@ -406,12 +374,6 @@ impl StubAircCitizen {
         }
     }
 
-    /// A handle to the `claim_card` (pull) recording — clone before moving the
-    /// stub behind an `Arc<dyn AircCitizen>`, then read which cards she pulled.
-    pub fn claim_recorder(&self) -> std::sync::Arc<std::sync::Mutex<Vec<airc_lib::WorkCardId>>> {
-        self.claimed.clone()
-    }
-
     /// Seed the cards this stub reports as active claims — so the held-work
     /// gate sees held work.
     pub fn with_claims(mut self, cards: Vec<airc_lib::WorkCard>) -> Self {
@@ -428,13 +390,6 @@ impl StubAircCitizen {
     /// Seed a subscribed board without changing which cards the citizen holds.
     pub fn with_board(mut self, room: Uuid, cards: Vec<airc_lib::WorkCard>) -> Self {
         self.boards.insert(room, cards);
-        self
-    }
-
-    /// Offer `cards` as claimable on every room's board
-    /// (what [`AircCitizen::claimable_cards_in`] reports).
-    pub fn with_claimable(mut self, cards: Vec<Uuid>) -> Self {
-        self.claimable = cards;
         self
     }
 

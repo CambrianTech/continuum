@@ -25,7 +25,7 @@
 
 use std::time::Duration;
 
-use crate::modules::serving_daemon::{ServingLudicrousHold, ServingSteadyHold};
+use crate::inference::serving_holds::{ServingLudicrousHold, ServingSteadyHold};
 use crate::resources::placement::{plan_placement, LaneDemand, Placement, ResidentLane};
 
 /// How long to watch for a grow-relaunch to START (lane goes not-ready) after declaring
@@ -181,7 +181,7 @@ impl ExamServingContext {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::modules::serving_daemon::{serving_held_steady, serving_ludicrous_active};
+    use crate::inference::serving_holds::{serving_held_steady, serving_ludicrous_active};
     use crate::resources::placement::DemandTier;
 
     const GIB: u64 = 1 << 30;

@@ -32,6 +32,9 @@ use std::path::{Path, PathBuf};
 
 use uuid::Uuid;
 
+use crate::code::card_branch::card_branch;
+use crate::persona::card_checkout::{checkout_path_for, gym_workspace};
+
 /// What staging produced for this claimer.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Staging {
@@ -55,76 +58,6 @@ enum Step {
     Shell(String),
     /// A recipe card with no workspace preparation.
     Nothing,
-}
-
-/// Where a claimed card's checkout ALREADY IS, staging nothing.
-///
-/// The read-only counterpart to [`stage_for_card`], and the ONE place that answers
-/// "where does this card's work live" so a caller cannot answer it differently
-/// ([[the-compression-principle]]). A benchmark card resolves through its title
-/// recipe's staged instance; every other card is airc's per-card worktree, which
-/// [`airc_lib::work_worktree::worktree_path_for`] derives purely from the card id —
-/// its own doc calls this "the lookup `card_staging` needs to root a citizen's
-/// hands at a repo card".
-///
-/// **Why a read-only resolver has to exist separately:** `stage_for_card` is the
-/// CLAIM-time path and may clone a repo and cut a branch. `root_at_held_card` runs
-/// on EVERY turn a citizen holds a card, so it must re-derive what staging already
-/// produced rather than perform staging on a turn's hot path. Same answer, no work.
-///
-/// `None` means this node has no checkout for the card — not that the card is
-/// untethered. The caller decides what to say about that; it is never silently a
-/// reason to act somewhere else.
-pub fn checkout_path_for(peer: &Uuid, card: &airc_lib::WorkCard) -> Option<PathBuf> {
-    // A benchmark REVIEW card's work is in the OWNER's checkout (the fix under review
-    // lives there), so the reviewer's hands stand in it. One rule for every turn (card
-    // fc9e9fd7: the held-work turn kept its own copy of this resolver).
-    if let Some(instance) = crate::cognition::bench_title::parse_review_title(&card.title) {
-        let copies = crate::persona::staged_workspace::owners_of(&instance);
-        if let Some(copy) = copies.iter().find(|c| c.has_work).or_else(|| copies.first()) {
-            return Some(copy.path.clone());
-        }
-    }
-    if let Some((bench, _)) = crate::cognition::bench_title::parse_card_title(&card.title) {
-        let spec = crate::commands::benchmark::known_benchmarks().iter().find(|s| s.name == bench)?;
-        return if spec.swe_dataset().is_some() {
-            crate::persona::staged_workspace::workspace_for_held_cards(peer, std::iter::once(card.title.as_str()))
-        } else {
-            let root = gym_workspace(&crate::paths::continuum_home().ok()?, *peer);
-            root.is_dir().then_some(root)
-        };
-    }
-    airc_lib::work_worktree::worktree_path_for(card.card_id).filter(|p| p.join(".git").exists())
-}
-
-/// PURE: the branch a repo card's work lives on — `<card short id>/<title slug>`. The
-/// same expression on every node, which is what lets a node the card moves to fetch
-/// the branch the last node pushed (`workspace_transfer::arrive`) rather than cut a
-/// fresh one from its own clone's HEAD.
-pub fn card_branch(card: &airc_lib::WorkCard) -> String {
-    let short = airc_lib::work_worktree::short_id(card.card_id);
-    let slug: String = card
-        .title
-        .to_lowercase()
-        .chars()
-        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
-        .collect::<String>()
-        .split('-')
-        .filter(|s| !s.is_empty())
-        .take(6)
-        .collect::<Vec<_>>()
-        .join("-");
-    format!("{short}/{slug}")
-}
-
-/// Whether a branch name has [`card_branch`]'s shape: a card's short id, then `/`. The one
-/// reader of that shape, so code outside card staging (the citizen workspace's shared sync)
-/// can tell a branch that will be pushed for review from a citizen's own working branch.
-pub fn is_card_branch(branch: &str) -> bool {
-    branch.split_once('/').is_some_and(|(short, _)| {
-        short.len() == airc_lib::work_worktree::SHORT_ID_LEN
-            && short.chars().all(|c| c.is_ascii_hexdigit())
-    })
 }
 
 /// Stage `title`'s work into the workspace of `claimer` under `home`.
@@ -163,7 +96,7 @@ pub async fn stage_for_card(home: &Path, claimer: Uuid, card: &airc_lib::WorkCar
     // staged as Ordinary and her hands stayed on the resident checkout, so a citizen who
     // pulled a card for another project (career-wrangler, 2026-09-28) had git, the PR
     // verbs and the build all pointed at continuum while she worked someone else's repo.
-    let clone = match crate::modules::repo_registry::path_for(&repo) {
+    let clone = match crate::code::repo_registry::path_for(&repo) {
         Some(clone) => clone,
         None => match ensure_managed_clone(home, &repo).await {
             Ok(clone) => clone,
@@ -247,49 +180,6 @@ pub async fn stage_for_card(home: &Path, claimer: Uuid, card: &airc_lib::WorkCar
 /// lost and probes the outcome (`work.claim.staged`, `card.checkout.migrated`); if it cannot,
 /// the old tree stays hers and the turn binds to it as before. A card clone is untouched.
 ///
-/// Gated so a tree that cannot migrate is not restaged on every turn (Fable on #5132: each
-/// try is a GitHub fetch, a submodule pass and a branch arrival). It is tried only when the
-/// local checks the migration itself needs already pass (clean, on a branch, nothing
-/// unpushed; local git only, no network), and at most once per carry interval per (resident,
-/// card): the carry is what pushes her commits, so that is when an unpushed tree can become
-/// migratable.
-pub async fn restage_held_linked_checkout(peer: Uuid, card: &airc_lib::WorkCard) {
-    static TRIED: std::sync::LazyLock<dashmap::DashMap<(Uuid, Uuid), std::time::Instant>> =
-        std::sync::LazyLock::new(dashmap::DashMap::new);
-    let Some(existing) = checkout_path_for(&peer, card)
-        .filter(|existing| airc_lib::work_worktree::is_linked_worktree(existing))
-    else {
-        return;
-    };
-    use crate::persona::workspace_transfer::{current_branch, has_unpushed_work, is_dirty};
-    if !matches!(is_dirty(&existing).await, Ok(false))
-        || current_branch(&existing).await.is_none()
-        || has_unpushed_work(&existing).await
-    {
-        return;
-    }
-    let key = (peer, card.card_id.as_uuid());
-    if TRIED
-        .get(&key)
-        .is_some_and(|at| at.elapsed() < crate::modules::card_carry::CARRY_SWEEP)
-    {
-        return;
-    }
-    TRIED.insert(key, std::time::Instant::now());
-    match crate::paths::continuum_home() {
-        Ok(home) => {
-            stage_for_card(&home, peer, card).await;
-        }
-        Err(error) => continuum_base::probe!(
-            class = "persona.work.restage_skipped",
-            peer = %peer,
-            card = %card.card_id.as_uuid(),
-            error = %error,
-            "a held linked checkout could not be restaged: no continuum home"
-        ),
-    }
-}
-
 /// A card repo this node may clone: exactly `owner/name`. The card's repo id is written by
 /// whichever peer created the card, and here it becomes a path and a `gh` argument, so
 /// `../x`, `a/b/c` and a leading `-` are refused at construction. The shape check is the
@@ -380,7 +270,7 @@ async fn ensure_managed_clone(home: &Path, repo: &str) -> Result<PathBuf, CloneE
     let target = repo.managed_path(home);
     // Two citizens claiming cards of the same new repo at once must not clone twice.
     let _one_clone_at_a_time = CLONING.lock().await;
-    if let Some(existing) = crate::modules::repo_registry::path_for(&key) {
+    if let Some(existing) = crate::code::repo_registry::path_for(&key) {
         return Ok(existing);
     }
     if !target.join(".git").is_dir() {
@@ -399,7 +289,7 @@ async fn ensure_managed_clone(home: &Path, repo: &str) -> Result<PathBuf, CloneE
         }
         cloned?;
     }
-    crate::modules::repo_registry::record(&key, &target);
+    crate::code::repo_registry::record(&key, &target);
     continuum_base::probe!(
         class = "work.claim.repo_cloned",
         repo = %key,
@@ -407,11 +297,6 @@ async fn ensure_managed_clone(home: &Path, repo: &str) -> Result<PathBuf, CloneE
         "a repo card's repo had no checkout on this node — cloned into the managed checkout and recorded"
     );
     Ok(target)
-}
-
-/// The gym artifact root, shared by claim staging, hands binding and grading.
-pub(crate) fn gym_workspace(home: &Path, peer: Uuid) -> PathBuf {
-    crate::identity::citizen_peer_dir(home, crate::identity::PeerId::from_uuid(peer)).join("workspace")
 }
 
 pub async fn stage_for_claimer(home: &Path, claimer: Uuid, title: &str) -> Staging {
@@ -441,17 +326,12 @@ pub async fn stage_for_claimer(home: &Path, claimer: Uuid, title: &str) -> Stagi
         ms = started.elapsed().as_millis() as u64,
         "on-claim staging — the claimer's workspace prepared per the card's recipe"
     );
-    // A staged tree (fresh clone, pristine restage, or shield) is a written workspace:
-    // the bench board learns of it from this event, not from a clock (card f860e59c).
-    if let Staging::Ready { path } = &outcome {
-        crate::code::workspace_events::note_written(path);
-    }
     outcome
 }
 
 /// Ask the recipe what staging `task` means. Benchmark specs are the recipes today.
 async fn resolve_step(bench: &str, task: &str) -> Result<Step, String> {
-    let spec = crate::commands::benchmark::known_benchmarks()
+    let spec = crate::recipe::benchmark_catalog::known_benchmarks()
         .iter()
         .find(|s| s.name == bench)
         .ok_or_else(|| format!("card names unknown benchmark '{bench}'"))?;
@@ -553,21 +433,16 @@ async fn stage_swe(workspace: &Path, instance: &crate::cognition::swe_bench::Swe
     }
     // The env (pytest + the repo, per-instance uv venv) builds BEHIND the claim: cached
     // after the first build, minutes the first time — never on the claim's critical
-    // path. Failure marks the instance broken this boot so a scored solve is not
-    // fired into a known wall; the card stays claimable once the env heals.
+    // path. A failure is an ENV failure, named on the probe; the card stays claimable.
     let inst = instance.clone();
     tokio::spawn(async move {
         match swe_bench::ensure_env(&inst, &dir).await {
-            Ok(_) => {
-                crate::modules::work::env_broken_this_boot().remove(&inst.instance_id);
-                continuum_base::probe!(
-                    class = "benchmark.env.prewarmed",
-                    instance = %inst.instance_id,
-                    "env ready behind the claim"
-                );
-            }
+            Ok(_) => continuum_base::probe!(
+                class = "benchmark.env.prewarmed",
+                instance = %inst.instance_id,
+                "env ready behind the claim"
+            ),
             Err(e) => {
-                crate::modules::work::env_broken_this_boot().insert(inst.instance_id.clone());
                 continuum_base::probe!(
                     class = "benchmark.env.prewarm_failed",
                     instance = %inst.instance_id,
@@ -596,6 +471,7 @@ fn failed(claimer: Uuid, title: &str, stage: &'static str, error: String) -> Sta
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::code::card_branch::is_card_branch;
 
     // what this catches: the dispatch→pull inversion at its seam. A card claimed by a
     // citizen who was NEVER its assignee must be staged into HER workspace (keyed by her
@@ -714,7 +590,7 @@ mod tests {
     fn a_generic_repo_card_is_never_answered_with_a_bench_checkout_that_its_title_names() {
         let home = tempfile::tempdir().unwrap(); // test: temp dir creation
         // Under the one crate-wide home lock (#4082); restored by the guard's drop.
-        let _home = crate::test_env::HomeGuard::set_blocking(home.path());
+        let _home = crate::paths::test_home::HomeGuard::set_blocking(home.path());
         std::env::set_var("CONTINUUM_HOME", home.path());
 
         let peer = Uuid::new_v4();

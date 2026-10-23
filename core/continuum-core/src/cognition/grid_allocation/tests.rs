@@ -503,10 +503,10 @@
         let (roles, floors) = roles_from(&[coder(65_536), helper.clone(), coder(131_072), lax], Some(70_071));
         assert_eq!(roles.iter().map(|r| r.name.as_str()).collect::<Vec<_>>(), vec!["coder", "helper"], "authoring order is priority");
         assert_eq!(roles[0].requirement, Requirement { window: 131_072, target_window: None, min_capability: 7, decode_floor_tps: Some(10.0) }, "the strictest declared requirement wins on every axis — a later laxer citizen loosens nothing");
-        assert_eq!(roles[1].requirement, Requirement { window: super::super::serving_plan::BOOTSTRAP_WORKING_SET, target_window: Some(70_071), min_capability: 0, decode_floor_tps: None }, "undeclared demand is a target, never a gate");
+        assert_eq!(roles[1].requirement, Requirement { window: crate::inference::planning::serving_plan::BOOTSTRAP_WORKING_SET, target_window: Some(70_071), min_capability: 0, decode_floor_tps: None }, "undeclared demand is a target, never a gate");
         assert_eq!(floors, vec![RoleFloor { role: 0, min_seats: 3 }, RoleFloor { role: 1, min_seats: 1 }]);
         let (roles, _) = roles_from(&[helper], None);
-        assert_eq!(roles[0].requirement.window, super::super::serving_plan::BOOTSTRAP_WORKING_SET, "nothing measured yet = the bootstrap working-set floor");
+        assert_eq!(roles[0].requirement.window, crate::inference::planning::serving_plan::BOOTSTRAP_WORKING_SET, "nothing measured yet = the bootstrap working-set floor");
         assert!(roles_from(&[], Some(1)).0.is_empty());
     }
 
@@ -535,7 +535,7 @@
         let key = inputs_key(&i);
         i.roles[0].requirement.target_window = Some(160_000);
         assert_ne!(key, inputs_key(&i), "new measurements must recompute selection");
-        i.nodes[0].plans[0].window = super::super::serving_plan::BOOTSTRAP_WORKING_SET - 1;
+        i.nodes[0].plans[0].window = crate::inference::planning::serving_plan::BOOTSTRAP_WORKING_SET - 1;
         assert_eq!(allocate(&i).node(node).unwrap().seats, 0, "the bootstrap working-set floor remains hard");
     }
 
@@ -606,7 +606,7 @@
     // already publishes. A cold 64 GB-class budget planning a 27B-class footprint.
     #[test]
     fn a_real_serving_plan_reads_as_a_lane_plan() {
-        use super::super::serving_plan::{plan_serving, HostBudget, ModelFootprint, ServingDemand};
+        use crate::inference::planning::serving_plan::{plan_serving, HostBudget, ModelFootprint, ServingDemand};
         let model = ModelFootprint {
             model_id: "coder-27b".into(),
             weights_bytes: 19_000_000_000,

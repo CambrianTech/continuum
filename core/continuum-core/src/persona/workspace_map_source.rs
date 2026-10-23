@@ -48,7 +48,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 
 use crate::persona::rag_budget::{
-    ContinuationCursor, RagContext, RagDelivery, RagItem, RagSource, ResolutionPreference,
+     RagContext, RagDelivery, RagItem, RagSource, ResolutionPreference,
 };
 
 /// Source identifier — the deliberation faculty renders this delivery under a
@@ -59,7 +59,7 @@ pub(crate) const SOURCE_ID: &str = "workspace-map";
 /// Token estimate — the ONE canonical chars/4 estimator (`cognition::token_budget`),
 /// shared by every RAG source so the replay ledger's numbers match. (Was a private
 /// copy — converged.)
-use crate::cognition::token_budget::estimate_prompt_tokens as estimate_tokens;
+use continuum_base::token_estimate::estimate_prompt_tokens as estimate_tokens;
 
 /// The real shape of the workspace: the root the tools act in, plus its
 /// top-level directory names (the navigation structure a persona globs against).
@@ -119,7 +119,7 @@ pub struct OwnCheckoutWorkspaceLayoutReader(LayoutReader);
 #[async_trait::async_trait]
 impl WorkspaceLayoutReader for OwnCheckoutWorkspaceLayoutReader {
     async fn layout(&self) -> Result<WorkspaceLayout, String> {
-        let root = crate::modules::repo_registry::own_checkout()
+        let root = crate::code::repo_registry::own_checkout()
             .await
             .map_err(|e| format!("workspace root unavailable: {e}"))?;
         self.0.read_layout(root).await
@@ -241,7 +241,7 @@ impl WorkspaceLayoutReader for CitizenLayerWorkspaceLayoutReader {
         let acting_root_present = acting.is_some();
         let root = match acting {
             Some(r) => r,
-            None => crate::modules::code_commands::ensure_citizen_layer(&self.peer)
+            None => crate::code::citizen_layer::ensure_citizen_layer(&self.peer)
                 .await
                 .map_err(|e| format!("citizen layer unavailable: {e}"))?,
         };
@@ -375,7 +375,7 @@ impl RagSource for WorkspaceMapSource {
             source_id: SOURCE_ID.to_string(),
             items: Vec::new(),
             tokens_used: 0,
-            continuation: None,
+            truncated: false,
             resolution_used: res,
         };
 
@@ -436,20 +436,11 @@ impl RagSource for WorkspaceMapSource {
             }],
             tokens_used: tokens,
             // One current layout snapshot per turn; no pagination.
-            continuation: None,
+            truncated: false,
             resolution_used: resolution,
         }
     }
 
-    async fn deliver_continuation(
-        &self,
-        _ctx: &RagContext,
-        _cursor: ContinuationCursor,
-        _budget: u32,
-    ) -> Option<RagDelivery> {
-        // The layout is a single current snapshot; any cursor is stale.
-        None
-    }
 }
 
 #[cfg(test)]

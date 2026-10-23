@@ -286,12 +286,12 @@ impl ServingDaemonModule {
         // are loadable into the serving catalog (the `--lora` set). Read from the
         // producer-written manifest, keyed by the CONTINUUM base id (the HF base
         // in each gene's PEFT config never matches the served id, so a directory
-        // scan can't make this association — see forge::adapter_manifest). An
+        // scan can't make this association — see genome::adapter_manifest). An
         // unreadable/corrupt manifest degrades to base-only HERE (logged loud) so
         // the reconcile tick never panics; a MISSING gene file still fails loud at
         // spawn (AdapterNotFound). Empty = base model only, the legitimate state.
-        let desired_adapters: Vec<AdapterEntry> = match crate::forge::adapter_manifest::load() {
-            Ok(all) => crate::forge::adapter_manifest::for_base(&all, &desired)
+        let desired_adapters: Vec<AdapterEntry> = match crate::genome::adapter_manifest::load() {
+            Ok(all) => crate::genome::adapter_manifest::for_base(&all, &desired)
                 .into_iter()
                 .map(|a| AdapterEntry {
                     alias: a.alias,
@@ -413,12 +413,12 @@ impl ServingDaemonModule {
                                 && g.lanes == live.lanes
                         })
                     {
-                        let observed = crate::cognition::working_set::PromptSample::geometry_median(
+                        let observed = crate::inference::resource_admission::PromptSample::geometry_median(
                             &(self.leased_in_sent)(),
                             endpoint.root(),
                             &geometry,
                         );
-                        crate::modules::served_window_store::record_reconciled(
+                        crate::inference::served_window_store::record_reconciled(
                             geometry,
                             settled_now,
                             observed,
@@ -427,7 +427,7 @@ impl ServingDaemonModule {
                     if settled_now {
                         // A settled geometry is lanes the hour served: fold it into the
                         // health window's maximum (the lane-bound rest stands on that).
-                        crate::modules::citizen_health::note_lanes(live.lanes as u64);
+                        crate::persona::health_ledger::note_lanes(live.lanes as u64);
                         continuum_base::probe!(
                             target: "continuum_core::modules::serving_daemon", class = "serving.geometry.settled",
                             model,
@@ -449,10 +449,7 @@ impl ServingDaemonModule {
                 // same sustained streak and cooldown as the window evidence, and every hold above
                 // (resident training, an eval) still defers it.
                 let measured_state = crate::inference::slots::measured_state_bytes(
-                    &crate::inference::llama_server::kv_page_dir(
-                        desired.as_str(),
-                        live.served_context_window,
-                    ),
+                    &crate::inference::llama_server::kv_page_dir(desired.as_str()),
                 );
                 let cache_holds_no_state =
                     crate::inference::lane_args::launched_cache_holds_no_state(

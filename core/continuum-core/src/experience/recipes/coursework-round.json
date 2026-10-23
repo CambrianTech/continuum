@@ -206,10 +206,6 @@
       "default": 0,
       "doc": "cap on cards offered; 0 = every tested lesson"
     },
-    "review_gate": {
-      "default": false,
-      "doc": "an owner's done becomes review + a sibling review card a non-owner pulls"
-    },
     "invite": {
       "default": [],
       "doc": "citizen names to INVITE into the round's room. An invitation, never an assignment: a citizen who leaves the room is offered none of its cards, nothing re-seats her, and leaving costs her nothing. Empty = nobody is invited"
@@ -234,16 +230,6 @@
       ]
     },
     {
-      "command": "benchmark/round-open",
-      "params": {
-        "roomId": "$room.id",
-        "roomName": "$room.name",
-        "suite": "$imported.suite",
-        "driver": "citizen",
-        "reviewGate": "$args.review_gate"
-      }
-    },
-    {
       "command": "work/create",
       "each": "$imported.cards",
       "params": {
@@ -256,14 +242,6 @@
       "saves": [
         "cards"
       ]
-    },
-    {
-      "command": "benchmark/round-track",
-      "params": {
-        "roomId": "$room.id",
-        "cards": "$cards",
-        "tasks": "$imported.cards"
-      }
     },
     {
       "command": "activity/invite",

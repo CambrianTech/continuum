@@ -250,25 +250,18 @@
         assert!(touches_build_inputs(["tools/scripts/lib/core-features.sh"]));
     }
 
-    // what this catches: the Rust list and CI's trigger drifting apart, so a tip the node
-    // treats as a deploy has no artifact (it waits out the budget, then compiles anyway).
+    // Every tip is considered hourly, so no BUILD_INPUTS path filter can omit an artifact.
+    // Urgent repairs still dispatch directly; newer tips must not cancel active publication.
     #[test]
-    fn ci_builds_on_every_build_input() {
-        let workflow = include_str!("../../../../.github/workflows/core-binaries.yml");
-        let push = workflow
-            .split("  push:")
-            .nth(1)
-            .expect("core-binaries.yml has a push trigger");
-        for input in BUILD_INPUTS {
-            let pattern = match input.strip_suffix('/') {
-                Some(dir) => format!("- '{dir}/**'"),
-                None => format!("- '{input}'"),
-            };
-            assert!(
-                push.contains(&pattern),
-                "core-binaries.yml push.paths lacks {pattern}"
-            );
-        }
+    fn ci_considers_every_tip_without_cancelling_publication() {
+        let publisher = include_str!("../../../../.github/workflows/core-binaries.yml");
+        let hourly = include_str!("../../../../.github/workflows/core-binaries-hourly.yml");
+        assert!(publisher.contains("  workflow_dispatch:"));
+        assert!(!publisher.lines().any(|line| line == "  push:"));
+        assert!(publisher.contains("cancel-in-progress: ${{ github.event_name == 'pull_request' }}"));
+        assert!(hourly.contains("cron: '23 * * * *'"));
+        assert!(hourly.contains("ref: canary"));
+        assert!(hourly.contains("CORE_BINARIES_HOURLY_ENABLED == 'true'"));
     }
 
     // what this catches (f4571736): user nodes must never fall back to compiling when
@@ -315,32 +308,44 @@
     // consumer only ever waited on the tip. The newest PUBLISHED candidate is the deploy.
     #[tokio::test]
     async fn the_newest_published_build_is_deployed_not_only_the_tip() {
+        struct Source<'a> {
+            keys: &'a [String],
+            published: &'a [bool],
+            verdicts: &'a [Option<crate::deploy_tracker::Checks>],
+            fetched: std::sync::Mutex<Vec<String>>,
+        }
+        #[async_trait::async_trait]
+        impl PublishedCoreSource for Source<'_> {
+            type Artifact = String;
+            async fn published(&self, key: &str) -> Result<bool, String> {
+                if key == "unreadable" { return Err("publication transport unavailable".into()); }
+                Ok(self.published[self.keys.iter().position(|k| k == key).unwrap()])
+            }
+            async fn checks(&self, key: &str) -> Result<crate::deploy_tracker::Checks, String> {
+                let verdict = self.verdicts[self.keys.iter().position(|k| k == key).unwrap()];
+                // None exercises a failed read; Some(Unknown) tests an explicit unknown verdict.
+                verdict.ok_or_else(|| "CI source unavailable".into())
+            }
+            async fn fetch(&self, key: &str) -> Result<Option<String>, PublishedCoreError> {
+                self.fetched.lock().unwrap().push(key.to_string());
+                Ok(Some(key.to_string()))
+            }
+        }
         async fn newest_published(candidates: &[String], published: &[bool], verdicts: &[Option<crate::deploy_tracker::Checks>]) -> Option<String> {
-            struct Source<'a> {
-                keys: &'a [String],
-                published: &'a [bool],
-                verdicts: &'a [Option<crate::deploy_tracker::Checks>],
-                fetched: std::sync::Mutex<Vec<String>>,
-            }
-            #[async_trait::async_trait]
-            impl PublishedCoreSource for Source<'_> {
-                type Artifact = String;
-                async fn published(&self, key: &str) -> Result<bool, String> {
-                    Ok(self.published[self.keys.iter().position(|k| k == key).unwrap()])
-                }
-                async fn checks(&self, key: &str) -> Result<crate::deploy_tracker::Checks, String> {
-                    let verdict = self.verdicts[self.keys.iter().position(|k| k == key).unwrap()];
-                    // None exercises a failed read; Some(Unknown) tests an explicit unknown verdict.
-                    verdict.ok_or_else(|| "CI source unavailable".into())
-                }
-                async fn fetch(&self, key: &str) -> Result<Option<String>, PublishedCoreError> {
-                    self.fetched.lock().unwrap().push(key.to_string());
-                    Ok(Some(key.to_string()))
-                }
-            }
             let source = Source { keys: candidates, published, verdicts, fetched: Default::default() };
             let selected = select_published_core(candidates, &source).await;
-            let key = selected.map(|(key, artifact)| { assert_eq!(artifact.unwrap(), Some(key.clone())); key });
+            let key = match selected {
+                Some((key, Ok(Some(artifact)))) => { assert_eq!(artifact, key); Some(key) }
+                Some((_, Err(PublishedCoreError::SourcePending(why)))) => {
+                    assert!(!why.is_empty(), "retain the failed observation for diagnosis");
+                    None
+                }
+                None => {
+                    assert!(!published.iter().any(|out| *out), "a known publication must not enter the missing-artifact deadline");
+                    None
+                }
+                other => { assert!(other.is_none(), "unexpected selection: {other:?}"); None }
+            };
             assert_eq!(*source.fetched.lock().unwrap(), key.iter().cloned().collect::<Vec<_>>(),
                 "only the authorized revision may reach artifact fetch");
             key
@@ -350,6 +355,25 @@
             .to_vec();
         use crate::deploy_tracker::Checks;
         let green = [Some(Checks::Green); 3];
+        // Same source and fetch recorder across uncertain observations and recovery:
+        // a20380a6 must be a typed source wait, not an operational exit that forces
+        // the actuator to spend another launch after its stranded backoff.
+        let recovery_keys = vec!["published".into()];
+        let unknown = [Some(Checks::Unknown)];
+        let pending = [Some(Checks::Pending)];
+        let failed_read = [None];
+        let authorized = [Some(Checks::Green)];
+        let mut recovering_source = Source { keys: &recovery_keys, published: &[true], verdicts: &unknown, fetched: Default::default() };
+        for observations in [&unknown, &pending, &failed_read] {
+            recovering_source.verdicts = observations;
+            assert!(matches!(select_published_core(&recovery_keys, &recovering_source).await,
+                Some((_, Err(PublishedCoreError::SourcePending(_))))));
+        }
+        assert!(matches!(recovering_source.fetched.lock(), Ok(ref fetched) if fetched.is_empty()));
+        recovering_source.verdicts = &authorized;
+        assert!(matches!(select_published_core(&recovery_keys, &recovering_source).await,
+            Some((_, Ok(Some(_))))));
+        assert!(matches!(recovering_source.fetched.lock(), Ok(ref fetched) if **fetched == recovery_keys));
         assert_eq!(
             newest_published(&candidates, &[false, false, true], &green).await.as_deref(),
             Some("8de501e35")
@@ -375,6 +399,14 @@
             assert_eq!(newest_published(&candidates, &[false, true, false], &[Some(Checks::Green), refused, Some(Checks::Unknown)]).await.as_deref(),
                 None, "without a published green candidate the running core stands");
         }
+        // Regression for 0738db8a: an unreadable source is not a missing release,
+        // and the next successful authorization may fetch without resetting state.
+        let unreadable = vec!["unreadable".into()];
+        assert_eq!(newest_published(&unreadable, &[true], &[Some(Checks::Green)]).await, None);
+        let recovering = vec!["published".into()];
+        assert_eq!(newest_published(&recovering, &[true], &[Some(Checks::Unknown)]).await, None);
+        assert_eq!(newest_published(&recovering, &[true], &[Some(Checks::Green)]).await.as_deref(), Some("published"));
+        assert_eq!(newest_published(&["unreadable".into(), "older".into()], &[true, true], &[Some(Checks::Green); 2]).await.as_deref(), Some("older"));
         // A published ancestor under resource pressure remains published and authorized,
         // but may not redownload until the same measured condition clears.
         struct DeferredSource { pending: Option<(String, ResourceDeferral)>, fetches: std::sync::atomic::AtomicUsize }

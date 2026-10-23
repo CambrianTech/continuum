@@ -256,11 +256,11 @@ impl AircPersonaConversation {
                         events.sort_by_key(|e| e.lamport);
                         for event in &events {
                             if event.lamport <= self.last_lamport
-                                || crate::airc::realtime_wire::is_stream_chunk(event)
+                                || crate::routing::airc_realtime_wire::is_stream_chunk(event)
                             {
                                 continue;
                             }
-                            crate::modules::work::bridge_wire_work_event(
+                            crate::persona::work_board::events::bridge_wire_work_event(
                                 event,
                                 self.runtime.peer_id(),
                             )
@@ -436,7 +436,7 @@ pub(super) fn perceptual_from_event(event: &TranscriptEvent) -> Result<IncomingM
     // all three named skip reasons live in the ONE decoder `room_turn_from_event`
     // (realtime_wire) — shared with the digest element and the positron
     // projection. This wrapper only adds the transcript's lamport.
-    let turn = crate::airc::realtime_wire::room_content_from_event(event)?;
+    let turn = crate::persona::room_event::room_content_from_event(event)?;
     // Work presence remains in the room's durable state/RAG projection. It is
     // not a new utterance to append after every action: doing that bypassed
     // AircRagSource's existing presence folding and filled active turns with
@@ -498,7 +498,7 @@ impl AircPersonaConversation {
         // so a citizen's own `work/state` echo counts. State events dedup by
         // event id; reviewed-credit delivery selects the publisher observer
         // and retains its durable retry identity.
-        crate::modules::work::bridge_wire_work_event(&event, self.runtime.peer_id()).await;
+        crate::persona::work_board::events::bridge_wire_work_event(&event, self.runtime.peer_id()).await;
         self.last_lamport = self.last_lamport.max(event.lamport);
         // Recover a perceptual room turn. Two on-wire shapes
         // reach a persona's subscribe stream and both are

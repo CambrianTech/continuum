@@ -1,9 +1,9 @@
 #![cfg(test)]
 
     use super::*;
-    /// The one crate-wide home lock (`crate::test_env`, #4082) — pins HOME, USERPROFILE,
+    /// The one crate-wide home lock (`crate::paths::test_home`, #4082) — pins HOME, USERPROFILE,
     /// HF_HOME and CONTINUUM_HOME together and restores them on drop.
-    use crate::test_env::HomeGuard;
+    use crate::paths::test_home::HomeGuard;
 
     // what this catches (card ad4bfaeb): a passing review after a failure training the
     // rejected turns as good. Kimi, 2026-10-10: review 5769a6c3 failed her card 63855189
@@ -19,8 +19,8 @@
     // to Trusted this fails, and the substrate connection can be revisited.
     #[test]
     pub(super) fn the_rejected_mark_needs_the_substrates_authority_not_hers() {
-        use crate::modules::grid::acl::is_command_authorized;
-        use crate::modules::grid::node::TrustLevel;
+        use crate::routing::command_acl::is_command_authorized;
+        use crate::routing::trust_level::TrustLevel;
         assert!(!is_command_authorized("data/update", TrustLevel::Trusted), "her own identity cannot mark the row");
         assert!(is_command_authorized("data/list", TrustLevel::Trusted), "while she can still read her staged rows");
     }

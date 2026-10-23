@@ -133,9 +133,8 @@ impl ServiceModule for InferenceCoordinatorModule {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::inference::planning::adaptive_throughput::{
-        ResourceClass, TargetSilicon, ThroughputLaneBudget,
-    };
+    use crate::resources::throughput_class::{ResourceClass, TargetSilicon};
+    use crate::inference::planning::adaptive_throughput::ThroughputLaneBudget;
     use crate::paging::{BrokerConfig, PressureBroker};
 
     fn test_config() -> CoordinatorConfig {

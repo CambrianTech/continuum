@@ -151,7 +151,7 @@ fn dot(a: &[f32], b: &[f32]) -> f32 {
 mod tests {
     use super::*;
     use crate::genome::commons_ranking::DefaultCommonsPolicy;
-    use crate::forge::recipe::CorpusRef;
+    use crate::genome::corpus_ref::CorpusRef;
     use crate::genome::signature::GeneSignature;
 
     fn sig(embedder: &str, centroid: Vec<f32>) -> GeneSignature {

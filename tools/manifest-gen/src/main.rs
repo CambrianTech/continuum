@@ -22,7 +22,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::exit;
 
-#[path = "../../../core/continuum-core/src/paging/disk_capacity.rs"]
+#[path = "../../../core/continuum-kernel/src/paging/disk_capacity.rs"]
 mod disk_capacity;
 
 fn render_disk_capacity() -> String {

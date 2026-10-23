@@ -139,7 +139,7 @@ impl Drop for QuiesceLease {
         // demand from whatever overrides remain (or the base floor if none) — safe under
         // any release order of overlapping measurements.
         if let Some(id) = self.demand_override {
-            crate::modules::serving_daemon::release_lane_demand(id);
+            crate::inference::lane_demand::release_lane_demand(id);
         }
     }
 }
@@ -345,24 +345,6 @@ impl PersonaAircRuntimeRegistry {
         self.inner.get(&persona_id).map(|e| e.quiesced.clone())
     }
 
-    /// Is this persona's autonomic self-tick currently suspended? `false` if she
-    /// isn't online (a despawned persona initiates nothing anyway).
-    pub fn is_quiesced(&self, persona_id: Uuid) -> bool {
-        self.inner
-            .get(&persona_id)
-            .map(|e| e.quiesced.load(Ordering::Relaxed))
-            .unwrap_or(false)
-    }
-
-    /// Suspend / resume ONE persona's autonomic self-tick. No-op if she isn't
-    /// online. Prefer [`quiesce_all`] for measurement — its lease guarantees the
-    /// resume even if the eval panics.
-    pub fn set_quiesced(&self, persona_id: Uuid, quiesced: bool) {
-        if let Some(e) = self.inner.get(&persona_id) {
-            e.quiesced.store(quiesced, Ordering::Relaxed);
-        }
-    }
-
     /// Acquire an exclusive-measurement lease over the WHOLE live fleet: every
     /// online persona's autonomic self-tick suspends now, and RESTORES when the
     /// returned guard drops — including on panic / early-return, because `Drop`
@@ -416,7 +398,7 @@ impl PersonaAircRuntimeRegistry {
         // ([[measured-work-gets-an-exclusive-warm-slot-quiesce-others]]). Restored on
         // drop. A no-op (`None`) before the serving daemon booted — pure in unit tests.
         let active = (total - flags.len()) as u32;
-        let demand_override = crate::modules::serving_daemon::quiesce_lane_demand(active);
+        let demand_override = crate::inference::lane_demand::quiesce_lane_demand(active);
         QuiesceLease {
             flags,
             demand_override,

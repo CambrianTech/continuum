@@ -20,7 +20,7 @@ use ts_rs::TS;
 
 use super::similar::{gate_for, SimilarCandidate};
 use crate::cognition::embedding::EmbeddingProvider;
-use crate::modules::embedding::detect_clusters;
+use crate::cognition::embedding::vector_math::detect_clusters;
 use crate::sdk_codegen::{AccessLevel, ActionCommand, CommandError, Ctx};
 
 fn default_min_z() -> f32 {

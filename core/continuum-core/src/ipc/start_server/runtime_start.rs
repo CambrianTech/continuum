@@ -64,7 +64,7 @@ pub(super) fn initialize_and_start_runtime(
     // those in the unconditional set, which broke `--mode=inference-only`
     // (R1#1 BLOCK). Conditional dispatch eliminates the contradiction
     // structurally.
-    if let Err(e) = runtime.verify_registration(&discovery, boot_mode) {
+    if let Err(e) = runtime.verify_registration(discovery, boot_mode) {
         log_error!("ipc", "server", "{}", e);
         return Err(std::io::Error::other(e));
     }

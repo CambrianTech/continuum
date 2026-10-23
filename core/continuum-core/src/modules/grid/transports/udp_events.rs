@@ -16,7 +16,6 @@
 //!   - Node B: Events.subscribe('sensor:motion') → receives via UDP injection
 //!   - Transparent: application code doesn't know events crossed the network
 
-use continuum_base::time::EpochMs;
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -25,9 +24,6 @@ use tokio::sync::RwLock;
 
 use super::super::frame::{GridFrame, GridPayload};
 use crate::runtime;
-
-/// Default UDP port for grid event streaming.
-pub const DEFAULT_UDP_PORT: u16 = 7118;
 
 /// Maximum UDP payload size (conservative for all networks).
 const MAX_UDP_PAYLOAD: usize = 1400;
@@ -39,8 +35,6 @@ struct RemoteSubscription {
     addr: SocketAddr,
     /// Event name patterns (e.g., "sensor:*", "voice:*", "grid:heartbeat")
     patterns: Vec<String>,
-    /// Last heartbeat received (ms since epoch)
-    last_seen: u64,
 }
 
 /// UDP event transport for the grid.
@@ -139,83 +133,6 @@ impl UdpEventTransport {
             .map_err(|e| format!("UDP send: {e}"))?;
 
         Ok(())
-    }
-
-    /// Register a remote node's event subscription.
-    pub async fn add_subscriber(&self, node_id: String, addr: SocketAddr, patterns: Vec<String>) {
-        let mut subs = self.subscribers.write().await;
-        subs.insert(
-            node_id,
-            RemoteSubscription {
-                addr,
-                patterns,
-                last_seen: EpochMs::now().millis(),
-            },
-        );
-    }
-
-    /// Remove a subscriber.
-    pub async fn remove_subscriber(&self, node_id: &str) {
-        let mut subs = self.subscribers.write().await;
-        subs.remove(node_id);
-    }
-
-    /// Start the receive loop — runs until shutdown.
-    /// Received events are passed to the callback for injection into Events.emit().
-    pub async fn recv_loop<F>(&self, on_event: F)
-    where
-        F: Fn(String, serde_json::Value, String) + Send + Sync + 'static,
-    {
-        let socket = match &self.socket {
-            Some(s) => s.clone(),
-            None => return,
-        };
-        let log = runtime::logger("grid-udp");
-
-        let mut buf = vec![0u8; MAX_UDP_PAYLOAD + 100];
-        loop {
-            match socket.recv_from(&mut buf).await {
-                Ok((len, src)) => {
-                    if let Ok(frame) = serde_json::from_slice::<GridFrame>(&buf[..len]) {
-                        match frame.payload {
-                            GridPayload::Event { event, data } => {
-                                on_event(event, data, frame.source_node);
-                            }
-                            // Subscription request: remote node wants our events
-                            GridPayload::Command {
-                                ref command,
-                                ref params,
-                            } if command == "grid/subscribe-events" => {
-                                if let Some(patterns) = params.get("patterns").and_then(|p| {
-                                    serde_json::from_value::<Vec<String>>(p.clone()).ok()
-                                }) {
-                                    let mut subs = self.subscribers.write().await;
-                                    subs.insert(
-                                        frame.source_node.clone(),
-                                        RemoteSubscription {
-                                            addr: src,
-                                            patterns,
-                                            last_seen: EpochMs::now().millis(),
-                                        },
-                                    );
-                                    log.debug(&format!(
-                                        "UDP: {} subscribed from {}",
-                                        frame.source_node, src
-                                    ));
-                                }
-                            }
-                            _ => {
-                                // Non-event frames on UDP are unexpected but not fatal
-                            }
-                        }
-                    }
-                }
-                Err(e) => {
-                    // UDP recv errors are transient — log and continue
-                    log.warn(&format!("UDP recv error: {}", e));
-                }
-            }
-        }
     }
 
     /// Get the bound socket address.

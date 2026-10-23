@@ -84,11 +84,11 @@ impl ChannelElement {
     /// identity), which `sender_id()` exposes so digests attribute the words to the
     /// speaker, not to the core's relay peer.
     fn new(event: TranscriptEvent, embedder: Arc<dyn EmbeddingProvider>) -> Self {
-        // The ONE room-turn decoder (realtime_wire::room_turn_from_event) recovers
+        // The ONE room-turn decoder (persona::room_event::room_turn_from_event) recovers
         // text + logical sender for BOTH wire shapes. A non-turn (presence,
         // event-bridge, decode error) is simply a text-less element here; the
         // skip-reason visibility lives on the perception path.
-        let (text, logical_sender) = match crate::airc::realtime_wire::room_turn_from_event(&event)
+        let (text, logical_sender) = match crate::persona::room_event::room_turn_from_event(&event)
         {
             Ok((sender, text)) => (Some(text), Some(sender)),
             Err(_) => (None, None),
@@ -285,11 +285,11 @@ mod tests {
     // the envelope), not the relay peer that published it.
     #[tokio::test]
     async fn chat_send_envelope_yields_text_and_logical_sender() {
-        use crate::airc::realtime::{
+        use crate::routing::airc_realtime::{
             AircRealtimeDelivery, AircRealtimeEnvelope, AircRealtimePayload,
             AircRealtimePayloadRef, AircRealtimeSchema,
         };
-        use crate::airc::realtime_wire::{body_for_envelope, headers_for_envelope};
+        use crate::routing::airc_realtime_wire::{body_for_envelope, headers_for_envelope};
 
         let human = Uuid::new_v4(); // the operator identity chat/send carries
         let envelope = AircRealtimeEnvelope {

@@ -601,7 +601,7 @@ pub struct CognitionEvalParams {
     pub max_acts: Option<u32>,
     /// Agentic-recovery budget: how many times a FAILED test-graded task is handed its
     /// compiler/test output to fix before it scores a miss. Default [`MAX_FAIL_RETRIES`].
-    /// Set `0` for the ONE-SHOT baseline (what plain inference / unsloth gets on the same
+    /// Set `0` for the ONE-SHOT baseline (what plain inference gets on the same
     /// weights) — so a `0` vs `N` A/B on the identical model+benchmark measures exactly the
     /// edge our agentic loop adds, repeatably, from one param.
     #[serde(default, skip_serializing_if = "Option::is_none")]

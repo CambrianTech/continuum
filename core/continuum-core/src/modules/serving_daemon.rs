@@ -1,7 +1,7 @@
 //! ServingDaemonModule — the ever-present ServiceModule that decides, and
 //! continuously re-decides, how THIS host serves persona inference.
 //!
-//! It is the control loop around the pure [`crate::cognition::serving_plan`]
+//! It is the control loop around the pure [`crate::inference::planning::serving_plan`]
 //! classifier. On each tick it takes an honest snapshot of the host — the
 //! GPU/UMA serving budget plus the model footprints actually on disk — runs
 //! [`plan_serving`], and publishes the resulting [`ServingPlan`] (which base
@@ -27,10 +27,10 @@ mod footprint;
 use super::serving_consumer::{FootprintFn, ServingConsumer, SERVING_CONSUMER_ID};
 use crate::capacity::placement::PlacementRequest;
 use crate::cognition::model_resolver::types::HwCapabilityTier;
-use crate::cognition::serving_plan::footprint::{footprint_for, footprint_from_parts};
-use crate::cognition::serving_plan::{
-    plan_serving, plan_serving_at_rest, plan_serving_stable, HostBudget, ModelFootprint,
-    ServingDemand, ServingPlan,
+use crate::inference::planning::serving_plan::footprint::{footprint_for, footprint_from_parts};
+use crate::inference::planning::serving_plan::{
+    host_budget_from, plan_serving, plan_serving_at_rest, plan_serving_stable, HostBudget,
+    HostBudgetInputs, ModelFootprint, ServingDemand, ServingPlan,
 };
 use crate::gpu::GpuMemoryManager;
 use crate::inference::lane_registry::LaneRecord;
@@ -50,7 +50,7 @@ use async_trait::async_trait;
 use serde_json::Value;
 use std::any::Any;
 use std::collections::HashSet;
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicU8, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicU8, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 use tokio::sync::watch;
@@ -122,7 +122,7 @@ type InheritedLaneSource = Arc<dyn Fn() -> Option<LaneRecord> + Send + Sync>;
 /// its own; production still reads the global, through the default below.
 type DecodeAgeSource = Arc<dyn Fn() -> Option<u64> + Send + Sync>;
 type LeasedInSentSource =
-    Arc<dyn Fn() -> Vec<crate::cognition::working_set::PromptSample> + Send + Sync>;
+    Arc<dyn Fn() -> Vec<crate::inference::resource_admission::PromptSample> + Send + Sync>;
 
 /// Where the heartbeat reads "consecutive REAL generations that failed on the live lane
 /// since the last success" (#363). Defaults to the llama-server process-global stamped by
@@ -562,7 +562,7 @@ impl ServingDaemonModule {
                 crate::model_registry::try_global().and_then(|r| r.model(id).cloned())
             }),
             decode_age: Arc::new(crate::inference::llama_server::ms_since_real_work),
-            leased_in_sent: Arc::new(crate::cognition::resource_admission::leased_in_sent_samples),
+            leased_in_sent: Arc::new(crate::inference::resource_admission::leased_in_sent_samples),
             last_miss_slots_fp: Arc::new(std::sync::Mutex::new(None)),
             frozen_slots: Arc::new(parking_lot::Mutex::new(None)),
             inherited_lane: Arc::new(crate::inference::lane_registry::live_lane),
@@ -651,47 +651,25 @@ pub use intent::{PinFit, PinFitChecker, ServingIntent, ServingIntentSnapshot};
 mod lifecycle;
 #[cfg(test)]
 use lifecycle::reconcile_wedged;
-pub(crate) use lifecycle::LifecycleGate;
+use crate::inference::serving_lifecycle::{LifecycleGate, ReconcileStep, ServingOperation};
 use lifecycle::{
-    reconcile_wedged_at, ForcedProbe, ReconcileStep, ServingOperation, PLAN_NONE_LIVE_LANE_TICKS,
-    RECONCILE_BUSY_SAY_EVERY, RECONCILE_WEDGE_BOUND,
+    reconcile_wedged_at, ForcedProbe, PLAN_NONE_LIVE_LANE_TICKS, RECONCILE_BUSY_SAY_EVERY,
+    RECONCILE_WEDGE_BOUND,
 };
-
-/// Why an admission may not decide now.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum GateRefusal {
-    /// Serving has not published its first plan on this core: the authority may not
-    /// hold a physical reading yet, so free memory is a boot artefact, not capacity.
-    Unsettled,
-    /// A serving operation (relaunch, placement move, teacher batch) holds the gate:
-    /// free memory now is its window, not capacity.
-    Operation,
-}
-/// The gate, held while one admission reads and leases; dropping it releases the gate.
-pub(crate) struct AdmissionHold {
-    _operation: ServingOperation,
-}
 
 mod demand;
-#[cfg(test)]
-use demand::LaneDemandState;
+use crate::inference::lane_demand::lane_demand_overridden;
 use demand::LAST_LEASED_IN_PEAK;
-pub use demand::{
-    lane_demand_overridden, quiesce_lane_demand, release_lane_demand, resident_lane_demand,
-    sustained_leased_in,
-};
+pub use demand::{resident_lane_demand, sustained_leased_in};
 mod budget;
-pub use budget::{
-    governed_host_budget, host_budget_from, live_host_budget, perf_cores, physical_usable_bytes,
-    HostBudgetInputs,
-};
+pub use budget::{governed_host_budget, live_host_budget, perf_cores, physical_usable_bytes};
 #[cfg(test)]
 use budget::{lane_admission_decision, pin_fit_decision};
 mod holds;
-pub use holds::{
-    serving_held_steady, serving_ludicrous_active, serving_pool_kind,
-    ServingLudicrousHold, ServingSteadyHold,
-};
+pub use holds::serving_pool_kind;
+use crate::inference::serving_holds::{serving_held_steady, serving_ludicrous_active};
+#[cfg(test)]
+use crate::inference::serving_holds::{ServingLudicrousHold, ServingSteadyHold};
 
 mod device_budget;
 #[cfg(test)]

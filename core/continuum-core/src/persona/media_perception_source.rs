@@ -19,9 +19,9 @@ use std::sync::Arc;
 use async_trait::async_trait;
 
 use super::rag_budget::{
-    ContinuationCursor, RagContext, RagDelivery, RagItem, RagSource, ResolutionPreference,
+     RagContext, RagDelivery, RagItem, RagSource, ResolutionPreference,
 };
-use crate::cognition::token_budget::estimate_prompt_tokens as estimate_tokens;
+use continuum_base::token_estimate::estimate_prompt_tokens as estimate_tokens;
 use crate::media::{Percept, PerceptionBuffer};
 use crate::runtime::SharedCompute;
 
@@ -87,7 +87,7 @@ fn empty_delivery() -> RagDelivery {
         source_id: SOURCE_ID.to_string(),
         items: Vec::new(),
         tokens_used: 0,
-        continuation: None,
+        truncated: false,
         resolution_used: ResolutionPreference::Placeholder,
     }
 }
@@ -142,20 +142,11 @@ impl RagSource for MediaPerceptionSource {
             items,
             tokens_used,
             // Room-as-now, not a paginated history.
-            continuation: None,
+            truncated: false,
             resolution_used: resolution,
         }
     }
 
-    async fn deliver_continuation(
-        &self,
-        _ctx: &RagContext,
-        _cursor: ContinuationCursor,
-        _budget: u32,
-    ) -> Option<RagDelivery> {
-        // Live perception is the CURRENT tail, not a backlog — no pagination.
-        None
-    }
 }
 
 #[cfg(test)]
@@ -238,7 +229,7 @@ mod tests {
             d.items[0].content
         );
         assert!(d.tokens_used > 0);
-        assert!(d.continuation.is_none(), "room-as-now, never paginated");
+        assert!(!d.truncated, "room-as-now, never paginated");
 
         // Cross-persona → empty (defense in depth).
         let other = RagContext::for_persona(Uuid::new_v4(), 0);

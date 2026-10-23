@@ -10,7 +10,7 @@ use crate::orm::types::CollectionSchema;
         // CONTINUUM_HOME precedes the process test home. Hold the existing shared
         // guard through adapter I/O so another fixture cannot remove its home
         // between path resolution and SQLite open (5067 hosted regression).
-        let _home = crate::test_env::HomeGuard::set(node.path()).await;
+        let _home = crate::paths::test_home::HomeGuard::set(node.path()).await;
         let remote = "postgres://shared.example/fleet";
         let backend = || DataState::resolve_handle_with("main", |key| {
             assert_eq!(key, "DATABASE_URL");

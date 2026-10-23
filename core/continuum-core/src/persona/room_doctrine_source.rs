@@ -37,7 +37,7 @@ use airc_lib::AircError;
 use async_trait::async_trait;
 
 use crate::persona::rag_budget::{
-    ContinuationCursor, RagContext, RagDelivery, RagItem, RagSource, ResolutionPreference,
+     RagContext, RagDelivery, RagItem, RagSource, ResolutionPreference,
 };
 
 /// Source identifier — the service-loop projection routes this delivery
@@ -47,7 +47,7 @@ pub(crate) const SOURCE_ID: &str = "room-doctrine";
 /// Token estimate — the ONE canonical chars/4 estimator (`cognition::token_budget`),
 /// shared by every RAG source so the replay ledger's numbers match. (Was a private
 /// copy — converged.)
-use crate::cognition::token_budget::estimate_prompt_tokens as estimate_tokens;
+use continuum_base::token_estimate::estimate_prompt_tokens as estimate_tokens;
 
 /// Abstract reader over the airc room operating doctrine. Production
 /// rides on `airc_lib::Airc::room_doctrine`; tests stub it without a
@@ -353,7 +353,7 @@ impl RagSource for RoomDoctrineSource {
             source_id: SOURCE_ID.to_string(),
             items: Vec::new(),
             tokens_used: 0,
-            continuation: None,
+            truncated: false,
             resolution_used: res,
         };
 
@@ -437,20 +437,11 @@ impl RagSource for RoomDoctrineSource {
             }],
             tokens_used: tokens,
             // One current contract per room; no pagination.
-            continuation: None,
+            truncated: false,
             resolution_used: resolution,
         }
     }
 
-    async fn deliver_continuation(
-        &self,
-        _ctx: &RagContext,
-        _cursor: ContinuationCursor,
-        _budget: u32,
-    ) -> Option<RagDelivery> {
-        // Doctrine is a single current snapshot; any cursor is stale.
-        None
-    }
 }
 
 #[cfg(test)]
@@ -700,7 +691,7 @@ mod tests {
         assert_eq!(delivery.items.len(), 1);
         assert!(delivery.items[0].content.contains("Respond sparingly"));
         assert_eq!(delivery.items[0].metadata["version"], "v1abc");
-        assert!(delivery.continuation.is_none());
+        assert!(!delivery.truncated);
     }
 
     // what this catches: a room with NO published doctrine renders no

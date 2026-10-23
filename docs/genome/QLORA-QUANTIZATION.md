@@ -98,17 +98,17 @@ export interface QuantizationInfo {
 # Merge LoRA into full-precision model
 ./jtag genome/convert --operation=merge-full \
   --adapterPath=.continuum/genome/adapters/helper-coding-123 \
-  --baseModel=unsloth/Llama-3.2-3B-Instruct
+  --baseModel=meta-llama/Llama-3.2-3B-Instruct
 
 # Merge LoRA and quantize to 4-bit GGUF
 ./jtag genome/convert --operation=merge-and-quantize \
   --adapterPath=.continuum/genome/adapters/helper-coding-123 \
-  --baseModel=unsloth/Llama-3.2-3B-Instruct \
+  --baseModel=meta-llama/Llama-3.2-3B-Instruct \
   --bits=4
 
 # Quantize base model to GGUF (no LoRA)
 ./jtag genome/convert --operation=quantize-base \
-  --baseModel=unsloth/Llama-3.2-3B-Instruct \
+  --baseModel=meta-llama/Llama-3.2-3B-Instruct \
   --bits=4
 
 # Validate a converted model
@@ -183,7 +183,7 @@ import { buildGenomeConvertPipeline } from '@system/sentinel/pipelines/GenomeCon
 const pipeline = buildGenomeConvertPipeline({
   operation: 'merge-and-quantize',
   adapterPath: '.continuum/genome/adapters/helper-coding-123',
-  baseModel: 'unsloth/Llama-3.2-3B-Instruct',
+  baseModel: 'meta-llama/Llama-3.2-3B-Instruct',
   bits: 4,
   personaId: helperPersonaId,
   domain: 'coding',
@@ -206,7 +206,7 @@ const trainingPipeline = buildLoRATrainingPipeline({
 });
 
 const fullPipeline = buildTrainAndConvertPipeline(trainingPipeline, {
-  baseModel: 'unsloth/Llama-3.2-3B-Instruct',
+  baseModel: 'meta-llama/Llama-3.2-3B-Instruct',
   bits: 4,
   personaId,
   domain: 'coding',
@@ -241,7 +241,7 @@ cat .continuum/genome/adapters/*/manifest.json | jq .quantization
 # 3. Convert to GGUF-merged
 ./jtag genome/convert --operation=merge-and-quantize \
   --adapterPath=.continuum/genome/adapters/helper-coding-* \
-  --baseModel=unsloth/Llama-3.2-3B-Instruct
+  --baseModel=meta-llama/Llama-3.2-3B-Instruct
 
 # 4. Verify both formats in registry
 ./jtag data/list --collection=genome_layers --limit=10

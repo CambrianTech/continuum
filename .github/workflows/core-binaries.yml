@@ -24,41 +24,29 @@
 # GPU flavor is named per leg ("Windows-NVIDIA x86_64"), because cargo-features.sh probes the
 # machine it runs on and a CI runner has no GPU. A Linux leg follows the same way.
 #
-# NEWEST TIP WINS: a node deploys canary's tip, so a run for a superseded commit is
-# cancelled rather than finished. Old canary releases are pruned to the newest 20.
+# Hourly admission dispatches the latest unpublished canary. Active publication is
+# never cancelled by a newer tip. Old canary releases are pruned to the newest 20.
 
 name: core-binaries
 
 on:
   # A PR that changes HOW the binaries are built proves both legs before merge (build and
-  # package, never publish). Ordinary core PRs don't pay two macOS builds; the push does.
+  # package, never publish). Ordinary core PRs wait for hourly publication.
   pull_request:
     paths:
       - 'tools/scripts/lib/**'
       - 'tools/scripts/shared/cargo-features.sh'
       - '.github/workflows/core-binaries.yml'
       - 'tools/scripts/tests/publish-core-package.test.sh'
-  push:
-    branches: [canary]
-    # Every build input (continuum-cli-lifecycle prebuilt_artifact::BUILD_INPUTS, pinned by
-    # its test) plus this file. The workspace manifest and lockfile live at the repo root.
-    paths:
-      - 'core/**'
-      - 'Cargo.toml'
-      - 'Cargo.lock'
-      - 'rust-toolchain.toml'
-      - 'tools/scripts/lib/**'
-      - 'tools/scripts/shared/cargo-features.sh'
-      - 'tools/scripts/start-livekit-windows.ps1'
-      - 'tools/scripts/generated/manifest.windows.ps1'
-      - '.github/workflows/core-binaries.yml'
+      - 'tools/scripts/ci-change-scope.cjs'
+      - 'tools/scripts/tests/ci-change-scope.test.cjs'
   workflow_dispatch:
 
-# A canary push must never cancel the canary build in progress. Each canary tip's core is what
+# A canary dispatch must never cancel the canary build in progress. Each canary tip's core is what
 # the deploy consumers download (card 50ca737e); the build takes 45-73 min and canary merges land
 # every 15-30 min, so cancel-in-progress cancelled EVERY build after b6ddc0d0e on 2026-10-04 and
 # no node could download anything. Without cancellation GitHub keeps one run going and only the
-# NEWEST push queued behind it (older queued pushes are dropped), so a build always finishes and
+# NEWEST dispatch queued behind it (older queued dispatches are dropped), so a build always finishes and
 # the queue cannot grow. Pull requests still cancel their own superseded runs.
 concurrency:
   group: core-binaries-${{ github.head_ref || github.ref }}
@@ -68,7 +56,57 @@ permissions:
   contents: write
 
 jobs:
+  publication-scope:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      publication: ${{ steps.select.outputs.publication }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: node --test tools/scripts/tests/ci-change-scope.test.cjs
+      - if: github.event_name == 'pull_request'
+        run: npm install --prefix "$RUNNER_TEMP/publication-yaml" --ignore-scripts --no-package-lock --no-audit --no-fund yaml@2.8.1
+      - uses: actions/github-script@v7
+        id: select
+        with:
+          script: |
+            const { selectChecks } = require('./tools/scripts/ci-change-scope.cjs');
+            let publication = true;
+            try {
+              if (context.eventName === 'pull_request') {
+                const files = await github.paginate(github.rest.pulls.listFiles, {
+                  ...context.repo, pull_number: context.issue.number, per_page: 100
+                });
+                const evidence = { eventName: context.eventName,
+                  complete: files.length === context.payload.pull_request.changed_files && files.length < 3000 };
+                const path = '.github/workflows/core-binaries.yml';
+                if (files.some(f => f.filename === path || f.previous_filename === path)) {
+                  const YAML = require(`${process.env.RUNNER_TEMP}/publication-yaml/node_modules/yaml`);
+                  const read = async ref => {
+                    const { data } = await github.rest.repos.getContent({ ...context.repo, path, ref });
+                    if (data.type !== 'file' || data.encoding !== 'base64') throw new Error('Missing workflow source');
+                    const document = YAML.parseDocument(Buffer.from(data.content, 'base64').toString('utf8'), { uniqueKeys: true });
+                    if (document.errors.length) throw document.errors[0];
+                    return document.toJS();
+                  };
+                  evidence.publicationBefore = await read(context.payload.pull_request.base.sha);
+                  evidence.publicationAfter = await read(context.payload.pull_request.head.sha);
+                }
+                publication = selectChecks(files, evidence).publication;
+              }
+            } catch (error) {
+              core.warning(`Cannot prove publication unchanged; running build: ${error.message}`);
+            }
+            core.setOutput('publication', String(publication));
   build:
+    needs: publication-scope
+    # Only proven equivalence skips compilation; a failed/missing selector retains it.
+    if: ${{ !cancelled() && needs.publication-scope.outputs.publication != 'false' }}
     name: core binaries (${{ matrix.platform }})
     runs-on: ${{ matrix.runner }}
     # Run 38995887152: Windows core 85m17 + engine 58m32 + package 2m28

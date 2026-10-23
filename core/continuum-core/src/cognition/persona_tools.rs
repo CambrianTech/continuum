@@ -28,22 +28,13 @@
 
 use crate::ai::types::{NativeToolSpec, ToolInputSchema};
 use crate::cognition::tool_embedding::extract_category;
-use crate::commands::help::CommandsHelp;
-use crate::modules::grid::acl::is_command_authorized;
-use crate::modules::grid::node::TrustLevel;
-use crate::sdk_codegen::{AccessLevel, ActionCommand, CommandDescriptor};
+use crate::routing::command_acl::is_command_authorized;
+use crate::routing::trust_level::TrustLevel;
+use crate::sdk_codegen::{AccessLevel, CommandDescriptor};
 use crate::sdk_codegen::ext::command_registry_live;
 use serde_json::json;
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
-
-/// The command a persona calls to learn HOW to invoke one tool — the on-demand half
-/// of progressive disclosure (the catalog gives names; this gives the call format).
-/// This is the EXISTING [`CommandsHelp`] (`commands/help`), which renders a
-/// fill-in-the-blanks tool-call envelope with typed argument docs — strictly better
-/// for a small model than raw JSON Schema. We do NOT define a parallel describe tool:
-/// one source of truth for "how do I call this?" [[command-infra-self-routing-schema-adapters]]
-pub const TOOL_HELP_NAME: &str = CommandsHelp::NAME;
 
 // The per-tool catalog-summary bound is a fraction of her LIVE window
 // (`ContextBudget::catalog_summary_chars`), never a constant: a catalog lists ~100 tools, so

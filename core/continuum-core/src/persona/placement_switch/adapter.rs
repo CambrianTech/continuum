@@ -345,7 +345,7 @@ impl PlacementSwitch {
                     return None;
                 }
                 self.set_seat(Seat::Home, now_ms);
-                crate::modules::citizen_health::note_move(false);
+                crate::persona::health_ledger::note_move(false);
                 continuum_base::probe!(
                     class = "persona.placement.fell_home",
                     persona = %self.persona_name,
@@ -372,7 +372,7 @@ impl PlacementSwitch {
             }
             PlacementMove::ReturnRemote => {
                 self.set_seat(Seat::Remote, now_ms);
-                crate::modules::citizen_health::note_move(false);
+                crate::persona::health_ledger::note_move(false);
                 continuum_base::probe!(
                     class = "persona.placement.returned",
                     persona = %self.persona_name,
@@ -412,6 +412,29 @@ impl AIProviderAdapter for NoSeat {
 
 #[async_trait]
 impl AIProviderAdapter for PlacementSwitch {
+    async fn prepare_generation(&self) {
+        if self.seat() == Seat::Remote && self.lane_cold() {
+            // A cold breaker is typed, pre-dispatch evidence. Do not spend another
+            // act asking the same peer, or wait for the next placement beacon.
+            // FallHome retains the remote adapter and its breaker; ordinary
+            // placement policy still owns returning to that peer later.
+            // This changes inference routing only: RemoteInferenceRequest carries
+            // a prompt and returns text, while residency, hands and workspace
+            // remain here. It therefore does not require workspace migration.
+            // The synchronous request path records the existing fell_home probe;
+            // unlike the grid tick, it does not publish an org-room announcement.
+            let _ = self.apply(
+                &PlacementMove::FallHome { reason: "remote circuit breaker cold before generation" },
+                continuum_base::time::EpochMs::now().millis(),
+                SeatFit::default(),
+            ).await;
+        }
+    }
+
+    fn generation_target(&self) -> Option<Arc<dyn AIProviderAdapter>> {
+        Some(self.current())
+    }
+
     fn provider_id(&self) -> &str {
         &self.provider_label
     }

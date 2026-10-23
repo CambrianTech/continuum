@@ -21,15 +21,8 @@ pub(super) fn register_code_data_and_service_modules(
     // Pushed shell completions (2026-08-24): the exit fold publishes
     // command:completed for handed-back executions; wire it the bus once.
     crate::code::shell_session::set_shell_completion_bus(runtime.bus_arc());
-    // Workspace writes (card f860e59c): every write site announces `workspace:written`;
-    // the bench board's artifact registry recomputes a tree's diff on THAT event, never
-    // by spawning git on a clock. Wired here, unconditionally — `benchmark/runs` and the
-    // standing autopilot read the registry too, not only the websocket board.
-    crate::code::workspace_events::set_workspace_event_bus(runtime.bus_arc());
-    crate::commands::workspace_artifacts::spawn_workspace_artifact_watcher(
-        rt_handle,
-        runtime.bus_arc(),
-    );
+    // The retired benchmark harness's files move into one archive dir, once (card c4f4b8cd).
+    crate::system_resources::harness_archive::spawn_archive(&rt_handle);
     let code_state = Arc::new(CodeState::new(
         file_engines.clone(),
         shell_sessions.clone(),
@@ -42,7 +35,7 @@ pub(super) fn register_code_data_and_service_modules(
     runtime.register(Arc::new(DataModule::new()));
     // RecipeModule: the node's durable recipe runs (`recipe_runs`) and the recipe/*
     // verbs. Its store opens through DataModule's adapter at initialize.
-    runtime.register(Arc::new(crate::modules::recipe::RecipeModule::new()));
+    runtime.register(Arc::new(crate::recipe::runs_owner::RecipeModule::new()));
 
     // ChatModule: the kernel `chat/send` + `chat/poll` surface (aliases of
     // `collaboration/chat/*`). Unlike `search/*` these DynCommands are NOT

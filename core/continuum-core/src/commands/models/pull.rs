@@ -390,7 +390,7 @@ impl ModelsPull {
         //    so multi-GB GGUFs land on the big/data drive, NOT the system drive.
         let api = {
             let mut b = ApiBuilder::new().with_token(hf_token());
-            if let Some(hub) = crate::model_registry::artifacts::huggingface_cache_root() {
+            if let Some(hub) = crate::paths::huggingface::huggingface_cache_root() {
                 b = b.with_cache_dir(hub);
             }
             // PARALLEL CHUNKS. hf-hub's ApiBuilder defaults to `max_files: 1` — ONE concurrent
@@ -502,7 +502,11 @@ impl ModelsPull {
                 gguf_path = Some(dl); // shard 1 (sorted) is llama.cpp's load entrypoint
             }
         }
-        let gguf_path = gguf_path.expect("expand_shard_set never returns empty");
+        let Some(gguf_path) = gguf_path else {
+            return Err(CommandError::Internal(
+                "shard expansion produced no files to download".to_string(),
+            ));
+        };
         let mmproj_path = match &mmproj_file {
             Some(f) => Some(download_with_retry(&repo, &repo_id, f, None).await?),
             None => None,
@@ -713,7 +717,7 @@ async fn download_with_retry(
     // reporter — `get` hard-codes the no-op one. Losing this probe would cost the property the
     // whole resume story rests on: a completed shard skips INSTANTLY on a re-run instead of being
     // re-fetched, which is what makes re-running an interrupted 76 GB pull cheap.
-    if let Some(hub) = crate::model_registry::artifacts::huggingface_cache_root() {
+    if let Some(hub) = crate::paths::huggingface::huggingface_cache_root() {
         if let Some(hit) = hf_hub::Cache::new(hub)
             .repo(hf_hub::Repo::model(repo_id.to_string()))
             .get(file)

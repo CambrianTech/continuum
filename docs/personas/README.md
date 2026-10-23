@@ -31,7 +31,6 @@
 | [GENOME-REVOLUTION.md](GENOME-REVOLUTION.md) | Autonomous citizens with evolvable intelligence -- the vision |
 | [PERSONA-GENOMIC-ARCHITECTURE.md](PERSONA-GENOMIC-ARCHITECTURE.md) | RTOS + genome paging + RAG integration |
 | [GENOME-MANAGER-INTEGRATION.md](GENOME-MANAGER-INTEGRATION.md) | GenomeManager + AIProviderDaemon integration (Phase 7) |
-| [FINE-TUNING-STRATEGY.md](FINE-TUNING-STRATEGY.md) | Local vs API training approaches |
 | [PHASE-7-FINE-TUNING-ARCHITECTURE.md](PHASE-7-FINE-TUNING-ARCHITECTURE.md) | Learn from experience through LoRA fine-tuning |
 | [COMPOSABLE-EXPERTISE.md](COMPOSABLE-EXPERTISE.md) | LoRA stacking concept (superseded by genome/ chapter) |
 | [VINE-DIESEL-PERSONA-DESIGN.md](VINE-DIESEL-PERSONA-DESIGN.md) | Multi-layer LoRA proof-of-concept |

@@ -20,7 +20,7 @@ use crate::cognition::generate_recipe::types::{
     RecipeDefinitionShape, RecipeGenerationRequest, RecipeGenerationResponse,
 };
 use crate::cognition::generate_recipe::validator::validate_recipe_structure;
-use crate::modules::ai_provider::{generate_text, global_registry};
+use crate::ai::adapter::{generate_text, global_registry};
 
 /// Default temperature for recipe generation. Mirrors TS `temperature: 0.4`
 /// at line 51 — low enough to keep the JSON well-formed, high enough to

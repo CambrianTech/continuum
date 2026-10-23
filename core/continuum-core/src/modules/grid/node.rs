@@ -9,32 +9,7 @@ use ts_rs::TS;
 
 use crate::forge::endpoint::ForgeEndpoint;
 use crate::identity::PeerId;
-
-/// Trust level for a remote node.
-/// Determines what commands the node is allowed to execute on us,
-/// and what commands we're willing to send to it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "../../../protocol/typescript/grid/TrustLevel.ts")]
-#[serde(rename_all = "lowercase")]
-pub enum TrustLevel {
-    /// Unknown node — not in our known_nodes list.
-    /// No remote commands allowed.
-    Blocked = 0,
-    /// First contact — limited to read-only info commands.
-    Provisional = 1,
-    /// Established history of successful interactions.
-    /// Can run compute commands (inference, training).
-    Trusted = 2,
-    /// Our own nodes (e.g., laptop + home tower).
-    /// Full access to all non-local-only commands.
-    Owner = 3,
-}
-
-impl Default for TrustLevel {
-    fn default() -> Self {
-        Self::Blocked
-    }
-}
+use crate::routing::trust_level::TrustLevel;
 
 /// Transport-specific address for reaching a node.
 /// Each variant corresponds to a GridTransport implementation.
@@ -64,20 +39,6 @@ pub enum TransportAddress {
         /// Reticulum destination hash (hex-encoded Ed25519 public key derivative).
         destination_hash: String,
     },
-}
-
-impl std::str::FromStr for TrustLevel {
-    type Err = String;
-
-    fn from_str(s: &str) -> Result<Self, String> {
-        match s {
-            "blocked" => Ok(Self::Blocked),
-            "provisional" => Ok(Self::Provisional),
-            "trusted" => Ok(Self::Trusted),
-            "owner" => Ok(Self::Owner),
-            _ => Err(format!("Invalid trust level: {s}. Use: blocked, provisional, trusted, owner")),
-        }
-    }
 }
 
 impl TransportAddress {

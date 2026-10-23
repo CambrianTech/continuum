@@ -894,17 +894,14 @@ mod tests {
     /// derive → OrmStore → adapter → SQLite → adapter → derive chain.
     #[tokio::test]
     async fn engram_round_trips_through_orm_store_with_derived_schema() {
-        use crate::orm::adapter::{AdapterConfig, StorageAdapter};
+        use crate::orm::adapter::StorageAdapter;
         use crate::orm::sqlite::SqliteAdapter;
         use crate::orm::OrmStore;
         use std::sync::Arc;
 
         let tmp = tempfile::tempdir().expect("tempdir");
         let path = tmp.path().join("engrams.sqlite");
-        let mut adapter = SqliteAdapter::new();
-        let mut config = AdapterConfig::default();
-        config.connection_string = path.to_string_lossy().into_owned();
-        adapter.initialize(config).await.expect("adapter init");
+        let adapter = SqliteAdapter::open(&path).await.expect("adapter open");
         let adapter: Arc<dyn StorageAdapter> = Arc::new(adapter);
 
         let store = OrmStore::<Engram>::new(adapter).await.expect("store");

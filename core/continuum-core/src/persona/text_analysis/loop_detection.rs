@@ -72,10 +72,6 @@ impl LoopDetector {
         (is_loop, duplicate_count)
     }
 
-    /// Clear loop history for a persona
-    pub fn clear_history(&self, persona_id: Uuid) {
-        self.states.remove(&persona_id);
-    }
 }
 
 /// Normalize and truncate response text for comparison.
@@ -148,22 +144,6 @@ mod tests {
         let (is_loop, _) =
             detector.check_response_loop(id, "Fourth response, still different topic D");
         assert!(!is_loop);
-    }
-
-    #[test]
-    fn test_clear_history() {
-        let detector = LoopDetector::new();
-        let id = Uuid::new_v4();
-
-        detector.check_response_loop(id, "Repeated response!");
-        detector.check_response_loop(id, "Repeated response!");
-        detector.check_response_loop(id, "Repeated response!");
-
-        detector.clear_history(id);
-
-        let (is_loop, count) = detector.check_response_loop(id, "Repeated response!");
-        assert!(!is_loop);
-        assert_eq!(count, 0);
     }
 
     #[test]

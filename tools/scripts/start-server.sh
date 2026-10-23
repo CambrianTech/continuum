@@ -178,12 +178,10 @@ if [ "${CONTINUUM_BUILD_ONLY:-}" != "1" ]; then
 # NOT launch llama-server itself (the daemon does, after the core boots):
 #   1. resolve the binary onto PATH so the daemon's `Command::new("llama-server")`
 #      finds it (the core inherits this PATH as our child)
-#   2. stop the excised Unsloth Studio so it isn't double-loading the GPU
-# Robustness note: the core SCANS for a free serving port (it does not assume
-# one), so a squatter never wedges it — stopping Studio is GPU/excision hygiene,
-# not a correctness prerequisite [[llama-server-serves-v1-direct-python-gateway-optional]].
+# The core SCANS for a free serving port (it does not assume one), so a
+# squatter never wedges it [[llama-server-serves-v1-direct-python-gateway-optional]].
 
-# (1) Resolve the binary WE OWN. The engine is ours now (unsloth is excised):
+# (1) Resolve the binary WE OWN. The engine is ours now :
 # we build llama-server from the llama.cpp submodule we vendor
 # (core/vendor/llama.cpp — our fork) into ~/.continuum/bin via
 # install-llama-server.sh. Resolution mirrors the core's own resolver
@@ -290,15 +288,6 @@ bounded_capture() {
   return "$rc"
 }
 
-# ── ROW: foreign inference servers ───────────────────────────────────
-# Unsloth Studio is the EXCISED gateway — there is no healthy state for it to be
-# adopted into, so it is reaped unconditionally. It is stopped before its backend
-# because the parent would otherwise respawn one.
-if pgrep -f 'studio run' >/dev/null 2>&1; then
-  echo "  reaping excised Unsloth Studio (freeing GPU for the core's engine)" >&2
-  pkill -f 'studio run' 2>/dev/null || true
-fi
-
 # ── ROW: llama lanes — adopt-or-reap is the CORE'S step, not this script's ──
 # `continuum start` runs `boot_plan::step_adopt_lanes` before this script: one verdict
 # (`lane_process::lane_verdict` — a bounded, retried /health AND the process's own
@@ -314,9 +303,7 @@ fi
 # are no rooms, so citizens have nothing to be resident IN and benchmarks are fed
 # into a system that is not running.
 #
-# Two failure states, distinguished because their fixes differ (the same
-# distinction `benchmark/dispatch` now draws between unregistered and
-# not-resident):
+# Two failure states, distinguished because their fixes differ:
 #   - airc BINARY ABSENT → nothing to enumerate, adopt or spawn. Warn and carry
 #     on; a box without airc installed is a different problem from a broken one,
 #     and refusing to boot would strand CI and fresh clones.
@@ -698,7 +685,7 @@ ensure_unswept_bin() {
 #   Cargo output. If this exact output is mapped, let Cargo fail: never kill a
 #   serving core (or its children) to unlock it. The guarded deploy caller owns
 #   the later stop and verified artifact handoff. Its failure is FATAL below.
-# continuum-mcp — the stdio MCP server that MCP clients (unsloth Studio, Claude
+# continuum-mcp — the stdio MCP server that MCP clients (Claude
 #   Code) SPAWN; it isn't launched by us, so it must exist on disk after the
 #   deploy. It replaces the Node `src/mcp-server.ts`; an MCP client config points
 #   at the built binary. Non-fatal: a missing MCP bin doesn't block core boot.

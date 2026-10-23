@@ -10,8 +10,7 @@
 //! the old machine. Three seams, plain git, no bundles, no new transport:
 //!
 //! 1. [`sync_after_act`] — at the end of every turn bound to a card claim's hands
-//!    (`persona_workspace::end_card_turn`, or `end_acting_context` for a fork that a card
-//!    rooted): a work-in-progress commit of whatever the act left, then
+//!    (`persona_workspace::end_card_turn`): a work-in-progress commit of whatever the act left, then
 //!    `git push -u origin <branch>`. The commit is made with plumbing
 //!    (`write-tree` / `commit-tree` / `update-ref`) so an autosave can never run the
 //!    repo's hooks — hooks belong to the reviewed commit she makes with `code/git/commit`.
@@ -591,8 +590,8 @@ pub fn forget_checkout(root: &std::path::Path) {
 /// parameter, so an unleased sync can't be written): each git it runs keeps that admission
 /// until the git's tree has ended, so a release never removes the checkout under it (Astra
 /// and Codex root on #5026), and the deadline ends the git instead of abandoning it.
-pub async fn sync_after_act_for(lease: std::sync::Arc<crate::code::hands::HandsLease>, persona: Uuid, persona_name: &str, root: PathBuf, card: Uuid) -> PushOutcome {
-    crate::code::hands::admitted(Some(lease), sync_admitted(persona, persona_name, root, card, CommitPolicy::TurnEnd)).await
+pub async fn sync_after_act_for(lease: std::sync::Arc<crate::identity::hands_gate::HandsLease>, persona: Uuid, persona_name: &str, root: PathBuf, card: Uuid) -> PushOutcome {
+    crate::identity::hands_gate::admitted(Some(lease), sync_admitted(persona, persona_name, root, card, CommitPolicy::TurnEnd)).await
 }
 
 async fn sync_admitted(persona: Uuid, persona_name: &str, root: PathBuf, card: Uuid, commit: CommitPolicy) -> PushOutcome {
@@ -664,7 +663,7 @@ async fn sync_by(deadline: tokio::time::Instant, root: &Path, sync: impl std::fu
 /// commits and carries it. The early checks only avoid unnecessary syncs; Never is
 /// enforced inside the locked sync, so becoming dirty while waiting returns a typed
 /// NotPushable outcome and cannot commit.
-pub async fn carry_committed(lease: std::sync::Arc<crate::code::hands::HandsLease>, persona: Uuid, persona_name: &str, root: PathBuf, card: Uuid) -> Option<PushOutcome> {
+pub async fn carry_committed(lease: std::sync::Arc<crate::identity::hands_gate::HandsLease>, persona: Uuid, persona_name: &str, root: PathBuf, card: Uuid) -> Option<PushOutcome> {
     match is_dirty(&root).await {
         Ok(false) => {}
         _ => return None,
@@ -672,7 +671,7 @@ pub async fn carry_committed(lease: std::sync::Arc<crate::code::hands::HandsLeas
     if !has_unpushed_work(&root).await {
         return None;
     }
-    Some(crate::code::hands::admitted(Some(lease), sync_admitted(persona, persona_name, root, card, CommitPolicy::Never)).await)
+    Some(crate::identity::hands_gate::admitted(Some(lease), sync_admitted(persona, persona_name, root, card, CommitPolicy::Never)).await)
 }
 
 /// [`move_blocker`] within [`BLOCKER_BOUND`]; unanswered in time = a blocker (fail

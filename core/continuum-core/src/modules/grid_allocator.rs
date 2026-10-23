@@ -29,8 +29,9 @@
 
 use continuum_base::time::EpochMs;
 use crate::cognition::grid_allocation::{allocate, inputs_key, roles_from, GridAllocation, GridInputs, GridRoster, Hold, LanePlan, ask_within, Mind, NodeOffer, OfferBook, OfferTerms, OpenSeats, Role};
-use crate::cognition::serving_plan::ServingPlan;
-use crate::cognition::window_allocator::{largest_known, requirements_for};
+use crate::inference::planning::serving_plan::ServingPlan;
+use crate::cognition::working_set::requirements_for;
+use crate::inference::planning::window_allocator::largest_known;
 use crate::experience::recipe::CitizenRecipe;
 use crate::runtime::{CommandResult, CommandSchema, ModuleConfig, ModulePriority, ServiceModule};
 use futures::FutureExt;
@@ -169,7 +170,7 @@ pub(crate) struct GridFacts {
 /// number, so an unmeasured mind is never named. A grid offering no plan at all
 /// (`widest == 0`) names nobody either: there is no width to exceed.
 pub(crate) fn minds_over_the_grid(
-    requirements: &[crate::cognition::window_allocator::LaneRequirement],
+    requirements: &[crate::inference::planning::window_allocator::LaneRequirement],
     widest_window: u32,
 ) -> Vec<(Uuid, u32)> {
     if widest_window == 0 {
@@ -261,7 +262,7 @@ pub(crate) fn build_inputs(f: &GridFacts, book: &mut OfferBook) -> GridInputs {
         roles,
         minds,
         nodes,
-        minds_per_lane: crate::modules::citizen_health::MINDS_PER_LANE_STARVED_ABOVE as u32,
+        minds_per_lane: crate::persona::health_ledger::MINDS_PER_LANE_STARVED_ABOVE as u32,
         holds,
         floors,
     }
@@ -339,7 +340,7 @@ impl Inner {
         let rank_of = |id: &str| -> Option<u8> {
             crate::model_registry::global()
                 .model(id)
-                .and_then(crate::cognition::serving_plan::footprint::footprint_for)
+                .and_then(crate::inference::planning::serving_plan::footprint::footprint_for)
                 .map(|f| f.capability_rank)
         };
         // This node's plan, read as an offer: the published plan's shape with the decode
@@ -366,7 +367,7 @@ impl Inner {
         let local_plan = LanePlan::serving(
             &serving,
             rank_of(serving.active_model.as_deref().unwrap_or("")) // unwrap_or: no model = no row anyway; `serving` returns None below
-                .unwrap_or(crate::cognition::serving_plan::footprint::UNMEASURED_RANK_CAP), // unwrap_or: an unmeasured model ranks at the proxy cap, exactly as a peer's would
+                .unwrap_or(crate::inference::planning::serving_plan::footprint::UNMEASURED_RANK_CAP), // unwrap_or: an unmeasured model ranks at the proxy cap, exactly as a peer's would
             // The SAME rate this node beacons to its peers (own curve, fresh or stale), so
             // local and foreign rows are measured by one definition (card 86fef3c3).
             serving.active_model.as_deref().and_then(|model| {
@@ -386,7 +387,7 @@ impl Inner {
                         model_id: model.clone(),
                         // The registry's measured rank, else the planner's own unmeasured
                         // proxy cap — the same number this node's plan would carry.
-                        capability_rank: rank_of(model).unwrap_or(crate::cognition::serving_plan::footprint::UNMEASURED_RANK_CAP), // unwrap_or: an unmeasured model ranks at the proxy cap, the planner's number
+                        capability_rank: rank_of(model).unwrap_or(crate::inference::planning::serving_plan::footprint::UNMEASURED_RANK_CAP), // unwrap_or: an unmeasured model ranks at the proxy cap, the planner's number
                         window: o.served_context_window,
                         lanes: o.lanes,
                         // The peer's measured speed, off its beacon (card 86fef3c3); None from a
@@ -448,8 +449,8 @@ impl Inner {
             return;
         }
         let allocation = allocate(&inputs);
-        let boot = crate::cognition::resource_admission::boot_ms();
-        let dormant = dormant_by_age(&allocation.dormant, facts.now_ms, boot, crate::cognition::resource_admission::last_turn_ms);
+        let boot = crate::cognition::turn_ledger::boot_ms();
+        let dormant = dormant_by_age(&allocation.dormant, facts.now_ms, boot, crate::cognition::turn_ledger::last_turn_ms);
         let idle_of = |node: Uuid| -> f64 {
             if node == facts.this_node {
                 return if facts.local_lanes > 0 { facts.local_free_slots as f64 / facts.local_lanes as f64 } else { 0.0 };
@@ -462,7 +463,7 @@ impl Inner {
                 .unwrap_or(0.0) // unwrap_or: a node the facts do not name has no idle seat to lend
         };
         let slack = slack_seats(&allocation.open, idle_of);
-        let clip = clip_interval_ms(dormant.len(), slack, crate::cognition::resource_admission::typical_turn_ms(&facts.minds));
+        let clip = clip_interval_ms(dormant.len(), slack, crate::cognition::turn_ledger::typical_turn_ms(&facts.minds));
         let published = Published {
             key,
             at_ms: facts.now_ms,
@@ -887,7 +888,7 @@ mod tests {
     // sentence. Aiko at ~24k fits and must never be named.
     #[test]
     fn a_mind_whose_turn_exceeds_every_lane_is_named_and_the_ones_that_fit_are_not() {
-        use crate::cognition::window_allocator::LaneRequirement;
+        use crate::inference::planning::window_allocator::LaneRequirement;
         let benchy = Uuid::new_v4();
         let aiko = Uuid::new_v4();
         let unmeasured = Uuid::new_v4();

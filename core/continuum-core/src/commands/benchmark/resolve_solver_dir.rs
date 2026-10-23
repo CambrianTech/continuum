@@ -297,9 +297,64 @@ pub(super) mod swe_setup_tests {
             assert!(
                 matches!(error, CommandError::Internal(ref message) if message.contains("candidate diff is not UTF-8; refusing to change patch bytes"))
             );
+            // What this catches (8ae653b1): work/submit can select a conflicted
+            // card checkout while the author's tested work lives in another one.
+            // Git happily emits a patch; candidate extraction must refuse it.
+            std::fs::write(root.path().join("code.txt"), format!("branch{newline}"))
+                .expect("test: divergent change");
+            git(&["add", "code.txt"]);
+            git(&[
+                "-c",
+                "user.name=Fixture",
+                "-c",
+                "user.email=fixture@example.test",
+                "-c",
+                "commit.gpgsign=false",
+                "commit",
+                "-qm",
+                "divergent change",
+            ]);
+            let divergent = git(&["rev-parse", "HEAD"]).trim().to_string();
+            git(&["checkout", "--detach", &base]);
+            std::fs::write(root.path().join("code.txt"), format!("other{newline}"))
+                .expect("test: conflicting change");
+            git(&["add", "code.txt"]);
+            git(&[
+                "-c",
+                "user.name=Fixture",
+                "-c",
+                "user.email=fixture@example.test",
+                "-c",
+                "commit.gpgsign=false",
+                "commit",
+                "-qm",
+                "other change",
+            ]);
+            let merge = std::process::Command::new("git")
+                .args([
+                    "-c",
+                    "user.name=Fixture",
+                    "-c",
+                    "user.email=fixture@example.test",
+                    "merge",
+                    "--no-commit",
+                    &divergent,
+                ])
+                .current_dir(root.path())
+                .output()
+                .expect("test: conflicting merge");
+            assert!(!merge.status.success());
+            assert!(!git(&["ls-files", "--unmerged"]).is_empty());
+            assert!(!git(&["diff", "--no-ext-diff", &base]).is_empty());
+            let error = workspace_candidate_diff_from(ws, Some(&base))
+                .expect_err("test: conflicted candidate refused before retention");
+            assert!(matches!(error, CommandError::Invalid(ref message)
+                if message.contains(ws) && message.contains("unresolved index conflicts")));
+            git(&["merge", "--abort"]);
+            assert!(workspace_candidate_diff_from(ws, Some(&base)).is_ok());
             let not_repo = tempfile::tempdir().expect("test: non-repository directory");
             assert!(
-                workspace_candidate_diff(not_repo.path().to_str().expect("test: temp path"))
+                workspace_candidate_diff_from(not_repo.path().to_str().expect("test: temp path"), None)
                     .is_err()
             );
         }
@@ -346,298 +401,4 @@ pub(super) mod swe_setup_tests {
         assert_eq!(BenchmarkSweSetup::NAME, "benchmark/swe-setup");
         assert!(matches!(BenchmarkSweSetup::ACCESS, AccessLevel::Privileged));
     }
-
-    // benchmark/runs (RunProjection) — nested per the one-mod rule.
-    mod run_projection {
-        use super::super::super::{fold_run_card, RUN_STALL_WINDOW_SECS};
-        use serde_json::json;
-
-        // what this catches: the projection's whole reason to exist — a
-        // non-terminal run with old artifacts must read `quiet`/stalled, not
-        // blend into `active` (the 2026-08-08 shape: 2.5h of silence that
-        // looked identical to progress).
-        #[test]
-        fn a_silent_nonterminal_run_reads_quiet_and_stalled() {
-            let result = json!({"persona_id": "p1", "acts": 12, "files_changed": []});
-            let grade = json!({"resolved": false, "failToPassPassed": 0, "failToPassTotal": 2,
-                               "passToPassPassed": 40, "passToPassTotal": 40, "patchBytes": 0,
-                               "failedTests": ["t1"]});
-            let now: u64 = 10_000_000_000;
-            let old = now - (RUN_STALL_WINDOW_SECS + 60) * 1000;
-            let card = fold_run_card("r1", Some(&result), Some(&grade), old, now);
-            assert_eq!(card.phase, "quiet");
-            assert!(card.stalled);
-            assert_eq!(card.fail_to_pass.as_deref(), Some("0/2"));
-            assert_eq!(card.pass_to_pass.as_deref(), Some("40/40"));
-        }
-
-        // what this catches: terminal states must NEVER be flagged stalled —
-        // a resolved run and a loud #2180 deadline kill are both finished,
-        // and paging the operator about finished work is alarm fatigue.
-        #[test]
-        fn terminal_states_are_never_stalled_regardless_of_age() {
-            let now: u64 = 10_000_000_000;
-            let ancient = 1_000;
-            let resolved = json!({"resolved": true, "failToPassPassed": 1, "failToPassTotal": 1,
-                                  "passToPassPassed": 6, "passToPassTotal": 6, "patchBytes": 974,
-                                  "failedTests": []});
-            let card = fold_run_card("r2", None, Some(&resolved), ancient, now);
-            assert_eq!(card.phase, "resolved");
-            assert!(!card.stalled);
-
-            let failed = json!({"failed": true, "infra_error": "attempt 2 exceeded its deadline"});
-            let card = fold_run_card("r3", Some(&failed), None, ancient, now);
-            assert_eq!(card.phase, "failed");
-            assert!(!card.stalled);
-            assert!(card
-                .infra_error
-                .as_deref()
-                .unwrap_or("")
-                .contains("deadline"));
-        }
-
-        // what this catches: fresh activity reads `active` — the stall window
-        // gates the QUIET verdict, not the other way around.
-        #[test]
-        fn recent_activity_reads_active() {
-            let now: u64 = 10_000_000_000;
-            let fresh = now - 60_000;
-            let card = fold_run_card("r4", None, None, fresh, now);
-            assert_eq!(card.phase, "active");
-            assert!(!card.stalled);
-        }
-
-        // what this catches: the dispatch-time `state: running` marker (#2246 —
-        // four live solves ran INVISIBLE to this projection for their whole
-        // first attempt because nothing was journaled until an attempt ended)
-        // must fold as a live `active` card with the solver named, never as
-        // failed/resolved, so the run is on the board from second zero.
-        #[test]
-        fn a_running_marker_folds_active_with_the_solver_named() {
-            let now: u64 = 10_000_000_000;
-            let fresh = now - 5_000;
-            let marker = json!({"state": "running", "run_id": "r5",
-                                "persona_id": "atlas-uuid", "workspace": "/w/swe/x"});
-            let card = fold_run_card("r5", Some(&marker), None, fresh, now);
-            assert_eq!(card.phase, "active");
-            assert!(!card.stalled);
-            assert_eq!(card.solver.as_deref(), Some("atlas-uuid"));
-            assert_eq!(card.resolved, None, "no grade yet — never a verdict");
-        }
-
-        // what this catches: an UNGRADEABLE grade must fold as an ABSENCE, never
-        // a capability zero. `SweGradeResult.error` documents the contract ("an
-        // ABSENCE, not a zero, and must never be tallied as a failed attempt")
-        // and the grader proves it — for the env class it re-runs the PRISTINE
-        // tree before declaring one. This projection read only the RESULT's
-        // error, so a grade-level fault folded `resolved: false` + phase
-        // `failed`, indistinguishable from a citizen who tried and lost.
-        // Measured 2026-08-13 on sympy__sympy-11400: p2p 0/29 on the pristine
-        // tree, and 8 of 36 instances graded UNGRADEABLE on that box — the
-        // denominator of every rate read off this projection was poisoned.
-        #[test]
-        fn an_ungradeable_grade_folds_as_absence_never_a_capability_zero() {
-            let now: u64 = 10_000_000_000;
-            let fresh = now - 5_000;
-            let result = json!({"persona_id": "asha-uuid", "acts": 12,
-                                "instance": "sympy__sympy-11400", "attempt": 1});
-            let ungradeable = json!({
-                "instance": "sympy__sympy-11400", "resolved": false, "gateOk": false,
-                "passToPassPassed": 0, "passToPassTotal": 29, "patchBytes": 402,
-                "error": "UNGRADEABLE — PASS_TO_PASS passes 0 of 29 on the PRISTINE tree: \
-                          the suite does not run in this environment, so every score from \
-                          this tree is an env fault, never a capability verdict."});
-            let card = fold_run_card("r6", Some(&result), Some(&ungradeable), fresh, now);
-            assert_eq!(
-                card.resolved, None,
-                "an env fault is an ABSENCE — `Some(false)` is the lie that reads as a \
-                 citizen who tried and failed"
-            );
-            assert_eq!(card.phase, "ungradeable", "never `failed`, never `resolved`");
-            assert!(
-                card.infra_error
-                    .as_deref()
-                    .is_some_and(|e| e.contains("UNGRADEABLE")),
-                "the REASON rides with the absence — one field means 'no valid verdict, \
-                 and why', fed by both the result's error and the grade's"
-            );
-
-            // Positive control: the SAME shape with no grade error is a real
-            // verdict and must still fold as a capability zero, or this test
-            // would pass by simply never reporting failure.
-            let honest_zero = json!({
-                "instance": "sympy__sympy-11400", "resolved": false, "gateOk": true,
-                "passToPassPassed": 29, "passToPassTotal": 29, "patchBytes": 402});
-            let card = fold_run_card("r7", Some(&result), Some(&honest_zero), fresh, now);
-            assert_eq!(card.resolved, Some(false), "a graded miss IS a zero");
-            assert_ne!(card.phase, "ungradeable");
-            assert!(card.infra_error.is_none());
-        }
-
-        // what this catches: the board facts (#329) — instance + attempt N/M
-        // projected from the result ledger, and patch_bytes derived LIVE from
-        // the result's own diff before any grade exists (the "patch is
-        // forming" leading indicator), while a real grade's byte count stays
-        // authoritative the moment one lands.
-        #[test]
-        fn board_facts_project_and_live_patch_yields_to_the_grade() {
-            let now: u64 = 10_000_000_000;
-            let fresh = now - 5_000;
-            let result = json!({"persona_id": "anon-uuid", "acts": 7,
-                                "instance": "sympy__sympy-21055",
-                                "attempt": 2, "max_attempts": 3,
-                                "patch": "diff --git a/x b/x\n+fix\n"});
-            // Pre-grade: live patch length from the result's own diff.
-            let card = fold_run_card("r6", Some(&result), None, fresh, now);
-            assert_eq!(card.instance.as_deref(), Some("sympy__sympy-21055"));
-            assert_eq!(card.attempt, Some(2));
-            assert_eq!(card.max_attempts, Some(3));
-            assert_eq!(card.patch_bytes, Some(24), "live diff length pre-grade");
-            // Graded: the grade's byte count wins over the live derivation.
-            let grade = json!({"resolved": false, "patchBytes": 1299});
-            let card = fold_run_card("r6", Some(&result), Some(&grade), fresh, now);
-            assert_eq!(card.patch_bytes, Some(1299), "grade is authoritative");
-        }
-    }
-}
-
-// ---------------------------------------------------------------------------
-// benchmark/runs — the RunProjection (exam-room surface, slice 2)
-// ---------------------------------------------------------------------------
-/// How long a non-terminal run may go without ANY artifact activity before the
-/// projection flags it `stalled`. Matches the harness cadence expectation (a
-/// healthy Devstral act lands every ~4-6 min; 20 min of silence is 3-4 missed
-/// beats), deliberately TIGHTER than the in-loop deadline (#2180's
-/// `max_acts × 15 min` kills the run) — the projection warns first, the
-/// deadline executes later. Glass-boxed origin: 2026-08-08, two runs sat
-/// silent 2.5h and the operator found out by asking.
-pub(super) const RUN_STALL_WINDOW_SECS: u64 = 20 * 60;
-
-#[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
-#[ts(
-    export,
-    export_to = "../../../protocol/typescript/benchmark/BenchmarkRunsParams.ts"
-)]
-pub struct BenchmarkRunsParams {
-    /// Filter to one run. Omit → the newest `limit` runs.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
-    pub run_id: Option<String>,
-    /// Newest N runs to return (default 20).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[ts(optional, type = "number")]
-    pub limit: Option<u32>,
-}
-
-/// One run's card — the projection every consumer renders: the positron
-/// exam-room tab bar, a teacher persona's grounding, and the operator's
-/// liveness Monitor all fold THIS, never bespoke file scraping
-/// (docs/architecture/ACADEMY-EXAM-ROOM-POSITRONIC-SURFACE.md §5.2).
-#[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
-#[ts(
-    export,
-    export_to = "../../../protocol/typescript/benchmark/BenchRunCard.ts"
-)]
-pub struct BenchRunCard {
-    pub run_id: String,
-    /// Instance under test ("sympy__sympy-24066") — from the result ledger's
-    /// staged-checkout name (#329: the board names WHAT, not just who).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
-    pub instance: Option<String>,
-    /// Attempt N of `max_attempts` — the N-chances counter, live per ledger write.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    #[ts(optional, type = "number")]
-    pub attempt: Option<u32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
-    #[ts(optional, type = "number")]
-    pub max_attempts: Option<u32>,
-    /// Solver persona (from the result ledger; absent while attempt 1 is
-    /// still in flight and nothing has been written yet).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
-    pub solver: Option<String>,
-    /// `resolved` | `failed` (loud infra marker, incl. #2180 stalls the
-    /// deadline caught) | `active` (artifact activity within the stall
-    /// window) | `queued` (silent past the window BUT the solver is actively
-    /// working another run — one pair of hands; waiting a turn is not a
-    /// stall) | `quiet` (non-terminal AND silent past the window — the
-    /// shape the projection exists to make visible) | `ungraded` (a staged
-    /// workspace holds a real diff that no grade has ever seen — durable
-    /// work awaiting a verdict, NOT a stall; see
-    /// [`scan_workspace_artifact_cards`]).
-    pub phase: String,
-    /// True exactly when `phase == "quiet"`.
-    pub stalled: bool,
-    /// Epoch ms of the newest artifact write (result or grade ledger).
-    #[ts(type = "number")]
-    pub last_activity_ms: u64,
-    #[ts(type = "number")]
-    pub age_secs: u64,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
-    #[ts(optional, type = "number")]
-    pub acts: Option<u32>,
-    pub files_changed: Vec<String>,
-    /// Investigation trail (#2177) — reads/searches/edit attempts, not git.
-    pub files_examined: Vec<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
-    pub resolved: Option<bool>,
-    /// "passed/total", e.g. "1/1" — string so the sparkline renders directly.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
-    pub fail_to_pass: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
-    pub pass_to_pass: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    #[ts(optional, type = "number")]
-    pub patch_bytes: Option<u32>,
-    pub failed_tests: Vec<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
-    pub infra_error: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
-#[ts(
-    export,
-    export_to = "../../../protocol/typescript/benchmark/BenchmarkRunsResult.ts"
-)]
-pub struct BenchmarkRunsResult {
-    pub runs: Vec<BenchRunCard>,
-    /// How many cards MATCHED before `limit` truncated — so a page is never mistaken
-    /// for the whole set.
-    ///
-    /// Measured cost of not having this (2026-08-21, on me): `benchmark/runs` returned
-    /// 20 rows carrying 1 resolved instance, and I read that as the system's whole
-    /// history and as evidence that grades were being lost on the way to the board.
-    /// Both wrong. The projection reads grade siblings AND durable verdicts correctly;
-    /// there were simply 37 graded instances and `limit.unwrap_or(20)` showed the 20
-    /// most recent. The SECOND real pass (`sympy__sympy-13480`) was older than the
-    /// window, so the board looked like a 1-pass history and nobody knew otherwise.
-    ///
-    /// Same convention `debug/probes/query` already uses ("MATCHED versus returned, so
-    /// a page is never mistaken for the whole"). Silent truncation reads as "that's
-    /// everything" — on the command an operator uses to ask how the benchmark is going,
-    /// that is the worst possible failure shape.
-    #[ts(type = "number")]
-    pub matched: u32,
-    /// Human-readable statement of the two numbers, so the truncation is visible in a
-    /// glance at the receipt and not only to a caller who compares two fields.
-    pub summary: String,
-}
-
-/// One run-ledger scan: the cards a caller asked for, plus how many there were BEFORE
-/// truncation.
-///
-/// Returned as a struct rather than a bare `Vec` so the count cannot be dropped on the
-/// way out — the positron board consumes `.cards` and ignores the total, while the
-/// command reports both. A tuple would have let either caller silently discard it.
-pub(crate) struct RunScan {
-    pub cards: Vec<BenchRunCard>,
-    /// Cards that matched the filter before `limit` was applied.
-    pub matched: usize,
 }

@@ -28,6 +28,7 @@ use crate::ai::adapter::AIProviderAdapter;
 use crate::ai::types::{EmbeddingInput, EmbeddingRequest};
 
 mod similarity;
+pub mod vector_math;
 
 pub use similarity::cosine_similarity;
 
