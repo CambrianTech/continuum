@@ -443,8 +443,11 @@
         let first = admit_turn(&sem, Some(first_key), Some(old_pool.clone()), &client, &root,
             100, std::time::Duration::ZERO).await?;
         let mut waiting = Box::pin(admit_turn(&sem, Some(waiting_key), Some(old_pool.clone()),
-            &client, &root, 100, std::time::Duration::from_secs(10)));
+            &client, &root, 100, AdmissionPatience::for_turn(None, std::time::Duration::ZERO)));
         assert!(futures::poll!(&mut waiting).is_pending());
+        // Healthy slot contention outlasts the 240s readiness allowance without
+        // spending it. A later engine replacement still gets its readiness hold.
+        tokio::time::advance(std::time::Duration::from_secs(300)).await;
         let mut replacing = Box::pin(endpoint.transition());
         assert!(futures::poll!(&mut replacing).is_pending());
         drop(first);
@@ -452,6 +455,8 @@
             .await.map_err(|_| "slot waiter blocked generation replacement")?;
         old.observed_exit();
         let new = replacement.start_generation()?;
+        assert!(futures::poll!(&mut waiting).is_pending());
+        tokio::time::advance(std::time::Duration::from_secs(20)).await;
         contract.context = 16384;
         replacement.ready(&root, &new, contract)?;
         drop(replacement);
@@ -469,9 +474,9 @@
     }
 
     // what this catches (10417f6d): restarting admission after a slot wake must
-    // spend the original readiness budget, not buy another full hold.
+    // retain readiness patience after slot contention, and cancellation releases it.
     #[tokio::test(start_paused = true)]
-    async fn slot_waits_spend_readiness_patience_and_cancellation_releases_admission()
+    async fn slot_waits_preserve_readiness_patience_and_cancellation_releases_admission()
         -> Result<(), Box<dyn std::error::Error>>
     {
         let root = format!("test://admission-patience-{}", Uuid::new_v4());
@@ -499,9 +504,37 @@
         drop(tokio::time::timeout(std::time::Duration::from_secs(1), &mut transition)
             .await.map_err(|_| "cancelled or waiting turn retained endpoint reader")?);
         assert!(waiting.as_mut().await.is_err(), "closed endpoint must exhaust patience");
-        assert_eq!(started.elapsed(), std::time::Duration::from_secs(10));
+        assert_eq!(started.elapsed(), std::time::Duration::from_secs(18));
         drop(waiting);
         assert_eq!(sem.available_permits(), 2);
+        Ok(())
+    }
+
+    // what this catches (10417f6d): excluding slot waits from readiness patience
+    // must not exclude them from the request's absolute deadline or leak a permit.
+    #[tokio::test(start_paused = true)]
+    async fn the_turn_deadline_bounds_adapter_and_slot_waits()
+        -> Result<(), Box<dyn std::error::Error>>
+    {
+        for permits in [1, 2] {
+            let root = format!("test://admission-deadline-{}", Uuid::new_v4());
+            let sem = Arc::new(Semaphore::new(permits));
+            let pool = Arc::new(KvSlotPool::new(&root, 1));
+            let client = reqwest::Client::new();
+            let first_key = ActivityKey::new(Uuid::new_v4(), Uuid::new_v4()).ok_or("first key")?;
+            let next_key = ActivityKey::new(Uuid::new_v4(), Uuid::new_v4()).ok_or("next key")?;
+            let running = admit_turn(&sem, Some(first_key), Some(pool.clone()), &client, &root,
+                100, std::time::Duration::ZERO).await?;
+            let started = tokio::time::Instant::now();
+            let waiting = admit_turn(&sem, Some(next_key), Some(pool), &client, &root, 100,
+                AdmissionPatience::for_turn(Some(std::time::Duration::from_secs(10)),
+                    std::time::Duration::from_secs(2)));
+            assert!(waiting.await.is_err());
+            assert_eq!(started.elapsed(), std::time::Duration::from_secs(8));
+            assert_eq!(sem.available_permits(), permits - 1);
+            drop(running);
+            assert_eq!(sem.available_permits(), permits);
+        }
         Ok(())
     }
 

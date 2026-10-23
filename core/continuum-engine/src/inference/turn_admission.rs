@@ -137,6 +137,28 @@ impl Drop for TurnAdmission {
     }
 }
 
+/// Independent admission budgets: readiness waits consume `readiness`; every wait
+/// consumes the request's absolute deadline when it has one.
+pub struct AdmissionPatience {
+    readiness: std::time::Duration,
+    deadline: Option<tokio::time::Instant>,
+}
+
+impl AdmissionPatience {
+    pub fn for_turn(bound: Option<std::time::Duration>, elapsed: std::time::Duration) -> Self {
+        Self {
+            readiness: crate::inference::slots::EndpointSlots::TURN_READINESS_PATIENCE,
+            deadline: bound.map(|bound| tokio::time::Instant::now() + bound.saturating_sub(elapsed)),
+        }
+    }
+}
+
+impl From<std::time::Duration> for AdmissionPatience {
+    fn from(readiness: std::time::Duration) -> Self {
+        Self { readiness, deadline: None }
+    }
+}
+
 /// Admit a turn: acquire the concurrency permit (always), then — for a Turn with a
 /// resolvable `(persona, room)` key and a live slot pool — lease + pin its slot and
 /// page its KV (save the evictee, restore this activity). Returns the guard the
@@ -150,9 +172,9 @@ impl Drop for TurnAdmission {
 /// `patience` is how long the turn holds through a CLOSED endpoint (an engine still
 /// loading, a transition in flight) before it is refused — the caller's bound, since
 /// only the caller knows what its request can afford: the persona adapter passes
-/// `EndpointSlots::turn_patience(turn_bound, elapsed)` — an engine replacement, capped by
-/// what the turn has left on its own bound — and a test that asserts the refusal passes
-/// zero. The hold is ONE deadline however many times the endpoint closes inside it. See `EndpointSlots::admit_when_ready`
+/// `AdmissionPatience::for_turn(turn_bound, elapsed)`. Readiness time is cumulative
+/// across retries; healthy slot and adapter waits spend only the request deadline.
+/// A test that asserts immediate readiness refusal passes zero. See `EndpointSlots::admit_when_ready`
 /// for the boot window that cost Kimi 16 turns.
 pub async fn admit_turn(
     concurrency: &Arc<Semaphore>,
@@ -161,9 +183,20 @@ pub async fn admit_turn(
     client: &reqwest::Client,
     root: &str,
     approx_tokens: u64,
-    patience: std::time::Duration,
+    patience: impl Into<AdmissionPatience>,
 ) -> Result<TurnAdmission, String> {
-    admit(concurrency, key, pool, client, root, approx_tokens, false, patience).await
+    let patience = patience.into();
+    let admission = admit(concurrency, key, pool, client, root, approx_tokens, false, patience.readiness);
+    match patience.deadline {
+        Some(deadline) => {
+            if deadline <= tokio::time::Instant::now() {
+                return Err("turn deadline elapsed before admission".into());
+            }
+            tokio::time::timeout_at(deadline, admission).await
+                .map_err(|_| "turn deadline elapsed during admission".to_owned())?
+        }
+        None => admission.await,
+    }
 }
 
 /// Best-effort warm-ahead uses the same paging and provisional-attribution owner
@@ -208,6 +241,7 @@ async fn admit(
     patience: std::time::Duration,
 ) -> Result<TurnAdmission, String> {
     let started = tokio::time::Instant::now();
+    let mut readiness_left = patience;
     let mut waited = false;
     'admit: loop {
         // 1. PERMIT FIRST — event-driven wait for a free lane. Cannot fail: the
@@ -222,10 +256,12 @@ async fn admit(
         //    a transition in flight) for the caller's `patience` before it is refused;
         //    zero is the instant answer. See `EndpointSlots::admit_when_ready` for the
         //    boot window that cost Kimi 16 turns.
+        let readiness_started = tokio::time::Instant::now();
         let endpoint = crate::inference::slots::directory()
             .endpoint(root)
-            .admit_when_ready(patience.saturating_sub(started.elapsed()))
+            .admit_when_ready(readiness_left)
             .await?;
+        readiness_left = readiness_left.saturating_sub(readiness_started.elapsed());
         // Discovery may have finished before an engine transition. Use the pool
         // owned by the admitted generation, never that stale discovery result.
         let pool = endpoint.pool.clone().or_else(|| pool.clone());
