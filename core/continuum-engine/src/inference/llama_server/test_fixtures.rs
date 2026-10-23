@@ -333,6 +333,8 @@ where
                 context: 11008,
                 slots: 4,
                 cache_type: Some("q8_0".into()),
+                flash_attn: Some(true),
+                engine_build: None,
                 engine: process.engine_bin().unwrap(),
                 revisions: Some(vec![]),
             },

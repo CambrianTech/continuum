@@ -449,10 +449,7 @@ impl ServingDaemonModule {
                 // same sustained streak and cooldown as the window evidence, and every hold above
                 // (resident training, an eval) still defers it.
                 let measured_state = crate::inference::slots::measured_state_bytes(
-                    &crate::inference::llama_server::kv_page_dir(
-                        desired.as_str(),
-                        live.served_context_window,
-                    ),
+                    &crate::inference::llama_server::kv_page_dir(desired.as_str()),
                 );
                 let cache_holds_no_state =
                     crate::inference::lane_args::launched_cache_holds_no_state(

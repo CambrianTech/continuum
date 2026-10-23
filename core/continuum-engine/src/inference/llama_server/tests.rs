@@ -219,7 +219,7 @@ mod pages;
 
 use super::configuration::{DEFAULT_HOST, DEFAULT_PORT, chosen_port};
 
-use super::pages::{sweep_stale_page_generations_guarded_in};
+use super::pages::{migrate_legacy_page_dir_guarded_in};
 
 use super::process::{tail_or_hang_marker};
 

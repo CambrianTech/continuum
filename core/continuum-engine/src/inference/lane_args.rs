@@ -375,8 +375,8 @@ pub fn base_invocation(
             // whole paging tier and rotation on an oversubscribed server costs
             // a full re-prefill per turn (measured 2026-09-01: hit_rate 0.0 on
             // every act, 35-45s each; restore of the same state measured
-            // ~0.1s). The dir is GEOMETRY-KEYED by the caller (model + per-slot
-            // ctx) so a stale page can never restore into a mismatched slot.
+            // ~0.1s). The dir is one per MODEL (the caller's `kv_page_dir`); a page
+            // that no longer fits its slot is refused by the engine on restore.
             arg("--slot-save-path"),
             slot_save_dir.to_string_lossy().into_owned(),
             // AN UNCAPPED REQUEST DECODES AT MOST ONE WINDOW. llama-server's `-n` is the

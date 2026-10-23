@@ -367,6 +367,26 @@ async fn admit(
                     admission.page_in = PageIn::Resident;
                 }
                 admission.uncommitted = Some((Arc::clone(pool), k, pg.slot));
+                if !pg.already_resident && !pg.restore {
+                    // Every fast-path miss is loud: this turn prefills from its first token.
+                    // With no page on disk that is a first visit; a page on disk the ledger does
+                    // not confirm (lost before a save finished, or a ledger that did not load)
+                    // is the defect class, never a quiet slower path.
+                    let on_disk = pool.page_on_disk(&k);
+                    continuum_base::probe!(
+                        class = "inference.kv_page.cold_turn",
+                        persona = %k.persona,
+                        room = %k.room,
+                        slot = pg.slot as u64,
+                        warm_only,
+                        cause = match on_disk {
+                            Some(true) => "page_on_disk_unconfirmed",
+                            Some(false) => "no_page",
+                            None => "no_page_dir",
+                        },
+                        "this activity's slot holds none of its KV and no restorable page exists: it prefills in full"
+                    );
+                }
 
                 // 3. The context switch onto a now-free slot: page the evictee out,
                 //    page this activity in. Lands immediately (no defer) because the slot
@@ -534,6 +554,17 @@ pub async fn admit_transient(
 static KV_PAGE_SWITCH_MS: crate::inference::resource_admission::WaitRing =
     crate::inference::resource_admission::WaitRing::new();
 
+/// How many of a slot's NEWEST context checkpoints a saved page carries, beside its oldest
+/// (the head of the first user turn, which the engine always keeps). A restore resumes from
+/// the newest checkpoint at or before where the next prompt diverges. Measured on the M5
+/// (engine log 2026-10-20..23, 804 resumes right after a page restore): 61% chose a
+/// checkpoint in the head (<16k), 22% one within 8k of the slot's end, 17% one in between.
+/// Since the epoch view went live (05:09Z 10-23), 5 of 5 chose the head or one at most
+/// 10.3k behind the end, which at the M5's spacing (window / 32, ~4k at 130k) is the third
+/// newest. A 27-checkpoint page measured 11.4 GB of sidecar (~424 MB each) beside a 2.2 GB
+/// state, and its save took 66-100 s. An engine without the subset ignores the field.
+pub(crate) const PAGE_CHECKPOINTS_NEWEST: u32 = 4;
+
 /// Below this a switch is never called a wedge, whatever the ring says — the floor the
 /// first switch on a box is judged by (the UMA case lands in ~0.1 s; the floor is 100×).
 const KV_PAGE_WEDGE_FLOOR: std::time::Duration = std::time::Duration::from_secs(10);
@@ -646,14 +677,18 @@ async fn kv_page_action_with_capacity(
     // stops moving, or an engine that stops answering, turns the switch uncertain at
     // that checkpoint, and a dead engine ends it sooner when its socket drops.
     let mut payload = json!({ "filename": filename });
+    if action == "save" {
+        payload["keep_newest_checkpoints"] = json!(PAGE_CHECKPOINTS_NEWEST);
+    }
     if let Some(operation) = operation {
         payload["operation_id"] = json!(operation);
     }
     if action == "save" && governed {
         // A separate action is required: older engines must not mistake a quote for a write.
         let quote = async {
+            // The quote names the same checkpoint subset as the write, or the admitted bytes lie.
             let response = client.post(format!("{}/slots/{slot}?action=save-size", root.trim_end_matches('/')))
-                .json(&json!({ "filename": filename })).send().await.ok()?;
+                .json(&json!({ "filename": filename, "keep_newest_checkpoints": PAGE_CHECKPOINTS_NEWEST })).send().await.ok()?;
             if !response.status().is_success() {
                 return None;
             }

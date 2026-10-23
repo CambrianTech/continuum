@@ -64,18 +64,26 @@ impl KvSlotPool {
     /// ledger's own keys (same fingerprint, page file present) become restorable first:
     /// a new core restoring the pages the last one saved. Returns the keys loaded.
     pub(crate) fn attach_ledger(&self, ledger: SavedLedger, load: bool) -> usize {
-        let keys = if load { ledger.load() } else { std::collections::HashSet::new() };
-        let loaded = keys.len();
+        let loaded = if load { ledger.load() } else { LoadedLedger::default() };
+        let count = loaded.keys.len();
         if self.ledger.set(ledger).is_err() {
             return 0;
         }
         let snapshot = {
             let mut saved = self.saved.lock();
-            saved.extend(keys);
-            self.ledger_snapshot(&saved)
+            saved.extend(loaded.keys);
+            let mut holders = self.holders.lock();
+            // Residents come back only from the same engine process (`SavedLedger::load`):
+            // its slots still hold their KV, so their next turn reuses it in place.
+            for (slot, key) in loaded.residents {
+                if slot < citizen_slots(self.n_slots) {
+                    holders.insert(slot, key);
+                }
+            }
+            self.ledger_snapshot(&saved, &holders)
         };
         self.persist_ledger(snapshot);
-        loaded
+        count
     }
 
     /// Stamp the engine process into this pool's ledger and rewrite it, so a core that
@@ -87,11 +95,7 @@ impl KvSlotPool {
         if ledger.incarnation.set(incarnation).is_err() {
             return;
         }
-        let snapshot = {
-            let saved = self.saved.lock();
-            self.ledger_snapshot(&saved)
-        };
-        self.persist_ledger(snapshot);
+        self.persist_ledger(self.current_snapshot());
     }
 
     pub fn n_slots(&self) -> u32 {
@@ -184,13 +188,21 @@ impl KvSlotPool {
                 );
             }
             let free = Arc::clone(&self.free);
+            // The slot that physically still holds this activity's KV (evicted from the pool
+            // but not yet overwritten, or resumed from the same engine's ledger) is taken
+            // back when free: its next turn reuses that KV in place instead of restoring.
+            let warm = self.holders.lock().iter().find(|(_, k)| **k == key).map(|(slot, _)| *slot);
             let res = self
                 .pool
                 .load_or_share(key, move |_| async move {
-                    let slot = free
-                        .lock()
-                        .pop()
-                        .ok_or_else(|| "no free slot index".to_string())?;
+                    let slot = {
+                        let mut free = free.lock();
+                        match warm.and_then(|w| free.iter().position(|s| *s == w)) {
+                            Some(at) => Some(free.remove(at)),
+                            None => free.pop(),
+                        }
+                    }
+                    .ok_or_else(|| "no free slot index".to_string())?;
                     Ok(Arc::new(KvSlotLease {
                         slot,
                         free,
@@ -265,6 +277,9 @@ impl KvSlotPool {
     /// Caller holds the physical-slot permit and activity pin before changing attribution.
     pub(crate) fn plan_paging(&self, slot: u32, key: ActivityKey) -> SlotPaging {
         let prev = self.holders.lock().insert(slot, key);
+        if prev != Some(key) {
+            self.persist_ledger(self.current_snapshot());
+        }
         let save_first = prev.filter(|p| *p != key);
         let slot_holds_ours = prev == Some(key);
         let restore = !slot_holds_ours && self.saved.lock().contains(&key);
@@ -292,6 +307,9 @@ impl KvSlotPool {
     /// transient KV for its own warm state or save it under its own filename.
     pub(crate) fn take_resident(&self, slot: u32) -> (Option<ActivityKey>, Option<SlotPin>) {
         let previous = self.holders.lock().remove(&slot);
+        if previous.is_some() {
+            self.persist_ledger(self.current_snapshot());
+        }
         let pin = previous.and_then(|key| self.pin(&key));
         (previous, pin)
     }
@@ -299,10 +317,20 @@ impl KvSlotPool {
     /// Failed/cancelled generation never proves whose KV now occupies the slot.
     /// Saved pages remain valid; only the provisional physical attribution clears.
     pub(crate) fn forget_resident(&self, slot: u32, key: ActivityKey) {
-        let mut holders = self.holders.lock();
-        if holders.get(&slot) == Some(&key) {
-            holders.remove(&slot);
+        let removed = {
+            let mut holders = self.holders.lock();
+            holders.get(&slot) == Some(&key) && holders.remove(&slot).is_some()
+        };
+        if removed {
+            self.persist_ledger(self.current_snapshot());
         }
+    }
+
+    /// Whether `key` has a page file beside this pool's ledger; `None` without a ledger (no
+    /// page dir known). One stat, on the cold path only.
+    pub(crate) fn page_on_disk(&self, key: &ActivityKey) -> Option<bool> {
+        let dir = self.ledger.get()?.path.parent()?.to_path_buf();
+        Some(dir.join(page_filename(key)).is_file())
     }
 
     /// Record that `key`'s page was successfully written to disk — it becomes
@@ -311,7 +339,7 @@ impl KvSlotPool {
         let snapshot = {
             let mut saved = self.saved.lock();
             saved.insert(key);
-            self.ledger_snapshot(&saved)
+            self.ledger_snapshot(&saved, &self.holders.lock())
         };
         self.persist_ledger(snapshot);
     }
@@ -326,7 +354,7 @@ impl KvSlotPool {
             if !saved.remove(key) {
                 return;
             }
-            self.ledger_snapshot(&saved)
+            self.ledger_snapshot(&saved, &self.holders.lock())
         };
         self.persist_ledger(snapshot);
     }
@@ -334,23 +362,37 @@ impl KvSlotPool {
     /// The set as it stands, numbered under the lock that changed it, so writes taken
     /// outside that lock can still be applied in the set's order ([`SavedLedger::write`]
     /// drops a snapshot older than the one already on disk). `None` without a ledger.
-    pub(super) fn ledger_snapshot(&self, saved: &std::collections::HashSet<ActivityKey>) -> Option<(u64, Vec<(Uuid, Uuid)>)> {
+    /// Lock order: `saved`, then `holders`.
+    pub(super) fn ledger_snapshot(
+        &self,
+        saved: &std::collections::HashSet<ActivityKey>,
+        holders: &std::collections::HashMap<u32, ActivityKey>,
+    ) -> Option<LedgerSnapshot> {
         self.ledger.get()?;
         let generation = self.ledger_generation.fetch_add(1, Ordering::Relaxed) + 1;
         let mut keys: Vec<(Uuid, Uuid)> = saved.iter().map(|k| (k.persona, k.room)).collect();
         keys.sort_unstable();
-        Some((generation, keys))
+        let mut residents: Vec<(u32, Uuid, Uuid)> = holders.iter().map(|(slot, k)| (*slot, k.persona, k.room)).collect();
+        residents.sort_unstable();
+        Some(LedgerSnapshot { generation, keys, residents })
+    }
+
+    /// [`Self::ledger_snapshot`] of the state right now, for a change that held neither lock.
+    pub(super) fn current_snapshot(&self) -> Option<LedgerSnapshot> {
+        let saved = self.saved.lock();
+        let holders = self.holders.lock();
+        self.ledger_snapshot(&saved, &holders)
     }
 
     /// Write a snapshot beside the pages, OUTSIDE the set's lock: the write may retry a
     /// Windows sharing violation for ~1.6 s (`replace_file`), and a turn's paging must
     /// never wait on that. Nothing to write without a ledger (no page dir, or a contract
     /// that cannot be fingerprinted).
-    pub(super) fn persist_ledger(&self, snapshot: Option<(u64, Vec<(Uuid, Uuid)>)>) {
-        let (Some(ledger), Some((generation, keys))) = (self.ledger.get(), snapshot) else {
+    pub(super) fn persist_ledger(&self, snapshot: Option<LedgerSnapshot>) {
+        let (Some(ledger), Some(snapshot)) = (self.ledger.get(), snapshot) else {
             return;
         };
-        if let Err(error) = ledger.write(generation, keys) {
+        if let Err(error) = ledger.write(snapshot) {
             // The in-memory set stays authoritative for this process; only a restart
             // loses the eligibility the file would have carried.
             continuum_base::probe!(
@@ -360,132 +402,6 @@ impl KvSlotPool {
                 "the confirmed-save ledger could not be written: saved pages stay restorable in this process, a restart will re-prefill them"
             );
         }
-    }
-}
-
-/// The confirmed-save set of one page dir, on disk, so it outlives the process
-/// (a deploy). Before this, eligibility lived only in [`KvSlotPool::saved`], which
-/// starts empty in every core: on the M5 2026-10-10 the first turns after the 18:49Z
-/// deploy reused nothing (turn_cached 0 of 31,811 and 27,250) while their pages sat on
-/// disk. The file holds exactly the in-memory set: a key enters only after the engine
-/// confirms its save and leaves before any save overwrites it, so a timed-out or
-/// interrupted save is never in it. It is read back only under the SAME contract
-/// fingerprint it was written with (the exact-contract rule of #4367, unchanged).
-pub(crate) struct SavedLedger {
-    pub(super) path: std::path::PathBuf,
-    pub(super) fingerprint: String,
-    /// The generation of the snapshot on disk; a write serializes on this and skips a
-    /// snapshot older than it.
-    pub(super) written: Mutex<u64>,
-    /// The engine process these pages belong to, stamped by the spawn once the engine is
-    /// ready ([`stamp_engine_incarnation`]) or carried over by an adoption.
-    pub(super) incarnation: std::sync::OnceLock<(u32, u64)>,
-}
-
-#[derive(serde::Serialize, serde::Deserialize)]
-pub(super) struct SavedLedgerFile {
-    pub(super) fingerprint: String,
-    pub(super) keys: Vec<(Uuid, Uuid)>,
-    /// The engine process that wrote these pages: (pid, OS start time). A core that
-    /// ADOPTS a running engine has no launch contract of its own; this is how it proves
-    /// the ledger is that very process's, and so under its contract. Absent on a ledger
-    /// written before the spawn stamped it: such a ledger is never adopted.
-    #[serde(default)]
-    pub(super) incarnation: Option<(u32, u64)>,
-}
-
-/// The ledger's file name inside a page dir. Not an `a-*.bin` page, so the page
-/// store's trim never counts or removes it; the generation sweep removes it with its dir.
-pub(super) const SAVED_LEDGER_FILE: &str = "saved-ledger.json";
-
-impl SavedLedger {
-    pub(super) fn in_dir(page_dir: &std::path::Path, fingerprint: String) -> Self {
-        Self {
-            path: page_dir.join(SAVED_LEDGER_FILE),
-            fingerprint,
-            written: Mutex::new(0),
-            incarnation: std::sync::OnceLock::new(),
-        }
-    }
-
-    /// The ledger a running engine left in `page_dir`, if that engine is the process
-    /// `incarnation` names: the fingerprint it was written under becomes this ledger's
-    /// own, because it is the same process under the same launch contract. Any other
-    /// ledger (another process, an unstamped one, none) is not this engine's.
-    pub(super) fn of_running_engine(page_dir: &std::path::Path, incarnation: (u32, u64)) -> Result<Self, AdoptRefusal> {
-        let bytes = match std::fs::read(page_dir.join(SAVED_LEDGER_FILE)) {
-            Ok(bytes) => bytes,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Err(AdoptRefusal::NoLedger),
-            Err(_) => return Err(AdoptRefusal::Unreadable),
-        };
-        let file = serde_json::from_slice::<SavedLedgerFile>(&bytes).map_err(|_| AdoptRefusal::Unreadable)?;
-        match file.incarnation {
-            None => return Err(AdoptRefusal::Unstamped),
-            Some(written_by) if written_by != incarnation => return Err(AdoptRefusal::AnotherProcess),
-            Some(_) => {}
-        }
-        let ledger = Self::in_dir(page_dir, file.fingerprint);
-        let _ = ledger.incarnation.set(incarnation);
-        Ok(ledger)
-    }
-
-    /// Atomic replace (write a sibling, then `replace_file`) into a dir that must already
-    /// exist: the lane creates its page dir; the ledger never creates one. Writes are
-    /// serialized and a snapshot older than the one on disk is dropped, so the file is
-    /// always the newest set even when writers race.
-    pub(super) fn write(&self, generation: u64, keys: Vec<(Uuid, Uuid)>) -> std::io::Result<()> {
-        let mut written = self.written.lock();
-        if generation <= *written {
-            return Ok(());
-        }
-        let file = SavedLedgerFile { fingerprint: self.fingerprint.clone(), keys, incarnation: self.incarnation.get().copied() };
-        let bytes = serde_json::to_vec(&file)?; // file on disk: the page dir's confirmed-save ledger, read back by `load`
-        let tmp = self.path.with_extension("json.tmp");
-        std::fs::write(&tmp, bytes)?;
-        continuum_base::fs_portable::replace::replace_file(&tmp, &self.path)?;
-        *written = generation;
-        Ok(())
-    }
-
-    /// The keys this ledger may restore: written under the same fingerprint, with
-    /// their page file still present. Anything else is no eligibility, never a guess:
-    /// a missing file, another contract's ledger, a malformed one.
-    pub(super) fn load(&self) -> std::collections::HashSet<ActivityKey> {
-        let Some(dir) = self.path.parent() else {
-            return std::collections::HashSet::new();
-        };
-        let unread = |why: &str| {
-            continuum_base::probe!(
-                class = "inference.kv_page.ledger_unread",
-                path = %self.path.display(),
-                why = why,
-                "no confirmed-save ledger restored: the pages in this dir re-prefill once"
-            );
-            std::collections::HashSet::new()
-        };
-        let bytes = match std::fs::read(&self.path) {
-            Ok(bytes) => bytes,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return std::collections::HashSet::new(),
-            Err(_) => return unread("unreadable"),
-        };
-        let Ok(file) = serde_json::from_slice::<SavedLedgerFile>(&bytes) else {
-            return unread("malformed");
-        };
-        if file.fingerprint != self.fingerprint {
-            return unread("written under another contract");
-        }
-        let listed = file.keys.len();
-        let keys: Vec<ActivityKey> = file.keys.into_iter().filter_map(|(persona, room)| ActivityKey::new(persona, room)).collect();
-        if keys.len() < listed {
-            // A key with a nil persona or room names no activity: its page re-prefills once.
-            continuum_base::probe!(
-                class = "inference.kv_page.ledger_keys_dropped",
-                path = %self.path.display(),
-                dropped = (listed - keys.len()) as u64,
-                "confirmed-save ledger entries without an activity were dropped: their pages re-prefill once"
-            );
-        }
-        keys.into_iter().filter(|k| dir.join(page_filename(k)).is_file()).collect()
     }
 }
 
@@ -507,46 +423,15 @@ pub struct KvPageContract {
     pub context: u32,
     pub slots: u32,
     pub cache_type: Option<String>,
+    /// Whether the engine runs flash attention: it decides the V layout a page stores.
+    pub flash_attn: Option<bool>,
+    /// The engine build's commit as the running server reports it (`/props` `build_info`).
+    /// `None` = unknown, and then the engine FILE is one of the `revisions` instead.
+    pub engine_build: Option<String>,
     pub engine: String,
     /// Cold-path revision evidence for the resolved model, adapters and engine.
     /// Unknown revisions refuse saved-page carry-over, never guess compatibility.
     pub revisions: Option<Vec<(std::path::PathBuf, u64, std::time::SystemTime)>>,
-}
-
-impl KvPageContract {
-    /// A stable digest of the whole contract, for the on-disk confirmed-save ledger:
-    /// two contracts with the same fingerprint are equal field for field. `None` under
-    /// the same conditions that refuse in-process carry-over (no page dir, unknown cache
-    /// type, unknown revisions): what cannot be compared exactly is never persisted.
-    pub(crate) fn fingerprint(&self) -> Option<String> {
-        use sha2::Digest;
-        let page_dir = self.page_dir.as_ref()?;
-        let cache_type = self.cache_type.as_ref()?;
-        let revisions = self.revisions.as_ref()?;
-        let mut h = sha2::Sha256::new();
-        let mut field = |label: &str, value: &[u8]| {
-            h.update(label.as_bytes());
-            h.update((value.len() as u64).to_le_bytes());
-            h.update(value);
-        };
-        field("model_id", self.model_id.as_bytes());
-        field("model", self.model.as_os_str().as_encoded_bytes());
-        for a in &self.adapters {
-            field("adapter", a.as_bytes());
-        }
-        field("page_dir", page_dir.as_os_str().as_encoded_bytes());
-        field("context", &self.context.to_le_bytes());
-        field("slots", &self.slots.to_le_bytes());
-        field("cache_type", cache_type.as_bytes());
-        field("engine", self.engine.as_bytes());
-        for (path, size, modified) in revisions {
-            field("revision", path.as_os_str().as_encoded_bytes());
-            field("size", &size.to_le_bytes());
-            let nanos = modified.duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).ok()?;
-            field("modified", &nanos.to_le_bytes());
-        }
-        Some(format!("{:x}", h.finalize()))
-    }
 }
 
 pub(super) struct EndpointState {

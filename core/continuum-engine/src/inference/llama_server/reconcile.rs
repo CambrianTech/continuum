@@ -323,7 +323,7 @@ async fn serve_or_adopt<C: LlamaServerControl + ?Sized>(
             // answered AlreadyServing, and every switch between minds stayed a full re-prefill.
             // The daemon's own rule decides here too: relaunch only when the running grant
             // holds no state and the target's would. Unknown (no argv) or drift is never one.
-            let page_dir = kv_page_dir(target.model_id(), served_window_n);
+            let page_dir = kv_page_dir(target.model_id());
             crate::inference::slots::seed_state_samples(&page_dir).await;
             let cache_ok = !crate::inference::lane_args::cache_relaunch_owed(
                 running_kv.as_ref().and_then(|r| r.cache_ram_mib),
