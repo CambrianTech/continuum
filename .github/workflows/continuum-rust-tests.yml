@@ -351,6 +351,8 @@ jobs:
           # Disk eviction lives in the kernel crate (core/continuum-kernel); its native custody
           # fixtures run from there.
           foreach ($test in @(
+              'system_resources::drives::tests::cold_tier_excludes_the_resolved_system_volume_and_reverses_with_capacity',
+              'system_resources::drives::tests::the_drive_holding_a_path_is_the_longest_mount_prefix_never_a_named_root',
             'system_resources::disk_eviction::tests::broker_reclaims_release_incremental_only_after_profile_custody',
             'system_resources::disk_eviction::tests::redirected_profile_or_incremental_child_never_reaches_external_data',
             'system_resources::disk_eviction::tests::ladder_frees_in_order_and_preserves_release_outputs'

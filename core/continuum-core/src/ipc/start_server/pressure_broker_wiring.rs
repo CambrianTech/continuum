@@ -136,14 +136,10 @@ pub(super) fn register_pressure_broker(
         // delete). No cold drive ⇒ the pool refuses loudly — models are
         // re-fetch-hours, not derived artifacts.
         if let Some(models_dir) = crate::system_resources::tracked_dir("genome-models") {
-            use crate::system_resources::drives::{detect_drives, DriveRole};
+            use crate::system_resources::drives::{detect_drives, drive_holding, DriveRole};
             let drives = detect_drives();
             // The volume holding the hot tier: longest mount-point prefix.
-            let volume_total = drives
-                .iter()
-                .filter(|d| models_dir.path().starts_with(&d.mount))
-                .max_by_key(|d| d.mount.as_os_str().len())
-                .map(|d| d.total_bytes);
+            let volume_total = drive_holding(&drives, models_dir.path()).map(|d| d.total_bytes);
             let cold_root = drives
                 .iter()
                 .find(|d| d.role == DriveRole::Cold)
