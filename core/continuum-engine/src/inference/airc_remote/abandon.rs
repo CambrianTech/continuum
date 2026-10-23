@@ -100,7 +100,7 @@ impl Cancel {
             }),
         };
         let headers = AircTransport::build_headers(&request);
-        let sent = match serde_json::to_value(&request) {
+        let sent = match serde_json::to_value(&request) { // boundary: the airc wire, this request's body
             Ok(body) => self
                 .airc
                 .request_in(
