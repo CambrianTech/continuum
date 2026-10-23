@@ -57,6 +57,7 @@
 //!   the heuristic; real-model work routes over airc to whichever
 //!   peer has capacity.
 
+mod abandon;
 pub mod adapter;
 pub mod interceptor;
 pub mod peer_breaker;

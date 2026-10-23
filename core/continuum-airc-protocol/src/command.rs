@@ -46,6 +46,34 @@ pub const HEADER_COMMAND_PATH: &str = "continuum.command.path";
 /// b3e5b582). One owner for the literal on the wire; other hand-written sites migrate.
 pub const COMMAND_PATH_AI_GENERATE: &str = "ai/generate";
 
+/// The control command a requester sends when it abandons a generation it asked a seat
+/// for (its deadline passed, or its turn was dropped): the seat aborts that generation
+/// instead of finishing it for no one (card 83f774fb). Sent only to a seat that
+/// advertises the capability; the seat honors it only from the original requester.
+pub const COMMAND_PATH_AI_GENERATE_CANCEL: &str = "ai/generate/cancel";
+
+/// Params of [`COMMAND_PATH_AI_GENERATE_CANCEL`]: the requester's generation id
+/// ([`HEADER_GENERATE_ID`]) of the abandoned `ai/generate` request, and that request's own
+/// validity ([`HEADER_GENERATE_VALID_UNTIL_MS`]): the seat remembers a cancel that overtook
+/// its request exactly as long as the request could still be admitted.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GenerateCancel {
+    pub generation: uuid::Uuid,
+    pub valid_until_ms: u64,
+}
+
+/// airc header on an `ai/generate` request: the REQUESTER's id for this generation, chosen
+/// before the request is published. The seat keys the served generation by it, so a cancel
+/// can name it even when the requester abandons the request before airc hands back its own
+/// correlation id (card 83f774fb: airc publishes before `request_in` returns).
+pub const HEADER_GENERATE_ID: &str = "continuum.generate.id";
+
+/// airc header on an `ai/generate` request, sent with [`HEADER_GENERATE_ID`]: the epoch ms
+/// past which the requester no longer waits for it (publication time plus its deadline).
+/// The seat refuses a request that arrives after it, so a delayed frame can never start
+/// work nobody waits for, and an early cancel need be remembered only until it.
+pub const HEADER_GENERATE_VALID_UNTIL_MS: &str = "continuum.generate.valid_until_ms";
+
 /// airc header naming the `RouteKind` of the dispatch.
 pub const HEADER_COMMAND_KIND: &str = "continuum.command.kind";
 

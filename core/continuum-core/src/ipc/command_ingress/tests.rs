@@ -306,6 +306,7 @@
             request_channel: airc_core::RoomId::from_uuid(Uuid::new_v4()),
             request_channel_name: None,
             presented_grant: None,
+            generation: None,
         }
     }
 
@@ -441,6 +442,7 @@
             request_channel: airc_core::RoomId::from_uuid(Uuid::new_v4()),
             request_channel_name: None,
             presented_grant: None,
+            generation: None,
         };
 
         // The path doesn't resolve to a module, so execute_with_caller
@@ -506,6 +508,7 @@
             request_channel: airc_core::RoomId::from_uuid(Uuid::new_v4()),
             request_channel_name: None,
             presented_grant: None,
+            generation: None,
         };
         let baseline = leased_in_calls();
 
@@ -883,6 +886,104 @@
                 .expect("shutting the public pump down drops the generation it was serving");
             held.abort();
             drop(membership_tx);
+        }
+
+
+        /// Peer B asks the seat for a held generation through the real requester transport
+        /// with `deadline`, and returns the transport's outcome once it gives up.
+        async fn abandon_a_held_generation(
+            rig: &Rig,
+            deadline: Duration,
+        ) -> Result<
+            crate::inference::airc_remote::protocol::RemoteInferenceResponse,
+            crate::inference::airc_remote::protocol::RemoteInferenceError,
+        > {
+            use crate::ai::types::{ChatMessage, MessageContent, TextGenerationRequest};
+            use crate::inference::airc_remote::transport::{AircInferenceTransport, AircLiveTransport};
+            let transport = Arc::into_inner(AircLiveTransport::new(
+                Arc::clone(rig.loop_back.peer_b()),
+                rig.loop_back.peer_a_id(),
+            ))
+            .expect("a freshly built transport has one owner")
+            .with_deadline(deadline);
+            let request = crate::inference::airc_remote::protocol::RemoteInferenceRequest::new(TextGenerationRequest {
+                messages: vec![ChatMessage {
+                    role: "user".to_string(),
+                    content: MessageContent::Text(HOLD.to_string()),
+                    name: None,
+                }],
+                ..Default::default()
+            });
+            transport.send_request(request).await
+        }
+
+        /// The seat's beacon as the requester hears it, advertising `capabilities`.
+        fn hear_seat(rig: &Rig, capabilities: Value) {
+            let offer: crate::capacity::gossip::CapacityOffer = serde_json::from_value(serde_json::json!({
+                "gpuTotalBytes": 1u64, "gpuFreeBytesLive": 0u64, "systemRamFreeBytes": 0u64,
+                "atMs": continuum_base::time::EpochMs::now().millis(),
+                "capabilities": capabilities,
+            }))
+            .expect("a seat beacon");
+            crate::capacity::gossip::global_ledger().hear(
+                rig.loop_back.peer_a_id(),
+                offer,
+                continuum_base::time::EpochMs::now().millis(),
+            );
+        }
+
+        // what this catches (card 83f774fb, IntelMac Iris 2026-10-23: the M5 finished
+        // 2,520 tokens ~55 s after she gave up): a requester that abandons a generation at its
+        // deadline tells a capable seat to stop, and the seat drops the work instead of
+        // finishing it for no one. Real requester transport, real seat handler.
+        #[tokio::test]
+        async fn an_abandoned_generation_is_cancelled_at_a_capable_seat() {
+            let rig = rig().await;
+            hear_seat(&rig, serde_json::json!(["remote_generate_cancel"]));
+            let outcome = abandon_a_held_generation(&rig, Duration::from_secs(2)).await;
+            assert!(outcome.is_err(), "the requester gave up at its deadline: {outcome:?}");
+            tokio::time::timeout(Duration::from_secs(15), rig.dropped.notified())
+                .await
+                .expect("the seat aborted the abandoned generation");
+            rig.pump.abort();
+        }
+
+        // what this catches: a seat whose beacon does not advertise the cancel is never sent
+        // one (it would not understand it); its generation runs to completion as before.
+        #[tokio::test]
+        async fn an_uncapable_seat_is_never_sent_a_cancel() {
+            let rig = rig().await;
+            hear_seat(&rig, serde_json::json!([]));
+            let outcome = abandon_a_held_generation(&rig, Duration::from_secs(2)).await;
+            assert!(outcome.is_err(), "the requester gave up at its deadline: {outcome:?}");
+            assert!(
+                tokio::time::timeout(Duration::from_secs(5), rig.dropped.notified()).await.is_err(),
+                "no cancel reached a seat that does not advertise it; the generation still runs"
+            );
+            rig.release.notify_one();
+            rig.pump.abort();
+        }
+
+
+        // what this catches (Codex BLOCK on 1ed901a74): the guard armed only after
+        // request_in returned, but airc publishes before that, so a turn dropped while its
+        // request was being published left the seat generating for no one. The guard is now
+        // armed before publication, keyed by the requester's own generation id: dropping the
+        // requesting turn while the seat is already serving it still cancels the work.
+        #[tokio::test]
+        async fn dropping_the_requesting_turn_cancels_at_a_capable_seat() {
+            let rig = StdArc::new(rig().await);
+            hear_seat(&rig, serde_json::json!(["remote_generate_cancel"]));
+            let task_rig = StdArc::clone(&rig);
+            let requester = tokio::spawn(async move {
+                abandon_a_held_generation(&task_rig, Duration::from_secs(600)).await
+            });
+            tokio::time::timeout(WAIT, rig.entered.notified()).await.expect("the seat is serving the request");
+            requester.abort();
+            tokio::time::timeout(Duration::from_secs(15), rig.dropped.notified())
+                .await
+                .expect("dropping the requesting turn cancelled the served generation");
+            rig.pump.abort();
         }
 
     }
