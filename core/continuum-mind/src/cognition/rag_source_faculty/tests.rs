@@ -345,14 +345,14 @@
         );
     }
 
-    // what this catches: the KV routing contract (2026-08-23). A session-stable
-    // source's bid lands in the cacheable system prefix (stable, not trailing);
-    // a volatile-content source's bid rides as a TRAILING conversation turn —
-    // never the system message, where its churn (kanban claim-flaps, her own
-    // writes mutating the workspace map) re-prefilled every conversation token
-    // after it (live KV reuse pinned at 18-33% on the MirrorCode round).
+    // what this catches: the KV routing contract. EVERY grounding bid rides her view
+    // (`trailing`), never the system message: volatile content because its churn
+    // re-prefilled every token after it (2026-08-23, live KV reuse 18-33%), and
+    // standing content because it is the ROOM's while the system message is hers in
+    // every room — a doctrine there rewrote its end on each room switch (2026-10-23).
+    // `stable` survives as a fact about the bytes, and importance is never erased.
     #[tokio::test]
-    async fn volatile_content_grounding_is_trailing_and_stable_grounding_is_not() {
+    async fn every_grounding_bid_rides_her_view_and_keeps_its_byte_stability() {
         let stable = RagSourceFaculty::new(
             persona(),
             Arc::new(StubSource::new("room-roster", &["Aria [persona]"])),
@@ -363,9 +363,9 @@
             .contribute(&Workspace::new("hi"))
             .await
             .expect("non-empty source bids");
-        assert!(c.stable, "standing framing stays in the cacheable prefix");
+        assert!(c.stable, "standing framing still says its bytes are stable");
         assert!(c.standing_grounding);
-        assert!(!c.trailing, "stable grounding must not double as trailing");
+        assert!(c.trailing, "standing grounding is a block of her view, never the system message");
 
         let volatile = RagSourceFaculty::new(
             persona(),

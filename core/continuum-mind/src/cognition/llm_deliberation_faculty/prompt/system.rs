@@ -1,10 +1,11 @@
 use super::*;
 
 impl LlmDeliberationFaculty {
-    /// Render the assembled context (the phase-1 winners that hold the workspace)
-    /// into a system-prompt block, so the reasoner conditions on what recall /
-    /// world-model / affect surfaced. Only *context* contributions are included
-    /// (the verdict isn't in the broadcast yet at phase 2).
+    /// Render the assembled context (the phase-1 winners that hold the workspace and did
+    /// not ride her view) into the body of the working-context message, which the prompt
+    /// places in the fresh tail after her view, never in the system message. Only
+    /// *context* contributions are included (the verdict isn't in the broadcast yet at
+    /// phase 2).
     ///
     /// Bounded to `budget_tokens`: context is enrichment, so under window pressure
     /// it yields FIRST (after the essential framing + the burst she is responding
@@ -91,11 +92,9 @@ impl LlmDeliberationFaculty {
             );
             return String::new();
         }
-        // TRAILING contributions (working-memory proprioception that grows each act)
-        // are excluded HERE — they render as trailing conversation turns nearest
-        // generation ([`messages_within`]), NOT in the system message, so a settle-act
-        // never shifts the cacheable system prefix (#205). Only standing framing and
-        // byte-stable grounding (roster, doctrine, map, recall) belong in `system`.
+        // TRAILING contributions (every grounding source's bid, recall, working memory)
+        // are excluded HERE — they are sources of her view (`prompt/epoch.rs`). What is
+        // left is whatever no producer marked as a view block; it renders after her view.
         let mut ctx: Vec<_> = ws
             .broadcast
             .iter()
@@ -147,7 +146,7 @@ impl LlmDeliberationFaculty {
         // sensor starts lying the first time the format changes).
         let mut dropped_salience: Vec<(String, f32)> = Vec::new();
         let mut partial: Vec<String> = Vec::new();
-        let mut used = plan.system_tokens();
+        let mut used = plan.context_tokens();
         for c in ctx {
             if c.standing_grounding {
                 continue; // This exact source already owns its selected units above.
@@ -380,33 +379,28 @@ impl LlmDeliberationFaculty {
         block
     }
 
-    /// Compose the full system prompt around an ALREADY-BUDGETED context block.
-    /// Splitting the assembly this way lets `prompt_view` size the context to the
-    /// served window before it is embedded (the framing wrapper is essential and
-    /// small; the context is the variable part that must fit the remainder).
     /// Assemble the system prompt for this turn. Thin adapter over
-    /// [`deliberation_prompt::compose`]: the faculty owns the *inputs* (its identity,
+    /// [`deliberation_prompt::compose_split`]: the faculty owns the *inputs* (its identity,
     /// tools, the turn's structural flags); the framing prose + block ordering live in
     /// [`super::super::super::deliberation_prompt`] as a procedural list of named, gated blocks.
+    /// It takes no room context: the system message is hers in every room, and a room's
+    /// assembled context renders after her view (`prompt_view_with_visual_feedback`).
     pub fn compose_system(
         &self,
-        context: &str,
         expanded: &BTreeSet<String>,
         directed: bool,
         self_initiated: bool,
         now_ms: Option<u64>,
     ) -> String {
-        self.compose_system_holding(context, expanded, directed, self_initiated, now_ms, false)
+        self.compose_system_holding(expanded, directed, self_initiated, now_ms, false)
     }
 
     /// [`Self::compose_system`] with the held-work contract flag. The plain form
     /// defaults it false so the many framing-shape tests (which have no workspace)
     /// keep their signature; the live prompt path derives it from `ws` and calls
     /// this directly.
-    #[allow(clippy::too_many_arguments)]
     fn compose_system_holding(
         &self,
-        context: &str,
         expanded: &BTreeSet<String>,
         directed: bool,
         self_initiated: bool,
@@ -417,7 +411,6 @@ impl LlmDeliberationFaculty {
         // Kept for the many framing-shape tests that assert against the composed whole; the
         // LIVE prompt path calls `compose_system_split` and places the two parts separately.
         let c = self.compose_system_split(
-            context,
             expanded,
             directed,
             self_initiated,
@@ -433,14 +426,12 @@ impl LlmDeliberationFaculty {
     /// [`stable`](deliberation_prompt::ComposedSystemPrompt::stable) prefix
     /// (identity + `[Taking your turn]` + tools) that belongs in the cacheable system
     /// message, and the per-turn
-    /// [`trailing`](deliberation_prompt::ComposedSystemPrompt::trailing) framing +
-    /// assembled context + clock that the live path rides on the newest turn so it never
-    /// invalidates the cached prefix. The whole-string [`compose_system_holding`] is
-    /// `stable ++ trailing` of exactly this.
-    #[allow(clippy::too_many_arguments)]
+    /// [`trailing`](deliberation_prompt::ComposedSystemPrompt::trailing) framing + clock
+    /// that the live path rides on the newest turn so it never invalidates the cached
+    /// prefix. The whole-string [`compose_system_holding`] is `stable ++ trailing` of
+    /// exactly this.
     pub fn compose_system_split(
         &self,
-        context: &str,
         expanded: &BTreeSet<String>,
         directed: bool,
         self_initiated: bool,
@@ -452,7 +443,6 @@ impl LlmDeliberationFaculty {
             persona_name: &self.persona_name,
             tools: &self.tools,
             expanded,
-            context,
             directed,
             now_ms,
             self_initiated,

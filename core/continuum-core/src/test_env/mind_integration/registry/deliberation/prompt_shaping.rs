@@ -443,7 +443,7 @@ fn tool_surface_is_a_category_index_plus_discovery_pair() {
     // only since the 2026-07-10 prompt diet; args live in commands/help + the
     // #1916 inline error-manual, never an 8k menu wall.
     let expanded = BTreeSet::from(["cat".to_string()]);
-    let framing = faculty.compose_system("", &expanded, false, false, None);
+    let framing = faculty.compose_system(&expanded, false, false, None);
     assert!(
         framing.contains("[Your tools]") && framing.contains("cat: command_0"),
         "an expanded category must name each verb under its header: {framing}"
@@ -454,7 +454,7 @@ fn tool_surface_is_a_category_index_plus_discovery_pair() {
 );
     // Collapsed (nothing expanded) the same category renders as a one-line
     // bookmark — the spine still NAMES it, so she can open it on demand.
-    let collapsed = faculty.compose_system("", &BTreeSet::new(), false, false, None);
+    let collapsed = faculty.compose_system(&BTreeSet::new(), false, false, None);
     assert!(
     collapsed.contains("cat (60 — commands/list --filter cat)"),
     "a collapsed category is a one-line bookmark naming it + its verb count: {collapsed}"

@@ -721,12 +721,15 @@ mod tests {
             .collect::<Vec<_>>()
             .join("\n");
         assert!(text.contains(task));
+        // The captured context reaches her as the assembled-context message after her
+        // view, never the system message, which is hers in every room (2026-10-23).
+        assert!(text.contains(receipt), "captured context must reach the replayed request");
         assert!(
             requests[0]
                 .system_prompt
                 .as_deref()
-                .is_some_and(|system| system.contains(receipt)),
-            "captured context must reach the replayed system prompt"
+                .is_some_and(|system| !system.contains(receipt)),
+            "captured context must stay out of the system prompt"
         );
         assert!(text.contains(&update.render_room_update()));
         assert_eq!(

@@ -37,7 +37,7 @@ fn an_unaffordable_standing_source_does_not_fault_the_turn() {
     // The fixture must actually be unaffordable, or this test proves nothing.
     let whole = GroundingPlan::minimum(&ws);
     assert!(
-        whole.system_reserve() + whole.trailing_tokens() > 4_096,
+        whole.context_reserve() + whole.trailing_tokens() > 4_096,
         "fixture must make the standing minimum genuinely unaffordable"
     );
 
@@ -70,7 +70,7 @@ fn shedding_reports_the_size_it_wanted() {
         .standing_grounding(),
     );
     let whole = GroundingPlan::minimum(&ws);
-    let wanted_tokens = whole.system_reserve() + whole.trailing_tokens();
+    let wanted_tokens = whole.context_reserve() + whole.trailing_tokens();
     assert!(
         wanted_tokens > 0,
         "the fixture must actually want something"
@@ -81,7 +81,7 @@ fn shedding_reports_the_size_it_wanted() {
         Fitted::Reduced { plan, wanted } => {
             assert_eq!(wanted, wanted_tokens, "the WANT survives the shed");
             assert_eq!(
-                plan.system_reserve() + plan.trailing_tokens(),
+                plan.context_reserve() + plan.trailing_tokens(),
                 0,
                 "nothing is kept that the budget cannot pay for — and a piece                              too big for the budget is dropped whole, never truncated into                              a fragment that reads as complete"
             );
@@ -90,7 +90,7 @@ fn shedding_reports_the_size_it_wanted() {
 
     match GroundingPlan::within_budget(&ws, wanted_tokens) {
         Fitted::Whole(plan) => assert_eq!(
-            plan.system_reserve() + plan.trailing_tokens(),
+            plan.context_reserve() + plan.trailing_tokens(),
             wanted_tokens,
             "an affordable minimum is kept whole"
         ),

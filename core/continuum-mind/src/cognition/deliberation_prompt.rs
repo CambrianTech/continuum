@@ -26,10 +26,16 @@
 //! ~1.8k-token catalog that rode every prefill for a ~0.4k-token menu that varies
 //! (Joel 2026-06-29, [[adaptive-tool-surface-meets-you-in-the-middle]]; the flip is a
 //! net prefill cut when the stable prefix is NOT reused across turns — the observed
-//! regime, slot churn across ~14 personas on `--parallel 4`). The assembled `context`
-//! stays LAST so the live situation is closest to the generation point (recency favors
-//! instruction-following). Keep the identity/turn-taking prefix above the tool block
-//! byte-stable; keep the volatile context at the tail.
+//! regime, slot churn across ~14 personas on `--parallel 4`).
+//!
+//! ## The system message is hers, never a room's (2026-10-23)
+//!
+//! The system message is a pure function of the PERSONA: tools, identity, turn contract.
+//! Nothing a room supplies enters it — [`SystemPromptParts`] has no field to carry it.
+//! A room's grounding (doctrine, roster, wall, board, map) is a source of her view, and
+//! whatever remains of the assembled context renders in the fresh tail after her view.
+//! One mind across activities (no room-scoped memory) needs one head across rooms: a room
+//! switch that rewrote the start of her prompt re-prefilled everything behind it.
 
 use std::borrow::Cow;
 use std::collections::BTreeSet;
@@ -53,8 +59,8 @@ pub(super) struct SystemPromptParts<'a> {
     pub tools: &'a [NativeToolSpec],
     /// Categories to expand inline this turn (the rest render as collapsed bookmarks).
     pub expanded: &'a BTreeSet<String>,
-    /// The context the mind assembled this tick (recall + who's present + situation).
-    pub context: &'a str,
+    // No `context`: the assembled context is a room's, and the system message is hers
+    // (module doc). It renders after her view ([`working_context_message`]).
     /// A turn DIRECTED at her (question/@mention/DM) withholds the silent-PASS hatch.
     pub directed: bool,
     /// Wall-clock (or eval-pinned) NOW in ms — rendered as `[now …]` standing context
@@ -86,11 +92,13 @@ pub(super) struct SystemPromptParts<'a> {
 /// block never invalidates a wider one's cache:
 ///
 /// - `Substrate`: identical for every persona on this base model (the tool catalogue).
-/// - `Persona`: stable across HER turns (identity, her turn contract).
-/// - `Activity`: changes only when the room's standing ground changes (roster, doctrine,
-///   workspace map; a card's ledger once it rides here).
-/// - `Turn`: changes every turn (clock, presence, recall, working memory) — never in the
-///   cacheable prefix; the message builder renders it as the newest trailing turn.
+/// - `Persona`: stable across HER turns and rooms (identity, her turn contract).
+///
+/// There is no activity or turn scope here, by construction: a room's ground (roster,
+/// doctrine, map, board) is a source of her view, which appends when it changes, and the
+/// per-turn material (clock, presence, recall) rides the fresh tail. An `Activity` scope
+/// used to close the system message with the room's assembled context, so the first
+/// bytes after her identity changed with every room switch (2026-10-23).
 ///
 /// Before 2026-09-12 the prefix was ordered by hand — identity first, so nothing was shared
 /// across personas — and three separate fixes (#205, #266, plan B4) each moved one block
@@ -101,8 +109,6 @@ pub(super) struct SystemPromptParts<'a> {
 pub enum PromptScope {
     Substrate,
     Persona,
-    Activity,
-    Turn,
 }
 
 /// HOW OFTEN A GROUNDING BLOCK'S BYTES CHANGE — the second key of the prefix order, for
@@ -184,10 +190,12 @@ pub(super) fn churn_of(faculty: &str) -> PromptChurn {
 /// of which are recomputed every turn. Salience still decides WHAT is selected; it no
 /// longer decides WHERE the survivors sit, which it never needed to.
 ///
-/// THE CACHEABLE PREFIX TAKES [`PromptChurn::Standing`] ONLY. Board and Turn churn
-/// render AFTER the conversation, however a source was registered — enforced once, at
-/// the registration seam (`rag_source_faculty::RagSourceFaculty::new`), not left to a
-/// builder call someone can forget. `room-wall` was the case that proved it necessary:
+/// THE SYSTEM MESSAGE TAKES NO GROUNDING (2026-10-23). Every grounding block is a source
+/// of her view, ordered by this comparator; `RagSourceFaculty::contribute` marks each
+/// bid so, and the system composer has no field to carry one. Until then Standing churn
+/// (doctrine, mission, media) rode the system message, so a room switch rewrote its end
+/// and everything behind it. Before that, Board churn was already moved out of it:
+/// `room-wall` was the case that proved it necessary:
 /// declared standing, sitting in the system message ahead of the conversation, with
 /// bytes that change whenever ANY teammate writes a card ledger. The M5's 2026-09-20
 /// log convicted it from both sides — the turns where the wall changed reused exactly
@@ -196,11 +204,12 @@ pub(super) fn churn_of(faculty: &str) -> PromptChurn {
 /// conversation is the more stable of the two.
 ///
 /// The whole-prompt order this comparator is one key of, most stable first:
-/// tools (substrate) → identity + turn contract (persona) → standing ground: doctrine,
-/// roster (system message ends) → the conversation → the standing grounding whose bytes
-/// mutate, in churn order: workspace-map → active-work → room-kanban → room-wall → the
-/// append-only results ring → the working-memory trail → perception facts → the clock +
-/// presence framing → the ask → this turn's room updates → the pinned result. The clock
+/// tools (substrate) → identity + turn contract (persona) (system message ends) → her
+/// view: the conversation, her actions, the grounding blocks in churn order (standing:
+/// room-doctrine, workspace-map → board: active-work, room-wall, roster → claims:
+/// room-kanban → turn: recall), her thoughts
+/// → the fresh tail: any remaining assembled context, perception facts, the clock +
+/// presence framing, the ask, this turn's room updates, the pinned result. The clock
 /// (`[now …]`) is in the volatile tail, never the system message (`volatile_blocks`).
 pub(super) fn stable_prefix_order(a: &str, b: &str) -> std::cmp::Ordering {
     churn_of(a).cmp(&churn_of(b)).then_with(|| a.cmp(b))
@@ -266,7 +275,9 @@ fn compose(p: &SystemPromptParts<'_>) -> String {
 
 /// The BYTE-STABLE prefix blocks: identity + `[Taking your turn]` + tools/`[Acting]`.
 /// A pure function of the persona (system prompt, name, authorized tool set) — invariant
-/// across her turns, so it is the cacheable KV prefix. NOTHING situational belongs here.
+/// across her turns AND her rooms, so it is the cacheable KV prefix that every room's
+/// acts share. NOTHING situational belongs here, and nothing a room supplies can: the
+/// parts carry no room input.
 fn stable_blocks<'a>(
     p: &'a SystemPromptParts<'a>,
 ) -> impl Iterator<Item = (PromptScope, Cow<'a, str>)> {
@@ -278,14 +289,6 @@ fn stable_blocks<'a>(
         // Tools + acting — the SUBSTRATE's block: byte-identical for every persona with
         // the same authorized set, so it leads and is the prefix N personas share.
         tools_block(p.tools, p.expanded).map(|b| (PromptScope::Substrate, Cow::Owned(b))),
-        // Assembled context — the standing grounding (roster/doctrine/workspace-map),
-        // stable-sorted inside the block. The ACTIVITY's pages: it changes when the
-        // room's ground changes, not per turn; the truly per-turn material (recall /
-        // working-memory traces) is separated out as `.trailing()` turns upstream (#205)
-        // and never lands here. Keeping context in the prefix preserves the "standing
-        // framing reaches the system message" contract
-        // (`trailing_proprioception_renders_in_the_tail_not_the_system_prefix`).
-        working_context_block(p.context).map(|b| (PromptScope::Activity, Cow::Owned(b))),
     ]
     .into_iter()
     .flatten()
@@ -390,7 +393,7 @@ fn taking_your_turn_block(name: &str) -> String {
          not a description of what you would produce. Do NOT write or invent \
          anyone else's lines, do NOT continue or replay the transcript, do NOT \
          prefix your message with your name, and do NOT narrate or outline what \
-         you are ABOUT to do (a plan is not the work). Let the context above — \
+         you are ABOUT to do (a plan is not the work). Let the context below — \
          especially the room's operating doctrine — shape what kind of \
          contribution fits.",
         opening = super::framing_echo::ROLE_PREAMBLE_OPENING,
@@ -514,29 +517,32 @@ const OWN_TIME_BLOCK: &str = "\n\n[Your own time]\n\
      yours alone; nothing here is telling you WHICH to pick — only that an empty \
      board is an invitation, not a stop sign.";
 
-/// `[What you are working with right now]` — the VOLATILE TAIL, appended last so the
-/// static blocks above stay a stable, cacheable prefix (see the module ordering note).
-/// This is the context the mind assembled THIS tick (recall + who's present + the
-/// situation); it changes every turn, so it must come after all static content or it
-/// poisons the KV-cache prefix. Returns `None` when the mind assembled no context.
-fn working_context_block(context: &str) -> Option<String> {
+/// `[What you are working with right now]` — the assembled context that did not ride
+/// her view, as ONE message of the fresh tail after it. It is a room's context, so it
+/// never enters the system message, which is hers in every room (module doc). Grounding
+/// sources ride her view (`RagSourceFaculty::contribute`), so in the live path this
+/// carries only a contribution no source marked as a view block. Returns `None` when
+/// the mind assembled no such context.
+pub(super) fn working_context_message(context: &str) -> Option<String> {
     if context.is_empty() {
         return None;
     }
-    let mut s = String::with_capacity(context.len() + 256);
-    s.push_str(WORKING_CONTEXT_HEADER);
+    // A message opens at its header; the header's leading blank lines separated it from
+    // the system blocks it used to follow.
+    let header = WORKING_CONTEXT_HEADER.trim_start_matches('\n');
+    let mut s = String::with_capacity(header.len() + context.len());
+    s.push_str(header);
     s.push_str(context);
     Some(s)
 }
 
-/// The wrapper the working-context block prepends to a NON-empty assembled
-/// context. `pub(super)` so the faculty's budget math can charge the ctx
-/// budget for it (estimate_guard_tokens of this constant): the framing estimate is
-/// taken with an EMPTY context — where this wrapper is absent — so without
-/// the explicit charge the final system prompt exceeds the estimate by
-/// exactly this header whenever any context renders (a systematic ~50-token
-/// under-count, masked by rounding slop until the tool-menu example grew the
-/// prompt to the budget edge, 2026-07-13).
+/// The wrapper the working-context message opens with when there is a NON-empty
+/// assembled context. `pub(super)` so the faculty's budget math can charge the ctx
+/// budget for it (`working_context_header_cost`, which also charges the message's
+/// chat-template wrapper): without the explicit charge the prompt exceeds the estimate
+/// by exactly this header whenever any context renders (a systematic ~50-token
+/// under-count, masked by rounding slop until the tool-menu example grew the prompt to
+/// the budget edge, 2026-07-13).
 pub(super) const WORKING_CONTEXT_HEADER: &str = "\n\n[What you are working with right now]\n\
      The following is the context your mind assembled this moment — \
      recalled memory, who is present, the room's nature, your read of \
@@ -592,43 +598,39 @@ mod tests {
     // consecutive prompts shared only 7,607 of ~14,706 chars because the presence framing
     // sat at char ~7607, BEFORE the context, and flipped every act → the whole tail
     // re-prefilled (0% KV reuse, the ~13min SWE solves this targets). The fix rides that
-    // framing on `trailing` instead. The persona-and-context prefix (identity + [Taking
-    // your turn] + tools + assembled grounding + clock) stays in `stable`: its head is the
-    // reusable KV, and the truly per-turn material (recall / working-memory) is already
-    // separated as its own `.trailing()` conversation turns upstream (#205), so it never
-    // reaches this `context` string. The invariant: for a FIXED context, flipping the
-    // per-turn framing dimensions (directed / self-initiated / holds-work) must not perturb
-    // the stable prefix — that flip is what used to poison the cache.
+    // framing on `trailing` instead. The persona prefix (tools + identity + [Taking your
+    // turn]) stays in `stable`; no room content reaches it at all (module doc). The
+    // invariant: flipping the per-turn framing dimensions (directed / self-initiated /
+    // holds-work) must not perturb the stable prefix — that flip is what used to poison
+    // the cache.
     #[test]
     fn framing_flip_never_perturbs_the_cacheable_prefix() {
         let expanded = BTreeSet::new();
-        let parts =
-            |directed, self_initiated, holds_live_work, now_ms, context| SystemPromptParts {
-                system_prompt: "IDENTITY-PROMPT",
-                persona_name: "Asha",
-                tools: &[],
-                expanded: &expanded,
-                context,
-                directed,
-                self_initiated,
-                now_ms,
-                holds_live_work,
-            };
+        let parts = |directed, self_initiated, holds_live_work, now_ms| SystemPromptParts {
+            system_prompt: "IDENTITY-PROMPT",
+            persona_name: "Asha",
+            tools: &[],
+            expanded: &expanded,
+            directed,
+            self_initiated,
+            now_ms,
+            holds_live_work,
+        };
         let stable = |p: &SystemPromptParts| compose_split(p).stable;
-        // Context held CONSTANT — only the per-turn FRAMING dimensions flip.
-        let baseline = stable(&parts(false, false, false, None, "CTX"));
+        // Only the per-turn FRAMING dimensions flip.
+        let baseline = stable(&parts(false, false, false, None));
         assert_eq!(
-            stable(&parts(true, false, false, None, "CTX")),
+            stable(&parts(true, false, false, None)),
             baseline,
             "directed must not change the stable prefix (framing rides trailing)"
         );
         assert_eq!(
-            stable(&parts(false, true, false, None, "CTX")),
+            stable(&parts(false, true, false, None)),
             baseline,
             "self-initiated must not change the stable prefix (own-time rides trailing)"
         );
         assert_eq!(
-            stable(&parts(false, false, true, None, "CTX")),
+            stable(&parts(false, false, true, None)),
             baseline,
             "holds-work must not change the stable prefix (working-presence rides trailing)"
         );
@@ -638,22 +640,15 @@ mod tests {
                 && !baseline.contains("[Your own time]"),
             "the per-turn framing must not sit in the cacheable prefix: {baseline}"
         );
-        // …the STANDING grounding, by contrast, DOES stay in the cacheable prefix (its head
-        // is the reusable KV; keeping it here preserves the "framing reaches the system
-        // message" contract that trailing_proprioception_renders_in_the_tail asserts).
-        assert!(
-            stable(&parts(false, false, false, None, "ROSTER: alice")).contains("ROSTER: alice"),
-            "standing grounding stays in the cacheable prefix, not trailing"
-        );
         // …and the framing DOES ride the trailing bundle (same content, relocated).
         assert!(
-            compose_split(&parts(false, true, false, None, "CTX"))
+            compose_split(&parts(false, true, false, None))
                 .trailing
                 .contains("[Your own time]"),
             "own-time framing rides trailing, not the stable prefix"
         );
         assert!(
-            compose_split(&parts(true, false, false, None, "CTX"))
+            compose_split(&parts(true, false, false, None))
                 .trailing
                 .contains("This message names you"),
             "directed framing rides trailing, not the stable prefix"
@@ -661,9 +656,10 @@ mod tests {
     }
 
     // what this catches: the procedural assembler must honor each block's gate AND
-    // preserve block ORDER — identity first, the volatile context last. A regression
-    // that reordered blocks (poisoning the KV-cache prefix) or dropped a gate (leaking
-    // the silent-PASS hatch onto a directed turn) would trip here.
+    // preserve block ORDER — identity first, the per-turn framing last, and no assembled
+    // context anywhere in it (a room's context renders after her view). A regression that
+    // reordered blocks (poisoning the KV-cache prefix) or dropped a gate (leaking the
+    // silent-PASS hatch onto a directed turn) would trip here.
     #[test]
     fn blocks_are_gated_and_ordered() {
         let expanded = BTreeSet::new();
@@ -672,7 +668,6 @@ mod tests {
             persona_name: "Asha",
             tools: &[],
             expanded: &expanded,
-            context: "CTX",
             directed: false,
             self_initiated: false,
             now_ms: None,
@@ -680,15 +675,13 @@ mod tests {
         };
 
         let s = compose(&base);
-        // Identity leads; context tail trails; presence block present (undirected).
+        // Identity leads; the turn contract follows; presence block present (undirected).
         let id = s.find("IDENTITY").expect("identity present");
         let turn = s.find("[Taking your turn]").expect("turn block present");
-        let ctx = s
-            .find("[What you are working with right now]")
-            .expect("ctx block");
+        assert!(id < turn, "identity → turn order: {s}");
         assert!(
-            id < turn && turn < ctx,
-            "identity → turn → context order: {s}"
+            !s.contains("[What you are working with right now]"),
+            "the composer carries no room context: {s}"
         );
         assert!(s.contains("Asha"), "persona name interpolated: {s}");
         assert!(
@@ -755,38 +748,17 @@ mod tests {
         );
     }
 
-    // what this catches: #139 context-split — the minute-volatile [now] clock must render
-    // AFTER the assembled context block, not before it. When [now] led the context, it
-    // pinned the KV-cache prefix boundary right there (~2k tokens) and the whole stable
-    // standing grounding (roster/doctrine/workspace-map, which lives in the context block
-    // and is stable-sorted first) re-prefilled every single turn. Placing [now] last keeps
-    // it out of the cacheable prefix so the stable grounding caches across turns. A
-    // regression that moved [now] back ahead of the context would silently ~halve the
-    // cross-turn prefix reuse — invisible except as latency — so pin the order here.
+    // what this catches: the assembled-context message drifting from the header the
+    // budget charges for (`working_context_header_cost`), or gaining the blank lines that
+    // separated it from the system blocks it used to follow; and an empty context
+    // rendering an empty-but-headed message into her tail.
     #[test]
-    fn now_clock_renders_after_the_context_block_to_preserve_the_cache_prefix() {
-        let expanded = BTreeSet::new();
-        let s = compose(&SystemPromptParts {
-            system_prompt: "IDENTITY",
-            persona_name: "Asha",
-            tools: &[],
-            expanded: &expanded,
-            context: "CTX",
-            directed: false,
-            holds_live_work: false,
-            self_initiated: false,
-            now_ms: Some(1_700_000_000_000),
-        });
-        let ctx = s
-            .find("[What you are working with right now]")
-            .expect("ctx block present");
-        let now = s
-            .find("[now ")
-            .expect("now clock present when now_ms is set");
-        assert!(
-            ctx < now,
-            "the volatile [now] clock must trail the context block (stable prefix stays cacheable): {s}"
-        );
+    fn the_working_context_message_opens_at_its_header_and_is_absent_when_empty() {
+        let m = working_context_message("CTX").expect("a non-empty context renders");
+        assert!(m.starts_with("[What you are working with right now]"), "{m}");
+        assert!(m.ends_with("CTX"), "{m}");
+        assert!(m.len() <= WORKING_CONTEXT_HEADER.len() + "CTX".len(), "never more than it is charged");
+        assert_eq!(working_context_message(""), None);
     }
 
     // what this catches: the anti-refusal coherence anchor. Live glass-box showed
@@ -818,7 +790,6 @@ mod tests {
             persona_name: "Kira",
             tools: &tools,
             expanded: &expanded,
-            context: "roster: Kira, Mathis",
             directed: false,
             now_ms: Some(1_700_000_000_000),
             self_initiated: false,
@@ -826,12 +797,10 @@ mod tests {
         });
         let tools_at = c.stable.find("code/read").expect("tools block present");
         let id_at = c.stable.find("IDENTITY").expect("identity present");
-        let ctx_at = c.stable.find("roster: Kira").expect("context present");
         assert!(tools_at < id_at, "substrate before persona: {}", &c.stable[..80]);
-        assert!(id_at < ctx_at, "persona before activity");
         assert!(!c.stable.contains("[now "), "the clock is a Turn block, never in the prefix");
         assert!(c.trailing.contains("[now "));
-        assert!(PromptScope::Substrate < PromptScope::Persona && PromptScope::Activity < PromptScope::Turn);
+        assert!(PromptScope::Substrate < PromptScope::Persona);
     }
 
     #[test]
@@ -853,7 +822,6 @@ mod tests {
             persona_name: "Asha",
             tools: &tools,
             expanded: &expanded,
-            context: "CTX",
             directed: true,
             holds_live_work: false,
             self_initiated: false,

@@ -327,7 +327,7 @@ fn self_initiated_turn_frames_rest_as_co_equal_and_stays_neutral() {
         .with_context_window(8192);
 
     // self_initiated = true, undirected.
-    let own_time = faculty.compose_system("", &BTreeSet::new(), false, true, None);
+    let own_time = faculty.compose_system(&BTreeSet::new(), false, true, None);
     assert!(
         own_time.contains("[Your own time]"),
         "self-initiated turn must carry the own-time framing: {own_time}"
@@ -356,7 +356,7 @@ fn self_initiated_turn_frames_rest_as_co_equal_and_stays_neutral() {
     );
 
     // A non-self-initiated (inbound-driven) turn must NOT carry the own-time block.
-    let ambient = faculty.compose_system("", &BTreeSet::new(), false, false, None);
+    let ambient = faculty.compose_system(&BTreeSet::new(), false, false, None);
     assert!(
         !ambient.contains("[Your own time]"),
         "ambient/directed turns must not carry the own-time framing: {ambient}"
@@ -394,7 +394,7 @@ fn catalog_fits_the_minimum_serving_window() {
     // least SOME burst — i.e. framing alone must not consume the window. With
     // nothing expanded (empty context) the menu is its smallest — a spine of
     // collapsed bookmarks — which is the floor case for this fit guard.
-    let collapsed = faculty.compose_system("", &BTreeSet::new(), false, false, None);
+    let collapsed = faculty.compose_system(&BTreeSet::new(), false, false, None);
     let framing = estimate_guard_tokens(&collapsed);
     // The reply's floor — what the window always holds for it — derived from the
     // claim itself, never re-spelled. Above it the reply grows by priority.
@@ -419,7 +419,6 @@ fn catalog_fits_the_minimum_serving_window() {
     // tool exists to call it — glass-box: hidden names → 909 code-fences / 3 native
     // runs). Names ride the expansion, summaries never do.
     let opened = faculty.compose_system(
-        "",
         &BTreeSet::from(["cat0".to_string()]),
         false,
         false,
