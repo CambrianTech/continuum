@@ -24,7 +24,7 @@ pub(super) async fn serve_persona_loop_inner(
     let mut seen_ids = crate::persona::wake_backlog::SeenIds::new(256);
     // Admitted triggers remain owned while capacity is unavailable. New inbox
     // input and Stop stay reachable without replacing an older trigger's custody.
-    let mut deferred_input = crate::persona::wake_backlog::PendingInput::default();
+    let mut deferred_input = crate::persona::wake_backlog::PendingInput::for_persona(ctx.identity.peer_id.as_uuid());
 
     // The persona's adapter (`ctx.adapter`) is reached by the
     // cognition layer through the global provider registry — slice
@@ -164,6 +164,7 @@ pub(super) async fn serve_persona_loop_inner(
             // A message means life in the room — snap back to a quick beat so she's present
             // and responsive, not drifting in rest.
             Wake::Msg(m) | Wake::Retry(m) => {
+                if admitted_retry { deferred_input.resume_input(&m); }
                 beat.next = beat.engaged;
                 m
             }
@@ -388,5 +389,6 @@ pub(super) async fn serve_persona_loop_inner(
         .await;
     }
 
+    deferred_input.stop();
     Ok(outcome)
 }

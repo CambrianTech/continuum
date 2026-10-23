@@ -15,3 +15,11 @@ Quiescence retains ready custody and uses the existing beat to recheck lease rel
 Regression source covers typed full settlement, refusal after prior work with metrics retained, independent binding/gossip/remote-adapter consumers, preassembly growth, provider-refit growth, retained input/engram, unrelated rooms, actual wake selection for Stop/new input/quiescence, and typed board changes before trigger filtering including distinct submissions.
 
 Validation so far: all 40 touched/new Rust files parse through rustfmt without file mutation; git diff --check passes. No Cargo checks or regression execution locally because serving/compiler ownership is reserved. CI execution and independent final source approval remain required. No persona/model binding configuration, active jobs or runtime state changed.
+
+## Follow-up for Cormac's source review
+
+`capacity_park_resumes_when_local_1_5b_routes_to_larger_remote_seat` now drives the real PlacementSwitch through FallHome/ReturnRemote, captures the actual 32768 local generation target, and verifies that the 65536 remote target releases readiness even when the wait future has not yet been polled. Stub transport panics if inference is dispatched; this is a source regression, not an observed M5 inference run.
+
+`persona.capacity.transition` carries persona, room, refusal UUID, required/budget tokens, phase and reason. A shared per-refusal atomic state permits one parked and one terminal disposition receipt across cloned projections. Reasons distinguish binding replacement, placement target change, window change, relevant input and Stop. Bound-adapter pointer replacement is explicitly retry evidence even when the forwarded target is unchanged: a new bound provider may change request handling. Input-resumed means eligible to assemble again, not dispatched or successfully answered. Normal loop exit emits stopped/stop for still-parked refusals; task cancellation/drop is not covered. Readiness checks and unchanged beats emit no receipt. The existing receipt test checks clone deduplication and distinct next refusals.
+
+Untouched settle_to_outcome formatting was restored. Follow-up parses without compilation; independent authorization_review source approval is conditional on final post-5308 integration and actual CI execution. No installed acceptance claim.

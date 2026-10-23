@@ -22,15 +22,36 @@ impl std::fmt::Display for PromptCapacityError {
 /// service loop and cancelled with that loop's other wake branches.
 #[derive(Clone)]
 pub struct CapacityRefusal {
+    pub id: uuid::Uuid,
+    receipt_state: std::sync::Arc<std::sync::atomic::AtomicU8>,
     pub error: PromptCapacityError,
     pub readiness: Option<std::sync::Arc<CapacityReadiness>>,
 }
 impl From<PromptCapacityError> for CapacityRefusal {
     fn from(error: PromptCapacityError) -> Self {
         Self {
+            id: uuid::Uuid::new_v4(),
+            receipt_state: std::sync::Arc::new(std::sync::atomic::AtomicU8::new(0)),
             error,
             readiness: None,
         }
+    }
+}
+/// One park and one disposition per refusal, shared across settlement projections.
+/// Readiness checks emit nothing; these receipts describe actual custody transitions.
+impl CapacityRefusal {
+    pub(crate) fn note_transition(&self, persona: Option<uuid::Uuid>, room: uuid::Uuid,
+        phase: &'static str, reason: &'static str) -> bool {
+        let bit = if phase == "parked" { 1 } else { 2 };
+        if self.receipt_state.fetch_or(bit, std::sync::atomic::Ordering::Relaxed) & bit != 0 {
+            return false;
+        }
+        continuum_base::probe!(class = "persona.capacity.transition",
+            persona = ?persona, room = %room, refusal = %self.id,
+            phase = phase, reason = reason,
+            required_tokens = self.error.required_tokens, budget_tokens = self.error.budget_tokens,
+            "prompt capacity custody changed");
+        true
     }
 }
 impl std::fmt::Debug for CapacityRefusal {
@@ -95,17 +116,23 @@ impl CapacityReadiness {
         })
     }
     pub fn changed(&self) -> bool {
+        self.change_reason().is_some()
+    }
+    pub fn change_reason(&self) -> Option<&'static str> {
         let current = self.handle.load();
-        let target = current
-            .adapter
-            .generation_target()
-            .unwrap_or_else(|| current.adapter.clone()); // A direct adapter has no forwarding target.
-        !std::sync::Arc::ptr_eq(&self.target, &target)
-            || self.observed.requested_model() != current.requested_model()
-            || current.adapter.live_served_window().map_or_else(
-                || !self.dynamic_window && self.window_changed(current.context_window),
-                |window| self.window_changed(window),
-            ) // Only growth can make the same required input fit.
+        if !std::sync::Arc::ptr_eq(&self.observed.adapter, &current.adapter)
+            || self.observed.requested_model() != current.requested_model() {
+            return Some("binding");
+        }
+        let target = current.adapter.generation_target()
+            .unwrap_or_else(|| current.adapter.clone()); // Direct adapters serve their own generations.
+        if !std::sync::Arc::ptr_eq(&self.target, &target) {
+            return Some("placement");
+        }
+        current.adapter.live_served_window().map_or_else(
+            || !self.dynamic_window && self.window_changed(current.context_window),
+            |window| self.window_changed(window),
+        ).then_some("window")
     }
     pub async fn wait(&self) {
         let mut binding_changes = self.handle.subscribe();
@@ -133,6 +160,22 @@ mod tests {
     use super::*;
     use crate::cognition::model_binding::{ModelBinding, ModelBindingState};
     use std::sync::Arc;
+
+    #[test]
+    fn capacity_receipts_are_once_per_refusal_across_cloned_projections() {
+        let refusal = CapacityRefusal::from(PromptCapacityError { required_tokens: 40, budget_tokens: 20 });
+        let projection = refusal.clone();
+        let room = uuid::Uuid::new_v4();
+        assert!(refusal.note_transition(None, room, "parked", "capacity"));
+        assert!(!projection.note_transition(None, room, "parked", "capacity"));
+        assert!(projection.note_transition(None, room, "resumed", "placement"));
+        assert!(!refusal.note_transition(None, room, "resumed", "input"));
+        assert!(!refusal.note_transition(None, room, "stopped", "stop"));
+        let next = CapacityRefusal::from(refusal.error);
+        assert_ne!(next.id, refusal.id);
+        assert!(next.note_transition(None, room, "parked", "capacity"));
+        assert!(next.note_transition(None, room, "stopped", "stop"));
+    }
 
     // Independent parked consumers see publication even before their future is
     // first polled; rebinding equal facts never admits another generation.

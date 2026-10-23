@@ -23,6 +23,7 @@ use crate::cognition::workspace::TurnAttention;
 /// serving facts, not the beat, while the ordinary inbox remains reachable.
 #[derive(Default)]
 pub(crate) struct PendingInput {
+    persona: Option<Uuid>,
     inputs: VecDeque<RetainedInput>,
     self_refusals: HashMap<Uuid, Option<crate::cognition::workspace::CapacityRefusal>>,
     work_witnesses: VecDeque<(Uuid, crate::persona::room_event::RoomWork)>,
@@ -35,6 +36,36 @@ struct RetainedInput {
 }
 
 impl PendingInput {
+    pub(crate) fn for_persona(persona: Uuid) -> Self {
+        Self { persona: Some(persona), ..Self::default() }
+    }
+    pub(crate) fn stop(&mut self) {
+        for input in &mut self.inputs {
+            if let Some(refusal) = input.capacity.take() {
+                refusal.note_transition(self.persona, input.message.room_id, "stopped", "stop");
+            }
+        }
+        for (room, refusal) in &mut self.self_refusals {
+            if let Some(refusal) = refusal.take() {
+                refusal.note_transition(self.persona, *room, "stopped", "stop");
+            }
+        }
+    }
+    pub(crate) fn resume_input(&mut self, message: &IncomingMessage) {
+        if let Some(input) = self.inputs.iter_mut().find(|input| input.message == *message) {
+            if let Some(reason) = input.capacity.as_ref().and_then(|r| r.readiness.as_ref())
+                .and_then(|r| r.change_reason()) {
+                if let Some(refusal) = input.capacity.take() {
+                    refusal.note_transition(self.persona, message.room_id, "resumed", reason);
+                }
+            }
+        }
+    }
+    fn park_self(&mut self, room: Uuid, refusal: &crate::cognition::workspace::CapacityRefusal) {
+        refusal.note_transition(self.persona, room, "parked", "capacity");
+        self.self_refusals.insert(room, Some(refusal.clone()));
+    }
+
     #[cfg(test)]
     pub(crate) fn message(&self) -> Option<&IncomingMessage> {
         self.inputs.front().map(|input| &input.message)
@@ -59,11 +90,15 @@ impl PendingInput {
     pub(crate) fn payload_changed(&mut self, message: &IncomingMessage) {
         for input in &mut self.inputs {
             if input.message.room_id == message.room_id && input.message != *message {
-                input.capacity = None;
+                if let Some(refusal) = input.capacity.take() {
+                    refusal.note_transition(self.persona, input.message.room_id, "resumed", "input");
+                }
             }
         }
         if let Some(refusal) = self.self_refusals.get_mut(&message.room_id) {
-            *refusal = None;
+            if let Some(refusal) = refusal.take() {
+                refusal.note_transition(self.persona, message.room_id, "resumed", "input");
+            }
         }
     }
     /// Typed board facts already pass through the retained inbox. Observe them
@@ -101,7 +136,11 @@ impl PendingInput {
             r.as_ref().map_or(true, |r| r.readiness.as_ref().is_some_and(|r| r.changed()))
         });
         if ready {
-            self.self_refusals.remove(&room);
+            if let Some(Some(refusal)) = self.self_refusals.remove(&room) {
+                if let Some(reason) = refusal.readiness.as_ref().and_then(|r| r.change_reason()) {
+                    refusal.note_transition(self.persona, room, "resumed", reason);
+                }
+            }
         }
         ready
     }
@@ -124,7 +163,7 @@ impl PendingInput {
         if let Some(room) = work.room {
             match &work.capacity {
                 Some(refusal) => {
-                    self.self_refusals.insert(room, Some(refusal.clone()));
+                    self.park_self(room, refusal);
                 }
                 None => {
                     self.self_refusals.remove(&room);
@@ -139,7 +178,7 @@ impl PendingInput {
     ) {
         match step {
             crate::cognition::act_observe::SettleStep::CapacityRefused { error, .. } => {
-                self.self_refusals.insert(room, Some(error.clone()));
+                self.park_self(room, error);
             }
             _ => {
                 self.self_refusals.remove(&room);
@@ -191,12 +230,15 @@ impl PendingInput {
             } => {
                 // Earlier work happened: do not replay the original message.
                 // Its continuation still waits for capacity rather than each beat.
-                self.self_refusals.insert(message.room_id, Some(error.clone()));
+                self.park_self(message.room_id, error);
                 return;
             }
             SettleStep::DeferredBeforeDispatch if attention.requires_priority() => None,
             _ => return,
         };
+        if let Some(refusal) = &capacity {
+            refusal.note_transition(self.persona, message.room_id, "parked", "capacity");
+        }
         self.inputs.push_back(RetainedInput {
             message: message.clone(),
             engram: wake_engram,

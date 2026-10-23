@@ -498,7 +498,7 @@ use crate::persona::inference_profile::{PersonaInferenceProfile, SamplingProfile
 use crate::persona::scripted_adapter_factory::ScriptedPersonaAdapterFactory;
 
 // An admission/window contract fixture: preparation must never generate itself.
-struct HomeLane;
+struct HomeLane(u32);
 
 #[async_trait::async_trait]
 impl AIProviderAdapter for HomeLane {
@@ -515,7 +515,7 @@ impl AIProviderAdapter for HomeLane {
         GenerationAdmissionOwner::SharedLocal
     }
     fn live_served_window(&self) -> Option<u32> {
-        Some(4096)
+        Some(self.0)
     }
     async fn generate_text(
         &self,
@@ -576,7 +576,7 @@ async fn trip(remote: &AircRemoteInferenceAdapter) {
 #[tokio::test]
 async fn cold_route_prepares_home_once_and_preserves_breaker(
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let home: Arc<dyn AIProviderAdapter> = Arc::new(HomeLane);
+    let home: Arc<dyn AIProviderAdapter> = Arc::new(HomeLane(4096));
     let home_for_factory = Arc::clone(&home);
     let factory = Arc::new(ScriptedPersonaAdapterFactory::custom(move |_| {
         Ok(Arc::clone(&home_for_factory))
@@ -638,4 +638,41 @@ async fn cold_route_without_home_keeps_honest_refusal() {
         1,
         "the failed home build is cached; cold act refusals remain an open limitation"
     );
+}
+
+#[tokio::test]
+async fn capacity_park_resumes_when_local_1_5b_routes_to_larger_remote_seat() {
+    use crate::cognition::model_binding::{ModelBinding, ModelBindingState};
+    use crate::cognition::workspace::CapacityReadiness;
+    use continuum_engine::capacity::gossip::{global_ledger, CapacityOffer};
+    let peer = Uuid::new_v4();
+    let now = continuum_base::time::EpochMs::now().millis();
+    let offer: CapacityOffer = serde_json::from_value(serde_json::json!({
+        "gpuTotalBytes": 1, "gpuFreeBytesLive": 0, "systemRamFreeBytes": 0,
+        "atMs": now, "servedModel": "m5-capacity-fixture",
+        "servedContextWindow": 65536, "capabilities": ["served_window_stamp"]
+    })).unwrap();
+    global_ledger().hear(peer, offer, now);
+    let remote = Arc::new(AircRemoteInferenceAdapter::new(StubInferenceTransport::new(|_| {
+        panic!("capacity readiness never dispatches inference")
+    })).with_target_peer(peer.to_string()).with_model("m5-capacity-fixture"));
+    let home: Arc<dyn AIProviderAdapter> = Arc::new(HomeLane(32768));
+    let factory = Arc::new(ScriptedPersonaAdapterFactory::custom(move |_| Ok(home.clone())));
+    let route = Arc::new(switch(factory, remote));
+    route.apply(&PlacementMove::FallHome { reason: "local 1.5B fixture" }, now, SeatFit::default()).await;
+    let binding = Arc::new(ModelBindingState::new(ModelBinding {
+        adapter: route.clone(), model: Some("local-1.5B".into()), context_window: 32768,
+    }));
+    let refusal = CapacityReadiness::new(binding.clone(), binding.load_full());
+    let local_target = route.generation_target().unwrap();
+    assert_eq!(refusal.observed_window(), 32768);
+    assert!(!refusal.changed());
+    let waiting = refusal.wait();
+    route.apply(&PlacementMove::ReturnRemote, now, SeatFit::default()).await;
+    assert!(!Arc::ptr_eq(&local_target, &route.generation_target().unwrap()));
+    assert_eq!(route.live_served_window(), Some(65536));
+    assert_eq!(refusal.change_reason(), Some("placement"));
+    tokio::time::timeout(std::time::Duration::from_secs(1), waiting).await
+        .expect("the actual forwarding target changed before the waiter was first polled");
+    assert_eq!(binding.load().requested_model(), "local-1.5B");
 }
