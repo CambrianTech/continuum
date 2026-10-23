@@ -187,7 +187,7 @@ impl OpenAICompatibleAdapter {
             // Estimate this activity's prompt size once — the eviction price basis
             // AND the overshoot-alarm input below (chars/4, deliberately conservative).
             let approx_tokens = prompt_tokens as u64;
-            // TURN ADMISSION (event-driven, no timeout) — permit-first, then lease+pin
+            // TURN ADMISSION (event-driven, bounded by the request deadline) — permit-first, then lease+pin
             // this activity's slot and page its KV onto a now-free slot. The returned
             // guard holds the permit + slot pin for the WHOLE generation (bound into
             // `_admission` at function scope above). A Turn that cannot name both
