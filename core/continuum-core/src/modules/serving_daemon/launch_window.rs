@@ -148,31 +148,14 @@ impl ServingDaemonModule {
         }
     }
 
-    /// Before a reconcile sizes anything, measure the saved states in the exact page dirs it will
-    /// read for the plan's model: the dir a launch would size its prompt cache from, and the dir
-    /// at the running lane's window (the cache-holds-no-state check). Bounded and off the worker
-    /// (card 37eb1925).
+    /// Before a reconcile sizes anything, measure the saved states in the page dir it will read
+    /// for the plan's model: one dir per model, whatever window the launch or the running lane
+    /// serves (the prompt-cache sizing and the cache-holds-no-state check read the same one).
+    /// Bounded and off the worker (card 37eb1925).
     pub(super) async fn seed_reconcile_pages(&self) {
-        let Some((model, plan_window, lanes)) = self.plan_tx.borrow().plan.as_ref().map(|plan| {
-            (
-                plan.base_model.model_id.clone(),
-                plan.served_context_window,
-                plan.lanes,
-            )
-        }) else {
+        let Some(model) = self.plan_tx.borrow().plan.as_ref().map(|plan| plan.base_model.model_id.clone()) else {
             return;
         };
-        let launch = self.launch_window(&model, plan_window, lanes).served;
-        crate::inference::slots::seed_state_samples(&crate::inference::llama_server::kv_page_dir(
-            &model, launch,
-        ))
-        .await;
-        let live = self.serving_tx.borrow().served_context_window;
-        if live > 0 && live != launch {
-            crate::inference::slots::seed_state_samples(
-                &crate::inference::llama_server::kv_page_dir(&model, live),
-            )
-            .await;
-        }
+        crate::inference::slots::seed_state_samples(&crate::inference::llama_server::kv_page_dir(&model)).await;
     }
 }

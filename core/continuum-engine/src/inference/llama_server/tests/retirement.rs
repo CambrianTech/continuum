@@ -46,7 +46,7 @@ async fn retiring_page_owner_requires_observed_child_exit() {
     let root = tempfile::tempdir().expect("isolated pages");
     let registry = tempfile::tempdir().expect("isolated registry");
     let old = root.path().join("retirement-model--c32768");
-    let current = root.path().join("retirement-model--c49152");
+    let current = root.path().join("retirement-model");
     let (reservation, ready) = PageDirReservation::take_and_create(&old);
     assert!(ready);
     std::fs::create_dir_all(&current).expect("current directory");
@@ -171,6 +171,8 @@ async fn retiring_page_owner_requires_observed_child_exit() {
             gguf: requested.model.gguf_local_path.clone().unwrap(),
             slot_save_dir: engine.join("pages"),
             page_cache_type: None,
+            page_flash_attn: None,
+            mtp_draft: None,
             mmproj: false,
             local_inputs: Ok(local_inputs.clone()),
             managed_environment: Vec::new(),
@@ -396,7 +398,7 @@ async fn retiring_page_owner_requires_observed_child_exit() {
         );
     }
     assert_eq!(
-        sweep_stale_page_generations_guarded_in(&current, registry.path()),
+        migrate_legacy_page_dir_guarded_in(&current, registry.path()),
         Some(0)
     );
     assert_eq!(held(), 6_000, "unknown status cannot release capacity");
@@ -417,7 +419,7 @@ async fn retiring_page_owner_requires_observed_child_exit() {
         let dir = guard.retiring[index].reserved_dir.take();
         assert!(
             guard.has_unknown_retiring_dir(),
-            "missing directory evidence must close the sweep gate"
+            "missing directory evidence must close the migration gate"
         );
         guard.retiring[index].reserved_dir = dir;
     }
@@ -448,10 +450,11 @@ async fn retiring_page_owner_requires_observed_child_exit() {
         );
     }
     assert_eq!(
-        sweep_stale_page_generations_guarded_in(&current, registry.path()),
+        migrate_legacy_page_dir_guarded_in(&current, registry.path()),
         Some(1)
     );
-    assert!(!old.exists());
+    assert!(!old.exists(), "the emptied legacy dir is removed");
+    assert!(current.join("page").is_file(), "its page moved into the model's dir, never deleted");
     assert_eq!(held(), 0, "observed child exit releases its grant");
     #[cfg(windows)]
     std::fs::write(

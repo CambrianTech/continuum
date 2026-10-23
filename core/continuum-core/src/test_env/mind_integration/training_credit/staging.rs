@@ -1,0 +1,384 @@
+#![cfg(test)]
+use super::*;
+use crate::runtime::LateBound;
+
+// what this catches: Astra/S6 on 799b8fe9 — `stage_credit` DISCARDED the results of
+// data/ensure-schema and data/batch. Those commands report adapter failure INSIDE the
+// payload as StorageResult{success:false}, and InProcessTransport forwards it
+// unchanged, so `.await?` caught only transport breakage. A child constraint
+// violation rolled the batch back and the caller still returned Ok(submission_id) and
+// emitted `training.credit.staged` for rows that do not exist. THE TEST PASSED
+// BECAUSE THE CHECK COULD NOT FAIL (card 36e8fdd6).
+//
+// The rollback is provoked the way production would hit it: TWO receipts sharing one
+// submittedRequestId, violating the unique index on (stagedCreditId,
+// submittedRequestId) that persona::register_substrate_orm_entities exists to keep.
+#[tokio::test]
+pub(super) async fn a_rolled_back_batch_is_never_reported_as_staged_credit() {
+    let home = tempfile::tempdir().expect("tempdir");
+    let _guard = HomeGuard::set(home.path()).await;
+    crate::persona::register_substrate_orm_entities(crate::orm::OrmEntityRegistry::global())
+        .expect("register staging entities");
+
+    let persona = Uuid::new_v4();
+    // Built directly rather than through a WorkCard fixture: what `stage_credit`
+    // consumes is the CREDIT, and a claimless card is the honest minimum — a card
+    // with no accepted claim still stages, it simply can never be stamped.
+    let credit = CapturedCredit {
+        task: crate::cognition::held_out::CardTask::NotATask,
+        card_id: Uuid::new_v4(),
+        claim: None,
+    };
+    let executor = data_runtime();
+
+    // POSITIVE CONTROL FIRST. Without it, a `stage_credit` that refused everything
+    // would satisfy the rollback assertion below for entirely the wrong reason.
+    let ok = stage_credit(
+        &conn_as(executor.clone(), persona),
+        "anwen",
+        &credit,
+        vec![receipt("req-a"), receipt("req-b")],
+        "prompt".to_string(),
+        "completion".to_string(),
+        None,
+        Uuid::new_v4(),
+        &[],
+    )
+    .await;
+    let submission = ok.expect("two DISTINCT receipts stage cleanly");
+
+    // THE REGRESSION: one submittedRequestId used twice violates the unique index,
+    // the batch rolls back, and `stage_credit` must REPORT that rather than hand back
+    // a submission id for rows the database threw away.
+    let rolled_back = stage_credit(
+        &conn_as(executor, persona),
+        "anwen",
+        &credit,
+        vec![receipt("req-dup"), receipt("req-dup")],
+        "prompt".to_string(),
+        "completion".to_string(),
+        None,
+        Uuid::new_v4(),
+        &[],
+    )
+    .await;
+    let err =
+        rolled_back.expect_err("a rolled-back batch must NOT be reported as staged credit");
+    assert_ne!(
+        format!("{err}"),
+        String::new(),
+        "the failure must name itself, not surface as an empty error"
+    );
+
+    // And the two runs are distinguishable: the control produced a real id.
+    assert!(
+        !submission.is_nil(),
+        "the clean stage returned a real submission id"
+    );
+}
+
+// what this catches: 6c36c24d — the actual public verbs bind before signed
+// publication, preserve caller/room, and report review versus credit honestly.
+#[tokio::test]
+pub(super) async fn work_submission_commands_bind_before_publication_and_preserve_identity() {
+    use crate::modules::work::submission::*;
+    use crate::sdk_codegen::{ActionCommand, Ctx};
+    let home = tempfile::tempdir().unwrap();
+    let _home = HomeGuard::set(home.path()).await;
+    crate::persona::register_substrate_orm_entities(crate::orm::OrmEntityRegistry::global())
+        .unwrap();
+    let airc_home = home.path().join("isolated-airc");
+    let airc = Arc::new(
+        airc_lib::Airc::open_with_wire_root_for_test(&airc_home, &airc_home)
+            .await
+            .unwrap(),
+    );
+    let room = airc.join("ordinary-project").await.unwrap();
+    let persona = airc.peer_id().as_uuid();
+    let name = "public-submission-owner";
+    let registry = crate::persona::PersonaAircRuntimeRegistry::new();
+    registry.register(crate::persona::PersonaAircRuntime::from_attached(
+        persona,
+        name,
+        airc_home,
+        airc.clone(),
+        room.channel,
+        crate::persona::identity_provider::PersonaIdentitySource::FreshlyMinted,
+    ));
+    let executor = data_runtime();
+    let slot = Arc::new(LateBound::new("work submission fixture"));
+    slot.install(executor.clone());
+    let ctx = Ctx {
+        caller: Some(CallerIdentity::local_persona(airc.peer_id())),
+        ..Default::default()
+    };
+    let repo = airc_work::RepoId::new("acme/ordinary-project").unwrap();
+    let card = airc
+        .create_work_card(airc_lib::CreateWorkCard::new(
+            repo.clone(),
+            "verified ordinary work",
+            airc_work::Priority::P1,
+        ))
+        .await
+        .unwrap();
+    let claim = airc
+        .claim_work_card(airc_lib::ClaimWorkCard {
+            card_id: card,
+            ttl_ms: 60_000,
+        })
+        .await
+        .unwrap();
+    let mut capture = TurnCreditCapture::with_executor(
+        executor.clone(),
+        persona,
+        name.into(),
+        "Inspect and repair the actual implementation, with evidence.".into(),
+        CapturedCredit {
+            task: crate::cognition::held_out::CardTask::NotATask,
+            card_id: card.as_uuid(),
+            claim: Some(ClaimReceipt {
+                claim_id: claim.as_uuid(),
+                owner: airc.peer_id(),
+                role: CreditRole::Owner,
+            }),
+        },
+    );
+    assert!(
+        capture
+            .record(
+                &settlement_acts(4),
+                &[served_receipt("public-command-request", "served-model")],
+                None,
+                true
+            )
+            .await
+    );
+    let selected = stored_credit_rows(&conn_as(executor, persona), name)
+        .await
+        .pop()
+        .unwrap();
+    // THROUGH SERDE, CARRYING THE SHORT HANDLES THE BOARD PRINTS (Astra's review of
+    // #4357). The defect these verbs carried was a DESERIALIZATION refusal — a
+    // `Uuid`-typed `card_id` rejected `d61513e4` before any handler ran — so a test
+    // that builds the struct in Rust cannot see it at all. This fixture now arrives
+    // the way a citizen's call actually does: as JSON, in the 8-char form she was
+    // shown, and the assertions below prove the whole path end to end.
+    let short = |id: Uuid| id.simple().to_string().chars().take(8).collect::<String>();
+    // A typed artifact must have its bytes retained (card e1babb61), so the fixture
+    // retains a real patch in this test's store and types ITS hash and size.
+    let patch = "diff --git a/x b/x\n--- a/x\n+++ b/x\n@@ -1 +1 @@\n-a\n+b\n";
+    let patch_hash = {
+        use airc_blobs::ContentAddressedStore;
+        crate::media::artifact::store().expect("test: store").put(patch.as_bytes()).expect("test: retain the patch").to_hex()
+    };
+    let params: WorkSubmitParams = serde_json::from_value(serde_json::json!({
+        "room": room.channel.as_uuid().to_string(),
+        "submission_id": Uuid::new_v4().to_string(),
+        "card_id": short(card.as_uuid()),
+        "claim_id": short(claim.as_uuid()),
+        "instance": "generic-project-work",
+        "base_sha": "a".repeat(40),
+        "artifact": { "hash": patch_hash, "size_bytes": patch.len(), "mime": "text/x-diff" },
+        "staged_revision_id": selected.id.to_string(),
+    }))
+    .expect("a citizen's call carries the handles her board printed"); // expect: the fixture's own json, asserted decodable
+    assert_eq!(
+        params.card_id,
+        short(card.as_uuid()),
+        "the handle survives deserialization — it used to be refused here"
+    );
+    let submit = WorkSubmit {
+        registry: registry.clone(),
+        executor_slot: slot.clone(),
+    };
+    let published = submit.run(&ctx, params.clone()).await.unwrap();
+    assert_eq!(published.publisher, persona);
+    assert_eq!(published.bound_staged_revision_id, Some(selected.id));
+    let mut overlap = params.clone();
+    overlap.submission_id = Some(Uuid::new_v4());
+    assert!(submit.run(&ctx, overlap.clone()).await.is_err());
+    assert!(
+        !airc
+            .work_board_in(&room)
+            .await
+            .unwrap()
+            .card(card)
+            .unwrap()
+            .submissions
+            .iter()
+            .any(|s| Some(s.submission_id.as_uuid()) == overlap.submission_id),
+        "failed binding cannot publish its artifact"
+    );
+    let review_card = airc_work::submission_review_card_id(
+        card,
+        airc_work::SubmissionId::from_uuid(published.submission_id),
+    );
+    let handoff_board = airc.work_board_in(&room).await.unwrap();
+    assert!(handoff_board.review_request(review_card).is_some());
+    assert_eq!(handoff_board.card(review_card).unwrap().reviews, Some(card));
+    let review_claim = airc
+        .claim_work_card(airc_lib::ClaimWorkCard {
+            card_id: review_card,
+            ttl_ms: 60_000,
+        })
+        .await
+        .unwrap();
+    let focus = airc.join("unrelated-focus").await.unwrap();
+    let replay = submit.run(&ctx, params.clone()).await.unwrap();
+    assert_eq!(replay.submitted_at_ms, published.submitted_at_ms);
+    let failed = WorkReview {
+        registry: registry.clone(),
+        executor_slot: slot.clone(),
+    }
+    .run(
+        &ctx,
+        WorkReviewParams {
+            room: params.room.clone(),
+            review_id: Some(Uuid::new_v4()),
+            card_id: Some(card.as_uuid().to_string()),
+            submission_id: Some(published.submission_id),
+            artifact: params.artifact.clone(),
+            review_card_id: review_card.as_uuid().to_string(),
+            review_claim_id: Some(review_claim.as_uuid()),
+            outcome: ReviewOutcome::Failed,
+            evidence_text: None,
+            evidence: params.artifact.clone(),
+        },
+    )
+    .await
+    .unwrap();
+    assert!(matches!(failed.outcome, ReviewOutcome::Failed));
+    let retry_after_review = submit.run(&ctx, params.clone()).await.unwrap();
+    assert_eq!(retry_after_review.submission_id, published.submission_id);
+    assert!(retry_after_review.next.contains("Revise the work"));
+    let board_after_review = airc.work_board_in(&room).await.unwrap();
+    assert_eq!(board_after_review.card(card).unwrap().claim_id, handoff_board.card(card).unwrap().claim_id);
+    assert_eq!(board_after_review.card(review_card).unwrap().claim_id, Some(review_claim));
+    let reviewed = WorkReview {
+        registry: registry.clone(),
+        executor_slot: slot.clone(),
+    }
+    .run(
+        &ctx,
+        WorkReviewParams {
+            room: params.room.clone(),
+            review_id: Some(Uuid::new_v4()),
+            card_id: Some(card.as_uuid().to_string()),
+            submission_id: Some(
+                params
+                    .submission_id
+                    .expect("the fixture names its submission"),
+            ),
+            artifact: Some(
+                params
+                    .artifact
+                    .clone()
+                    .expect("the fixture names its artifact"),
+            ),
+            review_card_id: review_card.as_uuid().to_string(),
+            review_claim_id: Some(review_claim.as_uuid()),
+            outcome: ReviewOutcome::Passed,
+            evidence_text: None,
+            evidence: Some(
+                params
+                    .artifact
+                    .clone()
+                    .expect("the fixture names its artifact"),
+            ),
+        },
+    )
+    .await
+    .unwrap();
+    assert!(
+        reviewed.credit_error.is_none(),
+        "{:?}",
+        reviewed.credit_error
+    );
+    assert_eq!(
+        reviewed.credit.unwrap().state,
+        reviewed::ReviewedCreditState::IndependentReviewRequired
+    );
+    let later_revision = Uuid::new_v4();
+    let another_claim = CapturedCredit {
+        task: crate::cognition::held_out::CardTask::NotATask,
+        card_id: card.as_uuid(),
+        claim: Some(ClaimReceipt {
+            claim_id: Uuid::new_v4(),
+            owner: airc.peer_id(),
+            role: CreditRole::Owner,
+        }),
+    };
+    stage_credit(
+        &capture.conn,
+        name,
+        &another_claim,
+        vec![served_receipt("another-claim-request", "served-model")],
+        "private later prompt".into(),
+        "private later completion".into(),
+        None,
+        later_revision,
+        &[],
+    )
+    .await
+    .unwrap();
+    let inspected = WorkSubmission {
+        registry,
+        executor_slot: slot,
+    }
+    .run(
+        &ctx,
+        // The readback takes handles too, and its submission handle resolves against
+        // THIS CARD's submissions — the card-scoped half of the same change. The
+        // evidence opt-in rides the same decode, so one fixture proves both.
+        serde_json::from_value(serde_json::json!({
+            "room": params.room,
+            "card_id": short(card.as_uuid()),
+            "submission_id": short(
+                params.submission_id.expect("the fixture names its submission"), // expect: set in the json above
+            ),
+            "include_staged_evidence": true,
+        }))
+        .expect("the readback's handles decode"), // expect: the fixture's own json, asserted decodable
+    )
+    .await
+    .unwrap();
+    assert_eq!(inspected.submission.publisher, persona);
+    assert_eq!(inspected.reviews.len(), 2);
+    assert_eq!(inspected.reviews[0].reviewer, persona);
+    // Regression: Kimi's accepted review exposed only "unbound", with no
+    // way to inspect the source-owned revision without reading private text.
+    let evidence = inspected.staged_evidence.as_ref().unwrap();
+    assert_eq!(evidence.len(), 2);
+    let original = evidence
+        .iter()
+        .find(|row| row.revision_id == selected.id)
+        .unwrap();
+    assert!(original.matches_submission_claim);
+    assert!(original.predates_submission);
+    assert_eq!(original.generation_count, selected.receipts.len());
+    assert_eq!(original.generation_request_ids, vec!["public-command-request"]);
+    let later = evidence
+        .iter()
+        .find(|row| row.revision_id == later_revision)
+        .unwrap();
+    assert!(
+        !later.matches_submission_claim,
+        "newest is not automatically the selected experience"
+    );
+    assert!(inspected.staged_evidence_error.is_none());
+    let public_evidence = serde_json::to_string(evidence).unwrap();
+    assert!(!public_evidence.contains(&selected.prompt));
+    assert!(!public_evidence.contains(&selected.completion));
+    assert!(!public_evidence.contains("private later"));
+    assert_eq!(
+        inspected.credit.unwrap().state,
+        reviewed::ReviewedCreditState::AwaitingReview
+    );
+    let safe = serde_json::to_value(&inspected.submission).unwrap();
+    assert!(!safe.to_string().contains(&selected.prompt));
+    assert_eq!(
+        airc.current_room().await.unwrap().channel,
+        focus.channel,
+        "all explicit work verbs preserve unrelated focus"
+    );
+}

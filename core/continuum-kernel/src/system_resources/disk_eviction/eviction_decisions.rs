@@ -169,17 +169,17 @@ pub(super) const DEFERRED: &[(&str, &str)] = &[
             "#155: broker-reachable pool over cognition/eval::live_eval_roots(); \
              sweep + RAII already own the steady state and the crash path",
         ),
-        // Steady-state owner ALREADY EXISTS at lane spawn:
-        // `inference::llama_server::sweep_stale_page_generations` deletes every
-        // sibling geometry the moment a serve's geometry changes — a page whose
-        // slot size no longer exists can never be restored, so the sweep is
-        // reference-safe by construction, and within a live geometry each
-        // activity owns ONE file that saves overwrite in place (count bounded
-        // by residents × rooms). Deferred only for the broker seam: under real
-        // disk pressure the broker cannot yet claw back the CURRENT
-        // generation's pages — that wants a pool that asks the slot pool which
-        // activities are resident (their pages are one eviction from being
-        // needed) versus departed, never a blind LRU.
+        // Steady-state owner ALREADY EXISTS on every save:
+        // `inference::slots::trim_page_store_after_save` keeps the model's one
+        // page dir under its byte budget, oldest pages first and never one
+        // younger than a day, and each activity owns ONE file that saves
+        // overwrite in place (count bounded by residents × rooms). Legacy
+        // per-window dirs (`<model>--c<step>`) are no longer written; the newest
+        // moves into the model's dir once, the rest wait for an operator.
+        // Deferred only for the broker seam: under real disk pressure the broker
+        // cannot yet claw back live pages — that wants a pool that asks the slot
+        // pool which activities are resident (their pages are one eviction from
+        // being needed) versus departed, never a blind LRU.
         // airc's per-room projection snapshots (operator scope; the personas' live under
         // `citizens`). Size is O(rooms × projection): the board snapshot is the folded
         // board (cards, not events), the wall snapshot is the room's posts (few). Both

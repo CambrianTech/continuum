@@ -14,6 +14,10 @@ pub(super) struct PreparedLocalLaunch {
     /// the launcher flag (f16 is passed as no flag at all, which read as "unknown" and cost
     /// every CPU lane its saved-page ledger, IntelMac 2026-10-11). `None` = genuinely unknown.
     pub(super) page_cache_type: Option<String>,
+    /// Whether the engine runs flash attention: part of a saved page's format (its V layout).
+    pub(super) page_flash_attn: Option<bool>,
+    /// The MTP draft model, whose KV a page's context checkpoints carry beside the target's.
+    pub(super) mtp_draft: Option<PathBuf>,
     pub(super) mmproj: bool,
     // Err retains an ordinary/legacy launch without inventing restoration authority.
     pub(super) local_inputs: Result<crate::inference::launch_inputs::LocalLaunchInputs, String>,

@@ -56,6 +56,15 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
         if pool.scratch_slot().is_none() {
             // Without reserved scratch, already-admitted keyless traffic can
             // select any physical slot and bypass speculative paging admission.
+            // Said, not silent: the restore then waits for the turn itself (the M5
+            // serves two citizen slots and no scratch, so this is every act there).
+            continuum_base::probe!(
+                class = "inference.kv_warm_ahead.skipped",
+                persona = %key.persona,
+                room = %key.room,
+                reason = "no_scratch_slot",
+                "warm-ahead skipped: this server has no scratch slot, so the page restore runs at admission instead of during prompt assembly"
+            );
             return;
         }
         let client = self.client.clone();

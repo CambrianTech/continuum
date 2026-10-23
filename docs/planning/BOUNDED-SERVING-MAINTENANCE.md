@@ -88,3 +88,24 @@ modeling the supported legacy engine without the optional size protocol. No
 admission guard is bypassed. Early caller failures now retain their actual Result
 in the assertion diagnostic. This is a source-identified fixture omission; the
 corrected end-to-end Windows result remains pending, not inferred from source.
+
+The final #5302 head 5253446a8 passed run39905654311: Windows core35m56,
+including the connected restoration test (1/1,6.73s), Unix33m9 and standalone
+Windows4m18. It merged as315b8624996b. Published Windows artifact39909266183
+was checksum-verified (258d79a2570eb2c66f1ffeb2585a061811a10675517210a446f295e70fd3415a).
+Actual published `continuum maintenance 60` refused before drain: real Scheduler
+COM XML omits Settings/Enabled when true, while our reader demanded that node.
+Deploy was immediately restarted through Task Scheduler; Core and Deploy are
+Running, with core10620/engine4280 untouched. No capacity recovery is claimed.
+
+The shared reader now excludes the optional Enabled element from registration
+identity, preserving raw XML, authoritative COM Enabled, SDDL and every other
+registration field. The existing Windows fixture now uses real unregistered COM
+task definitions, retaining interrupted-disable/recovery assertions. A direct PS5
+execution of the production reader against those definitions passed default true,
+false, reenable and registration-drift checks; no registered task was mutated.
+Raw receipts: b705-installed-maintenance.log, b705-core-task.xml and
+b705-scheduler-default-proof.txt in the team-proof state directory. Native CI and
+fixed published maintenance execution remain required. Older pending journals
+with the former normalized identity fail closed; this is not transparent journal
+migration. No pending journal was found at the installed root during inspection.

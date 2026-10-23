@@ -63,10 +63,7 @@ impl LlamaServerProcess {
             crate::model_registry::artifacts::resolve_mmproj_for_model(&target.model);
         let mtp_draft =
             crate::model_registry::artifacts::resolve_mtp_draft_for_model(&target.model);
-        let slot_save_dir = kv_page_dir(
-            &target.model.id,
-            target.served_total_ctx() / target.parallel_lanes().max(1),
-        );
+        let slot_save_dir = kv_page_dir(&target.model.id);
         // In-engine training is an addition to the lane, never a condition of it: a
         // directory that cannot be made turns /train off on this launch, says so, and
         // the lane serves exactly as it would have.
@@ -524,6 +521,8 @@ impl LlamaServerProcess {
             gguf,
             slot_save_dir,
             page_cache_type: Some(kv_plan.cache_type.clone()),
+            page_flash_attn: Some(flash_attn),
+            mtp_draft: mtp_draft.clone(),
             mmproj: mmproj.is_some(),
             local_inputs,
             managed_environment,

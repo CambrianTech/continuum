@@ -107,7 +107,7 @@ pub(super) fn derived_prompt_cache_mib(
         rotating_minds(&seen, EpochMs::now().millis(), rotation_window_ms(&seen)).max(warm_floor);
     // the served model's own page dir: the same key the spawn writes its pages under
     let measured_state = crate::inference::slots::measured_state_bytes(
-        &crate::inference::llama_server::kv_page_dir(model_id, served_ctx),
+        &crate::inference::llama_server::kv_page_dir(model_id),
     );
     let estimated = active_cache_states(&population, served_ctx, active);
     let demands = with_measured_state(estimated.clone(), fp.map(|f| f.kv_per_token), measured_state);

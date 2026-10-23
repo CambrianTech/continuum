@@ -55,6 +55,7 @@ ron = "0.12"     # RON scene descriptions (Bevy-idiomatic on-disk format)
 uuid.workspace = true
 continuum-base = { path = "../continuum-base" }
 continuum-kernel = { path = "../continuum-kernel" }
+continuum-mind = { path = "../continuum-mind" }
 continuum-live = { path = "../continuum-live" }
 continuum-hands = { path = "../continuum-hands" }
 continuum-engine = { path = "../continuum-engine" }
@@ -330,13 +331,13 @@ pocket-tts = ["continuum-live/pocket-tts"]
 # and web depend on. Regenerate after a command changes:
 # `cargo test -p continuum-core --features ts-codegen generates_live_typescript_sdk`.
 ts-codegen = ["continuum-kernel/ts-codegen"]
-metal = ["candle-core/metal", "candle-nn/metal", "candle-transformers/metal", "llama/metal", "ort/coreml", "continuum-engine/metal", "continuum-live/metal"]
-cuda = ["candle-core/cuda", "candle-nn/cuda", "candle-transformers/cuda", "llama/cuda", "ort/cuda", "continuum-kernel/cuda", "continuum-engine/cuda"]
+metal = ["candle-core/metal", "candle-nn/metal", "candle-transformers/metal", "llama/metal", "ort/coreml", "continuum-engine/metal", "continuum-live/metal", "continuum-mind/metal"]
+cuda = ["candle-core/cuda", "candle-nn/cuda", "candle-transformers/cuda", "llama/cuda", "ort/cuda", "continuum-kernel/cuda", "continuum-engine/cuda", "continuum-mind/cuda"]
 # Vulkan is llama.cpp-only (Candle has no Vulkan backend). Used by the
 # Mac-Carl-in-container path: Podman + krunkit routes Vulkan API calls out
 # to MoltenVK on the host, which translates to Metal. Also valid on Linux
 # Nvidia/AMD hosts with libvulkan available.
-vulkan = ["llama/vulkan", "continuum-kernel/vulkan", "continuum-engine/vulkan"]
+vulkan = ["llama/vulkan", "continuum-kernel/vulkan", "continuum-engine/vulkan", "continuum-mind/vulkan"]
 # ORT execution providers for the broader Carl-OOTB matrix (#964 series
 # follow-up). Each adds a cfg branch in inference/ort_providers.rs so
 # fastembed / Piper-TTS / Moonshine-STT / Kokoro / Orpheus / Silero VAD
@@ -380,7 +381,7 @@ load-dynamic-ort = ["ort/load-dynamic"]
 #     via `cargo test --features test-fixtures` or `--features test-fixtures`
 #     on the bin target.
 #   - Production: heuristic adapter doesn't exist in the binary at all.
-test-fixtures = ["continuum-base/test-fixtures", "continuum-kernel/test-fixtures", "continuum-engine/test-fixtures", "continuum-hands/test-fixtures", "continuum-live/test-fixtures"]
+test-fixtures = ["continuum-base/test-fixtures", "continuum-kernel/test-fixtures", "continuum-engine/test-fixtures", "continuum-hands/test-fixtures", "continuum-live/test-fixtures", "continuum-mind/test-fixtures"]
 
 # stress-tests: opts in concurrency / multi-thread / load tests that
 # pin substrate invariants under N-task simultaneous load. Each test
@@ -400,7 +401,7 @@ test-fixtures = ["continuum-base/test-fixtures", "continuum-kernel/test-fixtures
 # `#[cfg(test)] mod tests` block (chat, generator, data cursors,
 # airc realtime_store as of this writing). Greppable by:
 #     grep -rln 'cfg(feature = "stress-tests")' src/
-stress-tests = ["continuum-kernel/stress-tests"]
+stress-tests = ["continuum-kernel/stress-tests", "continuum-mind/stress-tests"]
 
 # Integration tests that link a `test-fixtures`-gated lib symbol (the
 # HeuristicInferenceAdapter stand-in, or the ChatQueueItem `compute_calls`
@@ -454,6 +455,8 @@ continuum-kernel = { path = "../continuum-kernel", features = ["test-fixtures"] 
 continuum-engine = { path = "../continuum-engine", features = ["test-fixtures"] }
 continuum-hands = { path = "../continuum-hands", features = ["test-fixtures"] }
 continuum-live = { path = "../continuum-live", features = ["test-fixtures"] }
+continuum-mind = { path = "../continuum-mind", features = ["test-fixtures"] }
+continuum-positron = { path = "../continuum-positron", features = ["test-fixtures"] }
 # The hygiene ratchets moved to their own std-only crate so a contributor learns an
 # unwrap count rose in seconds instead of after a 12.4-minute build. Two `#[cfg(test)]`
 # call sites here still use its scanner helpers, so it is a DEV dependency — production

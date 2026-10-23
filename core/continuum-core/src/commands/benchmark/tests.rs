@@ -31,7 +31,7 @@
         let by_name = |n: &str| known_benchmarks().iter().find(|b| b.name == n).unwrap();
 
         assert_eq!(
-            by_name("swe-bench-lite").reach(),
+            source_reach(by_name("swe-bench-lite")),
             SourceReach::Rows {
                 dataset: "princeton-nlp/SWE-bench_Lite",
                 config: "default",
@@ -39,18 +39,18 @@
             }
         );
         assert!(
-            matches!(by_name("humaneval").reach(), SourceReach::ForeignSource { .. }),
+            matches!(source_reach(by_name("humaneval")), SourceReach::ForeignSource { .. }),
             "a GitHub raw .jsonl must NOT fall through to the HF rows API — that returns an \
              in-band error a caller reads as 'the suite is empty'"
         );
-        assert!(matches!(by_name("hard-rs").reach(), SourceReach::InTree));
+        assert!(matches!(source_reach(by_name("hard-rs")), SourceReach::InTree));
 
         // The two live-verified script datasets (2026-08-19): the rows API refuses these at
         // EVERY coordinate, so they must be told apart from a wrong-config miss or the
         // operator retries configs forever.
         for n in ["apps", "livecodebench"] {
             assert!(
-                matches!(by_name(n).reach(), SourceReach::HuggingFaceScriptDataset { .. }),
+                matches!(source_reach(by_name(n)), SourceReach::HuggingFaceScriptDataset { .. }),
                 "`{n}` is a loading-script dataset; classifying it as fetchable sends the \
                  caller into a config-guessing loop that can never succeed"
             );
@@ -60,7 +60,7 @@
         // no `test` split at all. The default coordinates return "Unexpected error" — measured
         // live — so the version we score against has to be a recorded catalog fact.
         assert_eq!(
-            by_name("bigcodebench").reach(),
+            source_reach(by_name("bigcodebench")),
             SourceReach::Rows {
                 dataset: "bigcode/bigcodebench",
                 config: "default",
@@ -70,7 +70,7 @@
 
         // And no catalogued row may be silently unclassifiable.
         for b in known_benchmarks() {
-            let reach = b.reach();
+            let reach = source_reach(b);
             if let SourceReach::Rows { dataset, .. } = reach {
                 assert!(
                     dataset.contains('/'),

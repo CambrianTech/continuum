@@ -41,6 +41,11 @@ mod citizen_slots;
 pub use citizen_slots::*;
 mod kv_slot_pool;
 pub use kv_slot_pool::*;
+mod saved_ledger;
+pub(crate) use saved_ledger::SavedLedger;
+use saved_ledger::{LedgerSnapshot, LoadedLedger};
+#[cfg(test)]
+use saved_ledger::{SavedLedgerFile, LEDGER_FORMAT, SAVED_LEDGER_FILE};
 mod engine_generation;
 pub use engine_generation::*;
 mod placement;

@@ -407,10 +407,13 @@ impl EndpointTransition {
         // the new engine. Copy ONLY saved-page eligibility under an exact contract.
         let pool = Arc::new(KvSlotPool::new(root, contract.slots));
         let mut carried = false;
-        if contract.page_dir.is_some()
-            && contract.cache_type.is_some()
-            && contract.revisions.is_some()
-            && state.contract.as_ref() == Some(&contract)
+        // Same page format, not the same launch: a relaunch at another window or slot count
+        // keeps every page it can restore (the engine refuses, loudly, one that no longer fits).
+        let fingerprint = contract.fingerprint();
+        let previous = state.contract.as_ref();
+        if fingerprint.is_some()
+            && previous.and_then(KvPageContract::fingerprint) == fingerprint
+            && previous.and_then(|c| c.page_dir.as_ref()) == contract.page_dir.as_ref()
         {
             if let Some(Some(old)) = state.pool.as_ref() {
                 *pool.saved.lock() = old.saved.lock().clone();
@@ -421,8 +424,9 @@ impl EndpointTransition {
         // read only under the same fingerprint (the same exact contract). In-process
         // carry-over is the fresher record when there is one, so the disk is read only
         // when nothing was carried.
-        if let (Some(dir), Some(fingerprint)) = (contract.page_dir.as_ref(), contract.fingerprint()) {
-            let loaded = pool.attach_ledger(SavedLedger::in_dir(dir, fingerprint), !carried);
+        if let (Some(dir), Some(fingerprint)) = (contract.page_dir.as_ref(), fingerprint) {
+            let ledger = SavedLedger::in_dir(dir, fingerprint).with_identity_floor(contract.identity_floor());
+            let loaded = pool.attach_ledger(ledger, !carried);
             continuum_base::probe!(
                 class = "inference.kv_page.ledger_attached",
                 endpoint = root,

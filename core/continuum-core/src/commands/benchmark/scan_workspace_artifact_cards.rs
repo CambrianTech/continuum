@@ -26,40 +26,38 @@ pub enum SourceReach {
     InTree,
 }
 
-impl BenchmarkSpec {
-    /// The suite's fetch coordinates, as DATA rather than as an operator's memory.
-    ///
-    /// `config`/`split` are NOT derivable from the URL and are not uniformly `default`/`test`
-    /// — bigcodebench versions its splits (`v0.1.4`), and a wrong guess returns an in-band HF
-    /// error that a caller reads as "the suite is empty". So the exceptions live here, in the
-    /// ONE place that knows, exactly as [`BenchmarkSpec::swe_dataset`] already does for row
-    /// shape. The dataset id is still read back off `source_url` so it is never duplicated.
-    pub fn reach(&self) -> SourceReach {
-        let Some(url) = self.source_url else {
-            return SourceReach::InTree;
-        };
-        let Some(dataset) = url
-            .strip_prefix("https://huggingface.co/datasets/")
-            .filter(|id| id.contains('/'))
-        else {
-            return SourceReach::ForeignSource { url };
-        };
-        // Loading-script datasets: the rows API cannot serve these at ANY coordinates.
-        if matches!(dataset, "codeparrot/apps" | "livecodebench/code_generation_lite") {
-            return SourceReach::HuggingFaceScriptDataset { dataset };
-        }
-        let (config, split) = match dataset {
-            // bigcodebench publishes revisions as SPLITS; `test` does not exist. v0.1.4 is
-            // the newest as of 2026-08-19 — bump it here when they publish, so the version
-            // scored against is a recorded catalog fact and not whatever the default was.
-            "bigcode/bigcodebench" => ("default", "v0.1.4"),
-            _ => ("default", "test"),
-        };
-        SourceReach::Rows {
-            dataset,
-            config,
-            split,
-        }
+/// The suite's fetch coordinates, as DATA rather than as an operator's memory.
+///
+/// `config`/`split` are NOT derivable from the URL and are not uniformly `default`/`test`
+/// — bigcodebench versions its splits (`v0.1.4`), and a wrong guess returns an in-band HF
+/// error that a caller reads as "the suite is empty". So the exceptions live here, in the
+/// ONE place that knows, exactly as [`BenchmarkSpec::swe_dataset`] already does for row
+/// shape. The dataset id is still read back off `source_url` so it is never duplicated.
+pub fn source_reach(spec: &BenchmarkSpec) -> SourceReach {
+    let Some(url) = spec.source_url else {
+        return SourceReach::InTree;
+    };
+    let Some(dataset) = url
+        .strip_prefix("https://huggingface.co/datasets/")
+        .filter(|id| id.contains('/'))
+    else {
+        return SourceReach::ForeignSource { url };
+    };
+    // Loading-script datasets: the rows API cannot serve these at ANY coordinates.
+    if matches!(dataset, "codeparrot/apps" | "livecodebench/code_generation_lite") {
+        return SourceReach::HuggingFaceScriptDataset { dataset };
+    }
+    let (config, split) = match dataset {
+        // bigcodebench publishes revisions as SPLITS; `test` does not exist. v0.1.4 is
+        // the newest as of 2026-08-19 — bump it here when they publish, so the version
+        // scored against is a recorded catalog fact and not whatever the default was.
+        "bigcode/bigcodebench" => ("default", "v0.1.4"),
+        _ => ("default", "test"),
+    };
+    SourceReach::Rows {
+        dataset,
+        config,
+        split,
     }
 }
 

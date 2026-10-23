@@ -13,8 +13,13 @@ use serde_json::Value;
 use crate::persona::instance_manager::PersonaInstanceManagerModule;
 use crate::runtime::{CommandResult, ModuleConfig, ModuleContext, ModulePriority, ServiceModule};
 
+/// The `ServiceModule` face of the mind's [`PersonaInstanceManagerModule`]: its command
+/// surface and lifecycle are the surface's, the manager is the persona's. `as_any` is the
+/// inner manager.
+pub struct PersonaInstanceManagerService(pub Arc<PersonaInstanceManagerModule>);
+
 #[async_trait]
-impl ServiceModule for PersonaInstanceManagerModule {
+impl ServiceModule for PersonaInstanceManagerService {
     fn config(&self) -> ModuleConfig {
         ModuleConfig {
             name: "persona_instance_manager",
@@ -31,7 +36,7 @@ impl ServiceModule for PersonaInstanceManagerModule {
         // Capture the event bus so every completed birth (boot auto-seed OR the
         // `persona/spawn` command) can announce itself as `persona:born`. Shared with
         // `PersonaBirth` via the same `Arc<LateBound>`.
-        self.bus.install(ctx.bus.clone());
+        self.0.bus.install(ctx.bus.clone());
         Ok(())
     }
 
@@ -74,10 +79,10 @@ impl ServiceModule for PersonaInstanceManagerModule {
     /// capability — socket, room, executor — is threaded here.)
     fn commands(&self) -> Vec<Arc<dyn crate::sdk_codegen::DynCommand>> {
         crate::commands::persona::command_objects(
-            self.registry.clone(),
-            self.continuum_root.clone(),
-            Arc::clone(&self.executor),
-            self.birth(),
+            self.0.registry.clone(),
+            self.0.continuum_root.clone(),
+            Arc::clone(&self.0.executor),
+            self.0.birth(),
         )
     }
 
@@ -87,7 +92,7 @@ impl ServiceModule for PersonaInstanceManagerModule {
     /// are renewed once (board-derived, a full TTL), so the holds outlive the dark window.
     /// Bounded well inside the runtime's 2 s save budget; a slow daemon is probed, not waited on.
     async fn save_state(&self) -> Result<(), String> {
-        let runtimes: Vec<_> = self.registry.iter().collect();
+        let runtimes: Vec<_> = self.0.registry.iter().collect();
         let work = async {
             let mut renewed = 0usize;
             let now_ms = EpochMs::now().millis();
@@ -144,11 +149,11 @@ impl ServiceModule for PersonaInstanceManagerModule {
     }
 
     fn install_executor(&self, executor: std::sync::Arc<crate::runtime::CommandExecutor>) {
-        self.executor.install(executor);
+        self.0.executor.install(executor);
     }
 
     fn as_any(&self) -> &dyn Any {
-        self
+        self.0.as_ref()
     }
 }
 
@@ -167,11 +172,11 @@ mod tests {
     #[test]
     fn module_config_routes_persona_instances() {
         let registry = PersonaAircRuntimeRegistry::new();
-        let module = PersonaInstanceManagerModule::new(
+        let module = PersonaInstanceManagerService(Arc::new(PersonaInstanceManagerModule::new(
             registry,
             PathBuf::from("/nonexistent/socket"),
             PathBuf::from("/tmp/continuum-test"),
-        );
+        )));
         let cfg = module.config();
         assert_eq!(cfg.name, "persona_instance_manager");
         assert_eq!(cfg.command_prefixes, &["persona/instances/"]);
@@ -183,11 +188,11 @@ mod tests {
     // the roster read away from the typed command) is caught here.
     #[tokio::test]
     async fn migrated_list_and_get_arms_fail_loud() {
-        let module = PersonaInstanceManagerModule::new(
+        let module = PersonaInstanceManagerService(Arc::new(PersonaInstanceManagerModule::new(
             PersonaAircRuntimeRegistry::new(),
             PathBuf::from("/nonexistent/socket"),
             PathBuf::from("/tmp/continuum-test"),
-        );
+        )));
         for command in ["persona/instances/list", "persona/instances/get"] {
             let err = module
                 .handle_command(command, Value::Null)
@@ -204,11 +209,11 @@ mod tests {
     // surface without the roster verbs — is caught.
     #[test]
     fn contributes_the_typed_instance_commands() {
-        let module = PersonaInstanceManagerModule::new(
+        let module = PersonaInstanceManagerService(Arc::new(PersonaInstanceManagerModule::new(
             PersonaAircRuntimeRegistry::new(),
             PathBuf::from("/nonexistent/socket"),
             PathBuf::from("/tmp/continuum-test"),
-        );
+        )));
         let names: Vec<&str> = module.commands().iter().map(|c| c.name()).collect();
         assert!(names.contains(&"persona/instances/list"), "got {names:?}");
         assert!(names.contains(&"persona/instances/get"), "got {names:?}");
@@ -221,11 +226,11 @@ mod tests {
     #[tokio::test]
     async fn unknown_command_errors() {
         let registry = PersonaAircRuntimeRegistry::new();
-        let module = PersonaInstanceManagerModule::new(
+        let module = PersonaInstanceManagerService(Arc::new(PersonaInstanceManagerModule::new(
             registry,
             PathBuf::from("/nonexistent/socket"),
             PathBuf::from("/tmp/continuum-test"),
-        );
+        )));
         let res = module
             .handle_command("persona/instances/teleport", Value::Null)
             .await;

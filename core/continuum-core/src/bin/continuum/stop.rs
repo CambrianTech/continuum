@@ -363,7 +363,7 @@ pub(super) async fn stop_with_policy(keep_lanes: bool, operator_present: bool, r
         return Ok(graceful);
     }
     let mut unconfirmed_lanes = Vec::new();
-    for outcome in continuum_core::inference::lane_registry::sweep_all() {
+    for outcome in continuum_core::inference::lane_registry::sweep_all().await? {
         use continuum_core::inference::lane_registry::SweepOutcome as S;
         match outcome {
             S::ExitUnconfirmed { pid, .. } => unconfirmed_lanes.push(pid),

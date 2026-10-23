@@ -22,6 +22,7 @@ airc-lib.workspace = true
 airc-work.workspace = true
 async-trait.workspace = true
 parking_lot.workspace = true
+thiserror.workspace = true
 futures = "0.3"  # For VAD block_on in audio thread
 sysinfo = "0.33"  # Cross-platform CPU, memory, system resource monitoring
 tracing.workspace = true

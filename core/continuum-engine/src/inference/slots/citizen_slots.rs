@@ -446,8 +446,8 @@ pub(super) const STATE_SAMPLES: usize = 16;
 pub(super) const STATE_DIRS: usize = 8;
 
 /// Recent saved-state sizes, keyed by the PAGE DIR they were written to: a page dir is one
-/// model at one geometry ([`crate::inference::llama_server::kv_page_dir`]), so a second model's
-/// lane on the node is never sized by another model's states (Fable on #4930).
+/// model ([`crate::inference::llama_server::kv_page_dir`]), so a second model's lane on the
+/// node is never sized by another model's states (Fable on #4930).
 pub(super) type StateSamples = std::collections::VecDeque<(std::path::PathBuf, std::collections::VecDeque<u64>)>;
 
 pub(super) static RECENT_STATE_BYTES: parking_lot::Mutex<StateSamples> = parking_lot::Mutex::new(std::collections::VecDeque::new());

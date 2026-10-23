@@ -401,6 +401,30 @@ pub struct RosterSlotView {
     pub bio: Option<String>,
 }
 
+/// A present member with unresolved provenance and no availability or recency, for tests:
+/// they override any field via struct update (`RosterSlotView { active: false,
+/// ..test_roster_slot(..) }`).
+#[cfg(any(test, feature = "test-fixtures"))]
+pub fn test_roster_slot(member: Uuid, name: &str, kind: SenderKind) -> RosterSlotView {
+    RosterSlotView {
+        pronouns: None,
+        role_label: None,
+        bio: None,
+        member_id: member,
+        display_name: name.to_string(),
+        kind,
+        integrations: BTreeMap::new(),
+        provenance: Provenance::unresolved(),
+        active: true,
+        availability: None,
+        last_seen_ms: 0,
+        vitals: BTreeMap::new(),
+        loadout: None,
+        genes: Vec::new(),
+        avatar_url: None,
+    }
+}
+
 /// One tool ACT a room member performed — the transcript's collapsed-receipt
 /// row (the Claude-iOS pattern: "Ran 4 commands ›" between speech bubbles;
 /// web expands in place, mobile opens a sheet). The room IS the activity's

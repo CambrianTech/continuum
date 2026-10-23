@@ -176,29 +176,8 @@ pub(crate) fn test_presence_payload(room: Uuid, roster: Vec<RosterSlotView>) -> 
     .expect("AircPresenceUpdate serializes")
 }
 
-/// Test-only: one neutral roster slot — present + active, empty badges,
-/// unresolved provenance, no availability/recency. Tests override any field
-/// via struct-update (`RosterSlotView { active: false, ..test_roster_slot(..) }`).
 #[cfg(test)]
-pub(crate) fn test_roster_slot(member: Uuid, name: &str, kind: SenderKind) -> RosterSlotView {
-    RosterSlotView {
-        pronouns: None,
-        role_label: None,
-        bio: None,
-        member_id: member,
-        display_name: name.to_string(),
-        kind,
-        integrations: BTreeMap::new(),
-        provenance: Provenance::unresolved(),
-        active: true,
-        availability: None,
-        last_seen_ms: 0,
-        vitals: BTreeMap::new(),
-        loadout: None,
-        genes: Vec::new(),
-        avatar_url: None,
-    }
-}
+pub(crate) use continuum_positron::chat::test_roster_slot;
 
 /// A sender's identity resolved from the roster — name + neutral kind +
 /// opaque badges + accountability provenance. A struct (not an

@@ -159,7 +159,7 @@ impl ActionCommand for BenchmarkFetch {
                 )),
             });
         }
-        let (dataset, def_config, def_split) = match spec.reach() {
+        let (dataset, def_config, def_split) = match source_reach(spec) {
             SourceReach::Rows {
                 dataset,
                 config,

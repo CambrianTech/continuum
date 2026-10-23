@@ -140,7 +140,9 @@ pub(super) fn register_persona_registry_modules(
     // further down in `start_server`. The pre-fix shape
     // eagerly fetched the global here and panicked because
     // `init_executor` hadn't run yet.
-    runtime.register(instance_manager.clone());
+    runtime.register(Arc::new(crate::modules::persona_instance_manager::PersonaInstanceManagerService(
+        instance_manager.clone(),
+    )));
     log_info!(
         "ipc",
         "server",
