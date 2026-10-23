@@ -160,7 +160,7 @@ use super::*;
         .await;
 
         assert!(
-            drove,
+        drove.drove,
             "she held a card, so a held-work turn must have been driven"
         );
         let advanced = recorder.lock().unwrap_or_else(|p| p.into_inner()).clone(); // test: poisoned recorder lock still holds the pushes
@@ -226,6 +226,7 @@ use super::*;
                     false,
                 )
                 .await
+            .drove
             );
             let speech = crate::cognition::deliberation_budget::recent_own_speech(
                 crate::identity::PeerId::from_uuid(peer),
@@ -282,3 +283,172 @@ use super::*;
             last_submission_rejection: None,
         }
     }
+
+// Actual wake selection stays reachable while original capacity custody waits;
+// neither a new directed input nor Stop is hidden behind the retry timer.
+#[tokio::test(start_paused = true)]
+async fn capacity_park_keeps_new_input_and_stop_reachable() {
+    use crate::cognition::act_observe::SettleStep;
+    use crate::cognition::workspace::{PromptCapacityError, TurnAttention};
+    use crate::persona::wake_backlog::PendingInput;
+    let ctx = hosted_with_heuristic(Uuid::new_v4());
+    let original = IncomingMessage {
+        event_id: Uuid::new_v4(),
+        lamport: 1,
+        peer_id: Uuid::new_v4(),
+        room_id: Uuid::new_v4(),
+        text: "original required payload".into(),
+        work: None,
+        media: Vec::new(),
+    };
+    let mut newer = original.clone();
+    newer.event_id = Uuid::new_v4();
+    newer.text = "new directed input".into();
+    let engram = Some(Uuid::new_v4());
+    let mut pending = PendingInput::default();
+    pending.settle(
+        &original,
+        engram,
+        TurnAttention::HumanOpportunity,
+        &SettleStep::CapacityRefused {
+            error: PromptCapacityError {
+                required_tokens: 8192,
+                budget_tokens: 4096,
+            }
+            .into(),
+            replay_input: true,
+        },
+    );
+    let mut conversation =
+        ScriptedConversation::new().with_events(vec![Ok(Some(newer.clone())), Ok(None)]);
+    conversation.prime().await.unwrap();
+    let mut outcome = ServeOutcome::default();
+    let mut mind = MindWakeState::default();
+    let opts = ServeOptions::default();
+    let (wake, _) = await_wake(
+        &ctx,
+        &mut conversation,
+        &mut outcome,
+        &opts,
+        &pending,
+        &mut mind,
+        std::time::Duration::from_secs(1),
+    )
+    .await;
+    assert!(matches!(wake, Wake::Msg(m) if m == newer));
+    let (wake, _) = await_wake(
+        &ctx,
+        &mut conversation,
+        &mut outcome,
+        &opts,
+        &pending,
+        &mut mind,
+        std::time::Duration::from_secs(1),
+    )
+    .await;
+    assert!(matches!(wake, Wake::Stop));
+    assert_eq!(pending.message(), Some(&original));
+    assert_eq!(pending.wake_engram_for(&original), engram);
+}
+
+// Board-only attention is perceived before trigger selection, even when it is
+// not chat that would earn a turn. The existing custody owner carries readiness.
+#[tokio::test(start_paused = true)]
+async fn capacity_park_observes_semantic_board_change_before_trigger_filter() {
+    use crate::cognition::act_observe::SettleStep;
+    use crate::cognition::workspace::{PromptCapacityError, TurnAttention};
+    use crate::persona::wake_backlog::{PendingInput, SeenIds};
+    let ctx = hosted_with_heuristic(Uuid::new_v4());
+    let room = Uuid::new_v4();
+    let original = IncomingMessage {
+        event_id: Uuid::new_v4(), lamport: 1, peer_id: Uuid::new_v4(), room_id: room,
+        text: "retained required input".into(), work: None, media: Vec::new(),
+    };
+    let refusal = SettleStep::CapacityRefused {
+        error: PromptCapacityError { required_tokens: 8192, budget_tokens: 4096 }.into(),
+        replay_input: true,
+    };
+    let mut pending = PendingInput::default();
+    let engram = Some(Uuid::new_v4());
+    let mut conversation = ScriptedConversation::new();
+    conversation.prime().await.unwrap();
+    let mut outcome = ServeOutcome::default();
+    let mut seen = SeenIds::new(256);
+    let mut water = 0;
+    let card = Uuid::new_v4();
+    use crate::persona::room_event::RoomWork;
+    let state = |state| RoomWork::StateChanged { card_id: card, state, by: original.peer_id };
+    let submission = |id| RoomWork::Submitted {
+        card_id: card, publisher: original.peer_id, submission: Some(id),
+    };
+    let first_submission = Uuid::new_v4();
+    for (work, changed) in [
+        (state(airc_work::CardState::Open), true),
+        (state(airc_work::CardState::Open), false),
+        (state(airc_work::CardState::Claimed), true),
+        (state(airc_work::CardState::Open), true),
+        (submission(first_submission), true),
+        (submission(first_submission), false),
+        (submission(Uuid::new_v4()), true),
+    ] {
+        pending.settle(&original, engram, TurnAttention::HumanOpportunity, &refusal);
+        pending.settle_self(room, &refusal);
+        let board = IncomingMessage {
+            event_id: Uuid::new_v4(), lamport: water + 1, peer_id: original.peer_id,
+            room_id: room, text: String::new(), media: Vec::new(),
+            work: Some(work),
+        };
+        // Scripted end closes this drain; observing typed state must still happen
+        // before the non-trigger fact is discarded by the existing selector.
+        let _ = resync_to_now(&ctx, &mut conversation, &mut outcome, &mut seen,
+            &mut water, &mut pending, false, board).await;
+        let ready = tokio::time::timeout(std::time::Duration::from_secs(1), pending.ready_self_room()).await;
+        assert_eq!(ready.is_ok(), changed, "clock/new event ID is not a payload change");
+        if changed { assert_eq!(ready.unwrap(), room); }
+        assert_eq!(pending.message(), Some(&original));
+        assert_eq!(pending.wake_engram_for(&original), engram);
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn capacity_ready_self_waits_without_spinning_during_quiescence() {
+    use crate::cognition::act_observe::SettleStep;
+    use crate::cognition::workspace::PromptCapacityError;
+    use crate::persona::wake_backlog::PendingInput;
+    let ctx = hosted_with_heuristic(Uuid::new_v4());
+    let room = Uuid::new_v4();
+    let input = IncomingMessage {
+        event_id: Uuid::new_v4(), lamport: 1, peer_id: Uuid::new_v4(), room_id: room,
+        text: "new required payload".into(), work: None, media: Vec::new(),
+    };
+    let mut pending = PendingInput::default();
+    pending.settle_self(room, &SettleStep::CapacityRefused {
+        error: PromptCapacityError { required_tokens: 8192, budget_tokens: 4096 }.into(),
+        replay_input: false,
+    });
+    pending.payload_changed(&input);
+    let opts = ServeOptions::default();
+    opts.quiesced.store(true, std::sync::atomic::Ordering::Relaxed);
+    let mut conversation = ScriptedConversation::new().with_idle_inbox();
+    let mut outcome = ServeOutcome::default();
+    let mut mind = MindWakeState::default();
+    let beat = std::time::Duration::from_secs(1);
+    let start = tokio::time::Instant::now();
+    for _ in 0..3 {
+        let (wake, _) = await_wake(&ctx, &mut conversation, &mut outcome, &opts,
+            &pending, &mut mind, beat).await;
+        assert!(matches!(wake, Wake::Idle));
+    }
+    assert!(tokio::time::Instant::now().duration_since(start) >= beat * 3);
+    opts.quiesced.store(false, std::sync::atomic::Ordering::Relaxed);
+    let (wake, _) = await_wake(&ctx, &mut conversation, &mut outcome, &opts,
+        &pending, &mut mind, beat).await;
+    assert!(matches!(wake, Wake::Mind { room: Some(r), .. } if r == room));
+    assert!(pending.take_ready_self(Some(room)));
+    assert!(!pending.take_ready_self(Some(room)), "readiness consumed once");
+    opts.quiesced.store(true, std::sync::atomic::Ordering::Relaxed);
+    conversation = conversation.with_events(vec![Ok(None)]);
+    let (wake, _) = await_wake(&ctx, &mut conversation, &mut outcome, &opts,
+        &pending, &mut mind, beat).await;
+    assert!(matches!(wake, Wake::Stop));
+}

@@ -77,6 +77,8 @@ pub struct AircRemoteInferenceAdapter {
     /// for that). Measured 2026-09-18: every bound mind budgeted to the 16,384 floor
     /// against a 67k–101k seat until re-hosted, and every large prompt came back empty.
     learned_window: AtomicU32,
+    offer_at_feedback: std::sync::RwLock<Option<u32>>,
+    window_changed: tokio::sync::watch::Sender<()>,
     /// Flipped to true the first time a `generate_text` round-trip
     /// succeeds. `health_check` returns `Unknown` while this is
     /// false (no observation yet) and `Healthy` once it's true.
@@ -95,6 +97,15 @@ pub struct AircRemoteInferenceAdapter {
 }
 
 impl AircRemoteInferenceAdapter {
+    fn advertised_window(&self) -> Option<u32> {
+        let peer = uuid::Uuid::parse_str(self.default_target_peer.as_deref()?).ok()?;
+        crate::capacity::gossip::global_ledger().served_window(
+            peer,
+            self.default_model.as_deref()?,
+            continuum_base::time::EpochMs::now().millis(),
+        )
+    }
+
     pub fn new(transport: Arc<dyn AircInferenceTransport>) -> Self {
         Self {
             transport,
@@ -103,6 +114,8 @@ impl AircRemoteInferenceAdapter {
             persona: None,
             window_sink: None,
             learned_window: AtomicU32::new(0),
+            offer_at_feedback: std::sync::RwLock::new(None),
+            window_changed: tokio::sync::watch::channel(()).0,
             has_observed_success: AtomicBool::new(false),
             breaker: Arc::new(PeerBreaker::default()),
         }
@@ -323,7 +336,9 @@ impl AIProviderAdapter for AircRemoteInferenceAdapter {
             .and_then(|x| x.served_context_window)
             .filter(|w| *w > 0)
         {
+            *self.offer_at_feedback.write().expect("remote offer lock") = self.advertised_window();
             self.learned_window.store(window, Ordering::Relaxed);
+            self.window_changed.send_replace(());
             if let Some(sink) = self.window_sink.as_ref() {
                 sink(window);
             }
@@ -399,10 +414,37 @@ impl AIProviderAdapter for AircRemoteInferenceAdapter {
     /// The responder's served slot, once heard (see `learned_window`); `None` until the
     /// first answer — the binding window stands until the seat has spoken for itself.
     fn live_served_window(&self) -> Option<u32> {
-        match self.learned_window.load(Ordering::Relaxed) {
+        let advertised = self.advertised_window();
+        let learned = self.learned_window.load(Ordering::Relaxed);
+        if advertised.is_some()
+            && (learned == 0
+                || advertised != *self.offer_at_feedback.read().expect("remote offer lock"))
+        {
+            return advertised;
+        }
+        match learned {
             0 => None,
             w => Some(w),
         }
+    }
+
+    fn capacity_changed(
+        &self,
+        observed: Option<u32>,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + '_>> {
+        let mut changes = self.window_changed.subscribe();
+        let mut offers = crate::capacity::gossip::global_ledger().subscribe();
+        Box::pin(async move {
+            loop {
+                if self.live_served_window() != observed {
+                    return;
+                }
+                tokio::select! {
+                    result = changes.changed() => if result.is_err() { return std::future::pending::<()>().await; },
+                    result = offers.changed() => if result.is_err() { return std::future::pending::<()>().await; },
+                }
+            }
+        })
     }
 
     fn device_type(&self) -> InferenceDevice {
@@ -898,10 +940,28 @@ mod tests {
         assert_eq!(adapter.live_served_window(), Some(26_112), "arm 2: the seat's window is reported live once heard");
         // Arm 3: the seat re-plans — the second answer's window replaces the first (never
         // the first only), and the sink hears it too, so the durable override follows.
+        let changed = adapter.capacity_changed(Some(26_112));
+        let another = adapter.capacity_changed(Some(26_112));
         let again = adapter.generate_text(req("hi again")).await.unwrap();
-        assert_eq!(again.routing.as_ref().and_then(|r| r.served_context_window), Some(49_152));
-        assert_eq!(adapter.live_served_window(), Some(49_152), "arm 3: the last heard window, not the first");
-        assert_eq!(*seen.lock().unwrap(), Some(49_152), "the sink follows every answer");
+        tokio::time::timeout(std::time::Duration::from_secs(1), async {
+            tokio::join!(changed, another);
+        })
+        .await
+        .expect("same-adapter window feedback wakes every parked consumer");
+        assert_eq!(
+            again.routing.as_ref().and_then(|r| r.served_context_window),
+            Some(49_152)
+        );
+        assert_eq!(
+            adapter.live_served_window(),
+            Some(49_152),
+            "arm 3: the last heard window, not the first"
+        );
+        assert_eq!(
+            *seen.lock().unwrap(),
+            Some(49_152),
+            "the sink follows every answer"
+        );
         assert_eq!(route.adapters_applied, ["served-adapter"]);
         assert_eq!(route.model_mapped.as_deref(), Some("served-model"));
         assert_eq!(route.model_requested.as_deref(), Some("requested-model"));

@@ -35,13 +35,18 @@ use std::collections::BTreeSet;
 use uuid::Uuid;
 
 use super::deliberation_budget::turn_message_line_addressed;
-use continuum_base::token_estimate::{estimate_guard_tokens, GUARD_CHARS_PER_TOKEN};
 use super::deliberation_parse::decision_from_response;
 use super::deliberation_prompt;
 use super::persona_tools;
-use super::workspace::{Contribution, Decision, Faculty, FacultyId, TurnAttention, TurnVoice, Workspace};
+use super::workspace::{
+    Contribution, Decision, Faculty, FacultyId, TurnAttention, TurnVoice, Workspace,
+};
 use crate::ai::adapter::AIProviderAdapter;
-use crate::ai::types::{ActiveAdapterRequest, ChatMessage, FinishReason, NativeToolSpec, TextGenerationRequest, TextGenerationResponse};
+use crate::ai::types::{
+    ActiveAdapterRequest, ChatMessage, FinishReason, NativeToolSpec, TextGenerationRequest,
+    TextGenerationResponse,
+};
+use continuum_base::token_estimate::{estimate_guard_tokens, GUARD_CHARS_PER_TOKEN};
 
 /// Ambient deliberation yields to measured foreground work. Human opportunity
 /// keeps its existing turn class even when the message did not name the persona.
@@ -92,9 +97,9 @@ pub use super::model_binding::ModelBinding;
 
 mod prompt;
 pub use self::prompt::*;
-mod request;
 mod admission;
 pub(crate) mod admission_clock;
+mod request;
 use self::request::*;
 mod reply_claim;
 use self::reply_claim::*;
@@ -118,7 +123,7 @@ struct ActiveVisualFeedback {
 /// next generation reads it, and the genome + working memory + admission are
 /// carried across untouched (no cycle rebuild). See
 /// [[seamless-persona-failover-model-and-genome]].
-pub type ModelBindingHandle = Arc<ArcSwap<ModelBinding>>;
+pub use super::model_binding::ModelBindingHandle;
 
 /// Build a shared model-binding handle from its parts.
 pub fn model_binding(
@@ -133,7 +138,7 @@ pub fn model_binding(
     // fell to the unmeasured floor, five times the latency target. Resolve it HERE, the
     // one owner of the binding, never at each reader.
     let model = Some(model.unwrap_or_else(|| adapter.default_model().to_owned())); // unwrap_or_else: `None` = the adapter's own model, resolved at bind time
-    Arc::new(ArcSwap::from_pointee(ModelBinding {
+    Arc::new(super::model_binding::ModelBindingState::new(ModelBinding {
         adapter,
         model,
         context_window,
@@ -668,8 +673,12 @@ impl LlmDeliberationFaculty {
         let images: Vec<_> = wm
             .active_action_observations(seq)
             .into_iter()
-            .flat_map(|act| act.output.image.into_iter()
-                .chain(act.output.additional_images.into_iter().flatten()))
+            .flat_map(|act| {
+                act.output
+                    .image
+                    .into_iter()
+                    .chain(act.output.additional_images.into_iter().flatten())
+            })
             .collect();
         if images.is_empty() {
             return Ok(None);
@@ -751,7 +760,11 @@ pub(crate) fn expected_occupancy_for(persona_id: uuid::Uuid) -> Option<std::time
 /// PURE: the wall time one turn of `shape` is expected to occupy the lane at this box's
 /// measured rates — the UNCACHED prompt at `prefill_tps` plus the output at `decode_tps`.
 /// `None` unless both rates are positive numbers: an absence (or a NaN) is not a number.
-fn occupancy_of(shape: TurnShape, prefill_tps: f64, decode_tps: f64) -> Option<std::time::Duration> {
+fn occupancy_of(
+    shape: TurnShape,
+    prefill_tps: f64,
+    decode_tps: f64,
+) -> Option<std::time::Duration> {
     if !(prefill_tps > 0.0 && decode_tps > 0.0) {
         return None;
     }
@@ -762,7 +775,13 @@ fn occupancy_of(shape: TurnShape, prefill_tps: f64, decode_tps: f64) -> Option<s
 
 /// Append one request's exact message list to `<dir>/<persona>.wire.jsonl` (the wire capture,
 /// sink 4 of PRIVACY-OF-THOUGHT.md). A turn in her mind room writes nothing.
-fn append_wire_capture(dir: &std::path::Path, persona_id: Uuid, persona_name: &str, room_id: Uuid, request: &TextGenerationRequest) {
+fn append_wire_capture(
+    dir: &std::path::Path,
+    persona_id: Uuid,
+    persona_name: &str,
+    room_id: Uuid,
+    request: &TextGenerationRequest,
+) {
     if crate::persona::mind_room::is_private_room(persona_id, room_id) {
         crate::persona::mind_room::note_withheld(persona_id, "wire_capture");
         return;

@@ -460,6 +460,16 @@ pub trait AIProviderAdapter: Send + Sync {
         None
     }
 
+    /// Wait for a semantic capacity observation to change, without generating or
+    /// polling. Live adapters subscribe before rechecking; fixed bindings have
+    /// no capacity events and are woken by their binding owner instead.
+    fn capacity_changed(
+        &self,
+        _observed: Option<u32>,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + '_>> {
+        Box::pin(std::future::pending())
+    }
+
     /// Get default model for this provider
     fn default_model(&self) -> &str;
 

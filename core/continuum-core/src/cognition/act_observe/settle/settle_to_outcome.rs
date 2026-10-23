@@ -149,6 +149,7 @@ pub(super) async fn settle_to_outcome(
                 generation_receipts: generation_receipts.clone(),
                 inference_error: None,
                 deferred_before_dispatch: false,
+                capacity_refusal: None,
                 touched_paths: touched,
                 turn_acts: turn_acts.clone(),
             };
@@ -249,6 +250,7 @@ pub(super) async fn settle_to_outcome(
                         generation_receipts: generation_receipts.clone(),
                         inference_error: Some(error),
                         deferred_before_dispatch: false,
+                        capacity_refusal: None,
                         touched_paths: touched,
                         turn_acts: turn_acts.clone(),
                     };
@@ -395,7 +397,14 @@ pub(super) async fn settle_to_outcome(
             // Boxed: the step is the largest future in the drive, and holding it by value
             // inside this wrapper's own state overflowed the layout query depth (CI,
             // "queries overflow the depth limit"). The box keeps the wrapper one pointer wide.
-            Box::pin(settle_step(cycle, burst.clone(), may_act, framing, situation, &chain)),
+            Box::pin(settle_step(
+                cycle,
+                burst.clone(),
+                may_act,
+                framing,
+                situation,
+                &chain,
+            )),
         )
         .await
         {
@@ -452,6 +461,30 @@ pub(super) async fn settle_to_outcome(
         // No constants deciding cognition: "slow" is relative to THIS turn's
         // own pace (2x rolling mean, min 3 samples), and the row always carries
         // the raw numbers so a dashboard can re-judge.
+        // Capacity is an assembly refusal, not a lane wait or a pace sample.
+        // Return before zero-generation classification; preserve all prior work.
+        if let SettleStep::CapacityRefused { error, .. } = &step {
+            return SettleOutcome {
+                room: room_id,
+                decision: Decision::pass(),
+                spoken: None,
+                acts,
+                world_state: burst.rendered.clone(),
+                room_updates: Arc::clone(&burst.room_updates),
+                metrics,
+                deferred_before_dispatch: can_defer_input(
+                    generation_receipts.len(),
+                    acts,
+                    turn_acts.len(),
+                    delib_retries,
+                ),
+                capacity_refusal: Some(error.clone()),
+                generation_receipts,
+                inference_error: None,
+                touched_paths: touched,
+                turn_acts,
+            };
+        }
         let act_class = classify_act(act_model_ms, act_generations);
         {
             let act_secs = act_started.elapsed().as_secs_f64();
@@ -539,7 +572,10 @@ pub(super) async fn settle_to_outcome(
                 // hers; the caller budget and lifecycle deadlines still apply.
                 if framing.workspace_deliverable && narrations_since_act < NARRATION_BUDGET {
                     if let Some(body) = cycle.acting() {
-                        if !mutated_workspace(&body.working_memory.recent_entries(), ConcernPhase::JustSettled) {
+                        if !mutated_workspace(
+                            &body.working_memory.recent_entries(),
+                            ConcernPhase::JustSettled,
+                        ) {
                             narrations_since_act += 1;
                             acts_at_last_nudge = Some(acts);
                             // Sense, not steer (2026-09-01): the receipt-absence is
@@ -573,6 +609,7 @@ pub(super) async fn settle_to_outcome(
                     generation_receipts: generation_receipts.clone(),
                     inference_error: None,
                     deferred_before_dispatch: false,
+                    capacity_refusal: None,
                     touched_paths: touched,
                     turn_acts: turn_acts.clone(),
                 };
@@ -593,7 +630,10 @@ pub(super) async fn settle_to_outcome(
                 // fact — one truth for "did an act change a file".
                 if framing.workspace_deliverable && !mutated_yet {
                     if let Some(body) = cycle.acting() {
-                        mutated_yet = mutated_workspace(&body.working_memory.recent_entries(), ConcernPhase::Ongoing);
+                        mutated_yet = mutated_workspace(
+                            &body.working_memory.recent_entries(),
+                            ConcernPhase::Ongoing,
+                        );
                     }
                 }
                 // THE DELIVERABLE FACT BELONGS ON THE ACT PATH, NOT ONLY ON SETTLE.
@@ -614,7 +654,10 @@ pub(super) async fn settle_to_outcome(
                 // #206 failure this file already documents.
                 if framing.workspace_deliverable && acts_at_last_nudge != Some(acts) {
                     if let Some(body) = cycle.acting() {
-                        if !mutated_workspace(&body.working_memory.recent_entries(), ConcernPhase::Ongoing) {
+                        if !mutated_workspace(
+                            &body.working_memory.recent_entries(),
+                            ConcernPhase::Ongoing,
+                        ) {
                             acts_at_last_nudge = Some(acts);
                             // Sense, not steer — same contract as the settle-path fact.
                             body.working_memory.record_fact(&format!(
@@ -631,9 +674,9 @@ pub(super) async fn settle_to_outcome(
                         }
                     }
                 }
-                let evidence = cycle.acting().and_then(|body| {
-                    batch_evidence(&calls, &body.working_memory.recent_acts())
-                });
+                let evidence = cycle
+                    .acting()
+                    .and_then(|body| batch_evidence(&calls, &body.working_memory.recent_acts()));
                 if evidence.is_some() && evidence == prior_evidence {
                     stuck += 1;
                 } else {
@@ -682,6 +725,7 @@ pub(super) async fn settle_to_outcome(
                     generation_receipts: generation_receipts.clone(),
                     inference_error: None,
                     deferred_before_dispatch: false,
+                    capacity_refusal: None,
                     touched_paths: touched,
                     turn_acts: turn_acts.clone(),
                 };
@@ -698,6 +742,7 @@ pub(super) async fn settle_to_outcome(
                     generation_receipts: generation_receipts.clone(),
                     inference_error: None,
                     deferred_before_dispatch: false,
+                    capacity_refusal: None,
                     touched_paths: touched,
                     turn_acts: turn_acts.clone(),
                 };
@@ -707,6 +752,9 @@ pub(super) async fn settle_to_outcome(
             // and never a silent `Pass` ([[fallbacks-are-illegal-fail-loud]]). We do
             // not loop/retry here — the grader owns retry policy; the settle loop's
             // job is to report the truth of THIS attempt.
+            SettleStep::CapacityRefused { .. } => {
+                unreachable!("capacity refusal returns before act classification")
+            }
             SettleStep::DeferredBeforeDispatch => {
                 unreachable!("deferral is a driven-turn disposition, not an individual step");
             }
@@ -744,7 +792,13 @@ pub(super) async fn settle_to_outcome(
                         generation_receipts: generation_receipts.clone(),
                         // Not an inference fault: no inference was ever dispatched.
                         inference_error: None,
-                        deferred_before_dispatch: can_defer_input(generation_receipts.len(), acts, turn_acts.len(), delib_retries),
+                        deferred_before_dispatch: can_defer_input(
+                            generation_receipts.len(),
+                            acts,
+                            turn_acts.len(),
+                            delib_retries,
+                        ),
+                        capacity_refusal: None,
                         touched_paths: touched,
                         turn_acts: turn_acts.clone(),
                     };
@@ -781,6 +835,7 @@ pub(super) async fn settle_to_outcome(
                     generation_receipts: generation_receipts.clone(),
                     inference_error: Some(error),
                     deferred_before_dispatch: false,
+                    capacity_refusal: None,
                     touched_paths: touched,
                     turn_acts: turn_acts.clone(),
                 };

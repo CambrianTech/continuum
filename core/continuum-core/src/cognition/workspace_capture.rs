@@ -15,8 +15,8 @@
 //! a write failure is logged and dropped, NEVER fails the cognition turn —
 //! observability is not load-bearing ([[substrate-is-a-good-citizen-on-the-host]]).
 
-use continuum_base::time::EpochMs;
 use crate::routing::capped_appender::{CappedAppender, MAX_LOG_BYTES};
+use continuum_base::time::EpochMs;
 use std::io::{BufWriter, Write};
 use std::path::Path;
 use std::sync::{Arc, LazyLock, Mutex};
@@ -24,7 +24,9 @@ use std::sync::{Arc, LazyLock, Mutex};
 use serde::Serialize;
 use uuid::Uuid;
 
-use super::workspace::{Contribution, Decision, FacultyTiming, WorkspaceCaptureSink, WorkspaceTrace};
+use super::workspace::{
+    Contribution, Decision, FacultyTiming, WorkspaceCaptureSink, WorkspaceTrace,
+};
 
 /// Bumped when the on-disk record shape changes (replay readers gate on it).
 /// v2 added per-faculty `timings` (the speed axis / dashboard feed).
@@ -166,8 +168,9 @@ impl JsonlWorkspaceCaptureSink {
         std::fs::create_dir_all(dir)?;
         let file_name = format!("{persona_id}.jsonl");
         let path = dir.join(&file_name);
-        static OWNERS: LazyLock<super::prompt_capture::owner::CaptureOwners<BufWriter<CappedAppender>>> =
-            LazyLock::new(super::prompt_capture::owner::CaptureOwners::default);
+        static OWNERS: LazyLock<
+            super::prompt_capture::owner::CaptureOwners<BufWriter<CappedAppender>>,
+        > = LazyLock::new(super::prompt_capture::owner::CaptureOwners::default);
         let file = OWNERS.acquire(&path, |_| {
             CappedAppender::with_limits(dir, &file_name, max_bytes, TRACE_GENERATIONS)
                 .map(|appender| BufWriter::with_capacity(64 * 1024, appender))
@@ -252,6 +255,7 @@ mod tests {
             stable: false,
             standing_grounding: false,
             fault: None,
+            capacity_refusal: None,
             receipts: Vec::new(),
             raw_generation: None,
             trailing: false,
@@ -272,6 +276,7 @@ mod tests {
             stable: false,
             standing_grounding: false,
             fault: None,
+            capacity_refusal: None,
             receipts: Vec::new(),
             // #210: the verbatim generation carries a leading-char fumble the parser
             // tolerated — the capture must preserve it so model-vs-harness is decidable.

@@ -116,7 +116,10 @@ impl Burst {
     }
 
     /// This turn acts with the hands of `context` (the card claim it works).
-    pub fn in_hands(mut self, context: Option<crate::identity::hands_context::HandsContext>) -> Self {
+    pub fn in_hands(
+        mut self,
+        context: Option<crate::identity::hands_context::HandsContext>,
+    ) -> Self {
         self.hands = context;
         self
     }
@@ -613,6 +616,12 @@ impl Workspace {
         &self,
     ) -> impl Iterator<Item = &crate::cognition::provenance::GenerationReceipt> {
         self.receipts.iter()
+    }
+
+    pub fn prompt_capacity_refusal(&self) -> Option<CapacityRefusal> {
+        self.broadcast
+            .iter()
+            .find_map(|c| c.capacity_refusal.clone())
     }
 
     pub fn deliberation_fault(&self) -> Option<&str> {

@@ -207,7 +207,11 @@ async fn provider_context_feedback_refits_and_captures_each_attempt() {
             let changed_wm = wm.clone();
             let mut attempt = 0;
             *adapter.on_request.lock().unwrap() = Some(Box::new(move |request| {
-                let excess = match attempt { 0 => 337, 1 => 43, _ => return None };
+                let excess = match attempt {
+                    0 => 337,
+                    1 => 43,
+                    _ => return None,
+                };
                 if attempt == 0 {
                     changed_wm.record_receipt("arrived_after_frozen_quote");
                 }
@@ -220,7 +224,13 @@ async fn provider_context_feedback_refits_and_captures_each_attempt() {
         }
         let registry = crate::cognition::working_set::WorkingSetRegistry::new();
         for tick in 0..3 {
-            registry.record_emission_in_memory(persona, 834, 0, crate::cognition::working_set::EmissionStop::Landed, tick);
+            registry.record_emission_in_memory(
+                persona,
+                834,
+                0,
+                crate::cognition::working_set::EmissionStop::Landed,
+                tick,
+            );
         }
         let faculty =
             LlmDeliberationFaculty::new(persona, "Ivar", "You are Ivar.", adapter.clone())
@@ -259,8 +269,13 @@ async fn provider_context_feedback_refits_and_captures_each_attempt() {
         );
         ws.broadcast.push(Contribution::context(
             FacultyId::Custom("frozen-grounding".into()),
-            "frozen_trailing_grounding", 1.0, "snapshot boundary",
-        ).standing_grounding().trailing());
+                "frozen_trailing_grounding",
+                1.0,
+                "snapshot boundary",
+            )
+            .standing_grounding()
+            .trailing(),
+        );
         let initial = faculty.prompt_view_within(&ws, window);
         assert!(initial.capacity_error.is_none());
         let unfitted = faculty.messages_unfitted(&ws, None);
@@ -334,9 +349,8 @@ async fn provider_context_feedback_refits_and_captures_each_attempt() {
                 .expect("required system context")
                 .contains("selected card, owner and teammate review"));
             let cost = |r: &TextGenerationRequest| {
-                LlmDeliberationFaculty::framing_cost(
-                    r.system_prompt.as_deref().expect("system"),
-                ) + LlmDeliberationFaculty::messages_cost(&r.messages)
+                LlmDeliberationFaculty::framing_cost(r.system_prompt.as_deref().expect("system"))
+                    + LlmDeliberationFaculty::messages_cost(&r.messages)
                     + LlmDeliberationFaculty::tool_surface_tokens_of(
                         r.tools.as_deref().expect("selected tools"),
                     )
@@ -405,7 +419,8 @@ async fn provider_context_feedback_faults_when_required_input_cannot_fit() {
     let mut ws = Workspace::new("This complete stimulus is irreducible.");
     ws.now_ms = Some(1_000);
     let outcome = faculty.contribute(&ws).await.expect("fault contribution");
-    assert!(outcome.fault.is_some());
+    assert!(outcome.fault.is_none());
+    assert!(outcome.capacity_refusal.is_some());
     assert_eq!(
         outcome.receipts.len(),
         1,
@@ -416,9 +431,7 @@ async fn provider_context_feedback_faults_when_required_input_cannot_fit() {
         crate::cognition::provenance::GenerationOutcome::Faulted { .. }
     ));
     ws.now_ms = Some(180_000); // Clock and diagnostic churn do not replace the pending work.
-    wm.record_fact(
-        "The provider refused the previous prompt; the artifact remains pending.",
-    );
+    wm.record_fact("The provider refused the previous prompt; the artifact remains pending.");
     ws.turns.push(BurstTurn::perception(
         "Provider diagnostic: context capacity exceeded.",
     ));
@@ -429,7 +442,8 @@ async fn provider_context_feedback_faults_when_required_input_cannot_fit() {
         .contribute(&ws)
         .await
         .expect("retained capacity refusal");
-    assert!(next.fault.is_some());
+    assert!(next.fault.is_none());
+    assert!(next.capacity_refusal.is_some());
     assert!(
         next.receipts.is_empty(),
         "pre-dispatch refusal invents no generation"
@@ -501,7 +515,13 @@ async fn provider_context_feedback_bounds_replay_and_scales_next_turn() {
         ]);
     let registry = WorkingSetRegistry::new();
     for tick in 0..3 {
-        registry.record_emission_in_memory(persona, 834, 0, crate::cognition::working_set::EmissionStop::Landed, tick);
+        registry.record_emission_in_memory(
+            persona,
+            834,
+            0,
+            crate::cognition::working_set::EmissionStop::Landed,
+            tick,
+        );
     }
     let faculty =
         LlmDeliberationFaculty::new(persona, "Ivar", "You are Ivar.", adapter.clone())
@@ -658,4 +678,24 @@ async fn a_replys_engine_prompt_count_refits_the_next_prompt() {
         "at the measured density the reply's reserve fits: {priced} + {} > {window}",
         after.completion_reserve
     );
+}
+
+// The fitted view observed 4k; the same adapter grows before refusal is
+// published. Recording readiness only at refusal would park on the new 8k.
+#[tokio::test]
+async fn capacity_growth_during_assembly_is_not_lost_when_refusal_is_published() {
+    let scripted = ScriptedAdapter::new(vec![]);
+    *scripted.window_sequence.lock().unwrap() = [4096, 8192].into();
+    let adapter = Arc::new(scripted);
+    let faculty = LlmDeliberationFaculty::new(
+        Uuid::new_v4(), "Reviewer", "You are Reviewer.", adapter.clone(),
+    ).with_context_window(4096).with_tools(vec![read_tool()]);
+    let ws = Workspace::new("required original request ".repeat(10_000));
+    let outcome = faculty.contribute(&ws).await.expect("typed refusal");
+    let refusal = outcome.capacity_refusal.expect("input was not discarded to fit");
+    let readiness = refusal.readiness.expect("live owner witness");
+    assert_eq!(readiness.observed_window(), 4096);
+    tokio::time::timeout(std::time::Duration::from_secs(1), readiness.wait())
+        .await.expect("already published growth must not require another notification");
+    assert_eq!(adapter.call_count(), 0, "refused assembly never generates");
 }

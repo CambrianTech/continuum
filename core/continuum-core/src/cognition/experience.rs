@@ -239,7 +239,8 @@ impl ExperienceRecord {
         // hit its budget mid-action and never settled — the lived analog of the
         // eval's "did not finish", and an honest capability signal with no threshold.
         let converged = !matches!(settled.decision, Decision::Act { .. });
-        let clean = converged && settled.inference_error.is_none();
+        let clean =
+            converged && settled.inference_error.is_none() && settled.capacity_refusal.is_none();
         Self {
             // The stimulus IS the task for a lived turn: the message she answered,
             // posed as the prompt. No `test`/`expect` — nothing objective to grade
@@ -251,12 +252,17 @@ impl ExperienceRecord {
             // Settled cleanly = ok; infra fault OR non-convergence = not ok. NOT a
             // correctness claim — a lived turn has no grader (see doc above).
             ok: clean,
-            grade: match (&settled.inference_error, converged) {
-                (Some(cause), _) => format!("lived turn: inference fault — {cause}"),
-                (None, false) => {
+            grade: match (
+                &settled.inference_error,
+                &settled.capacity_refusal,
+                converged,
+            ) {
+                (Some(cause), _, _) => format!("lived turn: inference fault — {cause}"),
+                (None, Some(error), _) => format!("lived turn: prompt capacity refused — {error}"),
+                (None, None, false) => {
                     "lived turn: did not converge (action budget exhausted mid-act)".to_string()
                 }
-                (None, true) => "lived turn: settled".to_string(),
+                (None, None, true) => "lived turn: settled".to_string(),
             },
             answer: settled.spoken.clone().unwrap_or_default(),
             world_state: settled.world_state.clone(),

@@ -105,6 +105,17 @@ pub async fn settle_step(
     // Checked BEFORE the decision so a fault can never collapse into `Passed` (the
     // swept-model bug: reassign changed the served model, the faculty still requested
     // the old one, the lane refused, and the refusal read as serene silence).
+    if let Some(error) = ws.prompt_capacity_refusal() {
+        let replay_input = step_receipts.is_empty() && metrics.is_none();
+        return (
+            SettleStep::CapacityRefused {
+                error,
+                replay_input,
+            },
+            metrics,
+            step_receipts,
+        );
+    }
     if let Some(error) = ws.deliberation_fault() {
         // 2026-08-29: 18 solve attempts died on this path in six hours with ZERO
         // probe trail — the lane OOM'd every deep prefill and the harness read

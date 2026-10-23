@@ -46,6 +46,7 @@ struct ScriptedAdapter {
     seen: Mutex<Vec<TextGenerationRequest>>,
     rejections: Mutex<VecDeque<crate::ai::inference_error::InferenceError>>,
     live_window: Option<u32>,
+    window_sequence: Mutex<VecDeque<u32>>,
     on_window_read: Mutex<Option<WindowReadHook>>,
     on_request: Mutex<Option<RequestHook>>,
 }
@@ -61,6 +62,7 @@ impl ScriptedAdapter {
             seen: Mutex::new(Vec::new()),
             rejections: Mutex::new(VecDeque::new()),
             live_window: None,
+            window_sequence: Mutex::new(VecDeque::new()),
             on_window_read: Mutex::new(None),
             on_request: Mutex::new(None),
         }
@@ -92,7 +94,9 @@ impl AIProviderAdapter for ScriptedAdapter {
         if let Some(hook) = hook {
             hook();
         }
-        self.live_window
+        let mut sequence = self.window_sequence.lock().expect("fixture window sequence");
+        if sequence.len() > 1 { return sequence.pop_front(); }
+        sequence.front().copied().or(self.live_window)
     }
     async fn generate_stream_checked(
         &self,

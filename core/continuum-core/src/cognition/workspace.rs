@@ -33,6 +33,8 @@ use super::llm_deliberation_faculty::{
 };
 use crate::ai::types::{ActiveAdapterRequest, ToolCall};
 
+mod capacity;
+pub use capacity::*;
 mod edit;
 pub use edit::*;
 mod cause;

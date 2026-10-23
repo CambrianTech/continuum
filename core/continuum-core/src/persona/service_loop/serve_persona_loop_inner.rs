@@ -22,8 +22,8 @@ pub(super) async fn serve_persona_loop_inner(
         .map_err(|e| format!("high_water_mark failed: {e}"))?;
     // Event-id ring for staleness at the loop head (see `wake_backlog::is_stale`).
     let mut seen_ids = crate::persona::wake_backlog::SeenIds::new(256);
-    // One admitted trigger remains owned until the model actually gets a turn.
-    // Fresh arrivals stay in the conversation's existing retained inbox meanwhile.
+    // Admitted triggers remain owned while capacity is unavailable. New inbox
+    // input and Stop stay reachable without replacing an older trigger's custody.
     let mut deferred_input = crate::persona::wake_backlog::PendingInput::default();
 
     // The persona's adapter (`ctx.adapter`) is reached by the
@@ -52,7 +52,11 @@ pub(super) async fn serve_persona_loop_inner(
     let phase = std::time::Duration::from_millis(
         (ctx.identity.peer_id.as_uuid().as_u128() as u64) % SELF_TICK_MS,
     );
-    let mut beat = BeatClock { engaged: engaged_beat, rest_cap, next: engaged_beat + phase };
+    let mut beat = BeatClock {
+        engaged: engaged_beat,
+        rest_cap,
+        next: engaged_beat + phase,
+    };
     // Burst fingerprint of the last cycle (message OR self-tick), so a heartbeat
     // over an unchanged world is free. Shared by both paths: a message turn updates
     // it, so the very next tick doesn't re-deliberate the same burst.
@@ -141,6 +145,9 @@ pub(super) async fn serve_persona_loop_inner(
             Wake::Stop => break,
             Wake::Idle => continue,
             Wake::Tick | Wake::Mind { .. } => {
+                if deferred_input.take_ready_self(wake_room) {
+                    last_burst_fp = 0;
+                }
                 serve_self_tick(
                     ctx,
                     conversation,
@@ -149,6 +156,7 @@ pub(super) async fn serve_persona_loop_inner(
                     wake_room,
                     pending_before_wake,
                     &mut beat,
+                    &mut deferred_input,
                 )
                 .await;
                 continue;
@@ -166,6 +174,7 @@ pub(super) async fn serve_persona_loop_inner(
             &mut outcome,
             &mut seen_ids,
             &mut high_water,
+            &mut deferred_input,
             admitted_retry,
             msg,
         )
@@ -187,7 +196,11 @@ pub(super) async fn serve_persona_loop_inner(
         } else {
             msg.room_id
         };
-        let trigger = TurnTrigger { msg: &msg, turn_room, admitted_retry };
+        let trigger = TurnTrigger {
+            msg: &msg,
+            turn_room,
+            admitted_retry,
+        };
 
         // Message-path loop-filler gate (#16): the heartbeat dedups its burst, but
         // this path ran a full ~55s decode for EVERY inbound message — so two
@@ -204,8 +217,15 @@ pub(super) async fn serve_persona_loop_inner(
         // ([[no-hardcoded-heuristics-to-steer-cognition]]).
         // This heuristic compares text only. Equal captions do not establish
         // that two media-bearing messages are repeated input.
-        if let LoopStep::Continue =
-            defer_loop_filler(ctx, trigger, &roster_names, &mut recent_inbound, &opts, &mut outcome).await
+        if let LoopStep::Continue = defer_loop_filler(
+            ctx,
+            trigger,
+            &roster_names,
+            &mut recent_inbound,
+            &opts,
+            &mut outcome,
+        )
+        .await
         {
             continue;
         }
@@ -217,6 +237,9 @@ pub(super) async fn serve_persona_loop_inner(
         // immune to wall-clock skew. Per [[init-once-handle-then-lease-zero-copy-refs]]
         // the metric is what verifies the doctrine actually shaved
         // the round-trip the doctrine claims to shave.
+        if !admitted_retry && msg.work.is_none() {
+            deferred_input.payload_changed(&msg);
+        }
         let turn_started = std::time::Instant::now();
         // Per #195 slice 1: per-phase decomposition. Each successful
         // reply records all five phases into the matching
@@ -279,12 +302,21 @@ pub(super) async fn serve_persona_loop_inner(
             &roster_names,
             now_ms,
             &mut phase_timings,
-            deferred_input.wake_engram(),
+            admitted_retry
+                .then(|| deferred_input.wake_engram_for(&msg))
+                .flatten(),
         )
         .await;
         // 2. Compose the turn's RAG context (budget + multi-source composition); inference
         //    runs WITHOUT holding the cognition mutex.
-        let composed = compose_turn(ctx, turn_room, now_ms, &mut phase_timings, &mut roster_names).await;
+        let composed = compose_turn(
+            ctx,
+            turn_room,
+            now_ms,
+            &mut phase_timings,
+            &mut roster_names,
+        )
+        .await;
         let workspace_burst = build_turn_burst(ctx, &composed, trigger, now_ms, wake_engram);
         // Mark this world-state as just-deliberated so the next heartbeat tick doesn't
         // re-run the same burst (the message path and the self-tick share the gate;
@@ -333,7 +365,10 @@ pub(super) async fn serve_persona_loop_inner(
             &mut deferred_input,
             &mut phase_timings,
             trigger,
-            CycleInput { workspace_burst, wake_engram },
+            CycleInput {
+                workspace_burst,
+                wake_engram,
+            },
         )
         .await
         {
@@ -348,6 +383,7 @@ pub(super) async fn serve_persona_loop_inner(
             spoken,
             phase_timings,
             turn_started,
+            &mut deferred_input,
         )
         .await;
     }

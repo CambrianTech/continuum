@@ -1,7 +1,7 @@
 //! The `AIProviderAdapter` implementation for `OpenAICompatibleAdapter`.
 
-use super::*;
 use super::embedding::{build_embedding_body, parse_embedding_response, parse_embedding_usage};
+use super::*;
 
 // `apply_no_think_switch` / `close_trailing_assistant` live in `crate::inference::request_body` (S3b decompose).
 
@@ -132,6 +132,29 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
         }
         let s = crate::inference::llama_server::current_serving();
         (s.ready && s.served_context_window > 0).then_some(s.served_context_window)
+    }
+
+    fn capacity_changed(
+        &self,
+        observed: Option<u32>,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + '_>> {
+        if self.dedicated_lane || !self.config.single_resident_model {
+            return Box::pin(std::future::pending());
+        }
+        let Some(mut changes) = crate::inference::llama_server::serving_state_receiver() else {
+            return Box::pin(std::future::pending());
+        };
+        Box::pin(async move {
+            loop {
+                // Subscribe first; a publish between this read and changed is retained.
+                if self.live_served_window() != observed {
+                    return;
+                }
+                if changes.changed().await.is_err() {
+                    return std::future::pending::<()>().await;
+                }
+            }
+        })
     }
 
     /// Reports the LoRA capability the endpoint DISCOVERED about itself (via the

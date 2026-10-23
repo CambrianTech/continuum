@@ -122,10 +122,8 @@ pub(super) fn spawn_token_forwarder(
         let mut first = true;
         let mut seq: u64 = 0;
         let mut buf = String::new();
-        let mut flush = tokio::time::interval_at(
-            tokio::time::Instant::now() + FLUSH_EVERY,
-            FLUSH_EVERY,
-        );
+        let mut flush =
+            tokio::time::interval_at(tokio::time::Instant::now() + FLUSH_EVERY, FLUSH_EVERY);
         flush.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         // Tee one flushed chunk onto the local WS rail (#170) — no-op unless this is a
         // room turn (room+sender Some) AND a browser is subscribed.
@@ -210,6 +208,7 @@ pub(super) async fn run_self_cycle(
     // The room her own mind woke her in (a Perceive wake): she works there this cycle,
     // and that room counts as perceived. `None` = her held claim's room, else home.
     wake_room: Option<uuid::Uuid>,
+    pending: &mut crate::persona::wake_backlog::PendingInput,
 ) -> bool {
     let now_ms = (opts.now_ms)();
     // A self-cycle IS cognition: the claim-renewal pump reads this pulse, and it
@@ -222,7 +221,13 @@ pub(super) async fn run_self_cycle(
     // Ordinary project cards are on subscribed boards, not in the benchmark
     // registry. Lease renewal is liveness, not a new focus selection.
     if let Some(room) = wake_room {
-        crate::persona::perception_feed::mark_perceived(ctx.identity.peer_id.as_uuid(), room, 0, None, now_ms);
+        crate::persona::perception_feed::mark_perceived(
+            ctx.identity.peer_id.as_uuid(),
+            room,
+            0,
+            None,
+            now_ms,
+        );
     }
     let focus_room = if wake_room.is_some() { wake_room } else { match conversation.stream_citizen() {
         Some(citizen) => match super::super::work_focus::focus_room(citizen.as_ref()).await {
@@ -266,15 +271,16 @@ pub(super) async fn run_self_cycle(
     // deck for an idle citizen; that is how ac49a7d5 landed in her hands without her
     // choosing it. Boards are in her perception; claiming is her act, with her hands.
     let work_room = focus_room.unwrap_or(ctx.identity.default_room); // unwrap_or: no held claim = home room
-    if crate::persona::act_question::ask_the_act_question(
+    let work = crate::persona::act_question::ask_the_act_question(
         ctx,
         conversation,
         now_ms, // no triggering message — the tick clock stands in for lamport
         work_room,
         false, // a self-tick is never a directed address
     )
-    .await
-    {
+    .await;
+    pending.settle_work(&work);
+    if work.drove {
         // She WORKED her claim this tick — that is engagement, so the caller must
         // keep her at the fast beat, not rest her. The caller reads BeatOutcome from
         // whether `last_burst_fp` changed; bump it so a work turn always counts as
@@ -547,6 +553,7 @@ pub(super) async fn run_self_cycle(
     };
     cycle.set_token_sink(None);
     let _ = forwarder.await;
+    pending.settle_self(tick_room, &step);
     match step {
         crate::cognition::act_observe::SettleStep::Spoke(text) => {
             // Never broadcast a raw tool-call envelope to the room (same guard the
