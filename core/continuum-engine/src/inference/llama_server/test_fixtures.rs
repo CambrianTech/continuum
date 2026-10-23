@@ -1,5 +1,6 @@
 //! Shared fixture construction for engine contracts and their core caller.
 #![cfg(any(test, feature = "test-fixtures"))]
+#[cfg(any(test, windows))]
 use super::*;
 
 #[cfg(any(test, feature = "test-fixtures"))]
