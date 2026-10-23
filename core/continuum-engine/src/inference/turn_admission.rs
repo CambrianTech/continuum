@@ -207,171 +207,171 @@ async fn admit(
     warm_only: bool,
     patience: std::time::Duration,
 ) -> Result<TurnAdmission, String> {
-    // 1. PERMIT FIRST — event-driven wait for a free lane. Cannot fail: the
-    //    semaphore is never closed over the adapter's lifetime.
-    let _permit = concurrency
-        .clone()
-        .acquire_owned()
-        .await
-        .expect("adapter semaphore never closed");  // expect: the semaphore lives as long as the adapter, never closed
+    let started = tokio::time::Instant::now();
+    let mut waited = false;
+    'admit: loop {
+        // 1. PERMIT FIRST — event-driven wait for a free lane. Cannot fail: the
+        //    semaphore is never closed over the adapter's lifetime.
+        let _permit = concurrency
+            .clone()
+            .acquire_owned()
+            .await
+            .expect("adapter semaphore never closed");  // expect: the semaphore lives as long as the adapter, never closed
 
-    // 2. THE ENDPOINT — a turn holds through a closed one (an engine still loading,
-    //    a transition in flight) for the caller's `patience` before it is refused;
-    //    zero is the instant answer. See `EndpointSlots::admit_when_ready` for the
-    //    boot window that cost Kimi 16 turns.
-    let endpoint = crate::inference::slots::directory()
-        .endpoint(root)
-        .admit_when_ready(patience)
-        .await?;
-    // Discovery may have finished before an engine transition. Use the pool
-    // owned by the admitted generation, never that stale discovery result.
-    let pool = endpoint.pool.clone().or(pool);
-    let mut admission = TurnAdmission {
-        slot: None,
-        _pin: None,
-        _slot_permit: None,
-        released: None,
-        page_confirmed: false,
-        restored: false,
-        saved_evictee: false,
-        paging_in_flight: false,
-        _permit: Some(_permit),
-        uncommitted: None,
-        scratch: pool.as_ref().and_then(|pool| pool.scratch_slot()),
-        _endpoint: endpoint,
-    };
+        // 2. THE ENDPOINT — a turn holds through a closed one (an engine still loading,
+        //    a transition in flight) for the caller's `patience` before it is refused;
+        //    zero is the instant answer. See `EndpointSlots::admit_when_ready` for the
+        //    boot window that cost Kimi 16 turns.
+        let endpoint = crate::inference::slots::directory()
+            .endpoint(root)
+            .admit_when_ready(patience.saturating_sub(started.elapsed()))
+            .await?;
+        // Discovery may have finished before an engine transition. Use the pool
+        // owned by the admitted generation, never that stale discovery result.
+        let pool = endpoint.pool.clone().or_else(|| pool.clone());
+        let mut admission = TurnAdmission {
+            slot: None,
+            _pin: None,
+            _slot_permit: None,
+            released: None,
+            page_confirmed: false,
+            restored: false,
+            saved_evictee: false,
+            paging_in_flight: false,
+            _permit: Some(_permit),
+            uncommitted: None,
+            scratch: pool.as_ref().and_then(|pool| pool.scratch_slot()),
+            _endpoint: endpoint,
+        };
 
-    if warm_only
-        && pool
-            .as_ref()
-            .is_some_and(|pool| pool.scratch_slot().is_none())
-    {
-        return Ok(admission);
-    }
-    if let (Some(k), Some(pool)) = (key, pool.as_ref()) {
-        // A TURN NEVER RUNS UNPINNED OVER A RESIDENT (card ff9ecfd8). When every slot is pinned
-        // by an in-flight turn, `lease` frees nothing, and a pin can also lose a race to an
-        // eviction between lease and pin. Both used to return this admission with no slot: the
-        // server then placed the turn on whichever slot freed and overwrote a resident's KV with
-        // no save (8 of 13 contended leases on the M5, 19 of 36 on the IntelMac, 2026-09-28).
-        // The server cannot run the turn before a slot frees anyway, so the turn waits for a
-        // slot release and leases again; the evictee is then saved by the paging plan below.
-        // Warm-ahead is best-effort and still gives up at once.
-        let started = std::time::Instant::now();
-        let mut waited = false;
-        let pinned = loop {
-            let released = pool.released();
-            let notified = released.notified();
-            tokio::pin!(notified);
-            // Registered BEFORE the check, so a release between the check and the wait is
-            // never missed.
-            notified.as_mut().enable();
-            if pool.lease(k).await.is_some() {
-                // Pin before waiting for the physical-slot permit: a same-activity
-                // returner must await the prior owner without permitting eviction.
-                if let Some(pinned) = pool.pin_slot(&k) {
-                    break Some(pinned);
+        if warm_only
+            && pool
+                .as_ref()
+                .is_some_and(|pool| pool.scratch_slot().is_none())
+        {
+            return Ok(admission);
+        }
+        if let (Some(k), Some(pool)) = (key, pool.as_ref()) {
+            // A TURN NEVER RUNS UNPINNED OVER A RESIDENT (card ff9ecfd8). When every slot is pinned
+            // by an in-flight turn, `lease` frees nothing, and a pin can also lose a race to an
+            // eviction between lease and pin. Both used to return this admission with no slot: the
+            // server then placed the turn on whichever slot freed and overwrote a resident's KV with
+            // no save (8 of 13 contended leases on the M5, 19 of 36 on the IntelMac, 2026-09-28).
+            // The server cannot run the turn before a slot frees anyway, so the turn waits for a
+            // slot release and leases again; the evictee is then saved by the paging plan below.
+            // Warm-ahead is best-effort and still gives up at once.
+            let pinned = loop {
+                let released = pool.released();
+                let notified = released.notified();
+                tokio::pin!(notified);
+                // Registered BEFORE the check, so a release between the check and the wait is
+                // never missed.
+                notified.as_mut().enable();
+                if pool.lease(k).await.is_some() {
+                    // Pin before waiting for the physical-slot permit: a same-activity
+                    // returner must await the prior owner without permitting eviction.
+                    if let Some(pinned) = pool.pin_slot(&k) {
+                        break Some(pinned);
+                    }
+                    if warm_only {
+                        break None;
+                    }
+                    // Leased, then evicted before the pin: the pool CHANGED rather than filled,
+                    // and no release may ever be announced for it (the evicting worker can cancel
+                    // before it pins), so retry now instead of waiting (Codex on #4515).
+                    tokio::task::yield_now().await;
+                    continue;
                 }
                 if warm_only {
                     break None;
                 }
-                // Leased, then evicted before the pin: the pool CHANGED rather than filled,
-                // and no release may ever be announced for it (the evicting worker can cancel
-                // before it pins), so retry now instead of waiting (Codex on #4515).
-                tokio::task::yield_now().await;
-                continue;
+                waited = true;
+                // Never hold a lane while waiting for a slot (Fable on #4515): the lane semaphore
+                // is sized to every server slot, scratch included, so a held permit would block
+                // traffic that could run now, and a slot holder's nested call could need it.
+                // Release the endpoint reader too: keeping it across permit reacquisition
+                // cycles with a queued lifecycle writer and a later adapter admission.
+                // No pin or provisional page exists yet. Keep the registered notification,
+                // then rediscover the pool under the next admitted generation.
+                drop(admission);
+                notified.await;
+                continue 'admit;
+            };
+            if waited {
+                continuum_base::probe!(
+                    class = "inference.slot_affinity.waited",
+                    persona = %k.persona,
+                    room = %k.room,
+                    ms = started.elapsed().as_millis() as u64,
+                    "every slot was pinned: the turn waited for a release instead of running unpinned over a resident"
+                );
             }
-            if warm_only {
-                break None;
+            if let Some((slot, pin)) = pinned {
+                admission._pin = Some(pin);
+                admission.released = Some(pool.released());
+                admission._slot_permit = Some(pool.acquire_slot(slot).await?);
+                admission._endpoint.check_ready()?;
+                let pg = pool.plan_paging(slot, k);
+                admission.page_confirmed = pg.already_resident;
+                admission.uncommitted = Some((Arc::clone(pool), k, pg.slot));
+
+                // 3. The context switch onto a now-free slot: page the evictee out,
+                //    page this activity in. Lands immediately (no defer) because the slot
+                //    is not decoding.
+                if let Some(prev) = pg.save_first {
+                    // A failed or cancelled save may have replaced an older file.
+                    // Only a completed save can make this page restorable again.
+                    pool.note_page_lost(&prev);
+                    if admission
+                        .page_action(client, root, pg.slot, &prev, "save")
+                        .await?
+                    {
+                        pool.note_saved(prev);
+                        admission.saved_evictee = true;
+                    }
+                }
+                if pg.restore {
+                    admission.restored = admission
+                        .page_action(client, root, pg.slot, &k, "restore")
+                        .await?;
+                    admission.page_confirmed = admission.restored;
+                    if !admission.restored {
+                        pool.note_page_lost(&k);
+                    }
+                }
+                // Price basis for the eviction policy (B5): this activity's current
+                // prompt size — comparable across slots, which is all eviction needs.
+                if !warm_only {
+                    pool.note_tail(&k, approx_tokens);
+                }
+                admission.slot = Some(pg.slot);
             }
-            waited = true;
-            // Never hold a lane while waiting for a slot (Fable on #4515): the lane semaphore
-            // is sized to every server slot, scratch included, so a held permit would block
-            // traffic that could run now, and a slot holder's nested call could need it.
-            admission._permit = None;
-            notified.await;
-            admission._permit = Some(
-                concurrency
-                    .clone()
-                    .acquire_owned()
-                    .await
-                    .expect("adapter semaphore never closed"), // expect: the semaphore lives as long as the adapter, never closed
-            );
-        };
-        if waited {
-            continuum_base::probe!(
-                class = "inference.slot_affinity.waited",
-                persona = %k.persona,
-                room = %k.room,
-                ms = started.elapsed().as_millis() as u64,
-                "every slot was pinned: the turn waited for a release instead of running unpinned over a resident"
-            );
-        }
-        if let Some((slot, pin)) = pinned {
-            admission._pin = Some(pin);
-            admission.released = Some(pool.released());
-            admission._slot_permit = Some(pool.acquire_slot(slot).await?);
+        } else if let Some(pool) = pool.as_ref().filter(|pool| pool.scratch_slot().is_none()) {
+            // A server with no scratch slot (≤2 lanes): background/anonymous traffic
+            // borrows a citizen slot THROUGH the pool — the cheapest resident is saved
+            // and detached first — and carries that slot pinned, never left to the
+            // server's own placement. The two-lane case used to fall through here
+            // unpinned (card 4deaed09: the server put it on a resident's slot by
+            // similarity and overwrote her page every turn). Remove attribution
+            // BEFORE the await so cancellation cannot leave the next activity treating
+            // transient KV as its own warm tail.
+            let slot = pool.transient_slot();
+            admission.borrow_slot_for_transient(pool, slot, client, root).await?;
+        } else if let (Some(pool), Some(scratch)) = (pool.as_ref(), admission.scratch) {
+            // Anonymous traffic lands on the SCRATCH slot, and takes its operation permit
+            // like every other slot user. Before this, every non-turn call wrote the
+            // scratch KV with no owner, so a holder of that slot (the deploy self-check's
+            // cache probe, #4392) was overwritten between its own requests and read a warm
+            // restore as cold: the M5 self-check reported `no_reuse` on 2026-09-26 03:01Z
+            // while the same round trip on an owned slot measured 658/662 reused. The
+            // server already runs one request per slot at a time, so this moves the queue
+            // into the owner, where it is visible, rather than adding any.
+            admission._slot_permit = Some(pool.acquire_slot(scratch).await?);
             admission._endpoint.check_ready()?;
-            let pg = pool.plan_paging(slot, k);
-            admission.page_confirmed = pg.already_resident;
-            admission.uncommitted = Some((Arc::clone(pool), k, pg.slot));
-
-            // 3. The context switch onto a now-free slot: page the evictee out,
-            //    page this activity in. Lands immediately (no defer) because the slot
-            //    is not decoding.
-            if let Some(prev) = pg.save_first {
-                // A failed or cancelled save may have replaced an older file.
-                // Only a completed save can make this page restorable again.
-                pool.note_page_lost(&prev);
-                if admission
-                    .page_action(client, root, pg.slot, &prev, "save")
-                    .await?
-                {
-                    pool.note_saved(prev);
-                    admission.saved_evictee = true;
-                }
-            }
-            if pg.restore {
-                admission.restored = admission
-                    .page_action(client, root, pg.slot, &k, "restore")
-                    .await?;
-                admission.page_confirmed = admission.restored;
-                if !admission.restored {
-                    pool.note_page_lost(&k);
-                }
-            }
-            // Price basis for the eviction policy (B5): this activity's current
-            // prompt size — comparable across slots, which is all eviction needs.
-            if !warm_only {
-                pool.note_tail(&k, approx_tokens);
-            }
-            admission.slot = Some(pg.slot);
         }
-    } else if let Some(pool) = pool.as_ref().filter(|pool| pool.scratch_slot().is_none()) {
-        // A server with no scratch slot (≤2 lanes): background/anonymous traffic
-        // borrows a citizen slot THROUGH the pool — the cheapest resident is saved
-        // and detached first — and carries that slot pinned, never left to the
-        // server's own placement. The two-lane case used to fall through here
-        // unpinned (card 4deaed09: the server put it on a resident's slot by
-        // similarity and overwrote her page every turn). Remove attribution
-        // BEFORE the await so cancellation cannot leave the next activity treating
-        // transient KV as its own warm tail.
-        let slot = pool.transient_slot();
-        admission.borrow_slot_for_transient(pool, slot, client, root).await?;
-    } else if let (Some(pool), Some(scratch)) = (pool.as_ref(), admission.scratch) {
-        // Anonymous traffic lands on the SCRATCH slot, and takes its operation permit
-        // like every other slot user. Before this, every non-turn call wrote the
-        // scratch KV with no owner, so a holder of that slot (the deploy self-check's
-        // cache probe, #4392) was overwritten between its own requests and read a warm
-        // restore as cold: the M5 self-check reported `no_reuse` on 2026-09-26 03:01Z
-        // while the same round trip on an owned slot measured 658/662 reused. The
-        // server already runs one request per slot at a time, so this moves the queue
-        // into the owner, where it is visible, rather than adding any.
-        admission._slot_permit = Some(pool.acquire_slot(scratch).await?);
-        admission._endpoint.check_ready()?;
-    }
 
-    Ok(admission)
+        return Ok(admission);
+    }
 }
 
 impl TurnAdmission {
