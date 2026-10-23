@@ -122,8 +122,13 @@
         // spawn on another thread that cloned our fd table in that instant keeps the write
         // fd until it execs, so exec of the image reads ETXTBSY (CI #5208, run
         // 39362437168). Only that error is retried, within the same 1 s liveness bound.
+        // argv[0] names the tool: a multi-call coreutils (Ubuntu 26.04's /bin/sleep, CI from
+        // 2026-10-23) picks its applet by that name, and as `continuum_core-test` it exits at
+        // once, so nothing was executing and the rung rightly cut the image. The image on disk
+        // (what the ladder reads through /proc) is still the copy under debug/.
+        use std::os::unix::process::CommandExt;
         let mut child = (0..200)
-            .find_map(|_| match std::process::Command::new(&sleeper).arg("30").spawn() {
+            .find_map(|_| match std::process::Command::new(&sleeper).arg0("sleep").arg("30").spawn() {
                 Err(e) if e.kind() == std::io::ErrorKind::ExecutableFileBusy => {
                     std::thread::sleep(std::time::Duration::from_millis(5));
                     None
