@@ -98,6 +98,45 @@ fn a_lane_that_is_not_the_shared_gateway_reports_no_window_at_all() {
     );
 }
 
+// what this catches: card 7eef3e05, a wedged engine's mid-stream error frame read as an empty
+// `stop` completion (32 such acts on the M5, 2026-10-23); the act must fail with the server's
+// words so a resident never loops on empty "completed" acts.
+#[tokio::test]
+async fn a_server_error_frame_fails_the_act_never_an_empty_completion() {
+    use axum::{routing::post, Router};
+
+    const WEDGED: &str = "data: {\"choices\":[{\"finish_reason\":null,\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":null}}],\"model\":\"test-model\",\"prompt_progress\":{\"total\":113106,\"cache\":4096,\"processed\":4096,\"time_ms\":0}}\n\ndata: {\"error\":{\"code\":500,\"message\":\"decode() failed: failed to process speculative batch\",\"type\":\"server_error\"}}\n\n";
+    let app = Router::new().route(
+        "/v1/chat/completions",
+        post(|| async { ([("content-type", "text/event-stream")], WEDGED) }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("isolated HTTP fixture");
+    let address = listener.local_addr().expect("bound address");
+    let server = tokio::spawn(async move { axum::serve(listener, app).await });
+    let mut adapter = test_adapter();
+    adapter.config.base_url = format!("http://{address}");
+    let request = TextGenerationRequest {
+        messages: vec![ChatMessage::text("user", "act")],
+        ..Default::default()
+    };
+    let (sink, receiver) = tokio::sync::mpsc::unbounded_channel();
+    drop(receiver);
+    let result = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        adapter.generate_stream_checked(request, sink),
+    )
+    .await
+    .expect("bounded fixture request");
+    let error = result.expect_err("a server error frame is a failed act, never a completion");
+    assert!(
+        error.to_string().contains("failed to process speculative batch"),
+        "the server's own words reach the act's failure: {error}"
+    );
+    server.abort();
+}
+
 // what this catches: aa5888a9 — the actual HTTP boundary must preserve
 // structured counts, and a transport retry must send the same prepared bytes.
 #[tokio::test]
