@@ -1,4 +1,5 @@
 //! The confirmed-save ledger: what survives a core or engine restart, and what is refused.
+#![cfg(test)]
 use super::*;
 
 // What this catches (the M5, 2026-10-10 18:49Z: turn_cached 0 of 31,811 after a
