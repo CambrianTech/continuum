@@ -1,4 +1,5 @@
 //! Remote capacity notifications are fanout, not generation requests.
+#![cfg(test)]
 use super::adapter::AircRemoteInferenceAdapter;
 use super::transport::StubInferenceTransport;
 use crate::ai::adapter::AIProviderAdapter;

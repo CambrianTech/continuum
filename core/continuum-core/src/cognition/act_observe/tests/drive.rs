@@ -243,7 +243,7 @@ async fn starved_priority_input_survives_until_dispatch_without_replaying_action
     pending.settle(&original, cause, framing.attention, &step);
     conversation.event_feed().push(Ok(Some(newer.clone())));
     assert_eq!(pending.message(), Some(&original));
-    assert_eq!(pending.wake_engram(), cause);
+    assert_eq!(pending.wake_engram_for(&original), cause);
 
     // A second failed admission neither consumes nor replaces the original.
     let retried = pending.message().unwrap().clone();

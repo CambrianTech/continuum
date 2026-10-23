@@ -336,7 +336,7 @@ impl AIProviderAdapter for AircRemoteInferenceAdapter {
             .and_then(|x| x.served_context_window)
             .filter(|w| *w > 0)
         {
-            *self.offer_at_feedback.write().expect("remote offer lock") = self.advertised_window();
+            *self.offer_at_feedback.write().expect("remote offer lock") = self.advertised_window(); // Poisoning invalidates the feedback witness; fail loudly rather than invent capacity.
             self.learned_window.store(window, Ordering::Relaxed);
             self.window_changed.send_replace(());
             if let Some(sink) = self.window_sink.as_ref() {
@@ -418,7 +418,7 @@ impl AIProviderAdapter for AircRemoteInferenceAdapter {
         let learned = self.learned_window.load(Ordering::Relaxed);
         if advertised.is_some()
             && (learned == 0
-                || advertised != *self.offer_at_feedback.read().expect("remote offer lock"))
+                || advertised != *self.offer_at_feedback.read().expect("remote offer lock")) // A poisoned witness cannot safely authorize another generation.
         {
             return advertised;
         }
