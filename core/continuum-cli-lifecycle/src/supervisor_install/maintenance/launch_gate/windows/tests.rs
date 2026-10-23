@@ -242,15 +242,19 @@ async fn cancelled_waiter_retains_install_and_evidence_custody_until_worker_exit
 const SCHEDULER: &str = r#"
 $script:failDeploy=$false
 $script:tasks=@{}
+$definitions=New-Object -ComObject 'Schedule.Service'; $definitions.Connect()
 foreach ($name in @('ContinuumCore','ContinuumDeploy')) {
-    $task=[pscustomobject]@{Name=$name;Value=$true;State=4;Security='O:SYG:SYD:(A;;FA;;;SY)';Extra=''}
+    # Real unregistered task definitions retain Scheduler's default omission and
+    # formatting behavior. No OS task is registered, enabled or stopped here.
+    $task=[pscustomobject]@{Name=$name;Value=$true;State=4;Security='O:SYG:SYD:(A;;FA;;;SY)';Extra='';Definition=$definitions.NewTask(0)}
     $task | Add-Member ScriptProperty Enabled { $this.Value } {
         param($value)
         if ($script:failDeploy -and $this.Name -eq 'ContinuumDeploy') { throw 'injected interrupted mutation' }
         $this.Value=[bool]$value
     }
     $task | Add-Member ScriptProperty Xml {
-        '<Task xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task"><Settings><Enabled>' + $this.Value.ToString().ToLowerInvariant() + '</Enabled></Settings>' + $this.Extra + '</Task>'
+        $this.Definition.Settings.Enabled=$this.Value
+        $this.Definition.XmlText.Replace('</Task>', $this.Extra + '</Task>')
     }
     $task | Add-Member ScriptMethod GetSecurityDescriptor { param($flags) if ($flags -ne 7) { throw 'owner/group/DACL required' }; $this.Security }
     $script:tasks[$name]=$task
