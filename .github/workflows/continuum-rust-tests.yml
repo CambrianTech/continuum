@@ -363,6 +363,14 @@ jobs:
             if ($result -ne 0) { exit $result }
             if (($output -join "`n") -notmatch '1 passed;') { throw "Maintenance CLI fixture did not execute: $test" }
           }
+      - name: Windows connected teacher restoration regression
+        if: needs.changes.outputs.rust != 'false'
+        run: |
+          $output = & cargo test -p continuum-core --lib --profile dev-fast --features test-fixtures 'modules::serving_daemon::tests::cancelled_exclusive_teacher_restores_real_owned_child' -- --exact 2>&1
+          $result = $LASTEXITCODE
+          $output | Write-Output
+          if ($result -ne 0) { exit $result }
+          if (($output -join "`n") -notmatch '1 passed;') { throw 'Connected teacher restoration fixture did not execute' }
 
   # Standalone installer/lifecycle checks do not link continuum-core. Keep their
   # contract independent of the measured core build + integration + CLI link,

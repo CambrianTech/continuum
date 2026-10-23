@@ -58,3 +58,15 @@ Windows CI selection is explicit: PR #5302 carries the existing workflow's `wind
 label. Its initial unlabeled run skipped both Windows jobs, so the aggregate wrapper
 was not platform validation. The subsequent push with that label must execute the
 actual core CLI and lifecycle fixtures before merge; a skipped wrapper is insufficient.
+
+The labeled Windows run 39895257075 passed the standalone lifecycle job, then
+failed core compilation with E0433: the engine's Windows retirement fixture still
+called core's serving-daemon test module after the crate split. The correction
+moves that existing real-child scenario into the engine's opt-in test-fixtures
+surface and passes the core transaction as a callback from a Windows core test.
+All original preparation/retirement/restoration assertions remain; the Windows
+job runs the exact connected test and requires `1 passed`, rather than relying on
+compilation or silently dropping it. Fixture-only tempfile/bin selection remain
+behind test configuration; production dependency layering is unchanged. Locked
+metadata and diff checks passed locally without compiling beside serving. The
+corrected Windows execution and installed maintenance remain pending.

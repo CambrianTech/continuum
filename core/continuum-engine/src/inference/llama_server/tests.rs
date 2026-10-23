@@ -190,44 +190,7 @@ impl LlamaServerControl for FakeControl {
 /// load-bearing here (it drives the relaunch decision); the rest is filler so
 /// the grouped `Model` constructs. The real launcher path is covered by the
 /// live serving daemon, not these pure-decision tests.
-fn target(id: &str) -> ServingTarget {
-    use crate::model_registry::types::{Arch, MultiPartyChatStrategy};
-    ServingTarget {
-        host_prompt_cache_mib: crate::inference::lane_args::CACHE_RAM_MIB,
-        model: Model {
-            weights_bytes: None,
-            mmproj_bytes: None,
-            id: id.to_string(),
-            name: None,
-            provider: "llamacpp-local".to_string(),
-            arch: Arch::Qwen2,
-            context_window: 32768,
-            max_output_tokens: 4096,
-            tokens_per_second: 0.0,
-            capabilities: std::collections::BTreeSet::new(),
-            cost_input_per_1k: 0.0,
-            cost_output_per_1k: 0.0,
-            gguf_hint: None,
-            hf_source: None,
-            gguf_local_path: None,
-            chat_template: None,
-            stop_sequences: Vec::new(),
-            multi_party_strategy: MultiPartyChatStrategy::ProperChatMlSingleParty,
-            mmproj_local_path: None,
-            parameter_count: 0,
-            sampling: crate::model_registry::types::ModelSampling::default(),
-            persona_serving_eligible: true,
-            serving: Default::default(), // test/fixture literal: substrate defaults (text-only main lane, unverified kv-shift)
-        },
-        context_window: 32768,
-        lanes: 1,
-        adapters: Vec::new(),
-        placement: LanePlacement::Gpu,
-        expert_placement: None,
-        resident_override: None,
-        vision_sidecar: false,
-    }
-}
+use super::test_fixtures::target;
 
 /// Same as [`target`] but with a genome set loaded — for the relaunch-on-
 /// genome-change tests. Paths are the load identity the reconcile compares.

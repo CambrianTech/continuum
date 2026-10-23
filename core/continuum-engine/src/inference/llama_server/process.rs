@@ -18,7 +18,7 @@ pub struct LlamaServerProcess {
     pub(super) root: String,
     pub(super) v1_url: String,
     /// A test's fixture engine in place of [`server_bin`]'s per-launch resolution.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-fixtures"))]
     pub(super) bin_pin: Option<String>,
     pub(super) client: reqwest::Client,
     /// The live child, if one is running. `std::sync::Mutex` (not tokio) because
@@ -124,7 +124,7 @@ impl LlamaServerProcess {
         Self {
             root: serving_root(),
             v1_url: serving_v1_url(),
-            #[cfg(test)]
+            #[cfg(any(test, feature = "test-fixtures"))]
             bin_pin: None,
             client,
             child: Arc::new(StdMutex::new(None)),
@@ -156,7 +156,7 @@ impl LlamaServerProcess {
         Self {
             root,
             v1_url,
-            #[cfg(test)]
+            #[cfg(any(test, feature = "test-fixtures"))]
             bin_pin: None,
             client: reqwest::Client::new(),
             child: Arc::new(StdMutex::new(None)),

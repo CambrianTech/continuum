@@ -5,6 +5,7 @@ edition = "2021"
 publish = false
 
 [dependencies]
+tempfile = { version = "3", optional = true }
 continuum-kernel = { path = "../continuum-kernel" }
 continuum-tool-protocol = { path = "../continuum-tool-protocol" }
 tokio.workspace = true
@@ -65,5 +66,5 @@ metal = ["candle-core/metal", "candle-nn/metal", "candle-transformers/metal", "l
 mlx = []
 openvino = ["ort/openvino"]
 rocm = ["ort/rocm"]
-test-fixtures = ["continuum-base/test-fixtures", "continuum-kernel/test-fixtures"]
+test-fixtures = ["continuum-base/test-fixtures", "continuum-kernel/test-fixtures", "dep:tempfile"]
 vulkan = ["llama/vulkan", "continuum-kernel/vulkan"]
