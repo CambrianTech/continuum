@@ -13,7 +13,6 @@ use super::capabilities::{
 };
 use crate::{clog_debug, clog_info, clog_warn};
 use std::collections::HashMap;
-use std::sync::Arc;
 use tokio::sync::{broadcast, RwLock};
 
 /// Participant in a voice conversation with routing info
@@ -122,9 +121,6 @@ pub struct AudioRouter {
     /// All participants in the conversation
     participants: RwLock<HashMap<String, RoutedParticipant>>,
 
-    /// Model capability registry
-    registry: Arc<ModelCapabilityRegistry>,
-
     /// Channel for audio events
     event_tx: broadcast::Sender<AudioEvent>,
 }
@@ -135,7 +131,6 @@ impl AudioRouter {
 
         Self {
             participants: RwLock::new(HashMap::new()),
-            registry: Arc::new(ModelCapabilityRegistry::new()),
             event_tx,
         }
     }
@@ -353,6 +348,7 @@ mod tests {
     #[tokio::test]
     async fn test_heterogeneous_conversation() {
         let router = AudioRouter::new();
+        let registry = ModelCapabilityRegistry::new();
 
         // Add human
         router
@@ -368,7 +364,7 @@ mod tests {
                 "ai-1".into(),
                 "GPT-4o".into(),
                 "gpt-4o-realtime",
-                &router.registry,
+                &registry,
             ))
             .await;
 
@@ -378,7 +374,7 @@ mod tests {
                 "ai-2".into(),
                 "Claude".into(),
                 "claude-3-sonnet",
-                &router.registry,
+                &registry,
             ))
             .await;
 

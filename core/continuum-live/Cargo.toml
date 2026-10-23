@@ -91,3 +91,8 @@ livekit-webrtc = ["dep:livekit"]
 metal = ["continuum-engine/metal"]
 pocket-tts = ["dep:pocket-tts"]
 test-fixtures = ["continuum-engine/test-fixtures"]
+
+[lints.rust]
+# objc 0.2's msg_send! macro (metal_gpu_convert) uses the deprecated cargo-clippy
+# cfg check; same allowance continuum-core carried before the move. Until objc2.
+unexpected_cfgs = "allow"

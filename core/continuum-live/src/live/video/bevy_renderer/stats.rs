@@ -9,25 +9,6 @@ use super::types::*;
 use super::{AVATAR_HEIGHT, AVATAR_WIDTH};
 use crate::{clog_info, clog_warn};
 
-/// Run condition: returns true when at least one slot is active.
-pub(super) fn has_active_slots(registry: Res<SlotRegistry>) -> bool {
-    static LOG_COUNTER: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
-    let active = registry.slots.values().any(|s| s.is_active());
-    let count = LOG_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    if count % 300 == 0 {
-        let total = registry.slots.len();
-        let active_count = registry.slots.values().filter(|s| s.is_active()).count();
-        clog_info!(
-            "🎨 has_active_slots={} ({}/{} slots active, frame {})",
-            active,
-            active_count,
-            total,
-            count
-        );
-    }
-    active
-}
-
 pub(super) fn update_memory_stats(
     registry: Res<SlotRegistry>,
     pending: Res<PendingLoads>,

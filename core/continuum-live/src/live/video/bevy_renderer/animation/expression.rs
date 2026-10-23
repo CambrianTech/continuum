@@ -4,10 +4,8 @@ use bevy::mesh::morph::MorphWeights;
 use bevy::prelude::*;
 
 use super::components::*;
-use super::ExternalPose;
 
 /// Animate emotional expressions on entities with EmotionAnimation + MorphTargets.
-/// Skips entities owned by an external animator (`Without<ExternalPose>`).
 pub(in crate::live::video::bevy_renderer) fn animate_expression(
     time: Res<Time>,
     mut query: Query<
@@ -18,7 +16,6 @@ pub(in crate::live::video::bevy_renderer) fn animate_expression(
             Has<Speaking>,
             Has<SpeechClip>,
         ),
-        Without<ExternalPose>,
     >,
     mut morph_weights: Query<&mut MorphWeights>,
 ) {

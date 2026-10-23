@@ -13,7 +13,7 @@ use super::readback::{ensure_continuous_readback, request_snapshot_readback};
 use super::scene;
 use super::setup::{setup_render_slots, signal_ready};
 use super::stats::{
-    force_light_visibility, has_active_slots, monitor_load_states, sync_idle_cadence,
+    force_light_visibility, monitor_load_states, sync_idle_cadence,
     update_memory_stats,
 };
 use super::types::*;
@@ -48,7 +48,6 @@ pub(super) fn run_bevy_app(
         .insert_resource(RenderSchedule::default())
         .insert_resource(GpuGuards::default())
         .insert_resource(scene::physics::PhysicsBackendRegistry::default())
-        .insert_resource(animation::AnimatorRegistry::default())
         .insert_resource(SharedMemoryStats(memory_stats))
         .add_plugins(
             DefaultPlugins
@@ -109,16 +108,13 @@ pub(super) fn run_bevy_app(
         .add_systems(
             Update,
             (
-                animation::drive_animators,
                 animation::drive_cognitive_gestures,
                 animation::discover_morph_targets,
                 animation::manage_render_cadence,
             )
                 .in_set(animation::AnimationSet::Intent),
         )
-        // Pose: built-in writers (each gated `Without<ExternalPose>`) compute the
-        // procedural set; `apply_external_pose` drives the VLA-owned set. Disjoint
-        // entity sets, so they never double-write. Query-driven — empty = no-op.
+        // Pose: built-in writers compute Transforms/morphs. Query-driven — empty = no-op.
         .add_systems(
             Update,
             (
@@ -130,7 +126,6 @@ pub(super) fn run_bevy_app(
                 animation::animate_idle_gestures,
                 animation::animate_eye_gaze,
                 animation::animate_body_gestures,
-                animation::apply_external_pose,
             )
                 .in_set(animation::AnimationSet::Pose),
         )

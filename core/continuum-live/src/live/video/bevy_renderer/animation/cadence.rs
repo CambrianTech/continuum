@@ -4,7 +4,6 @@ use bevy::prelude::*;
 
 use super::super::scene::SlotRegistry;
 use super::super::types::{ActiveSpeechClips, RenderSchedule, SharedMemoryStats};
-use super::components::*;
 
 /// The render governor's policy: given how many slots are ACTIVE and how many are
 /// SPEAKING, decide how often the IDLE slots should render (`idle_cadence`).

@@ -296,20 +296,6 @@ pub(super) fn discover_bones(
         "Eye_R",
         "eye.R",
     ]);
-    let mut left_hand = discover(&[
-        "J_Bip_L_Hand",
-        "mixamorig:LeftHand",
-        "LeftHand",
-        "Hand_L",
-        "hand.L",
-    ]);
-    let mut right_hand = discover(&[
-        "J_Bip_R_Hand",
-        "mixamorig:RightHand",
-        "RightHand",
-        "Hand_R",
-        "hand.R",
-    ]);
 
     // VRM humanoid bone fallback
     let vrm_bones = vrm::parse_vrm_humanoid_bones(model_path);
@@ -334,12 +320,6 @@ pub(super) fn discover_bones(
         }
         if right_eye.is_none() {
             right_eye = vrm_discover("rightEye");
-        }
-        if left_hand.is_none() {
-            left_hand = vrm_discover("leftHand");
-        }
-        if right_hand.is_none() {
-            right_hand = vrm_discover("rightHand");
         }
     }
 
@@ -382,8 +362,6 @@ pub(super) fn discover_bones(
         right_lower_arm,
         left_eye,
         right_eye,
-        left_hand,
-        right_hand,
         look_at_config,
     }
 }

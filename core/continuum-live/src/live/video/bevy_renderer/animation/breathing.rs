@@ -4,14 +4,11 @@ use bevy::prelude::*;
 
 use super::super::scene::animation::{AnimationConfig, PORTRAIT_PROFILE};
 use super::components::*;
-use super::ExternalPose;
 
 /// Animate breathing on any entity with BreathingAnimation + Skeleton.
-/// Skips entities owned by an external animator (`Without<ExternalPose>`) so a
-/// VLA-driven avatar isn't double-written by `apply_external_pose`.
 pub(in crate::live::video::bevy_renderer) fn animate_breathing(
     time: Res<Time>,
-    query: Query<(&BreathingAnimation, &Skeleton, Option<&AnimationConfig>), Without<ExternalPose>>,
+    query: Query<(&BreathingAnimation, &Skeleton, Option<&AnimationConfig>)>,
     mut transforms: Query<&mut Transform>,
 ) {
     for (breathing, skeleton, anim_cfg) in &query {

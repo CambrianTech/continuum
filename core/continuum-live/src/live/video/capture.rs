@@ -16,7 +16,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
-use crate::{clog_info, clog_warn};
+use crate::clog_warn;
 
 /// Captured snapshot of a single participant's video frame.
 #[derive(Clone)]

@@ -4,10 +4,8 @@ use bevy::prelude::*;
 
 use super::super::scene::animation::{AnimationConfig, PORTRAIT_PROFILE};
 use super::components::*;
-use super::ExternalPose;
 
 /// Idle micro-movements on entities with IdleMotion + Skeleton.
-/// Skips entities owned by an external animator (`Without<ExternalPose>`).
 pub(in crate::live::video::bevy_renderer) fn animate_idle_gestures(
     time: Res<Time>,
     mut query: Query<
@@ -18,7 +16,6 @@ pub(in crate::live::video::bevy_renderer) fn animate_idle_gestures(
             Has<Speaking>,
             Has<GestureAnimation>,
         ),
-        Without<ExternalPose>,
     >,
     speaking_entities: Query<Entity, With<Speaking>>,
     mut transforms: Query<&mut Transform>,

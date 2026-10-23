@@ -155,7 +155,6 @@ struct SlotComputeState {
     bind_group: wgpu::BindGroup,
     width: u32,
     height: u32,
-    i420_size: u64,
     y_size: u64,
     u_size: u64,
     frame_tx: Sender<RgbaFrame>,
@@ -374,7 +373,6 @@ fn dispatch_compute(
                 bind_group,
                 width,
                 height,
-                i420_size,
                 y_size,
                 u_size,
                 frame_tx,
@@ -549,6 +547,7 @@ fn plane_size(num_bytes: u32) -> u64 {
 }
 
 /// Total I420 size for given dimensions.
+#[cfg(test)]
 fn i420_buffer_size(width: u32, height: u32) -> u64 {
     let y = plane_size(width * height);
     let uv = plane_size((width + 1) / 2 * ((height + 1) / 2));

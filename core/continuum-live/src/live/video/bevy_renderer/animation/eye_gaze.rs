@@ -4,10 +4,8 @@ use bevy::mesh::morph::MorphWeights;
 use bevy::prelude::*;
 
 use super::components::*;
-use super::ExternalPose;
 
 /// Animate eye gaze on entities with EyeGaze + Skeleton or MorphTargets.
-/// Skips entities owned by an external animator (`Without<ExternalPose>`).
 pub(in crate::live::video::bevy_renderer) fn animate_eye_gaze(
     time: Res<Time>,
     query: Query<
@@ -18,7 +16,6 @@ pub(in crate::live::video::bevy_renderer) fn animate_eye_gaze(
             Option<&MorphMeshLink>,
             Has<Speaking>,
         ),
-        Without<ExternalPose>,
     >,
     mut morph_weights: Query<&mut MorphWeights>,
     mut transforms: Query<&mut Transform>,

@@ -54,7 +54,6 @@ pub use avatar::*;
 pub use birther::birth_scene_for_identity;
 pub use builder::*;
 pub use instantiate::{
-    build_scene_from_description, spawn_global_lights, InstantiateParams, SceneInstance,
+    build_scene_from_description, spawn_global_lights, InstantiateParams,
 };
-pub use room::{scene_model_path, select_scene_for_identity, RoomConfig};
 pub use slot::*;

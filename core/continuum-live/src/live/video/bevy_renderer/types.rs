@@ -346,12 +346,12 @@ impl SnapshotTracker {
 
 /// Tracks asset handles for load state monitoring.
 #[derive(Resource, Default)]
-pub(super) struct PendingLoads {
+pub struct PendingLoads {
     pub scene_handles: Vec<PendingLoadEntry<Scene>>,
     pub gltf_handles: Vec<PendingLoadEntry<Gltf>>,
 }
 
-pub(super) struct PendingLoadEntry<T: bevy::asset::Asset> {
+pub struct PendingLoadEntry<T: bevy::asset::Asset> {
     pub slot: u8,
     pub handle: Handle<T>,
     pub path: String,

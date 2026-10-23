@@ -19,6 +19,7 @@ pub(super) fn setup_render_slots(
     mut commands: Commands,
     mut images: ResMut<Assets<Image>>,
     mut registry: ResMut<SlotRegistry>,
+    #[cfg(not(target_os = "macos"))]
     frame_channels: Res<FrameChannels>,
 ) {
     // Ambient light — low baseline so nothing is pure black.

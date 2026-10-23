@@ -34,7 +34,7 @@
 //!    seam is live and correct, waiting to carry a real correction the moment a
 //!    failing sample is characterized.
 //!
-//! The general basis-alignment math ([`CoordinateConvention::new`] +
+//! The general basis-alignment math (`CoordinateConvention::new` +
 //! [`CoordinateConvention::correction`]) is fully implemented and tested against
 //! synthetic non-canonical conventions (e.g. a Z-up source), so wiring a real
 //! correction later is a one-line change to a format's `convention()`, not new
@@ -115,6 +115,7 @@ impl CoordinateConvention {
     /// non-degenerate scale up front — a geometry-inferred detector (a later
     /// outlier) constructs through here so a bad basis fails loud at the source
     /// instead of producing a silently-wrong correction.
+    #[cfg(test)]
     pub fn new(forward: Vec3, up: Vec3, unit_scale: f32) -> Result<Self, String> {
         if forward.length_squared() < 1e-6 || up.length_squared() < 1e-6 {
             return Err("coordinate convention has a zero-length forward/up axis".to_string());

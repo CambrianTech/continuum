@@ -68,7 +68,9 @@ pub use api::{
 pub use types::{AvatarCommand, BevyMemoryStats, Emotion, Gesture, SpeechAnimationClip};
 
 // Re-export for metal_gpu_convert (crate-internal)
+#[cfg(all(feature = "avatar-3d", feature = "livekit-webrtc", target_os = "macos"))]
 pub(crate) use scene::SlotRegistry;
+#[cfg(all(feature = "avatar-3d", feature = "livekit-webrtc", target_os = "macos"))]
 pub(crate) use types::{FrameNotifiers, SlotDimensions};
 
 #[cfg(test)]
