@@ -482,8 +482,8 @@ impl PerceptionBuffer {
 
     /// Test-only: push a frame directly onto a source's ring without spawning warms — lets
     /// sibling-module tests (e.g. `modules::perception_consumer`) seed known residency.
-    #[cfg(test)]
-    pub(crate) fn seed_frame_for_test(&self, source: &str, frame: MediaFrame) {
+    #[cfg(any(test, feature = "test-fixtures"))]
+    pub fn seed_frame_for_test(&self, source: &str, frame: MediaFrame) {
         self.rings
             .lock()
             .unwrap_or_else(|e| e.into_inner())

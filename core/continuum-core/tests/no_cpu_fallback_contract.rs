@@ -42,7 +42,7 @@ const LLAMACPP_ADAPTER_SOURCE: &str = include_str!("../../continuum-engine/src/i
 
 const INFERENCE_GRPC_MODEL_SOURCE: &str = include_str!("../../inference-grpc/src/model.rs");
 
-const ORPHEUS_TTS_SOURCE: &str = include_str!("../src/live/audio/tts/orpheus.rs");
+const ORPHEUS_TTS_SOURCE: &str = include_str!("../../continuum-live/src/live/audio/tts/orpheus.rs");
 
 const RESIDENCY_GATE_SOURCE: &str = include_str!("../../continuum-engine/src/inference_capability/residency.rs");
 

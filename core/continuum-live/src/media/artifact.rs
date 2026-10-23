@@ -34,14 +34,14 @@ pub fn store() -> Result<FsStore, String> {
 /// read ([`FsStore::get_verified`]: bounded by the reference's size, digest checked), so the
 /// reviewer gets exactly the bytes the submitter published or a named reason why not (card
 /// e1babb61). The bound is the reference's own size, never a constant: a whole patch, unclipped.
-pub(crate) fn read_text_blob(reference: &MediaRef) -> Result<String, String> {
+pub fn read_text_blob(reference: &MediaRef) -> Result<String, String> {
     let bytes = store()?
         .get_verified(reference, reference.size_bytes)
         .map_err(|e| format!("{} ({} bytes) in {}: {e}", reference.hash.to_hex(), reference.size_bytes, store_path().display()))?;
     String::from_utf8(bytes).map_err(|e| format!("{} is not UTF-8 text: {e}", reference.hash.to_hex()))
 }
 
-pub(crate) fn store_path() -> std::path::PathBuf {
+pub fn store_path() -> std::path::PathBuf {
     crate::paths::continuum_root()
         .join("media")
         .join("blobs")
@@ -122,7 +122,7 @@ pub fn retain_captures(
     retain_captures_with(command, value, store, &directory)
 }
 
-pub(crate) fn retain_captures_with(
+pub fn retain_captures_with(
     command: &str,
     value: &mut serde_json::Value,
     mut open_store: impl FnMut() -> Result<FsStore, String>,
@@ -159,7 +159,7 @@ pub(crate) fn retain_captures_with(
     Ok(images)
 }
 
-pub(crate) fn retain_capture_with(
+pub fn retain_capture_with(
     command: &str,
     value: &mut serde_json::Value,
     open_store: impl FnOnce() -> Result<FsStore, String>,

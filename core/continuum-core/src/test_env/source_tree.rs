@@ -100,7 +100,7 @@ pub(crate) fn code_only(line: &str) -> &str {
 /// paths (`crate::runtime`, `crate::inference`, `crate::code`…). Their sources keep those
 /// relative paths here, so every guard that walks the tree still sees them. A new cut adds
 /// its directory here.
-const CUT_CRATES: &[&str] = &["continuum-kernel", "continuum-engine", "continuum-hands"];
+const CUT_CRATES: &[&str] = &["continuum-kernel", "continuum-engine", "continuum-hands", "continuum-live"];
 
 /// Every `.rs` file under this crate's `src/` and each [`CUT_CRATES`] `src/` (their own
 /// `lib.rs` files are crate roots, not modules core has, so they are left out).
