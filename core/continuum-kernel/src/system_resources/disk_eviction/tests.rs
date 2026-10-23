@@ -110,7 +110,10 @@
         let deps = tmp.path().join(profile).join(if profile == "release" { "build/unit/out/build" } else { "deps" });
         std::fs::create_dir_all(&deps).expect("mkdir");
         let sleeper = deps.join("continuum_core-test");
-        std::fs::copy("/bin/sleep", &sleeper).expect("a sleeper to run from debug/deps");
+        // The sleeper is a copy of /bin/sh blocked on its builtin `read`: a shell is one
+        // program whatever name it runs under, unlike a multi-call coreutils /bin/sleep (Ubuntu
+        // 26.04, CI from 2026-10-23), which picks its applet by name and exited at once here.
+        std::fs::copy("/bin/sh", &sleeper).expect("a sleeper to run from debug/deps");
         if profile == "release" {
             use continuum_cli_lifecycle::cargo_cache_custody as custody;
             let out = deps.parent().unwrap();
@@ -122,13 +125,12 @@
         // spawn on another thread that cloned our fd table in that instant keeps the write
         // fd until it execs, so exec of the image reads ETXTBSY (CI #5208, run
         // 39362437168). Only that error is retried, within the same 1 s liveness bound.
-        // argv[0] names the tool: a multi-call coreutils (Ubuntu 26.04's /bin/sleep, CI from
-        // 2026-10-23) picks its applet by that name, and as `continuum_core-test` it exits at
-        // once, so nothing was executing and the rung rightly cut the image. The image on disk
-        // (what the ladder reads through /proc) is still the copy under debug/.
-        use std::os::unix::process::CommandExt;
         let mut child = (0..200)
-            .find_map(|_| match std::process::Command::new(&sleeper).arg0("sleep").arg("30").spawn() {
+            .find_map(|_| match std::process::Command::new(&sleeper)
+                .args(["-c", "read line"])
+                .stdin(std::process::Stdio::piped())
+                .spawn()
+            {
                 Err(e) if e.kind() == std::io::ErrorKind::ExecutableFileBusy => {
                     std::thread::sleep(std::time::Duration::from_millis(5));
                     None
@@ -142,7 +144,12 @@
         let freed = past_spawn_windows(&pool, |f| *f, || pool.evict_at_least(100_000));
         assert!(!tmp.path().join("debug/incremental").exists(), "the first rung still cuts");
         assert!(!tmp.path().join("tests").exists(), "the second rung still cuts");
-        assert!(sleeper.exists(), "the executing image survives");
+        assert!(
+            sleeper.exists(),
+            "the executing image survives (child still running: {:?}; executing under debug/: {:?})",
+            child.try_wait().map(|status| status.is_none()),
+            process_executing_under(&tmp.path().join(profile)),
+        );
         assert_eq!(tmp.path().join("debug/lib.rlib").exists(), profile == "debug", "only the active profile stands down");
         assert_eq!(freed, if profile == "debug" { 6000 } else { 9000 }, "only safe rungs");
         child.kill().expect("stop the sleeper");
