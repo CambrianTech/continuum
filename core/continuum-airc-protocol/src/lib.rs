@@ -20,7 +20,7 @@ pub mod event;
 pub mod ws;
 
 pub use command::{
-    AircCommandRequest, AircCommandResponse, GenerateCancel, COMMAND_PATH_AI_GENERATE,
+    AircCommandRequest, AircCommandResponse, GenerateCancel, GenerateRefusal, COMMAND_PATH_AI_GENERATE,
     COMMAND_PATH_AI_GENERATE_CANCEL, COMMAND_REQUEST_BODY_HINT, HEADER_GENERATE_ID, HEADER_GENERATE_VALID_UNTIL_MS,
     COMMAND_RESPONSE_BODY_HINT,
     DEFAULT_COMMAND_DEADLINE, HEADER_COMMAND_ENV, HEADER_COMMAND_KIND, HEADER_COMMAND_PATH,

@@ -663,9 +663,9 @@ impl ConsumerAdapter for CommandRequestHandler {
                         }),
                     }
                 }
-                Err(e) => AircCommandResponse::Error {
-                    message: format!("ai/generate/cancel needs params {{generation: uuid, valid_until_ms: u64}}: {e}"),
-                },
+                Err(e) => AircCommandResponse::error(format!(
+                    "ai/generate/cancel needs params {{generation: uuid, valid_until_ms: u64}}: {e}"
+                )),
             };
             self.send_reply(&parsed, &response).await?;
             return Ok(());
@@ -717,7 +717,8 @@ impl ConsumerAdapter for CommandRequestHandler {
                             reason = %refusal,
                             "a served generation was refused at admission and answered at once"
                         );
-                        let response = AircCommandResponse::Error { message: refusal.to_string() };
+                        let response =
+                            AircCommandResponse::refused(refusal.to_string(), refusal.wire());
                         self.send_reply(&parsed, &response).await?;
                         return Ok(());
                     }
@@ -790,7 +791,7 @@ impl CommandRequestHandler {
         // the AuthPolicy verdict vs an unknown path). Truncated: a gate string is
         // a sentence, and an unbounded field in a hot probe is a log-flood risk.
         let (outcome, detail, result_bytes) = match &response {
-            AircCommandResponse::Error { message } => (
+            AircCommandResponse::Error { message, .. } => (
                 "error",
                 message.chars().take(400).collect::<String>(),
                 0u64,

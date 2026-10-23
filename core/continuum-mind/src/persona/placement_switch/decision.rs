@@ -13,6 +13,9 @@ pub const REMOTE_SEAT_FRESH_MS: u64 = 30_000;
 pub const SEAT_QUEUE_BOUND_MS: u64 = crate::inference::prefill_rate::UNATTENDED_TTFT.as_millis() as u64;
 /// The fall-home reason a queued seat earns.
 pub const SEAT_QUEUED_REASON: &str = "seat queued: its measured lane wait is past the bound";
+/// The fall-home reason a seat earns by refusing her last request with every lane busy
+/// (card 03660a77): taken before her next act, not at the next placement tick.
+pub const SEAT_OVERLOADED_REASON: &str = "remote seat refused her last request: every lane busy";
 
 /// PURE: is a seat's measured queue too long to be capacity for a node whose own median
 /// lane wait is `home_wait_p50_ms` (`None` = unmeasured)? An UNMEASURED seat (no samples)

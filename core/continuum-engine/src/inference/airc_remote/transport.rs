@@ -251,6 +251,23 @@ impl std::fmt::Debug for AircLiveTransport {
     }
 }
 
+/// PURE: the seat's reply as the requester acts on it. A typed overload refusal (card
+/// 03660a77) is [`RemoteInferenceError::SeatOverloaded`], so her next act goes home instead
+/// of asking the full seat again; every other error stays the peer's failure, by its text.
+pub(super) fn reply_result(
+    response: AircCommandResponse,
+) -> Result<serde_json::Value, RemoteInferenceError> {
+    let overloaded =
+        response.refusal() == Some(continuum_airc_protocol::GenerateRefusal::Overloaded);
+    response.into_result().map_err(|message| {
+        if overloaded {
+            RemoteInferenceError::SeatOverloaded { message }
+        } else {
+            RemoteInferenceError::PeerAdapterFailed { message }
+        }
+    })
+}
+
 /// A `CommandDeadline` this far before the real deadline is not a deadline:
 /// it is airc reporting that the per-request reply stream closed. Two seconds
 /// of slack covers clock skew between the pending's absolute deadline and ours.
@@ -770,9 +787,7 @@ impl AircInferenceTransport for AircLiveTransport {
                 message: format!("decode AircCommandResponse: {e}"),
             })?;
 
-        let result_value = response
-            .into_result()
-            .map_err(|e| RemoteInferenceError::PeerAdapterFailed { message: e })?;
+        let result_value = reply_result(response)?;
 
         let mut text_response: crate::ai::types::TextGenerationResponse =
             serde_json::from_value(result_value).map_err(|e| RemoteInferenceError::Transport {

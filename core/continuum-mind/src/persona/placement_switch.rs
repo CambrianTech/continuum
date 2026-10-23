@@ -45,7 +45,7 @@ pub use decision::{
     choose_offloads, decide, moves_between_machines, seat_queued, LocalShape,
     PeerOffer, PlacementInputs, PlacementMove, Seat, MOVE_COOLDOWN_MS,
     REMOTE_SEAT_FRESH_MS, REMOTE_SEAT_SILENT_MS, SEAT_QUEUED_REASON,
-    SEAT_QUEUE_BOUND_MS, SEAT_STARVES_REASON,
+    SEAT_OVERLOADED_REASON, SEAT_QUEUE_BOUND_MS, SEAT_STARVES_REASON,
 };
 pub use decision::{
     decide_opportunity, opportunity_cooldown_ms, seat_starves, OpportunityInputs,
