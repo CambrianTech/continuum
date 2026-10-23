@@ -97,10 +97,7 @@ pub const COMMAND_RESPONSE_BODY_HINT: &str = "continuum.command.response.v1";
 /// Wire-out envelope: the substrate's "dispatch this command on your
 /// peer" shape. Serialized as JSON in the airc frame body.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
-#[ts(
-    export,
-    export_to = "../../../protocol/typescript/transport/AircCommandRequest.ts"
-)]
+#[ts(export, export_to = "../../../protocol/typescript/transport/AircCommandRequest.ts")]
 pub struct AircCommandRequest {
     pub path: String,
     pub kind: String,
@@ -129,10 +126,7 @@ impl AircCommandRequest {
 
 /// Wire-back envelope: typed success/error.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
-#[ts(
-    export,
-    export_to = "../../../protocol/typescript/transport/AircCommandResponse.ts"
-)]
+#[ts(export, export_to = "../../../protocol/typescript/transport/AircCommandResponse.ts")]
 #[serde(tag = "status", rename_all = "snake_case")]
 pub enum AircCommandResponse {
     Ok {

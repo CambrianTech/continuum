@@ -27,9 +27,11 @@ pub(super) struct ServedGenerations {
     /// Cancels that arrived before their generation was admitted, per authenticated
     /// requester. A cancel travels on its own connection and can overtake the request it
     /// cancels; a remembered cancel refuses THAT requester's request when it arrives. It is
-    /// remembered exactly as long as the original request can still be admitted: the
-    /// request's own validity (HEADER_GENERATE_VALID_UNTIL, which admission enforces), so a
-    /// delayed original is refused either by its cancel or as expired, never started.
+    /// remembered exactly as long as the original request can still be admitted: until the
+    /// request's own validity (HEADER_GENERATE_VALID_UNTIL_MS, which admission enforces),
+    /// uncapped, so a delayed original is refused either by its cancel or as expired, never
+    /// started. The lifetime is the requester's own claim and only ever refuses that
+    /// requester's own ids; memory stays bounded by count.
     /// Keyed by requester first, so one peer's cancel can neither overwrite nor evict
     /// another's. Each requester keeps at most the admission bound; past it the seat FAILS
     /// CLOSED and fences that requester until the latest validity it was holding. Always
@@ -45,13 +47,6 @@ struct EarlyCancels {
     /// Set when `remembered` overflowed: until this epoch ms every new generation from this
     /// requester is refused (fail closed, O(1) memory).
     fenced_until_ms: Option<u64>,
-}
-
-/// A requester-stated validity, capped so no requester can make this seat remember (or
-/// fence) for longer than any act can last ([`ACT_CEILING`]).
-fn held_until(valid_until_ms: u64, now_ms: u64) -> u64 {
-    let ceiling = crate::inference::turn_bound::ACT_CEILING.as_millis() as u64;
-    valid_until_ms.min(now_ms.saturating_add(ceiling))
 }
 
 /// One outstanding generation.
@@ -165,9 +160,6 @@ impl ServedGenerations {
         valid_until_ms: Option<u64>,
         now_ms: u64,
     ) -> Result<Admission, Refusal> {
-        if valid_until_ms.is_some_and(|valid| now_ms > valid) {
-            return Err(Refusal::Expired { correlation });
-        }
         let mut outstanding = self.outstanding.lock();
         if outstanding.contains_key(&correlation) {
             return Err(Refusal::Duplicate { correlation });
@@ -175,6 +167,9 @@ impl ServedGenerations {
         {
             let mut early = self.early_cancels.lock();
             forget_expired(&mut early, now_ms);
+            if valid_until_ms.is_some_and(|valid| now_ms > valid) {
+                return Err(Refusal::Expired { correlation });
+            }
             if let Some(cancels) = early.get_mut(&caller) {
                 if cancels.fenced_until_ms.is_some() {
                     return Err(Refusal::Fenced { correlation });
@@ -238,7 +233,7 @@ impl ServedGenerations {
         let Some(served) = outstanding.get_mut(&correlation) else {
             let mut early = self.early_cancels.lock();
             forget_expired(&mut early, now_ms);
-            let until = held_until(valid_until_ms, now_ms);
+            let until = valid_until_ms;
             let cancels = early.entry(requester).or_default();
             if let Some(fence) = cancels.fenced_until_ms.as_mut() {
                 // Already fenced: the fence must also cover this cancel's request.
@@ -450,7 +445,7 @@ mod tests {
     // original request's own validity and refuses that requester's request when it arrives;
     // another caller's request with the same id is not blocked.
     #[test]
-    async fn a_cancel_that_overtakes_its_request_refuses_it_within_the_window() {
+    fn a_cancel_that_overtakes_its_request_refuses_it_within_its_validity() {
         let registry = Arc::new(ServedGenerations::default());
         let (asker, stranger) = (peer(1), peer(2));
         let early = Uuid::from_u128(20);
@@ -478,8 +473,8 @@ mod tests {
     // the ENFORCED validity of the request, not a nominal round trip. A delayed original
     // arriving long after its cancel (far past any round-trip budget) but still inside its
     // validity is refused by the remembered cancel; once past its validity it is refused as
-    // expired, so forgetting the cancel there can never let it start. A requester's stated
-    // validity is capped at the act ceiling.
+    // expired, so forgetting the cancel there can never let it start. The memory is not
+    // capped below the validity, so no gap opens between them.
     #[test]
     fn a_delayed_original_is_refused_until_and_after_its_validity() {
         let registry = Arc::new(ServedGenerations::default());
@@ -518,12 +513,6 @@ mod tests {
             registry.early_cancels.lock().is_empty(),
             "the expired cancel was forgotten"
         );
-        let ceiling = crate::inference::turn_bound::ACT_CEILING.as_millis() as u64;
-        assert_eq!(
-            held_until(u64::MAX, NOW),
-            NOW + ceiling,
-            "capped at the act ceiling"
-        );
     }
 
     // what this catches (Codex re-review of 165b35a5b): early cancels are scoped to the
@@ -532,7 +521,7 @@ mod tests {
     // bound is fenced until the latest validity it held (fail closed), never has a live
     // cancel dropped.
     #[test]
-    async fn early_cancels_are_per_requester_and_bounded() {
+    fn early_cancels_are_per_requester_and_bounded() {
         let registry = Arc::new(ServedGenerations::default());
         let (a, b) = (peer(1), peer(2));
         let id = Uuid::from_u128(30);
