@@ -28,10 +28,22 @@ pub(super) struct ServedGenerations {
     /// requester: (generation, arrival). A cancel travels on its own connection and can
     /// overtake the request it cancels; a remembered cancel refuses THAT requester's
     /// request when it arrives. Keyed by requester first, so one peer's cancel can neither
-    /// overwrite nor evict another's. Each requester keeps at most the admission bound (it
-    /// cannot have more of its own generations in flight here), oldest evicted first.
-    /// Always locked after `outstanding`, so a cancel and an admission never interleave.
-    early_cancels: Mutex<HashMap<PeerId, std::collections::VecDeque<(Uuid, tokio::time::Instant)>>>,
+    /// overwrite nor evict another's. Each requester keeps at most the admission bound; past
+    /// it the seat FAILS CLOSED: it forgets the individual cancels and fences that requester
+    /// (refuses all its new generations) for one window, so no abandoned request can start
+    /// because its cancel was dropped. Always locked after `outstanding`, so a cancel and an
+    /// admission never interleave.
+    early_cancels: Mutex<HashMap<PeerId, EarlyCancels>>,
+}
+
+/// One requester's cancels that arrived ahead of their requests.
+#[derive(Default)]
+struct EarlyCancels {
+    /// (generation, arrival), at most the admission bound.
+    remembered: std::collections::VecDeque<(Uuid, tokio::time::Instant)>,
+    /// Set when `remembered` overflowed: until then every new generation from this
+    /// requester is refused (fail closed, O(1) memory).
+    fenced_until: Option<tokio::time::Instant>,
 }
 
 /// How long an early cancel is remembered: the command round-trip budget both ends already
@@ -59,6 +71,9 @@ pub(super) enum CancelOutcome {
     /// Nothing outstanding has that generation yet: the cancel is remembered for
     /// [`EARLY_CANCEL_WINDOW`] and refuses the request if it arrives after its cancel.
     Remembered,
+    /// Past the per-requester bound: the requester is fenced for one window instead of a
+    /// live cancel being dropped.
+    Fenced,
     /// It is outstanding but was asked for by another peer: left running.
     NotYours,
 }
@@ -69,6 +84,7 @@ impl CancelOutcome {
             Self::Cancelled => "cancelled",
             Self::NotServing => "not_serving",
             Self::Remembered => "remembered",
+            Self::Fenced => "fenced",
             Self::NotYours => "not_yours",
         }
     }
@@ -83,6 +99,9 @@ pub(super) enum Refusal {
     Duplicate { correlation: Uuid },
     /// Its requester cancelled it before it arrived here.
     CancelledByRequester { correlation: Uuid },
+    /// Its requester sent more early cancels than this seat remembers, so all of that
+    /// requester's new generations are refused for one cancel window (fail closed).
+    Fenced { correlation: Uuid },
 }
 
 impl std::fmt::Display for Refusal {
@@ -96,6 +115,10 @@ impl std::fmt::Display for Refusal {
             Self::Duplicate { correlation } => {
                 write!(f, "generation {correlation} is already being served here")
             }
+            Self::Fenced { correlation } => write!(
+                f,
+                "generation {correlation} refused: its requester overflowed this seat's early-cancel memory; retry after the cancel window"
+            ),
             Self::CancelledByRequester { correlation } => write!(
                 f,
                 "generation {correlation} was cancelled by its requester before it arrived"
@@ -135,10 +158,17 @@ impl ServedGenerations {
         {
             let mut early = self.early_cancels.lock();
             forget_expired(&mut early);
-            if let Some(remembered) = early.get_mut(&caller) {
-                if let Some(at) = remembered.iter().position(|(id, _)| *id == correlation) {
-                    remembered.remove(at);
-                    if remembered.is_empty() {
+            if let Some(cancels) = early.get_mut(&caller) {
+                if cancels.fenced_until.is_some() {
+                    return Err(Refusal::Fenced { correlation });
+                }
+                if let Some(at) = cancels
+                    .remembered
+                    .iter()
+                    .position(|(id, _)| *id == correlation)
+                {
+                    cancels.remembered.remove(at);
+                    if cancels.remembered.is_empty() {
                         early.remove(&caller);
                     }
                     return Err(Refusal::CancelledByRequester { correlation });
@@ -189,11 +219,20 @@ impl ServedGenerations {
         let Some(served) = outstanding.get_mut(&correlation) else {
             let mut early = self.early_cancels.lock();
             forget_expired(&mut early);
-            let remembered = early.entry(requester).or_default();
-            remembered.retain(|(id, _)| *id != correlation);
-            remembered.push_back((correlation, tokio::time::Instant::now()));
-            while remembered.len() > bound.max(1) {
-                remembered.pop_front();
+            let now = tokio::time::Instant::now();
+            let cancels = early.entry(requester).or_default();
+            if cancels.fenced_until.is_some() {
+                // Already fenced: a further early cancel extends the fence to cover it.
+                cancels.fenced_until = Some(now + EARLY_CANCEL_WINDOW);
+                return CancelOutcome::Fenced;
+            }
+            cancels.remembered.retain(|(id, _)| *id != correlation);
+            cancels.remembered.push_back((correlation, now));
+            if cancels.remembered.len() > bound.max(1) {
+                // Never drop a live cancel: fence the requester for one window instead.
+                cancels.remembered.clear();
+                cancels.fenced_until = Some(now + EARLY_CANCEL_WINDOW);
+                return CancelOutcome::Fenced;
             }
             return CancelOutcome::Remembered;
         };
@@ -214,12 +253,16 @@ impl ServedGenerations {
 
 /// Drop early cancels older than [`EARLY_CANCEL_WINDOW`]: bounded by time, so a cancel
 /// for a request that never comes (or already finished) does not live on.
-fn forget_expired(
-    early: &mut HashMap<PeerId, std::collections::VecDeque<(Uuid, tokio::time::Instant)>>,
-) {
-    early.retain(|_, remembered| {
-        remembered.retain(|(_, at)| at.elapsed() <= EARLY_CANCEL_WINDOW);
-        !remembered.is_empty()
+fn forget_expired(early: &mut HashMap<PeerId, EarlyCancels>) {
+    let now = tokio::time::Instant::now();
+    early.retain(|_, cancels| {
+        cancels
+            .remembered
+            .retain(|(_, at)| at.elapsed() <= EARLY_CANCEL_WINDOW);
+        if cancels.fenced_until.is_some_and(|until| now >= until) {
+            cancels.fenced_until = None;
+        }
+        !cancels.remembered.is_empty() || cancels.fenced_until.is_some()
     });
 }
 
@@ -391,8 +434,8 @@ mod tests {
 
     // what this catches (Codex re-review of 165b35a5b): early cancels are scoped to the
     // authenticated requester. B's cancel for the same id neither overwrites nor removes
-    // A's, so A's overtaken request is still refused; and one requester's burst is bounded
-    // by the admission bound, evicting only its own oldest cancels.
+    // A's, so A's overtaken request is still refused; and a requester that overflows the
+    // bound is fenced for one window (fail closed), never has a live cancel dropped.
     #[tokio::test(start_paused = true)]
     async fn early_cancels_are_per_requester_and_bounded() {
         let registry = Arc::new(ServedGenerations::default());
@@ -411,33 +454,38 @@ mod tests {
             "and B's own cancel still applies to B"
         );
 
-        let bound = 2;
-        let burst: Vec<Uuid> = (40..45).map(Uuid::from_u128).collect();
-        for id in &burst {
-            assert_eq!(registry.cancel(*id, b, bound), CancelOutcome::Remembered);
-        }
-        let kept = registry.early_cancels.lock().get(&b).map_or(0, |q| q.len());
-        assert_eq!(
-            kept, bound,
-            "a requester's burst is bounded by the admission bound"
+        // Codex re-review of 9b12c8b75: with bound 1, cancel(r1), cancel(r2), then a
+        // delayed admit(r1) must NOT start r1. Overflow fences the requester (fail closed)
+        // instead of evicting r1's still-live cancel.
+        let bound = 1;
+        let (r1, r2, r3) = (
+            Uuid::from_u128(40),
+            Uuid::from_u128(41),
+            Uuid::from_u128(42),
         );
-        assert!(
-            registry.admit(burst[0], b, bound).is_ok(),
-            "its oldest cancel was evicted"
+        assert_eq!(registry.cancel(r1, b, bound), CancelOutcome::Remembered);
+        assert_eq!(registry.cancel(r2, b, bound), CancelOutcome::Fenced);
+        assert_eq!(
+            registry.admit(r1, b, 4).err(),
+            Some(Refusal::Fenced { correlation: r1 }),
+            "the delayed r1 is refused: its cancel was never silently dropped"
         );
         assert_eq!(
-            registry.admit(burst[4], b, bound).err(),
-            Some(Refusal::CancelledByRequester {
-                correlation: burst[4]
-            }),
-            "its newest cancels are kept"
+            registry.admit(r3, b, 4).err(),
+            Some(Refusal::Fenced { correlation: r3 }),
+            "every new generation from the fenced requester is refused within the window"
         );
         let early = Uuid::from_u128(31);
         assert_eq!(registry.cancel(early, a, bound), CancelOutcome::Remembered);
         assert_eq!(
             registry.admit(early, a, bound).err(),
             Some(Refusal::CancelledByRequester { correlation: early }),
-            "B's burst never evicted A's cancel"
+            "B's fence never touched A"
+        );
+        tokio::time::advance(EARLY_CANCEL_WINDOW + std::time::Duration::from_secs(1)).await;
+        assert!(
+            registry.admit(r3, b, 4).is_ok(),
+            "the fence lifts after one window"
         );
     }
 }
