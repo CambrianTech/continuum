@@ -96,8 +96,9 @@ pub struct AircRemoteInferenceAdapter {
     breaker: Arc<PeerBreaker>,
     /// The seat refused this mind's last request because every lane it serves was busy
     /// (`SeatOverloaded`, card 03660a77). Per adapter, so per mind: only the mind that was
-    /// refused goes home, never every mind on the peer. Read once, by her placement
-    /// switch before her next act ([`Self::take_seat_overloaded`]); an answer clears it.
+    /// refused goes home, never every mind on the peer. Read by her placement switch
+    /// before her next act, and cleared only once she has actually moved
+    /// ([`Self::clear_seat_overloaded`]) or the seat answers her.
     seat_overloaded: AtomicBool,
 }
 
@@ -127,11 +128,14 @@ impl AircRemoteInferenceAdapter {
         }
     }
 
-    /// Whether the seat refused this mind's last request as overloaded, consuming the
-    /// signal: the switch that reads it moves her home once, and a later return to the
-    /// seat starts clean.
-    pub fn take_seat_overloaded(&self) -> bool {
-        self.seat_overloaded.swap(false, Ordering::Relaxed)
+    /// Whether the seat refused this mind's last request as overloaded.
+    pub fn seat_overloaded(&self) -> bool {
+        self.seat_overloaded.load(Ordering::Relaxed)
+    }
+
+    /// She has moved off the seat: a later return to it starts clean.
+    pub fn clear_seat_overloaded(&self) {
+        self.seat_overloaded.store(false, Ordering::Relaxed);
     }
 
     /// Whether the lane currently refuses requests without a round trip.

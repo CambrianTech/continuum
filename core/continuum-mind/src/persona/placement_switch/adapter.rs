@@ -448,30 +448,38 @@ impl AIProviderAdapter for PlacementSwitch {
         // - a cold breaker (deadline misses in a row);
         // - the seat refused her last request with every lane busy (card 03660a77:
         //   IntelMac 10-23, Paige asked a full M5 13 times before the placement tick
-        //   moved her). Consumed here, so it moves her once.
+        //   moved her). Cleared only once she has actually moved: with no home lane, or
+        //   this future dropped mid-build, the refusal stands for her next act.
         // FallHome retains the remote adapter and its breaker; ordinary placement policy
         // (a beacon offering a slot, the move cooldown) still owns returning her. This
         // changes inference routing only: RemoteInferenceRequest carries a prompt and
         // returns text, while residency, hands and workspace remain here, so it needs no
         // workspace migration. The synchronous request path records the existing
         // fell_home probe; unlike the grid tick, it does not publish an org-room line.
+        let overloaded = self
+            .remote_adapter()
+            .filter(|remote| remote.seat_overloaded());
         let reason = if self.lane_cold() {
             "remote circuit breaker cold before generation"
-        } else if self
-            .remote_adapter()
-            .is_some_and(|remote| remote.take_seat_overloaded())
-        {
-            "remote seat refused her last request: every lane busy"
+        } else if overloaded.is_some() {
+            SEAT_OVERLOADED_REASON
         } else {
             return;
         };
+        let now = continuum_base::time::EpochMs::now().millis();
         let _ = self
-            .apply(
-                &PlacementMove::FallHome { reason },
-                continuum_base::time::EpochMs::now().millis(),
-                SeatFit::default(),
-            )
+            .apply(&PlacementMove::FallHome { reason }, now, SeatFit::default())
             .await;
+        if self.seat() == Seat::Home {
+            if let Some(remote) = overloaded {
+                remote.clear_seat_overloaded();
+            }
+        } else {
+            // No home lane: she stays on the seat, said so by name. The refusal stands.
+            let _ = self
+                .apply(&PlacementMove::Park { reason }, now, SeatFit::default())
+                .await;
+        }
     }
 
     fn generation_target(&self) -> Option<Arc<dyn AIProviderAdapter>> {

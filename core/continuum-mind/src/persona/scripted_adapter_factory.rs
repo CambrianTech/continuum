@@ -66,6 +66,8 @@ type BuildFn =
 pub struct ScriptedPersonaAdapterFactory {
     build: Box<BuildFn>,
     builds: AtomicUsize,
+    /// A build that never completes, so a caller can be dropped mid-build.
+    held: bool,
 }
 
 impl ScriptedPersonaAdapterFactory {
@@ -82,6 +84,16 @@ impl ScriptedPersonaAdapterFactory {
         Self {
             build: Box::new(build),
             builds: AtomicUsize::new(0),
+            held: false,
+        }
+    }
+
+    /// A build that is counted and then never completes: tests what a caller leaves
+    /// behind when its future is dropped while a home adapter is being built.
+    pub fn held() -> Self {
+        Self {
+            held: true,
+            ..Self::heuristic()
         }
     }
 
@@ -170,6 +182,9 @@ impl PersonaAdapterFactory for ScriptedPersonaAdapterFactory {
         profile: &PersonaInferenceProfile,
     ) -> Result<Arc<dyn AIProviderAdapter>, String> {
         self.builds.fetch_add(1, Ordering::SeqCst);
+        if self.held {
+            std::future::pending::<()>().await;
+        }
         (self.build)(profile)
     }
 }
