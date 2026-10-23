@@ -316,6 +316,11 @@ jobs:
           & $env:CONTINUUM_NATIVE_CONTAINER_LEASE_TEST
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           $env:CONTINUUM_REQUIRE_WINDOWS_REPARSE_TEST = '1'
+          $exitProof = & cargo test -p continuum-engine --lib --profile dev-fast --features test-fixtures 'inference::lane_registry::tests::shutdown_confirmation_waits_for_exit_and_preserves_replacements' -- --exact 2>&1
+          $exitProofResult = $LASTEXITCODE
+          $exitProof | Write-Output
+          if ($exitProofResult -ne 0) { exit $exitProofResult }
+          if (($exitProof -join "`n") -notmatch 'test result: ok\. 1 passed;') { throw 'The actual lane exit confirmation fixture did not execute.' }
           # The engine's native custody fixtures (expert placement, engine install) live in the
           # engine crate (core/continuum-engine); they run from there. Core's compile on Windows
           # is the windows-msvc check's job, so no core test binary is built here.
