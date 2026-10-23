@@ -35,7 +35,7 @@ impl LlamaServerProcess {
             inputs.validate().await.map_err(LlamaServerError::Spawn)?;
         }
         let endpoint = crate::inference::slots::directory().endpoint(&self.root);
-        let transition = match restore_generation.as_ref() {
+        let mut transition = match restore_generation.as_ref() {
             Some(expected) => {
                 endpoint
                     .transition_for_generation_if(expected, &|| {
@@ -56,6 +56,22 @@ impl LlamaServerProcess {
         // the reclaim wait; a fresh claim (we own none) is where a crashed
         // predecessor's orphan may still hold the canonical port.
         let had_own_child = self.child.lock().unwrap().is_some();
+        // The engine being replaced holds the residents' freshest KV in its slots, newer than
+        // any page on disk. Save each attributed resident before the kill, through the same
+        // owner the restore session uses: on the M5 at 2026-10-23 05:09Z a relaunch killed two
+        // residents' slots unsaved and their next acts re-prefilled 70k-115k tokens. The
+        // transition has drained every reader, so no turn is decoding. A refusal (no page
+        // dir, an exited engine, an uncertain save) is said and the relaunch goes on.
+        if had_own_child && !restoring {
+            let started = std::time::Instant::now();
+            let outcome = transition.checkpoint_residents(&self.client, &self.root).await.map(|_| ());
+            continuum_base::probe!(target: "continuum_core::inference::llama_server", class = "inference.kv_page.relaunch_checkpoint",
+                ok = outcome.is_ok(),
+                error = %outcome.as_ref().err().map_or("", String::as_str),
+                ms = started.elapsed().as_millis() as u64,
+                "residents' KV saved to their pages before the engine was replaced"
+            );
+        }
         self.kill_child();
 
         // A freed listener is not proof that the predecessor stopped decoding.
@@ -153,13 +169,11 @@ impl LlamaServerProcess {
             target.host_prompt_cache_mib,
             std::sync::atomic::Ordering::Relaxed,
         );
-        // KV disk-paging dir (restore economy): GEOMETRY-KEYED — model + the
-        // per-slot window — so a saved page can never be restored into a slot
-        // of a different size or model (llama-server would refuse or corrupt).
-        // Stale sibling generations for the SAME model are swept at spawn: a
-        // relaunch that changed geometry orphans its old pages, and the spawn
-        // is the one place that knows the new truth. Tracked + eviction-decided
-        // in system_resources (the no-new-cache-dir-without-eviction law).
+        // KV disk-paging dir (restore economy): one per MODEL, so a relaunch at
+        // another window keeps every page (the engine refuses, loudly, one that
+        // no longer fits its slot; the ledger refuses another model's). Tracked +
+        // eviction-decided in system_resources (the no-new-cache-dir-without-
+        // eviction law).
         // Remember this geometry ACROSS RUNS: the next boot's plan serves it first, so
         // the pages under this dir are still restorable after a reboot.
         // The geometry is remembered when the launch SETTLES (serving_daemon: cooldown
@@ -402,23 +416,17 @@ impl LlamaServerProcess {
                 prepared.engine_program
             )));
         }
-        // READY AND ACCEPTED: this lane owns its page dir. Sweep sibling generations
-        // of the same model except every dir another live lane was launched with —
-        // and only when the inventory is complete (Astra: "avoid sweeping when a live
-        // predecessor's directory is unknown"). Then publish the dir for the
+        // READY AND ACCEPTED: this lane owns its page dir. Before the ledger attaches
+        // (`transition.ready` below), move the newest legacy per-window dir's pages into it,
+        // never a dir another live lane was launched with, and only when the inventory is
+        // complete (Astra: a live predecessor's unknown dir is never touched). Census + move
+        // under ONE guard (Astra's re-review of #4069). Then publish the dir for the
         // save-side trim — after the gates, and only if the dir exists (mkdir failed
         // = the paging tier is amputated for this serve; nothing to trim).
-        // Census + sweep under ONE guard (Astra's re-review of #4069): no reservation
-        // can be inserted or handed off between the census and the deletion.
-        if !page_dir_ready {
-            // No dir of our own (mkdir failed): the paging tier is amputated for this
-            // serve — neither trim nor the destructive half runs (Cormac: symmetry).
-        } else if sweep_stale_page_generations_guarded(&slot_save_dir).is_some() {
-            // swept (possibly zero) with a complete inventory
-        } else {
-            continuum_base::probe!(target: "continuum_core::inference::llama_server", class = "inference.kv_page.sweep_skipped",
+        if page_dir_ready && migrate_legacy_page_dir_guarded(&slot_save_dir).is_none() {
+            continuum_base::probe!(target: "continuum_core::inference::llama_server", class = "inference.kv_page.migration_skipped",
                 reason = "a live lane's page dir is unknown (recorded before the field existed)",
-                "stale-generation sweep skipped — the live-lane inventory is incomplete"
+                "legacy page dir migration skipped — the live-lane inventory is incomplete"
             );
         }
         if page_dir_ready {
@@ -560,13 +568,26 @@ impl LlamaServerProcess {
         if restoring {
             prepared.verify_geometry(context, slots)?;
         }
-        // Cold lifecycle metadata for paths already resolved by this launcher.
-        // If any revision is unreadable (including a PATH-only engine name), do
-        // not carry saved eligibility across engines. Never probe to rediscover it.
+        // The engine build the running server reports (`b10765-965d38a90`): its commit names
+        // the state format a page is written in, and a reinstall of the same commit (a new
+        // file mtime) is the same format. Unknown → the engine FILE stands in for it below.
+        let engine_build = self
+            .served_engine_build()
+            .await
+            .ok()
+            .flatten()
+            .and_then(|build| build.rsplit('-').next().map(str::to_string))
+            .filter(|commit| commit.len() >= 7 && commit.bytes().all(|b| b.is_ascii_hexdigit()));
+        // Cold lifecycle metadata for paths already resolved by this launcher: the files
+        // whose identity a page's KV rests on (model, adapters, MTP draft). If any revision
+        // is unreadable (including a PATH-only engine name), do not carry saved eligibility
+        // across engines. Never probe to rediscover it.
+        let engine_file = engine_build.is_none().then(|| PathBuf::from(&prepared.engine_program));
         let revisions = match revision_evidence(
             std::iter::once(gguf.clone())
                 .chain(target.adapters.iter().map(|adapter| adapter.path.clone()))
-                .chain(std::iter::once(PathBuf::from(&prepared.engine_program))),
+                .chain(prepared.mtp_draft.iter().cloned())
+                .chain(engine_file),
         ) {
             Ok(revisions) => Some(revisions),
             Err((path, error)) => {
@@ -594,6 +615,8 @@ impl LlamaServerProcess {
                     context,
                     slots,
                     cache_type: page_cache_type,
+                    flash_attn: prepared.page_flash_attn,
+                    engine_build,
                     engine: prepared.engine_program.clone(),
                     revisions,
                 },

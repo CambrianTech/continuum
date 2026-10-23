@@ -10,13 +10,6 @@
 //! Architecture: Rust is the brain, TypeScript is the face.
 //! Target: 60-70% Rust (cognition, compute, real-time), 30-40% TypeScript (UI only)
 
-// objc macros (sel!, msg_send!, class!) must be imported at crate root.
-// Used by live::video::metal_gpu_convert for Metal compute shader dispatch —
-// the macros' only user, so the import carries that module's exact gate.
-#[cfg(all(target_os = "macos", feature = "avatar-3d", feature = "livekit-webrtc"))]
-#[macro_use]
-extern crate objc;
-
 // Self-alias so the `#[derive(Entity)]` macro's emitted paths
 // (`::continuum_core::orm::*`) resolve when used from within this
 // crate. External consumers reach the same paths through their
@@ -29,6 +22,11 @@ extern crate self as continuum_core;
 // paths, and `continuum_core::runtime::…` for every other crate, keep resolving to the one
 // owner. New code may name `continuum_kernel` directly.
 pub use continuum_engine::{ai, capacity, inference, inference_capability, model_registry, sensory};
+pub use continuum_hands::code;
+pub use continuum_live::{live, media};
+pub use continuum_mind::{
+    cognition, context, experience, genome, memory, perception, persona, rag, recipe, vdd,
+};
 pub use continuum_kernel::{
     concurrency, governor, gpu, identity, logging, orm, paging, paths, resources, routing, runtime,
     sdk_codegen, system_resources,
@@ -39,31 +37,18 @@ pub use continuum_kernel::{
     time_async, time_section,
 };
 pub mod airc;
-pub mod code;
-pub mod cognition;
 pub mod commands;
 pub mod comms;
-pub mod context;
 pub mod contracts;
-pub mod experience;
 pub mod forge;
-pub mod genome;
 pub mod http;
 pub mod boot_plan;
 pub mod interface;
 pub mod ipc;
-pub mod live;
-pub mod media;
-pub mod memory;
 pub mod modules;
-pub mod perception;
-pub mod persona;
 pub mod provisioning;
-pub mod rag;
-pub mod recipe;
 #[cfg(test)]
 pub(crate) mod test_env;
-pub mod vdd;
 
 
 pub use continuum_kernel::concurrency::*;

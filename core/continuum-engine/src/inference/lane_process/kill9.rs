@@ -77,22 +77,74 @@ pub fn still_present(set: &[ProcessIdentity]) -> Vec<ProcessIdentity> {
 
 /// Kill `who` only while its pid still names that same process. True when the kill was sent.
 pub fn kill_if_same(who: ProcessIdentity) -> bool {
+    signal_if_same(who).is_ok_and(|sent| sent)
+}
+
+/// Preserve the native termination result for lifecycle callers. `false` means
+/// the recorded incarnation is no longer present; it never authorizes another PID.
+pub fn signal_if_same(who: ProcessIdentity) -> Result<bool, String> {
+    #[cfg(unix)]
     if still_present(&[who]).is_empty() {
-        return false; // gone, or its pid now names another process: never signal a stranger
+        return Ok(false);
     }
     #[cfg(unix)]
     {
-        // SAFETY: kill only sends a signal to a pid just verified to be `who`; no memory is touched
-        unsafe { libc::kill(who.pid as libc::pid_t, libc::SIGKILL) == 0 }
+        // SAFETY: the recorded incarnation was checked immediately above.
+        if unsafe { libc::kill(who.pid as libc::pid_t, libc::SIGKILL) } == 0 {
+            Ok(true)
+        } else {
+            Err(format!("SIGKILL pid={} started={}: {}", who.pid, who.start_time, std::io::Error::last_os_error()))
+        }
     }
     #[cfg(windows)]
     {
-        std::process::Command::new("taskkill")
-            .args(["/F", "/PID", &who.pid.to_string()])
-            .output()
-            .is_ok_and(|o| o.status.success())
+        signal_windows_identity(who)
     }
 }
+
+#[cfg(windows)]
+fn signal_windows_identity(who: ProcessIdentity) -> Result<bool, String> {
+    use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
+    use windows_sys::Win32::Foundation::{FILETIME, ERROR_INVALID_PARAMETER, WAIT_OBJECT_0};
+    use windows_sys::Win32::System::Threading::{
+        GetProcessTimes, OpenProcess, TerminateProcess, WaitForSingleObject,
+        PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_TERMINATE, PROCESS_SYNCHRONIZE,
+    };
+    // Pin the incarnation before inspecting or signalling it: taskkill's PID
+    // lookup could otherwise hit a replacement between our check and its call.
+    // SAFETY: scalar PID/access flags only; returned handle is owned below.
+    let raw = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_TERMINATE | PROCESS_SYNCHRONIZE, 0, who.pid) };
+    if raw.is_null() {
+        let error = std::io::Error::last_os_error();
+        if error.raw_os_error() == Some(ERROR_INVALID_PARAMETER as i32) {
+            return Ok(false);
+        }
+        return Err(format!("OpenProcess pid={} started={}: {error}", who.pid, who.start_time));
+    }
+    // SAFETY: OpenProcess returned a new owned handle above.
+    let process = unsafe { OwnedHandle::from_raw_handle(raw) };
+    let mut creation = FILETIME { dwLowDateTime: 0, dwHighDateTime: 0 };
+    let mut exit = creation;
+    let mut kernel = creation;
+    let mut user = creation;
+    // SAFETY: owned live handle and four valid writable FILETIME pointers.
+    if unsafe { GetProcessTimes(process.as_raw_handle(), &mut creation, &mut exit, &mut kernel, &mut user) } == 0 {
+        return Err(format!("GetProcessTimes pid={}: {}", who.pid, std::io::Error::last_os_error()));
+    }
+    let ticks = (u64::from(creation.dwHighDateTime) << 32) | u64::from(creation.dwLowDateTime);
+    let started = (ticks / 10_000_000).checked_sub(11_644_473_600)
+        .ok_or("process creation time precedes the Unix epoch")?;
+    // SAFETY: the owned handle stays open through the nonblocking wait.
+    if started != who.start_time || unsafe { WaitForSingleObject(process.as_raw_handle(), 0) } == WAIT_OBJECT_0 {
+        return Ok(false);
+    }
+    // SAFETY: terminate only this held, creation-time-verified incarnation.
+    if unsafe { TerminateProcess(process.as_raw_handle(), 1) } == 0 {
+        return Err(format!("TerminateProcess pid={} started={}: {}", who.pid, who.start_time, std::io::Error::last_os_error()));
+    }
+    Ok(true)
+}
+
 
 /// End `child` and its tree: THE one way an owned child is ended (the shell's execution task and
 /// `gh`'s owner). Its descendants are found while it is alive and still their parent, killed

@@ -55,8 +55,8 @@ for line in open(sys.argv[1], encoding="utf-8", errors="replace"):
         continue
     if rec.get("reason") != "compiler-message":
         continue
-    # The engine is cut out of continuum-core (core/continuum-engine); its warnings stay counted.
-    if (rec.get("target") or {}).get("name") not in ("continuum-core", "continuum_core", "continuum-engine", "continuum_engine"):
+    # Crates cut out of continuum-core (engine, hands, live) keep their warnings counted.
+    if (rec.get("target") or {}).get("name") not in ("continuum-core", "continuum_core", "continuum-engine", "continuum_engine", "continuum-hands", "continuum_hands", "continuum-live", "continuum_live", "continuum-mind", "continuum_mind"):
         continue
     msg = rec.get("message") or {}
     if msg.get("level") != "warning":

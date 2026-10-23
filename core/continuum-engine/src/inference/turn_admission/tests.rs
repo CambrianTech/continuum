@@ -324,6 +324,220 @@
         assert_eq!(adm_b.slot(), Some(slot_a), "B must land PINNED on the freed slot");
     }
 
+    // what this catches (10417f6d): a queued lifecycle writer must not form a cycle
+    // with an existing slot waiter's semaphore reacquisition and a later admission.
+    #[tokio::test(start_paused = true)]
+    async fn a_later_admission_cannot_block_the_reader_a_transition_is_draining()
+        -> Result<(), Box<dyn std::error::Error>>
+    {
+        let root = format!("test://admission-drain-{}", Uuid::new_v4());
+        let pool = Arc::new(KvSlotPool::new(&root, 1));
+        let first_adapter = Arc::new(Semaphore::new(1));
+        let waiting_adapter = Arc::new(Semaphore::new(1));
+        let client = reqwest::Client::new();
+        let first_key = ActivityKey::new(Uuid::new_v4(), Uuid::new_v4()).ok_or("first key")?;
+        let waiting_key = ActivityKey::new(Uuid::new_v4(), Uuid::new_v4()).ok_or("waiting key")?;
+        let first = admit_turn(
+            &first_adapter, Some(first_key), Some(pool.clone()), &client, &root,
+            100, std::time::Duration::ZERO,
+        ).await?;
+        let first_slot = first.slot().ok_or("first admission must pin the slot")?;
+        let mut waiting = Box::pin(admit_turn(
+            &waiting_adapter, Some(waiting_key), Some(pool.clone()), &client, &root,
+            100, std::time::Duration::ZERO,
+        ));
+        assert!(futures::poll!(&mut waiting).is_pending(), "the only slot is pinned");
+        assert_eq!(waiting_adapter.available_permits(), 1, "slot waiter released its permit");
+
+        let endpoint = crate::inference::slots::directory().endpoint(&root);
+        // A superseded intent still drains before checking authority, but must leave
+        // the healthy generation ready. No engine or HTTP fixture is needed here.
+        let superseded = || false;
+        let mut transition = Box::pin(endpoint.transition_if(&superseded));
+        assert!(futures::poll!(&mut transition).is_pending(), "existing readers must drain");
+        let mut later = Box::pin(admit_turn(
+            &waiting_adapter, None, None, &client, &root,
+            0, std::time::Duration::ZERO,
+        ));
+        assert!(futures::poll!(&mut later).is_pending(), "a later reader cannot overtake the writer");
+        drop(first);
+
+        // On the old ordering, later owns the sole semaphore permit behind the writer,
+        // waiting retains a reader while reacquiring that permit, and the writer waits
+        // for waiting. The writer must drain without forcing either queued turn to
+        // run first; no outer watchdog fires or cancels an admission to free it.
+        assert!(tokio::time::timeout(std::time::Duration::from_secs(1), &mut transition)
+            .await.map_err(|_| "slot waiter blocked lifecycle drain")?.is_err());
+        assert!(endpoint.is_ready());
+        let later_admitted = tokio::time::timeout(std::time::Duration::from_secs(1), &mut later)
+            .await.map_err(|_| "later admission did not resume after lifecycle drain")??;
+        drop(later_admitted);
+        drop(later);
+        let admitted = tokio::time::timeout(std::time::Duration::from_secs(1), &mut waiting)
+            .await.map_err(|_| "released slot could not drain: endpoint/semaphore lock cycle")??;
+        assert_eq!(admitted.slot(), Some(first_slot));
+        drop(admitted);
+        drop(waiting);
+        assert_eq!(waiting_adapter.available_permits(), 1);
+        assert_eq!(first_adapter.available_permits(), 1);
+        Ok(())
+    }
+
+    // what this catches (10417f6d): fixing the lock order must not turn queued
+    // adapter admissions into endpoint readers that delay a lifecycle transition.
+    #[tokio::test(start_paused = true)]
+    async fn a_transition_drains_running_turns_not_the_adapter_queue()
+        -> Result<(), Box<dyn std::error::Error>>
+    {
+        let root = format!("test://admission-queue-drain-{}", Uuid::new_v4());
+        let sem = Arc::new(Semaphore::new(1));
+        let client = reqwest::Client::new();
+        let running = admit_turn(&sem, None, None, &client, &root, 0, std::time::Duration::ZERO).await?;
+        let mut first = Box::pin(admit_turn(&sem, None, None, &client, &root, 0, std::time::Duration::ZERO));
+        let mut second = Box::pin(admit_turn(&sem, None, None, &client, &root, 0, std::time::Duration::ZERO));
+        assert!(futures::poll!(&mut first).is_pending());
+        assert!(futures::poll!(&mut second).is_pending());
+        let endpoint = crate::inference::slots::directory().endpoint(&root);
+        let superseded = || false;
+        let mut transition = Box::pin(endpoint.transition_if(&superseded));
+        assert!(futures::poll!(&mut transition).is_pending());
+        drop(running);
+        // Poll the semaphore winner before the writer: it must wait behind the
+        // writer without already carrying a reader from its earlier queue wait.
+        assert!(futures::poll!(&mut first).is_pending());
+        assert!(tokio::time::timeout(std::time::Duration::from_secs(1), &mut transition)
+            .await.map_err(|_| "adapter queue retained endpoint readers")?.is_err());
+        let admitted = first.as_mut().await?;
+        drop(admitted);
+        drop(first);
+        let admitted = second.as_mut().await?;
+        drop(admitted);
+        drop(second);
+        assert_eq!(sem.available_permits(), 1);
+        Ok(())
+    }
+
+    // what this catches (10417f6d): an all-pinned waiter must discard discovery
+    // from the old generation when a lifecycle transition replaces its slot pool.
+    #[tokio::test(start_paused = true)]
+    async fn a_slot_waiter_resumes_on_the_replacement_generations_pool()
+        -> Result<(), Box<dyn std::error::Error>>
+    {
+        let root = format!("test://admission-generation-{}", Uuid::new_v4());
+        let endpoint = crate::inference::slots::directory().endpoint(&root);
+        let mut contract = crate::inference::slots::KvPageContract {
+            model_id: "fixture".into(), model: "fixture.gguf".into(), adapters: vec![],
+            page_dir: Some("fixture-pages".into()), context: 8192, slots: 1,
+            cache_type: Some("q8_0".into()), flash_attn: Some(true), engine_build: None, engine: "fixture-engine".into(),
+            revisions: Some(vec![("fixture.gguf".into(), 73, std::time::SystemTime::UNIX_EPOCH)]),
+        };
+        let initial = endpoint.transition().await;
+        let old = initial.start_generation()?;
+        initial.ready(&root, &old, contract.clone())?;
+        drop(initial);
+        let old_pool = endpoint.admit().await?.pool.ok_or("initial pool")?;
+        let sem = Arc::new(Semaphore::new(2));
+        let client = reqwest::Client::new();
+        let first_key = ActivityKey::new(Uuid::new_v4(), Uuid::new_v4()).ok_or("first key")?;
+        let waiting_key = ActivityKey::new(Uuid::new_v4(), Uuid::new_v4()).ok_or("waiting key")?;
+        let first = admit_turn(&sem, Some(first_key), Some(old_pool.clone()), &client, &root,
+            100, std::time::Duration::ZERO).await?;
+        let mut waiting = Box::pin(admit_turn(&sem, Some(waiting_key), Some(old_pool.clone()),
+            &client, &root, 100, AdmissionPatience::for_turn(None, std::time::Duration::ZERO)));
+        assert!(futures::poll!(&mut waiting).is_pending());
+        // Healthy slot contention outlasts the 240s readiness allowance without
+        // spending it. A later engine replacement still gets its readiness hold.
+        tokio::time::advance(std::time::Duration::from_secs(300)).await;
+        let mut replacing = Box::pin(endpoint.transition());
+        assert!(futures::poll!(&mut replacing).is_pending());
+        drop(first);
+        let replacement = tokio::time::timeout(std::time::Duration::from_secs(1), &mut replacing)
+            .await.map_err(|_| "slot waiter blocked generation replacement")?;
+        old.observed_exit();
+        let new = replacement.start_generation()?;
+        assert!(futures::poll!(&mut waiting).is_pending());
+        tokio::time::advance(std::time::Duration::from_secs(20)).await;
+        contract.context = 16384;
+        replacement.ready(&root, &new, contract)?;
+        drop(replacement);
+        let new_pool = endpoint.admit().await?.pool.ok_or("replacement pool")?;
+        assert!(!Arc::ptr_eq(&old_pool, &new_pool));
+        let admitted = tokio::time::timeout(std::time::Duration::from_secs(1), &mut waiting)
+            .await.map_err(|_| "slot waiter missed release across replacement")??;
+        let (admitted_pool, key, _) = admitted.uncommitted.as_ref().ok_or("provisional slot")?;
+        assert!(Arc::ptr_eq(admitted_pool, &new_pool), "stale discovery pool reused");
+        assert_eq!(*key, waiting_key);
+        drop(admitted);
+        drop(waiting);
+        assert_eq!(sem.available_permits(), 2);
+        Ok(())
+    }
+
+    // what this catches (10417f6d): restarting admission after a slot wake must
+    // retain readiness patience after slot contention, and cancellation releases it.
+    #[tokio::test(start_paused = true)]
+    async fn slot_waits_preserve_readiness_patience_and_cancellation_releases_admission()
+        -> Result<(), Box<dyn std::error::Error>>
+    {
+        let root = format!("test://admission-patience-{}", Uuid::new_v4());
+        let pool = Arc::new(KvSlotPool::new(&root, 1));
+        let sem = Arc::new(Semaphore::new(2));
+        let client = reqwest::Client::new();
+        let first_key = ActivityKey::new(Uuid::new_v4(), Uuid::new_v4()).ok_or("first key")?;
+        let waiting_key = ActivityKey::new(Uuid::new_v4(), Uuid::new_v4()).ok_or("waiting key")?;
+        let first = admit_turn(&sem, Some(first_key), Some(pool.clone()), &client, &root,
+            100, std::time::Duration::ZERO).await?;
+        let started = tokio::time::Instant::now();
+        let mut waiting = Box::pin(admit_turn(&sem, Some(waiting_key), Some(pool.clone()),
+            &client, &root, 100, std::time::Duration::from_secs(10)));
+        assert!(futures::poll!(&mut waiting).is_pending());
+        let mut cancelled = Box::pin(admit_turn(&sem, Some(waiting_key), Some(pool.clone()),
+            &client, &root, 100, std::time::Duration::from_secs(10)));
+        assert!(futures::poll!(&mut cancelled).is_pending());
+        drop(cancelled);
+        assert_eq!(sem.available_permits(), 1);
+        tokio::time::advance(std::time::Duration::from_secs(8)).await;
+        let endpoint = crate::inference::slots::directory().endpoint(&root);
+        let mut transition = Box::pin(endpoint.transition());
+        assert!(futures::poll!(&mut transition).is_pending());
+        drop(first);
+        drop(tokio::time::timeout(std::time::Duration::from_secs(1), &mut transition)
+            .await.map_err(|_| "cancelled or waiting turn retained endpoint reader")?);
+        assert!(waiting.as_mut().await.is_err(), "closed endpoint must exhaust patience");
+        assert_eq!(started.elapsed(), std::time::Duration::from_secs(18));
+        drop(waiting);
+        assert_eq!(sem.available_permits(), 2);
+        Ok(())
+    }
+
+    // what this catches (10417f6d): excluding slot waits from readiness patience
+    // must not exclude them from the request's absolute deadline or leak a permit.
+    #[tokio::test(start_paused = true)]
+    async fn the_turn_deadline_bounds_adapter_and_slot_waits()
+        -> Result<(), Box<dyn std::error::Error>>
+    {
+        for permits in [1, 2] {
+            let root = format!("test://admission-deadline-{}", Uuid::new_v4());
+            let sem = Arc::new(Semaphore::new(permits));
+            let pool = Arc::new(KvSlotPool::new(&root, 1));
+            let client = reqwest::Client::new();
+            let first_key = ActivityKey::new(Uuid::new_v4(), Uuid::new_v4()).ok_or("first key")?;
+            let next_key = ActivityKey::new(Uuid::new_v4(), Uuid::new_v4()).ok_or("next key")?;
+            let running = admit_turn(&sem, Some(first_key), Some(pool.clone()), &client, &root,
+                100, std::time::Duration::ZERO).await?;
+            let started = tokio::time::Instant::now();
+            let waiting = admit_turn(&sem, Some(next_key), Some(pool), &client, &root, 100,
+                AdmissionPatience::for_turn(Some(std::time::Duration::from_secs(10)),
+                    std::time::Duration::from_secs(2)));
+            assert!(waiting.await.is_err());
+            assert_eq!(started.elapsed(), std::time::Duration::from_secs(8));
+            assert_eq!(sem.available_permits(), permits - 1);
+            drop(running);
+            assert_eq!(sem.available_permits(), permits);
+        }
+        Ok(())
+    }
+
     // what this catches (Codex on #4515): a turn that pinned its slot and is then CANCELLED
     // while awaiting the slot's operation permit (pin held, no permit) frees an evictable lease,
     // and no SlotPermit drop will ever announce it; a turn parked on the all-pinned pool must
@@ -431,6 +645,8 @@
             context: 8192,
             slots: 3,
             cache_type: Some("q8_0".into()),
+            flash_attn: Some(true),
+            engine_build: None,
             engine: "fixture-engine".into(),
             revisions: Some(vec![(
                 "fixture.gguf".into(),

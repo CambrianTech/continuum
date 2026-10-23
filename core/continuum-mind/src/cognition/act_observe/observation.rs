@@ -1,0 +1,553 @@
+//! The TYPED observation: one executed act as a first-class value threaded
+//! end-to-end through the act→observe→re-perceive contract, replacing the
+//! `format!`-flattened `String` the whole downstream used to re-parse.
+//!
+//! See docs/cognition/TYPED-OBSERVATION-REFACTOR.md. The bug this kills
+//! (run-18057-f1): a persona's tool RESULT did not reliably re-enter her next
+//! LLM prompt — it flowed as untyped prose routed as a perception *bid* an
+//! arbiter could silently evict, and a dozen predicates re-parsed that rendered
+//! prose. Here the typed pair `(ToolCall, ToolResult)` — correlated by
+//! `tool_use_id == call.id`, precomputed `verb`/`paths` — is the single source,
+//! and the two renderings (recency / recall) become PURE FUNCTIONS of it so no
+//! consumer re-derives structure from the receipt string.
+//!
+//! All types derive `Serialize, Deserialize` (they land in `VolatileSnapshot` →
+//! `~/.continuum/personas/<id>/volatile.json`, also the grid-sync wire format)
+//! and `#[ts(export)]` (`ToolCall`/`ToolResult` already cross the Rust→TS
+//! boundary, so a struct built from them must too — ts-rs law, CLAUDE.md).
+
+use std::path::PathBuf;
+
+use serde::{Deserialize, Serialize};
+use ts_rs::TS;
+
+use crate::ai::types::{ToolCall, ToolResult};
+use crate::cognition::context_budget::ContextBudget;
+
+use super::recency::{
+    humanize_result_content, render_act_for_recall,
+    summarize_args_for_recency,
+};
+
+/// Semantic class of a tool verb. Produced ONCE from `ToolCall.name` at the act
+/// seam; every predicate that used to grep the rendered receipt for a verb
+/// prefix now reads this. Single home of the verb→class mapping duplicated as
+/// (a) the `wrote` bool in `apply.rs`, (b) the "I ran code/write(" scans in
+/// `perception.rs`, (c) the orientation-prefix scans in `is_redundant_orientation`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/cognition/ToolVerb.ts"
+)]
+pub enum ToolVerb {
+    Write,
+    Edit,
+    Apply,
+    Commit, // mutate disk
+    Run,
+    Shell,
+    Read,
+    Screenshot, // observe the world
+    ListCommands,
+    Help,
+    Tree,
+    Search, // orient
+    /// Put her output on the board (a submission, a review verdict, a ledger note, a card):
+    /// work that reaches no disk and was counted as reading (Joel, 2026-10-06).
+    Publish,
+    Other,
+}
+
+impl ToolVerb {
+    /// Use the executor's resolver so advertised aliases and canonical commands
+    /// produce the same feedback about what the persona actually did.
+    pub fn classify(name: &str) -> Self {
+        let n = crate::ai::tool_dialect::resolve_wire_name(name);
+        // exact SUBSTRING semantics preserved from the `wrote` bool so it is unchanged.
+        if n.contains("write") {
+            return ToolVerb::Write;
+        }
+        if n.contains("edit") {
+            return ToolVerb::Edit;
+        }
+        if n.contains("apply") {
+            return ToolVerb::Apply;
+        }
+        if n.contains("commit") {
+            return ToolVerb::Commit;
+        }
+        match n.as_str() {
+            "commands/list" => ToolVerb::ListCommands,
+            "commands/help" => ToolVerb::Help,
+            "code/tree" => ToolVerb::Tree,
+            "code/search" => ToolVerb::Search,
+            "code/run" => ToolVerb::Run,
+            "code/shell" => ToolVerb::Shell,
+            "code/read" => ToolVerb::Read,
+            // the board, and the forge: a PR, its comments and an issue are her output to
+            // the world as surely as a submission is (her #4812 comment counted as reading)
+            "work/submit" | "work/review" | "work/note" | "work/create" | "code/github/pr-create"
+            | "code/github/pr-comment" | "code/github/issue-create" => ToolVerb::Publish,
+            "interface/screenshot" | "interface/capture" | "perception/observe"
+            | "perception/look" | "vision/look" => ToolVerb::Screenshot,
+            _ => ToolVerb::Other,
+        }
+    }
+
+    /// Reached DISK — replaces the `mutated_workspace` / `wrote` bool scan.
+    pub fn mutates(&self) -> bool {
+        matches!(
+            self,
+            ToolVerb::Write | ToolVerb::Edit | ToolVerb::Apply | ToolVerb::Commit
+        )
+    }
+
+    /// Put output on the board — a write that reaches no disk.
+    pub fn publishes(&self) -> bool {
+        matches!(self, ToolVerb::Publish)
+    }
+
+    /// Looked at the world — replaces the observation-verb class scan in
+    /// `wrote_without_observation`.
+    pub fn observes(&self) -> bool {
+        matches!(
+            self,
+            ToolVerb::Run | ToolVerb::Shell | ToolVerb::Read | ToolVerb::Screenshot
+        )
+    }
+
+    /// Surveys what the mind already carries — replaces the `is_redundant_orientation`
+    /// prefix scan. `code/search` is NOT orientation (it reads specific content), so it
+    /// is excluded from this semantic class.
+    pub fn is_orientation(&self) -> bool {
+        matches!(
+            self,
+            ToolVerb::ListCommands | ToolVerb::Help | ToolVerb::Tree
+        )
+    }
+}
+
+/// The typed payload of ONE tool call's result. REPLACES the `format!` blob.
+/// `result` reuses the existing `ai::types::ToolResult` verbatim
+/// (`tool_use_id == ToolCall.id`). `verb`/`paths` PRECOMPUTED at the act seam so
+/// no consumer re-derives from prose.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/cognition/ToolOutput.ts"
+)]
+pub struct ToolOutput {
+    /// Retained source image; persisted history never owns base64 pixel payloads.
+    #[serde(default)]
+    #[ts(optional)]
+    pub image: Option<crate::media::artifact::ImageArtifact>,
+    /// Additional retained frames from this call, in result order.
+    #[serde(default)]
+    #[ts(optional)]
+    pub additional_images: Option<Vec<crate::media::artifact::ImageArtifact>>,
+    /// Single source of the raw payload; correlated by `tool_use_id == call.id`.
+    pub result: ToolResult,
+    /// Computed once via `ToolVerb::classify(call.name)`.
+    pub verb: ToolVerb,
+    /// Files touched, from `call.input` — exact membership, immune to head-truncation.
+    #[ts(type = "Array<string>")]
+    pub paths: Vec<PathBuf>,
+    /// What the COMMAND said about its own outcome, decoded once by the executor
+    /// from the pre-fold value and carried here.
+    ///
+    /// This is why the struct exists: "PRECOMPUTED at the act seam so no consumer
+    /// re-derives from prose". `result.is_error` is a bool and cannot express
+    /// *running* or *undecodable*, so a receipt reading only that bool rendered a
+    /// success tick for a shell that had not finished and for a payload nobody
+    /// could read (card f6c50a49).
+    #[serde(default)]
+    #[ts(skip)]
+    pub verdict: crate::sdk_codegen::ActVerdict,
+}
+
+/// Per-call outcome. Flattens the FIVE return sites of the old `Option<String>`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/cognition/ActStatus.ts"
+)]
+pub enum ActStatus {
+    Executed,
+    /// Executor `Err` — the old path only `warn`'d and dropped this.
+    Errored {
+        message: String,
+    },
+    /// Legacy checkpoint status. New calls execute; history does not prove satisfaction.
+    AlreadySatisfied {
+        repeat: usize,
+    },
+    /// Legacy checkpoint status retained for decoding historical observations.
+    RedundantOrientation {
+        repeat: usize,
+    },
+}
+
+/// ONE act = typed pair (call, output) + status. `call` retains `ToolCall`
+/// (INCLUDING `.id`) so correlation is by id, not by `outcome.results.get(i)`
+/// positional index.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/cognition/Observation.ts"
+)]
+pub struct Observation {
+    pub call: ToolCall,
+    pub output: ToolOutput,
+    pub status: ActStatus,
+}
+
+/// The BATCH result of `apply_act` — replaces `Option<String>`.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/cognition/ActOutcome.ts"
+)]
+pub enum ActOutcome {
+    /// The mind has no hands (tools were never offered) — was `None`.
+    NoHands,
+    /// The executor batch failed at the channel level — was `None`, now
+    /// distinguishable from no-hands for a future backstop.
+    ExecutorError {
+        calls: Vec<ToolCall>,
+        message: String,
+    },
+    /// One or more acts ran (or were short-circuited) — was `Some(observation)`.
+    Acted { acts: Vec<Observation> },
+}
+
+impl ActOutcome {
+    /// The Some/None signal `settle_step` used becomes typed.
+    pub fn produced_an_act(&self) -> bool {
+        matches!(self, ActOutcome::Acted { acts } if !acts.is_empty())
+    }
+}
+
+impl Observation {
+    /// Execution alone is not success: projected running/failed/undecodable
+    /// results do not establish an effect. Legacy unprojected commands retain
+    /// their transport outcome contract.
+    pub(crate) fn completed_successfully(&self) -> bool {
+        use crate::sdk_codegen::ActVerdict;
+        matches!(self.status, ActStatus::Executed)
+            && !self.is_err()
+            && (self.output.verdict.succeeded()
+                || self.output.verdict == ActVerdict::Unprojected)
+    }
+
+    pub(crate) fn mutated_workspace(&self) -> bool {
+        self.completed_successfully() && self.output.verb.mutates()
+    }
+
+    /// Humanized result body — the ONE decode both renderings share (card
+    /// 0a4c0648: the executor hands back serde-serialized JSON; render code as
+    /// code, never escape-soup).
+    fn body_text(&self) -> String {
+        humanize_result_content(&self.output.result.content)
+    }
+
+    pub(crate) fn is_err(&self) -> bool {
+        // The command's own verdict wins where it exists; the transport bool is the
+        // fallback for every command that never opted in. Deliberately NOT true for
+        // `Running` (not finished is not failed) or `Undecodable` (unreadable is not
+        // failed) — those are said by `verdict`, not smuggled through this bool.
+        self.output.verdict.failed() || self.output.result.is_error == Some(true)
+    }
+
+    /// The RECENCY-channel rendering: the FULL trace working memory keeps so the
+    /// mind can act on what it just fetched. Byte-identical to the old inline
+    /// `apply.rs` block (`{name}({args}){because}\nResult:\n{bounded}\n\n`) — the
+    /// #205 KV-stability invariant. `intent` is batch-level (one per `apply_act`
+    /// call, shared by every act in the batch), so it is passed rather than
+    /// stored per-`Observation`.
+    pub fn render_recency(&self, intent: &str, budget: &ContextBudget) -> String {
+        Self::render_recency_impl(self, intent, budget)
+    }
+
+    fn render_recency_impl(&self, intent: &str, budget: &ContextBudget) -> String {
+        let fold = Some(budget.echoed_arg_chars());
+        let args = summarize_args_for_recency(&self.call.input, fold);
+        // The intent rides the result as a ONE-LINE reason, clipped to the same
+        // window-relative echo budget the args get — never the whole monologue.
+        // Measured 2026-09-04: one result header carried 2,902 chars of intent
+        // ("Let me get oriented…") ahead of 790 chars of actual output; across a
+        // turn, 6.1k of 20.6k result chars were intent echo. The output is what
+        // she must read; the reason is a label.
+        let because = if intent.trim().is_empty() {
+            String::new()
+        } else {
+            format!(" because {}", clip_intent(intent, budget.echoed_arg_chars()))
+        };
+        format!(
+            "{}({}){}\nResult:\n{}\n\n",
+            self.call.name,
+            args,
+            because,
+            self.body_text().trim(),
+        )
+    }
+
+    /// The RECALL-channel rendering: the COLLAPSED reference the Episodic engram
+    /// re-injects on later turns (#166 — a separate channel from recency). The
+    /// Summary text may collapse; saved-result custody must remain recoverable.
+    pub fn render_recall(&self, intent: &str) -> String {
+        let mut recall = render_act_for_recall(
+            &self.call.name,
+            &self.call.input,
+            intent,
+            // The command's word where it gave one; the transport bool otherwise.
+            // This channel is re-injected on later turns, so a still-running act
+            // collapsed to "ok — …" here is the mind misremembering its own night.
+            if self.output.verdict == crate::sdk_codegen::ActVerdict::Unprojected
+                && self.output.result.is_error == Some(true)
+            {
+                crate::sdk_codegen::ActVerdict::Declared(crate::sdk_codegen::ToolVerdict::Failed)
+            } else {
+                self.output.verdict
+            },
+            &self.body_text(),
+        );
+        if let Some(handle) = self.output.result.custody.handle() {
+            recall.push_str(&format!(
+                "Saved result: `tool/output` {{\"outputId\":\"{handle}\"}}\n\n"
+            ));
+        }
+        recall
+    }
+}
+
+/// Extract the file paths a tool call NAMES: any string under a `file_path`,
+/// `path`, or `paths` key in the call's input. Exact typed membership from HER
+/// OWN call — immune to receipt head-truncation, never inferred. Mirrors the
+/// key set `collect_touched_paths` scans, plus a `paths` array.
+pub fn extract_paths(input: &serde_json::Value) -> Vec<PathBuf> {
+    let mut out: Vec<PathBuf> = Vec::new();
+    let mut push = |p: &str| {
+        let pb = PathBuf::from(p);
+        if !out.contains(&pb) {
+            out.push(pb);
+        }
+    };
+    for key in ["file_path", "path"] {
+        if let Some(p) = input.get(key).and_then(|v| v.as_str()) {
+            push(p);
+        }
+    }
+    if let Some(arr) = input.get("paths").and_then(|v| v.as_array()) {
+        for p in arr.iter().filter_map(|v| v.as_str()) {
+            push(p);
+        }
+    }
+    out
+}
+
+/// Clip an act's intent to a one-line reason of at most `max_chars` characters
+/// (first line, head-trimmed with an ellipsis). Pure; used by the recency render.
+pub(super) fn clip_intent(intent: &str, max_chars: usize) -> String {
+    let first = intent.trim().lines().next().unwrap_or("").trim(); // unwrap_or: an empty intent clips to nothing
+    let max = max_chars.max(24);
+    if first.chars().count() <= max {
+        first.to_string()
+    } else {
+        let head: String = first.chars().take(max.saturating_sub(1)).collect();
+        format!("{}…", head.trim_end())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+
+    // what this catches: the intent rides a tool result as a ONE-LINE label clipped to
+    // the echo budget — never the monologue (2,902 chars ahead of 790 chars of output,
+    // measured 2026-09-04). A short intent passes through untouched.
+    #[test]
+    fn intent_on_a_result_is_a_clipped_one_liner() {
+        let long = "Let me get oriented properly this time. I've been confusing myself with stale context and the board says otherwise.\nSecond line never rides.";
+        let clipped = super::clip_intent(long, 40);
+        assert!(clipped.chars().count() <= 40, "{clipped:?}");
+        assert!(clipped.ends_with('…') && !clipped.contains("Second line"), "{clipped:?}");
+        assert_eq!(super::clip_intent("read the card", 40), "read the card");
+        assert_eq!(super::clip_intent("   ", 40), "");
+    }
+
+    use super::*;
+
+    // what this catches: the verb→class mapping is the ONE home the `wrote` bool,
+    // the "I ran code/write(" scans, and the orientation-prefix scans all collapse
+    // into (run-18057-f1 / seam-5). `mutates()` must agree with the old `wrote`
+    // substring rule (write/edit/apply/commit, underscore-normalized), `observes()`
+    // with the run/read/screenshot class, `is_orientation()` with list/help/tree
+    // (never code/search — that reads content).
+    #[test]
+    fn tool_verb_classifies_the_load_bearing_classes() {
+        assert!(ToolVerb::classify("code/write").mutates());
+        assert!(ToolVerb::classify("code/edit").mutates());
+        assert!(ToolVerb::classify("code/apply").mutates());
+        assert!(ToolVerb::classify("code/commit").mutates());
+        // underscore form (models emit both) normalizes the same way
+        assert!(ToolVerb::classify("code_write").mutates());
+        assert!(!ToolVerb::classify("code/read").mutates());
+
+        assert!(ToolVerb::classify("code/run").observes());
+        assert!(ToolVerb::classify("code/shell").observes());
+        assert!(ToolVerb::classify("code/read").observes());
+        assert!(ToolVerb::classify("interface/screenshot").observes());
+        assert!(!ToolVerb::classify("code/write").observes());
+
+        assert!(ToolVerb::classify("commands/list").is_orientation());
+        assert!(ToolVerb::classify("commands/help").is_orientation());
+        assert!(ToolVerb::classify("code/tree").is_orientation());
+        // code/search reads specific content — NOT a survey, exactly as
+        // it reads specific content.
+        assert!(!ToolVerb::classify("code/search").is_orientation());
+        assert_eq!(ToolVerb::classify("code/search"), ToolVerb::Search);
+        assert_eq!(ToolVerb::classify("work/list"), ToolVerb::Other);
+    }
+
+    // what this catches: exact typed path membership from the call's own input —
+    // the field that replaces re-deriving a filename from head-truncated prose
+    // (claimed_file_without_act / touched_paths). file_path, path, and a paths[]
+    // array all land; duplicates dedupe; a call with none yields empty.
+    #[test]
+    fn extract_paths_reads_the_typed_input_not_the_receipt() {
+        let one = serde_json::json!({ "file_path": "sympy/core/basic.py" });
+        assert_eq!(
+            extract_paths(&one),
+            vec![PathBuf::from("sympy/core/basic.py")]
+        );
+
+        let arr = serde_json::json!({ "paths": ["a.rs", "b.rs", "a.rs"] });
+        assert_eq!(
+            extract_paths(&arr),
+            vec![PathBuf::from("a.rs"), PathBuf::from("b.rs")],
+            "paths array is read and deduped"
+        );
+
+        let none = serde_json::json!({ "query": "needle" });
+        assert!(extract_paths(&none).is_empty());
+    }
+
+    /// THE CONSUMER SIDE of card f6c50a49 (Astra, #4352 review: "projector-only
+    /// tests cannot catch the current Running regression at the consumer").
+    /// These assert what the RECEIPT does with a verdict, not what the projector
+    /// produced — the two are different failures and only this one was visible in
+    /// the room.
+    mod verdict_reaches_the_receipt {
+        // The enclosing `tests` mod does not glob its parent, so name what we use.
+        use crate::ai::types::{ToolCall, ToolResult};
+        use super::super::{ActStatus, Observation, ToolOutput, ToolVerb};
+        use crate::sdk_codegen::{ActVerdict, ToolVerdict};
+
+        fn obs(verdict: ActVerdict, is_error: Option<bool>, content: &str) -> Observation {
+            Observation {
+                call: ToolCall {
+                    id: "c1".into(),
+                    name: "code/shell".into(),
+                    input: serde_json::json!({ "command": "cargo test" }),
+                },
+                output: ToolOutput {
+                    image: None,
+                    additional_images: None,
+                    result: ToolResult {
+                        tool_use_id: "c1".into(),
+                        content: content.into(),
+                        is_error,
+                        custody: crate::ai::types::ResultCustody::Unsaved,
+                    },
+                    verb: ToolVerb::classify("code/shell"),
+                    paths: Vec::new(),
+                    verdict,
+                },
+                status: ActStatus::Executed,
+            }
+        }
+
+        /// what this catches: the whole defect, at the consumer. A command that
+        /// reported its OWN failure as data left `is_error` None, so every receipt
+        /// reading that bool called it a success.
+        #[test]
+        fn a_declared_failure_reads_as_an_error_even_though_the_transport_was_fine() {
+            let o = obs(ActVerdict::Declared(ToolVerdict::Failed), None, "exit 1");
+            assert!(
+                o.is_err(),
+                "the command said it failed; the transport bool being None must not overrule it"
+            );
+        }
+
+        /// what this catches: Running being flattened into either terminal state.
+        /// Not-finished is not failed, and it is certainly not succeeded.
+        #[test]
+        fn a_running_act_is_neither_an_error_nor_a_success() {
+            let o = obs(ActVerdict::Declared(ToolVerdict::Running), None, "handle");
+            assert!(!o.is_err(), "accepted is not failed");
+            assert!(!o.output.verdict.succeeded(), "accepted is not finished");
+            assert!(o.output.verdict.running());
+            assert_eq!(o.output.verdict.label(), "running");
+        }
+
+        /// what this catches: schema drift rendering as either a tick or a cross.
+        /// An unreadable result is an absence of information and the receipt must
+        /// say exactly that.
+        #[test]
+        fn an_undecodable_result_claims_neither_outcome() {
+            let o = obs(ActVerdict::Undecodable, None, "{}");
+            assert!(!o.is_err());
+            assert!(!o.output.verdict.succeeded());
+            assert_eq!(o.output.verdict.label(), "undecodable");
+        }
+
+        /// what this catches: a command that never opted in changing behaviour.
+        /// Its receipt must be byte-for-byte what it was before this change — the
+        /// transport bool alone decides.
+        #[test]
+        fn an_unprojected_command_still_reads_its_transport_bool() {
+            assert!(!obs(ActVerdict::Unprojected, None, "ok").is_err());
+            assert!(
+                obs(ActVerdict::Unprojected, Some(true), "boom").is_err(),
+                "a transport failure must still read as an error with no projector"
+            );
+        }
+
+        /// what this catches: the fix eating the feedback it exists to surface.
+        /// The whole point of marking a failed `code/run` is that the model then
+        /// READS the compiler's stderr and self-corrects — if the content were
+        /// replaced or dropped by the outcome marker, the cross would be useless.
+        #[test]
+        fn marking_a_failure_does_not_touch_the_stderr_the_model_needs() {
+            let stderr = "error[E0425]: cannot find value `x` in this scope";
+            let o = obs(ActVerdict::Declared(ToolVerdict::Failed), None, stderr);
+            assert!(o.is_err());
+            assert_eq!(
+                o.output.result.content, stderr,
+                "the payload is untouched; only the outcome marker changed"
+            );
+        }
+
+        /// A collapsed success, failure or pointer must retain typed custody,
+        /// even when the output reference is beyond the summary's text budget.
+        #[test]
+        fn recall_preserves_saved_output_reference_after_collapsing_text() {
+            use crate::ai::types::ResultCustody;
+            let handle = "8472d4bd946023ac";
+            let content = format!("header\n{}END_OF_SAVED_RESULT", "source line\n".repeat(100));
+            for verdict in [ToolVerdict::Succeeded, ToolVerdict::Failed, ToolVerdict::Running] {
+                let mut o = obs(ActVerdict::Declared(verdict), None, &content);
+                assert!(!o.render_recall("").contains("Saved result:"));
+                for custody in [
+                    ResultCustody::Whole { handle: handle.into() },
+                    ResultCustody::Pointer { handle: handle.into() },
+                ] {
+                    o.output.result.custody = custody;
+                    let recall = o.render_recall("");
+                    assert!(!recall.contains("END_OF_SAVED_RESULT"));
+                    assert!(recall.contains(&format!("`tool/output` {{\"outputId\":\"{handle}\"}}")));
+                    assert_eq!(o.output.result.content, content);
+                }
+            }
+        }
+    }
+}

@@ -187,7 +187,7 @@ impl OpenAICompatibleAdapter {
             // Estimate this activity's prompt size once — the eviction price basis
             // AND the overshoot-alarm input below (chars/4, deliberately conservative).
             let approx_tokens = prompt_tokens as u64;
-            // TURN ADMISSION (event-driven, no timeout) — permit-first, then lease+pin
+            // TURN ADMISSION (event-driven, bounded by the request deadline) — permit-first, then lease+pin
             // this activity's slot and page its KV onto a now-free slot. The returned
             // guard holds the permit + slot pin for the WHOLE generation (bound into
             // `_admission` at function scope above). A Turn that cannot name both
@@ -219,7 +219,7 @@ impl OpenAICompatibleAdapter {
                 &self.client,
                 root,
                 approx_tokens,
-                crate::inference::slots::EndpointSlots::turn_patience(request.turn_bound, start.elapsed()),
+                crate::inference::turn_admission::AdmissionPatience::for_turn(request.turn_bound, start.elapsed()),
             )
             .await
             .map_err(crate::ai::inference_error::InferenceError::Unavailable)?;
@@ -456,7 +456,7 @@ impl OpenAICompatibleAdapter {
                     &self.client,
                     root,
                     0,
-                    crate::inference::slots::EndpointSlots::turn_patience(request.turn_bound, start.elapsed()),
+                    crate::inference::turn_admission::AdmissionPatience::for_turn(request.turn_bound, start.elapsed()),
                 )
                 .await
                 .map_err(crate::ai::inference_error::InferenceError::Unavailable)?,
@@ -762,15 +762,27 @@ impl OpenAICompatibleAdapter {
                 // instead of injecting a probe into a live engine, which measured load
                 // and contention and held the M5 three times on 2026-09-25/26 while
                 // restores were warm (card 356ce732).
-                if admission.restored() {
-                    if let Some(t) = &timing {
-                        continuum_base::probe!(
+                // A restore the engine REFUSED is reported by turn admission at the decision
+                // (outcome `restore_rejected`, the same class), so it counts even for a turn
+                // that never completes; here only restores that happened are judged warm or
+                // cold (card f3ba3b56). A resident prefix the engine did not reuse is its own
+                // class: it is not a restore, and must not dilute the restore verdict.
+                use crate::inference::turn_admission::PageIn;
+                if let Some(t) = &timing {
+                    match admission.page_in() {
+                        PageIn::Restored => continuum_base::probe!(
                             class = "inference.restored_turn",
                             cached = t.cached_tokens,
                             prompt = t.prefill_tokens,
                             outcome = if t.cached_tokens > 0 { "warm" } else { "cold" },
-                            "a turn restored from a KV page completed — did the engine reuse the restored prefix"
-                        );
+                            "a turn restored from a KV page completed — did the engine reuse it"
+                        ),
+                        PageIn::Resident if t.cached_tokens == 0 => continuum_base::probe!(
+                            class = "inference.resident_prefix_lost",
+                            prompt = t.prefill_tokens,
+                            "a turn whose KV was resident in its slot reused none of it: a full re-prefill"
+                        ),
+                        PageIn::Resident | PageIn::None | PageIn::RestoreRejected => {}
                     }
                 }
             }

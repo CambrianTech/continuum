@@ -72,7 +72,7 @@ use std::path::{Path, PathBuf};
 
 /// Forbidden method-call patterns that name `CommandExecutor`'s
 /// imperative dispatch API. Each must appear on a non-test source
-/// line inside `core/continuum-core/src/cognition/` to trip the
+/// line inside `core/continuum-mind/src/cognition/` to trip the
 /// ratchet.
 ///
 /// Note: we intentionally don't list the bare `.execute(` suffix —
@@ -187,8 +187,9 @@ fn walk(dir: &Path, visit: &mut dyn FnMut(&Path)) {
 }
 
 fn cognition_root() -> PathBuf {
+    // cognition lives in the mind crate (core/continuum-mind), beside core.
     let manifest = env!("CARGO_MANIFEST_DIR");
-    PathBuf::from(manifest).join("src").join("cognition")
+    PathBuf::from(manifest).join("..").join("continuum-mind").join("src").join("cognition")
 }
 
 /// Current count of grandfathered violations. Per the proof-discipline

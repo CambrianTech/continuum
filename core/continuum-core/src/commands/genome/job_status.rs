@@ -113,9 +113,12 @@ crate::action_command! {
                 Err(e) => return Ok(JobStatusOutcome::refused(fine_tuning_error_kind(&e), e.to_string())),
             }
         }
+        #[cfg(not(test))]
+        let board = TrainingJobBoard::global();
+        #[cfg(test)]
+        let board = this.test_job_board.clone();
         let history = TrainingJobBoard::terminal_history(
-            p.job_handle, p.history_offset.unwrap_or(0), // JUSTIFIED unwrap_or: absent continuation starts at the journal's first byte.
-            #[cfg(test)] this.test_job_board.clone(),
+            board, p.job_handle, p.history_offset.unwrap_or(0), // JUSTIFIED unwrap_or: absent continuation starts at the journal's first byte.
         ).await;
         Ok(match history {
             Ok(JournalLookup::Observed(status)) => JobStatusOutcome::observed(status, JobStatusSource::Journal),

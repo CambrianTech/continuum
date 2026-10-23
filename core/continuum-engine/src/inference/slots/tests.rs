@@ -1,5 +1,8 @@
 #![cfg(test)]
 
+// The confirmed-save ledger: its page format, legacy migration and resident resume.
+mod ledger;
+
     // what this catches (card 9e3350bd; the 5090 2026-10-11, build 6148): the heartbeat's smoke
     // probe ran on a one-slot lane's only slot, replacing the resident's KV, and the next save
     // wrote the probe's 72 tokens as her page. With no scratch slot and a resident seated, the
@@ -193,6 +196,8 @@
             context: 32768,
             slots: 2,
             cache_type: Some("q8_0".into()),
+            flash_attn: Some(true),
+            engine_build: None,
             engine: "fixture-engine".into(),
             revisions: Some(vec![(
                 "fixture.gguf".into(),
@@ -251,6 +256,8 @@
             context: 32768,
             slots: 2,
             cache_type: Some("q8_0".into()),
+            flash_attn: Some(true),
+            engine_build: None,
             engine: "fixture-engine".into(),
             revisions: Some(vec![(
                 "fixture.gguf".into(),
@@ -288,25 +295,6 @@
         drop(second);
         let admitted = held.await.expect("admitted by the transition that finally left the endpoint open");
         assert!(admitted.check_ready().is_ok());
-    }
-
-    // what this catches: the hold spends the TURN's bound, never stacks on it — and a
-    // turn with no time left gets the instant answer, not a 240 s wait.
-    #[test]
-    fn the_turns_patience_is_capped_by_what_the_turn_has_left() {
-        use std::time::Duration;
-        let cap = EndpointSlots::TURN_READINESS_PATIENCE;
-        assert_eq!(EndpointSlots::turn_patience(None, Duration::from_secs(10)), cap);
-        assert_eq!(EndpointSlots::turn_patience(Some(Duration::from_secs(600)), Duration::from_secs(10)), cap);
-        assert_eq!(
-            EndpointSlots::turn_patience(Some(Duration::from_secs(44)), Duration::from_secs(20)),
-            Duration::from_secs(24)
-        );
-        assert_eq!(
-            EndpointSlots::turn_patience(Some(Duration::from_secs(44)), Duration::from_secs(50)),
-            Duration::ZERO,
-            "out of time is the instant answer"
-        );
     }
 
     // what this catches: the 2026-08-26 KV-reuse-0% bug, both halves. One persona
@@ -505,111 +493,6 @@
             "props for a different generation cannot publish capability");
     }
 
-    // What this catches (the M5, 2026-10-10 18:49Z: turn_cached 0 of 31,811 after a
-    // deploy, pages on disk): confirmed-save eligibility that dies with the process.
-    // A new pool under the SAME contract restores what the last one saved; a page whose
-    // file is gone, a key lost before its save completed, and any other contract (one
-    // more slot) restore nothing.
-    #[test]
-    fn confirmed_saves_survive_a_restart_only_under_the_same_contract() {
-        let dir = tempfile::tempdir().expect("test: page dir");
-        let contract = KvPageContract {
-            model_id: "fixture".into(),
-            model: "fixture.gguf".into(),
-            adapters: vec![],
-            page_dir: Some(dir.path().to_path_buf()),
-            context: 32768,
-            slots: 2,
-            cache_type: Some("q8_0".into()),
-            engine: "fixture-engine".into(),
-            revisions: Some(vec![("fixture.gguf".into(), 73, std::time::SystemTime::UNIX_EPOCH)]),
-        };
-        let fp = contract.fingerprint().expect("test: an exact contract fingerprints");
-        let ledger = || SavedLedger::in_dir(dir.path(), fp.clone());
-        let (kept, gone, interrupted) = (key(1, 2), key(3, 4), key(5, 6));
-        let first = KvSlotPool::new("test://ledger", 2);
-        assert_eq!(first.attach_ledger(ledger(), true), 0, "nothing saved yet");
-        for k in [kept, gone, interrupted] {
-            first.note_saved(k);
-            std::fs::write(dir.path().join(page_filename(&k)), b"kv").expect("test: page");
-        }
-        std::fs::remove_file(dir.path().join(page_filename(&gone))).expect("test: page gone");
-        first.note_page_lost(&interrupted); // a save began over it and never confirmed
-
-        let restarted = KvSlotPool::new("test://ledger", 2);
-        assert_eq!(restarted.attach_ledger(ledger(), true), 1);
-        assert!(restarted.saved.lock().contains(&kept), "a confirmed save survives the restart");
-        assert!(!restarted.saved.lock().contains(&gone), "a page whose file is gone is never offered");
-        assert!(!restarted.saved.lock().contains(&interrupted), "an unconfirmed save is never offered");
-
-        let other = KvPageContract { slots: 3, ..contract.clone() };
-        let other_fp = other.fingerprint().expect("test: fingerprint");
-        assert_ne!(other_fp, fp, "the slot count is part of the page format (measured: a p2 page refused into p1)");
-        assert_eq!(KvSlotPool::new("test://ledger", 3).attach_ledger(SavedLedger::in_dir(dir.path(), other_fp), true), 0);
-        assert!(KvPageContract { revisions: None, ..contract.clone() }.fingerprint().is_none(), "unknown revisions never persist");
-        // The CPU lane (IntelMac 2026-10-11): f16 is the engine default, launched with no flag.
-        // Its contract names the type the engine runs, so it persists like any other; it never
-        // matches a quantized page; a rebuilt engine is another contract; unknown stays refused.
-        let cpu = KvPageContract { cache_type: Some("f16".into()), ..contract.clone() };
-        let cpu_fp = cpu.fingerprint().expect("test: the engine's default type is a known type");
-        assert_eq!(cpu.clone().fingerprint(), Some(cpu_fp.clone()), "the same launch, the same ledger");
-        assert_ne!(cpu_fp, fp, "an f16 page is never a q8_0 page");
-        let rebuilt = vec![("fixture.gguf".into(), 73, std::time::SystemTime::UNIX_EPOCH), ("fixture-engine".into(), 9, std::time::SystemTime::UNIX_EPOCH)];
-        assert_ne!(KvPageContract { revisions: Some(rebuilt), ..cpu.clone() }.fingerprint(), Some(cpu_fp), "another engine revision");
-        assert!(KvPageContract { cache_type: None, ..cpu }.fingerprint().is_none(), "an unknown type never persists");
-    }
-
-    // What this catches (IntelMac, 2026-10-10 20:29Z: the new core ADOPTED the running
-    // engine, and an adopted engine's pool has no launch contract, so #4921's ledger never
-    // attached and every saved page was ignored): an adopting core restores the ledger
-    // its engine left, and ONLY when that ledger names the same process. Another pid,
-    // another start time of the same pid (a recycled number), or a ledger the spawn
-    // never stamped adopts nothing.
-    #[test]
-    fn an_adopted_engine_restores_only_the_ledger_its_own_process_wrote() {
-        let dir = tempfile::tempdir().expect("test: page dir");
-        let contract = KvPageContract {
-            model_id: "fixture".into(),
-            model: "fixture.gguf".into(),
-            adapters: vec![],
-            page_dir: Some(dir.path().to_path_buf()),
-            context: 32768,
-            slots: 2,
-            cache_type: Some("q8_0".into()),
-            engine: "fixture-engine".into(),
-            revisions: Some(vec![("fixture.gguf".into(), 73, std::time::SystemTime::UNIX_EPOCH)]),
-        };
-        let fp = contract.fingerprint().expect("test: fingerprint");
-        let spawned = KvSlotPool::new("test://adopt", 2);
-        spawned.attach_ledger(SavedLedger::in_dir(dir.path(), fp), true);
-        let k = key(7, 8);
-        spawned.note_saved(k);
-        std::fs::write(dir.path().join(page_filename(&k)), b"kv").expect("test: page");
-
-        let empty = tempfile::tempdir().expect("test: empty dir");
-        let first_core = KvSlotPool::new("test://adopt", 2);
-        assert_eq!(adopt_engine_ledger(&first_core, empty.path(), 4242, 1_700_000_000), Err(AdoptRefusal::NoLedger));
-        // ...but the adopting core starts this process's ledger, so its saves survive the next deploy
-        let saved_after = key(9, 10);
-        first_core.note_saved(saved_after);
-        std::fs::write(empty.path().join(page_filename(&saved_after)), b"kv").expect("test: page");
-        let next_core = KvSlotPool::new("test://adopt", 2);
-        assert_eq!(adopt_engine_ledger(&next_core, empty.path(), 4242, 1_700_000_000), Ok(1), "the next deploy restores what the adopter saved");
-        assert_eq!(adopt_engine_ledger(&KvSlotPool::new("test://adopt", 2), empty.path(), 4243, 1_700_000_000), Err(AdoptRefusal::AnotherProcess), "never another process");
-        std::fs::remove_file(empty.path().join(SAVED_LEDGER_FILE)).expect("test: reset for the cases below");
-        assert_eq!(adopt_engine_ledger(&KvSlotPool::new("test://adopt", 2), dir.path(), 4242, 1_700_000_000), Err(AdoptRefusal::Unstamped), "an unstamped ledger proves no process");
-        spawned.stamp_incarnation((4242, 1_700_000_000));
-
-        let adopted = KvSlotPool::new("test://adopt", 2);
-        assert_eq!(adopt_engine_ledger(&adopted, dir.path(), 4242, 1_700_000_000), Ok(1));
-        assert!(adopted.saved.lock().contains(&k), "the same process's confirmed save is restorable after the core restart");
-        assert_eq!(adopt_engine_ledger(&KvSlotPool::new("test://adopt", 2), dir.path(), 4243, 1_700_000_000), Err(AdoptRefusal::AnotherProcess), "another process");
-        assert_eq!(adopt_engine_ledger(&KvSlotPool::new("test://adopt", 2), dir.path(), 4242, 1_700_000_999), Err(AdoptRefusal::AnotherProcess), "a recycled pid");
-        assert_eq!(adopt_engine_ledger(&KvSlotPool::new("test://adopt", 2), dir.path(), 4242, 0), Err(AdoptRefusal::NoStartTime), "no start time, no proof");
-        std::fs::write(empty.path().join(SAVED_LEDGER_FILE), b"not json").expect("test: garbage");
-        assert_eq!(adopt_engine_ledger(&KvSlotPool::new("test://adopt", 2), empty.path(), 4242, 1_700_000_000), Err(AdoptRefusal::Unreadable));
-    }
-
     // What this catches: same-URL restart must restore saved KV, never trust old
     // physical holders; queued/late work cannot reopen or clear a newer generation.
     #[tokio::test]
@@ -626,6 +509,8 @@
             context: 32768,
             slots: 2,
             cache_type: Some("q8_0".into()),
+            flash_attn: Some(true),
+            engine_build: None,
             engine: "fixture-engine".into(),
             revisions: Some(vec![(
                 "fixture.gguf".into(),
@@ -771,7 +656,10 @@
         new.observed_exit();
         let changed = transition.start_generation().expect("new geometry engine");
         let mut incompatible = contract;
-        incompatible.context += 256; // Same 16k page bucket is not proof of exact compatibility.
+        // Another window and slot count is the same page FORMAT: her page stays restorable,
+        // and the engine refuses it, loudly, only if it no longer fits the slot (the M5,
+        // 2026-10-23: a 129,024 -> 2 x 130,048 relaunch must not turn every resident cold).
+        incompatible.context += 256;
         incompatible.slots = 1;
         transition
             .ready("test://generation", &changed, incompatible.clone())
@@ -780,7 +668,7 @@
         let admitted = endpoint.admit().await.expect("changed admission");
         let pool = admitted.pool.as_ref().expect("changed pool");
         assert_eq!(pool.n_slots(), 1);
-        assert!(!pool.lease_paged(activity).await.expect("cold").restore);
+        assert!(pool.lease_paged(activity).await.expect("relaunched").restore, "another window keeps her page");
         pool.note_saved(activity);
         drop(admitted);
         let transition = endpoint.transition().await;

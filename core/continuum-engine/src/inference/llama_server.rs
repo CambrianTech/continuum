@@ -71,12 +71,9 @@ mod kv_support;
 use kv_support::ensure_engine_kv_support_recorded;
 mod pages;
 pub use pages::collect_retired_engines;
-pub use pages::{
-    kv_page_dir, kv_pages_root, page_dirs_of, page_geometry_key, sweep_stale_page_generations,
-    PAGE_GEOMETRY_STEP,
-};
+pub use pages::{kv_page_dir, kv_pages_root, migrate_legacy_page_dir, page_dirs_of};
 use pages::{
-    retire_page_owner, revision_evidence, sweep_stale_page_generations_guarded, PageDirReservation,
+    migrate_legacy_page_dir_guarded, retire_page_owner, revision_evidence, PageDirReservation,
     PAGE_DIR_GUARD,
 };
 mod genome;
@@ -146,3 +143,6 @@ mod prepare;
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(any(test, feature = "test-fixtures"))]
+pub mod test_fixtures;

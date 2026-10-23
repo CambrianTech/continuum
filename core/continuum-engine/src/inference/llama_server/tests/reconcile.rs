@@ -319,7 +319,7 @@ async fn an_adopted_lane_whose_cache_holds_no_state_relaunches_onto_one_that_doe
     const MIB: u64 = 1024 * 1024;
     let id = "cache-grant-d7294f0b"; // its own page dir: the state samples are process-wide
     let t = target(id);
-    crate::inference::slots::note_state_bytes(&kv_page_dir(id, t.context_window), 3_800 * MIB);
+    crate::inference::slots::note_state_bytes(&kv_page_dir(id), 3_800 * MIB);
     let starved = FakeControl::probe(Ok(Some(id.into()))).owned().launched_with_cache(3_248);
     assert_eq!(
         ensure_model_serving(&starved, &t, false).await,

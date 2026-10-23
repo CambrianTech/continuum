@@ -112,7 +112,7 @@ jobs:
           bash tools/scripts/tests/start-server-airc-recovery.test.sh
           bash tools/scripts/tests/install-llama-server-slots.test.sh
           python3 tools/scripts/tests/test_ci_lib_test_artifact.py
-          python3 -m unittest discover -s core/continuum-core/src/genome/fine_tuning -p cuda_train_test.py -v
+          python3 -m unittest discover -s core/continuum-mind/src/genome/fine_tuning -p cuda_train_test.py -v
           export CONTINUUM_NATIVE_CONTAINER_LEASE_TEST="$RUNNER_TEMP/continuum-container-custody-test"
           c++ -std=c++17 -O1 -pthread -I core/vendor/llama.cpp/ggml/src -I core/vendor/llama.cpp/ggml/include \
             core/vendor/llama.cpp/tests/test-moe-residency.cpp -o "$CONTINUUM_NATIVE_CONTAINER_LEASE_TEST"
@@ -133,8 +133,7 @@ jobs:
           LD_LIBRARY_PATH="$CONTINUUM_LIB_TEST_LD_LIBRARY_PATH" "$CONTINUUM_LIB_TEST" \
             --skip 'gpu::memory_manager::' \
             --skip 'modules::gpu::' \
-            --skip 'modules::persona_allocator::' \
-            --skip 'persona::allocator::tests::test_allocate'
+            --skip 'modules::persona_allocator::'
           # The microkernel is its own crate (core/continuum-kernel): its unit tests moved out of
           # continuum-core's run above, so they run here, same profile and fixtures (seconds).
           cd ../..
@@ -144,6 +143,12 @@ jobs:
           # capacity, sensory): its unit tests and the native/fs2 custody interop fixture run here.
           export LD_LIBRARY_PATH="$CONTINUUM_LIB_TEST_LD_LIBRARY_PATH"
           cargo test -p continuum-engine --lib --profile dev-fast --features test-fixtures
+          cargo test -p continuum-hands --lib --profile dev-fast --features test-fixtures
+          cargo test -p continuum-live --lib --profile dev-fast --features test-fixtures
+          # The mind (core/continuum-mind: cognition, persona, genome, memory, rag, perception,
+          # experience, recipe, context, vdd); the allocator skip moved here with persona.
+          cargo test -p continuum-mind --lib --profile dev-fast --features test-fixtures -- \
+            --skip 'persona::allocator::tests::test_allocate'
           interop_output=$(cargo test -p continuum-engine --lib --profile dev-fast --features test-fixtures \
             model_registry::artifacts::expert_placement::tests::fs2_and_native_container_locks_interoperate_across_processes \
             -- --exact --ignored --nocapture 2>&1)
@@ -181,20 +186,21 @@ jobs:
             fi
           done
 
-      # The CLI step already builds the normal core rlib in this profile.
+      # The --lib step already builds the mind rlib (test-fixtures) in this profile.
       # Reuse it here instead of recompiling it in a separate runner. --lib
       # cannot exercise compile-fail doctests; preserve their exact count.
-      - name: cargo test -p continuum-core --doc (compile-fail guards)
+      - name: cargo test -p continuum-mind --doc (compile-fail guards)
         if: needs.changes.outputs.rust != 'false'
         run: |
           set -o pipefail
           # Same profile as the --lib build above, deliberately: a different profile
           # here would be a SECOND full codegen of a 625k-line crate, not a cheap extra step.
-          cargo test -p continuum-core --doc --profile dev-fast --features "$CORE_FEATURES" BindingIsUnstatable 2>&1 | tee doc-guard.log
+          # The guard lives in the mind crate (persona::viewstate_rag) since the mind cut.
+          cargo test -p continuum-mind --doc --profile dev-fast --features test-fixtures BindingIsUnstatable 2>&1 | tee doc-guard.log
           if ! grep -q 'test result: ok. 2 passed' doc-guard.log; then
             echo "::error::expected exactly 2 BindingIsUnstatable doctests to pass."
             echo "A zero-match filter exits 0, so this is how a renamed or deleted"
-            echo "guard is caught. Check core/continuum-core/src/persona/viewstate_rag.rs."
+            echo "guard is caught. Check core/continuum-mind/src/persona/viewstate_rag.rs."
             exit 1
           fi
 
@@ -314,6 +320,11 @@ jobs:
           & $env:CONTINUUM_NATIVE_CONTAINER_LEASE_TEST
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           $env:CONTINUUM_REQUIRE_WINDOWS_REPARSE_TEST = '1'
+          $exitProof = & cargo test -p continuum-engine --lib --profile dev-fast --features test-fixtures 'inference::lane_registry::tests::shutdown_confirmation_waits_for_exit_and_preserves_replacements' -- --exact 2>&1
+          $exitProofResult = $LASTEXITCODE
+          $exitProof | Write-Output
+          if ($exitProofResult -ne 0) { exit $exitProofResult }
+          if (($exitProof -join "`n") -notmatch 'test result: ok\. 1 passed;') { throw 'The actual lane exit confirmation fixture did not execute.' }
           # The engine's native custody fixtures (expert placement, engine install) live in the
           # engine crate (core/continuum-engine); they run from there. Core's compile on Windows
           # is the windows-msvc check's job, so no core test binary is built here.
@@ -354,6 +365,8 @@ jobs:
         run: |
           foreach ($test in @(
             'tests::reboot_tests::legacy_core_requires_explicit_recovery_before_reboot_teardown'
+            'maintenance::tests::maintenance_is_bounded_and_recovery_cannot_repeat_observation'
+            'maintenance::tests::every_drain_observation_and_restart_failure_restores_once'
           )) {
             $output = & cargo test -p continuum-core --bin continuum --profile dev-fast --features test-fixtures $test -- --exact 2>&1
             $result = $LASTEXITCODE
@@ -361,6 +374,23 @@ jobs:
             if ($result -ne 0) { exit $result }
             if (($output -join "`n") -notmatch '1 passed;') { throw "Maintenance CLI fixture did not execute: $test" }
           }
+      - name: Windows deploy maintenance custody regression
+        if: needs.changes.outputs.rust != 'false'
+        run: |
+          $output = & cargo test -p continuum-core --lib --profile dev-fast --features test-fixtures 'modules::deploy_actuator::tests::maintenance_blocks_real_spawner_before_scheduler_or_detached_child' -- --exact 2>&1
+          $result = $LASTEXITCODE
+          $output | Write-Output
+          if ($result -ne 0) { exit $result }
+          if (($output -join "`n") -notmatch '1 passed;') { throw 'Deploy custody fixture did not execute' }
+
+      - name: Windows connected teacher restoration regression
+        if: needs.changes.outputs.rust != 'false'
+        run: |
+          $output = & cargo test -p continuum-core --lib --profile dev-fast --features test-fixtures 'modules::serving_daemon::tests::cancelled_exclusive_teacher_restores_real_owned_child' -- --exact 2>&1
+          $result = $LASTEXITCODE
+          $output | Write-Output
+          if ($result -ne 0) { exit $result }
+          if (($output -join "`n") -notmatch '1 passed;') { throw 'Connected teacher restoration fixture did not execute' }
 
   # Standalone installer/lifecycle checks do not link continuum-core. Keep their
   # contract independent of the measured core build + integration + CLI link,

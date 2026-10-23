@@ -8,6 +8,7 @@ use super::{note_lane_held_ms, InflightModelCall, LanePriority};
 /// exactly the lane-consuming window (queue + prefill + decode) and nothing downstream.
 #[derive(Debug)]
 pub struct ServingLanePermit {
+    pub(super) _progress: super::progress::ProgressGuard,
     pub(super) _lane: tokio::sync::OwnedSemaphorePermit,
     pub(super) _nondirected: Option<tokio::sync::OwnedSemaphorePermit>,
     pub(super) _inflight: InflightModelCall,

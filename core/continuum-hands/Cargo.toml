@@ -1,0 +1,44 @@
+[package]
+name = "continuum-hands"
+version = "0.1.0"
+edition = "2021"
+publish = false
+repository = "https://github.com/CambrianTech/continuum"
+
+[dependencies]
+continuum-kernel = { path = "../continuum-kernel" }
+continuum-engine = { path = "../continuum-engine" }
+tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+uuid.workspace = true
+continuum-base = { path = "../continuum-base" }
+schemars = { version = "0.8", features = ["uuid1"] }
+reqwest = { version = "0.12", features = ["json", "multipart", "stream"] }
+dashmap = "6.1"  # Lock-free concurrent HashMap
+inventory = "0.3"
+airc-core.workspace = true
+airc-lib.workspace = true
+airc-work.workspace = true
+async-trait.workspace = true
+parking_lot.workspace = true
+thiserror.workspace = true
+futures = "0.3"  # For VAD block_on in audio thread
+sysinfo = "0.33"  # Cross-platform CPU, memory, system resource monitoring
+tracing.workspace = true
+ts-rs.workspace = true  # TypeScript type generation
+similar = "2.6"                  # Unified diff computation
+ignore = "0.4"                   # .gitignore-aware file walking (from ripgrep)
+regex = "1"                      # Regex search for code search
+rustpython-parser = "0.4.0"
+syn = { version = "2", features = ["full", "parsing", "extra-traits"] }
+proc-macro2 = { version = "1.0.107", features = ["span-locations"] }  # Span::start for line numbers in the Rust syntax reader
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }
+tempfile = "3"                   # Temp directories for code module tests
+futures = "0.3"
+
+[features]
+default = []
+test-fixtures = ["continuum-engine/test-fixtures"]

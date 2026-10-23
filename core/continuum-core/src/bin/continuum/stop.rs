@@ -152,6 +152,10 @@ pub(super) async fn stop_with_policy(keep_lanes: bool, operator_present: bool, r
     // For older cores, any missing privilege must be obtained BEFORE the drain.
     // New Windows cores can exit after the CLI receives their save receipt.
     // Older builds and multi-core recovery keep the OS-capability/UAC path.
+    if !keep_lanes {
+        continuum_core::inference::lane_registry::records_checked()
+            .map_err(|e| format!("cannot establish lane teardown ownership before drain: {e}"))?;
+    }
     let pids = cores_to_tear_down();
     let target = if cfg!(windows) && (keep_lanes || require_durable) {
         probe_shutdown_target(&pids).await?
@@ -222,6 +226,9 @@ pub(super) async fn stop_with_policy(keep_lanes: bool, operator_present: bool, r
         }
     }
 
+    // One existing teardown allowance covers all remaining lane exits, not
+    // a fresh grace period for each process or the shell's 100ms kill cadence.
+    let teardown_deadline = std::time::Instant::now() + TEARDOWN_EXIT_DEADLINE;
     let socket = socket_path();
     let pidfile = pidfile_for(&socket);
     // Resolve identity BEFORE any tree is killed. live_lane requires a matching
@@ -233,7 +240,12 @@ pub(super) async fn stop_with_policy(keep_lanes: bool, operator_present: bool, r
             .into_iter()
             .collect()
     } else {
-        Vec::new()
+        // Registered lanes have one identity-aware termination owner below.
+        // Generic tree/orphan cleanup must not signal them first and discard
+        // the native result before the registry can bind its exit proof.
+        continuum_core::inference::lane_registry::records_checked()
+            .map_err(|e| format!("cannot establish lane teardown ownership: {e}"))?
+            .into_iter().map(|r| r.pid as i32).collect()
     };
 
     let mut pidfile_core: Option<i32> = None;
@@ -363,10 +375,11 @@ pub(super) async fn stop_with_policy(keep_lanes: bool, operator_present: bool, r
         return Ok(graceful);
     }
     let mut unconfirmed_lanes = Vec::new();
-    for outcome in continuum_core::inference::lane_registry::sweep_all() {
+    for outcome in continuum_core::inference::lane_registry::sweep_all(teardown_deadline).await? {
         use continuum_core::inference::lane_registry::SweepOutcome as S;
         match outcome {
-            S::ExitUnconfirmed { pid, .. } => unconfirmed_lanes.push(pid),
+            S::ExitUnconfirmed { pid, .. } => unconfirmed_lanes.push(format!("pid={pid}: exit deadline elapsed")),
+            S::TerminationRefused { pid, started_s, reason } => unconfirmed_lanes.push(format!("pid={pid} started={started_s}: {reason}")),
             S::ReapedLive { pid, port } => {
                 println!("  reaping serving lane (pid {pid}, port {port}) — live lane, this core is stopping")
             }

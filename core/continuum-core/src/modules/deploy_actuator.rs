@@ -309,6 +309,9 @@ impl DeploySpawner for CliSpawner {
 impl DeploySpawner for CliSpawner {
     fn spawn(&self, plan: &SpawnPlan) -> Result<Spawned, String> {
         use std::os::windows::process::CommandExt;
+        // A disabled task is not permission to bypass maintenance with a child.
+        // Keep the shared permit across both Scheduler and detached spawn paths.
+        let _startup = continuum_cli_lifecycle::supervisor_install::maintenance::StartupPermit::acquire_deploy(&plan.cwd)?;
         // FIRST the registered consumer task: the scheduler runs it under the S4U
         // principal, outside this core's job object, and serializes it against its own
         // ten-minute firing (MultipleInstancesPolicy IgnoreNew) — one consumer at a time
@@ -618,6 +621,24 @@ mod tests {
     use super::*;
 
     const NOW: u64 = 1_700_000_000_000;
+
+    #[cfg(windows)]
+    #[test]
+    fn maintenance_blocks_real_spawner_before_scheduler_or_detached_child() -> Result<(), Box<dyn std::error::Error>> {
+        let root = tempfile::tempdir()?;
+        // Even unreadable/malformed recovery evidence must block deployment.
+        std::fs::write(root.path().join("supervisor-maintenance.json"), b"unfinished")?;
+        let plan = SpawnPlan {
+            cli: root.path().join("must-not-execute.exe"),
+            args: vec![CONSUMER_VERB.into()],
+            cwd: root.path().into(),
+            log: root.path().join("must-not-open.log"),
+        };
+        let result = CliSpawner.spawn(&plan);
+        assert!(matches!(result, Err(ref e) if e.contains("maintenance recovery is pending")));
+        assert!(!plan.log.exists());
+        Ok(())
+    }
 
     fn actuator(dir: &Path, switch: Option<&str>, pid: Option<u32>) -> (DeployActuator, std::sync::Arc<RecordingSpawner>) {
         // Two homes under ONE temp dir: the user home (where a tracker install would be)

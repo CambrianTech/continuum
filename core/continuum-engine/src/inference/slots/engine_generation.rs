@@ -139,21 +139,6 @@ impl EndpointSlots {
         }
     }
 
-    /// The patience a TURN brings to a closed endpoint: [`Self::TURN_READINESS_PATIENCE`],
-    /// but never more than the turn has left on its own bound, counted from the request's
-    /// start — so the hold SPENDS the turn bound and never stacks 240 s on top of it
-    /// (Cormac and Fable's review of #4411). A turn with no bound of its own gets the
-    /// full patience; one that is already out of time gets the instant answer. PURE.
-    pub fn turn_patience(
-        turn_bound: Option<std::time::Duration>,
-        elapsed: std::time::Duration,
-    ) -> std::time::Duration {
-        match turn_bound {
-            Some(bound) => Self::TURN_READINESS_PATIENCE.min(bound.saturating_sub(elapsed)),
-            None => Self::TURN_READINESS_PATIENCE,
-        }
-    }
-
     pub async fn admit(self: &Arc<Self>) -> Result<EndpointAdmission, String> {
         if !*self.state.lock().ready.borrow() {
             return Err("serving endpoint is suspended pending engine readiness".into());
@@ -422,10 +407,13 @@ impl EndpointTransition {
         // the new engine. Copy ONLY saved-page eligibility under an exact contract.
         let pool = Arc::new(KvSlotPool::new(root, contract.slots));
         let mut carried = false;
-        if contract.page_dir.is_some()
-            && contract.cache_type.is_some()
-            && contract.revisions.is_some()
-            && state.contract.as_ref() == Some(&contract)
+        // Same page format, not the same launch: a relaunch at another window or slot count
+        // keeps every page it can restore (the engine refuses, loudly, one that no longer fits).
+        let fingerprint = contract.fingerprint();
+        let previous = state.contract.as_ref();
+        if fingerprint.is_some()
+            && previous.and_then(KvPageContract::fingerprint) == fingerprint
+            && previous.and_then(|c| c.page_dir.as_ref()) == contract.page_dir.as_ref()
         {
             if let Some(Some(old)) = state.pool.as_ref() {
                 *pool.saved.lock() = old.saved.lock().clone();
@@ -436,8 +424,9 @@ impl EndpointTransition {
         // read only under the same fingerprint (the same exact contract). In-process
         // carry-over is the fresher record when there is one, so the disk is read only
         // when nothing was carried.
-        if let (Some(dir), Some(fingerprint)) = (contract.page_dir.as_ref(), contract.fingerprint()) {
-            let loaded = pool.attach_ledger(SavedLedger::in_dir(dir, fingerprint), !carried);
+        if let (Some(dir), Some(fingerprint)) = (contract.page_dir.as_ref(), fingerprint) {
+            let ledger = SavedLedger::in_dir(dir, fingerprint).with_identity_floor(contract.identity_floor());
+            let loaded = pool.attach_ledger(ledger, !carried);
             continuum_base::probe!(
                 class = "inference.kv_page.ledger_attached",
                 endpoint = root,

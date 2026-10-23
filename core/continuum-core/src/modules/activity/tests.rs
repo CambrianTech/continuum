@@ -176,7 +176,7 @@
         #[test]
         fn the_benchmark_recipe_roots_in_the_academy() {
             let recipe = crate::experience::recipe::ExperienceRecipe::from_json(include_str!(
-                "../../experience/recipes/benchmark.json"
+                "../../../../continuum-mind/src/experience/recipes/benchmark.json"
             ))
             .expect("shipped recipe parses"); // test: the embedded recipe is authored JSON
             assert_eq!(recipe.base.as_deref(), Some("academy"));
