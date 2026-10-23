@@ -7,7 +7,7 @@ use serde_json::Value;
 
 use crate::ai::types::TextGenerationResponse;
 use crate::ai::ChatMessage;
-use crate::cognition::provenance::GenerationOutcome;
+use crate::ai::provenance::GenerationOutcome;
 use crate::genome::teach::*;
 use crate::sdk_codegen::CommandError;
 use crate::modules::dataset::DatasetService;

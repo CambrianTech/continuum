@@ -319,7 +319,7 @@ async fn provider_context_feedback_refits_and_captures_each_attempt() {
             }
             assert!(matches!(
                 outcome.receipts[0].outcome,
-                crate::cognition::provenance::GenerationOutcome::Faulted {
+                crate::ai::provenance::GenerationOutcome::Faulted {
                     model: None,
                     provider: None,
                     ..
@@ -328,7 +328,7 @@ async fn provider_context_feedback_refits_and_captures_each_attempt() {
             assert_eq!(
                 matches!(
                     outcome.receipts.last().unwrap().outcome,
-                    crate::cognition::provenance::GenerationOutcome::Faulted { .. }
+                    crate::ai::provenance::GenerationOutcome::Faulted { .. }
                 ),
                 failed_response
             );
@@ -435,7 +435,7 @@ async fn provider_context_feedback_faults_when_required_input_cannot_fit() {
     );
     assert!(matches!(
         outcome.receipts[0].outcome,
-        crate::cognition::provenance::GenerationOutcome::Faulted { .. }
+        crate::ai::provenance::GenerationOutcome::Faulted { .. }
     ));
     ws.now_ms = Some(180_000); // Clock and diagnostic churn do not replace the pending work.
     wm.record_fact("The provider refused the previous prompt; the artifact remains pending.");

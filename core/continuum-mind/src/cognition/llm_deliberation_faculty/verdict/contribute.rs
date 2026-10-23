@@ -4,7 +4,7 @@ impl LlmDeliberationFaculty {
     pub(in super::super) async fn contribute_with_receipts(
         &self,
         ws: &Workspace,
-        receipts: &mut Vec<super::super::super::provenance::GenerationReceipt>,
+        receipts: &mut Vec<crate::ai::provenance::GenerationReceipt>,
     ) -> Option<Contribution> {
         // ONE atomic snapshot of the model binding for the whole turn — the
         // adapter we generate through, the model we request, and the served window

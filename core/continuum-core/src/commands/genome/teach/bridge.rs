@@ -544,7 +544,7 @@ mod tests {
                     0.0,
                 )
                 .await?;
-                let (passed, grade) = crate::cognition::gym_grader::test_grade(
+                let (passed, grade) = crate::genome::gym_grader::test_grade(
                     &generated.text,
                     "rust",
                     task.test.as_deref().unwrap(),

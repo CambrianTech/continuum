@@ -135,7 +135,7 @@ pub struct StagedCredit {
     ///
     /// The FULL receipts stay here; the child rows are references, not copies.
     #[entity(json)]
-    pub receipts: Vec<crate::cognition::provenance::GenerationReceipt>,
+    pub receipts: Vec<crate::ai::provenance::GenerationReceipt>,
 
     /// Representative served request when all usable generations agree on their
     /// model and provider. Mixed/all-faulted turns have no scalar summary; the
@@ -387,7 +387,7 @@ impl TurnCreditCapture {
     pub async fn record(
         &mut self,
         acts: &[(String, Vec<crate::ai::types::ToolCall>)],
-        receipts: &[crate::cognition::provenance::GenerationReceipt],
+        receipts: &[crate::ai::provenance::GenerationReceipt],
         report: Option<&str>,
         final_snapshot: bool,
     ) -> bool {
@@ -474,9 +474,9 @@ impl TurnCreditCapture {
 /// changing fields. Tags and length framing distinguish optional/adjacent strings.
 pub(super) fn snapshot_digest(
     completion: &str,
-    receipts: &[crate::cognition::provenance::GenerationReceipt],
+    receipts: &[crate::ai::provenance::GenerationReceipt],
 ) -> [u8; 32] {
-    use crate::cognition::provenance::GenerationOutcome;
+    use crate::ai::provenance::GenerationOutcome;
     use sha2::{Digest, Sha256};
     fn field(hash: &mut Sha256, value: Option<&str>) {
         hash.update([u8::from(value.is_some())]);
@@ -524,7 +524,7 @@ pub fn produce(
     prompt: String,
     completion: String,
     credit: Option<CapturedCredit>,
-    generation_receipts: Vec<crate::cognition::provenance::GenerationReceipt>,
+    generation_receipts: Vec<crate::ai::provenance::GenerationReceipt>,
 ) {
     produce_with_id(
         persona_id,
@@ -551,7 +551,7 @@ pub fn produce_with_id(
     // `None` is ordinary conversation and is NOT a training example (card 8e3dd206).
     credit: Option<CapturedCredit>,
     // Every generation this turn dispatched, in order, faults included.
-    generation_receipts: Vec<crate::cognition::provenance::GenerationReceipt>,
+    generation_receipts: Vec<crate::ai::provenance::GenerationReceipt>,
     submission_id: Uuid,
     replaces: Option<Uuid>,
 ) {

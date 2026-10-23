@@ -38,7 +38,7 @@ crate::action_command! {
         let need_text = p.need.clone().or_else(|| p.task_domain.clone());
         let (need, signatures) = match need_text {
             Some(text) => {
-                let embedder = crate::cognition::embedding::resolve_recall_embedder_local().await;
+                let embedder = crate::ai::embedding::resolve_recall_embedder_local().await;
                 let need = NeedEmbedding {
                     embedder_id: embedder.id().to_string(),
                     vector: embedder.embed(&text).await,

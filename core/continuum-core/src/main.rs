@@ -477,7 +477,7 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
          in-process Qwen3-Embedding on first recall) — no gateway probe on the boot path"
     );
     let embedding_provider: Arc<dyn continuum_core::memory::EmbeddingProvider> =
-        Arc::new(continuum_core::cognition::embedding::LazyRecallEmbedder::new());
+        Arc::new(continuum_core::ai::embedding::LazyRecallEmbedder::new());
     let memory_manager = Arc::new(PersonaMemoryManager::new(embedding_provider));
 
     // Persist the process-global embedding cache across restarts. This is the ONE
@@ -493,8 +493,8 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
             .join(".continuum")
             .join("cache")
             .join("embedding-cache.bin");
-        continuum_core::cognition::embedding::spawn_embedding_cache_persistence(
-            continuum_core::cognition::embedding::global_embedding_cache(),
+        continuum_core::ai::embedding::spawn_embedding_cache_persistence(
+            continuum_core::ai::embedding::global_embedding_cache(),
             cache_path,
         );
     }

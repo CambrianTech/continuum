@@ -14,7 +14,7 @@
 //! 6. CrossContext — knowledge from other rooms/contexts
 
 use crate::memory::corpus::MemoryCorpus;
-use crate::cognition::embedding::cosine_similarity;
+use crate::ai::embedding::cosine_similarity;
 use crate::memory::types::*;
 use std::collections::HashMap;
 use std::time::Instant;

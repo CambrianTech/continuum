@@ -27,6 +27,7 @@
 
 pub mod adapter;
 pub mod anthropic_adapter;
+pub mod embedding;
 // HeuristicInferenceAdapter is gated behind `cfg(any(test, feature =
 // "test-fixtures"))`. Production binaries built without the feature
 // do not contain it at all — the compiler enforces what the doctrine
@@ -40,6 +41,7 @@ pub mod inference_error;
 pub mod json_in_prompt_tools;
 pub mod openai_adapter;
 pub mod openai_endpoints;
+pub mod provenance;
 pub(crate) mod slot_discovery;
 pub mod registry_bridge;
 pub mod stream_sinks;

@@ -174,7 +174,7 @@ impl ActionCommand for GenomeRecall {
         let registered = manifest.len() as u32;
         let signed_count = alias_by_id.values().filter(|(_, s)| *s).count() as u32;
 
-        let embedder = crate::cognition::embedding::resolve_recall_embedder_local().await;
+        let embedder = crate::ai::embedding::resolve_recall_embedder_local().await;
         let source = std::sync::Arc::new(
             crate::genome::candidate_source_store::GenomeStoreCandidateSource::from_manifest(
                 &manifest,

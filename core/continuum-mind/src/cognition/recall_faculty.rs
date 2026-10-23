@@ -41,7 +41,7 @@ use async_trait::async_trait;
 use futures_util::future::{join, join_all};
 use uuid::Uuid;
 
-use super::embedding::EmbeddingProvider;
+use crate::ai::embedding::EmbeddingProvider;
 use super::working_memory::WorkingMemory;
 use super::workspace::{Contribution, Faculty, FacultyId, Workspace};
 use crate::persona::admission_state::AdmissionState;

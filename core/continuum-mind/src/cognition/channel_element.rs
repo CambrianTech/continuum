@@ -40,7 +40,7 @@ use dashmap::DashMap;
 use tokio::sync::OnceCell;
 use uuid::Uuid;
 
-use crate::cognition::embedding::EmbeddingProvider;
+use crate::ai::embedding::EmbeddingProvider;
 
 /// Soft bound on the shared element working set so a long-lived node servicing a
 /// busy room can't grow it without limit (the substrate pressure doctrine — an

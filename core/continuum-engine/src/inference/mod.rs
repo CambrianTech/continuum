@@ -73,6 +73,7 @@ pub mod serving_footprints;
 pub mod serving_guard;
 pub mod serving_holds;
 pub mod serving_lifecycle;
+pub mod single_purpose_lane;
 pub mod training_admission;
 pub mod throughput_expectation;
 pub mod turn_admission;

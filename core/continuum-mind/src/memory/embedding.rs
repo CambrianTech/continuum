@@ -1,7 +1,7 @@
 //! Memory-side embedding helpers.
 //!
 //! There is exactly ONE embedding trait in the substrate:
-//! [`crate::cognition::embedding::EmbeddingProvider`] — async, adapter-routed
+//! [`crate::ai::embedding::EmbeddingProvider`] — async, adapter-routed
 //! (llama-server `/v1/embeddings` via `AIProviderAdapter`), with the
 //! lexical bootstrap and the content-addressed cache behind the same interface
 //! (task #40). The old synchronous fastembed/ONNX providers that used to live
@@ -17,7 +17,7 @@
 //! Re-export the canonical trait so existing `memory::embedding::EmbeddingProvider`
 //! references resolve to the one true trait.
 
-pub use crate::cognition::embedding::EmbeddingProvider;
+pub use crate::ai::embedding::EmbeddingProvider;
 
 use async_trait::async_trait;
 
@@ -112,7 +112,7 @@ impl EmbeddingProvider for DeterministicEmbeddingProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cognition::embedding::cosine_similarity;
+    use crate::ai::embedding::cosine_similarity;
 
     #[test]
     fn test_cosine_similarity_identical() {

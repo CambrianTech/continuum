@@ -44,7 +44,7 @@ pub(super) async fn settle_to_outcome(
     let mut metrics = TurnMetrics::default();
     // Accumulated exactly like `metrics`, for the same reason: a turn is N
     // deliberations and no single one is canonical (card 0d51573a).
-    let mut generation_receipts: Vec<crate::cognition::provenance::GenerationReceipt> = Vec::new();
+    let mut generation_receipts: Vec<crate::ai::provenance::GenerationReceipt> = Vec::new();
 
     // Admission uses the caller's budget and lifecycle deadlines. Identical inputs
     // do not establish a stuck mind: repeated reads/retries can observe new state.

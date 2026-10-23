@@ -148,7 +148,7 @@ pub(super) async fn run_pass_team(
             .await;
             (v.passed(), v.message().to_string())
         } else if let (Some(file), Some(test)) = (&t.solution_file, &t.test) {
-            crate::cognition::gym_grader::test_grade_file(
+            crate::genome::gym_grader::test_grade_file(
                 t.workspace_root
                     .as_deref()
                     .or(workspace_root)

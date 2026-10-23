@@ -45,7 +45,7 @@ use super::*;
     // floor: the nags surface and crowd out / dilute the one relevant memory.
     #[tokio::test]
     pub(super) async fn recall_drops_topically_irrelevant_high_salience_nags() {
-        use crate::cognition::embedding::LexicalEmbedder;
+        use crate::ai::embedding::LexicalEmbedder;
         let now = 1_000_000_000u64;
         let query = "write a caesar cipher function";
 
@@ -154,7 +154,7 @@ use super::*;
     // number by the model metric" half of the budget.
     #[tokio::test]
     pub(super) async fn recall_count_is_bounded_by_a_tight_window() {
-        use crate::cognition::embedding::LexicalEmbedder;
+        use crate::ai::embedding::LexicalEmbedder;
         let now = 1_000_000_000u64;
         let recall_meta = Arc::new(RecallMetadataRegistry::new());
         let state = Arc::new(AdmissionState::new(recall_meta.clone()));
@@ -346,7 +346,7 @@ use super::*;
     pub(super) struct AnisotropicStub;
 
     #[async_trait]
-    impl crate::cognition::embedding::EmbeddingProvider for AnisotropicStub {
+    impl crate::ai::embedding::EmbeddingProvider for AnisotropicStub {
         fn id(&self) -> &str {
             "test-anisotropic"
         }

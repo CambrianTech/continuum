@@ -30,7 +30,7 @@ pub async fn settle_step(
 ) -> (
     SettleStep,
     Option<TurnMetrics>,
-    Vec<crate::cognition::provenance::GenerationReceipt>,
+    Vec<crate::ai::provenance::GenerationReceipt>,
 ) {
     let burst: Burst = burst.into();
     // The step's room comes FROM the burst (witnessed non-nil, #425). Raw-string
@@ -78,7 +78,7 @@ pub async fn settle_step(
     // caller cannot re-derive these after `ws` is dropped. A turn is N
     // deliberations; each tick contributes its dispatched generations, faults
     // included, and the loop folds them together.
-    let step_receipts: Vec<crate::cognition::provenance::GenerationReceipt> =
+    let step_receipts: Vec<crate::ai::provenance::GenerationReceipt> =
         ws.generation_receipts().cloned().collect();
     continuum_base::probe!(
         class = "cognition.cycle.cost",

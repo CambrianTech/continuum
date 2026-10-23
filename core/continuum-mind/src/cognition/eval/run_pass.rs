@@ -613,7 +613,7 @@ Fix the workspace and finish —                              the grade reads th
             // text) — the only way the act→verify loop shows up in the score. Same harness as
             // test_grade (strip her main, append test, compile, run).
             let lang = t.lang.as_deref().unwrap_or("rust");
-            crate::cognition::gym_grader::test_grade_file(
+            crate::genome::gym_grader::test_grade_file(
                 task_root.map(std::path::Path::new),
                 file,
                 lang,

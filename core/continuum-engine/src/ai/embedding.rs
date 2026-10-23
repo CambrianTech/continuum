@@ -36,6 +36,10 @@ mod embedding_cache_max;
 pub use embedding_cache_max::*;
 mod try_neural_embedder;
 pub use try_neural_embedder::*;
+#[cfg(any(test, feature = "test-fixtures"))]
+mod counting_embedder;
+#[cfg(any(test, feature = "test-fixtures"))]
+pub use counting_embedder::CountingEmbedder;
 
 #[cfg(test)]
 mod tests;

@@ -375,7 +375,7 @@ pub struct Workspace {
     /// card exists to prevent. What a turn generated is a fact about the turn; what
     /// earned a place in the prompt is a judgement about relevance. Populated from
     /// the same `all_bids` full-competition set the capture sink records.
-    pub receipts: Vec<crate::cognition::provenance::GenerationReceipt>,
+    pub receipts: Vec<crate::ai::provenance::GenerationReceipt>,
     /// Is this a SELF-INITIATED turn — the never-stop heartbeat pursuing the
     /// persona's own thread with no inbound message — versus a turn driven by an
     /// arriving message or an examiner's question? Drives the `[Your own time]`
@@ -614,7 +614,7 @@ impl Workspace {
     /// fault at all — a retry that failed and then succeeded is exactly that.
     pub fn generation_receipts(
         &self,
-    ) -> impl Iterator<Item = &crate::cognition::provenance::GenerationReceipt> {
+    ) -> impl Iterator<Item = &crate::ai::provenance::GenerationReceipt> {
         self.receipts.iter()
     }
 

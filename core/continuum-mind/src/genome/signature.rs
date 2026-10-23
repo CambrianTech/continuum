@@ -4,8 +4,8 @@
 //! The routing question "which gene helps this task?" is nearest-neighbor in
 //! the SAME embedding space engram recall uses — gene recall and memory recall
 //! are one problem, so this module reuses the one embedding lane
-//! ([`crate::cognition::embedding`]) and the one clustering kernel
-//! ([`crate::cognition::embedding::vector_math::detect_clusters`]), never a parallel space.
+//! ([`crate::ai::embedding`]) and the one clustering kernel
+//! ([`crate::ai::embedding::vector_math::detect_clusters`]), never a parallel space.
 //!
 //! # Where signatures come from and where they live
 //!
@@ -41,7 +41,7 @@ use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 
-use crate::cognition::embedding::{cosine_similarity, EmbeddingProvider};
+use crate::ai::embedding::{cosine_similarity, EmbeddingProvider};
 use crate::genome::corpus_ref::CorpusRef;
 
 /// Cluster admission floor for subspace detection. The recall space is
@@ -147,7 +147,7 @@ impl GeneSignature {
         normalize(&mut centroid);
 
         // Subspaces: the shared clustering kernel, largest themes first.
-        let mut clusters = crate::cognition::embedding::vector_math::detect_clusters(
+        let mut clusters = crate::ai::embedding::vector_math::detect_clusters(
             &embeddings,
             SUBSPACE_MIN_SIMILARITY,
             SUBSPACE_MIN_CLUSTER_SIZE,
@@ -250,7 +250,7 @@ impl SignatureStore {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cognition::embedding::LexicalEmbedder;
+    use crate::ai::embedding::LexicalEmbedder;
 
     fn corpus_ref() -> CorpusRef {
         CorpusRef {
@@ -289,6 +289,22 @@ mod tests {
             .await
             .expect_err("empty corpus must refuse");
         assert!(err.contains("empty corpus"), "{err}");
+    }
+
+    // what this catches (card d157d382, the 5090 2026-10-10): a signature minted text by
+    // text cost one embed call (and one lease) per training example, ~75 min of a
+    // 113-example dispatch. The mint must embed its whole corpus in ONE batched call.
+    #[tokio::test]
+    async fn a_mint_embeds_its_corpus_in_one_batch() {
+        let counting = Arc::new(crate::ai::embedding::CountingEmbedder::new("counting"));
+        let embedder: Arc<dyn EmbeddingProvider> = counting.clone();
+        let texts: Vec<String> = ["a", "bb", "ccc"].iter().map(|s| s.to_string()).collect();
+        GeneSignature::mint(&texts, corpus_ref(), &embedder, 1_000)
+            .await
+            .expect("mint");
+        use std::sync::atomic::Ordering;
+        assert_eq!(counting.batches.load(Ordering::SeqCst), 1, "one batched call for the corpus");
+        assert_eq!(counting.calls.load(Ordering::SeqCst), 0, "never text by text");
     }
 
     // what this catches: cross-SPACE comparison silently passing. A similarity

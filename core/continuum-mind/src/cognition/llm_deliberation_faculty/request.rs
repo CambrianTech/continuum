@@ -127,7 +127,7 @@ impl LlmDeliberationFaculty {
         binding: &ModelBinding,
         context_window: u32,
         mut request: TextGenerationRequest,
-        receipts: &mut Vec<super::super::provenance::GenerationReceipt>,
+        receipts: &mut Vec<crate::ai::provenance::GenerationReceipt>,
     ) -> Option<Result<TextGenerationResponse, crate::ai::inference_error::InferenceError>> {
         // Identity belongs to the submitted adapter request. Provider response IDs
         // remain separate, and one workspace can issue several calls.
@@ -141,7 +141,7 @@ impl LlmDeliberationFaculty {
         crate::cognition::prompt_prefix::stage_reuse(self.persona_id, &request_id, &request);
         // The genome this turn runs on, read before the request moves: the receipt names it,
         // so the room's outcome for the turn can be credited to the genes that produced it.
-        let genes = super::super::provenance::genes_of(request.active_adapters.as_deref());
+        let genes = crate::ai::provenance::genes_of(request.active_adapters.as_deref());
         let mut capture = self.prompt_capture.as_ref().map(|sink| {
             super::super::prompt_capture::CaptureLease::start(
                 Arc::clone(sink),
@@ -289,9 +289,9 @@ impl LlmDeliberationFaculty {
         receipts.push(
             match &gen_result {
                 Ok(response) => {
-                    super::super::provenance::GenerationReceipt::from_response(request_id, response)
+                    crate::ai::provenance::GenerationReceipt::from_response(request_id, response)
                 }
-                Err(error) => super::super::provenance::GenerationReceipt::faulted(
+                Err(error) => crate::ai::provenance::GenerationReceipt::faulted(
                     request_id,
                     error.to_string(),
                 ),

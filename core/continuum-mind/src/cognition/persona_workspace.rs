@@ -29,7 +29,7 @@ use uuid::Uuid;
 use crate::identity::{PeerId, PersonaRef};
 
 use super::deferred_faculty::DeferredFaculty;
-use super::embedding::{CachingEmbeddingProvider, EmbeddingProvider, LexicalEmbedder};
+use crate::ai::embedding::{CachingEmbeddingProvider, EmbeddingProvider, LexicalEmbedder};
 use super::llm_deliberation_faculty::LlmDeliberationFaculty;
 use super::rag_source_faculty::{RagSourceFaculty, SaliencePolicy};
 use super::recall_faculty::RecallFaculty;

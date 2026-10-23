@@ -379,7 +379,7 @@ pub(crate) async fn ask_the_act_question(
                     // Whatever ends this turn (settled, cancelled, a panic unwinding), her
                     // genome goes back to what she had before it: a trial gene never leaks onto
                     // her conversation turns (Cormac on #4474).
-                    let mut genome_back = crate::genome::gene_trial::GenomeRestore::snapshot(
+                    let mut genome_back = crate::cognition::workspace::GenomeRestore::snapshot(
                         std::sync::Arc::clone(&cycle),
                     );
                     if let Some(genes) = crate::genome::gene_trial::live_genes(persona_uuid) {

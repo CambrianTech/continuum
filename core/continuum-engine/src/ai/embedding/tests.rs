@@ -111,65 +111,20 @@
         );
     }
 
-    /// An embedder that counts how many times it actually computed — to prove
-    /// the cache prevents recomputation.
-    struct CountingEmbedder {
-        id: &'static str,
-        calls: AtomicUsize,
-        batches: AtomicUsize,
-    }
-    impl CountingEmbedder {
-        fn new(id: &'static str) -> Self {
-            Self {
-                id,
-                calls: AtomicUsize::new(0),
-                batches: AtomicUsize::new(0),
-            }
-        }
-    }
-    #[async_trait]
-    impl EmbeddingProvider for CountingEmbedder {
-        fn id(&self) -> &str {
-            self.id
-        }
-        fn dim(&self) -> usize {
-            4
-        }
-        async fn embed(&self, text: &str) -> Vec<f32> {
-            self.calls.fetch_add(1, Ordering::SeqCst);
-            // Deterministic per-content vector (content length spread over dims).
-            let n = text.len() as f32;
-            vec![n, n + 1.0, n + 2.0, n + 3.0]
-        }
-        async fn embed_many(&self, texts: &[String]) -> Vec<Vec<f32>> {
-            self.batches.fetch_add(1, Ordering::SeqCst);
-            texts.iter().map(|t| {
-                let n = t.len() as f32;
-                vec![n, n + 1.0, n + 2.0, n + 3.0]
-            }).collect()
-        }
-    }
-
     // what this catches (card d157d382, the 5090 2026-10-10): a gene signature minted text by
     // text, one embed call (and one lease) per training example, ~75 min of a 113-example
-    // dispatch. Through the cache, a mint of N texts is ONE batched inner call, cached texts
-    // never reach the inner embedder, and the result is in order.
+    // dispatch. A mint embeds its corpus with ONE `embed_many` (genome::signature::mint); through
+    // the cache that is ONE batched inner call, cached texts never reach the inner embedder, and
+    // the result is in order. The mint's own use of `embed_many` is the genome's to test.
     #[tokio::test]
-    async fn a_signature_mint_embeds_its_corpus_in_one_batch_through_the_cache() {
+    async fn a_corpus_embeds_in_one_batch_through_the_cache() {
         let inner = Arc::new(CountingEmbedder::new("counting"));
         let cached = CachingEmbeddingProvider::with_cache(inner.clone(), Arc::new(EmbeddingCache::new()));
         let warm = cached.embed("already seen").await;
         let embedder: Arc<dyn EmbeddingProvider> = Arc::new(cached);
         let texts: Vec<String> = ["already seen", "a", "bb", "ccc"].iter().map(|s| s.to_string()).collect();
-        let corpus = crate::genome::corpus_ref::CorpusRef {
-            name: "test-corpus".into(),
-            content_hash: "sha256:0000000000000000000000000000000000000000000000000000000000000000".into(),
-            size_bytes: 4,
-            source_url: None,
-        };
-        crate::genome::signature::GeneSignature::mint(&texts, corpus, &embedder, 1_000)
-            .await
-            .expect("test: mint");
+        let first = embedder.embed_many(&texts).await;
+        assert_eq!(first.len(), texts.len(), "one vector per text");
         assert_eq!(inner.batches.load(Ordering::SeqCst), 1, "the corpus is embedded in one batched call");
         assert_eq!(inner.calls.load(Ordering::SeqCst), 1, "only the warm-up went one by one");
         let again = embedder.embed_many(&texts).await;
@@ -437,7 +392,7 @@
     // local_embed_adapter() → try_neural_embedder().
     // #[ignore]: needs the Qwen3-Embedding-0.6B GGUF on disk; CI without it skips.
     // Run: cargo test -p continuum-core --features metal,accelerate,test-fixtures \
-    //   --lib cognition::embedding::tests::in_process_embedder_ranks_semantic_similarity \
+    //   --lib ai::embedding::tests::in_process_embedder_ranks_semantic_similarity \
     //   -- --ignored --nocapture
     #[tokio::test]
     #[ignore]

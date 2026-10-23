@@ -23,7 +23,7 @@ use std::sync::{Arc, OnceLock};
 use crate::cognition::channel_digest::ChannelDigestBuilder;
 use crate::cognition::channel_digest_region::DigestBuffer;
 use crate::cognition::channel_element::ChannelElementCache;
-use crate::cognition::embedding::{CachingEmbeddingProvider, LexicalEmbedder};
+use crate::ai::embedding::{CachingEmbeddingProvider, LexicalEmbedder};
 
 /// The shared element cache. Its embedder is the content-addressed lexical
 /// bootstrap for now — element embeddings are LAZY and currently uninvoked by the

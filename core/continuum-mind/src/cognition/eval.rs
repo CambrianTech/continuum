@@ -55,6 +55,8 @@ mod run_pass;
 use run_pass::*;
 mod eval_settle;
 use eval_settle::*;
+mod teacher_synthesis;
+pub use teacher_synthesis::*;
 
 #[cfg(test)]
 mod tests;

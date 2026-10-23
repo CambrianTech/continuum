@@ -4,7 +4,7 @@
 //! for another base: on IntelMac (2026-10-22) Delia's due bucket was qwen2.5-coder-0.5b while the
 //! live lane served 1.5b, and an Intel Mac has neither MLX nor CUDA, so no trainer advertised the
 //! base and the dispatch was retryable forever (7a68a4c6). This source stands up a single-purpose
-//! lane for that base the way a gene eval does (`cognition::single_purpose_lane`: memory headroom,
+//! lane for that base the way a gene eval does (`inference::single_purpose_lane`: memory headroom,
 //! window, GPU-first placement under a governed lease) and trains in it with the same `POST /train`
 //! as the resident lane. The lane's choice is read from its own lane record (`lane_choice`), so its
 //! pool is the placement it was launched with. The lane lives as long as the run holds the lease.
@@ -17,8 +17,8 @@ const TRAIN_LANE_BASE_PORT: u16 = 58_300;
 
 /// A training lane holds its governed slot for the life of its run, like every training lease
 /// (`inference::training_admission::request`): pinned, and released when the lane's process exits.
-const TRAIN_LANE_TERMS: crate::cognition::single_purpose_lane::LaneLeaseTerms =
-    crate::cognition::single_purpose_lane::LaneLeaseTerms { consumer: "train-lane", ttl_ms: u64::MAX };
+const TRAIN_LANE_TERMS: crate::inference::single_purpose_lane::LaneLeaseTerms =
+    crate::inference::single_purpose_lane::LaneLeaseTerms { consumer: "train-lane", ttl_ms: u64::MAX };
 
 /// Lanes stood up for a run ([`TrainingPlace::EngineLaneHere`]).
 pub(super) struct EngineLane;
@@ -64,7 +64,7 @@ impl LaneSource for EngineLane {
     }
 
     async fn acquire(&self, base: &str) -> Result<LaneLease, FineTuningError> {
-        use crate::cognition::single_purpose_lane as lane;
+        use crate::inference::single_purpose_lane as lane;
         use crate::inference::llama_server::{EphemeralServingLane, ServingTarget};
         use FineTuningError::Transient;
         let model = model_for(base)

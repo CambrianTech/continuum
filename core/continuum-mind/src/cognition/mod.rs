@@ -28,7 +28,6 @@
 //!                                  `ResponderDecision`)
 
 pub mod framing_echo;
-pub mod single_purpose_lane;
 pub mod not_speech;
 pub mod act_observe;
 pub mod directed_pending;
@@ -64,7 +63,7 @@ pub mod dispatch_listener;
 pub mod activity_gate;
 pub mod turn_ingress;
 pub mod dream_consolidation;
-pub mod embedding;
+pub mod curriculum;
 pub mod eval;
 pub mod exam_serving;
 pub mod experience;
@@ -76,7 +75,6 @@ pub mod generate_response;
 pub(crate) mod generation_drop;
 pub mod gym;
 pub mod gym_rng;
-pub mod gym_grader;
 pub mod host_capability_probe;
 pub mod inference_session;
 pub mod introspect_commands;
@@ -100,7 +98,6 @@ pub mod handoff;
 /// Bounded per-room diagnostics state, with the eviction decision CLAUDE.md
 /// requires of anything that accumulates (#3903 review).
 pub(crate) mod bounded_room_ledger;
-pub mod provenance;
 pub mod prompt_capture;
 pub(crate) mod prompt_prefix;
 pub mod rag_source_faculty;

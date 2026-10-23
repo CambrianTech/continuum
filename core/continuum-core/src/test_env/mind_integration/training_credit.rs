@@ -166,7 +166,7 @@ pub(super) async fn stage_settlement_fixture(
     persona: Uuid,
     name: &str,
     card: Uuid,
-    receipts: Vec<crate::cognition::provenance::GenerationReceipt>,
+    receipts: Vec<crate::ai::provenance::GenerationReceipt>,
 ) -> (TurnCreditCapture, StagedCredit) {
     let mut capture = TurnCreditCapture::with_executor(
         executor.clone(),
@@ -237,7 +237,7 @@ pub(super) struct ExactReview {
     pub(super) reviewer: airc_core::PeerId,
     pub(super) card_id: airc_work::WorkCardId,
     pub(super) room: Uuid,
-    pub(super) receipts: Vec<crate::cognition::provenance::GenerationReceipt>,
+    pub(super) receipts: Vec<crate::ai::provenance::GenerationReceipt>,
     pub(super) selected: StagedCredit,
     pub(super) selection: reviewed::SubmissionSelection,
     pub(super) data: Connection<InProcessTransport>,

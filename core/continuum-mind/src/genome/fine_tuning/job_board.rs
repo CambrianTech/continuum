@@ -46,7 +46,7 @@
 //!
 //! The writer (the `modules::training_trigger` module) and the reader (the
 //! L3 sentinel module) are independently-constructed `ServiceModule`s with no shared
-//! owner — exactly the shape [`crate::cognition::persona_workspace::global`] and the
+//! owner — exactly the shape the persona-workspace registry's global and the
 //! channel-digest buffer already use. One board per core, reached through
 //! [`TrainingJobBoard::global`].
 //!

@@ -16,7 +16,7 @@ pub(super) enum CycleVerdict {
 pub(super) struct SpokenTurn {
     pub(super) response_text: String,
     pub(super) turn_credit: Option<crate::persona::training_producer::CapturedCredit>,
-    pub(super) turn_generation_receipts: Vec<crate::cognition::provenance::GenerationReceipt>,
+    pub(super) turn_generation_receipts: Vec<crate::ai::provenance::GenerationReceipt>,
 }
 
 /// What the cycle needs beyond the trigger: the burst it reasons over and the engram of
@@ -58,7 +58,7 @@ pub(super) async fn run_turn_cycle(
             // so the genome never changes beneath a request. Unreadable: the genome she
             // has. The receipt names the genes that ran (GenerationReceipt::genes).
             let _genome_pin = {
-                let pin = crate::genome::gene_trial::GenomeRestore::snapshot(
+                let pin = crate::cognition::workspace::GenomeRestore::snapshot(
                     std::sync::Arc::clone(&cycle),
                 );
                 if let Some(genes) =

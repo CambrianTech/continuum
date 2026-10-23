@@ -497,7 +497,7 @@ async fn grade_gym_card(
         let path = workspace.join(&solution_file);
         let outcome: Option<(bool, String)> = match std::fs::read_to_string(&path) {
             Ok(code) if !code.trim().is_empty() => {
-                Some(crate::cognition::gym_grader::test_grade(&code, &lang, &test).await)
+                Some(crate::genome::gym_grader::test_grade(&code, &lang, &test).await)
             }
             Ok(_) | Err(_) => None,
         };

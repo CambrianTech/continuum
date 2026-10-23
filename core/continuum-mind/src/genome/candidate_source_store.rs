@@ -24,7 +24,7 @@ use super::recall_impl::{CandidateArtifact, CandidateSource};
 use super::recall_trait::{CapabilityQuery, RecallContext};
 use super::tier::TierRole;
 use crate::inference::page_ref::{ArtifactId, PageKind};
-use crate::cognition::embedding::{cosine_similarity, EmbeddingProvider};
+use crate::ai::embedding::{cosine_similarity, EmbeddingProvider};
 
 /// One local genome layer as the recall source sees it — content-addressed
 /// identity + the text that describes what it's for (its card/domain/keywords),
@@ -70,15 +70,12 @@ pub struct GenomeStoreCandidateSource {
 /// local layer keeps the same id across boots and cosine recall can dedup it; a
 /// real forge content-hash supersedes it once the layer is published to the market.
 pub fn stable_local_id(name: &str) -> ArtifactId {
-    let hash = crate::persona::inbox_admission::content_hash_sha256(name);
-    let hex = hash.strip_prefix("sha256:").unwrap_or(&hash);
+    // The digest's first 16 bytes ARE the id; no hex string round-trip (the bytes are the
+    // same ones the hex used to spell, so ids minted before this change are unchanged).
+    use sha2::{Digest, Sha256};
+    let digest = Sha256::digest(name.as_bytes());
     let mut bytes = [0u8; 16];
-    for (i, b) in bytes.iter_mut().enumerate() {
-        *b = hex
-            .get(i * 2..i * 2 + 2)
-            .and_then(|s| u8::from_str_radix(s, 16).ok())
-            .unwrap_or(0);
-    }
+    bytes.copy_from_slice(&digest[..16]); // head-cut-ok: an id is the digest's first 16 bytes, not a cut of prompt text
     ArtifactId(uuid::Uuid::from_bytes(bytes))
 }
 
@@ -190,7 +187,7 @@ impl CandidateSource for GenomeStoreCandidateSource {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cognition::embedding::LexicalEmbedder;
+    use crate::ai::embedding::LexicalEmbedder;
     use crate::genome::recall::{FreshnessTarget, RecallScope, TaskKind};
     use crate::genome::recall_trait::{DomainHint, RecallBudget};
     use uuid::Uuid;
