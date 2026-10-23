@@ -54,9 +54,11 @@ pub const TURN_BOUND_HEADROOM: u32 = 2;
 /// required-read and belongs in its own card.
 pub const TICK_DEADLINE: std::time::Duration = std::time::Duration::from_secs(25 * 60);
 
-/// The longest any one wait inside an act may last: the act bound's floor times its
-/// checkpoint extensions (25 min x 3, card 6f3218ed). A stalled stream and a remote
-/// seat's measured service time both stop here, so no wait outlives the act that owns it.
+/// The act floor times its checkpoint extensions (25 min x 3, card 6f3218ed): the cap on
+/// a stalled stream's wait (`sse_stream`) and on how far a seat's measured service time
+/// may RAISE a remote request's deadline. It is not a proven owner-cancellation boundary:
+/// the act's own bound is expectation-derived, and a current bound already above this
+/// is left as it is.
 // derived-or-floor: a ceiling, the act bound's own 3x ceiling; it only ENDS a wait.
 pub const ACT_CEILING: std::time::Duration = std::time::Duration::from_secs(TICK_DEADLINE.as_secs() * 3);
 

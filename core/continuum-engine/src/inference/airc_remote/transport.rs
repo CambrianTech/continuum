@@ -412,8 +412,9 @@ impl AircInferenceTransport for AircLiveTransport {
         // ...and the SEAT's own measured service time above both (card b3e5b582): a slow
         // seat's beacon says how long this decode takes there, so the requester waits for
         // the answer it asked for instead of abandoning it at a floor sized for fast seats.
-        let seat_estimate = super::seat_deadline::fresh_seat_offer(
+        let seat_estimate = super::seat_deadline::heard_seat_offer(
             target.0,
+            request.text_request.model.as_deref(),
             continuum_base::time::EpochMs::now().millis(),
         )
         .and_then(|offer| {
