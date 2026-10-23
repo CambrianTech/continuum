@@ -73,3 +73,6 @@ mod binding_and_history;
 // the presence framing in the volatile tail, after the conversation; nothing
 // dated or counted in the system message.
 mod stable_prefix_first;
+
+/// Her view's turnover leaves a growth reserve, so a sliding room appends between turnovers.
+mod a_busy_room_keeps_its_prefix;
