@@ -411,10 +411,12 @@ impl Model {
         ffi.type_k = match params.type_k {
             KvCacheType::F16 => sys::ggml_type_GGML_TYPE_F16,
             KvCacheType::Q8_0 => sys::ggml_type_GGML_TYPE_Q8_0,
+            KvCacheType::Q4_0 => sys::ggml_type_GGML_TYPE_Q4_0,
         };
         ffi.type_v = match params.type_v {
             KvCacheType::F16 => sys::ggml_type_GGML_TYPE_F16,
             KvCacheType::Q8_0 => sys::ggml_type_GGML_TYPE_Q8_0,
+            KvCacheType::Q4_0 => sys::ggml_type_GGML_TYPE_Q4_0,
         };
         ffi.embeddings = params.embeddings;
         ffi.pooling_type = match params.pooling_type {
@@ -674,6 +676,8 @@ pub enum FlashAttn {
 pub enum KvCacheType {
     F16,
     Q8_0,
+    /// Production serving's KV type (llama-server `-ctk q4_0 -ctv q4_0`).
+    Q4_0,
 }
 
 impl KvCacheType {
@@ -687,6 +691,8 @@ impl KvCacheType {
         match self {
             KvCacheType::F16 => 200,
             KvCacheType::Q8_0 => 106,
+            // 32 quants (16 B) + f16 scale (2 B) = 18 B per 32 elements.
+            KvCacheType::Q4_0 => 56,
         }
     }
 }
