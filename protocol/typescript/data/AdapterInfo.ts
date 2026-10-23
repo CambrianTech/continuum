@@ -8,7 +8,7 @@ import type { AdapterCapabilities } from "../orm/AdapterCapabilities";
  */
 export type AdapterInfo = { 
 /**
- * The adapter implementation name (e.g. "sqlite", "postgres").
+ * The adapter implementation name (e.g. "sqlite").
  */
 adapter: string, 
 /**
