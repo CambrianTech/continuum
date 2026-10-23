@@ -60,7 +60,7 @@ pub fn parse_card_title(title: &str) -> Option<(String, String)> {
 }
 
 /// A review card's title: `[review <parent8>] <instance>: …` — ONE writer
-/// ([`crate::modules::work::open_review_card`]), one parser, beside the bench one.
+/// (`modules::work::open_review_card`), one parser, beside the bench one.
 pub fn review_card_title(parent: uuid::Uuid, instance: &str, owner: &str) -> String {
     format!(
         "[review {}] {instance}: review {owner}'s fix",

@@ -70,6 +70,7 @@ pub mod fitness;
 pub mod commons_ranking;
 pub mod competence;
 pub mod corpus_ref;
+pub mod curriculum;
 pub mod recall_select;
 pub mod fitness_ledger;
 pub mod gene_trial;

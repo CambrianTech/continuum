@@ -1,9 +1,7 @@
 #![cfg(test)]
 
     use super::*;
-    /// The one crate-wide home lock (`crate::paths::test_home`, #4082) — pins HOME, USERPROFILE,
-    /// HF_HOME and CONTINUUM_HOME together and restores them on drop.
-    use crate::paths::test_home::HomeGuard;
+    use super::test_support::*;
 
     // what this catches (card ad4bfaeb): a passing review after a failure training the
     // rejected turns as good. Kimi, 2026-10-10: review 5769a6c3 failed her card 63855189
@@ -291,38 +289,6 @@
     // 2026-09-08 — a citizen accumulating toward a training threshold on a card still
     // in `Claimed` with no settlement, which must stay unstamped.
     //
-    // THE FIXTURE MUST CLEAR THE QUALITY GATE ON ITS OWN (the cc34ac0f lesson below):
-    // a FAILED outcome scores `0.20 + 0.3*substance`, so only the ≥500-char substance
-    // step reaches 0.47 and clears MIN_TRAINING_QUALITY 0.45. With a shorter fixture
-    // the gate refuses the turn, `plan` returns `None` for the wrong reason, and the
-    // failed-case assertion passes while proving nothing.
-    pub(super) fn claimed_card_fixture(
-        owner: Option<airc_core::PeerId>,
-        claim: Option<airc_work::ClaimId>,
-    ) -> airc_work::WorkCard {
-        airc_work::WorkCard {
-            card_id: airc_work::WorkCardId::new(),
-            repo: airc_work::RepoId::new("acme/continuum").expect("valid repo id in fixture"),
-            title: "t".to_string(),
-            body: None,
-            priority: airc_work::Priority::P2,
-            lane_id: None,
-            state: airc_work::CardState::Claimed,
-            owner,
-            claim_provenance: None,
-            claim_id: claim,
-            claim_expires_at_ms: None,
-            last_heartbeat_at_ms: None,
-            pull_request: None,
-            created_by: airc_core::PeerId::new(),
-            created_at_ms: 1,
-            updated_at_ms: 1,
-            reviews: None,
-            submissions: Vec::new(),
-            last_submission_rejection: None,
-        }
-    }
-
     // what this catches: a FABRICATED claim receipt. `WorkCard::owner` and `claim_id`
     // are both Option. A turn rooted at a card carrying neither is STILL card-linked
     // — she stood in that checkout and her edits landed there — so it must stage. But
@@ -332,7 +298,6 @@
     // accountability nobody recorded. Contract stated by Astra 2026-09-08.
     #[test]
     pub(super) fn a_claimless_card_stages_as_card_linked_without_inventing_a_receipt() {
-
 
         let bare = claimed_card_fixture(None, None);
         let captured = CapturedCredit::from_selected_card(&bare);
@@ -547,9 +512,4 @@
     }
 
 mod part_2;
-pub(crate) use part_2::*;
 mod part_3;
-use part_3::*;
-mod part_4;
-mod part_5;
-mod part_6;

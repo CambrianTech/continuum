@@ -557,48 +557,6 @@ diff --git a/odd name.py b/odd name.py
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    // what this catches: a SECOND swe env root. On 2026-08-17 two roots existed —
-    // `swe_cache_dir()/envs` (live, 46 envs / 8 repos) and `~/.continuum/cache/swe-envs`
-    // (retired, 14 envs / 3 repos, the legacy python default). Nothing failed: each root was
-    // internally consistent, so whichever you `ls`ed answered confidently. Reading the retired
-    // one produced "77% of staged instances have no environment", which was reported as the
-    // benchmark's root cause and had a design approved on it. Truth was 95% coverage.
-    //
-    // A cache with two roots cannot report its own coverage. So: the env root is derived from
-    // swe_cache_dir() and appears as a path literal NOWHERE else in the crate. If you need the
-    // envs dir, call the function. See swe_cache_dir's doc for the full incident.
-    #[test]
-    pub(super) fn the_swe_env_root_has_exactly_one_spelling() {
-        let files = crate::test_env::source_tree::crate_sources();
-
-        // The retired root, and any hand-spelled sibling of the live one. ASSEMBLED at
-        // runtime, never written whole: a literal needle would match its own declaration and
-        // the guard would fail on itself (it did, first run). Comments are stripped too, so
-        // this test's prose and swe_cache_dir's doc can name the paths freely.
-        let retired = format!("cache/{}-envs", "swe");
-        let live_spelled_out = format!("benchmarks/{}/envs", "swe");
-        let banned = [retired.as_str(), live_spelled_out.as_str()];
-        let mut hits = Vec::new();
-        for file in &files {
-            for (n, raw) in file.text.lines().enumerate() {
-                let code = crate::test_env::source_tree::code_only(raw);
-                for b in banned {
-                    if code.contains(b) {
-                        hits.push(format!("{}:{} → {}", file.rel, n + 1, code.trim()));
-                    }
-                }
-            }
-        }
-        assert!(
-            hits.is_empty(),
-            "a SECOND spelling of the swe env root appeared — this is exactly how the \
-             2026-08-17 coverage misdiagnosis happened (two roots, both real, neither naming \
-             the other, opposite answers to the same question). Derive it from \
-             `swe_cache_dir()` instead of writing the path:\n  {}",
-            hits.join("\n  ")
-        );
-    }
-
     // what this catches: the false-env-void misgrade (pytest-11143 attempt 3, live
     // 2026-08-12) — a candidate patch that CREATED a file survived `git checkout .`, the
     // leftover module broke the "pristine" p2p re-run, and a REAL capability regression was

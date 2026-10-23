@@ -1,6 +1,6 @@
 //! `ports/lease`, `ports/release`, `ports/list`: a citizen's services get ports that never
 //! collide with another citizen's or with Continuum's own (card 0c42c0bf). See
-//! `modules::ports` for the range, the bound and the store.
+//! `code::ports` for the range, the bound and the store.
 
 use std::sync::Arc;
 
@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
 use crate::identity::PeerId;
-use crate::modules::ports::{PortLease, PortLeaseError, PortLeases, CITIZEN_PORT_RANGE};
+use crate::code::ports::{PortLease, PortLeases, CITIZEN_PORT_RANGE};
 use crate::runtime::LateBound;
 use crate::sdk_codegen::{ActionCommand, CommandError, Ctx, DynCommand};
 
@@ -72,17 +72,6 @@ pub struct PortsListResult {
     pub leases: Vec<PortLeaseView>,
     pub range_first: u16,
     pub range_last: u16,
-}
-
-impl From<PortLeaseError> for CommandError {
-    fn from(e: PortLeaseError) -> Self {
-        match e {
-            PortLeaseError::Store(_) | PortLeaseError::NodeUnknown => CommandError::Internal(e.to_string()),
-            PortLeaseError::InvalidService(_) | PortLeaseError::AtCap { .. } | PortLeaseError::RangeExhausted { .. } => {
-                CommandError::Invalid(e.to_string())
-            }
-        }
-    }
 }
 
 /// The citizen a lease belongs to: the caller. A lease is hers, so a call with no caller

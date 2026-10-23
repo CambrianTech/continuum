@@ -16,7 +16,7 @@
 //!
 //! The continuum desktop app projects this same airc board into a
 //! `KanbanViewState` for its renderers
-//! ([`crate::ipc::positron_kanban_source`]). This source does NOT read that
+//! (`ipc::positron_kanban_source`). This source does NOT read that
 //! projection — persona cognition grounds on the airc substrate ITSELF, exactly
 //! as [`WallSource`](super::wall_source) reads airc `wall_posts` directly and
 //! [`ActiveWorkSource`] reads airc `active_claims` directly. Two faces of one

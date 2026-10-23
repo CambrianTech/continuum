@@ -17,20 +17,20 @@ use super::*;
 /// possible on every exit path: the cycle gets consumed by `with_capture`, moved into the
 /// drive, or dropped on an error — the hands handle outlives all of it.
 #[derive(Clone)]
-pub(crate) struct ActingHands {
-    pub(super) persona_id: Uuid,
-    pub(super) persona_name: String,
-    pub(super) executor: Arc<dyn crate::cognition::tool_executor::ToolExecutor>,
+pub struct ActingHands {
+    pub persona_id: Uuid,
+    pub persona_name: String,
+    pub executor: Arc<dyn crate::cognition::tool_executor::ToolExecutor>,
     /// Her working memory: the restore clears the receipt scope the rooting set.
-    pub(super) working_memory: Arc<crate::cognition::working_memory::WorkingMemory>,
+    pub working_memory: Arc<crate::cognition::working_memory::WorkingMemory>,
     /// Which of her hands these are: `None` her live ones, `Some` an eval's or a fork's own
     /// (`ToolExecutor::hands_context`). Rooting and restore act on THESE hands only.
-    pub(super) context: Option<crate::identity::hands_context::HandsContext>,
+    pub context: Option<crate::identity::hands_context::HandsContext>,
 }
 
 impl ActingHands {
     /// The hands of a cycle that has them; `None` for a pure-cognition (handless) cycle.
-    pub(crate) fn of(cycle: &WorkspaceCycle) -> Option<Self> {
+    pub fn of(cycle: &WorkspaceCycle) -> Option<Self> {
         cycle.acting().map(|a| Self {
             persona_id: a.persona_id,
             persona_name: a.persona_name.clone(),
@@ -42,7 +42,7 @@ impl ActingHands {
 
     /// The same persona's hands in `context`, a context these hands don't own (a card
     /// claim's): `None` when her executor can't act in a context.
-    pub(super) fn in_context(&self, context: crate::identity::hands_context::HandsContext) -> Option<Self> {
+    pub fn in_context(&self, context: crate::identity::hands_context::HandsContext) -> Option<Self> {
         Some(Self {
             executor: self.executor.in_hands(self.persona_id, context)?,
             context: Some(context),
@@ -56,7 +56,7 @@ impl ActingHands {
 /// the single place either direction (root for a measurement, restore afterward) goes
 /// through, so the ACL gate and the failure shape are identical for both
 /// ([[the-compression-principle]]).
-pub(super) async fn drive_create_workspace(
+pub async fn drive_create_workspace(
     hands: &ActingHands,
     root: &str,
     path_prepend: &[String],
@@ -138,7 +138,7 @@ pub(super) fn focus_of(persona_id: uuid::Uuid) -> Option<crate::identity::hands_
 }
 
 /// Point her perception at `context` (or home). The map she perceives re-renders when it moved.
-pub(super) fn set_focus(persona_id: uuid::Uuid, context: Option<crate::identity::hands_context::HandsContext>) {
+pub fn set_focus(persona_id: uuid::Uuid, context: Option<crate::identity::hands_context::HandsContext>) {
     let moved = {
         let mut map = FOCUS.lock().unwrap_or_else(|e| e.into_inner()); // poisoned lock = read the last state, same policy as every lock in this crate
         let before = match context {
@@ -162,7 +162,7 @@ pub fn acting_root_of(persona_id: uuid::Uuid) -> Option<std::path::PathBuf> {
 }
 
 /// Where one set of her hands stands: her live ones (`None`) or a context's.
-pub(crate) fn acting_root_in(persona_id: uuid::Uuid, context: Option<crate::identity::hands_context::HandsContext>) -> Option<std::path::PathBuf> {
+pub fn acting_root_in(persona_id: uuid::Uuid, context: Option<crate::identity::hands_context::HandsContext>) -> Option<std::path::PathBuf> {
     ACTING_ROOTS
         .lock()
         .unwrap_or_else(|e| e.into_inner())
@@ -180,7 +180,7 @@ pub fn acting_card_of(persona_id: uuid::Uuid) -> Option<uuid::Uuid> {
 }
 
 /// The card one set of her hands is rooted at: her live ones (`None`) or a context's.
-pub(crate) fn acting_card_in(persona_id: uuid::Uuid, context: Option<crate::identity::hands_context::HandsContext>) -> Option<uuid::Uuid> {
+pub fn acting_card_in(persona_id: uuid::Uuid, context: Option<crate::identity::hands_context::HandsContext>) -> Option<uuid::Uuid> {
     ACTING_ROOTS
         .lock()
         .unwrap_or_else(|e| e.into_inner())
@@ -188,7 +188,7 @@ pub(crate) fn acting_card_in(persona_id: uuid::Uuid, context: Option<crate::iden
         .and_then(|p| p.card) // poisoned lock = read the last state, same policy as every lock in this crate
 }
 
-pub(super) fn note_acting_card_in(persona_id: uuid::Uuid, context: Option<crate::identity::hands_context::HandsContext>, card: uuid::Uuid) {
+pub fn note_acting_card_in(persona_id: uuid::Uuid, context: Option<crate::identity::hands_context::HandsContext>, card: uuid::Uuid) {
     if let Some(place) = ACTING_ROOTS
         .lock()
         .unwrap_or_else(|e| e.into_inner())
@@ -199,7 +199,7 @@ pub(super) fn note_acting_card_in(persona_id: uuid::Uuid, context: Option<crate:
     }
 }
 
-pub(super) fn note_acting_root_in(
+pub fn note_acting_root_in(
     persona_id: uuid::Uuid,
     context: Option<crate::identity::hands_context::HandsContext>,
     root: Option<std::path::PathBuf>,
@@ -409,7 +409,7 @@ pub(crate) async fn activity_room_for(
 /// checkout through the one owner of where a card's work lives
 /// (`card_staging::checkout_path_for`), admits the turn to the claim's hands, roots them
 /// once, points her perception at them and tells her where she stands when that changed.
-pub(crate) async fn bind_card(
+pub async fn bind_card(
     cycle: &WorkspaceCycle,
     peer_id: uuid::Uuid,
     focus: &airc_lib::WorkCard,
@@ -577,14 +577,14 @@ pub(super) fn rooted_notice(repo: &str, root: &std::path::Path, branch: &str) ->
 /// ordinary unlinked conversation — submitting the turn immediately as positive SFT
 /// instead of staging it behind the evidence floor. A workspace failure must never be
 /// readable as "she was not working a card".
-pub(crate) struct HeldCardTurn {
+pub struct HeldCardTurn {
     /// The card the work store selected for this turn, present whenever one was
     /// selected — regardless of what happened to the workspace afterwards.
     pub(crate) credit: Option<crate::persona::training_producer::CapturedCredit>,
     /// The hands of the card claim this turn was admitted to, standing in its checkout.
     /// `None` means nothing may act on the card this turn; it says nothing about which
     /// card it is.
-    pub(crate) hands: Option<CardHands>,
+    pub hands: Option<CardHands>,
     /// When the card is known but its hands could not be bound: the never-rooted context the
     /// turn acts with instead, so its code tools refuse rather than act at home.
     pub(super) unbound: Option<crate::identity::hands_context::HandsContext>,
@@ -594,9 +594,9 @@ pub(crate) struct HeldCardTurn {
 /// is derived from the claim, rooted ONCE at the card's checkout and never moved; the lease
 /// holds the hands open until the turn ends, so closing them (the claim ended) waits the
 /// turn out instead of dropping its engine or shell under it.
-pub(crate) struct CardHands {
-    pub(crate) context: crate::identity::hands_context::HandsContext,
-    pub(super) hands: ActingHands,
+pub struct CardHands {
+    pub context: crate::identity::hands_context::HandsContext,
+    pub hands: ActingHands,
     pub(super) lease: std::sync::Arc<crate::identity::hands_gate::HandsLease>,
 }
 

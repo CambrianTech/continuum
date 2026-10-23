@@ -153,7 +153,7 @@ impl StagingPlan {
 
 /// What staging currently holds, and the lever to let it go.
 ///
-/// Abstracted as a trait for the same reason [`RenderSurface`](crate::modules::bevy_consumer)
+/// Abstracted as a trait for the same reason `RenderSurface` (`modules::bevy_consumer`)
 /// is: a unit test proves the reclaim disposition without a process-global staging area or a
 /// live governor.
 pub trait StagingResidency: Send + Sync {

@@ -317,7 +317,7 @@ pub fn is_stage_point(acts: usize) -> bool {
 /// leave a callback attached to another room or eval fork.
 /// An in-flight transaction may finish, but it can only replace this turn's rows.
 pub(crate) struct TurnCreditCapture {
-    pub(super) conn: Connection<InProcessTransport>,
+    pub conn: Connection<InProcessTransport>,
     pub(super) persona_id: Uuid,
     pub(super) persona_name: String,
     pub(super) prompt: String,
@@ -355,7 +355,7 @@ impl TurnCreditCapture {
         ))
     }
 
-    pub(super) fn with_executor(
+    pub fn with_executor(
         executor: Arc<CommandExecutor>,
         persona_id: Uuid,
         persona_name: String,

@@ -299,76 +299,9 @@ impl PersonaAdapterFactory for RemoteLaneAdapterFactory {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::atomic::Ordering;
 
-    /// Records whether the LOCAL path was taken. The whole point of several of these
-    /// tests is that a remote assignment must never reach it.
-    struct CountingInner {
-        calls: Arc<AtomicUsize>,
-    }
-
-    #[async_trait::async_trait]
-    impl PersonaAdapterFactory for CountingInner {
-        async fn build_adapter(
-            &self,
-            _profile: &PersonaInferenceProfile,
-        ) -> Result<Arc<dyn AIProviderAdapter>, String> {
-            self.calls.fetch_add(1, Ordering::SeqCst);
-            // The value is irrelevant — every assertion here is about WHICH path ran.
-            Err("local factory reached".to_string())
-        }
-    }
-
-    fn profile(name: &str) -> PersonaInferenceProfile {
-        use crate::persona::hw_tier_descriptor::HwTierCategory;
-        use crate::persona::inference_profile::SamplingProfile;
-        PersonaInferenceProfile {
-            persona_id: uuid::Uuid::nil(),
-            persona_name: name.to_string(),
-            model_id: "continuum-ai/qwen2.5-0.5b-instruct-GGUF".to_string(),
-            gguf_local_path: None,
-            tier_category: HwTierCategory::Compat,
-            tier_id: "mac_intel_metal_discrete".to_string(),
-            context_length: 2048,
-            n_ubatch: 512,
-            n_batch: 2048,
-            n_seq_max: 1,
-            n_gpu_layers: 0,
-            sampling: SamplingProfile::chat_defaults(),
-            chat_template: None,
-            stop_sequences: vec![],
-        }
-    }
-
-    /// Build a factory over a temp root, plus the call-counter for the inner factory.
-    fn factory_over(root: &std::path::Path) -> (RemoteLaneAdapterFactory, Arc<AtomicUsize>) {
-        let calls = Arc::new(AtomicUsize::new(0));
-        let inner = Arc::new(CountingInner {
-            calls: Arc::clone(&calls),
-        });
-        (
-            RemoteLaneAdapterFactory::new(
-                inner,
-                root.to_path_buf(),
-                // Empty cell = airc not attached, which is the state this node is in
-                // whenever the attach task has not completed.
-                Arc::new(tokio::sync::OnceCell::new()),
-            ),
-            calls,
-        )
-    }
-
-    fn home_for(root: &std::path::Path, name: &str) -> PersonaHome {
-        let airc_dir = crate::context::citizen_home_path(
-            root,
-            crate::identity::IdentityKind::Persona,
-            None,
-            name,
-        );
-        let home = PersonaHome::from_root(airc_dir.parent().unwrap().to_path_buf());
-        home.ensure_exists().expect("mkdir home");
-        home
-    }
+    use test_support::*;
 
     // what this catches: the decorator swallowing the ordinary case. A persona with no
     // override at all must reach the inner factory unchanged — this wrapper sits in the
@@ -438,38 +371,6 @@ mod tests {
         );
     }
 
-    // what this catches (card 2500d2f1, the M5 2026-09-19): a durable override naming
-    // one of THIS node's own ids as her remote seat. With no airc attached a remote seat
-    // would REFUSE (the test above); a seat that is herself must instead be retired and
-    // she born home — the local factory reached once, the record gone so the next boot
-    // does not bear her on a loopback lane again.
-    #[tokio::test]
-    async fn an_override_naming_this_node_is_retired_at_build_and_she_is_born_home() {
-        let tmp = tempfile::tempdir().unwrap();
-        let (f, calls) = factory_over(tmp.path()); // cell is empty: a real remote seat would refuse here
-        let home = home_for(tmp.path(), "Aris");
-        // The id enters the self set the way it does at boot: the airc module built from
-        // a Healthy discovery registers the id this node beacons under — before any
-        // persona build, before any echo (Cormac's condition on #4229).
-        let me = uuid::Uuid::new_v4();
-        let _module = crate::modules::airc::AircModule::from_discovery(&crate::airc::AircDiscovery::Healthy {
-            socket: tmp.path().join("airc.sock"),
-            default_room: airc_core::RoomId::from_uuid(uuid::Uuid::new_v4()),
-            room_name: "general".to_string(),
-            peer_id: me,
-        });
-        PersonaModelOverride::new_remote("ggml-org/Qwen3.8-27B-GGUF", Some("placement:fleet".to_string()), 1, me.to_string())
-            .write(&home)
-            .expect("write override");
-
-        let _ = f.build_adapter(&profile("Aris")).await;
-        assert_eq!(calls.load(Ordering::SeqCst), 1, "born home: the local factory is reached once");
-        assert!(
-            PersonaModelOverride::load(&home).expect("readable").is_none(),
-            "the record naming her own node as a seat is retired"
-        );
-    }
-
     // what this catches: a peer id that survived into the durable record failing at
     // materialisation with no clue where it came from. Refused by name, and again the
     // local factory is never reached.
@@ -534,5 +435,83 @@ mod tests {
             is_remote_bound(root.path(), "Kira"),
             Err(crate::persona::model_override::PersonaModelOverrideError::Malformed { .. })
         ));
+    }
+}
+
+/// The factory fixtures this module's tests and core's integration test share (the inner
+/// factory that counts whether the LOCAL path ran, a profile, a factory over a temp root,
+/// and a persona home under it).
+#[cfg(any(test, feature = "test-fixtures"))]
+pub mod test_support {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    /// Records whether the LOCAL path was taken. The whole point of several of these
+    /// tests is that a remote assignment must never reach it.
+    pub struct CountingInner {
+        pub calls: Arc<AtomicUsize>,
+    }
+
+    #[async_trait::async_trait]
+    impl PersonaAdapterFactory for CountingInner {
+        async fn build_adapter(
+            &self,
+            _profile: &PersonaInferenceProfile,
+        ) -> Result<Arc<dyn AIProviderAdapter>, String> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            // The value is irrelevant — every assertion here is about WHICH path ran.
+            Err("local factory reached".to_string())
+        }
+    }
+
+    pub fn profile(name: &str) -> PersonaInferenceProfile {
+        use crate::persona::hw_tier_descriptor::HwTierCategory;
+        use crate::persona::inference_profile::SamplingProfile;
+        PersonaInferenceProfile {
+            persona_id: uuid::Uuid::nil(),
+            persona_name: name.to_string(),
+            model_id: "continuum-ai/qwen2.5-0.5b-instruct-GGUF".to_string(),
+            gguf_local_path: None,
+            tier_category: HwTierCategory::Compat,
+            tier_id: "mac_intel_metal_discrete".to_string(),
+            context_length: 2048,
+            n_ubatch: 512,
+            n_batch: 2048,
+            n_seq_max: 1,
+            n_gpu_layers: 0,
+            sampling: SamplingProfile::chat_defaults(),
+            chat_template: None,
+            stop_sequences: vec![],
+        }
+    }
+
+    /// Build a factory over a temp root, plus the call-counter for the inner factory.
+    pub fn factory_over(root: &std::path::Path) -> (RemoteLaneAdapterFactory, Arc<AtomicUsize>) {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let inner = Arc::new(CountingInner {
+            calls: Arc::clone(&calls),
+        });
+        (
+            RemoteLaneAdapterFactory::new(
+                inner,
+                root.to_path_buf(),
+                // Empty cell = airc not attached, which is the state this node is in
+                // whenever the attach task has not completed.
+                Arc::new(tokio::sync::OnceCell::new()),
+            ),
+            calls,
+        )
+    }
+
+    pub fn home_for(root: &std::path::Path, name: &str) -> PersonaHome {
+        let airc_dir = crate::context::citizen_home_path(
+            root,
+            crate::identity::IdentityKind::Persona,
+            None,
+            name,
+        );
+        let home = PersonaHome::from_root(airc_dir.parent().unwrap().to_path_buf());
+        home.ensure_exists().expect("mkdir home");
+        home
     }
 }

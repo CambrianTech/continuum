@@ -372,7 +372,7 @@ const LIVED_TEACHER_SYSTEM: &str = "You are a thoughtful expert. A teammate was 
     following in a live conversation and their attempt stalled before they finished. Give a single, \
     complete, self-contained answer — clear and correct, with no meta-commentary about the attempt.";
 
-/// **Lived-axis expansion — the LLM-teacher path** that `commands::genome::curriculum::expansion_examples`
+/// **Lived-axis expansion — the LLM-teacher path** that `genome::curriculum::expansion_examples`
 /// deliberately deferred. A salient LIVED turn is untestable (no grader) AND a failure
 /// (non-convergence / infra fault), so it can be neither remediated (no `test` to validate
 /// a correction) nor echoed (training on her stalled answer would teach the failure). The

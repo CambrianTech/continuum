@@ -15,7 +15,7 @@
 //! returned `(JobHandle, provider)` to its caller and the handle was dropped on the
 //! floor. This board IS that retention. The L2 trigger registers each
 //! freshly-dispatched job here ([`TrainingJobBoard::register`]); the L3 sentinel
-//! ([`crate::modules::training_completion_sentinel`]) polls each one and, on
+//! (`modules::training_completion_sentinel`) polls each one and, on
 //! terminal completion, claims it ([`TrainingJobBoard::claim`]) and runs the
 //! eval→page-in chain. Polling vs a `watch` channel is the honest fit: there is no
 //! in-process completion event to subscribe to, and a cloud provider can only be
@@ -44,7 +44,7 @@
 //!
 //! ## Why process-global
 //!
-//! The writer (the [`crate::modules::training_trigger`] module) and the reader (the
+//! The writer (the `modules::training_trigger` module) and the reader (the
 //! L3 sentinel module) are independently-constructed `ServiceModule`s with no shared
 //! owner — exactly the shape [`crate::cognition::persona_workspace::global`] and the
 //! channel-digest buffer already use. One board per core, reached through

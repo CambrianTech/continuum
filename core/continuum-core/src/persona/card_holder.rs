@@ -12,7 +12,7 @@
 //! | [`super::room_board_source`] (persona reads the board) | `YOU` for self, **8-hex** for peers | yes |
 //! | [`super::service_loop`]'s work-board anchor | not rendered at all | was blind |
 //! | `modules::work` (`work/list`) | 8-hex short id | yes |
-//! | [`crate::ipc::positron_kanban_source`] (the human UI) | name — but only for a peer **present in the roster** | not carried |
+//! | `ipc::positron_kanban_source` (the human UI) | name — but only for a peer **present in the roster** | not carried |
 //! | `airc work board` (the operator CLI) | published alias, `me` for self | yes |
 //!
 //! Only the operator's CLI rendered a person. Every surface a CITIZEN reads
@@ -656,5 +656,4 @@ mod tests {
         assert!(!refused_on_this_box("fix the widget"));
         assert!(!refused_on_this_box("[bench swe-bench-verified] no__such-instance-0: never graded here"));
     }
-
 }

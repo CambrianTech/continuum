@@ -297,7 +297,7 @@ pub(in crate::persona::training_producer) async fn write_batch<T: Transport>(
     storage_ok(&value, "data/batch", WorkCreditBinding::COLLECTION)
 }
 
-pub(crate) async fn transfer_accepted<T: Transport>(
+pub async fn transfer_accepted<T: Transport>(
     conn: &Connection<T>,
     persona_name: &str,
     revision: Uuid,

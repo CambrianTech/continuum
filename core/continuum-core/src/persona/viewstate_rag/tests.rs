@@ -23,7 +23,7 @@ fn roster_registry_for(room: u128, names: &[&str]) -> Arc<PerRoomSubstrates> {
         .iter()
         .enumerate()
         .map(|(i, name)| {
-            crate::ipc::positron_source::test_roster_slot(
+            continuum_positron::chat::test_roster_slot(
                 Uuid::from_u128(i as u128 + 1),
                 name,
                 SenderKind::Agent,
@@ -56,7 +56,7 @@ fn ctx() -> RagContext {
 // 2026-09-04). Name, kind and role stay; presence is the live view's job.
 #[test]
 fn the_roster_line_carries_no_liveness_flag() {
-    let mut slot = crate::ipc::positron_source::test_roster_slot(
+    let mut slot = continuum_positron::chat::test_roster_slot(
         Uuid::from_u128(7),
         "Anwen",
         SenderKind::Agent,
@@ -88,12 +88,12 @@ fn a_citizens_own_row_is_marked_and_only_hers() {
     let view = RosterViewState {
         room_id: Uuid::from_u128(0xaa),
         roster: vec![
-            crate::ipc::positron_source::test_roster_slot(
+            continuum_positron::chat::test_roster_slot(
                 Uuid::from_u128(1),
                 "Paige",
                 SenderKind::Agent,
             ),
-            crate::ipc::positron_source::test_roster_slot(me, "Saoirse", SenderKind::Agent),
+            continuum_positron::chat::test_roster_slot(me, "Saoirse", SenderKind::Agent),
         ],
     };
     let units = RagRenderable::units(&view, me);
@@ -120,12 +120,12 @@ fn a_viewer_absent_from_the_roster_marks_nobody() {
     let view = RosterViewState {
         room_id: Uuid::from_u128(0xaa),
         roster: vec![
-            crate::ipc::positron_source::test_roster_slot(
+            continuum_positron::chat::test_roster_slot(
                 Uuid::from_u128(1),
                 "Paige",
                 SenderKind::Agent,
             ),
-            crate::ipc::positron_source::test_roster_slot(
+            continuum_positron::chat::test_roster_slot(
                 Uuid::from_u128(2),
                 "Saoirse",
                 SenderKind::Agent,
@@ -286,7 +286,7 @@ async fn the_roster_follows_the_turn_into_a_room_that_is_not_the_first_one() {
         .for_room(Uuid::from_u128(OTHER))
         .store(builder.session(RosterViewState {
             room_id: Uuid::from_u128(OTHER),
-            roster: vec![crate::ipc::positron_source::test_roster_slot(
+            roster: vec![continuum_positron::chat::test_roster_slot(
                 Uuid::from_u128(42),
                 "Saoirse",
                 SenderKind::Agent,

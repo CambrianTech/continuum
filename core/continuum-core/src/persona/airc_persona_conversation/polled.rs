@@ -425,6 +425,21 @@ pub struct AircPersonaConversation {
     pub(super) mind: Option<MindFeed>,
 }
 
+/// What core's membership test reads of a conversation: its subscription snapshot, and
+/// whether the pump and its inbox are running.
+#[cfg(any(test, feature = "test-fixtures"))]
+impl AircPersonaConversation {
+    /// The room subscription snapshot (`None` unprimed, empty primed but parked).
+    pub fn subscribed_rooms(&self) -> Option<&[Uuid]> {
+        self.rooms.as_deref()
+    }
+
+    /// `(pump running, inbox open)`.
+    pub fn pump_attached(&self) -> (bool, bool) {
+        (self.pump.is_some(), self.inbox.is_some())
+    }
+}
+
 impl AircPersonaConversation {
     /// Construct without contacting the daemon. The subscribe stream
     /// is built on first `next_message`; until then this is free.

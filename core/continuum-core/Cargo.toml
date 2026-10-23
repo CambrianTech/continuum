@@ -454,6 +454,7 @@ continuum-kernel = { path = "../continuum-kernel", features = ["test-fixtures"] 
 continuum-engine = { path = "../continuum-engine", features = ["test-fixtures"] }
 continuum-hands = { path = "../continuum-hands", features = ["test-fixtures"] }
 continuum-live = { path = "../continuum-live", features = ["test-fixtures"] }
+continuum-positron = { path = "../continuum-positron", features = ["test-fixtures"] }
 # The hygiene ratchets moved to their own std-only crate so a contributor learns an
 # unwrap count rose in seconds instead of after a 12.4-minute build. Two `#[cfg(test)]`
 # call sites here still use its scanner helpers, so it is a DEV dependency — production

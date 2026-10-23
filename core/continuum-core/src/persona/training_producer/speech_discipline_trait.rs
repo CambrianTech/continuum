@@ -268,7 +268,7 @@ pub(super) async fn submit_plan(
 /// surviving its rolled-back children would be a credit record asserting provenance
 /// it cannot produce.
 #[allow(clippy::too_many_arguments)]
-pub(super) async fn stage_credit<T: Transport>(
+pub async fn stage_credit<T: Transport>(
     conn: &Connection<T>,
     persona_name: &str,
     credit: &CapturedCredit,
@@ -518,7 +518,7 @@ pub(super) fn served_provenance(
 /// without this the caller emitted `training.credit.staged` with a submission id for
 /// rows that do not exist (Astra/S6 on 799b8fe9). Transport success is not operation
 /// success, and a receipt that cannot report failure is not a receipt.
-pub(super) fn storage_ok(
+pub fn storage_ok(
     value: &serde_json::Value,
     command: &str,
     collection: &str,
@@ -596,7 +596,7 @@ pub fn acted_chain(turn_acts: &[(String, Vec<crate::ai::types::ToolCall>)]) -> S
 /// it to Owner. For the producer's BOOKKEEPING on a resident's store only (the rejected
 /// mark, shedding a transferred row's lived copy); never for her acts, which carry her
 /// identity so provenance stays hers.
-pub(super) fn substrate_connection(executor: &Arc<CommandExecutor>) -> Connection<InProcessTransport> {
+pub fn substrate_connection(executor: &Arc<CommandExecutor>) -> Connection<InProcessTransport> {
     Connection::new(InProcessTransport::new(executor.clone(), None))
 }
 

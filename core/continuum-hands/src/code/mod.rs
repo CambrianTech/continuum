@@ -21,6 +21,7 @@ pub mod file_engine;
 pub mod git_bridge;
 pub mod hands;
 pub mod path_security;
+pub mod ports;
 pub mod repo_registry;
 pub mod search;
 pub mod shell_session;

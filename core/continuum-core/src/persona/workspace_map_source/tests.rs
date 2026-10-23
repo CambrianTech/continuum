@@ -250,7 +250,7 @@
     // that costs prompt tokens for a citizen who holds no leases.
     #[test]
     fn her_leased_ports_are_one_line_and_absent_when_she_has_none() {
-        use crate::modules::ports::PortLease;
+        use crate::code::ports::PortLease;
         let lease = |service: &str, port| PortLease {
             base: crate::orm::entity::BaseEntity::for_new_record(),
             node: crate::identity::PeerId::from_uuid(persona()),

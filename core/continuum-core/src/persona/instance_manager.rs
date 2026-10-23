@@ -450,7 +450,7 @@ impl PersonaInstanceManagerModule {
     /// `registry` is shared (cheap to clone — internal `Arc<DashMap>`)
     /// so callers can hand other modules a view of the same roster.
     /// `daemon_socket` comes from
-    /// [`crate::modules::airc::AircModule`]'s discovery.
+    /// `modules::airc::AircModule`'s discovery.
     /// `continuum_root` is where persona homes get carved out
     /// (typically `~/.continuum/`, env-overridable via
     /// `CONTINUUM_ROOT`). No room dep (#298): each persona's home room

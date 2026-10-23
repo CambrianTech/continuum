@@ -480,7 +480,7 @@ pub fn spec_for_command(name: &str) -> Option<NativeToolSpec> {
 }
 
 // The on-demand "how do I call this?" tool is the EXISTING `commands/help`
-// ([`CommandsHelp`] in `crate::commands::help`), referenced by [`TOOL_HELP_NAME`].
+// ([`CommandsHelp`] in `commands::help`), referenced by [`TOOL_HELP_NAME`].
 // We deliberately do NOT define a parallel describe command here — `commands/help`
 // renders a fill-in-the-blanks tool-call envelope with typed argument docs (better
 // for a small model than raw JSON Schema), and one source of truth for the call

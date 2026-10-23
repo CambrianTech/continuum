@@ -28,7 +28,7 @@
 //! 2. **scale ~2, not 20.** The prior checkpoints hardcoded `scale: 20.0`
 //!    (PEFT `lora_alpha = rank * 20`), which over-amplifies the adapter and
 //!    destabilises coherence. MLX stores `lora_parameters.scale` (== alpha/rank);
-//!    [`read_mlx_lora_hparams`](crate::forge::lora_convert::read_mlx_lora_hparams) reads
+//!    `read_mlx_lora_hparams` (`forge::lora_convert::read_mlx_lora_hparams`) reads
 //!    it back as `alpha = rank * scale`. So writing `scale: 2.0` here is exactly
 //!    the sane amplification the convert step then carries into the GGUF-lora.
 //!

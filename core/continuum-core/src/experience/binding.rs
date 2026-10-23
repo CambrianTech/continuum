@@ -17,7 +17,7 @@
 //! # Why this is a TYPE and not an inline `json!`
 //!
 //! It was an inline `serde_json::json!` at the write site in
-//! [`crate::modules::activity`], and **nothing on the planet read it back**. That
+//! `modules::activity`, and **nothing on the planet read it back**. That
 //! is worse than a missing feature: `activity/spawn` reported success, the binding
 //! landed on the wall, and every renderer — web, mobile, and the citizen standing
 //! in the room — still projected the room as a plain chat, because
@@ -36,7 +36,7 @@ use ts_rs::TS;
 pub const RECIPE_WALL_CATEGORY: &str = "recipe";
 
 /// The room → recipe pointer, as published by `activity/spawn` and read back by
-/// [`crate::ipc::recipe_room_purpose::RecipeRoomPurpose`].
+/// `ipc::recipe_room_purpose::RecipeRoomPurpose`.
 // `Eq` was dropped when `params` arrived (#433): `serde_json::Value` carries
 // floats, which are only `PartialEq`. Nothing keyed on the binding's Eq.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
@@ -314,5 +314,4 @@ mod tests {
         assert_eq!(bound(serde_json::json!({})).declared_repo(), None, "a recipe without the param declares none");
         assert_eq!(bound(serde_json::json!({"repo": 7})).declared_repo(), None, "a non-string is not a repo");
     }
-
 }

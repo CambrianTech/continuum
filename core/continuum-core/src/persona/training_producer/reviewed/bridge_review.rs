@@ -180,7 +180,7 @@ pub(crate) async fn consume_observed_review<T: Transport>(
     .await
 }
 
-pub(in crate::persona::training_producer) async fn consume_observed_review_with_boundary<T: Transport>(
+pub async fn consume_observed_review_with_boundary<T: Transport>(
     conn: &Connection<T>,
     persona_name: &str,
     observer: Uuid,
@@ -569,7 +569,7 @@ pub async fn consume_review<T: Transport>(
     .await
 }
 
-pub(in crate::persona::training_producer) async fn consume_review_with_boundary<T: Transport>(
+pub async fn consume_review_with_boundary<T: Transport>(
     conn: &Connection<T>,
     persona_name: &str,
     persona_id: Uuid,

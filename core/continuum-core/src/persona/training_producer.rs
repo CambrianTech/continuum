@@ -70,3 +70,58 @@ pub use settle_card_credit_bound::*;
 
 #[cfg(test)]
 pub(crate) mod tests;
+
+/// The receipt fixtures this module's tests and core's integration tests share.
+#[cfg(any(test, feature = "test-fixtures"))]
+pub mod test_support {
+    pub fn receipt(id: &str) -> crate::cognition::provenance::GenerationReceipt {
+        crate::cognition::provenance::GenerationReceipt::faulted(id, "irrelevant to staging")
+    }
+
+    pub fn served_receipt(id: &str, model: &str) -> crate::cognition::provenance::GenerationReceipt {
+        crate::cognition::provenance::GenerationReceipt {
+            submitted_request_id: id.into(),
+            outcome: crate::cognition::provenance::GenerationOutcome::Served {
+                model: model.into(),
+                provider: "fixture-provider".into(),
+                provider_request_id: None,
+            },
+            capture: None,
+            genes: Vec::new(),
+        }
+    }
+
+    /// A claimed card for the staging tests.
+    ///
+    // THE FIXTURE MUST CLEAR THE QUALITY GATE ON ITS OWN (the cc34ac0f lesson below):
+    // a FAILED outcome scores `0.20 + 0.3*substance`, so only the ≥500-char substance
+    // step reaches 0.47 and clears MIN_TRAINING_QUALITY 0.45. With a shorter fixture
+    // the gate refuses the turn, `plan` returns `None` for the wrong reason, and the
+    // failed-case assertion passes while proving nothing.
+    pub fn claimed_card_fixture(
+        owner: Option<airc_core::PeerId>,
+        claim: Option<airc_work::ClaimId>,
+    ) -> airc_work::WorkCard {
+        airc_work::WorkCard {
+            card_id: airc_work::WorkCardId::new(),
+            repo: airc_work::RepoId::new("acme/continuum").expect("valid repo id in fixture"),
+            title: "t".to_string(),
+            body: None,
+            priority: airc_work::Priority::P2,
+            lane_id: None,
+            state: airc_work::CardState::Claimed,
+            owner,
+            claim_provenance: None,
+            claim_id: claim,
+            claim_expires_at_ms: None,
+            last_heartbeat_at_ms: None,
+            pull_request: None,
+            created_by: airc_core::PeerId::new(),
+            created_at_ms: 1,
+            updated_at_ms: 1,
+            reviews: None,
+            submissions: Vec::new(),
+            last_submission_rejection: None,
+        }
+    }
+}

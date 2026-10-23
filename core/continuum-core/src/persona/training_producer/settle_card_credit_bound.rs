@@ -340,7 +340,7 @@ pub(super) fn across_turns(rows: &[StagedCredit]) -> Vec<(&StagedCredit, Option<
         .collect()
 }
 
-pub(super) async fn settle_staged_row<T: Transport, S: Transport>(
+pub async fn settle_staged_row<T: Transport, S: Transport>(
     conn: &Connection<T>,
     substrate: &Connection<S>,
     persona_id: Uuid,
@@ -480,7 +480,7 @@ pub(super) async fn mark_rejected<T: Transport>(conn: &Connection<T>, persona_na
 /// data/update is refused. Measured on the 5090 (2026-10-10, 26 refusals in one pass):
 /// through her identity no transferred row ever shed its lived copy, so her staged
 /// store grew by a second copy of every call she had already handed to training.
-pub(super) async fn clear_lived<S: Transport>(substrate: &Connection<S>, persona_name: &str, row: &StagedCredit) {
+pub async fn clear_lived<S: Transport>(substrate: &Connection<S>, persona_name: &str, row: &StagedCredit) {
     if row.lived.is_none() {
         return;
     }

@@ -238,7 +238,7 @@ pub struct ObserveResult {
 }
 
 /// Typed declaration of `perception/observe` — a `Provided` command, sibling of
-/// [`ScreenshotCommand`](crate::interface::ScreenshotCommand). The substrate
+/// `ScreenshotCommand` (`interface::ScreenshotCommand`). The substrate
 /// can't observe; it routes the call to an eye-node adapter, which exchanges bare
 /// [`ObserveParams`] → [`ObserveResult`] via `Commands.provide`. One name, N
 /// platform adapters. `AiSafe`, so it auto-joins every persona's tool surface.

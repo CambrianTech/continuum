@@ -62,7 +62,7 @@ pub(crate) fn forget_acting_context(persona_id: Uuid, context: crate::identity::
 
 /// Why an acting context is NOT closed: its handles and place are kept for a retry.
 #[derive(Debug)]
-pub(crate) struct ContextNotClosed {
+pub struct ContextNotClosed {
     pub message: String,
     /// The pids not confirmed gone, or `None` when the release couldn't report them.
     pub unconfirmed: Option<Vec<u32>>,
@@ -93,7 +93,7 @@ impl From<ContextNotClosed> for crate::sdk_codegen::CommandError {
 /// the context stood in and a retry finds it (Astra's review of #5005). This is the normal
 /// teardown of an eval, a solve or a replay; the release sent when its hands drop is only
 /// the fallback for an abnormal exit.
-pub(crate) async fn close_acting_context(hands: &ActingHands) -> Result<(), ContextNotClosed> {
+pub async fn close_acting_context(hands: &ActingHands) -> Result<(), ContextNotClosed> {
     let Some(context) = hands.context else {
         return Ok(()); // her live hands are never ended
     };

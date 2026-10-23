@@ -47,16 +47,6 @@ mod rehome;
 
 pub use crate::cognition::handoff::SaveReason;
 
-// The higher-ring items this module's tests use, named ONCE here (they reach them through
-// `use super::*`), so splitting the tests into their own file does not count the same upward
-// dependencies a second time (layer_discipline counts per file).
-#[cfg(test)]
-use crate::{
-    modules::{card_staging, code::{CodeModule, CodeState}},
-    modules::grid::GridTrustAuthPolicy,
-    routing::CallerIdentity,
-};
-
 // The tests gate themselves (`#![cfg(test)]` in tests.rs), so the scanner reads the file as test code.
 mod tests;
 

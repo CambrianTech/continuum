@@ -3,7 +3,7 @@
 //! The four cognition axes a persona tile draws as a live compass — **Focus,
 //! Reason, Recall, Act** — each carry a `0..=100` activation level that a
 //! cognition-stage tap bumps toward full and that DECAYS with wall-clock. The
-//! vitals radiator ([`crate::ipc::vitals_emitter`]) samples the decayed levels
+//! vitals radiator (`ipc::vitals_emitter`) samples the decayed levels
 //! every couple seconds and folds them into the persona's roster vitals, so the
 //! tile shows a live-but-smooth "shape of the mind": Reason bright while she
 //! deliberates, Act bright while she runs tools, fading back to dark at rest.
