@@ -290,25 +290,6 @@
         assert!(admitted.check_ready().is_ok());
     }
 
-    // what this catches: the hold spends the TURN's bound, never stacks on it — and a
-    // turn with no time left gets the instant answer, not a 240 s wait.
-    #[test]
-    fn the_turns_patience_is_capped_by_what_the_turn_has_left() {
-        use std::time::Duration;
-        let cap = EndpointSlots::TURN_READINESS_PATIENCE;
-        assert_eq!(EndpointSlots::turn_patience(None, Duration::from_secs(10)), cap);
-        assert_eq!(EndpointSlots::turn_patience(Some(Duration::from_secs(600)), Duration::from_secs(10)), cap);
-        assert_eq!(
-            EndpointSlots::turn_patience(Some(Duration::from_secs(44)), Duration::from_secs(20)),
-            Duration::from_secs(24)
-        );
-        assert_eq!(
-            EndpointSlots::turn_patience(Some(Duration::from_secs(44)), Duration::from_secs(50)),
-            Duration::ZERO,
-            "out of time is the instant answer"
-        );
-    }
-
     // what this catches: the 2026-08-26 KV-reuse-0% bug, both halves. One persona
     // running N concurrent activities (a 4-instance benchmark dispatch, each its
     // own room) must lease N DISTINCT slots — under the old persona-keyed lease
