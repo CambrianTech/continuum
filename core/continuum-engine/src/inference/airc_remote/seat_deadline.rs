@@ -16,8 +16,9 @@ use crate::inference::turn_bound::{from_expectation, BoundSource, ACT_CEILING};
 /// PURE: how long `offer`'s seat is measured to take for a request that may decode up
 /// to `max_tokens`: its median lane wait plus that decode at its measured rate. `None`
 /// when the beacon measures neither (zero samples or a zero rate is UNMEASURED, never
-/// fast). Prefill is not beaconed, so this is a lower bound on service time; the
-/// transport's floor still covers prefill.
+/// fast). Prefill is not beaconed, so this is a lower bound on service time; once it
+/// governs, prefill rides only the variance headroom of [`raise_to_seat`] (unmeasured,
+/// no additive guarantee), not the floor.
 pub(super) fn seat_service_estimate(
     offer: &CapacityOffer,
     max_tokens: Option<u32>,
