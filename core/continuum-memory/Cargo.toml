@@ -1,0 +1,27 @@
+[package]
+name = "continuum-memory"
+version = "0.1.0"
+edition = "2021"
+publish = false
+repository = "https://github.com/CambrianTech/continuum"
+
+# A mind's memory (the hippocampus: per-persona corpus, multi-layer recall, consolidation,
+# embeddings), cut out of continuum-mind (card 03e2a1c8). Placement map section 9.2 keeps it
+# a Mind faculty; as a leaf it needs only the engine (embedding provider, PersonaRef). The
+# mind re-exports it under its old path.
+
+[dependencies]
+continuum-engine = { path = "../continuum-engine" }
+tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+uuid.workspace = true
+schemars = { version = "0.8", features = ["uuid1"] }
+async-trait.workspace = true
+chrono.workspace = true
+dashmap = "6.1"  # Lock-free concurrent HashMap: per-persona corpora
+parking_lot.workspace = true
+ts-rs.workspace = true  # TypeScript type generation
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }
