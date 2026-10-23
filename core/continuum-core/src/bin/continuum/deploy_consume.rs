@@ -133,6 +133,11 @@ pub(super) async fn deploy_consume(options: DeployConsumeOptions) -> Result<(), 
         println!("{}", continuum_cli_lifecycle::prebuilt_artifact::CONSUMER_LEASE_PROTOCOL); // boundary: read-only CLI capability wire for retry rollout admission
         return Ok(());
     }
+    // The parent's launch permit ends at spawn. Reacquire in the consumer and
+    // retain custody for its whole pass so a delayed Scheduler/detached child
+    // cannot begin work inside a maintenance window.
+    #[cfg(windows)]
+    let _maintenance_permit = supervisor_install::maintenance::StartupPermit::acquire_deploy(&continuum_root()?)?;
     let attempts_path = consume_attempts_path()?;
     let _consumer_lease = ConsumeLedger::take_lease(&attempts_path)?;
     if let Some((build, digest)) = options.retry_resource {
