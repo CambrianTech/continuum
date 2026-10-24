@@ -237,6 +237,10 @@ pub struct WorkingMemory {
     /// (2026-09-07 11:46Z: four consecutive work turns with [investigation] and
     /// no [hands]/[env]). Cleared by key when the condition ends.
     pinned: Mutex<Vec<TurnPinnedFact>>,
+    /// Keys of pins whose condition ended (unpinned, or their turns ran out), newest last,
+    /// until re-pinned: her view retires each one's notice instead of showing an ended
+    /// condition until its next turnover. Bounded by the pin keys in use (a handful).
+    ended_pins: Mutex<Vec<String>>,
     /// The card the restored checkpoint said her hands were rooted at, until her first
     /// held-card turn reads the board and either confirms the hold or tells her it is
     /// gone (`[claim]`). Set by `restore`, taken once by the turn; `None` otherwise.

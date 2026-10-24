@@ -246,27 +246,54 @@ impl OpenViews {
         changed
     }
 
+    /// The banner her open views are listed under.
+    pub const BANNER: &'static str = "[open views] Files and outputs I have open, and which lines of each I have read \
+         (kept across turns and restarts; not a message from anyone). code/read with \
+         start_line/end_line pages a file; tool/output with outputId and startLine/endLine \
+         pages an output:";
+
+    /// Each view visible from `scope`: its stable key (its checkout and subject, so the same
+    /// relative path in two checkouts is two views) and its one line.
+    pub fn lines(&self, scope: Option<&str>) -> Vec<(String, String)> {
+        let mut visible: Vec<&OpenView> = self.views.iter().filter(|v| visible_from(v, scope)).collect();
+        visible.sort_by(|a, b| a.subject.cmp(&b.subject));
+        visible.into_iter().map(|view| (view_key(view), render_line(view))).collect()
+    }
+
+    /// The keys of views her hands cannot see from `scope` (they stand in another checkout):
+    /// her context view retires them, and offers them again when her hands return.
+    pub fn out_of_scope(&self, scope: Option<&str>) -> Vec<String> {
+        self.views.iter().filter(|v| !visible_from(v, scope)).map(view_key).collect()
+    }
+
+    #[cfg(test)]
     pub fn render(&self, scope: Option<&str>) -> Option<String> {
-        let mut visible: Vec<&OpenView> = self
-            .views
-            .iter()
-            .filter(|v| v.scope.is_none() || v.scope.as_deref() == scope)
-            .collect();
-        if visible.is_empty() {
+        let lines = self.lines(scope);
+        if lines.is_empty() {
             return None;
         }
-        visible.sort_by(|a, b| a.subject.cmp(&b.subject));
-        let mut out = String::from(
-            "[open views] Files and outputs I have open, and which lines of each I have read \
-             (kept across turns and restarts; not a message from anyone). code/read with \
-             start_line/end_line pages a file; tool/output with outputId and startLine/endLine \
-             pages an output:",
-        );
-        for view in visible {
+        let mut out = String::from(Self::BANNER);
+        for (_, line) in lines {
             out.push_str("\n- ");
-            out.push_str(&render_line(view));
+            out.push_str(&line);
         }
         Some(out)
+    }
+}
+
+fn visible_from(view: &OpenView, scope: Option<&str>) -> bool {
+    view.scope.is_none() || view.scope.as_deref() == scope
+}
+
+fn view_key(view: &OpenView) -> String {
+    // An unscoped view is visible from every checkout.
+    let scope = match view.scope.as_deref() {
+        Some(scope) => scope,
+        None => "*",
+    };
+    match &view.subject {
+        ViewSubject::File { path } => format!("{scope}/file/{path}"),
+        ViewSubject::Output { handle } => format!("{scope}/output/{handle}"),
     }
 }
 

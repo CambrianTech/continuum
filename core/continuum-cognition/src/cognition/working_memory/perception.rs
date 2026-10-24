@@ -189,9 +189,23 @@ impl WorkingMemory {
     /// Her open views as one compact block, one line per view visible from where her hands
     /// stand ([`super::super::open_views::OpenViews::render`]). Rendered as a required notice
     /// (`perception_facts::OpenViews`), so the history fit never drops it.
+    #[cfg(test)]
     pub fn open_views_block(&self) -> Option<String> {
         let scope = self.scope.lock().clone();
         self.open_views.lock().render(scope.as_deref())
+    }
+
+    /// Her open views visible from where her hands stand, one `(key, line)` each: the items of
+    /// her view's open-views stream (`context_streams::open_views`).
+    pub(crate) fn open_view_lines(&self) -> Vec<(String, String)> {
+        let scope = self.scope.lock().clone();
+        self.open_views.lock().lines(scope.as_deref())
+    }
+
+    /// Keys of her open views her hands cannot see from where they stand now.
+    pub(crate) fn open_views_out_of_scope(&self) -> Vec<String> {
+        let scope = self.scope.lock().clone();
+        self.open_views.lock().out_of_scope(scope.as_deref())
     }
 
     /// Every act she has a record of, oldest first, each in both renderings her context view

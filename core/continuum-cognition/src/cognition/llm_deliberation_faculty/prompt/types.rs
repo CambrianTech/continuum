@@ -112,9 +112,6 @@ pub struct PromptMessages {
     /// Public action text retains assistant provenance and required-input pricing.
     pub(in super::super) action_statement: Option<ChatMessage>,
     pub(in super::super) room_updates: Vec<ChatMessage>,
-    /// Substrate notices cannot disappear with the optional thought bid. Their
-    /// existing store owns retention; oversized payloads use the explicit fit refusal.
-    pub(in super::super) notices: Vec<ChatMessage>,
 }
 
 /// Her OWN most recent move and its outcome, priced — the SUFFIX of the optional history
@@ -294,7 +291,6 @@ impl PromptMessages {
         self.stimulus
             .iter()
             .chain(self.room_updates.iter())
-            .chain(self.notices.iter())
             .chain(self.action_statement.iter())
             .chain(self.latest_result.iter())
             .map(|message| LlmDeliberationFaculty::messages_cost(std::slice::from_ref(message)))

@@ -148,17 +148,10 @@ impl LlmDeliberationFaculty {
             persona_id: Some(self.persona_id),
         };
         let mut facts = perceived;
-        let mut notices = Vec::new();
-        for fact in super::super::super::perception_facts::render_facts(
+        facts.extend(super::super::super::perception_facts::render_facts(
             &fact_cx,
             &super::super::super::perception_facts::FactPolicy::default(),
-        ) {
-            use super::super::super::perception_facts::FactPlacement;
-            match fact.placement {
-                FactPlacement::History => facts.push(fact.text),
-                FactPlacement::Notice => notices.push(ChatMessage::text("user", fact.text)),
-            }
-        }
+        ));
         // MESSAGE ORDER IS MONOTONE IN STABILITY (2026-08-23, the byte-diff
         // verdict). Consecutive-act prompt captures showed the flickering
         // content — perception facts whose presence/wording changes per act,
@@ -377,7 +370,6 @@ impl LlmDeliberationFaculty {
             latest_result,
             action_statement,
             room_updates,
-            notices,
         }
     }
 

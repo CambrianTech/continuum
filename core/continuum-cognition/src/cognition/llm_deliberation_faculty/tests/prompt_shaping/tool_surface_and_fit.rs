@@ -109,7 +109,7 @@ fn fit_receipt_names_what_it_dropped_and_when_it_emptied_the_history() {
         history,
         stimulus: Some(stimulus.clone()),
         latest_result: Vec::new(), action_statement: None,
-        room_updates: Vec::new(), notices: Vec::new(),
+        room_updates: Vec::new(),
     };
     let required = prompt(Vec::new()).required_tokens();
     let total: usize = history.iter().map(LlmDeliberationFaculty::message_cost).sum();
@@ -172,7 +172,7 @@ fn fit_front_advances_in_quanta_not_per_act() {
                     history: msgs[..n].to_vec(),
                     stimulus: None,
                     latest_result: Vec::new(), action_statement: None,
-                    room_updates: Vec::new(), notices: Vec::new(),
+                    room_updates: Vec::new(),
                 },
                 budget,
             )
@@ -224,7 +224,7 @@ fn fit_front_advances_in_quanta_not_per_act() {
                 history: clustered,
                 stimulus: None,
                 latest_result: Vec::new(), action_statement: None,
-                room_updates: Vec::new(), notices: Vec::new(),
+                room_updates: Vec::new(),
             },
             budget,
         )
@@ -255,7 +255,7 @@ fn fit_front_advances_in_quanta_not_per_act() {
         ],
         stimulus: None,
         latest_result: Vec::new(), action_statement: None,
-        room_updates: Vec::new(), notices: Vec::new(),
+        room_updates: Vec::new(),
     };
     let ambient_cost =
         LlmDeliberationFaculty::message_cost(ambient().history.last().unwrap());
@@ -268,11 +268,11 @@ fn fit_front_advances_in_quanta_not_per_act() {
     assert!(faculty.fit_messages(ambient(), ambient_cost - 1).is_err());
 }
 
-// what this catches: the required notices placed after the ask, where bracketed meta gets
-// answered and parroted in its place (the 2026-07-20 humaneval fix), or behind the pinned
-// result, which stays last.
+// what this catches: anything placed after the ask, where bracketed meta gets answered and
+// parroted in its place (the 2026-07-20 humaneval fix), or behind the pinned result, which
+// stays last.
 #[test]
-fn notices_ride_before_the_pinned_result_and_never_after_the_ask() {
+fn the_pinned_result_rides_last_and_nothing_rides_after_the_ask() {
     let adapter: Arc<dyn AIProviderAdapter> = Arc::new(HeuristicInferenceAdapter::new());
     let faculty = LlmDeliberationFaculty::new(Uuid::new_v4(), "T", "You are T.", adapter);
     let prompt = |result: bool| PromptMessages {
@@ -283,7 +283,6 @@ fn notices_ride_before_the_pinned_result_and_never_after_the_ask() {
         stimulus: Some(ChatMessage::text("user", "the ask")),
         latest_result: result.then(|| ChatMessage::text("user", "Full result of your most recent action")).into_iter().collect(), action_statement: None,
         room_updates: vec![ChatMessage::text("user", "[Room message received during this turn] hi")],
-        notices: vec![ChatMessage::text("user", "Notices my substrate posted into my window")],
     };
     let order = |result: bool| -> Vec<String> {
         faculty.fit_messages(prompt(result), 100_000).expect("test: fits").messages.iter()
@@ -291,11 +290,10 @@ fn notices_ride_before_the_pinned_result_and_never_after_the_ask() {
     };
     assert_eq!(order(true), vec![
         "[work turn] fix the bug", "the ask", "[Room message received during this turn] hi",
-        "Notices my substrate posted into my window", "Full result of your most recent action",
+        "Full result of your most recent action",
     ]);
     assert_eq!(order(false), vec![
-        "[work turn] fix the bug", "Notices my substrate posted into my window", "the ask",
-        "[Room message received during this turn] hi",
+        "[work turn] fix the bug", "the ask", "[Room message received during this turn] hi",
     ]);
 }
 
@@ -313,7 +311,7 @@ fn continuity_followup_keeps_completed_action_evidence() {
         streams: Default::default(),
         result_pointers: Vec::new(),
         input_identity: [0; 32], grounding_tokens: 0, grounding_at: 0,
-        history, stimulus: None, latest_result: Vec::new(), action_statement: None, room_updates: Vec::new(), notices: Vec::new(),
+        history, stimulus: None, latest_result: Vec::new(), action_statement: None, room_updates: Vec::new(),
     };
     assert!(prompt.recent_move_evidence().tokens >= expected,
         "a new follow-up cannot make the preceding action and result disposable");
@@ -333,7 +331,7 @@ fn continuity_insufficient_capacity_refuses_instead_of_dropping_evidence() {
             ChatMessage::text("assistant", "calling code/write: completed.py ".repeat(30)),
             ChatMessage::text("user", "Full result of code/write: file written successfully."),
         ],
-        stimulus: None, latest_result: Vec::new(), action_statement: None, room_updates: Vec::new(), notices: Vec::new(),
+        stimulus: None, latest_result: Vec::new(), action_statement: None, room_updates: Vec::new(),
     };
     let insufficient = prompt.recent_move_evidence().tokens - 1;
     assert!(faculty.fit_messages(prompt, insufficient).is_err(),

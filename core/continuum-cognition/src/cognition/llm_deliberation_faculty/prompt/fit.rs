@@ -270,18 +270,16 @@ impl LlmDeliberationFaculty {
                 .filter_map(|(index, pointer)| index.checked_sub(start).map(|i| (i, pointer)))
                 .collect(),
         };
-        // The pinned result stays last. With none, the notices keep their place ahead of
-        // the ask: bracketed meta after the ask gets answered and parroted in its place
-        // (the 2026-07-20 humaneval fix).
+        // The pinned result stays last. With none, the ask follows her own statement:
+        // bracketed meta after the ask gets answered and parroted in its place (the
+        // 2026-07-20 humaneval fix); her notices ride her view, ahead of all of this.
         if !prompt.latest_result.is_empty() {
             prompt.history.extend(prompt.stimulus);
             prompt.history.extend(prompt.room_updates);
-            prompt.history.extend(prompt.notices);
             prompt.history.extend(prompt.action_statement);
             prompt.history.extend(prompt.latest_result);
         } else {
             prompt.history.extend(prompt.action_statement);
-            prompt.history.extend(prompt.notices);
             prompt.history.extend(prompt.stimulus);
             prompt.history.extend(prompt.room_updates);
         }
@@ -338,7 +336,6 @@ impl LlmDeliberationFaculty {
             latest_result: required,
             action_statement: None,
             room_updates: Vec::new(),
-            notices: Vec::new(),
         };
         let mut fitted = self.fit_messages(prompt, input_budget
             .saturating_sub(fixed_tokens).saturating_sub(frozen_grounding_tokens))?;

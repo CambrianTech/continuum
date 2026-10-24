@@ -53,6 +53,7 @@ impl WorkingMemory {
             instance: NEXT_INSTANCE.fetch_add(1, Ordering::Relaxed),
             capacity: capacity.max(1),
             pinned: Mutex::new(Vec::new()),
+            ended_pins: Mutex::new(Vec::new()),
             restored_acting_card: Mutex::new(None),
             served_window: AtomicU32::new(0),
             entries: Mutex::new(VecDeque::new()),

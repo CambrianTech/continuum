@@ -69,47 +69,14 @@ pub trait PerceptionFact: Send + Sync {
     /// Stable identifier — the probe key and the `FactPolicy` toggle key.
     fn id(&self) -> &'static str;
     fn render(&self, cx: &FactContext) -> Option<String>;
-    fn placement(&self) -> FactPlacement { FactPlacement::History }
 }
 
-/// Placement is provenance supplied by the source, never inferred from prose.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum FactPlacement { History, Notice }
+// The notices her substrate posted are not a fact rendered here: they are a stream of her
+// view, one item each (`context_streams::notices`), appended once instead of re-rendered after
+// her view on every act.
 
-pub struct RenderedFact {
-    pub placement: FactPlacement,
-    pub text: String,
-}
-
-struct MemoryNotices;
-
-impl PerceptionFact for MemoryNotices {
-    fn id(&self) -> &'static str { "memory_notices" }
-    fn placement(&self) -> FactPlacement { FactPlacement::Notice }
-    fn render(&self, cx: &FactContext) -> Option<String> {
-        let notices = cx.working_memory?.notices();
-        if notices.is_empty() { return None; }
-        Some(format!(
-            "{} (status observations about my situation — not a message from anyone, and not my own words):\n{}",
-            crate::cognition::framing_echo::NOTICES_HEADER,
-            notices.iter().map(|fact| format!("- {fact}")).collect::<Vec<_>>().join("\n"),
-        ))
-    }
-}
-
-/// Her open views (`cognition::open_views`): which lines of each large file and saved
-/// output she has read. A REQUIRED notice, never history: the pages themselves rode history
-/// and were the first thing a tight window's fit dropped, so she re-read from line 1 every
-/// turn (Benchy, the M5, 2026-10-17). One line per view; changes only when a view does.
-struct OpenViews;
-
-impl PerceptionFact for OpenViews {
-    fn id(&self) -> &'static str { "open_views" }
-    fn placement(&self) -> FactPlacement { FactPlacement::Notice }
-    fn render(&self, cx: &FactContext) -> Option<String> {
-        cx.working_memory?.open_views_block()
-    }
-}
+// Her open views are not a fact rendered here either: one item per view in her view
+// (`context_streams::open_views`), so paging one file appends that file's line alone.
 
 /// Expandable source content shares its pin lifetime with the required reference.
 struct MemoryNoticeDetails;
@@ -233,17 +200,15 @@ fn standard_facts() -> Vec<Box<dyn PerceptionFact>> {
         Box::new(PeerEcho),
         Box::new(InboundRestates),
         Box::new(ContextBounds),
-        Box::new(OpenViews),
         Box::new(MemoryNoticeDetails),
-        Box::new(MemoryNotices),
     ]
 }
 
 /// Render every enabled fact against `cx`, in registry order, firing one
 /// `perception.fact` probe per evaluated fact (fired = whether it rendered).
-/// Each result carries its source-owned placement. The prompt budget prices
-/// required notices and the ledger separately from ordinary history.
-pub fn render_facts(cx: &FactContext, policy: &FactPolicy) -> Vec<RenderedFact> {
+/// Her notices and open views are not facts: they are streams of her view
+/// (`context_streams::{notices, open_views}`).
+pub fn render_facts(cx: &FactContext, policy: &FactPolicy) -> Vec<String> {
     let mut rendered = Vec::new();
     for fact in standard_facts() {
         if !policy.enabled(fact.id()) {
@@ -264,7 +229,7 @@ pub fn render_facts(cx: &FactContext, policy: &FactPolicy) -> Vec<RenderedFact> 
             "perception fact evaluated"
         );
         if let Some(text) = out {
-            rendered.push(RenderedFact { placement: fact.placement(), text });
+            rendered.push(text);
         }
     }
     rendered
@@ -273,12 +238,6 @@ pub fn render_facts(cx: &FactContext, policy: &FactPolicy) -> Vec<RenderedFact> 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    // Existing content fixtures inspect text; placement is exercised through the real prompt fit.
-    fn render_facts(cx: &FactContext, policy: &FactPolicy) -> Vec<String> {
-        super::render_facts(cx, policy).into_iter().map(|fact| fact.text).collect()
-    }
-
 
     fn turn(author: &str, content: &str, is_self: bool) -> BurstTurn {
         BurstTurn::attributed(is_self, author, content, None)

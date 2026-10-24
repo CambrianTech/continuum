@@ -18,9 +18,7 @@ use continuum_context::source::Source;
 use continuum_context::view::{Claim, View};
 
 use super::*;
-use crate::cognition::context_streams::actions::Actions;
-use crate::cognition::context_streams::thoughts::Thoughts;
-use crate::cognition::context_streams::ContextMessage;
+use crate::cognition::context_streams::{ContextMessage, MemoryStreams};
 use crate::cognition::working_memory::WorkingMemory;
 
 /// The prefix of a view source's claim id in the window's one allocation.
@@ -59,9 +57,8 @@ impl LlmDeliberationFaculty {
     /// weighs her reply also decides, once, how much of her context she reads.
     pub(in super::super) fn view_claims(&self, streams: &Streams) -> Vec<crate::cognition::rag_budget::RagSourceBudget> {
         let memory = self.working_memory.as_deref();
-        let actions = memory.map(|memory| Actions { memory });
-        let thoughts = memory.map(|memory| Thoughts { memory });
-        Self::view_sources(streams, actions.as_ref(), thoughts.as_ref())
+        let memory_streams = memory.map(MemoryStreams::of);
+        Self::view_sources(streams, memory_streams.as_ref())
             .into_iter()
             .map(|source| {
                 let items = source.items();
@@ -74,7 +71,7 @@ impl LlmDeliberationFaculty {
                     floor_tokens: Self::clamp_u32(floor),
                     min_tokens: Self::clamp_u32(floor),
                     max_tokens: Self::clamp_u32(want),
-                    required: false,
+                    required: source.required(),
                 }
             })
             .collect()
@@ -126,10 +123,15 @@ impl LlmDeliberationFaculty {
         // floor is what it renders collapsed, so starting it anyway put the view over its
         // grant and left the fit to cut it (an atomic standing block, its minimum the whole
         // block, 21,857 tokens on an 8,192 window). A later act's advance offers it again.
+        // A required source is never shed: it got its floor first, or it is under-provisioned
+        // and kept anyway, so the view runs over its grant and the turn is refused
+        // (`budget_fault` / `capacity_error`, view.rs), never sent without it.
+        // (`escalation_needed` is only probed; it refuses nothing.)
         let shed: Vec<&str> = plan
             .allocations
             .iter()
             .filter(|a| a.allocated_tokens < a.requested_floor)
+            .filter(|a| a.state != crate::cognition::rag_budget::AllocationState::UnderProvisioned)
             .filter_map(|a| a.source_id.strip_prefix(VIEW_CLAIM))
             .collect();
         let started = self.turn_over_view_with(&prompt.streams, &shed, |claims: &[Claim]| {
@@ -156,9 +158,8 @@ impl LlmDeliberationFaculty {
     /// caller to size).
     fn advance_view(&self, streams: &Streams) -> (Vec<ChatMessage>, bool) {
         let memory = self.working_memory.as_deref();
-        let actions = memory.map(|memory| Actions { memory });
-        let thoughts = memory.map(|memory| Thoughts { memory });
-        let sources = Self::view_sources(streams, actions.as_ref(), thoughts.as_ref());
+        let memory_streams = memory.map(MemoryStreams::of);
+        let sources = Self::view_sources(streams, memory_streams.as_ref());
         let mut held = self.context_view.lock();
         // A restart resumes the view her checkpoint kept, the same bytes the engine's saved
         // page holds, instead of starting a new epoch cold.
@@ -184,6 +185,9 @@ impl LlmDeliberationFaculty {
                 Ok((view, _)) => {
                     *held = Some(view);
                     self.tool_head_turned_over();
+                    if let Some(memory) = memory {
+                        memory.reclaim_ended_notices();
+                    }
                 }
                 Err(mismatch) => continuum_base::probe!(
                     class = "delib.view.refused",
@@ -208,9 +212,8 @@ impl LlmDeliberationFaculty {
         allocate: impl FnOnce(&[Claim]) -> Vec<usize>,
     ) -> Vec<ChatMessage> {
         let memory = self.working_memory.as_deref();
-        let actions = memory.map(|memory| Actions { memory });
-        let thoughts = memory.map(|memory| Thoughts { memory });
-        let mut sources = Self::view_sources(streams, actions.as_ref(), thoughts.as_ref());
+        let memory_streams = memory.map(MemoryStreams::of);
+        let mut sources = Self::view_sources(streams, memory_streams.as_ref());
         sources.retain(|source| !shed.contains(&source.name()));
         let mut held = self.context_view.lock();
         let started = if let Some(view) = held.as_mut() {
@@ -236,6 +239,9 @@ impl LlmDeliberationFaculty {
                      by the flexbox at its start"
                 );
                 self.tool_head_turned_over();
+                if let Some(memory) = memory {
+                    memory.reclaim_ended_notices();
+                }
             }
             Err(mismatch) => continuum_base::probe!(
                 class = "delib.view.refused",
@@ -255,9 +261,8 @@ impl LlmDeliberationFaculty {
     #[cfg(any(test, feature = "test-fixtures"))]
     pub(in super::super) fn whole_view(&self, streams: &Streams) -> Vec<ChatMessage> {
         let memory = self.working_memory.as_deref();
-        let actions = memory.map(|memory| Actions { memory });
-        let thoughts = memory.map(|memory| Thoughts { memory });
-        let sources = Self::view_sources(streams, actions.as_ref(), thoughts.as_ref());
+        let memory_streams = memory.map(MemoryStreams::of);
+        let sources = Self::view_sources(streams, memory_streams.as_ref());
         let whole = |claims: &[Claim]| claims.iter().map(|claim| claim.full_chars).collect();
         match View::start(Vec::new(), &sources, whole) {
             Ok((view, _)) => Self::render(Some(&view)),
@@ -276,7 +281,8 @@ impl LlmDeliberationFaculty {
     /// Her sources in the order an epoch start renders them, the front that survives a
     /// turnover first: the settled blocks (standing and board churn, in their canonical
     /// order), her actions, her conversation, the blocks that count or change within an
-    /// epoch (the kanban's claims, recall, awareness, an unknown block), her thoughts. Within an epoch the order cannot matter (every act appends), so it is
+    /// epoch (the kanban's claims, recall, awareness, an unknown block), her thoughts, her open
+    /// views, then the notices her substrate posted, whose investigation tally changes most acts. Within an epoch the order cannot matter (every act appends), so it is
     /// chosen for the one rewrite an epoch costs: a turnover keeps the prefix up to the
     /// first source whose FRONT changed.
     ///
@@ -292,8 +298,7 @@ impl LlmDeliberationFaculty {
     /// recall's "N ago" ages, awareness and her thoughts.
     fn view_sources<'a>(
         streams: &'a Streams,
-        actions: Option<&'a Actions<'a>>,
-        thoughts: Option<&'a Thoughts<'a>>,
+        memory: Option<&'a MemoryStreams<'a>>,
     ) -> Vec<&'a dyn Source<ContextMessage>> {
         use crate::cognition::deliberation_prompt::{churn_of, PromptChurn};
         let settled = |block: &&crate::cognition::context_streams::blocks::Grounding| {
@@ -304,10 +309,12 @@ impl LlmDeliberationFaculty {
         };
         let mut sources: Vec<&dyn Source<ContextMessage>> =
             streams.blocks.iter().filter(settled).map(as_source).collect();
-        sources.extend(actions.map(|source| source as &dyn Source<ContextMessage>));
+        sources.extend(memory.map(|m| &m.actions as &dyn Source<ContextMessage>));
         sources.push(&streams.conversation);
         sources.extend(streams.blocks.iter().filter(|block| !settled(block)).map(as_source));
-        sources.extend(thoughts.map(|source| source as &dyn Source<ContextMessage>));
+        sources.extend(memory.map(|m| &m.thoughts as &dyn Source<ContextMessage>));
+        sources.extend(memory.map(|m| &m.open_views as &dyn Source<ContextMessage>));
+        sources.extend(memory.map(|m| &m.notices as &dyn Source<ContextMessage>));
         sources
     }
 

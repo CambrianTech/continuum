@@ -33,16 +33,15 @@ fn streams(first_turn: usize, recall: &str) -> Streams {
 /// actions, every block, her thoughts).
 fn ordered<'a>(
     streams: &'a Streams,
-    actions: &'a Actions<'a>,
-    thoughts: &'a Thoughts<'a>,
+    memory: &'a MemoryStreams<'a>,
     conversation_first: bool,
 ) -> Vec<&'a dyn Source<ContextMessage>> {
     if !conversation_first {
-        return LlmDeliberationFaculty::view_sources(streams, Some(actions), Some(thoughts));
+        return LlmDeliberationFaculty::view_sources(streams, Some(memory));
     }
-    let mut sources: Vec<&dyn Source<ContextMessage>> = vec![&streams.conversation, actions];
+    let mut sources: Vec<&dyn Source<ContextMessage>> = vec![&streams.conversation, &memory.actions];
     sources.extend(streams.blocks.iter().map(|block| block as &dyn Source<ContextMessage>));
-    sources.push(thoughts);
+    sources.push(&memory.thoughts);
     sources
 }
 
@@ -61,10 +60,10 @@ fn two_acts_and_a_turnover(conversation_first: bool) -> (usize, usize, usize) {
     let memory = WorkingMemory::new(8);
     memory.record_receipt("I ran code/list Result: 4 files");
     memory.record_settlement("listed", None);
-    let (actions, thoughts) = (Actions { memory: &memory }, Thoughts { memory: &memory });
+    let memory_streams = MemoryStreams::of(&memory);
     let first = streams(0, "RECALL: the repro lives in tests/");
     let whole = |claims: &[Claim]| claims.iter().map(|claim| claim.full_chars).collect();
-    let (mut view, _) = View::start(Vec::new(), &ordered(&first, &actions, &thoughts, conversation_first), whole)
+    let (mut view, _) = View::start(Vec::new(), &ordered(&first, &memory_streams, conversation_first), whole)
         .expect("test: one grant per source");
     let before = texts(&view);
 
@@ -72,7 +71,7 @@ fn two_acts_and_a_turnover(conversation_first: bool) -> (usize, usize, usize) {
     memory.record_receipt("I ran code/read(main.rs) Result: 120 lines");
     memory.record_settlement("read it", None);
     let next = streams(1, "RECALL: main.rs calls the parser");
-    let sources = ordered(&next, &actions, &thoughts, conversation_first);
+    let sources = ordered(&next, &memory_streams, conversation_first);
     view.advance(&sources);
     let advanced = texts(&view);
 
@@ -97,13 +96,13 @@ fn two_acts_and_a_turnover(conversation_first: bool) -> (usize, usize, usize) {
 #[test]
 fn consecutive_acts_share_the_whole_view_and_a_turnover_keeps_the_settled_front() {
     let memory = WorkingMemory::new(8);
-    let (actions, thoughts) = (Actions { memory: &memory }, Thoughts { memory: &memory });
+    let memory_streams = MemoryStreams::of(&memory);
     let now = streams(0, "RECALL: one");
     let names: Vec<&str> =
-        LlmDeliberationFaculty::view_sources(&now, Some(&actions), Some(&thoughts)).iter().map(|s| s.name()).collect();
+        LlmDeliberationFaculty::view_sources(&now, Some(&memory_streams)).iter().map(|s| s.name()).collect();
     assert_eq!(
         names,
-        ["workspace-map", "actions", "conversation", "room-kanban", "recall", "thoughts"],
+        ["workspace-map", "actions", "conversation", "room-kanban", "recall", "thoughts", "open-views", "notices"],
         "settled blocks, then her actions and conversation, then what counts or changes within an epoch"
     );
 
