@@ -60,7 +60,7 @@ pub fn has_path_prefix(path: &std::path::Path, base: &std::path::Path) -> bool {
 /// resolution the dispatch workspace + progress ledger use. `pub(crate)` so the
 /// curriculum drain (`genome/teach --from-experience`) resolves the SAME citizen
 /// layout as the grader that wrote the stream — one layout, never two.
-pub fn continuum_home() -> Result<std::path::PathBuf, String> {
+pub fn continuum_home_trial_renamed() -> Result<std::path::PathBuf, String> {
     std::env::var_os("CONTINUUM_HOME")
         .map(std::path::PathBuf::from)
         .or_else(test_home)
@@ -252,11 +252,11 @@ mod tests {
         if std::env::var_os("CONTINUUM_HOME").is_some() {
             return; // an explicitly declared home is the test's own choice
         }
-        let home = super::continuum_home().expect("a test home always resolves");
+        let home = super::continuum_home_trial_renamed().expect("a test home always resolves");
         assert!(home.starts_with(std::env::temp_dir()), "{}", home.display());
         assert!(home.to_string_lossy().contains("continuum-test-home-"), "{}", home.display());
         assert_ne!(Some(home.clone()), dirs::home_dir().map(|h| h.join(".continuum")));
-        assert_eq!(super::continuum_home().unwrap(), home, "one home per process");
+        assert_eq!(super::continuum_home_trial_renamed().unwrap(), home, "one home per process");
     }
 
 

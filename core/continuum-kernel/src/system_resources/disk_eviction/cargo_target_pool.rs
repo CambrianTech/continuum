@@ -34,7 +34,7 @@ impl ResourcePool for CargoTargetPool {
             let Some(hands) = PersonaHandsLease::try_take(peer) else {
                 return self.declined(DeclinedEviction::CitizenBusy("hands are in use".into()));
             };
-            let home = match crate::paths::continuum_home() {
+            let home = match crate::paths::continuum_home_trial_renamed() {
                 Ok(home) => home,
                 Err(error) => return self.declined(DeclinedEviction::CitizenBusy(error.to_string())),
             };

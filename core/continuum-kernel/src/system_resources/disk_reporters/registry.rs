@@ -616,7 +616,7 @@ pub async fn admit_cargo_target(
         None => crate::system_resources::confinement::Confinement::for_caller(
             &dirs::home_dir()
                 .ok_or_else(|| "Cargo target validation requires the native home".to_string())?,
-            &crate::paths::continuum_home()?,
+            &crate::paths::continuum_home_trial_renamed()?,
             "",
             cwd,
         ),

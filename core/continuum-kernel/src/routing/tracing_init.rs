@@ -158,7 +158,7 @@ impl ProbeTracingConfig {
         let log_dir = std::env::var(ENV_LOG_DIR)
             .ok()
             .map(PathBuf::from)
-            .or_else(|| crate::paths::continuum_home().ok().map(|h| h.join("logs")));
+            .or_else(|| crate::paths::continuum_home_trial_renamed().ok().map(|h| h.join("logs")));
         Self {
             probe_dir,
             probe_classes,
@@ -501,7 +501,7 @@ mod tests {
         assert!(empty.probe_classes.is_empty());
         assert_eq!(empty.default_filter, "warn");
         // log_dir defaults to `<continuum home>/logs` when `CONTINUUM_LOG_DIR` is unset: the
-        // home `paths::continuum_home()` resolves (under a test, the per-process test home, so a
+        // home `paths::continuum_home_trial_renamed()` resolves (under a test, the per-process test home, so a
         // test never writes the operator's logs; card 5e3a3e75). Pin the default so future
         // refactors can't silently move logs back to stderr-default or off the one home.
         let log_dir = empty
@@ -510,7 +510,7 @@ mod tests {
             .expect("CI/dev environments have a home — default must resolve");
         assert_eq!(
             Some(log_dir.to_path_buf()),
-            crate::paths::continuum_home().ok().map(|home| home.join("logs")),
+            crate::paths::continuum_home_trial_renamed().ok().map(|home| home.join("logs")),
             "default log_dir is the continuum home's logs"
         );
 

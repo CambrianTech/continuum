@@ -1,6 +1,6 @@
 //! The continuum home's layout: each well-known directory is named once, here.
 //!
-//! [`super::continuum_home`] owns WHERE the home is; this owns WHAT is under it. Before it,
+//! [`super::continuum_home_trial_renamed`] owns WHERE the home is; this owns WHAT is under it. Before it,
 //! every caller spelled its own subdirectory (`"genome/venv/bin/python3"`,
 //! `".continuum/datasets"`, `"genome/models"`), so one directory had as many definitions as
 //! callers, and a caller that bypassed the home resolver was invisible to it.
@@ -15,10 +15,10 @@ pub struct ContinuumLayout {
 }
 
 impl ContinuumLayout {
-    /// The layout of this process's continuum home ([`super::continuum_home`]: honours
+    /// The layout of this process's continuum home ([`super::continuum_home_trial_renamed`]: honours
     /// `$CONTINUUM_HOME`, and a test binary's per-process home).
     pub fn home() -> Result<Self, String> {
-        super::continuum_home().map(Self::at)
+        super::continuum_home_trial_renamed().map(Self::at)
     }
 
     /// The same layout under another root: a configured storage tier, or a test's temp dir.

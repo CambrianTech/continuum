@@ -15,8 +15,8 @@ use std::path::{Path, PathBuf};
 
 /// The archive directory, under the continuum home. Registered as the
 /// `benchmark-harness-archive` cache class (`disk_reporters::standard_tracked_dirs`).
-pub fn archive_root(continuum_home: &Path) -> PathBuf {
-    continuum_home.join("archive").join("benchmark-harness")
+pub fn archive_root(continuum_home_trial_renamed: &Path) -> PathBuf {
+    continuum_home_trial_renamed.join("archive").join("benchmark-harness")
 }
 
 /// The receipt the once-gate reads, inside [`archive_root`].
@@ -55,20 +55,20 @@ pub enum ArchiveOutcome {
     Moved(Vec<String>),
 }
 
-/// Archive the harness state under `continuum_home`, once. A failed rename stops the pass
+/// Archive the harness state under `continuum_home_trial_renamed`, once. A failed rename stops the pass
 /// before the receipt is written, so the next boot retries what is left.
-pub fn archive_once_in(continuum_home: &Path, archived_at_ms: u64) -> Result<ArchiveOutcome, String> {
-    let root = archive_root(continuum_home);
+pub fn archive_once_in(continuum_home_trial_renamed: &Path, archived_at_ms: u64) -> Result<ArchiveOutcome, String> {
+    let root = archive_root(continuum_home_trial_renamed);
     if root.join(RECEIPT).exists() {
         return Ok(ArchiveOutcome::AlreadyArchived);
     }
     let mut relative: Vec<String> = HARNESS_DIRS
         .iter()
         .chain(HARNESS_FILES)
-        .filter(|rel| continuum_home.join(rel).exists())
+        .filter(|rel| continuum_home_trial_renamed.join(rel).exists())
         .map(|rel| rel.to_string())
         .collect();
-    if let Ok(entries) = std::fs::read_dir(continuum_home.join(PROGRESS_DIR)) {
+    if let Ok(entries) = std::fs::read_dir(continuum_home_trial_renamed.join(PROGRESS_DIR)) {
         let mut names: Vec<String> = entries
             .flatten()
             .filter_map(|e| e.file_name().into_string().ok())
@@ -83,7 +83,7 @@ pub fn archive_once_in(continuum_home: &Path, archived_at_ms: u64) -> Result<Arc
         if let Some(parent) = to.parent() {
             std::fs::create_dir_all(parent).map_err(|e| format!("create {}: {e}", parent.display()))?;
         }
-        std::fs::rename(continuum_home.join(rel), &to).map_err(|e| format!("move {rel}: {e}"))?;
+        std::fs::rename(continuum_home_trial_renamed.join(rel), &to).map_err(|e| format!("move {rel}: {e}"))?;
     }
     std::fs::create_dir_all(&root).map_err(|e| format!("create {}: {e}", root.display()))?;
     let receipt = serde_json::json!({ // file format on disk: the archive's own receipt, read by the once-gate's existence check and by hand
@@ -99,7 +99,7 @@ pub fn archive_once_in(continuum_home: &Path, archived_at_ms: u64) -> Result<Arc
 /// Boot entry: archive the node's harness state once, off the main thread.
 pub fn spawn_archive(rt: &tokio::runtime::Handle) {
     rt.spawn_blocking(|| {
-        let outcome = crate::paths::continuum_home()
+        let outcome = crate::paths::continuum_home_trial_renamed()
             .and_then(|home| archive_once_in(&home, continuum_base::time::EpochMs::now().millis()));
         match outcome {
             Ok(ArchiveOutcome::AlreadyArchived) => {}
