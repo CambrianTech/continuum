@@ -205,9 +205,15 @@ fn a_manifest_only_kind_conforms() {
         );
         assert_eq!(report.commit_ops, 2, "manifest put + ref flip");
     }
-    // The recorded manifest is canonical: this build writes those exact bytes for schema 1.
+    // The recorded manifest is canonical: this build writes those exact bytes for schema 1,
+    // and its id is the one forge-alloy's shared vector pins (test-vectors/jcs.json
+    // `contentIds`), so a `package` stage in an alloy names it by the same hash.
     let m = Manifest::decode(TINY_V1.as_bytes()).unwrap();
     assert_eq!(m.encode().unwrap(), TINY_V1.as_bytes());
+    assert_eq!(
+        ContentId::of(TINY_V1.as_bytes()).to_string(),
+        "sha256:631135120fe75465ac31c0957e2acb6e38771cde30c6e67af767defa3d4857ae"
+    );
 }
 
 // what this catches: the contract on a deep, shared, multi-MB tree, plus its shape: a load

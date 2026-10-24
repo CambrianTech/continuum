@@ -58,6 +58,8 @@ pub enum PackError {
     Store(#[from] StoreError),
     #[error("manifest is malformed: {0}")]
     Manifest(serde_json::Error),
+    #[error("manifest has no RFC 8785 form: {0}")]
+    Canonical(#[from] crate::canonical::CanonicalError),
     #[error("manifest envelope format {found} is newer than {known}")]
     UnknownFormat { found: u32, known: u32 },
     #[error("expected a {expected} package, found {found}")]

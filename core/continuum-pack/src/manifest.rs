@@ -1,6 +1,7 @@
 //! The manifest: a package's one small document. Fields inline, every other part a
 //! descriptor (`mediaType`, `digest`, `size`, the OCI descriptor shape), requirements first.
-//! Stored as canonical JSON, so its id is a pure function of the value.
+//! Stored as RFC 8785 JCS bytes, so its id (sha256 of those bytes) is a pure function of the
+//! value, and the same bytes rule forge-alloy signs.
 
 use std::collections::BTreeMap;
 
@@ -14,6 +15,10 @@ use crate::requires::Requirement;
 
 /// The media type of a manifest stored as a blob (a child part's descriptor carries it).
 pub const MANIFEST_MEDIA: &str = "application/vnd.continuum.pack.manifest.v1+json";
+
+/// The media type of a package's provenance part: a forge-alloy chain whose final stage names
+/// this package's id. Only the name lives here; attaching and verifying alloys sits a layer up.
+pub const PROVENANCE_MEDIA: &str = "application/vnd.forge-alloy+json";
 
 /// The envelope format this build writes and reads. A newer one is refused, never guessed at.
 pub const FORMAT: u32 = 1;
@@ -60,10 +65,10 @@ impl Manifest {
         }
     }
 
-    /// The canonical bytes (sorted keys, no whitespace).
+    /// The RFC 8785 (JCS) bytes; the package id is their sha256.
     pub fn encode(&self) -> Result<Vec<u8>, PackError> {
         let value = serde_json::to_value(self).map_err(PackError::Manifest)?;
-        Ok(canonical::to_vec(&value))
+        Ok(canonical::canonicalize(&value)?)
     }
 
     /// Parse a manifest, refusing an envelope newer than this build.

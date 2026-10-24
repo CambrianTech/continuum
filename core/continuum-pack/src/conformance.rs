@@ -7,6 +7,7 @@ use std::fmt::Display;
 use std::sync::Arc;
 
 use crate::blob::BlobSource;
+use crate::canonical::canonicalize;
 use crate::error::{PackError, StoreError};
 use crate::id::ContentId;
 use crate::manifest::Manifest;
@@ -160,7 +161,22 @@ pub fn conformance<T: Packable>(
     // a flipped byte anywhere in the tree is caught.
     let s = fresh().case("store")?;
     save(s.as_ref(), &sample.a).case("flipped byte")?;
-    for node in nodes(s.as_ref(), &a_id).case("flipped byte")? {
+    let tree = nodes(s.as_ref(), &a_id).case("flipped byte")?;
+
+    // every manifest in the tree is stored as its RFC 8785 bytes and named by their sha256,
+    // the id rule forge-alloy's `package` stages carry (one hash, one canonical form).
+    for &(node, _) in tree.iter().filter(|(_, is_manifest)| *is_manifest) {
+        let case = "id is sha256 of JCS bytes";
+        let bytes = read_verified(s.as_ref(), &node).case(case)?;
+        let value: serde_json::Value = serde_json::from_slice(&bytes).case(case)?;
+        let jcs = canonicalize(&value).case(case)?;
+        require(jcs == bytes && ContentId::of(&jcs) == node, case, || {
+            format!("{node}: stored bytes are not their own JCS form")
+        })?;
+    }
+    report.passed.push("id is sha256 of JCS bytes");
+
+    for (node, _) in tree {
         let f: Arc<dyn Store> = Arc::new(FaultStore::tampering(s.clone(), node));
         let caught = |r: &Result<(), PackError>| matches!(r, Err(PackError::Store(StoreError::DigestMismatch { expected, .. })) if *expected == node);
         let walked = verify(f.as_ref(), &a_id).map(|_| ());
@@ -268,15 +284,15 @@ pub fn conformance<T: Packable>(
     Ok(report)
 }
 
-/// Every distinct node id under `root`, root first.
-fn nodes(store: &dyn Store, root: &ContentId) -> Result<Vec<ContentId>, PackError> {
-    let mut out = vec![*root];
+/// Every distinct node id under `root`, root first, with whether it is a manifest.
+fn nodes(store: &dyn Store, root: &ContentId) -> Result<Vec<(ContentId, bool)>, PackError> {
+    let mut out = vec![(*root, true)];
     let mut seen = HashSet::from([*root]);
     let mut manifests = vec![*root];
     while let Some(id) = manifests.pop() {
         for (is_child, d) in Manifest::decode(&read_verified(store, &id)?)?.links() {
             if seen.insert(d.digest) {
-                out.push(d.digest);
+                out.push((d.digest, is_child));
                 if is_child {
                     manifests.push(d.digest);
                 }

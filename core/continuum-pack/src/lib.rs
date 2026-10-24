@@ -1,7 +1,7 @@
 //! Packages: one load/store for every layer, any depth (docs/architecture/PACKAGES.md).
 //!
 //! A type says WHAT it is ([`Packable`], usually `#[derive(Packable)]`); a store says WHERE
-//! bytes go ([`Store`]). A package is a canonical-JSON manifest whose parts are inline fields,
+//! bytes go ([`Store`]). A package is an RFC 8785 (JCS) manifest whose parts are inline fields,
 //! content-addressed blobs and child packages, so a tree is a Merkle DAG: one root id commits
 //! to every byte below it, identical subtrees are stored once, and a save of any depth
 //! commits by ONE ref flip ([`commit`]). Loads are lazy ([`Handle`], [`Blob`]) and every byte
@@ -34,11 +34,12 @@ mod transport;
 mod unpacker;
 
 pub use blob::{Blob, BlobRead, BlobSource, Fill};
+pub use canonical::{canonicalize, CanonicalError};
 pub use continuum_pack_derive::Packable;
 pub use error::{PackError, StoreError};
 pub use handle::{ChildPart, Handle};
 pub use id::{ContentId, IdError};
-pub use manifest::{Descriptor, Manifest, Part, FORMAT, MANIFEST_MEDIA};
+pub use manifest::{Descriptor, Manifest, Part, FORMAT, MANIFEST_MEDIA, PROVENANCE_MEDIA};
 pub use packable::{Kind, Migration, Packable};
 pub use packer::{commit, save, Packer};
 pub use requires::{Audience, Offers, Required, Requirement};

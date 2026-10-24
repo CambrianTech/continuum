@@ -9,7 +9,8 @@ bytes = "1"
 continuum-base = { path = "../continuum-base" }
 continuum-pack-derive = { path = "../continuum-pack-derive" }
 serde = { workspace = true }
-serde_json = { workspace = true }
+# float_roundtrip: a manifest float must parse to the nearest double, or a load/re-save moves its id.
+serde_json = { workspace = true, features = ["float_roundtrip"] }
 sha2 = { workspace = true }
 thiserror = { workspace = true }
 # continuum_base::probe! expands to ::tracing::event!.
