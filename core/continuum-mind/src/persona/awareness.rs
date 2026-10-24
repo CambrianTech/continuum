@@ -155,7 +155,7 @@ impl AwarenessSnapshot {
         let mut out = Vec::with_capacity(self.visible().len() + 1);
         if let Some(c) = &self.continuation {
             out.push(if shows_note(c) {
-                format!("[working] {} — {}", short8(c.activity), c.note)
+                format!("[working] {} — {}", airc_core::shown_id::shown_form(c.activity), c.note)
             } else {
                 "[working] private work pending in your mind room".to_string()
             });
@@ -181,10 +181,6 @@ impl AwarenessSnapshot {
         }
         out
     }
-}
-
-fn short8(id: Uuid) -> String {
-    id.to_string()[..8].to_string()
 }
 
 fn reason_word(r: &crate::cognition::conversation::salience::SalienceReason) -> &'static str {

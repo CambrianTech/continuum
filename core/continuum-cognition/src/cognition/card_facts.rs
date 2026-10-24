@@ -2,7 +2,6 @@
 //! conclude a card, and the board's 8-char short id.
 
 use airc_lib::CardState;
-use uuid::Uuid;
 
 /// Default claim lease (ms) — 30 min — when the caller doesn't set one. The claim
 /// is heartbeat-extendable; this is just the initial TTL.
@@ -35,7 +34,3 @@ pub fn is_concluded(s: &CardState) -> bool {
     matches!(s, CardState::Merged | CardState::Closed)
 }
 
-/// The board's displayed 8-char short form of an id.
-pub fn short8(u: Uuid) -> String {
-    u.simple().to_string().chars().take(8).collect()
-}

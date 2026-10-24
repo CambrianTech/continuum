@@ -101,25 +101,24 @@ pub(crate) fn render_room_content(text: &str, media: &[crate::cognition::convers
 /// words. Short ids because that is how the board renders them; the typed event
 /// retains the full ids for her hands.
 pub fn render_room_work(work: &RoomWork, actor: uuid::Uuid) -> String {
-    let short = |id: uuid::Uuid| id.to_string()[..8].to_string();
     match work {
         RoomWork::Reviewed { card_id, outcome, reviewer, .. } => format!(
             "[board fact] review on card {}: {:?} (reviewer {})",
-            short(*card_id), outcome, short(*reviewer)
+            airc_core::shown_id::shown_form(*card_id), outcome, airc_core::shown_id::shown_form(*reviewer)
         ),
         RoomWork::StateChanged { card_id, state, by } => format!(
             "[board fact] card {} moved to {:?} (by {})",
-            short(*card_id), state, short(*by)
+            airc_core::shown_id::shown_form(*card_id), state, airc_core::shown_id::shown_form(*by)
         ),
         RoomWork::Submitted { card_id, publisher, .. } => format!(
             "[board fact] submission published on card {} (by {})",
-            short(*card_id), short(*publisher)
+            airc_core::shown_id::shown_form(*card_id), airc_core::shown_id::shown_form(*publisher)
         ),
         RoomWork::Claimed { card_id, owner, .. } => format!(
             "[board fact] card {} claimed (by {})",
-            short(*card_id), short(*owner)
+            airc_core::shown_id::shown_form(*card_id), airc_core::shown_id::shown_form(*owner)
         ),
-        RoomWork::Other { kind } => format!("[board fact] {kind} (by {})", short(actor)),
+        RoomWork::Other { kind } => format!("[board fact] {kind} (by {})", airc_core::shown_id::shown_form(actor)),
     }
 }
 

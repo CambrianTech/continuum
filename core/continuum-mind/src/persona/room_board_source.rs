@@ -316,7 +316,7 @@ impl RoomBoardSource {
         names: &dyn crate::cognition::card_holder::PeerNames,
         include_submission: bool,
     ) -> String {
-        let id8: String = card.card_id.as_uuid().to_string().chars().take(8).collect();
+        let id8: String = airc_core::shown_id::shown_form(card.card_id.as_uuid());
         let held = crate::cognition::card_holder::holder(card, self_id, now_ms, names);
         // The tag leads with what the card IS to someone deciding whether to take
         // it, not with the column it happens to sit in — a lapsed claim is takeable
@@ -387,7 +387,7 @@ fn claim_is_live(card: &airc_work::WorkCard, now_ms: u64) -> bool {
 /// times. The path is now in front of her each turn she holds the card. With no checkout on
 /// this node the line says nothing about one: an absence is not reported as a location.
 fn held_card_line(card: &airc_work::WorkCard, checkout: Option<&std::path::Path>) -> String {
-    let id8: String = card.card_id.as_uuid().to_string().chars().take(8).collect();
+    let id8: String = airc_core::shown_id::shown_form(card.card_id.as_uuid());
     let line = format!("  {id8}: \"{}\" [{:?}]", card.title, card.state);
     match checkout {
         Some(path) => format!("{line}\n    its work is at {}", path.display()),
@@ -684,7 +684,7 @@ impl RoomBoardSource {
                 .iter()
                 .take(5)
                 .map(|c| {
-                    let id8: String = c.card_id.as_uuid().to_string().chars().take(8).collect();
+                    let id8: String = airc_core::shown_id::shown_form(c.card_id.as_uuid());
                     format!("  {id8}: \"{}\" ({:?})", c.title, c.priority)
                 })
                 .collect::<Vec<_>>()

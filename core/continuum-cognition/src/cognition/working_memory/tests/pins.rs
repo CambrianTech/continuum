@@ -26,7 +26,7 @@ fn a_claim_gone_while_she_slept_is_said_from_the_boards_verdict_and_unknown_is_n
 
     woke.note_claim_gone(believed, ClaimGone::HeldBy { peer, expires_at_ms: Some(1_790_000_000_000) });
     let f = facts(&woke);
-    assert!(f.contains("NO LONGER YOURS") && f.contains(&peer.simple().to_string()[..8]) && f.contains("lease edge"), "{f}");
+    assert!(f.contains("NO LONGER YOURS") && f.contains(&airc_core::shown_id::shown_form(peer)) && f.contains("lease edge"), "{f}");
     assert!(f.contains("board now shows") && !f.contains("took it") && !f.contains("lapsed"), "observed state, not a story: {f}");
     assert!(f.contains("only when it reads claimable") && f.contains("untouched"), "{f}");
 

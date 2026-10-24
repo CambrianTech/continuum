@@ -453,31 +453,19 @@ pub fn render_on_wake(h: &Handoff, current_build: &str, now_ms: u64) -> String {
     );
     match &h.card {
         Some(card) => {
-            let id8: String = card
-                .card_id
-                .as_uuid()
-                .simple()
-                .to_string()
-                .chars()
-                .take(8)
-                .collect();
+            let id8: String = airc_core::shown_id::shown_form(card.card_id.as_uuid().simple());
             let claim =
                 match (card.claim_id, card.claim_expires_at_ms) {
                     (Some(c), Some(exp)) => {
                         format!(
                     "claim {} whose lease {} — holding is UNVERIFIED until the board answers",
-                    c.as_uuid().simple().to_string().chars().take(8).collect::<String>(),
+                    airc_core::shown_id::shown_form(c.as_uuid()),
                     lease_phrase(exp, now_ms)
                 )
                     }
                     (Some(c), None) => format!(
                         "claim {} with no lease edge recorded",
-                        c.as_uuid()
-                            .simple()
-                            .to_string()
-                            .chars()
-                            .take(8)
-                            .collect::<String>()
+                        airc_core::shown_id::shown_form(c.as_uuid().simple())
                     ),
                     _ => "no claim recorded on the card".to_string(),
                 };
@@ -546,14 +534,7 @@ pub fn render_on_wake(h: &Handoff, current_build: &str, now_ms: u64) -> String {
     if !h.obligations.is_empty() {
         out.push_str("\n  Open obligations at the seam:");
         for card in h.obligations.iter().take(6) {
-            let id8: String = card
-                .card_id
-                .as_uuid()
-                .simple()
-                .to_string()
-                .chars()
-                .take(8)
-                .collect();
+            let id8: String = airc_core::shown_id::shown_form(card.card_id.as_uuid().simple());
             let who = if card.reviews.is_some() {
                 "you owe a review on"
             } else {

@@ -229,11 +229,6 @@ pub fn in_flight_by(cards: &[WorkCard], holders: &std::collections::HashSet<airc
 /// How a holder with no published name is said in a sentence (see [`CardHolder::display`]).
 pub const UNNAMED_HOLDER: &str = "an unnamed peer";
 
-/// The 8-char short id every surface in the system uses to name a uuid.
-pub fn short8(id: &uuid::Uuid) -> String {
-    id.to_string().chars().take(8).collect()
-}
-
 /// Resolve a card's holder ONCE, for every surface.
 pub fn holder(
     card: &WorkCard,
@@ -579,7 +574,7 @@ mod tests {
         let me = uuid::Uuid::new_v4();
         let c = card(Some(ghost), true, Some(u64::MAX));
         let h = holder(&c, me, 1_000, &NoNames);
-        let short = short8(&ghost.as_uuid());
+        let short = airc_core::shown_id::shown_form(ghost.as_uuid());
         assert!(h.render().starts_with(&format!("owner {UNNAMED_HOLDER}")), "{}", h.render());
         assert!(!h.render().contains(&short), "no id inside the sentence: {}", h.render());
         assert!(!h.render().contains("someone"), "{}", h.render());

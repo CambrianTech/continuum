@@ -62,8 +62,8 @@ pub(super) async fn for_claim(
     })
     .await;
     continuum_base::probe!(
-        class = "work.claim.held", card_id = %short8(card_id.as_uuid()),
-        claimer = %short8(peer), staging = ?staging,
+        class = "work.claim.held", card_id = %airc_core::shown_id::shown_form(card_id.as_uuid()),
+        claimer = %airc_core::shown_id::shown_form(peer), staging = ?staging,
         "claim held; workspace provisioning outcome is returned to the caller"
     );
     staging.into()

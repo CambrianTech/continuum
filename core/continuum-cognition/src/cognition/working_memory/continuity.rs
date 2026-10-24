@@ -432,7 +432,7 @@ impl WorkingMemory {
     /// never inferred from an owner field — an expired claim still names its last holder,
     /// and a card in Review is absent from her live claims for a reason that is not a lapse.
     pub fn note_claim_gone(&self, card: uuid::Uuid, verdict: ClaimGone) {
-        let id8: String = card.simple().to_string().chars().take(8).collect();
+        let id8: String = airc_core::shown_id::shown_form(card);
         let edge = |ms: Option<u64>| {
             ms.and_then(|ms| chrono::DateTime::from_timestamp_millis(ms as i64))
                 .map(|t| format!(" (lease edge {}Z)", t.format("%H:%M")))
@@ -447,7 +447,7 @@ impl WorkingMemory {
                  the board now shows {} holding it{}. {untouched} Do not resume as its holder — \
                  work/get {card} shows its state; take it back with work/claim only when it \
                  reads claimable.",
-                peer.simple().to_string().chars().take(8).collect::<String>(),
+                airc_core::shown_id::shown_form(peer),
                 edge(expires_at_ms),
             ),
             ClaimGone::Lapsed { expired_at_ms } => format!(

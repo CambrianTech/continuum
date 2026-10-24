@@ -7,7 +7,6 @@ use airc_lib::{Airc, WorkCardId};
 
 use crate::sdk_codegen::CommandError;
 
-use crate::cognition::card_facts::short8;
 
 /// The room whose board holds `card_id` — the ONE place that answers *which
 /// activity does this card belong to*.
@@ -234,7 +233,7 @@ pub async fn follow_card_room(
     continuum_base::probe!(
         class = "work.followed_card_room",
         verb = verb,
-        card_id = %short8(card_id.as_uuid()),
+        card_id = %airc_core::shown_id::shown_form(card_id.as_uuid()),
         room = %room_name,
         "a by-id mutation targeted a card outside the current room — switched to \
          the card's room and retried (accept-or-redirect, never refuse-and-instruct)"

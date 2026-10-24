@@ -81,7 +81,7 @@ impl ActionCommand for WorkNote {
         let Some((room, _card)) = card_in_subscribed_rooms(&airc, card_id).await else {
             return Err(CommandError::NotFound(format!(
                 "card {} is on no board of a room you stand in — the ledger lives in the card's room",
-                short8(card_id.as_uuid())
+                airc_core::shown_id::shown_form(card_id.as_uuid())
             )));
         };
         let ledger = crate::experience::ledger::CardLedger {
@@ -103,8 +103,8 @@ impl ActionCommand for WorkNote {
         crate::cognition::handoff::note_ledger(airc.peer_id().as_uuid(), &ledger);
         continuum_base::probe!(
             class = "work.ledger.noted",
-            card = %short8(card_id.as_uuid()),
-            by = %short8(airc.peer_id().as_uuid()),
+            card = %airc_core::shown_id::shown_form(card_id.as_uuid()),
+            by = %airc_core::shown_id::shown_form(airc.peer_id().as_uuid()),
             known = ledger.known.len() as u64,
             hypotheses = ledger.hypotheses.len() as u64,
             has_next = !ledger.next_test.trim().is_empty(),

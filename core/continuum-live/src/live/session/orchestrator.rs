@@ -50,7 +50,7 @@ impl VoiceOrchestrator {
             .count();
         clog_info!(
             "Registered session {} with {} participants ({} text-based AI, {} audio-native)",
-            &session_id.to_string()[..8],
+            airc_core::shown_id::shown_form(session_id),
             participants.len(),
             text_ai_count,
             audio_native_count
@@ -92,7 +92,7 @@ impl VoiceOrchestrator {
         }
         clog_info!(
             "Session {} += {} ({:?})",
-            &session_id.to_string()[..8],
+            airc_core::shown_id::shown_form(session_id),
             participant.display_name,
             participant.participant_type
         );
@@ -128,7 +128,7 @@ impl VoiceOrchestrator {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .remove(&session_id);
-        clog_info!("Unregistered session {}", &session_id.to_string()[..8]);
+        clog_info!("Unregistered session {}", airc_core::shown_id::shown_form(session_id));
     }
 
     /// Process utterance and return ALL AI participant IDs (broadcast model)
@@ -150,7 +150,7 @@ impl VoiceOrchestrator {
             None => {
                 clog_info!(
                     "No context for session {}",
-                    crate::live::audio::tts::truncate_str(&event.session_id.to_string(), 8)
+                    airc_core::shown_id::shown_form(event.session_id)
                 );
                 return Vec::new();
             }
@@ -169,7 +169,7 @@ impl VoiceOrchestrator {
             None => {
                 clog_info!(
                     "No participants for session {}",
-                    &event.session_id.to_string()[..8]
+                    airc_core::shown_id::shown_form(event.session_id)
                 );
                 return Vec::new();
             }

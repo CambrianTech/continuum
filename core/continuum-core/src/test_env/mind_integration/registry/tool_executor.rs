@@ -77,7 +77,7 @@ async fn persona_verb_resolves_a_short_id_end_to_end() {
     use crate::persona::card::{self, PersonaCard};
     let id = Uuid::new_v4();
     card::register(PersonaCard::genesis(id, "Asha", 1000, None));
-    let short: String = id.simple().to_string().chars().take(8).collect();
+    let short: String = airc_core::shown_id::shown_form(id);
 
     let exec = stateless_surface_hands();
     let (is_error, content) =

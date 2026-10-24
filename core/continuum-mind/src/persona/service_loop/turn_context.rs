@@ -72,7 +72,7 @@ pub(super) async fn admit_trigger(
             tracing::info!(
                 lamport = msg.lamport,
                 rank,
-                engram_id = %&engram.id.to_string()[..8],
+                engram_id = %airc_core::shown_id::shown_form(engram.id),
                 salience = format!("{:.3}", salience),
                 content = %preview,
                 "recall_scored — engram ranked (introspection; RecallFaculty feeds the prompt)"

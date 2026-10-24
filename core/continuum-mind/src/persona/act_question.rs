@@ -201,7 +201,7 @@ pub(crate) async fn ask_the_act_question(
                                 .iter()
                                 .flat_map(|c| {
                                     let id8: String =
-                                        c.card_id.as_uuid().to_string().chars().take(8).collect();
+                                        airc_core::shown_id::shown_form(c.card_id.as_uuid());
                                     let inst =
                                         crate::recipe::bench_title::parse_card_title(&c.title)
                                             .map(|(_, i)| i)

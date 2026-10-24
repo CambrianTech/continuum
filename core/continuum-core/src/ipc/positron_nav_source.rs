@@ -540,7 +540,7 @@ impl NavReader for ChannelBookmarksNavReader {
                 // A room observed before presence named it gets an honest
                 // short-id label, never an invisible empty tab.
                 let title = if title.is_empty() {
-                    room.to_string()[..8].to_string()
+                    airc_core::shown_id::shown_form(*room)
                 } else {
                     title.clone()
                 };
@@ -762,7 +762,7 @@ fn activity_lineage(room_ref: &str, title: &str) -> (String, String) {
                 .find(|(_, peer)| *peer == act.assignee)
                 .map(|(name, _)| name)
         })
-        .unwrap_or_else(|| act.assignee.to_string()[..8].to_string());
+        .unwrap_or_else(|| airc_core::shown_id::shown_form(act.assignee));
     (
         run_room.to_string(),
         format!("{short_instance} · {who}"),

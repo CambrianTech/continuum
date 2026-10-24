@@ -267,7 +267,7 @@
             .expect("persona tab surfaced");
         assert_eq!(
             tab.title,
-            stranger.to_string().chars().take(8).collect::<String>()
+            airc_core::shown_id::shown_form(stranger)
         );
     }
 
@@ -279,7 +279,7 @@
         let reader = ChannelBookmarksNavReader::fixed(vec![(room, String::new())]);
         let snap = reader.nav_snapshot(Uuid::from_u128(11));
         assert_eq!(snap.activities.len(), 1);
-        assert_eq!(snap.activities[0].title, room.to_string()[..8].to_string());
+        assert_eq!(snap.activities[0].title, airc_core::shown_id::shown_form(room));
     }
 
     // what this catches: the registry spawns a citizen's projector exactly once

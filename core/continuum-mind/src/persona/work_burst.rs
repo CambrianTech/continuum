@@ -203,7 +203,7 @@ pub(crate) fn held_work_burst_gated(
          turn is for your claimed work:\n",
     );
     for card in held {
-        let id8: String = card.card_id.as_uuid().to_string().chars().take(8).collect();
+        let id8: String = airc_core::shown_id::shown_form(card.card_id.as_uuid());
         let _ = writeln!(s, "- card {id8} \"{}\"", card.title);
     }
     // HER LAST STATE LEADS (2026-09-04, measured on Freya: at 11:01 she had the

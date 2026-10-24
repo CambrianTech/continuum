@@ -51,7 +51,7 @@ impl ActionCommand for WorkClaim {
                     );
                     return Err(CommandError::Invalid(format!(
                         "card {} names {instance}, which this box cannot grade ({}). It is                          withheld from claims until the environment changes (benchmark/validate                          re-checks it); take another card — work/list with claimable=true.",
-                        short8(card_id.as_uuid()),
+                        airc_core::shown_id::shown_form(card_id.as_uuid()),
                         reason.trim_end_matches('.')
                     )));
                 }
@@ -103,7 +103,7 @@ impl ActionCommand for WorkClaim {
                 let caller_short = ctx
                     .caller
                     .as_ref()
-                    .map(|c| short8(c.peer_id.as_uuid()))
+                    .map(|c| airc_core::shown_id::shown_form(c.peer_id.as_uuid()))
                     .unwrap_or_else(|| "-".to_string());
                 if let Ok(board) = airc
                     .work_board_complete(airc_lib::WORK_BOARD_PROJECTION_PAGE_SIZE)
@@ -150,9 +150,9 @@ impl ActionCommand for WorkClaim {
                                      (most sit in the `claimed` column with a lapsed lease, so \
                                      filtering by state=\"open\" will not show them). \
                                      (claim error: {e})",
-                                    short8(card_id.as_uuid()),
+                                    airc_core::shown_id::shown_form(card_id.as_uuid()),
                                     card.title,
-                                    short8(owner),
+                                    airc_core::shown_id::shown_form(owner),
                                     state_str(&card.state),
                                 );
                             }

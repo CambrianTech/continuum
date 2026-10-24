@@ -4,7 +4,6 @@
 use airc_lib::WorkCardId;
 use uuid::Uuid;
 
-use crate::cognition::card_facts::short8;
 
 /// PURE: what happens next for the holder of a card whose latest submission is `latest`, given
 /// the outcomes its reviews have reached and whether it is a bench card. The ONE place this is
@@ -24,7 +23,7 @@ use crate::cognition::card_facts::short8;
 /// A `Failed` review sends either kind back. An oracle FAIL is not yet a WorkReview (card
 /// 2c756670), so for a bench card the room's grade line is named as the verdict to read.
 pub fn next_after_submission(latest: Option<Uuid>, outcomes: &[airc_work::WorkReviewOutcome], graded_at_submit: bool, review: Option<WorkCardId>) -> Option<String> {
-    let submission = short8(latest?);
+    let submission = airc_core::shown_id::shown_form(latest?);
     Some(if outcomes.contains(&airc_work::WorkReviewOutcome::Passed) {
         format!("Submission {submission} passed review: the card is done. Nothing more to do on it.")
     } else if outcomes.contains(&airc_work::WorkReviewOutcome::Failed) {
