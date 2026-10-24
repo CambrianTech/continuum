@@ -1,4 +1,4 @@
-//! The moved modules: learning ("dreaming") and the bench harness, above cognition (pure move).
+//! The moved modules: the academy, above cognition (pure move).
 pub use continuum_cognition::cognition::*;
 pub mod eval;
 pub mod exam_serving;

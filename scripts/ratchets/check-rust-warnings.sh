@@ -56,7 +56,7 @@ for line in open(sys.argv[1], encoding="utf-8", errors="replace"):
     if rec.get("reason") != "compiler-message":
         continue
     # Crates cut out of continuum-core (engine, hands, live, mind, cognition, ...) keep their warnings counted.
-    if (rec.get("target") or {}).get("name") not in ("continuum-core", "continuum_core", "continuum-engine", "continuum_engine", "continuum-hands", "continuum_hands", "continuum-live", "continuum_live", "continuum-mind", "continuum_mind", "continuum-perception", "continuum_perception", "continuum-genome", "continuum_genome", "continuum-memory", "continuum_memory", "continuum-experience", "continuum_experience", "continuum-cognition", "continuum_cognition", "continuum-dreaming", "continuum_dreaming"):
+    if (rec.get("target") or {}).get("name") not in ("continuum-core", "continuum_core", "continuum-engine", "continuum_engine", "continuum-hands", "continuum_hands", "continuum-live", "continuum_live", "continuum-mind", "continuum_mind", "continuum-perception", "continuum_perception", "continuum-genome", "continuum_genome", "continuum-memory", "continuum_memory", "continuum-experience", "continuum_experience", "continuum-cognition", "continuum_cognition", "continuum-academy", "continuum_academy"):
         continue
     msg = rec.get("message") or {}
     if msg.get("level") != "warning":

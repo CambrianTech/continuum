@@ -1,5 +1,5 @@
 [package]
-name = "continuum-dreaming"
+name = "continuum-academy"
 version = "0.1.0"
 edition = "2021"
 publish = false
@@ -8,7 +8,7 @@ repository = "https://github.com/CambrianTech/continuum"
 # (CONTINUUM_BUILD_GIT_SHA): core's build script is the one owner of that identity.
 build = "../continuum-core/build.rs"
 
-# How a mind learns, and the bench harness (plan line 1): cut out of continuum-cognition and
+# The academy: all learning capacity (plan line 1): cut out of continuum-cognition and
 # placed above it; cognition names none of it. The mind re-exports this crate's `cognition`.
 
 [dependencies]
