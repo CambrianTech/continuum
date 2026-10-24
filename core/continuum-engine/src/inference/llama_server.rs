@@ -53,6 +53,7 @@ pub use liveness::{
     NeverStartedClass, RealDecodeOutcome, SmokeMissVerdict,
 };
 
+mod convergence_attempt;
 mod reconcile;
 pub use reconcile::{ensure_model_serving, ensure_model_serving_if_current};
 #[cfg(test)]
