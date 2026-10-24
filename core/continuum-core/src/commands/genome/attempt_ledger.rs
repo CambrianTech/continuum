@@ -161,6 +161,25 @@ impl AttemptLedger {
         }
     }
 
+    /// What admission WOULD decide for `attempt`, without recording anything: lets
+    /// `genome/job-create` return an attempt's existing job, or refuse a fenced one, before it
+    /// runs the reuse/join decisions (which would otherwise "join" the attempt's own job and
+    /// hand its batch back). `None` = no record; `admit` still decides under the lock.
+    pub(crate) async fn peek(&self, attempt: Uuid) -> Result<Option<Admission>, AdmitError> {
+        let lock = self.lock(attempt);
+        let _held = lock.lock().await;
+        let store = self.store.require().map_err(AdmitError::Unreadable)?;
+        let existing = store
+            .find_by_id(attempt)
+            .await
+            .map_err(|e| AdmitError::Unreadable(e.to_string()))?;
+        Ok(existing.map(|row| match row.state {
+            AttemptState::Created { handle } => Admission::AlreadyCreated(handle),
+            AttemptState::Closed | AttemptState::Failed { .. } => Admission::Fenced,
+            AttemptState::Admitted => Admission::Unsettled,
+        }))
+    }
+
     /// Settle an admitted attempt with what the trainer returned. A failed write leaves it
     /// `Admitted`, which reconciles as Unknown: conservative, never a false "not created".
     pub(crate) async fn settle(&self, attempt: Uuid, state: AttemptState) -> Result<(), String> {

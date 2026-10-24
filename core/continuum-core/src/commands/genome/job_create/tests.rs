@@ -335,6 +335,50 @@
         assert_eq!(result.handle.provider_job_id, "openai-job-1");
     }
 
+    // what this catches (Codex review of 98180b88b, card 55d4b9e3): at the job-create
+    // boundary, an attempted create is ON THE BOARD by the time its attempt reads Created (so
+    // Created always implies a watcher), and a repeat of the same attempt returns the same job
+    // without calling the trainer again, re-journaling it, or "joining" its own job.
+    #[tokio::test]
+    async fn an_attempted_create_is_watched_when_created_and_a_repeat_returns_the_same_job() {
+        use crate::commands::genome::attempt_ledger::{AttemptLedger, Reconciled};
+        use crate::genome::fine_tuning::{FineTuningRegistry, RecordingFineTuningAdapter, TrainingJobBoard, RECORDING_BASE_PREFIX};
+        let (store_adapter, _dir) = crate::orm::store::fresh_adapter().await;
+        let ledger = Arc::new(AttemptLedger::new());
+        ledger.install(Arc::new(crate::orm::OrmStore::new(store_adapter).await.unwrap()));
+        let artifacts = Arc::new(tempfile::tempdir().unwrap());
+        let board = Arc::new(TrainingJobBoard::with_test_storage(artifacts.clone()));
+        let trainer = Arc::new(RecordingFineTuningAdapter::new());
+        let registry = Arc::new(FineTuningRegistry::new());
+        registry.register(trainer.clone());
+        let command = GenomeJobCreate {
+            attempts: Arc::clone(&ledger),
+            coordinator: Arc::new(FineTuningCoordinator::new(registry)),
+            test_job_board: board.clone(),
+            test_artifacts: artifacts.clone(),
+        };
+        let attempt = uuid::Uuid::new_v4();
+        let mut request = request_for(RECORDING_BASE_PREFIX);
+        request.persona_id = uuid::Uuid::new_v4();
+        let params = || JobCreateParams {
+            trigger_attempt_id: Some(attempt),
+            trigger_dispatch_id: Some(uuid::Uuid::new_v4()),
+            request: request.clone(),
+            preferred_provider: None,
+            dataset_name: None,
+        };
+        let first = command.run(&Ctx::default(), params()).await.unwrap();
+        let job = first.result.expect("created").handle;
+        let watched = |id| board.pending().iter().filter(|j| j.handle.local_id == id).count();
+        assert_eq!(watched(job.local_id), 1, "on the board");
+        assert_eq!(ledger.reconcile(attempt).await, Reconciled::Created(job.clone()), "and only then Created");
+
+        let again = command.run(&Ctx::default(), params()).await.unwrap();
+        assert_eq!(again.result.expect("the same job").handle, job);
+        assert_eq!(trainer.captured_job_count(), 1, "the trainer ran once");
+        assert_eq!(watched(job.local_id), 1, "never registered twice");
+    }
+
     // What this catches (278afa6c): the real command must register to its owned
     // ledger and pass fixture output to the provider, preserving explicit paths.
     #[tokio::test]

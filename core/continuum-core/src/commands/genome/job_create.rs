@@ -129,6 +129,24 @@ pub const ERROR_KIND_ATTEMPT_UNSETTLED: &str = "AttemptUnsettled";
 /// Deliberately not a retryable kind: the trigger reads it as uncertain.
 pub const ERROR_KIND_ATTEMPT_UNREADABLE: &str = "AttemptUnreadable";
 
+/// What a recorded attempt answers a create with (card 55d4b9e3): `Ok(Some(job))` the job it
+/// already made, `Ok(None)` go ahead, or `Err(outcome)`, a typed refusal returned as is.
+fn recorded_answer(
+    admission: Result<Option<super::attempt_ledger::Admission>, super::attempt_ledger::AdmitError>,
+    attempt: uuid::Uuid,
+    request: &TrainingJobRequest,
+) -> Result<Option<crate::genome::fine_tuning::JobHandle>, Result<JobCreateOutcome, crate::sdk_codegen::CommandError>> {
+    use super::attempt_ledger::{AdmitError, Admission};
+    match admission {
+        Ok(None) | Ok(Some(Admission::Fresh)) => Ok(None),
+        Ok(Some(Admission::AlreadyCreated(handle))) => Ok(Some(handle)),
+        Ok(Some(Admission::Fenced)) => Err(refused_decision(ERROR_KIND_ATTEMPT_FENCED, request, &format!("attempt {attempt} was closed by reconciliation; nothing started"))),
+        Ok(Some(Admission::Unsettled)) => Err(refused_decision(ERROR_KIND_ATTEMPT_UNSETTLED, request, &format!("attempt {attempt} was admitted before and never settled"))),
+        Err(AdmitError::Unreadable(e)) => Err(refused_decision(ERROR_KIND_ATTEMPT_UNREADABLE, request, &format!("attempt {attempt}'s record could not be read: {e}"))),
+        Err(AdmitError::Unrecorded(e)) => Err(refused_decision(ERROR_KIND_ATTEMPT_UNRECORDED, request, &format!("attempt {attempt} could not be admitted: {e}"))),
+    }
+}
+
 /// Whether a trainer's refusal proves it created nothing, so its attempt settles as failed
 /// (fenced) instead of staying admitted. The same created-nothing kinds the trigger retries;
 /// `LocalTrainerFailed`, `Transient` and the rest can follow a trainer that started.
@@ -333,7 +351,18 @@ crate::action_command! {
             this.test_artifacts.path().join("adapters.json"),
             crate::genome::gene_trial::GeneTrials::at(this.test_artifacts.path().join("trials.json")),
         ));
-        let decision = match watched_signature.as_ref() {
+        // card 55d4b9e3: an attempt that already made its job, or was fenced, answers BEFORE the
+        // reuse/join decisions below, which would otherwise "join" the attempt's own job and hand
+        // its batch back to the bucket (to be trained twice).
+        let attempt = p.trigger_attempt_id;
+        let mut prior: Option<crate::genome::fine_tuning::JobHandle> = None;
+        if let Some(attempt) = attempt {
+            match recorded_answer(this.attempts.peek(attempt).await, attempt, &p.request) {
+                Ok(job) => prior = job,
+                Err(refusal) => return refusal,
+            }
+        }
+        let decision = match watched_signature.as_ref().filter(|_| prior.is_none()) {
             None => None,
             Some(sig) => {
             use crate::genome::competence::{decide_with_pending, nearest_in_store, nearest_pending, Competence, Surprise, SIM_FORK};
@@ -593,26 +622,17 @@ crate::action_command! {
 
         // 2. Admit the attempt (card 55d4b9e3), then the adapter creates the job.
         //    FineTuningError carries a stable errorKind slug callers branch on.
-        let attempt = p.trigger_attempt_id;
-        // The job this attempt already made, when a create repeats (idempotent per attempt).
-        let mut prior: Option<crate::genome::fine_tuning::JobHandle> = None;
-        if let Some(attempt) = attempt {
-            use super::attempt_ledger::Admission;
-            match this.attempts.admit(attempt, p.trigger_dispatch_id, &selected_provider, "local").await {
-                Ok(Admission::Fresh) => {}
-                Ok(Admission::AlreadyCreated(handle)) => prior = Some(handle),
-                Ok(Admission::Fenced) => {
-                    return refused_decision(ERROR_KIND_ATTEMPT_FENCED, &p.request, &format!("attempt {attempt} was closed by reconciliation; nothing started"));
-                }
-                Ok(Admission::Unsettled) => {
-                    return refused_decision(ERROR_KIND_ATTEMPT_UNSETTLED, &p.request, &format!("attempt {attempt} was admitted before and never settled"));
-                }
-                Err(super::attempt_ledger::AdmitError::Unreadable(e)) => {
-                    return refused_decision(ERROR_KIND_ATTEMPT_UNREADABLE, &p.request, &format!("attempt {attempt}'s record could not be read: {e}"));
-                }
-                Err(super::attempt_ledger::AdmitError::Unrecorded(e)) => {
-                    return refused_decision(ERROR_KIND_ATTEMPT_UNRECORDED, &p.request, &format!("attempt {attempt} could not be admitted: {e}"));
-                }
+        // Admit the attempt under its lock, unless the early read already found its job.
+        let needs_admission = prior.is_none();
+        if let (Some(attempt), true) = (attempt, needs_admission) {
+            let admitted = this
+                .attempts
+                .admit(attempt, p.trigger_dispatch_id, &selected_provider, "local")
+                .await
+                .map(Some);
+            match recorded_answer(admitted, attempt, &p.request) {
+                Ok(job) => prior = job,
+                Err(refusal) => return refusal,
             }
         }
         let repeated = prior.is_some();
