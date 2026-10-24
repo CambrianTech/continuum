@@ -5,8 +5,9 @@
 
 use std::path::PathBuf;
 
-/// Shared fixture policy for live capture and its readers. Explicit HOME keeps
-/// its existing override semantics; native hosts need not inherit a shell HOME.
+/// Shared fixture policy for live capture and its readers: `relative` (e.g.
+/// `fixtures/prompt-captures`) under the one resolved continuum home, so `$CONTINUUM_HOME`
+/// moves every capture writer and reader together (card 3c8b03ae). No home, no captures.
 pub fn fixture_dir(relative: &str) -> Option<PathBuf> {
-    crate::paths::home_dir().map(|h| h.join(relative))
+    crate::paths::continuum_home().ok().map(|home| home.join(relative))
 }

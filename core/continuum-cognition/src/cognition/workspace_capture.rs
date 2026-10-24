@@ -33,7 +33,7 @@ use super::workspace::{
 /// v3 adds full source-labelled supplemental room inputs.
 const SCHEMA_VERSION: u32 = 4;
 
-pub(crate) const FIXTURE_DIR: &str = ".continuum/fixtures/workspace-traces";
+pub(crate) const FIXTURE_DIR: &str = "fixtures/workspace-traces";
 
 /// A persona's trace file rotates at the substrate's per-file bound, keeping one older
 /// generation beside the live file: at most `2 x MAX_LOG_BYTES` per persona. Before this the

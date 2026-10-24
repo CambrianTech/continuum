@@ -72,8 +72,8 @@ use uuid::Uuid;
 const FIXTURE_CAP_PER_DIR: usize = 200;
 /// Where the recorder writes each turn, resolved by `capture::fixture_dir`; `dataset/from-turns`
 /// reads the same place through the same owner (card 2ceab504).
-pub const RESPOND_FIXTURE_DIR: &str = ".continuum/fixtures/persona-respond";
-const TURN_FRAME_FIXTURE_DIR: &str = ".continuum/fixtures/persona-turn-frame";
+pub const RESPOND_FIXTURE_DIR: &str = "fixtures/persona-respond";
+const TURN_FRAME_FIXTURE_DIR: &str = "fixtures/persona-turn-frame";
 
 /// Env var to fully disable recording. Set to `1` / `true` for hosts
 /// that don't want disk writes (perf benchmarks, ephemeral CLI runs).
@@ -689,7 +689,7 @@ mod tests {
 
         record_turn_frame_replay(&record);
 
-        let dir = tmp.path().join(TURN_FRAME_FIXTURE_DIR);
+        let dir = fixture_dir(TURN_FRAME_FIXTURE_DIR).expect("the test home resolves"); // the recorder's own owner
         let entries: Vec<_> = std::fs::read_dir(&dir)
             .expect("turn-frame fixture dir exists")
             .map(|e| e.expect("fixture entry").path())
@@ -729,7 +729,7 @@ mod tests {
 
         record_turn_frame_replay(&fake_turn_frame_replay_record());
 
-        let dir = tmp.path().join(TURN_FRAME_FIXTURE_DIR);
+        let dir = fixture_dir(TURN_FRAME_FIXTURE_DIR).expect("the test home resolves"); // the recorder's own owner
         assert!(!dir.exists());
     }
 
