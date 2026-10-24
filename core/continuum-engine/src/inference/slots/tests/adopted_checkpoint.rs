@@ -5,7 +5,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 // Regression: core adoption has no Child/generation, but its physical residents
 // must still be saved. A failed save must not authorize retirement or fake warmth.
 #[tokio::test]
-async fn adopted_checkpoint_uses_its_ledger_and_classifies_save_completion() {
+async fn adopted_checkpoint_uses_its_ledger_and_classifies_save_completion() -> Result<(), Box<dyn std::error::Error>> {
     for behavior in 0..3 {
         let calls = Arc::new(AtomicUsize::new(0));
         let app = Router::new().route("/props", axum::routing::get(|| async {
@@ -28,22 +28,22 @@ async fn adopted_checkpoint_uses_its_ledger_and_classifies_save_completion() {
                 }
             }
         }));
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("fixture bind");
-        let address = listener.local_addr().expect("fixture address");
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+        let address = listener.local_addr()?;
         let root = format!("http://{address}");
         let server = tokio::spawn(async move { axum::serve(listener, app).await });
         let pool = directory().ensure_pool(&root, 3);
         let endpoint = directory().endpoint(&root);
         let process = crate::inference::engine_residency::EngineIncarnation::of(
             std::process::id(), address.port(),
-        ).expect("fixture process identity");
-        let pages = tempfile::tempdir().expect("isolated pages");
+        ).ok_or("fixture process identity unavailable")?;
+        let pages = tempfile::tempdir()?;
         assert_eq!(
             adopt_engine_ledger(&pool, pages.path(), process.pid, process.started_s),
             Err(AdoptRefusal::NoLedger),
             "fresh adoption installs an empty stamped ledger, with no prior pages",
         );
-        let key = PageKey::mind(Uuid::new_v4()).expect("fixture mind");
+        let key = PageKey::mind(Uuid::new_v4()).ok_or("fixture mind key unavailable")?;
         pool.plan_paging(0, key);
         let mut transition = endpoint.transition().await;
         let client = reqwest::Client::new();
@@ -66,4 +66,5 @@ async fn adopted_checkpoint_uses_its_ledger_and_classifies_save_completion() {
         drop(transition);
         server.abort();
     }
+    Ok(())
 }
