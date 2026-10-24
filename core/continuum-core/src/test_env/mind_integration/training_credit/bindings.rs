@@ -450,3 +450,183 @@ use super::*;
         );
         assert_eq!(stored_credit_rows(&data, name).await[0].id, newer.id);
     }
+
+    // what this catches (card fe8554d2, Codex on #5386): a submission with no explicit
+    // selection binds the turn that ISSUED it, never "her newest revision". Turn 1 issues the
+    // submission; a newer unrelated turn on the same claim stages after it; the review binds
+    // turn 1. A generation not yet staged at publish holds, then binds once staged. A row
+    // carrying another pending submission's generation holds (staging is periodic, so failed S
+    // and corrected M can share one), in either order, including when M is recorded after S's
+    // binding was made, and when S was bound explicitly. A record whose publication's answer was
+    // lost still counts (it may have landed). A board submission that is not the recorded one holds;
+    // the same id retried from a later act keeps the first generation; a different one is refused.
+    // Storage-level: record/resolve are called directly, not through WorkSubmit or a signed
+    // board review.
+    #[tokio::test]
+    pub(super) async fn a_pending_binding_resolves_to_the_issuing_turn_or_holds(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        use reviewed::{CreditBindingError, Held, PendingSelection};
+        let home = tempfile::tempdir()?;
+        let _home = HomeGuard::set(home.path()).await;
+        crate::persona::register_substrate_orm_entities(crate::orm::OrmEntityRegistry::global())?;
+        let executor = data_runtime();
+        let (persona, card, room) = (Uuid::new_v4(), Uuid::new_v4(), Uuid::new_v4());
+        let name = "pending-work-binding";
+        let (_turn1, issuing) =
+            stage_settlement_fixture(executor.clone(), persona, name, card, vec![served_receipt("work-a", "model-a")])
+                .await;
+        let claim = issuing.claim_id.ok_or("fixture row carries its claim")?;
+        let turn = |prompt: &str| {
+            TurnCreditCapture::with_executor(
+                executor.clone(),
+                persona,
+                name.into(),
+                prompt.into(),
+                CapturedCredit {
+                    task: crate::cognition::held_out::CardTask::NotATask,
+                    card_id: card,
+                    claim: Some(ClaimReceipt {
+                        claim_id: claim,
+                        owner: airc_core::PeerId::from_uuid(persona),
+                        role: CreditRole::Owner,
+                    }),
+                },
+            )
+        };
+        let data = conn_as(executor.clone(), persona);
+        let submission = |byte: char| -> Result<airc_work::WorkSubmission, Box<dyn std::error::Error>> {
+            Ok(airc_work::WorkSubmission {
+                submission_id: airc_work::SubmissionId::from_uuid(Uuid::new_v4()),
+                card_id: airc_work::WorkCardId::from_uuid(card),
+                claim_id: airc_work::ClaimId::from_uuid(claim),
+                instance: "ordinary-project-card".into(),
+                base_sha: airc_work::GitObjectId::new("a".repeat(40))?,
+                artifact: serde_json::from_value(
+                    json!({"hash": byte.to_string().repeat(64), "size_bytes": 5, "mime": "text/x-diff"}),
+                )?,
+                publisher: airc_core::PeerId::from_uuid(persona),
+                submitted_at_ms: 3,
+            })
+        };
+        let pending = |s: &airc_work::WorkSubmission, generation: &str| PendingSelection {
+            publication: reviewed::Publication::of(room, s),
+            issuing_generation: generation.into(),
+        };
+
+
+        // Turn 1 issued submission A; a newer unrelated turn stages after it.
+        let a = submission('b')?;
+        reviewed::record_pending(&data, name, persona, pending(&a, "work-a")).await?;
+        let mut newer = turn("Inspect an unrelated file.");
+        assert!(newer.record(&settlement_acts(4), &[served_receipt("inspect-b", "model-a")], None, true).await);
+        let bound = reviewed::resolve_pending(&data, name, persona, room, &a).await?;
+        assert!(
+            matches!(&bound, Some(Ok(b)) if b.selection.staged_revision_id == issuing.id),
+            "the issuing turn binds, not the newer one: {bound:?}"
+        );
+
+        // Not yet staged at publish: held, then bound once her turn stages it.
+        let late = submission('c')?;
+        reviewed::record_pending(&data, name, persona, pending(&late, "late")).await?;
+        assert!(matches!(
+            reviewed::resolve_pending(&data, name, persona, room, &late).await?,
+            Some(Err(Held::Unresolved(_)))
+        ));
+        let mut later = turn("Finish the change.");
+        assert!(later.record(&settlement_acts(4), &[served_receipt("late", "model-a")], None, true).await);
+        assert!(matches!(reviewed::resolve_pending(&data, name, persona, room, &late).await?, Some(Ok(_))));
+
+        // Failed S and corrected M share one staged row: either order holds.
+        let (s, m) = (submission('d')?, submission('e')?);
+        reviewed::record_pending(&data, name, persona, pending(&s, "s-gen")).await?;
+        reviewed::record_pending(&data, name, persona, pending(&m, "m-gen")).await?;
+        let mut shared = turn("Submit, take the failure, correct, resubmit.");
+        let both = [served_receipt("s-gen", "model-a"), served_receipt("m-gen", "model-a")];
+        assert!(shared.record(&settlement_acts(4), &both, None, true).await);
+        assert_eq!(
+            reviewed::resolve_pending(&data, name, persona, room, &m).await?.and_then(Result::err),
+            Some(Held::SharedRevision(s.submission_id.as_uuid()))
+        );
+        assert_eq!(
+            reviewed::resolve_pending(&data, name, persona, room, &s).await?.and_then(Result::err),
+            Some(Held::SharedRevision(m.submission_id.as_uuid()))
+        );
+
+        // Temporal: S binds while only S is pending, and its row already carries what becomes
+        // M's issuing generation. M is recorded afterwards; consuming S's binding re-checks its
+        // immutable snapshot and sees M.
+        let (s2, m2) = (submission('1')?, submission('2')?);
+        let mut bucket = turn("One staged bucket, two submissions.");
+        let both = [served_receipt("s2-gen", "model-a"), served_receipt("m2-gen", "model-a")];
+        assert!(bucket.record(&settlement_acts(4), &both, None, true).await);
+        reviewed::record_pending(&data, name, persona, pending(&s2, "s2-gen")).await?;
+        let Some(Ok(s2_bound)) = reviewed::resolve_pending(&data, name, persona, room, &s2).await? else {
+            return Err("S binds while it is the only pending submission".into());
+        };
+        reviewed::record_pending(&data, name, persona, pending(&m2, "m2-gen")).await?;
+        let intent: reviewed::CreditTransferIntent = reviewed::read_one(&data, name, &s2_bound.transfer_intent_id.to_string())
+            .await?
+            .ok_or("the binding retains its transfer intent")?;
+        assert_eq!(
+            reviewed::issued_elsewhere(&data, name, &intent.snapshot, s2.submission_id.as_uuid()).await?,
+            Some(m2.submission_id.as_uuid()),
+            "consumption sees a submission recorded after the binding"
+        );
+
+        // Explicit sharing: S binds its revision explicitly (no pending row), the turn restages
+        // with M's generation added, and M's row carries S's reserved generation: M holds.
+        let (s3, m3) = (submission('3')?, submission('4')?);
+        let mut explicit = turn("Explicit S, automatic M.");
+        assert!(explicit.record(&settlement_acts(4), &[served_receipt("s3-gen", "model-a")], None, true).await);
+        reviewed::bind_submission_generation(&data, name, persona, room, &s3, "s3-gen").await?;
+        let grown = [served_receipt("s3-gen", "model-a"), served_receipt("m3-gen", "model-a")];
+        assert!(explicit.record(&settlement_acts(8), &grown, None, true).await);
+        reviewed::record_pending(&data, name, persona, pending(&m3, "m3-gen")).await?;
+        assert_eq!(
+            reviewed::resolve_pending(&data, name, persona, room, &m3).await?.and_then(Result::err),
+            Some(Held::SharedRevision(s3.submission_id.as_uuid())),
+            "S's explicit reservation is seen without a pending row"
+        );
+
+        // An orphan: its record landed, its publication's answer was lost. It may have landed, so
+        // it still counts: a retry under a NEW id that shares its row holds. Its own same-id
+        // retry, from a later act, is the same publication and is accepted.
+        let (orphan, retry) = (submission('5')?, submission('6')?);
+        reviewed::record_pending(&data, name, persona, pending(&orphan, "orphan-gen")).await?;
+        reviewed::record_pending(&data, name, persona, pending(&retry, "retry-gen")).await?;
+        let mut restaged = turn("Publication answer lost; retry under a new id.");
+        let both = [served_receipt("orphan-gen", "model-a"), served_receipt("retry-gen", "model-a")];
+        assert!(restaged.record(&settlement_acts(4), &both, None, true).await);
+        assert_eq!(
+            reviewed::resolve_pending(&data, name, persona, room, &retry).await?.and_then(Result::err),
+            Some(Held::SharedRevision(orphan.submission_id.as_uuid())),
+            "an uncertain publication is never ruled out by absence"
+        );
+        reviewed::record_pending(&data, name, persona, pending(&orphan, "later-act")).await?;
+
+        // A crash between record and publish: the same record again is a no-op, a different
+        // one is refused, and a board submission that differs from the record holds.
+        let retried = submission('f')?;
+        reviewed::record_pending(&data, name, persona, pending(&retried, "work-a")).await?;
+        // The same id retried from a later act (a later generation) is the same publication:
+        // accepted, and the first generation, the act that made it, is kept.
+        reviewed::record_pending(&data, name, persona, pending(&retried, "later-act")).await?;
+        let kept: reviewed::PendingCreditBinding =
+            reviewed::read_one(&data, name, &retried.submission_id.as_uuid().to_string())
+                .await?
+                .ok_or("the pending row is retained")?;
+        assert_eq!(kept.selection.issuing_generation, "work-a");
+        let mut other = pending(&retried, "work-a");
+        other.publication.instance = "another-instance".into();
+        assert!(matches!(
+            reviewed::record_pending(&data, name, persona, other).await,
+            Err(CreditBindingError::ConflictingSubmission(_))
+        ));
+        let mut on_board = retried.clone();
+        on_board.artifact.size_bytes += 1;
+        assert_eq!(
+            reviewed::resolve_pending(&data, name, persona, room, &on_board).await?.and_then(Result::err),
+            Some(Held::PublicationMismatch)
+        );
+        Ok(())
+    }

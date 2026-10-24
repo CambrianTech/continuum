@@ -376,6 +376,58 @@ pub mod tests {
         }
     }
 
+    // ── A command that reads the caller's issuing generation ──────────
+    struct ProvenanceSpec;
+    impl CommandSpec for ProvenanceSpec {
+        const NAME: &'static str = "test/echo-provenance";
+        const ACCESS_LEVEL: AccessLevel = AccessLevel::AiSafe;
+        const WIRE: WireShape = WireShape::Bare;
+        type Params = EchoParams;
+        type Result = EchoResult;
+    }
+    struct ProvenanceHandler;
+    #[async_trait]
+    impl CommandHandler for ProvenanceHandler {
+        type Spec = ProvenanceSpec;
+        async fn execute(&self, ctx: &Ctx, _p: EchoParams) -> Result<Outcome<EchoResult>, CommandError> {
+            let issuing = ctx.caller.as_ref().and_then(|c| c.issuing_generation.clone());
+            Ok(EchoResult { echoed: format!("{issuing:?}") }.into())
+        }
+    }
+
+    async fn provenance_seen(
+        params: serde_json::Value,
+        caller: Option<crate::routing::CallerIdentity>,
+    ) -> serde_json::Value {
+        match dispatch_with_caller(&ProvenanceHandler, params, caller).await {
+            Ok(CommandResult::Json(v)) => v["echoed"].clone(),
+            other => panic!("expected Json, got {other:?}"),
+        }
+    }
+
+    // what this catches (card fe8554d2, Codex on #5386): credit binds a submission to the
+    // generation in `ctx.caller.issuing_generation`, so a tool call must not be able to name
+    // one. Envelope fields are parsed from the same JSON as the params; the caller is not.
+    // A forged field in either spelling, with or without a caller, never reaches the handler;
+    // only a caller the act seam bound with `issued_by` carries one.
+    #[tokio::test]
+    async fn a_tool_input_cannot_name_the_issuing_generation() {
+        let forged = serde_json::json!({
+            "text": "x",
+            "issuingGeneration": "forged",
+            "issuing_generation": "forged",
+            "caller": {"issuingGeneration": "forged"},
+        });
+        let her = crate::routing::CallerIdentity::local_persona(crate::identity::PeerId::from_uuid(Uuid::new_v4()));
+        assert_eq!(provenance_seen(forged.clone(), None).await, "None");
+        assert_eq!(provenance_seen(forged.clone(), Some(her.clone())).await, "None");
+        assert_eq!(
+            provenance_seen(forged, Some(her.issued_by("real".into()))).await,
+            "Some(\"real\")",
+            "the bound caller's generation, never the forged field"
+        );
+    }
+
     // what this catches: a Bare command's reply is the BARE output (no envelope),
     // so the SDK's bare `Result` type matches the wire — the author wrote only the
     // typed execute.

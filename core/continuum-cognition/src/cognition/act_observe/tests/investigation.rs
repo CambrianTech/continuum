@@ -202,7 +202,7 @@ async fn repeated_reads_and_scoped_discovery_reach_the_executor() {
         ("code/tree", serde_json::json!({"path":"b"}), "tree two"),
     ].into_iter().enumerate() {
         let call = ToolCall { id: format!("call-{i}"), name: name.into(), input };
-        let acts = acts_of(apply_act(&cycle, &[call], "inspect", room, &chain, None).await);
+        let acts = acts_of(apply_act(&cycle, &[call], "inspect", room, &chain, None, None).await);
         assert!(matches!(acts[0].status, ActStatus::Executed));
         assert!(acts[0].output.result.content.contains(expected));
         assert_eq!(acts[0].output.result.is_error, (i == 3).then_some(true));
@@ -226,7 +226,7 @@ async fn repeated_request_keeps_current_room_and_returns_fresh_evidence() {
             name: "code/read".into(),
             input: serde_json::json!({"file_path": "README.md"}),
         };
-        let acts = acts_of(apply_act(&cycle, &[call], "inspect", room, &ActChain::new(), None).await);
+        let acts = acts_of(apply_act(&cycle, &[call], "inspect", room, &ActChain::new(), None, None).await);
         assert!(matches!(acts[0].status, ActStatus::Executed));
         assert_eq!(acts[0].output.result.tool_use_id, id);
         assert!(acts[0].output.result.content.contains(if i == 0 {

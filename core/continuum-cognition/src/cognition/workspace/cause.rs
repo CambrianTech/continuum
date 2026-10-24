@@ -566,6 +566,21 @@ impl Workspace {
         self.winning_verdict().and_then(|c| c.decision.as_ref())
     }
 
+    /// The generation that produced [`decision`](Self::decision): the winning verdict's own
+    /// last served receipt (a retry leaves a fault receipt before it). Read from the same
+    /// selection as the decision, never from the turn-wide receipts, whose order is
+    /// phase-then-faculty. Its tool calls carry it, so a command can bind what she submits to
+    /// the turn that made it (card fe8554d2).
+    pub fn decision_generation(&self) -> Option<String> {
+        self.winning_verdict().and_then(|c| {
+            c.receipts
+                .iter()
+                .rev()
+                .find(|r| matches!(r.outcome, crate::ai::provenance::GenerationOutcome::Served { .. }))
+                .map(|r| r.submitted_request_id.clone())
+        })
+    }
+
     /// The cost of the verdict that won attention this tick — latency + tokens of
     /// the deliberation model call behind the decision. `None` when no verdict
     /// carried metrics (a context-only tick, or a faculty stand-in that did no

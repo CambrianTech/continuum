@@ -77,6 +77,9 @@ pub struct CommandToolExecutor {
     /// For a context's hands: ends the context when the last clone of these hands drops (the
     /// fork is over, on any exit path). `None` for her live hands, which never end.
     _release: Option<Arc<ContextRelease>>,
+    /// The identity the connection dispatches as, kept so a per-batch executor can add the
+    /// issuing generation to exactly it (`issued_by`). `None` for a bare connection.
+    identity: Option<CallerIdentity>,
 }
 
 /// Ends an acting context when the hands bound to it are gone: sends `code/release-hands`
@@ -124,7 +127,7 @@ impl Drop for ContextRelease {
 
 impl CommandToolExecutor {
     pub fn new(conn: Connection<InProcessTransport>) -> Self {
-        Self { conn, core: None, hands: None, _release: None }
+        Self { conn, core: None, hands: None, _release: None, identity: None }
     }
 
     /// Build a persona's hands over the uniform client: a
@@ -163,12 +166,13 @@ impl CommandToolExecutor {
             None => identity,
         };
         let release = hands.map(|context| Arc::new(ContextRelease { core: core.clone(), identity: identity.clone(), persona, context }));
-        let transport = InProcessTransport::new(executor, Some(identity));
+        let transport = InProcessTransport::new(executor, Some(identity.clone()));
         Self {
             conn: Connection::new(transport),
             core: Some(core),
             hands,
             _release: release,
+            identity: Some(identity),
         }
     }
 
@@ -177,12 +181,13 @@ impl CommandToolExecutor {
     /// context's owner (a card claim's lifetime) releases it (card fc9e9fd7).
     pub fn for_persona_bound(executor: Arc<CommandExecutor>, persona: Uuid, context: crate::identity::hands_context::HandsContext) -> Self {
         let identity = CallerIdentity::local_persona(crate::identity::PeerId::from_uuid(persona)).in_hands(context);
-        let transport = InProcessTransport::new(executor.clone(), Some(identity));
+        let transport = InProcessTransport::new(executor.clone(), Some(identity.clone()));
         Self {
             conn: Connection::new(transport),
             core: Some(executor),
             hands: Some(context),
             _release: None,
+            identity: Some(identity),
         }
     }
 
@@ -493,6 +498,20 @@ impl ToolExecutor for CommandToolExecutor {
     fn in_hands(&self, persona: Uuid, context: crate::identity::hands_context::HandsContext) -> Option<Arc<dyn ToolExecutor>> {
         let core = self.core.clone()?;
         Some(Arc::new(Self::for_persona_bound(core, persona, context)))
+    }
+
+    fn issued_by(&self, generation: String) -> Option<Arc<dyn ToolExecutor>> {
+        let core = self.core.clone()?;
+        // Exactly this executor's identity (persona and hands), plus the generation.
+        let identity = self.identity.clone()?.issued_by(generation);
+        // Borrows the hands for one batch: the executor that owns them keeps the release.
+        Some(Arc::new(Self {
+            conn: Connection::new(InProcessTransport::new(core.clone(), Some(identity.clone()))),
+            core: Some(core),
+            hands: self.hands,
+            _release: None,
+            identity: Some(identity),
+        }))
     }
 
     async fn execute_native_batch(

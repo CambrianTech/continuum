@@ -102,6 +102,7 @@ pub async fn apply_act(
     room_id: Uuid,
     chain: &ActChain,
     hands: Option<crate::identity::hands_context::HandsContext>,
+    issuing_generation: Option<String>,
 ) -> ActOutcome {
     // no hands → cannot act (and tools were never offered)
     let Some(body) = cycle.acting() else {
@@ -116,6 +117,13 @@ pub async fn apply_act(
             Some(executor) => executor,
             None => return ActOutcome::NoHands,
         },
+    };
+    // The generation whose calls these are rides the caller (card fe8554d2), so work/submit
+    // can bind what she submits to the turn that made it. Hands that cannot stamp run the
+    // calls as before, with no provenance.
+    let executor = match issuing_generation.and_then(|g| executor.issued_by(g)) {
+        Some(stamped) => stamped,
+        None => executor,
     };
     // Perception and execution share the activity resolved by the bound-turn owner.
     // Private turns retain their mind room at that boundary.

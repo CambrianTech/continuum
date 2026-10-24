@@ -581,6 +581,9 @@ pub async fn reconcile_reviews(persona_name: &str, airc: &airc_lib::Airc) {
                 Ok(Some(credit)) if credit.state == reviewed::ReviewedCreditState::PolicyUnavailable => {
                     "the room's review policy could not be read".to_string()
                 }
+                Ok(Some(credit)) if credit.state == reviewed::ReviewedCreditState::ProvenanceHeld => {
+                    "its submission's provenance is held (not staged yet, or shared)".to_string()
+                }
                 Ok(_) => continue,
                 Err(error) => error.to_string(),
             };

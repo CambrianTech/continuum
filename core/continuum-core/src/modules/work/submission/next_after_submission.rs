@@ -201,16 +201,7 @@ impl ActionCommand for WorkSubmit {
                     "selected credit must belong to the calling resident persona".into(),
                 ));
             }
-            let executor = self
-                .executor_slot
-                .cloned()
-                .ok_or_else(|| CommandError::Internal("work executor is not ready".into()))?;
-            let conn = Connection::new(InProcessTransport::new(
-                executor,
-                Some(crate::routing::CallerIdentity::local_persona(
-                    crate::identity::PeerId::from_uuid(runtime.persona_id()),
-                )),
-            ));
+            let conn = credit_connection(self.executor_slot.cloned(), runtime.persona_id())?;
             let binding = if let Some(generation) = p.generation_request_id.as_deref() {
                 reviewed::bind_submission_generation(
                     &conn,
@@ -248,6 +239,35 @@ impl ActionCommand for WorkSubmit {
                 other => CommandError::Invalid(other.to_string()),
             })?;
             bound_staged_revision_id = Some(binding.selection.staged_revision_id);
+        } else if let Some(generation) = ctx
+            .caller
+            .as_ref()
+            .filter(|c| c.peer_id.as_uuid() == runtime.persona_id())
+            .and_then(|c| c.issuing_generation.clone())
+            // A retry of a submission the board already holds records nothing new.
+            .filter(|_| !card.submissions.iter().any(|s| s.submission_id.as_uuid() == submission_id))
+        {
+            // She named no selection: the generation whose tool call this is, bound by her act
+            // seam and never by her arguments, is recorded before publication and binds when a
+            // review arrives (card fe8554d2). Only her own act's caller carries it. A record that
+            // fails refuses, like an explicit binding: publish only after provenance is durable.
+            let conn = credit_connection(self.executor_slot.cloned(), runtime.persona_id())?;
+            reviewed::record_pending(
+                &conn,
+                runtime.agent_name(),
+                runtime.persona_id(),
+                reviewed::PendingSelection {
+                    publication: reviewed::Publication::of(room.channel.as_uuid(), &candidate),
+                    issuing_generation: generation,
+                },
+            )
+            .await
+            .map_err(|e| match e {
+                reviewed::CreditBindingError::Storage(source) => CommandError::Internal(format!(
+                    "credit provenance was not recorded; retry the same submission_id: {source}"
+                )),
+                other => CommandError::Invalid(other.to_string()),
+            })?;
         }
         let grade_title = card.title.clone();
         let bench = crate::recipe::benchmark_catalog::graded_at_submit(&grade_title);
@@ -256,7 +276,7 @@ impl ActionCommand for WorkSubmit {
             submission_id: candidate.submission_id, card_id, claim_id: candidate.claim_id,
             instance: candidate.instance, base_sha: candidate.base_sha, artifact: candidate.artifact,
         }).await.map_err(|e| CommandError::Internal(format!(
-            "submission publication was not acknowledged; retry the same submission_id and selection: {e}")))?;
+            "submission {submission_id} publication was not acknowledged; retry with submission_id={submission_id} and the same selection: {e}")))?;
         let handoff = if bench {
             Ok(None)
         } else {

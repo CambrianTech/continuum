@@ -28,7 +28,7 @@ async fn a_settle_chain_links_each_act_caused_by_its_predecessor() {
     let chain = ActChain::new();
 
     // Act 1 — starts the chain: no predecessor, so no edge.
-    acts_of(apply_act(&cycle, &[tool_call()], "start", room, &chain, None).await);
+    acts_of(apply_act(&cycle, &[tool_call()], "start", room, &chain, None, None).await);
     let first = chain.prior().expect("first act admitted onto the chain");
     assert!(
         adm.engram_neighbors(&first).is_empty(),
@@ -42,7 +42,7 @@ async fn a_settle_chain_links_each_act_caused_by_its_predecessor() {
         name: "code/read".into(),
         input: serde_json::json!({ "file_path": "src/main.rs" }),
     };
-    acts_of(apply_act(&cycle, &[second_call], "inspect", room, &chain, None).await);
+    acts_of(apply_act(&cycle, &[second_call], "inspect", room, &chain, None, None).await);
     let second = chain.prior().expect("second act admitted onto the chain");
     assert_ne!(first, second, "two acts, two engrams");
 
@@ -88,7 +88,7 @@ async fn a_chain_rooted_in_its_trigger_links_the_first_act_to_what_caused_the_tu
     let trigger = Uuid::new_v4();
     let chain = ActChain::rooted_in(&crate::cognition::workspace::Cause::Stimulus(trigger));
 
-    acts_of(apply_act(&cycle, &[tool_call()], "start", room, &chain, None).await);
+    acts_of(apply_act(&cycle, &[tool_call()], "start", room, &chain, None, None).await);
     let first = chain.prior().expect("first act admitted onto the chain");
     assert_ne!(first, trigger, "the act is its own engram, not the trigger");
 
@@ -118,7 +118,7 @@ async fn an_unrooted_chain_leaves_its_first_act_honestly_unlinked() {
         .with_acting(body(exec.clone(), adm.clone()));
     let chain = ActChain::rooted_in(&crate::cognition::workspace::Cause::Ambient);
 
-    acts_of(apply_act(&cycle, &[tool_call()], "start", Uuid::new_v4(), &chain, None).await);
+    acts_of(apply_act(&cycle, &[tool_call()], "start", Uuid::new_v4(), &chain, None, None).await);
     let first = chain.prior().expect("first act admitted");
     assert!(
         adm.engram_neighbors(&first).is_empty(),

@@ -147,7 +147,7 @@ pub async fn settle_step(
                 // re-perceive next step; `NoHands`/`ExecutorError` → unfulfilled. Behavior
                 // identical to the old `Some`/`None`, but `ExecutorError` is now
                 // distinguishable for a future backstop.
-                if apply_act(cycle, &calls, &intent, ws.activity_room_id, chain, hands)
+                if apply_act(cycle, &calls, &intent, ws.activity_room_id, chain, hands, ws.decision_generation())
                     .await
                     .produced_an_act()
                 {
