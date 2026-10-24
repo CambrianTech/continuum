@@ -66,9 +66,48 @@ pub fn standing_env_refusal(instance: &str) -> Option<String> {
     refusal_is_env_fault(&r.reason).then_some(r.reason)
 }
 
+/// Does this card name a bench instance the box has a STANDING ENV refusal for? Such a
+/// card is deck hygiene, not work: no grade can score it until the env changes
+/// ([`standing_env_refusal`]). Non-bench titles are never refused.
+/// The probe fires once per instance per process — the pull asks every tick.
+pub fn refused_on_this_box(title: &str) -> bool {
+    standing_refusal_for_card(title).is_some()
+}
+
+/// The (instance, reason) of the standing ENV refusal a bench card's title names on
+/// this box — ONE predicate for the pull filter AND the claim verb (2026-09-13: the
+/// pull skipped requests-1766 correctly, then Atlas claimed it by id from a message
+/// turn and spent her next hour on it; a refusal that lives in one caller is not a rule).
+pub fn standing_refusal_for_card(title: &str) -> Option<(String, String)> {
+    let Some((_, instance)) = crate::recipe::bench_title::parse_card_title(title) else {
+        return None;
+    };
+    let reason = standing_env_refusal(&instance)?;
+    static PROBED: std::sync::LazyLock<std::sync::Mutex<std::collections::HashSet<String>>> =
+        std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashSet::new()));
+    // Poisoned or contended: the probe is the only thing at stake, never the decision.
+    if PROBED.lock().is_ok_and(|mut seen| seen.insert(instance.clone())) {
+        continuum_base::probe!(
+            class = "bench.round.pull_skipped_ungradeable",
+            instance = %instance,
+            reason = %reason,
+            "a standing env refusal keeps this card off every pull and claim on this box"
+        );
+    }
+    Some((instance, reason))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // what this catches: the pull filter refusing cards that carry no standing refusal —
+    // a non-bench title, and a bench title whose instance has no marker on this box.
+    #[test]
+    fn only_a_bench_card_with_a_standing_env_refusal_is_kept_off_the_pull() {
+        assert!(!refused_on_this_box("fix the widget"));
+        assert!(!refused_on_this_box("[bench swe-bench-verified] no__such-instance-0: never graded here"));
+    }
 
     // what this catches (2026-09-13, seed-4): an instance this box cannot grade — pytest-7236
     // (pristine PASS_TO_PASS 0/40), requests-1766 (era pytest cannot run here) — dispatched

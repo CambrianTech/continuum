@@ -22,10 +22,11 @@ pub fn install() {
     });
     ext::install_quiesce_fleet(quiesce_fleet);
     ext::install_card_room(card_room);
-    ext::install_resident_review_boundaries(|persona| {
+    crate::cognition::dream_consolidation::install_resident_review_boundaries(|persona| {
         crate::persona::training_producer::reviewed::boundaries::ReviewBoundaryStore::resident(persona)
             .map(|store| Arc::new(store) as Arc<dyn crate::cognition::dream_consolidation::ReviewBoundaryLedger>)
     });
+    ext::install_lived_turn_settled(crate::cognition::experience::record_lived_turn);
     ext::install_pinned_workspace_map(|persona, root| {
         Arc::new(crate::persona::workspace_map_source::WorkspaceMapSource::for_pinned_root(persona, root.to_path_buf()))
     });
@@ -73,5 +74,17 @@ impl CreditSink for TrainingCredit {
 
     fn settle_card(&self, card: Uuid, passed: bool) -> SlotFuture<()> {
         Box::pin(crate::persona::training_producer::settle_card_credit(card, passed))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    // what this catches (Cormac on #5380): the settle driver recording her lived turns through a
+    // slot nothing fills. The boot install must fill it, or every turn settles with no record in
+    // her curriculum while she visibly deliberates.
+    #[test]
+    fn install_fills_the_lived_turn_slot() {
+        super::install();
+        assert!(crate::cognition::extensions::lived_turn_settled_installed());
     }
 }
