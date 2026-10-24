@@ -5,9 +5,10 @@
 //! `airc_core::shown_id` — `Shown<T>` (an id as typed at a boundary: full, or the leading hex a
 //! surface shows, refused in the type's own words), `Shown::resolve` (a miss or a tie refused with
 //! what was found, never guessed) and `shown_form` (the ONE producer of the short rendering; each
-//! typed id's `shown()` calls it). The core used it zero times. Measured with this predicate on
-//! canary 2026-10-24: 62 hand-rolled renderings (`to_string()[..8]`, `chars().take(8)`) in 43
-//! files, and 16 private helpers (`short8`, `short_id`, `id8`, …), each free to differ.
+//! typed id's `shown()` calls it). The core used it zero times. This predicate counted 52
+//! production lines on canary 2026-10-24 (hand-rolled `[..8]` / `take(8)` renderings and private
+//! `short8` / `short_id` / `id8` helpers); #5389 moved them onto `shown_form`, leaving 5 that are
+//! not ids (build shas, a deliberate last-8 rendering, free strings).
 //!
 //! The count may only fall: render an id with `id.shown()` (a typed airc id) or
 //! `airc_core::shown_id::shown_form(uuid)`, parse one with `Shown<T>`.
