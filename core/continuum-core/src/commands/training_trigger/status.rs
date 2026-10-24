@@ -57,8 +57,6 @@ pub struct PendingBucketView {
     /// A stranded dispatch written before attempts existed: nothing names what it may have
     /// started, so its outcome is unknown and it is never retried on its own. Settle it with
     /// `genome/training-trigger/resolve` from concrete evidence.
-    #[serde(skip_serializing_if = "std::ops::Not::not")]
-    #[ts(optional)]
     pub unknown_legacy: bool,
 }
 

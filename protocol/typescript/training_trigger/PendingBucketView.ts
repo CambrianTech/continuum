@@ -14,4 +14,4 @@ dispatchAttempt?: string,
  * started, so its outcome is unknown and it is never retried on its own. Settle it with
  * `genome/training-trigger/resolve` from concrete evidence.
  */
-unknownLegacy?: boolean, };
+unknownLegacy: boolean, };
