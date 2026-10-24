@@ -79,7 +79,7 @@ impl ServiceModule for PlasticityModule {
 /// distributes precision tiers to fit within the target size. Otherwise falls back
 /// to fixed-threshold assignment.
 ///
-/// `pub(crate)`: the `plasticity/{analyze,compact,pipeline}` command bodies in
+/// `pub`: the `plasticity/{analyze,compact,pipeline}` command bodies in continuum-core's
 /// `commands/plasticity/` orchestrate over it. The topology-construction domain
 /// logic stays here in the module (mirrors genome's domain-in-module / wire-in-
 /// commands split); the commands are thin.
