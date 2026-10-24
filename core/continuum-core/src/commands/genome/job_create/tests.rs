@@ -63,6 +63,7 @@
     fn cmd(ids: &[&'static str]) -> GenomeJobCreate {
         let registry = registry_with(ids);
         GenomeJobCreate {
+            attempts: Arc::new(crate::commands::genome::attempt_ledger::AttemptLedger::new()),
             coordinator: Arc::new(FineTuningCoordinator::new(registry)),
             test_job_board: Arc::new(crate::genome::fine_tuning::TrainingJobBoard::default()),
             test_artifacts: Arc::new(tempfile::tempdir().unwrap()),
@@ -93,6 +94,7 @@
         let registry = Arc::new(FineTuningRegistry::new());
         registry.register(adapter.clone());
         let command = GenomeJobCreate {
+            attempts: Arc::new(crate::commands::genome::attempt_ledger::AttemptLedger::new()),
             coordinator: Arc::new(FineTuningCoordinator::new(registry)),
             test_job_board: board.clone(),
             test_artifacts: artifacts.clone(),
@@ -348,6 +350,7 @@
         let registry = Arc::new(FineTuningRegistry::new());
         registry.register(adapter.clone());
         let command = GenomeJobCreate {
+            attempts: Arc::new(crate::commands::genome::attempt_ledger::AttemptLedger::new()),
             coordinator: Arc::new(FineTuningCoordinator::new(registry)),
             test_job_board: board.clone(),
             test_artifacts: artifacts.clone(),

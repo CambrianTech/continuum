@@ -40,6 +40,8 @@ use crate::genome::fine_tuning::{
 use crate::sdk_codegen::DynCommand;
 use job_create::{ERROR_KIND_CAPACITY_PARKED, ERROR_KIND_TRAINER_UNAVAILABLE};
 
+pub(crate) mod attempt_ledger;
+pub mod job_attempt_reconcile;
 pub mod job_cancel;
 pub mod job_create;
 pub mod job_pause;
@@ -85,12 +87,17 @@ pub(crate) fn fine_tuning_error_kind(e: &FineTuningError) -> &'static str {
 pub fn command_objects(
     registry: Arc<FineTuningRegistry>,
     coordinator: Arc<FineTuningCoordinator>,
+    attempts: Arc<attempt_ledger::AttemptLedger>,
     #[cfg(test)] test_job_board: Arc<crate::genome::fine_tuning::TrainingJobBoard>,
     #[cfg(test)] test_artifacts: Arc<tempfile::TempDir>,
 ) -> Vec<Arc<dyn DynCommand>> {
     vec![
+        Arc::new(job_attempt_reconcile::GenomeJobAttemptReconcile {
+            attempts: Arc::clone(&attempts),
+        }),
         Arc::new(job_create::GenomeJobCreate {
             coordinator,
+            attempts,
             #[cfg(test)]
             test_job_board: test_job_board.clone(),
             #[cfg(test)]
@@ -230,7 +237,7 @@ mod tests {
         assert_eq!(GenomeJobCancel::NAME, "genome/job-cancel");
     }
 
-    // what this catches: command_objects assembles all three verbs — a dropped entry
+    // what this catches: command_objects assembles every genome/job-* verb (reconcile included) — a dropped entry
     // would silently remove a genome command from the registry.
     #[test]
     fn command_objects_assembles_all_three() {
@@ -239,9 +246,10 @@ mod tests {
         let objs = command_objects(
             registry,
             coordinator,
+            Arc::new(attempt_ledger::AttemptLedger::new()),
             Arc::new(crate::genome::fine_tuning::TrainingJobBoard::default()),
             Arc::new(tempfile::tempdir().unwrap()),
         );
-        assert_eq!(objs.len(), 5);
+        assert_eq!(objs.len(), 6);
     }
 }

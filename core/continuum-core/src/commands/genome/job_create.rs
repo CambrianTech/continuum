@@ -32,6 +32,12 @@ pub struct JobCreateParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional, type = "string")]
     pub trigger_dispatch_id: Option<uuid::Uuid>,
+    /// The trigger's attempt (card 55d4b9e3). When present the create is admitted in the
+    /// attempt ledger BEFORE the trainer runs: a repeat returns the same job, a create for an
+    /// attempt reconciliation already closed is refused before anything starts.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional, type = "string")]
+    pub trigger_attempt_id: Option<uuid::Uuid>,
     #[serde(flatten)]
     pub request: TrainingJobRequest,
     /// Force a specific provider (e.g. `"openai"`, `"local-candle"`). Honored only
@@ -111,6 +117,25 @@ pub const ERROR_KIND_CAPACITY_PARKED: &str = "CapacityParked";
 /// The trainer refused before creating anything (missing interpreter, a host it cannot run
 /// on): certain, so the trigger retries on a later fill, never recovery (card a9bc56ea).
 pub const ERROR_KIND_TRAINER_UNAVAILABLE: &str = "TrainerUnavailable";
+/// Reconciliation already closed this attempt: nothing was or will be started (certain).
+pub const ERROR_KIND_ATTEMPT_FENCED: &str = "AttemptFenced";
+/// The attempt ledger could not record the admission, so the trainer was never called
+/// (certain: a create the ledger cannot witness is never started).
+pub const ERROR_KIND_ATTEMPT_UNRECORDED: &str = "AttemptUnrecorded";
+/// This attempt was admitted before and never settled: a create may be running or may have
+/// crashed. Deliberately not a retryable kind, so the trigger reads it as uncertain.
+pub const ERROR_KIND_ATTEMPT_UNSETTLED: &str = "AttemptUnsettled";
+
+/// Whether a trainer's refusal proves it created nothing, so its attempt settles as failed
+/// (fenced) instead of staying admitted. The same created-nothing kinds the trigger retries;
+/// `LocalTrainerFailed`, `Transient` and the rest can follow a trainer that started.
+fn settles_as_not_created(e: &crate::genome::fine_tuning::FineTuningError) -> bool {
+    use crate::genome::fine_tuning::FineTuningError as E;
+    matches!(
+        e,
+        E::TrainerUnavailable(_) | E::InvalidRequest(_) | E::MissingCredentials(_) | E::ProviderRejected(_) | E::CapacityParked(_)
+    )
+}
 
 /// The decision could not be made: a typed refusal the trigger retries on the next fill,
 /// probed so a bucket that keeps refusing is readable.
@@ -135,6 +160,7 @@ crate::action_command! {
     /// failures) — branch on it; this is never a silent fallback.
     pub struct GenomeJobCreate {
         coordinator: Arc<FineTuningCoordinator>,
+        attempts: Arc<super::attempt_ledger::AttemptLedger>,
         #[cfg(test)]
         test_job_board: Arc<crate::genome::fine_tuning::TrainingJobBoard>,
         #[cfg(test)]
@@ -562,9 +588,52 @@ crate::action_command! {
             Some(Decision::Mint) | None => {}
         }
 
-        // 2. Adapter creates the job. FineTuningError carries a stable errorKind
-        //    slug callers branch on for retry-vs-surface.
-        match adapter.create_job(p.request).await {
+        // 2. Admit the attempt (card 55d4b9e3), then the adapter creates the job.
+        //    FineTuningError carries a stable errorKind slug callers branch on.
+        let attempt = p.trigger_attempt_id;
+        // The job this attempt already made, when a create repeats (idempotent per attempt).
+        let mut prior: Option<crate::genome::fine_tuning::JobHandle> = None;
+        if let Some(attempt) = attempt {
+            use super::attempt_ledger::Admission;
+            match this.attempts.admit(attempt, p.trigger_dispatch_id, &selected_provider, "local").await {
+                Ok(Admission::Fresh) => {}
+                Ok(Admission::AlreadyCreated(handle)) => prior = Some(handle),
+                Ok(Admission::Fenced) => {
+                    return refused_decision(ERROR_KIND_ATTEMPT_FENCED, &p.request, &format!("attempt {attempt} was closed by reconciliation; nothing started"));
+                }
+                Ok(Admission::Unsettled) => {
+                    return refused_decision(ERROR_KIND_ATTEMPT_UNSETTLED, &p.request, &format!("attempt {attempt} was admitted before and never settled"));
+                }
+                Err(e) => {
+                    return refused_decision(ERROR_KIND_ATTEMPT_UNRECORDED, &p.request, &format!("attempt {attempt} could not be admitted: {e}"));
+                }
+            }
+        }
+        let repeated = prior.is_some();
+        let created = match prior {
+            Some(handle) => Ok(handle),
+            None => adapter.create_job(p.request).await,
+        };
+        if let (Some(attempt), false) = (attempt, repeated) {
+            use super::attempt_ledger::AttemptState;
+            let settled = match &created {
+                Ok(handle) => Some(AttemptState::Created { handle: handle.clone() }),
+                Err(e) if settles_as_not_created(e) => Some(AttemptState::Failed { kind: fine_tuning_error_kind(e).to_string() }),
+                // Anything else may follow a trainer that started: left Admitted, reconciled Unknown.
+                Err(_) => None,
+            };
+            if let Some(state) = settled {
+                if let Err(error) = this.attempts.settle(attempt, state).await {
+                    continuum_base::probe!(
+                        class = "genome.attempt.unsettled",
+                        attempt = %attempt,
+                        error = %error,
+                        "the trainer answered but the attempt ledger could not record it: it stays admitted and reconciles as unknown"
+                    );
+                }
+            }
+        }
+        match created {
             Ok(handle) => {
                 // L2→L3 seam (the ONE birth-seam): every training job is born here —
                 // the trigger's batch path dispatches THIS command, a direct
@@ -579,19 +648,26 @@ crate::action_command! {
                 let job_board = crate::genome::fine_tuning::TrainingJobBoard::global();
                 #[cfg(test)]
                 let job_board = this.test_job_board.as_ref();
-                job_board.register(
-                    crate::genome::fine_tuning::WatchedJob {
-                        trigger_dispatch_id: p.trigger_dispatch_id,
-                        handle: handle.clone(),
-                        persona_id: watched_persona_id,
-                        persona_name: watched_persona_name,
-                        base_model: watched_base_model,
-                        trait_kind: watched_trait_kind,
-                        eval_set: watched_eval_set,
-                        signature: watched_signature,
-                        decision,
-                    },
-                );
+                // A repeated create returns the job its attempt already made. It is registered
+                // again only if the board does not hold it (a crash between create and
+                // registration), never journaled twice.
+                let on_board = repeated
+                    && job_board.pending().iter().any(|job| job.handle.local_id == handle.local_id);
+                if !on_board {
+                    job_board.register(
+                        crate::genome::fine_tuning::WatchedJob {
+                            trigger_dispatch_id: p.trigger_dispatch_id,
+                            handle: handle.clone(),
+                            persona_id: watched_persona_id,
+                            persona_name: watched_persona_name,
+                            base_model: watched_base_model,
+                            trait_kind: watched_trait_kind,
+                            eval_set: watched_eval_set,
+                            signature: watched_signature,
+                            decision,
+                        },
+                    );
+                }
                 Ok(JobCreateOutcome {
                     success: true,
                     result: Some(JobCreateResult {

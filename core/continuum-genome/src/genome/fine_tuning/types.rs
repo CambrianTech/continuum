@@ -388,7 +388,7 @@ impl ReattachOutcome {
 /// What [`super::FineTuningAdapter::create_job`] returns. Acts as a
 /// correlation token across the substrate side (`local_id`) and the
 /// provider side (`provider_job_id`).
-#[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS, JsonSchema)]
 #[ts(
     export,
     export_to = "../../../protocol/typescript/genome/fine_tuning/JobHandle.ts"

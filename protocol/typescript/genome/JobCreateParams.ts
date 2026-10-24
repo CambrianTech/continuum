@@ -17,6 +17,12 @@ export type JobCreateParams = {
  */
 triggerDispatchId?: string, 
 /**
+ * The trigger's attempt (card 55d4b9e3). When present the create is admitted in the
+ * attempt ledger BEFORE the trainer runs: a repeat returns the same job, a create for an
+ * attempt reconciliation already closed is refused before anything starts.
+ */
+triggerAttemptId?: string, 
+/**
  * Force a specific provider (e.g. `"openai"`, `"local-candle"`). Honored only
  * if that provider is in the capable set; otherwise the outcome is
  * `success=false` — never a silent fallback to a different provider.
