@@ -162,9 +162,9 @@ jobs:
         if: matrix.crate == 'continuum-genome'
         run: python3 -m unittest discover -s core/continuum-genome/src/genome/fine_tuning -p cuda_train_test.py -v
 
-      # ---- continuum-hands, -live, -perception, -genome, -experience, -memory, -cognition: lib tests ----
+      # ---- continuum-hands, -live, -perception, -genome, -experience, -memory, -cognition, -dreaming: lib tests ----
       - name: cargo test -p ${{ matrix.crate }} --lib
-        if: contains(fromJSON('["continuum-hands","continuum-live","continuum-perception","continuum-genome","continuum-experience","continuum-memory","continuum-cognition"]'), matrix.crate)
+        if: contains(fromJSON('["continuum-hands","continuum-live","continuum-perception","continuum-genome","continuum-experience","continuum-memory","continuum-cognition","continuum-dreaming"]'), matrix.crate)
         run: cargo test -p "$CRATE" --lib --profile dev-fast --features "$FEATURES"
 
       # ---- continuum-mind: lib tests, compile-fail doc guards ----

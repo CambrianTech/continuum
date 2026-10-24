@@ -167,34 +167,6 @@ async fn live_room_input_reaches_next_action_without_replacing_task_or_room() {
         assert_eq!(outcome.room, room);
         assert_eq!(outcome.world_state, original_world);
         assert_eq!(outcome.room_updates.len(), 3);
-        let lived =
-            crate::cognition::experience::ExperienceRecord::from_lived_turn(task, &outcome);
-        let encoded = serde_json::to_string(&lived).unwrap();
-        let mut restored: crate::cognition::experience::ExperienceRecord =
-            serde_json::from_str(&encoded).unwrap();
-        assert_eq!(restored.task.prompt, task);
-        assert_eq!(restored.world_state, original_world);
-        assert_eq!(restored.room, Some(room));
-        for update in messages.iter().chain(std::iter::once(&later_message)) {
-            assert!(restored.room_updates.contains(update));
-            assert!(restored
-                .training_prompt()
-                .contains(&update.render_room_update()));
-        }
-        // A later failed episode is taught with the same complete input,
-        // through the ordinary lived-curriculum selector.
-        restored.ok = false;
-        let teaching = crate::cognition::curriculum::LivedExpansionSynthesizer::new()
-            .select(std::slice::from_ref(&restored));
-        assert_eq!(teaching, vec![restored.training_prompt()]);
-        let mut legacy: serde_json::Value = serde_json::from_str(&encoded).unwrap();
-        legacy.as_object_mut().unwrap().remove("room_updates");
-        assert!(
-            serde_json::from_value::<crate::cognition::experience::ExperienceRecord>(legacy)
-                .unwrap()
-                .room_updates
-                .is_empty()
-        );
         assert_eq!(*exec.rooms.lock().unwrap(), vec![room, room]);
         let engrams = adm.recall_recent(adm.engram_count());
         let first_act = engrams

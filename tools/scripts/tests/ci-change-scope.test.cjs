@@ -90,27 +90,27 @@ test('every tested crate is a workspace member, and the graph names the cut crat
   const names = workspace.crates.map(c => c.name);
   for (const name of TESTED_CRATES) assert.ok(names.includes(name), name);
   const mind = workspace.crates.find(c => c.name === 'continuum-mind');
-  for (const dep of ['core/continuum-cognition', 'core/continuum-hands', 'core/continuum-live', 'core/continuum-kernel', 'core/continuum-perception', 'core/continuum-genome']) assert.ok(mind.deps.includes(dep), dep);
+  for (const dep of ['core/continuum-dreaming', 'core/continuum-hands', 'core/continuum-live', 'core/continuum-kernel', 'core/continuum-perception', 'core/continuum-genome']) assert.ok(mind.deps.includes(dep), dep);
 });
 
 test('a crate-local change runs that crate and every crate that depends on it', () => {
   assert.deepEqual(scope(['core/continuum-mind/src/persona/unified.rs']), crates('continuum-mind', 'continuum-core'));
   assert.deepEqual(scope(['core/continuum-core/src/modules/chat.rs']), crates('continuum-core'));
-  assert.deepEqual(scope(['core/continuum-hands/src/lib.rs']), crates('continuum-hands', 'continuum-cognition', 'continuum-mind', 'continuum-core'));
-  assert.deepEqual(scope(['core/continuum-live/src/lib.rs']), crates('continuum-live', 'continuum-perception', 'continuum-cognition', 'continuum-mind', 'continuum-core'));
-  assert.deepEqual(scope(['core/continuum-perception/src/lib.rs']), crates('continuum-perception', 'continuum-cognition', 'continuum-mind', 'continuum-core'));
-  assert.deepEqual(scope(['core/continuum-genome/src/lib.rs']), crates('continuum-genome', 'continuum-cognition', 'continuum-mind', 'continuum-core'));
-  assert.deepEqual(scope(['core/continuum-memory/src/lib.rs']), crates('continuum-memory', 'continuum-cognition', 'continuum-mind', 'continuum-core'));
-  assert.deepEqual(scope(['core/continuum-experience/src/lib.rs']), crates('continuum-experience', 'continuum-cognition', 'continuum-mind', 'continuum-core'));
-  assert.deepEqual(scope(['core/continuum-cognition/src/lib.rs']), crates('continuum-cognition', 'continuum-mind', 'continuum-core'));
-  const belowMind = crates('continuum-engine', 'continuum-hands', 'continuum-live', 'continuum-perception', 'continuum-genome', 'continuum-memory', 'continuum-cognition', 'continuum-mind', 'continuum-core');
+  assert.deepEqual(scope(['core/continuum-hands/src/lib.rs']), crates('continuum-hands', 'continuum-cognition', 'continuum-dreaming', 'continuum-mind', 'continuum-core'));
+  assert.deepEqual(scope(['core/continuum-live/src/lib.rs']), crates('continuum-live', 'continuum-perception', 'continuum-cognition', 'continuum-dreaming', 'continuum-mind', 'continuum-core'));
+  assert.deepEqual(scope(['core/continuum-perception/src/lib.rs']), crates('continuum-perception', 'continuum-cognition', 'continuum-dreaming', 'continuum-mind', 'continuum-core'));
+  assert.deepEqual(scope(['core/continuum-genome/src/lib.rs']), crates('continuum-genome', 'continuum-cognition', 'continuum-dreaming', 'continuum-mind', 'continuum-core'));
+  assert.deepEqual(scope(['core/continuum-memory/src/lib.rs']), crates('continuum-memory', 'continuum-cognition', 'continuum-dreaming', 'continuum-mind', 'continuum-core'));
+  assert.deepEqual(scope(['core/continuum-experience/src/lib.rs']), crates('continuum-experience', 'continuum-cognition', 'continuum-dreaming', 'continuum-mind', 'continuum-core'));
+  assert.deepEqual(scope(['core/continuum-cognition/src/lib.rs']), crates('continuum-cognition', 'continuum-dreaming', 'continuum-mind', 'continuum-core'));
+  const belowMind = crates('continuum-engine', 'continuum-hands', 'continuum-live', 'continuum-perception', 'continuum-genome', 'continuum-memory', 'continuum-cognition', 'continuum-dreaming', 'continuum-mind', 'continuum-core');
   assert.deepEqual(scope(['core/continuum-engine/src/lib.rs']), belowMind);
   assert.deepEqual(scope(['core/continuum-kernel/src/lib.rs']), { crates: TESTED_CRATES, cli: false });
   // Untested crates reach the tested ones through the graph: llama -> engine -> ...
   assert.deepEqual(scope(['core/llama/src/lib.rs']), belowMind);
-  assert.deepEqual(scope(['core/continuum-mind/src/a.rs', 'core/continuum-live/src/b.rs']), crates('continuum-live', 'continuum-perception', 'continuum-cognition', 'continuum-mind', 'continuum-core'));
+  assert.deepEqual(scope(['core/continuum-mind/src/a.rs', 'core/continuum-live/src/b.rs']), crates('continuum-live', 'continuum-perception', 'continuum-cognition', 'continuum-dreaming', 'continuum-mind', 'continuum-core'));
   // A crate's own manifest is that crate's change; a rename counts both ends.
-  assert.deepEqual(scope(['core/continuum-hands/Cargo.toml']), crates('continuum-hands', 'continuum-cognition', 'continuum-mind', 'continuum-core'));
+  assert.deepEqual(scope(['core/continuum-hands/Cargo.toml']), crates('continuum-hands', 'continuum-cognition', 'continuum-dreaming', 'continuum-mind', 'continuum-core'));
   const { crates: moved } = selectChecks([{ filename: 'core/continuum-mind/src/x.rs', previous_filename: 'core/continuum-engine/src/x.rs' }], { eventName: 'pull_request', workspace });
   assert.ok(moved.includes('continuum-engine'));
 });
