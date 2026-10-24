@@ -1,4 +1,4 @@
-name: Continuum Rust Tests
+name: Continuum Rust Tests  # trial a
 
 on:
   pull_request:
