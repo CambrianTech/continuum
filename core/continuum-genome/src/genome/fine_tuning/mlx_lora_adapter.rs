@@ -34,6 +34,8 @@ const MLX_PYTHON_KEY: &str = "MLX_PYTHON";
 pub struct MlxLoraFineTuner {
     jobs: super::native_jobs::NativeJobs,
     python: PathBuf,
+    /// Whether `python` can import `mlx_lm`, probed once in the background (card 6f05b89d).
+    readiness: super::python_trainer_readiness::PythonTrainerReadiness,
 }
 
 impl MlxLoraFineTuner {
@@ -46,6 +48,7 @@ impl MlxLoraFineTuner {
             .unwrap_or_else(default_mlx_python);
         Self {
             jobs: super::native_jobs::NativeJobs::new(PROVIDER_ID),
+            readiness: super::python_trainer_readiness::PythonTrainerReadiness::probe(Some(python.clone()), "import mlx_lm"),
             python,
         }
     }
@@ -104,6 +107,10 @@ impl FineTuningAdapter for MlxLoraFineTuner {
             requires: TrainerHardware::AppleSilicon,
             place: crate::genome::fine_tuning::adapter::TrainingPlace::SeparateCopyHere,
         }
+    }
+
+    fn serves_base(&self, base_model: &str) -> bool {
+        self.readiness.serves(base_model)
     }
 
     async fn create_job(&self, request: TrainingJobRequest) -> Result<JobHandle, FineTuningError> {
@@ -386,17 +393,23 @@ async fn tokenizer_has_chat_template(
     std::fs::write(&probe_path, include_str!("probe_chat_template.py")).map_err(|e| {
         FineTuningError::LocalTrainerFailed(format!("write chat-template probe: {e}"))
     })?;
-    let out = tokio::process::Command::new(python)
-        .kill_on_drop(true)
-        .arg(&probe_path)
-        .arg(train_base)
-        .output()
-        .await
-        .map_err(|e| FineTuningError::LocalTrainerFailed(format!("spawn probe: {e}")))?;
+    // A short question to the same interpreter, through the one owned runner: a cancelled job
+    // ends the probe and everything it started. The script bounds its own output (its answer,
+    // or one error line of at most ~2 KiB), so the capture is bounded.
+    use super::python_trainer_readiness::{ask_python, Answer};
+    let out = match ask_python(python, &[probe_path.as_os_str(), std::ffi::OsStr::new(train_base)], None).await {
+        Answer::Exited { output, cut: None } => output,
+        Answer::Exited { cut: Some(cut), .. } => {
+            return Err(FineTuningError::LocalTrainerFailed(format!("chat-template probe for {train_base}: {cut}")))
+        }
+        Answer::Unavailable(why) => {
+            return Err(FineTuningError::LocalTrainerFailed(format!("chat-template probe for {train_base}: {why}")))
+        }
+    };
     if !out.status.success() {
         return Err(FineTuningError::LocalTrainerFailed(format!(
             "chat-template probe failed for {train_base}: {}",
-            String::from_utf8_lossy(&out.stderr)
+            String::from_utf8_lossy(&out.stdout)
         )));
     }
     Ok(String::from_utf8_lossy(&out.stdout).trim() == "yes")

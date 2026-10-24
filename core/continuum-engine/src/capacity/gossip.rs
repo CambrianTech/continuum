@@ -135,6 +135,12 @@ pub struct CapacityOffer {
     /// comparison site).
     #[serde(default)]
     pub capabilities: Vec<CapabilityId>,
+    /// The bases a peer may lease LoRA training to this node for (card 6f05b89d): those a
+    /// trainer on THIS host would accept (its resident weights or its own copy), never one it
+    /// would pass to a grid peer or a cloud provider. Today at most the served base. An older
+    /// core advertises nothing (serde default), which reads as "trains nothing", never "all".
+    #[serde(default)]
+    pub trainable_bases: Vec<String>,
 }
 
 /// What a core knows how to do — the names a beacon may advertise in
@@ -562,6 +568,7 @@ mod tests {
             // capabilities at all, and the ledger must fold that as 'nothing',
             // never as 'all' (card 8bd75362).
             capabilities: Vec::new(),
+            trainable_bases: Vec::new(),
         }
     }
     // what this catches (2026-09-19, the M5 spilled two minds to ITSELF): a node hears

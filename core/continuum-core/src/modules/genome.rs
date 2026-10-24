@@ -102,6 +102,12 @@ impl GenomeModule {
         Ok(())
     }
 
+    /// Whether a trainer on this host takes LoRA jobs for `base`: what the capacity beacon
+    /// advertises as trainable here (card 6f05b89d).
+    pub(crate) fn trains_base_here(&self, base: &str) -> bool {
+        self.coordinator.trains_base_here(base)
+    }
+
     /// Visible to tests + boot. Returns the inner registry so a
     /// caller can introspect or register adapters after
     /// construction (substrate hot-reload future work; not used in
