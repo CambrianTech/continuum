@@ -42,8 +42,10 @@
 //! That is the WORKSPACE reach, for a caller from outside this node. This node's own
 //! resident has HOST reach ([`Confinement::reaching_host`]): everything the operator's
 //! process may touch EXCEPT the credential paths ([`CARVED_OUT_HOME_ENTRIES`], plus every
-//! scope's signing key, [`CREDENTIAL_SUFFIXES`]) and other citizens' directories (Joel
-//! 2026-10-17 "Don't restrict them"; 2026-10-18 "keep creds off-limits"). That boundary is
+//! scope's signing key, [`CREDENTIAL_SUFFIXES`]) and other citizens' private state, their
+//! minds (Joel 2026-10-17 "Don't restrict them"; 2026-10-18 "keep creds off-limits").
+//! Every citizen's workspace is the commons, read and written by all of them (2026-10-24:
+//! "they cannot be locked out of things so readily"). That boundary is
 //! a denylist by decision, so the list names every store a token lives in on the fleet's
 //! hosts. Seatbelt writes it as denials only; landlock grants the host carved around it.
 //!
@@ -248,7 +250,7 @@ enum Reach {
     /// Her workspace, her citizen dir, the toolchains and caches: a caller from outside
     /// this node.
     Workspace,
-    /// The whole host except the credential paths and other citizens' directories: this
+    /// The whole host except the credential paths and other citizens' private state: this
     /// node's own resident (Joel 2026-10-17 "Don't restrict them"; 2026-10-18 "keep creds
     /// off-limits").
     Host,
@@ -289,18 +291,45 @@ impl Confinement {
         self.reach == Reach::Host
     }
 
-    /// What a host-reach caller may never touch, canonical: the credential roots and
-    /// every other citizen's directory (hers excepted). The file verbs check this
-    /// without materializing the whole host grant.
+    /// What a host-reach caller may never touch, canonical: the credential roots and every
+    /// other citizen's PRIVATE state (her mind: airc state, lived experience, memory),
+    /// everything in another citizen's directory except her workspace. The file verbs check
+    /// this without materializing the whole host grant.
+    ///
+    /// Another citizen's workspace is the commons, never denied, read or write: a reviewer
+    /// reads and runs the code he was asked to review (Atlas on the M5, 2026-10-24: ~35 acts
+    /// refused as "escapes workspace" for paths inside the checkout his review lane rooted
+    /// him in), a citizen repairs a colleague's broken checkout or pushes a fix to her
+    /// branch, and minds learn from each other's code; git keeps every change recoverable.
+    /// Joel: "they cannot be locked out of things so readily nor harnessed"; "everything
+    /// you've just done we'd expect them to also be able to do here to fix each other". A
+    /// citizen's thoughts and every credential stay out of reach.
     pub fn host_denials(&self) -> Vec<PathBuf> {
         let mut deny = self.credential_roots();
-        let peers = crate::identity::citizen_peers_dir(&self.continuum_root);
-        if let Ok(entries) = std::fs::read_dir(&peers) {
-            let mine = self.citizen_dir.as_deref().and_then(|d| d.canonicalize().ok());
-            deny.extend(entries.flatten().map(|e| e.path()).filter(|p| p.canonicalize().ok() != mine));
-        }
+        deny.extend(self.other_citizens().flat_map(|dir| {
+            std::fs::read_dir(&dir)
+                .map(|entries| entries.flatten().map(|e| e.path()).filter(|p| p.file_name() != Some(WORKSPACE.as_ref())).collect::<Vec<_>>())
+                .unwrap_or_default() // unwrap_or_default: an unreadable citizen dir holds nothing to deny beneath it
+        }));
         canonical_all(&mut deny);
         deny
+    }
+
+    /// Every other citizen's workspace: the commons she reads and writes like her own.
+    pub fn shared_workspaces(&self) -> Vec<PathBuf> {
+        let mut shared: Vec<PathBuf> = self.other_citizens().map(|dir| dir.join(WORKSPACE)).filter(|ws| ws.is_dir()).collect();
+        canonical_all(&mut shared);
+        shared
+    }
+
+    /// The directories of every citizen on this node but her.
+    fn other_citizens(&self) -> impl Iterator<Item = PathBuf> {
+        let peers = crate::identity::citizen_peers_dir(&self.continuum_root);
+        let mine = self.citizen_dir.as_deref().and_then(|d| d.canonicalize().ok());
+        std::fs::read_dir(&peers)
+            .into_iter()
+            .flat_map(|entries| entries.flatten().map(|e| e.path()))
+            .filter(move |p| p.canonicalize().ok() != mine)
     }
 
     pub fn workspace(&self) -> &Path {
@@ -351,7 +380,8 @@ impl Confinement {
     fn materialize_with_cargo(&self, configured_target: Option<&CargoTargetGrant>) -> AllowList {
         if self.reach == Reach::Host {
             // Everything, then carved down to the parents of each denial, so an allow-only
-            // enforcer grants every sibling and never a credential.
+            // enforcer grants every sibling (other citizens' workspaces included) and never a
+            // credential or another citizen's private state.
             let deny = self.host_denials();
             let mut write = vec![PathBuf::from("/")];
             canonical_all(&mut write);
@@ -364,6 +394,9 @@ impl Confinement {
         // environment overrides are never inputs to this authority.
         write.extend(configured_target.filter(|grant| grant.policy == *self).map(|grant| grant.path.clone()));
         write.extend(self.citizen_dir.iter().cloned());
+        // Every other citizen's workspace, the commons (`shared_workspaces`); their private
+        // state stays ungranted, since the citizens root is enumerated without `peers`.
+        write.extend(self.shared_workspaces());
         write.extend(WRITABLE_HOME_ENTRIES.iter().map(|e| home.join(e)));
         write.push(std::env::temp_dir());
         // The host's temp root beneath the per-user temp dir (`/private/var/folders/..`
@@ -436,6 +469,9 @@ fn mirror_object_dirs(home: &Path) -> Vec<PathBuf> {
 /// `~/.cache/huggingface/hub` and never `~/.cache/huggingface/token`. A root equal to
 /// a carve-out is dropped. Children that appear after this spawn are seen by the next.
 /// Returns the directories it descended through: listable, never granted beneath.
+/// The one entry of a citizen's directory other citizens may read.
+const WORKSPACE: &str = "workspace";
+
 fn carve(roots: &mut Vec<PathBuf>, deny: &[PathBuf]) -> Vec<PathBuf> {
     let mut descended: Vec<PathBuf> = Vec::new();
     let mut out: Vec<PathBuf> = Vec::with_capacity(roots.len());
@@ -794,9 +830,10 @@ mod tests {
         assert!(!p.contains("file* "), "never the wildcard class: a deny in it loses to an earlier specific allow\n{p}");
     }
 
-    // what this catches (Joel 2026-10-18, kernel-level): a resident's real child under the
-    // host profile refused the operator's ordinary files or a fresh directory, or reading a
-    // credential, another citizen's directory, or a scope's signing key. Real `sandbox-exec`.
+    // what this catches (Joel 2026-10-18 and 2026-10-24, kernel-level): a resident's real child
+    // under the host profile refused the operator's ordinary files, a fresh directory, or
+    // another citizen's workspace (the commons), or reading a credential, another citizen's
+    // private state, or a scope's signing key. Real `sandbox-exec`.
     #[cfg(target_os = "macos")]
     #[tokio::test]
     async fn on_macos_a_residents_child_reaches_the_host_but_never_a_credential() {
@@ -808,18 +845,21 @@ mod tests {
             "Documents/letter.txt",
             "Development/continuum/.airc/identity.key",
             &format!(".continuum/citizens/peers/{other}/notes"),
+            &format!(".continuum/citizens/peers/{other}/workspace/repo/fix.txt"),
         ]);
         let h = home.path().canonicalize().expect("test: canonical");
         let c = Confinement::for_caller(&h, &h.join(".continuum"), &me.to_string(), &h.join("Development/continuum")).reaching_host();
         let leak = |rel: &str, tag: &str| format!("(cat '{}/{rel}' && echo LEAK-{tag}); ", h.display());
         let script = format!(
             "cat '{h}/Documents/letter.txt' && mkdir '{h}/Fresh' && echo made > '{h}/Fresh/new.txt' && cat '{h}/Fresh/new.txt' && ls '{h}' >/dev/null && echo LISTED; \
+             cat '{h}/.continuum/citizens/peers/{other}/workspace/repo/fix.txt' && echo fixed >> '{h}/.continuum/citizens/peers/{other}/workspace/repo/fix.txt' && echo COMMONS; \
              {s}{g}{k}{o}(echo pwn >> '{h}/.ssh/id' && echo LEAK-WRITE); echo done",
             h = h.display(),
             s = leak(".ssh/id", "SSH"),
             g = leak(".config/gh/hosts.yml", "GH-TOKEN"),
             k = leak("Development/continuum/.airc/identity.key", "SCOPE-KEY"),
             o = leak(&format!(".continuum/citizens/peers/{other}/notes"), "OTHER-CITIZEN"),
+            other = other,
         );
         let (mut cmd, receipt) = confined_command(&c, Path::new("/bin/sh"), &["-c".into(), script.into()], None, None);
         assert!(receipt.is_enforced(), "{receipt:?}");
@@ -827,6 +867,9 @@ mod tests {
         let stdout = String::from_utf8_lossy(&out.stdout);
         let stderr = String::from_utf8_lossy(&out.stderr);
         assert!(stdout.contains("done") && stdout.contains("made") && stdout.contains("LISTED"), "the operator's files, a fresh dir, a home listing: stdout={stdout} stderr={stderr}");
+        // 2026-10-24: another citizen's workspace is the commons (a reviewer runs its tests, a
+        // colleague repairs it); her private notes beside it stay hers.
+        assert!(stdout.contains("COMMONS"), "another citizen's workspace reads and writes: stdout={stdout} stderr={stderr}");
         for tag in ["SSH", "GH-TOKEN", "SCOPE-KEY", "OTHER-CITIZEN", "WRITE"] {
             assert!(!stdout.contains(&format!("LEAK-{tag}")), "{tag} leaked: stdout={stdout}");
         }
