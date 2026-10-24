@@ -1,0 +1,105 @@
+name: Rust CI setup
+description: >
+  Toolchain, system packages and the shared Rust build cache for every Linux Rust job of
+  continuum-rust-tests. One owner for the setup the crate jobs, the CLI job and the
+  cache-warming job share.
+inputs:
+  restore-target:
+    description: >
+      Restore the shared target cache and settle source mtimes against the commit it was built
+      from. The cache-warming job passes 'false': it builds cold, so every cached unit is from
+      one commit.
+    default: 'true'
+outputs:
+  cache-prefix:
+    description: The target cache key prefix; a key is this prefix plus the commit it was built from.
+    value: ${{ steps.key.outputs.prefix }}
+runs:
+  using: composite
+  steps:
+    - name: Install Rust toolchain from rust-toolchain.toml
+      shell: bash
+      run: |
+        rustup show active-toolchain || rustup show
+        rustc --version
+        cargo --version
+
+    - name: Cache keys
+      id: key
+      shell: bash
+      run: |
+        # The shared target cache is built cold at one canary commit by the warming job; its key
+        # ends with that commit, which is what `settle` diffs against. A toolchain change starts
+        # a new line. ImageOS/ImageVersion are runner machine variables (not in the env context).
+        echo "prefix=continuum-rust-target-v3-${RUNNER_OS}-$(sha256sum rust-toolchain.toml | cut -c1-16)-" >> "$GITHUB_OUTPUT"
+        echo "apt=apt-debs-${ImageOS}-${ImageVersion}-$(sha256sum "$GITHUB_ACTION_PATH/action.yml" | cut -c1-16)" >> "$GITHUB_OUTPUT"
+
+    # The mirror, not apt, is the cost: in #5330's trials 3 of 13 jobs fetched the same 52.9 MB at
+    # 65 kB/s (425-1,177 s; run 40056438743 hands: 13m37s). Cached debs come from the Actions
+    # cache instead. The key is the runner image (its package versions) and this action, which
+    # holds the package list; a newer index version than a cached deb is simply downloaded.
+    - name: Restore system package downloads
+      id: apt-cache
+      uses: actions/cache/restore@v4
+      with:
+        path: ~/apt-archives
+        key: ${{ steps.key.outputs.apt }}
+
+    # No prebuilt image carries these: ghcr holds only the runtime stages of
+    # docker/continuum-core.Dockerfile, never its builder stage.
+    - name: System deps (mirrors docker/continuum-core.Dockerfile builder stage)
+      shell: bash
+      run: |
+        # A THIRD-PARTY REPO WE NEVER INSTALL FROM MUST NOT FAIL OUR BUILD.
+        # The GitHub runner image ships vendor apt repos (Chrome, Microsoft, …).
+        # `apt-get update` exits 100 if ANY index fails, so on 2026-09-09 a Hash Sum
+        # mismatch on dl.google.com/linux/chrome-stable failed this step — and with it
+        # every Rust run on every branch — for a package list nothing here reads.
+        # Drop the vendor lists first, then update only the archives we install from,
+        # with retries for genuinely transient mirror errors. A real failure to fetch
+        # OUR packages still fails the step, loudly.
+        sudo rm -f /etc/apt/sources.list.d/google-chrome.list \
+                   /etc/apt/sources.list.d/microsoft-prod.list \
+                   /etc/apt/sources.list.d/*azure-cli* 2>/dev/null || true
+        # man-db re-indexes every installed manual page after dpkg; nothing here reads them.
+        sudo rm -f /var/lib/man-db/auto-update
+        mkdir -p ~/apt-archives/partial
+        sudo apt-get update -o Acquire::Retries=3
+        sudo apt-get install -y -o Acquire::Retries=3 -o Dir::Cache::Archives="$HOME/apt-archives" \
+          --no-install-recommends \
+          cmake pkg-config libssl-dev libpq-dev protobuf-compiler \
+          libclang-dev clang build-essential \
+          libglib2.0-dev libasound2-dev libva-dev
+        sudo chown -R "$(id -u):$(id -g)" ~/apt-archives
+
+    - name: Save system package downloads
+      if: steps.apt-cache.outputs.cache-hit != 'true'
+      continue-on-error: true  # a parallel job saving the same key first is not a failure
+      uses: actions/cache/save@v4
+      with:
+        path: ~/apt-archives
+        key: ${{ steps.apt-cache.outputs.cache-primary-key }}
+
+    - name: Restore the shared target cache
+      id: target-cache
+      if: inputs.restore-target == 'true'
+      uses: actions/cache/restore@v4
+      with:
+        path: |
+          target
+          ~/.cargo/registry/index
+          ~/.cargo/registry/cache
+          ~/.cargo/git/db
+        key: ${{ steps.key.outputs.prefix }}${{ github.sha }}
+        restore-keys: ${{ steps.key.outputs.prefix }}
+
+    - name: Settle source mtimes against the cache commit
+      if: inputs.restore-target == 'true'
+      shell: bash
+      env:
+        MATCHED_KEY: ${{ steps.target-cache.outputs.cache-matched-key }}
+        PREFIX: ${{ steps.key.outputs.prefix }}
+      run: |
+        # Unpack every dependency source first, so its mtimes are settled with the workspace's.
+        cargo fetch --target x86_64-unknown-linux-gnu
+        node tools/scripts/ci-cargo-freshness.cjs settle --prefix "$PREFIX" --matched-key "$MATCHED_KEY"
