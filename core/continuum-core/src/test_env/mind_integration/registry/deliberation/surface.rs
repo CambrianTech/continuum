@@ -188,11 +188,11 @@ fn the_shipped_benchmark_recipe_authorizes_every_hand_a_work_turn_offers() {
     for (file, json) in [
         (
             "benchmark.json",
-            include_str!("../../../../../../continuum-mind/src/experience/recipes/benchmark.json"),
+            include_str!("../../../../../../continuum-experience/src/experience/recipes/benchmark.json"),
         ),
         (
             "benchmark-round.json",
-            include_str!("../../../../../../continuum-mind/src/experience/recipes/benchmark-round.json"),
+            include_str!("../../../../../../continuum-experience/src/experience/recipes/benchmark-round.json"),
         ),
     ] {
         let recipe = crate::experience::recipe::ExperienceRecipe::from_json(json)

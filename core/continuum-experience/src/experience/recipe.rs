@@ -218,7 +218,7 @@ pub struct CitizenRecipe {
 }
 
 /// A role's declared lane requirement — the recipe's word on what a seat must hold
-/// before one of its minds sits there ([`crate::cognition::grid_allocation::Requirement`]).
+/// before one of its minds sits there (continuum-mind's `cognition::grid_allocation::Requirement`).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS, schemars::JsonSchema)]
 #[ts(
     export,

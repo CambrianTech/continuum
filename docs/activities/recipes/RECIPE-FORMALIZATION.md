@@ -19,7 +19,7 @@ Two populations of recipe exist in the tree today.
 
 | | count | fields |
 |---|---|---|
-| **Live** (`core/continuum-core/src/experience/recipes/`) | 4 | `purpose, regions, affordances, layout` |
+| **Live** (`core/continuum-experience/src/experience/recipes/`) | 4 | `purpose, regions, affordances, layout` |
 | **Legacy** (`legacy/src/system/recipes/`) | 28 | `uniqueId, version, name, displayName, description, tags, pipeline, ragTemplate, strategy, roles, tools, sentinelTemplates, layout, view, access, isPublic, locked, inputs, room, entityType` |
 
 The live four are `benchmark/hard-rs`, `chat`, `profile`, `video-chat`. The legacy

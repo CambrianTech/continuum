@@ -35,7 +35,7 @@ pub type SharedExperienceSource = Arc<dyn ExperienceSource>;
 
 /// The node's ONE experience source, installed by the boot path that builds the
 /// room→purpose index (ipc) and read by the persona spawn path. Same seam shape as
-/// [`crate::cognition::persona_workspace::global`]: the path that builds minds and
+/// `cognition::persona_workspace::global` (in continuum-mind): the path that builds minds and
 /// the path that resolves rooms share a handle instead of each loading recipes.
 ///
 /// Why a persona needs this at all (S1, docs/planning/RECIPE-CONVERGENCE-PLAN.md):

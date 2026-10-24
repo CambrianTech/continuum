@@ -41,7 +41,7 @@ pub struct BenchmarkSpec {
 impl BenchmarkSpec {
     /// The HuggingFace dataset id for a SWE-bench-INSTANCE-shaped collection (each row a
     /// real repo + `base_commit` + gold `patch` + `problem_statement` + held-out tests),
-    /// pulled on demand by [`crate::cognition::swe_bench::load_dataset`] and dispatched as
+    /// pulled on demand by `cognition::swe_bench::load_dataset` (in continuum-mind) and dispatched as
     /// real full-project cards. `None` for the gym collections and for non-SWE datasets.
     ///
     /// Instance-shape is a property of the COLLECTION, not derivable from the URL alone —

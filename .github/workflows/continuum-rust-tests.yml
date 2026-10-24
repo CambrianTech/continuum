@@ -148,8 +148,8 @@ jobs:
           cargo test -p continuum-engine --lib --profile dev-fast --features test-fixtures
           cargo test -p continuum-hands --lib --profile dev-fast --features test-fixtures
           cargo test -p continuum-live --lib --profile dev-fast --features test-fixtures
-          # The mind (core/continuum-mind: cognition, persona, genome, experience, recipe,
-          # context, vdd); the allocator skip moved here with persona.
+          # The mind (core/continuum-mind: cognition, persona, context, vdd); the allocator
+          # skip moved here with persona.
           cargo test -p continuum-mind --lib --profile dev-fast --features test-fixtures -- \
             --skip 'persona::allocator::tests::test_allocate'
           # Perception and rag, cut out of the mind (core/continuum-perception, card 2f5b275b).
@@ -157,6 +157,7 @@ jobs:
           cargo test -p continuum-genome --lib --profile dev-fast --features test-fixtures
           # Memory (the hippocampus), cut out of the mind (core/continuum-memory, card 03e2a1c8).
           cargo test -p continuum-memory --lib --profile dev-fast
+          cargo test -p continuum-experience --lib --profile dev-fast --features test-fixtures
           interop_output=$(cargo test -p continuum-engine --lib --profile dev-fast --features test-fixtures \
             model_registry::artifacts::expert_placement::tests::fs2_and_native_container_locks_interoperate_across_processes \
             -- --exact --ignored --nocapture 2>&1)

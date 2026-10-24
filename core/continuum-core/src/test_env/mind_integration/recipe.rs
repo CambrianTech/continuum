@@ -18,7 +18,7 @@ fn recipe(json: &str) -> ExperienceRecipe {
 // fields on its first run.)
 #[test]
 fn the_shipped_authored_round_is_well_formed_against_the_real_registry() {
-    let r = recipe(include_str!("../../../../continuum-mind/src/experience/recipes/benchmark-round.json"));
+    let r = recipe(include_str!("../../../../continuum-experience/src/experience/recipes/benchmark-round.json"));
     let issues = pipeline_issues(&r, |name| registry_lookup().get(name).cloned());
     let rendered: Vec<String> = issues.iter().map(ToString::to_string).collect();
     assert!(issues.is_empty(), "benchmark/round has pipeline issues: {rendered:#?}");
