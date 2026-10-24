@@ -46,6 +46,7 @@ impl TrainingTriggerState {
                 submission_ids: batch.submission_ids.clone(),
                 phase: DispatchPhase::Prepared,
                 is_active: true,
+                attempt: None,
             };
             let active = Arc::new(ActiveDispatch {
                 intent,
@@ -112,7 +113,48 @@ impl TrainingTriggerState {
                             }),
                         );
                     }
-                    DispatchLookup::NotObserved => {}
+                    DispatchLookup::NotObserved => {
+                        // Not on the board proves nothing: the board learns of a job only after
+                        // create_job returns. An intent that names its attempt asks the attempt
+                        // ledger, which closes the attempt before answering "not created"
+                        // (card 55d4b9e3). A legacy intent (no attempt) stays unknown.
+                        if let Some(attempt) = active.intent.attempt {
+                            use super::super::attempt_evidence::AttemptEvidence;
+                            match self.reconcile_attempt(attempt).await {
+                                AttemptEvidence::Created(handle) => {
+                                    // A created attempt is settled only after the board holds
+                                    // its job, so the board missing it means the journal lost it.
+                                    // Finishing would leave a real job unwatched: unknown instead.
+                                    return Ok(DispatchResult::Failed {
+                                        kind: "RecoveryRequired",
+                                        error: format!(
+                                            "dispatch {id}: attempt {attempt} created job {} but the board has no registration for it; not finished unwatched",
+                                            handle.local_id
+                                        ),
+                                    });
+                                }
+                                AttemptEvidence::NotCreated => {
+                                    let error = format!("dispatch {id}: attempt {attempt} reconciled as not created and closed; retried under a new attempt");
+                                    let mut intent = active.intent.clone();
+                                    intent.phase = DispatchPhase::Retryable { error: error.clone() };
+                                    let active = Arc::new(ActiveDispatch {
+                                        intent,
+                                        batch: active.batch.clone(),
+                                        journal_cursor: 0,
+                                    });
+                                    self.active_dispatches.insert(key.clone(), active.clone());
+                                    store.dispatches.update(id, &active.intent).await.map_err(|e| e.to_string())?;
+                                    return Ok(DispatchResult::Failed { kind: "DispatchFailed", error });
+                                }
+                                AttemptEvidence::Unknown(reason) => {
+                                    return Ok(DispatchResult::Failed {
+                                        kind: "RecoveryRequired",
+                                        error: format!("dispatch {id}: {reason}; it was not repeated"),
+                                    });
+                                }
+                            }
+                        }
+                    }
                     DispatchLookup::Corrupt {
                         observed,
                         malformed,
@@ -164,6 +206,9 @@ impl TrainingTriggerState {
         }
         let mut intent = active.intent.clone();
         intent.phase = DispatchPhase::Dispatching;
+        // A new attempt for every entry into Dispatching, written in the same durable update
+        // below, before job-create is called (card 55d4b9e3).
+        intent.attempt = Some(Uuid::new_v4());
         let active = Arc::new(ActiveDispatch {
             intent,
             batch: active.batch.clone(),
@@ -194,6 +239,7 @@ impl TrainingTriggerState {
                 &key.base_model,
                 &active.batch,
                 id,
+                active.intent.attempt,
             )
             .await
         {

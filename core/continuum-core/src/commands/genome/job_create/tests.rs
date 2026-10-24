@@ -63,6 +63,7 @@
     fn cmd(ids: &[&'static str]) -> GenomeJobCreate {
         let registry = registry_with(ids);
         GenomeJobCreate {
+            attempts: Arc::new(crate::commands::genome::attempt_ledger::AttemptLedger::new()),
             coordinator: Arc::new(FineTuningCoordinator::new(registry)),
             test_job_board: Arc::new(crate::genome::fine_tuning::TrainingJobBoard::default()),
             test_artifacts: Arc::new(tempfile::tempdir().unwrap()),
@@ -93,6 +94,7 @@
         let registry = Arc::new(FineTuningRegistry::new());
         registry.register(adapter.clone());
         let command = GenomeJobCreate {
+            attempts: Arc::new(crate::commands::genome::attempt_ledger::AttemptLedger::new()),
             coordinator: Arc::new(FineTuningCoordinator::new(registry)),
             test_job_board: board.clone(),
             test_artifacts: artifacts.clone(),
@@ -127,7 +129,7 @@
             self.command
                 .run(
                     &Ctx::default(),
-                    JobCreateParams { trigger_dispatch_id: None, request: self.request.clone(), preferred_provider: None, dataset_name: None },
+                    JobCreateParams { trigger_attempt_id: None, trigger_dispatch_id: None, request: self.request.clone(), preferred_provider: None, dataset_name: None },
                 )
                 .await
                 .unwrap()
@@ -318,7 +320,7 @@
             .run(
                 &Ctx::default(),
                 JobCreateParams {
-                    trigger_dispatch_id: None,
+                    trigger_attempt_id: None, trigger_dispatch_id: None,
                     request: request_for("gpt-4o-mini"),
                     preferred_provider: None,
                     dataset_name: None,
@@ -331,6 +333,139 @@
         assert_eq!(result.selected_provider, "openai");
         assert_eq!(result.handle.provider_id, "openai");
         assert_eq!(result.handle.provider_job_id, "openai-job-1");
+    }
+
+    // what this catches (Codex review of 98180b88b, card 55d4b9e3): at the job-create
+    // boundary, an attempted create is ON THE BOARD by the time its attempt reads Created (so
+    // Created always implies a watcher), and a repeat of the same attempt returns the same job
+    // without calling the trainer again, re-journaling it, or "joining" its own job.
+    #[tokio::test]
+    async fn an_attempted_create_is_watched_when_created_and_a_repeat_returns_the_same_job() {
+        use crate::commands::genome::attempt_ledger::{AttemptLedger, Reconciled};
+        use crate::genome::fine_tuning::{FineTuningRegistry, RecordingFineTuningAdapter, TrainingJobBoard, RECORDING_BASE_PREFIX};
+        let (store_adapter, _dir) = crate::orm::store::fresh_adapter().await;
+        let ledger = Arc::new(AttemptLedger::new());
+        ledger.install(Arc::new(crate::orm::OrmStore::new(store_adapter).await.unwrap()));
+        let artifacts = Arc::new(tempfile::tempdir().unwrap());
+        let board = Arc::new(TrainingJobBoard::with_test_storage(artifacts.clone()));
+        let trainer = Arc::new(RecordingFineTuningAdapter::new());
+        let registry = Arc::new(FineTuningRegistry::new());
+        registry.register(trainer.clone());
+        let command = GenomeJobCreate {
+            attempts: Arc::clone(&ledger),
+            coordinator: Arc::new(FineTuningCoordinator::new(registry)),
+            test_job_board: board.clone(),
+            test_artifacts: artifacts.clone(),
+        };
+        let attempt = uuid::Uuid::new_v4();
+        let mut request = request_for(RECORDING_BASE_PREFIX);
+        request.persona_id = uuid::Uuid::new_v4();
+        let params = || JobCreateParams {
+            trigger_attempt_id: Some(attempt),
+            trigger_dispatch_id: Some(uuid::Uuid::new_v4()),
+            request: request.clone(),
+            preferred_provider: None,
+            dataset_name: None,
+        };
+        let first = command.run(&Ctx::default(), params()).await.unwrap();
+        let job = first.result.expect("created").handle;
+        let watched = |id| board.pending().iter().filter(|j| j.handle.local_id == id).count();
+        assert_eq!(watched(job.local_id), 1, "on the board");
+        assert_eq!(ledger.reconcile(attempt).await, Reconciled::Created(job.clone()), "and only then Created");
+
+        let again = command.run(&Ctx::default(), params()).await.unwrap();
+        assert_eq!(again.result.expect("the same job").handle, job);
+        assert_eq!(trainer.captured_job_count(), 1, "the trainer ran once");
+        assert_eq!(watched(job.local_id), 1, "never registered twice");
+    }
+
+    // what this catches (Codex review of 30b89a759): two creates for the SAME attempt can never
+    // interleave. Here the test plays the first request mid-decision by holding the attempt's
+    // run; a second request must wait, not read "absent" and race. While it waits the first
+    // request creates, registers and settles its job; released, the second returns THAT job:
+    // no second trainer call, no "join" of its own job, no batch handed back.
+    #[tokio::test]
+    async fn a_second_create_for_the_same_attempt_waits_and_returns_the_first_job() {
+        use crate::commands::genome::attempt_ledger::{Admission, AttemptLedger, AttemptState};
+        use std::future::Future;
+        use crate::genome::fine_tuning::{FineTuningRegistry, JobHandle, RecordingFineTuningAdapter, TrainingJobBoard, WatchedJob, RECORDING_BASE_PREFIX};
+        let (store_adapter, _dir) = crate::orm::store::fresh_adapter().await;
+        let ledger = Arc::new(AttemptLedger::new());
+        ledger.install(Arc::new(crate::orm::OrmStore::new(store_adapter).await.unwrap()));
+        let artifacts = Arc::new(tempfile::tempdir().unwrap());
+        let board = Arc::new(TrainingJobBoard::with_test_storage(artifacts.clone()));
+        let trainer = Arc::new(RecordingFineTuningAdapter::new());
+        let registry = Arc::new(FineTuningRegistry::new());
+        registry.register(trainer.clone());
+        let command = Arc::new(GenomeJobCreate {
+            attempts: Arc::clone(&ledger),
+            coordinator: Arc::new(FineTuningCoordinator::new(registry)),
+            test_job_board: board.clone(),
+            test_artifacts: artifacts.clone(),
+        });
+        let attempt = uuid::Uuid::new_v4();
+        let mut request = request_for(RECORDING_BASE_PREFIX);
+        request.persona_id = uuid::Uuid::new_v4();
+        let params = JobCreateParams {
+            trigger_attempt_id: Some(attempt),
+            trigger_dispatch_id: None,
+            request: request.clone(),
+            preferred_provider: None,
+            dataset_name: None,
+        };
+
+        let first = ledger.run(attempt).await; // the first request, mid-decision
+        assert_eq!(ledger.run_holders(attempt), 2, "the ledger and the first request");
+        let ctx = Ctx::default();
+        let second = command.run(&ctx, params);
+        tokio::pin!(second);
+        // Drive the second create until it is parked on the attempt's run lock: its own
+        // holder appears beside the first's. Each poll must stay Pending: it cannot pass.
+        tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            while ledger.run_holders(attempt) < 3 {
+                std::future::poll_fn(|cx| {
+                    assert!(second.as_mut().poll(cx).is_pending(), "the second create waits for the first");
+                    std::task::Poll::Ready(())
+                })
+                .await;
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("the second create reaches the attempt's run lock");
+        std::future::poll_fn(|cx| {
+            assert!(second.as_mut().poll(cx).is_pending(), "parked on the lock, it stays parked");
+            std::task::Poll::Ready(())
+        })
+        .await;
+        assert_eq!(trainer.captured_job_count(), 0);
+
+        // The first request finishes: admitted, its job created, watched, then settled.
+        let id = uuid::Uuid::new_v4();
+        let job = JobHandle { provider_id: "recording".into(), provider_job_id: id.to_string(), local_id: id };
+        assert_eq!(ledger.admit(attempt, None, "recording", "local").await, Ok(Admission::Fresh));
+        board.register(WatchedJob {
+            trigger_dispatch_id: None,
+            handle: job.clone(),
+            persona_id: request.persona_id,
+            persona_name: request.persona_name.clone(),
+            base_model: request.base_model.clone(),
+            trait_kind: request.trait_kind.clone(),
+            eval_set: None,
+            signature: None,
+            decision: None,
+        });
+        ledger.settle(attempt, AttemptState::Created { handle: job.clone() }).await.unwrap();
+        drop(first);
+
+        let outcome = tokio::time::timeout(std::time::Duration::from_secs(10), second)
+            .await
+            .expect("released, the second create answers")
+            .unwrap();
+        assert!(outcome.success && outcome.took.is_none(), "the job, not a join: {outcome:?}");
+        assert_eq!(outcome.result.expect("the first job").handle, job);
+        assert_eq!(trainer.captured_job_count(), 0, "the second never called the trainer");
+        assert_eq!(board.pending().iter().filter(|w| w.handle.local_id == id).count(), 1);
     }
 
     // What this catches (278afa6c): the real command must register to its owned
@@ -348,6 +483,7 @@
         let registry = Arc::new(FineTuningRegistry::new());
         registry.register(adapter.clone());
         let command = GenomeJobCreate {
+            attempts: Arc::new(crate::commands::genome::attempt_ledger::AttemptLedger::new()),
             coordinator: Arc::new(FineTuningCoordinator::new(registry)),
             test_job_board: board.clone(),
             test_artifacts: artifacts.clone(),
@@ -365,7 +501,7 @@
                 .run(
                     &Ctx::default(),
                     JobCreateParams {
-                        trigger_dispatch_id: Some(dispatch_id),
+                        trigger_attempt_id: None, trigger_dispatch_id: Some(dispatch_id),
                         request,
                         preferred_provider: None,
                         dataset_name: None,
@@ -409,7 +545,7 @@
             .run(
                 &Ctx::default(),
                 JobCreateParams {
-                    trigger_dispatch_id: None,
+                    trigger_attempt_id: None, trigger_dispatch_id: None,
                     request: request_for("gpt-4o-mini"),
                     preferred_provider: None,
                     dataset_name: None,
@@ -434,7 +570,7 @@
             .run(
                 &Ctx::default(),
                 JobCreateParams {
-                    trigger_dispatch_id: None,
+                    trigger_attempt_id: None, trigger_dispatch_id: None,
                     request: empty_req,
                     preferred_provider: None,
                     dataset_name: None,
@@ -449,7 +585,7 @@
             .run(
                 &Ctx::default(),
                 JobCreateParams {
-                    trigger_dispatch_id: None,
+                    trigger_attempt_id: None, trigger_dispatch_id: None,
                     request: request_for("gpt-4o-mini"),
                     preferred_provider: None,
                     dataset_name: Some("also-named".into()),
@@ -472,7 +608,7 @@
             .run(
                 &Ctx::default(),
                 JobCreateParams {
-                    trigger_dispatch_id: None,
+                    trigger_attempt_id: None, trigger_dispatch_id: None,
                     request: req,
                     preferred_provider: None,
                     dataset_name: Some("no-such-dataset-xyz".into()),
@@ -498,7 +634,7 @@
             .run(
                 &Ctx::default(),
                 JobCreateParams {
-                    trigger_dispatch_id: None,
+                    trigger_attempt_id: None, trigger_dispatch_id: None,
                     request: request_for("gpt-4o-mini"),
                     preferred_provider: Some("mistral".into()),
                     dataset_name: None,

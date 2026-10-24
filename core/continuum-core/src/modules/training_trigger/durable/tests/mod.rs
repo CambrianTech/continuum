@@ -96,6 +96,7 @@
                         provider: "fixture".into(),
                     },
                     is_active: false,
+                    attempt: None,
                 };
                 let dispatch = entity_id(&intent.base).unwrap();
                 store.dispatches.save(dispatch, &intent).await.unwrap();
@@ -204,6 +205,7 @@
                 provider: crate::genome::fine_tuning::cuda_lora_adapter::PROVIDER_ID.into(),
             },
             is_active: false,
+            attempt: None,
         };
         let dispatch = entity_id(&intent.base).unwrap();
         store.dispatches.save(dispatch, &intent).await.unwrap();
@@ -639,6 +641,8 @@
             .unwrap()
             .unwrap();
         assert!(matches!(intent.phase, DispatchPhase::Dispatching));
+        // card 55d4b9e3: the attempt is durable before job-create runs.
+        assert!(intent.attempt.is_some(), "a dispatching intent names its attempt");
         caller.abort();
         assert!(caller.await.unwrap_err().is_cancelled());
         let waiting = executor.execute_json("genome/training-trigger/submit", request);
