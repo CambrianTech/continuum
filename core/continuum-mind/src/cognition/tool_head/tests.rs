@@ -104,3 +104,13 @@ async fn her_head_survives_a_restart_through_her_store() {
     restored.restore(kept.load().await.expect("read").expect("kept"));
     assert_eq!(restored.snapshot(), head.snapshot());
 }
+
+// what this catches: a verb found through the finder not loading, or another verb's `name`
+// argument loading something. (Its wire aliases resolve through `tool_dialect::resolve_wire_name`,
+// whose index the command registrations fill; core's `tool_aliases` tests pin that mapping.)
+#[test]
+fn only_the_finder_loads_the_verb_it_names() {
+    let call = |name: &str, verb: &str| crate::ai::types::ToolCall { id: "t".into(), name: verb.into(), input: serde_json::json!({ "name": name }) };
+    assert_eq!(found_by_finder([call("code/read", FINDER)].iter()), verbs(&["code/read"]));
+    assert!(found_by_finder([call("x", "code/read")].iter()).is_empty(), "only the finder loads");
+}

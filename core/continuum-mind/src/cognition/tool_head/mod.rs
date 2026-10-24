@@ -251,11 +251,13 @@ impl ToolHead {
     }
 }
 
-/// The verbs a batch of calls found with the finder: `commands/help(name=X)` loads `X`.
+/// The verbs a batch of calls found with the finder: `commands/help(name=X)` loads `X`, by its
+/// canonical name whichever dialect she asked in (`read_file` loads `code/read`).
 pub fn found_by_finder<'a>(calls: impl Iterator<Item = &'a crate::ai::types::ToolCall>) -> Vec<String> {
     calls
         .filter(|call| call.name == FINDER)
-        .filter_map(|call| call.input.get("name").and_then(serde_json::Value::as_str).map(str::to_owned))
+        .filter_map(|call| call.input.get("name").and_then(serde_json::Value::as_str))
+        .map(|name| crate::ai::tool_dialect::resolve_wire_name(name).to_string())
         .collect()
 }
 
