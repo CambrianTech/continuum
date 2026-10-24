@@ -26,7 +26,7 @@
 //!   bound. PR-4 caps that on install + alerts on >90% capacity.
 
 use continuum_base::time::EpochMs;
-use crate::modules::docker_tier::DockerTierProbe;
+use crate::docker_tier::DockerTierProbe;
 use crate::paging::{ResourcePool, ResourcePoolEntry};
 use crate::runtime;
 use serde::{Deserialize, Serialize};

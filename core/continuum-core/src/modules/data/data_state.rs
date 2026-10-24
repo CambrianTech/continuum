@@ -341,8 +341,8 @@ impl DataState {
             crate::orm::OrmEntityRegistry::global().resolve(collection)
         {
             rust_schema
-        } else if let Some(entity) = crate::modules::entity_schemas::resolve(collection) {
-            crate::modules::entity_schemas::to_collection_schema(entity)
+        } else if let Some(entity) = crate::entity_schemas::resolve(collection) {
+            crate::entity_schemas::to_collection_schema(entity)
         } else {
             return Err(format!(
                 "Unknown collection '{collection}' — not in the Rust ORM registry and not in \

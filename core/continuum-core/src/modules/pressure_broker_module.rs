@@ -28,7 +28,7 @@
 //! broker the same shutdown / metrics treatment as everything else.
 
 use crate::governor::{governor_alert_sink, SubstrateGovernor};
-use crate::modules::docker_tier_pool::DockerTierPool;
+use crate::docker_tier_pool::DockerTierPool;
 use crate::paging::{BrokerConfig, PressureBroker, ResourcePool};
 use crate::runtime::{CommandResult, ModuleConfig, ModuleContext, ModulePriority, ServiceModule};
 use async_trait::async_trait;

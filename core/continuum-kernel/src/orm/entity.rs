@@ -1,6 +1,6 @@
 //! Rust-native entity registry — the Rust authoring path that runs
 //! alongside the TS-decorator authoring path in
-//! `crate::modules::entity_schemas`.
+//! `crate::entity_schemas`.
 //!
 //! Doctrine: ORM-everything ([[orm-everything-not-hand-edited-files]]).
 //! Substrate-only entities (hw tiers, role templates, identity pools,

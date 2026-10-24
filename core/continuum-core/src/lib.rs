@@ -28,7 +28,8 @@ pub use continuum_mind::{
     cognition, context, experience, genome, memory, perception, persona, rag, recipe, vdd,
 };
 pub use continuum_kernel::{
-    concurrency, governor, gpu, identity, logging, orm, paging, paths, resources, routing, runtime,
+    concurrency, docker_tier, docker_tier_pool, entity_schemas, governor, gpu, identity, logging, orm,
+    paging, paths, probe_query, probe_stream, resource_broker, resources, routing, runtime,
     sdk_codegen, system_resources,
 };
 pub use continuum_kernel::{

@@ -6,7 +6,7 @@ pub(super) fn register_inference_modules(runtime: &Arc<Runtime>) {
     // Runtime-owned lease ledger for CPU/GPU/memory/disk/network admission.
     // Subsystems ask this broker for capacity instead of keeping private caps.
     runtime.register(Arc::new(
-        crate::modules::resource_broker::ResourceBrokerModule::new(),
+        crate::resource_broker::ResourceBrokerModule::new(),
     ));
 
     // `inference/capacity` is now a stateless self-routing command
