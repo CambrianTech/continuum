@@ -29,7 +29,7 @@
 
 use std::borrow::Cow;
 
-use continuum_base::token_estimate::estimate_guard_tokens;
+use continuum_base::token_estimate::estimate_tool_schema_tokens;
 
 use crate::ai::types::NativeToolSpec;
 
@@ -262,13 +262,11 @@ pub fn hands_surface(raw: &[NativeToolSpec]) -> Vec<NativeToolSpec> {
 
 /// Serialize and count a tool surface: paid once per [`ToolSurface::build`], never per turn.
 pub fn tool_surface_tokens_of(specs: &[NativeToolSpec]) -> usize {
-    // context-budget-exempt: fixed per-tool schema overhead in the template — same reason as PER_MESSAGE_TEMPLATE_TOKENS
-    const PER_TOOL_TEMPLATE_MARGIN_TOKENS: usize = 8;
     specs
         .iter()
         .map(|spec| {
             let serialized = serde_json::to_string(spec).unwrap_or_default();
-            estimate_guard_tokens(&serialized) + PER_TOOL_TEMPLATE_MARGIN_TOKENS
+            estimate_tool_schema_tokens(&serialized)
         })
         .sum()
 }
