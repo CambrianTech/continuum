@@ -34,6 +34,12 @@ pub struct ToolHeadStore {
     persona_id: Uuid,
 }
 
+impl std::fmt::Debug for ToolHeadStore {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ToolHeadStore").field("persona_id", &self.persona_id).finish()
+    }
+}
+
 impl ToolHeadStore {
     pub fn new(store: Arc<OrmStore<ToolHeadRecord>>, persona_id: Uuid) -> Self {
         Self { store, persona_id }

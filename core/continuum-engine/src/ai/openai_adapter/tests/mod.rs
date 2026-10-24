@@ -37,5 +37,6 @@ fn test_adapter() -> OpenAICompatibleAdapter {
         single_resident_model: false,
         dynamic_model_catalog: false,
         llamacpp_sampling_extensions: false,
+        tail_tools: false,
     })
 }

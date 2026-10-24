@@ -289,6 +289,12 @@ impl PersonaWorkspaceRegistry {
         // Assembly restores disk state; do it outside the lookup lock.
         let restored = load_volatile(persona_id)?;
         let (cycle, working_memory) = assemble_workspace_cycle(cfg, restored, Capture::Recorded);
+        // A resident keeps her learned tool head in her own store; a fork never does.
+        if let Some(store) = template.admission.tool_heads() {
+            working_memory
+                .tool_head()
+                .attach(crate::cognition::tool_head::entity::ToolHeadStore::new(Arc::clone(store), persona_id));
+        }
         let cycle = Arc::new(cycle);
         // cycles THEN templates (the one canonical lock order).
         let mut cycles = self.cycles.lock();
@@ -319,6 +325,12 @@ impl PersonaWorkspaceRegistry {
         let template = cfg.clone();
         let restored = load_volatile(persona_id)?;
         let (cycle, working_memory) = assemble_workspace_cycle(cfg, restored, Capture::Recorded);
+        // A resident keeps her learned tool head in her own store; a fork never does.
+        if let Some(store) = template.admission.tool_heads() {
+            working_memory
+                .tool_head()
+                .attach(crate::cognition::tool_head::entity::ToolHeadStore::new(Arc::clone(store), persona_id));
+        }
         let cycle = Arc::new(cycle);
         // cycles THEN templates (the one canonical lock order).
         let mut cycles = self.cycles.lock();

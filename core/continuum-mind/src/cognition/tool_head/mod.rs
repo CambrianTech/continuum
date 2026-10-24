@@ -103,6 +103,10 @@ struct Live {
 pub struct ToolHead {
     state: Mutex<ToolHeadState>,
     live: Mutex<Option<Live>>,
+    /// The head the budget reserved this act: what a turnover in this act adopts.
+    reserved: Mutex<Option<HeadSet>>,
+    /// Her row in her own store, attached for a resident mind (never a measurement fork).
+    store: Mutex<Option<entity::ToolHeadStore>>,
 }
 
 impl ToolHead {
@@ -131,8 +135,9 @@ impl ToolHead {
         }
     }
 
-    /// The head the next epoch would hold, were it to turn over now: her current epoch counted
-    /// as ended. `None` when there is no vocabulary or no call to learn from yet.
+    /// The head the next epoch would hold, were it to turn over now (her current epoch counted
+    /// as ended), reserved for a turnover in this act to adopt. `None` when there is no
+    /// vocabulary or no call to learn from yet.
     pub fn next(&self, at: EpochMs, activity: Option<Uuid>, budget_tokens: u32, cost: &CostModel) -> Option<HeadSet> {
         let live = self.live.lock();
         let live = live.as_ref()?;
@@ -149,12 +154,22 @@ impl ToolHead {
             activity: activity.map(ActivityId),
             population: None,
         };
-        Some(head_from(&history, &live.lexical, &state.model, cost, budget_tokens))
+        let head = head_from(&history, &live.lexical, &state.model, cost, budget_tokens);
+        *self.reserved.lock() = Some(head.clone());
+        Some(head)
     }
 
     /// Her view started a new epoch at `at`: learn from the epoch that ended, report what it
-    /// cost, and hold `next` (the head the budget reserved for) from here on. Epochs are
-    /// numbered here, monotonically across restarts (the view's own counter restarts).
+    /// cost, hold the head the budget reserved this act, and keep the state in her store.
+    pub fn turn_over_reserved(&self, at: EpochMs) -> Option<EpochCost> {
+        let reserved = self.reserved.lock().take();
+        let receipt = self.turn_over(at, reserved.as_ref());
+        self.keep();
+        receipt
+    }
+
+    /// [`Self::turn_over_reserved`] with an explicit head. Epochs are numbered here,
+    /// monotonically across restarts (the view's own counter restarts).
     pub fn turn_over(&self, at: EpochMs, next: Option<&HeadSet>) -> Option<EpochCost> {
         let live = self.live.lock();
         let mut state = self.state.lock();
@@ -179,6 +194,52 @@ impl ToolHead {
     /// The verbs loaded into the tail this epoch.
     pub fn loaded(&self) -> Vec<String> {
         self.state.lock().loaded.clone()
+    }
+
+    /// Attach her store and bring back what a previous life kept. A load that lands after she
+    /// has already acted this life keeps the live state (the newer evidence) and says so.
+    pub fn attach(self: &std::sync::Arc<Self>, store: entity::ToolHeadStore) {
+        *self.store.lock() = Some(store.clone());
+        let Ok(runtime) = tokio::runtime::Handle::try_current() else {
+            continuum_base::probe!(class = "delib.tool_head.unpersisted", "no runtime to read her saved tool head on");
+            return;
+        };
+        let head = std::sync::Arc::clone(self);
+        runtime.spawn(async move {
+            match store.load().await {
+                Ok(Some(saved)) => {
+                    let mut state = head.state.lock();
+                    if state.uses.is_empty() {
+                        *state = saved;
+                    } else {
+                        continuum_base::probe!(
+                            class = "delib.tool_head.restore_late",
+                            live_uses = state.uses.len() as u64,
+                            saved_uses = saved.uses.len() as u64,
+                            "her saved tool head arrived after she acted; the live state stays"
+                        );
+                    }
+                }
+                Ok(None) => {}
+                Err(error) => continuum_base::probe!(class = "delib.tool_head.load_failed", error = %error, "her saved tool head could not be read"),
+            }
+        });
+    }
+
+    /// Write her state to her store, off the act path.
+    fn keep(&self) {
+        let Some(store) = self.store.lock().clone() else {
+            return;
+        };
+        let Ok(runtime) = tokio::runtime::Handle::try_current() else {
+            return;
+        };
+        let state = self.snapshot();
+        runtime.spawn(async move {
+            if let Err(error) = store.keep(state).await {
+                continuum_base::probe!(class = "delib.tool_head.save_failed", error = %error, "her tool head could not be saved");
+            }
+        });
     }
 
     pub fn snapshot(&self) -> ToolHeadState {

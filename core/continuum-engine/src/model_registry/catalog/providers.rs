@@ -230,6 +230,9 @@ pub fn providers() -> Vec<Provider> {
                 // 4B doesn't loop its `<think>` block to the token budget
                 // (same failure DMR hit; the in-process path defaults 1.1).
                 llamacpp_sampling_extensions: true,
+                // `tail_tools` arrives with the fork pin that carries CambrianTech/llama.cpp#71;
+                // until then a mind's head stays her activity's static surface.
+                tail_tools: false,
                 // Its served model ids match the registry rows (the forged
                 // model now lives under this provider), so NO dynamic-catalog
                 // name resolution — `dynamic_model_catalog` stays false and

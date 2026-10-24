@@ -18,6 +18,73 @@ impl LlmDeliberationFaculty {
         self.surface = ToolSurface::build(persona_tools::native_tool_specs(), |spec| {
             crate::ai::tool_dialect::to_wire_spec_with(spec, style)
         });
+        self.share_vocabulary();
+    }
+
+    /// Hand her tool head the verbs it chooses from, priced as this surface sends them.
+    pub(super) fn share_vocabulary(&self) {
+        let Some(memory) = self.working_memory.as_deref() else {
+            return;
+        };
+        match self.surface.vocabulary() {
+            Ok(vocab) => memory.tool_head().set_vocabulary(vocab),
+            Err(error) => continuum_base::probe!(
+                class = "delib.tool_head.vocabulary_refused",
+                persona = %self.persona_name,
+                error = %error,
+                "her tool surface could not become the head's vocabulary; her head stays static"
+            ),
+        }
+    }
+
+    /// One act's price, measured: the engine's prefill and decode rates for her model and the
+    /// tokens her acts decode (`working_set::need_of`, p90 with headroom, so a miss is priced
+    /// high and the head errs toward holding a verb). The request overhead is not measured
+    /// here and is left out. `None` while any of them is unmeasured: then her head stays the
+    /// activity's static surface.
+    fn act_cost(&self) -> Option<tool_working_set::CostModel> {
+        let binding = self.binding.load();
+        let model = binding.requested_model();
+        let prefill = crate::inference::prefill_rate::measured_rate_for(model).tps?;
+        let decode = crate::inference::decode_knee::rate_for(model).tps?;
+        let need = self.working_set.as_ref()?.need_of(self.persona_id)?;
+        (prefill > 0.0 && decode > 0.0).then(|| tool_working_set::CostModel {
+            prefill_tokens_per_s: prefill,
+            decode_tokens_per_s: decode,
+            act_decode_tokens: f64::from(need.reasoning.saturating_add(need.answer)),
+            act_overhead_ms: 0.0,
+            samples: need.turns as usize,
+        })
+    }
+
+    /// Her learned head over `selected` (the activity's surface). It always computes and
+    /// reserves the head the next epoch would hold, so a turnover can adopt it and the shadow
+    /// receipt (`delib.tool_head.epoch`) measures it. It changes what is SENT only on a server
+    /// that takes `tail_tools`, where a verb outside the head stays callable.
+    fn with_learned_head<'a>(&'a self, selected: SelectedSurface<'a>, ws: &Workspace) -> SelectedSurface<'a> {
+        let Some(memory) = self.working_memory.as_deref() else {
+            return selected;
+        };
+        let Some(cost) = self.act_cost() else {
+            return selected;
+        };
+        let binding = self.binding.load();
+        let budget = super::super::context_budget::ContextBudget::from_window_unbounded(binding.context_window).tool_surface_tokens();
+        let head = memory.tool_head();
+        let next = head.next(
+            ws.now_ms.map_or_else(continuum_base::time::EpochMs::now, continuum_base::time::EpochMs::from_millis), // map_or_else: a workspace that carries no clock reading decides at now
+            Some(ws.room_id),
+            u32::try_from(budget).unwrap_or(u32::MAX), // unwrap_or: a share past u32 bounds nothing a schema set can reach
+            &cost,
+        );
+        if !binding.adapter.accepts_tail_tools() {
+            return selected;
+        }
+        let reserve = next.as_ref().map_or(0, |next| next.tokens() as usize); // map_or: no next head reserves nothing beyond this one
+        match head.held() {
+            Some(held) => self.surface.learned(&held, &head.loaded(), reserve),
+            None => selected.reserving(reserve),
+        }
     }
 
     /// Her native tool surfaces, as built for her tool set and model.
@@ -47,7 +114,32 @@ impl LlmDeliberationFaculty {
                  the rule binds nothing here; offering her hands instead"
             );
         }
-        selected
+        self.with_learned_head(selected, ws)
+    }
+
+    /// Her view started a new epoch, the one moment her head may change: her tool head learns
+    /// from the epoch that ended and holds the head this act reserved. The receipt is the
+    /// miss/waste read of the head that epoch held (`sent`: whether it was on the wire, or a
+    /// shadow head measured while her server cannot take `tail_tools`).
+    pub(super) fn tool_head_turned_over(&self) {
+        let Some(memory) = self.working_memory.as_deref() else {
+            return;
+        };
+        let Some(cost) = memory.tool_head().turn_over_reserved(continuum_base::time::EpochMs::now()) else {
+            return;
+        };
+        continuum_base::probe!(
+            class = "delib.tool_head.epoch",
+            persona = %self.persona_name,
+            sent = self.binding.load().adapter.accepts_tail_tools(),
+            learned = cost.learned,
+            calls = cost.calls,
+            misses = cost.misses,
+            waste_tokens = cost.waste_tokens,
+            head_tokens = cost.head_tokens,
+            "an epoch ended: the verbs she called that her head did not hold (one find each) and \
+             the head schema she never called"
+        );
     }
 
     /// A citizen served below [`Self::min_window_for_agentic_surface`] provably cannot hold

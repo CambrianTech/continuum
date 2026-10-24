@@ -321,6 +321,7 @@ impl LlmDeliberationFaculty {
         memory: Arc<crate::cognition::working_memory::WorkingMemory>,
     ) -> Self {
         self.working_memory = Some(memory);
+        self.share_vocabulary();
         self
     }
 

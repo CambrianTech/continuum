@@ -189,9 +189,9 @@ pub(crate) fn finish_body(
         {
             body["tools"] = json!(openai_tools(tools));
             if let Some(tail) = request.tail_tools.as_deref().filter(|tail| !tail.is_empty()) {
-                // A llama.cpp-family field (our fork's `tail_tools`): cloud OpenAI-compatible
-                // providers would reject it, the same rule as `repeat_penalty` below.
-                if cfg.llamacpp_sampling_extensions {
+                // Our fork's field: only a server that declares it gets it (a cloud provider
+                // would reject an unknown field, a stock llama-server would ignore it).
+                if cfg.tail_tools {
                     body["tail_tools"] = json!(openai_tools(tail));
                 }
             }
@@ -725,6 +725,7 @@ mod tests {
             single_resident_model: false,
             dynamic_model_catalog: false,
             llamacpp_sampling_extensions: llamacpp,
+            tail_tools: llamacpp,
         };
         let mut served = json!({ "model": "m" });
         finish_body(&cfg(true), &request, "m", &mut served);

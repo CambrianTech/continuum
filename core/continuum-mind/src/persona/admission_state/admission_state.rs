@@ -36,6 +36,7 @@ impl AdmissionState {
             persistence: RwLock::new(persistence),
             owner_id: RwLock::new(None),
             graph: crate::persona::engram_graph::EngramGraph::new(),
+            tool_heads: None,
         }
     }
 
@@ -84,7 +85,13 @@ impl AdmissionState {
             // empty graph and re-accumulates from live acts. Sidecar
             // persistence is the next slice (CAUSAL-MEMORY-GRAPH.md §4).
             graph: crate::persona::engram_graph::EngramGraph::new(),
+            tool_heads: None,
         }
+    }
+
+    /// Her tool head's row store, when this state has a disk.
+    pub fn tool_heads(&self) -> Option<&Arc<crate::orm::OrmStore<crate::cognition::tool_head::entity::ToolHeadRecord>>> {
+        self.tool_heads.as_ref()
     }
 
     /// Borrow the shared recall metadata registry. Recall + decay tick
@@ -231,13 +238,19 @@ impl AdmissionState {
         let (engrams, metadata, row_id_pairs) = loader.load_with_row_ids().await?;
         sink_concrete.prime_cache(row_id_pairs);
 
-        Ok(Self::new_rehydrated(
+        // Her tool head's row lives in the same database (one home, one store).
+        let tool_heads = Arc::new(
+            OrmStore::<crate::cognition::tool_head::entity::ToolHeadRecord>::new(Arc::clone(&adapter)).await?,
+        );
+        let mut state = Self::new_rehydrated(
             recall_metadata,
             sink_concrete
                 as Arc<dyn crate::persona::admission_persistence::AdmissionPersistenceSink>,
             engrams,
             metadata,
-        ))
+        );
+        state.tool_heads = Some(tool_heads);
+        Ok(state)
     }
 
     /// Run the admission pipeline on one inbox message, recording all

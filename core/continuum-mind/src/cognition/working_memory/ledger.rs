@@ -73,7 +73,7 @@ impl WorkingMemory {
     }
 
     /// Her learned tool head.
-    pub fn tool_head(&self) -> &super::super::tool_head::ToolHead {
+    pub fn tool_head(&self) -> &Arc<super::super::tool_head::ToolHead> {
         &self.tool_head
     }
 
