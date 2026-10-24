@@ -29,12 +29,12 @@
 //!   `a = 0`, so the next recompute drops it.
 //! - **No perception, no change.** Without a perception embedding, routed genes stay as they were.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::BTreeMap;
 
-use parking_lot::Mutex;
 use uuid::Uuid;
 
 use crate::ai::types::ActiveAdapterRequest;
+use crate::genome::gene_trial::Standing;
 use crate::genome::signature::{GeneSignature, SignatureStore};
 
 /// How many σ above the space's unrelated null a region edge must sit: the same 2σ
@@ -217,14 +217,6 @@ fn route(candidate: &Candidate<'_>, need: Option<&Need<'_>>, was_on: bool) -> Ro
     Route::Distance { similarity, floor, leave, weight, inside }
 }
 
-/// What each mind ran last turn: the hysteresis memory and the held weights. Per process:
-/// after a restart the first turn recomputes, which the engine's restored slot sees as a
-/// change only if the recomputed weights differ.
-fn last_applied() -> &'static Mutex<HashMap<Uuid, Vec<ActiveAdapterRequest>>> {
-    static LAST: std::sync::OnceLock<Mutex<HashMap<Uuid, Vec<ActiveAdapterRequest>>>> = std::sync::OnceLock::new();
-    LAST.get_or_init(|| Mutex::new(HashMap::new()))
-}
-
 /// Her phenotype for the next turn, composed from `perception` (what her mind is on: the turn's
 /// focused line). `None` when her genome cannot be read (no serving base, an unreadable trial
 /// file): the caller then keeps the genome she has, and the reason is on the probe stream.
@@ -243,9 +235,14 @@ pub async fn compose(persona: Uuid, perception: &str) -> Option<Phenotype> {
             return None;
         }
     };
-    let genes = crate::genome::gene_trial::her_genes(&trials, persona, &base);
+    let residency = crate::genome::gene_residency::GeneResidency::global();
+    let now_ms = continuum_base::time::EpochMs::now().millis();
+    let all = crate::genome::gene_trial::her_genes(&trials, persona, &base);
+    let pending = all.iter().filter(|(_, standing)| *standing == Standing::Pending).count();
+    let genes: Vec<ActiveAdapterRequest> =
+        all.into_iter().filter(|(_, standing)| standing.may_run()).map(|(gene, _)| gene).collect();
     if genes.is_empty() {
-        last_applied().lock().remove(&persona);
+        residency.record_turn(persona, &Phenotype::default(), now_ms);
         return Some(Phenotype::default());
     }
     let signatures = match crate::genome::signature::signature_store_path().and_then(|p| SignatureStore::load_at(&p)) {
@@ -278,18 +275,20 @@ pub async fn compose(persona: Uuid, perception: &str) -> Option<Phenotype> {
         vector,
         unrelated_null: *null,
     });
-    let previous = last_applied().lock().get(&persona).cloned().unwrap_or_default(); // unwrap_or_default: a mind with no turn yet this process ran no genes
-    // Capacity: every gene she has, until the gene working set reports how many the engine holds
-    // on the device (genome::working_set, the LOADED tier).
+    let previous = residency.previous(persona);
+    // Capacity: every gene she may run. Each is loaded in the engine (her trial loaded it), and
+    // one in host RAM pages back in on demand; the residency owner keeps her current ones on the
+    // device and pages the cold ones out under the one device budget.
     let selection = select(need.as_ref(), &candidates, candidates.len(), &previous);
-    probe_selection(persona, &selection);
-    last_applied().lock().insert(persona, selection.phenotype.genes.clone());
+    probe_selection(persona, &selection, pending);
+    residency.record_turn(persona, &selection.phenotype, now_ms);
+    residency.schedule_reconcile();
     Some(selection.phenotype)
 }
 
 /// `genome.select`: every gene considered, its similarity, floor, leave edge, depth and the
 /// scale it runs at; and, when the set changed, what the change costs her.
-fn probe_selection(persona: Uuid, selection: &Selection) {
+fn probe_selection(persona: Uuid, selection: &Selection, pending: usize) {
     let rows: Vec<String> = selection
         .considered
         .iter()
@@ -306,6 +305,7 @@ fn probe_selection(persona: Uuid, selection: &Selection) {
         class = "genome.select",
         persona = %persona,
         considered = selection.considered.len() as u64,
+        pending = pending as u64,
         applied = selection.phenotype.genes.len() as u64,
         changed = selection.changed,
         genes = %rows.join("; "),

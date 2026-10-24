@@ -2,7 +2,7 @@
 //!
 //! A gene that passes training's own pre-filter is ADOPTED ([`Adoption`]): registered (so the
 //! serving engine loads it, dormant, in place) and a [`GeneTrial`] opened on it. From then on
-//! it is in her head on every turn ([`genes_for_turn`]), and the examiner
+//! it is in her head on every turn ([`her_genes`]), and the examiner
 //! ([`crate::genome::examiner`]) sits the continual-learning acceptance test on it: her own
 //! turns on related tasks the gene never trained on and on unrelated ones, with and without
 //! the gene, on the same live engine; again after a normal restart. Its verdict promotes or
@@ -113,20 +113,39 @@ impl GeneTrial {
     }
 }
 
-/// PURE: the genes `persona` may run with on `base`: every gene she trained that has not
-/// been retired (Joel, 2026-10-10: a gene is hers once trained and follows her mind, never
-/// her workload). Which of them shape a turn, and how much, is `genome::composer`
-/// (`genome::composer`, GENE-REUSE-FORK-MINT §3d). Each at its trained scale 1.0: the
-/// composer sets the scale a turn runs it at. What decides whether a gene STAYS is the examiner's verdict.
-pub fn her_genes(trials: &[GeneTrial], persona: Uuid, base: &str) -> Vec<ActiveAdapterRequest> {
+/// Where a gene stands in her genome: still awaiting a verdict, or adopted.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Standing {
+    /// Trained and loaded; no verdict yet.
+    Pending,
+    /// The verdict adopted it.
+    Adopted,
+}
+
+impl Standing {
+    /// Whether a turn may run a gene of this standing. Today both: a gene is hers once trained
+    /// (Joel, 2026-10-10; §3d). The examiner's verdict owns this rule (Cormac, 2026-10-24: "the
+    /// examiner's verdict, not residency, decides what a turn may use"); the composer asks it.
+    pub fn may_run(self) -> bool {
+        match self {
+            Standing::Pending | Standing::Adopted => true,
+        }
+    }
+}
+
+/// PURE: the genes `persona` has on `base`, each with its standing: every gene she trained that
+/// has not been retired (Joel, 2026-10-10: a gene is hers once trained and follows her mind,
+/// never her workload). Each at its trained scale 1.0: which of them shape a turn, and how much,
+/// is `genome::composer` (GENE-REUSE-FORK-MINT §3d).
+pub fn her_genes(trials: &[GeneTrial], persona: Uuid, base: &str) -> Vec<(ActiveAdapterRequest, Standing)> {
     trials
         .iter()
         .filter(|t| t.persona_id == persona && t.base_model_id == base)
-        .filter(|t| match t.state {
-            TrialState::Promoted | TrialState::Trial => true,
-            TrialState::Retired | TrialState::Expired => false,
+        .filter_map(|t| match t.state {
+            TrialState::Trial => Some((t.page(), Standing::Pending)),
+            TrialState::Promoted => Some((t.page(), Standing::Adopted)),
+            TrialState::Retired | TrialState::Expired => None,
         })
-        .map(GeneTrial::page)
         .collect()
 }
 

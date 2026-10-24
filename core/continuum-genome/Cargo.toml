@@ -49,8 +49,6 @@ default = []
 metal = ["continuum-engine/metal"]
 cuda = ["continuum-kernel/cuda", "continuum-engine/cuda"]
 vulkan = ["continuum-kernel/vulkan", "continuum-engine/vulkan"]
-# The local manager's multi-thread stress test (compile-time gated, never #[ignore]).
-stress-tests = ["continuum-kernel/stress-tests"]
 # Test-only code (the recording adapter, the job board's test storage, gene-trial fixtures);
 # production binaries never build with it. The mind's test-fixtures forwards here.
 test-fixtures = ["continuum-base/test-fixtures", "continuum-kernel/test-fixtures", "continuum-engine/test-fixtures", "dep:tempfile"]

@@ -3,7 +3,7 @@
 //! The K3 capability-axis on-ramp: a Mixture-of-Experts model whose full weight set
 //! can't fit VRAM (K3 = 896 experts, ~594 GB) serves LOCALLY by keeping the HOT expert
 //! subset resident and paging the cold tail from the cold drive
-//! ([`ArtifactSource::Mapped`](crate::genome::blob::ArtifactSource)). WHICH
+//! (a mapped GGUF range, sized by [`expert_layout`](crate::inference_capability::expert_layout)). WHICH
 //! experts are hot is learned live from the router — M5's `ffn_moe_topk` eval-callback
 //! increments [`ExpertActivationProfile::hits`]; this is the sentinel-PGO signal.
 //!
@@ -29,7 +29,7 @@ use super::{DeviceCapacity, SystemProfile};
 /// headroom via [`SystemProfile::serving_budget_bytes`]), not raw live-free VRAM.
 ///
 /// `expert_bytes` = per-expert on-device weight size (from the ingested layout —
-/// [`ArtifactBlob::expert_size_bytes`](crate::genome::blob::ArtifactBlob)); `0` ⇒ the
+/// [`expert_layout`](crate::inference_capability::expert_layout)); `0` ⇒ the
 /// planner can't size residency and warms everything (its safe cold-start). `margin_bytes`
 /// is the eviction hysteresis the caller carries. RAM stays at its true live-free (the
 /// warm tier isn't the contended one — VRAM is); only the VRAM tier is budgeted, which

@@ -33,12 +33,6 @@ pub mod forget_context;
 pub mod full_evaluate;
 pub mod generate_recipe;
 pub mod generate_response;
-pub mod genome_activate_skill;
-pub mod genome_coverage_report;
-pub mod genome_evict_under_pressure;
-pub mod genome_record_activity;
-pub mod genome_state;
-pub mod genome_sync;
 pub mod get_state;
 pub mod gpu_budget;
 pub mod has_evaluated;
@@ -59,7 +53,6 @@ pub mod semantic_search_tools;
 pub mod set_sleep_mode;
 pub mod should_respond;
 pub mod sync_adapters;
-pub mod sync_domain_classifier;
 pub mod track_response;
 pub mod validate_response_decision;
 pub mod vision_describe;
@@ -74,12 +67,6 @@ use dream_now::DreamNow;
 use enqueue_message::EnqueueMessage;
 use forget_context::ForgetContext;
 use full_evaluate::FullEvaluate;
-use genome_activate_skill::GenomeActivateSkill;
-use genome_coverage_report::GenomeCoverageReport;
-use genome_evict_under_pressure::GenomeEvictUnderPressure;
-use genome_record_activity::GenomeRecordActivity;
-use genome_state::GenomeState;
-use genome_sync::GenomeSync;
 use get_state::GetState;
 use gpu_budget::GpuBudget;
 use has_evaluated::HasEvaluated;
@@ -94,7 +81,6 @@ use respond::Respond;
 use select_model::SelectModel;
 use set_sleep_mode::SetSleepMode;
 use sync_adapters::SyncAdapters;
-use sync_domain_classifier::SyncDomainClassifier;
 use track_response::TrackResponse;
 use vision_describe::VisionDescribe;
 
@@ -133,28 +119,7 @@ pub fn command_objects(
         Arc::new(TrackResponse {
             state: state.clone(),
         }),
-        Arc::new(GenomeActivateSkill {
-            state: state.clone(),
-        }),
-        Arc::new(GenomeSync {
-            state: state.clone(),
-        }),
-        Arc::new(GenomeState {
-            state: state.clone(),
-        }),
-        Arc::new(GenomeEvictUnderPressure {
-            state: state.clone(),
-        }),
-        Arc::new(GenomeRecordActivity {
-            state: state.clone(),
-        }),
-        Arc::new(GenomeCoverageReport {
-            state: state.clone(),
-        }),
         Arc::new(ClassifyDomain {
-            state: state.clone(),
-        }),
-        Arc::new(SyncDomainClassifier {
             state: state.clone(),
         }),
         Arc::new(RegisterDomainKeywords {

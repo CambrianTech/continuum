@@ -27,6 +27,8 @@ as a content-addressed artifact on the **Frozen/Cold** tier (D:).
 Real types it builds on:
 - `working_set::ArtifactId` — sha256-derived UUID, content-addressed. One per expert
   `(layer, expert_id)` tile.
+> **2026-10-24:** `genome::{blob, store, local_manager, manager, bus, working_set}` were deleted unwired (no caller outside their own tests). Expert paging lives in the engine's `capacity::expert_*` (container, ecache, reconcile, pager) and the expert layout in `inference_capability::expert_layout`; gene residency is `genome::gene_residency`. The seam proposals below are history.
+
 - `blob::ArtifactBlob { id, bytes }` + `blob::Provenance::minimal(id, created_at_ms)`.
 - `tier::TierStore::write(blob, provenance, role)` — the sink.
 - `working_set::{PageKind::MoEExpert, PageOffset, PageRef}` — `PageOffset` addresses one
