@@ -114,7 +114,7 @@ pub fn mark_tail_kept(tail: &str, full_tokens: u32) -> String {
 /// Tokens to reserve for a trim marker BEFORE trimming, so the disclosure cannot itself
 /// push the message back over the budget that forced the trim.
 ///
-/// A FUNCTION, not a `const`, for the same reason [`super::viewstate_rag`]'s floor is:
+/// A FUNCTION, not a `const`, for the same reason `cognition::viewstate_rag`'s floor is:
 /// `context_budget`'s de-hardcode guard scans `const`s whose name contains TOKEN for bare
 /// literals, and it is right to — a bare literal here is a prompt-size constant wearing a
 /// different hat.

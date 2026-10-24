@@ -1,0 +1,44 @@
+[package]
+name = "continuum-cognition-verbs"
+version = "0.1.0"
+edition = "2021"
+publish = false
+repository = "https://github.com/CambrianTech/continuum"
+
+# Cognition's stateless verbs (analysis, validation, response orchestration, generation helpers)
+# and prompt assembly: a layer that names no other cognition module, cut out of
+# continuum-cognition so it builds and tests alone. continuum-cognition re-exports each module
+# under its old `cognition::<name>` path.
+
+[dependencies]
+continuum-kernel = { path = "../continuum-kernel" }
+continuum-engine = { path = "../continuum-engine" }
+continuum-live = { path = "../continuum-live" }
+continuum-base = { path = "../continuum-base" }
+tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+uuid.workspace = true
+schemars = { version = "0.8", features = ["uuid1"] }
+thiserror.workspace = true
+dashmap = "6.1"
+base64 = "0.22"
+sha2 = "0.10"
+async-trait.workspace = true
+chrono.workspace = true
+once_cell.workspace = true
+ts-rs.workspace = true
+futures = "0.3"
+regex = "1"
+
+[dev-dependencies]
+continuum-kernel = { path = "../continuum-kernel", features = ["test-fixtures"] }
+tokio = { workspace = true, features = ["test-util"] }
+continuum-base = { path = "../continuum-base" }
+
+[features]
+default = []
+metal = ["continuum-engine/metal", "continuum-live/metal"]
+cuda = ["continuum-kernel/cuda", "continuum-engine/cuda"]
+vulkan = ["continuum-kernel/vulkan", "continuum-engine/vulkan"]
+test-fixtures = ["continuum-kernel/test-fixtures", "continuum-engine/test-fixtures", "continuum-live/test-fixtures"]

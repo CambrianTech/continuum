@@ -16,6 +16,7 @@ build = "../continuum-core/build.rs"
 
 [dependencies]
 continuum-kernel = { path = "../continuum-kernel" }
+continuum-cognition-verbs = { path = "../continuum-cognition-verbs" }
 continuum-engine = { path = "../continuum-engine" }
 continuum-hands = { path = "../continuum-hands" }
 continuum-live = { path = "../continuum-live" }
@@ -79,10 +80,10 @@ continuum-experience = { path = "../continuum-experience", features = ["test-fix
 default = []
 # The GPU backends are the engine's (llama, candle); cognition forwards them so it builds and
 # tests on its own with the same flags core takes.
-metal = ["continuum-engine/metal", "continuum-live/metal", "continuum-genome/metal"]
-cuda = ["continuum-kernel/cuda", "continuum-engine/cuda", "continuum-genome/cuda"]
-vulkan = ["continuum-kernel/vulkan", "continuum-engine/vulkan", "continuum-genome/vulkan"]
+metal = ["continuum-cognition-verbs/metal", "continuum-engine/metal", "continuum-live/metal", "continuum-genome/metal"]
+cuda = ["continuum-cognition-verbs/cuda", "continuum-kernel/cuda", "continuum-engine/cuda", "continuum-genome/cuda"]
+vulkan = ["continuum-cognition-verbs/vulkan", "continuum-kernel/vulkan", "continuum-engine/vulkan", "continuum-genome/vulkan"]
 stress-tests = ["continuum-kernel/stress-tests"]
 # Test-only code (fixtures shared with core's integration tests, the heuristic adapter it
 # drives); production binaries never build with it.
-test-fixtures = ["continuum-host/test-fixtures", "continuum-kernel/test-fixtures", "continuum-engine/test-fixtures", "continuum-hands/test-fixtures", "continuum-live/test-fixtures", "continuum-perception/test-fixtures", "continuum-genome/test-fixtures", "continuum-experience/test-fixtures"]
+test-fixtures = ["continuum-cognition-verbs/test-fixtures", "continuum-host/test-fixtures", "continuum-kernel/test-fixtures", "continuum-engine/test-fixtures", "continuum-hands/test-fixtures", "continuum-live/test-fixtures", "continuum-perception/test-fixtures", "continuum-genome/test-fixtures", "continuum-experience/test-fixtures"]
