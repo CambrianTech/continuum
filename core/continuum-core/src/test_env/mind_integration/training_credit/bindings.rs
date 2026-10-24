@@ -509,13 +509,7 @@ use super::*;
             })
         };
         let pending = |s: &airc_work::WorkSubmission, generation: &str| PendingSelection {
-            submission_id: s.submission_id.as_uuid(),
-            room_id: room,
-            card_id: card,
-            claim_id: claim,
-            instance: s.instance.clone(),
-            base_sha: s.base_sha.clone(),
-            artifact: s.artifact.clone(),
+            publication: reviewed::Publication::of(room, s),
             issuing_generation: generation.into(),
         };
 
@@ -623,7 +617,7 @@ use super::*;
                 .ok_or("the pending row is retained")?;
         assert_eq!(kept.selection.issuing_generation, "work-a");
         let mut other = pending(&retried, "work-a");
-        other.instance = "another-instance".into();
+        other.publication.instance = "another-instance".into();
         assert!(matches!(
             reviewed::record_pending(&data, name, persona, other).await,
             Err(CreditBindingError::ConflictingSubmission(_))

@@ -658,17 +658,11 @@ use super::*;
         };
         // The twin is published too; a pending row shares a row whether or not it is.
         let board = fx.project(vec![
-            (WorkEvent::WorkSubmitted(twin_published), fx.owner),
+            (WorkEvent::WorkSubmitted(twin_published.clone()), fx.owner),
             (WorkEvent::WorkSubmissionReviewed(pass.clone()), fx.reviewer),
         ]);
         let twin = reviewed::PendingSelection {
-            submission_id: twin_id,
-            room_id: room,
-            card_id: fx.selection.card_id,
-            claim_id: fx.selection.claim_id,
-            instance: fx.selection.instance.clone(),
-            base_sha: fx.selection.base_sha.clone(),
-            artifact: fx.selection.artifact.clone(),
+            publication: reviewed::Publication::of(room, &twin_published),
             issuing_generation: "reviewed-request".into(),
         };
         reviewed::record_pending(&fx.data, name, persona, twin).await?;

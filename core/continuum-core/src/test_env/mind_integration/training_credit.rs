@@ -341,13 +341,15 @@ pub(super) async fn exact_review_bound_by(issuing: Option<&str>) -> (ExactReview
         }
         Some(generation) => {
             let pending = reviewed::PendingSelection {
-                submission_id: selection.submission_id,
-                room_id: room,
-                card_id: selection.card_id,
-                claim_id: selection.claim_id,
-                instance: selection.instance.clone(),
-                base_sha: selection.base_sha.clone(),
-                artifact: selection.artifact.clone(),
+                publication: reviewed::Publication {
+                    submission_id: selection.submission_id,
+                    room_id: room,
+                    card_id: selection.card_id,
+                    claim_id: selection.claim_id,
+                    instance: selection.instance.clone(),
+                    base_sha: selection.base_sha.clone(),
+                    artifact: selection.artifact.clone(),
+                },
                 issuing_generation: generation.into(),
             };
             if let Err(e) = reviewed::record_pending(&data, name, persona, pending).await {

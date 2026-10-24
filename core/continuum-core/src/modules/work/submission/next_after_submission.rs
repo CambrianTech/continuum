@@ -257,13 +257,7 @@ impl ActionCommand for WorkSubmit {
                 runtime.agent_name(),
                 runtime.persona_id(),
                 reviewed::PendingSelection {
-                    submission_id,
-                    room_id: room.channel.as_uuid(),
-                    card_id: card_uuid,
-                    claim_id: claim_id.as_uuid(),
-                    instance: candidate.instance.clone(),
-                    base_sha: candidate.base_sha.clone(),
-                    artifact: candidate.artifact.clone(),
+                    publication: reviewed::Publication::of(room.channel.as_uuid(), &candidate),
                     issuing_generation: generation,
                 },
             )

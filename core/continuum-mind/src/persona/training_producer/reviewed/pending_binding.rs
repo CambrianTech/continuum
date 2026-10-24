@@ -11,11 +11,11 @@
 
 use super::*;
 
-/// What publication recorded: everything the published submission must match, plus the
-/// generation that issued it. Immutable once written.
+/// One publication: the fields a board submission and its retries must all match. A type, so
+/// sameness is `==` and a field added later cannot be left out of it (Fable on #5386).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct PendingSelection {
+pub struct Publication {
     pub submission_id: Uuid,
     pub room_id: Uuid,
     pub card_id: Uuid,
@@ -23,20 +23,31 @@ pub struct PendingSelection {
     pub instance: String,
     pub base_sha: airc_work::GitObjectId,
     pub artifact: airc_work::SubmissionArtifact,
-    pub issuing_generation: String,
 }
 
-impl PendingSelection {
-    /// Everything but the issuing generation: the publication a retry repeats.
-    pub fn same_publication(&self, other: &Self) -> bool {
-        self.submission_id == other.submission_id
-            && self.room_id == other.room_id
-            && self.card_id == other.card_id
-            && self.claim_id == other.claim_id
-            && self.instance == other.instance
-            && self.base_sha == other.base_sha
-            && self.artifact == other.artifact
+impl Publication {
+    /// The publication a submission in `room_id` is.
+    pub fn of(room_id: Uuid, submitted: &airc_work::WorkSubmission) -> Self {
+        Self {
+            submission_id: submitted.submission_id.as_uuid(),
+            room_id,
+            card_id: submitted.card_id.as_uuid(),
+            claim_id: submitted.claim_id.as_uuid(),
+            instance: submitted.instance.clone(),
+            base_sha: submitted.base_sha.clone(),
+            artifact: submitted.artifact.clone(),
+        }
     }
+}
+
+/// What publication recorded: the publication plus the generation that issued it. Immutable
+/// once written; a retry is the same publication, and keeps the first generation.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PendingSelection {
+    #[serde(flatten)]
+    pub publication: Publication,
+    pub issuing_generation: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, crate::orm::Entity)]
@@ -79,16 +90,16 @@ pub async fn record_pending<T: Transport>(
     selection: PendingSelection,
 ) -> Result<(), CreditBindingError> {
     ensure_storage(conn, persona_name).await?;
-    let id = selection.submission_id;
+    let id = selection.publication.submission_id;
     // A retry comes from a later act, so it carries a later generation: the publication fields
     // decide sameness, and the FIRST recorded generation is kept, because that act made it.
     let same = |prior: &PendingCreditBinding| {
-        prior.persona_id == persona_id && prior.selection.same_publication(&selection)
+        prior.persona_id == persona_id && prior.selection.publication == selection.publication
     };
     if let Some(prior) = read_one::<_, PendingCreditBinding>(conn, persona_name, &id.to_string()).await? {
         return if same(&prior) { Ok(()) } else { Err(CreditBindingError::ConflictingSubmission(id)) };
     }
-    let row = PendingCreditBinding { id, persona_id, card_id: selection.card_id, selection: selection.clone() };
+    let row = PendingCreditBinding { id, persona_id, card_id: selection.publication.card_id, selection: selection.clone() };
     if let Err(error) = write_batch(conn, persona_name, vec![create(id.to_string(), &row)?]).await {
         // A lost acknowledgement or a racing retry: the row that exists decides.
         match read_one::<_, PendingCreditBinding>(conn, persona_name, &id.to_string()).await? {
@@ -130,12 +141,12 @@ pub async fn resolve_pending<T: Transport>(
     let selection = SubmissionSelection {
         submission_id: id,
         room_id,
-        card_id: pending.selection.card_id,
-        claim_id: pending.selection.claim_id,
+        card_id: pending.selection.publication.card_id,
+        claim_id: pending.selection.publication.claim_id,
         staged_revision_id: row.id,
-        instance: pending.selection.instance.clone(),
-        base_sha: pending.selection.base_sha.clone(),
-        artifact: pending.selection.artifact.clone(),
+        instance: pending.selection.publication.instance.clone(),
+        base_sha: pending.selection.publication.base_sha.clone(),
+        artifact: pending.selection.publication.artifact.clone(),
     };
     match bind_snapshot(conn, persona_name, persona_id, selection, row).await {
         Ok(binding) => Ok(Some(Ok(binding))),
@@ -185,17 +196,10 @@ fn matches_publication(
     room_id: Uuid,
     submitted: &airc_work::WorkSubmission,
 ) -> bool {
-    let s = &pending.selection;
     pending.persona_id == persona_id
         && submitted.publisher.as_uuid() == persona_id
         && pending.id == submitted.submission_id.as_uuid()
-        && s.submission_id == pending.id
-        && s.room_id == room_id
-        && s.card_id == submitted.card_id.as_uuid()
-        && s.claim_id == submitted.claim_id.as_uuid()
-        && s.instance == submitted.instance
-        && s.base_sha == submitted.base_sha
-        && s.artifact == submitted.artifact
+        && pending.selection.publication == Publication::of(room_id, submitted)
 }
 
 /// PURE: another submission whose issuing generation sits in this row, if any.
