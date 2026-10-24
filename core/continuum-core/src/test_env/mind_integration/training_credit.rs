@@ -18,6 +18,7 @@ use crate::persona::training_producer::*;
 use crate::routing::CallerIdentity;
 use crate::runtime::{CommandExecutor, InProcessTransport};
 
+mod automatic;
 mod bindings;
 mod directed;
 mod reviewed_credit;
