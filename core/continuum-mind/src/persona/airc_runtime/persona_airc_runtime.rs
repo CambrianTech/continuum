@@ -313,9 +313,9 @@ impl PersonaAircRuntime {
                 // pulse — roster liveness IS a fast question. A 30-minute claim
                 // lease does not: renewing it every presence tick emitted ~30× the
                 // events one lease needs, and that churn crossed the wire to EVERY
-                // subscriber on every node. Renew at TTL/3 — derived from the one
-                // lease constant, never a second magic number — which still gives a
-                // healthy citizen three renewal opportunities per lease. The stamp
+                // subscriber on every node. Renew at TTL/6 — derived from the one
+                // lease constant, never a second magic number — which gives a
+                // healthy citizen six renewal opportunities per lease. The stamp
                 // is only advanced on a fully-clean pass, so any roster-read or
                 // per-card failure falls back to retrying on the NEXT 60s tick
                 // (exactly the old cadence) until clean — degraded mode is the old
@@ -699,7 +699,7 @@ impl PersonaAircRuntime {
                                     renewed = renewed,
                                     held = mine.len(),
                                     ttl_ms = crate::cognition::card_facts::DEFAULT_CLAIM_TTL_MS,
-                                    "held work-card claims renewed on the claim cadence (TTL/3)"
+                                    "held work-card claims renewed on the claim cadence (TTL/6)"
                                 );
                             }
                             // Only a fully-clean pass earns the slow cadence; any
