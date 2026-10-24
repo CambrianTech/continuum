@@ -65,16 +65,8 @@ const UNWIRED: &[Unwired] = &[
         why: "fixture: sibling of DefaultsModule, opts into every hook",
     },
     Unwired {
-        module: "PageFaultOnly",
-        why: "fixture: genome bus subscriber asserting fault-only delivery",
-    },
-    Unwired {
         module: "ReadyModule",
         why: "fixture: runtime readiness-gate test",
-    },
-    Unwired {
-        module: "RecorderModule",
-        why: "fixture: genome local_manager call recorder",
     },
     Unwired {
         module: "SlowJoiner",
