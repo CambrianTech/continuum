@@ -247,13 +247,25 @@ mod adopted_checkpoint;
             endpoint.state.lock().pool = Some(Some(pool));
             endpoint.pending_discard(DiscardReason::PagingUncertain).commit();
         };
-        relaunch(&[1, 2, 3]);
-        relaunch(&[4, 5]);
-        relaunch(&[]);
+        // One mind per relaunch, so "oldest" is defined: the first is evicted by the fourth.
+        for m in [1, 2, 3, 4] {
+            relaunch(&[m]);
+        }
+        {
+            let mut log = endpoint.discarded.lock();
+            assert_eq!(log.take(&mind(1)), None, "oldest evicted first");
+            for kept in [2, 3, 4] {
+                assert_eq!(log.take(&mind(kept)), Some(DiscardReason::PagingUncertain), "mind {kept} kept");
+            }
+        }
+        relaunch(&[5, 6]);
+        relaunch(&[7, 8, 9]); // a whole pool of slots: the latest relaunch is kept whole
+        relaunch(&[]); // nothing lost evicts nothing
         let mut log = endpoint.discarded.lock();
-        assert_eq!(log.take(&mind(1)), None, "oldest evicted first");
-        assert_eq!(log.take(&mind(2)), None, "oldest evicted first");
-        for kept in [3, 4, 5] {
+        for evicted in [5, 6] {
+            assert_eq!(log.take(&mind(evicted)), None, "mind {evicted} evicted by a newer relaunch");
+        }
+        for kept in [7, 8, 9] {
             assert_eq!(log.take(&mind(kept)), Some(DiscardReason::PagingUncertain), "mind {kept} kept");
         }
     }
