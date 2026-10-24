@@ -6,7 +6,7 @@ use crate::modules::airc::AircModule;
 use crate::modules::airc_bridge_directive::AircBridgeDirectiveModule;
 use crate::modules::airc_bridge_dispatch::AircBridgeDispatchModule;
 use crate::modules::auth::ExternalWebviewAuthModule;
-use crate::modules::avatar::AvatarModule;
+use continuum_live::consumers::avatar::AvatarModule;
 use crate::modules::channel::{ChannelModule, ChannelState};
 use crate::modules::code::{CodeModule, CodeState};
 use crate::modules::cognition::{CognitionModule, CognitionState};

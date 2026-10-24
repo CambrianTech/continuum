@@ -204,7 +204,7 @@ impl ResourceConsumer for BevyConsumer {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::modules::live_session_consumer::{VoiceConsumer, VoiceReclaimLever};
+    use crate::consumers::live_session_consumer::{VoiceConsumer, VoiceReclaimLever};
     use crate::resources::{
         DaemonConfig, GovernorConfig, LeaseRequest, MockCapacitySource, ReclaimPolicy,
         ReclaimStatus, ResourceDaemon,

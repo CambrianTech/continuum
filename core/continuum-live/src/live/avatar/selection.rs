@@ -73,7 +73,7 @@ pub fn select_avatar_for_voice(
 /// matches the persona's gender (which also drives its name + voice).
 ///
 /// This is the single-persona projection used by the profile-picture snapshot
-/// (`modules/avatar.rs`) and the live video pump (`live/avatar/video_pump.rs`).
+/// (`continuum-live/src/consumers/avatar.rs`) and the live video pump (`live/avatar/video_pump.rs`).
 /// It used to hash the FULL catalog with no gender filter, so a female persona
 /// (female name + female voice) could land on a male VRM — the incoherence
 /// [[procedural-persona-genesis]] Gap #1 names. Filtering by gender first makes a
