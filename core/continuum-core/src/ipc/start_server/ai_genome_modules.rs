@@ -123,16 +123,20 @@ pub(super) fn register_ai_provider_and_genome_modules(
 
         // TrainingCompletionSentinel: L3 of the dev-task continuous-learning loop.
         // Polls in-flight training jobs (the TrainingJobBoard the trigger writes to);
-        // on completion runs `cognition/eval` and pages the gene into the live
-        // persona ONLY on lift>0 — the keystone that makes the single-machine loop
-        // automatic (`docs/genome/DEV-TASK-LOOP-CLOSURE-PLAN.md` L3). Its executor is
-        // installed below by `install_executor_on_all`.
+        // on completion converts, registers and opens the gene's trial, which wakes the
+        // examiner below. Its executor is installed by `install_executor_on_all`.
         runtime.register(completion_sentinel);
         log_info!(
             "ipc",
             "server",
-            "TrainingCompletionSentinel: registered (L3 train-done → eval → lift>0 → page-in)"
+            "TrainingCompletionSentinel: registered (L3 train-done → register → trial opened)"
         );
+
+        // The gene EXAMINER: every trial that opens is sat on the continual-learning
+        // acceptance test (unseen related tasks, unrelated retention, with vs without the gene
+        // on her live lane) and its verdict promotes or retires the gene; the first pass of
+        // each core process is the retention re-run after a restart.
+        runtime.register(Arc::new(crate::modules::gene_examiner::GeneExaminerModule));
 
         // GenomeFitnessSentinel: the self-evolving genome's fitness daemon. On a slow
         // (5-min) Background tick it measures each resident layer's value-density

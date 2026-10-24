@@ -52,6 +52,7 @@ pub mod entity_schemas;
 pub mod events;
 pub mod forge;
 pub mod generator;
+pub mod gene_examiner;
 pub mod genome;
 pub mod genome_fitness_sentinel;
 pub mod gpu;

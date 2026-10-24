@@ -178,7 +178,7 @@ pub enum ToolChoice {
 // ============================================================================
 
 /// Active LoRA adapter to apply during generation
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[ts(
     export,
     export_to = "../../../protocol/typescript/ai/ActiveAdapterRequest.ts"

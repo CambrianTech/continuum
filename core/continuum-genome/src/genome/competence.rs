@@ -344,6 +344,7 @@ mod tests {
             corpus: CorpusRef { name: "t".into(), content_hash: "sha256:0".into(), size_bytes: 0, source_url: None },
             minted_at_ms: 0,
             parent: None,
+            region: None,
         };
         let mut store = SignatureStore::default();
         store.by_path.insert("/g/far.gguf".into(), sig("e1", vec![0.0, 1.0]));

@@ -390,30 +390,22 @@ pub(crate) async fn ask_the_act_question(
                         );
                     }
                     let selected_credit = card_turn.as_ref().and_then(|t| t.credit.clone());
-                    // HER GENES RIDE HER CARD, like her hands do (integrated, not parallel:
-                    // a gene is judged in her own work). The card this turn is credited to
-                    // decides the genome: her promoted genes, plus an open trial's gene when
-                    // this card drew its arm. Pinned before the turn and put back after it,
-                    // so the genome never changes beneath a request and every receipt of
-                    // this card names the same genes (`GenerationReceipt::genes`).
+                    // HER GENES FOLLOW HER MIND, never her card (GENE-REUSE-FORK-MINT §3d):
+                    // the genes whose regions this turn's focused line is inside, weighted by
+                    // depth (`genome::composer`), and every receipt names the genes that ran
+                    // (`GenerationReceipt::genes`). Unreadable: the genome she has.
                     let persona_uuid = ctx.identity.peer_id.as_uuid();
-                    let card_uuid = held.first().map(|card| card.card_id.as_uuid());
-                    // Whatever ends this turn (settled, cancelled, a panic unwinding), her
-                    // genome goes back to what she had before it: a trial gene never leaks onto
-                    // her conversation turns (Cormac on #4474).
-                    let mut genome_back = crate::cognition::workspace::GenomeRestore::snapshot(
-                        std::sync::Arc::clone(&cycle),
-                    );
-                    if let Some(genes) = crate::genome::gene_trial::live_genes(persona_uuid) {
-                        continuum_base::probe!(
-                            class = "persona.genome.card_genes",
-                            persona = %ctx.identity.agent_name,
-                            card = %card_uuid.map(|c| c.to_string()).unwrap_or_default(), // probe field: "" = no card
-                            genes = genes.len() as u64,
-                            "the genome this work turn runs with: promoted genes plus any trial gene this card drew"
-                        );
-                        cycle.page_in(genes);
-                    }
+                    let need = crate::cognition::recall_faculty::focused_query(&burst.rendered);
+                    if let Some(phenotype) = crate::genome::composer::compose(persona_uuid, need).await {
+                continuum_base::probe!(
+                    class = "persona.genome.turn_genes",
+                    persona = %ctx.identity.agent_name,
+                    genes = phenotype.genes.len() as u64,
+                    phenotype = %crate::genome::composer::render(&phenotype),
+                    "the phenotype this turn runs with: each gene and its scale"
+                );
+                cycle.page_in(phenotype.genes);
+            }
                     let mut credit_capture =
                         crate::persona::training_producer::TurnCreditCapture::for_turn(
                             ctx.identity.peer_id.as_uuid(),
@@ -430,13 +422,6 @@ pub(crate) async fn ask_the_act_question(
                         credit_capture.as_mut().map(|c| c as &mut dyn crate::cognition::act_observe::TurnCredit),
                     )
                     .await;
-                    // After the card her genome is what every turn runs with (her trained
-                    // genes, §3d); re-read so a gene that landed mid-turn is in her head next
-                    // turn. Unreadable: the pre-turn snapshot.
-                    if let Some(genes) = crate::genome::gene_trial::live_genes(persona_uuid) {
-                        genome_back.restore_to(genes);
-                    }
-                    drop(genome_back);
                     // The turn's work is synced to its card's branch; her hands stay where
                     // they are, because nothing moved them (card fc9e9fd7).
                     if let Some(hands) = work_hands {

@@ -89,6 +89,7 @@ pub mod test_support {
             },
             capture: None,
             genes: Vec::new(),
+            gene_scales: Vec::new(),
         }
     }
 

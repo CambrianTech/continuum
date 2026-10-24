@@ -2,7 +2,6 @@
 // Source: generator/generate-rust-bindings.ts
 // Re-generate: npx tsx generator/generate-rust-bindings.ts
 
-export type { ActivateSkillResult } from './ActivateSkillResult';
 export type { ActivityDomain } from './ActivityDomain';
 export type { AdapterInfo } from './AdapterInfo';
 export type { AdequacyResult } from './AdequacyResult';
@@ -21,14 +20,11 @@ export type { ChannelStatus } from './ChannelStatus';
 export type { ChatMessageRef } from './ChatMessageRef';
 export type { CleanedResponse } from './CleanedResponse';
 export type { CognitionDecision } from './CognitionDecision';
-export type { CompactionMetadata } from './CompactionMetadata';
 export type { ConsolidatedContext } from './ConsolidatedContext';
 export type { ConsolidatedInboxChunk } from './ConsolidatedInboxChunk';
 export type { ConsolidatedInboxMessage } from './ConsolidatedInboxMessage';
 export type { ConversationMessage } from './ConversationMessage';
-export type { CoverageReport } from './CoverageReport';
 export type { DespawnReport } from './DespawnReport';
-export type { DomainActivity } from './DomainActivity';
 export type { DomainClassification } from './DomainClassification';
 export type { DrainTurnFrameParams } from './DrainTurnFrameParams';
 export type { EdgeKind } from './EdgeKind';
@@ -41,8 +37,6 @@ export type { FullEvaluateResult } from './FullEvaluateResult';
 export type { GarbageCheckResult } from './GarbageCheckResult';
 export type { GarbageReason } from './GarbageReason';
 export type { GateDetails } from './GateDetails';
-export type { GenomeAdapterInfo } from './GenomeAdapterInfo';
-export type { GenomePagingState } from './GenomePagingState';
 export type { InboxMessage } from './InboxMessage';
 export type { InboxTask } from './InboxTask';
 export type { MediaItemRequest } from './MediaItemRequest';

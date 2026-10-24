@@ -51,7 +51,6 @@ pub mod domain_classifier;
 pub mod durable_history;
 pub mod engram_source;
 pub mod evaluator;
-pub mod genome_paging;
 pub mod host;
 pub mod hw_tier_descriptor;
 pub mod identity_provider;
@@ -133,10 +132,6 @@ pub use domain_classifier::{DomainClassification, DomainClassifier, QualityFacto
 pub use evaluator::{
     analyze_burst, AdequacyResult, BurstEvaluateResult, BurstRespondContext, FullEvaluateRequest,
     FullEvaluateResult, GateDetails, RateLimiterState, RecentResponse, SleepMode, SleepState,
-};
-pub use genome_paging::{
-    ActivateSkillResult, CoverageReport, DomainActivity, GenomeAdapterInfo, GenomePagingEngine,
-    GenomePagingState,
 };
 pub use inbox::{PersonaInbox, PersonaInboxFrame, PersonaInboxFrameMetrics};
 pub use message_cache::{
