@@ -29,7 +29,6 @@ ts-rs.workspace = true  # TypeScript type generation
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util"] }
 tempfile = "3"
-continuum-base = { path = "../continuum-base", features = ["test-fixtures"] }
 continuum-kernel = { path = "../continuum-kernel", features = ["test-fixtures"] }
 continuum-positron = { path = "../continuum-positron", features = ["test-fixtures"] }
 
@@ -37,4 +36,4 @@ continuum-positron = { path = "../continuum-positron", features = ["test-fixture
 default = []
 # Test-only code (the fixed room-purpose source, the executor's test hooks); production
 # binaries never build with it. The mind's test-fixtures forwards here.
-test-fixtures = ["continuum-base/test-fixtures", "continuum-kernel/test-fixtures"]
+test-fixtures = ["continuum-kernel/test-fixtures"]

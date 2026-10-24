@@ -14,6 +14,7 @@ serde.workspace = true
 serde_json.workspace = true
 uuid.workspace = true
 continuum-base = { path = "../continuum-base" }
+continuum-host = { path = "../continuum-host" }
 schemars = { version = "0.8", features = ["uuid1"] }
 continuum-airc-protocol = { path = "../continuum-airc-protocol" }
 reqwest = { version = "0.12", features = ["json", "multipart", "stream"] }
@@ -71,5 +72,5 @@ metal = ["candle-core/metal", "candle-nn/metal", "candle-transformers/metal", "l
 mlx = []
 openvino = ["ort/openvino"]
 rocm = ["ort/rocm"]
-test-fixtures = ["continuum-base/test-fixtures", "continuum-kernel/test-fixtures", "dep:tempfile"]
+test-fixtures = ["continuum-kernel/test-fixtures", "dep:tempfile"]
 vulkan = ["llama/vulkan", "continuum-kernel/vulkan"]

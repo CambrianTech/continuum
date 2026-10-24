@@ -39,7 +39,7 @@ architecture; everything else is a consequence.
 
 | ring | name | modules | what it may know |
 |---|---|---|---|
-| 0 | **kernel** | `time`, `identity`, `fs_portable`, `paths`, `concurrency`, `paging`, `logging`, `orm`, `system_resources`, `runtime`, `governor`, `resources`, `gpu` | the machine: clocks, ids, files, memory, disk, GPU, pressure, the bus, the `ServiceModule` contract. Nothing about models, minds, rooms or commands. |
+| 0 | **kernel** | `time`, `identity`, `paths`, `concurrency`, `paging`, `logging`, `orm`, `system_resources`, `runtime`, `governor`, `resources`, `gpu` | the machine: clocks, ids, files, memory, disk, GPU, pressure, the bus, the `ServiceModule` contract. Nothing about models, minds, rooms or commands. |
 | 1 | **engine** | `inference`, `inference_capability`, `model_registry`, `ai`, `live`, `media`, `sensory`, `tool_parsing` | serving: lanes, slots, pages, rates, adapters, the realtime media plane. Knows the kernel. Nothing about minds, rooms or commands. |
 | 2 | **mind** | `cognition`, `persona`, `genome`, `memory`, `rag`, `perception`, `experience`, `recipe`, `context`, `vdd` | the citizen: deliberation, working memory, genome, recall, activities. Knows the engine and the kernel. Nothing about sockets, CLI verbs or the module registry. |
 | 3 | **surface** | `commands`, `ipc`, `routing`, `sdk_codegen`, `airc`, `http`, `modules`, `interface`, `contracts`, `events`, `forge`, `provisioning`, `comms`, `ffi`, `bin` | how the outside reaches in: commands, the socket, airc, the registry of service modules, the binaries. Knows everything below. |
