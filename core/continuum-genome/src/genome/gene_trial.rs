@@ -115,9 +115,10 @@ impl GeneTrial {
 
 /// PURE: the genes `persona` may run with on `base`: every gene she trained that has not
 /// been retired (Joel, 2026-10-10: a gene is hers once trained and follows her mind, never
-/// her workload). Which of them shape a turn, and how much, is `genome::selection`
-/// (GENE-REUSE-FORK-MINT §3d). What decides whether a gene STAYS is the examiner's verdict.
-pub fn genes_for_turn(trials: &[GeneTrial], persona: Uuid, base: &str) -> Vec<ActiveAdapterRequest> {
+/// her workload). Which of them shape a turn, and how much, is `genome::composer`
+/// (`genome::composer`, GENE-REUSE-FORK-MINT §3d). Each at its trained scale 1.0: the
+/// composer sets the scale a turn runs it at. What decides whether a gene STAYS is the examiner's verdict.
+pub fn her_genes(trials: &[GeneTrial], persona: Uuid, base: &str) -> Vec<ActiveAdapterRequest> {
     trials
         .iter()
         .filter(|t| t.persona_id == persona && t.base_model_id == base)
@@ -442,7 +443,7 @@ mod tests {
         assert!(young.is_settling(now), "just landed: her next fill waits");
         let all = store.load().unwrap();
         assert!(all.iter().all(|t| t.state == TrialState::Trial), "nothing expired anything: both stay hers");
-        assert_eq!(genes_for_turn(&all, persona, "base").len(), 2, "both are in her head, settling or not");
+        assert_eq!(her_genes(&all, persona, "base").len(), 2, "both are in her head, settling or not");
     }
 
     // what this catches: a gene in her head that the examiner retired, or one missing that it
@@ -461,9 +462,9 @@ mod tests {
         let trials = store.load().unwrap();
         // what this catches (Joel, 2026-10-10; gene 1 loaded on the 5090 and served zero turns
         // because she held no card): a trained gene is in her head on every turn.
-        assert_eq!(genes_for_turn(&trials, kimi, "qwen-27b").len(), 1, "a turn talks through the gene she trained");
-        assert!(genes_for_turn(&trials, kimi, "other-base").is_empty());
-        assert!(genes_for_turn(&trials, Uuid::nil(), "qwen-27b").is_empty());
+        assert_eq!(her_genes(&trials, kimi, "qwen-27b").len(), 1, "a turn talks through the gene she trained");
+        assert!(her_genes(&trials, kimi, "other-base").is_empty());
+        assert!(her_genes(&trials, Uuid::nil(), "qwen-27b").is_empty());
 
         let verdict = TrialVerdict {
             with_gene: ArmTally { settled: 6, passed: 4 },
@@ -485,7 +486,7 @@ mod tests {
         let retired = store.decide(t.id, TrialState::Retired, verdict.clone(), 50).unwrap().expect("retention retires");
         assert_eq!(retired.state, TrialState::Retired);
         assert!(store.decide(t.id, TrialState::Promoted, verdict, 60).unwrap().is_none(), "a retired gene stays retired");
-        assert!(genes_for_turn(&store.load().unwrap(), kimi, "qwen-27b").is_empty(), "a retired gene never runs");
+        assert!(her_genes(&store.load().unwrap(), kimi, "qwen-27b").is_empty(), "a retired gene never runs");
 
         // A row the deleted card gate wrote still reads, its arms carried into the new names.
         let legacy = serde_json::json!([{

@@ -32,8 +32,8 @@
 // second, divergent rule.
 use crate::ai::types::TextGenerationResponse;
 
-/// ONE dispatched generation, and what became of it.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+/// ONE dispatched generation, and what became of it. `PartialEq` only: the gene scales are f64.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GenerationReceipt {
     /// **THE JOIN KEY.** `TextGenerationRequest::request_id` as submitted, assigned
@@ -55,17 +55,22 @@ pub struct GenerationReceipt {
     /// read as empty, which is what those calls ran (no live page-in existed).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub genes: Vec<String>,
+    /// The scale each of `genes` ran at, aligned with it: with `genes`, the phenotype the call
+    /// ran (`genome::composer`), so an examiner can replay it with one gene off. Rows written
+    /// before this field read as empty.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub gene_scales: Vec<f64>,
 }
 
-/// The genes a request actually runs with: every requested adapter at a non-zero scale.
-/// A zero-scale entry reaches no graph (the engine drops it), so it is not a gene this turn
-/// ran on.
-pub fn genes_of(adapters: Option<&[crate::ai::types::ActiveAdapterRequest]>) -> Vec<String> {
+/// The genes a request actually runs with, and their scales: every requested adapter at a
+/// non-zero scale. A zero-scale entry reaches no graph (the engine drops it), so it is not a
+/// gene this turn ran on.
+pub fn genes_of(adapters: Option<&[crate::ai::types::ActiveAdapterRequest]>) -> Vec<(String, f64)> {
     adapters
         .into_iter()
         .flatten()
         .filter(|a| a.scale != 0.0)
-        .map(|a| if a.path.is_empty() { a.name.clone() } else { a.path.clone() })
+        .map(|a| (if a.path.is_empty() { a.name.clone() } else { a.path.clone() }, a.scale))
         .collect()
 }
 
@@ -132,12 +137,13 @@ impl GenerationReceipt {
             outcome,
             capture: None,
             genes: Vec::new(),
+            gene_scales: Vec::new(),
         }
     }
 
-    /// Attach the genes the call ran with ([`genes_of`]).
-    pub fn with_genes(mut self, genes: Vec<String>) -> Self {
-        self.genes = genes;
+    /// Attach the genes the call ran with and their scales ([`genes_of`]).
+    pub fn with_genes(mut self, genes: Vec<(String, f64)>) -> Self {
+        (self.genes, self.gene_scales) = genes.into_iter().unzip();
         self
     }
 
@@ -159,6 +165,7 @@ impl GenerationReceipt {
             },
             capture: None,
             genes: Vec::new(),
+            gene_scales: Vec::new(),
         }
     }
 
@@ -301,15 +308,16 @@ mod tests {
             scale,
         };
         let asked = [gene("kimi-dream-1", "/genes/kimi-1.gguf", 1.0), gene("off", "/genes/off.gguf", 0.0), gene("named", "", 0.5)];
-        assert_eq!(genes_of(Some(&asked)), vec!["/genes/kimi-1.gguf".to_string(), "named".to_string()]);
+        assert_eq!(genes_of(Some(&asked)), vec![("/genes/kimi-1.gguf".to_string(), 1.0), ("named".to_string(), 0.5)]);
         assert!(genes_of(None).is_empty(), "no genome = the base model");
         let old: GenerationReceipt = serde_json::from_value(serde_json::json!({
             "submittedRequestId": "r", "outcome": {"kind": "faulted", "detail": "x"}
         }))
         .unwrap();
         assert!(old.genes.is_empty());
-        let now = GenerationReceipt::faulted("r", "x").with_genes(vec!["/genes/kimi-1.gguf".into()]);
+        let now = GenerationReceipt::faulted("r", "x").with_genes(vec![("/genes/kimi-1.gguf".into(), 0.4)]);
         let round: GenerationReceipt = serde_json::from_value(serde_json::to_value(&now).unwrap()).unwrap();
         assert_eq!(round.genes, vec!["/genes/kimi-1.gguf".to_string()]);
+        assert_eq!(round.gene_scales, vec![0.4], "the receipt carries the phenotype, scales included");
     }
 }

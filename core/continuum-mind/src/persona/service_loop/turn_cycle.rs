@@ -54,15 +54,20 @@ pub(super) async fn run_turn_cycle(
         Some(cycle) => {
             // HER GENES ARE IN HER HEAD ON EVERY TURN, chosen by what her mind is on
             // (GENE-REUSE-FORK-MINT §3d): every gene whose region the turn's focused line is
-            // inside, weighted by depth (`genome::selection`). They stay on her cycle until
+            // inside, weighted by depth (`genome::composer`). They stay on her cycle until
             // the next turn selects, so nothing between turns flips her slot's adapters (each
             // flip clears her KV). Unreadable: the genome she has. The receipt names the
             // genes that ran (GenerationReceipt::genes).
             let need = crate::cognition::recall_faculty::focused_query(&workspace_burst.rendered);
-            if let Some(genes) =
-                crate::genome::selection::live_genes(ctx.identity.peer_id.as_uuid(), need).await
-            {
-                cycle.page_in(genes);
+            if let Some(phenotype) = crate::genome::composer::compose(ctx.identity.peer_id.as_uuid(), need).await {
+                continuum_base::probe!(
+                    class = "persona.genome.turn_genes",
+                    persona = %ctx.identity.agent_name,
+                    genes = phenotype.genes.len() as u64,
+                    phenotype = %crate::genome::composer::render(&phenotype),
+                    "the phenotype this turn runs with: each gene and its scale"
+                );
+                cycle.page_in(phenotype.genes);
             }
             // Run the mind over the metadata-rich burst built above
             // (WHO/WHEN/WHAT per inbox item, own posts attributed, room as the

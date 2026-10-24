@@ -1,37 +1,33 @@
-//! Which of her genes shape THIS turn, and how much (GENE-REUSE-FORK-MINT §3d, the APPLIED
-//! tier): every gene whose region the turn's need is inside, several at once, weighted by
-//! how deep inside each one is, the way a mixture of experts routes. Joel, 2026-10-24:
-//! "Goal was many with weights."
+//! Her PHENOTYPE for a turn: which of her genes shape it, and at what scale
+//! (GENE-REUSE-FORK-MINT §3d, the APPLIED tier). Every gene whose region the turn's perception
+//! is inside, several at once, weighted by how deep inside each one is, the way a mixture of
+//! experts routes. Joel, 2026-10-24: "Goal was many with weights."
 //!
-//! The one owner of that decision. The turn sites ask [`live_genes`]; the pure core is
-//! [`select`], so the rule is tested without a node.
+//! The one composer. The turn sites ask [`compose`]; the pure core is [`select`]; an examiner
+//! compares `P` with [`Phenotype::without`] one gene (that gene at 0, every other unchanged).
 //!
 //! # The rule
 //!
-//! - **Inside.** A gene's region edge (`enter`) is its own spread
-//!   ([`GeneSignature::region`](crate::genome::signature::GeneSignature)), never below the
-//!   space's measured unrelated null + 2σ (a diffuse gene must not ride every turn). A gene
-//!   with neither, or signed in another embedding space, cannot be routed by distance: it
-//!   stays in her head at its trained scale, as every gene did before routing existed
-//!   (a gene never leaves her head by silence), and the probe names it unrouted.
-//! - **Hysteresis.** Enter at distance `r = 1 - enter`, leave at `1.5 r` (§3d), so a topic
-//!   at a region's edge does not switch the gene every turn.
-//! - **Weights: a convex mix of each gene's depth inside its own region.** `w_i = d_i / Σ d`,
-//!   `d_i = (sim_i - leave_i) / (1 - leave_i)`: 0 at the edge where the gene switches off,
-//!   1 at its center, so a broad gene and a narrow one compare on the same footing (a raw
-//!   margin would hand every turn to the broadest gene). Chosen over a softmax because (1) a gene's weight falls
-//!   continuously to zero at the edge where it switches off, so drifting out of a region
-//!   never steps the mix; (2) one gene alone runs at its trained scale 1.0, exactly what
-//!   it did before; (3) the deltas never sum past one trained adapter's magnitude. A
-//!   softmax needs a temperature, which is a constant or a second use of the null's σ, and
-//!   gives a gene that barely entered a large share.
-//! - **Held while the set holds.** The engine clears a slot's KV whenever its adapter
-//!   scales change at all (fork `are_lora_equal` compares scales exactly; server-context
-//!   `lora_should_clear_cache`), so re-weighting each turn would re-prefill her whole
-//!   context every turn. The weights are computed when the applied SET changes (which costs
-//!   that re-prefill anyway) and held bit-identical until it changes again.
-//! - **No need, no change.** Without a need embedding (nothing to embed, no embedder), the
-//!   routed genes stay as they were.
+//! - **Inside.** A gene's floor `f` is its own spread
+//!   ([`GeneSignature::region`](crate::genome::signature::GeneSignature): the 10th-percentile
+//!   similarity of its own corpus, filed at mint), never below the space's measured unrelated
+//!   null + 2σ (a diffuse gene must not ride every turn). A gene with neither, or signed in
+//!   another embedding space, cannot be routed by distance: it runs at its trained scale as every
+//!   gene did before routing existed (a gene never leaves her head by silence), named unrouted.
+//! - **Weight.** `a = clamp((sim - f) / (1 - f), 0, 1)`: 0 at the floor, 1 at the center, so a
+//!   broad gene and a narrow one compare on the same footing. The `capacity` heaviest are kept
+//!   (the genes the engine holds on the device; the working-set owner says how many), and each
+//!   runs at `a / max(1, Σa)`: one gene alone runs at its depth, never above its trained 1.0, and
+//!   the deltas of several never sum past one trained adapter's magnitude.
+//! - **Hysteresis.** A gene enters at its floor (distance `r = 1 - f`) and stays until the
+//!   distance passes `1.5 r` (§3d), so a topic at a region's edge does not switch it every turn.
+//! - **Held while the set holds.** The engine clears a slot's KV whenever its adapter scales
+//!   change at all (fork `are_lora_equal` compares scales exactly; server-context
+//!   `lora_should_clear_cache`), so re-weighting each turn would re-prefill her whole context
+//!   every turn. Scales are computed when the routed SET changes (which costs that re-prefill
+//!   anyway) and held bit-identical until it changes again. A gene kept only by hysteresis has
+//!   `a = 0`, so the next recompute drops it.
+//! - **No perception, no change.** Without a perception embedding, routed genes stay as they were.
 
 use std::collections::{BTreeMap, HashMap};
 
@@ -49,7 +45,7 @@ const NULL_SIGMAS: f32 = 2.0;
 /// "enter at r, leave at 1.5 r").
 const LEAVE_DISTANCE_RATIO: f32 = 1.5;
 
-/// The turn's need, embedded once by the caller (selection stays pure and sync).
+/// The turn's perception, embedded once by the caller (the composer stays pure and sync).
 #[derive(Debug, Clone, Copy)]
 pub struct Need<'a> {
     pub embedder_id: &'a str,
@@ -68,8 +64,8 @@ pub struct Candidate<'a> {
 /// How a considered gene was routed this turn.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Route {
-    /// Compared by distance: its similarity and the region edges it was held to.
-    Distance { similarity: f32, enter: f32, leave: f32, inside: bool },
+    /// Compared by distance: its similarity, the edges it was held to, its depth `a`.
+    Distance { similarity: f32, floor: f32, leave: f32, weight: f32, inside: bool },
     /// No usable signature in the need's space: applied at its trained scale.
     Unrouted,
     /// Signed, but the turn had no need to compare: kept as it was.
@@ -86,33 +82,58 @@ pub struct Considered {
     pub scale: f64,
 }
 
+/// A phenotype: the genes a turn runs with and their engine scales, heaviest first. Empty = the
+/// base alone.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct Phenotype {
+    pub genes: Vec<ActiveAdapterRequest>,
+}
+
+impl Phenotype {
+    /// `P ∖ g`: the same phenotype with gene `path` off and every other gene at its scale in `P`
+    /// (the examiner's comparison: `g` at its weight vs at 0, nothing else moved).
+    pub fn without(&self, path: &str) -> Phenotype {
+        Phenotype { genes: self.genes.iter().filter(|g| g.path != path).cloned().collect() }
+    }
+
+    /// The scale `path` runs at in this phenotype; 0 when it is not in it.
+    pub fn scale_of(&self, path: &str) -> f64 {
+        self.genes.iter().find(|g| g.path == path).map_or(0.0, |g| g.scale)
+    }
+}
+
 /// What [`select`] decided.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Selection {
-    /// The genes this turn runs with and their scales, heaviest first.
-    pub genes: Vec<ActiveAdapterRequest>,
+    pub phenotype: Phenotype,
     pub considered: Vec<Considered>,
     /// The applied set or a scale differs from the previous turn's: the engine clears her
     /// slot's KV and she re-prefills her context.
     pub changed: bool,
 }
 
-/// PURE: the region edges of a signed gene in the need's space, or `None` when it cannot
-/// be routed (no region and no measured null).
+/// PURE: the floor (enter edge) and leave edge of a signed gene in the perception's space, or
+/// `None` when it cannot be routed (no region and no measured null).
 fn edges(signature: &GeneSignature, need: &Need<'_>) -> Option<(f32, f32)> {
     let null_edge = need.unrelated_null.map(|(mean, std)| mean + NULL_SIGMAS * std);
-    let enter = match (signature.region, null_edge) {
+    let floor = match (signature.region, null_edge) {
         (Some(region), Some(null)) => region.max(null),
         (Some(region), None) => region,
         (None, Some(null)) => null,
         (None, None) => return None,
     };
-    Some((enter, 1.0 - LEAVE_DISTANCE_RATIO * (1.0 - enter)))
+    Some((floor, 1.0 - LEAVE_DISTANCE_RATIO * (1.0 - floor)))
 }
 
-/// PURE: the genes a turn runs with, given her candidates, the turn's need, and what she
-/// ran last turn (`previous`, with scales). See the module docs for the rule.
-pub fn select(need: Option<&Need<'_>>, candidates: &[Candidate<'_>], previous: &[ActiveAdapterRequest]) -> Selection {
+/// PURE: the phenotype for a turn, given her candidate genes, the turn's perception, how many
+/// genes the engine holds (`capacity`), and what she ran last turn (`previous`, with scales).
+/// See the module docs for the rule.
+pub fn select(
+    need: Option<&Need<'_>>,
+    candidates: &[Candidate<'_>],
+    capacity: usize,
+    previous: &[ActiveAdapterRequest],
+) -> Selection {
     let was: BTreeMap<&str, f64> = previous
         .iter()
         .filter(|g| g.scale != 0.0)
@@ -120,33 +141,33 @@ pub fn select(need: Option<&Need<'_>>, candidates: &[Candidate<'_>], previous: &
         .collect();
     let routes: Vec<Route> = candidates.iter().map(|c| route(c, need, was.contains_key(c.gene.path.as_str()))).collect();
 
-    // The routed genes inside their regions, with their depth inside each.
-    let margins: Vec<(usize, f32)> = routes
+    // The routed genes in the set: inside (or held by hysteresis), heaviest `capacity` of them.
+    let mut kept: Vec<(usize, f32)> = routes
         .iter()
         .enumerate()
         .filter_map(|(i, r)| match *r {
-            Route::Distance { similarity, leave, inside: true, .. } => {
-                Some((i, ((similarity - leave) / (1.0 - leave)).max(f32::EPSILON)))
-            }
+            Route::Distance { weight, inside: true, .. } => Some((i, weight)),
             _ => None,
         })
         .collect();
+    kept.sort_by(|a, b| b.1.total_cmp(&a.1).then_with(|| candidates[a.0].gene.path.cmp(&candidates[b.0].gene.path)));
+    kept.truncate(capacity);
     let routed_was = routes
         .iter()
         .zip(candidates)
         .filter(|(r, c)| matches!(r, Route::Distance { .. }) && was.contains_key(c.gene.path.as_str()))
         .count();
-    let held: Option<Vec<f64>> = margins
+    let held: Option<Vec<f64>> = kept
         .iter()
         .map(|(i, _)| was.get(candidates[*i].gene.path.as_str()).copied())
         .collect::<Option<Vec<f64>>>()
         .filter(|w| w.len() == routed_was);
-    let total: f32 = margins.iter().map(|(_, m)| m).sum();
+    let total: f32 = kept.iter().map(|(_, a)| a).sum();
     let mut scales = vec![0.0f64; candidates.len()];
-    for (k, &(i, m)) in margins.iter().enumerate() {
+    for (k, &(i, a)) in kept.iter().enumerate() {
         scales[i] = match &held {
             Some(w) => w[k],
-            None => f64::from(m / total),
+            None => f64::from(a / total.max(1.0)),
         };
     }
     for (i, r) in routes.iter().enumerate() {
@@ -175,7 +196,7 @@ pub fn select(need: Option<&Need<'_>>, candidates: &[Candidate<'_>], previous: &
         .zip(scales)
         .map(|((c, route), scale)| Considered { name: c.gene.name.clone(), path: c.gene.path.clone(), route, scale })
         .collect();
-    Selection { changed, genes, considered }
+    Selection { changed, phenotype: Phenotype { genes }, considered }
 }
 
 /// PURE: how one candidate is routed this turn (`was_on`: it ran last turn).
@@ -186,13 +207,14 @@ fn route(candidate: &Candidate<'_>, need: Option<&Need<'_>>, was_on: bool) -> Ro
     let Some(need) = need else {
         return Route::Kept;
     };
-    let (Some(similarity), Some((enter, leave))) =
+    let (Some(similarity), Some((floor, leave))) =
         (signature.similarity_in(need.embedder_id, need.vector), edges(signature, need))
     else {
         return Route::Unrouted;
     };
-    let inside = similarity >= enter || (was_on && similarity >= leave);
-    Route::Distance { similarity, enter, leave, inside }
+    let weight = ((similarity - floor) / (1.0 - floor)).clamp(0.0, 1.0);
+    let inside = weight > 0.0 || (was_on && similarity >= leave);
+    Route::Distance { similarity, floor, leave, weight, inside }
 }
 
 /// What each mind ran last turn: the hysteresis memory and the held weights. Per process:
@@ -203,11 +225,10 @@ fn last_applied() -> &'static Mutex<HashMap<Uuid, Vec<ActiveAdapterRequest>>> {
     LAST.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-/// The genes her next turn runs with, chosen by distance from `need_text` (what her mind is
-/// on: the turn's focused line). `None` when her genome cannot be read (no serving base, an
-/// unreadable trial file): the caller then keeps the genome she has, and the reason is on
-/// the probe stream.
-pub async fn live_genes(persona: Uuid, need_text: &str) -> Option<Vec<ActiveAdapterRequest>> {
+/// Her phenotype for the next turn, composed from `perception` (what her mind is on: the turn's
+/// focused line). `None` when her genome cannot be read (no serving base, an unreadable trial
+/// file): the caller then keeps the genome she has, and the reason is on the probe stream.
+pub async fn compose(persona: Uuid, perception: &str) -> Option<Phenotype> {
     let base = crate::inference::llama_server::current_serving().active_model?;
     let store = crate::genome::gene_trial::GeneTrials::default_store()?;
     let trials = match store.load() {
@@ -222,10 +243,10 @@ pub async fn live_genes(persona: Uuid, need_text: &str) -> Option<Vec<ActiveAdap
             return None;
         }
     };
-    let genes = crate::genome::gene_trial::genes_for_turn(&trials, persona, &base);
+    let genes = crate::genome::gene_trial::her_genes(&trials, persona, &base);
     if genes.is_empty() {
         last_applied().lock().remove(&persona);
-        return Some(genes);
+        return Some(Phenotype::default());
     }
     let signatures = match crate::genome::signature::signature_store_path().and_then(|p| SignatureStore::load_at(&p)) {
         Ok(store) => store,
@@ -246,9 +267,9 @@ pub async fn live_genes(persona: Uuid, need_text: &str) -> Option<Vec<ActiveAdap
             Candidate { gene, signature }
         })
         .collect();
-    let embedded = if candidates.iter().any(|c| c.signature.is_some()) && !need_text.trim().is_empty() {
+    let embedded = if candidates.iter().any(|c| c.signature.is_some()) && !perception.trim().is_empty() {
         let embedder = crate::ai::embedding::resolve_recall_embedder_local().await;
-        Some((embedder.id().to_string(), embedder.embed(need_text).await, embedder.unrelated_null()))
+        Some((embedder.id().to_string(), embedder.embed(perception).await, embedder.unrelated_null()))
     } else {
         None
     };
@@ -258,22 +279,25 @@ pub async fn live_genes(persona: Uuid, need_text: &str) -> Option<Vec<ActiveAdap
         unrelated_null: *null,
     });
     let previous = last_applied().lock().get(&persona).cloned().unwrap_or_default(); // unwrap_or_default: a mind with no turn yet this process ran no genes
-    let selection = select(need.as_ref(), &candidates, &previous);
+    // Capacity: every gene she has, until the gene working set reports how many the engine holds
+    // on the device (genome::working_set, the LOADED tier).
+    let selection = select(need.as_ref(), &candidates, candidates.len(), &previous);
     probe_selection(persona, &selection);
-    last_applied().lock().insert(persona, selection.genes.clone());
-    Some(selection.genes)
+    last_applied().lock().insert(persona, selection.phenotype.genes.clone());
+    Some(selection.phenotype)
 }
 
-/// `genome.select`: every gene considered, its similarity and edges, the scale it runs at;
-/// and, when the set changed, what the change costs her.
+/// `genome.select`: every gene considered, its similarity, floor, leave edge, depth and the
+/// scale it runs at; and, when the set changed, what the change costs her.
 fn probe_selection(persona: Uuid, selection: &Selection) {
     let rows: Vec<String> = selection
         .considered
         .iter()
         .map(|c| match c.route {
-            Route::Distance { similarity, enter, leave, .. } => {
-                format!("{} sim={similarity:.3} enter={enter:.3} leave={leave:.3} scale={:.3}", c.name, c.scale)
-            }
+            Route::Distance { similarity, floor, leave, weight, .. } => format!(
+                "{} sim={similarity:.3} floor={floor:.3} leave={leave:.3} a={weight:.3} scale={:.3}",
+                c.name, c.scale
+            ),
             Route::Unrouted => format!("{} unrouted scale={:.3}", c.name, c.scale),
             Route::Kept => format!("{} kept scale={:.3}", c.name, c.scale),
         })
@@ -282,7 +306,7 @@ fn probe_selection(persona: Uuid, selection: &Selection) {
         class = "genome.select",
         persona = %persona,
         considered = selection.considered.len() as u64,
-        applied = selection.genes.len() as u64,
+        applied = selection.phenotype.genes.len() as u64,
         changed = selection.changed,
         genes = %rows.join("; "),
         "the genes this turn runs with, by distance from what her mind is on"
@@ -291,10 +315,20 @@ fn probe_selection(persona: Uuid, selection: &Selection) {
         continuum_base::probe!(
             class = "genome.select.set_changed",
             persona = %persona,
-            applied = selection.genes.len() as u64,
+            applied = selection.phenotype.genes.len() as u64,
             "her gene set or a scale changed: the engine clears her slot's KV and she re-prefills her context, and her slot batches only with minds running the same set"
         );
     }
+}
+
+/// The `persona.genome.turn_genes` rendering of a phenotype: each gene and its scale.
+pub fn render(phenotype: &Phenotype) -> String {
+    phenotype
+        .genes
+        .iter()
+        .map(|g| format!("{}={:.3}", g.name, g.scale))
+        .collect::<Vec<_>>()
+        .join(",")
 }
 
 #[cfg(test)]

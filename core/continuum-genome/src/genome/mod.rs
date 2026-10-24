@@ -72,7 +72,7 @@ pub mod fitness_ledger;
 pub mod examiner;
 pub mod gene_trial;
 pub mod local_manager;
-pub mod selection;
+pub mod composer;
 pub mod signature;
 pub mod manager;
 pub mod recall;
