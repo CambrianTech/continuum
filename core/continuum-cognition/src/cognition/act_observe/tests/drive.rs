@@ -514,6 +514,7 @@ async fn fixed_point_requires_available_finished_result_evidence() {
     let mut acts = acts_of(apply_act(
         &cycle, &[call.clone()], "inspect", Uuid::new_v4(), &ActChain::new(),
         None,
+        None,
         )
         .await,
     );

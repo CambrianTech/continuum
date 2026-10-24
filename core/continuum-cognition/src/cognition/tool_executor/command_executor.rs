@@ -495,6 +495,22 @@ impl ToolExecutor for CommandToolExecutor {
         Some(Arc::new(Self::for_persona_bound(core, persona, context)))
     }
 
+    fn issued_by(&self, persona: Uuid, generation: String) -> Option<Arc<dyn ToolExecutor>> {
+        let core = self.core.clone()?;
+        let identity = CallerIdentity::local_persona(crate::identity::PeerId::from_uuid(persona));
+        let identity = match self.hands {
+            Some(context) => identity.in_hands(context),
+            None => identity,
+        };
+        // Borrows the hands for one batch: the executor that owns them keeps the release.
+        Some(Arc::new(Self {
+            conn: Connection::new(InProcessTransport::new(core.clone(), Some(identity.issued_by(generation)))),
+            core: Some(core),
+            hands: self.hands,
+            _release: None,
+        }))
+    }
+
     async fn execute_native_batch(
         &self,
         calls: &[NativeToolCall],

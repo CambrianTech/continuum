@@ -39,6 +39,7 @@ async fn apply_act_scopes_to_the_room_and_observes_the_result() {
         room,
         &ActChain::new(),
         None,
+        None,
     )
     .await
     {
@@ -184,6 +185,7 @@ async fn a_folded_running_alias_still_registers_its_dispatch_handle() {
         Uuid::new_v4(),
         &ActChain::new(),
         None,
+        None,
     )
     .await
     {
@@ -234,6 +236,7 @@ async fn apply_act_without_hands_abstains() {
                 Uuid::new_v4(),
                 &ActChain::new(),
         None,
+        None,
     )
             .await,
             ActOutcome::NoHands
@@ -259,6 +262,7 @@ async fn apply_act_abstains_when_the_hand_fails() {
                 Uuid::new_v4(),
                 &ActChain::new(),
         None,
+        None,
     )
             .await,
             ActOutcome::ExecutorError { .. }
@@ -266,4 +270,80 @@ async fn apply_act_abstains_when_the_hand_fails() {
         "a batch-level failure surfaces as ExecutorError, distinct from NoHands"
     );
     assert_eq!(adm.engram_count(), 0, "a failed act admits no memory");
+}
+
+// what this catches (card fe8554d2): her calls carry the generation that issued them, bound by
+// the act seam, so work/submit can tie a submission to the turn that made it. Every call of one
+// act (two submits in one batch) carries the same generation; an act with no generation is not
+// stamped; hands that cannot stamp still act, unstamped, as before.
+#[tokio::test]
+async fn an_acts_calls_carry_the_generation_that_issued_them() {
+    #[derive(Clone)]
+    struct StampingExecutor {
+        issued: Option<String>,
+        seen: Arc<Mutex<Vec<Option<String>>>>,
+    }
+    #[async_trait]
+    impl ToolExecutor for StampingExecutor {
+        fn issued_by(&self, _persona: Uuid, generation: String) -> Option<Arc<dyn ToolExecutor>> {
+            Some(Arc::new(Self { issued: Some(generation), seen: self.seen.clone() }))
+        }
+        async fn execute_native_batch(
+            &self,
+            calls: &[ToolCall],
+            _context: &ToolExecutionContext,
+            _max_result_chars: usize,
+        ) -> Result<NativeBatchOutcome, ToolError> {
+            if let Ok(mut seen) = self.seen.lock() {
+                seen.extend(calls.iter().map(|_| self.issued.clone()));
+            }
+            Ok(NativeBatchOutcome {
+                results: calls
+                    .iter()
+                    .map(|c| crate::ai::types::ToolResult {
+                        tool_use_id: c.id.clone(),
+                        content: "ok".into(),
+                        is_error: None,
+                        custody: crate::ai::types::ResultCustody::Unsaved,
+                    })
+                    .collect(),
+                media: Vec::new(),
+                stored_ids: Vec::new(),
+                verdicts: Vec::new(),
+            })
+        }
+        async fn parse_response(&self, _response_text: &str, _model_family: Option<&str>) -> Result<ParsedToolBatch, ToolError> {
+            Ok(ParsedToolBatch { tool_calls: Vec::new(), cleaned_text: String::new(), parse_time_us: 0 })
+        }
+        async fn store_outcome(&self, _outcome: &ToolOutcome, _context: &ToolExecutionContext) -> Result<Uuid, ToolError> {
+            Ok(Uuid::nil())
+        }
+    }
+    let seen_of = |exec: &StampingExecutor| match exec.seen.lock() {
+        Ok(seen) => seen.clone(),
+        Err(poisoned) => panic!("stamp record poisoned: {poisoned}"),
+    };
+    let two_submits = [
+        ToolCall { id: "submit-1".into(), name: "work/submit".into(), input: serde_json::json!({"card_id": "a"}) },
+        ToolCall { id: "submit-2".into(), name: "work/submit".into(), input: serde_json::json!({"card_id": "b"}) },
+    ];
+
+    let exec = StampingExecutor { issued: None, seen: Arc::new(Mutex::new(Vec::new())) };
+    let cycle = WorkspaceCycle::new(Vec::new(), Arc::new(SalienceArbiter), 8)
+        .with_acting(body(Arc::new(exec.clone()), admission()));
+    let stamped = apply_act(&cycle, &two_submits, "submit both", Uuid::new_v4(), &ActChain::new(), None, Some("gen-1".into())).await;
+    assert!(matches!(stamped, ActOutcome::Acted { .. }), "{stamped:?}");
+    assert_eq!(seen_of(&exec), vec![Some("gen-1".to_string()); 2], "one act, one issuing generation, every call");
+
+    let exec = StampingExecutor { issued: None, seen: Arc::new(Mutex::new(Vec::new())) };
+    let cycle = WorkspaceCycle::new(Vec::new(), Arc::new(SalienceArbiter), 8)
+        .with_acting(body(Arc::new(exec.clone()), admission()));
+    let unstamped = apply_act(&cycle, &[tool_call()], "no generation", Uuid::new_v4(), &ActChain::new(), None, None).await;
+    assert!(matches!(unstamped, ActOutcome::Acted { .. }), "{unstamped:?}");
+    assert_eq!(seen_of(&exec), vec![None], "no generation, no stamp");
+
+    let plain = Arc::new(RecordingExecutor { seen_context: Arc::new(Mutex::new(None)), result_content: "ok".into() });
+    let cycle = WorkspaceCycle::new(Vec::new(), Arc::new(SalienceArbiter), 8).with_acting(body(plain, admission()));
+    let acted = apply_act(&cycle, &[tool_call()], "cannot stamp", Uuid::new_v4(), &ActChain::new(), None, Some("gen-2".into())).await;
+    assert!(matches!(acted, ActOutcome::Acted { .. }), "hands that cannot stamp still act: {acted:?}");
 }

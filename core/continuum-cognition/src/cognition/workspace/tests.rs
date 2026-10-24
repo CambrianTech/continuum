@@ -629,6 +629,38 @@
         );
     }
 
+    // what this catches (card fe8554d2): the generation an act carries is the one that made its
+    // decision: the winning verdict's own last SERVED receipt, past a retry's fault. Never
+    // another faculty's generation, though the turn-wide receipts list it later
+    // (phase-then-faculty order, not chronology).
+    #[tokio::test]
+    async fn the_decision_generation_is_the_winning_verdicts_served_receipt() {
+        use crate::ai::provenance::{GenerationOutcome, GenerationReceipt};
+        let receipt = |id: &str, outcome: GenerationOutcome| GenerationReceipt {
+            submitted_request_id: id.into(),
+            outcome,
+            capture: None,
+            genes: Vec::new(),
+            gene_scales: Vec::new(),
+        };
+        let served = || GenerationOutcome::Served { model: "m".into(), provider: "p".into(), provider_request_id: None };
+        let faulted = || GenerationOutcome::Faulted { detail: "lane refused".into(), model: None, provider: None };
+        let mut verdict = Contribution::verdict(Decision::Speak { text: "done".into() }, 0.8, "decided");
+        verdict.receipts = vec![receipt("decided", served()), receipt("retry-fault", faulted())];
+        verdict.receipts.swap(0, 1); // the fault came first, the retry served
+        let mut context = Contribution::context(FacultyId::Recall, "context", 0.4, "recalled");
+        context.receipts = vec![receipt("other-faculty", served())];
+        let faculties: Vec<Arc<dyn Faculty>> =
+            vec![Arc::new(FixedFaculty(verdict)), Arc::new(FixedFaculty(context))];
+        let ws = cycle(faculties, 5).run("decide").await;
+        assert_eq!(ws.decision_generation().as_deref(), Some("decided"));
+
+        let mut all_faulted = Contribution::verdict(Decision::Speak { text: "x".into() }, 0.8, "faulted");
+        all_faulted.receipts = vec![receipt("only-fault", faulted())];
+        let ws = cycle(vec![Arc::new(FixedFaculty(all_faulted))], 5).run("decide").await;
+        assert_eq!(ws.decision_generation(), None, "a decision with no served generation carries none");
+    }
+
     // what this catches: one cycle runs over a CONSOLIDATED burst (the whole
     // world-state at once), not per-event — the efficiency spine.
     #[tokio::test]
