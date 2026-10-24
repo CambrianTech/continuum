@@ -115,7 +115,7 @@ jobs:
           bash tools/scripts/tests/start-server-airc-recovery.test.sh
           bash tools/scripts/tests/install-llama-server-slots.test.sh
           python3 tools/scripts/tests/test_ci_lib_test_artifact.py
-          python3 -m unittest discover -s core/continuum-mind/src/genome/fine_tuning -p cuda_train_test.py -v
+          python3 -m unittest discover -s core/continuum-genome/src/genome/fine_tuning -p cuda_train_test.py -v
           export CONTINUUM_NATIVE_CONTAINER_LEASE_TEST="$RUNNER_TEMP/continuum-container-custody-test"
           c++ -std=c++17 -O1 -pthread -I core/vendor/llama.cpp/ggml/src -I core/vendor/llama.cpp/ggml/include \
             core/vendor/llama.cpp/tests/test-moe-residency.cpp -o "$CONTINUUM_NATIVE_CONTAINER_LEASE_TEST"
@@ -154,6 +154,7 @@ jobs:
             --skip 'persona::allocator::tests::test_allocate'
           # Perception and rag, cut out of the mind (core/continuum-perception, card 2f5b275b).
           cargo test -p continuum-perception --lib --profile dev-fast --features test-fixtures
+          cargo test -p continuum-genome --lib --profile dev-fast --features test-fixtures
           interop_output=$(cargo test -p continuum-engine --lib --profile dev-fast --features test-fixtures \
             model_registry::artifacts::expert_placement::tests::fs2_and_native_container_locks_interoperate_across_processes \
             -- --exact --ignored --nocapture 2>&1)

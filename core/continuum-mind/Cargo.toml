@@ -15,6 +15,7 @@ continuum-engine = { path = "../continuum-engine" }
 continuum-hands = { path = "../continuum-hands" }
 continuum-live = { path = "../continuum-live" }
 continuum-perception = { path = "../continuum-perception" }
+continuum-genome = { path = "../continuum-genome" }
 tokio.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -41,25 +42,19 @@ airc-lib.workspace = true
 airc-work.workspace = true
 async-trait.workspace = true
 chrono.workspace = true
-axum = "0.8"
 parking_lot.workspace = true
 tokio-stream.workspace = true
 futures-util.workspace = true
 futures = "0.3"
 once_cell.workspace = true
-rayon.workspace = true
 num_cpus = "1.16"  # CPU count detection
 dirs = "5.0"
 sysinfo = "0.33"  # Cross-platform CPU, memory, system resource monitoring
-candle-core.workspace = true
-candle-nn.workspace = true  # For VarBuilder
-safetensors.workspace = true  # Model weight files
 tracing.workspace = true
 ts-rs.workspace = true  # TypeScript type generation
 arc-swap = "1.7"           # Wait-free policy publish for SubstrateGovernor (Lane H)
 image = "0.25"
 regex = "1"
-tempfile = { version = "3", optional = true }  # test-fixtures: the job board's test storage
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util"] }
@@ -67,15 +62,16 @@ tempfile = "3"
 continuum-base = { path = "../continuum-base", features = ["test-fixtures"] }
 continuum-client = { path = "../../client/continuum-client", features = ["test-fixtures"] }
 continuum-positron = { path = "../continuum-positron", features = ["test-fixtures"] }
+continuum-genome = { path = "../continuum-genome", features = ["test-fixtures"] }
 
 [features]
 default = []
 # The GPU backends are the engine's (llama, candle); the mind forwards them so it builds and
 # tests on its own with the same flags core takes.
-metal = ["continuum-engine/metal", "continuum-live/metal"]
-cuda = ["continuum-kernel/cuda", "continuum-engine/cuda"]
-vulkan = ["continuum-kernel/vulkan", "continuum-engine/vulkan"]
-stress-tests = ["continuum-kernel/stress-tests"]
+metal = ["continuum-engine/metal", "continuum-live/metal", "continuum-genome/metal"]
+cuda = ["continuum-kernel/cuda", "continuum-engine/cuda", "continuum-genome/cuda"]
+vulkan = ["continuum-kernel/vulkan", "continuum-engine/vulkan", "continuum-genome/vulkan"]
+stress-tests = ["continuum-kernel/stress-tests", "continuum-genome/stress-tests"]
 # Test-only code (fixtures shared with core's integration tests, the heuristic adapter it
 # drives); production binaries never build with it.
-test-fixtures = ["continuum-base/test-fixtures", "continuum-kernel/test-fixtures", "continuum-engine/test-fixtures", "continuum-hands/test-fixtures", "continuum-live/test-fixtures", "continuum-perception/test-fixtures", "dep:tempfile"]
+test-fixtures = ["continuum-base/test-fixtures", "continuum-kernel/test-fixtures", "continuum-engine/test-fixtures", "continuum-hands/test-fixtures", "continuum-live/test-fixtures", "continuum-perception/test-fixtures", "continuum-genome/test-fixtures"]
