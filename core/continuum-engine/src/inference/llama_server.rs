@@ -138,6 +138,7 @@ pub use ephemeral::{
 
 mod control_impl;
 mod launch;
+mod adopted_retirement;
 mod placement_stamp;
 mod prepare;
 

@@ -892,9 +892,11 @@
                 drop(receipt);
             } else {
                 assert!(checkpointing
-                    .checkpoint_residents(&client, &root)
+                    .checkpoint_before_replacement(&client, &root, &|| true)
                     .await
                     .is_err());
+                assert_eq!(endpoint.is_ready(), behavior == 7,
+                    "terminal save rejection resumes the original engine; uncertain saves stay closed");
                 assert_eq!(
                     endpoint.paging_recovery_required(),
                     behavior != 7,
@@ -922,9 +924,9 @@
                 "failed or unconfirmed overwrite invalidates previous saved eligibility"
             );
             drop(checkpointing);
-            assert!(
-                !endpoint.is_ready(),
-                "dropping writer never silently reopens"
+            assert_eq!(
+                endpoint.is_ready(), behavior == 7,
+                "dropping writer preserves the explicit resume decision"
             );
             prior = generation;
         }

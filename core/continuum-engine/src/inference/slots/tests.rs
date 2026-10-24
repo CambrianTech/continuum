@@ -2,6 +2,7 @@
 
 // The confirmed-save ledger: its page format, legacy migration and resident resume.
 mod ledger;
+mod adopted_checkpoint;
 
     // what this catches (card 9e3350bd; the 5090 2026-10-11, build 6148): the heartbeat's smoke
     // probe ran on a one-slot lane's only slot, replacing the resident's KV, and the next save
