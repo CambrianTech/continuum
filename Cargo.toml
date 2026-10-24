@@ -27,6 +27,7 @@ members = [
     "core/continuum-memory",
     "core/continuum-experience",
     "core/continuum-cognition",
+    "core/continuum-academy",
     "core/continuum-live",
     "core/continuum-hands",
     "core/continuum-engine",

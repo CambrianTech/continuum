@@ -13,7 +13,7 @@ use super::*;
 ///
 /// Callers root an acting context they opened (a fork's own hands); her own hands are
 /// never rooted here.
-pub(crate) async fn root_acting_workspace(
+pub async fn root_acting_workspace(
     cycle: &WorkspaceCycle,
     root: &str,
     path_prepend: &[String],

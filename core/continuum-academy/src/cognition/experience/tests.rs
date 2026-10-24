@@ -517,6 +517,62 @@
         );
     }
 
+    // What this catches: the lived record keeps EVERY room update the act driver perceived
+    // (teaching a failed episode with the same complete input) and still reads legacy JSON
+    // that predates `room_updates`. Moved here from act_observe's credit test when learning
+    // became its own crate above cognition; the driver half stays there.
+    #[test]
+    fn lived_record_keeps_every_room_update_and_reads_legacy_json() {
+        use crate::cognition::conversation::IncomingMessage;
+        use crate::cognition::curriculum::LivedExpansionSynthesizer;
+        use std::sync::Arc;
+        use uuid::Uuid;
+
+        let room = Uuid::new_v4();
+        let colleague = Uuid::new_v4();
+        let update = |lamport: u64, room_id: Uuid, text: &str| IncomingMessage {
+            work: None,
+            media: Vec::new(),
+            event_id: Uuid::new_v4(),
+            lamport,
+            peer_id: colleague,
+            text: text.into(),
+            room_id,
+        };
+        let updates = vec![
+            update(1, room, "Asha, the review target moved to src/new.rs; preserve the regression."),
+            update(1, Uuid::new_v4(), "Another activity has a question when you have attention available."),
+            update(2, Uuid::new_v4(), "Asha, newer evidence arrived during your second read; inspect src/final.rs."),
+        ];
+        let task = "Review the original src/lib.rs change and report a reproducible defect.";
+        let mut outcome = settled_speaking("done", 2, task);
+        outcome.room = room;
+        outcome.room_updates = Arc::new(updates.iter().cloned().map(Arc::new).collect());
+        let lived = ExperienceRecord::from_lived_turn(task, &outcome);
+        let encoded = serde_json::to_string(&lived).unwrap();
+        let mut restored: ExperienceRecord = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(restored.task.prompt, task);
+        assert_eq!(restored.world_state, task);
+        assert_eq!(restored.room, Some(room));
+        for update in &updates {
+            assert!(restored.room_updates.contains(update));
+            assert!(restored
+                .training_prompt()
+                .contains(&update.render_room_update()));
+        }
+        // A later failed episode is taught with the same complete input,
+        // through the ordinary lived-curriculum selector.
+        restored.ok = false;
+        let teaching = LivedExpansionSynthesizer::new().select(std::slice::from_ref(&restored));
+        assert_eq!(teaching, vec![restored.training_prompt()]);
+        let mut legacy: serde_json::Value = serde_json::from_str(&encoded).unwrap();
+        legacy.as_object_mut().unwrap().remove("room_updates");
+        assert!(serde_json::from_value::<ExperienceRecord>(legacy)
+            .unwrap()
+            .room_updates
+            .is_empty());
+    }
+
     mod durable_stream {
         use super::*;
 

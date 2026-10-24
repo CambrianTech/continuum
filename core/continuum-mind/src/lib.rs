@@ -11,7 +11,7 @@ pub use continuum_memory::memory;
 pub use continuum_experience::{experience, recipe};
 pub use continuum_perception::{perception, rag};
 
-pub use continuum_cognition::cognition;
+pub use continuum_academy::cognition;
 pub mod context;
 pub mod persona;
 pub mod vdd;
