@@ -610,11 +610,9 @@ mod tests {
                 grounding,
             ),
         ] {
-            assert!(home
-                .path()
-                .join(relative)
-                .join(format!("{persona}.jsonl"))
-                .is_file());
+            // Where the sinks wrote, through the one owner they write through (card 3c8b03ae).
+            let dir = crate::cognition::capture::fixture_dir(relative).expect("the test's native home resolves");
+            assert!(dir.starts_with(home.path()) && dir.join(format!("{persona}.jsonl")).is_file());
             let rows =
                 super::super::introspect_commands::tail_persona_jsonl(relative, &persona_text, 1)
                     .unwrap();

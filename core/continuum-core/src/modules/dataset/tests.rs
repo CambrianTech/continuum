@@ -503,3 +503,62 @@ snippet_200,Parser,"class Parser:\n    def parse(self, text):\n        return te
             .unwrap_err();
         assert!(err.contains("migrated to the typed registry"), "got: {err}");
     }
+
+    // what this catches (card 3c8b03ae, Codex's review of #5372): a capture writer and its
+    // reader resolving different homes. With $CONTINUUM_HOME pointing away from the native
+    // HOME and no per-thread test override, the turn the real recorder writes is the turn
+    // dataset/from-turns reads by default, and nothing lands under HOME/.continuum.
+    #[test]
+    fn a_turn_recorded_under_a_relocated_continuum_home_is_the_turn_from_turns_reads() {
+        use crate::cognition::PersonaSlot;
+        use crate::persona::response::{PersonaResponse, RespondInput};
+        let home = TempDir::new().unwrap();
+        let continuum = TempDir::new().unwrap();
+        let _home = crate::paths::test_home::HomeGuard::set_blocking(home.path());
+        std::env::set_var("CONTINUUM_HOME", continuum.path()); // restored by the guard
+        let input = RespondInput {
+            persona: PersonaSlot {
+                persona_id: uuid::Uuid::from_u128(7),
+                specialty: "general".to_string(),
+                display_name: "Relocated".to_string(),
+            },
+            turn_context: crate::persona::turn_context::TurnContext::arc(uuid::Uuid::from_u128(8), vec![], vec!["general".to_string()]),
+            message_id: uuid::Uuid::from_u128(9),
+            message_text: "where do my turns go?".to_string(),
+            other_persona_names: vec![],
+            system_prompt: "you are helpful".to_string(),
+            model: "test-model".to_string(),
+            is_voice: false,
+            message_media: vec![],
+            capabilities: std::collections::HashSet::new(),
+            recalled_engrams: vec![],
+            room_roster: vec![],
+            room_doctrine: None,
+        };
+        let response = PersonaResponse::Spoke {
+            persona_id: uuid::Uuid::from_u128(7),
+            text: "under the continuum home".to_string(),
+            model_used: "test-model".to_string(),
+            inference_ms: 1,
+            total_ms: 2,
+            think_blocks_emitted: 0,
+        };
+        crate::persona::recorder::record_turn(&input, &response, &crate::cognition::trace::CognitionTrace::new());
+
+        assert!(continuum.path().join(crate::persona::recorder::RESPOND_FIXTURE_DIR).is_dir(), "written under CONTINUUM_HOME");
+        assert!(!home.path().join(".continuum").exists(), "nothing under the native HOME");
+        let output_dir = continuum.path().join("out");
+        let v = service()
+            .from_turns(&FromTurnsParams {
+                turns_dir: None, // the default: the recorder's own place
+                output_dir: Some(output_dir.to_str().unwrap().to_string()),
+                name: "relocated-turns".to_string(),
+                split_ratio: 1.0,
+                include_system: true,
+                include_history: false,
+                persona_id: None,
+                room_id: None,
+            })
+            .unwrap();
+        assert_eq!(v.total_examples, 1, "the reader found the turn the writer wrote");
+    }
