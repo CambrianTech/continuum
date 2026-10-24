@@ -3,8 +3,7 @@
 //! The K3 capability-axis on-ramp: a Mixture-of-Experts model whose full weight set
 //! can't fit VRAM (K3 = 896 experts, ~594 GB) serves LOCALLY by keeping the HOT expert
 //! subset resident and paging the cold tail from the cold drive
-//! ([`ArtifactSource::Mapped`](crate::genome::blob::ArtifactSource) laid down by
-//! [`ingest_expert_sets`](crate::genome::expert_ingest::ingest_expert_sets)). WHICH
+//! ([`ArtifactSource::Mapped`](crate::genome::blob::ArtifactSource)). WHICH
 //! experts are hot is learned live from the router — M5's `ffn_moe_topk` eval-callback
 //! increments [`ExpertActivationProfile::hits`]; this is the sentinel-PGO signal.
 //!

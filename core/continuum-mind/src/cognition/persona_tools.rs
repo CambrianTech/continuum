@@ -346,13 +346,8 @@ pub fn render_tool_menu(
     out
 }
 
-/// Group the authorized tools into `(category, verbs)` pairs — the input
-/// [`tool_relevance::select_expanded_categories`] scores to decide which categories
-/// the menu opens. Verbs are the BARE names (no param hints): they are the category's
-/// vocabulary for lexical relevance, not a render. Stable (BTreeMap) order so the
-/// scored category list matches the spine order [`render_tool_menu`] emits.
-///
-/// [`tool_relevance::select_expanded_categories`]: crate::cognition::tool_relevance::select_expanded_categories
+/// Group the authorized tools into `(category, verbs)` pairs for the tool menu. Verbs are the BARE names (no param hints). Stable (BTreeMap) order
+/// so the category list matches the spine order [`render_tool_menu`] emits.
 pub fn group_categories(tools: &[NativeToolSpec]) -> Vec<(&str, Vec<&str>)> {
     let mut by_cat: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
     for t in tools {

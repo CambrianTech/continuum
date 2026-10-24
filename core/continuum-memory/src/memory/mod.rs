@@ -21,29 +21,16 @@
 
 pub mod cache;
 pub mod consciousness;
-pub mod consolidation_adapter;
-pub mod consolidation_pipeline;
-pub mod consolidation_threshold;
-pub mod consolidator;
 pub mod corpus;
 pub mod embedding;
-pub mod raw_adapter;
 pub mod recall;
 pub mod timeline;
 pub mod types;
 
 pub use cache::MemoryCache;
 pub use consciousness::build_consciousness_context;
-pub use consolidation_adapter::{
-    ConsolidatedMemory, ConsolidationAdapter, ConsolidationContext, ConsolidationResult,
-    MemoryType as ConsolidatedMemoryType, Thought,
-};
-pub use consolidation_pipeline::{run_consolidation_pass, to_corpus_memory};
-pub use consolidation_threshold::{AdaptiveConsolidationThreshold, ConsolidationThresholdStats};
-pub use consolidator::{ConsolidationMetrics, Consolidator, ConsolidatorStats};
 pub use corpus::MemoryCorpus;
 pub use embedding::{DeterministicEmbeddingProvider, EmbeddingProvider};
-pub use raw_adapter::RawMemoryAdapter;
 pub use recall::{MultiLayerRecall, RecallLayer, RecallQuery, ScoredMemory};
 pub use types::*;
 

@@ -63,15 +63,11 @@ pub mod adapter_manifest;
 pub mod blob;
 pub mod bus;
 pub mod candidate_source_store;
-pub mod eviction;
-pub mod expert_ingest;
 pub mod fine_tuning;
 pub mod fitness;
-pub mod commons_ranking;
 pub mod competence;
 pub mod corpus_ref;
 pub mod gym_grader;
-pub mod recall_select;
 pub mod fitness_ledger;
 pub mod gene_trial;
 pub mod local_manager;
@@ -79,7 +75,6 @@ pub mod signature;
 pub mod manager;
 pub mod recall;
 pub mod recall_trait;
-pub mod residency;
 pub mod store;
 pub mod teach;
 pub mod tier;
@@ -92,7 +87,6 @@ pub use bus::{
     publish_page_fault, subscribe_to_genome_events, ACCESS_DENIED_KEY, EVICTION_RECORD_KEY,
     PAGE_FAULT_KEY,
 };
-pub use eviction::rank_pages_for_eviction;
 pub use local_manager::LocalWorkingSetManager;
 pub use manager::WorkingSetManager;
 pub use recall::{
@@ -104,7 +98,6 @@ pub use recall_trait::{
     EngramRef, LoRALayerRef, MoEExpertRef, OutcomeWindow, RankedPool, RecallBudget, RecallContext,
     RecallScoreWeights, RecallTrace, TrajectoryHint, WeightSumOutOfBounds,
 };
-pub use residency::GenomeResidencyModule;
 pub use store::TierStore;
 pub use tier::{EvictionPolicy, EvictionRecord, TierCapacity, TierError, TierRole};
 pub use working_set::{AccessDenied, PageFault, PageHandle, ResidentPage, WorkingSet, WorkingSetCapacity};
@@ -115,9 +108,5 @@ pub use recall_scoring::{
 };
 pub mod recall_impl;
 pub use recall_impl::{CandidateArtifact, CandidateSource, LocalDemandAlignedRecall};
-pub mod recall_source_working_set;
-pub use recall_source_working_set::{WorkingSetCandidateSource, NEUTRAL_FACTOR_STUB};
 pub mod recall_source_composite;
 pub use recall_source_composite::{CompositeCandidateSource, DedupPolicy};
-pub mod recall_source_must_include;
-pub use recall_source_must_include::MustIncludeCandidateSource;

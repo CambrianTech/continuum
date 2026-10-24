@@ -31,14 +31,11 @@ pub mod framing_echo;
 pub mod not_speech;
 pub mod act_observe;
 pub mod directed_pending;
-pub mod act_replay;
-pub mod audit;
 pub mod bench_round;
 pub mod held_out;
 pub mod grid_allocation;
 pub mod measurement_staging;
 pub mod bench_task;
-pub mod round_readiness;
 pub mod activity;
 pub mod benchmark;
 pub mod benchmark_algotune;
@@ -74,7 +71,6 @@ pub mod generate_response;
 pub(crate) mod generation_drop;
 pub mod gym;
 pub mod gym_rng;
-pub mod host_capability_probe;
 pub mod inference_session;
 pub mod introspect_commands;
 pub mod learning_policy;
@@ -82,7 +78,6 @@ pub mod llm_deliberation_faculty;
 pub(crate) mod context_streams;
 pub mod tool_surface;
 pub mod model_binding;
-pub mod memory_consolidation_region;
 pub mod model_resolver;
 /// Paging cursors over large data she is working through, kept in working memory.
 pub mod open_views;
@@ -106,7 +101,6 @@ pub mod recall_ranker;
 pub mod audience;
 pub mod replay;
 pub mod room_roster;
-pub mod resolution;
 pub mod turn_ledger;
 pub mod response_orchestrator;
 pub mod response_validator;
@@ -116,22 +110,18 @@ pub mod should_respond;
 pub mod should_respond_module;
 pub mod swe_bench;
 pub mod swe_verdict_sweep;
-pub mod threat_detector;
 pub mod token_budget;
 pub mod tool_embedding;
 pub mod tool_executor;
-pub mod tool_relevance;
 pub mod turn_batch;
 pub mod types;
 pub mod validate_response;
 pub mod vision_describe;
 pub mod vision_gym;
-pub mod will;
 pub mod working_memory;
 pub mod working_set;
 pub mod workspace;
 pub mod workspace_capture;
-pub mod workspace_dashboard;
 // Leaf modules peeled down from persona (they name no persona module): the capture
 // fixture policy, the faculty ids persona's sources deliver under, the one budget
 // allocator, text analysis, prompt assembly, redaction, the health ledger, presence
@@ -155,7 +145,6 @@ pub use response_orchestrator::{
 pub use response_validator::{clean_and_validate, is_hard_failure, ValidationOutcome};
 pub use shared_analysis::{analyze, AnalysisInput, RecentMessage};
 pub use should_respond::*;
-pub use threat_detector::*;
 pub use tool_executor::{
     MediaItemLite, NativeBatchOutcome, ParsedToolBatch, PersonaMediaConfigLite,
     ToolExecutionContext, ToolExecutor, ToolInvocation, ToolOutcome,

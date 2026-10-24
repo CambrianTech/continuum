@@ -2,8 +2,7 @@
 //!
 //! Replaces `Result<T, String>` at the analyze / run_analysis /
 //! parse_model_output boundary so callers can pattern-match on the
-//! failure mode instead of substring-matching error text. Same shape
-//! as `cognition::host_capability_probe::ProbeError` (Joel's standing
+//! failure mode instead of substring-matching error text (Joel's standing
 //! "typed errors at IPC boundaries" rule, captured in
 //! `feedback_two_ironclad_rules_tests_and_fallbacks.md`).
 //!

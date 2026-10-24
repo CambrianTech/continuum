@@ -306,68 +306,6 @@ impl PersonaContext {
     }
 }
 
-// ─── Context trait impl ────────────────────────────────────────────────
-//
-// Per task #142 Slice 2 + [[airc-is-the-session-not-a-feature]]:
-// every actor on the substrate carries an `Identity` and an airc
-// citizen handle, reachable via the `Context` trait. `PersonaContext`
-// is the first concrete implementor; `StubContext`, `ClaudeContext`,
-// `JtagContext`, etc. follow the same shape.
-//
-// ## Transitional storage shape (Identity synthesized per call)
-//
-// `PersonaContext.identity` is still `PersonaInstanceInfo` (the
-// pre-Identity-entity struct). `Context::identity()` SYNTHESIZES an
-// `Identity` on each call, returning `Cow::Owned(synthesized)`. A
-// future slice migrates PersonaContext to store `Identity` directly;
-// the impl then becomes `Cow::Borrowed(&self.identity)` at zero cost.
-//
-// Per-call synthesis cost is acceptable per
-// [[substrate-overhead-is-1to3ms-LLM-dominates-latency]] — Uuid copy
-// + String clones are not the substrate's latency bottleneck.
-//
-// ## Identity Uuid — `ctx.identity().id` IS the registry key
-//
-// Slice 1B of #142 reseated `PersonaInstanceInfo.persona_id := peer_id`
-// at the runtime boundary; Step 4b of the identity-newtype wave then
-// DELETED the redundant `persona_id` twin entirely, leaving the single
-// canonical [`crate::identity::PeerId`] field `peer_id`. Callers use
-// `ctx.identity().id` as a registry key — it is the `.as_uuid()`
-// projection of that one `peer_id`, the same Uuid as
-// `airc.peer_id().as_uuid()`, per
-// [[persona-identity-derives-from-source-id]] (the cryptographic
-// keypair Uuid IS the substrate identity).
-impl crate::context::Context for PersonaContext {
-    fn identity(&self) -> std::borrow::Cow<'_, crate::identity::Identity> {
-        use crate::identity::{Identity, IdentityKind, IdentitySource};
-        use crate::persona::identity_provider::PersonaIdentitySource;
-
-        let source = match self.identity.source {
-            PersonaIdentitySource::ResumedFromDisk => IdentitySource::ResumedFromDisk,
-            PersonaIdentitySource::FreshlyMinted => IdentitySource::FreshlyMinted,
-        };
-
-        // Post-Step-4b there is one canonical identity field — `peer_id`,
-        // the airc cryptographic ground truth — so the dispatch
-        // `Identity.id` (a bare Uuid ORM key) is its `.as_uuid()` projection.
-        std::borrow::Cow::Owned(Identity {
-            id: self.identity.peer_id.as_uuid(),
-            kind: IdentityKind::Persona,
-            agent_name: self.identity.agent_name.clone(),
-            home_path: self.identity.home.to_string_lossy().into_owned(),
-            default_room: self.identity.default_room,
-            source,
-            // Personas aren't external AI agents — provider is None
-            // by definition. See Slice-4 IdentityKind doc.
-            agent_provider: None,
-        })
-    }
-
-    fn airc(&self) -> &Arc<dyn crate::persona::airc_citizen::AircCitizen> {
-        &self.runtime
-    }
-}
-
 /// Structured error per failed slot. The two failure modes are:
 ///
 /// - The slice-8 profile resolution already failed (bad model_id,
