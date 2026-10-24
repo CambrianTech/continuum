@@ -1,129 +1,6 @@
 use super::*;
 
-/// On-disk evidence re-check for a lapsed hold (card 13d7e47a, gap D of
-/// 1fc73f18). The in-memory pulse says she was idle; disk may disagree — a
-/// restart wipes the stamp while her commits stay. What we read here is what
-/// an incident reader needs to separate "truly idle" from "evidence wiped by
-/// restart": does the checkout exist, how old is its last commit relative to
-/// one lease length, and is there uncommitted work?
-struct LapseEvidence {
-    /// The card's staged checkout exists on this node.
-    checkout_present: bool,
-    /// Age of the checkout's HEAD commit in ms; None = no commit or unreadable.
-    head_commit_age_ms: Option<u64>,
-    /// Uncommitted changes (porcelain lines); None = status unreadable — a failed
-    /// read must not print as "clean".
-    dirty_files: Option<usize>,
-    /// The disambiguator: a commit within one lease length of now.
-    recent_within_ttl: bool,
-}
-
-/// Pure half of the evidence fold (testable without git): from a HEAD commit
-/// time and the clock, what does the disk say about recency?
-pub(crate) fn lapse_recency(
-    head_commit_ts_secs: Option<u64>,
-    now_ms: u64,
-    ttl_ms: u64,
-) -> (Option<u64>, bool) {
-    let age = head_commit_ts_secs.map(|ts| now_ms.saturating_sub(ts.saturating_mul(1000)));
-    (age, age.is_some_and(|a| a < ttl_ms))
-}
-
-/// The plumbing half: resolve the card's checkout and fold two bounded git reads
-/// into [`LapseEvidence`]. A hang is reported as unreadable, never waited out.
-fn lapse_evidence_recheck(peer: &Uuid, card: &airc_lib::WorkCard) -> LapseEvidence {
-    use crate::system_resources::bounded_command::{probe, Probed};
-
-    let absent = LapseEvidence {
-        checkout_present: false,
-        head_commit_age_ms: None,
-        dirty_files: None,
-        recent_within_ttl: false,
-    };
-    let Some(root) = crate::persona::card_checkout::checkout_path_for(peer, card) else {
-        return absent; // no staged checkout for this card — nothing to re-check
-    };
-    if !root.is_dir() {
-        return absent;
-    }
-    let root_s = root.to_string_lossy().to_string();
-    let now_ms = EpochMs::now().millis(); // pre-1970 reads 0: a pre-epoch clock reads 0, never a guess
-    let bound = crate::persona::work_board::advance::CHECKOUT_READ_BOUND;
-
-    let head_ts: Option<u64> = match probe(
-        "git",
-        &["-C", &root_s, "log", "-1", "--format=%ct"],
-        bound,
-    ) {
-        Probed::Exited { stdout, success } if success => stdout.trim().parse::<u64>().ok(),
-        // no commit yet / git failed: the evidence is "no commits", not a number
-        _ => None,
-    };
-    let (head_commit_age_ms, recent_within_ttl) = lapse_recency(
-        head_ts,
-        now_ms,
-        crate::cognition::card_facts::DEFAULT_CLAIM_TTL_MS,
-    );
-    let dirty_files = match probe("git", &["-C", &root_s, "status", "--porcelain"], bound) {
-        Probed::Exited { stdout, success } if success => Some(
-            stdout
-                .lines()
-                .filter(|line| !line.trim().is_empty())
-                .count(),
-        ),
-        _ => None,
-    };
-
-    LapseEvidence {
-        checkout_present: true,
-        head_commit_age_ms,
-        dirty_files,
-        recent_within_ttl,
-    }
-}
-
-#[cfg(test)]
-mod lapse_evidence_tests {
-    use super::*;
-
-    #[test]
-    fn a_commit_within_one_lease_length_is_recent() {
-        let now = 30u64 * 60 * 1000; // arbitrary clock: thirty minutes, in ms
-        let ttl = 30 * 60 * 1000;
-        let five_min_ago_secs = (now - 5 * 60 * 1000) / 1000;
-        let (age, recent) = lapse_recency(Some(five_min_ago_secs), now, ttl);
-        assert!(recent, "a commit from five minutes ago must read as work");
-        assert_eq!(age.unwrap() / 1000, 5 * 60, "the age should be what the clock says (±1s)");
-    }
-
-    #[test]
-    fn a_commit_older_than_one_lease_length_is_not_recent() {
-        let now_ms = 7_200_000u64; // two hours, in ms
-        let ttl = 30 * 60 * 1000;
-        let old_commit_secs = 100; // essentially at epoch — far older than one lease
-        let (age, recent) = lapse_recency(Some(old_commit_secs), now_ms, ttl);
-        assert!(!recent, "a commit from before the lease window must not read as work");
-        assert!(age.unwrap() > ttl);
-    }
-
-    #[test]
-    fn no_commit_is_never_recent() {
-        let (age, recent) = lapse_recency(None, 123_456, 1_800_000);
-        assert_eq!(age, None);
-        assert!(!recent);
-    }
-
-    #[test]
-    fn a_future_commit_clamps_to_zero_age_and_reads_recent() {
-        // clock skew must not print a negative age or read as "no evidence"
-        let (age, recent) = lapse_recency(Some(9_999_999), 100_000, 1_800_000);
-        assert_eq!(age, Some(0));
-        assert!(recent);
-    }
-}
-
 impl PersonaAircRuntime {
-
     /// [`Self::bootstrap`] generalized over the citizen KIND — the operator
     /// self-peer (#27) boots the SAME runtime as a persona (identity keypair,
     /// daemon attach, transcript/roster readers) homed under its own kind dir
@@ -145,11 +22,18 @@ impl PersonaAircRuntime {
         // Slice 4 of #142: symmetric citizens/<kind>/<label>/airc/
         // layout. Use the shared helper so every actor kind shares
         // the same path schema.
-        let home = crate::identity::citizen_path::citizen_home_path(continuum_root, kind, provider, &agent_name);
+        let home = crate::identity::citizen_path::citizen_home_path(
+            continuum_root,
+            kind,
+            provider,
+            &agent_name,
+        );
 
         // Migration: refuse to use the pre-Slice-4 layout. Hard-error
         // with the exact `mv` command per [[no-fallbacks-ever]].
-        if let Some(legacy) = crate::identity::citizen_path::legacy_home_path(continuum_root, kind, &agent_name) {
+        if let Some(legacy) =
+            crate::identity::citizen_path::legacy_home_path(continuum_root, kind, &agent_name)
+        {
             if tokio::fs::try_exists(&legacy).await.unwrap_or(false) {
                 let new_parent = home
                     .parent()
@@ -404,10 +288,8 @@ impl PersonaAircRuntime {
             let hb_name = agent_name.clone();
             // What she held before this core: the record beside her scope, so a followed
             // claim is renewed inside its first lease-length after a restart (2d9df546).
-            let recorded = crate::persona::held_claims::load(
-                hb_airc.peer_id().as_uuid(),
-                hb_airc.home(),
-            );
+            let recorded =
+                crate::persona::held_claims::load(hb_airc.peer_id().as_uuid(), hb_airc.home());
             if recorded > 0 {
                 continuum_base::probe!(
                     class = "persona.claim.record_loaded",
@@ -462,6 +344,11 @@ impl PersonaAircRuntime {
                 // a card that lapses again under a new claim generation records again.
                 let mut recorded_lapses: std::collections::HashSet<(uuid::Uuid, u64)> =
                     std::collections::HashSet::new();
+                // Earliest live lease expiry from the last board scan (ms). While
+                // denied her holds only change by lapsing — no turns, no claims — so
+                // a tick before this instant cannot have lapsed anything: the board
+                // is fetched at most once per expiry crossing, not every 60s.
+                let mut next_lapse_due: Option<u64> = None;
                 loop {
                     ticker.tick().await;
                     let serving = crate::inference::llama_server::current_serving();
@@ -575,66 +462,105 @@ impl PersonaAircRuntime {
                                         .map(|ms| ms.to_string())
                                         .unwrap_or_else(|| "never-thought".to_string()),
                                     ttl_ms = crate::cognition::card_facts::DEFAULT_CLAIM_TTL_MS,
-                                                "no cognition within one lease-length — renewals \
-                                                  DENIED from here until she thinks again; holds \
-                                                  lapse naturally so the work can be recovered"
-                                            );
-                                        }
-                                        // LAPSE-TIME OBSERVABILITY (card 13d7e47a, gaps C/D of
-                                        // 1fc73f18): denial is what lapses her holds — record WHY
-                                        // at the moment a hold has in fact lapsed. The pulse says
-                                        // idle; disk may disagree (a restart wipes the stamp), so
-                                        // re-check each lapsed checkout and carry its evidence:
-                                        // one row per lapse episode, keyed by lease generation.
-                                        if let Ok(board) = hb_airc
-                                            .work_board_complete(airc_lib::WORK_BOARD_PROJECTION_PAGE_SIZE)
-                                            .await
+                                    "no cognition within one lease-length — renewals \
+                                     DENIED from here until she thinks again; holds \
+                                     lapse naturally so the work can be recovered"
+                                );
+                            }
+                            // LAPSE-TIME OBSERVABILITY (card 13d7e47a, gaps C/D of
+                            // 1fc73f18): denial is what lapses her holds — record WHY at
+                            // the moment a hold has in fact lapsed. The pulse says idle;
+                            // disk may disagree (a restart wipes the stamp), so each
+                            // lapsed checkout gets an on-disk re-check and its evidence
+                            // rides the row: one per lapse episode, keyed by lease
+                            // generation.
+                            //
+                            // Fetch discipline: while denied her holds only change by
+                            // lapsing (no turns → no claims), so the board is fetched at
+                            // most once per expiry crossing — `next_lapse_due` carries
+                            // the earliest live lease from the last scan, and ticks
+                            // before it see nothing that can have lapsed.
+                            let due = next_lapse_due.map_or(true, |t| now_ms >= t);
+                            if due {
+                                if let Ok(board) = hb_airc
+                                    .work_board_complete(airc_lib::WORK_BOARD_PROJECTION_PAGE_SIZE)
+                                    .await
+                                {
+                                    let me = hb_airc.peer_id();
+                                    let mut next_due: Option<u64> = None;
+                                    for c in board.snapshot().cards.iter() {
+                                        if c.owner != Some(me)
+                                            || !matches!(
+                                                c.state,
+                                                airc_work::model::CardState::Claimed
+                                                    | airc_work::model::CardState::InProgress
+                                            )
                                         {
-                                            let me = hb_airc.peer_id();
-                                            for c in board.snapshot().cards.iter() {
-                                                if c.owner != Some(me)
-                                                    || !matches!(
-                                                        c.state,
-                                                        airc_work::model::CardState::Claimed
-                                                            | airc_work::model::CardState::InProgress
-                                                    )
-                                                {
-                                                    continue;
-                                                }
-                                                let Some(expiry) = c.claim_expires_at_ms else {
-                                                    continue; // no lease to lapse
-                                                };
-                                                if expiry > now_ms {
-                                                    continue; // still live — not lapsed yet
-                                                }
-                                                let key = (c.card_id.as_uuid(), expiry);
-                                                if !recorded_lapses.insert(key) {
-                                                    continue; // this episode is already recorded
-                                                }
-                                                let evidence = lapse_evidence_recheck(&me.as_uuid(), c);
-                                                continuum_base::probe!(
-                                                    class = "persona.claim.lapse_recorded",
-                                                    persona_id = %hb_persona,
-                                                    agent_name = %hb_name,
-                                                    card_id = %c.card_id.as_uuid(),
-                                                    denial_reason = %idle
-                                                        .map(|ms| format!("idle_{ms}ms"))
-                                                        .unwrap_or_else(|| "never-thought".to_string()),
-                                                    recent_evidence = evidence.recent_within_ttl,
-                                                    checkout_present = evidence.checkout_present,
-                                                    head_commit_age_ms = %evidence.head_commit_age_ms
-                                                        .map(|ms| ms.to_string())
-                                                        .unwrap_or_else(|| "unknown".to_string()),
-                                                    dirty_files = ?evidence.dirty_files,
-                                                    "claim lapsed while renewal was denied — why the \
-                                                     denial stood and what work evidence disk still held"
-                                                );
-                                            }
+                                            continue;
                                         }
-                                        continue;
+                                        let Some(expiry) = c.claim_expires_at_ms else {
+                                            continue; // no lease to lapse
+                                        };
+                                        if expiry > now_ms {
+                                            next_due = match next_due {
+                                                Some(t) => Some(t.min(expiry)),
+                                                None => Some(expiry),
+                                            };
+                                            continue; // still live — not lapsed yet
+                                        }
+                                        let key = (c.card_id.as_uuid(), expiry);
+                                        if !recorded_lapses.insert(key) {
+                                            continue; // this episode is already recorded
+                                        }
+                                        // The re-check is BLOCKING (two bounded git
+                                        // reads); run it off the async thread so a slow
+                                        // checkout can never pin a tokio worker that
+                                        // also serves her turns. `me` is this node's
+                                        // PeerId; the evidence fold keys by raw uuid, so
+                                        // hand the closure its own copies of both.
+                                        let peer = me.as_uuid();
+                                        let card = c.clone();
+                                        let evidence =
+                                            match tokio::task::spawn_blocking(move || {
+                                                super::lapse_evidence::lapse_evidence_recheck(
+                                                    &peer, &card,
+                                                )
+                                            })
+                                            .await
+                                            {
+                                                Ok(e) => e,
+                                                Err(_) => {
+                                                    super::lapse_evidence::LapseEvidence::absent()
+                                                } // join failed — no evidence, say so
+                                            };
+                                        continuum_base::probe!(
+                                            class = "persona.claim.lapse_recorded",
+                                            persona_id = %hb_persona,
+                                            agent_name = %hb_name,
+                                            card_id = %c.card_id.as_uuid(),
+                                            denial_reason = %idle
+                                                .map(|ms| format!("idle_{ms}ms"))
+                                                .unwrap_or_else(|| "never-thought".to_string()),
+                                            recent_evidence = evidence.recent_within_ttl,
+                                            checkout_present = evidence.checkout_present,
+                                            head_commit_age_ms = %evidence
+                                                .head_commit_age_ms
+                                                .map(|ms| ms.to_string())
+                                                .unwrap_or_else(|| "unknown".to_string()),
+                                            dirty_files = ?evidence.dirty_files,
+                                            "claim lapsed while renewal was denied — why the \
+                                             denial stood and what work evidence disk still held"
+                                        );
                                     }
+                                    next_lapse_due = next_due;
+                                }
+                            }
+                            continue;
+                        }
                         if renewal_denied {
                             renewal_denied = false;
+                            recorded_lapses.clear(); // the episodes ended — bound the set
+                            next_lapse_due = None; // re-establish from a fresh scan on the next denial
                             continuum_base::probe!(
                                 class = "persona.claim.renewal_resumed",
                                 persona_id = %hb_persona,
@@ -672,14 +598,13 @@ impl PersonaAircRuntime {
                                 .iter()
                                 .filter(|c| {
                                     crate::persona::cognition_pulse::renewal_earned(
-                                            crate::persona::cognition_pulse::work_idle_ms(
-                                                hb_persona,
-                                                Some(c.card_id.as_uuid()),
-                                                now_ms,
-                                            ),
-                                            crate::cognition::card_facts::DEFAULT_CLAIM_TTL_MS,
-                                        )
-                                        && c.owner == Some(me)
+                                        crate::persona::cognition_pulse::work_idle_ms(
+                                            hb_persona,
+                                            Some(c.card_id.as_uuid()),
+                                            now_ms,
+                                        ),
+                                        crate::cognition::card_facts::DEFAULT_CLAIM_TTL_MS,
+                                    ) && c.owner == Some(me)
                                         && c.claim_expires_at_ms.is_some_and(|e| e <= now_ms)
                                         && crate::cognition::bench_round::card_round_is_working(
                                             c.card_id.as_uuid(),
@@ -690,21 +615,31 @@ impl PersonaAircRuntime {
                                                 | airc_work::model::CardState::InProgress
                                         )
                                 })
-                                .max_by_key(|c| (
-                                    crate::persona::work_focus::explicit_choice_key(c.card_id.as_uuid(), c.claim_provenance.as_ref()),
-                                    c.updated_at_ms,
-                                ))
-                                .filter(|candidate| crate::persona::work_focus::recovery_preferred_over_live(
-                                    candidate,
-                                    snapshot.cards.iter().filter(|c| c.owner == Some(me)
-                                        && c.claim_expires_at_ms.is_some_and(|e| e > now_ms)),
-                                ));
+                                .max_by_key(|c| {
+                                    (
+                                        crate::persona::work_focus::explicit_choice_key(
+                                            c.card_id.as_uuid(),
+                                            c.claim_provenance.as_ref(),
+                                        ),
+                                        c.updated_at_ms,
+                                    )
+                                })
+                                .filter(|candidate| {
+                                    crate::persona::work_focus::recovery_preferred_over_live(
+                                        candidate,
+                                        snapshot.cards.iter().filter(|c| {
+                                            c.owner == Some(me)
+                                                && c.claim_expires_at_ms.is_some_and(|e| e > now_ms)
+                                        }),
+                                    )
+                                });
                             if let Some(card) = recoverable {
                                 match hb_airc
                                     .claim_work_card_with_provenance(
                                         airc_lib::ClaimWorkCard {
                                             card_id: card.card_id,
-                                            ttl_ms: crate::cognition::card_facts::DEFAULT_CLAIM_TTL_MS,
+                                            ttl_ms:
+                                                crate::cognition::card_facts::DEFAULT_CLAIM_TTL_MS,
                                         },
                                         card.claim_provenance
                                             .as_ref()
@@ -758,7 +693,8 @@ impl PersonaAircRuntime {
                                         airc_lib::HeartbeatWorkClaim {
                                             card_id: card.card_id,
                                             claim_id,
-                                            ttl_ms: crate::cognition::card_facts::DEFAULT_CLAIM_TTL_MS,
+                                            ttl_ms:
+                                                crate::cognition::card_facts::DEFAULT_CLAIM_TTL_MS,
                                         },
                                     )
                                     .await
@@ -836,7 +772,8 @@ impl PersonaAircRuntime {
                                         airc_lib::HeartbeatWorkClaim {
                                             card_id: airc_lib::WorkCardId::from_uuid(h.card_id),
                                             claim_id: airc_lib::ClaimId::from_uuid(h.claim_id),
-                                            ttl_ms: crate::cognition::card_facts::DEFAULT_CLAIM_TTL_MS,
+                                            ttl_ms:
+                                                crate::cognition::card_facts::DEFAULT_CLAIM_TTL_MS,
                                         },
                                     )
                                     .await
