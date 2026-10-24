@@ -689,7 +689,7 @@ mod tests {
 
         record_turn_frame_replay(&record);
 
-        let dir = tmp.path().join(TURN_FRAME_FIXTURE_DIR);
+        let dir = fixture_dir(TURN_FRAME_FIXTURE_DIR).expect("the test home resolves"); // the recorder's own owner
         let entries: Vec<_> = std::fs::read_dir(&dir)
             .expect("turn-frame fixture dir exists")
             .map(|e| e.expect("fixture entry").path())
@@ -729,7 +729,7 @@ mod tests {
 
         record_turn_frame_replay(&fake_turn_frame_replay_record());
 
-        let dir = tmp.path().join(TURN_FRAME_FIXTURE_DIR);
+        let dir = fixture_dir(TURN_FRAME_FIXTURE_DIR).expect("the test home resolves"); // the recorder's own owner
         assert!(!dir.exists());
     }
 
