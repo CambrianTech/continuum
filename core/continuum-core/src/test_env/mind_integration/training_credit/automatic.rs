@@ -13,7 +13,6 @@ type TestResult = Result<(), Box<dyn std::error::Error>>;
 /// A resident on a real local airc board with a claimed card and a retained patch.
 struct Resident {
     _home: (HomeGuard, tempfile::TempDir),
-    wire: std::path::PathBuf,
     airc: Arc<airc_lib::Airc>,
     room: airc_lib::Room,
     persona: Uuid,
@@ -70,7 +69,7 @@ impl Resident {
             "base_sha": "a".repeat(40),
             "artifact": { "hash": patch_hash, "size_bytes": patch.len(), "mime": "text/x-diff" },
         }))?;
-        Ok(Self { _home: (guard, home), wire, airc, room, persona, name, registry, executor, slot, card, claim, params })
+        Ok(Self { _home: (guard, home), airc, room, persona, name, registry, executor, slot, card, claim, params })
     }
 
     /// Her act: the generation that emits the call rides the caller, bound by the act seam.
@@ -194,45 +193,75 @@ pub(super) async fn an_ordinary_submit_binds_the_turn_that_issued_it_through_rev
     Ok(())
 }
 
-// what this catches: an independent reviewer, a second identity on the same board, files a
-// signed pass through the real work/review; the resident's credit binds the issuing turn and
-// its decision is recorded; the same exact consumption, with the training destination mocked
-// (MockTransport, not live training), accepts that row.
+// what this catches: an independent reviewer's signed pass reaches acceptance. The submission is
+// the one the real work/submit published; the board holding it and a Passed review signed by a
+// separate reviewer peer is projected through airc's codec (two test identities share no
+// transcript without a daemon, so the real work/review run by a second identity stays on
+// fcd8d1c1). Her credit binds the issuing turn, and the exact consumption, with the training
+// destination mocked (MockTransport, not live training), accepts that row.
 #[tokio::test]
-pub(super) async fn a_second_identitys_signed_pass_accepts_the_issuing_turn() -> TestResult {
+pub(super) async fn an_independent_signed_pass_accepts_the_issuing_turn() -> TestResult {
+    use airc_work::{CardCreated, WorkCardClaimed, WorkEvent, WorkReviewOutcome, WorkSubmissionReview};
     let r = Resident::new().await?;
     let published = r.submit().run(&r.act("issuing-gen"), r.params.clone()).await?;
     let issuing_row = r.stage("issuing-gen").await?;
+    let submitted = r
+        .airc
+        .work_board_in(&r.room)
+        .await?
+        .card(r.card)
+        .and_then(|c| c.submissions.iter().find(|s| s.submission_id.as_uuid() == published.submission_id).cloned())
+        .ok_or("work/submit published the submission")?;
 
-    let reviewer_home = r.wire.parent().ok_or("the fixture's home")?.join("reviewer-airc");
-    let reviewer = Arc::new(airc_lib::Airc::open_with_wire_root_for_test(&reviewer_home, &r.wire).await?);
-    let reviewer_room = reviewer.join("ordinary-project").await?;
-    assert_eq!(reviewer_room.channel, r.room.channel, "the same board");
-    r.registry.register(crate::persona::PersonaAircRuntime::from_attached(
-        reviewer.peer_id().as_uuid(),
-        "independent-reviewer",
-        reviewer_home,
-        reviewer.clone(),
-        reviewer_room.channel,
-        crate::persona::identity_provider::PersonaIdentitySource::FreshlyMinted,
-    ));
+    let (owner, reviewer) = (r.airc.peer_id(), airc_core::PeerId::new());
     let review_card = r.review_card(published.submission_id);
-    let held = reviewer.claim_work_card(airc_lib::ClaimWorkCard { card_id: review_card, ttl_ms: 60_000 }).await?;
-    let as_reviewer = Ctx { caller: Some(CallerIdentity::local_persona(reviewer.peer_id())), ..Default::default() };
-    let pass = r.review(published.submission_id, review_card, held, ReviewOutcome::Passed);
-    let filed = r.reviewer().run(&as_reviewer, pass).await?;
-    // This executor serves no training destination, so the dispatch itself cannot complete
-    // here; the binding and the independent decision are recorded before it.
-    let status = reviewed::credit_status(&r.data(), r.name, published.submission_id).await?;
-    assert_eq!(status.staged_revision_id, Some(issuing_row.id), "{:?}", filed.credit_error);
-    assert_eq!(status.state, State::AwaitingAcceptance, "an independent pass selects the decision");
-
-    let board = r.airc.work_board_in(&r.room).await?;
-    let review_id = board
-        .submission_reviews_for_card(r.card)
-        .find(|review| review.submission_id.as_uuid() == published.submission_id)
-        .map(|review| review.review_id)
-        .ok_or("the signed review is on the board")?;
+    let review_claim = airc_work::ClaimId::new();
+    let repo = airc_work::RepoId::new("acme/ordinary-project")?;
+    let created = |card_id, reviews, by| WorkEvent::CardCreated(CardCreated {
+        card_id,
+        repo: repo.clone(),
+        title: "ordinary work, submitted the ordinary way".into(),
+        body: None,
+        priority: airc_work::Priority::P1,
+        lane_id: None,
+        created_by: by,
+        created_at_ms: 1,
+        reviews,
+        origin: None,
+    });
+    let claimed = |card_id, claim_id, holder| WorkEvent::CardClaimed(WorkCardClaimed {
+        selected_at_ms: None,
+        origin: airc_work::ClaimOrigin::Unknown,
+        card_id,
+        claim_id,
+        owner: holder,
+        ttl_ms: 60_000,
+        claimed_at_ms: 2,
+    });
+    let pass = WorkSubmissionReview {
+        review_id: airc_work::WorkReviewId::new(),
+        card_id: r.card,
+        submission_id: submitted.submission_id,
+        artifact: submitted.artifact.clone(),
+        review_card_id: review_card,
+        review_claim_id: review_claim,
+        reviewer,
+        outcome: WorkReviewOutcome::Passed,
+        evidence: submitted.artifact.clone(),
+        evidence_text: None,
+        reviewed_at_ms: 4,
+    };
+    let board = project_events(
+        r.room.channel.as_uuid(),
+        vec![
+            (created(r.card, None, owner), owner),
+            (claimed(r.card, submitted.claim_id, owner), owner),
+            (WorkEvent::WorkSubmitted(submitted), owner),
+            (created(review_card, Some(r.card), reviewer), reviewer),
+            (claimed(review_card, review_claim, reviewer), reviewer),
+            (WorkEvent::WorkSubmissionReviewed(pass.clone()), reviewer),
+        ],
+    );
     let destination = continuum_client::mock::MockTransport::new();
     script_settlement_reply(
         &destination,
@@ -245,13 +274,13 @@ pub(super) async fn a_second_identitys_signed_pass_accepts_the_issuing_turn() ->
         r.persona,
         r.room.channel.as_uuid(),
         &board,
-        review_id,
+        pass.review_id,
         &reviewed::SelfReview::NotAdmitted,
         None,
     )
     .await?;
     assert_eq!(accepted.state, State::Accepted, "{accepted:?}");
-    assert_eq!(accepted.staged_revision_id, Some(issuing_row.id));
+    assert_eq!(accepted.staged_revision_id, Some(issuing_row.id), "the turn that issued the submission");
     Ok(())
 }
 
