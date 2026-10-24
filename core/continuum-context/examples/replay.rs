@@ -17,7 +17,9 @@
 //! over the way the core's `fit_view` does, under two rules: `whole` (before 2026-10-23: a
 //! source granted all it wants restarts whole, a cut one at half its grant) and `reserved`
 //! (`start_grants`: the grounding blocks whole; the conversation, results and thoughts at
-//! most half of what is left, and at most that less one act's appends).
+//! most half of what is left, and at most that less one act's appends). Each rule runs under
+//! two source orders (`Order`): her conversation first (before 2026-10-24), and the settled
+//! blocks first, as the core's `view_sources` now places them.
 //!
 //! `--chars-per-token <r>` prices the window at the core's own estimate instead of the
 //! engine's bill; `--keyed-turn` keys the standing turn text into the epoch; `--trace`
@@ -42,14 +44,34 @@ fn priority(source: &str) -> u8 {
     }
 }
 
-/// Where a source renders, as the core's `view_sources` orders them: her conversation, her
-/// actions, each standing block, her thoughts.
-fn order(source: &str) -> u8 {
-    match source {
-        "conversation" => 0,
-        "actions" => 1,
-        "working-memory" => 3,
-        _ => 2,
+/// Where the view's sources render at an epoch start.
+#[derive(Clone, Copy, Debug)]
+enum Order {
+    /// Before 2026-10-24: her conversation, her actions, each block, her thoughts.
+    ConversationFirst,
+    /// The core's `view_sources`: the settled blocks (standing and board churn, as
+    /// `deliberation_prompt::churn_of` classes them), her actions, her conversation, the
+    /// blocks that count or change within an epoch (the kanban, recall), her thoughts. A turnover keeps the prefix up to the
+    /// first source whose front changed, and a growing source changes at its front.
+    SettledFirst,
+}
+
+fn order(rule: Order, source: &str) -> u8 {
+    match rule {
+        Order::ConversationFirst => match source {
+            "conversation" => 0,
+            "actions" => 1,
+            "working-memory" => 3,
+            _ => 2,
+        },
+        Order::SettledFirst => match source {
+            "room-doctrine" | "room-roster" | "media-perception" | "mission" | "workspace-map" => 0,
+            "roster" | "room-wall" | "active-work" => 1,
+            "actions" => 3,
+            "conversation" => 4,
+            "working-memory" => 6,
+            _ => 5,
+        },
     }
 }
 
@@ -212,7 +234,7 @@ fn cut(request: &serde_json::Value, keyed_turn: bool) -> Cut {
             push("conversation", vec![item(key, text)]);
         } else if let Some(seq) = seq_after(&text, "[result #") {
             push("actions", vec![item(seq.to_string(), text)]);
-        } else if text.starts_with("Recent results of your own actions") {
+        } else if text.starts_with("Recent results of your own actions") || text.starts_with("[actions] ") {
             push("actions", vec![item("banner".into(), text)]);
         } else if text.starts_with("Older results, collapsed to pointers") {
             for line in text.lines().skip(1) {
@@ -234,6 +256,11 @@ fn cut(request: &serde_json::Value, keyed_turn: bool) -> Cut {
                 .filter(|item| !item.full.starts_with("- [action #"))
                 .collect();
             push("working-memory", thoughts);
+        } else if text.starts_with("My own recent thoughts") {
+            push("working-memory", vec![item("working-memory/header".into(), text)]);
+        } else if text.starts_with("- ") {
+            // One of her thoughts, a message of its own since the view keyed them.
+            push("working-memory", vec![item(text.clone(), text)]);
         } else if text.starts_with("[open views]") {
             push("open-views", bullets("open-views", &text));
         } else if text.starts_with("Notices my substrate posted") {
@@ -278,7 +305,7 @@ fn percent(values: &[f64]) -> String {
 
 /// Replay `cuts` (one resident's requests in one room, oldest first) through the view fitted
 /// to `window` characters for head, view and tail, turning over under `rule`.
-fn replay(label: &str, cuts: &[Cut], window: usize, rule: Rule, keyed_turn: bool, trace: bool) -> Result<(), Box<dyn std::error::Error>> {
+fn replay(label: &str, cuts: &[Cut], window: usize, (rule, placed): (Rule, Order), keyed_turn: bool, trace: bool) -> Result<(), Box<dyn std::error::Error>> {
     let mut view: Option<View<String>> = None;
     let mut previous_sent: Option<&str> = None;
     let mut previous_view = String::new();
@@ -290,7 +317,7 @@ fn replay(label: &str, cuts: &[Cut], window: usize, rule: Rule, keyed_turn: bool
     for cut in cuts {
         let mut sources: Vec<Captured> =
             cut.sources.iter().map(|(name, items)| Captured { name: name.clone(), items: items.clone() }).collect();
-        sources.sort_by_key(|source| order(&source.name));
+        sources.sort_by_key(|source| order(placed, &source.name));
         let refs: Vec<&dyn Source<String>> = sources.iter().map(|s| s as &dyn Source<String>).collect();
         let tail = cut.tail.join("\n");
         let tail_chars = tail.chars().count();
@@ -337,7 +364,7 @@ fn replay(label: &str, cuts: &[Cut], window: usize, rule: Rule, keyed_turn: bool
         previous_view = rendered;
     }
     println!(
-        "{label} [{rule:?}{}]\n  {} requests, window {window} chars, {turnovers} turnovers\n  shared prefix per act, %: as sent [{}] mean {:.0} median {:.0}\n  shared prefix per act, %: the view [{}] mean {:.0} median {:.0}\n  the view's prefill per act, chars: median {:.0} mean {:.0}; fresh tail median {:.0} chars",
+        "{label} [{rule:?}, {placed:?}{}]\n  {} requests, window {window} chars, {turnovers} turnovers\n  shared prefix per act, %: as sent [{}] mean {:.0} median {:.0}\n  shared prefix per act, %: the view [{}] mean {:.0} median {:.0}\n  the view's prefill per act, chars: median {:.0} mean {:.0}; fresh tail median {:.0} chars",
         if keyed_turn { ", standing turn text keyed into the epoch" } else { "" },
         cuts.len(),
         percent(&sent_share),
@@ -430,7 +457,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
     let cuts: Vec<Cut> = rows.iter().map(|row| cut(&row["request"], keyed_turn)).collect();
     for rule in [Rule::Whole, Rule::Reserved] {
-        replay(&label, &cuts, window, rule, keyed_turn, trace)?;
+        for placed in [Order::ConversationFirst, Order::SettledFirst] {
+            replay(&label, &cuts, window, (rule, placed), keyed_turn, trace)?;
+        }
     }
     Ok(())
 }

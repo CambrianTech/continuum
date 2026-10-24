@@ -46,10 +46,11 @@ mod binding_and_history;
 // ─── Stable prefix first (card c119ace7) ───────────────────────────────
 //
 // The prompt cache reuses only a common PREFIX. These pin the whole-prompt
-// order at the live boundary (`prompt_view`): conversation first, then the
-// standing grounding whose bytes mutate, in ONE canonical order; the clock and
+// order at the live boundary (`prompt_view`): the settled grounding first, in ONE
+// canonical order, then what grows (her actions, the conversation); the clock and
 // the presence framing in the volatile tail, after the conversation; nothing
-// dated or counted in the system message.
+// dated or counted in the system message; and an act's prompt holds the whole
+// previous view as its head.
 mod stable_prefix_first;
 
 /// Her view's turnover leaves a growth reserve, so a sliding room appends between turnovers.

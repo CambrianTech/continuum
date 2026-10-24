@@ -278,11 +278,17 @@ async fn own_history_preserves_corrections_at_each_inference_step() {
         let recorded = calls.lock().expect("actual request recorder");
         assert_eq!(recorded.len(), step + 1);
         let request = recorded.last().expect("submitted request");
-        // One message per turn (her view keys each turn), each keeping its event date.
+        // One message per turn (her view keys each turn), each keeping its event date. Her
+        // actions lead her history in the view (`view_sources`), so the turns start after them.
+        let first_turn = request
+            .messages
+            .iter()
+            .position(|message| message.content_text().starts_with("[occurred "))
+            .expect("her conversation is in the request");
         for (index, line) in dated_history.lines().enumerate() {
-            assert_eq!(request.messages[index].role, "user");
+            assert_eq!(request.messages[first_turn + index].role, "user");
             assert_eq!(
-                request.messages[index].content_text(),
+                request.messages[first_turn + index].content_text(),
                 line,
                 "history retains event dates across later turns"
             );
