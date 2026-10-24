@@ -167,11 +167,13 @@ fn audited_crate_root() -> PathBuf {
 /// rule ends up scanning a directory that does not exist and reporting zero.
 const AUDITED_CRATE: &str = "continuum-core";
 
-/// Crates split out of `continuum-core` (card a31492cb). A split must never move code out
-/// of the gates' sight, so their files are audited too, with the crate name as a path
+/// The base layer: crates below every module, depending on nothing above `continuum-base`
+/// (`continuum-base` was split out of `continuum-core`, card a31492cb; `continuum-pack` and
+/// its derive are the one load/store layer every module packs its state through,
+/// docs/architecture/PACKAGES.md). Their files are audited with the crate name as a path
 /// prefix (`continuum-base/time/mod.rs`): totals stay continuous across a cut and every
 /// per-path rule stays unambiguous.
-const SPLIT_CRATES: &[&str] = &["continuum-base"];
+const SPLIT_CRATES: &[&str] = &["continuum-base", "continuum-pack", "continuum-pack-derive"];
 
 /// Crates cut out of `continuum-core` that keep core's module names: `continuum-kernel`'s
 /// `runtime/`, `routing/`, `orm/`… are re-exported by core as `crate::runtime` and so on, so

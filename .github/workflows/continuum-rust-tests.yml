@@ -146,6 +146,10 @@ jobs:
           cargo test -p continuum-engine --lib --profile dev-fast --features test-fixtures
           cargo test -p continuum-hands --lib --profile dev-fast --features test-fixtures
           cargo test -p continuum-live --lib --profile dev-fast --features test-fixtures
+          # The base layer's load/store (core/continuum-pack + its derive): conformance on RAM
+          # and disk in seconds, and its compiler lock (no unwrap/expect/panic outside tests).
+          cargo test -p continuum-pack -p continuum-pack-derive --profile dev-fast
+          cargo clippy -p continuum-pack -p continuum-pack-derive --profile dev-fast --all-targets --features continuum-pack/conformance -- -D warnings
           interop_output=$(cargo test -p continuum-engine --lib --profile dev-fast --features test-fixtures \
             model_registry::artifacts::expert_placement::tests::fs2_and_native_container_locks_interoperate_across_processes \
             -- --exact --ignored --nocapture 2>&1)
