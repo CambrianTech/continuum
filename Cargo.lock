@@ -10196,6 +10196,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "serving-replay"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "servo_arc"
 version = "0.4.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
