@@ -344,11 +344,11 @@ impl PersonaAircRuntime {
                 // a card that lapses again under a new claim generation records again.
                 let mut recorded_lapses: std::collections::HashSet<(uuid::Uuid, u64)> =
                     std::collections::HashSet::new();
-                // Earliest live lease expiry from the last board scan (ms). While
+                // What the next denial tick owes for lapse scanning (see
+                // `lapse_scan::LapseScanSchedule`): due now on first denial; while
                 // denied her holds only change by lapsing — no turns, no claims — so
-                // a tick before this instant cannot have lapsed anything: the board
-                // is fetched at most once per expiry crossing, not every 60s.
-                let mut next_lapse_due: Option<u64> = None;
+                // one board fetch per expiry crossing, none in quiescence.
+                let mut lapse_schedule = super::lapse_scan::LapseScanSchedule::DueNow;
                 loop {
                     ticker.tick().await;
                     let serving = crate::inference::llama_server::current_serving();
@@ -473,18 +473,10 @@ impl PersonaAircRuntime {
                             // disk may disagree (a restart wipes the stamp), so each
                             // lapsed checkout gets an on-disk re-check and its evidence
                             // rides the row: one per lapse episode, keyed by lease
-                            // generation.
-                            //
-                            // Fetch discipline: while denied her holds only change by
-                            // lapsing (no turns → no claims), so the board is fetched at
-                            // most once per expiry crossing — `next_lapse_due` carries
-                            // the earliest live lease from the last scan, and ticks
-                            // before it see nothing that can have lapsed. The scan
-                            // itself lives in `lapse_scan`; a failed fetch returns None
-                            // (retry next tick) exactly as before.
-                            let due = next_lapse_due.map_or(true, |t| now_ms >= t);
-                            if due {
-                                next_lapse_due = super::lapse_scan::record_lapsed_holds(
+                            // generation. Fetch discipline (one board read per expiry
+                            // crossing, none in quiescence) lives with the scan itself.
+                            if lapse_schedule.is_due(now_ms) {
+                                lapse_schedule = super::lapse_scan::record_lapsed_holds(
                                     &hb_airc,
                                     hb_persona,
                                     &hb_name,
@@ -502,7 +494,7 @@ impl PersonaAircRuntime {
                             // board row persists, the same stale (card, expiry) could be
                             // recorded again at the next denial. Keys are pruned per scan,
                             // dropping only what the authoritative holds say has ended.
-                            next_lapse_due = None; // re-establish from a fresh scan on the next denial
+                            lapse_schedule = super::lapse_scan::LapseScanSchedule::DueNow; // re-establish from a fresh scan on the next denial
                             continuum_base::probe!(
                                 class = "persona.claim.renewal_resumed",
                                 persona_id = %hb_persona,
