@@ -354,3 +354,62 @@ pub(super) async fn a_refused_record_publishes_nothing() -> TestResult {
     );
     Ok(())
 }
+
+// what this catches (card 6593a869): the artifact is derived from her real checkout, not typed.
+// A git checkout at the card's worktree with airc's creation-base ref and her change committed
+// on top; the submit omits instance, base and artifact. work/submit derives the base (the
+// creation commit), retains the patch, and publishes exactly that patch's SHA-256; the pending
+// record names the issuing generation as before.
+#[tokio::test]
+pub(super) async fn a_checkout_derived_submit_publishes_her_patch_and_records_its_issuer() -> TestResult {
+    let r = Resident::new().await?;
+    let checkout = airc_lib::work_worktree::worktree_path_for(r.card).ok_or("the card has a worktree path")?;
+    std::fs::create_dir_all(&checkout)?;
+    let git = |args: &[&str]| -> Result<String, Box<dyn std::error::Error>> {
+        let out = std::process::Command::new("git").args(args).current_dir(&checkout).output()?;
+        if !out.status.success() {
+            return Err(format!("git {args:?}: {}", String::from_utf8_lossy(&out.stderr)).into());
+        }
+        Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
+    };
+    let commit = ["-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "-c", "commit.gpgsign=false", "commit", "-q", "-m"];
+    git(&["init", "-q", "-b", "work"])?;
+    std::fs::write(checkout.join("subject.txt"), "a\n")?;
+    git(&["add", "subject.txt"])?;
+    git(&[&commit[..], &["base"]].concat())?;
+    let base = git(&["rev-parse", "HEAD"])?;
+    git(&["update-ref", airc_lib::work_worktree::CREATION_BASE_REF, &base])?;
+    std::fs::write(checkout.join("subject.txt"), "b\n")?;
+    git(&["add", "subject.txt"])?;
+    git(&[&commit[..], &["her change"]].concat())?;
+
+    let params: WorkSubmitParams = serde_json::from_value(json!({
+        "room": r.room.channel.as_uuid().to_string(),
+        "card_id": r.card.as_uuid().to_string(),
+        "claim_id": r.claim.as_uuid().to_string(),
+    }))?;
+    let published = r.submit().run(&r.act("issuing-gen"), params).await?;
+
+    let submitted = r
+        .airc
+        .work_board_in(&r.room)
+        .await?
+        .card(r.card)
+        .and_then(|c| c.submissions.iter().find(|s| s.submission_id.as_uuid() == published.submission_id).cloned())
+        .ok_or("work/submit published the submission")?;
+    assert_eq!(submitted.base_sha, airc_work::GitObjectId::new(base.clone())?, "the creation base, read off her checkout");
+    let patch = crate::commands::benchmark::workspace_candidate_diff_from(&checkout.to_string_lossy(), Some(&base))?;
+    assert!(patch.contains("+b"), "her change is the patch: {patch}");
+    let artifact = serde_json::to_value(&submitted.artifact)?;
+    let expected = {
+        use sha2::Digest;
+        format!("{:x}", sha2::Sha256::digest(patch.as_bytes()))
+    };
+    assert_eq!(artifact["hash"], json!(expected), "the published artifact is exactly her patch");
+    assert_eq!(artifact["size_bytes"], json!(patch.len()));
+    let recorded: reviewed::PendingCreditBinding = reviewed::read_one(&r.data(), r.name, &published.submission_id.to_string())
+        .await?
+        .ok_or("the issuing generation is recorded")?;
+    assert_eq!(recorded.selection.issuing_generation, "issuing-gen");
+    Ok(())
+}
