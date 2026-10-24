@@ -198,20 +198,15 @@ pub type DispatchLookup = JournalLookup<JobHandle>;
 static GLOBAL: OnceLock<TrainingJobBoard> = OnceLock::new();
 const DISPATCH_JOURNAL_PAGE_BYTES: u64 = 64 * 1024;
 
-/// `~/.continuum/genome/jobs-ledger.jsonl` — sibling of the job artifact dirs
-/// (the MLX adapter's `job_dir_for` uses the same `~/.continuum/genome` root).
-/// The node's job ledger. A test process gets its own and never opens the home ledger: a
-/// `cargo test` that reached it replayed the LIVE core's open jobs as a dead core's and
-/// journaled them killed-by-reboot (2026-10-05, the 5090: 18 of Kimi's jobs, at the two
-/// instants a test ran). No home means no ledger, said, never a ledger in the cwd.
-#[cfg(not(test))]
+/// `<continuum home>/genome/jobs-ledger.jsonl` — sibling of the job artifact dirs
+/// ([`super::job_dir::genome_root`]). The node's job ledger. A test process never opens the
+/// home ledger: a `cargo test` that reached it replayed the LIVE core's open jobs as a dead
+/// core's and journaled them killed-by-reboot (2026-10-05, the 5090: 18 of Kimi's jobs, at
+/// the two instants a test ran). `paths::continuum_home` gives every test build (this crate's
+/// AND core's, mind's…) a per-process home, where a `#[cfg(test)]` copy here protected only
+/// this crate's own tests (card d11d9827). No home means no ledger, said, never one in the cwd.
 fn default_ledger_path() -> Option<PathBuf> {
-    dirs::home_dir().map(|home| home.join(".continuum/genome/jobs-ledger.jsonl"))
-}
-
-#[cfg(test)]
-fn default_ledger_path() -> Option<PathBuf> {
-    Some(std::env::temp_dir().join(format!("continuum-test-jobs-ledger-{}.jsonl", std::process::id())))
+    super::job_dir::genome_root().map(|genome| genome.join("jobs-ledger.jsonl"))
 }
 
 /// Take the ledger's owner lock if no live board holds it. `None` when another board owns

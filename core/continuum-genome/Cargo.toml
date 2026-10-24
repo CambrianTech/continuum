@@ -27,7 +27,6 @@ sha2 = "0.10"
 async-trait.workspace = true
 parking_lot.workspace = true
 futures = "0.3"
-dirs = "5.0"
 candle-core.workspace = true
 candle-nn.workspace = true  # For VarBuilder
 tracing.workspace = true

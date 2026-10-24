@@ -14,7 +14,7 @@ use uuid::Uuid;
 
 /// Where this node keeps its persona genomes (and their job directories).
 pub fn genome_root() -> Option<PathBuf> {
-    dirs::home_dir().map(|home| home.join(".continuum/genome"))
+    crate::paths::ContinuumLayout::home().ok().map(|layout| layout.genome())
 }
 
 /// A job's directory under a genome root: THE one layout of persona/trait/job. The trait
@@ -84,6 +84,22 @@ pub fn read_job_request(dir: &Path) -> Result<TrainingJobRequest, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // what this catches (card d11d9827): a genome store resolved outside every test home. Since
+    // the kernel was cut out of core, its `cfg(test)`-only temp home never applied in this
+    // crate's tests, and `home_dir().join(".continuum")` never honoured one at all, so a
+    // genome test could write the operator's real genome tree and job ledger (the 2026-10-05
+    // replay of 18 of Kimi's jobs). Any test home, pinned by a fixture or the per-process
+    // default, lives under the system temp dir.
+    #[test]
+    fn the_genome_root_in_a_test_build_is_never_the_operators_home() {
+        let root = genome_root().expect("a test build always has a home");
+        assert!(
+            root.starts_with(std::env::temp_dir()),
+            "genome root {} escaped the test home",
+            root.display()
+        );
+    }
 
     // what this catches (card 32d2abbb): the job writer and its readers must name the SAME
     // directory. The readers' old rule turned a hyphenated trait's `-` into `_`, so

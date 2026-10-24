@@ -502,7 +502,9 @@ impl GeneTrials {
 
     /// `~/.continuum/genome/trials.json`; `None` without a home directory.
     pub fn default_store() -> Option<Self> {
-        dirs::home_dir().map(|h| Self::at(h.join(".continuum").join("genome").join("trials.json")))
+        crate::paths::ContinuumLayout::home()
+            .ok()
+            .map(|layout| Self::at(layout.genome().join("trials.json")))
     }
 
     pub fn path(&self) -> &Path {
