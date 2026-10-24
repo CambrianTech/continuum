@@ -18,6 +18,7 @@ use crate::persona::training_producer::*;
 use crate::routing::CallerIdentity;
 use crate::runtime::{CommandExecutor, InProcessTransport};
 
+mod automatic;
 mod bindings;
 mod directed;
 mod reviewed_credit;
@@ -228,6 +229,30 @@ pub(super) fn script_settlement_reply(
 /// The exact-review scenario: her staged row bound to one submission on one card, a
 /// reviewer, and the room's work events up to the review. Shared by every exact-path
 /// test, so each states only its own case (CLAUDE.md: one fixture per concern).
+/// A room's board from these work events, signed by their peers, through airc's own codec and
+/// replay boundary: what any observer of the room would project.
+pub(super) fn project_events(room: Uuid, events: Vec<(airc_work::WorkEvent, airc_core::PeerId)>) -> airc_work::WorkBoardProjection {
+    airc_work::project_transcript_work_events(events.into_iter().enumerate().map(|(n, (event, peer_id))| {
+        let (headers, body) = airc_work::encode_work_event(&event).unwrap();
+        airc_core::TranscriptEvent {
+            event_id: airc_core::EventId::new(),
+            room_id: airc_core::RoomId::from_uuid(room),
+            peer_id,
+            client_id: airc_core::ClientId::new(),
+            kind: airc_core::TranscriptKind::System,
+            occurred_at_ms: event.occurred_at_ms(),
+            lamport: n as u64 + 1,
+            target: airc_core::MentionTarget::All,
+            headers,
+            body: Some(body),
+            attachment: None,
+            receipt: None,
+            metadata: serde_json::Value::Null,
+        }
+    }))
+    .unwrap()
+}
+
 pub(super) struct ExactReview {
     pub(super) _home: (HomeGuard, tempfile::TempDir),
     pub(super) executor: Arc<CommandExecutor>,
@@ -278,27 +303,7 @@ impl ExactReview {
     /// The room's board after the scenario's events plus `tail`, through the existing
     /// codec and replay boundary, including the authoritative transcript peer.
     pub(super) fn project(&self, tail: Vec<(airc_work::WorkEvent, airc_core::PeerId)>) -> airc_work::WorkBoardProjection {
-        airc_work::project_transcript_work_events(
-            self.prefix.iter().cloned().chain(tail).enumerate().map(|(n, (event, peer_id))| {
-                let (headers, body) = airc_work::encode_work_event(&event).unwrap();
-                airc_core::TranscriptEvent {
-                    event_id: airc_core::EventId::new(),
-                    room_id: airc_core::RoomId::from_uuid(self.room),
-                    peer_id,
-                    client_id: airc_core::ClientId::new(),
-                    kind: airc_core::TranscriptKind::System,
-                    occurred_at_ms: event.occurred_at_ms(),
-                    lamport: n as u64 + 1,
-                    target: airc_core::MentionTarget::All,
-                    headers,
-                    body: Some(body),
-                    attachment: None,
-                    receipt: None,
-                    metadata: serde_json::Value::Null,
-                }
-            }),
-        )
-        .unwrap()
+        project_events(self.room, self.prefix.iter().cloned().chain(tail).collect())
     }
 }
 
