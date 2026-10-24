@@ -106,26 +106,42 @@ subtree (a gene twenty minds share, a common checkpoint) is stored once.
 ## Identity
 
 `ContentId([u8; 32])`: full SHA-256, on the stack, rendered `sha256:<hex>` only at the edges. The
-manifest is canonical JSON (sorted keys), so the same value always has the same id, and an OCI
-registry accepts it as an artifact manifest unchanged. Provenance (ed25519, `GenomeProvenance`) signs
-a manifest's id. This one id replaces `ArtifactId`, `AlloyHash` and the bundle digest.
+manifest is RFC 8785 JCS canonical JSON, so the same value always has the same id; an OCI store wraps
+it in an OCI artifact manifest (OCI annotations are strings only). Provenance is the package's alloy. This one id replaces `ArtifactId`, the bundle digest and the model-dir hash an alloy would otherwise compute.
 
-## Provenance: the Merkle root locks it all down
+## Provenance: forge-alloy, the chain we already ship
 
-Joel: "Merkle maintains provenance and locks it all down cryptographically."
+Joel: "Merkle maintains provenance and locks it all down cryptographically" / forge-alloy "is already
+being used for provenance and Merkle, ties in so well for distribution purposes."
 
-- **One signature covers the whole tree.** A root's id commits to every field, blob and child below
-  it, so an ed25519 signature over that one id (`GenomeProvenance`, generalized to every kind) vouches
-  for every byte at any depth. Change one weight in one gene of a project and the project's id changes.
-- **Verified on every load and every transport.** A blob's bytes must hash to the id that names it,
-  whichever store or peer it came from, so a remote, a cache or a registry is never trusted for
-  integrity, only for availability.
-- **Lineage is part of identity.** A gene's `parents`, a page's genes, a project's inputs are children
-  or ids inside the manifest, so where something came from cannot be stripped or rewritten without
-  changing what it is. Credit travels with the work.
-- **Who may load what** is the manifest's `requires(Key(audience))` plus the signer's trust scope:
-  a mind accepts packages signed by the scopes it trusts and refuses the rest with a typed reason.
-  Secrets stay sealed to their audience even inside a shared tree.
+A package says WHAT a thing is; an **alloy** (github.com/CambrianTech/forge-alloy) says WHO did WHAT to
+make it: a chain of signed stages, `input hash -> stage -> output hash -> signature`, verified offline,
+in the browser or from a QR code, already domain-agnostic (adapter, dataset, compute receipt,
+delivery). Packages carry alloys; they never grow a second provenance format.
+
+- **A package's provenance part is an alloy**: a child of media type `application/vnd.forge-alloy+json`
+  whose final stage's output hash is the package's `ContentId`. A gene from its training run, a page
+  from a turn, a persona from her history, a published model from its forge: each arrives with the
+  chain of how it was made. `GenomeProvenance` (a separate ed25519 format) retires into it.
+- **One canonical form.** Manifests are RFC 8785 JCS, the canonicalization alloy already signs, so a
+  manifest's id and an alloy signature are computed over the same bytes rule and one verifier serves
+  both.
+- **One hash per artifact.** alloy names a packaged artifact by its `ContentId` (a `package` domain
+  in alloy), never by a second scheme over the same bytes; `forge-alloy verify` then works on
+  anything packed. The root's id commits to every byte at any depth, so the alloy's signature over it
+  vouches for the whole tree.
+- **Verified on every load and every transport.** A blob must hash to the id that names it whichever
+  store or peer it came from: a remote, cache or registry is trusted for availability, never integrity.
+- **Lineage is identity.** Parents are children or ids inside the manifest, and the alloy's stage
+  inputs name them, so provenance cannot be stripped without changing what the thing is. Credit
+  travels with the work.
+- **Who may load what** is `requires(Key(audience))` plus the signer's trust scope: a mind accepts
+  packages whose alloy is signed by scopes it trusts and refuses the rest with a typed reason.
+- **Migration keeps the chain.** A migrated package has a new id; its alloy gains a `migrate` stage
+  (old id -> new id), signed by whoever ran it, so the original signature still verifies its own link.
+- **Layering.** `continuum-pack` (base layer) knows only the provenance part's media type. Attaching
+  and verifying alloys sits one layer up (or a `pack` feature of the forge-alloy crate), so the base
+  never imports model-forge stage types.
 
 ## Versions: a migration chain, never two readers
 
@@ -175,3 +191,24 @@ Each slice lands with its validator and deletes what it replaces:
 5. The persona as a package: identity, memories, genes (by ref), pages, volatile state as children,
    with secrets for what is hers alone. A whole mind backs up, restores and moves between nodes.
 6. `AircStore` transfer between nodes; `project` packages (refs only, never copies of personal data).
+
+## Found while building slice 1 (#5371), and the answers
+
+1. SHA-256 measured 603 MB/s (software path; sha2 needs its `asm` feature for the ARM SHA unit): a
+   2.1 GB page is ~3.5 s, not ~1 s. Hardware hashing is a slice-3 prerequisite; failing that, local
+   KV parts take a generation id and their digest at first export.
+2. `has` and `get_ref` return `Result`: a disk error is never "absent".
+3. `set_ref(expect: None)` means "must not exist"; there is no blind overwrite.
+4. A range read cannot be checked against a whole-blob hash: verified ranges need per-chunk hashes
+   (a chunked blob part). Until then the method is `read_range_unverified`.
+5. An OCI store wraps the manifest; it is not an OCI manifest as-is.
+6. Requirements are keyed by part name; `KvFormat` gets defined fields in slice 3; audience matching
+   is any-of.
+7. Migration re-ids a package; its alloy records the `migrate` stage (above).
+8. A new field, even optional, is a schema bump plus a migration: a missing field is an error.
+9. Transport trusts "a stored manifest implies its children are stored": collection must keep it,
+   and a scrub verifies stored blobs and repairs from a peer.
+10. `RamStore` cannot be a `ResourcePool` from the base layer; the pool wraps it one layer up.
+11. Sealed parts derive their nonce from the content and the audience key, so the same value keeps
+   the same id.
+12. Still to come: parallel per-part hashing, ts-rs exports, a derive attribute for a load context.
