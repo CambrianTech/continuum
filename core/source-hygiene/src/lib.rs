@@ -35,6 +35,7 @@ pub mod identity_discipline;
 pub mod layer_discipline;
 pub mod module_cycles;
 pub mod os_branches;
+pub mod shown_ids;
 pub mod production_reachability;
 pub mod ratchet;
 pub mod tenant_neutrality;
