@@ -221,9 +221,9 @@ pub fn sha_matches(a: &str, b: &str) -> bool {
     credible(a) && credible(b) && (a.starts_with(b) || b.starts_with(a))
 }
 
-/// Validate the claimed source again before a warm build can stop serving.
+/// Validate the claimed source again after a dark build, before its artifact is launched.
 /// Endpoint comparison detects revision drift, not transient edit/revert races.
-pub fn warm_build_verdict(
+pub fn source_build_verdict(
     claimed: Option<&str>,
     after: Option<&str>,
     artifact: &str,
@@ -234,7 +234,7 @@ pub fn warm_build_verdict(
         }
     }
     Err(format!(
-        "source changed or could not be verified during warm build: claimed {claimed:?}, \
+        "source changed or could not be verified during the build: claimed {claimed:?}, \
          checkout {after:?}, artifact {artifact}; refusing handoff and leaving the running \
          core untouched. Retry install from a stable checkout"
     ))
@@ -247,8 +247,8 @@ mod tests {
     // Regression for the 2026-10-01 shared-checkout race: artifact and HEAD
     // advancing together must not erase the originally claimed revision.
     #[test]
-    fn warm_build_retains_its_original_source_identity() {
-        assert!(warm_build_verdict(Some("abc123f"), Some("abc123f00d"), "abc123f").is_ok());
+    fn a_source_build_retains_its_original_source_identity() {
+        assert!(source_build_verdict(Some("abc123f"), Some("abc123f00d"), "abc123f").is_ok());
         for (before, after, artifact) in [
             (Some("abc123f"), Some("def456a"), "def456a"),
             (Some("abc123f"), Some("def456a"), "abc123f"),
@@ -257,7 +257,7 @@ mod tests {
             (Some("abc123f"), None, "abc123f"),
             (Some("unknown"), Some("unknown"), "unknown"),
         ] {
-            assert!(warm_build_verdict(before, after, artifact).is_err());
+            assert!(source_build_verdict(before, after, artifact).is_err());
         }
     }
 

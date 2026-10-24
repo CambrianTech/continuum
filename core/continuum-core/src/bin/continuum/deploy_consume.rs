@@ -4,7 +4,7 @@ use super::*;
 use continuum_cli_lifecycle::deploy_health::RefusalKind;
 
 /// The consumer's log — the only place its output can land, since the scheduled task
-/// has no stdout. Set once by `deploy-consume`; read by the warm build to redirect
+/// has no stdout. Set once by `deploy-consume`; read by the dark build to redirect
 /// the build's own output there too.
 pub(super) static DEPLOY_LOG: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
 
@@ -310,7 +310,7 @@ pub(super) async fn deploy_consume_pass() -> Result<PassEnd, String> {
                 // 965d38a90). Initialized submodules only, so a deploy never starts a fresh
                 // clone; a submodule with local changes fails this loudly instead of losing them.
                 git_in(&repo, &["submodule", "update", "--quiet", "--recursive"])?;
-                // The warm build locates tools/scripts/start-server.sh by walking UP FROM
+                // The dark build locates tools/scripts/start-server.sh by walking UP FROM
                 // THE CWD, and a scheduled task starts in System32 — the same wall the
                 // Macs' launchd tracker hit ("under launchd the cwd is /; continuum reboot
                 // then finds no source"). The consumer knows the repo; it stands in it.
@@ -366,7 +366,7 @@ pub(super) async fn deploy_consume_pass() -> Result<PassEnd, String> {
                     if service { " --service" } else { "" }
                 ));
                 // A downloaded core lives in the artifact cache; launchd execs only its slot,
-                // so it is STAGED into the slot after the stop, like a warm build's artifact.
+                // so it is STAGED into the slot after the stop, like a dark build's artifact.
                 let stage_prebuilt = true;
                 // install_ci_companions above already put this core's CLI on PATH.
                 let cli_installed = true;

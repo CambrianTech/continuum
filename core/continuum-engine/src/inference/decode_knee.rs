@@ -271,7 +271,8 @@ pub fn observe(model: &str, inflight: u32, measured_tps: f64, expected_tps: f64)
 }
 
 /// Which of our own transients is open right now, if any: a deploy in flight (a live
-/// `continuum reboot` holds the claim while its warm build compiles beside this core) or
+/// `continuum reboot` holds the claim from before its drain; builds no longer run beside a
+/// serving core, but the drain itself is our transient) or
 /// the boot window. Named so the skip probe says which.
 pub(crate) fn own_transient(now: u64) -> Option<&'static str> {
     if let Some(root) = crate::paths::continuum_home().ok() {
