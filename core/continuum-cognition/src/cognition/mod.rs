@@ -112,7 +112,7 @@ pub mod tool_executor;
 pub use continuum_cognition_verbs::cognition::turn_batch;
 pub use continuum_cognition_verbs::cognition::types;
 pub use continuum_cognition_verbs::cognition::validate_response;
-pub use continuum_cognition_verbs::cognition::vision_describe;
+pub mod vision_describe;
 pub mod working_memory;
 pub mod working_set;
 pub mod workspace;

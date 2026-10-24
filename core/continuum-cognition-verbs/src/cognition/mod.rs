@@ -13,7 +13,6 @@ pub mod rate_proposals;
 pub mod model_resolver;
 pub mod turn_batch;
 pub mod tool_embedding;
-pub mod vision_describe;
 pub mod inference_session;
 pub mod generate_response;
 pub mod not_speech;

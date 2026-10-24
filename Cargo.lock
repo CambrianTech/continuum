@@ -2957,7 +2957,6 @@ dependencies = [
  "continuum-base",
  "continuum-engine",
  "continuum-kernel",
- "continuum-live",
  "dashmap",
  "futures",
  "once_cell",

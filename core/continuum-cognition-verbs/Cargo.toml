@@ -13,7 +13,6 @@ repository = "https://github.com/CambrianTech/continuum"
 [dependencies]
 continuum-kernel = { path = "../continuum-kernel" }
 continuum-engine = { path = "../continuum-engine" }
-continuum-live = { path = "../continuum-live" }
 continuum-base = { path = "../continuum-base" }
 tokio.workspace = true
 serde.workspace = true
@@ -35,11 +34,10 @@ regex = "1"
 [dev-dependencies]
 continuum-kernel = { path = "../continuum-kernel", features = ["test-fixtures"] }
 tokio = { workspace = true, features = ["test-util"] }
-continuum-base = { path = "../continuum-base" }
 
 [features]
 default = []
-metal = ["continuum-engine/metal", "continuum-live/metal"]
+metal = ["continuum-engine/metal"]
 cuda = ["continuum-kernel/cuda", "continuum-engine/cuda"]
 vulkan = ["continuum-kernel/vulkan", "continuum-engine/vulkan"]
-test-fixtures = ["continuum-kernel/test-fixtures", "continuum-engine/test-fixtures", "continuum-live/test-fixtures"]
+test-fixtures = ["continuum-kernel/test-fixtures", "continuum-engine/test-fixtures"]
