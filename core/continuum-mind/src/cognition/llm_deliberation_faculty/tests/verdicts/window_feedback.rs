@@ -62,10 +62,10 @@ async fn live_window_reductions_bound_actual_requests_and_persist() {
         let seen = adapter.seen.lock().expect("recorded request lock");
         assert_eq!(seen.len(), 1);
         let request = &seen[0];
-        let schemas = LlmDeliberationFaculty::tool_surface_tokens_of(
+        let schemas = crate::cognition::tool_surface::tool_surface_tokens_of(
             request.tools.as_ref().expect("native tools retained"),
         );
-        assert_eq!(schemas, faculty.select_tool_surface(&ws, expected).tokens);
+        assert_eq!(schemas, faculty.select_tool_surface(&ws).tokens);
         assert_eq!(request.max_tokens, Some(expected_view.completion_reserve));
         let cost = LlmDeliberationFaculty::framing_cost(
             request.system_prompt.as_deref().expect("system framing"),
@@ -358,7 +358,7 @@ async fn provider_context_feedback_refits_and_captures_each_attempt() {
             let cost = |r: &TextGenerationRequest| {
                 LlmDeliberationFaculty::framing_cost(r.system_prompt.as_deref().expect("system"))
                     + LlmDeliberationFaculty::messages_cost(&r.messages)
-                    + LlmDeliberationFaculty::tool_surface_tokens_of(
+                    + crate::cognition::tool_surface::tool_surface_tokens_of(
                         r.tools.as_deref().expect("selected tools"),
                     )
             };

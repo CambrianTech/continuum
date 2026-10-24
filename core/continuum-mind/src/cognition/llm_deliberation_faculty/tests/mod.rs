@@ -35,6 +35,7 @@ fn a_cut_act_records_that_it_did_not_land_and_what_it_was() {
 
 use super::*;
 use super::verdict::*;
+use crate::cognition::tool_surface::{core_hands, hands_surface, is_extended_hand};
 
 // what this catches: the hands surface chosen on WIRE names — `code/` prefixes
 // matched nothing after the dialect renamed them and every work turn went out
@@ -69,8 +70,9 @@ fn hands_surface_is_chosen_on_command_names_and_keeps_the_discovery_pair() {
     .collect();
     let hands: Vec<String> = hands_surface(&raw).into_iter().map(|s| s.name).collect();
     // A capable citizen (an unknown level counts as capable: more, not less) also gets
-    // the web, like Claude (Joel, 2026-09-28); her rooms and chat are hands, and
-    // the misread reviewer verbs stay out of her hands.
+    // the web, like Claude (Joel, 2026-09-28); her rooms and chat are hands, and so is all
+    // of work/**, the reviewer verbs included: offering those only while she held a review
+    // card made her card state an input to the surface (goal 10).
     assert_eq!(
         hands,
         [
@@ -80,11 +82,13 @@ fn hands_surface_is_chosen_on_command_names_and_keeps_the_discovery_pair() {
             "commands/list",
             "room/join",
             "code/git/status",
+            "work/submission",
+            "work/review",
             "work/submit",
             "web/fetch",
             "focus/continue"
         ],
-        "git/apply, work/submission and work/review are reviewer verbs, not hands; work/submit is the holder's"
+        "git/apply takes a peer's diff and stays one commands/help away; every other verb here is hers"
     );
     // what this also catches: a window too small for the extended verbs keeps her CORE
     // hands (never nothing), with the web and the push/PR verbs one commands/list away.
@@ -151,15 +155,8 @@ fn an_initiative_turn_takes_a_work_turns_hands_and_act_kind() {
     initiative.initiative = true;
     assert!(!initiative.workspace_deliverable, "an initiative is not a deliverable turn");
     assert_eq!(faculty.turn_kind(&initiative), faculty.turn_kind(&work), "the act allowance");
-    let (i, w) = (
-        faculty.select_tool_surface(&initiative, window),
-        faculty.select_tool_surface(&work, window),
-    );
-    assert_eq!((i.reason, i.tokens), (w.reason, w.tokens), "the work turn's hands");
-    if !faculty.hands_specs.is_empty() {
-        assert_eq!(faculty.turn_kind(&initiative), TurnKind::Act);
-        assert_eq!(i.reason, SurfaceReason::HandsForWork);
-    }
+    let (i, w) = (faculty.select_tool_surface(&initiative), faculty.select_tool_surface(&work));
+    assert_eq!((i.reason, i.specs), (w.reason, w.specs), "one surface for every kind of turn");
 }
 
 use crate::ai::types::{ToolCall, ToolInputSchema};

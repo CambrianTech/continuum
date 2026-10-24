@@ -130,7 +130,7 @@ impl LlmDeliberationFaculty {
         // hands on a work turn, and subtracting the full registry here trimmed the
         // conversation to fit room that was never occupied (card dec1a7ff). One
         // decision, made once, consulted by the budget and by the request alike.
-        let selected = self.select_tool_surface(ws, context_window);
+        let selected = self.select_tool_surface(ws);
 
         // Which tool categories the bookmarked menu OPENS this turn. Computed ONCE
         // here from `ws` (NOT from the budgeted `context`, which is not built yet) and
@@ -437,8 +437,8 @@ impl LlmDeliberationFaculty {
                     .saturating_add(unfitted_message_tokens)
                     .saturating_add(Self::assembled_context_cost(ws))
                     .saturating_add(Self::working_context_header_cost())
-                    // Demand includes the full registry only when capacity withheld it.
-                    .saturating_add(selected.demand_tokens(self.describe_tool_tokens())),
+                    // Demand includes her whole hands only when the window withheld the extended ones.
+                    .saturating_add(selected.demand_tokens()),
             )
             // Output is already measured in provider tokens; calibrate only input.
             .saturating_add(desired_reply);

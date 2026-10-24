@@ -80,7 +80,7 @@ pub mod introspect_commands;
 pub mod learning_policy;
 pub mod llm_deliberation_faculty;
 pub(crate) mod context_streams;
-pub(crate) mod tool_surface;
+pub mod tool_surface;
 pub mod model_binding;
 pub mod memory_consolidation_region;
 pub mod model_resolver;

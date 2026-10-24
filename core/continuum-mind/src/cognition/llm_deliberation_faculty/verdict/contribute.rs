@@ -198,65 +198,33 @@ impl LlmDeliberationFaculty {
             // The thread is now ROLE-ATTRIBUTED (own posts → assistant, peers → user)
             // built from the workspace's structured turns, not one flat `user` blob —
             // the structured-turns refactor that fixes the echo loop.
-            // Offer the DISCOVERY PAIR natively — `commands/list` (search/filter the
-            // authorized surface → a small list) + `commands/help` (one named tool's call
-            // format) — when the persona has a tool surface. The rest of the surface is
-            // the compact CATEGORY INDEX inside the system prompt (progressive
-            // disclosure): the persona searches a category with `commands/list`, loads a
-            // tool's schema via `commands/help`, then calls it. A tool not in this native
-            // array still DISPATCHES — `act_observe` resolves any call by name — and small
-            // models emit those calls as JSON-in-prose, which the parse path below
-            // handles. This keeps the per-turn tool payload at TWO tiny schemas instead of
-            // the ~150-schema dump that overflowed `n_ctx` and muted her.
-            // WHICH surface she is offered is a question about her WINDOW, not about the
-            // kind of turn she is taking. It used to be the latter: a work turn got her
-            // hands, and every MESSAGE turn got the whole registry — so the tier least able
-            // to afford 37 schemas received them, on the commonest turn type. Measured
-            // 2026-09-07 on IntelMac (card e20e064f): a 0.5B on a 32,768 window took 8,735
-            // tokens of schemas — more than her framing and her whole conversation combined
-            // — reached 97.3 % window demand before writing a token, and published her
-            // prompt preamble to the room instead of answering.
-            //
-            // So: offer the full surface while it fits inside its share of the served
-            // window ([`ContextBudget::tool_surface_tokens`]), and fall back to her HANDS
-            // when it does not. A work turn still takes hands regardless — that choice is
-            // about focus, not size, and predates this.
-            //
-            // The fallback is hands, never nothing: `hands_surface` keeps the `commands/`
-            // discovery pair, so a withheld verb stays one `commands/list` away. Amputating
-            // the surface is the #206 cliff (14/14 SWE acts spent on `commands/help`, 0
-            // edits) and this must never become that.
-            //
-            // The decision itself lives in [`Self::select_tool_surface`] so that the
-            // budget math in `prompt_view_within` reaches the SAME answer — those two
-            // disagreed for the life of #3829, and the budget's copy priced the full
-            // registry on turns that sent hands (card dec1a7ff).
+            // A verb not on her native surface still DISPATCHES: `act_observe` resolves any
+            // call by name, and the system prompt's menu plus `commands/help` reach it.
+            // WHICH surface she is offered is a question about her ACTIVITY and the served
+            // window, never about this turn: the schemas sit right after the system prompt,
+            // so a surface that moves between acts re-prefills everything after it (goal 10;
+            // `cognition::tool_surface` has the measurement). The decision lives in
+            // [`Self::select_tool_surface`] so the budget in `prompt_view_within` reaches the
+            // SAME answer (card dec1a7ff).
             if request_template.is_none() {
-                let selected = self.select_tool_surface(ws, fit_window);
-                if selected.reason == SurfaceReason::HandsForBudget {
-                    // Only the BUDGET path is a row: a work turn narrowing is routine and
-                    // already understood, but a message turn narrowing means she cannot see
-                    // verbs she would otherwise have been offered. Whoever later asks "why
-                    // did she never call X" needs this line to exist.
-                    //
-                    // `surface_tokens` is what she was OFFERED and `withheld_tokens` what she
-                    // did not get — reported apart because one field used to carry the full
-                    // registry's cost beside a count of her hands, and reconciling the two
-                    // gave a nonsense tokens-per-tool.
+                let selected = self.select_tool_surface(ws);
+                if selected.reason == SurfaceReason::CoreHandsForWindow {
+                    // The one truncating arm: the served window cannot hold her extended
+                    // hands. Whoever later asks "why did she never call X" needs this row.
+                    // Fixed per lane, so it repeats each turn until the window changes.
+                    let served = binding.context_window;
                     continuum_base::probe!(
                         class = "delib.tool_surface.withheld",
                         persona = %self.persona_name,
-                        offered = self.hands_specs.len() as u64,
-                        full = self.native_specs.len() as u64,
+                        offered = selected.specs.as_deref().map_or(0, <[_]>::len) as u64,
+                        hands = self.surface.hands().len() as u64,
                         surface_tokens = selected.tokens as u64,
-                        withheld_tokens = self.describe_tool_tokens() as u64,
-                        budget_tokens = super::super::super::context_budget::ContextBudget::from_window(
-                            fit_window
-                        )
-                        .tool_surface_tokens() as u64,
-                        context_window = fit_window,
-                        "the full tool surface exceeds its share of the served window — \
-                         offering her hands; the discovery pair still reaches the rest"
+                        withheld_tokens = selected.demand_tokens().saturating_sub(selected.tokens) as u64,
+                        budget_tokens = super::super::super::context_budget::ContextBudget::from_window_unbounded(served)
+                            .tool_surface_tokens() as u64,
+                        context_window = served,
+                        "her extended hands exceed the served window's tool share: \
+                         offering her core hands; the discovery pair still reaches the rest"
                     );
                 }
                 // Selection and budget accounting borrow the cached schemas. Only the
@@ -515,7 +483,14 @@ impl LlmDeliberationFaculty {
         // faculty on the NEXT tick with the result folded into perception, and that
         // tick captures itself. Best-effort; never affects the turn.
         if let Some(cap) = self.prompt_capture.as_ref().filter(|_| !lifecycle_recorded) {
-            let offered: Vec<String> = self.native_specs.iter().map(|s| s.name.clone()).collect();
+            // What was SENT, not the whole registry: the capture is the turn's glass box.
+            let offered: Vec<String> = request_template
+                .as_ref()
+                .and_then(|template| template.tools.as_deref())
+                .into_iter()
+                .flatten()
+                .map(|s| s.name.clone())
+                .collect();
             cap.record(
                 self.persona_id,
                 ws.room_id,

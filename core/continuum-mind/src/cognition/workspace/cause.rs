@@ -246,13 +246,8 @@ pub struct TurnFraming {
     /// zero-deliverable Speak one re-perception instead of settling on it. See
     /// that seam for why.
     pub workspace_deliverable: bool,
-    /// The held card is a REVIEW of someone else's work (`card.reviews` is set).
-    /// Structural like the facts above: it describes the card, never a read of her
-    /// output. It widens a work turn's hands by the reviewer verbs; see
-    /// [`Workspace::reviewing`].
-    pub reviewing: bool,
     /// An INITIATIVE turn: she holds nothing and her own heartbeat offers her a turn with
-    /// her hands (`persona::initiative_turn`). It takes the act surface and allowance a
+    /// her hands (`persona::initiative_turn`). It takes the act allowance a
     /// work turn takes, and NONE of its deliverable contract: nothing is due, so no
     /// workspace change is expected of it. See [`Workspace::initiative`].
     pub initiative: bool,
@@ -310,13 +305,6 @@ impl TurnFraming {
     /// [`Self::workspace_deliverable`].
     pub fn on_workspace(mut self) -> Self {
         self.workspace_deliverable = true;
-        self
-    }
-
-    /// Declare that the held card under work is a review card. See
-    /// [`Self::reviewing`].
-    pub fn reviewing(mut self, reviewing: bool) -> Self {
-        self.reviewing = reviewing;
         self
     }
 }
@@ -399,14 +387,9 @@ pub struct Workspace {
     /// driven.
     pub self_initiated: bool,
     /// This turn's deliverable is a change in the workspace (a held card's work
-    /// turn). The deliberation faculty narrows the tool surface to her HANDS for
-    /// such a turn: 37 tool schemas were 8.5k of a ~22k-token prefill per act
-    /// with zero KV reuse (measured 2026-09-05), and a work turn needs a dozen.
+    /// turn). It sets the act allowance; the tool surface is the same on every turn
+    /// (`cognition::tool_surface`).
     pub workspace_deliverable: bool,
-    /// The held card on this work turn is a REVIEW card. Her hands then carry the
-    /// reviewer verbs (`work/review`, `work/submission`) that every other holder's
-    /// hands withhold; see `tool_dialect::reviewer_hand`.
-    pub reviewing: bool,
     /// An initiative turn ([`TurnFraming::initiative`]): her hands and the act allowance,
     /// with no deliverable. Read by the deliberation faculty's act-turn test only.
     pub initiative: bool,
@@ -474,7 +457,6 @@ impl Workspace {
             receipts: Vec::new(),
             self_initiated: false,
             workspace_deliverable: false,
-            reviewing: false,
             initiative: false,
             room_affordances: Vec::new(),
             now_ms: burst_now,
@@ -534,11 +516,6 @@ impl Workspace {
 
     pub fn workspace_deliverable(mut self, workspace_deliverable: bool) -> Self {
         self.workspace_deliverable = workspace_deliverable;
-        self
-    }
-
-    pub fn reviewing(mut self, reviewing: bool) -> Self {
-        self.reviewing = reviewing;
         self
     }
 

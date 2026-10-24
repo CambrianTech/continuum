@@ -210,10 +210,10 @@ async fn prompt_preserves_stimulus_and_large_action_on_the_wire() {
             "the wire carries the plan's grant verbatim"
         );
         let schema_tokens =
-            LlmDeliberationFaculty::tool_surface_tokens_of(request.tools.as_ref().unwrap());
+            crate::cognition::tool_surface::tool_surface_tokens_of(request.tools.as_ref().unwrap());
         assert_eq!(
             schema_tokens,
-            faculty.select_tool_surface(&ws, window).tokens
+            faculty.select_tool_surface(&ws).tokens
         );
         let wire_tokens =
             LlmDeliberationFaculty::framing_cost(request.system_prompt.as_ref().unwrap())
@@ -278,7 +278,7 @@ async fn an_8192_window_keeps_required_content_under_a_large_measured_need() {
     let wire_tokens =
         LlmDeliberationFaculty::framing_cost(request.system_prompt.as_ref().unwrap())
             + LlmDeliberationFaculty::messages_cost(&request.messages)
-            + LlmDeliberationFaculty::tool_surface_tokens_of(request.tools.as_ref().unwrap())
+            + crate::cognition::tool_surface::tool_surface_tokens_of(request.tools.as_ref().unwrap())
             + reply as usize;
     assert!(wire_tokens <= window as usize, "prompt + reply {wire_tokens} > window {window}");
 }
