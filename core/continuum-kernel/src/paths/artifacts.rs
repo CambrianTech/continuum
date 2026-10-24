@@ -5,14 +5,18 @@ use continuum_cli_lifecycle::prebuilt_artifact::{
 };
 use std::path::{Path, PathBuf};
 
-pub fn root(home: &Path) -> Result<PathBuf, String> {
-    root_under(&home.join(".continuum"))
-}
-
-/// [`root`] for a resolved continuum home (`paths::continuum_home`), so a relocated
-/// `$CONTINUUM_HOME` holds for the artifact class too (card 4dedb177).
+/// Where downloaded core artifacts are written, under a resolved continuum home
+/// (`paths::continuum_home`), so a relocated `$CONTINUUM_HOME` holds for the writer and the
+/// disk tracker alike (card 4dedb177): the configured storage tier when set, else
+/// `<continuum home>/cache/artifacts`.
 pub fn root_under(continuum: &Path) -> Result<PathBuf, String> {
     resolve_root(super::configured("CONTINUUM_STORAGE_PATH"), continuum)
+}
+
+/// The historical default artifact root under the user home, before `$CONTINUUM_HOME` was
+/// honoured by the writer. Bytes written there stay there; the disk tracker keeps them visible.
+pub fn legacy_root(home: &Path) -> PathBuf {
+    home.join(".continuum/cache/artifacts")
 }
 
 /// Installed payload placement is independent of downloadable artifact storage.

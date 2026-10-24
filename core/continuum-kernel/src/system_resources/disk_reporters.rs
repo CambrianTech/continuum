@@ -487,6 +487,12 @@ pub fn standard_tracked_dirs(home: &std::path::Path, continuum: &std::path::Path
         Ok(_) => {}
         Err(error) => tracing::warn!(probe_class = "disk.tracked_dirs", %error, "configured artifact root unavailable"),
     }
+    // Artifacts written before the home moved stay where they were written: tracked, once, while
+    // they exist, so relocating `$CONTINUUM_HOME` never hides bytes already on disk (card 4dedb177).
+    let legacy = crate::paths::artifacts::legacy_root(home);
+    if legacy.is_dir() && dirs.iter().all(|tracked| tracked.path() != legacy.as_path()) {
+        dirs.push(TrackedDir::new("core-artifacts-legacy", legacy));
+    }
     if let Some(root) = hf_root {
         dirs.push(TrackedDir::new("hf-hub", root));
     }
@@ -959,21 +965,34 @@ mod tests {
         }
     }
 
-    // what this catches (card 4dedb177, plan line 7): every continuum cache class was a
-    // hand-built `~/.continuum/...`, so a relocated `$CONTINUUM_HOME` (or a test's home) left the
-    // tracker measuring, and the evictor deleting under, a home nothing uses. The continuum
-    // classes follow the continuum home; only airc's stay under the user home.
+    // what this catches (card 4dedb177, plan line 7, Codex's review of #5368): every continuum
+    // cache class was a hand-built `~/.continuum/...`, so a relocated `$CONTINUUM_HOME` left the
+    // tracker measuring a home nothing uses; and a tracker moved without its writer would hide
+    // real downloads. The artifact writer's root IS a tracked root; the other continuum classes
+    // follow the continuum home; airc stays under the user home; bytes already in the historical
+    // artifact root stay tracked (once) while they exist, and only that class remains there.
     #[test]
-    fn a_relocated_continuum_home_is_where_every_continuum_class_is_tracked() {
-        let (home, continuum) = (std::path::Path::new("/home/u"), std::path::Path::new("/srv/continuum"));
-        let dirs = standard_tracked_dirs(home, continuum);
-        let at = |class: &str| dirs.iter().find(|d| d.class() == class).map(|d| d.path().to_path_buf());
-        assert_eq!(at("kv-pages"), Some(continuum.join("cache/kv-pages")));
-        assert_eq!(at("genome-models"), Some(continuum.join("genome/models")));
-        assert_eq!(at("airc-worktrees"), Some(home.join(".airc/worktrees")), "airc keeps its own home");
-        assert!(
-            dirs.iter().all(|d| !d.path().starts_with(home.join(".continuum"))),
-            "no class is tracked under the user home's .continuum"
-        );
+    fn a_relocated_continuum_home_tracks_the_writers_roots_and_the_legacy_bytes() {
+        let home = tempfile::tempdir().expect("home");
+        let continuum = tempfile::tempdir().expect("continuum home");
+        let _home = crate::paths::test_home::HomeGuard::set_blocking(home.path());
+        let at = |dirs: &[Arc<TrackedDir>], class: &str| dirs.iter().find(|d| d.class() == class).map(|d| d.path().to_path_buf());
+
+        let dirs = standard_tracked_dirs(home.path(), continuum.path());
+        let writer = crate::paths::artifacts::root_under(continuum.path()).expect("writer root");
+        assert!(dirs.iter().any(|d| d.path() == writer.as_path()), "the writer's root is tracked");
+        assert_eq!(at(&dirs, "kv-pages"), Some(continuum.path().join("cache/kv-pages")));
+        assert_eq!(at(&dirs, "genome-models"), Some(continuum.path().join("genome/models")));
+        assert_eq!(at(&dirs, "airc-worktrees"), Some(home.path().join(".airc/worktrees")), "airc keeps its own home");
+        assert_eq!(at(&dirs, "core-artifacts-legacy"), None, "no historical bytes, no row");
+
+        let legacy = crate::paths::artifacts::legacy_root(home.path());
+        std::fs::create_dir_all(&legacy).expect("historical artifacts");
+        let dirs = standard_tracked_dirs(home.path(), continuum.path());
+        assert_eq!(at(&dirs, "core-artifacts-legacy"), Some(legacy.clone()), "bytes already written stay visible");
+        let old: Vec<&str> = dirs.iter().filter(|d| d.path().starts_with(home.path().join(".continuum"))).map(|d| d.class()).collect();
+        assert_eq!(old, ["core-artifacts-legacy"], "only the historical artifacts remain there");
+        let default = standard_tracked_dirs(home.path(), &home.path().join(".continuum"));
+        assert_eq!(default.iter().filter(|d| d.path() == legacy.as_path()).count(), 1, "default homes: counted once");
     }
 }
