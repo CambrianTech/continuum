@@ -472,7 +472,7 @@ impl ActionCommand for WorkReview {
             None => review_card.reviews.ok_or_else(|| {
                 CommandError::Invalid(format!(
                     "card {} (\"{}\") reviews no card, so it is not a review card; name the review card you hold, or pass card_id to review a card out of band",
-                    short_id(review_card.card_id.as_uuid()),
+                    crate::cognition::card_holder::short8(&review_card.card_id.as_uuid()),
                     review_card.title
                 ))
             })?,
@@ -496,11 +496,11 @@ impl ActionCommand for WorkReview {
         if review_card.reviews != Some(card_id) {
             // Name both ends, so the way forward is in the refusal (Benchy and Atlas on the M5,
             // 2026-10-24: ~10 acts each following refusals that never named the parent).
-            let reviews = review_card.reviews.map_or_else(|| "no card".to_owned(), |c| format!("card {}", short_id(c.as_uuid())));
+            let reviews = review_card.reviews.map_or_else(|| "no card".to_owned(), |c| format!("card {}", crate::cognition::card_holder::short8(&c.as_uuid())));
             return Err(CommandError::Invalid(format!(
                 "review card {} reviews {reviews}, not card {} you named; omit card_id to review what it reviews",
-                short_id(review_card.card_id.as_uuid()),
-                short_id(card_id.as_uuid())
+                crate::cognition::card_holder::short8(&review_card.card_id.as_uuid()),
+                crate::cognition::card_holder::short8(&card_id.as_uuid())
             )));
         }
         let submission = board.candidate_for_review(review_card.card_id, p.submission_id.map(airc_work::SubmissionId::from_uuid))
@@ -515,13 +515,13 @@ impl ActionCommand for WorkReview {
                     .map(|s| (s.submission_id.as_uuid(), s.publisher.as_uuid()))
                     .collect();
                 let nested = match parent.and_then(|c| c.reviews) {
-                    Some(up) => format!("; card {} is itself a review card, reviewing card {}", short_id(card_id.as_uuid()), short_id(up.as_uuid())),
+                    Some(up) => format!("; card {} is itself a review card, reviewing card {}", crate::cognition::card_holder::short8(&card_id.as_uuid()), crate::cognition::card_holder::short8(&up.as_uuid())),
                     None => String::new(),
                 };
                 CommandError::Invalid(format!(
                     "review candidate: {e} (review card {} reviews card {}{}); {}",
-                    short_id(review_card.card_id.as_uuid()),
-                    short_id(card_id.as_uuid()),
+                    crate::cognition::card_holder::short8(&review_card.card_id.as_uuid()),
+                    crate::cognition::card_holder::short8(&card_id.as_uuid()),
                     nested,
                     submissions_on_card(&on_card)
                 ))
@@ -679,9 +679,4 @@ pub struct WorkSubmissionResult {
     // `patch_error` naming why when this node holds no such bytes.
     pub patch: Option<String>,
     pub patch_error: Option<String>,
-}
-
-/// The leading eight hex characters a board shows and the resolver accepts as a prefix.
-fn short_id(id: Uuid) -> String {
-    id.simple().to_string()[..8].to_owned()
 }
