@@ -30,13 +30,6 @@ const IMPORT_PROBE_BOUND: Option<Duration> = None;
 pub(crate) const SILENCE_ALL: &str =
     "import os; _null = os.open(os.devnull, os.O_WRONLY); os.dup2(_null, 1); os.dup2(_null, 2); ";
 
-/// Python run before a probe whose answer is its stdout: stderr goes to `log` (a file in the
-/// caller's job directory, removed with it) instead of the capture, so the capture holds only
-/// the answer and a failure can still quote the log's tail.
-pub(crate) fn stderr_to(log: &Path) -> String {
-    format!("import os; os.dup2(os.open({:?}, os.O_WRONLY | os.O_CREAT | os.O_TRUNC), 2); ", log.display().to_string())
-}
-
 /// What one question to a trainer's interpreter came back with.
 pub(crate) enum Answer {
     /// It exited and was reaped; `cut` names a stream that could not be read whole.
