@@ -424,6 +424,7 @@ pub fn build_response_generation_request(
         repeat_last_n: None,
         stop_sequences: None,
         tools: None,
+        tail_tools: None,
         tool_choice: None,
         // Local Qwen takes plain text; no JSON-mode constraint here.
         response_format: Some(ResponseFormat::Text),

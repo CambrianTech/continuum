@@ -138,6 +138,7 @@ pub async fn teacher_generate(
         repeat_last_n: None,
         stop_sequences: None,
         tools: None,
+        tail_tools: None,
         tool_choice: None,
         response_format: None,
         active_adapters: None,

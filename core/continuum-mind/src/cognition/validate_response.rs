@@ -240,6 +240,7 @@ fn build_validate_generation_request(
         repeat_last_n: None,
         stop_sequences: None,
         tools: None,
+        tail_tools: None,
         tool_choice: None,
         response_format: Some(ResponseFormat::Text),
         active_adapters: None,

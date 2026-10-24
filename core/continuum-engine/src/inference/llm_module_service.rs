@@ -398,6 +398,7 @@ pub(super) async fn run_adapter_inference(
             Some(request.stop_sequences.clone())
         },
         tools: None,
+        tail_tools: None,
         tool_choice: None,
         response_format: None,
         active_adapters: None,
