@@ -1,3 +1,4 @@
+#![cfg(test)]
 use super::*;
 use crate::genome::gene_trial::{GeneTrials, TrialState};
 use std::path::Path;
