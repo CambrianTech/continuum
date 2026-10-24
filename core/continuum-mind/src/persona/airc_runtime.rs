@@ -67,6 +67,8 @@ use crate::cognition::card_holder::{held_of_owned, settled_card};
 
 mod citizen_commons_room;
 pub use citizen_commons_room::*;
+mod lapse_evidence;
+mod lapse_scan;
 mod persona_airc_runtime;
 mod persona_airc_runtime_2;
 pub use persona_airc_runtime_2::*;
