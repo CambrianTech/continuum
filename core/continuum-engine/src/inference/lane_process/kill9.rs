@@ -107,7 +107,7 @@ fn signal_windows_identity(who: ProcessIdentity) -> Result<bool, String> {
     use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
     use windows_sys::Win32::Foundation::{FILETIME, ERROR_INVALID_PARAMETER, WAIT_OBJECT_0};
     use windows_sys::Win32::System::Threading::{
-        GetProcessTimes, OpenProcess, TerminateProcess, WaitForSingleObject,
+        GetProcessTimes, OpenProcess, WaitForSingleObject,
         PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_TERMINATE, PROCESS_SYNCHRONIZE,
     };
     // Pin the incarnation before inspecting or signalling it: taskkill's PID
@@ -138,12 +138,36 @@ fn signal_windows_identity(who: ProcessIdentity) -> Result<bool, String> {
     if started != who.start_time || unsafe { WaitForSingleObject(process.as_raw_handle(), 0) } == WAIT_OBJECT_0 {
         return Ok(false);
     }
+    terminate_windows_handle(&process, who)
+}
+
+// The caller has verified creation time while holding this handle. Keep the
+// termination/exit race on that handle, including when signalling fails.
+#[cfg(windows)]
+fn terminate_windows_handle(
+    process: &impl std::os::windows::io::AsRawHandle,
+    who: ProcessIdentity,
+) -> Result<bool, String> {
+    use windows_sys::Win32::Foundation::WAIT_OBJECT_0;
+    use windows_sys::Win32::System::Threading::{TerminateProcess, WaitForSingleObject};
     // SAFETY: terminate only this held, creation-time-verified incarnation.
     if unsafe { TerminateProcess(process.as_raw_handle(), 1) } == 0 {
-        return Err(format!("TerminateProcess pid={} started={}: {}", who.pid, who.start_time, std::io::Error::last_os_error()));
+        let error = std::io::Error::last_os_error();
+        // It can exit between the preflight wait and TerminateProcess. Only a
+        // signalled handle proves that race; a live/failed wait preserves the
+        // original refusal, including genuine access denial. Never re-open a PID.
+        // SAFETY: the same owned incarnation handle remains open through this wait.
+        if unsafe { WaitForSingleObject(process.as_raw_handle(), 0) } == WAIT_OBJECT_0 {
+            return Ok(false);
+        }
+        return Err(format!("TerminateProcess pid={} started={}: {error}", who.pid, who.start_time));
     }
     Ok(true)
 }
+
+#[cfg(all(test, windows))]
+#[path = "kill9_windows_tests.rs"]
+mod windows_termination_tests;
 
 
 /// End `child` and its tree: THE one way an owned child is ended (the shell's execution task and
