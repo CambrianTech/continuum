@@ -105,7 +105,11 @@ test('a crate-local change runs that crate and every crate that depends on it', 
   assert.deepEqual(scope(['core/continuum-cognition/src/lib.rs']), crates('continuum-cognition', 'continuum-academy', 'continuum-mind', 'continuum-core'));
   const belowMind = crates('continuum-engine', 'continuum-hands', 'continuum-live', 'continuum-perception', 'continuum-genome', 'continuum-memory', 'continuum-cognition', 'continuum-academy', 'continuum-mind', 'continuum-core');
   assert.deepEqual(scope(['core/continuum-engine/src/lib.rs']), belowMind);
-  assert.deepEqual(scope(['core/continuum-kernel/src/lib.rs']), { crates: TESTED_CRATES, cli: false });
+  // The floor crates (base, host) sit below the kernel: a kernel change runs everything above them.
+  const aboveFloor = TESTED_CRATES.filter(n => n !== 'continuum-base' && n !== 'continuum-host');
+  assert.deepEqual(scope(['core/continuum-kernel/src/lib.rs']), { crates: aboveFloor, cli: false });
+  // A floor change runs the floor crate and every crate built on it.
+  assert.deepEqual(scope(['core/continuum-host/src/durable/mod.rs']), { crates: TESTED_CRATES.filter(n => n !== 'continuum-base'), cli: true });
   // Untested crates reach the tested ones through the graph: llama -> engine -> ...
   assert.deepEqual(scope(['core/llama/src/lib.rs']), belowMind);
   assert.deepEqual(scope(['core/continuum-mind/src/a.rs', 'core/continuum-live/src/b.rs']), crates('continuum-live', 'continuum-perception', 'continuum-cognition', 'continuum-academy', 'continuum-mind', 'continuum-core'));
@@ -136,7 +140,7 @@ test('docs, markdown and installer-only changes run no crate', () => {
 test('CLI handoff regressions run for the CLI and lifecycle paths, or with everything', () => {
   assert.deepEqual(scope(['core/continuum-core/src/bin/continuum/reboot.rs']), { crates: ['continuum-core'], cli: true });
   assert.deepEqual(scope(['core/continuum-core/src/bin/continuum.rs']), { crates: ['continuum-core'], cli: true });
-  assert.deepEqual(scope(['core/continuum-cli-lifecycle/src/lib.rs']), ALL);
+  assert.deepEqual(scope(['core/continuum-cli-lifecycle/src/lib.rs']), { crates: TESTED_CRATES.filter(n => n !== 'continuum-base' && n !== 'continuum-host'), cli: true });
   assert.equal(scope(['core/continuum-core/src/bin/continuum_other.rs']).cli, false);
   assert.equal(scope(['core/continuum-mind/src/a.rs']).cli, false);
 });
