@@ -499,3 +499,23 @@
         let none = holder_guard(Some(me), me, None, stale, card).expect_err("no live claim");
         assert!(none.to_string().contains("unclaimed"), "{}", none);
     }
+
+    // what this catches (card fe8554d2, Codex on b12fb476b): two submits of hers in one act's
+    // batch run concurrently. Her second must not read the board, record (superseding her
+    // unpublished records) and publish while her first is between its record and its
+    // publication's answer. The fence serializes per persona and does not block another persona.
+    #[tokio::test]
+    async fn one_submit_of_hers_records_and_publishes_at_a_time() {
+        let (her, other) = (uuid::Uuid::new_v4(), uuid::Uuid::new_v4());
+        let first = super::publication_fence(her).await;
+        let second = tokio::spawn(super::publication_fence(her));
+        tokio::task::yield_now().await;
+        assert!(!second.is_finished(), "her second submit waits for her first");
+        let elsewhere = tokio::time::timeout(std::time::Duration::from_secs(1), super::publication_fence(other)).await;
+        assert!(elsewhere.is_ok(), "another persona never waits on hers");
+        drop(first);
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_secs(1), second).await.is_ok(),
+            "her second submit proceeds once her first has its answer"
+        );
+    }

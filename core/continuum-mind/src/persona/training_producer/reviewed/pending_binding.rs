@@ -39,6 +39,14 @@ impl PendingSelection {
     }
 }
 
+/// The submissions the board holds published on `card`, as the consumer reads it.
+pub fn published_on(board: &airc_work::WorkBoardProjection, card: airc_work::WorkCardId) -> std::collections::HashSet<Uuid> {
+    match board.card(card) {
+        Some(c) => c.submissions.iter().map(|s| s.submission_id.as_uuid()).collect(),
+        None => std::collections::HashSet::new(), // a card the board does not hold publishes nothing
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, crate::orm::Entity)]
 #[serde(rename_all = "camelCase")]
 #[entity(collection = "pending_credit_binding")]
@@ -149,6 +157,7 @@ pub async fn resolve_pending<T: Transport>(
     persona_id: Uuid,
     room_id: Uuid,
     submitted: &airc_work::WorkSubmission,
+    published: &std::collections::HashSet<Uuid>,
 ) -> Result<Option<Result<WorkCreditBinding, Held>>, CreditBindingError> {
     ensure_storage(conn, persona_name).await?;
     let id = submitted.submission_id.as_uuid();
@@ -167,7 +176,7 @@ pub async fn resolve_pending<T: Transport>(
         Err(CreditBindingError::Storage(e)) => return Err(e.into()),
         Err(other) => return Ok(Some(Err(Held::Unresolved(other.to_string())))),
     };
-    if let Some(other) = issued_elsewhere(conn, persona_name, &row, id).await? {
+    if let Some(other) = issued_elsewhere(conn, persona_name, &row, id, published).await? {
         return Ok(Some(Err(Held::SharedRevision(other))));
     }
     let selection = SubmissionSelection {
@@ -197,13 +206,16 @@ pub async fn issued_elsewhere<T: Transport>(
     persona_name: &str,
     row: &StagedCredit,
     submission: Uuid,
+    published: &std::collections::HashSet<Uuid>,
 ) -> Result<Option<Uuid>, CreditBindingError> {
-    // Every pending row counts, published or still in flight, except one durably superseded
-    // before it was published. No board snapshot decides: a lagging view cannot hide one.
+    // Every pending row counts, published or still in flight, except one superseded before it
+    // was published AND absent from the board. The board alone never excludes a row; a
+    // superseded one that landed after all (a cancelled call, an uncertain acknowledgement)
+    // counts again.
     let others: Vec<PendingCreditBinding> = pending_on_card(conn, persona_name, row.card_id)
         .await?
         .into_iter()
-        .filter(|o| o.abandoned_by.is_none())
+        .filter(|o| o.abandoned_by.is_none() || published.contains(&o.id))
         .collect();
     let row_generations: Vec<&str> = row.receipts.iter().map(|r| r.submitted_request_id.as_str()).collect();
     let issued: Vec<(Uuid, &str)> =

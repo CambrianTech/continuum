@@ -528,7 +528,7 @@ use super::*;
         reviewed::record_pending(&data, name, persona, pending(&a, "work-a"), &published).await?;
         let mut newer = turn("Inspect an unrelated file.");
         assert!(newer.record(&settlement_acts(4), &[served_receipt("inspect-b", "model-a")], None, true).await);
-        let bound = reviewed::resolve_pending(&data, name, persona, room, &a).await?;
+        let bound = reviewed::resolve_pending(&data, name, persona, room, &a, &published).await?;
         assert!(
             matches!(&bound, Some(Ok(b)) if b.selection.staged_revision_id == issuing.id),
             "the issuing turn binds, not the newer one: {bound:?}"
@@ -539,12 +539,12 @@ use super::*;
         published.insert(late.submission_id.as_uuid());
         reviewed::record_pending(&data, name, persona, pending(&late, "late"), &published).await?;
         assert!(matches!(
-            reviewed::resolve_pending(&data, name, persona, room, &late).await?,
+            reviewed::resolve_pending(&data, name, persona, room, &late, &published).await?,
             Some(Err(Held::Unresolved(_)))
         ));
         let mut later = turn("Finish the change.");
         assert!(later.record(&settlement_acts(4), &[served_receipt("late", "model-a")], None, true).await);
-        assert!(matches!(reviewed::resolve_pending(&data, name, persona, room, &late).await?, Some(Ok(_))));
+        assert!(matches!(reviewed::resolve_pending(&data, name, persona, room, &late, &published).await?, Some(Ok(_))));
 
         // Failed S and corrected M share one staged row: either order holds.
         let (s, m) = (submission('d')?, submission('e')?);
@@ -556,11 +556,11 @@ use super::*;
         let both = [served_receipt("s-gen", "model-a"), served_receipt("m-gen", "model-a")];
         assert!(shared.record(&settlement_acts(4), &both, None, true).await);
         assert_eq!(
-            reviewed::resolve_pending(&data, name, persona, room, &m).await?.and_then(Result::err),
+            reviewed::resolve_pending(&data, name, persona, room, &m, &published).await?.and_then(Result::err),
             Some(Held::SharedRevision(s.submission_id.as_uuid()))
         );
         assert_eq!(
-            reviewed::resolve_pending(&data, name, persona, room, &s).await?.and_then(Result::err),
+            reviewed::resolve_pending(&data, name, persona, room, &s, &published).await?.and_then(Result::err),
             Some(Held::SharedRevision(m.submission_id.as_uuid()))
         );
 
@@ -574,7 +574,7 @@ use super::*;
         let both = [served_receipt("s2-gen", "model-a"), served_receipt("m2-gen", "model-a")];
         assert!(bucket.record(&settlement_acts(4), &both, None, true).await);
         reviewed::record_pending(&data, name, persona, pending(&s2, "s2-gen"), &published).await?;
-        let Some(Ok(s2_bound)) = reviewed::resolve_pending(&data, name, persona, room, &s2).await? else {
+        let Some(Ok(s2_bound)) = reviewed::resolve_pending(&data, name, persona, room, &s2, &published).await? else {
             return Err("S binds while it is the only pending submission".into());
         };
         reviewed::record_pending(&data, name, persona, pending(&m2, "m2-gen"), &published).await?;
@@ -582,7 +582,7 @@ use super::*;
             .await?
             .ok_or("the binding retains its transfer intent")?;
         assert_eq!(
-            reviewed::issued_elsewhere(&data, name, &intent.snapshot, s2.submission_id.as_uuid()).await?,
+            reviewed::issued_elsewhere(&data, name, &intent.snapshot, s2.submission_id.as_uuid(), &published).await?,
             Some(m2.submission_id.as_uuid()),
             "consumption sees a submission recorded after the binding"
         );
@@ -599,7 +599,7 @@ use super::*;
         assert!(explicit.record(&settlement_acts(8), &grown, None, true).await);
         reviewed::record_pending(&data, name, persona, pending(&m3, "m3-gen"), &published).await?;
         assert_eq!(
-            reviewed::resolve_pending(&data, name, persona, room, &m3).await?.and_then(Result::err),
+            reviewed::resolve_pending(&data, name, persona, room, &m3, &published).await?.and_then(Result::err),
             Some(Held::SharedRevision(s3.submission_id.as_uuid())),
             "S's explicit reservation is seen without a pending row"
         );
@@ -614,9 +614,25 @@ use super::*;
         let both = [served_receipt("orphan-gen", "model-a"), served_receipt("retry-gen", "model-a")];
         assert!(restaged.record(&settlement_acts(4), &both, None, true).await);
         assert!(
-            matches!(reviewed::resolve_pending(&data, name, persona, room, &retry).await?, Some(Ok(_))),
+            matches!(reviewed::resolve_pending(&data, name, persona, room, &retry, &published).await?, Some(Ok(_))),
             "the retry superseded the unpublished orphan in its own record: the orphan holds nothing"
         );
+        // A superseded record that landed on the board after all (a cancelled call, an
+        // uncertain acknowledgement) counts again: it holds a submission sharing its row.
+        let (landed, after) = (submission('7')?, submission('8')?);
+        reviewed::record_pending(&data, name, persona, pending(&landed, "landed-gen"), &published).await?;
+        published.insert(after.submission_id.as_uuid()); // `landed` is off the board when `after` records
+        reviewed::record_pending(&data, name, persona, pending(&after, "after-gen"), &published).await?;
+        published.insert(landed.submission_id.as_uuid()); // ...and on it by the time a review arrives
+        let mut late_row = turn("Cancelled publication that landed anyway.");
+        let both = [served_receipt("landed-gen", "model-a"), served_receipt("after-gen", "model-a")];
+        assert!(late_row.record(&settlement_acts(4), &both, None, true).await);
+        assert_eq!(
+            reviewed::resolve_pending(&data, name, persona, room, &after, &published).await?.and_then(Result::err),
+            Some(Held::SharedRevision(landed.submission_id.as_uuid())),
+            "the board alone never excludes a row"
+        );
+
         // ...and the orphan can never publish late under its old id.
         assert!(matches!(
             reviewed::record_pending(&data, name, persona, pending(&orphan, "orphan-gen"), &published).await,
@@ -645,7 +661,7 @@ use super::*;
         let mut on_board = retried.clone();
         on_board.artifact.size_bytes += 1;
         assert_eq!(
-            reviewed::resolve_pending(&data, name, persona, room, &on_board).await?.and_then(Result::err),
+            reviewed::resolve_pending(&data, name, persona, room, &on_board, &published).await?.and_then(Result::err),
             Some(Held::PublicationMismatch)
         );
         Ok(())
