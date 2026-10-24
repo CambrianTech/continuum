@@ -297,7 +297,11 @@ pub const CARGO_TARGET_CLASSES: [&str; 3] = ["cargo-target", "cargo-target-wt", 
 /// cold-storage installer had pointed `HF_HOME` at `D:\continuum-cold\huggingface` holding
 /// **2.48 TB** — Kimi-K3 at 1.45 TB, Kimi-K2.7 at 430 GB, GLM-5.2 at 375 GB. Entirely invisible to
 /// the disk governor.
-pub fn standard_tracked_dirs(home: &std::path::Path) -> Vec<Arc<TrackedDir>> {
+///
+/// `home` is the user's home, where airc keeps its own state. `continuum` is the continuum home,
+/// resolved once by `paths::continuum_home` (card 4dedb177), so `$CONTINUUM_HOME` and a test's
+/// home hold for every continuum class instead of a hand-built `~/.continuum`.
+pub fn standard_tracked_dirs(home: &std::path::Path, continuum: &std::path::Path) -> Vec<Arc<TrackedDir>> {
     // The HF cache is relocatable (HF_HOME / config.env, set by the cold-storage installer), so ask
     // the resolver instead of assuming the default. `huggingface_cache_root()` returns `<root>/hub`;
     // track the PARENT so the class covers the whole cache (blobs, snapshots, locks, refs), which is
@@ -330,7 +334,7 @@ pub fn standard_tracked_dirs(home: &std::path::Path) -> Vec<Arc<TrackedDir>> {
     let mut dirs = vec![
         // Retain the historical root when configuration moves future writes.
         // Boot and later writers register configured roots in this same registry.
-        TrackedDir::new("cargo-target", home.join(".continuum/cache/cargo-target")),
+        TrackedDir::new("cargo-target", continuum.join("cache/cargo-target")),
         // THE CACHE I INVENTED IS A CACHE THE SUBSTRATE OWNS (Joel, 2026-09-08: "the
         // system is supposed to manage disk; you've been defying design principles so it
         // can't"). Worktree builds must not write into the shared target — a worktree
@@ -340,7 +344,7 @@ pub fn standard_tracked_dirs(home: &std::path::Path) -> Vec<Arc<TrackedDir>> {
         // it was never registered: the 2026-07-13 law says a new directory the substrate
         // writes unbounded data into gets a TrackedDir row and an eviction decision, and
         // hand-sweeping it is exactly the compensation the law exists to end.
-        TrackedDir::new("cargo-target-wt", home.join(".continuum/cache/cargo-target-wt")),
+        TrackedDir::new("cargo-target-wt", continuum.join("cache/cargo-target-wt")),
         // THE THIRD CARGO TREE, unregistered until now (2026-09-21, the M5 at 97%: this
         // directory held 9.8 GB that no reporter could see and no pool could evict). The
         // airc build gets its own target dir for the same reason worktree builds do —
@@ -355,44 +359,44 @@ pub fn standard_tracked_dirs(home: &std::path::Path) -> Vec<Arc<TrackedDir>> {
         // next cargo tree to appear went unregistered anyway. A row is not remembered by
         // a doc; it is remembered by the class-coverage test below refusing an unlisted
         // class, which is why this lands with its eviction entry in the same change.
-        TrackedDir::new("cargo-target-airc", home.join(".continuum/cache/cargo-target-airc")),
+        TrackedDir::new("cargo-target-airc", continuum.join("cache/cargo-target-airc")),
         // The eye's browser profiles. Playwright defaults them into the OS temp dir,
         // where nothing of ours can see or evict them: 337 leaked profiles from 31
         // orphaned browsers accumulated there over a week (card de9b8876). A directory
         // under our own cache root is one the monitor can weigh and the reaper can clear.
-        TrackedDir::new("eye-profiles", home.join(".continuum/cache/eye-profiles")),
+        TrackedDir::new("eye-profiles", continuum.join("cache/eye-profiles")),
         // CI-built cores the deploy consumer downloads instead of compiling (card 50ca737e):
         // Legacy placement remains observable after configured storage redirects future writes.
-        TrackedDir::new("core-artifacts", home.join(".continuum/cache/artifacts")),
+        TrackedDir::new("core-artifacts", continuum.join("cache/artifacts")),
         // The served-weights store. UNTRACKED until 2026-09-06 — the largest class on the
         // volume (360 GB on the M5 that day: Flash-Next 123, Kimi-Linear 95, DeepSeek-V4-Flash
         // 91, Qwen3.8-27B 20, Ornith 20) and invisible to both halves of the governed-disk
         // contract while the disk went from 46 GB free to ZERO under a test build. 186 GB of
         // it was weights on NO serving path (two concluded experiments), which is exactly the
         // sub-class an owner evicts: not in the catalog, not the active or pinned model.
-        TrackedDir::new("models", home.join(".continuum/models")),
-        TrackedDir::new("genome-models", home.join(".continuum/genome/models")),
-        TrackedDir::new("citizens", home.join(".continuum/citizens")),
+        TrackedDir::new("models", continuum.join("models")),
+        TrackedDir::new("genome-models", continuum.join("genome/models")),
+        TrackedDir::new("citizens", continuum.join("citizens")),
         // Per-persona durable mind state: longterm.db + working-set.json, one dir per uuid.
         // UNTRACKED until 2026-08-20, which made it invisible to BOTH halves of the governed-
         // disk contract — no size report, and the eviction guard could not flag a missing
         // decision because that guard iterates THIS list. Exactly the silent-class shape the
         // 2026-07-13 incident was about, found at 295 dirs / 18 MB with 286 of them under
         // 100 KB — spawn ghosts (#437), not minds.
-        TrackedDir::new("personas", home.join(".continuum/personas")),
-        TrackedDir::new("forge", home.join(".continuum/forge")),
+        TrackedDir::new("personas", continuum.join("personas")),
+        TrackedDir::new("forge", continuum.join("forge")),
         // Benchmark working set: per-instance repo clones + per-instance venvs. Grows LINEARLY
         // with instances graded — a full SWE-bench Lite sweep is 300 repos, and one sympy
         // checkout is ~240 MB. Entirely re-creatable (git + uv), which is what makes it a
         // cache class rather than data.
-        TrackedDir::new("benchmarks", home.join(".continuum/benchmarks")),
+        TrackedDir::new("benchmarks", continuum.join("benchmarks")),
         // The retired benchmark harness's state, moved here once at boot (card c4f4b8cd
         // step 2; `harness_archive`). Written once, never grown.
-        TrackedDir::new("benchmark-harness-archive", home.join(".continuum/archive/benchmark-harness")),
+        TrackedDir::new("benchmark-harness-archive", continuum.join("archive/benchmark-harness")),
         // Managed clones of repos a citizen claimed a card for when this node had no
         // checkout (`card_staging::ensure_managed_clone`). One full clone per repo, and
         // every per-card worktree for that repo is cut from it.
-        TrackedDir::new("repos", home.join(".continuum/repos")),
+        TrackedDir::new("repos", continuum.join("repos")),
         // THE LARGEST THING ON THE 5090'S SYSTEM VOLUME WAS INVISIBLE (2026-09-18, the
         // day it hit 0 bytes free): the Kimi K3 expert-bank container, 760 GB, plus
         // 25 GB of MoE probe runs — both written under the home by the K3 pager work
@@ -400,14 +404,14 @@ pub fn standard_tracked_dirs(home: &std::path::Path) -> Vec<Arc<TrackedDir>> {
         // volume that was 1.8 TB used and could not say where the rest went. Same law
         // as every row above: a directory the substrate writes unbounded data into gets
         // a row and an eviction decision (deferred, named, in `disk_eviction.rs`).
-        TrackedDir::new("k3-container", home.join(".continuum/kimi-k3-container")),
+        TrackedDir::new("k3-container", continuum.join("kimi-k3-container")),
         // The cognition capture glass box: per-persona prompt captures and workspace traces
         // (and the replay fixtures beside them). UNTRACKED until card 75dd8bfe, the day the
         // 5090's C: reached 98% with a 3.0 GB workspace trace in it; IntelMac held 1.3 GB
         // across 76 trace files. Its writers now bound each persona's files; the total still
         // scales with persona count, which is why the class needs this row and an owner.
-        TrackedDir::new("fixtures", home.join(".continuum/fixtures")),
-        TrackedDir::new("moe-probe", home.join(".continuum/moe-probe")),
+        TrackedDir::new("fixtures", continuum.join("fixtures")),
+        TrackedDir::new("moe-probe", continuum.join("moe-probe")),
         // The substrate's OWN rotation-generation dirs. Registered
         // 2026-08-06 — they had been the two directories continuum
         // writes to most continuously and the only ones the disk
@@ -443,8 +447,8 @@ pub fn standard_tracked_dirs(home: &std::path::Path) -> Vec<Arc<TrackedDir>> {
         // (card d166e4f2). One per repo; it grows with the repo's history and is never
         // pruned (preciousObjects), so its size is the class to watch.
         TrackedDir::new("airc-mirrors", home.join(".airc/mirrors")),
-        TrackedDir::new("logs", home.join(".continuum/logs")),
-        TrackedDir::new("probes", home.join(".continuum/probes")),
+        TrackedDir::new("logs", continuum.join("logs")),
+        TrackedDir::new("probes", continuum.join("probes")),
         // #312 ephemeral exam worlds: one CoW clone of the checkout per eval run
         // (~31 GB logical each). RAII drop removes them on every in-process return
         // path, and the provision-time orphan sweep (`cognition/eval.rs::
@@ -457,7 +461,7 @@ pub fn standard_tracked_dirs(home: &std::path::Path) -> Vec<Arc<TrackedDir>> {
         // capture (SERVING_WIRE_CAPTURE_DIR default location). Opt-in writers,
         // bounded by operator attention in practice — tracked so "in practice"
         // never becomes the 2026-07-13 silent-class shape.
-        TrackedDir::new("eval-captures", home.join(".continuum/eval-captures")),
+        TrackedDir::new("eval-captures", continuum.join("eval-captures")),
         // KV disk pages (restore economy): one file per activity, overwritten on
         // each save, under one subdir per MODEL (any window restores from it).
         // Bounded by residents × rooms per model, and by the save-side store
@@ -465,23 +469,29 @@ pub fn standard_tracked_dirs(home: &std::path::Path) -> Vec<Arc<TrackedDir>> {
         // first, never one younger than a day). A page at 20-40k tokens of q8_0
         // KV is hundreds of MB, so the class is small in COUNT but real in
         // bytes — exactly what must never be an untracked writer.
-        TrackedDir::new("kv-pages", home.join(".continuum/cache/kv-pages")),
+        TrackedDir::new("kv-pages", continuum.join("cache/kv-pages")),
         // Every lane's `--train-dir`: adapters the engine's /train writes, in flight or
         // left by a crashed run (a finished one moves into its job dir). Registered with
         // the flag itself (2026-09-26) so it is never an unweighed writer.
-        TrackedDir::new("engine-train", home.join(".continuum/cache/engine-train")),
+        TrackedDir::new("engine-train", continuum.join("cache/engine-train")),
     ];
     // Present only when its real location is KNOWN (see the warn above). Kept
     // CONDITIONAL rather than defaulted: fabricating a path here is how a class
     // gets "tracked" at a location nothing writes to, which reads as an empty
     // cache forever.
     // Preserve the historical cache; relocation changes future writes only.
-    match crate::paths::artifacts::root(home) {
-        Ok(root) if root != home.join(".continuum/cache/artifacts") => {
+    match crate::paths::artifacts::root_under(continuum) {
+        Ok(root) if root != continuum.join("cache/artifacts") => {
             dirs.push(TrackedDir::new("core-artifacts-configured", root));
         }
         Ok(_) => {}
         Err(error) => tracing::warn!(probe_class = "disk.tracked_dirs", %error, "configured artifact root unavailable"),
+    }
+    // Artifacts written before the home moved stay where they were written: tracked, once, while
+    // they exist, so relocating `$CONTINUUM_HOME` never hides bytes already on disk (card 4dedb177).
+    let legacy = crate::paths::artifacts::legacy_root(home);
+    if legacy.is_dir() && dirs.iter().all(|tracked| tracked.path() != legacy.as_path()) {
+        dirs.push(TrackedDir::new("core-artifacts-legacy", legacy));
     }
     if let Some(root) = hf_root {
         dirs.push(TrackedDir::new("hf-hub", root));
@@ -740,7 +750,7 @@ mod tests {
     fn no_tracked_class_contains_a_persona_job_directory() {
         let home = std::path::Path::new("/h");
         let job = home.join(".continuum/genome/Kimi/code_owner/00000000-0000-0000-0000-000000000001");
-        for dir in standard_tracked_dirs(home) {
+        for dir in standard_tracked_dirs(home, &home.join(".continuum")) {
             assert!(!job.starts_with(dir.path()), "{} ({}) contains persona job directories", dir.class(), dir.path().display());
         }
     }
@@ -759,7 +769,7 @@ mod tests {
     // Mutation check: dropping "cargo-target-airc" from the const fails the first assert.
     #[test]
     fn every_cargo_target_class_has_an_owner() {
-        let dirs = standard_tracked_dirs(std::path::Path::new("/h"));
+        let dirs = standard_tracked_dirs(std::path::Path::new("/h"), std::path::Path::new("/h/.continuum"));
         let tracked_cargo: Vec<&str> = dirs
             .iter()
             .map(|d| d.class())
@@ -807,7 +817,7 @@ mod tests {
         let _home = crate::paths::test_home::HomeGuard::set_blocking(home.path());
         std::env::set_var("HF_HOME", relocated.path());
 
-        let dirs = standard_tracked_dirs(home.path());
+        let dirs = standard_tracked_dirs(home.path(), &home.path().join(".continuum"));
         let hf = dirs
             .iter()
             .find(|d| d.name == "hf-hub")
@@ -942,7 +952,7 @@ mod tests {
     // list silently un-names a known creep source.
     #[test]
     fn standard_dirs_cover_the_incident_cache_classes() {
-        let dirs = standard_tracked_dirs(std::path::Path::new("/home/u"));
+        let dirs = standard_tracked_dirs(std::path::Path::new("/home/u"), std::path::Path::new("/home/u/.continuum"));
         let names: Vec<&str> = dirs.iter().map(|d| d.name).collect();
         for must in [
             "cargo-target",
@@ -953,5 +963,36 @@ mod tests {
         ] {
             assert!(names.contains(&must), "missing cache class: {must}");
         }
+    }
+
+    // what this catches (card 4dedb177, plan line 7, Codex's review of #5368): every continuum
+    // cache class was a hand-built `~/.continuum/...`, so a relocated `$CONTINUUM_HOME` left the
+    // tracker measuring a home nothing uses; and a tracker moved without its writer would hide
+    // real downloads. The artifact writer's root IS a tracked root; the other continuum classes
+    // follow the continuum home; airc stays under the user home; bytes already in the historical
+    // artifact root stay tracked (once) while they exist, and only that class remains there.
+    #[test]
+    fn a_relocated_continuum_home_tracks_the_writers_roots_and_the_legacy_bytes() {
+        let home = tempfile::tempdir().expect("home");
+        let continuum = tempfile::tempdir().expect("continuum home");
+        let _home = crate::paths::test_home::HomeGuard::set_blocking(home.path());
+        let at = |dirs: &[Arc<TrackedDir>], class: &str| dirs.iter().find(|d| d.class() == class).map(|d| d.path().to_path_buf());
+
+        let dirs = standard_tracked_dirs(home.path(), continuum.path());
+        let writer = crate::paths::artifacts::root_under(continuum.path()).expect("writer root");
+        assert!(dirs.iter().any(|d| d.path() == writer.as_path()), "the writer's root is tracked");
+        assert_eq!(at(&dirs, "kv-pages"), Some(continuum.path().join("cache/kv-pages")));
+        assert_eq!(at(&dirs, "genome-models"), Some(continuum.path().join("genome/models")));
+        assert_eq!(at(&dirs, "airc-worktrees"), Some(home.path().join(".airc/worktrees")), "airc keeps its own home");
+        assert_eq!(at(&dirs, "core-artifacts-legacy"), None, "no historical bytes, no row");
+
+        let legacy = crate::paths::artifacts::legacy_root(home.path());
+        std::fs::create_dir_all(&legacy).expect("historical artifacts");
+        let dirs = standard_tracked_dirs(home.path(), continuum.path());
+        assert_eq!(at(&dirs, "core-artifacts-legacy"), Some(legacy.clone()), "bytes already written stay visible");
+        let old: Vec<&str> = dirs.iter().filter(|d| d.path().starts_with(home.path().join(".continuum"))).map(|d| d.class()).collect();
+        assert_eq!(old, ["core-artifacts-legacy"], "only the historical artifacts remain there");
+        let default = standard_tracked_dirs(home.path(), &home.path().join(".continuum"));
+        assert_eq!(default.iter().filter(|d| d.path() == legacy.as_path()).count(), 1, "default homes: counted once");
     }
 }

@@ -5,9 +5,18 @@ use continuum_cli_lifecycle::prebuilt_artifact::{
 };
 use std::path::{Path, PathBuf};
 
-pub fn root(home: &Path) -> Result<PathBuf, String> {
-    let storage = super::configured("CONTINUUM_STORAGE_PATH");
-    resolve_root(storage, home)
+/// Where downloaded core artifacts are written, under a resolved continuum home
+/// (`paths::continuum_home`), so a relocated `$CONTINUUM_HOME` holds for the writer and the
+/// disk tracker alike (card 4dedb177): the configured storage tier when set, else
+/// `<continuum home>/cache/artifacts`.
+pub fn root_under(continuum: &Path) -> Result<PathBuf, String> {
+    resolve_root(super::configured("CONTINUUM_STORAGE_PATH"), continuum)
+}
+
+/// The historical default artifact root under the user home, before `$CONTINUUM_HOME` was
+/// honoured by the writer. Bytes written there stay there; the disk tracker keeps them visible.
+pub fn legacy_root(home: &Path) -> PathBuf {
+    home.join(".continuum/cache/artifacts")
 }
 
 /// Installed payload placement is independent of downloadable artifact storage.
@@ -19,13 +28,13 @@ pub fn service_destination(home: &Path) -> Result<PathBuf, PublishedCoreError> {
         .map_err(PublishedCoreError::OperationalBlocked)
 }
 
-fn resolve_root(storage: Option<PathBuf>, home: &Path) -> Result<PathBuf, String> {
+fn resolve_root(storage: Option<PathBuf>, continuum: &Path) -> Result<PathBuf, String> {
     match storage {
         Some(root) if !root.is_absolute() => {
             Err("Configured storage root must be absolute for shared artifact placement".into())
         }
         Some(root) => Ok(root.join("artifacts")),
-        None => Ok(home.join(".continuum/cache/artifacts")),
+        None => Ok(continuum.join("cache/artifacts")),
     }
 }
 
@@ -176,13 +185,14 @@ mod tests {
     async fn configured_artifacts_use_their_own_volume_and_count_coexistence() {
         let home = tempfile::tempdir().unwrap();
         let storage = tempfile::tempdir().unwrap();
-        let root = resolve_root(Some(storage.path().into()), home.path()).unwrap();
+        let continuum = home.path().join(".continuum");
+        let root = resolve_root(Some(storage.path().into()), &continuum).unwrap();
         assert_eq!(root, storage.path().join("artifacts"));
         assert_eq!(
-            resolve_root(None, home.path()).unwrap(),
-            home.path().join(".continuum/cache/artifacts")
+            resolve_root(None, &continuum).unwrap(),
+            continuum.join("cache/artifacts")
         );
-        assert!(resolve_root(Some("relative".into()), home.path()).is_err());
+        assert!(resolve_root(Some("relative".into()), &continuum).is_err());
         let drives = vec![
             DriveInfo {
                 mount: home.path().into(),

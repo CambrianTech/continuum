@@ -85,6 +85,7 @@ pub(super) const DEFERRED: &[(&str, &str)] = &[
              protected by serving_active_artifacts while served; never deleted in place",
         ),
         ("core-artifacts-configured", "139c651d: shared configured staging root; writer projected-byte admission and post-success retention, no migration/deletion of legacy cache"),
+        ("core-artifacts-legacy", "4dedb177: the historical ~/.continuum/cache/artifacts after $CONTINUUM_HOME moved; no writer adds to it, tracked only while it exists so its bytes stay visible; no automatic deletion"),
         (
             "core-artifacts",
             "50ca737e: bounded by its writer — the deploy consumer keeps the newest 3 \
