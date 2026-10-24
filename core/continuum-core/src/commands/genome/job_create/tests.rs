@@ -379,6 +379,76 @@
         assert_eq!(watched(job.local_id), 1, "never registered twice");
     }
 
+    // what this catches (Codex review of 30b89a759): two creates for the SAME attempt can never
+    // interleave. Here the test plays the first request mid-decision by holding the attempt's
+    // run; a second request must wait, not read "absent" and race. While it waits the first
+    // request creates, registers and settles its job; released, the second returns THAT job:
+    // no second trainer call, no "join" of its own job, no batch handed back.
+    #[tokio::test]
+    async fn a_second_create_for_the_same_attempt_waits_and_returns_the_first_job() {
+        use crate::commands::genome::attempt_ledger::{Admission, AttemptLedger, AttemptState};
+        use crate::genome::fine_tuning::{FineTuningRegistry, JobHandle, RecordingFineTuningAdapter, TrainingJobBoard, WatchedJob, RECORDING_BASE_PREFIX};
+        let (store_adapter, _dir) = crate::orm::store::fresh_adapter().await;
+        let ledger = Arc::new(AttemptLedger::new());
+        ledger.install(Arc::new(crate::orm::OrmStore::new(store_adapter).await.unwrap()));
+        let artifacts = Arc::new(tempfile::tempdir().unwrap());
+        let board = Arc::new(TrainingJobBoard::with_test_storage(artifacts.clone()));
+        let trainer = Arc::new(RecordingFineTuningAdapter::new());
+        let registry = Arc::new(FineTuningRegistry::new());
+        registry.register(trainer.clone());
+        let command = Arc::new(GenomeJobCreate {
+            attempts: Arc::clone(&ledger),
+            coordinator: Arc::new(FineTuningCoordinator::new(registry)),
+            test_job_board: board.clone(),
+            test_artifacts: artifacts.clone(),
+        });
+        let attempt = uuid::Uuid::new_v4();
+        let mut request = request_for(RECORDING_BASE_PREFIX);
+        request.persona_id = uuid::Uuid::new_v4();
+        let params = JobCreateParams {
+            trigger_attempt_id: Some(attempt),
+            trigger_dispatch_id: None,
+            request: request.clone(),
+            preferred_provider: None,
+            dataset_name: None,
+        };
+
+        let first = ledger.run(attempt).await; // the first request, mid-decision
+        let second = tokio::spawn({
+            let command = Arc::clone(&command);
+            async move { command.run(&Ctx::default(), params).await.unwrap() }
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        assert!(!second.is_finished(), "the second create waits for the first");
+
+        // The first request finishes: admitted, its job created, watched, then settled.
+        let id = uuid::Uuid::new_v4();
+        let job = JobHandle { provider_id: "recording".into(), provider_job_id: id.to_string(), local_id: id };
+        assert_eq!(ledger.admit(attempt, None, "recording", "local").await, Ok(Admission::Fresh));
+        board.register(WatchedJob {
+            trigger_dispatch_id: None,
+            handle: job.clone(),
+            persona_id: request.persona_id,
+            persona_name: request.persona_name.clone(),
+            base_model: request.base_model.clone(),
+            trait_kind: request.trait_kind.clone(),
+            eval_set: None,
+            signature: None,
+            decision: None,
+        });
+        ledger.settle(attempt, AttemptState::Created { handle: job.clone() }).await.unwrap();
+        drop(first);
+
+        let outcome = tokio::time::timeout(std::time::Duration::from_secs(10), second)
+            .await
+            .expect("released, the second create answers")
+            .unwrap();
+        assert!(outcome.success && outcome.took.is_none(), "the job, not a join: {outcome:?}");
+        assert_eq!(outcome.result.expect("the first job").handle, job);
+        assert_eq!(trainer.captured_job_count(), 0, "the second never called the trainer");
+        assert_eq!(board.pending().iter().filter(|w| w.handle.local_id == id).count(), 1);
+    }
+
     // What this catches (278afa6c): the real command must register to its owned
     // ledger and pass fixture output to the provider, preserving explicit paths.
     #[tokio::test]

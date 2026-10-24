@@ -103,6 +103,10 @@ pub(crate) enum Reconciled {
 pub(crate) struct AttemptLedger {
     store: LateBound<OrmStore<TrainingAttempt>>,
     locks: DashMap<Uuid, Arc<tokio::sync::Mutex<()>>>,
+    /// One `genome/job-create` at a time per attempt, held for the whole command. Separate
+    /// from `locks` (held only around a record read or write) so reconciliation is never
+    /// blocked behind a long create.
+    runs: DashMap<Uuid, Arc<tokio::sync::Mutex<()>>>,
 }
 
 impl AttemptLedger {
@@ -110,7 +114,18 @@ impl AttemptLedger {
         Self {
             store: LateBound::new("genome training attempts"),
             locks: DashMap::new(),
+            runs: DashMap::new(),
         }
+    }
+
+    /// Serialize every `genome/job-create` for `attempt` (Codex review of 30b89a759): held from
+    /// before the attempt is read until the command returns, so a second request for the same
+    /// attempt can never create and register its job while the first is inside its reuse/join
+    /// decision (which would see that job and "join" it, handing the batch back). The second
+    /// waits, then reads the attempt and returns the job the first made.
+    pub(crate) async fn run(&self, attempt: Uuid) -> tokio::sync::OwnedMutexGuard<()> {
+        let run = Arc::clone(self.runs.entry(attempt).or_default().value());
+        run.lock_owned().await
     }
 
     pub(crate) fn install(&self, store: Arc<OrmStore<TrainingAttempt>>) {

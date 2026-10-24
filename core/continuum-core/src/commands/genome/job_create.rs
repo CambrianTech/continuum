@@ -355,6 +355,11 @@ crate::action_command! {
         // reuse/join decisions below, which would otherwise "join" the attempt's own job and hand
         // its batch back to the bucket (to be trained twice).
         let attempt = p.trigger_attempt_id;
+        // One create per attempt at a time, for the whole command (see AttemptLedger::run).
+        let _attempt_run = match attempt {
+            Some(attempt) => Some(this.attempts.run(attempt).await),
+            None => None,
+        };
         let mut prior: Option<crate::genome::fine_tuning::JobHandle> = None;
         if let Some(attempt) = attempt {
             match recorded_answer(this.attempts.peek(attempt).await, attempt, &p.request) {
