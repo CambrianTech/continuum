@@ -34,6 +34,8 @@ const MLX_PYTHON_KEY: &str = "MLX_PYTHON";
 pub struct MlxLoraFineTuner {
     jobs: super::native_jobs::NativeJobs,
     python: PathBuf,
+    /// Whether `python` can import `mlx_lm`, probed once in the background (card 6f05b89d).
+    readiness: super::python_trainer_readiness::PythonTrainerReadiness,
 }
 
 impl MlxLoraFineTuner {
@@ -46,6 +48,7 @@ impl MlxLoraFineTuner {
             .unwrap_or_else(default_mlx_python);
         Self {
             jobs: super::native_jobs::NativeJobs::new(PROVIDER_ID),
+            readiness: super::python_trainer_readiness::PythonTrainerReadiness::probe(Some(python.clone()), "import mlx_lm"),
             python,
         }
     }
@@ -107,7 +110,7 @@ impl FineTuningAdapter for MlxLoraFineTuner {
     }
 
     fn serves_base(&self, base_model: &str) -> bool {
-        super::adapter::a_python_trainer_serves(Some(&self.python), base_model)
+        self.readiness.serves(base_model)
     }
 
     async fn create_job(&self, request: TrainingJobRequest) -> Result<JobHandle, FineTuningError> {

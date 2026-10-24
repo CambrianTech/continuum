@@ -18,6 +18,9 @@ pub struct CudaLoraFineTuner {
     jobs: NativeJobs,
     /// `None` with no override and no continuum home: no trainer to run.
     python: Option<PathBuf>,
+    /// Whether `python` can import the CUDA trainer's packages (cuda-requirements.txt, plus
+    /// torch), probed once in the background (card 6f05b89d).
+    readiness: super::python_trainer_readiness::PythonTrainerReadiness,
 }
 
 #[derive(Serialize)]
@@ -54,6 +57,10 @@ impl CudaLoraFineTuner {
         });
         Self {
             jobs: NativeJobs::new(PROVIDER_ID),
+            readiness: super::python_trainer_readiness::PythonTrainerReadiness::probe(
+                python.clone(),
+                "import torch, transformers, peft, accelerate, bitsandbytes, safetensors",
+            ),
             python,
         }
     }
@@ -74,7 +81,7 @@ impl FineTuningAdapter for CudaLoraFineTuner {
     }
 
     fn serves_base(&self, base_model: &str) -> bool {
-        super::adapter::a_python_trainer_serves(self.python.as_deref(), base_model)
+        self.readiness.serves(base_model)
     }
 
     async fn create_job(
