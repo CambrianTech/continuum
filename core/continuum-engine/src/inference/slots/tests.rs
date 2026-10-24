@@ -204,8 +204,6 @@ mod ledger;
             slots: 2,
             cache_type: Some("q8_0".into()),
             flash_attn: Some(true),
-            engine_build: None,
-            engine: "fixture-engine".into(),
             revisions: Some(vec![(
                 "fixture.gguf".into(),
                 73,
@@ -264,8 +262,6 @@ mod ledger;
             slots: 2,
             cache_type: Some("q8_0".into()),
             flash_attn: Some(true),
-            engine_build: None,
-            engine: "fixture-engine".into(),
             revisions: Some(vec![(
                 "fixture.gguf".into(),
                 73,
@@ -552,8 +548,6 @@ mod ledger;
             slots: 2,
             cache_type: Some("q8_0".into()),
             flash_attn: Some(true),
-            engine_build: None,
-            engine: "fixture-engine".into(),
             revisions: Some(vec![(
                 "fixture.gguf".into(),
                 73,

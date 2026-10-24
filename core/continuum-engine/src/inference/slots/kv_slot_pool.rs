@@ -426,11 +426,7 @@ pub struct KvPageContract {
     pub cache_type: Option<String>,
     /// Whether the engine runs flash attention: it decides the V layout a page stores.
     pub flash_attn: Option<bool>,
-    /// The engine build's commit as the running server reports it (`/props` `build_info`).
-    /// `None` = unknown, and then the engine FILE is one of the `revisions` instead.
-    pub engine_build: Option<String>,
-    pub engine: String,
-    /// Cold-path revision evidence for the resolved model, adapters and engine.
+    /// Cold-path revision evidence for the resolved model, adapters and MTP draft.
     /// Unknown revisions refuse saved-page carry-over, never guess compatibility.
     pub revisions: Option<Vec<(std::path::PathBuf, u64, std::time::SystemTime)>>,
 }

@@ -329,9 +329,13 @@ fn move_page(dir: &std::path::Path, source: &str, target: &str) -> std::io::Resu
 }
 
 impl KvPageContract {
-    /// A stable digest of what makes a saved page's KV valid for this engine: the model,
-    /// adapters and draft (by path, size and mtime), the KV cache type, flash attention,
-    /// and the engine build (its commit, or its file revision when the build is unknown).
+    /// A stable digest of what makes a saved page's KV valid: the model, adapters and draft
+    /// (by path, size and mtime), the KV cache type and flash attention. NOT the engine
+    /// build: a page and its checkpoint sidecar each carry the engine's own state format
+    /// (`LLAMA_STATE_SEQ_MAGIC`/`VERSION`, the fork's `CKPT` magic and version), which the
+    /// engine checks and refuses loudly on a mismatch, so keying on the build only threw
+    /// away every page at each engine upgrade (IntelMac, 2026-10-23 21:17Z: a convergence
+    /// relaunch onto the installed engine left every resident cold, 30-34 min prefills).
     /// NOT the window or the slot count: the engine refuses a page that does not fit its
     /// slot (`Restored prompt does not fit`, `not enough cells`), loudly, and keying on
     /// them made every relaunch's few-hundred-token window jitter a new ledger (the M5,
@@ -357,9 +361,6 @@ impl KvPageContract {
         }
         field("cache_type", cache_type.as_bytes());
         field("flash_attn", &[u8::from(flash_attn)]);
-        if let Some(build) = &self.engine_build {
-            field("engine_build", build.as_bytes());
-        }
         for (path, size, modified) in revisions {
             field("revision", path.as_os_str().as_encoded_bytes());
             field("size", &size.to_le_bytes());
@@ -370,14 +371,8 @@ impl KvPageContract {
     }
 
     /// The newest modification among the identity files (model, adapters, draft): the date
-    /// a legacy ledger's pages must postdate. The engine binary is not one of them.
+    /// a legacy ledger's pages must postdate.
     pub(crate) fn identity_floor(&self) -> Option<std::time::SystemTime> {
-        let engine = std::path::Path::new(&self.engine);
-        self.revisions
-            .as_ref()?
-            .iter()
-            .filter(|(path, _, _)| path.as_path() != engine)
-            .map(|(_, _, modified)| *modified)
-            .max()
+        self.revisions.as_ref()?.iter().map(|(_, _, modified)| *modified).max()
     }
 }

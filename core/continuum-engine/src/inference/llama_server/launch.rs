@@ -568,26 +568,15 @@ impl LlamaServerProcess {
         if restoring {
             prepared.verify_geometry(context, slots)?;
         }
-        // The engine build the running server reports (`b10765-965d38a90`): its commit names
-        // the state format a page is written in, and a reinstall of the same commit (a new
-        // file mtime) is the same format. Unknown → the engine FILE stands in for it below.
-        let engine_build = self
-            .served_engine_build()
-            .await
-            .ok()
-            .flatten()
-            .and_then(|build| build.rsplit('-').next().map(str::to_string))
-            .filter(|commit| commit.len() >= 7 && commit.bytes().all(|b| b.is_ascii_hexdigit()));
         // Cold lifecycle metadata for paths already resolved by this launcher: the files
         // whose identity a page's KV rests on (model, adapters, MTP draft). If any revision
-        // is unreadable (including a PATH-only engine name), do not carry saved eligibility
-        // across engines. Never probe to rediscover it.
-        let engine_file = engine_build.is_none().then(|| PathBuf::from(&prepared.engine_program));
+        // is unreadable, do not carry saved eligibility across engines. Never probe to
+        // rediscover it. The engine itself is not one: its pages carry their own state
+        // format, which it checks on restore (`KvPageContract::fingerprint`).
         let revisions = match revision_evidence(
             std::iter::once(gguf.clone())
                 .chain(target.adapters.iter().map(|adapter| adapter.path.clone()))
-                .chain(prepared.mtp_draft.iter().cloned())
-                .chain(engine_file),
+                .chain(prepared.mtp_draft.iter().cloned()),
         ) {
             Ok(revisions) => Some(revisions),
             Err((path, error)) => {
@@ -616,8 +605,6 @@ impl LlamaServerProcess {
                     slots,
                     cache_type: page_cache_type,
                     flash_attn: prepared.page_flash_attn,
-                    engine_build,
-                    engine: prepared.engine_program.clone(),
                     revisions,
                 },
             )
