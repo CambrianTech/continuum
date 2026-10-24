@@ -125,6 +125,9 @@ pub const ERROR_KIND_ATTEMPT_UNRECORDED: &str = "AttemptUnrecorded";
 /// This attempt was admitted before and never settled: a create may be running or may have
 /// crashed. Deliberately not a retryable kind, so the trigger reads it as uncertain.
 pub const ERROR_KIND_ATTEMPT_UNSETTLED: &str = "AttemptUnsettled";
+/// This attempt's existing record could not be read, so it may name a job already started.
+/// Deliberately not a retryable kind: the trigger reads it as uncertain.
+pub const ERROR_KIND_ATTEMPT_UNREADABLE: &str = "AttemptUnreadable";
 
 /// Whether a trainer's refusal proves it created nothing, so its attempt settles as failed
 /// (fenced) instead of staying admitted. The same created-nothing kinds the trigger retries;
@@ -604,7 +607,10 @@ crate::action_command! {
                 Ok(Admission::Unsettled) => {
                     return refused_decision(ERROR_KIND_ATTEMPT_UNSETTLED, &p.request, &format!("attempt {attempt} was admitted before and never settled"));
                 }
-                Err(e) => {
+                Err(super::attempt_ledger::AdmitError::Unreadable(e)) => {
+                    return refused_decision(ERROR_KIND_ATTEMPT_UNREADABLE, &p.request, &format!("attempt {attempt}'s record could not be read: {e}"));
+                }
+                Err(super::attempt_ledger::AdmitError::Unrecorded(e)) => {
                     return refused_decision(ERROR_KIND_ATTEMPT_UNRECORDED, &p.request, &format!("attempt {attempt} could not be admitted: {e}"));
                 }
             }
@@ -617,7 +623,10 @@ crate::action_command! {
         if let (Some(attempt), false) = (attempt, repeated) {
             use super::attempt_ledger::AttemptState;
             let settled = match &created {
-                Ok(handle) => Some(AttemptState::Created { handle: handle.clone() }),
+                // Created is settled only AFTER the board holds the job (below): a crash in
+                // between leaves it Admitted, reconciled Unknown, never a created job nobody
+                // watches (Codex review of c2c955174).
+                Ok(_) => None,
                 Err(e) if settles_as_not_created(e) => Some(AttemptState::Failed { kind: fine_tuning_error_kind(e).to_string() }),
                 // Anything else may follow a trainer that started: left Admitted, reconciled Unknown.
                 Err(_) => None,
@@ -667,6 +676,18 @@ crate::action_command! {
                             decision,
                         },
                     );
+                }
+                // Now that the board watches it, the attempt is settled Created.
+                if let (Some(attempt), false) = (attempt, repeated) {
+                    let state = super::attempt_ledger::AttemptState::Created { handle: handle.clone() };
+                    if let Err(error) = this.attempts.settle(attempt, state).await {
+                        continuum_base::probe!(
+                            class = "genome.attempt.unsettled",
+                            attempt = %attempt,
+                            error = %error,
+                            "the job is created and watched but the ledger could not record it: the attempt reconciles as unknown"
+                        );
+                    }
                 }
                 Ok(JobCreateOutcome {
                     success: true,

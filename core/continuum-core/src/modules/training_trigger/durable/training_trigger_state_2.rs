@@ -122,8 +122,16 @@ impl TrainingTriggerState {
                             use super::super::attempt_evidence::AttemptEvidence;
                             match self.reconcile_attempt(attempt).await {
                                 AttemptEvidence::Created(handle) => {
-                                    let provider = handle.provider_id.clone();
-                                    return self.finish_dispatch(key, &active, handle, provider).await;
+                                    // A created attempt is settled only after the board holds
+                                    // its job, so the board missing it means the journal lost it.
+                                    // Finishing would leave a real job unwatched: unknown instead.
+                                    return Ok(DispatchResult::Failed {
+                                        kind: "RecoveryRequired",
+                                        error: format!(
+                                            "dispatch {id}: attempt {attempt} created job {} but the board has no registration for it; not finished unwatched",
+                                            handle.local_id
+                                        ),
+                                    });
                                 }
                                 AttemptEvidence::NotCreated => {
                                     let error = format!("dispatch {id}: attempt {attempt} reconciled as not created and closed; retried under a new attempt");

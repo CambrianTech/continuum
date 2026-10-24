@@ -76,6 +76,18 @@ pub(crate) enum Admission {
     Unsettled,
 }
 
+/// Why admission could not decide. The two are not alike: a record that cannot be READ may
+/// name a job already started, so it is uncertain; a NEW record that cannot be written, after
+/// the read proved there was none, leaves nothing started (Codex review of c2c955174).
+#[derive(Debug, PartialEq)]
+pub(crate) enum AdmitError {
+    /// The ledger, or this attempt's existing record, could not be read: uncertain.
+    Unreadable(String),
+    /// No record existed and the admission could not be written: the trainer is not
+    /// called, so nothing started under this attempt (certain).
+    Unrecorded(String),
+}
+
 /// What reconciliation can prove about an attempt.
 #[derive(Debug, PartialEq)]
 pub(crate) enum Reconciled {
@@ -117,11 +129,15 @@ impl AttemptLedger {
         dispatch_id: Option<Uuid>,
         provider: &str,
         destination: &str,
-    ) -> Result<Admission, String> {
+    ) -> Result<Admission, AdmitError> {
         let lock = self.lock(attempt);
         let _held = lock.lock().await;
-        let store = self.store.require()?;
-        match store.find_by_id(attempt).await.map_err(|e| e.to_string())? {
+        let store = self.store.require().map_err(AdmitError::Unreadable)?;
+        let existing = store
+            .find_by_id(attempt)
+            .await
+            .map_err(|e| AdmitError::Unreadable(e.to_string()))?;
+        match existing {
             Some(row) => Ok(match row.state {
                 AttemptState::Created { handle } => Admission::AlreadyCreated(handle),
                 AttemptState::Closed | AttemptState::Failed { .. } => Admission::Fenced,
@@ -136,7 +152,10 @@ impl AttemptLedger {
                     owner_generation: crate::capacity::gossip::this_process_origin(),
                     state: AttemptState::Admitted,
                 };
-                store.save(attempt, &row).await.map_err(|e| e.to_string())?;
+                store
+                    .save(attempt, &row)
+                    .await
+                    .map_err(|e| AdmitError::Unrecorded(e.to_string()))?;
                 Ok(Admission::Fresh)
             }
         }
@@ -283,6 +302,81 @@ mod tests {
         let ledger = AttemptLedger::new(); // never installed: the store cannot be read
         let attempt = Uuid::new_v4();
         assert!(matches!(ledger.reconcile(attempt).await, Reconciled::Unknown(_)));
-        assert!(ledger.admit(attempt, None, "engine-local", "local").await.is_err());
+        assert!(matches!(
+            ledger.admit(attempt, None, "engine-local", "local").await,
+            Err(AdmitError::Unreadable(_))
+        ));
+    }
+
+    // what this catches (Codex review of c2c955174): an EXISTING record that cannot be read
+    // may name a job already started, so admission is uncertain (Unreadable), never the
+    // certain Unrecorded, and reconciliation says Unknown, never "not created".
+    #[tokio::test]
+    async fn an_existing_record_that_cannot_be_read_is_uncertain() {
+        let (adapter, _dir) = crate::orm::store::fresh_adapter().await;
+        let typed: Arc<OrmStore<TrainingAttempt>> =
+            Arc::new(OrmStore::new(adapter).await.expect("attempt store"));
+        let ledger = AttemptLedger::new();
+        ledger.install(Arc::clone(&typed));
+        let attempt = Uuid::new_v4();
+        assert_eq!(ledger.admit(attempt, None, "engine-local", "local").await, Ok(Admission::Fresh));
+        ledger.settle(attempt, AttemptState::Created { handle: handle() }).await.unwrap();
+        // The created record's state is overwritten with one this build cannot decode.
+        typed
+            .update_fields(attempt, &serde_json::json!({ "state": { "state": "from_a_future_build" } }))
+            .await
+            .unwrap();
+        assert!(matches!(
+            ledger.admit(attempt, None, "engine-local", "local").await,
+            Err(AdmitError::Unreadable(_))
+        ));
+        assert!(matches!(ledger.reconcile(attempt).await, Reconciled::Unknown(_)));
+    }
+
+    // what this catches: admission and closing are one atomic step per attempt. Racing a
+    // create against a reconciliation never yields both "admitted" and "not created".
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_concurrent_create_and_reconcile_never_both_win() {
+        let (ledger, _dir) = ledger().await;
+        let ledger = Arc::new(ledger);
+        for _ in 0..32 {
+            let attempt = Uuid::new_v4();
+            let (a, r) = (Arc::clone(&ledger), Arc::clone(&ledger));
+            let (admitted, reconciled) = tokio::join!(
+                tokio::spawn(async move { a.admit(attempt, None, "engine-local", "local").await }),
+                tokio::spawn(async move { r.reconcile(attempt).await }),
+            );
+            match (admitted.unwrap(), reconciled.unwrap()) {
+                (Ok(Admission::Fresh), Reconciled::Unknown(_)) => {}
+                (Ok(Admission::Fenced), Reconciled::NotCreated) => {}
+                other => panic!("create and reconcile both decided: {other:?}"),
+            }
+        }
+    }
+
+    // what this catches: the ledger is durable across a restart. A new owner over the same
+    // database returns the job a created attempt made and keeps a closed attempt closed.
+    #[tokio::test]
+    async fn the_ledger_survives_a_restart() {
+        let (adapter, _dir) = crate::orm::store::fresh_adapter().await;
+        let open = |adapter: Arc<dyn crate::orm::StorageAdapter>| async move {
+            let ledger = AttemptLedger::new();
+            ledger.install(Arc::new(OrmStore::new(adapter).await.expect("attempt store")));
+            ledger
+        };
+        let (made, closed, job) = (Uuid::new_v4(), Uuid::new_v4(), handle());
+        {
+            let before = open(adapter.clone()).await;
+            assert_eq!(before.admit(made, None, "engine-local", "local").await, Ok(Admission::Fresh));
+            before.settle(made, AttemptState::Created { handle: job.clone() }).await.unwrap();
+            assert_eq!(before.reconcile(closed).await, Reconciled::NotCreated);
+        }
+        let after = open(adapter).await;
+        assert_eq!(
+            after.admit(made, None, "engine-local", "local").await,
+            Ok(Admission::AlreadyCreated(job.clone()))
+        );
+        assert_eq!(after.reconcile(made).await, Reconciled::Created(job));
+        assert_eq!(after.admit(closed, None, "engine-local", "local").await, Ok(Admission::Fenced));
     }
 }

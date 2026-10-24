@@ -129,7 +129,7 @@
             self.command
                 .run(
                     &Ctx::default(),
-                    JobCreateParams { trigger_dispatch_id: None, request: self.request.clone(), preferred_provider: None, dataset_name: None },
+                    JobCreateParams { trigger_attempt_id: None, trigger_dispatch_id: None, request: self.request.clone(), preferred_provider: None, dataset_name: None },
                 )
                 .await
                 .unwrap()
@@ -320,7 +320,7 @@
             .run(
                 &Ctx::default(),
                 JobCreateParams {
-                    trigger_dispatch_id: None,
+                    trigger_attempt_id: None, trigger_dispatch_id: None,
                     request: request_for("gpt-4o-mini"),
                     preferred_provider: None,
                     dataset_name: None,
@@ -368,7 +368,7 @@
                 .run(
                     &Ctx::default(),
                     JobCreateParams {
-                        trigger_dispatch_id: Some(dispatch_id),
+                        trigger_attempt_id: None, trigger_dispatch_id: Some(dispatch_id),
                         request,
                         preferred_provider: None,
                         dataset_name: None,
@@ -412,7 +412,7 @@
             .run(
                 &Ctx::default(),
                 JobCreateParams {
-                    trigger_dispatch_id: None,
+                    trigger_attempt_id: None, trigger_dispatch_id: None,
                     request: request_for("gpt-4o-mini"),
                     preferred_provider: None,
                     dataset_name: None,
@@ -437,7 +437,7 @@
             .run(
                 &Ctx::default(),
                 JobCreateParams {
-                    trigger_dispatch_id: None,
+                    trigger_attempt_id: None, trigger_dispatch_id: None,
                     request: empty_req,
                     preferred_provider: None,
                     dataset_name: None,
@@ -452,7 +452,7 @@
             .run(
                 &Ctx::default(),
                 JobCreateParams {
-                    trigger_dispatch_id: None,
+                    trigger_attempt_id: None, trigger_dispatch_id: None,
                     request: request_for("gpt-4o-mini"),
                     preferred_provider: None,
                     dataset_name: Some("also-named".into()),
@@ -475,7 +475,7 @@
             .run(
                 &Ctx::default(),
                 JobCreateParams {
-                    trigger_dispatch_id: None,
+                    trigger_attempt_id: None, trigger_dispatch_id: None,
                     request: req,
                     preferred_provider: None,
                     dataset_name: Some("no-such-dataset-xyz".into()),
@@ -501,7 +501,7 @@
             .run(
                 &Ctx::default(),
                 JobCreateParams {
-                    trigger_dispatch_id: None,
+                    trigger_attempt_id: None, trigger_dispatch_id: None,
                     request: request_for("gpt-4o-mini"),
                     preferred_provider: Some("mistral".into()),
                     dataset_name: None,
