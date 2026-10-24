@@ -330,6 +330,9 @@ pub struct WorkingMemory {
     /// has read: her cursors, kept here because the history that carried each page is the
     /// first thing a tight window's fit drops ([`super::open_views`]).
     open_views: Mutex<super::open_views::OpenViews>,
+    /// Her learned tool head: every call she makes is noted here, and the deliberation faculty
+    /// reads and adopts the head at each epoch turnover ([`super::tool_head`]).
+    tool_head: super::tool_head::ToolHead,
 }
 
 /// The PROVENANCE of one working-memory entry — the type that makes receipts,

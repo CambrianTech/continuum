@@ -68,7 +68,13 @@ impl WorkingMemory {
             receipt_children: Mutex::new(BTreeMap::new()),
             active_from_seq: AtomicU64::new(0),
             open_views: Mutex::new(Default::default()),
+            tool_head: Default::default(),
         }
+    }
+
+    /// Her learned tool head.
+    pub fn tool_head(&self) -> &super::super::tool_head::ToolHead {
+        &self.tool_head
     }
 
     /// Keep the existing measured truncation peak across intermediate Act replies.
@@ -347,6 +353,10 @@ impl WorkingMemory {
         // trail's KV-cache prefix byte-stable across a settle-act.
         let head: String = a.chars().take(self.budget().trail_head_chars()).collect();
         let text = format!("[action #{seq}] {head}");
+        // Her tool head learns from every call, and a verb she found is loaded into the tail.
+        let verbs: Vec<String> = acts.iter().map(|act| act.call.name.clone()).collect();
+        let found = super::super::tool_head::found_by_finder(acts.iter().map(|act| &act.call));
+        self.tool_head.note(continuum_base::time::EpochMs::now(), room, &verbs, &found, &text);
         let mut e = self.entries.lock();
         // Transfer provenance before bounded entry eviction. Match this scope,
         // activity. Consume it once; mismatched IDs remain an explicit protocol

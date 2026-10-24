@@ -24,6 +24,7 @@ serde_json.workspace = true
 uuid.workspace = true
 continuum-base = { path = "../continuum-base" }
 continuum-context = { path = "../continuum-context" }
+tool-working-set = { path = "../tool-working-set" }  # the learned tool head: pure policy, no core dependency
 schemars = { version = "0.8", features = ["uuid1"] }
 continuum-airc-protocol = { path = "../continuum-airc-protocol" }
 continuum-positron = { path = "../continuum-positron" }
