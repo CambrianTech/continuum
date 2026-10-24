@@ -234,6 +234,7 @@ async fn messages_handler(
         repeat_last_n: None,
         stop_sequences: req.stop_sequences.clone(),
         tools: None, // Tool calls handled by Claude Code, not the local model
+        tail_tools: None,
         tool_choice: None,
         response_format: None,
         active_adapters,

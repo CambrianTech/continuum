@@ -8,7 +8,9 @@ use crate::features::FEATURES;
 /// One training example: a tool's input row at a turnover, and whether she called it.
 pub type Example = ([f32; FEATURES], bool);
 
-#[derive(Debug, Clone, PartialEq)]
+/// Serializable so a mind's learned weights and running scale survive a restart (the core
+/// keeps them as an ORM entity).
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Logistic {
     weights: [f64; FEATURES],
     count: f64,

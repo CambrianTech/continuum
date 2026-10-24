@@ -37,6 +37,10 @@ pub struct CommandsHelpParams {
     #[serde(default)]
     #[ts(optional)]
     pub name: Option<String>,
+    /// What you want to do, when you do not know the command's name: the best matches, ranked.
+    #[serde(default)]
+    #[ts(optional)]
+    pub query: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, TS)]
@@ -65,8 +69,8 @@ impl ActionCommand for CommandsHelp {
     const NATIVE: bool = true; // discovery pair — the on-demand "how do I call this?" tool
     const ACCESS: AccessLevel = AccessLevel::AiSafe;
     const DESCRIPTION: &'static str =
-        "Show how to CALL a command: the exact tool-call format to emit + its arguments. \
-         Pass the command name (e.g. code/read). Use it when unsure how to invoke a tool.";
+        "Show how to CALL a command: its exact tool-call format + arguments. Pass `name` \
+         (e.g. code/read), or `query` (what you want to do) to find one.";
     type Params = CommandsHelpParams;
     type Output = CommandsHelpResult;
 
@@ -82,6 +86,11 @@ impl ActionCommand for CommandsHelp {
             .into_iter()
             .filter(|d| is_command_authorized(d.name, trust))
             .collect();
+
+        // A query → the commands that best match what she wants to do, ranked, one line each.
+        if let Some(query) = p.query.as_deref().filter(|q| !q.trim().is_empty()).filter(|_| p.name.is_none()) {
+            return Ok(ranked_matches(query, &authorized));
+        }
 
         // No name → the INDEX: every command you can call, one line each. This is the
         // orientation an agent needs FIRST; erroring here (the old "missing field name")
@@ -132,10 +141,64 @@ impl ActionCommand for CommandsHelp {
 
 crate::register_stateless_command!(CommandsHelp);
 
+/// The authorized commands whose name and description best match `query`, through the same
+/// relevance seam the learned tool head reads (`tool_working_set::relevance`).
+fn ranked_matches(query: &str, authorized: &[crate::sdk_codegen::CommandDescriptor]) -> CommandsHelpResult {
+    use tool_working_set::relevance::{Lexical, Relevance};
+    use tool_working_set::vocab::{ToolSchema, Vocabulary};
+    let schemas: Vec<ToolSchema> = authorized
+        .iter()
+        .map(|d| ToolSchema { name: d.name.to_string(), description: d.description.to_string(), tokens: 0 })
+        .collect();
+    let lines = match Vocabulary::new(schemas) {
+        Ok(vocab) => {
+            let relevance = Lexical::new(&vocab).relevance(query);
+            let mut ranked: Vec<(f32, tool_working_set::ToolId)> =
+                vocab.ids().map(|tool| (relevance[tool.index()], tool)).filter(|(score, _)| *score > 0.0).collect();
+            ranked.sort_by(|a, b| b.0.total_cmp(&a.0).then(a.1.cmp(&b.1)));
+            ranked
+                .into_iter()
+                .take(crate::sdk_codegen::ai_help::SUGGESTION_WINDOW)
+                .map(|(_, tool)| format!("- {} — {}", vocab.name(tool), vocab.schema(tool).description))
+                .collect::<Vec<_>>()
+        }
+        Err(refused) => vec![format!("(the registry could not be ranked: {refused})")],
+    };
+    let manual = if lines.is_empty() {
+        format!("No command matches \"{query}\". Call `commands/help` with no arguments for the full index.")
+    } else {
+        format!(
+            "The commands that best match \"{query}\". Call `commands/help` with the `name` you choose for its exact call; \
+             it is then callable on your next act.\n\n{}",
+            lines.join("\n")
+        )
+    };
+    CommandsHelpResult {
+        name: String::new(),
+        description: format!("commands matching \"{query}\""),
+        access_level: "ai-safe".to_string(),
+        manual,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::{json, Value};
+
+    // what this catches: a mind that does not know a verb's name having no way to find it
+    // once her head no longer lists every verb: a query in her words must reach the verb
+    // over the LIVE registry, ranked first, within the shared window.
+    #[test]
+    fn a_query_in_her_words_ranks_the_verb_she_means_over_the_live_registry() {
+        let registry = command_registry_live();
+        let result = ranked_matches("open a pull request on github", &registry);
+        let names: Vec<&str> = result.manual.lines().filter_map(|l| l.strip_prefix("- ")).map(|l| l.split(" — ").next().unwrap_or(l)).collect(); // unwrap_or: a line without a description is all name
+        assert!(names.first().is_some_and(|n| n.contains("pr-create")), "{}", result.manual);
+        assert!(names.len() <= crate::sdk_codegen::ai_help::SUGGESTION_WINDOW);
+        let none = ranked_matches("zzqx", &registry);
+        assert!(none.manual.starts_with("No command matches"), "{}", none.manual);
+    }
 
     // what this catches: an underscored bare guess getting NO suggestion at all, which
     // is what let a citizen re-issue `list_cards` 31 times (2026-09-05). Neither

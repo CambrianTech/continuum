@@ -731,7 +731,11 @@ fn tool_surface_is_a_category_index_plus_discovery_pair() {
     // 17238 -> 17298 (PR #5112, 2026-10-16): work/list gains `limit` (default 40,
     // claimable first) so a board of 776 cards is never one 198k-char line again;
     // one optional field and its one-line doc, measured locally at 17298.
-    const AGENTIC_SURFACE_CEILING: u32 = 17298;
+    // 17298 -> 17335 (goal 10 slice 2, card ecd5dff3, 2026-10-24): commands/help gains
+    // `query`, the way a mind finds a verb by what she wants to do once her learned head no
+    // longer lists every verb. Its text was cut to one line (it measured 17427 first); the
+    // 37 left are the param itself, the feature. Measured locally at 17335.
+    const AGENTIC_SURFACE_CEILING: u32 = 17335;
     let surface = faculty.describe_tool_tokens() as u32 + faculty.framing_floor_tokens();
     println!("agentic surface: {surface} guard tokens; ceiling {AGENTIC_SURFACE_CEILING}");
     assert!(

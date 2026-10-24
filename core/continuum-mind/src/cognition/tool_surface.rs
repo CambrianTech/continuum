@@ -55,6 +55,9 @@ pub enum SurfaceReason {
     /// the discovery pair and her focus verbs beside them. Not a truncation: the recipe is
     /// the rule.
     RoomAffordances,
+    /// Her learned head for this epoch ([`crate::cognition::tool_head`]), on a server that takes
+    /// `tail_tools`: every other verb is one `commands/help` away and callable from the tail.
+    LearnedHead,
 }
 
 /// One working set as it goes on the wire, priced once when it is built.
@@ -139,6 +142,7 @@ impl ToolSurface {
                 tokens,
                 reason: SurfaceReason::RoomAffordances,
                 demand: tokens,
+                tail: Vec::new(),
             };
         }
         // The SERVED window, never the prefill-affordable one: the schemas sit in the cached
@@ -149,6 +153,45 @@ impl ToolSurface {
             SelectedSurface::borrowed(&self.hands.specs, self.hands.tokens, SurfaceReason::Hands, self.hands.tokens)
         } else {
             SelectedSurface::borrowed(&self.core.specs, self.core.tokens, SurfaceReason::CoreHandsForWindow, self.hands.tokens)
+        }
+    }
+
+    /// Every native verb as the learned head chooses from it: its canonical name, its
+    /// description, and what its schema costs on the wire.
+    pub fn vocabulary(&self) -> Result<tool_working_set::Vocabulary, String> {
+        let schemas = self
+            .names
+            .iter()
+            .zip(self.registry.specs.iter())
+            .map(|(name, spec)| {
+                let tokens = u32::try_from(tool_surface_tokens_of(std::slice::from_ref(spec)))
+                    .map_err(|e| format!("{name}: schema size: {e}"))?;
+                Ok(tool_working_set::vocab::ToolSchema { name: name.clone(), description: spec.description.clone(), tokens })
+            })
+            .collect::<Result<Vec<_>, String>>()?;
+        tool_working_set::Vocabulary::new(schemas)
+    }
+
+    /// Her learned head: the `held` verbs in canonical order, the `loaded` ones riding the
+    /// tail, the budget charged `reserve_tokens` when that exceeds the head (the larger of
+    /// this epoch's head and the next one, so a turnover in this act fits what it adopts).
+    pub fn learned(&self, held: &[String], loaded: &[String], reserve_tokens: usize) -> SelectedSurface<'_> {
+        let pick = |wanted: &[String]| -> Vec<NativeToolSpec> {
+            self.names
+                .iter()
+                .zip(self.registry.specs.iter())
+                .filter(|(name, _)| wanted.contains(name))
+                .map(|(_, spec)| spec.clone())
+                .collect()
+        };
+        let specs = pick(held);
+        let tokens = tool_surface_tokens_of(&specs);
+        SelectedSurface {
+            specs: Some(Cow::Owned(specs)),
+            tokens: tokens.max(reserve_tokens),
+            reason: SurfaceReason::LearnedHead,
+            demand: tokens,
+            tail: pick(loaded),
         }
     }
 
@@ -196,11 +239,13 @@ pub struct SelectedSurface<'a> {
     pub tokens: usize,
     pub reason: SurfaceReason,
     demand: usize,
+    /// Verbs loaded into the tail: callable through the request's `tail_tools`, never in the head.
+    pub tail: Vec<NativeToolSpec>,
 }
 
 impl<'a> SelectedSurface<'a> {
     fn borrowed(specs: &'a [NativeToolSpec], tokens: usize, reason: SurfaceReason, demand: usize) -> Self {
-        Self { specs: (reason != SurfaceReason::NoTools).then_some(Cow::Borrowed(specs)), tokens, reason, demand }
+        Self { specs: (reason != SurfaceReason::NoTools).then_some(Cow::Borrowed(specs)), tokens, reason, demand, tail: Vec::new() }
     }
 
     /// What an UNTRUNCATED demand measurement prices for this turn.
@@ -211,6 +256,13 @@ impl<'a> SelectedSurface<'a> {
     /// her whole hands are the demand. Every other arm sent what was wanted.
     pub fn demand_tokens(&self) -> usize {
         self.demand
+    }
+
+    /// Charge the budget at least `reserve_tokens` for this surface: the next epoch's head,
+    /// which a turnover in this act would adopt, is larger than this one.
+    pub fn reserving(mut self, reserve_tokens: usize) -> Self {
+        self.tokens = self.tokens.max(reserve_tokens);
+        self
     }
 }
 
@@ -381,5 +433,26 @@ mod tests {
         let names: Vec<&str> = tight.specs.as_deref().into_iter().flatten().map(|s| s.name.as_str()).collect();
         assert!(names.contains(&"commands/list") && !names.contains(&"web/fetch"), "{names:?}");
         assert_eq!(surface.select(&[], 0).reason, SurfaceReason::Hands, "an unknown window is never an invented one");
+    }
+
+    // what this catches: the learned head sending verbs out of canonical order (two acts in one
+    // epoch would differ), a loaded verb landing in the head instead of the tail, or the budget
+    // charged less than the next epoch's head a turnover in this act would adopt.
+    #[test]
+    fn a_learned_head_holds_its_verbs_in_order_loads_the_rest_in_the_tail_and_reserves_the_next() {
+        let surface = built(REGISTRY.iter().copied());
+        let held = vec!["commands/help".to_string(), "code/edit".to_string()];
+        let loaded = vec!["web/fetch".to_string()];
+        let head = surface.learned(&held, &loaded, 0);
+        let names: Vec<&str> = head.specs.as_deref().into_iter().flatten().map(|s| s.name.as_str()).collect();
+        assert_eq!(names, ["code/edit", "commands/help"]);
+        assert_eq!(head.tail.iter().map(|s| s.name.as_str()).collect::<Vec<_>>(), ["web/fetch"]);
+        assert_eq!(head.reason, SurfaceReason::LearnedHead);
+        let reserved = surface.learned(&held, &loaded, 100_000);
+        assert_eq!((reserved.tokens, reserved.demand_tokens()), (100_000, head.tokens));
+        let vocab = surface.vocabulary().expect("vocabulary");
+        assert_eq!(vocab.len(), REGISTRY.len());
+        let edit = vocab.id("code/edit").expect("canonical names key the vocabulary");
+        assert_eq!(vocab.tokens(edit) as usize, tool_surface_tokens_of(&[spec("code/edit")]));
     }
 }

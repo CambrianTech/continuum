@@ -415,6 +415,12 @@ pub trait AIProviderAdapter: Send + Sync {
         AdapterCapabilities::text_only()
     }
 
+    /// Whether this adapter's server accepts `tail_tools` (callable verbs outside the rendered
+    /// head). Default `false`: only a server that declares it gets a learned tool head.
+    fn accepts_tail_tools(&self) -> bool {
+        false
+    }
+
     /// Get API style.
     ///
     /// Default: `Local` (in-process inference). Cloud adapters override

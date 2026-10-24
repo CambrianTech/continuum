@@ -115,6 +115,9 @@ pub struct AdmissionState {
     /// retrieval surfaces walk it, cognition judges. In-memory (DashMap);
     /// sidecar durability is a follow-on slice.
     pub(super) graph: crate::persona::engram_graph::EngramGraph,
+    /// Her learned tool head's row store, in this same per-persona database; `None` for a
+    /// state with no disk (tests, replay, a measurement fork).
+    pub(super) tool_heads: Option<Arc<crate::orm::OrmStore<crate::cognition::tool_head::entity::ToolHeadRecord>>>,
     /// The persona this store BELONGS to (its own user id). Set once at spawn via
     /// [`set_owner_id`](Self::set_owner_id); `None` for bare/test states. Used to
     /// recognize the persona's OWN authored chat engrams (`Chat` origin whose

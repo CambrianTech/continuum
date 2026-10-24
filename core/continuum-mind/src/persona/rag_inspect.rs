@@ -549,6 +549,7 @@ async fn run_inference_probe(
         repeat_last_n: None,
         stop_sequences: None,
         tools: None,
+        tail_tools: None,
         tool_choice: None,
         // The substrate's cognition contract: JSON-grammar-constrained
         // output. LlamaCpp wires this to GBNF grammar so the sampler

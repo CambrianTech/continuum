@@ -691,6 +691,7 @@ async fn run_render(
         repeat_last_n: Some(sampling.repeat_last_n),
         stop_sequences: None,
         tools: None,
+        tail_tools: None,
         tool_choice: None,
         response_format: None,
         active_adapters: None,

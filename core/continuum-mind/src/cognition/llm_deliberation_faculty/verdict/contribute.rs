@@ -207,7 +207,9 @@ impl LlmDeliberationFaculty {
             // [`Self::select_tool_surface`] so the budget in `prompt_view_within` reaches the
             // SAME answer (card dec1a7ff).
             if request_template.is_none() {
-                let selected = self.select_tool_surface(ws);
+                let mut selected = self.select_tool_surface(ws);
+                // Verbs she loaded into the tail ride beside the head, callable natively.
+                let tail = std::mem::take(&mut selected.tail);
                 if selected.reason == SurfaceReason::CoreHandsForWindow {
                     // The one truncating arm: the served window cannot hold her extended
                     // hands. Whoever later asks "why did she never call X" needs this row.
@@ -250,6 +252,7 @@ impl LlmDeliberationFaculty {
                 );
 
                 let mut template = request;
+                template.tail_tools = (!tail.is_empty()).then_some(tail);
                 template.messages.clear();
                 request_template = Some(template);
             }

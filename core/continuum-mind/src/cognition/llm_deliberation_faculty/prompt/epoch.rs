@@ -181,7 +181,10 @@ impl LlmDeliberationFaculty {
         } else {
             let whole = |claims: &[Claim]| claims.iter().map(|claim| claim.full_chars).collect();
             match View::start(Vec::new(), &sources, whole) {
-                Ok((view, _)) => *held = Some(view),
+                Ok((view, _)) => {
+                    *held = Some(view);
+                    self.tool_head_turned_over();
+                }
                 Err(mismatch) => continuum_base::probe!(
                     class = "delib.view.refused",
                     persona = %self.persona_name,
@@ -222,15 +225,18 @@ impl LlmDeliberationFaculty {
             }
         };
         match started {
-            Ok(start) => continuum_base::probe!(
-                class = "delib.view.turnover",
-                persona = %self.persona_name,
-                epoch = start.epoch,
-                start_chars = start.chars,
-                collapsed_items = start.collapsed,
-                "her view started a new epoch: the one re-prefill an epoch costs, collapsed \
-                 by the flexbox at its start"
-            ),
+            Ok(start) => {
+                continuum_base::probe!(
+                    class = "delib.view.turnover",
+                    persona = %self.persona_name,
+                    epoch = start.epoch,
+                    start_chars = start.chars,
+                    collapsed_items = start.collapsed,
+                    "her view started a new epoch: the one re-prefill an epoch costs, collapsed \
+                     by the flexbox at its start"
+                );
+                self.tool_head_turned_over();
+            }
             Err(mismatch) => continuum_base::probe!(
                 class = "delib.view.refused",
                 persona = %self.persona_name,

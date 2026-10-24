@@ -13,6 +13,10 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
         &self.config.provider_id
     }
 
+    fn accepts_tail_tools(&self) -> bool {
+        self.config.tail_tools
+    }
+
     /// The live set the daemon's reconcile / `/v1/models` refresh verified
     /// (`runtime_models`), sorted for stable output; the catalog default only
     /// when nothing has been verified yet. `config.default_model` is a

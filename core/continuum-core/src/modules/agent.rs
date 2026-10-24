@@ -757,6 +757,7 @@ async fn call_llm(
         repeat_last_n: None,
         stop_sequences: None,
         tools: None,
+        tail_tools: None,
         tool_choice: None,
         request_id: None,
         user_id: None,

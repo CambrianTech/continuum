@@ -77,6 +77,7 @@ pub mod learning_policy;
 pub mod llm_deliberation_faculty;
 pub(crate) mod context_streams;
 pub mod tool_surface;
+pub mod tool_head;
 pub mod model_binding;
 pub mod model_resolver;
 /// Paging cursors over large data she is working through, kept in working memory.

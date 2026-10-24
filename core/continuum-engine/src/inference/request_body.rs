@@ -188,6 +188,13 @@ pub(crate) fn finish_body(
                 == crate::model_registry::ToolProtocol::NativeFunctionCalling
         {
             body["tools"] = json!(openai_tools(tools));
+            if let Some(tail) = request.tail_tools.as_deref().filter(|tail| !tail.is_empty()) {
+                // Our fork's field: only a server that declares it gets it (a cloud provider
+                // would reject an unknown field, a stock llama-server would ignore it).
+                if cfg.tail_tools {
+                    body["tail_tools"] = json!(openai_tools(tail));
+                }
+            }
 
             // Add tool_choice if specified
             if let Some(choice) = &request.tool_choice {
@@ -215,6 +222,7 @@ pub(crate) fn finish_body(
         class = "ai.request.tool_surface",
         model = %model,
         tools_n = body.get("tools").and_then(|t| t.as_array()).map_or(0, |a| a.len()),
+        tail_tools_n = body.get("tail_tools").and_then(|t| t.as_array()).map_or(0, |a| a.len()),
         tool_choice = body.get("tool_choice").is_some(),
         stops_n = body.get("stop").and_then(|s| s.as_array()).map_or(0, |a| a.len()),
         msgs_n = body.get("messages").and_then(|m| m.as_array()).map_or(0, |a| a.len()),
@@ -680,5 +688,51 @@ mod tests {
         assert!(delib.get("reasoning_budget_tokens").is_none());
         let mut none = json!({ "model": "m" });
         assert_eq!(apply_reasoning_budget(None, &mut none), None);
+    }
+
+    // what this catches: a tail-loaded verb not reaching a llama.cpp-family server (she could
+    // read its schema and never call it), or the non-standard field going to a cloud provider
+    // that rejects unknown fields.
+    #[test]
+    fn tail_tools_reach_only_a_llamacpp_family_server_and_never_join_the_head() {
+        let spec = |name: &str| crate::ai::types::NativeToolSpec {
+            name: name.to_owned(),
+            description: format!("{name} does one thing"),
+            input_schema: crate::ai::types::ToolInputSchema {
+                schema_type: "object".to_owned(),
+                properties: json!({}),
+                required: None,
+                definitions: None,
+            },
+        };
+        let request = TextGenerationRequest {
+            tools: Some(vec![spec("commands_help")]),
+            tail_tools: Some(vec![spec("code_git_apply")]),
+            ..Default::default()
+        };
+        let cfg = |llamacpp: bool| OpenAICompatibleConfig {
+            provider_id: "test-gateway".into(),
+            name: "Test Gateway".into(),
+            base_url: "http://127.0.0.1:0".into(),
+            api_key_env: None,
+            default_model: "test-model".into(),
+            capabilities: [Capability::ToolUse].into_iter().collect(),
+            models: Vec::new(),
+            model_prefixes: Vec::new(),
+            requires_auth: false,
+            tool_protocol: crate::model_registry::ToolProtocol::NativeFunctionCalling,
+            thinking: ThinkingMode::Default,
+            single_resident_model: false,
+            dynamic_model_catalog: false,
+            llamacpp_sampling_extensions: llamacpp,
+            tail_tools: llamacpp,
+        };
+        let mut served = json!({ "model": "m" });
+        finish_body(&cfg(true), &request, "m", &mut served);
+        assert_eq!(served["tools"].as_array().map(Vec::len), Some(1), "the head holds only its own verbs");
+        assert_eq!(served["tail_tools"][0]["function"]["name"], "code_git_apply");
+        let mut cloud = json!({ "model": "m" });
+        finish_body(&cfg(false), &request, "m", &mut cloud);
+        assert!(cloud.get("tail_tools").is_none(), "{cloud}");
     }
 }
