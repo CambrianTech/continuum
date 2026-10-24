@@ -13,7 +13,7 @@
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use super::attention::{AttentionDial, Continuation};
+use crate::cognition::attention::{AttentionDial, Continuation};
 use crate::cognition::conversation::salience::{Salience, SalienceLevel};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -147,7 +147,7 @@ impl AwarenessSnapshot {
     /// reaches a public turn's prompt or capture.
     pub fn render_lines_in(&self, persona: Uuid, room: Option<Uuid>) -> Vec<String> {
         self.render_with(|c| {
-            !crate::persona::mind_room::is_private_room(persona, c.activity) || room == Some(c.activity)
+            !crate::cognition::mind_room::is_private_room(persona, c.activity) || room == Some(c.activity)
         })
     }
 
@@ -300,7 +300,7 @@ mod tests {
     #[test]
     fn a_private_continuation_shows_its_note_only_in_her_mind_room() {
         let her = Uuid::new_v4();
-        let mind = crate::persona::mind_room::mind_room_id(her);
+        let mind = crate::cognition::mind_room::mind_room_id(her);
         let c = Continuation { activity: mind, note: "a private plan".into(), expectation: None, written_at_ms: 0 };
         let snap = fold(vec![], Some(c), AttentionDial::default(), 1_000, 1);
         let public = snap.render_lines_in(her, Some(Uuid::new_v4()));

@@ -376,7 +376,7 @@ impl WorkspaceCycle {
         let admission = acting.admission.clone();
         let checkpoint = admission.checkpoint();
         let real_sink =
-            admission.swap_persistence(crate::persona::admission_persistence::NoopSink::arc());
+            admission.swap_persistence(crate::cognition::admission_persistence::NoopSink::arc());
         EvalIsolation {
             admission: Some(admission),
             checkpoint: Some(checkpoint),

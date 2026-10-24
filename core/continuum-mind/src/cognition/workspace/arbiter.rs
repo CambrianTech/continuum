@@ -211,7 +211,7 @@ pub struct ActingBody {
     /// The hippocampus the action's RESULT is admitted into as an Episodic
     /// engram — so the outcome becomes a thing the mind remembers and can be
     /// reminded of next tick, the same way it carries every other fact.
-    pub admission: Arc<crate::persona::admission_state::AdmissionState>,
+    pub admission: Arc<crate::cognition::admission_state::AdmissionState>,
     /// The volatile working-memory scratchpad the organism records each act into
     /// (proprioception). Distinct from `admission` (long-term, content-deduped): an
     /// act must be perceptible NEXT tick even when its result is a dedup no-op in
@@ -320,9 +320,9 @@ pub struct WorkspaceCycle {
 /// restore. All `Option` so a pure-cognition cycle (no hands) yields a benign
 /// no-op guard. Not `Clone` — the restore must happen exactly once, on drop.
 pub struct EvalIsolation {
-    pub(super) admission: Option<Arc<crate::persona::admission_state::AdmissionState>>,
-    pub(super) checkpoint: Option<crate::persona::admission_state::AdmissionCheckpoint>,
-    pub(super) real_sink: Option<Arc<dyn crate::persona::admission_persistence::AdmissionPersistenceSink>>,
+    pub(super) admission: Option<Arc<crate::cognition::admission_state::AdmissionState>>,
+    pub(super) checkpoint: Option<crate::cognition::admission_state::AdmissionCheckpoint>,
+    pub(super) real_sink: Option<Arc<dyn crate::cognition::admission_persistence::AdmissionPersistenceSink>>,
     /// The shared decoding handle the guard forced to greedy on creation — restored
     /// to relaxed (`None`) on drop. Carried even for a no-hands (pure-cognition)
     /// cycle, because a reproducible metric needs deterministic generation whether

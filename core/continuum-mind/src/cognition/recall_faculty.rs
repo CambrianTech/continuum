@@ -44,8 +44,8 @@ use uuid::Uuid;
 use crate::ai::embedding::EmbeddingProvider;
 use super::working_memory::WorkingMemory;
 use super::workspace::{Contribution, Faculty, FacultyId, Workspace};
-use crate::persona::admission_state::AdmissionState;
-use crate::persona::engram::{Engram, EngramOrigin};
+use crate::cognition::admission_state::AdmissionState;
+use crate::cognition::engram::{Engram, EngramOrigin};
 
 /// Hard safety ceiling on memories surfaced per tick, regardless of model size —
 /// the [`RecallBudget`] picks the ACTUAL count (smaller) within this. `with_limit`

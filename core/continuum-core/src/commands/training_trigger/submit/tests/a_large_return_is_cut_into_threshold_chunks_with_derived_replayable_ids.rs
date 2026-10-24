@@ -415,7 +415,7 @@ use super::*;
     // over the floor and the next fill dispatches. A mind never judged is not held.
     #[tokio::test]
     pub(super) async fn a_fill_while_her_expectations_hold_is_held_and_a_contradiction_releases_it() {
-        use crate::persona::attention::{AttentionDial, Continuation};
+        use crate::cognition::attention::{AttentionDial, Continuation};
         use crate::persona::perception_region::PerceptionRegion;
         use crate::cognition::conversation::salience::{BoardChange, Expectation, ExpectedVerdict, ObservedVerdict};
         use std::sync::{Arc, Mutex};

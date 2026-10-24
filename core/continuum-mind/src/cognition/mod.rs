@@ -29,6 +29,19 @@
 
 pub mod conversation;
 pub mod extensions;
+pub mod training_sources;
+pub mod admission;
+pub mod admission_persistence;
+pub mod admission_state;
+pub mod attention;
+pub mod engram;
+pub mod engram_graph;
+pub mod home;
+pub mod inbox_admission;
+pub mod mind_room;
+pub mod recall_metadata;
+pub mod trace;
+pub mod decay_tick;
 pub mod cached_source;
 pub mod card_facts;
 pub mod card_holder;

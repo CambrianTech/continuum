@@ -119,7 +119,7 @@ pub async fn apply_act(
     };
     // Perception and execution share the activity resolved by the bound-turn owner.
     // Private turns retain their mind room at that boundary.
-    let private = crate::persona::mind_room::is_private_room(body.persona_id, room_id);
+    let private = crate::cognition::mind_room::is_private_room(body.persona_id, room_id);
 
     // Call history is not a cache-validity proof. Reads can change, failures can
     // recover, and earlier results may no longer fit the prompt. Execute through
@@ -518,7 +518,7 @@ pub async fn apply_act(
         // the room whose line triggered the turn (`acting_card_of`).
         let receipt_room = room_id;
         if private {
-            crate::persona::mind_room::note_withheld(body.persona_id, "thought_line");
+            crate::cognition::mind_room::note_withheld(body.persona_id, "thought_line");
         } else if !lines.is_empty() {
             if let Some(published) =
                 crate::cognition::extensions::publish_in_room(body.persona_id, receipt_room, lines.join("\n")).await
@@ -584,14 +584,14 @@ pub async fn apply_act(
         .first()
         .map(|c| c.name.clone())
         .unwrap_or_else(|| "action".to_string());
-    let obs_hash = crate::persona::inbox_admission::content_hash_sha256(&recall_observation);
-    let self_observation = crate::persona::engram::Engram {
+    let obs_hash = crate::cognition::inbox_admission::content_hash_sha256(&recall_observation);
+    let self_observation = crate::cognition::engram::Engram {
         id: Uuid::new_v4(),
         context_id: Some(room_id),
-        kind: crate::persona::engram::EngramKind::Episodic,
+        kind: crate::cognition::engram::EngramKind::Episodic,
         content: recall_observation,
-        origin: crate::persona::engram::EngramOrigin::Tool(
-            crate::persona::engram::ToolInvocationRef {
+        origin: crate::cognition::engram::EngramOrigin::Tool(
+            crate::cognition::engram::ToolInvocationRef {
                 invocation_id: Uuid::new_v4(),
                 tool_name,
                 invoked_at_ms: now_ms,
@@ -601,11 +601,11 @@ pub async fn apply_act(
         ),
         recall_keys: Vec::new(),
         admitted_at_ms: now_ms,
-        trust_state_at_admission: crate::persona::engram::TrustState::SelfTrust,
+        trust_state_at_admission: crate::cognition::engram::TrustState::SelfTrust,
         admission_trace_id: None,
     };
     match body.admission.admit_reflection(self_observation) {
-        Ok(crate::persona::engram::AdmissionDecision::Admit { engram, .. }) => {
+        Ok(crate::cognition::engram::AdmissionDecision::Admit { engram, .. }) => {
             // Belt-and-braces with the recall gate: even excluded from semantic
             // recall, keep the receipt's stored salience low so any OTHER surface
             // (recency ranking, dashboards) treats it as proprioception, not
@@ -621,7 +621,7 @@ pub async fn apply_act(
                 body.admission.link_engrams(
                     engram.id,
                     prior,
-                    crate::persona::engram_graph::EdgeKind::CausedBy,
+                    crate::cognition::engram_graph::EdgeKind::CausedBy,
                 );
                 continuum_base::probe!(
                     class = "engram.edge.caused_by",

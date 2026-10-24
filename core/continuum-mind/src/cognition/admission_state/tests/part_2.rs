@@ -9,7 +9,7 @@ use super::*;
     pub(super) fn fork_detached_inherits_owner_id_so_the_benchmark_gets_the_recall_fix() {
         let owner = Uuid::new_v4();
         let state = AdmissionState::new(Arc::new(
-            crate::persona::recall_metadata::RecallMetadataRegistry::new(),
+            crate::cognition::recall_metadata::RecallMetadataRegistry::new(),
         ));
         state.set_owner_id(owner);
         state
@@ -36,7 +36,7 @@ use super::*;
     pub(super) fn chat_recall_gate_is_noop_without_owner_bound() {
         let author = Uuid::new_v4();
         let state = AdmissionState::new(Arc::new(
-            crate::persona::recall_metadata::RecallMetadataRegistry::new(),
+            crate::cognition::recall_metadata::RecallMetadataRegistry::new(),
         ));
         state
             .admit_reflection(chat_engram("some chat from an author", author))
@@ -61,7 +61,7 @@ use super::*;
     #[test]
     pub(super) fn admit_reflection_dedups_identical_facts() {
         let state = AdmissionState::new(Arc::new(
-            crate::persona::recall_metadata::RecallMetadataRegistry::new(),
+            crate::cognition::recall_metadata::RecallMetadataRegistry::new(),
         ));
         let parent = Uuid::new_v4();
         let first = semantic_reflection("Headless core, many equal clients", parent);
@@ -86,7 +86,7 @@ use super::*;
     /// highest — defeating the whole point of Algorithm 4 driving recall.
     #[test]
     pub(super) fn recall_scored_ranks_by_salience_desc() {
-        let registry = Arc::new(crate::persona::recall_metadata::RecallMetadataRegistry::new());
+        let registry = Arc::new(crate::cognition::recall_metadata::RecallMetadataRegistry::new());
         let state = AdmissionState::new(Arc::clone(&registry));
         let ids = admit_n_distinct(
             &state,
@@ -123,7 +123,7 @@ use super::*;
     /// remembering.
     #[test]
     pub(super) fn recall_scored_records_recall_hit_on_returned_engrams() {
-        let registry = Arc::new(crate::persona::recall_metadata::RecallMetadataRegistry::new());
+        let registry = Arc::new(crate::cognition::recall_metadata::RecallMetadataRegistry::new());
         let state = AdmissionState::new(Arc::clone(&registry));
         let ids = admit_n_distinct(
             &state,
@@ -164,7 +164,7 @@ use super::*;
     /// without panicking + without recording spurious hits.
     #[test]
     pub(super) fn recall_scored_respects_limit_and_empty() {
-        let registry = Arc::new(crate::persona::recall_metadata::RecallMetadataRegistry::new());
+        let registry = Arc::new(crate::cognition::recall_metadata::RecallMetadataRegistry::new());
         let state = AdmissionState::new(Arc::clone(&registry));
         let ids = admit_n_distinct(
             &state,
@@ -206,7 +206,7 @@ use super::*;
     #[test]
     pub(super) fn recall_by_id_finds_known_returns_none_unknown() {
         let state = AdmissionState::new(Arc::new(
-            crate::persona::recall_metadata::RecallMetadataRegistry::new(),
+            crate::cognition::recall_metadata::RecallMetadataRegistry::new(),
         ));
         let ids = admit_n_distinct(
             &state,
@@ -230,7 +230,7 @@ use super::*;
     #[test]
     pub(super) fn recall_by_keyword_case_insensitive_newest_first_with_limit() {
         let state = AdmissionState::new(Arc::new(
-            crate::persona::recall_metadata::RecallMetadataRegistry::new(),
+            crate::cognition::recall_metadata::RecallMetadataRegistry::new(),
         ));
         admit_n_distinct(
             &state,
@@ -268,7 +268,7 @@ use super::*;
     #[test]
     pub(super) fn recall_by_origin_kind_filters_to_requested_variant() {
         let state = AdmissionState::new(Arc::new(
-            crate::persona::recall_metadata::RecallMetadataRegistry::new(),
+            crate::cognition::recall_metadata::RecallMetadataRegistry::new(),
         ));
         admit_n_distinct(
             &state,
@@ -308,7 +308,7 @@ use super::*;
         assert_eq!(EngramOriginKind::from(&chat.origin), EngramOriginKind::Chat);
         assert_eq!(EngramOriginKind::from(&airc.origin), EngramOriginKind::Airc);
         // Agent origin (agent-memory bridge) maps to EngramOriginKind::Agent.
-        let agent_origin = EngramOrigin::Agent(crate::persona::engram::AgentRef {
+        let agent_origin = EngramOrigin::Agent(crate::cognition::engram::AgentRef {
             agent_peer_id: Uuid::new_v4(),
             session: None,
             origin_hint: None,
@@ -329,7 +329,7 @@ use super::*;
     /// serde-tag drift would silently break cross-agent recall.
     #[test]
     pub(super) fn agent_origin_serde_round_trips_with_required_peer_id() {
-        use crate::persona::engram::AgentRef;
+        use crate::cognition::engram::AgentRef;
         let me = Uuid::new_v4();
 
         let origin = EngramOrigin::Agent(AgentRef {
@@ -356,7 +356,7 @@ use super::*;
     #[test]
     pub(super) fn admit_airc_origin_still_records_both_content_hash_and_event_id() {
         let state = AdmissionState::new(Arc::new(
-            crate::persona::recall_metadata::RecallMetadataRegistry::new(),
+            crate::cognition::recall_metadata::RecallMetadataRegistry::new(),
         ));
         let event_id = "airc-msg-admit-1";
         let engram =
@@ -389,13 +389,13 @@ use super::*;
     /// can assert it landed.
     #[test]
     pub(super) fn admit_observes_admission_through_persistence_sink() {
-        use crate::persona::admission_persistence::RecordingSink;
-        let registry = Arc::new(crate::persona::recall_metadata::RecallMetadataRegistry::new());
+        use crate::cognition::admission_persistence::RecordingSink;
+        let registry = Arc::new(crate::cognition::recall_metadata::RecallMetadataRegistry::new());
         let sink = Arc::new(RecordingSink::new());
         let state = AdmissionState::new_with_persistence(
             Arc::clone(&registry),
             Arc::clone(&sink)
-                as Arc<dyn crate::persona::admission_persistence::AdmissionPersistenceSink>,
+                as Arc<dyn crate::cognition::admission_persistence::AdmissionPersistenceSink>,
         );
         let msg = synthetic_human_message("watch me persist");
         state.admit(&msg, None).expect("admit");
@@ -410,13 +410,13 @@ use super::*;
     /// that lifts salience flushes the new value.
     #[test]
     pub(super) fn recall_scored_observes_metadata_updates_through_sink() {
-        use crate::persona::admission_persistence::RecordingSink;
-        let registry = Arc::new(crate::persona::recall_metadata::RecallMetadataRegistry::new());
+        use crate::cognition::admission_persistence::RecordingSink;
+        let registry = Arc::new(crate::cognition::recall_metadata::RecallMetadataRegistry::new());
         let sink = Arc::new(RecordingSink::new());
         let state = AdmissionState::new_with_persistence(
             Arc::clone(&registry),
             Arc::clone(&sink)
-                as Arc<dyn crate::persona::admission_persistence::AdmissionPersistenceSink>,
+                as Arc<dyn crate::cognition::admission_persistence::AdmissionPersistenceSink>,
         );
         // Admit 2 engrams so recall has something to score.
         admit_n_distinct(
@@ -448,13 +448,13 @@ use super::*;
     /// observes again afterward. Regresses [[eval-mutates-persona-lift-needs-isolation]].
     #[test]
     pub(super) fn eval_isolation_checkpoint_restore_leaves_no_trace() {
-        use crate::persona::admission_persistence::{NoopSink, RecordingSink};
-        let registry = Arc::new(crate::persona::recall_metadata::RecallMetadataRegistry::new());
+        use crate::cognition::admission_persistence::{NoopSink, RecordingSink};
+        let registry = Arc::new(crate::cognition::recall_metadata::RecallMetadataRegistry::new());
         let real_sink = Arc::new(RecordingSink::new());
         let state = AdmissionState::new_with_persistence(
             Arc::clone(&registry),
             Arc::clone(&real_sink)
-                as Arc<dyn crate::persona::admission_persistence::AdmissionPersistenceSink>,
+                as Arc<dyn crate::cognition::admission_persistence::AdmissionPersistenceSink>,
         );
 
         // Non-trivial content: the admission gate drops short strings as
@@ -517,20 +517,20 @@ use super::*;
     /// salience values. The proof that boot rehydration works.
     #[test]
     pub(super) fn new_rehydrated_restores_engrams_and_metadata_for_recall() {
-        let registry = Arc::new(crate::persona::recall_metadata::RecallMetadataRegistry::new());
+        let registry = Arc::new(crate::cognition::recall_metadata::RecallMetadataRegistry::new());
         // Synthesize a couple of engrams + their metadata as if they
         // had been loaded from disk.
         let alpha_engram = synthetic_engram_with_chat_origin("alpha persisted");
         let beta_engram = synthetic_engram_with_chat_origin("beta persisted");
         let loaded_engrams = vec![alpha_engram.clone(), beta_engram.clone()];
-        let high_salience = crate::persona::recall_metadata::RecallMetadata {
+        let high_salience = crate::cognition::recall_metadata::RecallMetadata {
             salience: 0.9,
             access_count: 5,
             last_accessed_ms: 1_000,
             protected_until_ms: 0,
             last_decayed_ms: 1_000,
         };
-        let low_salience = crate::persona::recall_metadata::RecallMetadata {
+        let low_salience = crate::cognition::recall_metadata::RecallMetadata {
             salience: 0.2,
             access_count: 0,
             last_accessed_ms: 0,
@@ -544,7 +544,7 @@ use super::*;
 
         let state = AdmissionState::new_rehydrated(
             Arc::clone(&registry),
-            crate::persona::admission_persistence::NoopSink::arc(),
+            crate::cognition::admission_persistence::NoopSink::arc(),
             loaded_engrams,
             loaded_metadata,
         );
@@ -577,7 +577,7 @@ use super::*;
     // last_decayed_ms, whose loss would trigger the epoch-delta decay collapse.
     #[test]
     pub(super) fn set_recall_salience_lowers_salience_and_preserves_decay_clock() {
-        let registry = Arc::new(crate::persona::recall_metadata::RecallMetadataRegistry::new());
+        let registry = Arc::new(crate::cognition::recall_metadata::RecallMetadataRegistry::new());
         let state = AdmissionState::new(registry.clone());
         let id = Uuid::new_v4();
         // Seed as an ordinary admission does (default 0.5 salience, decay clock set).
@@ -599,7 +599,7 @@ use super::*;
 
     #[test]
     pub(super) fn rehydrate_backfills_metadata_for_phantom_engrams() {
-        let registry = Arc::new(crate::persona::recall_metadata::RecallMetadataRegistry::new());
+        let registry = Arc::new(crate::cognition::recall_metadata::RecallMetadataRegistry::new());
         let phantom_engram = synthetic_engram_with_chat_origin("phantom no metadata row");
         let healthy_engram = synthetic_engram_with_chat_origin("healthy has metadata");
         let phantom_id = phantom_engram.id;
@@ -609,7 +609,7 @@ use super::*;
         // window between engram-save and metadata-save.
         let metadata_pair = (
             healthy_id,
-            crate::persona::recall_metadata::RecallMetadata {
+            crate::cognition::recall_metadata::RecallMetadata {
                 salience: 0.8,
                 access_count: 2,
                 last_accessed_ms: 1_000,
@@ -620,7 +620,7 @@ use super::*;
 
         let state = AdmissionState::new_rehydrated(
             Arc::clone(&registry),
-            crate::persona::admission_persistence::NoopSink::arc(),
+            crate::cognition::admission_persistence::NoopSink::arc(),
             vec![phantom_engram, healthy_engram],
             vec![metadata_pair],
         );
@@ -669,11 +669,11 @@ use super::*;
     #[tokio::test]
     pub(super) async fn for_persona_round_trips_admissions_via_per_persona_sqlite() {
         let tmp = tempfile::tempdir().expect("tempdir");
-        let home = crate::persona::home::PersonaHome::for_persona(tmp.path(), "Paige");
+        let home = crate::cognition::home::PersonaHome::for_persona(tmp.path(), "Paige");
 
         // ── Lifetime 1: admit through the persona's home ────────
         let original_ids: Vec<Uuid> = {
-            let registry = Arc::new(crate::persona::recall_metadata::RecallMetadataRegistry::new());
+            let registry = Arc::new(crate::cognition::recall_metadata::RecallMetadataRegistry::new());
             let state = AdmissionState::for_persona(&home, Arc::clone(&registry))
                 .await
                 .expect("for_persona setup");
@@ -695,7 +695,7 @@ use super::*;
 
         // Wait for fire-and-forget writes to land.
         let mut tries = 0;
-        let registry2 = Arc::new(crate::persona::recall_metadata::RecallMetadataRegistry::new());
+        let registry2 = Arc::new(crate::cognition::recall_metadata::RecallMetadataRegistry::new());
         let state2 = loop {
             let st = AdmissionState::for_persona(&home, Arc::clone(&registry2))
                 .await

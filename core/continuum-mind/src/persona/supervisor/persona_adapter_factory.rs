@@ -414,8 +414,8 @@ pub(super) fn remote_override_for(
         persona_name,
     )
     .parent()
-    .map(|root| crate::persona::home::PersonaHome::from_root(root.to_path_buf()));
-    let by_identity = crate::persona::home::PersonaHome::from_root(identity_home.to_path_buf());
+    .map(|root| crate::cognition::home::PersonaHome::from_root(root.to_path_buf()));
+    let by_identity = crate::cognition::home::PersonaHome::from_root(identity_home.to_path_buf());
     by_name
         .into_iter()
         .chain(std::iter::once(by_identity))

@@ -122,9 +122,9 @@ mod tests {
     use super::*;
     use crate::ai::heuristic_adapter::HeuristicInferenceAdapter;
     use crate::cognition::persona_workspace::PersonaBrainConfig;
-    use crate::persona::admission_state::AdmissionState;
-    use crate::persona::engram::{ChatMessageRef, Engram, EngramKind, EngramOrigin, TrustState};
-    use crate::persona::recall_metadata::{RecallMetadata, RecallMetadataRegistry};
+    use crate::cognition::admission_state::AdmissionState;
+    use crate::cognition::engram::{ChatMessageRef, Engram, EngramKind, EngramOrigin, TrustState};
+    use crate::cognition::recall_metadata::{RecallMetadata, RecallMetadataRegistry};
     use crate::runtime::service_module::CommandResult;
 
     fn seed_admission(now_ms: u64) -> Arc<AdmissionState> {

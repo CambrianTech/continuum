@@ -448,7 +448,7 @@
         use crate::orm::adapter::StorageAdapter;
         use crate::orm::sqlite::SqliteAdapter;
         use crate::orm::OrmStore;
-        use crate::persona::engram::{AircMessageRef, Engram, EngramKind, EngramOrigin, TrustState};
+        use crate::cognition::engram::{AircMessageRef, Engram, EngramKind, EngramOrigin, TrustState};
         use std::sync::Arc;
 
         let tmp = tempfile::tempdir().expect("tempdir");

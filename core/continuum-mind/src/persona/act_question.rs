@@ -427,7 +427,7 @@ pub(crate) async fn ask_the_act_question(
                         LIVE_MAX_ACTS,
                         work_framing,
                         conversation,
-                        credit_capture.as_mut(),
+                        credit_capture.as_mut().map(|c| c as &mut dyn crate::cognition::act_observe::TurnCredit),
                     )
                     .await;
                     // After the card her genome is what every turn runs with (her trained

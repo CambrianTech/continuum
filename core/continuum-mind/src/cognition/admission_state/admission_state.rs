@@ -9,11 +9,11 @@ impl AdmissionState {
     /// PersonaCognition share a single registry view across admission +
     /// recall + decay tick subsystems.
     pub fn new(
-        recall_metadata: Arc<crate::persona::recall_metadata::RecallMetadataRegistry>,
+        recall_metadata: Arc<crate::cognition::recall_metadata::RecallMetadataRegistry>,
     ) -> Self {
         Self::new_with_persistence(
             recall_metadata,
-            crate::persona::admission_persistence::NoopSink::arc(),
+            crate::cognition::admission_persistence::NoopSink::arc(),
         )
     }
 
@@ -24,8 +24,8 @@ impl AdmissionState {
     /// metadata update and chooses what to do with them
     /// (fire-and-forget write, buffer, no-op, etc.).
     pub fn new_with_persistence(
-        recall_metadata: Arc<crate::persona::recall_metadata::RecallMetadataRegistry>,
-        persistence: Arc<dyn crate::persona::admission_persistence::AdmissionPersistenceSink>,
+        recall_metadata: Arc<crate::cognition::recall_metadata::RecallMetadataRegistry>,
+        persistence: Arc<dyn crate::cognition::admission_persistence::AdmissionPersistenceSink>,
     ) -> Self {
         Self {
             runner: InboxAdmissionRunner::default_v1(),
@@ -35,7 +35,7 @@ impl AdmissionState {
             recall_metadata,
             persistence: RwLock::new(persistence),
             owner_id: RwLock::new(None),
-            graph: crate::persona::engram_graph::EngramGraph::new(),
+            graph: crate::cognition::engram_graph::EngramGraph::new(),
             tool_heads: None,
         }
     }
@@ -49,10 +49,10 @@ impl AdmissionState {
     /// works against the rehydrated salience values; the Hebbian
     /// rehearsal loop continues across the restart boundary.
     pub fn new_rehydrated(
-        recall_metadata: Arc<crate::persona::recall_metadata::RecallMetadataRegistry>,
-        persistence: Arc<dyn crate::persona::admission_persistence::AdmissionPersistenceSink>,
+        recall_metadata: Arc<crate::cognition::recall_metadata::RecallMetadataRegistry>,
+        persistence: Arc<dyn crate::cognition::admission_persistence::AdmissionPersistenceSink>,
         loaded_engrams: Vec<Engram>,
-        loaded_metadata: Vec<(Uuid, crate::persona::recall_metadata::RecallMetadata)>,
+        loaded_metadata: Vec<(Uuid, crate::cognition::recall_metadata::RecallMetadata)>,
     ) -> Self {
         // Populate the metadata registry with the loaded snapshots
         // BEFORE building the Vec — recall scoring later reads
@@ -84,7 +84,7 @@ impl AdmissionState {
             // Edges are not yet durable — a rehydrated store starts with an
             // empty graph and re-accumulates from live acts. Sidecar
             // persistence is the next slice (CAUSAL-MEMORY-GRAPH.md §4).
-            graph: crate::persona::engram_graph::EngramGraph::new(),
+            graph: crate::cognition::engram_graph::EngramGraph::new(),
             tool_heads: None,
         }
     }
@@ -97,7 +97,7 @@ impl AdmissionState {
     /// Borrow the shared recall metadata registry. Recall + decay tick
     /// subsystems clone this Arc for their own reads/writes — they
     /// observe the same DashMap admission writes into.
-    pub fn recall_metadata(&self) -> &Arc<crate::persona::recall_metadata::RecallMetadataRegistry> {
+    pub fn recall_metadata(&self) -> &Arc<crate::cognition::recall_metadata::RecallMetadataRegistry> {
         &self.recall_metadata
     }
 
@@ -112,7 +112,7 @@ impl AdmissionState {
         &self,
         from: Uuid,
         to: Uuid,
-        kind: crate::persona::engram_graph::EdgeKind,
+        kind: crate::cognition::engram_graph::EdgeKind,
     ) {
         self.graph.add_edge(from, to, kind, 1.0);
     }
@@ -122,7 +122,7 @@ impl AdmissionState {
     pub fn engram_neighbors(
         &self,
         id: &Uuid,
-    ) -> Vec<crate::persona::engram_graph::EngramEdge> {
+    ) -> Vec<crate::cognition::engram_graph::EngramEdge> {
         self.graph.neighbors(id)
     }
 
@@ -136,10 +136,10 @@ impl AdmissionState {
     /// no owner (tests, replay) has no mind room.
     pub(super) fn withheld_in_her_mind_room(&self, room: Uuid) -> Option<AdmissionDecision> {
         let owner = (*self.owner_id.read().unwrap())?;
-        crate::persona::mind_room::is_private_room(owner, room).then(|| {
-            crate::persona::mind_room::note_withheld(owner, "engrams");
+        crate::cognition::mind_room::is_private_room(owner, room).then(|| {
+            crate::cognition::mind_room::note_withheld(owner, "engrams");
             AdmissionDecision::Drop {
-                reason: crate::persona::engram::AdmissionDropReason::PolicyDeniedAdmission {
+                reason: crate::cognition::engram::AdmissionDropReason::PolicyDeniedAdmission {
                     policy_id: "mind-room".to_string(),
                     explanation: "a turn in her mind room is hers; it is not written to engrams.sqlite".to_string(),
                 },
@@ -177,15 +177,15 @@ impl AdmissionState {
     /// airc-native entity envelope emission — all riding on top of
     /// this same PersonaHome resolution.
     pub async fn for_persona(
-        home: &crate::persona::home::PersonaHome,
-        recall_metadata: Arc<crate::persona::recall_metadata::RecallMetadataRegistry>,
+        home: &crate::cognition::home::PersonaHome,
+        recall_metadata: Arc<crate::cognition::recall_metadata::RecallMetadataRegistry>,
     ) -> Result<Self, crate::orm::OrmStoreError> {
         use crate::orm::adapter::StorageAdapter;
         use crate::orm::sqlite::SqliteAdapter;
         use crate::orm::OrmStore;
-        use crate::persona::admission_persistence::{OrmLoader, OrmPersistenceSink};
-        use crate::persona::engram::Engram;
-        use crate::persona::recall_metadata::EngramRecallMetadata;
+        use crate::cognition::admission_persistence::{OrmLoader, OrmPersistenceSink};
+        use crate::cognition::engram::Engram;
+        use crate::cognition::recall_metadata::EngramRecallMetadata;
 
         // Ensure the persona's home directory exists. fs::create_dir_all
         // is idempotent and safe to call on every boot.
@@ -245,7 +245,7 @@ impl AdmissionState {
         let mut state = Self::new_rehydrated(
             recall_metadata,
             sink_concrete
-                as Arc<dyn crate::persona::admission_persistence::AdmissionPersistenceSink>,
+                as Arc<dyn crate::cognition::admission_persistence::AdmissionPersistenceSink>,
             engrams,
             metadata,
         );
@@ -534,7 +534,7 @@ impl AdmissionState {
     /// [[design-the-persona-as-a-being]] + [[eval-mutates-persona-lift-needs-isolation]].
     pub fn fork_detached(&self) -> AdmissionState {
         let cp = self.checkpoint();
-        let fork_registry = crate::persona::recall_metadata::RecallMetadataRegistry::new();
+        let fork_registry = crate::cognition::recall_metadata::RecallMetadataRegistry::new();
         // Carry the LIVING registry's state into the fork — salience, rehearsal
         // counts, protection, supersession demotions. A fresh-empty registry
         // resets every engram to DEFAULT salience inside the fork, which
@@ -568,8 +568,8 @@ impl AdmissionState {
     /// on any hot path.
     pub fn swap_persistence(
         &self,
-        sink: Arc<dyn crate::persona::admission_persistence::AdmissionPersistenceSink>,
-    ) -> Arc<dyn crate::persona::admission_persistence::AdmissionPersistenceSink> {
+        sink: Arc<dyn crate::cognition::admission_persistence::AdmissionPersistenceSink>,
+    ) -> Arc<dyn crate::cognition::admission_persistence::AdmissionPersistenceSink> {
         let mut guard = self.persistence.write().unwrap();
         std::mem::replace(&mut *guard, sink)
     }
@@ -609,7 +609,7 @@ impl AdmissionState {
         let mut hits: Vec<Engram> = engrams
             .iter()
             .rev() // newest-first (insertion order store)
-            .filter(|e| e.kind == crate::persona::engram::EngramKind::Semantic)
+            .filter(|e| e.kind == crate::cognition::engram::EngramKind::Semantic)
             .filter(|e| {
                 let content = e.content.to_lowercase();
                 needles.iter().any(|n| content.contains(n.as_str()))
@@ -642,7 +642,7 @@ impl AdmissionState {
         let engrams = self.engrams.lock().unwrap();
         engrams
             .iter() // insertion order == oldest first
-            .filter(|e| e.kind == crate::persona::engram::EngramKind::Semantic)
+            .filter(|e| e.kind == crate::cognition::engram::EngramKind::Semantic)
             .filter(|e| e.admitted_at_ms < admitted_before_ms)
             .filter(|e| !exclude.contains(&e.id))
             .take(limit)

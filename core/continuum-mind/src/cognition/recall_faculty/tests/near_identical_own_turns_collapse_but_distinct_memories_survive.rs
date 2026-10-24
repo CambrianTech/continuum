@@ -349,7 +349,7 @@ use super::*;
     // coherence depends on.
     #[tokio::test]
     pub(super) async fn memory_carries_context_across_turns() {
-        use crate::persona::engram::AdmissionDecision;
+        use crate::cognition::engram::AdmissionDecision;
         use crate::cognition::conversation::types::{InboxMessage, SenderType};
 
         let now1 = 1_000_000_000u64;

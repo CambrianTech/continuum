@@ -104,8 +104,8 @@ pub(super) const PERCEIVE_SETTLE: std::time::Duration = std::time::Duration::fro
 /// The slow re-perceive floor, by HER dial (Fable, 2026-10-04: "her opening her eyes,
 /// not the tick choosing"): how long her mind may go without checking whether a
 /// continuation fell due or a room is loud and unread.
-pub(super) fn mind_check_floor(dial: crate::persona::attention::AttentionDial) -> std::time::Duration {
-    use crate::persona::attention::Depth;
+pub(super) fn mind_check_floor(dial: crate::cognition::attention::AttentionDial) -> std::time::Duration {
+    use crate::cognition::attention::Depth;
     std::time::Duration::from_secs(match dial.depth {
         Depth::Deep => 15 * 60,
         Depth::Normal => 5 * 60,

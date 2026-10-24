@@ -57,7 +57,7 @@ use continuum_base::time::EpochMs;
 use crate::cognition::capture::fixture_dir;
 use crate::cognition::tool_executor::types::MediaItemLite;
 use crate::persona::response::{PersonaResponse, RespondInput};
-use crate::persona::trace::CognitionTrace;
+use crate::cognition::trace::CognitionTrace;
 use crate::persona::PersonaTurnFrameReplayRecord;
 use crate::runtime;
 use serde::Serialize;
@@ -229,8 +229,8 @@ pub fn record_turn_frame_replay(record: &PersonaTurnFrameReplayRecord) {
     if disabled() {
         return;
     }
-    if crate::persona::mind_room::is_private_room(record.persona_id, record.room_id) {
-        crate::persona::mind_room::note_withheld(record.persona_id, "turn_frame_recorder");
+    if crate::cognition::mind_room::is_private_room(record.persona_id, record.room_id) {
+        crate::cognition::mind_room::note_withheld(record.persona_id, "turn_frame_recorder");
         return;
     }
     let dir = match fixture_dir(TURN_FRAME_FIXTURE_DIR) {
@@ -247,8 +247,8 @@ fn persist_turn_payload(input: &RespondInput, payload: serde_json::Value) {
         return;
     }
     // A turn in her mind room is hers (PRIVACY-OF-THOUGHT.md §4, sink 1): not recorded.
-    if crate::persona::mind_room::is_private_room(input.persona.persona_id, input.turn_context.room_id) {
-        crate::persona::mind_room::note_withheld(input.persona.persona_id, "turn_recorder");
+    if crate::cognition::mind_room::is_private_room(input.persona.persona_id, input.turn_context.room_id) {
+        crate::cognition::mind_room::note_withheld(input.persona.persona_id, "turn_recorder");
         return;
     }
     let dir = match fixture_dir(RESPOND_FIXTURE_DIR) {
@@ -637,7 +637,7 @@ mod tests {
     /// turns left no fixture and the most diagnostic captures were lost.
     #[test]
     fn record_failed_turn_writes_error_with_partial_trace() {
-        use crate::persona::trace::SEAM_ANALYZE;
+        use crate::cognition::trace::SEAM_ANALYZE;
         let tmp = tempdir().expect("temp home");
         let _restore = EnvRestore::install(tmp.path(), None);
         let input = fake_input();

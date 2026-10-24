@@ -2,13 +2,13 @@ use super::*;
 
 /// The settle loop itself. Both public drivers reach it through the same lived-
 /// experience wrapper, so taking input cannot bypass the recording seam.
-pub(super) async fn settle_to_outcome(
+pub(super) async fn settle_to_outcome<'c>(
     cycle: &WorkspaceCycle,
     mut burst: Burst,
     max_acts: usize,
     mut framing: TurnFraming,
     mut conversation: Option<&mut dyn crate::cognition::conversation::PersonaConversation>,
-    mut credit: Option<&mut crate::persona::training_producer::TurnCreditCapture>,
+    mut credit: Option<&mut (dyn TurnCredit + 'c)>,
 ) -> SettleOutcome {
     // The turn's room comes FROM the burst — witnessed non-nil at construction,
     // so the drive can no longer disagree with the rendered header (#425).

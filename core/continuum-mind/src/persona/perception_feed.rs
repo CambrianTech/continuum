@@ -237,7 +237,7 @@ pub fn feed(event: &Arc<TranscriptEvent>, now_ms: u64) -> usize {
 mod tests {
     use crate::cognition::conversation::salience::ObservedVerdict;
     use super::*;
-    use crate::persona::attention::AttentionDial;
+    use crate::cognition::attention::AttentionDial;
     use crate::cognition::conversation::salience::SalienceLevel;
 
     const ROOM_A: Uuid = Uuid::from_u128(0xa);

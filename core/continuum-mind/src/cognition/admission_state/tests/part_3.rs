@@ -8,12 +8,12 @@ use super::*;
     #[tokio::test]
     pub(super) async fn for_persona_isolates_two_personas_at_the_storage_layer() {
         let tmp = tempfile::tempdir().expect("tempdir");
-        let paige_home = crate::persona::home::PersonaHome::for_persona(tmp.path(), "Paige");
-        let niko_home = crate::persona::home::PersonaHome::for_persona(tmp.path(), "Niko");
+        let paige_home = crate::cognition::home::PersonaHome::for_persona(tmp.path(), "Paige");
+        let niko_home = crate::cognition::home::PersonaHome::for_persona(tmp.path(), "Niko");
 
         // Admit through Paige's home only.
         let paige_id = {
-            let registry = Arc::new(crate::persona::recall_metadata::RecallMetadataRegistry::new());
+            let registry = Arc::new(crate::cognition::recall_metadata::RecallMetadataRegistry::new());
             let state = AdmissionState::for_persona(&paige_home, registry)
                 .await
                 .expect("paige setup");
@@ -33,7 +33,7 @@ use super::*;
         let mut tries = 0;
         loop {
             let paige_registry =
-                Arc::new(crate::persona::recall_metadata::RecallMetadataRegistry::new());
+                Arc::new(crate::cognition::recall_metadata::RecallMetadataRegistry::new());
             let paige_state = AdmissionState::for_persona(&paige_home, paige_registry)
                 .await
                 .expect("paige reload");
@@ -49,7 +49,7 @@ use super::*;
 
         // Niko's fresh state must NOT see Paige's engram.
         let niko_registry =
-            Arc::new(crate::persona::recall_metadata::RecallMetadataRegistry::new());
+            Arc::new(crate::cognition::recall_metadata::RecallMetadataRegistry::new());
         let niko_state = AdmissionState::for_persona(&niko_home, niko_registry)
             .await
             .expect("niko setup");
@@ -80,7 +80,7 @@ use super::*;
     #[test]
     pub(super) fn restore_drops_post_checkpoint_engrams_but_keeps_baseline() {
         let state = AdmissionState::new(Arc::new(
-            crate::persona::recall_metadata::RecallMetadataRegistry::new(),
+            crate::cognition::recall_metadata::RecallMetadataRegistry::new(),
         ));
         let mut trace = CognitionTrace::new();
 
@@ -135,7 +135,7 @@ use super::*;
     #[test]
     pub(super) fn semantic_beliefs_matching_is_semantic_only_key_overlap() {
         let state = AdmissionState::new(Arc::new(
-            crate::persona::recall_metadata::RecallMetadataRegistry::new(),
+            crate::cognition::recall_metadata::RecallMetadataRegistry::new(),
         ));
         let mk = |kind: EngramKind, content: &str| Engram {
             id: Uuid::new_v4(),

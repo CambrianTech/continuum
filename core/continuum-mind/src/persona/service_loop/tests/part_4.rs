@@ -95,8 +95,8 @@ use super::*;
         // Register her cognition cycle in the global registry the act-question
         // reads, wired to a canned adapter that answers "PASS: done" — so the
         // drive settles on a reasoned pass, not the heuristic echo (a Speak).
-        let recall_meta = Arc::new(crate::persona::recall_metadata::RecallMetadataRegistry::new());
-        let admission = Arc::new(crate::persona::admission_state::AdmissionState::new(
+        let recall_meta = Arc::new(crate::cognition::recall_metadata::RecallMetadataRegistry::new());
+        let admission = Arc::new(crate::cognition::admission_state::AdmissionState::new(
             recall_meta,
         ));
         let cfg = crate::cognition::persona_workspace::PersonaBrainConfig {
@@ -197,8 +197,8 @@ use super::*;
                 persona_id: peer,
                 persona_name: "Paige".into(),
                 system_prompt: "You are Paige.".into(),
-                admission: Arc::new(crate::persona::admission_state::AdmissionState::new(
-                    Arc::new(crate::persona::recall_metadata::RecallMetadataRegistry::new()),
+                admission: Arc::new(crate::cognition::admission_state::AdmissionState::new(
+                    Arc::new(crate::cognition::recall_metadata::RecallMetadataRegistry::new()),
                 )),
                 adapter: Arc::new(
                     HeuristicInferenceAdapter::new()
@@ -477,8 +477,8 @@ async fn holding_nothing_her_heartbeat_offers_an_initiative_turn_with_her_hands(
         persona_id: peer,
         persona_name: "Aris".into(),
         system_prompt: "You are Aris.".into(),
-        admission: Arc::new(crate::persona::admission_state::AdmissionState::new(Arc::new(
-            crate::persona::recall_metadata::RecallMetadataRegistry::new(),
+        admission: Arc::new(crate::cognition::admission_state::AdmissionState::new(Arc::new(
+            crate::cognition::recall_metadata::RecallMetadataRegistry::new(),
         ))),
         adapter: Arc::new(
             HeuristicInferenceAdapter::new().with_canned_response("PASS: nothing calls me right now"),

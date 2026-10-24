@@ -66,7 +66,7 @@ impl InMemorySeenEvents {
 /// reaches sqlite. See [[eval-mutates-persona-lift-needs-isolation]].
 pub struct AdmissionCheckpoint {
     pub(super) engrams: Vec<Engram>,
-    pub(super) recall_metadata: Vec<(Uuid, crate::persona::recall_metadata::RecallMetadata)>,
+    pub(super) recall_metadata: Vec<(Uuid, crate::cognition::recall_metadata::RecallMetadata)>,
     pub(super) seen_content: HashMap<String, Uuid>,
     pub(super) seen_events: HashMap<String, u64>,
 }
@@ -91,7 +91,7 @@ pub struct AdmissionState {
     /// durable content layer per the cognition-cache-hierarchy
     /// doctrine. Lock-free reads via DashMap; admission-time write
     /// happens inside record_admitted().
-    pub(super) recall_metadata: Arc<crate::persona::recall_metadata::RecallMetadataRegistry>,
+    pub(super) recall_metadata: Arc<crate::cognition::recall_metadata::RecallMetadataRegistry>,
     /// Persistence sink — observes admissions + metadata updates.
     /// `NoopSink` by default (preserves test + replay paths); the
     /// production path uses `OrmPersistenceSink` to fire-and-forget
@@ -107,14 +107,14 @@ pub struct AdmissionState {
     /// admit / once per recall-batch (human-message cadence, never
     /// per-token), so the cost is nil. See
     /// [[eval-mutates-persona-lift-needs-isolation]].
-    pub(super) persistence: RwLock<Arc<dyn crate::persona::admission_persistence::AdmissionPersistenceSink>>,
+    pub(super) persistence: RwLock<Arc<dyn crate::cognition::admission_persistence::AdmissionPersistenceSink>>,
     /// The engram edge graph — causal + associative structure over the
     /// engrams this store admits (docs/cognition/CAUSAL-MEMORY-GRAPH.md,
     /// docs/cognition/BELIEF-JUSTIFICATION-GRAPH.md). Edges are FACTS about
     /// what happened, recorded at the write site; the graph never decides —
     /// retrieval surfaces walk it, cognition judges. In-memory (DashMap);
     /// sidecar durability is a follow-on slice.
-    pub(super) graph: crate::persona::engram_graph::EngramGraph,
+    pub(super) graph: crate::cognition::engram_graph::EngramGraph,
     /// Her learned tool head's row store, in this same per-persona database; `None` for a
     /// state with no disk (tests, replay, a measurement fork).
     pub(super) tool_heads: Option<Arc<crate::orm::OrmStore<crate::cognition::tool_head::entity::ToolHeadRecord>>>,
@@ -135,7 +135,7 @@ pub struct AdmissionState {
 impl Default for AdmissionState {
     fn default() -> Self {
         Self::new(Arc::new(
-            crate::persona::recall_metadata::RecallMetadataRegistry::new(),
+            crate::cognition::recall_metadata::RecallMetadataRegistry::new(),
         ))
     }
 }

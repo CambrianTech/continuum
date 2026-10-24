@@ -150,7 +150,7 @@ async fn bound_card_activity_is_shared_by_perception_and_execution() {
     assert!(actions.contains("code/run"), "{actions}");
     assert!(!actions.contains("nothing has executed yet"), "{actions}");
     assert_eq!(airc.current_room().await.unwrap().channel, wake.channel);
-    let private = crate::persona::mind_room::mind_room_id(persona);
+    let private = crate::cognition::mind_room::mind_room_id(persona);
     let private_ws = cycle
         .run(
             crate::cognition::workspace::Burst::raw_in(

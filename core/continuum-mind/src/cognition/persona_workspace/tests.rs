@@ -10,9 +10,9 @@
 
     use crate::cognition::workspace::Decision;
 
-    use crate::persona::engram::{ChatMessageRef, Engram, EngramKind, EngramOrigin, TrustState};
+    use crate::cognition::engram::{ChatMessageRef, Engram, EngramKind, EngramOrigin, TrustState};
 
-    use crate::persona::recall_metadata::{RecallMetadata, RecallMetadataRegistry};
+    use crate::cognition::recall_metadata::{RecallMetadata, RecallMetadataRegistry};
 
 mod she_is_told_when_her_hands_move_and_only_then;
 mod final_checkpoint_drains_admitted_periodic_writer_before_ack;

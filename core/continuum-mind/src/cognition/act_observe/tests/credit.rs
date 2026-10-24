@@ -209,12 +209,12 @@ async fn live_room_input_reaches_next_action_without_replacing_task_or_room() {
             .engram_neighbors(&first_act.id)
             .iter()
             .any(|edge| Some(edge.target) == cause.root()
-                && edge.kind == crate::persona::engram_graph::EdgeKind::CausedBy));
+                && edge.kind == crate::cognition::engram_graph::EdgeKind::CausedBy));
         assert!(adm
             .engram_neighbors(&second_act.id)
             .iter()
             .any(|edge| edge.target == first_act.id
-                && edge.kind == crate::persona::engram_graph::EdgeKind::CausedBy));
+                && edge.kind == crate::cognition::engram_graph::EdgeKind::CausedBy));
         {
             let requests = recorded.lock().unwrap();
             assert_eq!(requests.len(), 3);

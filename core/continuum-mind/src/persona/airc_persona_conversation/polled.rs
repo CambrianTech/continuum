@@ -50,7 +50,7 @@ impl MindFeed {
         // Her private continuation is never in mind-state.json; it is sealed in her mind
         // store (PRIVACY-OF-THOUGHT.md sink 10). Restore it when no open one was saved.
         if region.continuation().is_none() {
-            if let Some(private) = crate::persona::mind_room::sealed_continuation(persona) {
+            if let Some(private) = crate::persona::mind_store::sealed_continuation(persona) {
                 region.restore_private_continuation(private, now);
             }
         }

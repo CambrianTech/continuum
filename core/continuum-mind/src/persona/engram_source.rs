@@ -50,8 +50,8 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 
-use crate::persona::admission_state::AdmissionState;
-use crate::persona::engram::Engram;
+use crate::cognition::admission_state::AdmissionState;
+use crate::cognition::engram::Engram;
 use crate::cognition::rag_budget::{
      RagContext, RagDelivery, RagItem, RagSource, ResolutionPreference,
 };
@@ -244,9 +244,9 @@ impl RagSource for EngramSource {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::persona::admission_state::EngramOriginKind;
-    use crate::persona::engram::{ChatMessageRef, Engram, EngramKind, EngramOrigin, TrustState};
-    use crate::persona::recall_metadata::{RecallMetadata, RecallMetadataRegistry};
+    use crate::cognition::admission_state::EngramOriginKind;
+    use crate::cognition::engram::{ChatMessageRef, Engram, EngramKind, EngramOrigin, TrustState};
+    use crate::cognition::recall_metadata::{RecallMetadata, RecallMetadataRegistry};
     use uuid::Uuid;
 
     /// Build an AdmissionState wrapped in Arc, with `count` engrams

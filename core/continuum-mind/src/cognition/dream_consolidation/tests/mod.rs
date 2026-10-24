@@ -3,7 +3,7 @@
 use super::*;
 pub(crate) use super::test_support::*;
 use crate::ai::heuristic_adapter::HeuristicInferenceAdapter;
-use crate::persona::engram::{Engram, EngramKind, EngramOrigin};
+use crate::cognition::engram::{Engram, EngramKind, EngramOrigin};
 
 // what this catches (#175 budget-at-assembly): the observation block is composed
 // WITHIN the char budget by dropping WHOLE trailing engrams — never truncating an
@@ -193,14 +193,14 @@ fn parse_supersedes_line_maps_indices_and_strips() {
     let mk = |content: &str| Engram {
         id: Uuid::new_v4(),
         context_id: None,
-        kind: crate::persona::engram::EngramKind::Semantic,
+        kind: crate::cognition::engram::EngramKind::Semantic,
         content: content.to_string(),
-        origin: crate::persona::engram::EngramOrigin::SelfReflection {
+        origin: crate::cognition::engram::EngramOrigin::SelfReflection {
             parent_engram_id: Uuid::nil(),
         },
         recall_keys: vec![],
         admitted_at_ms: 1,
-        trust_state_at_admission: crate::persona::engram::TrustState::SelfTrust,
+        trust_state_at_admission: crate::cognition::engram::TrustState::SelfTrust,
         admission_trace_id: None,
     };
     let priors = vec![mk("old belief one"), mk("old belief two"), mk("old three")];
@@ -242,14 +242,14 @@ fn a_decorated_verdict_line_is_still_the_models_judgment() {
     let mk = |content: &str| Engram {
         id: Uuid::new_v4(),
         context_id: None,
-        kind: crate::persona::engram::EngramKind::Semantic,
+        kind: crate::cognition::engram::EngramKind::Semantic,
         content: content.to_string(),
-        origin: crate::persona::engram::EngramOrigin::SelfReflection {
+        origin: crate::cognition::engram::EngramOrigin::SelfReflection {
             parent_engram_id: Uuid::nil(),
         },
         recall_keys: vec![],
         admitted_at_ms: 1,
-        trust_state_at_admission: crate::persona::engram::TrustState::SelfTrust,
+        trust_state_at_admission: crate::cognition::engram::TrustState::SelfTrust,
         admission_trace_id: None,
     };
     let priors = vec![mk("one"), mk("two"), mk("three")];

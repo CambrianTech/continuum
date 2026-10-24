@@ -169,7 +169,7 @@ async fn reviewed_boundary_retries_failed_distillation_with_bounded_receipt_stat
 // tick, so nothing accumulates forever. regression for the plastic-memory fix (#221).
 #[tokio::test]
 async fn dream_tick_runs_the_decay_drain() {
-    use crate::persona::recall_metadata::RecallMetadata;
+    use crate::cognition::recall_metadata::RecallMetadata;
     let persona = Uuid::from_u128(7);
     // A single episodic so there's a live reflective surface (below min_cluster → the
     // consolidation itself sleeps, which is the point: decay runs BEFORE that gate).

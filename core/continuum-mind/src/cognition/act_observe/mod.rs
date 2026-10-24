@@ -42,7 +42,7 @@ pub(crate) mod disk_change;
 pub use apply::{apply_act, ActChain};
 
 mod settle;
-pub use settle::drive_to_settle_with_credit;
+pub use settle::{drive_to_settle_with_credit, TurnCredit};
 pub use settle::{drive_to_settle, drive_to_settle_with_input, settle_step};
 
 #[cfg(test)]
@@ -64,8 +64,8 @@ pub mod test_support {
     };
     use crate::cognition::working_memory::WorkingMemory;
     use crate::cognition::workspace::ActingBody;
-    use crate::persona::admission_state::AdmissionState;
-    use crate::persona::recall_metadata::RecallMetadataRegistry;
+    use crate::cognition::admission_state::AdmissionState;
+    use crate::cognition::recall_metadata::RecallMetadataRegistry;
 
     pub fn admission() -> Arc<AdmissionState> {
         Arc::new(AdmissionState::new(Arc::new(RecallMetadataRegistry::new())))

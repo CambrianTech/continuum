@@ -226,20 +226,20 @@ pub fn drive_to_settle_with_credit<'a>(
     max_acts: usize,
     framing: TurnFraming,
     conversation: &'a mut dyn crate::cognition::conversation::PersonaConversation,
-    credit: Option<&'a mut crate::persona::training_producer::TurnCreditCapture>,
+    credit: Option<&'a mut dyn TurnCredit>,
 ) -> impl std::future::Future<Output = SettleOutcome> + Send + 'a {
     // Return the shared driver directly: an async forwarding wrapper needlessly
     // nests its state in every live/eval caller and inflates future layout depth.
     drive_with_input(cycle, burst, max_acts, framing, Some(conversation), credit)
 }
 
-pub(super) async fn drive_with_input(
+pub(super) async fn drive_with_input<'c>(
     cycle: &WorkspaceCycle,
     burst: Burst,
     max_acts: usize,
     framing: TurnFraming,
     conversation: Option<&mut dyn crate::cognition::conversation::PersonaConversation>,
-    mut credit: Option<&mut crate::persona::training_producer::TurnCreditCapture>,
+    mut credit: Option<&mut (dyn TurnCredit + 'c)>,
 ) -> SettleOutcome {
     let turn_room = burst.room.as_uuid();
     let settled = settle_to_outcome(
@@ -260,10 +260,10 @@ pub(super) async fn drive_with_input(
     // (build step 2) it is not written at all.
     let private = cycle
         .acting()
-        .is_some_and(|body| crate::persona::mind_room::is_private_room(body.persona_id, turn_room));
+        .is_some_and(|body| crate::cognition::mind_room::is_private_room(body.persona_id, turn_room));
     if private {
         if let Some(body) = cycle.acting() {
-            crate::persona::mind_room::note_withheld(body.persona_id, "experience_and_credit");
+            crate::cognition::mind_room::note_withheld(body.persona_id, "experience_and_credit");
         }
         return settled;
     }

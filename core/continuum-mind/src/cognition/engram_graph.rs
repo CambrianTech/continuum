@@ -19,7 +19,7 @@
 //! ## Sidecar pattern
 //!
 //! This module is intentionally **separate** from
-//! [`crate::persona::engram`], which ships the admission membrane
+//! [`crate::cognition::engram`], which ships the admission membrane
 //! (provenance, trust, content references). The admission membrane is
 //! about *where engrams come from*; this graph is about *how engrams
 //! connect*. Keeping them separate means admission consumers don't
@@ -144,7 +144,7 @@ pub struct EngramEdge {
 /// ## What this is NOT
 ///
 /// - **Not** the engram store. The actual `Engram` content lives in
-///   the admission membrane (`crate::persona::engram`); the graph
+///   the admission membrane (`crate::cognition::engram`); the graph
 ///   only carries ids and connectivity.
 /// - **Not** the spreading algorithm. Algorithm 3 (activation
 ///   spreading) traversal lands in L0-3a.5 — it reads this graph but

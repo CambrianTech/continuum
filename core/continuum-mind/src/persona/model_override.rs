@@ -42,7 +42,7 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
-use crate::persona::home::PersonaHome;
+use crate::cognition::home::PersonaHome;
 
 /// The persisted per-persona base-model assignment: which model, set when, by whom.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

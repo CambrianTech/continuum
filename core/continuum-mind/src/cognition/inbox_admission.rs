@@ -305,7 +305,7 @@ impl InboxAdmissionRunner<HeuristicIsMemorable> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::persona::engram::AdmissionDropReason;
+    use crate::cognition::engram::AdmissionDropReason;
     use std::collections::HashMap;
     use std::sync::Mutex;
     use uuid::Uuid;

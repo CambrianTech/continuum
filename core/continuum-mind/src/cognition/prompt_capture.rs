@@ -119,8 +119,8 @@ impl CaptureLease {
         // A turn in her mind room is hers (PRIVACY-OF-THOUGHT.md §4, sink 2): the lease is
         // inert, so neither `finish` nor `Drop` writes, and every dataset built from
         // captures (sink 3) has nothing to read.
-        let token = if crate::persona::mind_room::is_private_room(call.persona_id, call.room_id) {
-            crate::persona::mind_room::note_withheld(call.persona_id, "prompt_capture");
+        let token = if crate::cognition::mind_room::is_private_room(call.persona_id, call.room_id) {
+            crate::cognition::mind_room::note_withheld(call.persona_id, "prompt_capture");
             None
         } else {
             sink.submitted(call, request)
@@ -727,7 +727,7 @@ mod tests {
         };
         // Opening the store may write its own index; the turn must add nothing beyond it.
         let opened = bytes(dir.path());
-        let mind = crate::persona::mind_room::mind_room_id(persona);
+        let mind = crate::cognition::mind_room::mind_room_id(persona);
         let mut finished = CaptureLease::start(Arc::clone(&sink), &call(mind), &request);
         assert_eq!(finished.finish(None, Some("done")), None, "an inert lease names no entry");
         drop(CaptureLease::start(Arc::clone(&sink), &call(mind), &request));
@@ -806,7 +806,7 @@ mod tests {
         assert!(with_newline.wire.is_some() && with_newline.wire_omitted.is_none(), "JSON plus newline fits");
 
         let private_id = format!("wire-{}", Uuid::new_v4());
-        let mind = crate::persona::mind_room::mind_room_id(persona);
+        let mind = crate::cognition::mind_room::mind_room_id(persona);
         drop(CaptureLease::start(Arc::clone(&sink), &call(mind, &private_id), &request));
         let mut thought = crate::inference::wire_tap::WireTap::open(Some(&private_id));
         thought.push("a private token");

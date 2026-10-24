@@ -276,7 +276,7 @@ pub(super) async fn run_turn_cycle(
                     LIVE_MAX_ACTS,
                     framing,
                     conversation,
-                    credit_capture.as_mut(),
+                    credit_capture.as_mut().map(|c| c as &mut dyn crate::cognition::act_observe::TurnCredit),
                 )
                 .await;
                 // The lived-turn experience write (#319) is NOT here: it lives inside

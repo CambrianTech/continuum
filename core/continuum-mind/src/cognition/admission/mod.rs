@@ -1,7 +1,7 @@
 //! Admission Gate + IsMemorable Recipe (continuum#1121 PR-2)
 //!
 //! Layers the admission policy machinery over the storage-shape types
-//! shipped in PR-1 (`persona::engram`). Splits cleanly into two responsibilities:
+//! shipped in PR-1 (`cognition::engram`). Splits cleanly into two responsibilities:
 //!
 //! - **Gate (structural)** — `AdmissionGate::admit()` runs the prereqs that
 //!   are independent of any specific persona's policy: envelope structure
@@ -41,8 +41,8 @@
 //!   replace.
 //!
 //! Pairs with:
-//! - [`persona::engram`] — storage-shape types this module operates over.
-//! - [`persona::trace`] — `SEAM_ADMISSION` constant + `CognitionTrace`.
+//! - [`cognition::engram`] — storage-shape types this module operates over.
+//! - [`cognition::trace`] — `SEAM_ADMISSION` constant + `CognitionTrace`.
 //! - `docs/grid/COGNITIVE-IMMUNE-MODEL.md` — defense posture this gate
 //!   participates in (apoptosis-cheaper-than-corruption, B-cell anergy,
 //!   forensic-not-destructive).
@@ -68,7 +68,7 @@ use ts_rs::TS;
 use uuid::Uuid;
 
 // Re-exported pub so submodules (`recipes`) can import via `super::`
-// without reaching across to `crate::persona::engram` for every type.
+// without reaching across to `crate::cognition::engram` for every type.
 use super::engram::Engram;
 pub use super::engram::{AdmissionDecision, AdmissionDropReason, AdmissionError, AircMessageRef, EngramKind, EngramOrigin, TrustState};
 use super::trace::{CognitionTrace, SEAM_ADMISSION};

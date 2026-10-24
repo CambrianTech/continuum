@@ -8,7 +8,7 @@
 //! After: 1 DashMap<Uuid, PersonaCognition> — 1 lock, contiguous memory,
 //! atomic access to engine + rate_limiter + sleep_state + adapters + genome.
 
-use crate::persona::admission_state::AdmissionState;
+use crate::cognition::admission_state::AdmissionState;
 use crate::persona::cognition::PersonaCognitionEngine;
 use crate::persona::domain_classifier::DomainClassifier;
 use crate::persona::engram_source::EngramSource;
@@ -25,7 +25,7 @@ use crate::cognition::rag_budget::{
 use crate::persona::rag_capture::{
     NoopRagCaptureSink, RagCaptureEvent, RagCaptureSink, RecordingRagSource,
 };
-use crate::persona::recall_metadata::RecallMetadataRegistry;
+use crate::cognition::recall_metadata::RecallMetadataRegistry;
 use crate::rag::RagEngine;
 use std::sync::Arc;
 use uuid::Uuid;
@@ -466,7 +466,7 @@ impl RagSource for ArcRagSource {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::persona::engram::{ChatMessageRef, Engram, EngramKind, EngramOrigin, TrustState};
+    use crate::cognition::engram::{ChatMessageRef, Engram, EngramKind, EngramOrigin, TrustState};
     use crate::cognition::rag_budget::{RagContext, RagSource, ResolutionPreference};
     use crate::persona::rag_capture::{
         InMemoryRagCaptureSink, RagCaptureEvent, RagCaptureSink,
@@ -814,7 +814,7 @@ mod tests {
         let mut pc =
             PersonaCognition::with_capture_sink(id, "Kimi".into(), Arc::new(RagEngine::new()), 200.0, sink_dyn);
         pc.set_airc_source(Arc::new(CannedSource { id: "airc", tokens_per_item: 50, items_offered: 2, share: None }));
-        let mind = crate::persona::mind_room::mind_room_id(id);
+        let mind = crate::cognition::mind_room::mind_room_id(id);
         let _ = pc.compose_for_turn(&lcd_profile(), 1_000_000, Some(mind)).await;
         assert!(sink.is_empty(), "her mind room: no capture events, got {}", sink.len());
         let _ = pc.compose_for_turn(&lcd_profile(), 1_000_000, Some(Uuid::new_v4())).await;

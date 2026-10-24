@@ -136,7 +136,7 @@ impl AdmissionState {
                 // them explicitly by `thought:<lens>` recall-key (`recall_by_keyword`, a
                 // separate path). Dream-DISTILLED insight is EngramKind::Semantic
                 // (durable) — untouched. Sibling of the Tool-receipt gate above (#166).
-                if e.kind == crate::persona::engram::EngramKind::SelfReflection
+                if e.kind == crate::cognition::engram::EngramKind::SelfReflection
                     && now_ms.saturating_sub(e.admitted_at_ms) > INNER_SPEECH_RECALL_TTL_MS
                 {
                     return None;

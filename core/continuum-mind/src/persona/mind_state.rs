@@ -18,7 +18,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use super::attention::{AttentionDial, Continuation};
+use crate::cognition::attention::{AttentionDial, Continuation};
 
 pub const FILE_NAME: &str = "mind-state.json";
 const VERSION: u32 = 1;

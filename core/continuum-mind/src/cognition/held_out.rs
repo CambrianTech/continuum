@@ -129,7 +129,7 @@ impl Trained {
 /// The tasks a training job's examples worked. Only an explicit record counts: a task field,
 /// or an unlinked producer's `source` with no card. Anything else is unknown.
 pub fn trained(examples: &[TrainingExample]) -> Trained {
-    use crate::persona::training_producer::UNLINKED_SOURCES;
+    use crate::cognition::training_sources::UNLINKED_SOURCES;
     let mut out = Trained {
         tasks: BTreeSet::new(),
         reviewed: BTreeSet::new(),
@@ -286,7 +286,7 @@ mod tests {
     #[test]
     fn only_an_explicit_record_proves_an_example_clean() {
         let set = [task("t1"), task("t2")];
-        let lesson = crate::persona::training_producer::RECEIVED_LESSON_SOURCE;
+        let lesson = crate::cognition::training_sources::RECEIVED_LESSON_SOURCE;
         let clean = vec![
             example(json!({"task": "notATask"})),
             example(json!({"source": lesson})),

@@ -1,9 +1,9 @@
 #![cfg(test)]
     use super::*;
 
-    use crate::persona::engram::{ChatMessageRef, Engram, EngramKind, EngramOrigin, TrustState};
+    use crate::cognition::engram::{ChatMessageRef, Engram, EngramKind, EngramOrigin, TrustState};
 
-    use crate::persona::recall_metadata::{RecallMetadata, RecallMetadataRegistry};
+    use crate::cognition::recall_metadata::{RecallMetadata, RecallMetadataRegistry};
 
     // ---- The mind in action: real hippocampus → workspace → informed decision ----
     use super::super::workspace::{Decision, NoopWorkspaceCaptureSink, WorkspaceCaptureSink, WorkspaceCycle, WorkspaceTrace};

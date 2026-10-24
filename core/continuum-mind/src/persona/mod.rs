@@ -11,10 +11,6 @@
 //!   - channel_queue: Generic per-domain queue container
 //!   - channel_registry: Domain-to-queue routing + service_cycle()
 
-pub mod admission;
-pub mod admission_persistence;
-pub mod admission_state;
-pub mod attention;
 pub mod awareness;
 pub mod awareness_source;
 pub mod airc_admission;
@@ -51,28 +47,23 @@ pub mod cognition_extensions;
 pub mod cognition_io;
 pub mod cognition_pulse;
 pub mod substrate_governor;
-pub mod decay_tick;
 pub mod domain_classifier;
 pub mod durable_history;
-pub mod engram;
-pub mod engram_graph;
 pub mod engram_source;
 pub mod evaluator;
 pub mod genome_paging;
-pub mod home;
 pub mod host;
 pub mod hw_tier_descriptor;
 pub mod identity_provider;
 pub mod inbox;
-pub mod inbox_admission;
 pub mod inference_profile;
 pub mod instance_manager;
 pub mod loop_dedup;
 pub mod media_perception_source;
 pub mod media_policy;
 pub mod message_cache;
-pub mod mind_room;
 pub mod mind_state;
+pub mod mind_store;
 pub mod perception_feed;
 pub mod perception_region;
 pub mod model_override;
@@ -86,7 +77,6 @@ pub mod profile_builder;
 pub mod viewstate_rag;
 pub mod rag_capture;
 pub mod rag_inspect;
-pub mod recall_metadata;
 pub mod recorder;
 pub mod response;
 pub mod resume_or_mint_provider;
@@ -120,7 +110,6 @@ pub mod service_module;
 pub mod spawner;
 pub mod spawner_module;
 pub mod supervisor;
-pub mod trace;
 pub mod training_producer;
 pub mod turn_context;
 pub mod turn_frame;
@@ -128,11 +117,6 @@ pub mod unified;
 pub mod wall_source;
 pub mod workspace_map_source;
 
-pub use admission::{
-    build_engram_from_candidate, AdmissionCandidate, AdmissionConfig, AdmissionContext,
-    AdmissionGate, HeuristicIsMemorable, IsMemorable, SeenContentLookup, SeenEventLookup,
-};
-pub use admission_state::{AdmissionState, EngramOriginKind};
 pub use airc_admission::{
     airc_envelope_to_candidate, airc_envelope_to_ref, AircAdmissionConversionError,
     AircAdmissionEnvelope,
@@ -146,10 +130,6 @@ pub use allocator::{
 pub use channel_registry::ChannelRegistry;
 pub use cognition::{CognitionDecision, PersonaCognitionEngine, PriorityFactors, PriorityScore};
 pub use domain_classifier::{DomainClassification, DomainClassifier, QualityFactors, QualityScore};
-pub use engram::{
-    AdmissionDecision, AdmissionDropReason, AdmissionError, AircMessageRef, ChatMessageRef, Engram,
-    EngramKind, EngramOrigin, ToolInvocationRef, TrustState,
-};
 pub use evaluator::{
     analyze_burst, AdequacyResult, BurstEvaluateResult, BurstRespondContext, FullEvaluateRequest,
     FullEvaluateResult, GateDetails, RateLimiterState, RecentResponse, SleepMode, SleepState,
@@ -159,10 +139,6 @@ pub use genome_paging::{
     GenomePagingState,
 };
 pub use inbox::{PersonaInbox, PersonaInboxFrame, PersonaInboxFrameMetrics};
-pub use inbox_admission::{
-    content_hash_sha256, inbox_message_to_candidate, inbox_message_to_origin, InboxAdmissionRunner,
-    TrustMapping,
-};
 pub use message_cache::{
     CachedMessage, ContentDedupResult, ContentDeduplicator, EchoChamberResult, RecentMessageCache,
     SenderCategory,

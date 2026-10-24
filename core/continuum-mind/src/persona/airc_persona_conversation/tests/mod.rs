@@ -257,7 +257,7 @@
             airc.clone(), room, PersonaIdentitySource::FreshlyMinted,
         ));
         let conversation = AircPersonaConversation::new(runtime.clone());
-        let mind = crate::persona::mind_room::mind_room_id(airc.peer_id().as_uuid());
+        let mind = crate::cognition::mind_room::mind_room_id(airc.peer_id().as_uuid());
         conversation.say_in(mind, "a private word").await.expect("said to herself, never published");
         conversation.say_in(room.as_uuid(), "an open word").await.expect("an open room still publishes");
     }

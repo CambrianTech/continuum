@@ -53,7 +53,7 @@ use ts_rs::TS;
 
 use crate::identity::citizen_path::citizen_home_path;
 use crate::identity::IdentityKind;
-use crate::persona::home::PersonaHome;
+use crate::cognition::home::PersonaHome;
 use crate::persona::PersonaModelOverride;
 use crate::runtime::{CommandExecutor, LateBound};
 use crate::sdk_codegen::CommandError;

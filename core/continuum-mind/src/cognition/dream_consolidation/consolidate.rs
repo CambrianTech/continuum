@@ -92,7 +92,7 @@ impl DreamConsolidationRegion {
         // stale memory fades even when there's nothing new to dream about. Idempotent + cheap
         // (`last_decayed_ms` guards double-decay); NOT stripping memory — salience decays, genuine
         // rehearsed knowledge (high access_count) stays strong.
-        let decay = crate::persona::decay_tick::apply_decay_sweep(
+        let decay = crate::cognition::decay_tick::apply_decay_sweep(
             reflector.admission.recall_metadata(),
             continuum_base::time::EpochMs::now().millis(),
         );

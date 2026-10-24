@@ -719,8 +719,8 @@ fn occupancy_of(shape: TurnShape, prefill_tps: f64, decode_tps: f64) -> Option<s
 /// Append one request's exact message list to `<dir>/<persona>.wire.jsonl` (the wire capture,
 /// sink 4 of PRIVACY-OF-THOUGHT.md). A turn in her mind room writes nothing.
 fn append_wire_capture(dir: &std::path::Path, persona_id: Uuid, persona_name: &str, room_id: Uuid, request: &TextGenerationRequest) {
-    if crate::persona::mind_room::is_private_room(persona_id, room_id) {
-        crate::persona::mind_room::note_withheld(persona_id, "wire_capture");
+    if crate::cognition::mind_room::is_private_room(persona_id, room_id) {
+        crate::cognition::mind_room::note_withheld(persona_id, "wire_capture");
         return;
     }
     let row = serde_json::json!({

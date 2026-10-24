@@ -19,7 +19,8 @@ use std::sync::Arc;
 use uuid::Uuid;
 
 use crate::modules::cognition::CognitionState;
-use crate::persona::{Engram, EngramOriginKind};
+use crate::cognition::engram::Engram;
+use crate::cognition::admission_state::EngramOriginKind;
 use crate::sdk_codegen::CommandError;
 
 fn default_kind() -> String {

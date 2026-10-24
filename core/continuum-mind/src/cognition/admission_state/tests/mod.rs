@@ -1,11 +1,11 @@
 #![cfg(test)]
 
     use super::*;
-    use crate::persona::admission::IsMemorable as _;
-    use crate::persona::engram::{
+    use crate::cognition::admission::IsMemorable as _;
+    use crate::cognition::engram::{
         AdmissionDropReason, AircMessageRef, ChatMessageRef, EngramKind, TrustState,
     };
-    use crate::persona::inbox_admission::content_hash_sha256;
+    use crate::cognition::inbox_admission::content_hash_sha256;
     use crate::cognition::conversation::types::SenderType;
 
     pub(super) fn synthetic_human_message(content: &str) -> InboxMessage {
@@ -30,7 +30,7 @@
     #[test]
     pub(super) fn admit_records_engram_and_dedup_blocks_repeat() {
         let state = AdmissionState::new(Arc::new(
-            crate::persona::recall_metadata::RecallMetadataRegistry::new(),
+            crate::cognition::recall_metadata::RecallMetadataRegistry::new(),
         ));
         let mut trace = CognitionTrace::new();
         let content = "this is a non-trivial design observation worth storing";
@@ -62,7 +62,7 @@
     #[test]
     pub(super) fn dropped_message_records_no_side_effect() {
         let state = AdmissionState::new(Arc::new(
-            crate::persona::recall_metadata::RecallMetadataRegistry::new(),
+            crate::cognition::recall_metadata::RecallMetadataRegistry::new(),
         ));
         let mut trace = CognitionTrace::new();
         // Short content → drops with NotMemorable.
@@ -85,7 +85,7 @@
     #[test]
     pub(super) fn admitted_engrams_accumulate_in_order_and_are_retrievable() {
         let state = AdmissionState::new(Arc::new(
-            crate::persona::recall_metadata::RecallMetadataRegistry::new(),
+            crate::cognition::recall_metadata::RecallMetadataRegistry::new(),
         ));
         let mut trace = CognitionTrace::new();
         let messages = [
@@ -115,7 +115,7 @@
     #[test]
     pub(super) fn admit_emits_one_seam_per_call_through_state_wrapper() {
         let state = AdmissionState::new(Arc::new(
-            crate::persona::recall_metadata::RecallMetadataRegistry::new(),
+            crate::cognition::recall_metadata::RecallMetadataRegistry::new(),
         ));
         let mut trace = CognitionTrace::new();
         // Three admits with three different outcomes:
@@ -136,7 +136,7 @@
     #[test]
     pub(super) fn runner_accessor_exposes_default_v1_config() {
         let state = AdmissionState::new(Arc::new(
-            crate::persona::recall_metadata::RecallMetadataRegistry::new(),
+            crate::cognition::recall_metadata::RecallMetadataRegistry::new(),
         ));
         assert_eq!(state.runner().recipe().id(), "heuristic.v1");
     }
@@ -219,7 +219,7 @@
     #[test]
     pub(super) fn quarantine_chat_origin_records_no_side_effects() {
         let state = AdmissionState::new(Arc::new(
-            crate::persona::recall_metadata::RecallMetadataRegistry::new(),
+            crate::cognition::recall_metadata::RecallMetadataRegistry::new(),
         ));
         let engram = synthetic_engram_with_chat_origin("borderline observation");
         let content_hash = match &engram.origin {
@@ -252,7 +252,7 @@
     #[test]
     pub(super) fn quarantine_airc_origin_records_event_id_only_not_content_hash() {
         let state = AdmissionState::new(Arc::new(
-            crate::persona::recall_metadata::RecallMetadataRegistry::new(),
+            crate::cognition::recall_metadata::RecallMetadataRegistry::new(),
         ));
         let event_id = "airc-msg-quarantine-1";
         let engram =
@@ -308,7 +308,7 @@
     #[test]
     pub(super) fn recall_recent_returns_newest_first() {
         let state = AdmissionState::new(Arc::new(
-            crate::persona::recall_metadata::RecallMetadataRegistry::new(),
+            crate::cognition::recall_metadata::RecallMetadataRegistry::new(),
         ));
         let ids = admit_n_distinct(
             &state,
@@ -335,7 +335,7 @@
     #[test]
     pub(super) fn forget_context_wipes_only_the_tagged_episode() {
         let state = AdmissionState::new(Arc::new(
-            crate::persona::recall_metadata::RecallMetadataRegistry::new(),
+            crate::cognition::recall_metadata::RecallMetadataRegistry::new(),
         ));
         admit_n_distinct(
             &state,
@@ -369,7 +369,7 @@
     #[test]
     pub(super) fn recall_recent_respects_limit_above_and_below_count() {
         let state = AdmissionState::new(Arc::new(
-            crate::persona::recall_metadata::RecallMetadataRegistry::new(),
+            crate::cognition::recall_metadata::RecallMetadataRegistry::new(),
         ));
         admit_n_distinct(
             &state,
@@ -398,7 +398,7 @@
     #[test]
     pub(super) fn recall_candidates_keeps_newest_when_salience_ties() {
         let state = AdmissionState::new(Arc::new(
-            crate::persona::recall_metadata::RecallMetadataRegistry::new(),
+            crate::cognition::recall_metadata::RecallMetadataRegistry::new(),
         ));
         // Seven engrams, all at the default salience (a tie). The freshest is ids[6].
         let ids = admit_n_distinct(
@@ -437,16 +437,16 @@
     #[test]
     pub(super) fn recall_candidates_excludes_tool_origin_receipts() {
         let state = AdmissionState::new(Arc::new(
-            crate::persona::recall_metadata::RecallMetadataRegistry::new(),
+            crate::cognition::recall_metadata::RecallMetadataRegistry::new(),
         ));
         let knowledge = admit_n_distinct(&state, &["the ticket asks for a wordstats CLI here"]);
-        let receipt = crate::persona::engram::Engram {
+        let receipt = crate::cognition::engram::Engram {
             id: Uuid::new_v4(),
             context_id: None,
-            kind: crate::persona::engram::EngramKind::Episodic,
+            kind: crate::cognition::engram::EngramKind::Episodic,
             content: "code/list(path=src) → ok".to_string(),
-            origin: crate::persona::engram::EngramOrigin::Tool(
-                crate::persona::engram::ToolInvocationRef {
+            origin: crate::cognition::engram::EngramOrigin::Tool(
+                crate::cognition::engram::ToolInvocationRef {
                     invocation_id: Uuid::new_v4(),
                     tool_name: "code/list".to_string(),
                     invoked_at_ms: 1000,
@@ -456,7 +456,7 @@
             ),
             recall_keys: Vec::new(),
             admitted_at_ms: 2000,
-            trust_state_at_admission: crate::persona::engram::TrustState::SelfTrust,
+            trust_state_at_admission: crate::cognition::engram::TrustState::SelfTrust,
             admission_trace_id: None,
         };
         let receipt_id = receipt.id;
@@ -485,7 +485,7 @@
     #[test]
     pub(super) fn recall_recency_bounds_wanderer_inner_speech_but_keeps_distilled() {
         let state = AdmissionState::new(Arc::new(
-            crate::persona::recall_metadata::RecallMetadataRegistry::new(),
+            crate::cognition::recall_metadata::RecallMetadataRegistry::new(),
         ));
         let now = 100 * 60 * 1000; // 100 min in
         let inner = |content: &str, admitted_at_ms: u64| Engram {
@@ -558,7 +558,7 @@
     #[test]
     pub(super) fn admit_reflection_stores_self_produced_fact() {
         let state = AdmissionState::new(Arc::new(
-            crate::persona::recall_metadata::RecallMetadataRegistry::new(),
+            crate::cognition::recall_metadata::RecallMetadataRegistry::new(),
         ));
         let fact = semantic_reflection("Rust is the core; Node is the shell", Uuid::new_v4());
 
@@ -579,15 +579,15 @@
     #[test]
     pub(super) fn a_memory_from_her_mind_room_is_not_written_to_her_engrams() {
         let state = AdmissionState::new(Arc::new(
-            crate::persona::recall_metadata::RecallMetadataRegistry::new(),
+            crate::cognition::recall_metadata::RecallMetadataRegistry::new(),
         ));
         let her = Uuid::new_v4();
         state.set_owner_id(her);
         let mut private = semantic_reflection("a private thought", Uuid::new_v4());
-        private.context_id = Some(crate::persona::mind_room::mind_room_id(her));
+        private.context_id = Some(crate::cognition::mind_room::mind_room_id(her));
         assert!(matches!(
             state.admit_reflection(private).expect("no error"),
-            AdmissionDecision::Drop { reason: crate::persona::engram::AdmissionDropReason::PolicyDeniedAdmission { .. } }
+            AdmissionDecision::Drop { reason: crate::cognition::engram::AdmissionDropReason::PolicyDeniedAdmission { .. } }
         ));
         assert_eq!(state.engram_count(), 0, "her mind room: nothing in her engrams");
         let mut open = semantic_reflection("an open thought", Uuid::new_v4());
@@ -605,7 +605,7 @@
     pub(super) fn redact_scrubs_exam_key_from_memory_keeping_the_experience() {
         use crate::cognition::redaction::{HeldOutAnswerDetector, RedactionClass, RedactionPolicy};
         let state = AdmissionState::new(Arc::new(
-            crate::persona::recall_metadata::RecallMetadataRegistry::new(),
+            crate::cognition::recall_metadata::RecallMetadataRegistry::new(),
         ));
         let mem = semantic_reflection(
             "I was asked which file holds the loop; I answered service_loop.rs and it passed.",
@@ -635,7 +635,7 @@
     pub(super) fn redact_with_noop_policy_changes_nothing() {
         use crate::cognition::redaction::RedactionPolicy;
         let state = AdmissionState::new(Arc::new(
-            crate::persona::recall_metadata::RecallMetadataRegistry::new(),
+            crate::cognition::recall_metadata::RecallMetadataRegistry::new(),
         ));
         let mem = semantic_reflection("plain memory, nothing sensitive", Uuid::new_v4());
         state.admit_reflection(mem).expect("admits");
@@ -678,7 +678,7 @@
         let owner = Uuid::new_v4();
         let other = Uuid::new_v4();
         let state = AdmissionState::new(Arc::new(
-            crate::persona::recall_metadata::RecallMetadataRegistry::new(),
+            crate::cognition::recall_metadata::RecallMetadataRegistry::new(),
         ));
         state.set_owner_id(owner);
 

@@ -35,18 +35,19 @@ use uuid::Uuid;
 
 use crate::ai::adapter::AIProviderAdapter;
 use crate::ai::types::{ChatMessage, TextGenerationRequest};
-use crate::persona::admission_state::AdmissionState;
-use crate::persona::engram::{AdmissionDecision, Engram, EngramKind, EngramOrigin, TrustState};
-use crate::persona::training_producer::reviewed::boundaries::ReviewBoundaryStore;
+use crate::cognition::admission_state::AdmissionState;
+use crate::cognition::engram::{AdmissionDecision, Engram, EngramKind, EngramOrigin, TrustState};
 use crate::runtime::brain_region::{BrainRegion, CadenceHint, ComputeClass, MemoryClass, Orientation, PressureProfile, PressureSignalKind, RegionContext, RegionId, TickOutcome};
 
 mod consolidate;
 mod distiller;
 mod passes;
 mod region;
+mod review_boundary_ledger;
 
 pub use distiller::*;
 pub use region::*;
+pub use review_boundary_ledger::*;
 use passes::*;
 
 #[async_trait]
@@ -172,14 +173,14 @@ fn thought_engram(fact: &DistilledFact, lens: Lens) -> Engram {
 /// Every live mind's hippocampus + adapter are already retained there as the
 /// fork-template handles — the dream resolves them per tick, never stores a
 /// parallel persona→adapter map (the wiring contract documented on
-/// [`PersonaReflectionSource`]). Mirrors `impl PersonaChannelReader for
-/// PersonaAircRuntimeRegistry` in channel_digest_region.rs.
+/// [`PersonaReflectionSource`]). Mirrors persona's `impl PersonaChannelReader for
+/// PersonaAircRuntimeRegistry`.
 impl PersonaReflectionSource for crate::cognition::persona_workspace::PersonaWorkspaceRegistry {
     fn review_boundary_store(
         &self,
         persona_id: Uuid,
-    ) -> Result<Option<ReviewBoundaryStore>, continuum_client::ClientError> {
-        ReviewBoundaryStore::resident(persona_id).map(Some)
+    ) -> Result<Option<Arc<dyn ReviewBoundaryLedger>>, continuum_client::ClientError> {
+        crate::cognition::extensions::resident_review_boundaries(persona_id)
     }
     fn live_personas(&self) -> Vec<Uuid> {
         self.roster().into_iter().map(|(id, _)| id).collect()
@@ -205,9 +206,9 @@ pub(crate) mod tests;
 pub mod test_support {
     use super::*;
     use crate::ai::heuristic_adapter::HeuristicInferenceAdapter;
-    use crate::persona::admission_state::AdmissionState;
-    use crate::persona::engram::{Engram, EngramKind, EngramOrigin, TrustState};
-    use crate::persona::recall_metadata::RecallMetadataRegistry;
+    use crate::cognition::admission_state::AdmissionState;
+    use crate::cognition::engram::{Engram, EngramKind, EngramOrigin, TrustState};
+    use crate::cognition::recall_metadata::RecallMetadataRegistry;
 
     /// Build an episodic engram with a given id, content, and recall keys.
     pub fn episodic(id: Uuid, content: &str, recall_keys: &[&str]) -> Engram {
@@ -233,7 +234,7 @@ pub mod test_support {
         pub persona_id: Uuid,
         pub admission: Arc<AdmissionState>,
         pub adapter: Arc<dyn AIProviderAdapter>,
-        pub boundary_store: Option<ReviewBoundaryStore>,
+        pub boundary_store: Option<Arc<dyn ReviewBoundaryLedger>>,
         pub credit_unavailable: bool,
     }
 
@@ -241,7 +242,7 @@ pub mod test_support {
         fn review_boundary_store(
             &self,
             _persona_id: Uuid,
-        ) -> Result<Option<ReviewBoundaryStore>, continuum_client::ClientError> {
+        ) -> Result<Option<Arc<dyn ReviewBoundaryLedger>>, continuum_client::ClientError> {
             if self.credit_unavailable {
                 return Err(continuum_client::ClientError::Transport(
                     "credit storage unavailable".into(),
@@ -296,7 +297,7 @@ pub mod test_support {
     pub fn region_over_with_store(
         persona_id: Uuid,
         admission: Arc<AdmissionState>,
-        boundary_store: Option<ReviewBoundaryStore>,
+        boundary_store: Option<Arc<dyn ReviewBoundaryLedger>>,
     ) -> DreamConsolidationRegion {
         DreamConsolidationRegion::new(Arc::new(StubReflectionSource {
             persona_id,

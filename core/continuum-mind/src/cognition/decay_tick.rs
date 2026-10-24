@@ -37,7 +37,7 @@
 
 use std::sync::Arc;
 
-use crate::persona::recall_metadata::RecallMetadataRegistry;
+use crate::cognition::recall_metadata::RecallMetadataRegistry;
 
 /// Outcome of one decay sweep across a registry. Per the
 /// [[substrate-is-a-good-citizen-on-the-host]] "observability
@@ -121,7 +121,7 @@ pub fn apply_decay_sweep(registry: &Arc<RecallMetadataRegistry>, now_ms: u64) ->
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::persona::recall_metadata::RecallMetadata;
+    use crate::cognition::recall_metadata::RecallMetadata;
     use uuid::Uuid;
 
     #[test]

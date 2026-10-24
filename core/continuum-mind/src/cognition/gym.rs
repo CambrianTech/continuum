@@ -450,7 +450,7 @@ const TRAIT_GYMS: &[(&str, &str)] = &[
     // that must end in silence and real asks that must be answered — so a gene that
     // learned to pass everything fails here and is never adopted.
     (
-        crate::persona::training_producer::SPEECH_DISCIPLINE_TRAIT,
+        crate::cognition::training_sources::SPEECH_DISCIPLINE_TRAIT,
         "docs/genome/speech-discipline.jsonl",
     ),
 ];

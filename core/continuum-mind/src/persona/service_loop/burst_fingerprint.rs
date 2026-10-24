@@ -105,12 +105,12 @@ pub(super) fn spawn_token_forwarder(
         sender_id.as_deref().and_then(|s| Uuid::parse_str(s).ok()),
         room_id.as_deref().and_then(|r| Uuid::parse_str(r).ok()),
     ) {
-        (Some(sender), Some(room)) => crate::persona::mind_room::is_private_room(sender, room),
+        (Some(sender), Some(room)) => crate::cognition::mind_room::is_private_room(sender, room),
         _ => false,
     };
     let (citizen, room_id, sender_id) = if private {
         if let Some(sender) = sender_id.as_deref().and_then(|s| Uuid::parse_str(s).ok()) {
-            crate::persona::mind_room::note_withheld(sender, "token_stream");
+            crate::cognition::mind_room::note_withheld(sender, "token_stream");
         }
         (None, None, None)
     } else {

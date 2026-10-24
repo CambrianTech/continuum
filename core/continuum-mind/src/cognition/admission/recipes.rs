@@ -145,7 +145,7 @@ mod tests {
         SeenContentLookup, SeenEventLookup, TrustState,
     };
     use super::*;
-    use crate::persona::trace::CognitionTrace;
+    use crate::cognition::trace::CognitionTrace;
     use std::collections::HashMap;
     use std::sync::Mutex;
     use uuid::Uuid;

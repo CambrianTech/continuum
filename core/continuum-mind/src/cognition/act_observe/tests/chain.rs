@@ -51,7 +51,7 @@ async fn a_settle_chain_links_each_act_caused_by_its_predecessor() {
         edges
             .iter()
             .any(|e| e.target == first
-                && e.kind == crate::persona::engram_graph::EdgeKind::CausedBy),
+                && e.kind == crate::cognition::engram_graph::EdgeKind::CausedBy),
         "the second act must carry a CausedBy edge to its predecessor — \
          the `because` clause as structure, not prose; got {edges:?}"
     );
@@ -95,7 +95,7 @@ async fn a_chain_rooted_in_its_trigger_links_the_first_act_to_what_caused_the_tu
     let edges = adm.engram_neighbors(&first);
     assert!(
         edges.iter().any(|e| e.target == trigger
-            && e.kind == crate::persona::engram_graph::EdgeKind::CausedBy),
+            && e.kind == crate::cognition::engram_graph::EdgeKind::CausedBy),
         "the FIRST act must chain to the trigger that caused the turn — without \
          this edge there is no path from a work card to the acts done for it; \
          got {edges:?}"

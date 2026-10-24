@@ -16,7 +16,7 @@ use crate::genome::training_outcome::SubmitOutcome;
 use crate::genome::fine_tuning::{TrainingDataset, TrainingSource};
 use crate::identity::PersonaRef;
 use crate::modules::dataset::{CandidateReservation, DatasetCandidate, DatasetService};
-use crate::persona::inbox_admission::content_hash_sha256;
+use crate::cognition::inbox_admission::content_hash_sha256;
 use crate::runtime::InProcessTransport;
 use crate::sdk_codegen::{CommandError, Ctx};
 

@@ -43,8 +43,8 @@ use dashmap::DashMap;
 use uuid::Uuid;
 
 use crate::orm::{OrmStore, OrmStoreError};
-use crate::persona::engram::Engram;
-use crate::persona::recall_metadata::{EngramRecallMetadata, RecallMetadata};
+use crate::cognition::engram::Engram;
+use crate::cognition::recall_metadata::{EngramRecallMetadata, RecallMetadata};
 
 /// Adapter-first persistence rail. Impls choose synchronously /
 /// fire-and-forget / batched / no-op.
@@ -437,7 +437,7 @@ impl OrmLoader {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::persona::engram::{AircMessageRef, EngramKind, EngramOrigin, TrustState};
+    use crate::cognition::engram::{AircMessageRef, EngramKind, EngramOrigin, TrustState};
 
     fn sample_engram(content: &str) -> Engram {
         Engram {
@@ -532,8 +532,8 @@ mod tests {
         use crate::orm::adapter::StorageAdapter;
         use crate::orm::sqlite::SqliteAdapter;
         use crate::orm::OrmStore;
-        use crate::persona::admission_state::AdmissionState;
-        use crate::persona::recall_metadata::RecallMetadataRegistry;
+        use crate::cognition::admission_state::AdmissionState;
+        use crate::cognition::recall_metadata::RecallMetadataRegistry;
         use crate::cognition::conversation::types::InboxMessage;
 
         // Set up SQLite + OrmStores + the production sink + loader.
@@ -584,11 +584,11 @@ mod tests {
             let d1 = state.admit(&m1, None).expect("admit m1");
             let d2 = state.admit(&m2, None).expect("admit m2");
             let id1 = match d1 {
-                crate::persona::engram::AdmissionDecision::Admit { engram, .. } => engram.id,
+                crate::cognition::engram::AdmissionDecision::Admit { engram, .. } => engram.id,
                 other => panic!("expected Admit got {other:?}"),
             };
             let id2 = match d2 {
-                crate::persona::engram::AdmissionDecision::Admit { engram, .. } => engram.id,
+                crate::cognition::engram::AdmissionDecision::Admit { engram, .. } => engram.id,
                 other => panic!("expected Admit got {other:?}"),
             };
             vec![id1, id2]

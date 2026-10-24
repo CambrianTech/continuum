@@ -24,7 +24,7 @@ pub trait PersonaReflectionSource: Send + Sync {
     fn review_boundary_store(
         &self,
         _persona_id: Uuid,
-    ) -> Result<Option<ReviewBoundaryStore>, continuum_client::ClientError> {
+    ) -> Result<Option<Arc<dyn ReviewBoundaryLedger>>, continuum_client::ClientError> {
         Ok(None)
     }
 }

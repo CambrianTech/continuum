@@ -25,7 +25,7 @@ use crate::cognition::tool_executor::ToolExecutor;
 use crate::cognition::tool_executor::ToolOutcome;
 use crate::ai::types::ToolCall;
 use uuid::Uuid;
-use crate::persona::admission_state::AdmissionState;
+use crate::cognition::admission_state::AdmissionState;
 use async_trait::async_trait;
 use std::sync::Arc;
 use std::sync::Mutex;

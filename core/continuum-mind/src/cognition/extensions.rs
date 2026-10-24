@@ -252,3 +252,29 @@ pub fn pinned_workspace_map(persona: Uuid, root: &Path) -> Option<Arc<dyn crate:
         }
     }
 }
+
+// ─── The dream's review-boundary ledger ──────────────────────────────────────────────────
+
+/// The resident's durable review-boundary ledger (persona's training producer owns its rows).
+pub type ResidentReviewBoundaries =
+    fn(persona: Uuid) -> Result<Arc<dyn crate::cognition::dream_consolidation::ReviewBoundaryLedger>, continuum_client::ClientError>;
+
+static RESIDENT_REVIEW_BOUNDARIES: RwLock<Option<ResidentReviewBoundaries>> = RwLock::new(None);
+
+pub fn install_resident_review_boundaries(ledger: ResidentReviewBoundaries) {
+    *RESIDENT_REVIEW_BOUNDARIES.write() = Some(ledger);
+}
+
+/// Empty slot: probed, and `Ok(None)`: the resident has no durable credit store this tick
+/// (the nonpersistent answer), so the dream consolidates without boundary recovery.
+pub fn resident_review_boundaries(
+    persona: Uuid,
+) -> Result<Option<Arc<dyn crate::cognition::dream_consolidation::ReviewBoundaryLedger>>, continuum_client::ClientError> {
+    match *RESIDENT_REVIEW_BOUNDARIES.read() {
+        Some(ledger) => ledger(persona).map(Some),
+        None => {
+            missing("resident_review_boundaries");
+            Ok(None)
+        }
+    }
+}

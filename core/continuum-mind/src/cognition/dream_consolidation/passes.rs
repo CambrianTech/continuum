@@ -7,7 +7,7 @@ pub(super) async fn finish_review_boundaries(
     persona: Uuid,
     reviews: &[Uuid],
     eligible_clusters: usize,
-    store: Option<&ReviewBoundaryStore>,
+    store: Option<&Arc<dyn ReviewBoundaryLedger>>,
 ) {
     if let Some(store) = store {
         if let error @ (Ok(Err(_)) | Err(_)) = tokio::time::timeout(

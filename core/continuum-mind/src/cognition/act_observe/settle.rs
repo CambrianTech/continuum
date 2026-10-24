@@ -19,6 +19,8 @@ use super::types::{SettleOutcome, SettleStep};
 use crate::inference::turn_bound::TICK_DEADLINE;
 
 mod tick_deadline;
+mod turn_credit;
+pub use turn_credit::TurnCredit;
 pub use tick_deadline::*;
 mod settle_to_outcome;
 use settle_to_outcome::*;

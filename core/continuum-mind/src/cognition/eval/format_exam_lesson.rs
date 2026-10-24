@@ -43,7 +43,7 @@ pub(crate) struct LessonSink {
     pub(super) persona_uuid: uuid::Uuid,
     pub(super) room: uuid::Uuid,
     pub(super) peer_dir: std::path::PathBuf,
-    pub(super) admission: std::sync::Arc<crate::persona::admission_state::AdmissionState>,
+    pub(super) admission: std::sync::Arc<crate::cognition::admission_state::AdmissionState>,
     pub(super) admitted: std::sync::atomic::AtomicUsize,
 }
 
@@ -94,22 +94,22 @@ impl LessonSink {
             return;
         }
         let (lesson, _report) = self.policy.redact(&format_exam_lesson(task, result));
-        let engram = crate::persona::engram::Engram {
+        let engram = crate::cognition::engram::Engram {
             id: uuid::Uuid::new_v4(),
             context_id: Some(self.room),
-            kind: crate::persona::engram::EngramKind::Episodic,
+            kind: crate::cognition::engram::EngramKind::Episodic,
             content: lesson,
-            origin: crate::persona::engram::EngramOrigin::SelfReflection {
+            origin: crate::cognition::engram::EngramOrigin::SelfReflection {
                 parent_engram_id: uuid::Uuid::nil(),
             },
             recall_keys: vec!["exam".to_string(), task.id.clone()],
             admitted_at_ms: EpochMs::now().millis(),
-            trust_state_at_admission: crate::persona::engram::TrustState::SelfTrust,
+            trust_state_at_admission: crate::cognition::engram::TrustState::SelfTrust,
             admission_trace_id: None,
         };
         if matches!(
             self.admission.admit_reflection(engram),
-            Ok(crate::persona::engram::AdmissionDecision::Admit { .. })
+            Ok(crate::cognition::engram::AdmissionDecision::Admit { .. })
         ) {
             self.admitted.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             continuum_base::probe!(
@@ -161,7 +161,7 @@ impl LessonSink {
 /// [`LessonSink`]; this run-shape summary is the one piece that genuinely
 /// needs the whole run.)
 pub(super) fn admit_progress_engram(
-    admission: &crate::persona::admission_state::AdmissionState,
+    admission: &crate::cognition::admission_state::AdmissionState,
     room: uuid::Uuid,
     eval_set: &str,
     results: &[EvalTaskResult],
@@ -170,19 +170,19 @@ pub(super) fn admit_progress_engram(
     let graded = results.len();
     if graded > 0 {
         let rate = solved as f32 / graded as f32;
-        let summary = crate::persona::engram::Engram {
+        let summary = crate::cognition::engram::Engram {
             id: uuid::Uuid::new_v4(),
             context_id: Some(room),
-            kind: crate::persona::engram::EngramKind::Semantic,
+            kind: crate::cognition::engram::EngramKind::Semantic,
             content: format!(
                 "Exam '{eval_set}': I solved {solved} of {graded} tasks (rate {rate:.2})."
             ),
-            origin: crate::persona::engram::EngramOrigin::SelfReflection {
+            origin: crate::cognition::engram::EngramOrigin::SelfReflection {
                 parent_engram_id: uuid::Uuid::nil(),
             },
             recall_keys: vec!["progress".to_string(), eval_set.to_string()],
             admitted_at_ms: EpochMs::now().millis(),
-            trust_state_at_admission: crate::persona::engram::TrustState::SelfTrust,
+            trust_state_at_admission: crate::cognition::engram::TrustState::SelfTrust,
             admission_trace_id: None,
         };
         let _ = admission.admit_reflection(summary); // duplicate-content dedup is the store's job; a repeat exam at the same rate is legitimately the same belief
