@@ -35,7 +35,9 @@ async fn live_window_reductions_bound_actual_requests_and_persist() {
                 BurstTurn::attributed(
                     i % 2 == 1,
                     if i % 2 == 1 { "Reviewer" } else { "Peer" },
-                    format!("history_{i} ").repeat(200),
+                    // Enough to exceed the largest window case (36,865, asserted below) with
+                    // margin; 200 repeats built ~100k tokens per case and ~60 s per run.
+                    format!("history_{i} ").repeat(100),
                     Some(i),
                 )
             })

@@ -505,53 +505,6 @@
         assert!(gap_msg.is_some(), "Should have time gap marker");
     }
 
-    // TODO(prompt-assembly): implement identity reminder injection.
-    // The test below describes a desirable behavior — for small/local
-    // models that tend to "forget" who they are over a long history,
-    // injecting a "Remember: You are <persona_name>" message at
-    // position N-2 (right before the current user message) keeps
-    // identity grounded. Production code in `assemble()` does not yet
-    // do this; only the test asserts the behavior. Marking ignored
-    // until the injection is implemented in `build_messages_*` so
-    // pre-push doesn't fail on an unimplemented spec.
-    #[ignore = "identity reminder injection not yet implemented in assemble()"]
-    #[test]
-    fn test_identity_reminder_position() {
-        let input = PromptAssemblyInput {
-            persona_name: "Helper AI".to_string(),
-            system_prompt: "System.".to_string(),
-            matched_angle: String::new(),
-            history: vec![HistoryMessage {
-                role: "user".to_string(),
-                name: None,
-                content: "msg1".to_string(),
-                timestamp_ms: None,
-            }],
-            current_message: HistoryMessage {
-                role: "user".to_string(),
-                name: None,
-                content: "current".to_string(),
-                timestamp_ms: None,
-            },
-            is_voice: false,
-            social_signals: None,
-            multi_party_strategy: MultiPartyChatStrategy::default(),
-            other_persona_names: vec![],
-            recalled_engrams: vec![],
-            room_roster: vec![],
-            room_doctrine: None,
-        };
-
-        let result = assemble(&input);
-        // Identity reminder should be second-to-last (before current message)
-        let len = result.messages.len();
-        assert!(len >= 3);
-        assert!(result.messages[len - 2]
-            .content
-            .contains("Remember: You are Helper AI"));
-        assert!(result.messages[len - 1].content.contains("current"));
-    }
-
     /// Reproduces the empirical task #75 chat shape: 5 personas + a human
     /// trigger, with the persona under render being one of them. The new
     /// `ProperChatMlSingleParty` strategy must:
