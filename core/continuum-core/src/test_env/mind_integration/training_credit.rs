@@ -303,6 +303,12 @@ impl ExactReview {
 }
 
 pub(super) async fn exact_review() -> (ExactReview, TurnCreditCapture) {
+    exact_review_bound_by(None).await
+}
+
+/// [`exact_review`], with the submission bound the way `work/submit` binds it: explicitly
+/// (`None`), or by recording the generation that issued it (`Some`), resolved at review.
+pub(super) async fn exact_review_bound_by(issuing: Option<&str>) -> (ExactReview, TurnCreditCapture) {
     use airc_work::{WorkEvent, WorkReviewOutcome, WorkSubmissionReview};
     let home = tempfile::tempdir().unwrap();
     let guard = HomeGuard::set(home.path()).await;
@@ -329,7 +335,26 @@ pub(super) async fn exact_review() -> (ExactReview, TurnCreditCapture) {
         artifact: serde_json::from_value(json!({"hash":"b".repeat(64),"size_bytes":12})).unwrap(),
     };
     let data = conn_as(executor.clone(), persona);
-    reviewed::bind_submission(&data, name, persona, selection.clone()).await.unwrap();
+    match issuing {
+        None => {
+            reviewed::bind_submission(&data, name, persona, selection.clone()).await.unwrap();
+        }
+        Some(generation) => {
+            let pending = reviewed::PendingSelection {
+                submission_id: selection.submission_id,
+                room_id: room,
+                card_id: selection.card_id,
+                claim_id: selection.claim_id,
+                instance: selection.instance.clone(),
+                base_sha: selection.base_sha.clone(),
+                artifact: selection.artifact.clone(),
+                issuing_generation: generation.into(),
+            };
+            if let Err(e) = reviewed::record_pending(&data, name, persona, pending).await {
+                panic!("the fixture records its pending binding: {e}");
+            }
+        }
+    }
     let submitted = airc_work::WorkSubmission {
         submission_id: airc_work::SubmissionId::from_uuid(selection.submission_id),
         card_id,
