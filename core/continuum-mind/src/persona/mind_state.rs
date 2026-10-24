@@ -129,7 +129,7 @@ impl MindState {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::persona::salience::Expectation;
+    use crate::cognition::conversation::salience::Expectation;
 
     // what this catches: rule 8. A saved mind comes back as the same mind: cursors,
     // her note and her dial; an absent file is a fresh mind (not a crash); a

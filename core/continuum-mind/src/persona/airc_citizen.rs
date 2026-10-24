@@ -55,7 +55,7 @@
 //! via the identity struct; AircCitizen carries the *live handle*.
 //! Two concerns, two types.
 
-use crate::persona::airc_source::AircTranscriptReader;
+use crate::cognition::conversation::transcript_reader::AircTranscriptReader;
 use airc_lib::{AircError, EventId, FilteredEventStream};
 use async_trait::async_trait;
 use uuid::Uuid;
@@ -147,7 +147,7 @@ pub trait AircCitizen:
 
     /// Publish a text message under the citizen's identity INTO A
     /// SPECIFIC ROOM — normally the room the turn being answered
-    /// arrived in ([`IncomingMessage::room_id`](super::service_loop::IncomingMessage),
+    /// arrived in ([`IncomingMessage::room_id`](crate::cognition::conversation::IncomingMessage),
     /// already carried since A.6).
     ///
     /// Answering is room-targeted for the same reason perception is

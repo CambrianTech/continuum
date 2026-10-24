@@ -195,7 +195,7 @@ async fn publish_as_sender(
         ).await.map(|_| ()).map_err(|e| e.to_string());
     }
     let envelope: crate::routing::airc_realtime::AircRealtimeEnvelope = serde_json::from_value(
-        crate::persona::room_event::chat_transcript_envelope(
+        crate::cognition::conversation::room_event::chat_transcript_envelope(
             message_id,
             &params.transcript_line(),
             EpochMs::now().millis(),

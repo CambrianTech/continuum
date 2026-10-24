@@ -13,7 +13,7 @@ use crate::routing::airc_realtime_wire::{envelope_from_event, is_command_frame, 
 pub struct RoomTurn {
     pub sender: uuid::Uuid,
     pub text: String,
-    pub media: Vec<crate::persona::channel_items::MediaItemRequest>,
+    pub media: Vec<crate::cognition::conversation::channel_items::MediaItemRequest>,
 }
 
 /// A typed work fact in the room, as perception (EVENT-MIND.md §1b, phase 1
@@ -21,10 +21,10 @@ pub struct RoomTurn {
 /// (a PASS on her own card) replicated to her node and her inbound dropped it as
 /// `non_chat_schema`, 519 of 520 events; only chat was perception. A citizen who
 /// cannot perceive her own board cannot be woken by it. The decoder now yields the
-/// board's typed events beside speech; `persona::salience` judges them.
+/// board's typed events beside speech; `cognition::conversation::salience` judges them.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum RoomWork {
-    Reviewed { card_id: uuid::Uuid, outcome: crate::persona::salience::ObservedVerdict, reviewer: uuid::Uuid, review: uuid::Uuid },
+    Reviewed { card_id: uuid::Uuid, outcome: crate::cognition::conversation::salience::ObservedVerdict, reviewer: uuid::Uuid, review: uuid::Uuid },
     StateChanged { card_id: uuid::Uuid, state: airc_work::CardState, by: uuid::Uuid },
     Submitted { card_id: uuid::Uuid, publisher: uuid::Uuid, #[serde(default)] submission: Option<uuid::Uuid> },
     Claimed { card_id: uuid::Uuid, owner: uuid::Uuid, #[serde(default)] claim: Option<uuid::Uuid> },
@@ -57,9 +57,9 @@ pub fn room_work_from_event(event: &TranscriptEvent) -> Result<Option<RoomWork>,
             card_id: r.card_id.as_uuid(),
             review: r.review_id.as_uuid(),
             outcome: match r.outcome {
-                airc_work::WorkReviewOutcome::Passed => crate::persona::salience::ObservedVerdict::Passed,
-                airc_work::WorkReviewOutcome::Failed => crate::persona::salience::ObservedVerdict::Failed,
-                airc_work::WorkReviewOutcome::Unknown => crate::persona::salience::ObservedVerdict::Unknown,
+                airc_work::WorkReviewOutcome::Passed => crate::cognition::conversation::salience::ObservedVerdict::Passed,
+                airc_work::WorkReviewOutcome::Failed => crate::cognition::conversation::salience::ObservedVerdict::Failed,
+                airc_work::WorkReviewOutcome::Unknown => crate::cognition::conversation::salience::ObservedVerdict::Unknown,
             },
             reviewer: r.reviewer.as_uuid(),
         },
@@ -83,7 +83,7 @@ pub fn room_turn_from_event(event: &TranscriptEvent) -> Result<(uuid::Uuid, Stri
 
 /// A bounded notice, not a claim that the model has inspected the attachment.
 /// The event retains the full references for explicit inspection/replay.
-pub(crate) fn render_room_content(text: &str, media: &[crate::persona::channel_items::MediaItemRequest]) -> String {
+pub(crate) fn render_room_content(text: &str, media: &[crate::cognition::conversation::channel_items::MediaItemRequest]) -> String {
     if media.is_empty() { return text.to_owned(); }
     let mut rendered = format!("{text}\n[{} media attachment(s); contents not loaded", media.len());
     for item in media.iter().take(8) {
@@ -181,7 +181,7 @@ pub fn room_content_from_event(event: &TranscriptEvent) -> Result<RoomTurn, &'st
             let kind = attachment.media_type.as_deref()
                 .and_then(|mime| mime.split_once('/').map(|(kind, _)| kind))
                 .unwrap_or("file"); // Unknown MIME is displayed as a generic file, never a supported visual capability.
-            let media = crate::persona::channel_items::MediaItemRequest {
+            let media = crate::cognition::conversation::channel_items::MediaItemRequest {
                 kind: kind.to_owned(), mime_type: attachment.media_type.clone(),
                 blob_hash: Some(attachment.content_hash.0.clone()),
                 url: None, description: None,
@@ -246,7 +246,7 @@ pub struct ChatTranscriptLine<'a> {
     pub room_id: uuid::Uuid,
     pub sender_id: uuid::Uuid,
     pub text: &'a str,
-    pub media: &'a [crate::persona::channel_items::MediaItemRequest],
+    pub media: &'a [crate::cognition::conversation::channel_items::MediaItemRequest],
     pub reply_to_id: Option<uuid::Uuid>,
 }
 
@@ -328,7 +328,7 @@ mod tests {
     // what this catches: media awareness must not embed URL/base64 or generated descriptions in every turn.
     #[test]
     fn media_notice_is_bounded_and_does_not_load_content() {
-        let item = crate::persona::channel_items::MediaItemRequest {
+        let item = crate::cognition::conversation::channel_items::MediaItemRequest {
             kind: "image".into(), mime_type: Some("image/png".into()),
             blob_hash: Some(format!("sha256:{}", "a".repeat(64))),
             url: Some(format!("data:image/png;base64,{}", "x".repeat(100_000))),

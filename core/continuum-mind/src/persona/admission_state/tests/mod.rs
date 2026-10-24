@@ -6,7 +6,7 @@
         AdmissionDropReason, AircMessageRef, ChatMessageRef, EngramKind, TrustState,
     };
     use crate::persona::inbox_admission::content_hash_sha256;
-    use crate::persona::types::SenderType;
+    use crate::cognition::conversation::types::SenderType;
 
     pub(super) fn synthetic_human_message(content: &str) -> InboxMessage {
         InboxMessage {

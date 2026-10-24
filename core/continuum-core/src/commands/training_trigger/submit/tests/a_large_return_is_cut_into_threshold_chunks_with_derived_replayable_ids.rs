@@ -417,7 +417,7 @@ use super::*;
     pub(super) async fn a_fill_while_her_expectations_hold_is_held_and_a_contradiction_releases_it() {
         use crate::persona::attention::{AttentionDial, Continuation};
         use crate::persona::perception_region::PerceptionRegion;
-        use crate::persona::salience::{BoardChange, Expectation, ExpectedVerdict, ObservedVerdict};
+        use crate::cognition::conversation::salience::{BoardChange, Expectation, ExpectedVerdict, ObservedVerdict};
         use std::sync::{Arc, Mutex};
         let (trigger, executor, _dir) = build_runtime_with_trigger_and_genome().await;
         let persona = Uuid::new_v4();

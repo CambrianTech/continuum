@@ -7,7 +7,7 @@ pub(super) async fn settle_to_outcome(
     mut burst: Burst,
     max_acts: usize,
     mut framing: TurnFraming,
-    mut conversation: Option<&mut dyn crate::persona::service_loop::PersonaConversation>,
+    mut conversation: Option<&mut dyn crate::cognition::conversation::PersonaConversation>,
     mut credit: Option<&mut crate::persona::training_producer::TurnCreditCapture>,
 ) -> SettleOutcome {
     // The turn's room comes FROM the burst — witnessed non-nil at construction,
@@ -182,15 +182,15 @@ pub(super) async fn settle_to_outcome(
                     Err(_elapsed) => Err("tick deadline exceeded during room input admission; input remains owned by the conversation".into()),
                 };
                 let admitted = received.and_then(|messages| {
-                    let recipient = crate::persona::persona_identity::PersonaIdentity::new(
+                    let recipient = crate::cognition::conversation::persona_identity::PersonaIdentity::new(
                         body.persona_id, body.persona_name.clone(),
                     );
                     for message in messages {
                         if message.peer_id == body.persona_id
-                            || crate::persona::wake_backlog::is_stale(
+                            || crate::cognition::conversation::seen_ids::is_stale(
                                 message,
-                                seen_inputs.get_or_insert_with(|| crate::persona::wake_backlog::SeenIds::new(
-                                    crate::persona::airc_persona_conversation::INBOX_CAPACITY,
+                                seen_inputs.get_or_insert_with(|| crate::cognition::conversation::seen_ids::SeenIds::new(
+                                    crate::cognition::conversation::INBOX_CAPACITY,
                                 )),
                                 input_watermark,
                             )
@@ -198,12 +198,12 @@ pub(super) async fn settle_to_outcome(
                             continue;
                         }
                         input_watermark = input_watermark.max(message.lamport);
-                        let inbox_message = crate::persona::types::InboxMessage {
+                        let inbox_message = crate::cognition::conversation::types::InboxMessage {
                             id: message.event_id,
                             room_id: message.room_id,
                             sender_id: message.peer_id,
                             sender_name: message.peer_id.to_string(),
-                            sender_type: crate::persona::types::SenderType::Persona,
+                            sender_type: crate::cognition::conversation::types::SenderType::Persona,
                             content: message.text.clone(),
                             timestamp: EpochMs::now().millis(),
                             priority: 0.5,

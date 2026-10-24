@@ -5,7 +5,7 @@ use super::*;
 /// and the L2 training producer.
 pub(super) async fn finish_spoken_turn(
     ctx: &HostedPersona,
-    conversation: &mut dyn PersonaConversation,
+    conversation: &mut dyn CitizenConversation,
     outcome: &mut ServeOutcome,
     trigger: TurnTrigger<'_>,
     spoken: SpokenTurn,

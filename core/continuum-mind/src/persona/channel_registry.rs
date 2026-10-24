@@ -7,10 +7,10 @@
 //! When any channel receives work, the global signal wakes the service loop.
 
 use super::channel_queue::{ChannelQueue, ChannelQueueConfig};
-use super::channel_types::{ActivityDomain, ChannelRegistryStatus, CoherentUnit, QueueItemBehavior, ServiceCycleResult, DOMAIN_PRIORITY_ORDER};
+use crate::cognition::conversation::channel_types::{ActivityDomain, ChannelRegistryStatus, CoherentUnit, QueueItemBehavior, ServiceCycleResult, DOMAIN_PRIORITY_ORDER};
 use super::channel_view::{ChatChannelView, CoherentInput, PersonaChannelView};
-use super::persona_identity::PersonaIdentity;
-use super::types::PersonaState;
+use crate::cognition::conversation::persona_identity::PersonaIdentity;
+use crate::cognition::conversation::types::PersonaState;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tracing::{debug, info};
@@ -382,8 +382,8 @@ fn domain_name(domain: ActivityDomain) -> &'static str {
 
 #[cfg(test)]
 mod tests {
-    use super::super::channel_items::*;
-    use super::super::types::SenderType;
+    use crate::cognition::conversation::channel_items::*;
+    use crate::cognition::conversation::types::SenderType;
     use super::*;
     use continuum_base::time::EpochMs;
     use uuid::Uuid;
@@ -688,7 +688,7 @@ mod tests {
         assert_eq!(state.inbox_load, 0);
         assert!(matches!(
             state.mood,
-            crate::persona::types::Mood::Active | crate::persona::types::Mood::Idle
+            crate::cognition::conversation::types::Mood::Active | crate::cognition::conversation::types::Mood::Idle
         ));
 
         let _inputs = registry.service_cycle_batched(
@@ -709,7 +709,7 @@ mod tests {
         // (inbox_load > 20 → Overwhelmed; here load=1 so Active).
         assert_eq!(
             state.mood,
-            crate::persona::types::Mood::Active,
+            crate::cognition::conversation::types::Mood::Active,
             "mood must be Active after load=1 (the calculate_mood transition)"
         );
     }

@@ -97,8 +97,8 @@ pub mod test_support {
         pub results: Mutex<std::collections::VecDeque<String>>,
         pub input: Mutex<
             std::collections::VecDeque<(
-                crate::persona::scripted_conversation::ScriptedConversationFeed,
-                Vec<crate::persona::service_loop::IncomingMessage>,
+                crate::cognition::conversation::scripted_conversation::ScriptedConversationFeed,
+                Vec<crate::cognition::conversation::IncomingMessage>,
             )>,
         >,
         pub rooms: Mutex<Vec<Uuid>>,
@@ -124,8 +124,8 @@ pub mod test_support {
         }
         pub fn with_incoming(
             self,
-            feed: crate::persona::scripted_conversation::ScriptedConversationFeed,
-            messages: Vec<crate::persona::service_loop::IncomingMessage>,
+            feed: crate::cognition::conversation::scripted_conversation::ScriptedConversationFeed,
+            messages: Vec<crate::cognition::conversation::IncomingMessage>,
         ) -> Self {
             self.input.lock().unwrap().push_back((feed, messages));
             self

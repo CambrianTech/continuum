@@ -15,7 +15,7 @@ use airc_lib::decode_wire_event;
 use tracing::warn;
 
 use crate::routing::airc_realtime::AircRealtimeEnvelope;
-use crate::persona::room_event::chat_transcript_message;
+use crate::cognition::conversation::room_event::chat_transcript_message;
 use crate::routing::airc_realtime_wire::{bus_event_from_envelope, envelope_from_event};
 use crate::ipc::positron_kanban_source::KANBAN_CHANGED;
 use crate::ipc::positron_source::CHAT_POSTED;

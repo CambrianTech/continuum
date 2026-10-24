@@ -696,7 +696,7 @@ pub struct Burst {
     /// the conversation's retained attention queue; never replace this burst's
     /// task, room, or causal root. This is the existing chat projection, not a
     /// replacement for the multimodal sensory faculties.
-    pub room_updates: Arc<Vec<Arc<crate::persona::service_loop::IncomingMessage>>>,
+    pub room_updates: Arc<Vec<Arc<crate::cognition::conversation::IncomingMessage>>>,
     /// The activity this turn belongs to — REQUIRED at construction, witnessed
     /// non-nil by [`ActivityRoom`]. The burst carries the room because the burst
     /// IS the perception the turn responds to: when the room rode as a separate

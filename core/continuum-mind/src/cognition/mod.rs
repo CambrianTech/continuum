@@ -27,6 +27,7 @@
 //!                                  decision (the verb that produces
 //!                                  `ResponderDecision`)
 
+pub mod conversation;
 pub mod framing_echo;
 pub mod not_speech;
 pub mod act_observe;

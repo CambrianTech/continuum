@@ -221,7 +221,7 @@
     async fn the_decision_itself_holds_an_unsurprised_mind_and_trains_a_never_judged_one() {
         use crate::persona::attention::{AttentionDial, Continuation};
         use crate::persona::perception_region::PerceptionRegion;
-        use crate::persona::salience::{BoardChange, Expectation, ExpectedVerdict, ObservedVerdict};
+        use crate::cognition::conversation::salience::{BoardChange, Expectation, ExpectedVerdict, ObservedVerdict};
         use std::sync::{Arc as StdArc, Mutex};
         let w = decision_world().await;
         let activity = uuid::Uuid::new_v4();

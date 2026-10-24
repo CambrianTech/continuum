@@ -33,7 +33,7 @@
 //!   the decision and its inputs whether or not a work turn follows. A gate whose
 //!   refusal is invisible is a gate nobody can debug.
 
-use crate::persona::service_loop::{PersonaConversation, LIVE_MAX_ACTS};
+use crate::persona::service_loop::{CitizenConversation, LIVE_MAX_ACTS};
 use crate::persona::supervisor::HostedPersona;
 
 /// How many run-room rows the write-or-release gate reads to count a holder's
@@ -74,7 +74,7 @@ pub(crate) struct WorkQuestionOutcome {
 
 pub(crate) async fn ask_the_act_question(
     ctx: &HostedPersona,
-    conversation: &mut dyn PersonaConversation,
+    conversation: &mut dyn CitizenConversation,
     lamport: u64,
     turn_room: uuid::Uuid,
     directed: bool,

@@ -534,7 +534,7 @@ mod tests {
         use crate::orm::OrmStore;
         use crate::persona::admission_state::AdmissionState;
         use crate::persona::recall_metadata::RecallMetadataRegistry;
-        use crate::persona::types::InboxMessage;
+        use crate::cognition::conversation::types::InboxMessage;
 
         // Set up SQLite + OrmStores + the production sink + loader.
         let tmp = tempfile::tempdir().expect("tempdir");
@@ -562,7 +562,7 @@ mod tests {
                 room_id: Uuid::new_v4(),
                 sender_id: Uuid::new_v4(),
                 sender_name: "operator".to_string(),
-                sender_type: crate::persona::types::SenderType::Human,
+                sender_type: crate::cognition::conversation::types::SenderType::Human,
                 content: "persistence proof engram alpha".to_string(),
                 timestamp: 1_000,
                 priority: 0.5,
@@ -574,7 +574,7 @@ mod tests {
                 room_id: Uuid::new_v4(),
                 sender_id: Uuid::new_v4(),
                 sender_name: "operator".to_string(),
-                sender_type: crate::persona::types::SenderType::Human,
+                sender_type: crate::cognition::conversation::types::SenderType::Human,
                 content: "persistence proof engram beta".to_string(),
                 timestamp: 2_000,
                 priority: 0.5,

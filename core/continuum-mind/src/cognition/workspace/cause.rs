@@ -316,7 +316,7 @@ impl TurnFraming {
 #[derive(Debug, Clone)]
 pub struct Workspace {
     /// Additional room inputs; the active turn's room and task remain separate.
-    pub room_updates: Arc<Vec<Arc<crate::persona::service_loop::IncomingMessage>>>,
+    pub room_updates: Arc<Vec<Arc<crate::cognition::conversation::IncomingMessage>>>,
     /// The consolidated burst / world-state at service time, as flat text — the
     /// rendered projection of [`turns`](Self::turns). Opaque to the core; the
     /// channel/recipe adapter shapes it. Every TEXT reader (recall, dashboards,

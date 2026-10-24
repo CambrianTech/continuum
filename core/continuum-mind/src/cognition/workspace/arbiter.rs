@@ -153,7 +153,7 @@ pub struct WorkspaceTrace {
     pub cause: Cause,
     pub world_state: String,
     /// Supplemental inputs admitted before this tick; shared with the live burst.
-    pub room_updates: Arc<Vec<Arc<crate::persona::service_loop::IncomingMessage>>>,
+    pub room_updates: Arc<Vec<Arc<crate::cognition::conversation::IncomingMessage>>>,
     /// The room/context this tick reasoned within (contextId) — so a replayed
     /// trace correlates to the room it happened in, not a floating burst.
     pub room_id: Uuid,

@@ -71,7 +71,7 @@ struct TraceLine {
     room_id: String,
     world_state: String,
     #[serde(default)]
-    room_updates: Vec<crate::persona::service_loop::IncomingMessage>,
+    room_updates: Vec<crate::cognition::conversation::IncomingMessage>,
     /// The assembled broadcast that reached the decider this tick. Absent on
     /// older traces (pre-context-replay) → empty, handled as "no broadcast".
     #[serde(default)]
@@ -202,7 +202,7 @@ struct ResolvedBurst {
     room: String,
     source: String,
     broadcast: Vec<Contribution>,
-    room_updates: Vec<crate::persona::service_loop::IncomingMessage>,
+    room_updates: Vec<crate::cognition::conversation::IncomingMessage>,
 }
 
 impl ResolvedBurst {
@@ -249,7 +249,7 @@ impl ResolvedBurst {
 fn build_budget(
     world_state: &str,
     broadcast: &[Contribution],
-    room_updates: &[crate::persona::service_loop::IncomingMessage],
+    room_updates: &[crate::cognition::conversation::IncomingMessage],
 ) -> PromptBudget {
     let world_state_tokens = estimate_prompt_tokens(world_state);
     let mut layers: Vec<BudgetLayer> = broadcast
@@ -649,7 +649,7 @@ mod tests {
         use crate::cognition::llm_deliberation_faculty::LlmDeliberationFaculty;
         use crate::cognition::workspace::{Faculty, WorkspaceCaptureSink, WorkspaceTrace};
         use crate::cognition::workspace_capture::JsonlWorkspaceCaptureSink;
-        use crate::persona::service_loop::IncomingMessage;
+        use crate::cognition::conversation::IncomingMessage;
         use std::sync::{Arc, Mutex};
 
         let dir = tempfile::tempdir().unwrap();

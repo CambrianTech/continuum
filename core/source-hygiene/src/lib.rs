@@ -25,6 +25,7 @@
 //! that is a follow-up, not a reason to hand-roll a fourth.
 
 pub mod boundary_serialization;
+pub mod cognition_names_persona;
 pub mod continuum_home;
 pub mod derived_bounds;
 pub mod grab_bag;

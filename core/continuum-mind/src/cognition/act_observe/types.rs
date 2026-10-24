@@ -32,7 +32,7 @@ pub struct SettleOutcome {
     pub world_state: String,
     /// Full source-labelled room inputs perceived while this turn was in flight.
     pub room_updates:
-        std::sync::Arc<Vec<std::sync::Arc<crate::persona::service_loop::IncomingMessage>>>,
+        std::sync::Arc<Vec<std::sync::Arc<crate::cognition::conversation::IncomingMessage>>>,
     /// The accumulated cost of settling this task: every act→observe deliberation
     /// generation's latency + tokens, summed. `tokens_per_second()` re-derives
     /// throughput from the totals. This is the speed/latency the eval reports next

@@ -395,7 +395,7 @@ impl CognitionEval {
             for _ in 0..15u32 {
                 let burst = crate::cognition::workspace::Burst::from_turns(
                     warm_room,
-                    crate::persona::service_loop::build_workspace_turns(
+                    crate::cognition::conversation::workspace_turns::build_workspace_turns(
                         std::slice::from_ref(&probe_delivery),
                         "",
                         "",

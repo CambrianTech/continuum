@@ -30,7 +30,7 @@ pub(super) struct CycleInput {
 /// and report the verdict. Every non-speaking end of the turn is `Skip`.
 pub(super) async fn run_turn_cycle(
     ctx: &HostedPersona,
-    conversation: &mut dyn PersonaConversation,
+    conversation: &mut dyn CitizenConversation,
     outcome: &mut ServeOutcome,
     deferred_input: &mut crate::persona::wake_backlog::PendingInput,
     phase_timings: &mut PhaseTimings,

@@ -213,7 +213,7 @@ pub fn drive_to_settle_with_input<'a>(
     burst: Burst,
     max_acts: usize,
     framing: TurnFraming,
-    conversation: &'a mut dyn crate::persona::service_loop::PersonaConversation,
+    conversation: &'a mut dyn crate::cognition::conversation::PersonaConversation,
 ) -> impl std::future::Future<Output = SettleOutcome> + Send + 'a {
     drive_with_input(cycle, burst, max_acts, framing, Some(conversation), None)
 }
@@ -225,7 +225,7 @@ pub fn drive_to_settle_with_credit<'a>(
     burst: Burst,
     max_acts: usize,
     framing: TurnFraming,
-    conversation: &'a mut dyn crate::persona::service_loop::PersonaConversation,
+    conversation: &'a mut dyn crate::cognition::conversation::PersonaConversation,
     credit: Option<&'a mut crate::persona::training_producer::TurnCreditCapture>,
 ) -> impl std::future::Future<Output = SettleOutcome> + Send + 'a {
     // Return the shared driver directly: an async forwarding wrapper needlessly
@@ -238,7 +238,7 @@ pub(super) async fn drive_with_input(
     burst: Burst,
     max_acts: usize,
     framing: TurnFraming,
-    conversation: Option<&mut dyn crate::persona::service_loop::PersonaConversation>,
+    conversation: Option<&mut dyn crate::cognition::conversation::PersonaConversation>,
     mut credit: Option<&mut crate::persona::training_producer::TurnCreditCapture>,
 ) -> SettleOutcome {
     let turn_room = burst.room.as_uuid();

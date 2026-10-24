@@ -1,9 +1,5 @@
 use super::*;
 
-/// In-process inbox depth between the pump and the loop. A turn in progress
-/// can leave the loop away for minutes; 8k events is hours of a busy room.
-pub(crate) const INBOX_CAPACITY: usize = 8_192;
-
 /// The live stream is dead when a catch-up tick admits events from the store
 /// while no live frame arrived since the previous tick. The first tick after
 /// (re)open is exempt: it legitimately admits the backlog.
@@ -304,7 +300,7 @@ impl AircPersonaConversation {
 impl PersonaConversation for AircPersonaConversation {
     fn take_wakes(
         &mut self,
-    ) -> Option<tokio::sync::mpsc::Receiver<crate::persona::perception_region::Wake>> {
+    ) -> Option<tokio::sync::mpsc::Receiver<crate::cognition::conversation::Wake>> {
         self.mind.as_mut().and_then(|m| m.wakes.take())
     }
 
@@ -394,6 +390,9 @@ impl PersonaConversation for AircPersonaConversation {
             .map_err(|e| format!("say failed: {e}"))
     }
 
+}
+
+impl crate::persona::service_loop::CitizenConversation for AircPersonaConversation {
     /// #170: the airc citizen behind this conversation streams — hand the
     /// forwarder our runtime handle so it can publish ephemeral token chunks.
     fn stream_citizen(
@@ -436,7 +435,7 @@ pub(super) fn perceptual_from_event(event: &TranscriptEvent) -> Result<IncomingM
     // all three named skip reasons live in the ONE decoder `room_turn_from_event`
     // (realtime_wire) — shared with the digest element and the positron
     // projection. This wrapper only adds the transcript's lamport.
-    let turn = crate::persona::room_event::room_content_from_event(event)?;
+    let turn = crate::cognition::conversation::room_event::room_content_from_event(event)?;
     // Work presence remains in the room's durable state/RAG projection. It is
     // not a new utterance to append after every action: doing that bypassed
     // AircRagSource's existing presence folding and filled active turns with

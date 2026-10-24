@@ -41,7 +41,7 @@ use airc_lib::AircError;
 use uuid::Uuid;
 
 use crate::cognition::channel_element::{ChannelElement, ChannelElementCache};
-use crate::persona::airc_source::AircTranscriptReader;
+use crate::cognition::conversation::transcript_reader::AircTranscriptReader;
 
 /// Default N-before-bookmark grounding when a caller has no recipe-specified value.
 /// Recipe/RoomPurpose resolution belongs to the caller; this is only the floor.

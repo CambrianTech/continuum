@@ -49,7 +49,7 @@ async fn prompt_preserves_stimulus_and_large_action_on_the_wire() {
             )
             .into_boxed_str(),
         );
-        let update = Arc::new(crate::persona::service_loop::IncomingMessage {
+        let update = Arc::new(crate::cognition::conversation::IncomingMessage {
             work: None,
             media: Vec::new(),
             event_id: Uuid::new_v4(),
@@ -347,7 +347,7 @@ async fn prompt_capacity_fault_keeps_demand_and_never_calls_the_adapter() {
             wm.record_receipt("complete active result");
             let mut ws = Workspace::new("original task stays required");
             ws.room_updates = Arc::new(vec![Arc::new(
-                crate::persona::service_loop::IncomingMessage {
+                crate::cognition::conversation::IncomingMessage {
                     work: None,
                     media: Vec::new(),
                     event_id: Uuid::new_v4(),

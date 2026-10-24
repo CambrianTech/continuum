@@ -17,7 +17,7 @@ use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
 use crate::persona::attention::Continuation;
-use crate::persona::salience::{Expectation, ExpectedVerdict};
+use crate::cognition::conversation::salience::{Expectation, ExpectedVerdict};
 use crate::routing::CallerSource;
 use crate::sdk_codegen::{ActionCommand, CommandError, Ctx};
 

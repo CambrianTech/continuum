@@ -48,7 +48,7 @@ use super::admission::{HeuristicIsMemorable, SeenContentLookup, SeenEventLookup}
 use super::engram::{AdmissionDecision, AdmissionDropReason, AdmissionError, Engram, EngramOrigin};
 use super::inbox_admission::{content_hash_sha256, InboxAdmissionRunner};
 use super::trace::CognitionTrace;
-use super::types::InboxMessage;
+use crate::cognition::conversation::types::InboxMessage;
 
 //=============================================================================
 // IN-MEMORY ORACLES (private, used by AdmissionState)

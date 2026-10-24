@@ -95,7 +95,7 @@ async fn a_busy_room_cannot_make_a_citizen_mute() {
     // its required share. This is a normal busy room, not a pathological one.
     let updates: Vec<_> = (0..40)
         .map(|i| {
-            Arc::new(crate::persona::service_loop::IncomingMessage {
+            Arc::new(crate::cognition::conversation::IncomingMessage {
                 work: None,
                 media: Vec::new(),
                 event_id: Uuid::new_v4(),

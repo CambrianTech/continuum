@@ -23,8 +23,8 @@ async fn live_room_input_reaches_next_action_without_replacing_task_or_room() {
     };
     use crate::cognition::llm_deliberation_faculty::LlmDeliberationFaculty;
     use crate::cognition::workspace::{Burst, BurstTurn, Cause, TurnAttention};
-    use crate::persona::scripted_conversation::ScriptedConversation;
-    use crate::persona::service_loop::{IncomingMessage, PersonaConversation};
+    use crate::cognition::conversation::scripted_conversation::ScriptedConversation;
+    use crate::cognition::conversation::{IncomingMessage, PersonaConversation};
 
     for framing in [
         TurnFraming::message(TurnAttention::Addressed),

@@ -6,7 +6,7 @@
 use std::sync::Arc;
 
 use crate::persona::airc_persona_conversation::*;
-use crate::persona::service_loop::PersonaConversation;
+use crate::cognition::conversation::PersonaConversation;
 
 /// what this catches: e0d64552 — the actual membership commands persisted
 /// their changes but bypassed the epoch that refreshes a living stream.

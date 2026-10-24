@@ -350,7 +350,7 @@ use super::*;
     #[tokio::test]
     pub(super) async fn memory_carries_context_across_turns() {
         use crate::persona::engram::AdmissionDecision;
-        use crate::persona::types::{InboxMessage, SenderType};
+        use crate::cognition::conversation::types::{InboxMessage, SenderType};
 
         let now1 = 1_000_000_000u64;
         let recall_meta = Arc::new(RecallMetadataRegistry::new());

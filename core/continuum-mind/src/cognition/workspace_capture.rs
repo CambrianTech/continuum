@@ -125,7 +125,7 @@ struct WorkspaceTraceRecord<'a> {
     /// The consolidated burst the mind reasoned over this tick.
     world_state: &'a str,
     #[serde(skip_serializing_if = "Vec::is_empty")]
-    room_updates: Vec<&'a crate::persona::service_loop::IncomingMessage>,
+    room_updates: Vec<&'a crate::cognition::conversation::IncomingMessage>,
     /// EVERY bid this tick (winners + losers, both phases) — the full competition.
     bids: Vec<BidRecord<'a>>,
     /// The assembled context that won attention and reached the decider (the RAG).

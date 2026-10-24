@@ -12,11 +12,11 @@
 //! (a ring), the trigger is the newest priority line (human opportunity or a
 //! mention), and every priority line drained earns its heard receipt.
 
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, VecDeque};
 
 use uuid::Uuid;
 
-use super::service_loop::IncomingMessage;
+use crate::cognition::conversation::IncomingMessage;
 use crate::cognition::workspace::TurnAttention;
 
 /// Loop-local custody of admitted inputs. Capacity refusals wait on their bound
@@ -26,7 +26,7 @@ pub(crate) struct PendingInput {
     persona: Option<Uuid>,
     inputs: VecDeque<RetainedInput>,
     self_refusals: HashMap<Uuid, Option<crate::cognition::workspace::CapacityRefusal>>,
-    work_witnesses: VecDeque<(Uuid, crate::persona::room_event::RoomWork)>,
+    work_witnesses: VecDeque<(Uuid, crate::cognition::conversation::room_event::RoomWork)>,
 }
 struct RetainedInput {
     message: IncomingMessage,
@@ -107,9 +107,9 @@ impl PendingInput {
     /// repeated semantic facts cannot re-arm an unchanged parked request.
     pub(crate) fn observe_work(&mut self, message: &IncomingMessage) {
         let Some(work) = &message.work else { return };
-        if matches!(work, crate::persona::room_event::RoomWork::Other { .. }) { return; }
-        let key = |work: &crate::persona::room_event::RoomWork| {
-            use crate::persona::room_event::RoomWork;
+        if matches!(work, crate::cognition::conversation::room_event::RoomWork::Other { .. }) { return; }
+        let key = |work: &crate::cognition::conversation::room_event::RoomWork| {
+            use crate::cognition::conversation::room_event::RoomWork;
             match work {
                 RoomWork::Reviewed { card_id, .. } | RoomWork::StateChanged { card_id, .. }
                 | RoomWork::Submitted { card_id, .. } | RoomWork::Claimed { card_id, .. } => Some(*card_id),
@@ -252,52 +252,6 @@ async fn wait_capacity(refusal: &crate::cognition::workspace::CapacityRefusal) {
         Some(readiness) => readiness.wait().await,
         // A producer without a readiness owner must not generate a retry storm.
         None => std::future::pending::<()>().await,
-    }
-}
-
-/// Event-id ring for replay/redelivery dedupe at the loop head. Small: the
-/// pump already dedupes the store catch-up; this catches re-open replays.
-pub(crate) struct SeenIds {
-    ring: VecDeque<Uuid>,
-    ids: HashSet<Uuid>,
-    cap: usize,
-}
-
-impl SeenIds {
-    pub(crate) fn new(cap: usize) -> Self {
-        Self {
-            ring: VecDeque::with_capacity(cap),
-            ids: HashSet::with_capacity(cap),
-            cap,
-        }
-    }
-
-    /// Note an id; `true` when it is NEW (first sight), `false` on a repeat.
-    pub(crate) fn note(&mut self, id: Uuid) -> bool {
-        if self.ids.contains(&id) {
-            return false;
-        }
-        if self.cap == 0 {
-            return true;
-        }
-        if self.ring.len() == self.cap {
-            if let Some(evicted) = self.ring.pop_front() {
-                self.ids.remove(&evicted);
-            }
-        }
-        self.ids.insert(id);
-        self.ring.push_back(id);
-        true
-    }
-}
-
-/// Is this drained line stale? By event id when the source stamps one; by the
-/// publisher clock only for id-less sources (scripted/test conversations).
-pub(crate) fn is_stale(m: &IncomingMessage, seen: &mut SeenIds, high_water: u64) -> bool {
-    if m.event_id.is_nil() {
-        m.lamport <= high_water
-    } else {
-        !seen.note(m.event_id)
     }
 }
 
@@ -447,8 +401,8 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn deferred_attention_waits_without_consuming_the_trigger_or_new_input() {
         use crate::cognition::act_observe::SettleStep;
-        use crate::persona::scripted_conversation::ScriptedConversation;
-        use crate::persona::service_loop::PersonaConversation;
+        use crate::cognition::conversation::scripted_conversation::ScriptedConversation;
+        use crate::cognition::conversation::PersonaConversation;
         use std::time::Duration;
         let original = line(1, 1, "original directed request");
         let newer = line(2, 2, "newer directed request");
@@ -573,54 +527,13 @@ mod tests {
         assert!(triggers_a_turn(true, true, false));
     }
 
-    // what this catches: the per-publisher lamport read a human line as stale
-    // against citizens' larger clocks (the 9/4 deaf-citizens regression).
-    #[test]
-    fn a_human_line_with_a_small_publisher_clock_is_not_stale() {
-        let mut seen = SeenIds::new(8);
-        let human = line(1, 3, "Joel here — which card do you hold?");
-        assert!(!is_stale(&human, &mut seen, 157_000));
-    }
-
-    // what this catches: a re-open replay redelivering the same event id.
-    #[test]
-    fn a_replayed_event_id_is_stale_the_second_time() {
-        let mut seen = SeenIds::new(8);
-        let m = line(1, 3, "once");
-        assert!(!is_stale(&m, &mut seen, 0));
-        assert!(is_stale(&m, &mut seen, 0));
-    }
-
-    // The index must evict with the ordered ring; retained snapshots do not
-    // refresh recency or grow the bounded set on duplicate admission.
-    #[test]
-    fn seen_id_index_evicts_with_the_ring() {
-        let mut seen = SeenIds::new(2);
-        let a = Uuid::new_v4();
-        let b = Uuid::new_v4();
-        let c = Uuid::new_v4();
-        assert!(seen.note(a));
-        assert!(seen.note(b));
-        assert!(!seen.note(a));
-        assert!(seen.note(c));
-        assert!(seen.note(a));
-        assert!(!seen.note(c));
-        assert_eq!(seen.ids.len(), 2);
-        assert_eq!(seen.ring.len(), 2);
-        let mut empty = SeenIds::new(0);
-        assert!(empty.note(a));
-        assert!(empty.note(a));
-        assert!(empty.ids.is_empty());
-        assert!(empty.ring.is_empty());
-    }
-
     // what this catches: a human line without an @mention losing the turn to a
     // newer citizen work receipt.
     #[test]
     fn a_human_opportunity_wins_over_newer_citizen_chatter_without_a_mention() {
         use crate::cognition::workspace::TurnAttention;
         let identity =
-            crate::persona::persona_identity::PersonaIdentity::new(Uuid::new_v4(), "Kimi");
+            crate::cognition::conversation::persona_identity::PersonaIdentity::new(Uuid::new_v4(), "Kimi");
         let human = line(1, 3, "Joel here — which card do you hold?");
         let human_id = human.event_id;
         let receipt = line(2, 900, "💭 Let me get my bearings.");

@@ -1,6 +1,7 @@
 #![cfg(test)]
 
     use super::*;
+    use std::sync::Arc;
     use crate::ai::adapter::AIProviderAdapter;
     use crate::persona::work_burst::{held_work_burst, own_recent_thoughts};
     use crate::ai::HeuristicInferenceAdapter;
@@ -8,7 +9,8 @@
     use crate::persona::airc_citizen::StubAircCitizen;
     use crate::persona::identity_provider::PersonaIdentitySource;
     use crate::experience::role::RoleId;
-    use crate::persona::scripted_conversation::ScriptedConversation;
+    use crate::cognition::conversation::scripted_conversation::ScriptedConversation;
+    use crate::persona::scripted_conversation::ScriptedCitizen;
     use crate::persona::supervisor::HostedPersona;
     use std::path::PathBuf;
 
@@ -106,7 +108,7 @@
     #[tokio::test]
     pub(super) async fn successful_publication_records_speech_once_in_the_actual_room() {
         use crate::cognition::deliberation_budget::recent_own_speech;
-        use crate::persona::scripted_conversation::ScriptedConversation;
+        use crate::cognition::conversation::scripted_conversation::ScriptedConversation;
 
         let peer = crate::identity::PeerId::from_uuid(Uuid::new_v4());
         let room = Uuid::new_v4();

@@ -217,7 +217,7 @@ crate::action_command! {
             .unwrap_or_default();
         let burst = crate::cognition::workspace::Burst::from_turns(
             room,
-            crate::persona::service_loop::build_workspace_turns(
+            crate::cognition::conversation::workspace_turns::build_workspace_turns(
                 std::slice::from_ref(&delivery),
                 &own_peer,
                 &agent_name,
@@ -334,7 +334,8 @@ mod tests {
     use super::*;
     use crate::cognition::act_observe::SettleStep;
     use crate::cognition::workspace::TurnMetrics;
-    use crate::persona::{InboxMessage, Modality, PersonaCognition, SenderType};
+    use crate::persona::PersonaCognition;
+    use crate::cognition::conversation::types::{InboxMessage, Modality, SenderType};
     use crate::rag::RagEngine;
     use crate::sdk_codegen::{AccessLevel, ActionCommand, Ctx};
 

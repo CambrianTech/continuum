@@ -43,10 +43,8 @@ pub mod card_checkout;
 pub mod card_holder;
 pub mod held_claims;
 pub mod card_ledger_fact;
-pub mod channel_items;
 pub mod channel_queue;
 pub mod channel_registry;
-pub mod channel_types;
 pub mod channel_view;
 pub mod claim_rejections;
 pub mod cognition;
@@ -85,14 +83,12 @@ pub mod placement_switch;
 pub mod self_peer;
 pub mod remote_lane_factory;
 pub mod model_selection;
-pub mod persona_identity;
 pub mod profile_builder;
 pub mod viewstate_rag;
 pub mod rag_capture;
 pub mod rag_inspect;
 pub mod recall_metadata;
 pub mod recorder;
-pub mod salience;
 pub mod response;
 pub mod resume_or_mint_provider;
 pub mod resting_seat;
@@ -101,7 +97,6 @@ pub mod role_template;
 pub mod room_board_source;
 pub mod room_doctrine_source;
 pub mod identity_card_cache;
-pub mod room_event;
 pub mod room_resolve;
 pub mod room_roster_source;
 pub mod room_substrates;
@@ -131,7 +126,6 @@ pub mod trace;
 pub mod training_producer;
 pub mod turn_context;
 pub mod turn_frame;
-pub mod types;
 pub mod unified;
 pub mod wall_source;
 pub mod workspace_map_source;
@@ -151,9 +145,7 @@ pub use allocator::{
     allocate as allocate_personas, load_catalog, select_local_model, AllocationResult,
     PersonaAllocation, PersonaCatalogEntry,
 };
-pub use channel_items::{ChannelEnqueueRequest, MediaItemRequest};
 pub use channel_registry::ChannelRegistry;
-pub use channel_types::{ActivityDomain, ChannelRegistryStatus, ChannelStatus, ServiceCycleResult};
 pub use cognition::{CognitionDecision, PersonaCognitionEngine, PriorityFactors, PriorityScore};
 pub use domain_classifier::{DomainClassification, DomainClassifier, QualityFactors, QualityScore};
 pub use engram::{
@@ -186,7 +178,6 @@ pub use turn_frame::{
     ConsolidatedInboxChunk, PersonaTurnFrame, PersonaTurnFrameReplayRecord, RagAssemblySeed,
     PERSONA_TURN_FRAME_REPLAY_SCHEMA_VERSION,
 };
-pub use types::*;
 pub use unified::PersonaCognition;
 
 // ── Substrate ORM entity registration ────────────────────────────

@@ -84,11 +84,11 @@ impl ChannelElement {
     /// identity), which `sender_id()` exposes so digests attribute the words to the
     /// speaker, not to the core's relay peer.
     fn new(event: TranscriptEvent, embedder: Arc<dyn EmbeddingProvider>) -> Self {
-        // The ONE room-turn decoder (persona::room_event::room_turn_from_event) recovers
+        // The ONE room-turn decoder (cognition::conversation::room_event::room_turn_from_event) recovers
         // text + logical sender for BOTH wire shapes. A non-turn (presence,
         // event-bridge, decode error) is simply a text-less element here; the
         // skip-reason visibility lives on the perception path.
-        let (text, logical_sender) = match crate::persona::room_event::room_turn_from_event(&event)
+        let (text, logical_sender) = match crate::cognition::conversation::room_event::room_turn_from_event(&event)
         {
             Ok((sender, text)) => (Some(text), Some(sender)),
             Err(_) => (None, None),

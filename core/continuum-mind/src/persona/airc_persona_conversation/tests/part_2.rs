@@ -15,7 +15,7 @@ use super::*;
             text: "Joel here — which card do you hold?".to_string(),
         };
         let mut with_media = row.clone();
-        with_media.media.push(super::super::super::channel_items::MediaItemRequest {
+        with_media.media.push(crate::cognition::conversation::channel_items::MediaItemRequest {
             kind: "image".into(), mime_type: Some("image/png".into()),
             blob_hash: Some("sha256:1234".into()), url: None, description: None,
         });
@@ -28,7 +28,7 @@ use super::*;
         let incoming = perceptual_from_event(&media_event).expect("caption turn");
         assert_eq!(incoming.text, row.text);
         assert_eq!(incoming.media.len(), 1);
-        let (sender, rendered) = crate::persona::room_event::room_turn_from_event(&media_event).unwrap();
+        let (sender, rendered) = crate::cognition::conversation::room_event::room_turn_from_event(&media_event).unwrap();
         let attention = AttentionEvent::classify(Arc::new(media_event.clone())).unwrap();
         let classified = attention.perception.unwrap();
         assert_eq!(SeenRooms::fingerprint(sender, &rendered),

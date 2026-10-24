@@ -210,7 +210,7 @@ async fn a_tight_budget_yields_fewer_units_never_a_chopped_one() {
             assert_eq!(admitted.get(&Uuid::from_u128(id).to_string()).map(String::as_str), Some(name));
         }
     }
-    let wake = super::super::service_loop::build_workspace_turns(
+    let wake = crate::cognition::conversation::workspace_turns::build_workspace_turns(
         std::slice::from_ref(&delivery),
         "self",
         "Reader",
@@ -234,7 +234,7 @@ async fn a_tight_budget_yields_fewer_units_never_a_chopped_one() {
         resolution_used: ResolutionPreference::Raw,
     };
     let own = Uuid::from_u128(3).to_string();
-    let turns = super::super::service_loop::build_workspace_turns(
+    let turns = crate::cognition::conversation::workspace_turns::build_workspace_turns(
         &[delivery, transcript],
         &own,
         "Native identity",

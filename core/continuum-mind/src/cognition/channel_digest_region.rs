@@ -31,7 +31,7 @@ use async_trait::async_trait;
 use uuid::Uuid;
 
 use crate::cognition::channel_digest::{ChannelDigest, ChannelDigestBuilder, DEFAULT_GROUNDING};
-use crate::persona::airc_source::AircTranscriptReader;
+use crate::cognition::conversation::transcript_reader::AircTranscriptReader;
 use crate::runtime::brain_region::{
     BrainRegion, CadenceHint, ComputeClass, MemoryClass, PressureProfile, RegionContext, RegionId,
     TickOutcome,

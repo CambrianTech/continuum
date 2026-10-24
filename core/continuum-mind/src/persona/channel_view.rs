@@ -22,9 +22,9 @@
 //! `N × M × decode_cost`. The flow-geometric proof's persona-day-one
 //! delivery rests on this split.
 
-use crate::persona::channel_items::ChatQueueItem;
-use crate::persona::channel_types::{ActivityDomain, CoherentUnit};
-use crate::persona::persona_identity::PersonaIdentity;
+use crate::cognition::conversation::channel_items::ChatQueueItem;
+use crate::cognition::conversation::channel_types::{ActivityDomain, CoherentUnit};
+use crate::cognition::conversation::persona_identity::PersonaIdentity;
 use std::sync::Arc;
 use uuid::Uuid;
 
@@ -266,15 +266,15 @@ impl PersonaChannelView for ChatChannelView {
 mod tests {
     use super::*;
     use continuum_base::time::EpochMs;
-    use crate::persona::channel_items::ChatQueueItem;
-    use crate::persona::types::SenderType;
+    use crate::cognition::conversation::channel_items::ChatQueueItem;
+    use crate::cognition::conversation::types::SenderType;
     use std::sync::OnceLock;
 
     fn make_chat_arc(
         content: &str,
         sender: &str,
         room: Uuid,
-    ) -> Arc<dyn crate::persona::channel_types::QueueItemBehavior> {
+    ) -> Arc<dyn crate::cognition::conversation::channel_types::QueueItemBehavior> {
         Arc::new(ChatQueueItem {
             id: Uuid::new_v4(),
             room_id: room,
@@ -382,7 +382,7 @@ mod tests {
     #[test]
     fn chat_view_burst_embedding_is_arc_shared_across_personas() {
         let room = Uuid::new_v4();
-        let items: Vec<Arc<dyn crate::persona::channel_types::QueueItemBehavior>> =
+        let items: Vec<Arc<dyn crate::cognition::conversation::channel_types::QueueItemBehavior>> =
             vec![make_chat_arc(
                 "the shared content for this test",
                 "Operator",

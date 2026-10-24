@@ -9,8 +9,8 @@
 //! One ChannelQueue per ActivityDomain. The CNS iterates channels in priority order.
 
 use continuum_base::time::EpochMs;
-use super::channel_items::{ChatQueueItem, TaskQueueItem};
-use super::channel_types::{ActivityDomain, ChannelStatus, CoherentUnit, QueueItemBehavior};
+use crate::cognition::conversation::channel_items::{ChatQueueItem, TaskQueueItem};
+use crate::cognition::conversation::channel_types::{ActivityDomain, ChannelStatus, CoherentUnit, QueueItemBehavior};
 use std::sync::Arc;
 use tracing::debug;
 
@@ -482,8 +482,8 @@ impl ChannelQueue {
 
 #[cfg(test)]
 mod tests {
-    use super::super::channel_items::*;
-    use super::super::types::SenderType;
+    use crate::cognition::conversation::channel_items::*;
+    use crate::cognition::conversation::types::SenderType;
     use super::*;
     use uuid::Uuid;
 

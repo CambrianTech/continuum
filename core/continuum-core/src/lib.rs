@@ -53,10 +53,8 @@ pub(crate) mod test_env;
 
 pub use continuum_kernel::concurrency::*;
 pub use live::VoiceOrchestrator;
-pub use persona::{
-    CognitionDecision, InboxMessage, InboxTask, Modality, Mood, PersonaCognitionEngine,
-    PersonaInbox, PersonaState, PriorityScore, QueueItem, SenderType,
-};
+pub use cognition::conversation::types::{InboxMessage, InboxTask, Modality, Mood, PersonaState, QueueItem, SenderType};
+pub use persona::{CognitionDecision, PersonaCognitionEngine, PersonaInbox, PriorityScore};
 // Easy logging macros - auto-route to proper log files based on module_path!()
 // Usage: clog_info!("Session started"); clog_warn!("Warning"); etc.
 pub use ipc::start_server;

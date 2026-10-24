@@ -18,7 +18,7 @@
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use super::salience::{Expectation, SalienceLevel};
+use crate::cognition::conversation::salience::{Expectation, SalienceLevel};
 
 /// How much of the world she lets in beside her task.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

@@ -36,7 +36,8 @@
 use crate::gpu::GpuMemoryManager;
 use crate::logging::TimingGuard;
 use crate::cognition::text_analysis::LoopDetector;
-use crate::persona::{InboxMessage, Modality, PersonaCognition, PersonaInboxFrame, PersonaTurnFrame, PersonaTurnFrameReplayRecord, SenderType};
+use crate::persona::{PersonaCognition, PersonaInboxFrame, PersonaTurnFrame, PersonaTurnFrameReplayRecord};
+use crate::cognition::conversation::types::{InboxMessage, Modality, SenderType};
 use crate::rag::RagEngine;
 use crate::runtime;
 use crate::runtime::{CommandResult, LateBound, ModuleConfig, ModuleContext, ModulePriority, ServiceModule};

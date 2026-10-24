@@ -37,7 +37,7 @@
 
 use crate::cognition::act_observe::SettleStep;
 use crate::persona::act_question::WorkQuestionOutcome;
-use crate::persona::service_loop::{PersonaConversation, LIVE_MAX_ACTS};
+use crate::persona::service_loop::{CitizenConversation, LIVE_MAX_ACTS};
 use crate::persona::supervisor::HostedPersona;
 
 /// Whether the caller's cadence offers her an initiative turn when she holds nothing.
@@ -60,7 +60,7 @@ pub(crate) const INITIATIVE_MOMENT: &str = "[initiative] Nothing is assigned to 
 pub(crate) async fn drive_initiative_turn(
     ctx: &HostedPersona,
     cycle: &crate::cognition::workspace::WorkspaceCycle,
-    conversation: &mut dyn PersonaConversation,
+    conversation: &mut dyn CitizenConversation,
     lamport: u64,
     turn_room: uuid::Uuid,
 ) -> WorkQuestionOutcome {

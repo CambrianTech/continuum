@@ -24,7 +24,7 @@ pub(super) async fn eval_settle(
     };
     let burst = crate::cognition::workspace::Burst::from_turns(
         room,
-        crate::persona::service_loop::build_workspace_turns(
+        crate::cognition::conversation::workspace_turns::build_workspace_turns(
             std::slice::from_ref(&delivery),
             "",
             "",

@@ -27,8 +27,8 @@ pub(super) fn trigger_inbox_message(
     turn_room: Uuid,
     roster_names: &std::collections::HashMap<Uuid, String>,
     now_ms: u64,
-) -> crate::persona::types::InboxMessage {
-    crate::persona::types::InboxMessage {
+) -> crate::cognition::conversation::types::InboxMessage {
+    crate::cognition::conversation::types::InboxMessage {
         id: Uuid::new_v4(),
         room_id: turn_room,
         sender_id: msg.peer_id,
@@ -36,7 +36,7 @@ pub(super) fn trigger_inbox_message(
             .get(&msg.peer_id)
             .cloned()
             .unwrap_or_else(|| format!("peer-{}", &msg.peer_id.to_string()[..8])),
-        sender_type: crate::persona::types::SenderType::Persona,
+        sender_type: crate::cognition::conversation::types::SenderType::Persona,
         content: msg.render_content(),
         timestamp: now_ms,
         priority: 0.5,
@@ -49,9 +49,9 @@ pub(super) fn trigger_inbox_message(
 /// on the newest addressed one. An already-admitted retry passes straight through.
 pub(super) async fn resync_to_now(
     ctx: &HostedPersona,
-    conversation: &mut dyn PersonaConversation,
+    conversation: &mut dyn CitizenConversation,
     outcome: &mut ServeOutcome,
-    seen_ids: &mut crate::persona::wake_backlog::SeenIds,
+    seen_ids: &mut crate::cognition::conversation::seen_ids::SeenIds,
     high_water: &mut u64,
     pending: &mut crate::persona::wake_backlog::PendingInput,
     admitted_retry: bool,
@@ -105,7 +105,7 @@ pub(super) async fn resync_to_now(
             // Staleness by EVENT ID (a lamport is the publisher's clock, not a
             // room order — see `wake_backlog`); the clock rule only for id-less
             // scripted sources.
-            let stale = crate::persona::wake_backlog::is_stale(&m, &mut *seen_ids, *high_water);
+            let stale = crate::cognition::conversation::seen_ids::is_stale(&m, &mut *seen_ids, *high_water);
             *high_water = m.lamport.max(*high_water);
             if stale || m.peer_id == self_id {
                 outcome.turns_skipped += 1;

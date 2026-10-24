@@ -223,7 +223,7 @@ pub(super) async fn run_pass(
         let make_burst = || {
             crate::cognition::workspace::Burst::from_turns(
                 room,
-                crate::persona::service_loop::build_workspace_turns(
+                crate::cognition::conversation::workspace_turns::build_workspace_turns(
                     std::slice::from_ref(&task_delivery),
                     "",
                     "",
@@ -414,7 +414,7 @@ pub(super) async fn run_pass(
             };
             let nudge_burst = crate::cognition::workspace::Burst::from_turns(
                 room,
-                crate::persona::service_loop::build_workspace_turns(
+                crate::cognition::conversation::workspace_turns::build_workspace_turns(
                     std::slice::from_ref(&nudge_delivery),
                     "",
                     "",
@@ -535,7 +535,7 @@ Fix the workspace and finish —                              the grade reads th
                 };
                 let red_burst = crate::cognition::workspace::Burst::from_turns(
                     room,
-                    crate::persona::service_loop::build_workspace_turns(
+                    crate::cognition::conversation::workspace_turns::build_workspace_turns(
                         std::slice::from_ref(&red_delivery),
                         "",
                         "",

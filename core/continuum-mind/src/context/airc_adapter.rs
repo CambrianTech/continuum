@@ -20,7 +20,7 @@ use async_trait::async_trait;
 use uuid::Uuid;
 
 use crate::persona::airc_citizen::AircCitizen;
-use crate::persona::airc_source::AircTranscriptReader;
+use crate::cognition::conversation::transcript_reader::AircTranscriptReader;
 
 /// Wraps an `Arc<airc_lib::Airc>` so it can be handed to substrate
 /// surfaces expecting `Arc<dyn AircCitizen>`. Stateless; delegates
@@ -40,7 +40,7 @@ impl AircTranscriptReader for AircHandleAdapter {
     async fn page_recent(&self, limit: usize) -> Result<Vec<airc_lib::TranscriptEvent>, AircError> {
         // Route through the ONE kinds-filtered impl on `airc_lib::Airc`
         // (persona/airc_source.rs, #297) — never the raw inherent page.
-        crate::persona::airc_source::AircTranscriptReader::page_recent(&*self.inner, limit).await
+        crate::cognition::conversation::transcript_reader::AircTranscriptReader::page_recent(&*self.inner, limit).await
     }
 
     async fn page_recent_in(
@@ -50,7 +50,7 @@ impl AircTranscriptReader for AircHandleAdapter {
     ) -> Result<Vec<airc_lib::TranscriptEvent>, AircError> {
         // Explicit forward (#367) — the #262 lesson lives in this file:
         // a silently-inherited trait default is how regressions ship.
-        crate::persona::airc_source::AircTranscriptReader::page_recent_in(&*self.inner, room, limit)
+        crate::cognition::conversation::transcript_reader::AircTranscriptReader::page_recent_in(&*self.inner, room, limit)
             .await
     }
 }

@@ -33,19 +33,9 @@ use uuid::Uuid;
 use super::attention::{AttentionDial, Continuation};
 use super::awareness::{self, ActivityLine, AwarenessSnapshot};
 use super::mind_state::{ActivityCursor, MindState, MindStateError};
-use super::salience::{self, ActivityDelta, BoardChange, ExpectedVerdict, Me, ObservedVerdict, Salience, SalienceLevel, SpeechLine};
+use crate::cognition::conversation::salience::{self, ActivityDelta, BoardChange, ExpectedVerdict, Me, ObservedVerdict, Salience, SalienceLevel, SpeechLine};
 use crate::cognition::channel_digest::ChannelDigest;
-
-/// Why she is being woken. The activity rides on the wake; no room is implied.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Wake {
-    /// An activity's delta is loud enough for her dial.
-    Perceive { activity: Uuid, salience: Salience },
-    /// The time she expected something by has passed.
-    Continuation,
-    /// First wake after a restart: continue what she was doing.
-    Resume,
-}
+use crate::cognition::conversation::Wake;
 
 /// One activity as she perceives it (EVENT-MIND §6 `ActivityView`), borrowing the
 /// truth; nothing copied.
@@ -492,7 +482,7 @@ fn blank(name: String) -> ActivityView {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::persona::salience::{Expectation, ExpectedVerdict, ObservedVerdict, SalienceReason};
+    use crate::cognition::conversation::salience::{Expectation, ExpectedVerdict, ObservedVerdict, SalienceReason};
 
     const ME: Uuid = Uuid::from_u128(0x1);
     const PEER: Uuid = Uuid::from_u128(0x2);

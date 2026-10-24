@@ -364,7 +364,8 @@ async fn capacity_park_keeps_new_input_and_stop_reachable() {
 async fn capacity_park_observes_semantic_board_change_before_trigger_filter() {
     use crate::cognition::act_observe::SettleStep;
     use crate::cognition::workspace::{PromptCapacityError, TurnAttention};
-    use crate::persona::wake_backlog::{PendingInput, SeenIds};
+    use crate::persona::wake_backlog::PendingInput;
+    use crate::cognition::conversation::seen_ids::SeenIds;
     let ctx = hosted_with_heuristic(Uuid::new_v4());
     let room = Uuid::new_v4();
     let original = IncomingMessage {
@@ -383,7 +384,7 @@ async fn capacity_park_observes_semantic_board_change_before_trigger_filter() {
     let mut seen = SeenIds::new(256);
     let mut water = 0;
     let card = Uuid::new_v4();
-    use crate::persona::room_event::RoomWork;
+    use crate::cognition::conversation::room_event::RoomWork;
     let state = |state| RoomWork::StateChanged { card_id: card, state, by: original.peer_id };
     let submission = |id| RoomWork::Submitted {
         card_id: card, publisher: original.peer_id, submission: Some(id),
@@ -540,7 +541,7 @@ async fn holding_nothing_her_heartbeat_offers_an_initiative_turn_with_her_hands(
         use crate::cognition::rag_budget::{RagContext, RagSource, ResolutionPreference};
         use crate::model_registry::types::MultiPartyChatStrategy;
         use crate::persona::room_roster_source::{AircRosterReader, RoomRosterSource};
-        use crate::persona::service_loop::project_room_roster;
+        use crate::cognition::conversation::workspace_turns::project_room_roster;
         use airc_core::PeerId;
         use airc_lib::{AgentAvailabilityState, AircError, RoomMember};
         use async_trait::async_trait;

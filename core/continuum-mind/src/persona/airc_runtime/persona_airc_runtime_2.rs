@@ -198,11 +198,11 @@ impl PersonaAircRuntime {
 // peers (human, web, browser). See `persona::airc_citizen` for the
 // trait definition + rationale.
 #[async_trait::async_trait]
-impl crate::persona::airc_source::AircTranscriptReader for PersonaAircRuntime {
+impl crate::cognition::conversation::transcript_reader::AircTranscriptReader for PersonaAircRuntime {
     async fn page_recent(&self, limit: usize) -> Result<Vec<airc_lib::TranscriptEvent>, AircError> {
         // Route through the ONE kinds-filtered impl on `airc_lib::Airc`
         // (persona/airc_source.rs, #297) — never the raw inherent page.
-        crate::persona::airc_source::AircTranscriptReader::page_recent(&*self.airc, limit).await
+        crate::cognition::conversation::transcript_reader::AircTranscriptReader::page_recent(&*self.airc, limit).await
     }
 
     async fn page_recent_in(
@@ -212,7 +212,7 @@ impl crate::persona::airc_source::AircTranscriptReader for PersonaAircRuntime {
     ) -> Result<Vec<airc_lib::TranscriptEvent>, AircError> {
         // Explicit forward (#367) — inheriting the trait default here would
         // silently drop the turn-room scope (#262-class regression).
-        crate::persona::airc_source::AircTranscriptReader::page_recent_in(&*self.airc, room, limit)
+        crate::cognition::conversation::transcript_reader::AircTranscriptReader::page_recent_in(&*self.airc, room, limit)
             .await
     }
 }

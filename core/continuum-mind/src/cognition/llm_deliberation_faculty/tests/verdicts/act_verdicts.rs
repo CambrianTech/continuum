@@ -329,7 +329,7 @@ async fn directed_turn_withholds_the_silence_escape() {
     use crate::ai::types::MessageContent;
     use crate::cognition::workspace::{SalienceArbiter, Situation, TurnFraming, WorkspaceCycle};
     use crate::inference::slots::SlotClass;
-    use crate::persona::persona_identity::PersonaIdentity;
+    use crate::cognition::conversation::persona_identity::PersonaIdentity;
     let adapter = Arc::new(ScriptedAdapter::new(vec![]));
     let faculty =
         LlmDeliberationFaculty::new(Uuid::new_v4(), "Kimi", "You are Kimi.", adapter);

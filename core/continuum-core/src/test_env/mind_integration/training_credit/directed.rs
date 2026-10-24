@@ -19,8 +19,8 @@ async fn directed_credit_survives_partial_cancellation_and_atomic_retry() {
         FinishReason, TextGenerationRequest, TextGenerationResponse, UsageMetrics,
     };
     use crate::cognition::llm_deliberation_faculty::LlmDeliberationFaculty;
-    use crate::persona::scripted_conversation::ScriptedConversation;
-    use crate::persona::service_loop::PersonaConversation;
+    use crate::cognition::conversation::scripted_conversation::ScriptedConversation;
+    use crate::cognition::conversation::PersonaConversation;
     use crate::persona::training_producer::{
         CapturedCredit, StagedCredit, StagedCreditGeneration,
     };

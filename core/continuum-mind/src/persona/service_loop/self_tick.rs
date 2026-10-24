@@ -12,7 +12,7 @@ pub(super) struct BeatClock {
 /// over the CURRENT world-state and sets the next beat from what it found.
 pub(super) async fn serve_self_tick(
     ctx: &HostedPersona,
-    conversation: &mut dyn PersonaConversation,
+    conversation: &mut dyn CitizenConversation,
     opts: &ServeOptions,
     last_burst_fp: &mut u64,
     wake_room: Option<uuid::Uuid>,

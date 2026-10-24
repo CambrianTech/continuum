@@ -364,7 +364,7 @@ impl ChatModule {
         // surface a parse error and the test
         // `send_envelope_matches_airc_publish_wire_shape` will
         // catch the drift.
-        let publish_envelope = crate::persona::room_event::chat_transcript_envelope(
+        let publish_envelope = crate::cognition::conversation::room_event::chat_transcript_envelope(
             message_id,
             &params.transcript_line(),
             now_ms,

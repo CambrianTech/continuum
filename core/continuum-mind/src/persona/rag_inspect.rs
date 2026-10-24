@@ -40,7 +40,8 @@ use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::persona::airc_source::{AircRagSource, AircTranscriptReader};
+use crate::cognition::conversation::transcript_reader::AircTranscriptReader;
+use crate::persona::airc_source::AircRagSource;
 use crate::cognition::rag_budget::{
     BudgetAllocation, FlexboxRagBudgetAdapter, RagBudgetAdapter, RagContext, RagSource,
     RagSourceBudget, ReservedTokens, ResolutionPreference,

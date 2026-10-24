@@ -202,7 +202,7 @@ pub(super) fn spawn_token_forwarder(
 /// act question, kanban pull) always runs.
 pub(super) async fn run_self_cycle(
     ctx: &HostedPersona,
-    conversation: &mut dyn PersonaConversation,
+    conversation: &mut dyn CitizenConversation,
     opts: &ServeOptions,
     last_burst_fp: &mut u64,
     // The room her own mind woke her in (a Perceive wake): she works there this cycle,
@@ -629,7 +629,7 @@ pub(super) async fn run_self_cycle(
 /// + continuing. Returns `None` only when the stream is genuinely
 /// over.
 pub(super) async fn next_event(
-    conversation: &mut dyn PersonaConversation,
+    conversation: &mut dyn CitizenConversation,
     outcome: &mut ServeOutcome,
 ) -> Option<IncomingMessage> {
     loop {

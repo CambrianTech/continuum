@@ -430,7 +430,8 @@ mod tests {
     use crate::cognition::PersonaSlot;
     use crate::persona::inbox::{PersonaInboxFrame, PersonaInboxFrameMetrics};
     use crate::persona::response::PersonaResponse;
-    use crate::persona::{InboxMessage, Modality, PersonaTurnFrame, SenderType};
+    use crate::cognition::conversation::types::{InboxMessage, Modality, SenderType};
+    use crate::persona::PersonaTurnFrame;
     use std::collections::HashSet;
     use tempfile::tempdir;
 

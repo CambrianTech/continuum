@@ -187,8 +187,8 @@ async fn capacity_refusal_leaves_the_driver_once_with_typed_custody() {
 #[tokio::test]
 async fn starved_priority_input_survives_until_dispatch_without_replaying_actions() {
     use crate::cognition::workspace::{Burst, TurnAttention};
-    use crate::persona::scripted_conversation::ScriptedConversation;
-    use crate::persona::service_loop::{IncomingMessage, PersonaConversation};
+    use crate::cognition::conversation::scripted_conversation::ScriptedConversation;
+    use crate::cognition::conversation::{IncomingMessage, PersonaConversation};
     use crate::persona::wake_backlog::PendingInput;
     use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -212,7 +212,7 @@ async fn starved_priority_input_survives_until_dispatch_without_replaying_action
     let original = IncomingMessage {
         event_id: Uuid::new_v4(), lamport: 10, peer_id: Uuid::new_v4(),
         room_id: Uuid::new_v4(), text: "Asha, inspect this exact input".into(), work: None,
-        media: vec![crate::persona::channel_items::MediaItemRequest {
+        media: vec![crate::cognition::conversation::channel_items::MediaItemRequest {
             kind: "image".into(), mime_type: Some("image/png".into()),
             blob_hash: Some("sha256:retained-input".into()), url: None,
             description: Some("original attachment".into()),

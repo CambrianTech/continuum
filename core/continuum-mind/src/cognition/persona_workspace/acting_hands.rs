@@ -280,7 +280,7 @@ pub(crate) fn claim_gone_verdict(
 pub(crate) async fn root_at_held_card(
     cycle: &WorkspaceCycle,
     peer_id: uuid::Uuid,
-    conversation: &dyn crate::persona::service_loop::PersonaConversation,
+    conversation: &dyn crate::persona::service_loop::CitizenConversation,
 ) -> HeldCardTurn {
     let turn = bind_held_card(cycle, peer_id, conversation).await;
     // A turn bound to no claim's hands acts with her default hands, at home: her
@@ -294,7 +294,7 @@ pub(crate) async fn root_at_held_card(
 pub(super) async fn bind_held_card(
     cycle: &WorkspaceCycle,
     peer_id: uuid::Uuid,
-    conversation: &dyn crate::persona::service_loop::PersonaConversation,
+    conversation: &dyn crate::persona::service_loop::CitizenConversation,
 ) -> HeldCardTurn {
     // The card is UNKNOWN on each of these: there is no citizen, her claims could not be
     // read, or she holds nothing. Absent credit is the honest answer here — unlike the

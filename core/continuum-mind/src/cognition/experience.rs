@@ -134,7 +134,7 @@ pub struct ExperienceRecord {
     /// Source-labelled supplemental inputs that accompanied this episode's answer.
     /// Old records have none. Only the turn's admitted inputs are stored here.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub room_updates: Vec<crate::persona::service_loop::IncomingMessage>,
+    pub room_updates: Vec<crate::cognition::conversation::IncomingMessage>,
     /// How many times she acted before settling — the effort proxy (near the
     /// budget = struggle). Surfaced today via `SettleOutcome.acts`.
     pub acts: u32,

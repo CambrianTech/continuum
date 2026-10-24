@@ -2,7 +2,7 @@
 //! message (typed, dep-holding).
 //!
 //! Converts the JSON-transport [`InboxMessageRequest`](crate::ipc::InboxMessageRequest)
-//! to the domain [`InboxMessage`](crate::persona::InboxMessage) via the one canonical
+//! to the domain [`InboxMessage`](crate::cognition::conversation::types::InboxMessage) via the one canonical
 //! `to_inbox_message()` seam, then runs the persona's admission gate
 //! ([`admit`](crate::persona::admission_state)) — recording side-effects (admitted
 //! engram → store, content_hash → dedup, AIRC event_id → replay-protection). Returns

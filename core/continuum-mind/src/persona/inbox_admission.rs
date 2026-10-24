@@ -71,7 +71,7 @@ use super::engram::{
     AdmissionDecision, AdmissionError, ChatMessageRef, EngramKind, EngramOrigin, TrustState,
 };
 use super::trace::CognitionTrace;
-use super::types::{InboxMessage, SenderType};
+use crate::cognition::conversation::types::{InboxMessage, SenderType};
 
 //=============================================================================
 // TRUST MAPPING

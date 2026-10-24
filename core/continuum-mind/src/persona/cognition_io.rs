@@ -37,7 +37,7 @@ use crate::cognition::RecentMessage;
 use crate::model_registry::Capability;
 use crate::persona::response::RespondInput;
 use crate::persona::turn_context::TurnContext;
-use crate::persona::types::{InboxMessage, Modality, SenderType};
+use crate::cognition::conversation::types::{InboxMessage, Modality, SenderType};
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 use uuid::Uuid;
