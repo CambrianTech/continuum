@@ -387,6 +387,7 @@
     #[tokio::test]
     async fn a_second_create_for_the_same_attempt_waits_and_returns_the_first_job() {
         use crate::commands::genome::attempt_ledger::{Admission, AttemptLedger, AttemptState};
+        use std::future::Future;
         use crate::genome::fine_tuning::{FineTuningRegistry, JobHandle, RecordingFineTuningAdapter, TrainingJobBoard, WatchedJob, RECORDING_BASE_PREFIX};
         let (store_adapter, _dir) = crate::orm::store::fresh_adapter().await;
         let ledger = Arc::new(AttemptLedger::new());
@@ -414,12 +415,30 @@
         };
 
         let first = ledger.run(attempt).await; // the first request, mid-decision
-        let second = tokio::spawn({
-            let command = Arc::clone(&command);
-            async move { command.run(&Ctx::default(), params).await.unwrap() }
-        });
-        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-        assert!(!second.is_finished(), "the second create waits for the first");
+        assert_eq!(ledger.run_holders(attempt), 2, "the ledger and the first request");
+        let ctx = Ctx::default();
+        let second = command.run(&ctx, params);
+        tokio::pin!(second);
+        // Drive the second create until it is parked on the attempt's run lock: its own
+        // holder appears beside the first's. Each poll must stay Pending: it cannot pass.
+        tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            while ledger.run_holders(attempt) < 3 {
+                std::future::poll_fn(|cx| {
+                    assert!(second.as_mut().poll(cx).is_pending(), "the second create waits for the first");
+                    std::task::Poll::Ready(())
+                })
+                .await;
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("the second create reaches the attempt's run lock");
+        std::future::poll_fn(|cx| {
+            assert!(second.as_mut().poll(cx).is_pending(), "parked on the lock, it stays parked");
+            std::task::Poll::Ready(())
+        })
+        .await;
+        assert_eq!(trainer.captured_job_count(), 0);
 
         // The first request finishes: admitted, its job created, watched, then settled.
         let id = uuid::Uuid::new_v4();

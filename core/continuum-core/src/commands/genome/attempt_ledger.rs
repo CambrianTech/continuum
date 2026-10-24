@@ -128,6 +128,13 @@ impl AttemptLedger {
         run.lock_owned().await
     }
 
+    /// How many holders the attempt's run lock has: the ledger's own, plus one per request
+    /// holding or waiting on it. A test reads this to prove a second request is parked on it.
+    #[cfg(test)]
+    pub(crate) fn run_holders(&self, attempt: Uuid) -> usize {
+        self.runs.get(&attempt).map_or(0, |run| Arc::strong_count(run.value()))
+    }
+
     pub(crate) fn install(&self, store: Arc<OrmStore<TrainingAttempt>>) {
         self.store.install(store);
     }
