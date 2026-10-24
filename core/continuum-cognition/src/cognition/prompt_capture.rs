@@ -15,7 +15,7 @@ mod store;
 pub use store::{detail, page};
 pub use store::{CallHeader, CallStatus, PlaybackDetail, PlaybackPage};
 use store::{PayloadRef, Store};
-pub const FIXTURE_DIR: &str = ".continuum/fixtures/prompt-captures";
+pub const FIXTURE_DIR: &str = "fixtures/prompt-captures";
 
 #[derive(Debug, Serialize)]
 pub struct PromptCall {

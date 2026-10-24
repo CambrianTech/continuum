@@ -61,6 +61,12 @@ pub fn has_path_prefix(path: &std::path::Path, base: &std::path::Path) -> bool {
 /// curriculum drain (`genome/teach --from-experience`) resolves the SAME citizen
 /// layout as the grader that wrote the stream — one layout, never two.
 pub fn continuum_home() -> Result<std::path::PathBuf, String> {
+    // A test's per-thread native home wins over process-global env (card 3c8b03ae): the
+    // captures and the recorder resolve here now, and their tests isolate per thread.
+    #[cfg(any(test, feature = "test-fixtures"))]
+    if let Some(native) = NativeHomeOverride::current() {
+        return Ok(native.join(".continuum"));
+    }
     std::env::var_os("CONTINUUM_HOME")
         .map(std::path::PathBuf::from)
         .or_else(test_home)
