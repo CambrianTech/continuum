@@ -1,7 +1,7 @@
 //! `avatar/snapshot` — render a persona's 3D avatar to a profile PNG.
 //!
 //! Stateless: the Bevy-render domain logic lives on
-//! [`crate::modules::avatar::AvatarModule`] (shared with its tick-driven
+//! [`continuum_live::consumers::avatar::AvatarModule`] (shared with its tick-driven
 //! auto-refresh); this command orchestrates the on-disk cache check and runs the
 //! blocking capture off the async thread.
 
@@ -172,7 +172,7 @@ crate::action_command! {
         // Bevy slot allocation + frame capture is blocking — off the async thread.
         let stem_for_task = stem.clone();
         let relative_path = tokio::task::spawn_blocking(move || {
-            crate::modules::avatar::AvatarModule::capture_snapshot(
+            continuum_live::consumers::avatar::AvatarModule::capture_snapshot(
                 &identity, width, height, &avatar_dir, pinned, expression, pose, mouth,
                 &stem_for_task,
             )

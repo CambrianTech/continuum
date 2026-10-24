@@ -75,7 +75,7 @@ mod memory_holders {
             .map(|h| h.id)
             .collect();
         assert!(declared.contains(&crate::modules::serving_consumer::SERVING_CONSUMER_ID));
-        assert!(declared.contains(&crate::modules::perception_consumer::PERCEPTION_CONSUMER_ID));
+        assert!(declared.contains(&continuum_live::consumers::perception_consumer::PERCEPTION_CONSUMER_ID));
         assert!(declared.contains(&crate::cognition::measurement_staging::CONSUMER_ID));
         // `embed` has a constant but is deliberately NOT declared (#225) — if someone
         // registers it as a consumer, this assertion is the reminder to move its row.

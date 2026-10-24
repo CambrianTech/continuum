@@ -40,11 +40,11 @@ impl AvatarModule {
 
     /// Blocking snapshot capture — runs on spawn_blocking thread.
     ///
-    /// `pub(crate)`: both the `avatar/snapshot` command body (in `commands/avatar.rs`)
+    /// `pub`: both the `avatar/snapshot` command body (in `commands/avatar.rs`)
     /// and the module's `tick()` auto-refresh drive it. The Bevy-render domain logic
     /// stays here in the module; the command orchestrates the cache check + threading.
     #[cfg(feature = "avatar-3d")]
-    pub(crate) fn capture_snapshot(
+    pub fn capture_snapshot(
         identity: &str,
         width: u32,
         height: u32,
@@ -226,7 +226,7 @@ impl AvatarModule {
     /// Built without `avatar-3d`: there is no renderer to draw her face with.
     /// Refuse loudly, naming the feature — never write a stand-in PNG.
     #[cfg(not(feature = "avatar-3d"))]
-    pub(crate) fn capture_snapshot(
+    pub fn capture_snapshot(
         identity: &str,
         _width: u32,
         _height: u32,
