@@ -3,7 +3,7 @@ name: Continuum Rust Tests
 on:
   pull_request:
   push:
-    branches: [canary, main, fable/ci-faster]  # TRIAL: remove before review
+    branches: [canary, main]
 
 concurrency:
   group: continuum-rust-tests-${{ github.workflow }}-${{ github.head_ref || github.run_id }}
@@ -253,7 +253,7 @@ jobs:
   # crate job always rebuilds. Not a gate: a failed warm-up only leaves the previous cache.
   warm-cache:
     name: Warm the shared Rust build cache
-    if: ${{ github.event_name == 'push' && (github.ref == 'refs/heads/canary' || github.ref == 'refs/heads/fable/ci-faster') }}  # TRIAL: canary only before review
+    if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/canary' }}
     runs-on: ubuntu-latest
     timeout-minutes: 120
     # One warm-up at a time; a newer push queues behind it rather than cancelling it, so a
@@ -284,7 +284,7 @@ jobs:
           core_features=$(node -p 'require("./tools/scripts/ci-change-scope.cjs").TEST_FEATURES["continuum-core"]')
           cargo test -p continuum-core --bin continuum --profile dev-fast --features "$core_features" --no-run --message-format=json >> warm.jsonl
           node tools/scripts/ci-cargo-freshness.cjs prune-test-executables warm.jsonl
-          du -sh target target/dev-fast/* target/dev-fast/.fingerprint target/dev-fast/build/* ~/.cargo/registry ~/.cargo/git | sort -h | tail -15
+          du -sh target ~/.cargo/registry ~/.cargo/git
       - name: Save the shared target cache
         uses: actions/cache/save@v4
         with:
