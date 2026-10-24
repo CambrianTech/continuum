@@ -56,9 +56,10 @@ Phases, in order; each owner works its area in parallel:
   CI checks only the affected crates.
 - **4 Then pace work**, one change at a time inside its crate, validator first, then the live read.
 - **5 Patterns bubble up** (Joel, 10-24): once the crates are cut, every agent takes a crate and sweeps it for
-  repeated shapes (stores, slots, retries, OS calls, probes); a pattern found in two crates moves DOWN to the
-  floor (`continuum-base`, `continuum-host`, `continuum-pack`) as one owner with adapters for the diff, and the
-  copies are deleted. Each sweep reports the pattern, its copies, and the lines removed.
+  repeated shapes (stores, slots, retries, OS calls, probes); a pattern found in two crates moves DOWN to one
+  owner below both: an existing floor crate (`continuum-base`, `continuum-host`, `continuum-pack`) when it fits
+  that crate's one job, otherwise a NEW shared crate named for the pattern (never a utils drawer), with adapters
+  for the diff, and the copies are deleted. Each sweep reports the pattern, its copies, and the lines removed.
 
 Measured daily: lines past 1,000, crate count, check time per crate, unwrap count, residents' acts/hour.
 
