@@ -166,11 +166,12 @@ mod experience {
 
         let mut callers: Vec<String> = Vec::new();
         for file in &files {
-            // This file DEFINES it — not a production call site.
-            if file.rel == "cognition/experience.rs" {
+            // The slot's own file DEFINES the call; the recorder is installed into it, never
+            // called directly from cognition's core.
+            if file.rel == "cognition/extensions.rs" {
                 continue;
             }
-            if file.production().contains("record_lived_turn(") {
+            if file.production().contains("extensions::lived_turn_settled(") {
                 callers.push(file.rel.clone());
             }
         }
@@ -178,7 +179,7 @@ mod experience {
         assert_eq!(
             callers.len(),
             1,
-            "expected exactly ONE production caller of record_lived_turn (the \
+            "expected exactly ONE production caller of lived_turn_settled (the \
              settle driver); found {}: {callers:?}. If you are adding a call at a \
              turn call site, don't — `drive_to_settle` already records every \
              outcome it produces, so a second call double-writes her stream. If \

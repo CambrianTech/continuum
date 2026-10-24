@@ -22,10 +22,11 @@ pub fn install() {
     });
     ext::install_quiesce_fleet(quiesce_fleet);
     ext::install_card_room(card_room);
-    ext::install_resident_review_boundaries(|persona| {
+    crate::cognition::dream_consolidation::install_resident_review_boundaries(|persona| {
         crate::persona::training_producer::reviewed::boundaries::ReviewBoundaryStore::resident(persona)
             .map(|store| Arc::new(store) as Arc<dyn crate::cognition::dream_consolidation::ReviewBoundaryLedger>)
     });
+    ext::install_lived_turn_settled(crate::cognition::experience::record_lived_turn);
     ext::install_pinned_workspace_map(|persona, root| {
         Arc::new(crate::persona::workspace_map_source::WorkspaceMapSource::for_pinned_root(persona, root.to_path_buf()))
     });

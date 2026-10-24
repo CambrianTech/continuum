@@ -253,28 +253,27 @@ pub fn pinned_workspace_map(persona: Uuid, root: &Path) -> Option<Arc<dyn crate:
     }
 }
 
-// ─── The dream's review-boundary ledger ──────────────────────────────────────────────────
+// ─── Her lived turn, for her curriculum ──────────────────────────────────────────────────
 
-/// The resident's durable review-boundary ledger (persona's training producer owns its rows).
-pub type ResidentReviewBoundaries =
-    fn(persona: Uuid) -> Result<Arc<dyn crate::cognition::dream_consolidation::ReviewBoundaryLedger>, continuum_client::ClientError>;
+/// Record a settled turn in her lived-experience stream (`experience::record_lived_turn`,
+/// above cognition's core with the rest of her learning). Called once, by the settle driver,
+/// for every turn it settles.
+pub type LivedTurnSettled = fn(
+    root: &Path,
+    peer: crate::identity::PeerId,
+    settled: &crate::cognition::act_observe::SettleOutcome,
+);
 
-static RESIDENT_REVIEW_BOUNDARIES: RwLock<Option<ResidentReviewBoundaries>> = RwLock::new(None);
+static LIVED_TURN_SETTLED: RwLock<Option<LivedTurnSettled>> = RwLock::new(None);
 
-pub fn install_resident_review_boundaries(ledger: ResidentReviewBoundaries) {
-    *RESIDENT_REVIEW_BOUNDARIES.write() = Some(ledger);
+pub fn install_lived_turn_settled(record: LivedTurnSettled) {
+    *LIVED_TURN_SETTLED.write() = Some(record);
 }
 
-/// Empty slot: probed, and `Ok(None)`: the resident has no durable credit store this tick
-/// (the nonpersistent answer), so the dream consolidates without boundary recovery.
-pub fn resident_review_boundaries(
-    persona: Uuid,
-) -> Result<Option<Arc<dyn crate::cognition::dream_consolidation::ReviewBoundaryLedger>>, continuum_client::ClientError> {
-    match *RESIDENT_REVIEW_BOUNDARIES.read() {
-        Some(ledger) => ledger(persona).map(Some),
-        None => {
-            missing("resident_review_boundaries");
-            Ok(None)
-        }
+/// Empty slot: probed, and nothing recorded.
+pub fn lived_turn_settled(root: &Path, peer: crate::identity::PeerId, settled: &crate::cognition::act_observe::SettleOutcome) {
+    match *LIVED_TURN_SETTLED.read() {
+        Some(record) => record(root, peer, settled),
+        None => missing("lived_turn_settled"),
     }
 }

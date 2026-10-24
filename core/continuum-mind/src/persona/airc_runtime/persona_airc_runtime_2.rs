@@ -477,7 +477,7 @@ impl crate::persona::airc_citizen::AircCitizen for PersonaAircRuntime {
             // cards already on a board — psf__requests-1766 (2026-09-13): refused
             // ungradeable at 09:36, closed, reopened by its closer at 16:27, pulled by
             // Kira at 17:15 → a lane spent on work no grade can ever score.
-            .filter(|c| !crate::cognition::card_holder::refused_on_this_box(&c.title))
+            .filter(|c| !crate::cognition::swe_verdict_sweep::refused_on_this_box(&c.title))
             // A review card is never offered to the owner of the card it reviews:
             // the reviewer is the fresh pair of eyes by construction.
             .filter(|c| {

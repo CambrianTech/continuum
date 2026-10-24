@@ -180,7 +180,7 @@ impl PersonaReflectionSource for crate::cognition::persona_workspace::PersonaWor
         &self,
         persona_id: Uuid,
     ) -> Result<Option<Arc<dyn ReviewBoundaryLedger>>, continuum_client::ClientError> {
-        crate::cognition::extensions::resident_review_boundaries(persona_id)
+        review_boundary_ledger::resident_review_boundaries(persona_id)
     }
     fn live_personas(&self) -> Vec<Uuid> {
         self.roster().into_iter().map(|(id, _)| id).collect()

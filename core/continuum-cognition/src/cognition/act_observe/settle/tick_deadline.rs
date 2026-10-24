@@ -268,7 +268,7 @@ pub(super) async fn drive_with_input<'c>(
         return settled;
     }
     if let Some(body) = cycle.acting() {
-        crate::cognition::experience::record_lived_turn(
+        crate::cognition::extensions::lived_turn_settled(
             &crate::paths::continuum_root(),
             crate::identity::PeerId::from_uuid(body.persona_id),
             &settled,
