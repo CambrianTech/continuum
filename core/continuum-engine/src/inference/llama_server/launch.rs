@@ -105,8 +105,17 @@ impl LlamaServerProcess {
         // An occupied listener without retirement authority is never reaped by
         // command name. Owned and adopted predecessors were handled above.
         if !crate::inference::lane_process::wait_port_free(port, Duration::from_secs(8)).await {
+            let occupant = match crate::inference::lane_process::pid_listening_on_port(port) {
+                Some(pid) => match crate::inference::lane_process::command_name(pid) {
+                    Some(command) => format!("pid {pid}, command {command:?}"),
+                    None => format!("pid {pid}, command unavailable"),
+                },
+                None => "listener identity unavailable".to_owned(),
+            };
             return Err(LlamaServerError::Spawn(format!(
-                "port {port} remains occupied after verified retirement; refusing an unowned reap"
+                "port {port} remains occupied ({occupant}); no retirement authority for this listener. \
+                 Have its machine/deployment owner stop it through its supported lifecycle, \
+                 verify the port is free, then retry serving reconciliation"
             )));
         }
         self.mmproj_on_lane.store(
