@@ -21,6 +21,7 @@ serde_json.workspace = true
 uuid.workspace = true
 schemars = { version = "0.8", features = ["uuid1"] }
 thiserror.workspace = true
+tracing.workspace = true  # continuum_base::probe! expands to tracing events
 dashmap = "6.1"
 base64 = "0.22"
 sha2 = "0.10"
