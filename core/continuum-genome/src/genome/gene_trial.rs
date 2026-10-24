@@ -113,11 +113,10 @@ impl GeneTrial {
     }
 }
 
-/// PURE: the genes a turn of `persona` runs with on `base`: every gene she trained that
-/// has not been retired, on EVERY turn, card or conversation (Joel, 2026-10-10: a gene is
-/// hers once trained and follows her mind, never her workload; the full rule, selection
-/// by distance with two tiers, is GENE-REUSE-FORK-MINT §3d; with one gene there is nothing
-/// to select). What decides whether a gene STAYS is the examiner's verdict, never a card.
+/// PURE: the genes `persona` may run with on `base`: every gene she trained that has not
+/// been retired (Joel, 2026-10-10: a gene is hers once trained and follows her mind, never
+/// her workload). Which of them shape a turn, and how much, is `genome::selection`
+/// (GENE-REUSE-FORK-MINT §3d). What decides whether a gene STAYS is the examiner's verdict.
 pub fn genes_for_turn(trials: &[GeneTrial], persona: Uuid, base: &str) -> Vec<ActiveAdapterRequest> {
     trials
         .iter()
@@ -128,26 +127,6 @@ pub fn genes_for_turn(trials: &[GeneTrial], persona: Uuid, base: &str) -> Vec<Ac
         })
         .map(GeneTrial::page)
         .collect()
-}
-
-/// The genes her next turn runs with (every turn, card or conversation), read from the trial
-/// file and the base the node serves right now. `None` when either cannot be read: the caller then leaves her genome as it is
-/// (never a guessed one), and the reason is on the probe stream.
-pub fn live_genes(persona: Uuid) -> Option<Vec<ActiveAdapterRequest>> {
-    let base = crate::inference::llama_server::current_serving().active_model?;
-    let store = GeneTrials::default_store()?;
-    match store.load() {
-        Ok(trials) => Some(genes_for_turn(&trials, persona, &base)),
-        Err(error) => {
-            continuum_base::probe!(
-                class = "genome.trial.unreadable",
-                persona = %persona,
-                error = error.as_str(),
-                "the gene trial file did not read: this turn keeps the genome she has"
-            );
-            None
-        }
-    }
 }
 
 /// The effects of a decision the examiner wrote (through [`GeneTrials::decide`]). Promoted:

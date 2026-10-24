@@ -52,29 +52,18 @@ pub(super) async fn run_turn_cycle(
         .cycle_for_room(&ctx.identity.peer_id.as_uuid(), turn_room)
     {
         Some(cycle) => {
-            // HER GENES ARE IN HER HEAD ON EVERY TURN (Joel, 2026-10-10: a gene is hers
-            // once trained and follows her mind, never her workload; GENE-REUSE-FORK-MINT
-            // §3d). Pinned before the turn and put back after it, as the work turn does,
-            // so the genome never changes beneath a request. Unreadable: the genome she
-            // has. The receipt names the genes that ran (GenerationReceipt::genes).
-            let _genome_pin = {
-                let pin = crate::cognition::workspace::GenomeRestore::snapshot(
-                    std::sync::Arc::clone(&cycle),
-                );
-                if let Some(genes) =
-                    crate::genome::gene_trial::live_genes(ctx.identity.peer_id.as_uuid())
-                {
-                    continuum_base::probe!(
-                        class = "persona.genome.turn_genes",
-                        persona = %ctx.identity.agent_name,
-                        room = %turn_room,
-                        genes = genes.len() as u64,
-                        "the genome this turn runs with: every gene she trained that is not retired"
-                    );
-                    cycle.page_in(genes);
-                }
-                pin
-            };
+            // HER GENES ARE IN HER HEAD ON EVERY TURN, chosen by what her mind is on
+            // (GENE-REUSE-FORK-MINT §3d): every gene whose region the turn's focused line is
+            // inside, weighted by depth (`genome::selection`). They stay on her cycle until
+            // the next turn selects, so nothing between turns flips her slot's adapters (each
+            // flip clears her KV). Unreadable: the genome she has. The receipt names the
+            // genes that ran (GenerationReceipt::genes).
+            let need = crate::cognition::recall_faculty::focused_query(&workspace_burst.rendered);
+            if let Some(genes) =
+                crate::genome::selection::live_genes(ctx.identity.peer_id.as_uuid(), need).await
+            {
+                cycle.page_in(genes);
+            }
             // Run the mind over the metadata-rich burst built above
             // (WHO/WHEN/WHAT per inbox item, own posts attributed, room as the
             // WHERE). Recall (the persona's own memories) is injected by the
