@@ -487,6 +487,33 @@ impl PersonaAircRuntime {
                                     .await
                                 {
                                     let me = hb_airc.peer_id();
+                                    // Prune episode keys whose generation has ended: a card
+                                    // that left her live holds (transferred, settled) or one
+                                    // with a new lease (different expiry) no longer needs its
+                                    // old key. A lapsed hold still reads as her Claimed/
+                                    // InProgress with an expired lease, so it keeps its key;
+                                    // and when the fetch fails we prune nothing at all —
+                                    // unreadable is not clean.
+                                    let live_generations: std::collections::HashSet<(
+                                        uuid::Uuid,
+                                        u64,
+                                    )> = board
+                                        .snapshot()
+                                        .cards
+                                        .iter()
+                                        .filter(|c| {
+                                            c.owner == Some(me)
+                                                && matches!(
+                                                    c.state,
+                                                    airc_work::model::CardState::Claimed
+                                                        | airc_work::model::CardState::InProgress
+                                                )
+                                        })
+                                        .filter_map(|c| {
+                                            c.claim_expires_at_ms.map(|e| (c.card_id.as_uuid(), e))
+                                        })
+                                        .collect();
+                                    recorded_lapses.retain(|k| live_generations.contains(k));
                                     let mut next_due: Option<u64> = None;
                                     for c in board.snapshot().cards.iter() {
                                         if c.owner != Some(me)
@@ -530,23 +557,28 @@ impl PersonaAircRuntime {
                                             {
                                                 Ok(e) => e,
                                                 Err(_) => {
-                                                    super::lapse_evidence::LapseEvidence::absent()
-                                                } // join failed — no evidence, say so
+                                                    // The check itself did not run: record it
+                                                    // as unknown, never as an absent checkout.
+                                                    super::lapse_evidence::LapseEvidence::unchecked(
+                                                    )
+                                                }
                                             };
                                         continuum_base::probe!(
                                             class = "persona.claim.lapse_recorded",
                                             persona_id = %hb_persona,
                                             agent_name = %hb_name,
                                             card_id = %c.card_id.as_uuid(),
+                                            // JUSTIFIED unwrap_or_else: `idle` is None only
+                                            // when she has never thought in this process (no
+                                            // cognition stamp) — a real standing state, not
+                                            // absent data; "never-thought" names it. Same
+                                            // idiom as the denial probe above.
                                             denial_reason = %idle
                                                 .map(|ms| format!("idle_{ms}ms"))
                                                 .unwrap_or_else(|| "never-thought".to_string()),
                                             recent_evidence = evidence.recent_within_ttl,
-                                            checkout_present = evidence.checkout_present,
-                                            head_commit_age_ms = %evidence
-                                                .head_commit_age_ms
-                                                .map(|ms| ms.to_string())
-                                                .unwrap_or_else(|| "unknown".to_string()),
+                                            checkout_present = ?evidence.checkout_present,
+                                            head_commit_age_ms = ?evidence.head_commit_age_ms,
                                             dirty_files = ?evidence.dirty_files,
                                             "claim lapsed while renewal was denied — why the \
                                              denial stood and what work evidence disk still held"
@@ -559,7 +591,10 @@ impl PersonaAircRuntime {
                         }
                         if renewal_denied {
                             renewal_denied = false;
-                            recorded_lapses.clear(); // the episodes ended — bound the set
+                            // Do NOT clear the episode keys on resume: while a lapsed
+                            // board row persists, the same stale (card, expiry) could be
+                            // recorded again at the next denial. Keys are pruned per scan,
+                            // dropping only what the authoritative holds say has ended.
                             next_lapse_due = None; // re-establish from a fresh scan on the next denial
                             continuum_base::probe!(
                                 class = "persona.claim.renewal_resumed",

@@ -14,8 +14,10 @@ use uuid::Uuid;
 
 /// On-disk evidence for one lapsed hold.
 pub(super) struct LapseEvidence {
-    /// The card's staged checkout exists on this node.
-    pub(super) checkout_present: bool,
+    /// The card's staged checkout exists on this node;
+    /// None = the check itself could not run (a spawn_blocking join failure):
+    /// "could not check" must never print as "no checkout".
+    pub(super) checkout_present: Option<bool>,
     /// Age of the checkout's HEAD commit in ms; None = no commit or unreadable.
     pub(super) head_commit_age_ms: Option<u64>,
     /// Uncommitted changes (porcelain lines); None = status unreadable — a failed
@@ -26,9 +28,21 @@ pub(super) struct LapseEvidence {
 }
 
 impl LapseEvidence {
+    /// The check ran and found no staged checkout for the card on this node.
     pub(super) const fn absent() -> Self {
         Self {
-            checkout_present: false,
+            checkout_present: Some(false),
+            head_commit_age_ms: None,
+            dirty_files: None,
+            recent_within_ttl: false,
+        }
+    }
+
+    /// The check itself could not run (a spawn_blocking join failure): every field
+    /// reads "unknown" — a failed check must never print as an absent checkout.
+    pub(super) const fn unchecked() -> Self {
+        Self {
+            checkout_present: None,
             head_commit_age_ms: None,
             dirty_files: None,
             recent_within_ttl: false,
@@ -84,7 +98,7 @@ pub(super) fn lapse_evidence_recheck(peer: &Uuid, card: &airc_lib::WorkCard) -> 
     };
 
     LapseEvidence {
-        checkout_present: true,
+        checkout_present: Some(true),
         head_commit_age_ms,
         dirty_files,
         recent_within_ttl,
