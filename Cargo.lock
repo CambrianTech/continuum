@@ -11419,6 +11419,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "tool-working-set"
+version = "0.1.0"
+dependencies = [
+ "continuum-base",
+ "serde",
+ "serde_json",
+ "uuid",
+]
+
+[[package]]
 name = "tower"
 version = "0.5.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"

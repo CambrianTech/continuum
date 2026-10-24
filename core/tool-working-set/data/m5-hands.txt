@@ -1,0 +1,42 @@
+# The M5 residents' static tool surface: her hands, 38 verbs (ToolSurface::hands, #5350).
+# Receipt: the `tools` of Freya's prompt capture submitted 2026-10-18 (build 507787810),
+# 38 wire specs, 31,029 chars = 10,635 guard tokens; #5350 reports 10,594 on canary 2f042c2ea.
+# Canonical names, mapped from the wire dialect by each command's declared alias.
+code/edit
+code/git/add
+code/git/commit
+code/git/diff
+code/git/push
+code/git/status
+code/github/pr-comment
+code/github/pr-create
+code/list
+code/read
+code/run
+code/search
+code/shell
+code/shell-poll
+code/tree
+code/write
+commands/help
+commands/list
+focus/continue
+focus/mute
+focus/nudge
+room/join
+room/leave
+room/list
+room/members
+web/fetch
+web/search
+work/claim
+work/create
+work/get
+work/heartbeat
+work/list
+work/note
+work/release
+work/review
+work/state
+work/submission
+work/submit
