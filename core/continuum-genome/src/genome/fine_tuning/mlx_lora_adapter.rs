@@ -7,7 +7,6 @@
 //! custodian converts MLX weights to PEFT/GGUF; genome evaluation and paging
 //! remain downstream concerns.
 
-use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 
 use async_trait::async_trait;
@@ -394,19 +393,30 @@ async fn tokenizer_has_chat_template(
     std::fs::write(&probe_path, include_str!("probe_chat_template.py")).map_err(|e| {
         FineTuningError::LocalTrainerFailed(format!("write chat-template probe: {e}"))
     })?;
-    // A short question to the same interpreter, through the one owner that asks it. A
-    // cancelled job lets the probe finish its tokenizer load; it is never left running past it.
-    let (python, train_arg) = (python.to_path_buf(), train_base.to_owned());
-    let out = tokio::task::spawn_blocking(move || {
-        super::python_trainer_readiness::ask_python(&python, &[probe_path.as_os_str(), OsStr::new(&train_arg)])
-    })
-    .await
-    .map_err(|e| FineTuningError::LocalTrainerFailed(format!("chat-template probe task: {e}")))?
-    .map_err(|e| FineTuningError::LocalTrainerFailed(format!("spawn probe: {e}")))?;
+    // A short question to the same interpreter, through the one owned runner: a cancelled job
+    // ends the probe and everything it started. Its stderr goes to a log beside the script, so
+    // the capture holds only the one-word answer, and a failure quotes the log's tail.
+    use super::python_trainer_readiness::{ask_python, stderr_to, Answer};
+    let log = job_dir.join("probe_chat_template.stderr");
+    let script = probe_path.to_str().ok_or_else(|| {
+        FineTuningError::LocalTrainerFailed(format!("chat-template probe path is not UTF-8: {}", probe_path.display()))
+    })?;
+    let run = format!("{}import runpy, sys; sys.argv = [sys.argv[1], sys.argv[2]]; runpy.run_path(sys.argv[0], run_name='__main__')", stderr_to(&log));
+    let out = match ask_python(python, &["-c", run.as_str(), script, train_base], None).await {
+        Answer::Exited { output, cut: None } => output,
+        Answer::Exited { cut: Some(cut), .. } => {
+            return Err(FineTuningError::LocalTrainerFailed(format!("chat-template probe for {train_base}: {cut}")))
+        }
+        Answer::Unavailable(why) => {
+            return Err(FineTuningError::LocalTrainerFailed(format!("chat-template probe for {train_base}: {why}")))
+        }
+    };
     if !out.status.success() {
+        let stderr = std::fs::read(&log).unwrap_or_default(); // unwrap_or_default: no log means the probe died before writing one; the status still says it failed
+        let tail = &stderr[stderr.len().saturating_sub(2048)..];
         return Err(FineTuningError::LocalTrainerFailed(format!(
             "chat-template probe failed for {train_base}: {}",
-            String::from_utf8_lossy(&out.stderr)
+            String::from_utf8_lossy(tail)
         )));
     }
     Ok(String::from_utf8_lossy(&out.stdout).trim() == "yes")

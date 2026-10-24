@@ -215,12 +215,17 @@ pub fn start_server(
     rehome_reconciler::spawn_rehome_reconciler(&rt_handle, &serving_daemon);
     stretch_mark("end_of_persona_host_block", "ai_provider_register");
 
-    ai_genome_modules::register_ai_provider_and_genome_modules(
-        &runtime,
-        &gpu_manager,
-        &serving_daemon,
-        &airc_interceptor_cell,
-    );
+    {
+        // Trainers probe their own interpreter's imports when built (card 6f05b89d): the probe
+        // is an owned task on this runtime, so registration runs inside it.
+        let _rt_guard = rt_handle.enter();
+        ai_genome_modules::register_ai_provider_and_genome_modules(
+            &runtime,
+            &gpu_manager,
+            &serving_daemon,
+            &airc_interceptor_cell,
+        );
+    }
     let grid_state = closing_modules::register_closing_modules(&runtime, &gpu_manager, &code_state);
 
     let runtime_start::RuntimeStarted {
