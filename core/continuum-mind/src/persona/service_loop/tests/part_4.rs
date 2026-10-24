@@ -291,6 +291,29 @@ use super::*;
         }
     }
 
+    // what this catches (moved from cognition::handoff when the card bind moved up, mind split
+    // step 7): a card whose hands cannot be bound must not clear the handoff's bound card.
+    #[tokio::test]
+    async fn a_failed_bind_keeps_the_bound_card_in_the_handoff() {
+        use crate::cognition::handoff::{compose, note_held, note_unbound, TornBy};
+        let me = Uuid::from_u128(1_073);
+        let current = held_card(me);
+        note_held(me, None, &current, 1_850);
+        let cycle = crate::cognition::workspace::WorkspaceCycle::new(
+            vec![],
+            Arc::new(crate::cognition::workspace::SalienceArbiter),
+            4,
+        );
+        let mut unavailable = current.clone();
+        unavailable.card_id = airc_lib::WorkCardId::new();
+        let turn = crate::persona::card_hands::bind_card(&cycle, me, &unavailable).await;
+        assert!(turn.hands.is_none(), "no checkout/hands can be bound by this fixture");
+        let root = std::path::Path::new("current-checkout");
+        let bound = compose(me, TornBy::Periodic, Some(root), None, 1_875).expect("bound").card;
+        assert_eq!(bound, Some(current));
+        note_unbound(me);
+    }
+
 // Actual wake selection stays reachable while original capacity custody waits;
 // neither a new directed input nor Stop is hidden behind the retry timer.
 #[tokio::test(start_paused = true)]

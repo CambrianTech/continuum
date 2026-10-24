@@ -425,3 +425,29 @@ impl HeldCardTurn {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // what this catches (card 822c4253): her hands moving to a card's own checkout with no
+    // word (Kimi's code/read of career-wrangler/docs/... failing in a per-card worktree),
+    // or the notice repeating every turn at the same checkout. Told on a new root, silent
+    // on the same one, told again when it moves; the notice names root, branch and the
+    // home tree that did not move.
+    #[test]
+    fn she_is_told_when_her_hands_move_and_only_then() {
+        let kimi = Uuid::new_v4();
+        let card = std::path::Path::new("/w/worktrees/af4e2cea");
+        assert!(!already_told(kimi, card), "first rooting is news");
+        assert!(!already_told(kimi, card), "checking does not record: only a pinned line does");
+        mark_told(kimi, card);
+        assert!(already_told(kimi, card), "the same checkout next turn is not news");
+        assert!(!already_told(kimi, std::path::Path::new("/w/worktrees/b0b0b0b0")));
+        assert!(!already_told(Uuid::new_v4(), card), "per citizen, never shared");
+        let line = rooted_notice("CambrianTech/career-wrangler", card, "af4e2cea/a-real-product");
+        for want in ["/w/worktrees/af4e2cea", "af4e2cea/a-real-product", "docs/x.md", "home workspace is unchanged"] {
+            assert!(line.contains(want), "{want}: {line}");
+        }
+    }
+}

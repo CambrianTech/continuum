@@ -6,6 +6,7 @@
 //! exactly what it asserted before the move.
 
 mod airc_conversation;
+mod bound_card_activity;
 mod eval;
 mod recipe;
 mod registry;

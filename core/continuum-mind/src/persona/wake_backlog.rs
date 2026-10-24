@@ -549,4 +549,100 @@ mod tests {
             "human priority does not require a name"
         );
     }
+
+    // what this catches (moved from cognition::act_observe with mind split step 7: custody is
+    // persona's): regression 2e3f0eab: admission refusal must retain the original directed
+    // input, even when a newer directed input arrives before the admitted retry.
+    #[tokio::test]
+    async fn starved_priority_input_survives_until_dispatch_without_replaying_actions() {
+        use crate::cognition::act_observe::test_support::{admission, body_with_wm, ActThenSpeak, RecordingExecutor};
+        use crate::cognition::act_observe::{drive_to_settle_with_input, SettleStep};
+        use crate::cognition::working_memory::{WorkingMemory, WorkingMemoryFaculty};
+        use crate::cognition::workspace::{Burst, Faculty, SalienceArbiter, TurnAttention, TurnFraming, WorkspaceCycle};
+        use std::sync::{Arc, Mutex};
+        use crate::cognition::conversation::scripted_conversation::ScriptedConversation;
+        use crate::cognition::conversation::{IncomingMessage, PersonaConversation};
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        let gate = Arc::new(AtomicBool::new(false));
+        let mut faculty = ActThenSpeak::new();
+        faculty.admission_open = Some(Arc::clone(&gate));
+        let exec = Arc::new(RecordingExecutor {
+            seen_context: Arc::new(Mutex::new(None)),
+            result_content: "4".into(),
+        });
+        let wm = Arc::new(WorkingMemory::new(8));
+        let cycle = WorkspaceCycle::new(
+            vec![
+                Arc::new(WorkingMemoryFaculty::new(Arc::clone(&wm))) as Arc<dyn Faculty>,
+                Arc::new(faculty),
+            ],
+            Arc::new(SalienceArbiter),
+            8,
+        )
+        .with_acting(body_with_wm(exec.clone(), admission(), wm));
+        let original = IncomingMessage {
+            event_id: Uuid::new_v4(), lamport: 10, peer_id: Uuid::new_v4(),
+            room_id: Uuid::new_v4(), text: "Asha, inspect this exact input".into(), work: None,
+            media: vec![crate::cognition::conversation::channel_items::MediaItemRequest {
+                kind: "image".into(), mime_type: Some("image/png".into()),
+                blob_hash: Some("sha256:retained-input".into()), url: None,
+                description: Some("original attachment".into()),
+            }],
+        };
+        let mut newer = original.clone();
+        newer.event_id = Uuid::new_v4();
+        newer.room_id = Uuid::new_v4();
+        newer.lamport += 1;
+        newer.text = "Asha, a newer directed request".into();
+        let mut conversation = ScriptedConversation::new();
+        conversation.prime().await.unwrap();
+        let mut pending = PendingInput::default();
+        let cause = Some(Uuid::new_v4());
+        let framing = TurnFraming::message(TurnAttention::for_message(true, false));
+        let burst = |message: &IncomingMessage| {
+            Burst::raw_in(
+            crate::identity::ActivityRoom::from_uuid(message.room_id).unwrap(),
+            message.render_content(),
+            )
+        };
+        let refused =
+            drive_to_settle_with_input(&cycle, burst(&original), 8, framing, &mut conversation).await;
+        assert!(refused.deferred_before_dispatch);
+        assert_eq!(refused.acts, 0);
+        assert!(exec.seen_context.lock().unwrap().is_none());
+        let (step, _, _) = SettleStep::from_settled(refused);
+        pending.settle(&original, cause, framing.attention, &step);
+        conversation.event_feed().push(Ok(Some(newer.clone())));
+        assert_eq!(pending.message(), Some(&original));
+        assert_eq!(pending.wake_engram_for(&original), cause);
+
+        // A second failed admission neither consumes nor replaces the original.
+        let retried = pending.message().unwrap().clone();
+        let refused_again = drive_to_settle_with_input(&cycle, burst(&retried), 8, framing, &mut conversation).await;
+        let (step, _, _) = SettleStep::from_settled(refused_again);
+        pending.settle(&retried, cause, framing.attention, &step);
+        assert_eq!(pending.message(), Some(&original));
+        assert!(conversation.perceive_ready().await.unwrap().iter().any(|m| **m == newer));
+
+        gate.store(true, Ordering::SeqCst);
+        let completed = drive_to_settle_with_input(
+            &cycle,
+            burst(pending.message().unwrap()),
+            8,
+            framing,
+            &mut conversation,
+        )
+        .await;
+        assert!(!completed.deferred_before_dispatch);
+        assert_eq!(completed.acts, 1, "only the admitted retry executes an action");
+        assert!(completed.room_updates.iter().any(|m| **m == newer));
+        assert_eq!(completed.room, original.room_id);
+        let (step, _, _) = SettleStep::from_settled(completed);
+        assert!(matches!(&step, SettleStep::Spoke(_)));
+        pending.settle(&original, cause, framing.attention, &step);
+        assert!(pending.message().is_none(), "completed input is not replayed");
+        assert_eq!(conversation.next_message().await.unwrap(), Some(newer));
+        assert!(conversation.next_message().await.unwrap().is_none());
+    }
 }
