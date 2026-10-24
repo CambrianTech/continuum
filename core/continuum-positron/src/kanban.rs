@@ -115,6 +115,41 @@ pub enum KanbanHold {
     Unclaimed,
 }
 
+/// A review's verdict — mirrors airc's `WorkReviewOutcome` variant-for-variant (the continuum
+/// projector maps it exhaustively at the seam, like [`KanbanCardState`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export, export_to = "../../../protocol/typescript/positron/KanbanReviewOutcome.ts")]
+pub enum KanbanReviewOutcome {
+    Passed,
+    Failed,
+    Unknown,
+}
+
+/// The latest review of a card's latest submission, with the reviewer's finding: what a
+/// correction says, on the card a human sees and a resident reads (one board,
+/// docs/architecture/ONE-BOARD-THROUGH-POSITRON.md). A verdict without its finding taught
+/// nothing: residents on the M5 saw "review on card X: Failed" and nothing more (2026-10-24).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../../protocol/typescript/positron/KanbanReviewView.ts")]
+pub struct KanbanReviewView {
+    /// The submission this review judged (the card's latest).
+    #[ts(type = "string")]
+    pub submission_id: Uuid,
+    #[ts(type = "string")]
+    pub reviewer_id: Uuid,
+    /// Resolved substrate-side from `reviewer_id`, as `creator_name` is.
+    pub reviewer_name: String,
+    pub outcome: KanbanReviewOutcome,
+    /// The reviewer's finding as written. `None` for a legacy review that carried only an
+    /// evidence blob: its finding is read with `work/submission <submission_id>`.
+    #[ts(optional)]
+    pub finding: Option<String>,
+    /// Unix-ms, the reviewer's signed clock.
+    #[ts(type = "number")]
+    pub reviewed_at: u64,
+}
+
 /// A lane's state — mirrors airc's `LaneState` variant-for-variant.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "snake_case")]
@@ -248,6 +283,10 @@ pub struct KanbanCardView {
     /// Landing link, once a PR exists for the card. `None` before then.
     #[ts(optional)]
     pub pull_request: Option<KanbanPullRequest>,
+    /// The latest review of the card's latest submission, finding included. `None` before
+    /// any review.
+    #[ts(optional)]
+    pub review: Option<KanbanReviewView>,
     /// Unix-ms airc creation time — the board MAY show card age.
     #[ts(type = "number")]
     pub created_at: u64,
@@ -365,6 +404,14 @@ mod tests {
                 repo: "CambrianTech/continuum".to_string(),
                 number: 1735,
             }),
+            review: Some(KanbanReviewView {
+                submission_id: Uuid::from_u128(5),
+                reviewer_id: Uuid::from_u128(4),
+                reviewer_name: "Cormac".to_string(),
+                outcome: KanbanReviewOutcome::Failed,
+                finding: Some("execute() checks only the id in its terminal UPDATE".to_string()),
+                reviewed_at: 1_720_000_400_000,
+            }),
             created_at: 1_720_000_000_000,
             updated_at: 1_720_000_500_000,
         }
@@ -429,6 +476,7 @@ mod tests {
             assignee_id: None,
             assignee_name: None,
             pull_request: None,
+            review: None,
             body: None,
             ..sample_card()
         };
