@@ -65,30 +65,14 @@ pub async fn settle_card_credit_bound(
         if rows.is_empty() {
             continue;
         }
-        // The room judged this card, so her open gene trials hear it: the card is credited
-        // to the genome that worked it, named by its receipts (genome/gene_trial.rs). A
-        // COURSEWORK lesson is the exception (ONE-RESIDENT §10.2): its verdict says what she
-        // was taught, not whether it transfers, and lessons repeat by design, so a gene trained
-        // on a lesson would be judged on that same lesson. The promotion gate judges real work
-        // only; the lesson's passing turns still train below.
-        if let Some(set) = rows.iter().find_map(|r| r.coursework_set.as_deref()) {
-            continuum_base::probe!(
-                class = "training.credit.coursework_no_trial",
-                card = %card_id,
-                set = %set,
-                passed,
-                "a coursework lesson settled: its turns train, its verdict never credits a gene trial"
-            );
-        } else {
-            let turns: Vec<crate::genome::gene_trial::CardTurn> = rows
-                .iter()
-                .map(|r| crate::genome::gene_trial::CardTurn::from_receipts(r.staged_at_ms, &r.receipts))
-                .collect();
-            crate::genome::gene_trial::credit_settled_card(persona_id, card_id, passed, &turns);
-        }
         // VERDICT ORDER (card ad4bfaeb): a failure marks every row staged so far; a pass
         // trains only what was staged after it. The order is her own core's perception of
         // the failure, so no clock on the reviewer's node is compared with hers.
+        let verdict = match passed.then(|| pass_admits(&rows)) {
+            None => CardVerdict::Failed,
+            Some(PassAdmits::All) => CardVerdict::Passed,
+            Some(PassAdmits::AfterFailure) => CardVerdict::Corrected,
+        };
         let rows = if passed {
             match pass_admits(&rows) {
                 PassAdmits::All => rows,
@@ -130,7 +114,7 @@ pub async fn settle_card_credit_bound(
                 );
                 continue;
             }
-            match settle_staged_row(&conn, &substrate, persona_id, &persona_name, row, passed).await {
+            match settle_staged_row(&conn, &substrate, persona_id, &persona_name, row, verdict).await {
                 Ok(true) => submitted += 1,
                 Ok(false) => {}
                 Err(error) => continuum_base::probe!(
@@ -194,8 +178,10 @@ pub(super) fn staged_submission_params(
     persona_id: Uuid,
     persona_name: &str,
     row: &StagedCredit,
-    passed: bool,
+    verdict: impl Into<CardVerdict>,
 ) -> Result<serde_json::Value, &'static str> {
+    let verdict = verdict.into();
+    let passed = verdict != CardVerdict::Failed;
     // Every arm NAMES itself. This used to be one `Option`, and returning `None`
     // was the ONLY exit on the settle path that left no trace anywhere — every
     // other one emits a probe. A row could be skipped forever and the ledger would
@@ -243,6 +229,13 @@ pub(super) fn staged_submission_params(
     }
     params["submissionId"] = json!(row.id);
     crate::cognition::held_out::stamp_examples(&mut params, row.task.as_ref());
+    if verdict == CardVerdict::Corrected {
+        // The reviewed correction (#4900) is the one labelled source: its own bucket, and one
+        // correction trains, through the same /train path at the one default schedule
+        // (`native_jobs::DEFAULT_LEARNING_RATE`, 1e-4, measured on the 5090 2026-10-10).
+        params["traitKind"] = json!(format!("{}/{CORRECTED_BUCKET}", plan.bucket_key()));
+        params["minExamples"] = json!(1);
+    }
     Ok(params)
 }
 
@@ -346,9 +339,9 @@ pub async fn settle_staged_row<T: Transport, S: Transport>(
     persona_id: Uuid,
     persona_name: &str,
     row: &StagedCredit,
-    passed: bool,
+    verdict: impl Into<CardVerdict>,
 ) -> Result<bool, ClientError> {
-    let params = match staged_submission_params(persona_id, persona_name, row, passed) {
+    let params = match staged_submission_params(persona_id, persona_name, row, verdict) {
         Ok(params) => params,
         Err(reason) => {
             // SAY IT. A staged credit that can never settle is a citizen's work
@@ -417,6 +410,25 @@ pub async fn settle_staged_row<T: Transport, S: Transport>(
         "destination durably accepted this staged revision; training is a separate outcome"
     );
     Ok(true)
+}
+
+/// The bucket suffix a reviewed correction trains under.
+pub(crate) const CORRECTED_BUCKET: &str = "corrected";
+
+/// What a card's verdict makes of the rows it settles. A pass after a failure on the same
+/// card is the reviewed correction (#4900): the labelled example the examiner's acceptance
+/// test is built on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CardVerdict {
+    Failed,
+    Passed,
+    Corrected,
+}
+
+impl From<bool> for CardVerdict {
+    fn from(passed: bool) -> Self {
+        if passed { CardVerdict::Passed } else { CardVerdict::Failed }
+    }
 }
 
 /// Which staged rows a PASSING verdict may train (card ad4bfaeb).
