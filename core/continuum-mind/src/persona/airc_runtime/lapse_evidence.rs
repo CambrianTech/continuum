@@ -110,6 +110,8 @@ mod tests {
     use super::lapse_recency;
 
     #[test]
+    // what this catches: the recency disambiguator — a commit inside one lease length
+    // of now must read as work ("she was demonstrably working"), never as idle.
     fn a_commit_within_one_lease_length_is_recent() {
         let now = 30u64 * 60 * 1000; // arbitrary clock: thirty minutes, in ms
         let ttl = 30 * 60 * 1000;
@@ -120,6 +122,8 @@ mod tests {
     }
 
     #[test]
+    // what this catches: staleness masquerading as recency — a HEAD older than the
+    // lease window must not read as work evidence for the lapsed episode.
     fn a_commit_older_than_one_lease_length_is_not_recent() {
         let now_ms = 7_200_000u64; // two hours, in ms
         let ttl = 30 * 60 * 1000;
@@ -133,6 +137,8 @@ mod tests {
     }
 
     #[test]
+    // what this catches: an absent HEAD printing as a number or as recent — no commit
+    // is "no evidence", never recency.
     fn no_commit_is_never_recent() {
         let (age, recent) = lapse_recency(None, 123_456, 1_800_000);
         assert_eq!(age, None);
@@ -140,6 +146,8 @@ mod tests {
     }
 
     #[test]
+    // what this catches: clock skew — a future-dated commit must clamp to zero age and
+    // still read recent, never a negative age or "no evidence".
     fn a_future_commit_clamps_to_zero_age_and_reads_recent() {
         // clock skew must not print a negative age or read as "no evidence"
         let (age, recent) = lapse_recency(Some(9_999_999), 100_000, 1_800_000);

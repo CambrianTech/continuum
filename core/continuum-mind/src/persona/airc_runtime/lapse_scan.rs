@@ -163,19 +163,14 @@ pub(super) async fn record_lapsed_holds(
             persona_id = %persona_id,
             agent_name = %agent_name,
             card_id = %card.card_id.as_uuid(),
-            // JUSTIFIED unwrap_or_else: `idle` is None only when she has never
-            // thought in this process (no cognition stamp) — a real standing state,
-            // not absent data; "never-thought" names it. Same idiom as the denial
-            // probe at the call site.
-            denial_reason = %idle
-                .map(|ms| format!("idle_{ms}ms"))
-                .unwrap_or_else(|| "never-thought".to_string()),
+            idle_ms = ?idle,
             recent_evidence = evidence.recent_within_ttl,
             checkout_present = ?evidence.checkout_present,
             head_commit_age_ms = ?evidence.head_commit_age_ms,
             dirty_files = ?evidence.dirty_files,
-            "claim lapsed while renewal was denied — why the \
-             denial stood and what work evidence disk still held"
+            "claim lapsed while renewal was denied (idle_ms=None: she never \
+             thought in this process) — why the denial stood and what work \
+             evidence disk still held"
         );
     }
     plan.schedule
@@ -221,6 +216,8 @@ mod tests {
     }
 
     #[test]
+    // what this catches: the same lapsed (card, expiry) seen on several denial ticks
+    // recorded one row per tick — dedup by lease generation is what keeps it to once.
     fn lapsed_episode_records_once_then_dedups() {
         let me = me();
         let c = card(
@@ -250,6 +247,8 @@ mod tests {
     }
 
     #[test]
+    // what this catches: a re-claimed card under a fresh lease that lapses again would
+    // be wrongly deduped as the old episode — new generation must record again.
     fn new_lease_generation_is_a_new_episode() {
         let me = me();
         let mut recorded: HashSet<(Uuid, u64)> = HashSet::new();
@@ -278,6 +277,8 @@ mod tests {
     }
 
     #[test]
+    // what this catches: recorded episode keys grow forever — a card that leaves her
+    // live holds (transferred, settled) must have its stale key pruned per scan.
     fn keys_prune_when_the_hold_leaves() {
         let me = me();
         let other = airc_core::PeerId::from_u128(9);
@@ -301,6 +302,8 @@ mod tests {
     }
 
     #[test]
+    // what this catches: the fetch discipline — one board read per expiry crossing, on
+    // the EARLIEST live expiry, and none at all once every hold has lapsed (quiescent).
     fn schedule_tracks_earliest_live_expiry_and_quiescence() {
         let me = me();
         let mut recorded: HashSet<(Uuid, u64)> = HashSet::new();
