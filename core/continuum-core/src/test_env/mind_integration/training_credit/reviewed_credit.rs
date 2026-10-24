@@ -645,9 +645,24 @@ use super::*;
         let (mut fx, _capture) = exact_review_bound_by(Some("reviewed-request")).await;
         let (executor, persona, name, room) = (fx.executor.clone(), fx.persona, fx.name, fx.room);
         let pass = fx.pass.clone();
-        let board = fx.project(vec![(WorkEvent::WorkSubmissionReviewed(pass.clone()), fx.reviewer)]);
+        let twin_id = Uuid::new_v4();
+        let twin_published = airc_work::WorkSubmission {
+            submission_id: airc_work::SubmissionId::from_uuid(twin_id),
+            card_id: fx.card_id,
+            claim_id: airc_work::ClaimId::from_uuid(fx.selection.claim_id),
+            instance: fx.selection.instance.clone(),
+            base_sha: fx.selection.base_sha.clone(),
+            artifact: fx.selection.artifact.clone(),
+            publisher: fx.owner,
+            submitted_at_ms: 3,
+        };
+        // The twin is published: only a published submission can share a row.
+        let board = fx.project(vec![
+            (WorkEvent::WorkSubmitted(twin_published), fx.owner),
+            (WorkEvent::WorkSubmissionReviewed(pass.clone()), fx.reviewer),
+        ]);
         let twin = reviewed::PendingSelection {
-            submission_id: Uuid::new_v4(),
+            submission_id: twin_id,
             room_id: room,
             card_id: fx.selection.card_id,
             claim_id: fx.selection.claim_id,

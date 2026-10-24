@@ -200,10 +200,9 @@ pub struct CallerIdentity {
     /// #5026). Set only by the kernel's release path ([`Self::releasing_hands`]), never from
     /// params.
     pub releases_hands: bool,
-    /// The generation whose tool call this dispatch is: its `submitted_request_id`, bound by
-    /// the act seam that executes her calls ([`Self::issued_by`]), never from params, so a tool
-    /// call cannot name another generation. Credit binds a submission to the turn that made it
-    /// through this (card fe8554d2). `None` for every caller that is not her act.
+    /// Provenance: the generation whose tool call this dispatch is (its request id). Bound
+    /// in-process by the code that executes the call ([`Self::issued_by`]), never from params,
+    /// so a call cannot name another generation. `None` for every caller that is not an act.
     pub issuing_generation: Option<String>,
 }
 

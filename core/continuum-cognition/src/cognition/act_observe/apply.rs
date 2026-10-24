@@ -121,7 +121,7 @@ pub async fn apply_act(
     // The generation whose calls these are rides the caller (card fe8554d2), so work/submit
     // can bind what she submits to the turn that made it. Hands that cannot stamp run the
     // calls as before, with no provenance.
-    let executor = match issuing_generation.and_then(|g| executor.issued_by(body.persona_id, g)) {
+    let executor = match issuing_generation.and_then(|g| executor.issued_by(g)) {
         Some(stamped) => stamped,
         None => executor,
     };

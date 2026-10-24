@@ -285,7 +285,7 @@ async fn an_acts_calls_carry_the_generation_that_issued_them() {
     }
     #[async_trait]
     impl ToolExecutor for StampingExecutor {
-        fn issued_by(&self, _persona: Uuid, generation: String) -> Option<Arc<dyn ToolExecutor>> {
+        fn issued_by(&self, generation: String) -> Option<Arc<dyn ToolExecutor>> {
             Some(Arc::new(Self { issued: Some(generation), seen: self.seen.clone() }))
         }
         async fn execute_native_batch(

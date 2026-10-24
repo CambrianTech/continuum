@@ -330,6 +330,31 @@ pub struct TurnCreditCapture {
 }
 
 impl TurnCreditCapture {
+    /// This snapshot may carry the generation a pending submission recorded; a review of it
+    /// that held because that generation was not staged yet can bind now. Re-drives through
+    /// the one replay registration uses (idempotent), only when a pending generation staged.
+    async fn redrive_held_reviews(&self, receipts: &[crate::ai::provenance::GenerationReceipt]) {
+        match reviewed::issues_pending(&self.conn, &self.persona_name, self.credit.card_id, receipts).await {
+            Ok(false) => {}
+            Ok(true) => {
+                let Some(runtime) = crate::persona::PersonaAircRuntimeRegistry::try_global()
+                    .and_then(|registry| registry.get(self.persona_id))
+                else {
+                    return; // not resident here: her next registration replays it
+                };
+                let name = self.persona_name.clone();
+                tokio::spawn(async move { reconcile_reviews(&name, runtime.airc()).await });
+            }
+            Err(error) => continuum_base::probe!(
+                class = "training.credit.redrive_unreadable",
+                persona = %self.persona_name,
+                card = %self.credit.card_id,
+                error = %error,
+                "pending submissions on this card could not be read after staging: a held review waits for the next review event or registration"
+            ),
+        }
+    }
+
     pub(crate) fn for_turn(
         persona_id: Uuid,
         persona_name: &str,
@@ -451,6 +476,7 @@ impl TurnCreditCapture {
                     elapsed_ms = started.elapsed().as_millis() as u64,
                     "card-linked turn snapshot persisted; outcome remains unverified"
                 );
+                self.redrive_held_reviews(receipts).await;
                 true
             }
             Err(error) => {

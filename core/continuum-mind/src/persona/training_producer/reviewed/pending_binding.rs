@@ -26,6 +26,29 @@ pub struct PendingSelection {
     pub issuing_generation: String,
 }
 
+impl PendingSelection {
+    /// Everything but the issuing generation: the publication a retry repeats.
+    pub fn same_publication(&self, other: &Self) -> bool {
+        self.submission_id == other.submission_id
+            && self.room_id == other.room_id
+            && self.card_id == other.card_id
+            && self.claim_id == other.claim_id
+            && self.instance == other.instance
+            && self.base_sha == other.base_sha
+            && self.artifact == other.artifact
+    }
+}
+
+/// The submissions the board holds published on `card`. A pending row counts as another
+/// submission only once it is here: a record whose publication failed is an orphan, and must
+/// never hold the retry that replaced it.
+pub fn published_on(board: &airc_work::WorkBoardProjection, card: airc_work::WorkCardId) -> std::collections::HashSet<Uuid> {
+    match board.card(card) {
+        Some(c) => c.submissions.iter().map(|s| s.submission_id.as_uuid()).collect(),
+        None => std::collections::HashSet::new(), // a card the board does not hold publishes nothing
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, crate::orm::Entity)]
 #[serde(rename_all = "camelCase")]
 #[entity(collection = "pending_credit_binding")]
@@ -67,7 +90,11 @@ pub async fn record_pending<T: Transport>(
 ) -> Result<(), CreditBindingError> {
     ensure_storage(conn, persona_name).await?;
     let id = selection.submission_id;
-    let same = |prior: &PendingCreditBinding| prior.persona_id == persona_id && prior.selection == selection;
+    // A retry comes from a later act, so it carries a later generation: the publication fields
+    // decide sameness, and the FIRST recorded generation is kept, because that act made it.
+    let same = |prior: &PendingCreditBinding| {
+        prior.persona_id == persona_id && prior.selection.same_publication(&selection)
+    };
     if let Some(prior) = read_one::<_, PendingCreditBinding>(conn, persona_name, &id.to_string()).await? {
         return if same(&prior) { Ok(()) } else { Err(CreditBindingError::ConflictingSubmission(id)) };
     }
@@ -92,6 +119,7 @@ pub async fn resolve_pending<T: Transport>(
     persona_id: Uuid,
     room_id: Uuid,
     submitted: &airc_work::WorkSubmission,
+    published: &std::collections::HashSet<Uuid>,
 ) -> Result<Option<Result<WorkCreditBinding, Held>>, CreditBindingError> {
     ensure_storage(conn, persona_name).await?;
     let id = submitted.submission_id.as_uuid();
@@ -107,7 +135,7 @@ pub async fn resolve_pending<T: Transport>(
         Err(CreditBindingError::Storage(e)) => return Err(e.into()),
         Err(other) => return Ok(Some(Err(Held::Unresolved(other.to_string())))),
     };
-    if let Some(other) = issued_elsewhere(conn, persona_name, &row, id).await? {
+    if let Some(other) = issued_elsewhere(conn, persona_name, &row, id, published).await? {
         return Ok(Some(Err(Held::SharedRevision(other))));
     }
     let selection = SubmissionSelection {
@@ -137,8 +165,13 @@ pub async fn issued_elsewhere<T: Transport>(
     persona_name: &str,
     row: &StagedCredit,
     submission: Uuid,
+    published: &std::collections::HashSet<Uuid>,
 ) -> Result<Option<Uuid>, CreditBindingError> {
-    let others = pending_on_card(conn, persona_name, row.card_id).await?;
+    let others: Vec<PendingCreditBinding> = pending_on_card(conn, persona_name, row.card_id)
+        .await?
+        .into_iter()
+        .filter(|o| published.contains(&o.id))
+        .collect();
     let row_generations: Vec<&str> = row.receipts.iter().map(|r| r.submitted_request_id.as_str()).collect();
     let issued: Vec<(Uuid, &str)> =
         others.iter().map(|o| (o.id, o.selection.issuing_generation.as_str())).collect();
@@ -182,6 +215,20 @@ fn shared_with(row_generations: &[&str], submission: Uuid, issued: &[(Uuid, &str
         .iter()
         .find(|(other, generation)| *other != submission && row_generations.contains(generation))
         .map(|(other, _)| *other)
+}
+
+/// Does a row staged with these generations carry a pending submission's issuing generation?
+/// Then a review of that submission that waited (`Unresolved`: not staged yet) can bind now.
+pub async fn issues_pending<T: Transport>(
+    conn: &Connection<T>,
+    persona_name: &str,
+    card_id: Uuid,
+    receipts: &[crate::ai::provenance::GenerationReceipt],
+) -> Result<bool, ClientError> {
+    let pending = pending_on_card(conn, persona_name, card_id).await?;
+    Ok(pending
+        .iter()
+        .any(|p| receipts.iter().any(|r| r.submitted_request_id == p.selection.issuing_generation)))
 }
 
 /// Every pending row on the card. An incomplete list is an error, never "no other submission".

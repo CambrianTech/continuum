@@ -125,7 +125,7 @@ pub trait ToolExecutor: Send + Sync {
     /// bound here and never by a tool input, so a command can tie what she submits to the turn
     /// that made it (card fe8554d2). `None` when these hands cannot stamp; the calls then carry
     /// no provenance, exactly as before.
-    fn issued_by(&self, _persona: uuid::Uuid, _generation: String) -> Option<std::sync::Arc<dyn ToolExecutor>> {
+    fn issued_by(&self, _generation: String) -> Option<std::sync::Arc<dyn ToolExecutor>> {
         None
     }
 

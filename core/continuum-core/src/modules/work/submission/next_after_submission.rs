@@ -244,6 +244,8 @@ impl ActionCommand for WorkSubmit {
             .as_ref()
             .filter(|c| c.peer_id.as_uuid() == runtime.persona_id())
             .and_then(|c| c.issuing_generation.clone())
+            // A retry of a submission the board already holds records nothing new.
+            .filter(|_| !card.submissions.iter().any(|s| s.submission_id.as_uuid() == submission_id))
         {
             // She named no selection: the generation whose tool call this is, bound by her act
             // seam and never by her arguments, is recorded before publication and binds when a
@@ -280,7 +282,7 @@ impl ActionCommand for WorkSubmit {
             submission_id: candidate.submission_id, card_id, claim_id: candidate.claim_id,
             instance: candidate.instance, base_sha: candidate.base_sha, artifact: candidate.artifact,
         }).await.map_err(|e| CommandError::Internal(format!(
-            "submission publication was not acknowledged; retry the same submission_id and selection: {e}")))?;
+            "submission {submission_id} publication was not acknowledged; retry with submission_id={submission_id} and the same selection: {e}")))?;
         let handoff = if bench {
             Ok(None)
         } else {
