@@ -7,6 +7,9 @@
 //! `docs/architecture/MICROKERNEL-DECOMPOSITION.md`.
 
 pub mod concurrency;
+pub mod docker_tier;
+pub mod docker_tier_pool;
+pub mod entity_schemas;
 pub mod governor;
 pub mod gpu;
 pub mod identity;
@@ -14,6 +17,9 @@ pub mod logging;
 pub mod orm;
 pub mod paging;
 pub mod paths;
+pub mod probe_query;
+pub mod probe_stream;
+pub mod resource_broker;
 pub mod resources;
 pub mod routing;
 pub mod runtime;

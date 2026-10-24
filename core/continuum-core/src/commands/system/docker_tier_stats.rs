@@ -3,7 +3,7 @@
 
 use std::sync::Arc;
 
-use crate::modules::docker_tier_pool::DockerTierStats;
+use crate::docker_tier_pool::DockerTierStats;
 use crate::modules::system_resources::SystemResourceService;
 use crate::sdk_codegen::CommandError;
 

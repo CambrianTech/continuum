@@ -92,7 +92,7 @@ fn divergence_excerpt(prev: &str, next: &str, at: usize) -> (String, String) {
 // ─────────────────────────── debug/prompt-reuse ──────────────────────────
 
 /// Score predicted KV prefix reuse over recorded prompt captures. Stateless;
-/// self-registers like [`super::probe_query::ProbeQuery`].
+/// self-registers like [`crate::probe_query::ProbeQuery`].
 #[derive(Default)]
 pub struct PromptReuse;
 

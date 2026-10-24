@@ -37,7 +37,7 @@ use ts_rs::TS;
 use airc_core::RoomId;
 
 use crate::identity::PeerId;
-use crate::modules::probe_query::{scan_ledger, ProbeRow, MAX_LIMIT};
+use crate::probe_query::{scan_ledger, ProbeRow, MAX_LIMIT};
 use crate::routing::probe_file_sink::ENV_PROBE_DIR;
 use crate::sdk_codegen::CommandError;
 
