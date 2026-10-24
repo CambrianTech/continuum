@@ -90,15 +90,23 @@ mod tests {
     // crate's tests, and `home_dir().join(".continuum")` never honoured one at all, so a
     // genome test could write the operator's real genome tree and job ledger (the 2026-10-05
     // replay of 18 of Kimi's jobs). Any test home, pinned by a fixture or the per-process
-    // default, lives under the system temp dir.
+    // default, lives under the system temp dir. The one exception is by design: an operator
+    // who EXPLICITLY exports `CONTINUUM_HOME` for a test run is honoured (`continuum_home`
+    // reads it first), so the assertion holds only when no home was declared from outside.
     #[test]
     fn the_genome_root_in_a_test_build_is_never_the_operators_home() {
         let root = genome_root().expect("a test build always has a home");
-        assert!(
-            root.starts_with(std::env::temp_dir()),
-            "genome root {} escaped the test home",
-            root.display()
-        );
+        let declared = std::env::var_os("CONTINUUM_HOME")
+            .map(std::path::PathBuf::from)
+            .filter(|home| !home.starts_with(std::env::temp_dir()));
+        match declared {
+            Some(home) => assert_eq!(root, home.join("genome"), "an explicit home is honoured"),
+            None => assert!(
+                root.starts_with(std::env::temp_dir()),
+                "genome root {} escaped the test home",
+                root.display()
+            ),
+        }
     }
 
     // what this catches (card 32d2abbb): the job writer and its readers must name the SAME

@@ -87,7 +87,8 @@ pub fn continuum_root() -> std::path::PathBuf {
 /// fixture's "coder-14b" into ~/.continuum/state/served-window.json; the next boot
 /// remembered that model, found no decode knee for it, planned 8 lanes unclamped on a box
 /// whose knee is 2, and swapped 4.6 GB. Every store resolves its path through this
-/// function, so in any test build — when no `$CONTINUUM_HOME` is declared — the home is a
+/// function, so in any test build — when no `$CONTINUUM_HOME` is declared (an explicit one is
+/// always honoured, by design) — the home is a
 /// per-process directory under the system temp dir. Not configurable, not a fixture to
 /// remember: a test cannot reach the operator's state by forgetting.
 ///
