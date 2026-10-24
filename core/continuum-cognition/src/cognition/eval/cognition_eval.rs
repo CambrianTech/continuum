@@ -378,45 +378,7 @@ impl CognitionEval {
         // never warms, fail LOUD rather than emit a bogus 0. (Cost is one cheap probe on a
         // warm lane — the common case returns on the first try.)
         {
-            let warm_room = crate::identity::ActivityRoom::mint();
-            let probe_delivery = crate::cognition::rag_budget::RagDelivery {
-                source_id: "airc".to_string(),
-                items: vec![crate::cognition::rag_budget::RagItem {
-                    content: "ready check".to_string(),
-                    tokens: 0,
-                    metadata: serde_json::json!({ "peer_id": "peer", "occurred_at_ms": EVAL_EPOCH_MS }),
-                }],
-                tokens_used: 0,
-                truncated: false,
-                resolution_used: crate::cognition::rag_budget::ResolutionPreference::Raw,
-            };
-            let mut warm = false;
-            for _ in 0..15u32 {
-                let burst = crate::cognition::workspace::Burst::from_turns(
-                    warm_room,
-                    crate::cognition::conversation::workspace_turns::build_workspace_turns(
-                        std::slice::from_ref(&probe_delivery),
-                        "",
-                        "",
-                        None,
-                    ),
-                );
-                let probe = crate::cognition::act_observe::drive_to_settle(
-                    &cycle,
-                    burst,
-                    0, // no acts — a bare deliberation is enough to prove the lane answers
-                    crate::cognition::workspace::TurnFraming::directed(),
-                )
-                .await;
-                if probe.inference_error.is_none() {
-                    warm = true;
-                    break;
-                }
-                tokio::time::sleep(std::time::Duration::from_secs(4)).await;
-            }
-            // Reset the volatile scratch the probe touched so task #1 starts from the same
-            // clean frame every other task does.
-            cycle.reset_working_memory();
+            let warm = warm_gate(&cycle).await;
             if !warm {
                 return Err(CommandError::Internal(
                     "serving lane not ready after ~60s of warm probes — refusing to run an \

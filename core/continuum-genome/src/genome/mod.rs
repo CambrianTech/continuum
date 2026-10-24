@@ -69,6 +69,7 @@ pub mod competence;
 pub mod corpus_ref;
 pub mod gym_grader;
 pub mod fitness_ledger;
+pub mod examiner;
 pub mod gene_trial;
 pub mod local_manager;
 pub mod signature;
