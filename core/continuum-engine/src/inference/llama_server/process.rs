@@ -28,6 +28,8 @@ pub struct LlamaServerProcess {
     pub(super) pending_resource_reservation: parking_lot::Mutex<Option<crate::resources::LeaseGuard>>,
     // Retains the exact startup generation even when readiness already retired it.
     pub(super) last_started: parking_lot::Mutex<Option<crate::inference::slots::EngineGeneration>>,
+    /// A signalled adopted predecessor stays fenced across timeout/cancellation.
+    pub(super) retiring_adopted: parking_lot::Mutex<Option<crate::inference::engine_residency::EngineIncarnation>>,
     /// The LoRA genome set (sorted paths) the CURRENT child was launched with —
     /// the truthful record of what `/lora-adapters` holds, since llama.cpp has no
     /// API to query it. `ensure_model_serving` compares this against the desired
@@ -130,6 +132,7 @@ impl LlamaServerProcess {
             child: Arc::new(StdMutex::new(None)),
             pending_resource_reservation: parking_lot::Mutex::new(None),
             last_started: parking_lot::Mutex::new(None),
+            retiring_adopted: parking_lot::Mutex::new(None),
             served_adapters: Arc::new(StdMutex::new(Vec::new())),
             retained_page_dir: Arc::new(parking_lot::Mutex::new(None)),
             // THE host's live lane — pins the canonical port, owns the reclaim
@@ -162,6 +165,7 @@ impl LlamaServerProcess {
             child: Arc::new(StdMutex::new(None)),
             pending_resource_reservation: parking_lot::Mutex::new(None),
             last_started: parking_lot::Mutex::new(None),
+            retiring_adopted: parking_lot::Mutex::new(None),
             served_adapters: Arc::new(StdMutex::new(Vec::new())),
             retained_page_dir: Arc::new(parking_lot::Mutex::new(None)),
             // Ephemeral lane on its OWN scanned port: NOT the canonical live lane.
