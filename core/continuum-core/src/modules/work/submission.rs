@@ -11,6 +11,8 @@ use crate::persona::work_board::submissions::*;
 
 mod latest_submission;
 pub use latest_submission::*;
+mod default_credit;
+use default_credit::{default_revision, probe_default_unbound};
 mod next_after_submission;
 pub use next_after_submission::*;
 mod work_submission;

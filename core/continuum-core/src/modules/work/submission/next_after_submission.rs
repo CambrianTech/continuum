@@ -193,18 +193,26 @@ impl ActionCommand for WorkSubmit {
             ));
         }
         let mut bound_staged_revision_id = None;
-        if p.staged_revision_id.is_some() || p.generation_request_id.is_some() {
-            if self.registry.get(runtime.persona_id()).is_none()
-                || runtime.persona_id() != airc.peer_id().as_uuid()
-            {
-                return Err(CommandError::Invalid(
-                    "selected credit must belong to the calling resident persona".into(),
-                ));
+        let explicit = p.staged_revision_id.is_some() || p.generation_request_id.is_some();
+        let resident = self.registry.get(runtime.persona_id()).is_some()
+            && runtime.persona_id() == airc.peer_id().as_uuid();
+        if explicit && !resident {
+            return Err(CommandError::Invalid(
+                "selected credit must belong to the calling resident persona".into(),
+            ));
+        }
+        let executor = match (explicit || resident, self.executor_slot.cloned()) {
+            (false, _) => None,
+            (_, Some(executor)) => Some(executor),
+            (true, None) if explicit => {
+                return Err(CommandError::Internal("work executor is not ready".into()))
             }
-            let executor = self
-                .executor_slot
-                .cloned()
-                .ok_or_else(|| CommandError::Internal("work executor is not ready".into()))?;
+            (true, None) => {
+                probe_default_unbound(runtime.agent_name(), card_uuid, submission_id, "executor_not_ready");
+                None
+            }
+        };
+        if let Some(executor) = executor {
             let conn = Connection::new(InProcessTransport::new(
                 executor,
                 Some(crate::routing::CallerIdentity::local_persona(
@@ -212,42 +220,59 @@ impl ActionCommand for WorkSubmit {
                 )),
             ));
             let binding = if let Some(generation) = p.generation_request_id.as_deref() {
-                reviewed::bind_submission_generation(
-                    &conn,
-                    runtime.agent_name(),
-                    runtime.persona_id(),
-                    room.channel.as_uuid(),
-                    &candidate,
-                    generation,
+                Some(
+                    reviewed::bind_submission_generation(
+                        &conn,
+                        runtime.agent_name(),
+                        runtime.persona_id(),
+                        room.channel.as_uuid(),
+                        &candidate,
+                        generation,
+                    )
+                    .await,
                 )
-                .await
-            } else if let Some(revision) = p.staged_revision_id {
-                reviewed::bind_submission(
-                    &conn,
-                    runtime.agent_name(),
-                    runtime.persona_id(),
-                    SubmissionSelection {
-                        submission_id,
-                        room_id: room.channel.as_uuid(),
-                        card_id: card_uuid,
-                        claim_id: claim_id.as_uuid(),
-                        staged_revision_id: revision,
-                        instance: candidate.instance.clone(),
-                        base_sha: candidate.base_sha.clone(),
-                        artifact: candidate.artifact.clone(),
-                    },
-                )
-                .await
             } else {
-                unreachable!("credit selection checked above")
-            }
-            .map_err(|e| match e {
-                reviewed::CreditBindingError::Storage(source) => {
-                    CommandError::Internal(source.to_string())
+                // She named no selection: her own core picks what she staged on this card (card
+                // fe8554d2), so a review reaches her credit without her knowing the plumbing.
+                let revision = match p.staged_revision_id {
+                    Some(revision) => Some(revision),
+                    None => default_revision(&conn, runtime.agent_name(), &candidate).await,
+                };
+                match revision {
+                    Some(revision) => Some(
+                        reviewed::bind_submission(
+                            &conn,
+                            runtime.agent_name(),
+                            runtime.persona_id(),
+                            SubmissionSelection {
+                                submission_id,
+                                room_id: room.channel.as_uuid(),
+                                card_id: card_uuid,
+                                claim_id: claim_id.as_uuid(),
+                                staged_revision_id: revision,
+                                instance: candidate.instance.clone(),
+                                base_sha: candidate.base_sha.clone(),
+                                artifact: candidate.artifact.clone(),
+                            },
+                        )
+                        .await,
+                    ),
+                    None => None,
                 }
-                other => CommandError::Invalid(other.to_string()),
-            })?;
-            bound_staged_revision_id = Some(binding.selection.staged_revision_id);
+            };
+            if let Some(Err(e)) = binding.as_ref().filter(|_| !explicit) {
+                // Her core's pick was refused by the same validator an explicit selection
+                // meets: the submission still publishes, unbound, and says why.
+                probe_default_unbound(runtime.agent_name(), card_uuid, submission_id, &format!("binding_refused: {e}"));
+            } else if let Some(binding) = binding {
+                let binding = binding.map_err(|e| match e {
+                    reviewed::CreditBindingError::Storage(source) => {
+                        CommandError::Internal(source.to_string())
+                    }
+                    other => CommandError::Invalid(other.to_string()),
+                })?;
+                bound_staged_revision_id = Some(binding.selection.staged_revision_id);
+            }
         }
         let grade_title = card.title.clone();
         let bench = crate::recipe::benchmark_catalog::graded_at_submit(&grade_title);
