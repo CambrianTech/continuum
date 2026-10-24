@@ -70,7 +70,7 @@ const LEDGER_BASENAME: &str = "continuum-probes.jsonl";
 const DEFAULT_LIMIT: u32 = 50;
 
 /// Hard ceiling on rows in one response — a `limit` of 100k would blow the IPC frame.
-pub(crate) const MAX_LIMIT: u32 = 2_000;
+pub const MAX_LIMIT: u32 = 2_000;
 
 /// Accept `"a"`, `"a,b"`, or `["a","b"]` for a list-shaped param.
 ///
@@ -307,7 +307,7 @@ pub(crate) struct Scan {
 ///
 /// Split out so the filtering rules are unit-testable against a temp dir without an
 /// async runtime, a live core, or an env var.
-pub(crate) fn scan_ledger(
+pub fn scan_ledger(
     dir: &PathBuf,
     filter: &HashSet<String>,
     since_ms: Option<u64>,
