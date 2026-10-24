@@ -18,10 +18,12 @@ use std::time::Duration;
 use crate::inference::lane_process::{run_owned, Ended};
 
 /// How long the import probe may run before it is ended and readiness is unavailable.
-/// `None` until the cold import time of each trainer's interpreter is measured on its node
-/// class (asked of the M5 and the 5090 on #5356). Without a bound the probe is still owned,
-/// so a hung import keeps the trainer unadvertised and its process ends with the trainer.
-const IMPORT_PROBE_BOUND: Option<Duration> = None;
+/// Measured: the CUDA trainer's imports (torch, transformers, peft, accelerate, bitsandbytes,
+/// safetensors) took 28.3 s in a fresh process on the 5090 (Windows, its cuda-training venv,
+/// under serving load, OS cache state unproven), 2026-10-24T08:25Z, Codex. The bound is about
+/// 4x that observed sample, not a worst case. Exceeding it reads as unavailable, never as
+/// missing dependencies. MLX's `import mlx_lm` on the M5 is still to be measured.
+const IMPORT_PROBE_BOUND: Option<Duration> = Some(Duration::from_secs(120));
 
 /// Python run before an import probe's statement: the interpreter's stdout and stderr go to
 /// the null device at the file-descriptor level, so nothing the imported packages print (native
