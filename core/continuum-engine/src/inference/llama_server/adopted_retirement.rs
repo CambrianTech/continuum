@@ -23,29 +23,39 @@ impl LlamaServerProcess {
             return Err(LlamaServerError::Spawn("recorded live lane belongs to another endpoint".into()));
         }
         let incarnation = lane.incarnation();
+        use crate::inference::slots::DiscardReason;
         let endpoint = crate::inference::slots::directory().endpoint(&self.root);
         match incarnation.liveness() {
             Liveness::Dead => {
                 // Its residents' KV died with it; their next turns name this (card 6b28a445).
-                endpoint.record_relaunch_discard(crate::inference::slots::DiscardReason::AdoptedEngineDead);
+                endpoint.pending_discard(DiscardReason::AdoptedEngineDead).commit();
                 return Ok(());
             }
             Liveness::Unknown => return Err(LlamaServerError::Spawn("adopted engine identity is unverified; refusing retirement".into())),
             Liveness::Alive => {}
         }
-        if endpoint.paging_recovery_required() {
-            endpoint.record_relaunch_discard(crate::inference::slots::DiscardReason::PagingUncertain);
+        // Quarantined paging cannot save: its residents are captured now, recorded only once
+        // the engine is signalled or seen dead, so a superseded or refused retirement never
+        // reports a loss (card 6b28a445).
+        let unsaved = if endpoint.paging_recovery_required() {
+            Some(endpoint.pending_discard(DiscardReason::PagingUncertain))
         } else {
             transition.checkpoint_adopted_before_replacement(
                 &self.client, &self.root, incarnation, current,
             ).await.map_err(LlamaServerError::Spawn)?;
-        }
+            None
+        };
         if !current() {
             return Err(LlamaServerError::Superseded);
         }
         // A completed checkpoint is not authority to signal a reused PID.
         match incarnation.liveness() {
-            Liveness::Dead => return Ok(()),
+            Liveness::Dead => {
+                if let Some(unsaved) = unsaved {
+                    unsaved.because(DiscardReason::AdoptedEngineDead).commit();
+                }
+                return Ok(());
+            }
             Liveness::Unknown => return Err(LlamaServerError::Spawn("adopted engine identity became unverified after checkpoint".into())),
             Liveness::Alive => {}
         }
@@ -58,6 +68,9 @@ impl LlamaServerProcess {
         // No await between signalling and retaining custody. Cancellation of the
         // wait cannot turn this predecessor back into a serving candidate.
         *self.retiring_adopted.lock() = Some(incarnation);
+        if let Some(unsaved) = unsaved {
+            unsaved.commit();
+        }
         self.await_adopted_exit(incarnation, Duration::from_secs(10)).await
     }
 

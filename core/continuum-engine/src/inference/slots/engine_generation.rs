@@ -275,22 +275,22 @@ impl EndpointTransition {
 
     /// Planned replacement cannot discard a healthy engine's unsaved residents.
     /// A terminal refusal resumes the exact original ledger; an uncertain write
-    /// stays quarantined. Dead engines and quarantined paging use recovery instead.
+    /// stays quarantined. Dead engines and quarantined paging use recovery instead:
+    /// nothing can be saved, so their unsaved residents come back as a
+    /// [`PendingDiscard`] the caller commits once the engine is killed (card 6b28a445).
     pub(crate) async fn checkpoint_before_replacement(
         &mut self,
         client: &reqwest::Client,
         root: &str,
         current: &(dyn Fn() -> bool + Send + Sync),
-    ) -> Result<(), String> {
+    ) -> Result<Option<PendingDiscard>, String> {
         let generation = self.previous_generation().ok_or("replacement requires a known generation")?;
         if generation.has_exited() || self.endpoint.paging_recovery_required() {
-            // Nothing can be saved: the engine is gone, or a save could not be trusted.
-            self.endpoint.record_relaunch_discard(if generation.has_exited() {
+            return Ok(Some(self.endpoint.pending_discard(if generation.has_exited() {
                 DiscardReason::EngineExited
             } else {
                 DiscardReason::PagingUncertain
-            });
-            return Ok(());
+            })));
         }
         let original = self.capture_suspension(&generation)?;
         let result = self.checkpoint_residents(client, root).await.map(|_| ());
@@ -303,7 +303,7 @@ impl EndpointTransition {
         if !current() {
             return Err("replacement intent changed after checkpoint".into());
         }
-        Ok(())
+        Ok(None)
     }
 
     pub(crate) fn capture_suspension(
@@ -564,7 +564,7 @@ impl SlotDirectory {
                     gate: Arc::new(tokio::sync::RwLock::new(())),
                     paging_tasks: Mutex::new(tokio::task::JoinSet::new()),
                     ready_rx,
-                    discarded: Mutex::new(std::collections::HashMap::new()),
+                    discarded: Mutex::new(DiscardLog::default()),
                     state: Mutex::new(EndpointState {
                         ready,
                         paging_uncertain: false,

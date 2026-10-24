@@ -184,30 +184,78 @@ mod adopted_checkpoint;
         PageKey::mind(Uuid::from_u128(p)).expect("non-nil test id")
     }
 
-    // what this catches (card 6b28a445): a relaunch that cannot save (engine exited, paging
-    // quarantined, adopted engine dead) discarded residents' KV with no record, so their
-    // next cold turn read as a lost page. Only minds held WITHOUT a confirmed save are
-    // recorded, the record survives the pool being replaced, and it is taken exactly once.
+    // what this catches (card 6b28a445): a relaunch that cannot save (here, an engine that
+    // already exited) lost residents' KV with no record, so their next cold turn read as a
+    // lost page. Through the real replacement path: the loss is only CAPTURED by the
+    // checkpoint decision, and a capture dropped without commit (a superseded or refused
+    // retirement) records nothing. Committed, only minds held without a confirmed save are
+    // recorded, the record survives the pool's replacement, and it is taken exactly once.
     #[tokio::test]
-    async fn a_relaunch_records_only_unsaved_residents_and_their_next_turn_takes_it_once() {
+    async fn a_relaunch_records_unsaved_residents_only_when_committed_and_their_next_turn_takes_it_once() {
         let dir = SlotDirectory { endpoints: dashmap::DashMap::new() };
         let endpoint = dir.endpoint("test://relaunch");
+        let mut transition = endpoint.transition().await;
+        let generation = transition.start_generation().expect("first generation");
         let pool = Arc::new(KvSlotPool::new("test://relaunch", 4));
         pool.holders.lock().insert(0, mind(1));
         pool.holders.lock().insert(1, mind(2));
         pool.holders.lock().insert(2, key(3, 4));
         pool.note_saved(mind(2));
         endpoint.state.lock().pool = Some(Some(pool));
+        generation.observed_exit();
+        let client = reqwest::Client::new();
 
-        endpoint.record_relaunch_discard(DiscardReason::EngineExited);
+        let superseded = transition
+            .checkpoint_before_replacement(&client, "test://relaunch", &|| true)
+            .await
+            .expect("an exited engine has nothing to save")
+            .expect("its unsaved residents are captured");
+        drop(superseded);
+        assert_eq!(endpoint.discarded.lock().take(&mind(1)), None, "a capture never committed records nothing");
+
+        transition
+            .checkpoint_before_replacement(&client, "test://relaunch", &|| true)
+            .await
+            .expect("an exited engine has nothing to save")
+            .expect("its unsaved residents are captured")
+            .commit();
+        drop(transition);
         // The next generation's pool replaces this one; the record is the endpoint's.
         endpoint.state.lock().pool = Some(Some(Arc::new(KvSlotPool::new("test://relaunch", 4))));
+        endpoint.state.lock().ready.send_replace(true); // the replacement verified ready
 
         let admission = endpoint.admit().await.expect("an open endpoint admits");
         assert_eq!(admission.take_relaunch_discard(&mind(1)), Some(DiscardReason::EngineExited));
         assert_eq!(admission.take_relaunch_discard(&mind(1)), None, "taken once");
         assert_eq!(admission.take_relaunch_discard(&mind(2)), None, "a saved page restores; nothing was lost");
         assert_eq!(admission.take_relaunch_discard(&key(3, 4)), None, "a fork dies with its core anyway");
+    }
+
+    // what this catches (card 6b28a445, Codex's review): minds discarded by one relaunch that
+    // never return stayed recorded forever, across every later generation. Retention is one
+    // pool's worth of slots: the latest relaunch is kept whole, older records are evicted
+    // oldest first, and an empty capture evicts nothing.
+    #[tokio::test]
+    async fn discard_records_keep_one_pool_of_slots_across_generations() {
+        let dir = SlotDirectory { endpoints: dashmap::DashMap::new() };
+        let endpoint = dir.endpoint("test://retention");
+        let relaunch = |minds: &[u128]| {
+            let pool = Arc::new(KvSlotPool::new("test://retention", 3));
+            for (slot, m) in minds.iter().enumerate() {
+                pool.holders.lock().insert(slot as u32, mind(*m));
+            }
+            endpoint.state.lock().pool = Some(Some(pool));
+            endpoint.pending_discard(DiscardReason::PagingUncertain).commit();
+        };
+        relaunch(&[1, 2, 3]);
+        relaunch(&[4, 5]);
+        relaunch(&[]);
+        let mut log = endpoint.discarded.lock();
+        assert_eq!(log.take(&mind(1)), None, "oldest evicted first");
+        assert_eq!(log.take(&mind(2)), None, "oldest evicted first");
+        for kept in [3, 4, 5] {
+            assert_eq!(log.take(&mind(kept)), Some(DiscardReason::PagingUncertain), "mind {kept} kept");
+        }
     }
 
     // regression for card 6102ac09 (BigMama, 2026-09-26 12:28Z): a turn that reached a
