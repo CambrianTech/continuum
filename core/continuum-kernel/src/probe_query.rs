@@ -296,11 +296,11 @@ impl ActionCommand for ProbeQuery {
 
 /// Raw scan output, before the summary sentence is composed.
 #[derive(Debug)]
-pub(crate) struct Scan {
-    pub(crate) events: Vec<ProbeRow>,
-    pub(crate) matched: u32,
-    pub(crate) scanned: u32,
-    pub(crate) sources: Vec<String>,
+pub struct Scan {
+    pub events: Vec<ProbeRow>,
+    pub matched: u32,
+    pub scanned: u32,
+    pub sources: Vec<String>,
 }
 
 /// Walk every ledger generation oldest-first, keeping the newest `limit` matches.
