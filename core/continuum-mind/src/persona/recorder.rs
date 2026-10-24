@@ -70,7 +70,9 @@ use uuid::Uuid;
 /// retention window for incident analysis, copy fixtures out before
 /// the cap rotates them.
 const FIXTURE_CAP_PER_DIR: usize = 200;
-const RESPOND_FIXTURE_DIR: &str = ".continuum/fixtures/persona-respond";
+/// Where the recorder writes each turn, resolved by `capture::fixture_dir`; `dataset/from-turns`
+/// reads the same place through the same owner (card 2ceab504).
+pub const RESPOND_FIXTURE_DIR: &str = ".continuum/fixtures/persona-respond";
 const TURN_FRAME_FIXTURE_DIR: &str = ".continuum/fixtures/persona-turn-frame";
 
 /// Env var to fully disable recording. Set to `1` / `true` for hosts
