@@ -24,6 +24,7 @@ jobs:
       crates: ${{ steps.select.outputs.crates }}
       features: ${{ steps.select.outputs.features }}
       cli: ${{ steps.select.outputs.cli }}
+      shards: ${{ steps.select.outputs.shards }}
     steps:
       - uses: actions/checkout@v4
       - run: node --test tools/scripts/tests/ci-change-scope.test.cjs tools/scripts/tests/ci-cargo-freshness.test.cjs
@@ -60,32 +61,33 @@ jobs:
             core.setOutput('crates', JSON.stringify(selection.crates));
             core.setOutput('features', JSON.stringify(TEST_FEATURES));
             core.setOutput('cli', String(selection.cli));
+            // `core` when continuum-core is selected; `rest` when any other crate is.
+            const shards = [];
+            if (selection.crates.includes('continuum-core')) shards.push('core');
+            if (selection.crates.some(c => c !== 'continuum-core')) shards.push('rest');
+            core.setOutput('shards', JSON.stringify(shards));
 
-  # One job per affected crate, in parallel (card 44a3c460). The selector derives the set:
-  # every crate a changed path lies in plus all of its dependents, from the Cargo.toml graph.
-  # Each crate's own fixtures run in its job: the training script with the genome, the native custody
-  # interop with the engine, the compile-fail doc guards with the mind, and the warning ratchet
-  # and core lib binary with core (core depends on every other tested crate, so it runs
-  # whenever any of them does). The CLI handoff regressions are their own job (cli-handoff).
+  # Two shards, not one job per crate (card 44a3c460's matrix, measured 2026-10-24: in each crate
+  # job the shared setup, system packages plus the multi-GB target cache, took 109-227 s and the
+  # tests 33-35 s, so ~85% of every job was the same setup repeated per crate). `core` runs
+  # continuum-core's lib tests (the long one, ~5.4 min); `rest` sets up ONCE and runs every other
+  # selected crate in turn, each with its own fixtures: the native custody interop with the
+  # engine, the training script with the genome, the compile-fail doc guards with the mind. The
+  # selector still derives the crate set from the Cargo.toml graph. The CLI handoff regressions
+  # are their own job (cli-handoff).
   crate-tests:
-    name: lib tests ${{ matrix.crate }}
+    name: lib tests ${{ matrix.shard }}
     needs: changes
     if: ${{ needs.changes.outputs.crates != '[]' && needs.changes.outputs.crates != '' }}
     runs-on: ubuntu-latest
-    # The previous single job's 70-minute allowance (cold build plus bounded setup) stays the
-    # ceiling per crate; one crate's build is a subset of what that job compiled.
     timeout-minutes: 70
     strategy:
       fail-fast: false
       matrix:
-        crate: ${{ fromJSON(needs.changes.outputs.crates) }}
+        shard: ${{ fromJSON(needs.changes.outputs.shards) }}
     env:
-      CRATE: ${{ matrix.crate }}
-      # The crate's test features, from the selector (TEST_FEATURES), the same set the warming
-      # job caches. Core's are the call and 3D-avatar paths (livekit-webrtc,avatar-3d) a node's
-      # profile turns on; the crate builds headless by default (`default = []`), which is the
-      # Windows job's configuration.
-      FEATURES: ${{ fromJSON(needs.changes.outputs.features)[matrix.crate] }}
+      CRATES: ${{ needs.changes.outputs.crates }}
+      FEATURE_MAP: ${{ needs.changes.outputs.features }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -95,7 +97,7 @@ jobs:
 
       # ---- continuum-core: script fixtures, the warnings ratchet, the core lib binary ----
       - name: cargo test -p continuum-core --lib
-        if: matrix.crate == 'continuum-core'
+        if: matrix.shard == 'core'
         run: |
           bash tools/scripts/tests/start-server-build-only.test.sh
           bash tools/scripts/tests/start-server-airc-recovery.test.sh
@@ -105,7 +107,7 @@ jobs:
           # compiler-message records, which the render-diagnostics form sends to stderr
           # as text instead. The artifact script reads compiler-artifact records, present
           # in both.
-          python3 tools/scripts/ci-lib-test-artifact.py --capture lib-artifacts.jsonl -- cargo test -p continuum-core --lib --profile dev-fast --features "$FEATURES" --no-run --timings --message-format=json
+          python3 tools/scripts/ci-lib-test-artifact.py --capture lib-artifacts.jsonl -- cargo test -p continuum-core --lib --profile dev-fast --features "${{ fromJSON(needs.changes.outputs.features)['continuum-core'] }}" --no-run --timings --message-format=json
           # Warning debt is monotonic: the same stream, counted against
           # scripts/ratchets/rust-warnings-baseline.txt (grow = red; shrink = lower it here).
           # This build compiles every crate the ratchet counts (core, engine, hands, live,
@@ -124,7 +126,7 @@ jobs:
             --skip 'modules::persona_allocator::'
 
       - name: Retain Unix build evidence
-        if: always() && matrix.crate == 'continuum-core'
+        if: always() && matrix.shard == 'core'
         uses: actions/upload-artifact@v4
         with:
           name: unix-lib-build-evidence
@@ -136,22 +138,22 @@ jobs:
 
       # ---- continuum-kernel: lib tests ----
       - name: cargo test -p continuum-kernel --lib
-        if: matrix.crate == 'continuum-kernel'
+        if: matrix.shard == 'rest' && contains(fromJSON(needs.changes.outputs.crates), 'continuum-kernel')
         run: |
-          cargo test -p continuum-kernel --lib --profile dev-fast --features "$FEATURES" -- \
+          cargo test -p continuum-kernel --lib --profile dev-fast --features "${{ fromJSON(needs.changes.outputs.features)['continuum-kernel'] }}" -- \
             --skip 'gpu::memory_manager::'
 
       # ---- continuum-engine: lib tests and the native/fs2 custody interop fixture ----
       - name: cargo test -p continuum-engine --lib (and native custody interop)
-        if: matrix.crate == 'continuum-engine'
+        if: matrix.shard == 'rest' && contains(fromJSON(needs.changes.outputs.crates), 'continuum-engine')
         run: |
           set -o pipefail
           export CONTINUUM_NATIVE_CONTAINER_LEASE_TEST="$RUNNER_TEMP/continuum-container-custody-test"
           c++ -std=c++17 -O1 -pthread -I core/vendor/llama.cpp/ggml/src -I core/vendor/llama.cpp/ggml/include \
             core/vendor/llama.cpp/tests/test-moe-residency.cpp -o "$CONTINUUM_NATIVE_CONTAINER_LEASE_TEST"
           "$CONTINUUM_NATIVE_CONTAINER_LEASE_TEST"
-          cargo test -p continuum-engine --lib --profile dev-fast --features "$FEATURES"
-          interop_output=$(cargo test -p continuum-engine --lib --profile dev-fast --features "$FEATURES" \
+          cargo test -p continuum-engine --lib --profile dev-fast --features "${{ fromJSON(needs.changes.outputs.features)['continuum-engine'] }}"
+          interop_output=$(cargo test -p continuum-engine --lib --profile dev-fast --features "${{ fromJSON(needs.changes.outputs.features)['continuum-engine'] }}" \
             model_registry::artifacts::expert_placement::tests::fs2_and_native_container_locks_interoperate_across_processes \
             -- --exact --ignored --nocapture 2>&1)
           printf '%s\n' "$interop_output"
@@ -159,33 +161,43 @@ jobs:
 
       # ---- continuum-genome: the training script test, then lib tests ----
       - name: cuda_train_test.py (genome fine-tuning script)
-        if: matrix.crate == 'continuum-genome'
+        if: matrix.shard == 'rest' && contains(fromJSON(needs.changes.outputs.crates), 'continuum-genome')
         run: python3 -m unittest discover -s core/continuum-genome/src/genome/fine_tuning -p cuda_train_test.py -v
 
-      # ---- continuum-hands, -live, -perception, -genome, -experience, -memory, -cognition, -academy: lib tests ----
-      - name: cargo test -p ${{ matrix.crate }} --lib
-        if: contains(fromJSON('["continuum-hands","continuum-live","continuum-perception","continuum-genome","continuum-experience","continuum-memory","continuum-cognition","continuum-academy"]'), matrix.crate)
-        run: cargo test -p "$CRATE" --lib --profile dev-fast --features "$FEATURES"
+      # ---- every other selected crate with no fixture of its own: lib tests, one after another ----
+      - name: cargo test --lib (hands, live, perception, genome, experience, memory, cognition, academy, ...)
+        if: matrix.shard == 'rest'
+        run: |
+          set -euo pipefail
+          for crate in $(jq -r '.[]' <<<"$CRATES"); do
+            case "$crate" in
+              continuum-core|continuum-kernel|continuum-engine|continuum-mind) continue ;;
+            esac
+            features=$(jq -r --arg c "$crate" '.[$c] // ""' <<<"$FEATURE_MAP")
+            echo "::group::cargo test -p $crate --lib"
+            cargo test -p "$crate" --lib --profile dev-fast --features "$features"
+            echo "::endgroup::"
+          done
 
       # ---- continuum-mind: lib tests, compile-fail doc guards ----
       - name: cargo test -p continuum-mind --lib
-        if: matrix.crate == 'continuum-mind'
+        if: matrix.shard == 'rest' && contains(fromJSON(needs.changes.outputs.crates), 'continuum-mind')
         run: |
           # The allocator skip moved here with persona.
-          cargo test -p continuum-mind --lib --profile dev-fast --features "$FEATURES" -- \
+          cargo test -p continuum-mind --lib --profile dev-fast --features "${{ fromJSON(needs.changes.outputs.features)['continuum-mind'] }}" -- \
             --skip 'persona::allocator::tests::test_allocate'
 
       # The --lib step already builds the mind rlib (test-fixtures) in this profile.
       # Reuse it here instead of recompiling it in a separate runner. --lib
       # cannot exercise compile-fail doctests; preserve their exact count.
       - name: cargo test -p continuum-mind --doc (compile-fail guards)
-        if: matrix.crate == 'continuum-mind'
+        if: matrix.shard == 'rest' && contains(fromJSON(needs.changes.outputs.crates), 'continuum-mind')
         run: |
           set -o pipefail
           # Same profile as the --lib build above, deliberately: a different profile
           # here would be a SECOND full codegen of a 625k-line crate, not a cheap extra step.
           # The guard lives in the mind crate (persona::viewstate_rag) since the mind cut.
-          cargo test -p continuum-mind --doc --profile dev-fast --features "$FEATURES" BindingIsUnstatable 2>&1 | tee doc-guard.log
+          cargo test -p continuum-mind --doc --profile dev-fast --features "${{ fromJSON(needs.changes.outputs.features)['continuum-mind'] }}" BindingIsUnstatable 2>&1 | tee doc-guard.log
           if ! grep -q 'test result: ok. 2 passed' doc-guard.log; then
             echo "::error::expected exactly 2 BindingIsUnstatable doctests to pass."
             echo "A zero-match filter exits 0, so this is how a renamed or deleted"
@@ -198,7 +210,7 @@ jobs:
       - name: Verify protocol/typescript/ in sync with Rust source
         run: |
           if ! git diff --exit-code protocol/typescript/ protocol/schema/; then
-            echo "::error::ts-rs binding drift detected in $CRATE. Some Rust types"
+            echo "::error::ts-rs binding drift detected in the ${{ matrix.shard }} shard. Some Rust types"
             echo "were modified but their regenerated TypeScript bindings"
             echo "(in protocol/typescript/) were not committed."
             echo ""
