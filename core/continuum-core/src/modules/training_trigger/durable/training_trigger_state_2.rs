@@ -46,6 +46,7 @@ impl TrainingTriggerState {
                 submission_ids: batch.submission_ids.clone(),
                 phase: DispatchPhase::Prepared,
                 is_active: true,
+                attempt: None,
             };
             let active = Arc::new(ActiveDispatch {
                 intent,
@@ -164,6 +165,9 @@ impl TrainingTriggerState {
         }
         let mut intent = active.intent.clone();
         intent.phase = DispatchPhase::Dispatching;
+        // A new attempt for every entry into Dispatching, written in the same durable update
+        // below, before job-create is called (card 55d4b9e3).
+        intent.attempt = Some(Uuid::new_v4());
         let active = Arc::new(ActiveDispatch {
             intent,
             batch: active.batch.clone(),

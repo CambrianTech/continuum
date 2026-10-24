@@ -4,4 +4,14 @@ import type { DispatchPhase } from "./DispatchPhase";
 /**
  * One row in the status snapshot — a single pending bucket's identity + counts.
  */
-export type PendingBucketView = { personaId: string, personaName: string, traitKind: string, baseModel: string, examplesPending: number, minExamples: number, dispatchId?: string, dispatch?: DispatchPhase, };
+export type PendingBucketView = { personaId: string, personaName: string, traitKind: string, baseModel: string, examplesPending: number, minExamples: number, dispatchId?: string, dispatch?: DispatchPhase, 
+/**
+ * The attempt the active dispatch is in, minted before job-create ran (card 55d4b9e3).
+ */
+dispatchAttempt?: string, 
+/**
+ * A stranded dispatch written before attempts existed: nothing names what it may have
+ * started, so its outcome is unknown and it is never retried on its own. Settle it with
+ * `genome/training-trigger/resolve` from concrete evidence.
+ */
+unknownLegacy?: boolean, };

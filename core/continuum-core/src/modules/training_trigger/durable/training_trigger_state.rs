@@ -53,30 +53,33 @@ impl TrainingTriggerState {
         &self,
     ) -> Vec<crate::commands::training_trigger::status::PendingBucketView> {
         use crate::commands::training_trigger::status::PendingBucketView;
-        let view =
-            |key: &BucketKey, batch: &PendingBatch, dispatch_id, dispatch| PendingBucketView {
+        let view = |key: &BucketKey, batch: &PendingBatch, active: Option<&DispatchIntent>| {
+            PendingBucketView {
                 persona_id: key.persona_id,
                 persona_name: batch.persona_name.clone(),
                 trait_kind: key.trait_kind.clone(),
                 base_model: key.base_model.clone(),
                 examples_pending: batch.examples.len() as u32,
                 min_examples: batch.min_examples,
-                dispatch_id,
-                dispatch,
-            };
+                dispatch_id: active.and_then(|intent| Uuid::parse_str(&intent.base.id).ok()),
+                dispatch: active.map(|intent| intent.phase.clone()),
+                dispatch_attempt: active.and_then(|intent| intent.attempt),
+                unknown_legacy: active.is_some_and(|intent| {
+                    intent.attempt.is_none()
+                        && matches!(intent.phase, DispatchPhase::RecoveryRequired { .. })
+                }),
+            }
+        };
         let mut rows: Vec<_> = self
             .buckets
             .iter()
-            .map(|row| view(row.key(), row.value(), None, None))
+            .map(|row| view(row.key(), row.value(), None))
             .collect();
-        rows.extend(self.active_dispatches.iter().map(|row| {
-            view(
-                row.key(),
-                &row.batch,
-                Uuid::parse_str(&row.intent.base.id).ok(),
-                Some(row.intent.phase.clone()),
-            )
-        }));
+        rows.extend(
+            self.active_dispatches
+                .iter()
+                .map(|row| view(row.key(), &row.batch, Some(&row.intent))),
+        );
         rows
     }
 

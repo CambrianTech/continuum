@@ -41,6 +41,7 @@ use super::*;
             submission_ids: batch.submission_ids.clone(),
             phase: DispatchPhase::Prepared,
             is_active: true,
+            attempt: None,
         };
         let dispatch_id = entity_id(&intent.base).unwrap();
         let store = old.state.durable.require().unwrap();
@@ -189,6 +190,7 @@ use super::*;
             submission_ids: batch.submission_ids,
             phase: DispatchPhase::Dispatching,
             is_active: true,
+            attempt: None,
         };
         let id = entity_id(&intent.base).unwrap();
         old.state
@@ -226,6 +228,16 @@ use super::*;
             DispatchPhase::RecoveryRequired { .. }
         ));
         assert_eq!(active.batch.examples.len(), 1);
+        drop(active);
+        // card 55d4b9e3: an intent written before attempts existed is surfaced as unknown.
+        let row = next
+            .state
+            .pending_views()
+            .into_iter()
+            .find(|row| row.dispatch_id == Some(id))
+            .expect("the stranded dispatch is listed");
+        assert!(row.unknown_legacy, "no attempt names what it may have started");
+        assert_eq!(row.dispatch_attempt, None);
     }
 
     // what this catches (the 5090, 2026-10-10: thirteen cargo-test fixture rows from
@@ -295,6 +307,7 @@ use super::*;
             submission_ids: batch.submission_ids,
             phase: DispatchPhase::Dispatching,
             is_active: true,
+            attempt: None,
         };
         let id = entity_id(&intent.base).unwrap();
         let store = old.state.durable.require().unwrap();
