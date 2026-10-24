@@ -69,6 +69,8 @@
             json!({"success": false, "error": "bad", "errorKind": 7}),
             json!({"success": false, "error": "bad", "errorKind": null}),
             json!({"success": false, "error": "bad", "errorKind": "Transient"}),
+            // A local trainer failure can follow a trainer that started work: never a retry.
+            json!({"success": false, "error": "bad", "errorKind": "LocalTrainerFailed"}),
             json!({"success": true}),
         ] {
             assert!(matches!(
@@ -87,6 +89,9 @@
             Some(crate::commands::genome::job_create::ERROR_KIND_REUSE_PULL_FAILED),
             Some(crate::commands::genome::job_create::ERROR_KIND_REUSE_ADOPT_FAILED),
             Some(crate::commands::genome::job_create::ERROR_KIND_TRIAL_FILE_UNREADABLE),
+            // card a9bc56ea: a trainer that refused before creating anything (IntelMac, a
+            // missing MLX interpreter wedged Sigurd's bucket in RecoveryRequired).
+            Some(crate::commands::genome::job_create::ERROR_KIND_TRAINER_UNAVAILABLE),
         ] {
             let mut response = json!({"success": false, "error": "explicit refusal"});
             if let Some(kind) = kind {

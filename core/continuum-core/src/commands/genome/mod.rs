@@ -38,7 +38,7 @@ use crate::genome::fine_tuning::{
     coordinator::FineTuningCoordinator, FineTuningError, FineTuningRegistry, JobHandle,
 };
 use crate::sdk_codegen::DynCommand;
-use job_create::ERROR_KIND_CAPACITY_PARKED;
+use job_create::{ERROR_KIND_CAPACITY_PARKED, ERROR_KIND_TRAINER_UNAVAILABLE};
 
 pub mod job_cancel;
 pub mod job_create;
@@ -73,6 +73,7 @@ pub(crate) fn fine_tuning_error_kind(e: &FineTuningError) -> &'static str {
         FineTuningError::Transient(_) => "Transient",
         FineTuningError::MalformedResponse(_) => "MalformedResponse",
         FineTuningError::LocalTrainerFailed(_) => "LocalTrainerFailed",
+        FineTuningError::TrainerUnavailable(_) => ERROR_KIND_TRAINER_UNAVAILABLE,
         FineTuningError::CapacityParked(_) => ERROR_KIND_CAPACITY_PARKED,
         FineTuningError::UnknownHandle(_) => "UnknownHandle",
     }

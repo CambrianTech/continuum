@@ -56,6 +56,15 @@ pub enum FineTuningError {
     #[error("local trainer failed: {0}")]
     LocalTrainerFailed(String),
 
+    /// The trainer refused BEFORE creating anything: its interpreter is missing, or this
+    /// host cannot run it. Unlike [`Self::LocalTrainerFailed`], which can follow a trainer
+    /// that started work, this is certain: nothing exists to recover, so the trigger
+    /// retries the batch on a later fill and never parks it awaiting evidence. Only
+    /// returned from a path that has created no job, process or file (card a9bc56ea:
+    /// IntelMac, a missing MLX interpreter wedged Sigurd's bucket in RecoveryRequired).
+    #[error("trainer unavailable: {0}")]
+    TrainerUnavailable(String),
+
     /// The memory the trainer is governed to has no room for the smallest window that trains
     /// one of her examples, by measurement: the job is not created, and its examples wait,
     /// owned by the trigger, until [`super::types::CapacityWait::wakes`] (card de9e1342).

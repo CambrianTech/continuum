@@ -798,7 +798,7 @@ fn decode_job_create(response: Value) -> Result<Created, DispatchFailure> {
         "genome/job-create rejected: {}",
         response.error.unwrap_or_default()
     );
-    use crate::commands::genome::job_create::{ERROR_KIND_CAPACITY_PARKED, ERROR_KIND_REUSE_ADOPT_FAILED, ERROR_KIND_REUSE_PULL_FAILED, ERROR_KIND_TRIAL_FILE_UNREADABLE};
+    use crate::commands::genome::job_create::{ERROR_KIND_CAPACITY_PARKED, ERROR_KIND_REUSE_ADOPT_FAILED, ERROR_KIND_REUSE_PULL_FAILED, ERROR_KIND_TRAINER_UNAVAILABLE, ERROR_KIND_TRIAL_FILE_UNREADABLE};
     if response.error_kind.as_deref() == Some(ERROR_KIND_CAPACITY_PARKED) {
         // Parked only with its wake key: a refusal that names no wait is evidence of nothing.
         return Err(match response.capacity_wait {
@@ -812,9 +812,10 @@ fn decode_job_create(response: Value) -> Result<Created, DispatchFailure> {
             DispatchFailure::Retryable(error)
         }
         // A decision that created nothing is certain, never recovery: a hub pull that
-        // failed, a gene not adopted, a trial file not read. The next fill retries
-        // (Cormac on #4794: Uncertain here wedged the bucket in RecoveryRequired).
-        Some(kind) if kind == ERROR_KIND_REUSE_PULL_FAILED || kind == ERROR_KIND_REUSE_ADOPT_FAILED || kind == ERROR_KIND_TRIAL_FILE_UNREADABLE => {
+        // failed, a gene not adopted, a trial file not read, a trainer that refused before
+        // creating anything. The next fill retries (Cormac on #4794, and card a9bc56ea:
+        // Uncertain here wedged the bucket in RecoveryRequired).
+        Some(kind) if kind == ERROR_KIND_REUSE_PULL_FAILED || kind == ERROR_KIND_REUSE_ADOPT_FAILED || kind == ERROR_KIND_TRIAL_FILE_UNREADABLE || kind == ERROR_KIND_TRAINER_UNAVAILABLE => {
             DispatchFailure::Retryable(error)
         }
         Some(_) => DispatchFailure::Uncertain(error),
