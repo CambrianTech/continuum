@@ -167,6 +167,12 @@ async fn live_room_input_reaches_next_action_without_replacing_task_or_room() {
         assert_eq!(outcome.room, room);
         assert_eq!(outcome.world_state, original_world);
         assert_eq!(outcome.room_updates.len(), 3);
+        // The driver's own outcome carries each room message (Cormac on #5385): the academy's
+        // lived record is built from this outcome, so its half of the test can only be as
+        // true as these.
+        for update in messages.iter().chain(std::iter::once(&later_message)) {
+            assert!(outcome.room_updates.contains(update), "the driver's outcome lost a room update");
+        }
         assert_eq!(*exec.rooms.lock().unwrap(), vec![room, room]);
         let engrams = adm.recall_recent(adm.engram_count());
         let first_act = engrams
