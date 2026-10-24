@@ -10,6 +10,8 @@ export type { KanbanLaneState } from './KanbanLaneState';
 export type { KanbanLaneView } from './KanbanLaneView';
 export type { KanbanPriority } from './KanbanPriority';
 export type { KanbanPullRequest } from './KanbanPullRequest';
+export type { KanbanReviewOutcome } from './KanbanReviewOutcome';
+export type { KanbanReviewView } from './KanbanReviewView';
 export type { KanbanViewState } from './KanbanViewState';
 export type { Loadout } from './Loadout';
 export type { Provenance } from './Provenance';
