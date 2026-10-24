@@ -169,7 +169,7 @@ impl GeneFitnessIndex {
 
     /// The canonical progress-ledger location (`cognition/eval` writes here).
     pub fn default_dir() -> Option<std::path::PathBuf> {
-        dirs::home_dir().map(|h| h.join(".continuum/progress"))
+        crate::paths::ContinuumLayout::home().ok().map(|layout| layout.progress())
     }
 
     /// Unknown/legacy receipts cannot establish fitness for a qualified artifact.

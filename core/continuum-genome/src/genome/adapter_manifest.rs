@@ -51,9 +51,9 @@ pub fn manifest_path() -> Result<PathBuf, String> {
             return Ok(PathBuf::from(trimmed));
         }
     }
-    let home = dirs::home_dir()
-        .ok_or_else(|| "cannot resolve home directory for the adapter manifest".to_string())?;
-    Ok(home.join(".continuum/forge/gguf-lora/manifest.json"))
+    let home = crate::paths::continuum_home()
+        .map_err(|e| format!("cannot resolve the continuum home for the adapter manifest: {e}"))?;
+    Ok(home.join("forge/gguf-lora/manifest.json"))
 }
 
 /// Read the manifest at `path`. A missing file is NOT an error — zero registered

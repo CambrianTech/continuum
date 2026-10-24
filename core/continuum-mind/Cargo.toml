@@ -59,6 +59,7 @@ image = "0.25"
 regex = "1"
 
 [dev-dependencies]
+continuum-kernel = { path = "../continuum-kernel", features = ["test-fixtures"] }  # every test build of this crate gets the per-process continuum home (card d11d9827)
 tokio = { workspace = true, features = ["test-util"] }
 tempfile = "3"
 continuum-base = { path = "../continuum-base", features = ["test-fixtures"] }
