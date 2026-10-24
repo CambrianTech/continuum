@@ -380,6 +380,10 @@ pub struct CreditReviewAcceptance {
 )]
 pub enum ReviewedCreditState {
     Unbound,
+    /// Publication recorded the issuing generation, but it does not yet bind: not staged,
+    /// shared with another submission's row, or not the publication on the board. Held, never
+    /// passed; retried at the next review event and at registration replay.
+    ProvenanceHeld,
     AwaitingReview,
     FailedReview,
     UnknownReview,
@@ -524,6 +528,7 @@ pub async fn ensure_storage<T: Transport>(
         CreditTransferAcceptance::COLLECTION,
         graded::BenchmarkCreditAttribution::COLLECTION,
         WorkCreditBinding::COLLECTION,
+        PendingCreditBinding::COLLECTION,
         CreditGenerationReservation::COLLECTION,
         CreditReviewDecision::COLLECTION,
         CreditReviewAcceptance::COLLECTION,

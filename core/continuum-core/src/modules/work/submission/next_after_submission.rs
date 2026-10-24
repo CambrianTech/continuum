@@ -193,86 +193,85 @@ impl ActionCommand for WorkSubmit {
             ));
         }
         let mut bound_staged_revision_id = None;
-        let explicit = p.staged_revision_id.is_some() || p.generation_request_id.is_some();
-        let resident = self.registry.get(runtime.persona_id()).is_some()
-            && runtime.persona_id() == airc.peer_id().as_uuid();
-        if explicit && !resident {
-            return Err(CommandError::Invalid(
-                "selected credit must belong to the calling resident persona".into(),
-            ));
-        }
-        let executor = match (explicit || resident, self.executor_slot.cloned()) {
-            (false, _) => None,
-            (_, Some(executor)) => Some(executor),
-            (true, None) if explicit => {
-                return Err(CommandError::Internal("work executor is not ready".into()))
+        if p.staged_revision_id.is_some() || p.generation_request_id.is_some() {
+            if self.registry.get(runtime.persona_id()).is_none()
+                || runtime.persona_id() != airc.peer_id().as_uuid()
+            {
+                return Err(CommandError::Invalid(
+                    "selected credit must belong to the calling resident persona".into(),
+                ));
             }
-            (true, None) => {
-                probe_default_unbound(runtime.agent_name(), card_uuid, submission_id, "executor_not_ready");
-                None
-            }
-        };
-        if let Some(executor) = executor {
-            let conn = Connection::new(InProcessTransport::new(
-                executor,
-                Some(crate::routing::CallerIdentity::local_persona(
-                    crate::identity::PeerId::from_uuid(runtime.persona_id()),
-                )),
-            ));
+            let conn = credit_connection(self.executor_slot.cloned(), runtime.persona_id())?;
             let binding = if let Some(generation) = p.generation_request_id.as_deref() {
-                Some(
-                    reviewed::bind_submission_generation(
-                        &conn,
-                        runtime.agent_name(),
-                        runtime.persona_id(),
-                        room.channel.as_uuid(),
-                        &candidate,
-                        generation,
-                    )
-                    .await,
+                reviewed::bind_submission_generation(
+                    &conn,
+                    runtime.agent_name(),
+                    runtime.persona_id(),
+                    room.channel.as_uuid(),
+                    &candidate,
+                    generation,
                 )
+                .await
+            } else if let Some(revision) = p.staged_revision_id {
+                reviewed::bind_submission(
+                    &conn,
+                    runtime.agent_name(),
+                    runtime.persona_id(),
+                    SubmissionSelection {
+                        submission_id,
+                        room_id: room.channel.as_uuid(),
+                        card_id: card_uuid,
+                        claim_id: claim_id.as_uuid(),
+                        staged_revision_id: revision,
+                        instance: candidate.instance.clone(),
+                        base_sha: candidate.base_sha.clone(),
+                        artifact: candidate.artifact.clone(),
+                    },
+                )
+                .await
             } else {
-                // She named no selection: her own core picks what she staged on this card (card
-                // fe8554d2), so a review reaches her credit without her knowing the plumbing.
-                let revision = match p.staged_revision_id {
-                    Some(revision) => Some(revision),
-                    None => default_revision(&conn, runtime.agent_name(), &candidate).await,
-                };
-                match revision {
-                    Some(revision) => Some(
-                        reviewed::bind_submission(
-                            &conn,
-                            runtime.agent_name(),
-                            runtime.persona_id(),
-                            SubmissionSelection {
-                                submission_id,
-                                room_id: room.channel.as_uuid(),
-                                card_id: card_uuid,
-                                claim_id: claim_id.as_uuid(),
-                                staged_revision_id: revision,
-                                instance: candidate.instance.clone(),
-                                base_sha: candidate.base_sha.clone(),
-                                artifact: candidate.artifact.clone(),
-                            },
-                        )
-                        .await,
-                    ),
-                    None => None,
-                }
-            };
-            if let Some(Err(e)) = binding.as_ref().filter(|_| !explicit) {
-                // Her core's pick was refused by the same validator an explicit selection
-                // meets: the submission still publishes, unbound, and says why.
-                probe_default_unbound(runtime.agent_name(), card_uuid, submission_id, &format!("binding_refused: {e}"));
-            } else if let Some(binding) = binding {
-                let binding = binding.map_err(|e| match e {
-                    reviewed::CreditBindingError::Storage(source) => {
-                        CommandError::Internal(source.to_string())
-                    }
-                    other => CommandError::Invalid(other.to_string()),
-                })?;
-                bound_staged_revision_id = Some(binding.selection.staged_revision_id);
+                unreachable!("credit selection checked above")
             }
+            .map_err(|e| match e {
+                reviewed::CreditBindingError::Storage(source) => {
+                    CommandError::Internal(source.to_string())
+                }
+                other => CommandError::Invalid(other.to_string()),
+            })?;
+            bound_staged_revision_id = Some(binding.selection.staged_revision_id);
+        } else if let Some(generation) = ctx
+            .caller
+            .as_ref()
+            .filter(|c| c.peer_id.as_uuid() == runtime.persona_id())
+            .and_then(|c| c.issuing_generation.clone())
+        {
+            // She named no selection: the generation whose tool call this is, bound by her act
+            // seam and never by her arguments, is recorded before publication and binds when a
+            // review arrives (card fe8554d2). Only her own act's caller carries it. A record that
+            // fails refuses, like an explicit binding: publish only after provenance is durable.
+            let conn = credit_connection(self.executor_slot.cloned(), runtime.persona_id())?;
+            reviewed::record_pending(
+                &conn,
+                runtime.agent_name(),
+                runtime.persona_id(),
+                reviewed::PendingSelection {
+                    submission_id,
+                    room_id: room.channel.as_uuid(),
+                    card_id: card_uuid,
+                    claim_id: claim_id.as_uuid(),
+                    instance: candidate.instance.clone(),
+                    base_sha: candidate.base_sha.clone(),
+                    artifact: candidate.artifact.clone(),
+                    issuing_generation: generation,
+                },
+            )
+            .await
+            .map_err(|e| match e {
+                reviewed::CreditBindingError::Storage(source) => CommandError::Internal(format!(
+                    "credit provenance was not recorded; retry the same submission_id: {source}"
+                )),
+                other => CommandError::Invalid(other.to_string()),
+            })?;
         }
         let grade_title = card.title.clone();
         let bench = crate::recipe::benchmark_catalog::graded_at_submit(&grade_title);

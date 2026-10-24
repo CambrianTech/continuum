@@ -450,3 +450,125 @@ use super::*;
         );
         assert_eq!(stored_credit_rows(&data, name).await[0].id, newer.id);
     }
+
+    // what this catches (card fe8554d2, Codex on #5386): a submission with no explicit
+    // selection binds the turn that ISSUED it, never "her newest revision". Turn 1 issues the
+    // submission; a newer unrelated turn on the same claim stages after it; the review binds
+    // turn 1. A generation not yet staged at publish holds, then binds once staged. A row
+    // carrying another pending submission's generation holds (staging is periodic, so failed S
+    // and corrected M can share one). A board submission that is not the recorded publication
+    // holds; a retry of the same record is a no-op and a different one is refused.
+    #[tokio::test]
+    pub(super) async fn a_pending_binding_resolves_to_the_issuing_turn_or_holds(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        use reviewed::{CreditBindingError, Held, PendingSelection};
+        let home = tempfile::tempdir()?;
+        let _home = HomeGuard::set(home.path()).await;
+        crate::persona::register_substrate_orm_entities(crate::orm::OrmEntityRegistry::global())?;
+        let executor = data_runtime();
+        let (persona, card, room) = (Uuid::new_v4(), Uuid::new_v4(), Uuid::new_v4());
+        let name = "pending-work-binding";
+        let (_turn1, issuing) =
+            stage_settlement_fixture(executor.clone(), persona, name, card, vec![served_receipt("work-a", "model-a")])
+                .await;
+        let claim = issuing.claim_id.ok_or("fixture row carries its claim")?;
+        let turn = |prompt: &str| {
+            TurnCreditCapture::with_executor(
+                executor.clone(),
+                persona,
+                name.into(),
+                prompt.into(),
+                CapturedCredit {
+                    task: crate::cognition::held_out::CardTask::NotATask,
+                    card_id: card,
+                    claim: Some(ClaimReceipt {
+                        claim_id: claim,
+                        owner: airc_core::PeerId::from_uuid(persona),
+                        role: CreditRole::Owner,
+                    }),
+                },
+            )
+        };
+        let data = conn_as(executor.clone(), persona);
+        let submission = |byte: char| -> Result<airc_work::WorkSubmission, Box<dyn std::error::Error>> {
+            Ok(airc_work::WorkSubmission {
+                submission_id: airc_work::SubmissionId::from_uuid(Uuid::new_v4()),
+                card_id: airc_work::WorkCardId::from_uuid(card),
+                claim_id: airc_work::ClaimId::from_uuid(claim),
+                instance: "ordinary-project-card".into(),
+                base_sha: airc_work::GitObjectId::new("a".repeat(40))?,
+                artifact: serde_json::from_value(
+                    json!({"hash": byte.to_string().repeat(64), "size_bytes": 5, "mime": "text/x-diff"}),
+                )?,
+                publisher: airc_core::PeerId::from_uuid(persona),
+                submitted_at_ms: 3,
+            })
+        };
+        let pending = |s: &airc_work::WorkSubmission, generation: &str| PendingSelection {
+            submission_id: s.submission_id.as_uuid(),
+            room_id: room,
+            card_id: card,
+            claim_id: claim,
+            instance: s.instance.clone(),
+            base_sha: s.base_sha.clone(),
+            artifact: s.artifact.clone(),
+            issuing_generation: generation.into(),
+        };
+
+        // Turn 1 issued submission A; a newer unrelated turn stages after it.
+        let a = submission('b')?;
+        reviewed::record_pending(&data, name, persona, pending(&a, "work-a")).await?;
+        let mut newer = turn("Inspect an unrelated file.");
+        assert!(newer.record(&settlement_acts(4), &[served_receipt("inspect-b", "model-a")], None, true).await);
+        let bound = reviewed::resolve_pending(&data, name, persona, room, &a).await?;
+        assert!(
+            matches!(&bound, Some(Ok(b)) if b.selection.staged_revision_id == issuing.id),
+            "the issuing turn binds, not the newer one: {bound:?}"
+        );
+
+        // Not yet staged at publish: held, then bound once her turn stages it.
+        let late = submission('c')?;
+        reviewed::record_pending(&data, name, persona, pending(&late, "late")).await?;
+        assert!(matches!(
+            reviewed::resolve_pending(&data, name, persona, room, &late).await?,
+            Some(Err(Held::Unresolved(_)))
+        ));
+        let mut later = turn("Finish the change.");
+        assert!(later.record(&settlement_acts(4), &[served_receipt("late", "model-a")], None, true).await);
+        assert!(matches!(reviewed::resolve_pending(&data, name, persona, room, &late).await?, Some(Ok(_))));
+
+        // Failed S and corrected M share one staged row: either order holds.
+        let (s, m) = (submission('d')?, submission('e')?);
+        reviewed::record_pending(&data, name, persona, pending(&s, "s-gen")).await?;
+        reviewed::record_pending(&data, name, persona, pending(&m, "m-gen")).await?;
+        let mut shared = turn("Submit, take the failure, correct, resubmit.");
+        let both = [served_receipt("s-gen", "model-a"), served_receipt("m-gen", "model-a")];
+        assert!(shared.record(&settlement_acts(4), &both, None, true).await);
+        assert_eq!(
+            reviewed::resolve_pending(&data, name, persona, room, &m).await?.and_then(Result::err),
+            Some(Held::SharedRevision(s.submission_id.as_uuid()))
+        );
+        assert_eq!(
+            reviewed::resolve_pending(&data, name, persona, room, &s).await?.and_then(Result::err),
+            Some(Held::SharedRevision(m.submission_id.as_uuid()))
+        );
+
+        // A crash between record and publish: the same record again is a no-op, a different
+        // one is refused, and a board submission that differs from the record holds.
+        let retried = submission('f')?;
+        reviewed::record_pending(&data, name, persona, pending(&retried, "work-a")).await?;
+        reviewed::record_pending(&data, name, persona, pending(&retried, "work-a")).await?;
+        let mut other = pending(&retried, "work-a");
+        other.instance = "another-instance".into();
+        assert!(matches!(
+            reviewed::record_pending(&data, name, persona, other).await,
+            Err(CreditBindingError::ConflictingSubmission(_))
+        ));
+        let mut published = retried.clone();
+        published.artifact.size_bytes += 1;
+        assert_eq!(
+            reviewed::resolve_pending(&data, name, persona, room, &published).await?.and_then(Result::err),
+            Some(Held::PublicationMismatch)
+        );
+        Ok(())
+    }

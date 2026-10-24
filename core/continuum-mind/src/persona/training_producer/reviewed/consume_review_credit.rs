@@ -25,10 +25,24 @@ pub(super) async fn consume_review_credit<T: Transport>(
     }
     ensure_storage(conn, persona_name).await?;
     let id = submitted.submission_id.as_uuid();
-    let Some(binding) =
-        read_one::<_, WorkCreditBinding>(conn, persona_name, &id.to_string()).await?
-    else {
-        return Ok(ReviewedCredit::pending(ReviewedCreditState::Unbound));
+    let binding = match read_one::<_, WorkCreditBinding>(conn, persona_name, &id.to_string()).await? {
+        Some(binding) => binding,
+        // No binding yet: the generation publication recorded binds now, against the
+        // submission as the board holds it (card fe8554d2).
+        None => match resolve_pending(conn, persona_name, persona_id, room_id, submitted).await? {
+            Some(Ok(binding)) => binding,
+            Some(Err(held)) => {
+                continuum_base::probe!(
+                    class = "training.credit.provenance_held",
+                    persona = %persona_name,
+                    submission = %id,
+                    held = ?held,
+                    "a review arrived for a submission whose issuing generation does not bind yet: credit held, not passed"
+                );
+                return Ok(ReviewedCredit::pending(ReviewedCreditState::ProvenanceHeld));
+            }
+            None => return Ok(ReviewedCredit::pending(ReviewedCreditState::Unbound)),
+        },
     };
     let selection = &binding.selection;
     if binding.persona_id != persona_id
@@ -461,6 +475,29 @@ pub async fn bind_submission_generation<T: Transport>(
         }
         return Ok(prior);
     }
+    let snapshot = generation_row(conn, persona_name, persona_id, submitted, generation).await?;
+    // Carry the captured snapshot through the transaction; rereading its mutable
+    // staging key here would reintroduce the inspection/publication race.
+    bind_snapshot(
+        conn,
+        persona_name,
+        persona_id,
+        selection(snapshot.id),
+        snapshot,
+    )
+    .await
+}
+
+/// The ONE staged row on this card, claim and owner whose receipts carry `generation`, read
+/// through the generation index. Absent, repeated or replaced mid-read is ambiguous, never
+/// evidence for another row.
+pub(super) async fn generation_row<T: Transport>(
+    conn: &Connection<T>,
+    persona_name: &str,
+    persona_id: Uuid,
+    submitted: &airc_work::WorkSubmission,
+    generation: &str,
+) -> Result<StagedCredit, CreditBindingError> {
     let value = conn
         .commands()
         .execute_value(
@@ -512,18 +549,7 @@ pub async fn bind_submission_generation<T: Transport>(
             selected = Some(row);
         }
     }
-    let snapshot =
-        selected.ok_or_else(|| CreditBindingError::AmbiguousGeneration(generation.into()))?;
-    // Carry the captured snapshot through the transaction; rereading its mutable
-    // staging key here would reintroduce the inspection/publication race.
-    bind_snapshot(
-        conn,
-        persona_name,
-        persona_id,
-        selection(snapshot.id),
-        snapshot,
-    )
-    .await
+    selected.ok_or_else(|| CreditBindingError::AmbiguousGeneration(generation.into()))
 }
 
 pub(super) async fn bind_snapshot<T: Transport>(

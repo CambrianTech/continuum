@@ -78,16 +78,7 @@ impl ActionCommand for WorkSubmission {
                     "registered publisher identity differs".into(),
                 ));
             }
-            let executor = self
-                .executor_slot
-                .cloned()
-                .ok_or_else(|| CommandError::Internal("work executor is not ready".into()))?;
-            let conn = Connection::new(InProcessTransport::new(
-                executor,
-                Some(crate::routing::CallerIdentity::local_persona(
-                    crate::identity::PeerId::from_uuid(owner.persona_id()),
-                )),
-            ));
+            let conn = credit_connection(self.executor_slot.cloned(), owner.persona_id())?;
             if p.include_staged_evidence {
                 match reviewed::staged_evidence(&conn, owner.agent_name(), submitted).await {
                     Ok(rows) => staged_evidence = Some(rows),

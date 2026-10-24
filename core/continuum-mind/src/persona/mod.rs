@@ -211,6 +211,7 @@ pub fn register_substrate_orm_entities(
     registry.register::<training_producer::StagedCreditGeneration>()?;
     registry.register::<training_producer::graded::BenchmarkCreditAttribution>()?;
     registry.register::<training_producer::reviewed::WorkCreditBinding>()?;
+    registry.register::<training_producer::reviewed::PendingCreditBinding>()?;
     registry.register::<training_producer::reviewed::CreditTransferIntent>()?;
     registry.register::<training_producer::reviewed::CreditGenerationReservation>()?;
     registry.register::<training_producer::reviewed::CreditReviewDecision>()?;

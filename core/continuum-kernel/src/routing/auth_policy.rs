@@ -200,12 +200,23 @@ pub struct CallerIdentity {
     /// #5026). Set only by the kernel's release path ([`Self::releasing_hands`]), never from
     /// params.
     pub releases_hands: bool,
+    /// The generation whose tool call this dispatch is: its `submitted_request_id`, bound by
+    /// the act seam that executes her calls ([`Self::issued_by`]), never from params, so a tool
+    /// call cannot name another generation. Credit binds a submission to the turn that made it
+    /// through this (card fe8554d2). `None` for every caller that is not her act.
+    pub issuing_generation: Option<String>,
 }
 
 impl CallerIdentity {
     /// This identity, acting in `context`: same caller, same trust, its own hands.
     pub fn in_hands(mut self, context: crate::identity::hands_context::HandsContext) -> Self {
         self.hands = Some(context);
+        self
+    }
+
+    /// This identity, dispatching a tool call that `generation` emitted.
+    pub fn issued_by(mut self, generation: String) -> Self {
+        self.issuing_generation = Some(generation);
         self
     }
 
@@ -225,6 +236,7 @@ impl CallerIdentity {
             granted_capabilities: Vec::new(),
             hands: None,
             releases_hands: false,
+            issuing_generation: None,
         }
     }
 
@@ -238,6 +250,7 @@ impl CallerIdentity {
             granted_capabilities: Vec::new(),
             hands: None,
             releases_hands: false,
+            issuing_generation: None,
         }
     }
 
@@ -253,6 +266,7 @@ impl CallerIdentity {
             granted_capabilities: Vec::new(),
             hands: None,
             releases_hands: false,
+            issuing_generation: None,
         }
     }
 
@@ -266,6 +280,7 @@ impl CallerIdentity {
             granted_capabilities: Vec::new(),
             hands: None,
             releases_hands: false,
+            issuing_generation: None,
         }
     }
 
@@ -281,6 +296,7 @@ impl CallerIdentity {
             granted_capabilities: Vec::new(),
             hands: None,
             releases_hands: false,
+            issuing_generation: None,
         }
     }
 
@@ -311,6 +327,7 @@ impl CallerIdentity {
             granted_capabilities: Vec::new(),
             hands: None,
             releases_hands: false,
+            issuing_generation: None,
         }
     }
 
