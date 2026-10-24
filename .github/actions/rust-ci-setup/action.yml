@@ -10,6 +10,12 @@ inputs:
       from. The cache-warming job passes 'false': it builds cold, so every cached unit is from
       one commit.
     default: 'true'
+  save-apt:
+    description: >
+      Save the downloaded system packages. Only a push run's cache is visible to other runs (a
+      pull request's is scoped to that pull request), and parallel jobs race for one key, so the
+      warming job alone saves; every job restores.
+    default: 'false'
 outputs:
   cache-prefix:
     description: The target cache key prefix; a key is this prefix plus the commit it was built from.
@@ -32,18 +38,22 @@ runs:
         # ends with that commit, which is what `settle` diffs against. A toolchain change starts
         # a new line. ImageOS/ImageVersion are runner machine variables (not in the env context).
         echo "prefix=continuum-rust-target-v3-${RUNNER_OS}-$(sha256sum rust-toolchain.toml | cut -c1-16)-" >> "$GITHUB_OUTPUT"
-        echo "apt=apt-debs-${ImageOS}-${ImageVersion}-$(sha256sum "$GITHUB_ACTION_PATH/action.yml" | cut -c1-16)" >> "$GITHUB_OUTPUT"
+        apt="apt-debs-${ImageOS}-$(sha256sum "$GITHUB_ACTION_PATH/action.yml" | cut -c1-16)-"
+        echo "apt-prefix=$apt" >> "$GITHUB_OUTPUT"
+        echo "apt=$apt${ImageVersion}" >> "$GITHUB_OUTPUT"
 
     # The mirror, not apt, is the cost: in #5330's trials 3 of 13 jobs fetched the same 52.9 MB at
     # 65 kB/s (425-1,177 s; run 40056438743 hands: 13m37s). Cached debs come from the Actions
-    # cache instead. The key is the runner image (its package versions) and this action, which
-    # holds the package list; a newer index version than a cached deb is simply downloaded.
+    # cache instead. The key is the runner image and this action, which holds the package list;
+    # two image versions are in rotation, so any version's debs restore and apt downloads only a
+    # package whose indexed version differs.
     - name: Restore system package downloads
       id: apt-cache
       uses: actions/cache/restore@v4
       with:
         path: ~/apt-archives
         key: ${{ steps.key.outputs.apt }}
+        restore-keys: ${{ steps.key.outputs.apt-prefix }}
 
     # No prebuilt image carries these: ghcr holds only the runtime stages of
     # docker/continuum-core.Dockerfile, never its builder stage.
@@ -73,8 +83,7 @@ runs:
         sudo chown -R "$(id -u):$(id -g)" ~/apt-archives
 
     - name: Save system package downloads
-      if: steps.apt-cache.outputs.cache-hit != 'true'
-      continue-on-error: true  # a parallel job saving the same key first is not a failure
+      if: inputs.save-apt == 'true' && steps.apt-cache.outputs.cache-hit != 'true'
       uses: actions/cache/save@v4
       with:
         path: ~/apt-archives

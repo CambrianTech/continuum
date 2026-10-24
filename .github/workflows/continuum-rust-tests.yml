@@ -269,6 +269,7 @@ jobs:
         id: setup
         with:
           restore-target: 'false'
+          save-apt: 'true'
       - name: Build every crate job's tests and the CLI's (no run)
         run: |
           mapfile -t targets < <(node -e '
@@ -283,7 +284,7 @@ jobs:
           core_features=$(node -p 'require("./tools/scripts/ci-change-scope.cjs").TEST_FEATURES["continuum-core"]')
           cargo test -p continuum-core --bin continuum --profile dev-fast --features "$core_features" --no-run --message-format=json >> warm.jsonl
           node tools/scripts/ci-cargo-freshness.cjs prune-test-executables warm.jsonl
-          du -sh target target/*/* ~/.cargo/registry ~/.cargo/git 2>/dev/null | sort -h | tail -12
+          du -sh target target/dev-fast/* target/dev-fast/.fingerprint target/dev-fast/build/* ~/.cargo/registry ~/.cargo/git | sort -h | tail -15
       - name: Save the shared target cache
         uses: actions/cache/save@v4
         with:
