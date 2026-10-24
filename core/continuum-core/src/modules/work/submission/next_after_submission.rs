@@ -470,10 +470,11 @@ impl ActionCommand for WorkReview {
         let card_id = match p.card_id.as_deref() {
             Some(c) => WorkCardId::from_uuid(resolve_shown(c, &shown, "card")?),
             None => review_card.reviews.ok_or_else(|| {
-                CommandError::Invalid(
-                    "the card you named is not a review card (it reviews nothing) — pass card_id if you are reviewing out of band"
-                        .to_string(),
-                )
+                CommandError::Invalid(format!(
+                    "card {} (\"{}\") reviews no card, so it is not a review card; name the review card you hold, or pass card_id to review a card out of band",
+                    short_id(review_card.card_id.as_uuid()),
+                    review_card.title
+                ))
             })?,
         };
         let review_claim_id = match p.review_claim_id {
@@ -493,10 +494,38 @@ impl ActionCommand for WorkReview {
             },
         };
         if review_card.reviews != Some(card_id) {
-            return Err(CommandError::Invalid("review card does not review the named parent".into()));
+            // Name both ends, so the way forward is in the refusal (Benchy and Atlas on the M5,
+            // 2026-10-24: ~10 acts each following refusals that never named the parent).
+            let reviews = review_card.reviews.map_or_else(|| "no card".to_owned(), |c| format!("card {}", short_id(c.as_uuid())));
+            return Err(CommandError::Invalid(format!(
+                "review card {} reviews {reviews}, not card {} you named; omit card_id to review what it reviews",
+                short_id(review_card.card_id.as_uuid()),
+                short_id(card_id.as_uuid())
+            )));
         }
         let submission = board.candidate_for_review(review_card.card_id, p.submission_id.map(airc_work::SubmissionId::from_uuid))
-            .map_err(|e| CommandError::Invalid(format!("review candidate: {e}")))?;
+            .map_err(|e| {
+                // The parent and what it holds: a review card whose parent is itself a review
+                // card (its submissions sit one card further up) reads as "no submissions"
+                // unless the refusal says which card it looked at.
+                let parent = board.card(card_id);
+                let on_card: Vec<(Uuid, Uuid)> = parent
+                    .iter()
+                    .flat_map(|c| c.submissions.iter())
+                    .map(|s| (s.submission_id.as_uuid(), s.publisher.as_uuid()))
+                    .collect();
+                let nested = match parent.and_then(|c| c.reviews) {
+                    Some(up) => format!("; card {} is itself a review card, reviewing card {}", short_id(card_id.as_uuid()), short_id(up.as_uuid())),
+                    None => String::new(),
+                };
+                CommandError::Invalid(format!(
+                    "review candidate: {e} (review card {} reviews card {}{}); {}",
+                    short_id(review_card.card_id.as_uuid()),
+                    short_id(card_id.as_uuid()),
+                    nested,
+                    submissions_on_card(&on_card)
+                ))
+            })?;
         // SELF-REVIEW IS THE ROOM'S CALL (card fa4aaaaa). The author reviewing her own
         // submission is admitted only where the room's policy says `self`; a room that
         // declares no policy keeps today's behaviour. Refused up front, by name, rather
@@ -650,4 +679,9 @@ pub struct WorkSubmissionResult {
     // `patch_error` naming why when this node holds no such bytes.
     pub patch: Option<String>,
     pub patch_error: Option<String>,
+}
+
+/// The leading eight hex characters a board shows and the resolver accepts as a prefix.
+fn short_id(id: Uuid) -> String {
+    id.simple().to_string()[..8].to_owned()
 }
