@@ -94,6 +94,19 @@ pub(super) async fn consume_review_credit<T: Transport>(
     {
         return Err(CreditBindingError::WrongSelection);
     }
+    // Positive credit re-checks provenance against the immutable snapshot every time, so a
+    // submission recorded after this binding was made still holds a shared row (card fe8554d2).
+    if let Some(other) = issued_elsewhere(conn, persona_name, row, id).await? {
+        continuum_base::probe!(
+            class = "training.credit.provenance_held",
+            persona = %persona_name,
+            submission = %id,
+            held = ?Held::SharedRevision(other),
+            "a bound snapshot carries another submission's issuing generation: credit held, not passed"
+        );
+        result.state = ReviewedCreditState::ProvenanceHeld;
+        return Ok(result);
+    }
     let mut params = match staged_submission_params(persona_id, persona_name, row, true) {
         Ok(params) => params,
         Err(reason) => {

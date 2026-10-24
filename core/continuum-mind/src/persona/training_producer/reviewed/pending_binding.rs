@@ -47,8 +47,10 @@ pub enum Held {
     /// recording and publishing, then a different retry): no review of it reaches this row.
     PublicationMismatch,
     /// The issuing generation's staged row also carries another submission's issuing
-    /// generation. Staging is periodic, so a failed submission and its correction can share
-    /// one row; crediting it would train the failed generations as the correction.
+    /// generation, or a generation another binding already reserved (named by its submission,
+    /// or its revision for a legacy transfer). Staging is periodic, so a failed submission and
+    /// its correction can share one row; crediting it would train the failed generations as the
+    /// correction.
     SharedRevision(Uuid),
     /// The generation is not staged yet, or names no single row: retried at the next review
     /// event and at registration replay.
@@ -105,11 +107,7 @@ pub async fn resolve_pending<T: Transport>(
         Err(CreditBindingError::Storage(e)) => return Err(e.into()),
         Err(other) => return Ok(Some(Err(Held::Unresolved(other.to_string())))),
     };
-    let others = pending_on_card(conn, persona_name, pending.card_id).await?;
-    let row_generations: Vec<&str> = row.receipts.iter().map(|r| r.submitted_request_id.as_str()).collect();
-    let issued: Vec<(Uuid, &str)> =
-        others.iter().map(|o| (o.id, o.selection.issuing_generation.as_str())).collect();
-    if let Some(other) = shared_with(&row_generations, id, &issued) {
+    if let Some(other) = issued_elsewhere(conn, persona_name, &row, id).await? {
         return Ok(Some(Err(Held::SharedRevision(other))));
     }
     let selection = SubmissionSelection {
@@ -127,6 +125,35 @@ pub async fn resolve_pending<T: Transport>(
         Err(CreditBindingError::Storage(e)) => Err(e.into()),
         Err(other) => Ok(Some(Err(Held::Unresolved(other.to_string())))),
     }
+}
+
+/// Another submission sharing this staged row's provenance: one whose issuing generation the
+/// row carries (pending rows), or one already holding a reservation on any of its generations
+/// (explicit and legacy bindings, which have no pending row). Checked when a pending row
+/// resolves AND each time a binding is consumed for positive credit, against the binding's
+/// immutable snapshot, so a submission recorded after the binding was made is still seen.
+pub async fn issued_elsewhere<T: Transport>(
+    conn: &Connection<T>,
+    persona_name: &str,
+    row: &StagedCredit,
+    submission: Uuid,
+) -> Result<Option<Uuid>, CreditBindingError> {
+    let others = pending_on_card(conn, persona_name, row.card_id).await?;
+    let row_generations: Vec<&str> = row.receipts.iter().map(|r| r.submitted_request_id.as_str()).collect();
+    let issued: Vec<(Uuid, &str)> =
+        others.iter().map(|o| (o.id, o.selection.issuing_generation.as_str())).collect();
+    if let Some(other) = shared_with(&row_generations, submission, &issued) {
+        return Ok(Some(other));
+    }
+    let held = read_reservations(conn, persona_name, &reservations(row, Some(submission))?).await?;
+    Ok(held
+        .into_values()
+        .find(|r| r.work_submission_id != Some(submission))
+        // A legacy transfer reserves with no submission: name its revision instead.
+        .map(|r| match r.work_submission_id {
+            Some(other) => other,
+            None => r.revision_id,
+        }))
 }
 
 /// PURE: the pending row and the board's submission name the same publication.

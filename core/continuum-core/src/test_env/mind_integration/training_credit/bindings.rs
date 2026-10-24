@@ -456,8 +456,11 @@ use super::*;
     // submission; a newer unrelated turn on the same claim stages after it; the review binds
     // turn 1. A generation not yet staged at publish holds, then binds once staged. A row
     // carrying another pending submission's generation holds (staging is periodic, so failed S
-    // and corrected M can share one). A board submission that is not the recorded publication
-    // holds; a retry of the same record is a no-op and a different one is refused.
+    // and corrected M can share one), in either order, including when M is recorded after S's
+    // binding was made, and when S was bound explicitly. A board submission that is not the
+    // recorded publication holds; a retry of the same record is a no-op, a different one refused.
+    // Storage-level: record/resolve are called directly, not through WorkSubmit or a signed
+    // board review.
     #[tokio::test]
     pub(super) async fn a_pending_binding_resolves_to_the_issuing_turn_or_holds(
     ) -> Result<(), Box<dyn std::error::Error>> {
@@ -551,6 +554,42 @@ use super::*;
         assert_eq!(
             reviewed::resolve_pending(&data, name, persona, room, &s).await?.and_then(Result::err),
             Some(Held::SharedRevision(m.submission_id.as_uuid()))
+        );
+
+        // Temporal: S binds while only S is pending, and its row already carries what becomes
+        // M's issuing generation. M is recorded afterwards; consuming S's binding re-checks its
+        // immutable snapshot and sees M.
+        let (s2, m2) = (submission('g')?, submission('h')?);
+        let mut bucket = turn("One staged bucket, two submissions.");
+        let both = [served_receipt("s2-gen", "model-a"), served_receipt("m2-gen", "model-a")];
+        assert!(bucket.record(&settlement_acts(4), &both, None, true).await);
+        reviewed::record_pending(&data, name, persona, pending(&s2, "s2-gen")).await?;
+        let Some(Ok(s2_bound)) = reviewed::resolve_pending(&data, name, persona, room, &s2).await? else {
+            return Err("S binds while it is the only pending submission".into());
+        };
+        reviewed::record_pending(&data, name, persona, pending(&m2, "m2-gen")).await?;
+        let intent: reviewed::CreditTransferIntent = reviewed::read_one(&data, name, &s2_bound.transfer_intent_id.to_string())
+            .await?
+            .ok_or("the binding retains its transfer intent")?;
+        assert_eq!(
+            reviewed::issued_elsewhere(&data, name, &intent.snapshot, s2.submission_id.as_uuid()).await?,
+            Some(m2.submission_id.as_uuid()),
+            "consumption sees a submission recorded after the binding"
+        );
+
+        // Explicit sharing: S binds its revision explicitly (no pending row), the turn restages
+        // with M's generation added, and M's row carries S's reserved generation: M holds.
+        let (s3, m3) = (submission('i')?, submission('j')?);
+        let mut explicit = turn("Explicit S, automatic M.");
+        assert!(explicit.record(&settlement_acts(4), &[served_receipt("s3-gen", "model-a")], None, true).await);
+        reviewed::bind_submission_generation(&data, name, persona, room, &s3, "s3-gen").await?;
+        let grown = [served_receipt("s3-gen", "model-a"), served_receipt("m3-gen", "model-a")];
+        assert!(explicit.record(&settlement_acts(8), &grown, None, true).await);
+        reviewed::record_pending(&data, name, persona, pending(&m3, "m3-gen")).await?;
+        assert_eq!(
+            reviewed::resolve_pending(&data, name, persona, room, &m3).await?.and_then(Result::err),
+            Some(Held::SharedRevision(s3.submission_id.as_uuid())),
+            "S's explicit reservation is seen without a pending row"
         );
 
         // A crash between record and publish: the same record again is a no-op, a different
