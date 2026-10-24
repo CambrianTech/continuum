@@ -26,6 +26,7 @@ scraper = "0.21"
 base64 = "0.22"  # perception/look encodes a captured frame as a data URL
 
 [dev-dependencies]
+continuum-kernel = { path = "../continuum-kernel", features = ["test-fixtures"] }  # every test build of this crate gets the per-process continuum home (card d11d9827)
 tokio = { workspace = true, features = ["test-util"] }
 tempfile = "3"
 airc-blobs.workspace = true  # tests: frames retained into a real blob store
