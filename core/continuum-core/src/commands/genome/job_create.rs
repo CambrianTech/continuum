@@ -526,7 +526,7 @@ crate::action_command! {
                 return without_job(Took::Awaited { trial: *trial });
             }
             // A gene that already carries this competence is adopted for trial: pulled first
-            // when it lives on the hub, then registered dormant and trialled on her cards.
+            // when it lives on the hub, then registered dormant and handed to the examiner.
             // No training. Her work decides it; a retired one is never offered again.
             Some(Decision::Reuse { gene, similarity }) => {
                 let refused = |error_kind: &str, error: String| {
@@ -560,7 +560,7 @@ crate::action_command! {
                 let adopted = adoption
                     .as_ref()
                     .map_err(Clone::clone)
-                    .and_then(|a| a.adopt(watched_persona_id, &p.request.trait_kind, &path, &p.request.base_model, continuum_base::time::EpochMs::now().millis()));
+                    .and_then(|a| a.adopt(watched_persona_id, &p.request.trait_kind, &path, &p.request.base_model, None, continuum_base::time::EpochMs::now().millis()));
                 match adopted {
                     Ok(trial) => {
                         continuum_base::probe!(
@@ -572,8 +572,7 @@ crate::action_command! {
                             path = %path.display(),
                             similarity = *similarity,
                             trial = %trial.id,
-                            share_milli = trial.share_milli as u64,
-                            "an existing gene carries this competence: adopted for trial on her cards, no training"
+                            "an existing gene carries this competence: adopted, no training; with no training job here the examiner receipts it unexaminable"
                         );
                         return without_job(Took::Reused { trial: trial.id, gene: gene.clone() });
                     }

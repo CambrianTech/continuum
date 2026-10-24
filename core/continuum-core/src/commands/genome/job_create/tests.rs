@@ -208,7 +208,7 @@
         assert!(out.result.is_some() && out.took.is_none(), "a retired gene is not reused: {out:?}");
         assert!(matches!(w.board.snapshot()[0].decision, Some(Decision::Mint)));
         let adoption = Adoption::at(w.manifest(), w.trials());
-        let refused = adoption.adopt(w.persona, &w.request.trait_kind, &w.gene_path, &w.request.base_model, 2);
+        let refused = adoption.adopt(w.persona, &w.request.trait_kind, &w.gene_path, &w.request.base_model, None, 2);
         assert_eq!(refused, Err(crate::genome::gene_trial::AdoptRefusal::AlreadyDecided(crate::genome::gene_trial::TrialState::Retired)));
         assert!(!w.manifest().exists(), "a refused adoption never registered the gene");
     }
