@@ -559,7 +559,7 @@ use super::*;
         // Temporal: S binds while only S is pending, and its row already carries what becomes
         // M's issuing generation. M is recorded afterwards; consuming S's binding re-checks its
         // immutable snapshot and sees M.
-        let (s2, m2) = (submission('g')?, submission('h')?);
+        let (s2, m2) = (submission('1')?, submission('2')?);
         let mut bucket = turn("One staged bucket, two submissions.");
         let both = [served_receipt("s2-gen", "model-a"), served_receipt("m2-gen", "model-a")];
         assert!(bucket.record(&settlement_acts(4), &both, None, true).await);
@@ -579,7 +579,7 @@ use super::*;
 
         // Explicit sharing: S binds its revision explicitly (no pending row), the turn restages
         // with M's generation added, and M's row carries S's reserved generation: M holds.
-        let (s3, m3) = (submission('i')?, submission('j')?);
+        let (s3, m3) = (submission('3')?, submission('4')?);
         let mut explicit = turn("Explicit S, automatic M.");
         assert!(explicit.record(&settlement_acts(4), &[served_receipt("s3-gen", "model-a")], None, true).await);
         reviewed::bind_submission_generation(&data, name, persona, room, &s3, "s3-gen").await?;
