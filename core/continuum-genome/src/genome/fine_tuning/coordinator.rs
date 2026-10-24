@@ -182,26 +182,36 @@ impl FineTuningCoordinator {
         }
     }
 
+    /// The bases a grid peer may lease to this node (card 6f05b89d): `base` when a trainer
+    /// on THIS host, its resident weights or its own copy, would accept a LoRA job for it.
+    /// A grid-peer or cloud trainer never counts, so a node never advertises training it
+    /// would only pass on. The selection gate is the one `select` uses, never a second one.
+    pub fn trains_base_here(&self, base: &str) -> bool {
+        self.registry.list().iter().filter_map(|id| self.registry.get(id)).any(|adapter| {
+            let caps = adapter.capabilities();
+            !matches!(caps.place, TrainingPlace::GridPeer | TrainingPlace::Cloud)
+                && caps.supports_lora
+                && self.runs_base_here(&caps, base)
+                && adapter.serves_base(base)
+        })
+    }
+
+    /// The host can run this trainer, and it accepts this base: the hardware gate first (an
+    /// Apple `mlx-local` trainer on a Linux box, or a CUDA trainer on a Mac, is filtered out
+    /// before anything else, on the host's probed device flags), then the base prefix (an
+    /// empty list means the adapter validates the base on create_job, so any base matches).
+    fn runs_base_here(&self, caps: &FineTuningCapabilities, base: &str) -> bool {
+        caps.requires.satisfied_by(&self.host)
+            && (caps.supported_base_model_prefixes.is_empty()
+                || caps.supported_base_model_prefixes.iter().any(|p| base.starts_with(p)))
+    }
+
     /// `true` iff the adapter's static capabilities cover this
     /// request's hard requirements AND the host can actually run it.
     /// Soft preferences (cost, pressure) are applied later in `rank`;
     /// this is the binary "can it even run on THIS host?" gate.
     fn caps_match(&self, caps: &FineTuningCapabilities, request: &TrainingJobRequest) -> bool {
-        // Hardware gate FIRST — an Apple `mlx-local` trainer on a Linux
-        // box, or a CUDA trainer on a Mac, is filtered out before any
-        // other consideration. Deterministic match on the host's probed
-        // device flags (no string parsing of `platform`).
-        if !caps.requires.satisfied_by(&self.host) {
-            return false;
-        }
-        // Wildcard prefix list = adapter validates the actual base
-        // on create_job. Treat as "match any base."
-        let base_ok = caps.supported_base_model_prefixes.is_empty()
-            || caps
-                .supported_base_model_prefixes
-                .iter()
-                .any(|p| request.base_model.starts_with(p));
-        if !base_ok {
+        if !self.runs_base_here(caps, &request.base_model) {
             return false;
         }
         if request.lora.is_some() && !caps.supports_lora {
@@ -501,4 +511,28 @@ mod tests {
         assert!(matches!(err, CoordinatorError::NoCapableAdapter { .. }));
     }
 
+    // what this catches (card 6f05b89d): a node advertising training it would only pass on.
+    // A cloud trainer or a grid-peer trainer must not make a node look trainable to the grid
+    // (a peer leasing to it would bounce the job onward or to a provider), and a trainer
+    // without LoRA, or for another base, does not count either.
+    #[test]
+    fn only_a_trainer_on_this_host_makes_a_base_trainable_here() {
+        let mut grid = caps("grid-peer", true, true, true, &[]);
+        grid.place = TrainingPlace::GridPeer;
+        let remote_only = registry_with(vec![
+            ("openai", caps("openai", true, true, false, &["gpt-"])),
+            ("grid-peer", grid),
+        ]);
+        let coord = FineTuningCoordinator::new(remote_only);
+        assert!(!coord.trains_base_here("gpt-4o-mini"), "a cloud trainer is not training here");
+        assert!(!coord.trains_base_here("qwen3.5-4b"), "a grid-peer trainer is not training here");
+
+        let local = registry_with(vec![
+            ("local", caps("local", true, true, true, &["qwen"])),
+            ("no-lora", caps("no-lora", false, true, true, &[])),
+        ]);
+        let coord = FineTuningCoordinator::new(local);
+        assert!(coord.trains_base_here("qwen3.5-4b"));
+        assert!(!coord.trains_base_here("llama-3-8b"), "another base, and the wildcard trainer has no LoRA");
+    }
 }

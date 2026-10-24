@@ -203,7 +203,7 @@ mod tests {
             residents: 0,
             free_slots_live: 0,
             lane_wait_p50_ms: 0,
-            lane_wait_samples: 0, served_context_window: 0, decode_tps_milli: 0, capabilities: Vec::new(),
+            lane_wait_samples: 0, served_context_window: 0, decode_tps_milli: 0, capabilities: Vec::new(), trainable_bases: Vec::new(),
         }
         .capacity()
     }
