@@ -284,6 +284,12 @@ impl EndpointTransition {
     ) -> Result<(), String> {
         let generation = self.previous_generation().ok_or("replacement requires a known generation")?;
         if generation.has_exited() || self.endpoint.paging_recovery_required() {
+            // Nothing can be saved: the engine is gone, or a save could not be trusted.
+            self.endpoint.record_relaunch_discard(if generation.has_exited() {
+                DiscardReason::EngineExited
+            } else {
+                DiscardReason::PagingUncertain
+            });
             return Ok(());
         }
         let original = self.capture_suspension(&generation)?;
@@ -558,6 +564,7 @@ impl SlotDirectory {
                     gate: Arc::new(tokio::sync::RwLock::new(())),
                     paging_tasks: Mutex::new(tokio::task::JoinSet::new()),
                     ready_rx,
+                    discarded: Mutex::new(std::collections::HashMap::new()),
                     state: Mutex::new(EndpointState {
                         ready,
                         paging_uncertain: false,

@@ -23,13 +23,19 @@ impl LlamaServerProcess {
             return Err(LlamaServerError::Spawn("recorded live lane belongs to another endpoint".into()));
         }
         let incarnation = lane.incarnation();
+        let endpoint = crate::inference::slots::directory().endpoint(&self.root);
         match incarnation.liveness() {
-            Liveness::Dead => return Ok(()),
+            Liveness::Dead => {
+                // Its residents' KV died with it; their next turns name this (card 6b28a445).
+                endpoint.record_relaunch_discard(crate::inference::slots::DiscardReason::AdoptedEngineDead);
+                return Ok(());
+            }
             Liveness::Unknown => return Err(LlamaServerError::Spawn("adopted engine identity is unverified; refusing retirement".into())),
             Liveness::Alive => {}
         }
-        let endpoint = crate::inference::slots::directory().endpoint(&self.root);
-        if !endpoint.paging_recovery_required() {
+        if endpoint.paging_recovery_required() {
+            endpoint.record_relaunch_discard(crate::inference::slots::DiscardReason::PagingUncertain);
+        } else {
             transition.checkpoint_adopted_before_replacement(
                 &self.client, &self.root, incarnation, current,
             ).await.map_err(LlamaServerError::Spawn)?;

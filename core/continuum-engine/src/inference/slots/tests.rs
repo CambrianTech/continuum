@@ -184,6 +184,32 @@ mod adopted_checkpoint;
         PageKey::mind(Uuid::from_u128(p)).expect("non-nil test id")
     }
 
+    // what this catches (card 6b28a445): a relaunch that cannot save (engine exited, paging
+    // quarantined, adopted engine dead) discarded residents' KV with no record, so their
+    // next cold turn read as a lost page. Only minds held WITHOUT a confirmed save are
+    // recorded, the record survives the pool being replaced, and it is taken exactly once.
+    #[tokio::test]
+    async fn a_relaunch_records_only_unsaved_residents_and_their_next_turn_takes_it_once() {
+        let dir = SlotDirectory { endpoints: dashmap::DashMap::new() };
+        let endpoint = dir.endpoint("test://relaunch");
+        let pool = Arc::new(KvSlotPool::new("test://relaunch", 4));
+        pool.holders.lock().insert(0, mind(1));
+        pool.holders.lock().insert(1, mind(2));
+        pool.holders.lock().insert(2, key(3, 4));
+        pool.note_saved(mind(2));
+        endpoint.state.lock().pool = Some(Some(pool));
+
+        endpoint.record_relaunch_discard(DiscardReason::EngineExited);
+        // The next generation's pool replaces this one; the record is the endpoint's.
+        endpoint.state.lock().pool = Some(Some(Arc::new(KvSlotPool::new("test://relaunch", 4))));
+
+        let admission = endpoint.admit().await.expect("an open endpoint admits");
+        assert_eq!(admission.take_relaunch_discard(&mind(1)), Some(DiscardReason::EngineExited));
+        assert_eq!(admission.take_relaunch_discard(&mind(1)), None, "taken once");
+        assert_eq!(admission.take_relaunch_discard(&mind(2)), None, "a saved page restores; nothing was lost");
+        assert_eq!(admission.take_relaunch_discard(&key(3, 4)), None, "a fork dies with its core anyway");
+    }
+
     // regression for card 6102ac09 (BigMama, 2026-09-26 12:28Z): a turn that reached a
     // loading engine was refused instantly — 16 of Kimi's 26 requests in 90 min failed
     // inside a 90 s launch window, half of them on the cross-grid fallback.
