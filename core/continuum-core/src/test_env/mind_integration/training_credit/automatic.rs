@@ -407,6 +407,12 @@ pub(super) async fn a_checkout_derived_submit_publishes_her_patch_and_records_it
     };
     assert_eq!(artifact["hash"], json!(expected), "the published artifact is exactly her patch");
     assert_eq!(artifact["size_bytes"], json!(patch.len()));
+    // Retained, not only hashed: the store hands back exactly her patch's bytes.
+    let retained = {
+        use airc_blobs::ContentAddressedStore;
+        crate::media::artifact::store()?.get(&airc_blobs::ContentHash::from_bytes(patch.as_bytes()))?
+    };
+    assert_eq!(retained, patch.as_bytes(), "the retained blob is the published patch");
     let recorded: reviewed::PendingCreditBinding = reviewed::read_one(&r.data(), r.name, &published.submission_id.to_string())
         .await?
         .ok_or("the issuing generation is recorded")?;
