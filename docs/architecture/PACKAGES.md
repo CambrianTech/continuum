@@ -110,6 +110,23 @@ manifest is canonical JSON (sorted keys), so the same value always has the same 
 registry accepts it as an artifact manifest unchanged. Provenance (ed25519, `GenomeProvenance`) signs
 a manifest's id. This one id replaces `ArtifactId`, `AlloyHash` and the bundle digest.
 
+## Provenance: the Merkle root locks it all down
+
+Joel: "Merkle maintains provenance and locks it all down cryptographically."
+
+- **One signature covers the whole tree.** A root's id commits to every field, blob and child below
+  it, so an ed25519 signature over that one id (`GenomeProvenance`, generalized to every kind) vouches
+  for every byte at any depth. Change one weight in one gene of a project and the project's id changes.
+- **Verified on every load and every transport.** A blob's bytes must hash to the id that names it,
+  whichever store or peer it came from, so a remote, a cache or a registry is never trusted for
+  integrity, only for availability.
+- **Lineage is part of identity.** A gene's `parents`, a page's genes, a project's inputs are children
+  or ids inside the manifest, so where something came from cannot be stripped or rewritten without
+  changing what it is. Credit travels with the work.
+- **Who may load what** is the manifest's `requires(Key(audience))` plus the signer's trust scope:
+  a mind accepts packages signed by the scopes it trusts and refuses the rest with a typed reason.
+  Secrets stay sealed to their audience even inside a shared tree.
+
 ## Versions: a migration chain, never two readers
 
 Each kind carries a schema number and an ordered list of pure functions `manifest(n) -> manifest(n+1)`,
