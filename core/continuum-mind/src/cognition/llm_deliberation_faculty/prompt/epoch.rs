@@ -267,16 +267,40 @@ impl LlmDeliberationFaculty {
         }
     }
 
-    /// Her sources in the order they first render: the conversation, her actions, each
-    /// standing block, her thoughts (the order the prompt had before the view).
+    /// Her sources in the order an epoch start renders them, the front that survives a
+    /// turnover first: the settled blocks (standing and board churn, in their canonical
+    /// order), her actions, her conversation, the blocks that count or change within an
+    /// epoch (the kanban's claims, recall, awareness, an unknown block), her thoughts. Within an epoch the order cannot matter (every act appends), so it is
+    /// chosen for the one rewrite an epoch costs: a turnover keeps the prefix up to the
+    /// first source whose FRONT changed.
+    ///
+    /// A growing source's front changes at nearly every turnover, because that is where it
+    /// collapses: her conversation led, and a turnover broke the prompt at its first message,
+    /// re-prefilling everything behind identity and tools (Benchy on the M5, 2026-10-24
+    /// 00:32Z: turnover of 98 items, `delib.prompt.common_prefix` index 2, 20% shared; Delia
+    /// on the IntelMac, 10-24 00:14Z: index 2 at `[actions]`, 41%). The settled blocks lead,
+    /// then her actions, whose collapsed items keep their pointers so their front outlives a
+    /// turnover, then her conversation, whose collapsed turns leave the view. Nothing ahead
+    /// of her history counts or dates anything: the kanban's claimable count and claim
+    /// column changed on 30% of turns (card 5b09111e), so it rides after her history with
+    /// recall's "N ago" ages, awareness and her thoughts.
     fn view_sources<'a>(
         streams: &'a Streams,
         actions: Option<&'a Actions<'a>>,
         thoughts: Option<&'a Thoughts<'a>>,
     ) -> Vec<&'a dyn Source<ContextMessage>> {
-        let mut sources: Vec<&dyn Source<ContextMessage>> = vec![&streams.conversation];
+        use crate::cognition::deliberation_prompt::{churn_of, PromptChurn};
+        let settled = |block: &&crate::cognition::context_streams::blocks::Grounding| {
+            churn_of(&block.faculty) < PromptChurn::Claims
+        };
+        let as_source = |block: &'a crate::cognition::context_streams::blocks::Grounding| {
+            block as &dyn Source<ContextMessage>
+        };
+        let mut sources: Vec<&dyn Source<ContextMessage>> =
+            streams.blocks.iter().filter(settled).map(as_source).collect();
         sources.extend(actions.map(|source| source as &dyn Source<ContextMessage>));
-        sources.extend(streams.blocks.iter().map(|source| source as &dyn Source<ContextMessage>));
+        sources.push(&streams.conversation);
+        sources.extend(streams.blocks.iter().filter(|block| !settled(block)).map(as_source));
         sources.extend(thoughts.map(|source| source as &dyn Source<ContextMessage>));
         sources
     }
@@ -376,3 +400,6 @@ pub(in super::super) fn start_grants(
         })
         .collect()
 }
+
+#[cfg(test)]
+mod tests;
