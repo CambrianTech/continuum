@@ -390,22 +390,28 @@ async fn admit(
                     admission.page_in = PageIn::Resident;
                 }
                 admission.uncommitted = Some((Arc::clone(pool), k, pg.slot));
+                // Taken on every admission, so only the first turn after a relaunch is blamed on it.
+                let discarded = admission._endpoint.take_relaunch_discard(&k);
                 if !pg.already_resident && !pg.restore {
                     // Every fast-path miss is loud: this turn prefills from its first token.
                     // With no page on disk that is a first visit; a page on disk the ledger does
                     // not confirm (lost before a save finished, or a ledger that did not load)
                     // is the defect class, never a quiet slower path.
+                    // A relaunch that discarded this resident unsaved is the cause, whatever
+                    // is on disk (card 6b28a445); otherwise the page store answers.
                     let on_disk = pool.page_on_disk(&k);
                     continuum_base::probe!(
                         class = "inference.kv_page.cold_turn",
                         page = %k,
                         slot = pg.slot as u64,
                         warm_only,
-                        cause = match on_disk {
-                            Some(true) => "page_on_disk_unconfirmed",
-                            Some(false) => "no_page",
-                            None => "no_page_dir",
+                        cause = match (discarded, on_disk) {
+                            (Some(_), _) => "discarded_by_relaunch",
+                            (None, Some(true)) => "page_on_disk_unconfirmed",
+                            (None, Some(false)) => "no_page",
+                            (None, None) => "no_page_dir",
                         },
+                        discard_reason = discarded.map_or("", crate::inference::slots::DiscardReason::as_str),
                         "this page's slot holds none of its KV and no restorable page exists: it prefills in full"
                     );
                 }

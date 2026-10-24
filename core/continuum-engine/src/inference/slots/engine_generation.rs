@@ -31,6 +31,9 @@ impl EngineGeneration {
                 // Do not mutate a ledger while an old HTTP future can still write
                 // it. Replacement readiness drains admissions and replaces it.
             }
+            drop(state);
+            // A relaunch that could not save waited for this death to record its loss.
+            endpoint.relaunch_exit_observed(self.id);
         }
     }
 }
@@ -275,7 +278,9 @@ impl EndpointTransition {
 
     /// Planned replacement cannot discard a healthy engine's unsaved residents.
     /// A terminal refusal resumes the exact original ledger; an uncertain write
-    /// stays quarantined. Dead engines and quarantined paging use recovery instead.
+    /// stays quarantined. Dead engines and quarantined paging use recovery instead:
+    /// nothing can be saved, so their unsaved residents are recorded as lost when this
+    /// generation's exit is observed, at once if it already was (card 6b28a445).
     pub(crate) async fn checkpoint_before_replacement(
         &mut self,
         client: &reqwest::Client,
@@ -284,6 +289,12 @@ impl EndpointTransition {
     ) -> Result<(), String> {
         let generation = self.previous_generation().ok_or("replacement requires a known generation")?;
         if generation.has_exited() || self.endpoint.paging_recovery_required() {
+            let reason = if generation.has_exited() {
+                DiscardReason::EngineExited
+            } else {
+                DiscardReason::PagingUncertain
+            };
+            self.endpoint.pending_discard(reason).on_exit_of(&generation);
             return Ok(());
         }
         let original = self.capture_suspension(&generation)?;
@@ -558,6 +569,7 @@ impl SlotDirectory {
                     gate: Arc::new(tokio::sync::RwLock::new(())),
                     paging_tasks: Mutex::new(tokio::task::JoinSet::new()),
                     ready_rx,
+                    discarded: Mutex::new(DiscardLog::default()),
                     state: Mutex::new(EndpointState {
                         ready,
                         paging_uncertain: false,

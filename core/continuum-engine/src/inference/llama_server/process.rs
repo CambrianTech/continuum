@@ -30,6 +30,9 @@ pub struct LlamaServerProcess {
     pub(super) last_started: parking_lot::Mutex<Option<crate::inference::slots::EngineGeneration>>,
     /// A signalled adopted predecessor stays fenced across timeout/cancellation.
     pub(super) retiring_adopted: parking_lot::Mutex<Option<crate::inference::engine_residency::EngineIncarnation>>,
+    /// The residents that predecessor loses unsaved, recorded only once its exit is observed
+    /// (card 6b28a445). Held with `retiring_adopted`, so a re-entered wait still records it.
+    pub(super) retiring_discard: parking_lot::Mutex<Option<crate::inference::slots::PendingDiscard>>,
     /// The LoRA genome set (sorted paths) the CURRENT child was launched with —
     /// the truthful record of what `/lora-adapters` holds, since llama.cpp has no
     /// API to query it. `ensure_model_serving` compares this against the desired
@@ -133,6 +136,7 @@ impl LlamaServerProcess {
             pending_resource_reservation: parking_lot::Mutex::new(None),
             last_started: parking_lot::Mutex::new(None),
             retiring_adopted: parking_lot::Mutex::new(None),
+            retiring_discard: parking_lot::Mutex::new(None),
             served_adapters: Arc::new(StdMutex::new(Vec::new())),
             retained_page_dir: Arc::new(parking_lot::Mutex::new(None)),
             // THE host's live lane — pins the canonical port, owns the reclaim
@@ -166,6 +170,7 @@ impl LlamaServerProcess {
             pending_resource_reservation: parking_lot::Mutex::new(None),
             last_started: parking_lot::Mutex::new(None),
             retiring_adopted: parking_lot::Mutex::new(None),
+            retiring_discard: parking_lot::Mutex::new(None),
             served_adapters: Arc::new(StdMutex::new(Vec::new())),
             retained_page_dir: Arc::new(parking_lot::Mutex::new(None)),
             // Ephemeral lane on its OWN scanned port: NOT the canonical live lane.

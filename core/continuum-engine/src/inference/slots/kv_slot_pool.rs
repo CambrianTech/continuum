@@ -459,6 +459,10 @@ pub struct EndpointSlots {
     pub(super) paging_tasks: Mutex<tokio::task::JoinSet<()>>,
     /// The read side of `EndpointState::ready`, for turns that hold through a transition.
     pub(super) ready_rx: tokio::sync::watch::Receiver<bool>,
+    /// Residents a relaunch discarded unsaved, until their next turn takes the record
+    /// (card 6b28a445). On the endpoint because the pool does not outlive the engine;
+    /// retention is bounded by [`DiscardLog`].
+    pub(super) discarded: Mutex<DiscardLog>,
 }
 
 pub struct EndpointAdmission {

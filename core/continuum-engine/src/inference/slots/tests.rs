@@ -184,6 +184,91 @@ mod adopted_checkpoint;
         PageKey::mind(Uuid::from_u128(p)).expect("non-nil test id")
     }
 
+    // what this catches (card 6b28a445): a relaunch that cannot save (here, quarantined
+    // paging) lost residents' KV with no record, so their next cold turn read as a lost page;
+    // and, per Codex's review, a record made when the kill was SENT reports a loss that may
+    // not have happened. Through the real replacement path: nothing is recorded while the
+    // engine is only quarantined, even on re-entry; its observed exit records only the
+    // minds held without a confirmed save, once; a re-entry after the exit records nothing
+    // more; the record survives the pool's replacement and is taken exactly once.
+    #[tokio::test]
+    async fn a_relaunch_records_unsaved_residents_only_at_the_observed_exit_and_once() {
+        let dir = SlotDirectory { endpoints: dashmap::DashMap::new() };
+        let endpoint = dir.endpoint("test://relaunch");
+        let mut transition = endpoint.transition().await;
+        let generation = transition.start_generation().expect("first generation");
+        let pool = Arc::new(KvSlotPool::new("test://relaunch", 4));
+        pool.holders.lock().insert(0, mind(1));
+        pool.holders.lock().insert(1, mind(2));
+        pool.holders.lock().insert(2, key(3, 4));
+        pool.note_saved(mind(2));
+        endpoint.state.lock().pool = Some(Some(pool));
+        endpoint.quarantine_paging();
+        let client = reqwest::Client::new();
+
+        for _attempt in 0..2 {
+            transition
+                .checkpoint_before_replacement(&client, "test://relaunch", &|| true)
+                .await
+                .expect("quarantined paging has nothing to save");
+            assert_eq!(endpoint.discarded.lock().take(&mind(1)), None, "the kill is not the death");
+        }
+        generation.observed_exit();
+        transition
+            .checkpoint_before_replacement(&client, "test://relaunch", &|| true)
+            .await
+            .expect("an exited engine has nothing to save");
+        drop(transition);
+        // The next generation's pool replaces this one; the record is the endpoint's.
+        endpoint.state.lock().pool = Some(Some(Arc::new(KvSlotPool::new("test://relaunch", 4))));
+        endpoint.state.lock().ready.send_replace(true); // the replacement verified ready
+
+        let admission = endpoint.admit().await.expect("an open endpoint admits");
+        assert_eq!(admission.take_relaunch_discard(&mind(1)), Some(DiscardReason::PagingUncertain));
+        assert_eq!(admission.take_relaunch_discard(&mind(1)), None, "recorded once, taken once");
+        assert_eq!(admission.take_relaunch_discard(&mind(2)), None, "a saved page restores; nothing was lost");
+        assert_eq!(admission.take_relaunch_discard(&key(3, 4)), None, "a fork dies with its core anyway");
+    }
+
+    // what this catches (card 6b28a445, Codex's review): minds discarded by one relaunch that
+    // never return stayed recorded forever, across every later generation. Retention is one
+    // pool's worth of slots: the latest relaunch is kept whole, older records are evicted
+    // oldest first, and an empty capture evicts nothing.
+    #[tokio::test]
+    async fn discard_records_keep_one_pool_of_slots_across_generations() {
+        let dir = SlotDirectory { endpoints: dashmap::DashMap::new() };
+        let endpoint = dir.endpoint("test://retention");
+        let relaunch = |minds: &[u128]| {
+            let pool = Arc::new(KvSlotPool::new("test://retention", 3));
+            for (slot, m) in minds.iter().enumerate() {
+                pool.holders.lock().insert(slot as u32, mind(*m));
+            }
+            endpoint.state.lock().pool = Some(Some(pool));
+            endpoint.pending_discard(DiscardReason::PagingUncertain).commit();
+        };
+        // One mind per relaunch, so "oldest" is defined: the first is evicted by the fourth.
+        for m in [1, 2, 3, 4] {
+            relaunch(&[m]);
+        }
+        {
+            let mut log = endpoint.discarded.lock();
+            assert_eq!(log.take(&mind(1)), None, "oldest evicted first");
+            for kept in [2, 3, 4] {
+                assert_eq!(log.take(&mind(kept)), Some(DiscardReason::PagingUncertain), "mind {kept} kept");
+            }
+        }
+        relaunch(&[5, 6]);
+        relaunch(&[7, 8, 9]); // a whole pool of slots: the latest relaunch is kept whole
+        relaunch(&[]); // nothing lost evicts nothing
+        let mut log = endpoint.discarded.lock();
+        for evicted in [5, 6] {
+            assert_eq!(log.take(&mind(evicted)), None, "mind {evicted} evicted by a newer relaunch");
+        }
+        for kept in [7, 8, 9] {
+            assert_eq!(log.take(&mind(kept)), Some(DiscardReason::PagingUncertain), "mind {kept} kept");
+        }
+    }
+
     // regression for card 6102ac09 (BigMama, 2026-09-26 12:28Z): a turn that reached a
     // loading engine was refused instantly — 16 of Kimi's 26 requests in 90 min failed
     // inside a 90 s launch window, half of them on the cross-grid fallback.
