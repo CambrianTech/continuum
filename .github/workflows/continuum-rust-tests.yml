@@ -400,6 +400,8 @@ jobs:
           if ($interopResult -ne 0) { exit $interopResult }
           if (($interop -join "`n") -notmatch '1 passed;') { throw 'Native/fs2 custody fixture did not execute' }
           foreach ($test in @(
+            'inference::lane_process::kill9::windows_termination_tests::exit_between_preflight_and_termination_is_already_gone',
+            'inference::lane_process::kill9::windows_termination_tests::live_process_access_denial_remains_a_refusal',
             'model_registry::artifacts::expert_placement::tests::online_preparation_preserves_readers_until_explicit_final_exclusion',
             'model_registry::artifacts::expert_placement::tests::actual_lazy_reader_excludes_freeze_until_its_lifetime_ends',
             'inference::engine_install::tests::installed_engine_receipt_binds_bytes_and_candidate_membership'
