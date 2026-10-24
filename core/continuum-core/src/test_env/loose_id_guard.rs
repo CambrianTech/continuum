@@ -110,7 +110,6 @@ const LOOSE_IDS: &[LooseId] = &[
     LooseId { file: "persona/engram.rs", field: "message_id", why: "pending: airc wire id, arrives as text from the daemon. Types when the airc-side ids do — #396" },
     LooseId { file: "persona/engram.rs", field: "room_id", why: "pending: airc wire id, arrives as text from the daemon. Types when the airc-side ids do — #396" },
     LooseId { file: "persona/engram.rs", field: "sender_id", why: "pending: airc wire id, arrives as text from the daemon. Types when the airc-side ids do — #396" },
-    LooseId { file: "persona/projection.rs", field: "persona_id", why: "pending: ours, but nothing on this path RESOLVES yet. Typing it as an identity today would assert something the code does not do — #164/#396" },
     LooseId { file: "ai/types.rs", field: "persona_id", why: "pending: ours, but nothing on this path RESOLVES yet. Typing it as an identity today would assert something the code does not do — #164/#396" },
     LooseId { file: "ai/types.rs", field: "room_id", why: "pending: ours, but nothing on this path RESOLVES yet. Typing it as an identity today would assert something the code does not do — #164/#396" },
     LooseId { file: "ai/types.rs", field: "user_id", why: "pending: ours, but nothing on this path RESOLVES yet. Typing it as an identity today would assert something the code does not do — #164/#396" },
