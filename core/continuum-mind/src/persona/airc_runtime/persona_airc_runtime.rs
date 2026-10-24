@@ -1,5 +1,127 @@
 use super::*;
 
+/// On-disk evidence re-check for a lapsed hold (card 13d7e47a, gap D of
+/// 1fc73f18). The in-memory pulse says she was idle; disk may disagree — a
+/// restart wipes the stamp while her commits stay. What we read here is what
+/// an incident reader needs to separate "truly idle" from "evidence wiped by
+/// restart": does the checkout exist, how old is its last commit relative to
+/// one lease length, and is there uncommitted work?
+struct LapseEvidence {
+    /// The card's staged checkout exists on this node.
+    checkout_present: bool,
+    /// Age of the checkout's HEAD commit in ms; None = no commit or unreadable.
+    head_commit_age_ms: Option<u64>,
+    /// Uncommitted changes (porcelain lines); None = status unreadable — a failed
+    /// read must not print as "clean".
+    dirty_files: Option<usize>,
+    /// The disambiguator: a commit within one lease length of now.
+    recent_within_ttl: bool,
+}
+
+/// Pure half of the evidence fold (testable without git): from a HEAD commit
+/// time and the clock, what does the disk say about recency?
+pub(crate) fn lapse_recency(
+    head_commit_ts_secs: Option<u64>,
+    now_ms: u64,
+    ttl_ms: u64,
+) -> (Option<u64>, bool) {
+    let age = head_commit_ts_secs.map(|ts| now_ms.saturating_sub(ts.saturating_mul(1000)));
+    (age, age.is_some_and(|a| a < ttl_ms))
+}
+
+/// The plumbing half: resolve the card's checkout and fold two bounded git reads
+/// into [`LapseEvidence`]. A hang is reported as unreadable, never waited out.
+fn lapse_evidence_recheck(peer: &Uuid, card: &airc_lib::WorkCard) -> LapseEvidence {
+    use crate::system_resources::bounded_command::{probe, Probed};
+
+    let absent = LapseEvidence {
+        checkout_present: false,
+        head_commit_age_ms: None,
+        dirty_files: None,
+        recent_within_ttl: false,
+    };
+    let Some(root) = crate::persona::card_checkout::checkout_path_for(peer, card) else {
+        return absent; // no staged checkout for this card — nothing to re-check
+    };
+    if !root.is_dir() {
+        return absent;
+    }
+    let root_s = root.to_string_lossy().to_string();
+    let now_ms = EpochMs::now().millis(); // pre-1970 reads 0: a pre-epoch clock reads 0, never a guess
+    let bound = crate::persona::work_board::advance::CHECKOUT_READ_BOUND;
+
+    let head_ts: Option<u64> = match probe(
+        "git",
+        &["-C", &root_s, "log", "-1", "--format=%ct"],
+        bound,
+    ) {
+        Probed::Exited { stdout, success } if success => stdout.trim().parse::<u64>().ok(),
+        // no commit yet / git failed: the evidence is "no commits", not a number
+        _ => None,
+    };
+    let (head_commit_age_ms, recent_within_ttl) = lapse_recency(
+        head_ts,
+        now_ms,
+        crate::cognition::card_facts::DEFAULT_CLAIM_TTL_MS,
+    );
+    let dirty_files = match probe("git", &["-C", &root_s, "status", "--porcelain"], bound) {
+        Probed::Exited { stdout, success } if success => Some(
+            stdout
+                .lines()
+                .filter(|line| !line.trim().is_empty())
+                .count(),
+        ),
+        _ => None,
+    };
+
+    LapseEvidence {
+        checkout_present: true,
+        head_commit_age_ms,
+        dirty_files,
+        recent_within_ttl,
+    }
+}
+
+#[cfg(test)]
+mod lapse_evidence_tests {
+    use super::*;
+
+    #[test]
+    fn a_commit_within_one_lease_length_is_recent() {
+        let now = 30u64 * 60 * 1000; // arbitrary clock: thirty minutes, in ms
+        let ttl = 30 * 60 * 1000;
+        let five_min_ago_secs = (now - 5 * 60 * 1000) / 1000;
+        let (age, recent) = lapse_recency(Some(five_min_ago_secs), now, ttl);
+        assert!(recent, "a commit from five minutes ago must read as work");
+        assert_eq!(age.unwrap() / 1000, 5 * 60, "the age should be what the clock says (±1s)");
+    }
+
+    #[test]
+    fn a_commit_older_than_one_lease_length_is_not_recent() {
+        let now_ms = 7_200_000u64; // two hours, in ms
+        let ttl = 30 * 60 * 1000;
+        let old_commit_secs = 100; // essentially at epoch — far older than one lease
+        let (age, recent) = lapse_recency(Some(old_commit_secs), now_ms, ttl);
+        assert!(!recent, "a commit from before the lease window must not read as work");
+        assert!(age.unwrap() > ttl);
+    }
+
+    #[test]
+    fn no_commit_is_never_recent() {
+        let (age, recent) = lapse_recency(None, 123_456, 1_800_000);
+        assert_eq!(age, None);
+        assert!(!recent);
+    }
+
+    #[test]
+    fn a_future_commit_clamps_to_zero_age_and_reads_recent() {
+        // clock skew must not print a negative age or read as "no evidence"
+        let (age, recent) = lapse_recency(Some(9_999_999), 100_000, 1_800_000);
+        assert_eq!(age, Some(0));
+        assert!(recent);
+    }
+}
+
 impl PersonaAircRuntime {
 
     /// [`Self::bootstrap`] generalized over the citizen KIND — the operator
@@ -333,6 +455,13 @@ impl PersonaAircRuntime {
                 // when renewals resume; the standing state stays queryable via
                 // the work board's lease column.
                 let mut renewal_denied = false;
+                // Lapse-time observability (card 13d7e47a, gaps C/D of 1fc73f18): one
+                // probe row per lapse episode — WHY the renewal was denied plus the
+                // on-disk evidence re-check. Keyed by (card_id, lease expiry), so the
+                // same lapsed lease seen across several denial ticks records once and
+                // a card that lapses again under a new claim generation records again.
+                let mut recorded_lapses: std::collections::HashSet<(uuid::Uuid, u64)> =
+                    std::collections::HashSet::new();
                 loop {
                     ticker.tick().await;
                     let serving = crate::inference::llama_server::current_serving();
@@ -446,13 +575,64 @@ impl PersonaAircRuntime {
                                         .map(|ms| ms.to_string())
                                         .unwrap_or_else(|| "never-thought".to_string()),
                                     ttl_ms = crate::cognition::card_facts::DEFAULT_CLAIM_TTL_MS,
-                                    "no cognition within one lease-length — renewals \
-                                     DENIED from here until she thinks again; holds \
-                                     lapse naturally so the work can be recovered"
-                                );
-                            }
-                            continue;
-                        }
+                                                "no cognition within one lease-length — renewals \
+                                                  DENIED from here until she thinks again; holds \
+                                                  lapse naturally so the work can be recovered"
+                                            );
+                                        }
+                                        // LAPSE-TIME OBSERVABILITY (card 13d7e47a, gaps C/D of
+                                        // 1fc73f18): denial is what lapses her holds — record WHY
+                                        // at the moment a hold has in fact lapsed. The pulse says
+                                        // idle; disk may disagree (a restart wipes the stamp), so
+                                        // re-check each lapsed checkout and carry its evidence:
+                                        // one row per lapse episode, keyed by lease generation.
+                                        if let Ok(board) = hb_airc
+                                            .work_board_complete(airc_lib::WORK_BOARD_PROJECTION_PAGE_SIZE)
+                                            .await
+                                        {
+                                            let me = hb_airc.peer_id();
+                                            for c in board.snapshot().cards.iter() {
+                                                if c.owner != Some(me)
+                                                    || !matches!(
+                                                        c.state,
+                                                        airc_work::model::CardState::Claimed
+                                                            | airc_work::model::CardState::InProgress
+                                                    )
+                                                {
+                                                    continue;
+                                                }
+                                                let Some(expiry) = c.claim_expires_at_ms else {
+                                                    continue; // no lease to lapse
+                                                };
+                                                if expiry > now_ms {
+                                                    continue; // still live — not lapsed yet
+                                                }
+                                                let key = (c.card_id.as_uuid(), expiry);
+                                                if !recorded_lapses.insert(key) {
+                                                    continue; // this episode is already recorded
+                                                }
+                                                let evidence = lapse_evidence_recheck(&me.as_uuid(), c);
+                                                continuum_base::probe!(
+                                                    class = "persona.claim.lapse_recorded",
+                                                    persona_id = %hb_persona,
+                                                    agent_name = %hb_name,
+                                                    card_id = %c.card_id.as_uuid(),
+                                                    denial_reason = %idle
+                                                        .map(|ms| format!("idle_{ms}ms"))
+                                                        .unwrap_or_else(|| "never-thought".to_string()),
+                                                    recent_evidence = evidence.recent_within_ttl,
+                                                    checkout_present = evidence.checkout_present,
+                                                    head_commit_age_ms = %evidence.head_commit_age_ms
+                                                        .map(|ms| ms.to_string())
+                                                        .unwrap_or_else(|| "unknown".to_string()),
+                                                    dirty_files = ?evidence.dirty_files,
+                                                    "claim lapsed while renewal was denied — why the \
+                                                     denial stood and what work evidence disk still held"
+                                                );
+                                            }
+                                        }
+                                        continue;
+                                    }
                         if renewal_denied {
                             renewal_denied = false;
                             continuum_base::probe!(
