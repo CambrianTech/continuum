@@ -151,7 +151,7 @@ impl Resident {
 // what this catches: the submit records the issuing generation before publishing and binds
 // nothing yet; a review that arrives before her turn is staged holds (ProvenanceHeld, never
 // Unbound or passed); once the turn stages, the next review binds exactly the issuing turn's
-// row; the binding reads back through a new runtime; a same-id retry from a later act keeps
+// row; the binding reads back through a new runtime (not a process restart); a same-id retry from a later act keeps
 // the first generation. (Her own review: IndependentReviewRequired; acceptance is the
 // second-identity test below.)
 #[tokio::test]
@@ -196,8 +196,8 @@ pub(super) async fn an_ordinary_submit_binds_the_turn_that_issued_it_through_rev
 
 // what this catches: an independent reviewer, a second identity on the same board, files a
 // signed pass through the real work/review; the resident's credit binds the issuing turn and
-// its decision is recorded; the same exact consumption, with the training destination
-// answering, accepts that row once.
+// its decision is recorded; the same exact consumption, with the training destination mocked
+// (MockTransport, not live training), accepts that row.
 #[tokio::test]
 pub(super) async fn a_second_identitys_signed_pass_accepts_the_issuing_turn() -> TestResult {
     let r = Resident::new().await?;
@@ -255,12 +255,13 @@ pub(super) async fn a_second_identitys_signed_pass_accepts_the_issuing_turn() ->
     Ok(())
 }
 
-// what this catches: a lost answer. Her first act recorded the pending binding and its
-// publication never landed; her retry under the SAME id from a later act is the same
-// publication, publishes now, keeps the first generation, and a review binds the turn that
-// first issued it.
+// what this catches: a retry from a persisted, unpublished record. The record is seeded the
+// way work/submit's first half writes it, and nothing publishes (this does NOT inject a
+// cancellation or a lost response into work/submit's own publication). Her retry under the
+// SAME id from a later act is the same publication: it publishes now, keeps the first
+// generation, and a review binds the turn that first issued it.
 #[tokio::test]
-pub(super) async fn a_lost_answer_is_resolved_by_her_same_id_retry() -> TestResult {
+pub(super) async fn a_retry_from_a_persisted_unpublished_record_keeps_the_first_generation() -> TestResult {
     let r = Resident::new().await?;
     let submission = Uuid::new_v4();
     // The first half of work/submit, then nothing: the publication never happened.
