@@ -34,13 +34,6 @@ mod gpu_base {
                 "gpu/monitor.rs",
                 "MockMonitor: a scripted test double with no device behind it",
             ),
-            (
-                "cognition/host_capability_probe.rs",
-                "a #[cfg(test)] fake device inside that module's own tests — no hardware, \
-                 no sampling loop. Found BY this guard on its first run, which is the point. \
-                 It is a second test double next to MockMonitor and should collapse into it \
-                 (CLAUDE.md: one fixture per concern) — sanctioned as a test, not as a backend.",
-            ),
         ];
 
         // Split so this file's own needle is not an impl site (the guard reads this file too).

@@ -105,8 +105,8 @@ use super::*;
     // A future parked on a shut gate cannot complete no matter how loaded the
     // machine is, so neither assertion has a timing tolerance to blow. The COST
     // this buys (that removing it from the barrier removes exactly its deliver
-    // from the turn's wait) is the arithmetic half, table-tested clock-free in
-    // `workspace_dashboard::tests`.
+    // from the turn's wait) is the arithmetic half, table-tested clock-free elsewhere
+    // (the dashboard module that held it was removed as dead).
     //
     // This replaces a version that asserted `deferred_critical_path < 30ms` on the
     // live cycle. It measured wall clock through `cargo test`'s parallelism, so on
