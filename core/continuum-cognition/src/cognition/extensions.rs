@@ -270,6 +270,13 @@ pub fn install_lived_turn_settled(record: LivedTurnSettled) {
     *LIVED_TURN_SETTLED.write() = Some(record);
 }
 
+/// Whether the boot wiring filled the lived-turn slot: an empty one would record no turn while
+/// she visibly deliberates (the zero-`LivedTurn` defect the one-caller guard was written for).
+#[cfg(any(test, feature = "test-fixtures"))]
+pub fn lived_turn_settled_installed() -> bool {
+    LIVED_TURN_SETTLED.read().is_some()
+}
+
 /// Empty slot: probed, and nothing recorded.
 pub fn lived_turn_settled(root: &Path, peer: crate::identity::PeerId, settled: &crate::cognition::act_observe::SettleOutcome) {
     match *LIVED_TURN_SETTLED.read() {
