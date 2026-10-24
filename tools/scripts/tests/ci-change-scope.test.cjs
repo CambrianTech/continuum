@@ -1,7 +1,7 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const path = require('node:path');
-const { selectChecks, readWorkspace, TESTED_CRATES } = require('../ci-change-scope.cjs');
+const { selectChecks, readWorkspace, TESTED_CRATES, TEST_FEATURES } = require('../ci-change-scope.cjs');
 const ALL = { crates: TESTED_CRATES, cli: true };
 const NONE = { crates: [], cli: false };
 const select = (...paths) => {
@@ -157,4 +157,11 @@ test('a malformed workspace cannot be read as a narrower scope', () => {
   fs.writeFileSync(path.join(root, 'Cargo.toml'), '[workspace]\n');
   assert.throws(() => readWorkspace(root), /members/);
   fs.rmSync(root, { recursive: true });
+});
+
+test('every tested crate names the features its tests build with', () => {
+  // what this catches: a crate added to TESTED_CRATES whose job and cache warm-up would build
+  // it without its fixtures, or two different feature sets for the two.
+  assert.deepEqual(Object.keys(TEST_FEATURES), TESTED_CRATES);
+  for (const crate of TESTED_CRATES) assert.equal(typeof TEST_FEATURES[crate], 'string', crate);
 });

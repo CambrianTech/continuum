@@ -6,6 +6,12 @@ const { isDeepStrictEqual } = require('node:util');
 // Which of them run is derived from the workspace graph at selection time, never listed here.
 const TESTED_CRATES = ['continuum-core', 'continuum-mind', 'continuum-engine', 'continuum-perception', 'continuum-genome',
   'continuum-kernel', 'continuum-live', 'continuum-hands', 'continuum-memory', 'continuum-experience'];
+// The cargo features each crate's job builds its tests with: the crate job and the cache-warming
+// job both read this, so the cache holds exactly the units the crate jobs ask for. Core is the
+// one that compiles and tests the call (livekit-webrtc) and 3D-avatar (avatar-3d) paths a node's
+// profile turns on; memory has no fixtures feature; the rest test with their fixtures.
+const TEST_FEATURES = Object.fromEntries(TESTED_CRATES.map(c => [c,
+  c === 'continuum-core' ? 'livekit-webrtc,avatar-3d' : c === 'continuum-memory' ? '' : 'test-fixtures']));
 
 const publisherPath = '.github/workflows/core-binaries.yml';
 const publicationGate = "${{ !cancelled() && needs.publication-scope.outputs.publication != 'false' }}";
@@ -120,4 +126,4 @@ function selectChecks(files, evidence = {}) {
     : selectCrates(rustPaths, evidence.eventName === 'push' ? null : evidence.workspace);
   return { rust, installer: rust || paths.some(windows), publication: selectPublication(paths, evidence), ...scope };
 }
-module.exports = { selectChecks, readWorkspace, TESTED_CRATES };
+module.exports = { selectChecks, readWorkspace, TESTED_CRATES, TEST_FEATURES };
