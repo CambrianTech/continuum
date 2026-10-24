@@ -673,6 +673,7 @@ mod tests {
             ".continuum/citizens/humans/",
             &format!(".continuum/citizens/peers/{me}/workspace/"),
             &format!(".continuum/citizens/peers/{other}/workspace/"),
+            &format!(".continuum/citizens/peers/{other}/experience.jsonl"),
             "miniconda3/envs/",
             "Pictures/holiday.jpg",
             "Documents/resume/.git/",
@@ -697,9 +698,10 @@ mod tests {
         assert!(ok(".continuum/models/x.gguf"), "the models");
         assert!(ok(".continuum/cache/cargo-target/debug"), "the shared build cache");
         assert!(ok(".continuum/citizens/humans/joel"), "citizens that are not peers");
+        assert!(ok(&format!(".continuum/citizens/peers/{other}/workspace/src.rs")), "ANOTHER citizen's workspace: the commons (2026-10-24)");
         // never
         assert!(!ok(".airc/identity/key"), "airc's identity, beside her worktree");
-        assert!(!ok(&format!(".continuum/citizens/peers/{other}/workspace/src.rs")), "ANOTHER citizen");
+        assert!(!ok(&format!(".continuum/citizens/peers/{other}/experience.jsonl")), "ANOTHER citizen's private state");
         assert!(!ok(".ssh/id_ed25519"), "a secret");
         assert!(!ok(".git-credentials"), "git credentials");
         assert!(!ok(".config/gh/hosts.yml"), "the GitHub token");
