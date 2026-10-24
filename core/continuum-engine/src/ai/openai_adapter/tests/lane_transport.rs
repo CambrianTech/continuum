@@ -429,8 +429,8 @@ async fn single_slot_background_use_preserves_only_successfully_saved_activity_p
     let generation = transition.start_generation().expect("fixture engine generation");
     transition.ready(&root, &generation, crate::inference::slots::KvPageContract {
         model_id: "test-model".into(), model: "fixture.gguf".into(), adapters: vec![],
-        page_dir: None, context: 8192, slots: 1, cache_type: None, flash_attn: None, engine_build: None,
-        engine: "fixture-engine".into(), revisions: None,
+        page_dir: None, context: 8192, slots: 1, cache_type: None, flash_attn: None,
+        revisions: None,
     }).expect("fixture owned engine readiness");
     drop(transition);
     assert!(matches!(adapter.ensure_slot_pool(&adapter.endpoints()).await,

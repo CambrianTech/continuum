@@ -18,8 +18,6 @@ fn confirmed_saves_survive_a_restart_under_the_same_page_format() {
         slots: 2,
         cache_type: Some("q8_0".into()),
         flash_attn: Some(true),
-        engine_build: Some("4a79fed98".into()),
-        engine: "fixture-engine".into(),
         revisions: Some(vec![("fixture.gguf".into(), 73, std::time::SystemTime::UNIX_EPOCH)]),
     };
     let fp = contract.fingerprint().expect("test: an exact contract fingerprints");
@@ -44,10 +42,11 @@ fn confirmed_saves_survive_a_restart_under_the_same_page_format() {
 // What this catches (the M5, 2026-10-23 04:39Z: a relaunch from one 129,024-token slot
 // to two of 130,048 read the ledger as `written under another contract`, and every
 // resident's first act after the 05:09Z deploy prefilled 71k-110k tokens cold): the
-// fingerprint is the PAGE FORMAT, so an engine restart at another window, slot count or
-// engine file of the same build keeps every page, and any field that changes what the KV
-// means (model file, adapter, draft, cache type, flash attention, engine build, or the
-// engine file when the build is unknown) refuses them all.
+// fingerprint is the PAGE FORMAT, so an engine restart at another window or slot count, or
+// onto another engine build, keeps every page (IntelMac, 2026-10-23 21:17Z: a convergence
+// onto the installed engine left every resident cold; the engine checks a page's own state
+// format on restore), and any field that changes what the KV means (model file, adapter,
+// draft, cache type, flash attention) refuses them all.
 #[test]
 fn a_page_survives_an_engine_restart_unless_its_format_changed() {
     let dir = tempfile::tempdir().expect("test: page dir");
@@ -61,8 +60,6 @@ fn a_page_survives_an_engine_restart_unless_its_format_changed() {
         slots: 1,
         cache_type: Some("q8_0".into()),
         flash_attn: Some(true),
-        engine_build: Some("4a79fed98".into()),
-        engine: "/engines/slot-a/llama-server".into(),
         revisions: Some(vec![("/models/qwen.gguf".into(), 17_000_000_000, at(100)), ("/genes/a.lora".into(), 12, at(200))]),
     };
     let fp = contract.fingerprint().expect("test: fingerprint");
@@ -78,14 +75,14 @@ fn a_page_survives_an_engine_restart_unless_its_format_changed() {
         let kept = pool.saved.lock().contains(&k);
         kept
     };
-    // Same format, another launch: the window, the slot count and the engine's file.
+    // Same format, another launch: the window, the slot count, and another engine build
+    // (the contract has no engine field: nothing about the engine binary can refuse it).
     let relaunch = KvPageContract {
         context: 130_048,
         slots: 2,
-        engine: "/engines/slot-b/llama-server".into(),
         ..contract.clone()
     };
-    assert!(restored(&relaunch), "a relaunch at another window and slot count keeps her page");
+    assert!(restored(&relaunch), "a relaunch at another window, slot count or engine build keeps her page");
     // Every field that changes what the KV means refuses it. Each arm restores the
     // ledger first (a refusal rewrites it under the new format), then checks.
     let reset = || {
@@ -99,12 +96,6 @@ fn a_page_survives_an_engine_restart_unless_its_format_changed() {
         ("adapter", KvPageContract { adapters: vec!["/genes/b.lora".into()], ..contract.clone() }),
         ("cache type", KvPageContract { cache_type: Some("f16".into()), ..contract.clone() }),
         ("flash attention", KvPageContract { flash_attn: Some(false), ..contract.clone() }),
-        ("engine build", KvPageContract { engine_build: Some("965d38a90".into()), ..contract.clone() }),
-        ("unknown build: the engine file stands in", KvPageContract {
-            engine_build: None,
-            revisions: Some(vec![("/models/qwen.gguf".into(), 17_000_000_000, at(100)), ("/genes/a.lora".into(), 12, at(200)), ("/engines/slot-a/llama-server".into(), 9, at(300))]),
-            ..contract.clone()
-        }),
     ];
     for (what, other) in changed {
         reset();
@@ -259,8 +250,6 @@ fn an_adopted_engine_restores_only_the_ledger_its_own_process_wrote() {
         slots: 2,
         cache_type: Some("q8_0".into()),
         flash_attn: Some(true),
-        engine_build: None,
-        engine: "fixture-engine".into(),
         revisions: Some(vec![("fixture.gguf".into(), 73, std::time::SystemTime::UNIX_EPOCH)]),
     };
     let fp = contract.fingerprint().expect("test: fingerprint");

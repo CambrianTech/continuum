@@ -466,8 +466,6 @@ async fn a_smoke_miss_on_a_lane_with_advancing_slots_is_not_wedge_evidence() {
                 slots: 1,
                 cache_type: None,
                 flash_attn: None,
-                engine_build: None,
-                engine: "fixture-engine".into(),
                 revisions: None,
             },
         )
