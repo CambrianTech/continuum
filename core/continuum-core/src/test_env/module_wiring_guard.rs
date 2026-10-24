@@ -53,10 +53,6 @@ const UNWIRED: &[Unwired] = &[
         why: "fixture: exercises ModuleConfig trait defaults",
     },
     Unwired {
-        module: "FaultRecorder",
-        why: "fixture: records genome page-faults in residency tests",
-    },
-    Unwired {
         module: "GreeterModule",
         why: "fixture: the module_harness worked example",
     },
