@@ -39,14 +39,6 @@ impl PendingSelection {
     }
 }
 
-/// The submissions the board holds published on `card`, as the consumer reads it.
-pub fn published_on(board: &airc_work::WorkBoardProjection, card: airc_work::WorkCardId) -> std::collections::HashSet<Uuid> {
-    match board.card(card) {
-        Some(c) => c.submissions.iter().map(|s| s.submission_id.as_uuid()).collect(),
-        None => std::collections::HashSet::new(), // a card the board does not hold publishes nothing
-    }
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize, crate::orm::Entity)]
 #[serde(rename_all = "camelCase")]
 #[entity(collection = "pending_credit_binding")]
@@ -59,12 +51,6 @@ pub struct PendingCreditBinding {
     pub card_id: Uuid,
     #[entity(json)]
     pub selection: PendingSelection,
-    /// The submission that superseded this one before it was ever published: her next record
-    /// on the same claim while this one was still off the board. Written in that record's own
-    /// batch, before its publication, so ordering is her store's, not a board snapshot's. An
-    /// abandoned id is never published later (its retry is refused) and never holds another.
-    #[serde(default)]
-    pub abandoned_by: Option<Uuid>,
 }
 
 /// Why a pending binding did not bind. Each holds her credit; none of them passes it.
@@ -82,68 +68,34 @@ pub enum Held {
     /// The generation is not staged yet, or names no single row: retried at the next review
     /// event and at registration replay.
     Unresolved(String),
-    /// This submission was superseded before it was published (`abandoned_by`), yet a review
-    /// of it reached her: the board and her record disagree, so nothing is credited.
-    Superseded(Uuid),
 }
 
-/// Record the issuing generation before publication. The same id again (a retry, from a later
-/// act) is the same publication when its fields match: a no-op that keeps the first generation.
-/// A different publication under that id is refused, and so is retrying an id that was
-/// superseded. `published` is what the board holds on this card: any earlier pending row of hers
-/// on this claim that is not there was never published, and this record supersedes it.
+/// Record the issuing generation before publication. A retry with the same selection is a
+/// no-op; a different selection for the same submission id is refused.
 pub async fn record_pending<T: Transport>(
     conn: &Connection<T>,
     persona_name: &str,
     persona_id: Uuid,
     selection: PendingSelection,
-    published: &std::collections::HashSet<Uuid>,
 ) -> Result<(), CreditBindingError> {
     ensure_storage(conn, persona_name).await?;
     let id = selection.submission_id;
+    // A retry comes from a later act, so it carries a later generation: the publication fields
+    // decide sameness, and the FIRST recorded generation is kept, because that act made it.
     let same = |prior: &PendingCreditBinding| {
         prior.persona_id == persona_id && prior.selection.same_publication(&selection)
     };
-    let decide = |prior: PendingCreditBinding| match prior.abandoned_by {
-        Some(by) => Err(CreditBindingError::Superseded(id, by)),
-        None if same(&prior) => Ok(()),
-        None => Err(CreditBindingError::ConflictingSubmission(id)),
-    };
     if let Some(prior) = read_one::<_, PendingCreditBinding>(conn, persona_name, &id.to_string()).await? {
-        return decide(prior);
+        return if same(&prior) { Ok(()) } else { Err(CreditBindingError::ConflictingSubmission(id)) };
     }
-    let superseded: Vec<Uuid> = pending_on_card(conn, persona_name, selection.card_id)
-        .await?
-        .into_iter()
-        .filter(|p| {
-            p.id != id
-                && p.persona_id == persona_id
-                && p.selection.claim_id == selection.claim_id
-                && p.abandoned_by.is_none()
-                && !published.contains(&p.id)
-        })
-        .map(|p| p.id)
-        .collect();
-    let row = PendingCreditBinding {
-        id,
-        persona_id,
-        card_id: selection.card_id,
-        selection: selection.clone(),
-        abandoned_by: None,
-    };
-    let mut operations = vec![create(id.to_string(), &row)?];
-    operations.extend(superseded.iter().map(|old| BatchOperation {
-        operation_type: BatchOperationType::Update,
-        collection: PendingCreditBinding::COLLECTION.into(),
-        id: Some(old.to_string()),
-        data: Some(json!({ "abandonedBy": id })),
-    }));
-    if let Err(error) = write_batch(conn, persona_name, operations).await {
+    let row = PendingCreditBinding { id, persona_id, card_id: selection.card_id, selection: selection.clone() };
+    if let Err(error) = write_batch(conn, persona_name, vec![create(id.to_string(), &row)?]).await {
         // A lost acknowledgement or a racing retry: the row that exists decides.
-        return match read_one::<_, PendingCreditBinding>(conn, persona_name, &id.to_string()).await? {
-            Some(prior) => decide(prior),
-            None => Err(error.into()),
-        };
+        match read_one::<_, PendingCreditBinding>(conn, persona_name, &id.to_string()).await? {
+            Some(prior) if same(&prior) => return Ok(()),
+            Some(_) => return Err(CreditBindingError::ConflictingSubmission(id)),
+            None => return Err(error.into()),
+        }
     }
     Ok(())
 }
@@ -157,7 +109,6 @@ pub async fn resolve_pending<T: Transport>(
     persona_id: Uuid,
     room_id: Uuid,
     submitted: &airc_work::WorkSubmission,
-    published: &std::collections::HashSet<Uuid>,
 ) -> Result<Option<Result<WorkCreditBinding, Held>>, CreditBindingError> {
     ensure_storage(conn, persona_name).await?;
     let id = submitted.submission_id.as_uuid();
@@ -167,16 +118,13 @@ pub async fn resolve_pending<T: Transport>(
     if !matches_publication(&pending, persona_id, room_id, submitted) {
         return Ok(Some(Err(Held::PublicationMismatch)));
     }
-    if let Some(by) = pending.abandoned_by {
-        return Ok(Some(Err(Held::Superseded(by))));
-    }
     let generation = pending.selection.issuing_generation.as_str();
     let row = match generation_row(conn, persona_name, persona_id, submitted, generation).await {
         Ok(row) => row,
         Err(CreditBindingError::Storage(e)) => return Err(e.into()),
         Err(other) => return Ok(Some(Err(Held::Unresolved(other.to_string())))),
     };
-    if let Some(other) = issued_elsewhere(conn, persona_name, &row, id, published).await? {
+    if let Some(other) = issued_elsewhere(conn, persona_name, &row, id).await? {
         return Ok(Some(Err(Held::SharedRevision(other))));
     }
     let selection = SubmissionSelection {
@@ -197,7 +145,7 @@ pub async fn resolve_pending<T: Transport>(
 }
 
 /// Another submission sharing this staged row's provenance: one whose issuing generation the
-/// row carries (pending rows not superseded), or one already holding a reservation on any of its generations
+/// row carries (pending rows), or one already holding a reservation on any of its generations
 /// (explicit and legacy bindings, which have no pending row). Checked when a pending row
 /// resolves AND each time a binding is consumed for positive credit, against the binding's
 /// immutable snapshot, so a submission recorded after the binding was made is still seen.
@@ -206,17 +154,13 @@ pub async fn issued_elsewhere<T: Transport>(
     persona_name: &str,
     row: &StagedCredit,
     submission: Uuid,
-    published: &std::collections::HashSet<Uuid>,
 ) -> Result<Option<Uuid>, CreditBindingError> {
-    // Every pending row counts, published or still in flight, except one superseded before it
-    // was published AND absent from the board. The board alone never excludes a row; a
-    // superseded one that landed after all (a cancelled call, an uncertain acknowledgement)
-    // counts again.
-    let others: Vec<PendingCreditBinding> = pending_on_card(conn, persona_name, row.card_id)
-        .await?
-        .into_iter()
-        .filter(|o| o.abandoned_by.is_none() || published.contains(&o.id))
-        .collect();
+    // Every pending row counts, published or not: an airc publish whose answer was lost or
+    // cancelled may still have landed (its error is not definitive), so a row cannot be ruled
+    // out by its absence from a board. An unpublished record resolves by its own same-id
+    // retry, which work/submit's error names and record_pending accepts, keeping its first
+    // generation; it is never superseded by a new id.
+    let others = pending_on_card(conn, persona_name, row.card_id).await?;
     let row_generations: Vec<&str> = row.receipts.iter().map(|r| r.submitted_request_id.as_str()).collect();
     let issued: Vec<(Uuid, &str)> =
         others.iter().map(|o| (o.id, o.selection.issuing_generation.as_str())).collect();

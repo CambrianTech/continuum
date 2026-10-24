@@ -192,8 +192,6 @@ impl ActionCommand for WorkSubmit {
                 "select staged_revision_id or generation_request_id, not both".into(),
             ));
         }
-        // From the record to the publication's answer, one submit of hers at a time.
-        let fence = publication_fence(runtime.persona_id()).await;
         let mut bound_staged_revision_id = None;
         if p.staged_revision_id.is_some() || p.generation_request_id.is_some() {
             if self.registry.get(runtime.persona_id()).is_none()
@@ -254,17 +252,6 @@ impl ActionCommand for WorkSubmit {
             // review arrives (card fe8554d2). Only her own act's caller carries it. A record that
             // fails refuses, like an explicit binding: publish only after provenance is durable.
             let conn = credit_connection(self.executor_slot.cloned(), runtime.persona_id())?;
-            // What the board holds NOW, read inside the fence: any earlier submit of hers has
-            // finished publishing (or failed), and her own node's store answers her own publish.
-            let published: std::collections::HashSet<Uuid> = match airc
-                .work_board_in(&room)
-                .await
-                .map_err(|e| CommandError::Internal(e.to_string()))?
-                .card(card_id)
-            {
-                Some(fresh) => fresh.submissions.iter().map(|s| s.submission_id.as_uuid()).collect(),
-                None => std::collections::HashSet::new(),
-            };
             reviewed::record_pending(
                 &conn,
                 runtime.agent_name(),
@@ -279,7 +266,6 @@ impl ActionCommand for WorkSubmit {
                     artifact: candidate.artifact.clone(),
                     issuing_generation: generation,
                 },
-                &published,
             )
             .await
             .map_err(|e| match e {
@@ -297,7 +283,6 @@ impl ActionCommand for WorkSubmit {
             instance: candidate.instance, base_sha: candidate.base_sha, artifact: candidate.artifact,
         }).await.map_err(|e| CommandError::Internal(format!(
             "submission {submission_id} publication was not acknowledged; retry with submission_id={submission_id} and the same selection: {e}")))?;
-        drop(fence);
         let handoff = if bench {
             Ok(None)
         } else {

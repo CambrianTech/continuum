@@ -350,8 +350,7 @@ pub(super) async fn exact_review_bound_by(issuing: Option<&str>) -> (ExactReview
                 artifact: selection.artifact.clone(),
                 issuing_generation: generation.into(),
             };
-            let published = std::collections::HashSet::from([selection.submission_id]);
-            if let Err(e) = reviewed::record_pending(&data, name, persona, pending, &published).await {
+            if let Err(e) = reviewed::record_pending(&data, name, persona, pending).await {
                 panic!("the fixture records its pending binding: {e}");
             }
         }

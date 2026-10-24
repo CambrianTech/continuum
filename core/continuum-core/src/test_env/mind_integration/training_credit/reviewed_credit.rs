@@ -656,7 +656,7 @@ use super::*;
             publisher: fx.owner,
             submitted_at_ms: 3,
         };
-        // The twin is published: only a published submission can share a row.
+        // The twin is published too; a pending row shares a row whether or not it is.
         let board = fx.project(vec![
             (WorkEvent::WorkSubmitted(twin_published), fx.owner),
             (WorkEvent::WorkSubmissionReviewed(pass.clone()), fx.reviewer),
@@ -671,8 +671,7 @@ use super::*;
             artifact: fx.selection.artifact.clone(),
             issuing_generation: "reviewed-request".into(),
         };
-        let published = std::collections::HashSet::from([fx.selection.submission_id, twin_id]);
-        reviewed::record_pending(&fx.data, name, persona, twin, &published).await?;
+        reviewed::record_pending(&fx.data, name, persona, twin).await?;
         let never_submit = continuum_client::mock::MockTransport::new();
         never_submit.respond_to("genome/training-trigger/submit", |_| panic!("held provenance must not dispatch"));
         let held = reviewed::consume_review_with_boundary(
