@@ -163,7 +163,6 @@ pub(super) async fn work_submission_commands_bind_before_publication_and_preserv
     // that builds the struct in Rust cannot see it at all. This fixture now arrives
     // the way a citizen's call actually does: as JSON, in the 8-char form she was
     // shown, and the assertions below prove the whole path end to end.
-    let short = |id: Uuid| id.simple().to_string().chars().take(8).collect::<String>();
     // A typed artifact must have its bytes retained (card e1babb61), so the fixture
     // retains a real patch in this test's store and types ITS hash and size.
     let patch = "diff --git a/x b/x\n--- a/x\n+++ b/x\n@@ -1 +1 @@\n-a\n+b\n";
@@ -174,8 +173,8 @@ pub(super) async fn work_submission_commands_bind_before_publication_and_preserv
     let params: WorkSubmitParams = serde_json::from_value(serde_json::json!({
         "room": room.channel.as_uuid().to_string(),
         "submission_id": Uuid::new_v4().to_string(),
-        "card_id": short(card.as_uuid()),
-        "claim_id": short(claim.as_uuid()),
+        "card_id": airc_core::shown_id::shown_form(card.as_uuid()),
+        "claim_id": airc_core::shown_id::shown_form(claim.as_uuid()),
         "instance": "generic-project-work",
         "base_sha": "a".repeat(40),
         "artifact": { "hash": patch_hash, "size_bytes": patch.len(), "mime": "text/x-diff" },
@@ -184,7 +183,7 @@ pub(super) async fn work_submission_commands_bind_before_publication_and_preserv
     .expect("a citizen's call carries the handles her board printed"); // expect: the fixture's own json, asserted decodable
     assert_eq!(
         params.card_id,
-        short(card.as_uuid()),
+        airc_core::shown_id::shown_form(card.as_uuid()),
         "the handle survives deserialization — it used to be refused here"
     );
     let submit = WorkSubmit {
@@ -333,8 +332,8 @@ pub(super) async fn work_submission_commands_bind_before_publication_and_preserv
         // evidence opt-in rides the same decode, so one fixture proves both.
         serde_json::from_value(serde_json::json!({
             "room": params.room,
-            "card_id": short(card.as_uuid()),
-            "submission_id": short(
+            "card_id": airc_core::shown_id::shown_form(card.as_uuid()),
+            "submission_id": airc_core::shown_id::shown_form(
                 params.submission_id.expect("the fixture names its submission"), // expect: set in the json above
             ),
             "include_staged_evidence": true,

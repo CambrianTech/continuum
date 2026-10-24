@@ -260,7 +260,7 @@ use super::*;
             .await
             .expect("part the academy");
 
-        let prefix = card.as_uuid().simple().to_string()[..8].to_string();
+        let prefix = airc_core::shown_id::shown_form(card.as_uuid());
         let full_id = card.as_uuid().to_string();
         let before = airc
             .subscription_set()
@@ -376,12 +376,12 @@ use super::*;
         assert!(!WorkGet::receipt(room, &claimed, None, 100, Uuid::nil()).claimable);
         for id in [
             local_card.as_uuid().to_string(),
-            short8(local_card.as_uuid()),
+            airc_core::shown_id::shown_form(local_card.as_uuid()),
         ] {
             let read = WorkGet::read_card(&airc, &id, Uuid::nil())
                 .await
                 .expect("read the current-room card");
-            assert_eq!(read.id, short8(local_card.as_uuid()));
+            assert_eq!(read.id, airc_core::shown_id::shown_form(local_card.as_uuid()));
             assert_eq!(read.title, "local task");
             assert!(read.body.is_none());
         }

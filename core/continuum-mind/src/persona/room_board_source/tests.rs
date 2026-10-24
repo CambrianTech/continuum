@@ -251,7 +251,7 @@
         assert!(cards[0].content.contains("[InProgress]"));
         // No alias published for this holder → said as an unnamed peer, never an id inside
         // the sentence (Joel, 2026-10-06), and NEVER "someone".
-        let owner8: String = holder.as_uuid().to_string().chars().take(8).collect();
+        let owner8: String = airc_core::shown_id::shown_form(holder.as_uuid());
         assert!(cards[0].content.contains(crate::cognition::card_holder::UNNAMED_HOLDER), "{}", cards[0].content);
         assert!(!cards[0].content.contains(&owner8), "{}", cards[0].content);
         assert!(!cards[0].content.contains("someone"));
@@ -370,7 +370,7 @@
             .collect();
         assert_eq!(cards.len(), 2);
 
-        let asha8: String = asha.as_uuid().to_string().chars().take(8).collect();
+        let asha8: String = airc_core::shown_id::shown_form(asha.as_uuid());
         // Live hold: named, and the raw hex is GONE from the line.
         assert!(
             cards[0].content.contains("owner Asha"),

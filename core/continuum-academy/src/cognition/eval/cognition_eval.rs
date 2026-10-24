@@ -655,7 +655,7 @@ impl CognitionEval {
                                     }
                                     let who = sp
                                         .sender
-                                        .map(|u| u.to_string()[..8].to_string())
+                                        .map(|u| airc_core::shown_id::shown_form(u))
                                         .unwrap_or_else(|| "peer".into()); // legacy senderless call site: an anonymous voice, labeled as such
                                     wm.record_dispatch_event(
                                         Uuid::new_v4(),

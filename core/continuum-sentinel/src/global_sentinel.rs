@@ -63,7 +63,7 @@ impl SentinelModule {
 
     /// Generate a unique handle ID
     pub(super) fn generate_handle_id() -> String {
-        uuid::Uuid::new_v4().to_string()[..8].to_string()
+        airc_core::shown_id::shown_form(uuid::Uuid::new_v4())
     }
 
     /// Get logs directory for a handle

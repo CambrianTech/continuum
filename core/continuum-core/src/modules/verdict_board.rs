@@ -155,7 +155,6 @@ pub async fn follow_with(verdict: &SweVerdict, mode: FollowMode) -> FollowTally 
     if all.is_empty() {
         return tally;
     }
-    let short = |c: &Uuid| c.to_string().chars().take(8).collect::<String>();
     let Some(airc) = crate::persona::operator_peer::operator_airc() else {
         continuum_base::probe!(
             class = "benchmark.verdict.board_close_failed",
@@ -209,7 +208,7 @@ pub async fn follow_with(verdict: &SweVerdict, mode: FollowMode) -> FollowTally 
         continuum_base::probe!(
             class = "benchmark.verdict.card_informed",
             instance = verdict.instance_id.as_str(),
-            card = %short(&card),
+            card = %airc_core::shown_id::shown_form(card),
             "another round's card for this instance — told of the grade, its state untouched"
         );
         say_in_card_room(verdict, card, &airc, &BoardMove::Informed).await;
@@ -239,8 +238,8 @@ pub async fn follow_with(verdict: &SweVerdict, mode: FollowMode) -> FollowTally 
                         continuum_base::probe!(
                             class = "benchmark.verdict.review_closed",
                             instance = verdict.instance_id.as_str(),
-                            card = %short(&card),
-                            review = %short(&review),
+                            card = %airc_core::shown_id::shown_form(card),
+                            review = %airc_core::shown_id::shown_form(review),
                             "the review card follows its resolved parent — closed as passed, parent closed through the gate"
                         );
                         say_in_card_room(verdict, card, &airc, &BoardMove::Closed).await;
@@ -249,7 +248,7 @@ pub async fn follow_with(verdict: &SweVerdict, mode: FollowMode) -> FollowTally 
                     Err(e) => continuum_base::probe!(
                         class = "benchmark.verdict.board_close_failed",
                         instance = verdict.instance_id.as_str(),
-                        card = %short(&review),
+                        card = %airc_core::shown_id::shown_form(review),
                         error = %e,
                         "the review card could not be closed — falling through to the parent move; retried next pass"
                     ),
@@ -275,7 +274,7 @@ pub async fn follow_with(verdict: &SweVerdict, mode: FollowMode) -> FollowTally 
                 continuum_base::probe!(
                     class = "benchmark.verdict.board_closed",
                     instance = verdict.instance_id.as_str(),
-                    card = %short(&card),
+                    card = %airc_core::shown_id::shown_form(card),
                     resolved = verdict.resolved,
                     "the board card follows the verdict — closed"
                 );
@@ -285,7 +284,7 @@ pub async fn follow_with(verdict: &SweVerdict, mode: FollowMode) -> FollowTally 
                 continuum_base::probe!(
                     class = "benchmark.verdict.returned_to_holder",
                     instance = verdict.instance_id.as_str(),
-                    card = %short(&card),
+                    card = %airc_core::shown_id::shown_form(card),
                     failing = %verdict.failed_tests.join(","),
                     "the board card follows the verdict — back to in-progress with the failing tests named"
                 );
@@ -295,7 +294,7 @@ pub async fn follow_with(verdict: &SweVerdict, mode: FollowMode) -> FollowTally 
                 continuum_base::probe!(
                     class = "benchmark.verdict.board_close_failed",
                     instance = verdict.instance_id.as_str(),
-                    card = %short(&card),
+                    card = %airc_core::shown_id::shown_form(card),
                     error = %e,
                     "the verdict is recorded but the board card could not be moved — it reads as she left it until the next pass"
                 );
@@ -325,7 +324,7 @@ async fn say_in_card_room(
     operator: &Arc<airc_lib::Airc>,
     moved: &BoardMove,
 ) {
-    let short = card.to_string().chars().take(8).collect::<String>();
+    let short = airc_core::shown_id::shown_form(card);
     let Some(room) = crate::cognition::bench_round::room_for_card(card) else {
         continuum_base::probe!(
             class = "benchmark.verdict.line_not_posted",
@@ -388,7 +387,7 @@ async fn say_in_card_room(
             class = "benchmark.verdict.line_posted",
             instance = verdict.instance_id.as_str(),
             card = %short,
-            room = %room.to_string().chars().take(8).collect::<String>(),
+            room = %airc_core::shown_id::shown_form(room),
             holder = %holder_name.unwrap_or_else(|| "-".into()), // unwrap_or: "-" = no live holder, a legible absence in the probe
             resolved = verdict.resolved,
             "the room heard the verdict"
@@ -408,7 +407,7 @@ fn holder_label(id: Uuid, alias: Option<&str>, historical: bool) -> String {
     let name = alias
         .filter(|name| !name.trim().is_empty())
         .map(str::to_owned)
-        .unwrap_or_else(|| crate::cognition::card_holder::short8(&id)); // unwrap_or: unknown identity uses the board's addressable short id
+        .unwrap_or_else(|| airc_core::shown_id::shown_form(id)); // unwrap_or: unknown identity uses the board's addressable short id
     if historical {
         format!("{name} (dispatch assignee; live board unavailable)")
     } else {

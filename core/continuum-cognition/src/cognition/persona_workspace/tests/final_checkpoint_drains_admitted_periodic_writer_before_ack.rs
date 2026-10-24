@@ -198,7 +198,7 @@ use super::*;
         // 8-char short-id prefix
         assert_eq!(
             registry
-                .resolve_persona(&asha.to_string()[..8].into())
+                .resolve_persona(&airc_core::shown_id::shown_form(asha).into())
                 .unwrap(),
             PeerId::from_uuid(asha)
         );

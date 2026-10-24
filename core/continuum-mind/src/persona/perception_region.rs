@@ -85,7 +85,7 @@ fn bound<T>(items: &mut Vec<T>, overflow: &mut u64, activity: Uuid, what: &'stat
     *overflow += drop as u64;
     continuum_base::probe!(
         class = "mind.region.overflow",
-        activity = %short8(activity),
+        activity = %airc_core::shown_id::shown_form(activity),
         what,
         dropped = drop as u64,
         overflow_since_perceived = *overflow,
@@ -220,7 +220,7 @@ impl PerceptionRegion {
     /// inbound seam). Recomputes its delta and salience and republishes the
     /// strip. Returns the wake it would cause, if any.
     pub fn observe_speech(&mut self, activity: Uuid, line: SpeechLine, now_ms: u64) -> Option<Wake> {
-        let view = self.views.entry(activity).or_insert_with(|| blank(short8(activity)));
+        let view = self.views.entry(activity).or_insert_with(|| blank(airc_core::shown_id::shown_form(activity)));
         if line.occurred_at_ms > 0 {
             view.last_activity_ms = Some(view.last_activity_ms.map_or(line.occurred_at_ms, |m| m.max(line.occurred_at_ms)));
         }
@@ -231,7 +231,7 @@ impl PerceptionRegion {
 
     /// The activity's board changed above her cursor (bus-fed).
     pub fn observe_board(&mut self, activity: Uuid, changes: Vec<BoardChange>, now_ms: u64) -> Option<Wake> {
-        let view = self.views.entry(activity).or_insert_with(|| blank(short8(activity)));
+        let view = self.views.entry(activity).or_insert_with(|| blank(airc_core::shown_id::shown_form(activity)));
         // THE TALLY: a verdict on a card she holds, against the verdict she said she
         // expected here. Confirmed or contradicted, it is her surprise record for this
         // activity; the salience below raises the contradiction as Urgent, this keeps the count.
@@ -252,7 +252,7 @@ impl PerceptionRegion {
                         continuum_base::probe!(
                             class = "mind.surprise.duplicate",
                             persona = %self.me,
-                            activity = %short8(activity),
+                            activity = %airc_core::shown_id::shown_form(activity),
                             review = %review,
                             "a review already counted arrived again: her surprise number did not move"
                         );
@@ -271,7 +271,7 @@ impl PerceptionRegion {
                     continuum_base::probe!(
                         class = "mind.surprise",
                         persona = %self.me,
-                        activity = %short8(activity),
+                        activity = %airc_core::shown_id::shown_form(activity),
                         card = %card_id,
                         contradicted,
                         confirmed = view.surprise.confirmed,
@@ -305,7 +305,7 @@ impl PerceptionRegion {
         continuum_base::probe!(
             class = if admitted { "mind.perceive.wake" } else { "mind.perceive.quiet" },
             persona = %self.me,
-            activity = %short8(activity),
+            activity = %airc_core::shown_id::shown_form(activity),
             level = ?salience.level,
             reasons = salience.reasons.len(),
             dial = ?self.state.dial.depth,
@@ -475,10 +475,6 @@ impl PerceptionRegion {
         );
         let _ = self.strip.send(snapshot); // no receiver = nobody rendering yet; not an error
     }
-}
-
-fn short8(id: Uuid) -> String {
-    id.to_string()[..8].to_string()
 }
 
 fn blank(name: String) -> ActivityView {

@@ -276,7 +276,7 @@
         assert_eq!(classify_push_error("something new"), PushFailure::Unreachable, "unknown reads as not delivered");
         let card = Uuid::new_v4();
         assert_eq!(node_of_wip_subject(&wip_message(card, "node-a", None)).as_deref(), Some("node-a"));
-        assert!(wip_message(card, "n", None).starts_with(&format!("wip({})", &card.to_string()[..8])));
+        assert!(wip_message(card, "n", None).starts_with(&format!("wip({})", airc_core::shown_id::shown_form(card))));
         // what this catches (card e5e72485): her act commits carried no trailer, so her
         // authorship of her own work had to be added by hand. Credited, and the node still
         // reads back from the subject line.

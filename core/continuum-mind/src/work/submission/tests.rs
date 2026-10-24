@@ -65,7 +65,7 @@
     // the SHA-256 of her patch; a benchmark checkout names its instance from its path
     // and a repo worktree names the card; a worktree with no base to diff against is a
     // named refusal, never a diff against HEAD.
-    use super::{artifact_of_patch, base_sha_of, holder_guard, instance_of_checkout, is_placeholder_hash, resolve_shown, room_label, short8};
+    use super::{artifact_of_patch, base_sha_of, holder_guard, instance_of_checkout, is_placeholder_hash, resolve_shown, room_label};
 
     /// The seam's fixture: no datasets, no grader, and the candidate diff in the grader's form
     /// computed by plain `git diff`, so the derivation is exercised against a real repository.
@@ -100,7 +100,7 @@
         use airc_work::WorkReviewOutcome::{Failed, Passed, Unknown};
         let id = uuid::Uuid::new_v4();
         let bench = super::next_after_submission(Some(id), &[], true, None).expect("submitted");
-        assert!(bench.contains(&short8(id)) && bench.contains("test oracle grades it now") && bench.contains("verdict in the room"), "{bench}");
+        assert!(bench.contains(&airc_core::shown_id::shown_form(id)) && bench.contains("test oracle grades it now") && bench.contains("verdict in the room"), "{bench}");
         assert!(bench.contains("marking the card done") && !bench.contains("No state"), "never contradicts the bench card's own text: {bench}");
         assert!(bench.contains("failed grade: revise and work/submit again"), "{bench}");
         let handoff = Some(airc_lib::WorkCardId::new());
@@ -155,7 +155,7 @@
             .await
             .expect("card");
         let turn_room = airc.join("academy").await.expect("join her turn's room");
-        let short = card.as_uuid().simple().to_string()[..8].to_string();
+        let short = airc_core::shown_id::shown_form(card.as_uuid());
         let hint = super::card_elsewhere(&airc, &short, turn_room.channel.as_uuid())
             .await
             .expect("the card is on another board");
@@ -189,7 +189,7 @@
             .await
             .expect("card");
         airc.join("academy").await.expect("her pointer stands elsewhere");
-        let short = card.as_uuid().simple().to_string()[..8].to_string();
+        let short = airc_core::shown_id::shown_form(card.as_uuid());
         for named in [None, Some("swe-bench"), Some("default"), Some("academy"), Some("")] {
             let room = super::room_of_card(&airc, named, &short, "work/submit").await.expect("the card says its room");
             assert_eq!(room.name, "bench-swe-bench-verified-1789170698", "named {named:?}");
@@ -290,7 +290,7 @@
         let b = uuid::Uuid::from_u128(0x12345678_90ab_cdef_1234_567890abcdef);
         let seed = room_label("continuum", a);
         assert!(seed.contains("'continuum'"), "the resolved NAME is quoted: {seed}");
-        assert!(seed.contains(&short8(a)), "and the channel id rides beside it: {seed}");
+        assert!(seed.contains(&airc_core::shown_id::shown_form(a)), "and the channel id rides beside it: {seed}");
         // Two rooms sharing a name are distinguishable — the whole point of carrying the id.
         assert_ne!(room_label("continuum", a), room_label("continuum", b));
     }
@@ -506,14 +506,14 @@
         // Someone else holds it: say WHO, and reuse the holder sentence.
         let held = holder_guard(Some(peer), me, Some(mine), mine, card).expect_err("not hers");
         let held = held.to_string();
-        assert!(held.contains(&short8(peer.as_uuid())), "names the holder: {held}");
+        assert!(held.contains(&airc_core::shown_id::shown_form(peer.as_uuid())), "names the holder: {held}");
         assert!(held.contains("only the holder submits"), "{held}");
 
         // Hers, but the id she passed is stale: name BOTH ids and the way out.
         let bad = holder_guard(Some(me), me, Some(mine), stale, card).expect_err("stale id");
         let bad = bad.to_string();
-        assert!(bad.contains(&short8(stale.as_uuid())), "names what she passed: {bad}");
-        assert!(bad.contains(&short8(mine.as_uuid())), "names the live claim: {bad}");
+        assert!(bad.contains(&airc_core::shown_id::shown_form(stale.as_uuid())), "names what she passed: {bad}");
+        assert!(bad.contains(&airc_core::shown_id::shown_form(mine.as_uuid())), "names the live claim: {bad}");
         assert!(bad.contains("omit claim_id"), "names the corrective that works: {bad}");
         assert!(!bad.contains("only the holder submits"), "she IS the holder: {bad}");
 

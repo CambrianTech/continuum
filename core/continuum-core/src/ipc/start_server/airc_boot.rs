@@ -81,7 +81,7 @@ pub(super) fn discover_and_register_airc(
                 room_name,
                 ..
             } => {
-                let peer_short: String = peer_id.to_string().chars().take(8).collect();
+                let peer_short: String = airc_core::shown_id::shown_form(*peer_id);
                 (
                     BootStatusKind::Ok,
                     format!(

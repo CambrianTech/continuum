@@ -301,7 +301,7 @@ impl ActionCommand for WorkList {
                 let holder = crate::cognition::card_holder::holder(c, me, now_ms, &names);
                 (
                     WorkListCard {
-                        id: short8(c.card_id.as_uuid()),
+                        id: airc_core::shown_id::shown_form(c.card_id.as_uuid()),
                         title: c.title.clone(),
                         state: state_str(&c.state).to_string(),
                         // The person, not the hex: a published name when known, "an
