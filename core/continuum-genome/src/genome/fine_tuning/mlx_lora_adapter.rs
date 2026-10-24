@@ -7,6 +7,7 @@
 //! custodian converts MLX weights to PEFT/GGUF; genome evaluation and paging
 //! remain downstream concerns.
 
+use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 
 use async_trait::async_trait;
@@ -393,13 +394,15 @@ async fn tokenizer_has_chat_template(
     std::fs::write(&probe_path, include_str!("probe_chat_template.py")).map_err(|e| {
         FineTuningError::LocalTrainerFailed(format!("write chat-template probe: {e}"))
     })?;
-    let out = tokio::process::Command::new(python)
-        .kill_on_drop(true)
-        .arg(&probe_path)
-        .arg(train_base)
-        .output()
-        .await
-        .map_err(|e| FineTuningError::LocalTrainerFailed(format!("spawn probe: {e}")))?;
+    // A short question to the same interpreter, through the one owner that asks it. A
+    // cancelled job lets the probe finish its tokenizer load; it is never left running past it.
+    let (python, train_arg) = (python.to_path_buf(), train_base.to_owned());
+    let out = tokio::task::spawn_blocking(move || {
+        super::python_trainer_readiness::ask_python(&python, &[probe_path.as_os_str(), OsStr::new(&train_arg)])
+    })
+    .await
+    .map_err(|e| FineTuningError::LocalTrainerFailed(format!("chat-template probe task: {e}")))?
+    .map_err(|e| FineTuningError::LocalTrainerFailed(format!("spawn probe: {e}")))?;
     if !out.status.success() {
         return Err(FineTuningError::LocalTrainerFailed(format!(
             "chat-template probe failed for {train_base}: {}",

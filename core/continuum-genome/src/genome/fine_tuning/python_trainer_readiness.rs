@@ -8,8 +8,19 @@
 //! import keeps it unadvertised, and that is the truth. Dependencies installed later take effect
 //! at the next core start.
 
-use std::path::PathBuf;
+use std::ffi::OsStr;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
+
+/// Ask a trainer's interpreter one question: run `python` with `args` and collect what it
+/// says. The one place the genome's trainers spawn their interpreter to ask (the readiness
+/// import probe, MLX's chat-template probe); the training runs themselves are their own.
+pub(crate) fn ask_python<S: AsRef<OsStr>>(python: &Path, args: &[S]) -> std::io::Result<std::process::Output> {
+    std::process::Command::new(python)
+        .args(args)
+        .stdin(std::process::Stdio::null())
+        .output()
+}
 
 /// The cached answer to "can this trainer's interpreter import what it needs".
 pub(crate) struct PythonTrainerReadiness {
@@ -33,13 +44,8 @@ impl PythonTrainerReadiness {
                 std::thread::Builder::new()
                     .name("trainer-readiness".into())
                     .spawn(move || {
-                        let imported = std::process::Command::new(&python)
-                            .args(["-c", imports])
-                            .stdin(std::process::Stdio::null())
-                            .stdout(std::process::Stdio::null())
-                            .stderr(std::process::Stdio::null())
-                            .status()
-                            .is_ok_and(|status| status.success());
+                        let imported = ask_python(&python, &["-c", imports])
+                            .is_ok_and(|answer| answer.status.success());
                         continuum_base::probe!(
                             class = "genome.trainer.readiness",
                             python = %python.display(),
