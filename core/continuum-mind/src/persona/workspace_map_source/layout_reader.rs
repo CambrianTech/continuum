@@ -1,6 +1,7 @@
 //! Workspace evidence reader: one filesystem/Git observation path for all root adapters.
 //! Allocation receipts are immutable; current checkout state and private refs are not.
-use super::{WorkspaceLayout, SOURCE_ID};
+use super::WorkspaceLayout;
+use crate::cognition::faculty_ids::WORKSPACE_MAP;
 use crate::code::types::FsEntryKind;
 use crate::code::{FileEngine, PathSecurity};
 use std::path::PathBuf;
@@ -34,7 +35,7 @@ impl LayoutReader {
     pub(super) async fn read_layout(&self, root: PathBuf) -> Result<WorkspaceLayout, String> {
         let security =
             PathSecurity::new(&root).map_err(|e| format!("workspace security init failed: {e}"))?;
-        let engine = FileEngine::new(SOURCE_ID, security);
+        let engine = FileEngine::new(WORKSPACE_MAP, security);
         // Hidden entries are real workspace contents (#336); every root adapter shares this read.
         let listing = engine
             .list_dir(".", true)

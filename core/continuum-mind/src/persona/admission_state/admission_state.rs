@@ -680,9 +680,9 @@ impl AdmissionState {
     /// the *old* text should NOT dedup against a memory that no longer holds it.
     pub fn redact(
         &self,
-        policy: &crate::persona::redaction::RedactionPolicy,
-    ) -> crate::persona::redaction::RedactionReport {
-        let mut total = crate::persona::redaction::RedactionReport::default();
+        policy: &crate::cognition::redaction::RedactionPolicy,
+    ) -> crate::cognition::redaction::RedactionReport {
+        let mut total = crate::cognition::redaction::RedactionReport::default();
         if policy.is_noop() {
             return total;
         }

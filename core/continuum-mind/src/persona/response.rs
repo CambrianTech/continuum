@@ -446,7 +446,7 @@ async fn respond_inner(
     // Rust-side gate. The condition is whether the brain's own
     // output matches the documented silence vocabulary — the
     // decision was made inside the LLM, not by us.
-    if crate::persona::prompt_assembly::looks_like_silence_token(&visible_text) {
+    if crate::cognition::prompt_assembly::looks_like_silence_token(&visible_text) {
         // RTOS-debugger breakpoint: the persona chose silence via
         // the PASS affordance. The `reason` is observable so a
         // training loop can analyze when personas use the signal
@@ -526,7 +526,7 @@ async fn run_render(
 ) -> Result<RawRenderOutput, String> {
     use crate::ai::adapter::InferenceDevice;
     use crate::ai::types::TextGenerationRequest;
-    use crate::persona::prompt_assembly::{assemble, HistoryMessage, PromptAssemblyInput};
+    use crate::cognition::prompt_assembly::{assemble, HistoryMessage, PromptAssemblyInput};
 
     // 1. The matched angle for this persona's specialty. Empty string
     //    means "no specific angle" — assemble() handles that gracefully
@@ -786,7 +786,7 @@ async fn run_render(
 ///   - no user-role messages found → media silently dropped (rare —
 ///     would mean the assembler produced an unusual shape).
 pub fn build_messages_with_media(
-    prompt_messages: Vec<crate::persona::prompt_assembly::PromptMessage>,
+    prompt_messages: Vec<crate::cognition::prompt_assembly::PromptMessage>,
     media: &[MediaItemLite],
     model_caps: &std::collections::HashSet<crate::model_registry::Capability>,
 ) -> Vec<crate::ai::types::ChatMessage> {

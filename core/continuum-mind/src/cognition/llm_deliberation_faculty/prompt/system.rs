@@ -103,8 +103,8 @@ impl LlmDeliberationFaculty {
         ctx.sort_by(|a, b| {
             // Retain the legacy enrichment ordering. Standing source units have
             // already been reserved and cannot be spent by this optional walk.
-            let a_held = a.faculty.as_str() == crate::persona::active_work_source::SOURCE_ID;
-            let b_held = b.faculty.as_str() == crate::persona::active_work_source::SOURCE_ID;
+            let a_held = a.faculty.as_str() == crate::cognition::faculty_ids::ACTIVE_WORK;
+            let b_held = b.faculty.as_str() == crate::cognition::faculty_ids::ACTIVE_WORK;
             b_held.cmp(&a_held).then(
                 b.salience
                     .partial_cmp(&a.salience)

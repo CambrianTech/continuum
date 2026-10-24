@@ -53,7 +53,7 @@ was inconsistent, and nobody owned repairing it.
    human to `room/join` first is a design defect.
 
 8. **Planes, not deserialization.** A citizen's line carries its class at its head — `💭`
-   thought, `⚙` act receipt (`persona/presence_glyph.rs`, the one vocabulary) — and every reader
+   thought, `⚙` act receipt (`cognition/presence_glyph.rs`, the one vocabulary) — and every reader
    sniffs the class before it reads the body. While she holds work: her digest carries the
    MESSAGE plane only (human/agent lines, citizens' real speech; no presence lines, hers
    included), a line is a wake only if a human wrote it or it names her (agent status traffic is

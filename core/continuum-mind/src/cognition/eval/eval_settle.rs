@@ -11,16 +11,16 @@ pub(super) async fn eval_settle(
     prompt: &str,
     max_acts: usize,
 ) -> crate::cognition::act_observe::SettleOutcome {
-    let delivery = crate::persona::rag_budget::RagDelivery {
+    let delivery = crate::cognition::rag_budget::RagDelivery {
         source_id: "airc".to_string(),
-        items: vec![crate::persona::rag_budget::RagItem {
+        items: vec![crate::cognition::rag_budget::RagItem {
             content: prompt.to_string(),
             tokens: 0,
             metadata: serde_json::json!({ "peer_id": "peer", "occurred_at_ms": EVAL_EPOCH_MS }),
         }],
         tokens_used: 0,
         truncated: false,
-        resolution_used: crate::persona::rag_budget::ResolutionPreference::Raw,
+        resolution_used: crate::cognition::rag_budget::ResolutionPreference::Raw,
     };
     let burst = crate::cognition::workspace::Burst::from_turns(
         room,

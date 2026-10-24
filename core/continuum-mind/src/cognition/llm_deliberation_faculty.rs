@@ -561,8 +561,8 @@ impl LlmDeliberationFaculty {
         ws.broadcast
             .iter()
             .filter(|c| c.decision.is_none() && !c.trailing)
-            .filter(|c| c.faculty.as_str() == crate::persona::active_work_source::SOURCE_ID)
-            .any(|c| crate::persona::active_work_source::renders_held_in_progress(&c.content))
+            .filter(|c| c.faculty.as_str() == crate::cognition::faculty_ids::ACTIVE_WORK)
+            .any(|c| crate::cognition::faculty_ids::renders_held_in_progress(&c.content))
     }
 
     /// Does this workspace name a card she HOLDS (Claimed or InProgress)? The lane
@@ -604,8 +604,8 @@ impl LlmDeliberationFaculty {
         ws.broadcast
             .iter()
             .filter(|c| c.decision.is_none() && !c.trailing)
-            .filter(|c| c.faculty.as_str() == crate::persona::active_work_source::SOURCE_ID)
-            .any(|c| crate::persona::active_work_source::renders_held_card(&c.content))
+            .filter(|c| c.faculty.as_str() == crate::cognition::faculty_ids::ACTIVE_WORK)
+            .any(|c| crate::cognition::faculty_ids::renders_held_card(&c.content))
     }
 }
 

@@ -202,9 +202,9 @@ pub(super) async fn run_pass(
             "This is a task for you to complete now. Provide your complete solution:\n\n{}",
             t.prompt.trim()
         );
-        let task_delivery = crate::persona::rag_budget::RagDelivery {
+        let task_delivery = crate::cognition::rag_budget::RagDelivery {
             source_id: "airc".to_string(),
-            items: vec![crate::persona::rag_budget::RagItem {
+            items: vec![crate::cognition::rag_budget::RagItem {
                 content: framed_prompt,
                 tokens: 0,
                 metadata: serde_json::json!({
@@ -214,7 +214,7 @@ pub(super) async fn run_pass(
             }],
             tokens_used: 0,
             truncated: false,
-            resolution_used: crate::persona::rag_budget::ResolutionPreference::Raw,
+            resolution_used: crate::cognition::rag_budget::ResolutionPreference::Raw,
         };
         // own_peer/agent_name attribute the persona's OWN past posts; a single-task
         // exam has none, so they're inert here (the item's peer_id "peer" ≠ "").
@@ -397,9 +397,9 @@ pub(super) async fn run_pass(
                 task = %t.id,
                 "directed exam question was DECLINED (settled PASS) — re-driving once with an answer-required nudge"
             );
-            let nudge_delivery = crate::persona::rag_budget::RagDelivery {
+            let nudge_delivery = crate::cognition::rag_budget::RagDelivery {
                 source_id: "airc".to_string(),
-                items: vec![crate::persona::rag_budget::RagItem {
+                items: vec![crate::cognition::rag_budget::RagItem {
                     content: format!(
                         "You did not answer. This is a GRADED exam question and you must answer it \
                          now — do NOT reply PASS or stay silent. Provide your complete solution:\n\n{}",
@@ -410,7 +410,7 @@ pub(super) async fn run_pass(
                 }],
                 tokens_used: 0,
                 truncated: false,
-                resolution_used: crate::persona::rag_budget::ResolutionPreference::Raw,
+                resolution_used: crate::cognition::rag_budget::ResolutionPreference::Raw,
             };
             let nudge_burst = crate::cognition::workspace::Burst::from_turns(
                 room,
@@ -516,9 +516,9 @@ pub(super) async fn run_pass(
                         .into_iter()
                         .rev()
                         .collect();
-                    let red_delivery = crate::persona::rag_budget::RagDelivery {
+                    let red_delivery = crate::cognition::rag_budget::RagDelivery {
                     source_id: "airc".to_string(),
-                    items: vec![crate::persona::rag_budget::RagItem {
+                    items: vec![crate::cognition::rag_budget::RagItem {
                         content: format!(
                             "You settled, but the task's definition-of-done currently FAILS.                              Its output ends:
 
@@ -531,7 +531,7 @@ Fix the workspace and finish —                              the grade reads th
                     }],
                     tokens_used: 0,
                     truncated: false,
-                    resolution_used: crate::persona::rag_budget::ResolutionPreference::Raw,
+                    resolution_used: crate::cognition::rag_budget::ResolutionPreference::Raw,
                 };
                 let red_burst = crate::cognition::workspace::Burst::from_turns(
                     room,

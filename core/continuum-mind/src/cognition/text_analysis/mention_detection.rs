@@ -8,17 +8,17 @@
 //!
 //! Hot path: called once per message per persona per tick from the
 //! unified evaluator pre-response gate (see
-//! [`crate::persona::evaluator::full_evaluate`]). Pre-2026-05-30 this
+//! persona's `evaluator::full_evaluate`). Pre-2026-05-30 this
 //! function allocated up to 9 Strings per call (msg.to_lowercase() +
 //! name.to_lowercase() + uid.to_lowercase() + 6 format!() markers for
 //! the @prefix and trailing-comma/colon checks). Now: zero per-call
-//! allocations via [`crate::persona::text_analysis::ascii_case::contains_ascii_case_insensitive`]
-//! and [`crate::persona::text_analysis::ascii_case::starts_with_ascii_case_insensitive`],
+//! allocations via [`crate::cognition::text_analysis::ascii_case::contains_ascii_case_insensitive`]
+//! and [`crate::cognition::text_analysis::ascii_case::starts_with_ascii_case_insensitive`],
 //! both of which fold ASCII bytes inline without allocating a
 //! lowercase copy. Persona names + uids are ASCII in continuum so the
 //! ASCII fast path is sufficient.
 
-use crate::persona::text_analysis::ascii_case::starts_with_ascii_case_insensitive;
+use crate::cognition::text_analysis::ascii_case::starts_with_ascii_case_insensitive;
 use regex::Regex;
 use std::sync::LazyLock;
 

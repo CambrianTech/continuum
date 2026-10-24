@@ -39,7 +39,7 @@ pub(super) fn format_exam_lesson(task: &EvalTask, result: &EvalTaskResult) -> St
 /// streams AT GRADE TIME — an interrupted round keeps every lesson it
 /// earned. Resume-is-recall applied to teaching.
 pub(crate) struct LessonSink {
-    pub(super) policy: crate::persona::redaction::RedactionPolicy,
+    pub(super) policy: crate::cognition::redaction::RedactionPolicy,
     pub(super) persona_uuid: uuid::Uuid,
     pub(super) room: uuid::Uuid,
     pub(super) peer_dir: std::path::PathBuf,
@@ -60,10 +60,10 @@ impl LessonSink {
             .map(|t| t.expect.clone())
             .filter(|a| !a.trim().is_empty())
             .collect();
-        let policy = crate::persona::redaction::RedactionPolicy::new(vec![Box::new(
-            crate::persona::redaction::HeldOutAnswerDetector::new(
+        let policy = crate::cognition::redaction::RedactionPolicy::new(vec![Box::new(
+            crate::cognition::redaction::HeldOutAnswerDetector::new(
                 answers,
-                crate::persona::redaction::HeldOutAnswerDetector::DEFAULT_MIN_LEN,
+                crate::cognition::redaction::HeldOutAnswerDetector::DEFAULT_MIN_LEN,
             ),
         )]);
         let peer_dir = crate::identity::citizen_peer_dir(

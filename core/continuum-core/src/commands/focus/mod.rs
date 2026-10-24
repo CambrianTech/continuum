@@ -1,6 +1,6 @@
 //! `focus/*` — the persona's self-determination control surface (#91): the tools
 //! through which she steers her own attention allocation. Backed by the by-persona
-//! `crate::persona::focus::registry()`, written here and read by the never-stop serve
+//! `crate::cognition::focus::registry()`, written here and read by the never-stop serve
 //! loop's wake floor.
 //!
 //! Today: `focus/mute` (per-lane hush + snooze, already honored live by the wake floor)

@@ -1,7 +1,7 @@
 //! The one budget's invariant, checked once where the final messages are fixed (goal 7).
 //!
 //! Every part of the prompt is a claim in the window's one allocation
-//! ([`crate::persona::rag_budget::flex_allocate`]), each at its charged price, so
+//! ([`crate::cognition::rag_budget::flex_allocate`]), each at its charged price, so
 //! `charge(prompt) + completion_reserve <= window` holds by construction and her view fits
 //! without a fit step dropping it. When the assembled prompt says otherwise, the allocation
 //! is wrong: the act fails loud as a budget fault with each claim's grant beside its actual

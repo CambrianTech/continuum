@@ -48,7 +48,7 @@
 //! lexically — that is the job of the embedding-backed novelty judge (#9/#16), and
 //! this module does not pretend to cover it.
 
-use crate::persona::rag_budget::{RagDelivery, RagItem};
+use crate::cognition::rag_budget::{RagDelivery, RagItem};
 use std::collections::{HashSet, VecDeque};
 
 /// airc-chat deliveries are tagged with this source id (mirrors the literal in
@@ -248,7 +248,7 @@ pub fn defer_as_loop_filler(incoming: &str, recent: &[String]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::persona::rag_budget::{RagDelivery, RagItem, ResolutionPreference};
+    use crate::cognition::rag_budget::{RagDelivery, RagItem, ResolutionPreference};
     use serde_json::json;
 
     fn airc_item(content: &str, peer: &str) -> RagItem {

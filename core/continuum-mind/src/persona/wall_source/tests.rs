@@ -170,11 +170,11 @@
     #[test]
     fn the_wall_announces_itself_as_the_wall() {
         assert_eq!(
-            SOURCE_ID, "room-wall",
+            WALL, "room-wall",
             "this source reads the WALL; `room-board` named the work board and sent              readers to room_board_source.rs (#3874)"
         );
         assert_ne!(
-            SOURCE_ID, "room-kanban",
+            WALL, "room-kanban",
             "and it must never collide with the work board's id -- two sources under              one header would make the grounding block ambiguous to the citizen"
         );
     }

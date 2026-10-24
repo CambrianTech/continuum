@@ -323,7 +323,7 @@ pub fn active_cache_states(population: &[(u32, u32)], served_ctx: u32, active: u
     let keep = if active > 0 {
         active
     } else {
-        crate::persona::health_ledger::MINDLESS_RESIDENT_FLOOR as usize
+        crate::cognition::health_ledger::MINDLESS_RESIDENT_FLOOR as usize
     };
     states.truncate(keep);
     states

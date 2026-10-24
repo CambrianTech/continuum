@@ -442,7 +442,7 @@ pub(super) fn perceptual_from_event(event: &TranscriptEvent) -> Result<IncomingM
     // AircRagSource's existing presence folding and filled active turns with
     // other residents' work broadcasts. Media-bearing messages remain input.
     if turn.media.is_empty()
-        && crate::persona::presence_glyph::is_presence_line(&turn.text)
+        && crate::cognition::presence_glyph::is_presence_line(&turn.text)
     {
         return Err("work_presence");
     }

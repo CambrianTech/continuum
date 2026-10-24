@@ -525,7 +525,7 @@
     // catching the key, "learn from exams" would either teach nothing or cheat.
     #[test]
     fn learn_mode_lesson_keeps_experience_but_scrubs_the_answer_key() {
-        use crate::persona::redaction::{HeldOutAnswerDetector, RedactionClass, RedactionPolicy};
+        use crate::cognition::redaction::{HeldOutAnswerDetector, RedactionClass, RedactionPolicy};
         let task = EvalTask {
             id: "loop-file".into(),
             prompt: "Which file holds the service loop, service_loop.rs perhaps?".into(),

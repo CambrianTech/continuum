@@ -11,7 +11,7 @@
     pub(super) mod workspace_burst_names {
         use super::super::super::build_workspace_turns;
         use crate::cognition::workspace::Burst;
-        use crate::persona::rag_budget::{RagDelivery, RagItem, ResolutionPreference};
+        use crate::cognition::rag_budget::{RagDelivery, RagItem, ResolutionPreference};
         use serde_json::json;
 
         fn delivery(source_id: &str, items: Vec<RagItem>) -> RagDelivery {

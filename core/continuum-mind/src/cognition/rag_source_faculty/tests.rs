@@ -1,6 +1,6 @@
 #![cfg(test)]
     use super::*;
-    use crate::persona::rag_budget::{ RagDelivery, RagItem, ResolutionPreference};
+    use crate::cognition::rag_budget::{ RagDelivery, RagItem, ResolutionPreference};
     use std::sync::Mutex;
 
     fn persona() -> Uuid {

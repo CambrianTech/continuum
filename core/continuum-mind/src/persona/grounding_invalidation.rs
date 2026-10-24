@@ -183,7 +183,7 @@ pub fn spawn_publish_invalidator(
 mod tests {
     use super::*;
     use crate::persona::cached_source::{CachedRagSource, DirtyHandle};
-    use crate::persona::rag_budget::{
+    use crate::cognition::rag_budget::{
          RagContext, RagDelivery, RagSource, ResolutionPreference,
     };
     use async_trait::async_trait;
@@ -213,7 +213,7 @@ mod tests {
             let n = self.fetches.fetch_add(1, Ordering::SeqCst) + 1;
             RagDelivery {
                 source_id: "counting".to_string(),
-                items: vec![crate::persona::rag_budget::RagItem {
+                items: vec![crate::cognition::rag_budget::RagItem {
                     content: format!("fetch #{n}"),
                     tokens: 4,
                     metadata: serde_json::json!({}),

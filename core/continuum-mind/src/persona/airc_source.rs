@@ -37,13 +37,12 @@ use crate::cognition::channel_element::ChannelElement;
 use crate::cognition::channel_substrate::{
     global_channel_digest_buffer, global_channel_digest_builder,
 };
-use crate::persona::rag_budget::{
+use crate::cognition::rag_budget::{
      RagContext, RagDelivery, RagItem, RagSource, ResolutionPreference,
 };
 use crate::runtime::ready_buffer::ReadyBuffer;
 
-/// Source identifier — used by budget presets, telemetry, cursor scope checks.
-pub(crate) const SOURCE_ID: &str = "airc";
+use crate::cognition::faculty_ids::AIRC;
 
 /// Default newest-events fetch cap when building a digest on demand (mirrors the
 /// region's). The recipe-defined grounding window slices within this.
@@ -572,9 +571,9 @@ impl AircRagSource {
         for text in texts {
             for line in text.lines() {
                 let line = line.trim();
-                if line.starts_with(crate::persona::presence_glyph::THOUGHT) {
+                if line.starts_with(crate::cognition::presence_glyph::THOUGHT) {
                     last_thought = Some(line);
-                } else if let Some(rest) = line.strip_prefix(crate::persona::presence_glyph::ACT) {
+                } else if let Some(rest) = line.strip_prefix(crate::cognition::presence_glyph::ACT) {
                     let mut parts = rest.split_whitespace();
                     let verb = parts.next().unwrap_or("?"); // unwrap_or: a bare marker still tallies as unknown
                     let mark = parts.last().unwrap_or("·"); // unwrap_or: a verb without a mark tallies as neutral
@@ -630,7 +629,7 @@ impl AircRagSource {
 
     fn empty(resolution: ResolutionPreference) -> RagDelivery {
         RagDelivery {
-            source_id: SOURCE_ID.to_string(),
+            source_id: AIRC.to_string(),
             items: Vec::new(),
             tokens_used: 0,
             truncated: false,
@@ -657,7 +656,7 @@ struct PackUnit {
 /// A radiated work receipt (`act_observe::apply`): leads with `💭` or `⚙`.
 fn is_work_receipt(text: &str) -> bool {
     let t = text.trim_start();
-    crate::persona::presence_glyph::is_presence_line(t)
+    crate::cognition::presence_glyph::is_presence_line(t)
 }
 
 /// The speak gate's verdict, read at the perception seam — one predicate, two seams.
@@ -668,7 +667,7 @@ fn is_not_a_contribution(text: &str) -> bool {
 #[async_trait]
 impl RagSource for AircRagSource {
     fn source_id(&self) -> &'static str {
-        SOURCE_ID
+        AIRC
     }
 
     fn expand_command(&self) -> Option<&'static str> {
@@ -882,7 +881,7 @@ impl RagSource for AircRagSource {
             "airc_rag: deliver (digest)"
         );
         RagDelivery {
-            source_id: SOURCE_ID.to_string(),
+            source_id: AIRC.to_string(),
             items,
             tokens_used,
             // The digest IS the window. More history = a command (scrollback/search),

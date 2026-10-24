@@ -24,7 +24,7 @@ use std::sync::Arc;
 use uuid::Uuid;
 
 use crate::modules::cognition::CognitionState;
-use crate::persona::redaction::{
+use crate::cognition::redaction::{
     HeldOutAnswerDetector, RedactionClass, RedactionDetector, RedactionPolicy, SecretDetector,
 };
 use crate::sdk_codegen::CommandError;

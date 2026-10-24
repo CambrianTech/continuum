@@ -9,7 +9,7 @@ const PASS_RUNAWAY_MULTIPLE: u32 = 2;
 /// THE REPLY'S CLAIM on the served window, and its runaway bound. Pure.
 ///
 /// The reply is one claimant in the same flexbox allocation as framing, required input,
-/// grounding and history ([`crate::persona::rag_budget::flex_allocate`]) — never a share
+/// grounding and history ([`crate::cognition::rag_budget::flex_allocate`]) — never a share
 /// carved off the top by its own rule. The carve-off is what cut Benchy's first write
 /// mid-call (2026-10-18 02:10Z): her reserve was twice her read-only peak (~5.4k), her
 /// think was capped near 2k (`delib.emission.think_budget_hit` at 1,592–1,746), and the
@@ -41,7 +41,7 @@ pub fn reply_claim(
     pending_peak: u32,
     live_work: bool,
     directed: bool,
-) -> (crate::persona::rag_budget::RagSourceBudget, u32) {
+) -> (crate::cognition::rag_budget::RagSourceBudget, u32) {
     let cap = LlmDeliberationFaculty::ACT_OUTPUT_CAP;
     let runaway = match kind {
         TurnKind::Act => cap,
@@ -64,7 +64,7 @@ pub fn reply_claim(
         TurnKind::Pass => 4,
     };
     (
-        crate::persona::rag_budget::RagSourceBudget {
+        crate::cognition::rag_budget::RagSourceBudget {
             source_id: FLEX_REPLY.to_owned(),
             priority,
             floor_tokens: floor,

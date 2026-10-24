@@ -42,7 +42,7 @@ pub use sleep_state::{SleepMode, SleepState};
 
 use crate::persona::cognition::PersonaCognitionEngine;
 use crate::persona::message_cache::RecentMessageCache;
-use crate::persona::text_analysis;
+use crate::cognition::text_analysis;
 use crate::persona::types::{InboxMessage, Modality, SenderType};
 use serde::{Deserialize, Serialize};
 use std::time::Instant;

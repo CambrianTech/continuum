@@ -56,7 +56,7 @@ use async_trait::async_trait;
 use uuid::Uuid;
 
 use super::workspace::{Contribution, Faculty, FacultyId, Workspace};
-use crate::persona::rag_budget::{RagContext, RagSource, ResolutionPreference};
+use crate::cognition::rag_budget::{RagContext, RagSource, ResolutionPreference};
 
 /// Resolve a source offer through the same measured affordability owner as
 /// recall, tools and working memory. The serving minimum is not permission to
@@ -369,8 +369,8 @@ impl Faculty for RagSourceFaculty {
         // Sources declare what they describe: task board versus wake conversation.
         // Select before delivery so existing source caches see the same selected room.
         let room = match self.source.room_scope() {
-            crate::persona::rag_budget::RagRoomScope::Conversation => ws.room_id,
-            crate::persona::rag_budget::RagRoomScope::Activity => ws.activity_room_id,
+            crate::cognition::rag_budget::RagRoomScope::Conversation => ws.room_id,
+            crate::cognition::rag_budget::RagRoomScope::Activity => ws.activity_room_id,
         };
         let ctx = RagContext::for_persona_in_room(self.persona_id, now, room);
         let delivery = self

@@ -159,7 +159,7 @@ pub async fn settle_card_credit_bound(
             submitted = submitted as u64,
             "card verdict checked staged revisions; acknowledged transfers retain inspectable evidence"
         );
-        crate::persona::health_ledger::note_credit_settled();
+        crate::cognition::health_ledger::note_credit_settled();
     }
     Ok(())
 }

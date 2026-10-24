@@ -123,7 +123,7 @@ pub(super) async fn run_turn_cycle(
                 .unwrap_or_else(|| { // A new message has no retained attention; derive it from its actual sender and mentions.
                     crate::cognition::workspace::TurnAttention::for_message(
                     ctx.identity.persona_identity().mentions(&msg.text),
-                    crate::persona::room_directory::is_human_peer(msg.peer_id),
+                    crate::cognition::room_directory::is_human_peer(msg.peer_id),
                     )
                 });
             if attention.requires_priority() {

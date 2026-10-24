@@ -231,7 +231,7 @@ pub struct RecallFaculty {
     /// until something moves the dial (recipe defaults, `focus/nudge`, or a
     /// learned policy — same seam for all three). The SCALAR it consumes is
     /// read per tick from the persona focus kernel
-    /// ([`crate::persona::focus::registry`]) — one home for focus state.
+    /// ([`crate::cognition::focus::registry`]) — one home for focus state.
     focus_policy: Arc<dyn crate::cognition::focus_policy::FocusPolicy>,
     /// STICKY RENDER CACHE (rung 3): per room, the last surfaced set (ids, in
     /// order), its rendered block, and the refresh countdown. The block is
@@ -462,14 +462,14 @@ impl Faculty for RecallFaculty {
                         // The scalar comes from HER focus kernel, per tick —
                         // peek only (a persona who never touched focus reads
                         // the resting setpoint; no state is created for her).
-                        let scalar = crate::persona::focus::registry()
+                        let scalar = crate::cognition::focus::registry()
                             .get(&self.persona_id)
                             .map(|h| {
                                 h.lock()
                                     .expect("focus state mutex poisoned by a prior panic")
                                     .focus()
                             })
-                            .unwrap_or(crate::persona::focus::RESTING_FOCUS);
+                            .unwrap_or(crate::cognition::focus::RESTING_FOCUS);
                         r.sigma = self.focus_policy.recall_sigma(scalar);
                         Arc::new(r)
                     });

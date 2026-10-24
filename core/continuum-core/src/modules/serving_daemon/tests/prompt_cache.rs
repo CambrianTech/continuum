@@ -80,7 +80,7 @@ fn the_cache_holds_the_active_rosters_states_not_every_seed_on_disk() {
     // unknown is not "all 23 at their peaks" — that is the want this law deletes.
     assert_eq!(
         active_cache_states(&population, 67_072, 0).len(),
-        crate::persona::health_ledger::MINDLESS_RESIDENT_FLOOR as usize
+        crate::cognition::health_ledger::MINDLESS_RESIDENT_FLOOR as usize
     );
     // Through the decision: the same population on a 2-lane serve asks for a
     // demand-sized cache, not the whole afford.

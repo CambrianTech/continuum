@@ -183,13 +183,13 @@ pub struct TriggerTurn<'a> {
 /// The shared roster projection's admitted atoms. The legacy source remains
 /// readable for existing replay/diagnostic deliveries; live turns use KIND.
 pub(super) fn roster_items(
-    deliveries: &[crate::persona::rag_budget::RagDelivery],
-) -> impl Iterator<Item = &crate::persona::rag_budget::RagItem> {
+    deliveries: &[crate::cognition::rag_budget::RagDelivery],
+) -> impl Iterator<Item = &crate::cognition::rag_budget::RagItem> {
     deliveries
         .iter()
         .filter(|d| {
             d.source_id == continuum_positron::RosterViewState::KIND
-                || d.source_id == super::super::room_roster_source::SOURCE_ID
+                || d.source_id == crate::cognition::faculty_ids::ROOM_ROSTER
         })
         .flat_map(|d| d.items.iter())
 }
@@ -197,7 +197,7 @@ pub(super) fn roster_items(
 /// Resolve identity from admitted roster atoms, never rendered text or a second
 /// unbudgeted roster read. Legacy replay deliveries carry the same metadata.
 pub(super) fn roster_identities(
-    deliveries: &[crate::persona::rag_budget::RagDelivery],
+    deliveries: &[crate::cognition::rag_budget::RagDelivery],
 ) -> impl Iterator<Item = (&str, &str)> {
     roster_items(deliveries).filter_map(|item| {
         Some((
@@ -291,7 +291,7 @@ pub(crate) fn ring_echo_run(own_recent: &[String], room_recent: &[String]) -> us
 /// anchor they would have. One anchor per burst, whichever counter earns it.
 pub(super) fn append_ring_anchor_if_starved(
     turns: &mut Vec<crate::cognition::workspace::BurstTurn>,
-    deliveries: &[crate::persona::rag_budget::RagDelivery],
+    deliveries: &[crate::cognition::rag_budget::RagDelivery],
     peer: crate::identity::PeerId,
     room: uuid::Uuid,
 ) {
@@ -322,7 +322,7 @@ pub(super) fn append_ring_anchor_if_starved(
 /// by forgetting to check.
 pub(super) fn push_work_board_anchor(
     turns: &mut Vec<crate::cognition::workspace::BurstTurn>,
-    deliveries: &[crate::persona::rag_budget::RagDelivery],
+    deliveries: &[crate::cognition::rag_budget::RagDelivery],
 ) {
     let anchor = work_board_anchor(deliveries);
     if anchor.is_empty() {
@@ -341,7 +341,7 @@ pub(super) fn push_work_board_anchor(
 }
 
 pub fn build_workspace_turns(
-    deliveries: &[crate::persona::rag_budget::RagDelivery],
+    deliveries: &[crate::cognition::rag_budget::RagDelivery],
     own_peer: &str,
     agent_name: &str,
     trigger: Option<TriggerTurn<'_>>,
@@ -685,7 +685,7 @@ pub(crate) struct RoomRosterProjection {
 /// Project the same admitted roster atoms for the legacy prompt-assembly seam.
 #[cfg(test)]
 pub(crate) fn project_room_roster(
-    deliveries: &[crate::persona::rag_budget::RagDelivery],
+    deliveries: &[crate::cognition::rag_budget::RagDelivery],
 ) -> RoomRosterProjection {
     let mut room_roster: Vec<String> = Vec::new();
     let mut other_persona_names: Vec<String> = Vec::new();

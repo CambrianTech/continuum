@@ -433,7 +433,7 @@ pub async fn apply_act(
                         .map(|c| c.chars().take(80).collect::<String>())
                 })
                 .unwrap_or_default();
-            let update = crate::persona::mind_events::PersonaActUpdate {
+            let update = crate::cognition::mind_events::PersonaActUpdate {
                 act_id: Uuid::new_v4(),
                 room_id,
                 actor_id: body.persona_id,
@@ -451,7 +451,7 @@ pub async fn apply_act(
                 timestamp: now_ms,
             };
             match serde_json::to_value(&update) {
-                Ok(payload) => bus.publish_async_only(crate::persona::mind_events::PERSONA_ACT, payload),
+                Ok(payload) => bus.publish_async_only(crate::cognition::mind_events::PERSONA_ACT, payload),
                 Err(e) => {
                     tracing::warn!(error = %e, "persona:act receipt failed to serialize — receipt dropped, act unaffected")
                 }
@@ -478,7 +478,7 @@ pub async fn apply_act(
         // she said nothing about leads with its acts.
         let mut lines: Vec<String> = Vec::with_capacity(acts.len() + 1);
         if let Some(said) = body.working_memory.action_statement(room_id) {
-            lines.push(crate::persona::presence_glyph::said_line(said.trim()));
+            lines.push(crate::cognition::presence_glyph::said_line(said.trim()));
         }
         lines.extend(acts.iter().map(|obs| {
                 let object = obs
@@ -494,7 +494,7 @@ pub async fn apply_act(
                             .map(|c| c.chars().take(80).collect::<String>())
                     })
                     .unwrap_or_default();
-                crate::persona::presence_glyph::act_line(
+                crate::cognition::presence_glyph::act_line(
                     &obs.call.name,
                     &object,
                     // The command's own word where it gave one; the transport bool
@@ -720,8 +720,8 @@ pub async fn apply_act(
         chars = observation.len(),
         "acted and observed the result"
     );
-    crate::persona::health_ledger::note_act(wrote);
-    crate::persona::health_ledger::note_act_of(body.persona_id, wrote);
+    crate::cognition::health_ledger::note_act(wrote);
+    crate::cognition::health_ledger::note_act_of(body.persona_id, wrote);
 
     // An act that changed a checkout wakes the one carry owner (modules::card_carry), which
     // carries every resident's committed card work; a turn's end is no longer the only push.

@@ -524,11 +524,11 @@ use super::*;
         }
         async fn deliver(
             &self,
-            _ctx: &crate::persona::rag_budget::RagContext,
+            _ctx: &crate::cognition::rag_budget::RagContext,
             _budget: u32,
-            resolution: crate::persona::rag_budget::ResolutionPreference,
-        ) -> crate::persona::rag_budget::RagDelivery {
-            crate::persona::rag_budget::RagDelivery {
+            resolution: crate::cognition::rag_budget::ResolutionPreference,
+        ) -> crate::cognition::rag_budget::RagDelivery {
+            crate::cognition::rag_budget::RagDelivery {
                 source_id: "classify-stub".to_string(),
                 items: Vec::new(),
                 tokens_used: 0,
@@ -607,13 +607,13 @@ use super::*;
             }
             async fn deliver(
                 &self,
-                _ctx: &crate::persona::rag_budget::RagContext,
+                _ctx: &crate::cognition::rag_budget::RagContext,
                 _budget: u32,
-                resolution: crate::persona::rag_budget::ResolutionPreference,
-            ) -> crate::persona::rag_budget::RagDelivery {
-                crate::persona::rag_budget::RagDelivery {
+                resolution: crate::cognition::rag_budget::ResolutionPreference,
+            ) -> crate::cognition::rag_budget::RagDelivery {
+                crate::cognition::rag_budget::RagDelivery {
                     source_id: "workspace-map".to_string(),
-                    items: vec![crate::persona::rag_budget::RagItem {
+                    items: vec![crate::cognition::rag_budget::RagItem {
                         content: format!("workspace layout — {HANDS_MARKER}"),
                         tokens: 12,
                         metadata: serde_json::Value::Null,
