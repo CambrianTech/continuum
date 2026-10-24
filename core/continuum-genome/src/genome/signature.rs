@@ -79,7 +79,21 @@ pub struct GeneSignature {
     /// (GENE-REUSE-FORK-MINT.md §3a), is counted from these.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent: Option<crate::genome::competence::GeneRef>,
+    /// The gene's REGION, measured at mint: the similarity to this signature that
+    /// [`REGION_QUANTILE`] of its own training examples clear (GENE-REUSE-FORK-MINT §3d,
+    /// "the floor is the gene's own spread"). A turn is inside the gene when its need is at
+    /// least this near; a broad gene has a wide region, a narrow one a narrow region. Absent
+    /// on signatures minted before it was filed: selection then falls back to the space's
+    /// measured null (`genome::selection`), never to a hand-tuned cosine.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub region: Option<f32>,
 }
+
+/// Which share of a gene's own training examples its region must hold: the region's edge
+/// is the similarity at this low quantile, so nine in ten of the examples that made the
+/// gene lie inside it. A definition of "inside", not a tuned threshold: the threshold it
+/// produces is measured per gene, from the gene's own corpus.
+pub const REGION_QUANTILE: f32 = 0.10;
 
 /// L2-normalize in place; a zero vector stays zero (and can never win a max).
 fn normalize(v: &mut [f32]) {
@@ -172,7 +186,7 @@ impl GeneSignature {
             })
             .collect();
 
-        Ok(Self {
+        let mut minted = Self {
             embedder: embedder.id().to_string(),
             dim,
             centroid,
@@ -180,7 +194,18 @@ impl GeneSignature {
             corpus,
             minted_at_ms: now_ms,
             parent: None,
-        })
+            region: None,
+        };
+        minted.region = region_of(&minted, &embeddings);
+        Ok(minted)
+    }
+
+    /// Similarity of an embedding already known to be in this signature's space.
+    fn nearness(&self, query: &[f32]) -> f32 {
+        self.subspaces
+            .iter()
+            .map(|s| cosine_similarity(query, s))
+            .fold(cosine_similarity(query, &self.centroid), f32::max)
     }
 
     /// Similarity of a query embedding to this gene, in the named space.
@@ -191,12 +216,17 @@ impl GeneSignature {
         if embedder_id != self.embedder || query.len() != self.dim {
             return None;
         }
-        let mut best = cosine_similarity(query, &self.centroid);
-        for s in &self.subspaces {
-            best = best.max(cosine_similarity(query, s));
-        }
-        Some(best)
+        Some(self.nearness(query))
     }
+}
+
+/// PURE: the region edge of `signature` over the embeddings of the corpus that minted it:
+/// the [`REGION_QUANTILE`] similarity (nearest rank). `None` for an empty corpus.
+fn region_of(signature: &GeneSignature, corpus: &[Vec<f32>]) -> Option<f32> {
+    let mut near: Vec<f32> = corpus.iter().map(|e| signature.nearness(e)).collect();
+    near.sort_by(f32::total_cmp);
+    let rank = ((near.len().saturating_sub(1)) as f32 * REGION_QUANTILE).floor() as usize;
+    near.get(rank).copied()
 }
 
 /// The sidecar store: gene path → signature, persisted beside the adapter
@@ -327,6 +357,34 @@ mod tests {
 
         assert!(sig.similarity_in("some-other-embedder", &near).is_none());
         assert!(sig.similarity_in(embedder.id(), &near[..near.len() - 1]).is_none());
+    }
+
+    // what this catches: the region (the selection floor, GENE-REUSE-FORK-MINT §3d) being
+    // a constant in disguise. It is measured from the gene's own corpus: at least nine in
+    // ten of its examples are inside it, an unrelated text is outside it, and a signature
+    // minted before regions were filed still loads (region absent, never a guessed number).
+    #[tokio::test]
+    async fn the_region_holds_the_genes_own_examples_and_excludes_an_unrelated_need() {
+        let embedder: Arc<dyn EmbeddingProvider> = Arc::new(LexicalEmbedder::default());
+        let texts: Vec<String> = ["fold the list", "fold the list recursively", "map the list", "fold a tree"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let sig = GeneSignature::mint(&texts, corpus_ref(), &embedder, 0).await.expect("mint");
+        let region = sig.region.expect("a minted signature files its region");
+        let mut inside = 0;
+        for t in &texts {
+            let sim = sig.similarity_in(embedder.id(), &embedder.embed(t).await).expect("same space");
+            inside += usize::from(sim >= region);
+        }
+        assert!(inside * 10 >= texts.len() * 9, "{inside} of {} examples inside", texts.len());
+        let far = embedder.embed("quarterly tax spreadsheet").await;
+        assert!(sig.similarity_in(embedder.id(), &far).expect("same space") < region);
+
+        let mut old = serde_json::to_value(&sig).expect("serialize");
+        old.as_object_mut().expect("object").remove("region");
+        let loaded: GeneSignature = serde_json::from_value(old).expect("pre-region signature loads");
+        assert_eq!(loaded.region, None);
     }
 
     // what this catches: the sidecar's load/stamp contract — missing file is the

@@ -55,8 +55,20 @@ impl ExamHost for MindExamHost {
                 exam.base_model_id, serving.active_model
             )));
         }
-        let her_genome = crate::genome::gene_trial::live_genes(exam.persona)
-            .ok_or_else(|| not_now("her genome could not be read".into()))?;
+        // Her genome for the sitting: every gene she may run, at its trained scale (the
+        // composer weighs them per turn by distance; the exam holds them fixed so the only
+        // difference between the arms is the gene).
+        let her_genome: Vec<crate::ai::types::ActiveAdapterRequest> = crate::genome::gene_trial::GeneTrials::default_store()
+            .ok_or_else(|| not_now("no continuum home: her genome could not be read".into()))?
+            .load()
+            .map_err(|e| not_now(format!("her genome could not be read: {e}")))
+            .map(|trials| {
+                crate::genome::gene_trial::her_genes(&trials, exam.persona, &exam.base_model_id)
+                    .into_iter()
+                    .filter(|(_, standing)| standing.may_run())
+                    .map(|(gene, _)| gene)
+                    .collect()
+            })?;
         let (without, with) = two_genomes(&her_genome, &exam.gene);
 
         let tag = format!("gene-exam-{}", Uuid::new_v4());

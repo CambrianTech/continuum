@@ -78,6 +78,8 @@ use pages::{
     PAGE_DIR_GUARD,
 };
 mod genome;
+mod gene_pages;
+pub use gene_pages::{gene_seats, page_gene, GeneMove, GenePageError, GeneSeat};
 pub(crate) use genome::gene_stage_name;
 pub use genome::{engine_accepts_train_dir, engine_train_dir, GenomeInPlace};
 use genome::{engine_help_lists_train_dir, ENGINE_TRAIN_DIR};

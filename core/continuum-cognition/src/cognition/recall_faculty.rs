@@ -159,7 +159,7 @@ pub const DEFAULT_RELEVANCE_WEIGHT: f32 = 0.5;
 /// only the question). The rule is bracket-tag GRAMMAR — a line starting
 /// with `[` is an annotation unless it is a `[t=…]` message stamp — never
 /// content inspection.
-fn focused_query(world_state: &str) -> &str {
+pub fn focused_query(world_state: &str) -> &str {
     let line = world_state
         .lines()
         .map(str::trim)

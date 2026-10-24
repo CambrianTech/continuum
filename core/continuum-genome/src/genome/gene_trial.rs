@@ -2,7 +2,7 @@
 //!
 //! A gene that passes training's own pre-filter is ADOPTED ([`Adoption`]): registered (so the
 //! serving engine loads it, dormant, in place) and a [`GeneTrial`] opened on it. From then on
-//! it is in her head on every turn ([`genes_for_turn`]), and the examiner
+//! it is in her head on every turn ([`her_genes`]), and the examiner
 //! ([`crate::genome::examiner`]) sits the continual-learning acceptance test on it: her own
 //! turns on related tasks the gene never trained on and on unrelated ones, with and without
 //! the gene, on the same live engine; again after a normal restart. Its verdict promotes or
@@ -113,41 +113,40 @@ impl GeneTrial {
     }
 }
 
-/// PURE: the genes a turn of `persona` runs with on `base`: every gene she trained that
-/// has not been retired, on EVERY turn, card or conversation (Joel, 2026-10-10: a gene is
-/// hers once trained and follows her mind, never her workload; the full rule, selection
-/// by distance with two tiers, is GENE-REUSE-FORK-MINT §3d; with one gene there is nothing
-/// to select). What decides whether a gene STAYS is the examiner's verdict, never a card.
-pub fn genes_for_turn(trials: &[GeneTrial], persona: Uuid, base: &str) -> Vec<ActiveAdapterRequest> {
+/// Where a gene stands in her genome: still awaiting a verdict, or adopted.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Standing {
+    /// Trained and loaded; no verdict yet.
+    Pending,
+    /// The verdict adopted it.
+    Adopted,
+}
+
+impl Standing {
+    /// Whether a turn may run a gene of this standing. Today both: a gene is hers once trained
+    /// (Joel, 2026-10-10; §3d). The examiner's verdict owns this rule (Cormac, 2026-10-24: "the
+    /// examiner's verdict, not residency, decides what a turn may use"); the composer asks it.
+    pub fn may_run(self) -> bool {
+        match self {
+            Standing::Pending | Standing::Adopted => true,
+        }
+    }
+}
+
+/// PURE: the genes `persona` has on `base`, each with its standing: every gene she trained that
+/// has not been retired (Joel, 2026-10-10: a gene is hers once trained and follows her mind,
+/// never her workload). Each at its trained scale 1.0: which of them shape a turn, and how much,
+/// is `genome::composer` (GENE-REUSE-FORK-MINT §3d).
+pub fn her_genes(trials: &[GeneTrial], persona: Uuid, base: &str) -> Vec<(ActiveAdapterRequest, Standing)> {
     trials
         .iter()
         .filter(|t| t.persona_id == persona && t.base_model_id == base)
-        .filter(|t| match t.state {
-            TrialState::Promoted | TrialState::Trial => true,
-            TrialState::Retired | TrialState::Expired => false,
+        .filter_map(|t| match t.state {
+            TrialState::Trial => Some((t.page(), Standing::Pending)),
+            TrialState::Promoted => Some((t.page(), Standing::Adopted)),
+            TrialState::Retired | TrialState::Expired => None,
         })
-        .map(GeneTrial::page)
         .collect()
-}
-
-/// The genes her next turn runs with (every turn, card or conversation), read from the trial
-/// file and the base the node serves right now. `None` when either cannot be read: the caller then leaves her genome as it is
-/// (never a guessed one), and the reason is on the probe stream.
-pub fn live_genes(persona: Uuid) -> Option<Vec<ActiveAdapterRequest>> {
-    let base = crate::inference::llama_server::current_serving().active_model?;
-    let store = GeneTrials::default_store()?;
-    match store.load() {
-        Ok(trials) => Some(genes_for_turn(&trials, persona, &base)),
-        Err(error) => {
-            continuum_base::probe!(
-                class = "genome.trial.unreadable",
-                persona = %persona,
-                error = error.as_str(),
-                "the gene trial file did not read: this turn keeps the genome she has"
-            );
-            None
-        }
-    }
 }
 
 /// The effects of a decision the examiner wrote (through [`GeneTrials::decide`]). Promoted:
@@ -463,7 +462,7 @@ mod tests {
         assert!(young.is_settling(now), "just landed: her next fill waits");
         let all = store.load().unwrap();
         assert!(all.iter().all(|t| t.state == TrialState::Trial), "nothing expired anything: both stay hers");
-        assert_eq!(genes_for_turn(&all, persona, "base").len(), 2, "both are in her head, settling or not");
+        assert_eq!(her_genes(&all, persona, "base").len(), 2, "both are in her head, settling or not");
     }
 
     // what this catches: a gene in her head that the examiner retired, or one missing that it
@@ -482,9 +481,9 @@ mod tests {
         let trials = store.load().unwrap();
         // what this catches (Joel, 2026-10-10; gene 1 loaded on the 5090 and served zero turns
         // because she held no card): a trained gene is in her head on every turn.
-        assert_eq!(genes_for_turn(&trials, kimi, "qwen-27b").len(), 1, "a turn talks through the gene she trained");
-        assert!(genes_for_turn(&trials, kimi, "other-base").is_empty());
-        assert!(genes_for_turn(&trials, Uuid::nil(), "qwen-27b").is_empty());
+        assert_eq!(her_genes(&trials, kimi, "qwen-27b").len(), 1, "a turn talks through the gene she trained");
+        assert!(her_genes(&trials, kimi, "other-base").is_empty());
+        assert!(her_genes(&trials, Uuid::nil(), "qwen-27b").is_empty());
 
         let verdict = TrialVerdict {
             with_gene: ArmTally { settled: 6, passed: 4 },
@@ -506,7 +505,7 @@ mod tests {
         let retired = store.decide(t.id, TrialState::Retired, verdict.clone(), 50).unwrap().expect("retention retires");
         assert_eq!(retired.state, TrialState::Retired);
         assert!(store.decide(t.id, TrialState::Promoted, verdict, 60).unwrap().is_none(), "a retired gene stays retired");
-        assert!(genes_for_turn(&store.load().unwrap(), kimi, "qwen-27b").is_empty(), "a retired gene never runs");
+        assert!(her_genes(&store.load().unwrap(), kimi, "qwen-27b").is_empty(), "a retired gene never runs");
 
         // A row the deleted card gate wrote still reads, its arms carried into the new names.
         let legacy = serde_json::json!([{

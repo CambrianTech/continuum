@@ -81,7 +81,7 @@ default = []
 metal = ["continuum-engine/metal", "continuum-live/metal", "continuum-genome/metal"]
 cuda = ["continuum-kernel/cuda", "continuum-engine/cuda", "continuum-genome/cuda"]
 vulkan = ["continuum-kernel/vulkan", "continuum-engine/vulkan", "continuum-genome/vulkan"]
-stress-tests = ["continuum-kernel/stress-tests", "continuum-genome/stress-tests"]
+stress-tests = ["continuum-kernel/stress-tests"]
 # Test-only code (fixtures shared with core's integration tests, the heuristic adapter it
 # drives); production binaries never build with it.
 test-fixtures = ["continuum-base/test-fixtures", "continuum-kernel/test-fixtures", "continuum-engine/test-fixtures", "continuum-hands/test-fixtures", "continuum-live/test-fixtures", "continuum-perception/test-fixtures", "continuum-genome/test-fixtures", "continuum-experience/test-fixtures"]
