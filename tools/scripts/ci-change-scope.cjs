@@ -5,7 +5,7 @@ const { isDeepStrictEqual } = require('node:util');
 // The crates this workflow tests, one parallel job each (longest first, so it starts first).
 // Which of them run is derived from the workspace graph at selection time, never listed here.
 const TESTED_CRATES = ['continuum-core', 'continuum-mind', 'continuum-engine', 'continuum-perception', 'continuum-genome',
-  'continuum-kernel', 'continuum-live', 'continuum-hands', 'continuum-memory'];
+  'continuum-kernel', 'continuum-live', 'continuum-hands', 'continuum-memory', 'continuum-experience'];
 
 const publisherPath = '.github/workflows/core-binaries.yml';
 const publicationGate = "${{ !cancelled() && needs.publication-scope.outputs.publication != 'false' }}";

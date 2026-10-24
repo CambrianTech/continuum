@@ -101,6 +101,7 @@ test('a crate-local change runs that crate and every crate that depends on it', 
   assert.deepEqual(scope(['core/continuum-perception/src/lib.rs']), crates('continuum-perception', 'continuum-mind', 'continuum-core'));
   assert.deepEqual(scope(['core/continuum-genome/src/lib.rs']), crates('continuum-genome', 'continuum-mind', 'continuum-core'));
   assert.deepEqual(scope(['core/continuum-memory/src/lib.rs']), crates('continuum-memory', 'continuum-mind', 'continuum-core'));
+  assert.deepEqual(scope(['core/continuum-experience/src/lib.rs']), crates('continuum-experience', 'continuum-mind', 'continuum-core'));
   const belowMind = crates('continuum-engine', 'continuum-hands', 'continuum-live', 'continuum-perception', 'continuum-genome', 'continuum-memory', 'continuum-mind', 'continuum-core');
   assert.deepEqual(scope(['core/continuum-engine/src/lib.rs']), belowMind);
   assert.deepEqual(scope(['core/continuum-kernel/src/lib.rs']), { crates: TESTED_CRATES, cli: false });
