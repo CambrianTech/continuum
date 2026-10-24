@@ -524,9 +524,18 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
     // known cache class now reports through a TrackedDir fed by the
     // DiskUsageScanner daemon (one slow walker; reporters read atomics
     // within the 100 ms budget).
-    let tracked_dirs = continuum_core::system_resources::standard_tracked_dirs(
-        &dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("/")),
-    );
+    // The continuum classes follow the one resolved continuum home (card 4dedb177): with none,
+    // nothing is tracked and it is said, rather than tracking a fabricated `/.continuum`.
+    let tracked_dirs = match continuum_core::paths::continuum_home() {
+        Ok(continuum) => continuum_core::system_resources::standard_tracked_dirs(
+            &dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("/")), // JUSTIFIED unwrap_or_else: unchanged here; with no resolvable home airc's classes point at /.airc, which nothing writes
+            &continuum,
+        ),
+        Err(error) => {
+            tracing::warn!(probe_class = "disk.tracked_dirs", %error, "no continuum home: no cache class is tracked this boot");
+            Vec::new()
+        }
+    };
     // Process-wide registry: the IPC thread's broker block fetches the
     // SAME TrackedDir instances to build eviction pools over (one
     // measurement per cache class, shared by reporter + pool).

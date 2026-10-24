@@ -539,7 +539,7 @@
         // a served model); there is nothing unsafe here to defer for.
         use super::eviction_decisions::{DEFERRED, OWNED};
         use super::super::disk_pressure::DiskReporter as _;
-        for dir in super::super::disk_reporters::standard_tracked_dirs(Path::new("/h")) {
+        for dir in super::super::disk_reporters::standard_tracked_dirs(Path::new("/h"), Path::new("/h/.continuum")) {
             let name = dir.report().name;
             let decided =
                 OWNED.contains(&name.as_str()) || DEFERRED.iter().any(|(n, _)| *n == name);
