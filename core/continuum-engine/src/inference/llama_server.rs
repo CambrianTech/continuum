@@ -85,10 +85,7 @@ mod engine_install;
 #[cfg(windows)]
 pub(crate) use engine_install::engine_override;
 pub(crate) use engine_install::{installed_engine_commit, lane_runs_installed_engine};
-pub use engine_install::{
-    engine_stale, warm_build_jobs_for_memory, WARM_BUILD_FIRST_JOB_BYTES, WARM_BUILD_JOB_BYTES,
-    WARM_BUILD_MIN_FREE_BYTES, WARM_BUILD_RESERVE_BYTES, WARM_BUILD_UNCAPPED_FREE_BYTES,
-};
+pub use engine_install::engine_stale;
 use engine_install::{
     mark_engine_proven, roll_back_engine_after_failed_launch, server_bin, ENGINE_CONVERGE_TRIED,
     ENGINE_STALE,

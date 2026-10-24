@@ -1,35 +1,6 @@
 #![cfg(test)]
 use super::*;
 
-// what this catches: a warm build at normal priority beside a serving core, the
-// contention that starved the IntelMac's CPU lane for ~10 h (2026-09-27). A child
-// spawned through yield_to_serving must run at the lowest priority, where cargo and
-// rustc inherit it.
-#[cfg(unix)]
-#[test]
-fn a_warm_build_runs_at_the_lowest_priority_beside_the_serving_core() {
-    let mut cmd = std::process::Command::new("sh");
-    cmd.args(["-c", "nice"]);
-    yield_to_serving(&mut cmd);
-    let out = cmd.output().expect("test: sh runs");
-    assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "19");
-}
-
-// what this catches (2026-09-13): a warm build attempted without headroom (starving the
-// serving core, Joel 08-23) or without a build definition; and a refusal that does not
-// name the number the operator needs.
-#[test]
-fn a_warm_build_needs_a_script_and_headroom_and_says_why_not() {
-    let script = Some(PathBuf::from("/x/start-server.sh"));
-    assert!(warm_build_allowed(WARM_BUILD_MIN_FREE_BYTES, script.clone()).is_ok());
-    let err = warm_build_allowed(WARM_BUILD_MIN_FREE_BYTES - 1, script).unwrap_err();
-    assert!(err.contains("GiB free"), "{err}");
-    assert!(
-        warm_build_allowed(u64::MAX, None).is_err(),
-        "no script = no build definition"
-    );
-}
-
 // what this catches (2026-09-19, the 5090's consumer): a log handle opened with
 // `.append(true)` is FILE_APPEND_DATA-only on Windows, and an MSYS bash handed it
 // as stdout exits 1 before running a line — every unattended deploy on the node
@@ -58,8 +29,8 @@ fn the_deploy_log_handle_is_one_bash_can_run_under() {
 // Regression for card 571d6e0b: an old script's absent receipt, malformed
 // output, or failed build cannot turn into teardown followed by a rebuild.
 #[tokio::test]
-async fn warm_build_receipts_are_bounded_owned_and_fail_closed() {
-    let receipt = WarmBuildReceipt::create().unwrap();
+async fn build_receipts_are_bounded_owned_and_fail_closed() {
+    let receipt = BuildReceipt::create().unwrap();
     let receipt_path = receipt.0.clone();
     for invalid in ["", "relative/core", "/one\n/two\n", "/one\0two"] {
         std::fs::write(&receipt.0, invalid).unwrap();
@@ -95,13 +66,12 @@ async fn warm_build_receipts_are_bounded_owned_and_fail_closed() {
         "-c",
         "printf '%s\\n' /misleading/core > \"$CONTINUUM_BUILD_RECEIPT\"; exit 23",
     ]);
-    let error = prepare_warm_build(failed).await.unwrap_err();
-    assert!(error.contains("warm build exited"), "{error}");
-    assert!(error.contains("leaving the running core untouched"));
+    let error = build_dark(failed).await.unwrap_err();
+    assert!(error.contains("the build exited"), "{error}");
 
     let mut missing = std::process::Command::new(locate_bash().unwrap());
     missing.args(["-c", "exit 0"]);
-    assert!(prepare_warm_build(missing)
+    assert!(build_dark(missing)
         .await
         .unwrap_err()
         .contains("did not report one absolute native artifact path"));
@@ -117,6 +87,21 @@ async fn warm_build_receipts_are_bounded_owned_and_fail_closed() {
             "receipt-fixture",
         ])
         .arg(&unusable);
-    let error = prepare_warm_build(reported).await.unwrap_err();
+    let error = build_dark(reported).await.unwrap_err();
     assert!(error.contains("--build-sha"), "{error}");
+}
+
+// what this catches: a dark build's way back resolved from a path guess instead of the
+// process that is serving. The rollback copy must be the file the running pid exec'd, or a
+// failed build restarts something other than what was serving (or nothing).
+#[cfg(unix)]
+#[test]
+fn the_build_kept_for_rollback_is_the_file_the_serving_pid_runs() {
+    let mut child = std::process::Command::new("/bin/sleep").arg("30").spawn().expect("test: sleep runs");
+    let exe = running_core_exe(&[child.id() as i32]);
+    let _ = child.kill();
+    let _ = child.wait();
+    let expected = std::path::Path::new("/bin/sleep").canonicalize().expect("test: /bin/sleep resolves");
+    assert_eq!(exe.expect("a live pid's executable is readable").canonicalize().expect("resolves"), expected);
+    assert!(running_core_exe(&[]).is_err(), "no pid, no way back: the reboot refuses before the stop");
 }

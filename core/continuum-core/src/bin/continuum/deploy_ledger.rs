@@ -19,8 +19,8 @@ use super::*;
 // consumer that loses it) → check the tip out detached → `reboot` (`--service` on
 // Windows, where the handoff goes to the ContinuumCore supervisor, never a child of
 // this process; on macOS a bare reboot hands the launch to a registered launchd job on
-// its own; Linux has no service arm yet), whose warm build is RAM-gated
-// (`warm_build_allowed`, Fable's build-path rule). The deploy claim it takes is what the
+// its own; Linux has no service arm yet), which stops serving, builds dark and puts the
+// previous build back if the build fails (`dark_build`). The deploy claim it takes is what the
 // tracker's #4187 reconcile reads; `deploy.settled` on this node with no human in the
 // loop is the receipt.
 //

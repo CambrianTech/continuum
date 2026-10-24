@@ -17,5 +17,5 @@ mod processes_tests;
 mod reboot_tests;
 #[path = "tests/stop_tests.rs"]
 mod stop_tests;
-#[path = "tests/warm_build_tests.rs"]
-mod warm_build_tests;
+#[path = "tests/dark_build_tests.rs"]
+mod dark_build_tests;
