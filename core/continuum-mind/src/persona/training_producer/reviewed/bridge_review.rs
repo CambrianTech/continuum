@@ -515,6 +515,8 @@ pub enum CreditBindingError {
     ConflictingSubmission(Uuid),
     #[error("generation evidence is empty, repeated or already reserved by another revision")]
     Overlap,
+    #[error("submission {0} was superseded by {1} before it was published; submit {1} or a new one")]
+    Superseded(Uuid, Uuid),
 }
 
 pub async fn ensure_storage<T: Transport>(

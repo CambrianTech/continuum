@@ -29,7 +29,7 @@ pub(super) async fn consume_review_credit<T: Transport>(
         Some(binding) => binding,
         // No binding yet: the generation publication recorded binds now, against the
         // submission as the board holds it (card fe8554d2).
-        None => match resolve_pending(conn, persona_name, persona_id, room_id, submitted, &published_on(board, review.card_id)).await? {
+        None => match resolve_pending(conn, persona_name, persona_id, room_id, submitted).await? {
             Some(Ok(binding)) => binding,
             Some(Err(held)) => {
                 continuum_base::probe!(
@@ -107,7 +107,7 @@ pub(super) async fn consume_review_credit<T: Transport>(
     }
     // Positive credit re-checks provenance against the immutable snapshot every time, so a
     // submission recorded after this binding was made still holds a shared row (card fe8554d2).
-    if let Some(other) = issued_elsewhere(conn, persona_name, row, id, &published_on(board, review.card_id)).await? {
+    if let Some(other) = issued_elsewhere(conn, persona_name, row, id).await? {
         continuum_base::probe!(
             class = "training.credit.provenance_held",
             persona = %persona_name,

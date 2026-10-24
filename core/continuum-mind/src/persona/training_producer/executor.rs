@@ -342,8 +342,7 @@ impl TurnCreditCapture {
                 else {
                     return; // not resident here: her next registration replays it
                 };
-                let name = self.persona_name.clone();
-                tokio::spawn(async move { reconcile_reviews(&name, runtime.airc()).await });
+                redrive::request(self.persona_id, self.persona_name.clone(), runtime);
             }
             Err(error) => continuum_base::probe!(
                 class = "training.credit.redrive_unreadable",

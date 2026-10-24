@@ -266,6 +266,7 @@ impl ActionCommand for WorkSubmit {
                     artifact: candidate.artifact.clone(),
                     issuing_generation: generation,
                 },
+                &card.submissions.iter().map(|s| s.submission_id.as_uuid()).collect(),
             )
             .await
             .map_err(|e| match e {
