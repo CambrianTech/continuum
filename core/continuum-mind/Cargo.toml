@@ -14,6 +14,7 @@ continuum-kernel = { path = "../continuum-kernel" }
 continuum-engine = { path = "../continuum-engine" }
 continuum-hands = { path = "../continuum-hands" }
 continuum-live = { path = "../continuum-live" }
+continuum-memory = { path = "../continuum-memory" }
 continuum-perception = { path = "../continuum-perception" }
 continuum-genome = { path = "../continuum-genome" }
 tokio.workspace = true
