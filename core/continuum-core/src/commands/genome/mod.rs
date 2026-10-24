@@ -84,7 +84,7 @@ pub(crate) fn fine_tuning_error_kind(e: &FineTuningError) -> &'static str {
 /// Build the dep-holding `genome/job-*` command objects. `job-create` drives the
 /// coordinator; `job-status` + `job-cancel` look adapters up directly in the
 /// registry. Called from `GenomeModule::commands`.
-pub fn command_objects(
+pub(crate) fn command_objects(
     registry: Arc<FineTuningRegistry>,
     coordinator: Arc<FineTuningCoordinator>,
     attempts: Arc<attempt_ledger::AttemptLedger>,
