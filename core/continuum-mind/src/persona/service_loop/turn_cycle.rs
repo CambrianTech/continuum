@@ -253,7 +253,7 @@ pub(super) async fn run_turn_cycle(
             );
             // A citizen holding a card works at that repo — in a ROOM turn too: the
             // turn is bound to her card claim's hands, admitted here.
-            let held_card = crate::cognition::persona_workspace::root_at_held_card(
+            let held_card = crate::persona::card_hands::root_at_held_card(
                 &cycle,
                 ctx.identity.peer_id.as_uuid(),
                 conversation,
@@ -311,7 +311,7 @@ pub(super) async fn run_turn_cycle(
             // The turn's work is synced to its card's branch; her hands stay where they
             // are, because nothing moved them (card fc9e9fd7).
             if let Some(hands) = &held_card.hands {
-                crate::cognition::persona_workspace::end_card_turn(hands, turn_act_count).await;
+                crate::persona::card_hands::end_card_turn(hands, turn_act_count).await;
             }
             cycle.set_token_sink(None);
             let _ = forwarder.await;

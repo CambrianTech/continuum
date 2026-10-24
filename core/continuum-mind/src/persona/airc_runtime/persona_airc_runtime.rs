@@ -321,7 +321,7 @@ impl PersonaAircRuntime {
                 // (exactly the old cadence) until clean — degraded mode is the old
                 // behavior, never a wider gap.
                 let renewal_period = std::time::Duration::from_millis(
-                    crate::persona::work_board::facts::DEFAULT_CLAIM_TTL_MS / 6,
+                    crate::cognition::card_facts::DEFAULT_CLAIM_TTL_MS / 6,
                 );
                 let mut last_clean_renewal: Option<std::time::Instant> = None;
                 // Emit-on-transition for the renewal-denied probe: denial is a
@@ -428,7 +428,7 @@ impl PersonaAircRuntime {
                             crate::persona::cognition_pulse::work_idle_ms(hb_persona, None, now_ms);
                         if !crate::persona::cognition_pulse::renewal_earned(
                             idle,
-                            crate::persona::work_board::facts::DEFAULT_CLAIM_TTL_MS,
+                            crate::cognition::card_facts::DEFAULT_CLAIM_TTL_MS,
                         ) {
                             if !renewal_denied {
                                 renewal_denied = true;
@@ -445,7 +445,7 @@ impl PersonaAircRuntime {
                                     idle = %idle
                                         .map(|ms| ms.to_string())
                                         .unwrap_or_else(|| "never-thought".to_string()),
-                                    ttl_ms = crate::persona::work_board::facts::DEFAULT_CLAIM_TTL_MS,
+                                    ttl_ms = crate::cognition::card_facts::DEFAULT_CLAIM_TTL_MS,
                                     "no cognition within one lease-length — renewals \
                                      DENIED from here until she thinks again; holds \
                                      lapse naturally so the work can be recovered"
@@ -497,7 +497,7 @@ impl PersonaAircRuntime {
                                                 Some(c.card_id.as_uuid()),
                                                 now_ms,
                                             ),
-                                            crate::persona::work_board::facts::DEFAULT_CLAIM_TTL_MS,
+                                            crate::cognition::card_facts::DEFAULT_CLAIM_TTL_MS,
                                         )
                                         && c.owner == Some(me)
                                         && c.claim_expires_at_ms.is_some_and(|e| e <= now_ms)
@@ -524,7 +524,7 @@ impl PersonaAircRuntime {
                                     .claim_work_card_with_provenance(
                                         airc_lib::ClaimWorkCard {
                                             card_id: card.card_id,
-                                            ttl_ms: crate::persona::work_board::facts::DEFAULT_CLAIM_TTL_MS,
+                                            ttl_ms: crate::cognition::card_facts::DEFAULT_CLAIM_TTL_MS,
                                         },
                                         card.claim_provenance
                                             .as_ref()
@@ -565,7 +565,7 @@ impl PersonaAircRuntime {
                                         Some(card.card_id.as_uuid()),
                                         EpochMs::now().millis(),
                                     ),
-                                    crate::persona::work_board::facts::DEFAULT_CLAIM_TTL_MS,
+                                    crate::cognition::card_facts::DEFAULT_CLAIM_TTL_MS,
                                 ) {
                                     continue;
                                 }
@@ -578,7 +578,7 @@ impl PersonaAircRuntime {
                                         airc_lib::HeartbeatWorkClaim {
                                             card_id: card.card_id,
                                             claim_id,
-                                            ttl_ms: crate::persona::work_board::facts::DEFAULT_CLAIM_TTL_MS,
+                                            ttl_ms: crate::cognition::card_facts::DEFAULT_CLAIM_TTL_MS,
                                         },
                                     )
                                     .await
@@ -646,7 +646,7 @@ impl PersonaAircRuntime {
                                         Some(h.card_id),
                                         EpochMs::now().millis(),
                                     ),
-                                    crate::persona::work_board::facts::DEFAULT_CLAIM_TTL_MS,
+                                    crate::cognition::card_facts::DEFAULT_CLAIM_TTL_MS,
                                 ) {
                                     continue;
                                 }
@@ -656,7 +656,7 @@ impl PersonaAircRuntime {
                                         airc_lib::HeartbeatWorkClaim {
                                             card_id: airc_lib::WorkCardId::from_uuid(h.card_id),
                                             claim_id: airc_lib::ClaimId::from_uuid(h.claim_id),
-                                            ttl_ms: crate::persona::work_board::facts::DEFAULT_CLAIM_TTL_MS,
+                                            ttl_ms: crate::cognition::card_facts::DEFAULT_CLAIM_TTL_MS,
                                         },
                                     )
                                     .await
@@ -698,7 +698,7 @@ impl PersonaAircRuntime {
                                     agent_name = %hb_name,
                                     renewed = renewed,
                                     held = mine.len(),
-                                    ttl_ms = crate::persona::work_board::facts::DEFAULT_CLAIM_TTL_MS,
+                                    ttl_ms = crate::cognition::card_facts::DEFAULT_CLAIM_TTL_MS,
                                     "held work-card claims renewed on the claim cadence (TTL/3)"
                                 );
                             }

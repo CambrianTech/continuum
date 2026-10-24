@@ -132,6 +132,7 @@ use super::*;
     // Serving-edge rehome must preserve a resident's binding when its assignment is corrupt.
     #[tokio::test]
     pub(super) async fn rehome_requires_a_readable_local_assignment() {
+        crate::persona::cognition_extensions::install(); // her remote binding is persona's to read
         let root = tempfile::tempdir().expect("root");
         let _native = crate::paths::NativeHomeOverride::install(root.path());
         let registry = PersonaWorkspaceRegistry::new();

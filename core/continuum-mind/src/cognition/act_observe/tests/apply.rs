@@ -30,6 +30,7 @@ use crate::cognition::working_memory::WorkingMemoryFaculty;
 // board grounding, ledger rendering and execution, without moving the wake.
 #[tokio::test]
 async fn bound_card_activity_is_shared_by_perception_and_execution() {
+    crate::persona::cognition_extensions::install(); // the card's board room is persona's to read
     use crate::cognition::{
         llm_deliberation_faculty::LlmDeliberationFaculty,
         rag_source_faculty::{RagSourceFaculty, SaliencePolicy},
@@ -83,7 +84,7 @@ async fn bound_card_activity_is_shared_by_perception_and_execution() {
         result_content: "read subject file".into(),
     });
     let wm = Arc::new(WorkingMemory::new(8));
-    let (board_source, _dirty) = crate::persona::cached_source::CachedRagSource::new(Arc::new(
+    let (board_source, _dirty) = crate::cognition::cached_source::CachedRagSource::new(Arc::new(
         RoomBoardSource::new(persona, runtime).for_room(wake.channel.as_uuid()),
     ));
     let board = RagSourceFaculty::new(persona, board_source, SaliencePolicy::StandingFraming);
@@ -105,7 +106,7 @@ async fn bound_card_activity_is_shared_by_perception_and_execution() {
     }));
     let board_state = airc.work_board_in(&task).await.unwrap();
     let focus = board_state.card(card).unwrap();
-    let binding = crate::cognition::persona_workspace::bind_card(&cycle, persona, focus).await;
+    let binding = crate::persona::card_hands::bind_card(&cycle, persona, focus).await;
     assert_eq!(binding.hands.as_ref().map(|h| h.context), Some(hands));
     let burst = crate::cognition::workspace::Burst::raw_in(
         crate::identity::ActivityRoom::from_uuid(wake.channel.as_uuid()).unwrap(),

@@ -33,9 +33,10 @@ mod ws_ingress;
 /// What the kernel's extension slots hold in this process, installed before any executor
 /// exists: every dispatch runs under the hooks (the hands' admission is a safety boundary), a
 /// command name resolves through the persona path's vocabulary, and a stop lets admitted turns
-/// finish. One list, so boot and a test that dispatches through a real executor install the same.
+/// finish. Cognition's slots (the verbs it calls that persona owns) are filled here too. One list, so boot and a test that dispatches through a real executor install the same.
 pub(crate) fn install_kernel_extensions() {
     crate::runtime::dispatch_hook::install(Arc::new(crate::code::hands::HandsAdmission));
+    crate::persona::cognition_extensions::install();
     crate::runtime::dispatch_hook::install(Arc::new(crate::persona::cognition_pulse::CardWorkPulse));
     crate::runtime::extensions::install_command_name_resolver(crate::ai::tool_dialect::resolve_wire_name);
     crate::runtime::extensions::install_settle_before_stop(Arc::new(crate::cognition::turn_ingress::TurnsSettle));

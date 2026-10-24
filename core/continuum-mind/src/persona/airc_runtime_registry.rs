@@ -626,6 +626,23 @@ pub(crate) fn resident_from_loop_state(loop_finished: Option<bool>) -> bool {
     matches!(loop_finished, Some(false))
 }
 
+// ─── The channel-digest region reads her transcript and room through this registry ──
+
+impl crate::cognition::channel_digest_region::PersonaChannelReader for PersonaAircRuntimeRegistry {
+    fn live_personas(&self) -> Vec<Uuid> {
+        // Inherent method of the same name; qualify to avoid trait/inherent ambiguity.
+        PersonaAircRuntimeRegistry::live_personas(self)
+    }
+
+    fn reader_and_room(&self, persona_id: Uuid) -> Option<(Arc<dyn crate::cognition::conversation::transcript_reader::AircTranscriptReader>, Uuid)> {
+        let runtime = self.get(persona_id)?;
+        let room = runtime.default_room().as_uuid();
+        // PersonaAircRuntime: AircTranscriptReader — upcast the Arc.
+        let reader: Arc<dyn crate::cognition::conversation::transcript_reader::AircTranscriptReader> = runtime;
+        Some((reader, room))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

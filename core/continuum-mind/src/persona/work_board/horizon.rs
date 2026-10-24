@@ -7,7 +7,7 @@ use airc_lib::{Airc, WorkCardId};
 
 use crate::sdk_codegen::CommandError;
 
-use super::facts::short8;
+use crate::cognition::card_facts::short8;
 
 /// The room whose board holds `card_id` — the ONE place that answers *which
 /// activity does this card belong to*.

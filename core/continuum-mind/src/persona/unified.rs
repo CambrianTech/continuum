@@ -786,7 +786,7 @@ mod tests {
             items_offered: 3,
             share: std::num::NonZeroU32::new(64),
         });
-        let (cached, _) = crate::persona::cached_source::CachedRagSource::new(source.clone());
+        let (cached, _) = crate::cognition::cached_source::CachedRagSource::new(source.clone());
         let mut pc = PersonaCognition::new(Uuid::new_v4(), "TestBot".into(), Arc::new(RagEngine::new()));
         pc.set_roster_source(cached);
         let wrapped = pc.roster_source.as_ref().unwrap();

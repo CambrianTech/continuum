@@ -37,7 +37,7 @@ pub async fn sweep() -> usize {
             continue;
         };
         let name = runtime.agent_name().to_string();
-        for card in held.iter().filter(|c| crate::persona::card_holder::hold_of(c, now_ms) == crate::persona::card_holder::Hold::Held) {
+        for card in held.iter().filter(|c| crate::cognition::card_holder::hold_of(c, now_ms) == crate::cognition::card_holder::Hold::Held) {
             let Some(claim) = card.claim_id else { continue };
             let Some(root) = crate::persona::card_checkout::checkout_path_for(&persona, card) else { continue };
             let context = crate::identity::hands_context::HandsContext::for_claim(persona, card.card_id.as_uuid(), claim.as_uuid());

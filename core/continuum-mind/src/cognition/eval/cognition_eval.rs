@@ -20,12 +20,11 @@ impl CognitionEval {
         // ([[jtag-probes-are-rtos-debugger]]). Whether the fleet actually quiesced is
         // load-bearing for trusting a benchmark number (contended → depressed score), so
         // it MUST be verifiable — this probe is how we confirm the clean lane fired.
-        let _fleet_lease = match crate::persona::PersonaAircRuntimeRegistry::try_global() {
-            Some(r) => {
-                let lease = r.quiesce_all();
+        let _fleet_lease = match crate::cognition::extensions::quiesce_fleet() {
+            Some(lease) => {
                 continuum_base::probe!(
                     class = "eval.quiesce",
-                    personas = lease.count(),
+                    personas = lease.count,
                     "eval-preemption lease: fleet quiesced for the measurement"
                 );
                 Some(lease)

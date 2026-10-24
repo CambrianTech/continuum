@@ -151,7 +151,7 @@ pub(crate) fn note_unbound(persona: Uuid) {
 /// #4407). Her cards in Review and the review cards she holds are obligations.
 pub fn note_owned(persona: Uuid, owned: &[(airc_lib::Room, airc_lib::WorkCard)], now_ms: u64) {
     use airc_work::model::CardState;
-    let held = crate::persona::airc_runtime::held_of_owned(owned.to_vec(), now_ms);
+    let held = crate::cognition::card_holder::held_of_owned(owned.to_vec(), now_ms);
     let mut obligations: Vec<airc_lib::WorkCard> = owned
         .iter()
         .filter(|(_, card)| matches!(card.state, CardState::Review))
@@ -486,7 +486,7 @@ pub fn render_on_wake(h: &Handoff, current_build: &str, now_ms: u64) -> String {
                 card.title.trim(),
                 card.state
             ));
-            if let Some(sub) = crate::persona::work_board::submissions::latest_submission(card) {
+            if let Some(sub) = crate::cognition::card_holder::latest_submission(card) {
                 out.push_str(&format!(
                     "\n  Latest submission on it: {}, made {} (re-fetch by id; do not re-make it).",
                     sub.submission_id.as_uuid(),
@@ -733,7 +733,7 @@ mod tests {
         );
         let mut unavailable = current.clone();
         unavailable.card_id = airc_lib::WorkCardId::new();
-        let turn = crate::cognition::persona_workspace::bind_card(&cycle, me, &unavailable).await;
+        let turn = crate::persona::card_hands::bind_card(&cycle, me, &unavailable).await;
         assert!(
             turn.hands.is_none(),
             "no checkout/hands can be bound by this fixture"

@@ -684,12 +684,12 @@ pub(super) fn repoint_workspace_map_if_pinned(
         .and_then(|c| c.message_bus());
     for g in cfg.grounding_sources.iter_mut() {
         if g.source.source_id() == "workspace-map" {
-            let pinned: Arc<dyn crate::cognition::rag_budget::RagSource> = Arc::new(
-                crate::persona::workspace_map_source::WorkspaceMapSource::for_pinned_root(
-                    *persona_id,
-                    root,
-                ),
-            );
+            // The map source is persona's (its layout readers); the slot builds it at `root`.
+            let Some(pinned) =
+                crate::cognition::extensions::pinned_workspace_map(*persona_id, std::path::Path::new(root))
+            else {
+                continue;
+            };
             // Event-invalidated cache (#398): eval forks compose SYNCHRONOUSLY
             // (defer_grounding=false), so without this the pinned map re-walks
             // the repo dir on EVERY act — the measured per-act prefill churn on
@@ -700,8 +700,8 @@ pub(super) fn repoint_workspace_map_if_pinned(
             g.source = match bus.clone() {
                 Some(bus) => {
                     let (cached, dirty) =
-                        crate::persona::cached_source::CachedRagSource::new(pinned);
-                    crate::persona::grounding_invalidation::spawn_workspace_invalidator(
+                        crate::cognition::cached_source::CachedRagSource::new(pinned);
+                    crate::cognition::grounding_invalidation::spawn_workspace_invalidator(
                         bus,
                         dirty.downgrade(),
                     );

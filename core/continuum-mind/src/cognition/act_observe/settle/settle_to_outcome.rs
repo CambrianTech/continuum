@@ -227,7 +227,7 @@ pub(super) async fn settle_to_outcome(
                             from_peer = %message.peer_id,
                             "room input perceived between actions; original task and causal root retained"
                         );
-                        crate::persona::perception_feed::mark_perceived(
+                        crate::cognition::extensions::mark_perceived(
                             body.persona_id,
                             message.room_id,
                             message.lamport,

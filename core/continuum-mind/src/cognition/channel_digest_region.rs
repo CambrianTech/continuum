@@ -190,23 +190,6 @@ impl BrainRegion for ChannelDigestRegion {
     }
 }
 
-// ─── Real impl: resolve reader + room from the persona runtime registry ──────────
-
-impl PersonaChannelReader for crate::persona::airc_runtime_registry::PersonaAircRuntimeRegistry {
-    fn live_personas(&self) -> Vec<Uuid> {
-        // Inherent method of the same name; qualify to avoid trait/inherent ambiguity.
-        crate::persona::airc_runtime_registry::PersonaAircRuntimeRegistry::live_personas(self)
-    }
-
-    fn reader_and_room(&self, persona_id: Uuid) -> Option<(Arc<dyn AircTranscriptReader>, Uuid)> {
-        let runtime = self.get(persona_id)?;
-        let room = runtime.default_room().as_uuid();
-        // PersonaAircRuntime: AircTranscriptReader — upcast the Arc.
-        let reader: Arc<dyn AircTranscriptReader> = runtime;
-        Some((reader, room))
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

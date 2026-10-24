@@ -105,7 +105,7 @@ pub(crate) async fn room_review(airc: &std::sync::Arc<Airc>, card_id: WorkCardId
         return None;
     };
     let board = airc.work_board_in(&room).await.ok()?;
-    let latest = super::submissions::latest_submission(&card);
+    let latest = crate::cognition::card_holder::latest_submission(&card);
     let author = latest.map(|s| s.publisher.as_uuid()).or(card.owner.map(|o| o.as_uuid()));
     let reviews: Vec<ReviewFact> = match latest {
         Some(sub) => board

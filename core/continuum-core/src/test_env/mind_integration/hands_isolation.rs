@@ -9,6 +9,7 @@ use continuum_base::time::EpochMs;
 use uuid::Uuid;
 
 use crate::cognition::persona_workspace::*;
+use crate::persona::card_hands::bind_card;
 use crate::cognition::workspace::{ActingBody, WorkspaceCycle};
 use crate::persona::admission_state::AdmissionState;
 use crate::modules::card_staging;

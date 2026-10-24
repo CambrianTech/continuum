@@ -384,7 +384,7 @@ pub fn regrade_history_path(instance_id: &str) -> PathBuf {
 pub fn record_verdict(verdict: &SweVerdict, is_gold: bool) -> Result<Option<PathBuf>, String> {
     let recorded = persist_verdict(verdict, is_gold)?;
     if recorded.is_some() {
-        crate::persona::training_producer::settle_instance_credit(&verdict.instance_id, verdict.resolved);
+        crate::cognition::extensions::settle_instance_credit(&verdict.instance_id, verdict.resolved);
     }
     Ok(recorded)
 }
@@ -395,7 +395,7 @@ pub async fn record_card_verdict(
     verdict: &SweVerdict,
     card: uuid::Uuid,
 ) -> Result<Option<PathBuf>, String> {
-    record_card_verdict_with(verdict, card, crate::persona::training_producer::settle_card_credit).await
+    record_card_verdict_with(verdict, card, crate::cognition::extensions::settle_card_credit).await
 }
 
 pub async fn record_card_verdict_with<F, Fut>(

@@ -192,7 +192,7 @@ pub async fn follow_with(verdict: &SweVerdict, mode: FollowMode) -> FollowTally 
             let open_reviews = snap
                 .cards
                 .iter()
-                .filter(|k| !crate::persona::work_board::facts::is_concluded(&k.state))
+                .filter(|k| !crate::cognition::card_facts::is_concluded(&k.state))
                 .filter_map(|k| k.reviews.map(|parent| (parent.as_uuid(), k.card_id.as_uuid())))
                 .filter(|(parent, _)| all.contains(parent))
                 .collect();
@@ -408,7 +408,7 @@ fn holder_label(id: Uuid, alias: Option<&str>, historical: bool) -> String {
     let name = alias
         .filter(|name| !name.trim().is_empty())
         .map(str::to_owned)
-        .unwrap_or_else(|| crate::persona::card_holder::short8(&id)); // unwrap_or: unknown identity uses the board's addressable short id
+        .unwrap_or_else(|| crate::cognition::card_holder::short8(&id)); // unwrap_or: unknown identity uses the board's addressable short id
     if historical {
         format!("{name} (dispatch assignee; live board unavailable)")
     } else {
@@ -461,13 +461,13 @@ async fn holder_of(
     let Some(found) = board.cards.iter().find(|c| c.card_id.as_uuid() == card) else {
         return HolderRead::Unavailable("card not on the board");
     };
-    match crate::persona::card_holder::hold_of(found, now_ms) {
-        crate::persona::card_holder::Hold::Held => match found.owner {
+    match crate::cognition::card_holder::hold_of(found, now_ms) {
+        crate::cognition::card_holder::Hold::Held => match found.owner {
             Some(o) => HolderRead::Held(o.as_uuid()),
             None => HolderRead::Unheld,
         },
-        crate::persona::card_holder::Hold::Lapsed
-        | crate::persona::card_holder::Hold::Unclaimed => HolderRead::Unheld,
+        crate::cognition::card_holder::Hold::Lapsed
+        | crate::cognition::card_holder::Hold::Unclaimed => HolderRead::Unheld,
     }
 }
 

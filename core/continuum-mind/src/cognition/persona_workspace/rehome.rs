@@ -37,7 +37,7 @@ impl PersonaWorkspaceRegistry {
             templates
                 .iter()
                 .map(|(id, cfg)| {
-                    let assignment = match crate::persona::remote_lane_factory::is_remote_bound(root, &cfg.persona_name) {
+                    let assignment = match crate::cognition::extensions::is_remote_bound(root, &cfg.persona_name) {
                         Ok(false) => Assignment::Local,
                         Ok(true) => Assignment::Remote,
                         Err(error) => {

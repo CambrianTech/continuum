@@ -254,7 +254,7 @@ impl LlmDeliberationFaculty {
                 && !ws.directed_at_self()
                 && ws.cause != super::super::workspace::Cause::Synthetic
             {
-                crate::persona::training_producer::produce_speech_discipline(
+                crate::cognition::extensions::produce_speech_discipline(
                     self.persona_id,
                     self.persona_name.clone(),
                     self.binding.load().model.clone().unwrap_or_default(), // unwrap_or_default: an unbound faculty stages under an empty base — the trigger keys buckets by base and files it honestly under ""

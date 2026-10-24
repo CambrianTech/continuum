@@ -389,6 +389,39 @@ impl CardHolder {
     }
 }
 
+/// A card whose work is over (merged or closed): never held, never renewed, whatever its
+/// claim fields still say. The one rule for the walk and the followed claims alike.
+pub fn settled_card(state: &airc_work::model::CardState) -> bool {
+    matches!(state, airc_work::model::CardState::Closed | airc_work::model::CardState::Merged)
+}
+
+/// The HELD subset of an owned walk: lease live, not claimable, not settled. Split from the
+/// walk so one board read can feed both the renewal (holds) and the handoff record (all of
+/// what she owns, whole) — never two walks for one seam.
+pub fn held_of_owned(
+    owned: Vec<(airc_lib::Room, airc_lib::WorkCard)>,
+    now_ms: u64,
+) -> Vec<(airc_lib::Room, airc_lib::WorkCard)> {
+    owned
+        .into_iter()
+        .filter(|(_, card)| {
+            // A settled card is nobody's work, whatever its lease says: a closed card
+            // whose claim fields outlive the close read as HELD, focused her ticks on a
+            // finished room and made the pull think she had work (2026-09-13 14:0xZ).
+            !settled_card(&card.state) && hold_of(card, now_ms)
+                == Hold::Held
+                && !claimable_now(card, now_ms)
+        })
+        .collect()
+}
+
+/// Latest accepted candidate in the board's transcript order. AIRC projects submissions
+/// newest first; publisher wall clocks do not define recency. Keep handoff and review
+/// consumers on this contract so a resumed citizen sees the candidate being reviewed.
+pub fn latest_submission(card: &airc_lib::WorkCard) -> Option<&airc_work::WorkSubmission> {
+    card.submissions.first()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -520,17 +520,11 @@ pub async fn apply_act(
         if private {
             crate::persona::mind_room::note_withheld(body.persona_id, "thought_line");
         } else if !lines.is_empty() {
-            if let Some(rt) = crate::persona::airc_runtime_registry::PersonaAircRuntimeRegistry::try_global()
-                .and_then(|reg| reg.get(body.persona_id))
+            if let Some(published) =
+                crate::cognition::extensions::publish_in_room(body.persona_id, receipt_room, lines.join("\n")).await
             {
-                match crate::persona::airc_citizen::publish_text_in_room(
-                    rt.airc(),
-                    receipt_room,
-                    &lines.join("\n"),
-                )
-                .await
-                {
-                    Ok(_) => continuum_base::probe!(
+                match published {
+                    Ok(()) => continuum_base::probe!(
                         class = "room.work_receipt.published",
                         room = %receipt_room,
                         actor = %body.persona_id,
@@ -541,7 +535,7 @@ pub async fn apply_act(
                         class = "room.work_receipt.failed",
                         room = %room_id,
                         actor = %body.persona_id,
-                        error = %e.to_string(),
+                        error = %e,
                         "act receipts did not reach the room transcript — console feed unaffected"
                     ),
                 }
@@ -726,7 +720,7 @@ pub async fn apply_act(
     // An act that changed a checkout wakes the one carry owner (modules::card_carry), which
     // carries every resident's committed card work; a turn's end is no longer the only push.
     if disk == super::disk_change::DiskChange::Changed {
-        crate::persona::card_carry::request();
+        crate::cognition::extensions::request_card_carry();
     }
 
     ActOutcome::Acted { acts }

@@ -8,7 +8,7 @@ use uuid::Uuid;
 /// is heartbeat-extendable; this is just the initial TTL.
 ///
 /// Shared with the persona runtime's heartbeat pump
-/// ([`crate::persona::airc_runtime`]), which renews a citizen's live claims on the
+/// (`persona::airc_runtime`), which renews a citizen's live claims on the
 /// presence cadence. ONE lease length, one place — a renewal that used a different
 /// TTL than the claim would make "how long is my hold good for" answerable two ways.
 pub const DEFAULT_CLAIM_TTL_MS: u64 = 30 * 60 * 1000;

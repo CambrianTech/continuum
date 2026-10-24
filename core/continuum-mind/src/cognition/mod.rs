@@ -28,6 +28,12 @@
 //!                                  `ResponderDecision`)
 
 pub mod conversation;
+pub mod extensions;
+pub mod cached_source;
+pub mod card_facts;
+pub mod card_holder;
+pub mod grounding_invalidation;
+pub mod room_substrates;
 pub mod framing_echo;
 pub mod not_speech;
 pub mod act_observe;

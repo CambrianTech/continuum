@@ -303,7 +303,7 @@ impl RoomBoardSource {
     /// The whole board carries all owners, so owner is always surfaced (unlike
     /// the active-work source, which is implicitly self-owned).
     /// Holder resolution is NOT done here — it lives in
-    /// [`crate::persona::card_holder`], the ONE place every board surface
+    /// [`crate::cognition::card_holder`], the ONE place every board surface
     /// (this source, the service-loop anchor, `work/list`, the CLI) answers
     /// "who holds this, is the hold live". Rendering it locally is what let
     /// five surfaces disagree, and why a peer's card read as an 8-hex prefix
@@ -313,11 +313,11 @@ impl RoomBoardSource {
         board: &BoardSnapshot,
         self_id: uuid::Uuid,
         now_ms: u64,
-        names: &dyn crate::persona::card_holder::PeerNames,
+        names: &dyn crate::cognition::card_holder::PeerNames,
         include_submission: bool,
     ) -> String {
         let id8: String = card.card_id.as_uuid().to_string().chars().take(8).collect();
-        let held = crate::persona::card_holder::holder(card, self_id, now_ms, names);
+        let held = crate::cognition::card_holder::holder(card, self_id, now_ms, names);
         // The tag leads with what the card IS to someone deciding whether to take
         // it, not with the column it happens to sit in — a lapsed claim is takeable
         // work whose column still reads `Claimed`. See `CardHolder::state_tag`;
@@ -342,7 +342,7 @@ impl RoomBoardSource {
     /// Current signed candidate state is independent of a potentially long title.
     /// Reuse the submission owner's next-action semantics and evidence address.
     fn submission_guidance(card: &airc_work::WorkCard, board: &BoardSnapshot) -> Option<String> {
-        let candidate = crate::persona::work_board::submissions::latest_submission(card)?;
+        let candidate = crate::cognition::card_holder::latest_submission(card)?;
         let reviews: Vec<_> = board.submission_reviews.iter().filter(|review| {
             review.card_id == card.card_id && review.submission_id == candidate.submission_id
         }).collect();
@@ -368,12 +368,12 @@ impl RoomBoardSource {
 /// than imported because continuum deps airc-protocol/-core, not airc-lib; the
 /// doc-link is the drift guard.
 ///
-/// Now a one-line delegation to [`crate::persona::card_holder::hold_of`] — the
+/// Now a one-line delegation to [`crate::cognition::card_holder::hold_of`] — the
 /// predicate itself moved there so the anchor, `work/list`, and this source
 /// cannot drift apart on what "held" means. Kept as a named local so the
 /// call sites below read as liveness questions rather than enum matches.
 fn claim_is_live(card: &airc_work::WorkCard, now_ms: u64) -> bool {
-    crate::persona::card_holder::hold_of(card, now_ms) == crate::persona::card_holder::Hold::Held
+    crate::cognition::card_holder::hold_of(card, now_ms) == crate::cognition::card_holder::Hold::Held
 }
 
 /// One held card in the `[your work]` lead: its id, title and state, and the absolute path
@@ -551,7 +551,7 @@ impl RoomBoardSource {
         let open: Vec<&airc_work::WorkCard> = board
             .cards
             .iter()
-            .filter(|c| crate::persona::card_holder::claimable_now(c, now_ms))
+            .filter(|c| crate::cognition::card_holder::claimable_now(c, now_ms))
             .collect();
 
         // HEADLINE — the cheapest COMPLETE statement of this board's two facts, first,

@@ -1,5 +1,6 @@
 #![cfg(test)]
 use super::*;
+use crate::persona::card_hands::{already_told, mark_told, rooted_notice};
 
     // what this catches (card 822c4253): her hands moving to a card's own checkout with no
     // word (Kimi's code/read of career-wrangler/docs/... failing in a per-card worktree),

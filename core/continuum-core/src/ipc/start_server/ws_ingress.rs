@@ -83,7 +83,7 @@ pub(super) fn spawn_ws_ingress(
                     // citizen's grounding) reads THAT room instead of whichever room
                     // wrote last. The node substrate above still receives everything,
                     // so the focused-room web session is unchanged.
-                    Some(crate::persona::room_substrates::global_room_substrates()),
+                    Some(crate::cognition::room_substrates::global_room_substrates()),
                 );
 
                 // Per-citizen substrates for per-user views (nav): each connecting

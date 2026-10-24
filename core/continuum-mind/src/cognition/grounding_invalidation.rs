@@ -26,7 +26,7 @@
 
 use std::sync::Arc;
 
-use crate::persona::cached_source::WeakDirtyHandle;
+use crate::cognition::cached_source::WeakDirtyHandle;
 use crate::runtime::command_events::{CommandCompletedEvent, COMMAND_COMPLETED_TOPIC};
 use crate::runtime::message_bus::MessageBus;
 
@@ -182,7 +182,7 @@ pub fn spawn_publish_invalidator(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::persona::cached_source::{CachedRagSource, DirtyHandle};
+    use crate::cognition::cached_source::{CachedRagSource, DirtyHandle};
     use crate::cognition::rag_budget::{
          RagContext, RagDelivery, RagSource, ResolutionPreference,
     };

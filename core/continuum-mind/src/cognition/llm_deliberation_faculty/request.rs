@@ -226,7 +226,7 @@ impl LlmDeliberationFaculty {
             // expired to the fleet (Kimi flagged it as a collision risk). Same class as
             // the detached-solve tick in `agent/solve` (#425): a lane granted for a
             // generation is her thinking this instant, the strongest witness there is.
-            crate::persona::cognition_pulse::touch(
+            crate::cognition::extensions::touch_cognition_pulse(
                 self.persona_id,
                 continuum_base::time::EpochMs::now().millis(), // pre-1970 reads 0: a pre-1970 clock stamps 0, which DENIES renewal — the conservative direction, same as no stamp
             );
