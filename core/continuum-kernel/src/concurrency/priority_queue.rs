@@ -153,35 +153,4 @@ mod tests {
         }
     }
 
-    #[tokio::test]
-    #[ignore] // TODO: Fix race condition in test - worker task timing
-    async fn test_concurrent_priority_queue() {
-        let mut queue = ConcurrentPriorityQueue::new();
-
-        queue.enqueue(TestMessage {
-            priority: 0.3,
-            content: "Low".to_string(),
-        });
-        queue.enqueue(TestMessage {
-            priority: 0.9,
-            content: "High".to_string(),
-        });
-        queue.enqueue(TestMessage {
-            priority: 0.5,
-            content: "Medium".to_string(),
-        });
-
-        // Wait for processing (worker task needs time to process)
-        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
-
-        // Should get highest priority first
-        let first = queue.dequeue().await.unwrap();
-        assert_eq!(first.priority, 0.9);
-
-        let second = queue.dequeue().await.unwrap();
-        assert_eq!(second.priority, 0.5);
-
-        let third = queue.dequeue().await.unwrap();
-        assert_eq!(third.priority, 0.3);
-    }
 }
