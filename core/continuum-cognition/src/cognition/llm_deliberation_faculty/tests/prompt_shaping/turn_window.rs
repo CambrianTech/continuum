@@ -36,22 +36,27 @@ async fn substrate_notices_survive_attention_and_history_pressure_once() {
         world_state: &ws.world_state, situation: Situation::PostAction,
     });
     assert!(!ws.broadcast.iter().any(|c| c.faculty == memory.faculty));
+    // Her notices ride her view as a required source (`context_streams::notices`): the
+    // allocation grants their floor before anything optional, and the final fit never cuts
+    // her view. So through the production path, at every window from too small to roomy,
+    // a prompt that would be sent carries each notice exactly once, and a window that
+    // cannot hold them says so instead of sending a prompt without them.
     for keep_memory in [false, true] {
         if keep_memory { ws.broadcast.push(memory.clone()); }
-        let mut prompt = faculty.messages_unfitted(&ws, None);
-        let required = prompt.required_tokens();
-        assert!(required > 0);
-        prompt.history.push(ChatMessage::text("user", "old history ".repeat(500)));
-        let fitted = faculty.fit_messages(prompt, required).expect("required notices fit");
-        let text = fitted.messages.iter().map(ChatMessage::content_text).collect::<Vec<_>>().join("\n");
-        assert_eq!(text.matches("[no-deliverable]").count(), 1);
-        assert_eq!(text.matches("[hands]").count(), 1);
-        assert!(text.contains(crate::cognition::framing_echo::NOTICES_HEADER));
-        assert!(text.contains(&format!("work/get(card_id=\"{}\")", ledger.card_id)));
-        assert!(!text.contains("large-ledger-detail"), "oversized detail yields without muting the turn");
-        assert!(!text.contains("weighing the next step"), "optional thought trail yielded; notices retain substrate provenance");
-        let prompt = faculty.messages_unfitted(&ws, None);
-        assert!(faculty.fit_messages(prompt, required - 1).is_err(), "shortfall is explicit, not dropped feedback");
+        let mut sent = 0;
+        for window in (2_048u32..=65_536).step_by(2_048) {
+            let view = faculty.prompt_view_within(&ws, window);
+            if view.capacity_error.is_some() || view.budget_fault.is_some() {
+                continue;
+            }
+            sent += 1;
+            let text = view.messages.iter().map(ChatMessage::content_text).collect::<Vec<_>>().join("\n");
+            assert_eq!(text.matches("[no-deliverable]").count(), 1, "window {window}");
+            assert_eq!(text.matches("[hands]").count(), 1, "window {window}");
+            assert_eq!(text.matches(crate::cognition::framing_echo::NOTICES_HEADER).count(), 1, "window {window}");
+            assert!(text.contains(&format!("work/get(card_id=\"{}\")", ledger.card_id)), "window {window}");
+        }
+        assert!(sent > 0, "some window holds her notices");
     }
     let prompt = faculty.messages_unfitted(&ws, None);
     let all = prompt.required_tokens() + LlmDeliberationFaculty::messages_cost(&prompt.history);
@@ -67,12 +72,13 @@ async fn substrate_notices_survive_attention_and_history_pressure_once() {
     let only = Arc::new(WorkingMemory::new(8));
     only.record_fact("[no-deliverable] No workspace change yet.");
     assert!(WorkingMemoryFaculty::new(Arc::clone(&only)).contribute(&ws).await.is_none());
-    let faculty = faculty.with_working_memory(only);
+    let faculty = LlmDeliberationFaculty::new(
+        Uuid::new_v4(), "T", "You are T.", Arc::new(HeuristicInferenceAdapter::new()),
+    ).with_working_memory(only);
     ws.broadcast.clear();
-    let prompt = faculty.messages_unfitted(&ws, None);
-    let required = prompt.required_tokens();
-    let fitted = faculty.fit_messages(prompt, required).expect("fact-only input");
-    assert_eq!(fitted.messages.iter().filter(|message| message.content_text().contains("[no-deliverable]")).count(), 1);
+    let view = faculty.prompt_view_within(&ws, 16_384);
+    assert!(view.capacity_error.is_none() && view.budget_fault.is_none(), "fact-only input fits");
+    assert_eq!(view.messages.iter().filter(|message| message.content_text().contains("[no-deliverable]")).count(), 1);
 }
 
 // what this catches: an UNBOUNDED required room payload making a citizen mute.

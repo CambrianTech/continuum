@@ -246,27 +246,42 @@ impl OpenViews {
         changed
     }
 
-    pub fn render(&self, scope: Option<&str>) -> Option<String> {
+    /// The banner her open views are listed under.
+    pub const BANNER: &'static str = "[open views] Files and outputs I have open, and which lines of each I have read \
+         (kept across turns and restarts; not a message from anyone). code/read with \
+         start_line/end_line pages a file; tool/output with outputId and startLine/endLine \
+         pages an output:";
+
+    /// Each view visible from `scope`, by subject: its stable key and its one line.
+    pub fn lines(&self, scope: Option<&str>) -> Vec<(String, String)> {
         let mut visible: Vec<&OpenView> = self
             .views
             .iter()
             .filter(|v| v.scope.is_none() || v.scope.as_deref() == scope)
             .collect();
-        if visible.is_empty() {
+        visible.sort_by(|a, b| a.subject.cmp(&b.subject));
+        visible.into_iter().map(|view| (subject_key(&view.subject), render_line(view))).collect()
+    }
+
+    #[cfg(test)]
+    pub fn render(&self, scope: Option<&str>) -> Option<String> {
+        let lines = self.lines(scope);
+        if lines.is_empty() {
             return None;
         }
-        visible.sort_by(|a, b| a.subject.cmp(&b.subject));
-        let mut out = String::from(
-            "[open views] Files and outputs I have open, and which lines of each I have read \
-             (kept across turns and restarts; not a message from anyone). code/read with \
-             start_line/end_line pages a file; tool/output with outputId and startLine/endLine \
-             pages an output:",
-        );
-        for view in visible {
+        let mut out = String::from(Self::BANNER);
+        for (_, line) in lines {
             out.push_str("\n- ");
-            out.push_str(&render_line(view));
+            out.push_str(&line);
         }
         Some(out)
+    }
+}
+
+fn subject_key(subject: &ViewSubject) -> String {
+    match subject {
+        ViewSubject::File { path } => format!("file/{path}"),
+        ViewSubject::Output { handle } => format!("output/{handle}"),
     }
 }
 

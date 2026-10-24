@@ -11,6 +11,7 @@ pub(crate) mod actions;
 pub(crate) mod blocks;
 pub(crate) mod conversation;
 pub(crate) mod notices;
+pub(crate) mod open_views;
 pub(crate) mod thoughts;
 
 use continuum_context::epoch::Block;
@@ -18,11 +19,13 @@ use continuum_context::epoch::Block;
 use crate::ai::types::ChatMessage;
 use crate::cognition::working_memory::WorkingMemory;
 
-/// The streams her working memory feeds her view: her actions, her thoughts and the notices
-/// her substrate posted. Built once per use from her memory, never assembled by hand.
+/// The streams her working memory feeds her view: her actions, her thoughts, her open views
+/// and the notices her substrate posted. Built once per use from her memory, never assembled
+/// by hand.
 pub(crate) struct MemoryStreams<'a> {
     pub actions: actions::Actions<'a>,
     pub thoughts: thoughts::Thoughts<'a>,
+    pub open_views: open_views::OpenViews<'a>,
     pub notices: notices::Notices<'a>,
 }
 
@@ -31,6 +34,7 @@ impl<'a> MemoryStreams<'a> {
         Self {
             actions: actions::Actions { memory },
             thoughts: thoughts::Thoughts { memory },
+            open_views: open_views::OpenViews { memory },
             notices: notices::Notices { memory },
         }
     }

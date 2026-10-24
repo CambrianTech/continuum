@@ -71,7 +71,7 @@ impl LlmDeliberationFaculty {
                     floor_tokens: Self::clamp_u32(floor),
                     min_tokens: Self::clamp_u32(floor),
                     max_tokens: Self::clamp_u32(want),
-                    required: false,
+                    required: source.required(),
                 }
             })
             .collect()
@@ -123,10 +123,13 @@ impl LlmDeliberationFaculty {
         // floor is what it renders collapsed, so starting it anyway put the view over its
         // grant and left the fit to cut it (an atomic standing block, its minimum the whole
         // block, 21,857 tokens on an 8,192 window). A later act's advance offers it again.
+        // A required source is never shed: it got its floor first, or the allocation is an
+        // under-provision the turn reports (`escalation_needed`).
         let shed: Vec<&str> = plan
             .allocations
             .iter()
             .filter(|a| a.allocated_tokens < a.requested_floor)
+            .filter(|a| a.state != crate::cognition::rag_budget::AllocationState::UnderProvisioned)
             .filter_map(|a| a.source_id.strip_prefix(VIEW_CLAIM))
             .collect();
         let started = self.turn_over_view_with(&prompt.streams, &shed, |claims: &[Claim]| {
@@ -270,8 +273,8 @@ impl LlmDeliberationFaculty {
     /// Her sources in the order an epoch start renders them, the front that survives a
     /// turnover first: the settled blocks (standing and board churn, in their canonical
     /// order), her actions, her conversation, the blocks that count or change within an
-    /// epoch (the kanban's claims, recall, awareness, an unknown block), her thoughts, then the
-    /// notices her substrate posted, whose investigation tally changes most acts. Within an epoch the order cannot matter (every act appends), so it is
+    /// epoch (the kanban's claims, recall, awareness, an unknown block), her thoughts, her open
+    /// views, then the notices her substrate posted, whose investigation tally changes most acts. Within an epoch the order cannot matter (every act appends), so it is
     /// chosen for the one rewrite an epoch costs: a turnover keeps the prefix up to the
     /// first source whose FRONT changed.
     ///
@@ -302,6 +305,7 @@ impl LlmDeliberationFaculty {
         sources.push(&streams.conversation);
         sources.extend(streams.blocks.iter().filter(|block| !settled(block)).map(as_source));
         sources.extend(memory.map(|m| &m.thoughts as &dyn Source<ContextMessage>));
+        sources.extend(memory.map(|m| &m.open_views as &dyn Source<ContextMessage>));
         sources.extend(memory.map(|m| &m.notices as &dyn Source<ContextMessage>));
         sources
     }

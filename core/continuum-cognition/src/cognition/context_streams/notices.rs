@@ -29,6 +29,10 @@ impl Source<ContextMessage> for Notices<'_> {
         priority::NOTICES
     }
 
+    fn required(&self) -> bool {
+        true
+    }
+
     fn items(&self) -> Vec<Item<ContextMessage>> {
         let notices = self.memory.notice_items();
         if notices.is_empty() {
