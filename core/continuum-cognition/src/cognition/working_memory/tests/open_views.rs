@@ -143,3 +143,38 @@ fn an_open_view_survives_checkpoint_and_restore() {
     let legacy: VolatileSnapshot = serde_json::from_str(&legacy).expect("a pre-field checkpoint decodes");
     assert!(legacy.open_views.is_empty());
 }
+
+// what this catches (Codex on #5376): her view keeping a view her hands cannot see. When her
+// hands move to another checkout, a view opened in the first is retired from her context view
+// (keyed by its checkout, so the same relative path in two checkouts is two views), and it is
+// offered again when her hands return.
+#[test]
+fn a_view_in_a_checkout_her_hands_left_is_retired_from_her_view() {
+    use continuum_context::source::Source;
+    use continuum_context::view::{Claim, View};
+
+    let wm = WorkingMemory::new(3);
+    wm.set_served_window(46_848);
+    wm.set_scope(Some("/checkouts/a".into()));
+    record(&wm, read(1, 40, 498, None));
+    let views = crate::cognition::context_streams::open_views::OpenViews { memory: &wm };
+    let whole = |claims: &[Claim]| claims.iter().map(|claim| claim.full_chars).collect();
+    let (mut view, _) = match View::start(Vec::new(), &[&views as &dyn Source<_>], whole) {
+        Ok(started) => started,
+        Err(mismatch) => panic!("test: {mismatch}"),
+    };
+    let text = |view: &View<crate::cognition::context_streams::ContextMessage>| {
+        view.render().map(|m| m.text.clone()).collect::<Vec<_>>().join("\n")
+    };
+    assert!(text(&view).contains(PATH), "the view she opened in checkout a");
+
+    wm.set_scope(Some("/checkouts/b".into()));
+    assert!(wm.open_view_lines().is_empty(), "not visible from checkout b");
+    view.advance(&[&views as &dyn Source<_>]);
+    assert!(text(&view).contains("[not visible from here] /checkouts/a/file/"), "{}", text(&view));
+    assert_eq!(view.advance(&[&views as &dyn Source<_>]).chars, 0, "retired once");
+
+    wm.set_scope(Some("/checkouts/a".into()));
+    let back = view.advance(&[&views as &dyn Source<_>]);
+    assert_eq!(back.items, 1, "offered again when her hands return");
+}

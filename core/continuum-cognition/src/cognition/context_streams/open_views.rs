@@ -42,4 +42,17 @@ impl Source<ContextMessage> for OpenViews<'_> {
         items.extend(lines.into_iter().map(|(key, line)| required(key, format!("- {line}"))));
         items
     }
+
+    /// A view in a checkout her hands left reads as not visible now, never as open where she
+    /// stands; it is offered again when they return.
+    fn retired(&self) -> Vec<Item<ContextMessage>> {
+        self.memory
+            .open_views_out_of_scope()
+            .into_iter()
+            .map(|key| {
+                let notice = format!("- [not visible from here] {key}");
+                required(key, notice)
+            })
+            .collect()
+    }
 }

@@ -38,15 +38,16 @@ async fn substrate_notices_survive_attention_and_history_pressure_once() {
     assert!(!ws.broadcast.iter().any(|c| c.faculty == memory.faculty));
     // Her notices ride her view as a required source (`context_streams::notices`): the
     // allocation grants their floor before anything optional, and the final fit never cuts
-    // her view. So through the production path, at every window from too small to roomy,
+    // her view. So through the production path, at every window from 256 tokens (too small) to roomy,
     // a prompt that would be sent carries each notice exactly once, and a window that
     // cannot hold them says so instead of sending a prompt without them.
     for keep_memory in [false, true] {
         if keep_memory { ws.broadcast.push(memory.clone()); }
-        let mut sent = 0;
-        for window in (2_048u32..=65_536).step_by(2_048) {
+        let (mut sent, mut refused) = (0, 0);
+        for window in (256u32..=65_536).step_by(2_048) {
             let view = faculty.prompt_view_within(&ws, window);
             if view.capacity_error.is_some() || view.budget_fault.is_some() {
+                refused += 1;
                 continue;
             }
             sent += 1;
@@ -57,6 +58,8 @@ async fn substrate_notices_survive_attention_and_history_pressure_once() {
             assert!(text.contains(&format!("work/get(card_id=\"{}\")", ledger.card_id)), "window {window}");
         }
         assert!(sent > 0, "some window holds her notices");
+        // Cormac on #5376: both sides, so a refusal path that never runs cannot pass.
+        assert!(refused > 0, "a window too small for her notices refuses the turn");
     }
     let prompt = faculty.messages_unfitted(&ws, None);
     let all = prompt.required_tokens() + LlmDeliberationFaculty::messages_cost(&prompt.history);

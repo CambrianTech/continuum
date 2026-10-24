@@ -202,6 +202,12 @@ impl WorkingMemory {
         self.open_views.lock().lines(scope.as_deref())
     }
 
+    /// Keys of her open views her hands cannot see from where they stand now.
+    pub(crate) fn open_views_out_of_scope(&self) -> Vec<String> {
+        let scope = self.scope.lock().clone();
+        self.open_views.lock().out_of_scope(scope.as_deref())
+    }
+
     /// Every act she has a record of, oldest first, each in both renderings her context view
     /// chooses between: `(seq, full, pointer)`. Full is the whole result while retained,
     /// else what its pointer says; the pointer names the handle that reopens it, or is the

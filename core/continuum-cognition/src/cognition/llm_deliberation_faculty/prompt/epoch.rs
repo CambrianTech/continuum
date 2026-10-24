@@ -123,8 +123,10 @@ impl LlmDeliberationFaculty {
         // floor is what it renders collapsed, so starting it anyway put the view over its
         // grant and left the fit to cut it (an atomic standing block, its minimum the whole
         // block, 21,857 tokens on an 8,192 window). A later act's advance offers it again.
-        // A required source is never shed: it got its floor first, or the allocation is an
-        // under-provision the turn reports (`escalation_needed`).
+        // A required source is never shed: it got its floor first, or it is under-provisioned
+        // and kept anyway, so the view runs over its grant and the turn is refused
+        // (`budget_fault` / `capacity_error`, view.rs), never sent without it.
+        // (`escalation_needed` is only probed; it refuses nothing.)
         let shed: Vec<&str> = plan
             .allocations
             .iter()
@@ -183,6 +185,9 @@ impl LlmDeliberationFaculty {
                 Ok((view, _)) => {
                     *held = Some(view);
                     self.tool_head_turned_over();
+                    if let Some(memory) = memory {
+                        memory.reclaim_ended_notices();
+                    }
                 }
                 Err(mismatch) => continuum_base::probe!(
                     class = "delib.view.refused",
@@ -234,6 +239,9 @@ impl LlmDeliberationFaculty {
                      by the flexbox at its start"
                 );
                 self.tool_head_turned_over();
+                if let Some(memory) = memory {
+                    memory.reclaim_ended_notices();
+                }
             }
             Err(mismatch) => continuum_base::probe!(
                 class = "delib.view.refused",

@@ -109,6 +109,12 @@ impl WorkingMemory {
         self.ended_pins.lock().iter().map(|key| format!("pin/{key}")).collect()
     }
 
+    /// A new epoch renders her notices from what holds now, so no ended pin can show in it:
+    /// the list starts over (its reclamation boundary).
+    pub(crate) fn reclaim_ended_notices(&self) {
+        self.ended_pins.lock().clear();
+    }
+
     fn pin_ended(&self, key: String) {
         let mut ended = self.ended_pins.lock();
         if !ended.contains(&key) {
