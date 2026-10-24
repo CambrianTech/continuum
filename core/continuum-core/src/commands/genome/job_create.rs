@@ -108,6 +108,9 @@ pub const ERROR_KIND_TRIAL_FILE_UNREADABLE: &str = "TrialFileUnreadable";
 /// No room for the smallest window that trains one of her examples, by measurement: no job;
 /// the trigger parks the batch with the outcome's `capacityWait` (card de9e1342).
 pub const ERROR_KIND_CAPACITY_PARKED: &str = "CapacityParked";
+/// The trainer refused before creating anything (missing interpreter, a host it cannot run
+/// on): certain, so the trigger retries on a later fill, never recovery (card a9bc56ea).
+pub const ERROR_KIND_TRAINER_UNAVAILABLE: &str = "TrainerUnavailable";
 
 /// The decision could not be made: a typed refusal the trigger retries on the next fill,
 /// probed so a bucket that keeps refusing is readable.

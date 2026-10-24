@@ -160,7 +160,8 @@ impl FineTuningAdapter for MlxLoraFineTuner {
             ));
         }
         if !self.python.exists() {
-            return Err(FineTuningError::LocalTrainerFailed(format!(
+            // Before any job, process or file exists: certain, never awaiting evidence.
+            return Err(FineTuningError::TrainerUnavailable(format!(
                 "mlx python interpreter not found at {} — set {} in config.env",
                 self.python.display(),
                 MLX_PYTHON_KEY
