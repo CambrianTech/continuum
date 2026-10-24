@@ -10,7 +10,9 @@ use uuid::Uuid;
 use crate::cognition::act_observe::test_support::{admission, ActThenSpeak, RecordingExecutor};
 use crate::cognition::act_observe::{settle_step, ActChain};
 use crate::cognition::working_memory::{WorkingMemory, WorkingMemoryFaculty};
-use crate::cognition::workspace::{ActingBody, SalienceArbiter, Situation, TurnFraming, WorkspaceCycle};
+use crate::cognition::workspace::{
+    ActingBody, SalienceArbiter, Situation, TurnFraming, WorkspaceCycle,
+};
 
 // Regression17d3e6ff: real card lookup must resolve admitted hands before
 // board grounding, ledger rendering and execution, without moving the wake.
@@ -60,11 +62,40 @@ async fn bound_card_activity_is_shared_by_perception_and_execution() {
         wake.channel,
         crate::persona::identity_provider::PersonaIdentitySource::FreshlyMinted,
     ));
-    let hands =
-        crate::identity::hands_context::HandsContext::for_claim(persona, card.as_uuid(), claim.as_uuid());
+    let hands = crate::identity::hands_context::HandsContext::for_claim(
+        persona,
+        card.as_uuid(),
+        claim.as_uuid(),
+    );
     let checkout = airc_lib::work_worktree::worktree_path_for(card).unwrap();
     assert!(checkout.starts_with(home.path()));
-    std::fs::create_dir_all(checkout.join(".git")).unwrap();
+    // Hands requires a usable checkout, not an interrupted clone's bare .git directory.
+    assert!(std::fs::create_dir_all(&checkout).is_ok());
+    assert!(std::fs::write(checkout.join("subject.txt"), "subject\n").is_ok());
+    for args in [
+        vec!["init", "-b", "fixture"],
+        vec!["add", "subject.txt"],
+        vec![
+            "-c",
+            "user.name=Fixture",
+            "-c",
+            "user.email=fixture@example.invalid",
+            "-c",
+            "commit.gpgsign=false",
+            "commit",
+            "-m",
+            "fixture",
+        ],
+    ] {
+        assert!(
+            std::process::Command::new("git")
+                .args(&args)
+                .current_dir(&checkout)
+                .output()
+                .is_ok_and(|output| output.status.success()),
+            "git {args:?}"
+        );
+    }
     let exec = Arc::new(RecordingExecutor {
         seen_context: Arc::new(Mutex::new(None)),
         result_content: "read subject file".into(),
@@ -131,8 +162,16 @@ async fn bound_card_activity_is_shared_by_perception_and_execution() {
     .with_working_memory(wm)
     .prompt_view(&ws);
     // Her acts reach her through the action stream (the steps ledger it replaced is gone).
-    let text: String = prompt.messages.iter().map(|m| m.content_text()).collect::<Vec<_>>().join("\n");
-    let actions = text.find("[actions]").map(|at| &text[at..]).expect("test: the action stream is in her view");
+    let text: String = prompt
+        .messages
+        .iter()
+        .map(|m| m.content_text())
+        .collect::<Vec<_>>()
+        .join("\n");
+    let actions = text
+        .find("[actions]")
+        .map(|at| &text[at..])
+        .expect("test: the action stream is in her view");
     assert!(actions.contains("code/run"), "{actions}");
     assert!(!actions.contains("nothing has executed yet"), "{actions}");
     assert_eq!(airc.current_room().await.unwrap().channel, wake.channel);
