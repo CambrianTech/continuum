@@ -51,7 +51,7 @@ impl CardTask {
     /// Through the one bench and review title parsers, so a card's task identity is the same
     /// string the dispatch wrote and the grader reads.
     pub fn of_card_title(title: &str) -> Self {
-        use crate::cognition::bench_title::{parse_card_title, parse_review_title};
+        use crate::recipe::bench_title::{parse_card_title, parse_review_title};
         if let Some((set, task)) = parse_card_title(title) {
             CardTask::Task(TaskIdentity { set, task })
         } else if let Some(task) = parse_review_title(title) {

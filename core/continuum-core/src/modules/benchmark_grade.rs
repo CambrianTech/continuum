@@ -34,7 +34,7 @@ fn is_terminal(state: &str) -> bool {
     crate::cognition::bench_round::is_terminal_card_state(state)
 }
 
-use crate::cognition::bench_title::parse_card_title as parse_bench_title;
+use crate::recipe::bench_title::parse_card_title as parse_bench_title;
 
 /// The grade-on-done subscriber. Holds a persona-airc registry so it can author the grade
 /// through a live citizen — whoever this machine has online (never a hardcoded name), the

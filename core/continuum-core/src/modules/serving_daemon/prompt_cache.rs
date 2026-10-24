@@ -60,7 +60,7 @@ pub(super) fn derived_prompt_cache_mib(
             .map(|r| r.live_personas().into_iter().collect())
             .unwrap_or_default();
     let planned: Vec<uuid::Uuid> =
-        crate::persona::seed::persona_ids_with_seeds_in(&crate::context::citizens_kind_dir(
+        crate::persona::seed::persona_ids_with_seeds_in(&crate::identity::citizen_path::citizens_kind_dir(
             &crate::paths::continuum_root(),
             crate::identity::IdentityKind::Persona,
         ));

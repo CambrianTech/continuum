@@ -43,7 +43,7 @@
 use crate::ai::adapter::AIProviderAdapter;
 use crate::persona::airc_citizen::AircCitizen;
 use crate::persona::inference_profile::{InferenceProfileError, PersonaInferenceProfile};
-use crate::persona::role_template::RoleId;
+use crate::experience::role::RoleId;
 use crate::persona::spawner_module::MaterializedPersonaPlan;
 use async_trait::async_trait;
 use std::sync::Arc;

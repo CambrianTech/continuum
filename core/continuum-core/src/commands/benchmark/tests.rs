@@ -128,7 +128,7 @@
     // for 51 distinct tasks, sympy__sympy-24152 holding 15 of them).
     mod dispatch_identity {
         use super::*;
-        use crate::cognition::bench_title::{bench_card_key, dispatch_card_key};
+        use crate::recipe::bench_title::{bench_card_key, dispatch_card_key};
 
         // what this catches: key/title drift. The key MUST be a prefix of the
         // rendered title, so a card on the board can be matched back to the task

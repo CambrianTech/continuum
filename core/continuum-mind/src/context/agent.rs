@@ -44,7 +44,7 @@ use airc_lib::{Airc, AircError};
 use uuid::Uuid;
 
 use crate::context::airc_adapter::AircHandleAdapter;
-use crate::context::citizen_path::{citizen_home_path, legacy_home_path};
+use crate::identity::citizen_path::{citizen_home_path, legacy_home_path};
 use crate::context::Context;
 use crate::identity::{Identity, IdentityKind, IdentitySource};
 use crate::persona::airc_citizen::AircCitizen;

@@ -205,9 +205,9 @@ pub struct ParamDecl {
 #[serde(rename_all = "camelCase")]
 pub struct CitizenRecipe {
     /// Role identifier (snake_case: `helper`, `coder`, `sentinel`, …) —
-    /// `persona/role_template::RoleId`'s own serde form.
+    /// `experience::role::RoleId`'s own serde form.
     #[ts(type = "string")]
-    pub role: crate::persona::role_template::RoleId,
+    pub role: crate::experience::role::RoleId,
     /// What one of this citizen's turns NEEDS of a lane — the grid allocator's
     /// requirement for the role (card 10bba591; Joel: never a constant of our grid, a
     /// declared input). Absent = unmeasured: the residents' measured typical prompt

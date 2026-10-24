@@ -7,7 +7,7 @@
     use crate::persona::instance_manager::PersonaInstanceInfo;
     use crate::persona::airc_citizen::StubAircCitizen;
     use crate::persona::identity_provider::PersonaIdentitySource;
-    use crate::persona::role_template::RoleId;
+    use crate::experience::role::RoleId;
     use crate::persona::scripted_conversation::ScriptedConversation;
     use crate::persona::supervisor::HostedPersona;
     use std::path::PathBuf;

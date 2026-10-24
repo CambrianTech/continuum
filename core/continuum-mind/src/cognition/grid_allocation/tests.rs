@@ -490,7 +490,7 @@
     #[test]
     fn a_recipes_citizens_are_the_allocators_roles_and_floors() {
         use crate::experience::recipe::{CitizenRecipe, CitizenRequirement};
-        use crate::persona::role_template::RoleId;
+        use crate::experience::role::RoleId;
         let coder = |window: u32| CitizenRecipe {
             role: RoleId::Coder,
             requirement: Some(CitizenRequirement { window_tokens: window, min_capability: 7, decode_floor_tps: Some(10.0) }),
@@ -515,7 +515,7 @@
     #[test]
     fn measured_window_above_the_fleet_does_not_remove_its_seats() {
         use crate::experience::recipe::CitizenRecipe;
-        use crate::persona::role_template::RoleId;
+        use crate::experience::role::RoleId;
         let node = Uuid::new_v4();
         let (roles, floors) = roles_from(
             &[CitizenRecipe { role: RoleId::Helper, requirement: None }],
@@ -544,7 +544,7 @@
     #[test]
     fn measured_targets_preserve_declared_gates_and_capability_order() {
         use crate::experience::recipe::{CitizenRecipe, CitizenRequirement};
-        use crate::persona::role_template::RoleId;
+        use crate::experience::role::RoleId;
         let declared = CitizenRecipe {
             role: RoleId::Coder,
             requirement: Some(CitizenRequirement { window_tokens: 32_768, min_capability: 7, decode_floor_tps: Some(10.0) }),

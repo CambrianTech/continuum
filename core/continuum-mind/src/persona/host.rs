@@ -37,7 +37,7 @@ use continuum_base::time::EpochMs;
 use crate::persona::airc_persona_conversation::AircPersonaConversation;
 use crate::persona::airc_runtime_registry::PersonaAircRuntimeRegistry;
 use crate::persona::identity_provider::PersonaIdentityProvider;
-use crate::persona::role_template::RoleId;
+use crate::experience::role::RoleId;
 use crate::persona::service_loop::{serve_persona_loop, PersonaConversation, ServeOptions, ServeOutcome};
 use crate::persona::spawner_module::{bootstrap_planned, PersonaSpawnerModule};
 use crate::persona::supervisor::{materialize_adapters, HostedPersona, PersonaAdapterFactory, PersonaContext, SupervisorError};

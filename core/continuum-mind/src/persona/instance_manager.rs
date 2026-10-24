@@ -523,8 +523,9 @@ impl PersonaInstanceManagerModule {
     }
 }
 
-fn role_bio_template(role: crate::persona::role_template::RoleId) -> String {
-    use crate::persona::role_template::{coder_template, designer_template, helper_template, RoleId};
+fn role_bio_template(role: crate::experience::role::RoleId) -> String {
+    use crate::experience::role::RoleId;
+    use crate::persona::role_template::{coder_template, designer_template, helper_template};
     match role {
         RoleId::Helper => helper_template().identity.bio_template,
         RoleId::Coder => coder_template().identity.bio_template,

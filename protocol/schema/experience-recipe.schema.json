@@ -61,7 +61,7 @@
               "$ref": "#/definitions/RoleId"
             }
           ],
-          "description": "Role identifier (snake_case: `helper`, `coder`, `sentinel`, …) — `persona/role_template::RoleId`'s own serde form."
+          "description": "Role identifier (snake_case: `helper`, `coder`, `sentinel`, …) — `experience::role::RoleId`'s own serde form."
         }
       },
       "required": [

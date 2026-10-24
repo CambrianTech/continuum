@@ -267,7 +267,7 @@ pub(crate) async fn open_review_card(airc: &Arc<Airc>, parent: WorkCardId) -> Re
     let (room, card) = card_in_subscribed_rooms(airc, parent)
         .await
         .ok_or_else(|| "parent card is on no subscribed room's board".to_string())?;
-    let Some((_, instance)) = crate::cognition::bench_title::parse_card_title(&card.title) else {
+    let Some((_, instance)) = crate::recipe::bench_title::parse_card_title(&card.title) else {
         // A room's own card (not a bench card): its review card comes from the parent
         // itself, under the room's policy (card fa4aaaaa). The bench branch below is
         // unchanged.
@@ -281,7 +281,7 @@ pub(crate) async fn open_review_card(airc: &Arc<Airc>, parent: WorkCardId) -> Re
                 .map(|rt| rt.agent_name().to_string())
         })
         .unwrap_or_else(|| "the owner".to_string()); // unwrap_or: owner not resident = a neutral name in the review body
-    let title = crate::cognition::bench_title::review_card_title(parent.as_uuid(), &instance, &owner);
+    let title = crate::recipe::bench_title::review_card_title(parent.as_uuid(), &instance, &owner);
     let p8 = parent.as_uuid().simple().to_string()[..8].to_string();
     let body = format!(
         "Review {owner}'s fix for `{instance}` (card {p8}). You are the fresh pair of \

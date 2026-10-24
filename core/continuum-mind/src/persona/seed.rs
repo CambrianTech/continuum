@@ -50,7 +50,7 @@ use uuid::Uuid;
 
 use crate::live::avatar::types::AvatarGender;
 use crate::persona::card::PersonaCard;
-use crate::persona::role_template::RoleId;
+use crate::experience::role::RoleId;
 
 /// The on-disk seed record. Schema-versioned so we can evolve
 /// fields without breaking older installs.

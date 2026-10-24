@@ -49,7 +49,7 @@ use uuid::Uuid;
 use crate::live::avatar::gender::{gender_from_identity, pronouns_for_gender, PronounSet};
 use crate::live::avatar::types::AvatarGender;
 use crate::live::avatar::names::gender_from_name;
-use crate::persona::role_template::RoleId;
+use crate::experience::role::RoleId;
 
 /// The coherent identity card. Every field agrees with `gender`, the presentation
 /// spine (avatar, voice, and pronouns all follow from it). Owned + serializable via

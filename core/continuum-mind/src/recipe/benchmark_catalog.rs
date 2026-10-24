@@ -464,7 +464,7 @@ pub fn known_benchmarks() -> &'static [BenchmarkSpec] {
 /// when it holds (BigMama on #4954: a `[bench <non-swe>]` card would be promised a grade that never
 /// comes).
 pub fn submission_oracle_dataset(card_title: &str) -> Option<(String, &'static str)> {
-    let (bench, _) = crate::cognition::bench_title::parse_card_title(card_title)?;
+    let (bench, _) = crate::recipe::bench_title::parse_card_title(card_title)?;
     let dataset = known_benchmarks().iter().find(|b| b.name == bench).and_then(|s| s.swe_dataset())?;
     Some((bench, dataset))
 }

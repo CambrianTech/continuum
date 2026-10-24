@@ -31,11 +31,11 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
-use crate::context::citizen_home_path;
+use crate::identity::citizen_path::citizen_home_path;
 use crate::identity::IdentityKind;
 use crate::live::avatar::types::AvatarGender;
 use crate::persona::card::PersonaCard;
-use crate::persona::role_template::RoleId;
+use crate::experience::role::RoleId;
 use crate::persona::seed::{write_seed_atomic, PersonaSeedFile};
 use crate::routing::CallerSource;
 use crate::sdk_codegen::CommandError;

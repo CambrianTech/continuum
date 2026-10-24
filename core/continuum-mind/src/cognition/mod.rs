@@ -34,7 +34,6 @@ pub mod directed_pending;
 pub mod act_replay;
 pub mod audit;
 pub mod bench_round;
-pub mod bench_title;
 pub mod held_out;
 pub mod grid_allocation;
 pub mod measurement_staging;

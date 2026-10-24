@@ -15,7 +15,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
-use crate::cognition::bench_title::dispatch_card_title;
+use crate::recipe::bench_title::dispatch_card_title;
 use crate::sdk_codegen::{AccessLevel, ActionCommand, CommandError, Ctx};
 
 pub(crate) mod credit_recovery;

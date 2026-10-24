@@ -88,6 +88,7 @@ pub use airc_core::PeerId;
 pub mod hands_context;
 pub mod hands_gate;
 pub mod activity;
+pub mod citizen_path;
 pub use activity::{ActivityRoom, RoomlessTurn};
 
 /// The durable on-disk home of one citizen: `<root>/citizens/peers/<peer_id>`.

@@ -138,7 +138,7 @@ use super::*;
         let id = Uuid::new_v4();
         let cycle = registry.register_from_cfg(cfg_for(id)).expect("resident");
         let (original, original_model) = cycle.current_model_route().expect("binding");
-        let airc = crate::context::citizen_home_path(root.path(), crate::identity::IdentityKind::Persona, None, "Ivar");
+        let airc = crate::identity::citizen_path::citizen_home_path(root.path(), crate::identity::IdentityKind::Persona, None, "Ivar");
         let home = crate::persona::home::PersonaHome::from_root(airc.parent().expect("parent").to_path_buf());
         let remote = crate::persona::PersonaModelOverride::new_remote("remote/model", None, 1, Uuid::new_v4().to_string());
         remote.write(&home).expect("remote override");

@@ -24,7 +24,7 @@ home correction did not change that database's resident path:
 
 The resident root comes from `CONTINUUM_ROOT` when set, otherwise
 `dirs::home_dir()/.continuum`. The existing
-[`citizen_home_path`](../../core/continuum-core/src/context/citizen_path.rs)
+[`citizen_home_path`](../../core/continuum-kernel/src/identity/citizen_path.rs)
 resolves the citizen's `airc` directory;
 [`PersonaInstanceInfo::from_runtime`](../../core/continuum-core/src/modules/persona_instance_manager.rs)
 carries that exact path as `identity.home`. The supervisor passes it through

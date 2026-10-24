@@ -18,7 +18,7 @@ Companions: [[ask-anything-assemble-best-self-or-train]], [[shop-genome-market]]
 |---|---|---|
 | The roster (which personas spawn) | `persona/spawner_module.rs::plan_for_tier()` | hardcoded `Vec<DesiredRole>` (one Helper today; `[Helper, Coder]` commented for "slice 14") |
 | Model per role × tier | `persona/role_template.rs` `helper_template()` / `coder_template()` | hardcoded `model_per_tier` maps of model-id strings |
-| Roles | `persona/role_template.rs` `RoleId` | enum `Helper/Coder/Sentinel/Custom` |
+| Roles | `experience/role.rs` `RoleId` | enum `Helper/Coder/Sentinel/Custom` |
 | Model catalog | `model_registry/catalog.rs::models()` | static Rust `Vec<Model>` — NOT read from any `/v1/models` |
 | Model resolution | `cognition/model_resolver/` | static filter chain over the static catalog |
 | Persona identity | minted in `modules/persona_instance_manager.rs` (`Uuid::new_v4()` + derived name) + `persona/seed.rs` JSON | no persona-as-data; no `persona/create`; name derived, not authored |
