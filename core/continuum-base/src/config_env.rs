@@ -138,8 +138,7 @@ pub fn read_all_from(path: &Path) -> Vec<(String, String)> {
 pub fn read_from(path: &Path, key: &str) -> Option<String> {
     read_all_from(path)
         .into_iter()
-        .filter(|(k, _)| k == key)
-        .next_back()
+        .rfind(|(k, _)| k == key)
         .map(|(_, v)| v)
 }
 

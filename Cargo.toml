@@ -18,6 +18,8 @@ members = [
     "core/continuum-cli-lifecycle",
     "core/continuum-tool-protocol",
     "core/continuum-base",
+    "core/continuum-pack",
+    "core/continuum-pack-derive",
     "core/continuum-context",
     "core/continuum-core",
     "core/continuum-kernel",
@@ -241,6 +243,11 @@ airc-work = { git = "https://github.com/CambrianTech/airc", rev = "2666f362f66cc
 candle-core = { version = "0.9" }
 candle-nn = { version = "0.9" }
 candle-transformers = { version = "0.9" }
+
+# The base layer's one load/store (docs/architecture/PACKAGES.md): any crate packs its state
+# with `continuum-pack.workspace = true` (trait, derive, stores; `features = ["conformance"]`
+# in dev-dependencies for the generic suite).
+continuum-pack = { path = "core/continuum-pack" }
 
 # Serialization
 serde = { version = "1", features = ["derive"] }
