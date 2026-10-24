@@ -344,8 +344,8 @@ impl RagInspectResult {
     }
 }
 
-fn allocation_state_to_str(state: crate::persona::rag_budget::AllocationState) -> &'static str {
-    use crate::persona::rag_budget::AllocationState as S;
+fn allocation_state_to_str(state: crate::cognition::rag_budget::AllocationState) -> &'static str {
+    use crate::cognition::rag_budget::AllocationState as S;
     match state {
         S::Satisfied => "satisfied",
         S::FloorOnly => "floor_only",

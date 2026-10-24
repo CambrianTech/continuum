@@ -79,7 +79,7 @@ async fn prompt_preserves_stimulus_and_large_action_on_the_wire() {
         ws.room_updates = Arc::new(vec![Arc::clone(&update)]);
         ws.broadcast.push(
             Contribution::context(
-                FacultyId::Custom(crate::persona::active_work_source::SOURCE_ID.into()),
+                FacultyId::Custom(crate::cognition::faculty_ids::ACTIVE_WORK.into()),
                 format!(
                     "Held activity context: continue independent source review.{}",
                     "x".repeat(padding)

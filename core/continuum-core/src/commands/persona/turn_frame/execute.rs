@@ -188,7 +188,7 @@ crate::action_command! {
         let items = inbox_frame
             .messages
             .iter()
-            .map(|m| crate::persona::rag_budget::RagItem {
+            .map(|m| crate::cognition::rag_budget::RagItem {
                 content: m.content.clone(),
                 tokens: 0,
                 metadata: serde_json::json!({
@@ -197,12 +197,12 @@ crate::action_command! {
                 }),
             })
             .collect::<Vec<_>>();
-        let delivery = crate::persona::rag_budget::RagDelivery {
+        let delivery = crate::cognition::rag_budget::RagDelivery {
             source_id: "airc".to_string(),
             items,
             tokens_used: 0,
             truncated: false,
-            resolution_used: crate::persona::rag_budget::ResolutionPreference::Raw,
+            resolution_used: crate::cognition::rag_budget::ResolutionPreference::Raw,
         };
         // own_peer attributes the persona's OWN past posts (is_self → assistant role); a
         // command-seeded turn carries only inbound peer messages, so it's inert here but

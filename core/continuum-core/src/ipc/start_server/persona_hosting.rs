@@ -190,7 +190,7 @@ pub(super) fn start_persona_host(
             grid_citizens,
         ),
     ));
-    let resident_roles: Vec<crate::persona::role_template::RoleId> =
+    let resident_roles: Vec<crate::experience::role::RoleId> =
         resident_citizens.into_iter().map(|c| c.role).collect();
     stretch_mark("resident_roles_and_overlay", "supervisor_construct");
     stretch_mark(

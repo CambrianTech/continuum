@@ -264,7 +264,7 @@ pub struct JsonlPromptCaptureSink {
 }
 impl JsonlPromptCaptureSink {
     pub(crate) fn open_for_persona(persona_id: Uuid) -> std::io::Result<Self> {
-        let dir = crate::persona::recorder::fixture_dir(FIXTURE_DIR).ok_or_else(|| {
+        let dir = crate::cognition::capture::fixture_dir(FIXTURE_DIR).ok_or_else(|| {
             std::io::Error::new(
                 std::io::ErrorKind::NotFound,
                 "cannot resolve capture home directory",

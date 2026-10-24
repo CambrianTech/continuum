@@ -57,7 +57,7 @@ use std::time::Duration;
 use uuid::Uuid;
 
 use crate::ipc::positron_source::{AircPresenceUpdate, PRESENCE_UPDATED};
-use crate::persona::room_directory::{load_directory, persist_directory};
+use crate::cognition::room_directory::{load_directory, persist_directory};
 use crate::persona::room_roster_source::AircRosterReader;
 use crate::persona::room_roster_source::{PRESENCE_WINDOW, ROSTER_SCAN};
 use crate::runtime::MessageBus;

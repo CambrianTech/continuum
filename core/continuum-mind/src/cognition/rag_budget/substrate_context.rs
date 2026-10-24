@@ -473,7 +473,7 @@ pub trait RagSource: Send + Sync {
     /// `None` is a legitimate answer for a source with genuinely nothing more to
     /// show (a one-shot fact, a stub). It is NOT the answer for "I didn't think
     /// about it" — which is why there is no default impl: every source decides,
-    /// the same forcing function as [`super::super::room_board_source::RoomBoardReader::peer_names`].
+    /// the same forcing function as persona's `room_board_source::RoomBoardReader::peer_names`.
     fn expand_command(&self) -> Option<&'static str>;
 
     /// The cost, in tokens, of the SMALLEST COMPLETE STATEMENT this source can

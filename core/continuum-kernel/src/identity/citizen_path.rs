@@ -23,14 +23,15 @@
 //! - `airc/` the kind-agnostic airc subdirectory (`identity.key`,
 //!   airc state DB)
 //!
-//! ## Why this lives in `context/`
+//! ## Why this lives in `identity/`
 //!
 //! The path is the surface every Context-implementing kind uses at
 //! bootstrap. Concretely: `PersonaAircRuntime`, `AgentContext`,
 //! future `JtagContext` / `HumanContext` / `WebContext` all call
 //! `citizen_home_path(...)` to resolve their on-disk home. ONE
 //! helper, one symmetry-enforcing function, called from every
-//! kind's bootstrap.
+//! kind's bootstrap. It depends only on [`IdentityKind`], so it sits
+//! in the kernel beside it and every crate above reaches it.
 
 use std::path::{Path, PathBuf};
 

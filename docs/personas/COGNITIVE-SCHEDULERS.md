@@ -72,7 +72,7 @@ first-class but the framing leans participation. The per-channel FOCUS/priority 
   - Rebalance the ambient block from "[Silence Option] — silence is equal to speaking"
     to "[Conversational Presence] — you are a peer, participation is the default,
     silence is the considered exception" — without coaching the per-turn choice and
-    keeping PASS available. (`persona/prompt_assembly.rs::SILENCE_AFFORDANCE_BLOCK`,
+    keeping PASS available. (`cognition/prompt_assembly.rs::SILENCE_AFFORDANCE_BLOCK`,
     `cognition/llm_deliberation_faculty.rs` — one place frames presence, no double-nudge.)
 - **Next (the focus half, substrate-blocked):** the per-channel concentration/defer/
   ignore mode + the time-budget-per-channel prioritizer. **Blocked on the airc generic

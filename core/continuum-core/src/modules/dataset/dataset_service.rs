@@ -167,7 +167,7 @@ impl DatasetService {
             .as_deref()
             .map(PathBuf::from)
             .or_else(|| {
-                crate::persona::recorder::fixture_dir(crate::cognition::prompt_capture::FIXTURE_DIR)
+                crate::cognition::capture::fixture_dir(crate::cognition::prompt_capture::FIXTURE_DIR)
             })
             .ok_or_else(|| "cannot resolve capture home directory".to_string())?;
         if !dir.is_dir() {

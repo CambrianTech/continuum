@@ -18,7 +18,7 @@ use crate::persona::inbox::PersonaInbox;
 use crate::persona::inference_profile::PersonaInferenceProfile;
 use crate::persona::message_cache::{ContentDeduplicator, RecentMessageCache};
 use crate::persona::model_selection::AdapterRegistry;
-use crate::persona::rag_budget::{
+use crate::cognition::rag_budget::{
     BudgetAllocation, FlexboxRagBudgetAdapter, RagBudgetAdapter, RagContext, RagDelivery,
     RagSource, RagSourceBudget, ReservedTokens, ResolutionPreference,
 };
@@ -109,7 +109,7 @@ pub struct PersonaCognition {
 // Self-determined attention allocation (#91) does NOT live on the brain: it must be
 // reachable by `persona_id` from BOTH the service loop and a self-set tool she invokes
 // through the command registry (which only knows her id, never holds `cognition.lock()`).
-// Its single home is `crate::persona::focus::registry()` — see that module.
+// Its single home is `crate::cognition::focus::registry()` — see that module.
 
 /// What [`PersonaCognition::compose_for_turn`] returns — the
 /// substrate's structured handoff between "brain composed a budgeted
@@ -429,7 +429,7 @@ impl ArcRagSource {
 
 #[async_trait::async_trait]
 impl RagSource for ArcRagSource {
-    fn room_scope(&self) -> super::rag_budget::RagRoomScope {
+    fn room_scope(&self) -> crate::cognition::rag_budget::RagRoomScope {
         self.0.room_scope()
     }
 
@@ -449,7 +449,7 @@ impl RagSource for ArcRagSource {
         self.0.floor_tokens()
     }
 
-    fn budget_claim(&self, window: u32, headroom: u32) -> super::rag_budget::RagSourceBudget {
+    fn budget_claim(&self, window: u32, headroom: u32) -> crate::cognition::rag_budget::RagSourceBudget {
         self.0.budget_claim(window, headroom)
     }
 
@@ -467,7 +467,7 @@ impl RagSource for ArcRagSource {
 mod tests {
     use super::*;
     use crate::persona::engram::{ChatMessageRef, Engram, EngramKind, EngramOrigin, TrustState};
-    use crate::persona::rag_budget::{RagContext, RagSource, ResolutionPreference};
+    use crate::cognition::rag_budget::{RagContext, RagSource, ResolutionPreference};
     use crate::persona::rag_capture::{
         InMemoryRagCaptureSink, RagCaptureEvent, RagCaptureSink,
     };
@@ -635,7 +635,7 @@ mod tests {
     //      over engram + airc, not via inspect_persona_rag's ad-hoc seam.
 
     use crate::persona::inference_profile::PersonaInferenceProfile;
-    use crate::persona::rag_budget::{AllocationState, RagDelivery, RagItem};
+    use crate::cognition::rag_budget::{AllocationState, RagDelivery, RagItem};
     use async_trait::async_trait;
 
     /// Test source that returns a fixed budget-aware payload — proves

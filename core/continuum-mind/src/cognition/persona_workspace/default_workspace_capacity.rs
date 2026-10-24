@@ -684,7 +684,7 @@ pub(super) fn repoint_workspace_map_if_pinned(
         .and_then(|c| c.message_bus());
     for g in cfg.grounding_sources.iter_mut() {
         if g.source.source_id() == "workspace-map" {
-            let pinned: Arc<dyn crate::persona::rag_budget::RagSource> = Arc::new(
+            let pinned: Arc<dyn crate::cognition::rag_budget::RagSource> = Arc::new(
                 crate::persona::workspace_map_source::WorkspaceMapSource::for_pinned_root(
                     *persona_id,
                     root,

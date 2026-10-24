@@ -544,7 +544,7 @@ impl LlmDeliberationFaculty {
         // reading fresh reasons to keep passing.
         // ([[no-hardcoded-heuristics-to-steer-cognition]])
         if let Some(wm) = &self.working_memory {
-            if crate::persona::prompt_assembly::looks_like_silence_token(&resp.text) {
+            if crate::cognition::prompt_assembly::looks_like_silence_token(&resp.text) {
                 wm.record_fact("chose silence — said nothing to the room");
             } else if let Some(reasoning) = &resp.reasoning {
                 wm.record(reasoning);
@@ -836,7 +836,7 @@ impl LlmDeliberationFaculty {
                         );
                         // The hour's receipt counts it (`[health] … think-only N`): two of
                         // these in an hour on the M5 were the whole story of #4194.
-                        crate::persona::health_ledger::note_think_only();
+                        crate::cognition::health_ledger::note_think_only();
                         let call = crate::ai::types::ToolCall {
                             id: "tool-attempt-think-only".to_string(),
                             name: crate::cognition::tool_executor::command_executor::THINK_ONLY_SENTINEL

@@ -1,6 +1,6 @@
 //! Self-determined attention allocation — the persona's steering wheel.
 //!
-//! Distinct from [`PersonaState`](super::types::PersonaState)'s `attention`,
+//! Distinct from persona's `PersonaState`'s `attention`,
 //! which is *capacity* (depletes with work, recovers with rest — an economy the
 //! substrate computes). `FocusState` is *allocation*: HOW the persona chooses to
 //! spend the attention she has. A single self-set scalar of focus, a sticky

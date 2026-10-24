@@ -49,7 +49,7 @@ pub(super) fn tail_persona_jsonl(
             "persona_id '{persona_id}' is not a valid id token"
         )));
     }
-    let path = crate::persona::recorder::fixture_dir(relative_dir)
+    let path = crate::cognition::capture::fixture_dir(relative_dir)
         .ok_or_else(|| CommandError::Internal("cannot resolve capture home directory".into()))?
         .join(format!("{persona_id}.jsonl"));
     let body = match std::fs::read_to_string(&path) {
@@ -185,7 +185,7 @@ impl ActionCommand for CognitionPrompt {
         let limit = p.limit.map(|n| n as usize).unwrap_or(DEFAULT_LIMIT);
         let persona = uuid::Uuid::parse_str(p.persona_id.as_str())
             .map_err(|_| CommandError::Arguments("persona_id must be a UUID".into()))?;
-        let dir = crate::persona::recorder::fixture_dir(super::prompt_capture::FIXTURE_DIR)
+        let dir = crate::cognition::capture::fixture_dir(super::prompt_capture::FIXTURE_DIR)
             .ok_or_else(|| {
                 CommandError::Internal("cannot resolve capture home directory".into())
             })?;
@@ -336,7 +336,7 @@ impl ActionCommand for CognitionPlayback {
     async fn run(&self, _ctx: &Ctx, p: Self::Params) -> Result<Self::Output, CommandError> {
         let persona = uuid::Uuid::parse_str(p.persona_id.as_str())
             .map_err(|_| CommandError::Arguments("persona_id must be a UUID".into()))?;
-        let dir = crate::persona::recorder::fixture_dir(super::prompt_capture::FIXTURE_DIR)
+        let dir = crate::cognition::capture::fixture_dir(super::prompt_capture::FIXTURE_DIR)
             .ok_or_else(|| {
                 CommandError::Internal("cannot resolve capture home directory".into())
             })?;

@@ -43,7 +43,7 @@ use std::fmt::Write as _;
 
 use super::persona_tools;
 use crate::ai::types::NativeToolSpec;
-use crate::persona::prompt_assembly::SILENCE_AFFORDANCE_BLOCK;
+use crate::cognition::prompt_assembly::SILENCE_AFFORDANCE_BLOCK;
 
 /// Everything the system prompt is assembled from — the dynamic inputs the blocks
 /// interpolate and the structural flags they gate on, in ONE carrier so [`compose`]
@@ -70,7 +70,7 @@ pub(super) struct SystemPromptParts<'a> {
     pub self_initiated: bool,
     /// This persona currently HOLDS a live in-progress work claim — a structural
     /// claim-state fact (derived from the [active-work] grounding her own workspace
-    /// assembled, via `active_work_source::renders_held_in_progress`; never a read of
+    /// assembled, via `faculty_ids::renders_held_in_progress`; never a read of
     /// her output). On an UNDIRECTED turn it swaps the conversational-presence block
     /// for the working-presence contract: a quiet room stops reading as "nothing to
     /// do" when her claimed card is sitting in her workspace. Directed turns are
@@ -149,28 +149,27 @@ pub(super) enum PromptChurn {
 pub(super) fn churn_of(faculty: &str) -> PromptChurn {
     use crate::cognition::working_memory::WM_FACULTY_ID;
     use crate::cognition::workspace::FacultyId;
-    use crate::persona::{
-        active_work_source, airc_source, engram_source, media_perception_source, mission_source,
-        room_board_source, room_doctrine_source, room_roster_source, wall_source,
-        workspace_map_source,
+    use crate::cognition::faculty_ids::{
+        ACTIVE_WORK, AIRC, AWARENESS, ENGRAMS, MEDIA_PERCEPTION, MISSION, ROOM_BOARD,
+        ROOM_DOCTRINE, ROOM_ROSTER, WALL, WORKSPACE_MAP,
     };
     match faculty {
-        room_doctrine_source::SOURCE_ID
-        | room_roster_source::SOURCE_ID
-        | media_perception_source::SOURCE_ID
-        | mission_source::SOURCE_ID
-        | workspace_map_source::SOURCE_ID => PromptChurn::Standing,
+        ROOM_DOCTRINE
+        | ROOM_ROSTER
+        | MEDIA_PERCEPTION
+        | MISSION
+        | WORKSPACE_MAP => PromptChurn::Standing,
         // The live roster renders under its view-state kind, not `room-roster` (the
         // replaced reader's id), and fell to Unknown. Board, not Standing: resting and
         // waking change it within the hour, and Standing would put it in the system prefix.
         continuum_positron::RosterViewState::KIND
-        | wall_source::SOURCE_ID
-        | active_work_source::SOURCE_ID => PromptChurn::Board,
-        room_board_source::SOURCE_ID => PromptChurn::Claims,
-        engram_source::SOURCE_ID | airc_source::SOURCE_ID | WM_FACULTY_ID => PromptChurn::Turn,
+        | WALL
+        | ACTIVE_WORK => PromptChurn::Board,
+        ROOM_BOARD => PromptChurn::Claims,
+        ENGRAMS | AIRC | WM_FACULTY_ID => PromptChurn::Turn,
         // The strip changes with every event in any of her rooms: turn churn, after the
         // standing and board blocks, so her awareness never displaces the cached prefix.
-        crate::persona::awareness_source::SOURCE_ID => PromptChurn::Turn,
+        AWARENESS => PromptChurn::Turn,
         _ if faculty == FacultyId::Recall.as_str() => PromptChurn::Turn,
         _ => PromptChurn::Unknown,
     }
@@ -339,9 +338,9 @@ fn volatile_blocks(
         // under the conversational contract while acting fine under the eval
         // harness's work framing — the contract was the variable, not the model).
         Some(Cow::Borrowed(if directed {
-            crate::persona::prompt_assembly::DIRECTED_PRESENCE_BLOCK
+            crate::cognition::prompt_assembly::DIRECTED_PRESENCE_BLOCK
         } else if holds_live_work {
-            crate::persona::prompt_assembly::WORKING_PRESENCE_BLOCK
+            crate::cognition::prompt_assembly::WORKING_PRESENCE_BLOCK
         } else {
             SILENCE_AFFORDANCE_BLOCK
         })),

@@ -145,7 +145,7 @@ pub struct PromptReuseResult {
 }
 
 fn captures_dir() -> Result<PathBuf, CommandError> {
-    crate::persona::recorder::fixture_dir(crate::cognition::prompt_capture::FIXTURE_DIR)
+    crate::cognition::capture::fixture_dir(crate::cognition::prompt_capture::FIXTURE_DIR)
         .ok_or_else(|| CommandError::Internal("cannot resolve capture home directory".into()))
 }
 

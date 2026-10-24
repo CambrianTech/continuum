@@ -121,7 +121,7 @@ pub(super) async fn resync_to_now(
         let priority_line = |m: &IncomingMessage| {
             crate::cognition::workspace::TurnAttention::for_message(
                 ctx.identity.persona_identity().mentions(&m.text),
-                crate::persona::room_directory::is_human_peer(m.peer_id),
+                crate::cognition::room_directory::is_human_peer(m.peer_id),
             )
             .requires_priority()
         };

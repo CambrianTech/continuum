@@ -35,7 +35,7 @@ pub type SharedExperienceSource = Arc<dyn ExperienceSource>;
 
 /// The node's ONE experience source, installed by the boot path that builds the
 /// room→purpose index (ipc) and read by the persona spawn path. Same seam shape as
-/// [`crate::cognition::persona_workspace::global`]: the path that builds minds and
+/// `cognition::persona_workspace::global` (in continuum-mind): the path that builds minds and
 /// the path that resolves rooms share a handle instead of each loading recipes.
 ///
 /// Why a persona needs this at all (S1, docs/planning/RECIPE-CONVERGENCE-PLAN.md):
@@ -268,7 +268,7 @@ impl RecipeExperienceSource {
     /// disk and the node's resident roster changes with zero code.
     pub fn resident_roles(
         dir: &std::path::Path,
-    ) -> Result<Vec<crate::persona::role_template::RoleId>, RecipeLoadError> {
+    ) -> Result<Vec<crate::experience::role::RoleId>, RecipeLoadError> {
         Ok(Self::resident_citizens(dir)?.into_iter().map(|c| c.role).collect())
     }
 
@@ -311,7 +311,7 @@ impl RecipeExperienceSource {
     /// tests/fixtures and as the documented loud-refusal arm when the overlay
     /// directory fails to load (same shape as the positron projection's #432
     /// refusal: serve the shipped floor, never go dark over one bad file).
-    pub fn resident_roles_embedded() -> Vec<crate::persona::role_template::RoleId> {
+    pub fn resident_roles_embedded() -> Vec<crate::experience::role::RoleId> {
         Self::resident_citizens_embedded().into_iter().map(|c| c.role).collect()
     }
 
@@ -647,7 +647,7 @@ mod tests {
     /// hardcoded roster and authored rosters are dead data.
     #[test]
     fn resident_roster_is_recipe_data_and_the_overlay_replaces_it() {
-        use crate::persona::role_template::RoleId;
+        use crate::experience::role::RoleId;
         assert_eq!(
             RecipeExperienceSource::resident_roles_embedded(),
             vec![RoleId::Helper],

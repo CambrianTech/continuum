@@ -43,7 +43,7 @@
 use crate::persona::hw_tier_descriptor::HwTierCategory;
 use crate::persona::inference_profile::{InferenceProfileError, PersonaInferenceProfile};
 use crate::persona::profile_builder::{build_profile, ServingParams};
-use crate::persona::role_template::RoleId;
+use crate::experience::role::RoleId;
 use uuid::Uuid;
 
 /// One row of the roster: a substrate-resolved persona slot ready for

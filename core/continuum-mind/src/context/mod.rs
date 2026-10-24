@@ -69,9 +69,7 @@ use crate::persona::airc_citizen::AircCitizen;
 
 pub mod agent;
 pub mod airc_adapter;
-pub mod citizen_path;
 pub use agent::{AgentContext, AgentContextError, AgentMetadata};
-pub use citizen_path::{citizen_home_path, citizens_kind_dir, kind_slug, legacy_home_path};
 
 /// The substrate's universal actor handle.
 ///

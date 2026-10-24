@@ -23,11 +23,11 @@ impl PersonaAircRuntime {
         // Slice 4 of #142: symmetric citizens/<kind>/<label>/airc/
         // layout. Use the shared helper so every actor kind shares
         // the same path schema.
-        let home = crate::context::citizen_home_path(continuum_root, kind, provider, &agent_name);
+        let home = crate::identity::citizen_path::citizen_home_path(continuum_root, kind, provider, &agent_name);
 
         // Migration: refuse to use the pre-Slice-4 layout. Hard-error
         // with the exact `mv` command per [[no-fallbacks-ever]].
-        if let Some(legacy) = crate::context::legacy_home_path(continuum_root, kind, &agent_name) {
+        if let Some(legacy) = crate::identity::citizen_path::legacy_home_path(continuum_root, kind, &agent_name) {
             if tokio::fs::try_exists(&legacy).await.unwrap_or(false) {
                 let new_parent = home
                     .parent()

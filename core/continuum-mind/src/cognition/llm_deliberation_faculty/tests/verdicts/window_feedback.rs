@@ -260,7 +260,7 @@ async fn provider_context_feedback_refits_and_captures_each_attempt() {
         ));
         ws.broadcast.push(
             Contribution::context(
-                FacultyId::Custom(crate::persona::active_work_source::SOURCE_ID.into()),
+                FacultyId::Custom(crate::cognition::faculty_ids::ACTIVE_WORK.into()),
                 "The selected card, owner and teammate review remain required.",
                 1.0,
                 "current held activity",

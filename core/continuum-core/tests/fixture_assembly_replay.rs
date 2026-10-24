@@ -68,7 +68,7 @@ use continuum_core::model_registry::Capability;
 use continuum_core::persona::cognition_io::{
     build_respond_input, PersonaContext, Signal, SignalKind, SignalOriginator,
 };
-use continuum_core::persona::prompt_assembly::PromptMessage;
+use continuum_core::cognition::prompt_assembly::PromptMessage;
 use continuum_core::persona::response::build_messages_with_media;
 use serde_json::Value;
 use std::collections::HashSet;

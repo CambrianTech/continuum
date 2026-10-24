@@ -30,7 +30,7 @@ use super::*;
 /// change-detection over what she should be attending to.
 /// [[organic-substrate-continuous-concern-scheduler]].
 pub(super) fn burst_fingerprint(
-    deliveries: &[crate::persona::rag_budget::RagDelivery],
+    deliveries: &[crate::cognition::rag_budget::RagDelivery],
     own_peer: &str,
 ) -> u64 {
     use std::hash::{Hash, Hasher};
@@ -439,7 +439,7 @@ pub(super) async fn run_self_cycle(
     // BOTH this loop and the self-set tool she invokes (the brain holds no global
     // handle), so her steering and this floor read one state. Locked only across the
     // synchronous read (no await held), per the concurrency style guide.
-    let focus_handle = crate::persona::focus::registry().handle(ctx.identity.peer_id.as_uuid());
+    let focus_handle = crate::cognition::focus::registry().handle(ctx.identity.peer_id.as_uuid());
     let wakes = {
         let mut focus = focus_handle
             .lock()

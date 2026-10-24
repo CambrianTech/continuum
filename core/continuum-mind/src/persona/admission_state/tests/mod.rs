@@ -603,7 +603,7 @@
     /// memorize the crib sheet, but her autobiography of struggling stays.
     #[test]
     pub(super) fn redact_scrubs_exam_key_from_memory_keeping_the_experience() {
-        use crate::persona::redaction::{HeldOutAnswerDetector, RedactionClass, RedactionPolicy};
+        use crate::cognition::redaction::{HeldOutAnswerDetector, RedactionClass, RedactionPolicy};
         let state = AdmissionState::new(Arc::new(
             crate::persona::recall_metadata::RecallMetadataRegistry::new(),
         ));
@@ -633,7 +633,7 @@
     /// empty report and mutates nothing — the hot path when no exam is in play.
     #[test]
     pub(super) fn redact_with_noop_policy_changes_nothing() {
-        use crate::persona::redaction::RedactionPolicy;
+        use crate::cognition::redaction::RedactionPolicy;
         let state = AdmissionState::new(Arc::new(
             crate::persona::recall_metadata::RecallMetadataRegistry::new(),
         ));

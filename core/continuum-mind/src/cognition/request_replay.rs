@@ -291,7 +291,7 @@ impl ActionCommand for CognitionReplayRequest {
             .map_err(|e| CommandError::Arguments(format!("persona_id: {e}")))?;
         let selected = p.selected.clone();
         let prepared = tokio::task::spawn_blocking(move || {
-            let dir = crate::persona::recorder::fixture_dir(prompt_capture::FIXTURE_DIR)
+            let dir = crate::cognition::capture::fixture_dir(prompt_capture::FIXTURE_DIR)
                 .ok_or_else(|| CommandError::Internal("capture directory unavailable".into()))?;
             let detail = prompt_capture::detail(&dir, persona, &selected)
                 .map_err(|e| CommandError::Invalid(format!("capture: {e}")))?;

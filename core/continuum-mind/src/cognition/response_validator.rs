@@ -7,10 +7,10 @@
 //! puts that orchestration in Rust where it belongs, so the cognition
 //! layer is self-contained and the TS shim becomes a deletion target.
 //!
-//! No new validation LOGIC — that lives in `persona::text_analysis`
+//! No new validation LOGIC — that lives in `cognition::text_analysis`
 //! and is reused as-is. This module is the integration layer.
 
-use crate::persona::text_analysis::{
+use crate::cognition::text_analysis::{
     clean_response, validate_response, ConversationMessage, LoopDetector,
 };
 use uuid::Uuid;
@@ -48,7 +48,7 @@ impl ValidationOutcome {
 /// Clean a raw model response and run all validation gates against it.
 ///
 /// Pure orchestration. The actual cleaning + validation logic lives in
-/// `persona::text_analysis`. This function:
+/// `cognition::text_analysis`. This function:
 ///   1. Strips `<thinking>` blocks and name prefixes via `clean_response`
 ///   2. Runs the 4-gate validator (garbage, loop, truncated, semantic)
 ///   3. Packages the outcome with logging-friendly reason text
@@ -170,7 +170,7 @@ pub fn is_hard_failure(gate: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::persona::text_analysis::ConversationMessage;
+    use crate::cognition::text_analysis::ConversationMessage;
     use uuid::Uuid;
 
     fn empty_history() -> Vec<ConversationMessage> {

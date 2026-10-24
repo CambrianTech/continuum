@@ -34,7 +34,7 @@ pub const JUSTIFICATION_MARKER: &str = "head-cut-ok:";
 const MIN_REASON_CHARS: usize = 16;
 
 /// The trees that render what a mind reads.
-const PROMPT_PATHS: &[&str] = &["cognition/", "persona/", "genome/", "rag/", "modules/", "airc/", "positron/"];
+const PROMPT_PATHS: &[&str] = &["cognition/", "persona/", "genome/", "rag/", "modules/", "airc/", "positron/", "experience/", "recipe/"];
 
 /// Cuts that keep a head whatever bounds them.
 const HEAD_KEEPERS: &[&str] = &[".chars().take(", "head_to_tokens(", "truncate_chars(", ".lines().next()"];

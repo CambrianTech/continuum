@@ -12,13 +12,13 @@
 //! own `focus/nudge` verb (the kernel's existing agency seam) and per-recipe
 //! mode defaults (exam=1.0, dream→0) feed the SAME inputs.
 //!
-//! Every method's return at [`crate::persona::focus::RESTING_FOCUS`] must equal the calibrated
+//! Every method's return at [`crate::cognition::focus::RESTING_FOCUS`] must equal the calibrated
 //! constant the seam replaced — installing this junction changes NOTHING until
 //! something moves the dial. That identity is pinned by test.
 
 /// The focus SCALAR this junction consumes is the persona focus kernel's —
-/// [`crate::persona::focus::FocusState::focus`] (0..1, resting setpoint
-/// [`crate::persona::focus::RESTING_FOCUS`]). One dial, one home
+/// [`crate::cognition::focus::FocusState::focus`] (0..1, resting setpoint
+/// [`crate::cognition::focus::RESTING_FOCUS`]). One dial, one home
 /// ([[compression|one logical decision, one place]]): the kernel owns the
 /// state (scalar + sticky cursor + mutes, set via `focus/nudge` etc.); this
 /// module owns only the PROJECTION of that scalar into cognition thresholds —
@@ -70,7 +70,7 @@ impl FocusPolicy for CalibratedConstants {
 /// behind the same signature.
 #[derive(Debug)]
 pub struct LinearBeta {
-    /// σ at [`crate::persona::focus::RESTING_FOCUS`] — the calibrated anchor.
+    /// σ at [`crate::cognition::focus::RESTING_FOCUS`] — the calibrated anchor.
     pub neutral_sigma: f32,
     /// How far the bar travels from neutral to either extreme, in σ.
     pub span: f32,
@@ -104,7 +104,7 @@ impl FocusPolicy for LinearBeta {
 mod tests {
     use super::*;
 
-    use crate::persona::focus::RESTING_FOCUS;
+    use crate::cognition::focus::RESTING_FOCUS;
 
     // what this catches: the junction's install contract — at NEUTRAL focus
     // every adapter must return the calibrated constant the seam replaced, so

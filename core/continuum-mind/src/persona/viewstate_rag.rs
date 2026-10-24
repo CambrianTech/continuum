@@ -92,7 +92,7 @@ use serde::de::DeserializeOwned;
 
 use continuum_positron::Substrate;
 
-use super::rag_budget::{
+use crate::cognition::rag_budget::{
     room_scope_allows, RagContext, RagDelivery, RagItem, RagSource,
     ResolutionPreference,
 };
@@ -149,8 +149,8 @@ pub trait RagRenderable: DeserializeOwned + Send + Sync + 'static {
     fn floor_tokens() -> u32;
 
     /// Source-owned appetite, shared with non-ViewState grounding sources.
-    fn budget_claim(window: u32, headroom: u32) -> super::rag_budget::RagSourceBudget {
-        super::rag_budget::RagSourceBudget::retrieval(
+    fn budget_claim(window: u32, headroom: u32) -> crate::cognition::rag_budget::RagSourceBudget {
+        crate::cognition::rag_budget::RagSourceBudget::retrieval(
             Self::KIND,
             Self::floor_tokens(),
             window,
@@ -414,7 +414,7 @@ impl<V: RagRenderable> RagSource for ViewStateRagSource<V> {
         V::floor_tokens()
     }
 
-    fn budget_claim(&self, window: u32, headroom: u32) -> super::rag_budget::RagSourceBudget {
+    fn budget_claim(&self, window: u32, headroom: u32) -> crate::cognition::rag_budget::RagSourceBudget {
         V::budget_claim(window, headroom)
     }
 
@@ -473,7 +473,7 @@ impl RagRenderable for continuum_positron::RosterViewState {
     /// One member line, measured: a name plus a short role runs ~10 tokens. The
     /// floor is ONE PERSON — under any budget that admits this source at all, a
     /// citizen should learn that at least someone is here.
-    fn budget_claim(window: u32, headroom: u32) -> super::rag_budget::RagSourceBudget {
+    fn budget_claim(window: u32, headroom: u32) -> crate::cognition::rag_budget::RagSourceBudget {
         super::room_roster_source::roster_budget_claim(Self::KIND, window, headroom)
     }
 

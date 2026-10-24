@@ -18,14 +18,14 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 
-use super::rag_budget::{
+use crate::cognition::rag_budget::{
      RagContext, RagDelivery, RagItem, RagSource, ResolutionPreference,
 };
 use continuum_base::token_estimate::estimate_prompt_tokens as estimate_tokens;
 use crate::media::{Percept, PerceptionBuffer};
 use crate::runtime::SharedCompute;
 
-pub(crate) const SOURCE_ID: &str = "media-perception";
+use crate::cognition::faculty_ids::MEDIA_PERCEPTION;
 
 /// A persona's live-call visual perception, delivered as budgeted RAG grounding.
 pub struct MediaPerceptionSource {
@@ -84,7 +84,7 @@ fn short(id: &str) -> &str {
 
 fn empty_delivery() -> RagDelivery {
     RagDelivery {
-        source_id: SOURCE_ID.to_string(),
+        source_id: MEDIA_PERCEPTION.to_string(),
         items: Vec::new(),
         tokens_used: 0,
         truncated: false,
@@ -95,7 +95,7 @@ fn empty_delivery() -> RagDelivery {
 #[async_trait]
 impl RagSource for MediaPerceptionSource {
     fn source_id(&self) -> &'static str {
-        SOURCE_ID
+        MEDIA_PERCEPTION
     }
 
     fn expand_command(&self) -> Option<&'static str> {
@@ -138,7 +138,7 @@ impl RagSource for MediaPerceptionSource {
         }
 
         RagDelivery {
-            source_id: SOURCE_ID.to_string(),
+            source_id: MEDIA_PERCEPTION.to_string(),
             items,
             tokens_used,
             // Room-as-now, not a paginated history.

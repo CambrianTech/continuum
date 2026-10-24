@@ -12,7 +12,7 @@
 //!
 //! Extracted from `evaluator.rs` (continuum#1208).
 
-use crate::persona::text_analysis;
+use crate::cognition::text_analysis;
 use serde::{Deserialize, Serialize};
 use std::time::Instant;
 use ts_rs::TS;

@@ -685,7 +685,7 @@ fn a_held_work_card_survives_budget_pressure_that_drops_everything_else() {
     ));
     // Her held card — what a claim-holding citizen must never lose sight of.
     ws.broadcast.push(Contribution::context(
-        FacultyId::Custom(crate::persona::active_work_source::SOURCE_ID.into()),
+        FacultyId::Custom(crate::cognition::faculty_ids::ACTIVE_WORK.into()),
         "[your work] psf__requests-2148 staged in workspace/swe — fix in place, tests are the grade",
         0.9,
         "held claims",
@@ -718,7 +718,7 @@ fn the_reply_claim_holds_the_reasoning_channel_under_its_runaway_bound() {
     let prior = LlmDeliberationFaculty::COMPLETION_COLD_PRIOR_TOKENS;
     let cap = LlmDeliberationFaculty::ACT_OUTPUT_CAP;
     // (floor, wanted, priority, runaway bound)
-    let shape = |(c, r): (crate::persona::rag_budget::RagSourceBudget, u32)| {
+    let shape = |(c, r): (crate::cognition::rag_budget::RagSourceBudget, u32)| {
         assert_eq!(c.min_tokens, c.floor_tokens, "above its floor the reply grows by priority");
         assert!(c.required, "the reply always gets its floor");
         (c.floor_tokens, c.max_tokens, c.priority, r)

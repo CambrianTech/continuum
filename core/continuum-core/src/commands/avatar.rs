@@ -39,7 +39,7 @@ async fn pin_from_live_runtime(uuid: uuid::Uuid) -> Option<String> {
 /// disk, so a cold render is still correct — no re-derivation, no thrash.
 async fn pin_from_seed_scan(uuid: uuid::Uuid) -> Option<String> {
     let root = dirs::home_dir()?.join(".continuum");
-    let dir = crate::context::citizen_path::citizens_kind_dir(
+    let dir = crate::identity::citizen_path::citizens_kind_dir(
         &root,
         crate::identity::IdentityKind::Persona,
     );

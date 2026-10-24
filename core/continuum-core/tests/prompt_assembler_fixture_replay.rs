@@ -7,7 +7,7 @@
 //! state the assembler saw and the EXACT output it produced.
 //!
 //! This harness loads each fixture row and asserts the Rust port
-//! `persona::prompt_assembly::assemble()` (or its turn-N variant when
+//! `cognition::prompt_assembly::assemble()` (or its turn-N variant when
 //! we add one) produces an output equivalent to the captured TS output.
 //!
 //! Equivalence is field-by-field, not byte-by-byte — TS may serialize
@@ -145,7 +145,7 @@ fn rust_assembler_matches_ts_captures() {
         // record schema mismatches as failures (they're actionable
         // signals that the TS capture needs a field rename or the
         // Rust struct needs a new field).
-        let parsed: Result<continuum_core::persona::prompt_assembly::PromptAssemblyInput, _> =
+        let parsed: Result<continuum_core::cognition::prompt_assembly::PromptAssemblyInput, _> =
             serde_json::from_value(row.input.clone());
         let input = match parsed {
             Ok(input) => input,
@@ -158,7 +158,7 @@ fn rust_assembler_matches_ts_captures() {
             }
         };
 
-        let actual = continuum_core::persona::prompt_assembly::assemble(&input);
+        let actual = continuum_core::cognition::prompt_assembly::assemble(&input);
         // Compare via JSON to be tolerant of field-order differences.
         let actual_json = match serde_json::to_value(&actual) {
             Ok(v) => v,

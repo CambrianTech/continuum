@@ -37,7 +37,7 @@ use super::working_memory::{WorkingMemory, WorkingMemoryFaculty};
 use super::workspace::{ActingBody, Faculty, SituationFocusArbiter, WorkspaceCycle};
 use crate::ai::adapter::AIProviderAdapter;
 use crate::persona::admission_state::AdmissionState;
-use crate::persona::rag_budget::RagSource;
+use crate::cognition::rag_budget::RagSource;
 
 /// Explicit offline adoption of a selected legacy checkpoint; shares this
 /// owner's schema, native path, and cross-process checkpoint exclusion.

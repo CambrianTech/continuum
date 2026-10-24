@@ -8,7 +8,7 @@ use continuum_context::source::{Item, Source};
 use continuum_context::view::{claims, Claim, View};
 
 use crate::cognition::llm_deliberation_faculty::prompt::start_grants;
-use crate::persona::rag_budget::{flex_allocate, FlexAllocation, RagSourceBudget};
+use crate::cognition::rag_budget::{flex_allocate, FlexAllocation, RagSourceBudget};
 
 /// One of her sources: keyed items, each collapsible to a short pointer.
 struct Stream {

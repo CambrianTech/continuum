@@ -427,7 +427,7 @@ impl ServingDaemonModule {
                     if settled_now {
                         // A settled geometry is lanes the hour served: fold it into the
                         // health window's maximum (the lane-bound rest stands on that).
-                        crate::persona::health_ledger::note_lanes(live.lanes as u64);
+                        crate::cognition::health_ledger::note_lanes(live.lanes as u64);
                         continuum_base::probe!(
                             target: "continuum_core::modules::serving_daemon", class = "serving.geometry.settled",
                             model,

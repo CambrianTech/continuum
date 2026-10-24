@@ -321,8 +321,8 @@ pub(crate) fn triggers_a_turn(priority: bool, sender_is_citizen: bool, is_receip
 /// of help) still wakes; a human's or a mention always does (priority).
 pub(crate) fn is_receipt(text: &str) -> bool {
     let t = text.trim_start();
-    t.starts_with(crate::persona::presence_glyph::THOUGHT)
-        || t.starts_with(crate::persona::presence_glyph::ACT)
+    t.starts_with(crate::cognition::presence_glyph::THOUGHT)
+        || t.starts_with(crate::cognition::presence_glyph::ACT)
 }
 
 /// The trigger for ONE turn over the drained backlog: the newest priority line
@@ -352,7 +352,7 @@ pub(crate) fn publish_heard(persona: Uuid, msg: &IncomingMessage) {
     }
     if let Some(bus) = crate::runtime::MessageBus::global() {
         bus.publish_async_only(
-            crate::persona::mind_events::CHAT_HEARD,
+            crate::cognition::mind_events::CHAT_HEARD,
             serde_json::json!({
                 "message_id": msg.event_id,
                 "room_id": msg.room_id,

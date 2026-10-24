@@ -31,7 +31,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 
-use crate::persona::rag_budget::{
+use crate::cognition::rag_budget::{
      RagContext, RagDelivery, RagSource, ResolutionPreference,
 };
 
@@ -120,7 +120,7 @@ impl CachedRagSource {
 
 #[async_trait]
 impl RagSource for CachedRagSource {
-    fn room_scope(&self) -> super::rag_budget::RagRoomScope {
+    fn room_scope(&self) -> crate::cognition::rag_budget::RagRoomScope {
         self.inner.room_scope()
     }
 
@@ -136,7 +136,7 @@ impl RagSource for CachedRagSource {
         self.inner.floor_tokens()
     }
 
-    fn budget_claim(&self, window: u32, headroom: u32) -> super::rag_budget::RagSourceBudget {
+    fn budget_claim(&self, window: u32, headroom: u32) -> crate::cognition::rag_budget::RagSourceBudget {
         self.inner.budget_claim(window, headroom)
     }
 
@@ -199,7 +199,7 @@ mod tests {
             let n = self.fetches.fetch_add(1, Ordering::SeqCst) + 1;
             RagDelivery {
                 source_id: "counting".to_string(),
-                items: vec![crate::persona::rag_budget::RagItem {
+                items: vec![crate::cognition::rag_budget::RagItem {
                     content: format!("fetch #{n}"),
                     tokens: 4,
                     metadata: serde_json::json!({}),

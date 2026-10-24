@@ -54,6 +54,7 @@
 //! and the turn returns its real result.
 
 use continuum_base::time::EpochMs;
+use crate::cognition::capture::fixture_dir;
 use crate::cognition::tool_executor::types::MediaItemLite;
 use crate::persona::response::{PersonaResponse, RespondInput};
 use crate::persona::trace::CognitionTrace;
@@ -430,12 +431,6 @@ fn disabled() -> bool {
     std::env::var(DISABLE_ENV)
         .map(|v| matches!(v.as_str(), "1" | "true" | "TRUE"))
         .unwrap_or(false)
-}
-
-/// Shared fixture policy for live capture and its readers. Explicit HOME keeps
-/// its existing override semantics; native hosts need not inherit a shell HOME.
-pub fn fixture_dir(relative: &str) -> Option<PathBuf> {
-    crate::paths::home_dir().map(|h| h.join(relative))
 }
 
 /// Reuses the recorder's per-thread fixture isolation for capture/read tests.

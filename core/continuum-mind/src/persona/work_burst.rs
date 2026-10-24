@@ -28,7 +28,7 @@ pub(crate) fn acts_since_last_write_since(
     mine.sort_by_key(|r| r.occurred_at_ms);
     let mut n = 0usize;
     for r in mine {
-        for act in r.text.split(crate::persona::presence_glyph::ACT).skip(1) {
+        for act in r.text.split(crate::cognition::presence_glyph::ACT).skip(1) {
             let verb = act.split_whitespace().next().unwrap_or(""); // unwrap_or: a bare glyph names no verb
                         // Every write-capable hand resets the count (review on #3790: `code/write`
             // is what the one card completion tonight used — a gate that reads a
@@ -81,7 +81,7 @@ const PROGRESS_RAN_KEEP: usize = 3;
 /// `⚙ verb object ✓` segments joined by the act glyph; the object is whatever the
 /// writer put there (a path, a command, a card id), clipped for the block.
 pub(crate) fn card_progress(rows: &[crate::persona::durable_history::RoomRow], me: Uuid) -> CardProgress {
-    use crate::persona::presence_glyph::{ACT, FAIL, OK};
+    use crate::cognition::presence_glyph::{ACT, FAIL, OK};
     let mut mine: Vec<&crate::persona::durable_history::RoomRow> =
         rows.iter().filter(|r| r.sender == me && r.text.contains(ACT)).collect();
     mine.sort_by_key(|r| r.occurred_at_ms);
@@ -265,7 +265,7 @@ pub(crate) fn own_recent_thoughts_about(
 ) -> Vec<String> {
     let mut mine: Vec<&crate::persona::durable_history::RoomRow> = rows
         .iter()
-        .filter(|r| r.sender == me && r.text.starts_with(crate::persona::presence_glyph::THOUGHT))
+        .filter(|r| r.sender == me && r.text.starts_with(crate::cognition::presence_glyph::THOUGHT))
         .collect();
     if !about.is_empty() {
         let scoped: Vec<&crate::persona::durable_history::RoomRow> = mine
@@ -308,7 +308,7 @@ pub(crate) fn own_recent_thoughts_about(
         .collect()
 }
 
-pub(crate) fn work_board_anchor(deliveries: &[crate::persona::rag_budget::RagDelivery]) -> String {
+pub(crate) fn work_board_anchor(deliveries: &[crate::cognition::rag_budget::RagDelivery]) -> String {
     // Did the board source SPEAK this turn? "The board is empty" and "I never read the
     // board" are different facts about the world, and only one of them is knowable from an
     // absent delivery. Glass-boxed 2026-08-06 from Benchy's live capture: `room-kanban`
@@ -326,7 +326,7 @@ pub(crate) fn work_board_anchor(deliveries: &[crate::persona::rag_budget::RagDel
         // one. An anchor that invents emptiness actively overrides it.
         return String::new();
     }
-    let cards: Vec<&crate::persona::rag_budget::RagItem> = deliveries
+    let cards: Vec<&crate::cognition::rag_budget::RagItem> = deliveries
         .iter()
         .filter(|d| d.source_id == "room-kanban")
         .flat_map(|d| d.items.iter())
@@ -337,7 +337,7 @@ pub(crate) fn work_board_anchor(deliveries: &[crate::persona::rag_budget::RagDel
     /// `None` for an item whose metadata carries no parseable state — which is a real
     /// possibility (a future variant this build doesn't know) and must read as "unknown",
     /// never as a silent mismatch against a hardcoded spelling.
-    fn state(i: &crate::persona::rag_budget::RagItem) -> Option<airc_work::CardState> {
+    fn state(i: &crate::cognition::rag_budget::RagItem) -> Option<airc_work::CardState> {
         i.metadata
             .get("state")
             .and_then(|s| serde_json::from_value(s.clone()).ok())
@@ -346,7 +346,7 @@ pub(crate) fn work_board_anchor(deliveries: &[crate::persona::rag_budget::RagDel
     /// carries, never re-derived here — `claim_is_live` is the ONE definition and
     /// `room_board_source` already applied it. Absent (an older projection) reads as
     /// LIVE, so a missing field can never invent availability that isn't there.
-    fn claim_live(i: &crate::persona::rag_budget::RagItem) -> bool {
+    fn claim_live(i: &crate::cognition::rag_budget::RagItem) -> bool {
         i.metadata
             .get("claim_live")
             .and_then(|v| v.as_bool())

@@ -42,7 +42,7 @@ use crate::sdk_codegen::{AccessLevel, ActionCommand, CommandError, Ctx};
 /// Where the live cycle writes its per-persona workspace traces (mirror of
 /// `persona_workspace`'s capture wiring). The replay reads the SAME files.
 fn traces_dir() -> Option<std::path::PathBuf> {
-    crate::persona::recorder::fixture_dir(super::workspace_capture::FIXTURE_DIR)
+    crate::cognition::capture::fixture_dir(super::workspace_capture::FIXTURE_DIR)
 }
 
 /// One captured bid from the assembled `context` (the broadcast the decider saw).

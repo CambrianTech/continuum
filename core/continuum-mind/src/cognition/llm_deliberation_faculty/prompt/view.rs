@@ -262,7 +262,7 @@ impl LlmDeliberationFaculty {
                 .saturating_sub(selected.tokens)
                 .saturating_sub(framing_tokens);
             offered()
-                .find(|c| c.faculty.as_str() == crate::persona::active_work_source::SOURCE_ID)
+                .find(|c| c.faculty.as_str() == crate::cognition::faculty_ids::ACTIVE_WORK)
                 .map(cost)
                 .or_else(|| offered().map(cost).min())
                 .map(|tokens| tokens + Self::working_context_header_cost())
@@ -277,7 +277,7 @@ impl LlmDeliberationFaculty {
         // work." Every claimant on the served window bids in engine-calibrated tokens —
         // framing + the selected tools and the required input (required, never traded),
         // standing grounding, optional history, and the REPLY — and the one flexbox
-        // algorithm decides ([`crate::persona::rag_budget::flex_allocate`]). The reply was
+        // algorithm decides ([`crate::cognition::rag_budget::flex_allocate`]). The reply was
         // carved off the top by its own rule and then yielded in two steps; on a writing
         // turn that cut Benchy's first write mid-call (2026-10-18 02:10Z). Now it trades
         // against history and grounding by priority and never takes from required input.
@@ -318,7 +318,7 @@ impl LlmDeliberationFaculty {
         }
         reply.floor_tokens = reply_need.min(context_window.saturating_sub(fixed_cost.saturating_add(required_cost)));
         reply.min_tokens = reply.floor_tokens;
-        let fixed_claim = |id: &str, tokens: u32| crate::persona::rag_budget::RagSourceBudget {
+        let fixed_claim = |id: &str, tokens: u32| crate::cognition::rag_budget::RagSourceBudget {
             source_id: id.to_owned(),
             priority: 10,
             floor_tokens: tokens,
@@ -331,7 +331,7 @@ impl LlmDeliberationFaculty {
         let mut claims = vec![
             fixed_claim(FLEX_FRAMING, fixed_cost),
             fixed_claim(FLEX_REQUIRED, required_cost),
-            crate::persona::rag_budget::RagSourceBudget {
+            crate::cognition::rag_budget::RagSourceBudget {
                 source_id: FLEX_GROUNDING.to_owned(),
                 priority: 6,
                 floor_tokens: grounding_floor,
@@ -347,7 +347,7 @@ impl LlmDeliberationFaculty {
                 ),
                 required: false,
             },
-            crate::persona::rag_budget::RagSourceBudget {
+            crate::cognition::rag_budget::RagSourceBudget {
                 source_id: FLEX_HISTORY.to_owned(),
                 priority: 5,
                 floor_tokens: history_floor,
@@ -365,8 +365,8 @@ impl LlmDeliberationFaculty {
             source.max_tokens = claim(source.max_tokens as usize).max(source.floor_tokens);
             source
         }));
-        let plan = crate::persona::rag_budget::flex_allocate(context_window, &claims);
-        let budget_floor = crate::persona::rag_budget::turn_need(&claims).saturating_sub(claims.iter().find(|c| c.source_id == FLEX_REPLY).map_or(0, |c| c.floor_tokens)).saturating_add(reply_need);
+        let plan = crate::cognition::rag_budget::flex_allocate(context_window, &claims);
+        let budget_floor = crate::cognition::rag_budget::turn_need(&claims).saturating_sub(claims.iter().find(|c| c.source_id == FLEX_REPLY).map_or(0, |c| c.floor_tokens)).saturating_add(reply_need);
         // Whatever no claim took is hers to write with, up to the runaway bound.
         let reply_grant = plan.granted(FLEX_REPLY);
         let completion_reserve = reply_grant

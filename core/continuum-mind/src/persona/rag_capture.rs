@@ -60,7 +60,7 @@ use std::sync::Mutex;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
-use crate::persona::rag_budget::{
+use crate::cognition::rag_budget::{
     BudgetAllocation, RagContext, RagDelivery, RagSource, RagSourceBudget,
     ReservedTokens, ResolutionPreference,
 };
@@ -268,7 +268,7 @@ impl<S: RagSource> RecordingRagSource<S> {
 
 #[async_trait]
 impl<S: RagSource + 'static> RagSource for RecordingRagSource<S> {
-    fn room_scope(&self) -> super::rag_budget::RagRoomScope {
+    fn room_scope(&self) -> crate::cognition::rag_budget::RagRoomScope {
         self.inner.room_scope()
     }
 
@@ -287,7 +287,7 @@ impl<S: RagSource + 'static> RagSource for RecordingRagSource<S> {
         self.inner.floor_tokens()
     }
 
-    fn budget_claim(&self, window: u32, headroom: u32) -> super::rag_budget::RagSourceBudget {
+    fn budget_claim(&self, window: u32, headroom: u32) -> crate::cognition::rag_budget::RagSourceBudget {
         self.inner.budget_claim(window, headroom)
     }
 
@@ -367,7 +367,7 @@ impl RagCaptureSink for InMemoryRagCaptureSink {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::persona::rag_budget::{ RagDelivery, RagItem, StubRagSource};
+    use crate::cognition::rag_budget::{ RagDelivery, RagItem, StubRagSource};
     use tempfile::TempDir;
     use uuid::Uuid;
 

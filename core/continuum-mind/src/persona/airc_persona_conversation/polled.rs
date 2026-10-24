@@ -186,7 +186,7 @@ pub(super) fn signal_if_directed(own: uuid::Uuid, attention: &AttentionEvent) {
             crate::persona::persona_identity::PersonaIdentity::new(own, rt.agent_name().to_string())
         })
         .is_some_and(|me| me.mentions(&message.text));
-    let sender_is_human = crate::persona::room_directory::is_human_peer(peer);
+    let sender_is_human = crate::cognition::room_directory::is_human_peer(peer);
     if crate::cognition::workspace::TurnAttention::for_message(mentioned, sender_is_human)
         .requires_priority()
     {

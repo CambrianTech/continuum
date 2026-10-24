@@ -70,18 +70,18 @@ use super::*;
         }
         async fn deliver(
             &self,
-            _ctx: &crate::persona::rag_budget::RagContext,
+            _ctx: &crate::cognition::rag_budget::RagContext,
             _budget: u32,
-            resolution: crate::persona::rag_budget::ResolutionPreference,
-        ) -> crate::persona::rag_budget::RagDelivery {
+            resolution: crate::cognition::rag_budget::ResolutionPreference,
+        ) -> crate::cognition::rag_budget::RagDelivery {
             self.entries.fetch_add(1, AtomicOrdering::SeqCst);
             self.entered.notify_one();
             // Park until the test opens the gate. `wait_for` returns immediately
             // when it is already open, so an open gate costs nothing.
             let _ = self.gate.subscribe().wait_for(|open| *open).await;
-            crate::persona::rag_budget::RagDelivery {
+            crate::cognition::rag_budget::RagDelivery {
                 source_id: "gated-grounding".to_string(),
-                items: vec![crate::persona::rag_budget::RagItem {
+                items: vec![crate::cognition::rag_budget::RagItem {
                     content: "roster: Ivar [persona], win-claude [claude]".to_string(),
                     tokens: 12,
                     metadata: serde_json::Value::Null,

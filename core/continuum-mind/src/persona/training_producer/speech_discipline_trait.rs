@@ -394,7 +394,7 @@ pub(super) async fn read_lived(
         .map(|r| r.capture.clone())
         .collect();
     let read = tokio::task::spawn_blocking(move || {
-        let dir = crate::persona::recorder::fixture_dir(crate::cognition::prompt_capture::FIXTURE_DIR);
+        let dir = crate::cognition::capture::fixture_dir(crate::cognition::prompt_capture::FIXTURE_DIR);
         read_lived_calls(dir.as_deref(), persona_id, served, known)
     })
     .await;

@@ -57,7 +57,7 @@ impl LlmDeliberationFaculty {
     /// included): floor = the source collapsed, want = the source whole, at the source's
     /// priority. There is no separate history claim for the view, so the allocation that
     /// weighs her reply also decides, once, how much of her context she reads.
-    pub(in super::super) fn view_claims(&self, streams: &Streams) -> Vec<crate::persona::rag_budget::RagSourceBudget> {
+    pub(in super::super) fn view_claims(&self, streams: &Streams) -> Vec<crate::cognition::rag_budget::RagSourceBudget> {
         let memory = self.working_memory.as_deref();
         let actions = memory.map(|memory| Actions { memory });
         let thoughts = memory.map(|memory| Thoughts { memory });
@@ -68,7 +68,7 @@ impl LlmDeliberationFaculty {
                 let cost = |message: &ContextMessage| Self::message_cost(&message.to_chat());
                 let floor: usize = items.iter().map(|item| item.pointer.as_ref().map_or(0, cost)).sum(); // map_or: an item that leaves when collapsed costs nothing
                 let want: usize = items.iter().map(|item| cost(&item.full)).sum();
-                crate::persona::rag_budget::RagSourceBudget {
+                crate::cognition::rag_budget::RagSourceBudget {
                     source_id: format!("{VIEW_CLAIM}{}", source.name()),
                     priority: source.priority(),
                     floor_tokens: Self::clamp_u32(floor),
@@ -96,7 +96,7 @@ impl LlmDeliberationFaculty {
         &self,
         prompt: &mut PromptMessages,
         view: ViewPlacement,
-        plan: &crate::persona::rag_budget::FlexAllocation,
+        plan: &crate::cognition::rag_budget::FlexAllocation,
         room: usize,
         calibration: super::types::PromptCalibration,
     ) {
@@ -316,11 +316,11 @@ impl LlmDeliberationFaculty {
 /// and collapses its oldest first, at the start only ([`View::turn_over`]).
 pub(in super::super) fn start_grants(
     claims: &[Claim],
-    plan: &crate::persona::rag_budget::FlexAllocation,
+    plan: &crate::cognition::rag_budget::FlexAllocation,
     available: usize,
     appended_per_act: Option<usize>,
 ) -> Vec<usize> {
-    let grants: Vec<Option<&crate::persona::rag_budget::SourceAllocation>> = claims
+    let grants: Vec<Option<&crate::cognition::rag_budget::SourceAllocation>> = claims
         .iter()
         .map(|claim| plan.allocations.iter().find(|a| a.source_id == format!("{VIEW_CLAIM}{}", claim.source)))
         .collect();
@@ -349,12 +349,12 @@ pub(in super::super) fn start_grants(
         growable / 2
     };
     let start = grounding + growing;
-    let budgets: Vec<crate::persona::rag_budget::RagSourceBudget> = claims
+    let budgets: Vec<crate::cognition::rag_budget::RagSourceBudget> = claims
         .iter()
         .zip(&grants)
         .map(|(claim, grant)| {
             let (floor, max) = grant.map_or((0, 0), |a| (a.requested_floor, a.allocated_tokens)); // map_or: a source the window granted nothing starts collapsed
-            crate::persona::rag_budget::RagSourceBudget {
+            crate::cognition::rag_budget::RagSourceBudget {
                 source_id: claim.source.clone(),
                 priority: claim.priority,
                 floor_tokens: floor.min(max),
@@ -364,7 +364,7 @@ pub(in super::super) fn start_grants(
             }
         })
         .collect();
-    let sized = crate::persona::rag_budget::flex_allocate(LlmDeliberationFaculty::clamp_u32(start), &budgets);
+    let sized = crate::cognition::rag_budget::flex_allocate(LlmDeliberationFaculty::clamp_u32(start), &budgets);
     claims
         .iter()
         .zip(&grants)

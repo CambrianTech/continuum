@@ -7,7 +7,7 @@
     use crate::persona::instance_manager::PersonaInstanceInfo;
     use crate::persona::airc_citizen::StubAircCitizen;
     use crate::persona::identity_provider::PersonaIdentitySource;
-    use crate::persona::role_template::RoleId;
+    use crate::experience::role::RoleId;
     use crate::persona::scripted_conversation::ScriptedConversation;
     use crate::persona::supervisor::HostedPersona;
     use std::path::PathBuf;
@@ -463,7 +463,7 @@
     // regression for the 2026-08-06 anchor/receipt contradiction
     #[test]
     pub(super) fn an_absent_board_source_yields_no_anchor_at_all() {
-        use crate::persona::rag_budget::{RagDelivery, RagItem, ResolutionPreference};
+        use crate::cognition::rag_budget::{RagDelivery, RagItem, ResolutionPreference};
 
         let delivery = |source_id: &str, items: Vec<RagItem>| RagDelivery {
             source_id: source_id.to_string(),
@@ -532,16 +532,16 @@
         );
         assert!(turns[0].content.contains("list_commands"));
 
-        let delivery = crate::persona::rag_budget::RagDelivery {
+        let delivery = crate::cognition::rag_budget::RagDelivery {
             source_id: "airc".to_string(),
-            items: vec![crate::persona::rag_budget::RagItem {
+            items: vec![crate::cognition::rag_budget::RagItem {
                 content: "hello there".to_string(),
                 tokens: 0,
                 metadata: serde_json::json!({ "peer_id": "peer-2" }),
             }],
             tokens_used: 0,
             truncated: false,
-            resolution_used: crate::persona::rag_budget::ResolutionPreference::Raw,
+            resolution_used: crate::cognition::rag_budget::ResolutionPreference::Raw,
         };
         let turns = build_workspace_turns(&[delivery], "peer-1", "Asha", None);
         assert!(
@@ -558,16 +558,16 @@
     // verb-filler.
     #[test]
     pub(super) fn empty_wake_leads_with_her_work_thread_before_the_room() {
-        let work = crate::persona::rag_budget::RagDelivery {
+        let work = crate::cognition::rag_budget::RagDelivery {
             source_id: "active-work".to_string(),
             items: vec![
-                crate::persona::rag_budget::RagItem {
+                crate::cognition::rag_budget::RagItem {
                     content: "card 20fe404a \"macOS install acceptance checks\" (P1, owner YOU)"
                         .to_string(),
                     tokens: 0,
                     metadata: serde_json::json!({}),
                 },
-                crate::persona::rag_budget::RagItem {
+                crate::cognition::rag_budget::RagItem {
                     content: "[work] Your claim on card 33a0e899 \"conway\" is no longer held by you (lease expired or released)."
                         .to_string(),
                     tokens: 0,
@@ -576,7 +576,7 @@
             ],
             tokens_used: 0,
             truncated: false,
-            resolution_used: crate::persona::rag_budget::ResolutionPreference::Raw,
+            resolution_used: crate::cognition::rag_budget::ResolutionPreference::Raw,
         };
         let turns = build_workspace_turns(&[work], "peer-1", "Asha", None);
         assert_eq!(turns.len(), 1);
@@ -604,7 +604,7 @@
     /// thought. [[alignment-through-mutual-self-interest]].
     pub(super) mod burst_fingerprint_drive {
         use super::super::burst_fingerprint;
-        use crate::persona::rag_budget::{RagDelivery, RagItem, ResolutionPreference};
+        use crate::cognition::rag_budget::{RagDelivery, RagItem, ResolutionPreference};
         use serde_json::json;
 
         const ME: &str = "me-peer";

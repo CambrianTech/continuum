@@ -34,7 +34,6 @@ pub mod directed_pending;
 pub mod act_replay;
 pub mod audit;
 pub mod bench_round;
-pub mod bench_title;
 pub mod held_out;
 pub mod grid_allocation;
 pub mod measurement_staging;
@@ -133,6 +132,21 @@ pub mod working_set;
 pub mod workspace;
 pub mod workspace_capture;
 pub mod workspace_dashboard;
+// Leaf modules peeled down from persona (they name no persona module): the capture
+// fixture policy, the faculty ids persona's sources deliver under, the one budget
+// allocator, text analysis, prompt assembly, redaction, the health ledger, presence
+// glyphs, mind events, the room directory and the focus registry.
+pub mod capture;
+pub mod faculty_ids;
+pub mod focus;
+pub mod health_ledger;
+pub mod mind_events;
+pub mod presence_glyph;
+pub mod prompt_assembly;
+pub mod rag_budget;
+pub mod redaction;
+pub mod room_directory;
+pub mod text_analysis;
 
 pub use model_resolver::*;
 pub use response_orchestrator::{

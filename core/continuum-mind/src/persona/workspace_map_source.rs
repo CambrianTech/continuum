@@ -47,14 +47,11 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 
-use crate::persona::rag_budget::{
+use crate::cognition::rag_budget::{
      RagContext, RagDelivery, RagItem, RagSource, ResolutionPreference,
 };
 
-/// Source identifier — the deliberation faculty renders this delivery under a
-/// `[workspace-map]` grounding block (header is the source id verbatim, same as
-/// `room-roster` / `room-doctrine` in the brain path).
-pub(crate) const SOURCE_ID: &str = "workspace-map";
+use crate::cognition::faculty_ids::WORKSPACE_MAP;
 
 /// Token estimate — the ONE canonical chars/4 estimator (`cognition::token_budget`),
 /// shared by every RAG source so the replay ledger's numbers match. (Was a private
@@ -352,7 +349,7 @@ impl WorkspaceMapSource {
 #[async_trait]
 impl RagSource for WorkspaceMapSource {
     fn source_id(&self) -> &'static str {
-        SOURCE_ID
+        WORKSPACE_MAP
     }
 
     fn expand_command(&self) -> Option<&'static str> {
@@ -372,7 +369,7 @@ impl RagSource for WorkspaceMapSource {
         resolution: ResolutionPreference,
     ) -> RagDelivery {
         let empty = |res| RagDelivery {
-            source_id: SOURCE_ID.to_string(),
+            source_id: WORKSPACE_MAP.to_string(),
             items: Vec::new(),
             tokens_used: 0,
             truncated: false,
@@ -425,7 +422,7 @@ impl RagSource for WorkspaceMapSource {
         );
 
         RagDelivery {
-            source_id: SOURCE_ID.to_string(),
+            source_id: WORKSPACE_MAP.to_string(),
             items: vec![RagItem {
                 content,
                 tokens,

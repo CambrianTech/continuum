@@ -41,7 +41,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::persona::airc_source::{AircRagSource, AircTranscriptReader};
-use crate::persona::rag_budget::{
+use crate::cognition::rag_budget::{
     BudgetAllocation, FlexboxRagBudgetAdapter, RagBudgetAdapter, RagContext, RagSource,
     RagSourceBudget, ReservedTokens, ResolutionPreference,
 };
@@ -493,7 +493,7 @@ pub async fn inspect_persona_rag_with_inference(
 async fn run_inference_probe(
     adapter: Arc<dyn crate::ai::adapter::AIProviderAdapter>,
     persona_name: &str,
-    items: &[crate::persona::rag_budget::RagItem],
+    items: &[crate::cognition::rag_budget::RagItem],
 ) -> Result<ModelResponseInspection, String> {
     use crate::ai::types::{ChatMessage, MessageContent, ResponseFormat, TextGenerationRequest};
     let adapter_id = adapter.provider_id().to_string();

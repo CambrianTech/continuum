@@ -39,7 +39,7 @@ use std::sync::Mutex;
 
 use async_trait::async_trait;
 
-use crate::persona::rag_budget::{
+use crate::cognition::rag_budget::{
      RagContext, RagDelivery, RagSource, RagSourceBudget, ResolutionPreference,
 };
 use crate::persona::rag_capture::RagCaptureEvent;
@@ -244,7 +244,7 @@ pub fn read_jsonl_captures(path: &Path) -> std::io::Result<Vec<RagCaptureEvent>>
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::persona::rag_budget::{RagDelivery, RagItem};
+    use crate::cognition::rag_budget::{RagDelivery, RagItem};
     use crate::persona::rag_capture::{
         InMemoryRagCaptureSink, JsonlRagCaptureSink, RagCaptureSink, RecordingRagSource,
     };
@@ -337,7 +337,7 @@ mod tests {
     #[tokio::test]
     async fn capture_then_replay_via_in_memory_sink() {
         // Live source produces 2 items.
-        let live = crate::persona::rag_budget::StubRagSource::new(
+        let live = crate::cognition::rag_budget::StubRagSource::new(
             "stub",
             persona(),
             vec![item("alpha", 5), item("beta", 5)],
@@ -368,7 +368,7 @@ mod tests {
                 persona_id: persona(),
                 turn_id: context.substrate.turn_id,
                 context_window: 2048,
-                reserved: crate::persona::rag_budget::ReservedTokens {
+                reserved: crate::cognition::rag_budget::ReservedTokens {
                     system: 0,
                     completion: 0,
                 },
@@ -381,7 +381,7 @@ mod tests {
             persona_id: Uuid::new_v4(),
             turn_id: first_ctx.substrate.turn_id,
             context_window: 2048,
-            reserved: crate::persona::rag_budget::ReservedTokens {
+            reserved: crate::cognition::rag_budget::ReservedTokens {
                 system: 0,
                 completion: 0,
             },
@@ -508,7 +508,7 @@ mod tests {
 
         // Phase 1: capture
         {
-            let live = crate::persona::rag_budget::StubRagSource::new(
+            let live = crate::cognition::rag_budget::StubRagSource::new(
                 "stub",
                 persona(),
                 vec![item("hello", 5), item("world", 5)],
@@ -538,7 +538,7 @@ mod tests {
     /// old JSONL shapes (no `truncated`, legacy `continuation`) and precedence lines
     /// (both present) are constructed exactly as they would appear on disk.
     fn source_delivered_wire(
-        items: Vec<crate::persona::rag_budget::RagItem>,
+        items: Vec<crate::cognition::rag_budget::RagItem>,
         truncated: Option<bool>,
         continuation: Option<serde_json::Value>,
     ) -> String {
@@ -549,7 +549,7 @@ mod tests {
             source_id: "stub".to_string(),
             budget_requested: 100,
             resolution_requested: ResolutionPreference::Raw,
-            delivery: crate::persona::rag_budget::RagDelivery {
+            delivery: crate::cognition::rag_budget::RagDelivery {
                 source_id: "stub".to_string(),
                 items,
                 tokens_used: 5,

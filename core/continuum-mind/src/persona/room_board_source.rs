@@ -60,13 +60,9 @@ use airc_work::BoardSnapshot;
 use async_trait::async_trait;
 use serde_json::json;
 
-use crate::persona::rag_budget::{ RagContext, RagDelivery, RagItem, RagSource, ResolutionPreference};
+use crate::cognition::rag_budget::{ RagContext, RagDelivery, RagItem, RagSource, ResolutionPreference};
 
-/// Source identifier — the deliberation faculty renders this delivery under a
-/// `[room-kanban]` header (generic `[<source_id>]` projection). Distinct from
-/// `active-work` (own claims) and `room-wall` (the wall, renamed from the
-/// misleading `room-board` in #3874).
-pub(crate) const SOURCE_ID: &str = "room-kanban";
+use crate::cognition::faculty_ids::ROOM_BOARD;
 
 /// Most cards this source will render in full, per turn.
 ///
@@ -98,7 +94,7 @@ pub trait RoomBoardReader: Send + Sync {
     /// The work board of `room` — folded by airc into a [`BoardSnapshot`].
     ///
     /// `room` is the id this source is BOUND to (`for_room`), i.e. the same
-    /// value [`crate::persona::rag_budget::room_scope_allows`] gates on. Passing
+    /// value [`crate::cognition::rag_budget::room_scope_allows`] gates on. Passing
     /// it is what makes gate and read one decision instead of two that merely
     /// coincide: before 2026-08-07 the read resolved airc's `current_room()`
     /// independently ("whatever my default subscription happens to be") while the
@@ -173,7 +169,7 @@ impl RoomBoardReader for airc_lib::Airc {
                 // What these marks actually established, 2026-09-05: they EXONERATED
                 // this read. Chasing a faculty rendered as `[room-board]` that pins at
                 // the 30s deadline, I assumed it was this one. It is not — that
-                // SOURCE_ID belongs to `wall_source.rs`. The proof is an ABSENCE: every
+                // source id belongs to `wall_source.rs`. The proof is an ABSENCE: every
                 // read that emitted `resolve_room` here also reached `complete`
                 // (1.4-9.9s), while the 30s deadline events carry no mark at all, not
                 // even the first. A faculty cancelled before the first line of this
@@ -294,7 +290,7 @@ impl RoomBoardSource {
 
     fn empty() -> RagDelivery {
         RagDelivery {
-            source_id: SOURCE_ID.to_string(),
+            source_id: ROOM_BOARD.to_string(),
             items: Vec::new(),
             tokens_used: 0,
             truncated: false,
@@ -401,12 +397,12 @@ fn held_card_line(card: &airc_work::WorkCard, checkout: Option<&std::path::Path>
 
 #[async_trait]
 impl RagSource for RoomBoardSource {
-    fn room_scope(&self) -> super::rag_budget::RagRoomScope {
-        super::rag_budget::RagRoomScope::Activity
+    fn room_scope(&self) -> crate::cognition::rag_budget::RagRoomScope {
+        crate::cognition::rag_budget::RagRoomScope::Activity
     }
 
     fn source_id(&self) -> &'static str {
-        SOURCE_ID
+        ROOM_BOARD
     }
 
     fn expand_command(&self) -> Option<&'static str> {
@@ -472,7 +468,7 @@ impl RoomBoardSource {
             Some(t) if t.is_nil() => {
                 continuum_base::probe!(
                     class = "rag.room_gate.abstain",
-                    source = SOURCE_ID,
+                    source = ROOM_BOARD,
                     bound_room = ?self.room_id,
                     turn_room = %t,
                     persona_id = %ctx.persona_id,
@@ -508,7 +504,7 @@ impl RoomBoardSource {
         if board.cards.is_empty() {
             tracing::info!(
                 probe_class = "rag.board.empty",
-                source = SOURCE_ID,
+                source = ROOM_BOARD,
                 persona_id = %self.persona_id,
                 bound_room = ?self.room_id,
                 turn_room = ?ctx.airc_room.as_ref().map(|r| r.as_uuid()),
@@ -839,7 +835,7 @@ impl RoomBoardSource {
         );
 
         RagDelivery {
-            source_id: SOURCE_ID.to_string(),
+            source_id: ROOM_BOARD.to_string(),
             items,
             tokens_used,
             truncated: false,

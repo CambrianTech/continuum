@@ -138,7 +138,7 @@ use super::*;
         let id = Uuid::new_v4();
         let cycle = registry.register_from_cfg(cfg_for(id)).expect("resident");
         let (original, original_model) = cycle.current_model_route().expect("binding");
-        let airc = crate::context::citizen_home_path(root.path(), crate::identity::IdentityKind::Persona, None, "Ivar");
+        let airc = crate::identity::citizen_path::citizen_home_path(root.path(), crate::identity::IdentityKind::Persona, None, "Ivar");
         let home = crate::persona::home::PersonaHome::from_root(airc.parent().expect("parent").to_path_buf());
         let remote = crate::persona::PersonaModelOverride::new_remote("remote/model", None, 1, Uuid::new_v4().to_string());
         remote.write(&home).expect("remote override");
@@ -524,11 +524,11 @@ use super::*;
         }
         async fn deliver(
             &self,
-            _ctx: &crate::persona::rag_budget::RagContext,
+            _ctx: &crate::cognition::rag_budget::RagContext,
             _budget: u32,
-            resolution: crate::persona::rag_budget::ResolutionPreference,
-        ) -> crate::persona::rag_budget::RagDelivery {
-            crate::persona::rag_budget::RagDelivery {
+            resolution: crate::cognition::rag_budget::ResolutionPreference,
+        ) -> crate::cognition::rag_budget::RagDelivery {
+            crate::cognition::rag_budget::RagDelivery {
                 source_id: "classify-stub".to_string(),
                 items: Vec::new(),
                 tokens_used: 0,
@@ -607,13 +607,13 @@ use super::*;
             }
             async fn deliver(
                 &self,
-                _ctx: &crate::persona::rag_budget::RagContext,
+                _ctx: &crate::cognition::rag_budget::RagContext,
                 _budget: u32,
-                resolution: crate::persona::rag_budget::ResolutionPreference,
-            ) -> crate::persona::rag_budget::RagDelivery {
-                crate::persona::rag_budget::RagDelivery {
+                resolution: crate::cognition::rag_budget::ResolutionPreference,
+            ) -> crate::cognition::rag_budget::RagDelivery {
+                crate::cognition::rag_budget::RagDelivery {
                     source_id: "workspace-map".to_string(),
-                    items: vec![crate::persona::rag_budget::RagItem {
+                    items: vec![crate::cognition::rag_budget::RagItem {
                         content: format!("workspace layout — {HANDS_MARKER}"),
                         tokens: 12,
                         metadata: serde_json::Value::Null,

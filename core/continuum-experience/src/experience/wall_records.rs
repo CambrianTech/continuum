@@ -65,7 +65,7 @@ fn record_key(post: &WallPostPublished) -> Option<(uuid::Uuid, &'static str, Str
 
 /// The wall records still in force, in publish order: each keyed record's newest post,
 /// every unkeyed post. Storage is append-only and this never mutates it.
-pub(crate) fn current_wall_records(posts: Vec<WallPostPublished>) -> Vec<WallPostPublished> {
+pub fn current_wall_records(posts: Vec<WallPostPublished>) -> Vec<WallPostPublished> {
     let mut seen = std::collections::HashSet::new();
     let mut current = Vec::with_capacity(posts.len());
     for post in posts.into_iter().rev() {

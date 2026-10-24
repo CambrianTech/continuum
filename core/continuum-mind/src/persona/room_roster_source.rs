@@ -57,7 +57,7 @@ use async_trait::async_trait;
 use continuum_positron::RosterSlotView;
 
 use crate::persona::roster_slot::roster_slot_from_member;
-use crate::persona::rag_budget::{
+use crate::cognition::rag_budget::{
      RagContext, RagDelivery, RagItem, RagSource, ResolutionPreference,
 };
 
@@ -67,8 +67,8 @@ pub(crate) fn roster_budget_claim(
     source_id: &str,
     window: u32,
     headroom: u32,
-) -> super::rag_budget::RagSourceBudget {
-    super::rag_budget::RagSourceBudget::floorless_share(
+) -> crate::cognition::rag_budget::RagSourceBudget {
+    crate::cognition::rag_budget::RagSourceBudget::floorless_share(
         source_id,
         window,
         headroom,
@@ -76,10 +76,7 @@ pub(crate) fn roster_budget_claim(
     )
 }
 
-/// Source identifier — used by budget presets, telemetry, and the
-/// service-loop projection that routes this delivery into system-prompt
-/// grounding rather than conversation history.
-pub(crate) const SOURCE_ID: &str = "room-roster";
+use crate::cognition::faculty_ids::ROOM_ROSTER;
 
 /// How far back a heartbeat counts as "present". Matches the airc
 /// agent-liveness convention of a short recency window — a peer that
@@ -328,10 +325,10 @@ impl RoomRosterSource {
 #[async_trait]
 impl RagSource for RoomRosterSource {
     fn source_id(&self) -> &'static str {
-        SOURCE_ID
+        ROOM_ROSTER
     }
 
-    fn budget_claim(&self, window: u32, headroom: u32) -> super::rag_budget::RagSourceBudget {
+    fn budget_claim(&self, window: u32, headroom: u32) -> crate::cognition::rag_budget::RagSourceBudget {
         roster_budget_claim(self.source_id(), window, headroom)
     }
 
@@ -356,7 +353,7 @@ impl RagSource for RoomRosterSource {
         // depth, same shape as AircRagSource).
         if ctx.persona_id != self.persona_id {
             return RagDelivery {
-                source_id: SOURCE_ID.to_string(),
+                source_id: ROOM_ROSTER.to_string(),
                 items: Vec::new(),
                 tokens_used: 0,
                 truncated: false,
@@ -372,14 +369,14 @@ impl RagSource for RoomRosterSource {
             Some(t) if t.is_nil() => {
                 continuum_base::probe!(
                     class = "rag.room_gate.abstain",
-                    source = SOURCE_ID,
+                    source = ROOM_ROSTER,
                     bound_room = ?self.room_id,
                     turn_room = %t,
                     persona_id = %ctx.persona_id,
                     "synthetic nil-room context — no roster, and no fallback to the bound room"
                 );
                 return RagDelivery {
-                    source_id: SOURCE_ID.to_string(),
+                    source_id: ROOM_ROSTER.to_string(),
                     items: Vec::new(),
                     tokens_used: 0,
                     truncated: false,
@@ -406,7 +403,7 @@ impl RagSource for RoomRosterSource {
                     "room_roster: room_roster failed — empty delivery, cognition stays up"
                 );
                 return RagDelivery {
-                    source_id: SOURCE_ID.to_string(),
+                    source_id: ROOM_ROSTER.to_string(),
                     items: Vec::new(),
                     tokens_used: 0,
                     truncated: false,
@@ -480,7 +477,7 @@ impl RagSource for RoomRosterSource {
         );
 
         RagDelivery {
-            source_id: SOURCE_ID.to_string(),
+            source_id: ROOM_ROSTER.to_string(),
             items,
             tokens_used,
             // Presence is always-current and small; no pagination.

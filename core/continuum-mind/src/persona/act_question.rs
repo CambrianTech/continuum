@@ -203,7 +203,7 @@ pub(crate) async fn ask_the_act_question(
                                     let id8: String =
                                         c.card_id.as_uuid().to_string().chars().take(8).collect();
                                     let inst =
-                                        crate::cognition::bench_title::parse_card_title(&c.title)
+                                        crate::recipe::bench_title::parse_card_title(&c.title)
                                             .map(|(_, i)| i)
                                             .unwrap_or_default(); // unwrap_or: a non-bench title has no instance to scope on
                                     [id8, inst]
@@ -337,8 +337,8 @@ pub(crate) async fn ask_the_act_question(
                         // Prepared environments and hidden grading belong only
                         // to benchmark recipes, never to an ordinary project.
                         if held.first().is_some_and(|card| {
-                            crate::cognition::bench_title::parse_card_title(&card.title).is_some()
-                                || crate::cognition::bench_title::parse_review_title(&card.title).is_some()
+                            crate::recipe::bench_title::parse_card_title(&card.title).is_some()
+                                || crate::recipe::bench_title::parse_review_title(&card.title).is_some()
                         }) {
                             // THE ENVIRONMENT, as a fact. Live 2026-09-07: a
                             // holder ran `pip install --no-build-isolation -e .`

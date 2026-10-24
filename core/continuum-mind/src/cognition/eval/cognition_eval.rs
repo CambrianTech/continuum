@@ -380,16 +380,16 @@ impl CognitionEval {
         // warm lane — the common case returns on the first try.)
         {
             let warm_room = crate::identity::ActivityRoom::mint();
-            let probe_delivery = crate::persona::rag_budget::RagDelivery {
+            let probe_delivery = crate::cognition::rag_budget::RagDelivery {
                 source_id: "airc".to_string(),
-                items: vec![crate::persona::rag_budget::RagItem {
+                items: vec![crate::cognition::rag_budget::RagItem {
                     content: "ready check".to_string(),
                     tokens: 0,
                     metadata: serde_json::json!({ "peer_id": "peer", "occurred_at_ms": EVAL_EPOCH_MS }),
                 }],
                 tokens_used: 0,
                 truncated: false,
-                resolution_used: crate::persona::rag_budget::ResolutionPreference::Raw,
+                resolution_used: crate::cognition::rag_budget::ResolutionPreference::Raw,
             };
             let mut warm = false;
             for _ in 0..15u32 {

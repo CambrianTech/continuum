@@ -56,27 +56,11 @@ use airc_core::doctrine::WallPostPublished;
 use airc_lib::AircError;
 use async_trait::async_trait;
 
-use crate::persona::rag_budget::{
+use crate::cognition::rag_budget::{
      RagContext, RagDelivery, RagItem, RagSource, ResolutionPreference,
 };
 
-/// Source identifier -- the deliberation faculty renders this delivery under a
-/// `[room-wall]` header (generic `[<source_id>]` projection), so this string is
-/// what a CITIZEN reads above the pinned posts, not just what a grep finds.
-///
-/// It was `"room-board"` until #3874. That was not a naming quibble: the WALL
-/// announced itself as the BOARD while `room_board_source.rs` -- the work board
-/// -- emitted `"room-kanban"`. Every id-first reader landed in the wrong file,
-/// and it cost a wrong row in a published census (2026-09-08) plus a landmine
-/// warning to a citizen mid-task.
-///
-/// Renamed ONE WAY on purpose. Swapping both (`room-board` -> the kanban,
-/// `wall` -> `room-board`) would have made an EXISTING id change meaning, so a
-/// replay corpus or a prompt capture keyed on `room-board` would silently start
-/// resolving to a different source. Retiring an id and minting a fresh one has
-/// no such window: `room-board` now names nothing, and nothing that reads it
-/// gets a wrong answer instead of no answer.
-pub(crate) const SOURCE_ID: &str = "room-wall";
+use crate::cognition::faculty_ids::WALL;
 
 /// Token estimate — the ONE canonical chars/4 estimator
 /// (`cognition::token_budget`), shared by every RAG source so the replay
@@ -94,7 +78,7 @@ pub trait WallReader: Send + Sync {
     /// without changing this seam.
     ///
     /// `room` is the id this source is BOUND to (`for_room`) — the same value
-    /// [`crate::persona::rag_budget::room_scope_allows`] gates on, exactly as
+    /// [`crate::cognition::rag_budget::room_scope_allows`] gates on, exactly as
     /// [`crate::persona::room_board_source::RoomBoardReader::work_board`]
     /// takes it. Passing it makes gate and read ONE decision instead of two
     /// that merely tend to agree. `None` = unscoped legacy construction.
@@ -409,7 +393,7 @@ impl WallSource {
         resolution: ResolutionPreference,
     ) -> RagDelivery {
         RagDelivery {
-            source_id: SOURCE_ID.to_string(),
+            source_id: WALL.to_string(),
             items,
             tokens_used: used,
             truncated: next.is_some(),
@@ -421,7 +405,7 @@ impl WallSource {
 #[async_trait]
 impl RagSource for WallSource {
     fn source_id(&self) -> &'static str {
-        SOURCE_ID
+        WALL
     }
 
     fn expand_command(&self) -> Option<&'static str> {
@@ -444,7 +428,7 @@ impl RagSource for WallSource {
         resolution: ResolutionPreference,
     ) -> RagDelivery {
         let empty = |res| RagDelivery {
-            source_id: SOURCE_ID.to_string(),
+            source_id: WALL.to_string(),
             items: Vec::new(),
             tokens_used: 0,
             truncated: false,
@@ -471,7 +455,7 @@ impl RagSource for WallSource {
             Some(turn) if turn.is_nil() => {
                 continuum_base::probe!(
                     class = "rag.room_gate.abstain",
-                    source = SOURCE_ID,
+                    source = WALL,
                     bound_room = ?self.room_id,
                     turn_room = %turn,
                     persona_id = %ctx.persona_id,
@@ -489,7 +473,7 @@ impl RagSource for WallSource {
         // BREADCRUMB BEFORE THE READ, for the same reason as RoomBoardSource: this
         // runs under workspace.rs's 30s PERCEPTION_DEADLINE, and the ticks worth
         // diagnosing are the CANCELLED ones, which never reach a probe placed after
-        // the await. Measured 2026-09-05: `room-board` (this source's SOURCE_ID) is
+        // the await. Measured 2026-09-05: `room-board` (this source's id then) is
         // the slowest faculty, pinned at 30.00s — on 45a852a9b, 8 of 8 ticks.
         //
         // CORRECTED 2026-09-06, because the first explanation here was wrong and the

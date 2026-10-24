@@ -68,7 +68,7 @@ enum Step {
 /// there. A repo this node never checked out is cloned into a managed checkout first
 /// ([`ensure_managed_clone`]); a clone that fails is `Failed { stage: "clone" }`.
 pub async fn stage_for_card(home: &Path, claimer: Uuid, card: &airc_lib::WorkCard) -> Staging {
-    if crate::cognition::bench_title::parse_card_title(&card.title).is_some() {
+    if crate::recipe::bench_title::parse_card_title(&card.title).is_some() {
         return stage_for_claimer(home, claimer, &card.title).await;
     }
     let repo = card.repo.to_string();
@@ -300,7 +300,7 @@ async fn ensure_managed_clone(home: &Path, repo: &str) -> Result<PathBuf, CloneE
 }
 
 pub async fn stage_for_claimer(home: &Path, claimer: Uuid, title: &str) -> Staging {
-    let Some((bench, task)) = crate::cognition::bench_title::parse_card_title(title) else {
+    let Some((bench, task)) = crate::recipe::bench_title::parse_card_title(title) else {
         return Staging::Ordinary;
     };
     let workspace = gym_workspace(home, claimer);
