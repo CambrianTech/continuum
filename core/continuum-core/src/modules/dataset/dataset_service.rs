@@ -93,14 +93,11 @@ impl DatasetService {
     /// curated *recall* memory, not paired SFT turns. Only `spoke` turns yield a
     /// training pair; `silent` / errored / malformed turns are skipped.
     pub fn from_turns(&self, p: &FromTurnsParams) -> Result<DatasetManifest, String> {
-        let turns_dir = p
-            .turns_dir
-            .as_deref()
-            .map(PathBuf::from)
-            .unwrap_or_else(|| {
-                let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
-                PathBuf::from(home).join(".continuum/fixtures/persona-respond")
-            });
+        // The recorder's default turns dir, under the one resolved continuum home (card 2ceab504).
+        let turns_dir = match p.turns_dir.as_deref() {
+            Some(dir) => PathBuf::from(dir),
+            None => crate::paths::continuum_home()?.join("fixtures/persona-respond"),
+        };
         if !turns_dir.is_dir() {
             return Err(format!(
                 "turnsDir not found: {} — point it at the recorder's per-turn JSON dir \
@@ -594,7 +591,8 @@ impl Default for DatasetModule {
                     error = e.to_string().as_str(),
                     "no continuum home: dataset/* writes land in the temp dir and will not survive a boot"
                 );
-                std::env::temp_dir().join(".continuum").join("datasets")
+                // Not a continuum home: a temp dir named for what it is.
+                std::env::temp_dir().join("continuum-datasets-unrooted")
             }))),
         }
     }
