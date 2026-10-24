@@ -8,4 +8,7 @@ pub mod capacity;
 pub mod inference;
 pub mod inference_capability;
 pub mod model_registry;
+pub mod plasticity;
 pub mod sensory;
+pub mod serving_pin_store;
+pub mod serving_tier_down;
