@@ -181,6 +181,6 @@ mod tests {
         let f = crate::cognition::workspace::TurnFraming::initiative();
         assert!(f.initiative && f.self_initiated, "{f:?}");
         assert!(!f.attention.is_addressed(), "nobody named her: {f:?}");
-        assert!(!f.workspace_deliverable && !f.reviewing, "no card contract rides it: {f:?}");
+        assert!(!f.workspace_deliverable, "no card contract rides it: {f:?}");
     }
 }

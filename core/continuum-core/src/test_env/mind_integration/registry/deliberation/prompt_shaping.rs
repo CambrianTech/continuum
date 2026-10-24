@@ -393,7 +393,7 @@ fn tool_surface_is_a_category_index_plus_discovery_pair() {
     // context, protecting the hands. This test USED to pin the cliff; now
     // it pins its absence.
     let native: Vec<&str> = faculty
-        .native_specs
+        .tool_surface().registry()
         .iter()
         .map(|s| s.name.as_str())
         .collect();
@@ -427,7 +427,7 @@ fn tool_surface_is_a_category_index_plus_discovery_pair() {
         )
         .with_context_window(32_768)
         .with_tools(persona_tools::native_tool_specs());
-        f.native_specs.iter().map(|s| s.name.clone()).collect()
+        f.tool_surface().registry().iter().map(|s| s.name.clone()).collect()
     };
     // Wire names are the DIALECT aliases (tool_dialect) — the coding arc
     // rides under the names the model was trained on, never our slashes.
@@ -770,7 +770,7 @@ fn tool_surface_is_a_category_index_plus_discovery_pair() {
         "the newest burst line must survive once the budget prices the surface it \
                  actually sends — if this regresses, the accounting is double-counting the \
                  withheld registry again (card dec1a7ff); selected={}, estimated={}, reserve={}, capacity={:?}\n{}",
-        faculty.select_tool_surface(&ws, window).tokens,
+        faculty.select_tool_surface(&ws).tokens,
         view.estimated_prompt_tokens,
         view.completion_reserve,
         view.capacity_error,

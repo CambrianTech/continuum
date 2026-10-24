@@ -45,7 +45,7 @@ async fn a_writing_turn_after_a_cut_gets_its_reply_on_a_46848_window() {
     let wire_tokens =
         LlmDeliberationFaculty::framing_cost(request.system_prompt.as_ref().unwrap())
             + LlmDeliberationFaculty::messages_cost(&request.messages)
-            + LlmDeliberationFaculty::tool_surface_tokens_of(request.tools.as_ref().unwrap())
+            + crate::cognition::tool_surface::tool_surface_tokens_of(request.tools.as_ref().unwrap())
             + reply as usize;
     assert!(wire_tokens <= window as usize, "prompt + reply {wire_tokens} > window {window}");
     assert!(
@@ -384,7 +384,7 @@ async fn standing_activity_grounding_survives_history_on_the_wire() {
             // budget-shed one.
             let minimum = GroundingPlan::minimum(&ws);
             let fixed = LlmDeliberationFaculty::framing_cost(&framing.stable)
-                + faculty.select_tool_surface(&ws, window).tokens
+                + faculty.select_tool_surface(&ws).tokens
                 + minimum.context_reserve()
                 + minimum.trailing_tokens()
                 + unfitted.required_tokens()
@@ -514,8 +514,8 @@ async fn standing_activity_grounding_survives_history_on_the_wire() {
             "optional history must yield"
         );
         let tools = request.tools.as_ref().expect("actual native surface");
-        let tool_tokens = LlmDeliberationFaculty::tool_surface_tokens_of(tools);
-        assert_eq!(tool_tokens, faculty.select_tool_surface(&ws, window).tokens);
+        let tool_tokens = crate::cognition::tool_surface::tool_surface_tokens_of(tools);
+        assert_eq!(tool_tokens, faculty.select_tool_surface(&ws).tokens);
         let wire = LlmDeliberationFaculty::framing_cost(system)
             + LlmDeliberationFaculty::messages_cost(&request.messages)
             + tool_tokens

@@ -100,8 +100,7 @@ mod reply_claim;
 use self::reply_claim::*;
 mod verdict;
 mod tool_surface;
-mod hands_surface;
-use self::hands_surface::*;
+use super::tool_surface::{SelectedSurface, ToolSurface};
 
 pub struct ActiveVisualFeedback {
     seq: u64,
@@ -184,45 +183,10 @@ pub struct LlmDeliberationFaculty {
     /// — the act→observe driver ([`super::act_observe`]) does. Single-shot: one
     /// generation → one verdict (`Act` xor `Speak` xor `Pass`) per tick.
     tools: Vec<NativeToolSpec>,
-    /// The tools natively offered to the model each turn: the DISCOVERY PAIR —
-    /// `commands/list` (filter/search the authorized surface → a small list of
-    /// matching tools) + `commands/help` (load one named tool's full argument
-    /// schema). Empty when the persona has no tools. Every other tool is dispatched
-    /// by NAME through the JSON-in-prose path — `act_observe` maps any name back to
-    /// its command, so a tool reached via `commands/list` still runs without being in
-    /// this native array. This is what keeps the per-turn tool payload at TWO tiny
-    /// schemas instead of the whole ~150-tool registry. Computed in
-    /// [`Self::rebuild_tool_surface`].
-    pub native_specs: Vec<NativeToolSpec>,
-    /// Her HANDS for a work turn: the subset of `native_specs` whose COMMAND
-    /// name (before the wire dialect renames it) is a file/work/git/cargo/tool
-    /// verb, plus the discovery pair. Chosen at rebuild on the raw names —
-    /// filtering the wire names by `code/` prefixes matched nothing and every
-    /// work turn went out with ZERO tools (2026-09-04, 13 turns, all passed).
-    pub hands_specs: Vec<NativeToolSpec>,
-    /// `hands_specs` plus the reviewer verbs (`tool_dialect::reviewer_hand`): the hands
-    /// of a work turn on a REVIEW card. Built beside `hands_specs` at rebuild.
-    review_hands_specs: Vec<NativeToolSpec>,
-    /// The RAW command name of each entry in `native_specs`, same order. The specs
-    /// are cached in the model's wire dialect (`edit_file`), so any selection keyed
-    /// on canonical names (`code/edit`) — the room's affordances — must key here.
-    /// The 2026-09-04 muting was exactly a name-space mismatch at this seam.
-    pub native_command_names: Vec<String>,
-    /// Token cost of serializing `native_specs` into the request — memoized at
-    /// [`Self::rebuild_tool_surface`] time because the specs are static between
-    /// rebuilds while [`Self::describe_tool_tokens`] is consulted on EVERY
-    /// prompt assembly (per-turn serde of ~a dozen schemas, pure waste).
-    pub tool_surface_tokens: usize,
-    /// Token cost of serializing `hands_specs` — memoized for the same reason as
-    /// `tool_surface_tokens`, and needed for the same accounting.
-    ///
-    /// Without it the budget prices the FULL registry on a turn that sends only
-    /// hands, which is not a cosmetic error: `prompt_view_within` subtracts this
-    /// from the message budget, so over-pricing trims conversation to fit room
-    /// that was never occupied. Card dec1a7ff.
-    pub hands_surface_tokens: usize,
-    /// Token cost of `review_hands_specs`, memoized like `hands_surface_tokens`.
-    review_hands_surface_tokens: usize,
+    /// Her native tool surfaces (the whole registry, her hands, her core hands), built
+    /// once per tool assignment in canonical order; which one a turn sends is
+    /// [`Self::select_tool_surface`], from the activity and the served window only.
+    surface: ToolSurface,
     /// Where this faculty records its chain-of-thought after a verdict, so the
     /// persona can resume its train of thought next turn (the
     /// [`WorkingMemory`](crate::cognition::working_memory::WorkingMemory)
@@ -292,13 +256,7 @@ impl LlmDeliberationFaculty {
             prompt_feedback: ArcSwapOption::empty(),
             temperature: DEFAULT_TEMPERATURE,
             tools: Vec::new(),
-            native_specs: Vec::new(),
-            hands_specs: Vec::new(),
-            review_hands_specs: Vec::new(),
-            native_command_names: Vec::new(),
-            tool_surface_tokens: 0,
-            hands_surface_tokens: 0,
-            review_hands_surface_tokens: 0,
+            surface: ToolSurface::default(),
             working_memory: None,
             prompt_capture: None,
             genome: empty_genome(),
@@ -390,10 +348,10 @@ impl LlmDeliberationFaculty {
     }
 
     /// Is this turn an ACT with her hands (a deliverable, or her own initiative) rather
-    /// than a message turn? Asked by the surface selection, the ACT output cap and the
-    /// lane priority, so it lives in one place rather than being spelled thrice.
+    /// than a message turn? Asked by the ACT output cap and the lane priority, so it lives
+    /// in one place. Never by the tool surface: that is the same on every kind of turn.
     fn is_work_turn(&self, ws: &Workspace) -> bool {
-        (ws.workspace_deliverable || ws.initiative) && !self.hands_specs.is_empty()
+        (ws.workspace_deliverable || ws.initiative) && !self.surface.hands().is_empty()
     }
 
     /// What kind of turn this is, for its allowance: a work turn is an ACT; anything
@@ -419,10 +377,8 @@ impl LlmDeliberationFaculty {
             model: cur.model.clone(),
             context_window,
         });
-        // Re-derive the surface in the (possibly new) model's wire dialect. NOT
-        // window-adaptive — `rebuild_tool_surface` documents why the old
-        // window-vs-surface cliff was deleted (#206): amputating the hands on a tight
-        // window strands a native-call model in a help loop.
+        // Re-derive the surface in the (possibly new) model's wire dialect. Which surface
+        // a turn sends reads the served window at selection (`select_tool_surface`).
         self.rebuild_tool_surface();
         // …but the arithmetic still has to close, and if it cannot she is MUTE. Say so.
         self.warn_if_window_cannot_host_the_agentic_surface();
@@ -809,11 +765,11 @@ pub mod test_support {
     use crate::cognition::workspace::{BurstTurn, Workspace};
 
     /// The surface internals core's registry tests price against the live registry.
-    pub use super::hands_surface::hands_surface;
+    pub use crate::cognition::tool_surface::hands_surface;
     pub use super::prompt::fit::{GroundingPiece, GroundingPlan};
     pub use super::reply_claim::reply_claim;
     pub use super::request::TurnKind;
-    pub use super::tool_surface::SelectedSurface;
+    pub use crate::cognition::tool_surface::SelectedSurface;
     pub use crate::cognition::tool_surface::SurfaceReason;
 
     pub type WindowReadHook = Box<dyn FnOnce() + Send>;
