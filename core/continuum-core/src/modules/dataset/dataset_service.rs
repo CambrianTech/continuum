@@ -93,10 +93,12 @@ impl DatasetService {
     /// curated *recall* memory, not paired SFT turns. Only `spoke` turns yield a
     /// training pair; `silent` / errored / malformed turns are skipped.
     pub fn from_turns(&self, p: &FromTurnsParams) -> Result<DatasetManifest, String> {
-        // The recorder's default turns dir, under the one resolved continuum home (card 2ceab504).
+        // Where the recorder writes turns, through the same owner it writes through (card 2ceab504):
+        // a reader that resolved its own path would miss the turns once the homes differ.
         let turns_dir = match p.turns_dir.as_deref() {
             Some(dir) => PathBuf::from(dir),
-            None => crate::paths::continuum_home()?.join("fixtures/persona-respond"),
+            None => crate::cognition::capture::fixture_dir(crate::persona::recorder::RESPOND_FIXTURE_DIR)
+                .ok_or("no home directory: cannot find the recorder's turns; pass turnsDir")?,
         };
         if !turns_dir.is_dir() {
             return Err(format!(
