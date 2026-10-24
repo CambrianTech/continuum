@@ -279,6 +279,16 @@ pub trait FineTuningAdapter: Send + Sync {
 /// `ai/adapter.rs`.
 pub type ArcFineTuningAdapter = Arc<dyn FineTuningAdapter>;
 
+/// Whether a trainer that runs its own Python process over its own copy of the base can take
+/// `base` here (card 6f05b89d): its interpreter is installed, and the base's registry row
+/// names the trainable HF source it would load. The MLX and CUDA trainers answer
+/// `serves_base` with this, so neither is selected, nor advertised to the grid, for a job it
+/// would refuse at `create_job` (`TrainerUnavailable` or `InvalidRequest`).
+pub(crate) fn a_python_trainer_serves(python: Option<&std::path::Path>, base: &str) -> bool {
+    python.is_some_and(std::path::Path::is_file)
+        && crate::model_registry::artifacts::resolve_hf_source_for_model_id(base).is_ok()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -384,5 +394,17 @@ mod tests {
         }
 
         adapter.cancel(&handle).await.unwrap();
+    }
+
+    // what this catches (card 6f05b89d): a registered trainer whose dependency is missing was
+    // selected (and would be advertised to the grid) for a job it refuses at create_job. No
+    // interpreter, or a base with no trainable source, is not a base this trainer serves.
+    #[test]
+    fn a_python_trainer_without_its_interpreter_or_a_trainable_base_serves_nothing() {
+        assert!(!a_python_trainer_serves(None, "qwen3.5-4b"));
+        let missing = std::env::temp_dir().join(format!("no-python-{}", Uuid::new_v4()));
+        assert!(!a_python_trainer_serves(Some(&missing), "qwen3.5-4b"));
+        let present = std::env::current_exe().expect("the test binary is a file");
+        assert!(!a_python_trainer_serves(Some(&present), "no-such-registry-row"), "no trainable source");
     }
 }

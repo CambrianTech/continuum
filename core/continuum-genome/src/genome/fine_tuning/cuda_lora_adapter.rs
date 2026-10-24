@@ -73,6 +73,10 @@ impl FineTuningAdapter for CudaLoraFineTuner {
         }
     }
 
+    fn serves_base(&self, base_model: &str) -> bool {
+        super::adapter::a_python_trainer_serves(self.python.as_deref(), base_model)
+    }
+
     async fn create_job(
         &self,
         mut request: TrainingJobRequest,

@@ -106,6 +106,10 @@ impl FineTuningAdapter for MlxLoraFineTuner {
         }
     }
 
+    fn serves_base(&self, base_model: &str) -> bool {
+        super::adapter::a_python_trainer_serves(Some(&self.python), base_model)
+    }
+
     async fn create_job(&self, request: TrainingJobRequest) -> Result<JobHandle, FineTuningError> {
         // ── Preconditions (fail loud, name the cause) ──────────────
         if !host_has_metal() {
