@@ -41,7 +41,7 @@ impl ActionCommand for WorkClaim {
             let board = board.snapshot();
             if let Some(card) = board.cards.iter().find(|c| c.card_id == card_id) {
                 if let Some((instance, reason)) =
-                    crate::persona::card_holder::standing_refusal_for_card(&card.title)
+                    crate::cognition::card_holder::standing_refusal_for_card(&card.title)
                 {
                     continuum_base::probe!(
                         class = "work.claim.refused_ungradeable",

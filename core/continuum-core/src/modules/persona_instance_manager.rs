@@ -108,7 +108,7 @@ impl ServiceModule for PersonaInstanceManagerService {
                         Err(_) => continue,
                     };
                 crate::cognition::handoff::note_owned(rt.airc().peer_id().as_uuid(), &owned, now_ms);
-                let held = crate::persona::airc_runtime::held_of_owned(owned, now_ms);
+                let held = crate::cognition::card_holder::held_of_owned(owned, now_ms);
                 for (room, card) in held {
                     let Some(claim_id) = card.claim_id else {
                         continue;
@@ -120,7 +120,7 @@ impl ServiceModule for PersonaInstanceManagerService {
                             airc_lib::HeartbeatWorkClaim {
                                 card_id: card.card_id,
                                 claim_id,
-                                ttl_ms: crate::persona::work_board::facts::DEFAULT_CLAIM_TTL_MS,
+                                ttl_ms: crate::cognition::card_facts::DEFAULT_CLAIM_TTL_MS,
                             },
                         )
                         .await

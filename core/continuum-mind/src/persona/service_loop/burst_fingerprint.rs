@@ -105,12 +105,12 @@ pub(super) fn spawn_token_forwarder(
         sender_id.as_deref().and_then(|s| Uuid::parse_str(s).ok()),
         room_id.as_deref().and_then(|r| Uuid::parse_str(r).ok()),
     ) {
-        (Some(sender), Some(room)) => crate::persona::mind_room::is_private_room(sender, room),
+        (Some(sender), Some(room)) => crate::cognition::mind_room::is_private_room(sender, room),
         _ => false,
     };
     let (citizen, room_id, sender_id) = if private {
         if let Some(sender) = sender_id.as_deref().and_then(|s| Uuid::parse_str(s).ok()) {
-            crate::persona::mind_room::note_withheld(sender, "token_stream");
+            crate::cognition::mind_room::note_withheld(sender, "token_stream");
         }
         (None, None, None)
     } else {
@@ -202,7 +202,7 @@ pub(super) fn spawn_token_forwarder(
 /// act question, kanban pull) always runs.
 pub(super) async fn run_self_cycle(
     ctx: &HostedPersona,
-    conversation: &mut dyn PersonaConversation,
+    conversation: &mut dyn CitizenConversation,
     opts: &ServeOptions,
     last_burst_fp: &mut u64,
     // The room her own mind woke her in (a Perceive wake): she works there this cycle,
@@ -629,7 +629,7 @@ pub(super) async fn run_self_cycle(
 /// + continuing. Returns `None` only when the stream is genuinely
 /// over.
 pub(super) async fn next_event(
-    conversation: &mut dyn PersonaConversation,
+    conversation: &mut dyn CitizenConversation,
     outcome: &mut ServeOutcome,
 ) -> Option<IncomingMessage> {
     loop {

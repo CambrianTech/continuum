@@ -198,11 +198,11 @@ impl PersonaAircRuntime {
 // peers (human, web, browser). See `persona::airc_citizen` for the
 // trait definition + rationale.
 #[async_trait::async_trait]
-impl crate::persona::airc_source::AircTranscriptReader for PersonaAircRuntime {
+impl crate::cognition::conversation::transcript_reader::AircTranscriptReader for PersonaAircRuntime {
     async fn page_recent(&self, limit: usize) -> Result<Vec<airc_lib::TranscriptEvent>, AircError> {
         // Route through the ONE kinds-filtered impl on `airc_lib::Airc`
         // (persona/airc_source.rs, #297) — never the raw inherent page.
-        crate::persona::airc_source::AircTranscriptReader::page_recent(&*self.airc, limit).await
+        crate::cognition::conversation::transcript_reader::AircTranscriptReader::page_recent(&*self.airc, limit).await
     }
 
     async fn page_recent_in(
@@ -212,7 +212,7 @@ impl crate::persona::airc_source::AircTranscriptReader for PersonaAircRuntime {
     ) -> Result<Vec<airc_lib::TranscriptEvent>, AircError> {
         // Explicit forward (#367) — inheriting the trait default here would
         // silently drop the turn-room scope (#262-class regression).
-        crate::persona::airc_source::AircTranscriptReader::page_recent_in(&*self.airc, room, limit)
+        crate::cognition::conversation::transcript_reader::AircTranscriptReader::page_recent_in(&*self.airc, room, limit)
             .await
     }
 }
@@ -468,7 +468,7 @@ impl crate::persona::airc_citizen::AircCitizen for PersonaAircRuntime {
                         .as_ref()
                         .is_some_and(|r| r.get(o.as_uuid()).is_some())
                 });
-                crate::persona::card_holder::claimable_by(c, now_ms, me, owner_resident)
+                crate::cognition::card_holder::claimable_by(c, now_ms, me, owner_resident)
             })
             // A card whose instance carries a STANDING ENV refusal on this box (the
             // harness cannot grade it: era-pinned pytest, repo will not install,
@@ -477,7 +477,7 @@ impl crate::persona::airc_citizen::AircCitizen for PersonaAircRuntime {
             // cards already on a board — psf__requests-1766 (2026-09-13): refused
             // ungradeable at 09:36, closed, reopened by its closer at 16:27, pulled by
             // Kira at 17:15 → a lane spent on work no grade can ever score.
-            .filter(|c| !crate::persona::card_holder::refused_on_this_box(&c.title))
+            .filter(|c| !crate::cognition::card_holder::refused_on_this_box(&c.title))
             // A review card is never offered to the owner of the card it reviews:
             // the reviewer is the fresh pair of eyes by construction.
             .filter(|c| {
@@ -508,7 +508,7 @@ impl crate::persona::airc_citizen::AircCitizen for PersonaAircRuntime {
                 .map(|r| r.iter().map(|rt| rt.airc().peer_id()).collect())
                 .unwrap_or_default(); // unwrap_or: no registry yet = only me holds here
         holders.insert(self.airc.peer_id());
-        Ok(crate::persona::card_holder::in_flight_by(
+        Ok(crate::cognition::card_holder::in_flight_by(
             &board.cards,
             &holders,
             now_ms,
@@ -535,32 +535,6 @@ pub(crate) async fn scoped_board_held_by(
 ) -> Result<Vec<(airc_lib::Room, airc_lib::WorkCard)>, AircError> {
     let now_ms = EpochMs::now().millis(); // pre-1970 reads 0: a pre-epoch clock reads 0 — every lease then reads live, the conservative side
     Ok(held_of_owned(scoped_board_owned_by(airc).await?, now_ms))
-}
-
-/// A card whose work is over (merged or closed): never held, never renewed, whatever its
-/// claim fields still say. The one rule for the walk and the followed claims alike.
-pub(super) fn settled_card(state: &airc_work::model::CardState) -> bool {
-    matches!(state, airc_work::model::CardState::Closed | airc_work::model::CardState::Merged)
-}
-
-/// The HELD subset of an owned walk: lease live, not claimable, not settled. Split from the
-/// walk so one board read can feed both the renewal (holds) and the handoff record (all of
-/// what she owns, whole) — never two walks for one seam.
-pub fn held_of_owned(
-    owned: Vec<(airc_lib::Room, airc_lib::WorkCard)>,
-    now_ms: u64,
-) -> Vec<(airc_lib::Room, airc_lib::WorkCard)> {
-    owned
-        .into_iter()
-        .filter(|(_, card)| {
-            // A settled card is nobody's work, whatever its lease says: a closed card
-            // whose claim fields outlive the close read as HELD, focused her ticks on a
-            // finished room and made the pull think she had work (2026-09-13 14:0xZ).
-            !settled_card(&card.state) && crate::persona::card_holder::hold_of(card, now_ms)
-                == crate::persona::card_holder::Hold::Held
-                && !crate::persona::card_holder::claimable_now(card, now_ms)
-        })
-        .collect()
 }
 
 /// Every card the boards she stands in show with owner = her, in ANY state, whole, with its

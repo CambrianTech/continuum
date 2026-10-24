@@ -26,6 +26,7 @@ members = [
     "core/continuum-genome",
     "core/continuum-memory",
     "core/continuum-experience",
+    "core/continuum-cognition",
     "core/continuum-live",
     "core/continuum-hands",
     "core/continuum-engine",

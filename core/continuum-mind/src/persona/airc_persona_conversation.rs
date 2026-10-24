@@ -44,7 +44,7 @@
 
 use continuum_base::time::EpochMs;
 use crate::persona::airc_citizen::AircCitizen;
-use crate::persona::service_loop::{IncomingMessage, PersonaConversation};
+use crate::cognition::conversation::{IncomingMessage, PersonaConversation, CATCH_UP_PAGE, INBOX_CAPACITY};
 use airc_core::TranscriptEvent;
 use airc_lib::FilteredEventStream;
 use async_trait::async_trait;
@@ -56,7 +56,7 @@ use super::durable_history::event_from_row;
 mod polled;
 pub use polled::*;
 mod inbox_capacity;
-pub(crate) use inbox_capacity::*;
+use inbox_capacity::*;
 
 #[cfg(test)]
 mod tests;

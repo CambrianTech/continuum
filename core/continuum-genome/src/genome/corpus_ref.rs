@@ -13,7 +13,7 @@ use ts_rs::TS;
 /// node-local storage, or wherever the `source_url` resolves.
 ///
 /// `content_hash` uses the canonical `"sha256:<hex>"` format that
-/// matches `persona::admission` content_hash on the engram side
+/// matches `cognition::admission` content_hash on the engram side
 /// (consensus position #8 from the design review). Cross-domain
 /// consistency: any two subsystems comparing hashes can do
 /// string-equality without normalization.

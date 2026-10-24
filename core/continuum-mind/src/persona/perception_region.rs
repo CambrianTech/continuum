@@ -30,22 +30,12 @@ use airc_core::PeerId;
 use tokio::sync::watch;
 use uuid::Uuid;
 
-use super::attention::{AttentionDial, Continuation};
+use crate::cognition::attention::{AttentionDial, Continuation};
 use super::awareness::{self, ActivityLine, AwarenessSnapshot};
 use super::mind_state::{ActivityCursor, MindState, MindStateError};
-use super::salience::{self, ActivityDelta, BoardChange, ExpectedVerdict, Me, ObservedVerdict, Salience, SalienceLevel, SpeechLine};
+use crate::cognition::conversation::salience::{self, ActivityDelta, BoardChange, ExpectedVerdict, Me, ObservedVerdict, Salience, SalienceLevel, SpeechLine};
 use crate::cognition::channel_digest::ChannelDigest;
-
-/// Why she is being woken. The activity rides on the wake; no room is implied.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Wake {
-    /// An activity's delta is loud enough for her dial.
-    Perceive { activity: Uuid, salience: Salience },
-    /// The time she expected something by has passed.
-    Continuation,
-    /// First wake after a restart: continue what she was doing.
-    Resume,
-}
+use crate::cognition::conversation::Wake;
 
 /// One activity as she perceives it (EVENT-MIND §6 `ActivityView`), borrowing the
 /// truth; nothing copied.
@@ -430,8 +420,8 @@ impl PerceptionRegion {
         // memory only, and a restart forgets it, which is the honest cost (the same as her
         // mind cycle's working memory). Her open state is saved as always.
         let me = self.me.as_uuid();
-        if self.state.continuation.as_ref().is_some_and(|c| crate::persona::mind_room::is_private_room(me, c.activity)) {
-            crate::persona::mind_room::note_withheld(me, "mind_state_continuation");
+        if self.state.continuation.as_ref().is_some_and(|c| crate::cognition::mind_room::is_private_room(me, c.activity)) {
+            crate::cognition::mind_room::note_withheld(me, "mind_state_continuation");
             let mut open = self.state.clone();
             open.continuation = None;
             return open.save(peer_dir, now_ms);
@@ -492,7 +482,7 @@ fn blank(name: String) -> ActivityView {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::persona::salience::{Expectation, ExpectedVerdict, ObservedVerdict, SalienceReason};
+    use crate::cognition::conversation::salience::{Expectation, ExpectedVerdict, ObservedVerdict, SalienceReason};
 
     const ME: Uuid = Uuid::from_u128(0x1);
     const PEER: Uuid = Uuid::from_u128(0x2);
@@ -534,7 +524,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let (mut r, _rx) = PerceptionRegion::boot(PeerId::from_uuid(ME), dir.path(), 1_000, 0);
         assert_ne!(r.wake_for(1), Some(Wake::Resume), "nothing saved, nothing to resume");
-        let mind = crate::persona::mind_room::mind_room_id(ME);
+        let mind = crate::cognition::mind_room::mind_room_id(ME);
         r.restore_private_continuation(
             Continuation { activity: mind, note: "a private plan".into(), expectation: None, written_at_ms: 1 },
             2,
@@ -550,7 +540,7 @@ mod tests {
     fn a_private_continuation_is_never_written_to_her_mind_state() {
         let dir = tempfile::tempdir().unwrap();
         let (mut r, _rx) = PerceptionRegion::boot(PeerId::from_uuid(ME), dir.path(), 1_000, 0);
-        let mind = crate::persona::mind_room::mind_room_id(ME);
+        let mind = crate::cognition::mind_room::mind_room_id(ME);
         r.set_continuation(
             Some(Continuation { activity: mind, note: "a private plan".into(), expectation: None, written_at_ms: 1 }),
             1,

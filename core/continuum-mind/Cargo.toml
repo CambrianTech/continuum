@@ -10,6 +10,7 @@ repository = "https://github.com/CambrianTech/continuum"
 build = "../continuum-core/build.rs"
 
 [dependencies]
+continuum-cognition = { path = "../continuum-cognition" }
 continuum-kernel = { path = "../continuum-kernel" }
 continuum-engine = { path = "../continuum-engine" }
 continuum-hands = { path = "../continuum-hands" }
@@ -24,7 +25,6 @@ serde_json.workspace = true
 uuid.workspace = true
 continuum-base = { path = "../continuum-base" }
 continuum-context = { path = "../continuum-context" }
-tool-working-set = { path = "../tool-working-set" }  # the learned tool head: pure policy, no core dependency
 schemars = { version = "0.8", features = ["uuid1"] }
 continuum-airc-protocol = { path = "../continuum-airc-protocol" }
 continuum-positron = { path = "../continuum-positron" }
@@ -60,6 +60,7 @@ image = "0.25"
 regex = "1"
 
 [dev-dependencies]
+continuum-cognition = { path = "../continuum-cognition", features = ["test-fixtures"] }
 continuum-kernel = { path = "../continuum-kernel", features = ["test-fixtures"] }  # every test build of this crate gets the per-process continuum home (card d11d9827)
 tokio = { workspace = true, features = ["test-util"] }
 tempfile = "3"
@@ -73,10 +74,10 @@ continuum-experience = { path = "../continuum-experience", features = ["test-fix
 default = []
 # The GPU backends are the engine's (llama, candle); the mind forwards them so it builds and
 # tests on its own with the same flags core takes.
-metal = ["continuum-engine/metal", "continuum-live/metal", "continuum-genome/metal"]
-cuda = ["continuum-kernel/cuda", "continuum-engine/cuda", "continuum-genome/cuda"]
-vulkan = ["continuum-kernel/vulkan", "continuum-engine/vulkan", "continuum-genome/vulkan"]
-stress-tests = ["continuum-kernel/stress-tests", "continuum-genome/stress-tests"]
+metal = ["continuum-cognition/metal", "continuum-engine/metal", "continuum-live/metal", "continuum-genome/metal"]
+cuda = ["continuum-cognition/cuda", "continuum-kernel/cuda", "continuum-engine/cuda", "continuum-genome/cuda"]
+vulkan = ["continuum-cognition/vulkan", "continuum-kernel/vulkan", "continuum-engine/vulkan", "continuum-genome/vulkan"]
+stress-tests = ["continuum-cognition/stress-tests", "continuum-kernel/stress-tests", "continuum-genome/stress-tests"]
 # Test-only code (fixtures shared with core's integration tests, the heuristic adapter it
 # drives); production binaries never build with it.
-test-fixtures = ["continuum-base/test-fixtures", "continuum-kernel/test-fixtures", "continuum-engine/test-fixtures", "continuum-hands/test-fixtures", "continuum-live/test-fixtures", "continuum-perception/test-fixtures", "continuum-genome/test-fixtures", "continuum-experience/test-fixtures"]
+test-fixtures = ["continuum-cognition/test-fixtures", "continuum-base/test-fixtures", "continuum-kernel/test-fixtures", "continuum-engine/test-fixtures", "continuum-hands/test-fixtures", "continuum-live/test-fixtures", "continuum-perception/test-fixtures", "continuum-genome/test-fixtures", "continuum-experience/test-fixtures"]

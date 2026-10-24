@@ -10,7 +10,7 @@
 //! Target: Sub-1ms decisions, freeing TypeScript for UI only.
 
 use super::inbox::PersonaInbox;
-use super::types::{InboxMessage, PersonaState, SenderType};
+use crate::cognition::conversation::types::{InboxMessage, PersonaState, SenderType};
 use crate::rag::RagEngine;
 use dashmap::DashSet;
 use serde::{Deserialize, Serialize};

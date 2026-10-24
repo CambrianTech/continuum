@@ -214,7 +214,7 @@ pub enum PersonaResponse {
 /// the caller for proper user-facing error reporting; we don't
 /// silently fall back to "Silent" because that would hide real bugs.
 pub async fn respond(input: RespondInput) -> Result<PersonaResponse, String> {
-    use crate::persona::trace::CognitionTrace;
+    use crate::cognition::trace::CognitionTrace;
 
     let total_start = EpochMs::now().millis();
     let mut trace = CognitionTrace::new();
@@ -250,10 +250,10 @@ pub async fn respond(input: RespondInput) -> Result<PersonaResponse, String> {
 /// later seam fails — partial traces are the diagnostic value.
 async fn respond_inner(
     input: &RespondInput,
-    trace: &mut crate::persona::trace::CognitionTrace,
+    trace: &mut crate::cognition::trace::CognitionTrace,
     total_start: u64,
 ) -> Result<PersonaResponse, String> {
-    use crate::persona::trace::{SEAM_ANALYZE, SEAM_INFERENCE, SEAM_POST_PROCESS};
+    use crate::cognition::trace::{SEAM_ANALYZE, SEAM_INFERENCE, SEAM_POST_PROCESS};
 
     // RTOS-debugger breakpoint: respond cycle entry. Captures who's
     // responding to what, plus the size of the contextual inputs the

@@ -2,7 +2,7 @@ use super::*;
 
 pub(super) async fn serve_persona_loop_inner(
     ctx: &HostedPersona,
-    conversation: &mut dyn PersonaConversation,
+    conversation: &mut dyn CitizenConversation,
     opts: ServeOptions,
 ) -> Result<ServeOutcome, String> {
     // PRECONDITION: caller MUST have called `conversation.prime()`
@@ -21,7 +21,7 @@ pub(super) async fn serve_persona_loop_inner(
         .await
         .map_err(|e| format!("high_water_mark failed: {e}"))?;
     // Event-id ring for staleness at the loop head (see `wake_backlog::is_stale`).
-    let mut seen_ids = crate::persona::wake_backlog::SeenIds::new(256);
+    let mut seen_ids = crate::cognition::conversation::seen_ids::SeenIds::new(256);
     // Admitted triggers remain owned while capacity is unavailable. New inbox
     // input and Stop stay reachable without replacing an older trigger's custody.
     let mut deferred_input = crate::persona::wake_backlog::PendingInput::for_persona(ctx.identity.peer_id.as_uuid());

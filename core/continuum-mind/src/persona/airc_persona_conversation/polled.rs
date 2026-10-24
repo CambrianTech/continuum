@@ -15,8 +15,6 @@ pub(super) enum Polled {
 /// How often the store-backed catch-up pages every subscribed room's tail.
 pub(super) const CATCH_UP_EVERY: std::time::Duration = std::time::Duration::from_secs(60);
 
-/// Events paged per room per catch-up tick.
-pub(crate) const CATCH_UP_PAGE: usize = 32;
 
 /// Event ids remembered per room to tell "seen" from "dropped" (bounded).
 pub(super) const SEEN_RING: usize = 128;
@@ -25,9 +23,9 @@ pub(super) const SEEN_RING: usize = 128;
 pub(super) struct MindFeed {
     pub(super) persona: Uuid,
     pub(super) region: Arc<std::sync::Mutex<crate::persona::perception_region::PerceptionRegion>>,
-    pub(super) wake_tx: tokio::sync::mpsc::Sender<crate::persona::perception_region::Wake>,
+    pub(super) wake_tx: tokio::sync::mpsc::Sender<crate::cognition::conversation::Wake>,
     /// Her wakes until the loop's Wake consumer takes them (`take_wakes`).
-    pub(super) wakes: Option<tokio::sync::mpsc::Receiver<crate::persona::perception_region::Wake>>,
+    pub(super) wakes: Option<tokio::sync::mpsc::Receiver<crate::cognition::conversation::Wake>>,
 }
 
 impl MindFeed {
@@ -52,7 +50,7 @@ impl MindFeed {
         // Her private continuation is never in mind-state.json; it is sealed in her mind
         // store (PRIVACY-OF-THOUGHT.md sink 10). Restore it when no open one was saved.
         if region.continuation().is_none() {
-            if let Some(private) = crate::persona::mind_room::sealed_continuation(persona) {
+            if let Some(private) = crate::persona::mind_store::sealed_continuation(persona) {
                 region.restore_private_continuation(private, now);
             }
         }
@@ -138,7 +136,7 @@ impl AttentionEvent {
         {
             return None;
         }
-        let perception = match crate::persona::room_event::room_work_from_event(&event) {
+        let perception = match crate::cognition::conversation::room_event::room_work_from_event(&event) {
             Ok(Some(work)) => Ok(IncomingMessage {
                 event_id: event.event_id.as_uuid(), lamport: event.lamport,
                 peer_id: event.peer_id.as_uuid(), room_id: event.room_id.as_uuid(),
@@ -183,7 +181,7 @@ pub(super) fn signal_if_directed(own: uuid::Uuid, attention: &AttentionEvent) {
         .as_ref()
         .and_then(|r| r.get(own))
         .map(|rt| {
-            crate::persona::persona_identity::PersonaIdentity::new(own, rt.agent_name().to_string())
+            crate::cognition::conversation::persona_identity::PersonaIdentity::new(own, rt.agent_name().to_string())
         })
         .is_some_and(|me| me.mentions(&message.text));
     let sender_is_human = crate::cognition::room_directory::is_human_peer(peer);

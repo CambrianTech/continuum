@@ -315,7 +315,7 @@ crate::action_command! {
                     .dataset_name
                     .clone()
                     .unwrap_or_else(|| format!("inline:{}", p.request.trait_kind)), // inline datasets have no on-disk name; the trait names the mint
-                content_hash: crate::persona::inbox_admission::content_hash_sha256(&joined),
+                content_hash: crate::cognition::inbox_admission::content_hash_sha256(&joined),
                 size_bytes: joined.len() as u64,
                 source_url: None,
             };

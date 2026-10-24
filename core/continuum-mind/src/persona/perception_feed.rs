@@ -26,14 +26,15 @@ use airc_core::{PeerId, TranscriptEvent};
 use tokio::sync::mpsc;
 use uuid::Uuid;
 
-use super::perception_region::{PerceptionRegion, Wake};
-use super::salience::{BoardChange, SpeechLine};
-use crate::persona::room_event::{room_work_from_event, RoomWork};
+use super::perception_region::PerceptionRegion;
+use crate::cognition::conversation::Wake;
+use crate::cognition::conversation::salience::{BoardChange, SpeechLine};
+use crate::cognition::conversation::room_event::{room_work_from_event, RoomWork};
 
 struct Resident {
     peer: PeerId,
     /// Her identity for the one mention detector (`PersonaIdentity::mentions`).
-    identity: super::persona_identity::PersonaIdentity,
+    identity: crate::cognition::conversation::persona_identity::PersonaIdentity,
     region: Arc<Mutex<PerceptionRegion>>,
     wake_tx: mpsc::Sender<Wake>,
     /// Her conversation's admission pipeline (BigMama's consumer, phase 2): the
@@ -59,7 +60,7 @@ pub fn register(
     events_tx: Option<mpsc::Sender<Arc<TranscriptEvent>>>,
 ) {
     attach_her_rooms(&region);
-    let identity = super::persona_identity::PersonaIdentity::new(peer.as_uuid(), agent_name.to_string());
+    let identity = crate::cognition::conversation::persona_identity::PersonaIdentity::new(peer.as_uuid(), agent_name.to_string());
     registry()
         .lock()
         .unwrap_or_else(|p| p.into_inner())
@@ -166,7 +167,7 @@ pub fn classify(event: &TranscriptEvent) -> Fed {
         Ok(Some(RoomWork::Submitted { card_id, publisher, .. })) => Fed::Board(BoardChange::Moved { card_id, by: publisher }),
         Ok(Some(RoomWork::Other { kind })) => Fed::OtherWork(kind),
         Err(reason) => Fed::NotPerception(reason),
-        Ok(None) => match crate::persona::room_event::room_content_from_event(event) {
+        Ok(None) => match crate::cognition::conversation::room_event::room_content_from_event(event) {
             Ok(_) => Fed::Speech,
             Err(reason) => Fed::NotPerception(reason),
         },
@@ -234,10 +235,10 @@ pub fn feed(event: &Arc<TranscriptEvent>, now_ms: u64) -> usize {
 
 #[cfg(test)]
 mod tests {
-    use super::super::salience::ObservedVerdict;
+    use crate::cognition::conversation::salience::ObservedVerdict;
     use super::*;
-    use crate::persona::attention::AttentionDial;
-    use crate::persona::salience::SalienceLevel;
+    use crate::cognition::attention::AttentionDial;
+    use crate::cognition::conversation::salience::SalienceLevel;
 
     const ROOM_A: Uuid = Uuid::from_u128(0xa);
     const ROOM_B: Uuid = Uuid::from_u128(0xb);
@@ -350,7 +351,7 @@ mod tests {
         match rx.try_recv() {
             Ok(Wake::Perceive { salience, .. }) => {
                 assert_eq!(salience.level, SalienceLevel::Addressed);
-                assert!(salience.reasons.iter().any(|r| matches!(r, crate::persona::salience::SalienceReason::MentionedMe { by } if *by == peer)));
+                assert!(salience.reasons.iter().any(|r| matches!(r, crate::cognition::conversation::salience::SalienceReason::MentionedMe { by } if *by == peer)));
             }
             other => panic!("her name in the text is addressed to her: {other:?}"),
         }

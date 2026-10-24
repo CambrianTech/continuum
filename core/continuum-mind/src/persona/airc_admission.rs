@@ -10,9 +10,9 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use ts_rs::TS;
 
-use super::admission::AdmissionCandidate;
-use super::engram::{AircMessageRef, EngramKind, EngramOrigin, TrustState};
-use super::inbox_admission::content_hash_sha256;
+use crate::cognition::admission::AdmissionCandidate;
+use crate::cognition::engram::{AircMessageRef, EngramKind, EngramOrigin, TrustState};
+use crate::cognition::inbox_admission::content_hash_sha256;
 
 /// Signed AIRC message envelope material needed for memory admission.
 ///
@@ -141,10 +141,8 @@ fn airc_recall_keys(envelope: &AircAdmissionEnvelope) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::persona::{
-        AdmissionConfig, AdmissionContext, AdmissionDecision, AdmissionDropReason, AdmissionError,
-        AdmissionGate, HeuristicIsMemorable, SeenContentLookup, SeenEventLookup,
-    };
+    use crate::cognition::admission::{AdmissionConfig, AdmissionContext, AdmissionGate, HeuristicIsMemorable, SeenContentLookup, SeenEventLookup};
+    use crate::cognition::engram::{AdmissionDecision, AdmissionDropReason, AdmissionError};
     use std::collections::HashMap;
     use std::sync::Mutex;
     use uuid::Uuid;

@@ -75,7 +75,7 @@ pub struct StagedCreditGeneration {
 /// Observed live 2026-09-08: a citizen accumulating toward a training threshold on a
 /// card still in `Claimed` with no settlement.
 ///
-/// Lives in the citizen's own [`crate::persona::home::PersonaHome`], alongside
+/// Lives in the citizen's own [`crate::cognition::home::PersonaHome`], alongside
 /// `engrams.sqlite` — persistence inside its existing owner, per-citizen, NOT a new
 /// global queue ([[source-drain-is-the-universal-pattern]]: the drain is settlement).
 ///
@@ -711,4 +711,17 @@ pub fn received_submission_params(
         }
     }
     params
+}
+
+#[async_trait::async_trait]
+impl crate::cognition::act_observe::TurnCredit for TurnCreditCapture {
+    async fn record(
+        &mut self,
+        acts: &[(String, Vec<crate::ai::types::ToolCall>)],
+        receipts: &[crate::ai::provenance::GenerationReceipt],
+        report: Option<&str>,
+        final_snapshot: bool,
+    ) -> bool {
+        TurnCreditCapture::record(self, acts, receipts, report, final_snapshot).await
+    }
 }

@@ -63,12 +63,12 @@
 use std::sync::Arc;
 use uuid::Uuid;
 
-use continuum_core::persona::channel_items::ChatQueueItem;
+use continuum_core::cognition::conversation::channel_items::ChatQueueItem;
 use continuum_core::persona::channel_registry::{ChannelRegistry, DEFAULT_BURST_WINDOW_MS};
-use continuum_core::persona::channel_types::QueueItemBehavior;
+use continuum_core::cognition::conversation::channel_types::QueueItemBehavior;
 use continuum_core::persona::channel_view::CoherentInput;
-use continuum_core::persona::persona_identity::PersonaIdentity;
-use continuum_core::persona::types::{PersonaState, SenderType};
+use continuum_core::cognition::conversation::persona_identity::PersonaIdentity;
+use continuum_core::cognition::conversation::types::{PersonaState, SenderType};
 
 fn make_chat(room: Uuid, sender: &str, content: &str) -> Arc<dyn QueueItemBehavior> {
     make_chat_at(room, sender, content, continuum_base::time::EpochMs::now().millis())
@@ -182,7 +182,7 @@ fn service_cycle_with_n_chat_messages_yields_one_input() {
 /// window arrival distributions — not just within one tight window.
 #[test]
 fn service_cycle_multi_window_yields_one_input_with_remainder_deferred() {
-    use continuum_core::persona::channel_types::ActivityDomain;
+    use continuum_core::cognition::conversation::channel_types::ActivityDomain;
 
     let mut registry = ChannelRegistry::new();
     let mut state = PersonaState::new();

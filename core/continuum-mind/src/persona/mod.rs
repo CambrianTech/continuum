@@ -11,10 +11,6 @@
 //!   - channel_queue: Generic per-domain queue container
 //!   - channel_registry: Domain-to-queue routing + service_cycle()
 
-pub mod admission;
-pub mod admission_persistence;
-pub mod admission_state;
-pub mod attention;
 pub mod awareness;
 pub mod awareness_source;
 pub mod airc_admission;
@@ -36,46 +32,38 @@ pub mod active_work_source;
 pub mod airc_runtime_registry;
 pub mod airc_source;
 pub mod allocator;
-pub mod cached_source;
 pub mod card;
 pub mod card_carry;
+pub mod card_hands;
 pub mod card_checkout;
-pub mod card_holder;
 pub mod held_claims;
 pub mod card_ledger_fact;
-pub mod channel_items;
 pub mod channel_queue;
 pub mod channel_registry;
-pub mod channel_types;
 pub mod channel_view;
 pub mod claim_rejections;
 pub mod cognition;
+pub mod cognition_extensions;
 pub mod cognition_io;
 pub mod cognition_pulse;
 pub mod substrate_governor;
-pub mod decay_tick;
 pub mod domain_classifier;
 pub mod durable_history;
-pub mod engram;
-pub mod engram_graph;
 pub mod engram_source;
 pub mod evaluator;
 pub mod genome_paging;
-pub mod grounding_invalidation;
-pub mod home;
 pub mod host;
 pub mod hw_tier_descriptor;
 pub mod identity_provider;
 pub mod inbox;
-pub mod inbox_admission;
 pub mod inference_profile;
 pub mod instance_manager;
 pub mod loop_dedup;
 pub mod media_perception_source;
 pub mod media_policy;
 pub mod message_cache;
-pub mod mind_room;
 pub mod mind_state;
+pub mod mind_store;
 pub mod perception_feed;
 pub mod perception_region;
 pub mod model_override;
@@ -85,14 +73,11 @@ pub mod placement_switch;
 pub mod self_peer;
 pub mod remote_lane_factory;
 pub mod model_selection;
-pub mod persona_identity;
 pub mod profile_builder;
 pub mod viewstate_rag;
 pub mod rag_capture;
 pub mod rag_inspect;
-pub mod recall_metadata;
 pub mod recorder;
-pub mod salience;
 pub mod response;
 pub mod resume_or_mint_provider;
 pub mod resting_seat;
@@ -101,10 +86,8 @@ pub mod role_template;
 pub mod room_board_source;
 pub mod room_doctrine_source;
 pub mod identity_card_cache;
-pub mod room_event;
 pub mod room_resolve;
 pub mod room_roster_source;
-pub mod room_substrates;
 pub mod roster_slot;
 pub mod stream_rail;
 #[cfg(any(test, feature = "test-fixtures"))]
@@ -127,20 +110,13 @@ pub mod service_module;
 pub mod spawner;
 pub mod spawner_module;
 pub mod supervisor;
-pub mod trace;
 pub mod training_producer;
 pub mod turn_context;
 pub mod turn_frame;
-pub mod types;
 pub mod unified;
 pub mod wall_source;
 pub mod workspace_map_source;
 
-pub use admission::{
-    build_engram_from_candidate, AdmissionCandidate, AdmissionConfig, AdmissionContext,
-    AdmissionGate, HeuristicIsMemorable, IsMemorable, SeenContentLookup, SeenEventLookup,
-};
-pub use admission_state::{AdmissionState, EngramOriginKind};
 pub use airc_admission::{
     airc_envelope_to_candidate, airc_envelope_to_ref, AircAdmissionConversionError,
     AircAdmissionEnvelope,
@@ -151,15 +127,9 @@ pub use allocator::{
     allocate as allocate_personas, load_catalog, select_local_model, AllocationResult,
     PersonaAllocation, PersonaCatalogEntry,
 };
-pub use channel_items::{ChannelEnqueueRequest, MediaItemRequest};
 pub use channel_registry::ChannelRegistry;
-pub use channel_types::{ActivityDomain, ChannelRegistryStatus, ChannelStatus, ServiceCycleResult};
 pub use cognition::{CognitionDecision, PersonaCognitionEngine, PriorityFactors, PriorityScore};
 pub use domain_classifier::{DomainClassification, DomainClassifier, QualityFactors, QualityScore};
-pub use engram::{
-    AdmissionDecision, AdmissionDropReason, AdmissionError, AircMessageRef, ChatMessageRef, Engram,
-    EngramKind, EngramOrigin, ToolInvocationRef, TrustState,
-};
 pub use evaluator::{
     analyze_burst, AdequacyResult, BurstEvaluateResult, BurstRespondContext, FullEvaluateRequest,
     FullEvaluateResult, GateDetails, RateLimiterState, RecentResponse, SleepMode, SleepState,
@@ -169,10 +139,6 @@ pub use genome_paging::{
     GenomePagingState,
 };
 pub use inbox::{PersonaInbox, PersonaInboxFrame, PersonaInboxFrameMetrics};
-pub use inbox_admission::{
-    content_hash_sha256, inbox_message_to_candidate, inbox_message_to_origin, InboxAdmissionRunner,
-    TrustMapping,
-};
 pub use message_cache::{
     CachedMessage, ContentDedupResult, ContentDeduplicator, EchoChamberResult, RecentMessageCache,
     SenderCategory,
@@ -186,7 +152,6 @@ pub use turn_frame::{
     ConsolidatedInboxChunk, PersonaTurnFrame, PersonaTurnFrameReplayRecord, RagAssemblySeed,
     PERSONA_TURN_FRAME_REPLAY_SCHEMA_VERSION,
 };
-pub use types::*;
 pub use unified::PersonaCognition;
 
 // ── Substrate ORM entity registration ────────────────────────────

@@ -337,8 +337,8 @@ mod tests {
     use super::*;
     use crate::ai::heuristic_adapter::HeuristicInferenceAdapter;
     use crate::cognition::persona_workspace::{PersonaBrainConfig, PersonaWorkspaceRegistry};
-    use crate::persona::admission_state::AdmissionState;
-    use crate::persona::recall_metadata::RecallMetadataRegistry;
+    use crate::cognition::admission_state::AdmissionState;
+    use crate::cognition::recall_metadata::RecallMetadataRegistry;
 
     /// A minimal resident persona in a LOCAL registry (never the process
     /// global), keyed by `peer_id` — the same uuid the spawn path would take

@@ -58,6 +58,7 @@ use crate::orm::OrmEntity;
 
 pub mod reviewed;
 pub mod graded;
+use crate::cognition::training_sources::*;
 mod stamp;
 pub use stamp::{CapturedCredit, ClaimReceipt, CreditRole, OutcomeStamp, ServedProvenance, SettlementOutcome};
 

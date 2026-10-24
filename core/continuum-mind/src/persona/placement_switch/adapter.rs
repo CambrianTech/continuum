@@ -9,7 +9,7 @@ use crate::ai::types::{
     TextGenerationResponse,
 };
 use crate::inference::airc_remote::AircRemoteInferenceAdapter;
-use crate::persona::home::PersonaHome;
+use crate::cognition::home::PersonaHome;
 use crate::persona::inference_profile::PersonaInferenceProfile;
 use crate::persona::model_override::PersonaModelOverride;
 use crate::persona::supervisor::PersonaAdapterFactory;

@@ -272,7 +272,7 @@
         // No alias published for this holder → said as an unnamed peer, never an id inside
         // the sentence (Joel, 2026-10-06), and NEVER "someone".
         let owner8: String = holder.as_uuid().to_string().chars().take(8).collect();
-        assert!(cards[0].content.contains(crate::persona::card_holder::UNNAMED_HOLDER), "{}", cards[0].content);
+        assert!(cards[0].content.contains(crate::cognition::card_holder::UNNAMED_HOLDER), "{}", cards[0].content);
         assert!(!cards[0].content.contains(&owner8), "{}", cards[0].content);
         assert!(!cards[0].content.contains("someone"));
         // An unclaimed card is surfaced as such — all owners visible on the board.

@@ -47,7 +47,7 @@
         // directed room message still passes below.
         let mut rpc = event("RPC result, not speech");
         rpc.headers.insert(airc_protocol::HEADER_AIRC_CORRELATION_ID.into(), Uuid::new_v4().to_string());
-        assert_eq!(crate::persona::room_event::room_turn_from_event(&rpc), Err("command_frame"));
+        assert_eq!(crate::cognition::conversation::room_event::room_turn_from_event(&rpc), Err("command_frame"));
         for _ in 0..CATCH_UP_PAGE * 2 {
             let mut telemetry = event("");
             telemetry.kind = airc_core::TranscriptKind::System;
@@ -138,7 +138,7 @@
         review_event.headers = headers;
         review_event.body = Some(body);
         assert!(matches!(AttentionEvent::classify(Arc::new(review_event)).unwrap().perception.unwrap().work,
-            Some(crate::persona::room_event::RoomWork::Reviewed { .. })));
+            Some(crate::cognition::conversation::room_event::RoomWork::Reviewed { .. })));
         let work_id = work.event_id.as_uuid();
         frames.push(Ok(Arc::new(work)));
         let mut directed = event("@citizen Shared Cargo owner: please wait");
@@ -171,7 +171,7 @@
         let perceived = conversation.perceive_ready().await.unwrap();
         assert_eq!(perceived.len(), 2);
         assert_eq!(perceived[0].event_id, work_id);
-        assert!(matches!(perceived[0].work, Some(crate::persona::room_event::RoomWork::StateChanged { .. })));
+        assert!(matches!(perceived[0].work, Some(crate::cognition::conversation::room_event::RoomWork::StateChanged { .. })));
         assert_eq!(perceived[1].event_id, directed.event_id.as_uuid());
         assert_eq!(perceived[1].room_id, room);
         assert_eq!(perceived[1].peer_id, peer);
@@ -257,7 +257,7 @@
             airc.clone(), room, PersonaIdentitySource::FreshlyMinted,
         ));
         let conversation = AircPersonaConversation::new(runtime.clone());
-        let mind = crate::persona::mind_room::mind_room_id(airc.peer_id().as_uuid());
+        let mind = crate::cognition::mind_room::mind_room_id(airc.peer_id().as_uuid());
         conversation.say_in(mind, "a private word").await.expect("said to herself, never published");
         conversation.say_in(room.as_uuid(), "an open word").await.expect("an open room still publishes");
     }

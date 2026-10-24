@@ -95,8 +95,8 @@ use super::*;
         // Register her cognition cycle in the global registry the act-question
         // reads, wired to a canned adapter that answers "PASS: done" — so the
         // drive settles on a reasoned pass, not the heuristic echo (a Speak).
-        let recall_meta = Arc::new(crate::persona::recall_metadata::RecallMetadataRegistry::new());
-        let admission = Arc::new(crate::persona::admission_state::AdmissionState::new(
+        let recall_meta = Arc::new(crate::cognition::recall_metadata::RecallMetadataRegistry::new());
+        let admission = Arc::new(crate::cognition::admission_state::AdmissionState::new(
             recall_meta,
         ));
         let cfg = crate::cognition::persona_workspace::PersonaBrainConfig {
@@ -197,8 +197,8 @@ use super::*;
                 persona_id: peer,
                 persona_name: "Paige".into(),
                 system_prompt: "You are Paige.".into(),
-                admission: Arc::new(crate::persona::admission_state::AdmissionState::new(
-                    Arc::new(crate::persona::recall_metadata::RecallMetadataRegistry::new()),
+                admission: Arc::new(crate::cognition::admission_state::AdmissionState::new(
+                    Arc::new(crate::cognition::recall_metadata::RecallMetadataRegistry::new()),
                 )),
                 adapter: Arc::new(
                     HeuristicInferenceAdapter::new()
@@ -291,6 +291,29 @@ use super::*;
         }
     }
 
+    // what this catches (moved from cognition::handoff when the card bind moved up, mind split
+    // step 7): a card whose hands cannot be bound must not clear the handoff's bound card.
+    #[tokio::test]
+    async fn a_failed_bind_keeps_the_bound_card_in_the_handoff() {
+        use crate::cognition::handoff::{compose, note_held, note_unbound, TornBy};
+        let me = Uuid::from_u128(1_073);
+        let current = held_card(me);
+        note_held(me, None, &current, 1_850);
+        let cycle = crate::cognition::workspace::WorkspaceCycle::new(
+            vec![],
+            Arc::new(crate::cognition::workspace::SalienceArbiter),
+            4,
+        );
+        let mut unavailable = current.clone();
+        unavailable.card_id = airc_lib::WorkCardId::new();
+        let turn = crate::persona::card_hands::bind_card(&cycle, me, &unavailable).await;
+        assert!(turn.hands.is_none(), "no checkout/hands can be bound by this fixture");
+        let root = std::path::Path::new("current-checkout");
+        let bound = compose(me, TornBy::Periodic, Some(root), None, 1_875).expect("bound").card;
+        assert_eq!(bound, Some(current));
+        note_unbound(me);
+    }
+
 // Actual wake selection stays reachable while original capacity custody waits;
 // neither a new directed input nor Stop is hidden behind the retry timer.
 #[tokio::test(start_paused = true)]
@@ -364,7 +387,8 @@ async fn capacity_park_keeps_new_input_and_stop_reachable() {
 async fn capacity_park_observes_semantic_board_change_before_trigger_filter() {
     use crate::cognition::act_observe::SettleStep;
     use crate::cognition::workspace::{PromptCapacityError, TurnAttention};
-    use crate::persona::wake_backlog::{PendingInput, SeenIds};
+    use crate::persona::wake_backlog::PendingInput;
+    use crate::cognition::conversation::seen_ids::SeenIds;
     let ctx = hosted_with_heuristic(Uuid::new_v4());
     let room = Uuid::new_v4();
     let original = IncomingMessage {
@@ -383,7 +407,7 @@ async fn capacity_park_observes_semantic_board_change_before_trigger_filter() {
     let mut seen = SeenIds::new(256);
     let mut water = 0;
     let card = Uuid::new_v4();
-    use crate::persona::room_event::RoomWork;
+    use crate::cognition::conversation::room_event::RoomWork;
     let state = |state| RoomWork::StateChanged { card_id: card, state, by: original.peer_id };
     let submission = |id| RoomWork::Submitted {
         card_id: card, publisher: original.peer_id, submission: Some(id),
@@ -476,8 +500,8 @@ async fn holding_nothing_her_heartbeat_offers_an_initiative_turn_with_her_hands(
         persona_id: peer,
         persona_name: "Aris".into(),
         system_prompt: "You are Aris.".into(),
-        admission: Arc::new(crate::persona::admission_state::AdmissionState::new(Arc::new(
-            crate::persona::recall_metadata::RecallMetadataRegistry::new(),
+        admission: Arc::new(crate::cognition::admission_state::AdmissionState::new(Arc::new(
+            crate::cognition::recall_metadata::RecallMetadataRegistry::new(),
         ))),
         adapter: Arc::new(
             HeuristicInferenceAdapter::new().with_canned_response("PASS: nothing calls me right now"),
@@ -540,7 +564,7 @@ async fn holding_nothing_her_heartbeat_offers_an_initiative_turn_with_her_hands(
         use crate::cognition::rag_budget::{RagContext, RagSource, ResolutionPreference};
         use crate::model_registry::types::MultiPartyChatStrategy;
         use crate::persona::room_roster_source::{AircRosterReader, RoomRosterSource};
-        use crate::persona::service_loop::project_room_roster;
+        use crate::cognition::conversation::workspace_turns::project_room_roster;
         use airc_core::PeerId;
         use airc_lib::{AgentAvailabilityState, AircError, RoomMember};
         use async_trait::async_trait;

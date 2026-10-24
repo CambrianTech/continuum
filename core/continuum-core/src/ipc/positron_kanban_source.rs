@@ -173,8 +173,8 @@ fn map_lane_state(state: LaneState) -> KanbanLaneState {
     }
 }
 
-fn map_hold(hold: crate::persona::card_holder::Hold) -> KanbanHold {
-    use crate::persona::card_holder::Hold;
+fn map_hold(hold: crate::cognition::card_holder::Hold) -> KanbanHold {
+    use crate::cognition::card_holder::Hold;
     match hold {
         Hold::Held => KanbanHold::Held,
         Hold::Lapsed => KanbanHold::Lapsed,
@@ -296,7 +296,7 @@ impl KanbanProjection {
             // boundary crossing mid-projection must not make one card claim a
             // different "now" than the predicate that judged it. Cheap, and
             // the projection is not a hot path.
-            hold: map_hold(crate::persona::card_holder::hold_of(card, continuum_base::time::EpochMs::now().millis())),
+            hold: map_hold(crate::cognition::card_holder::hold_of(card, continuum_base::time::EpochMs::now().millis())),
             pull_request: card.pull_request.as_ref().map(|pr| KanbanPullRequest {
                 repo: pr.repo.to_string(),
                 number: pr.number,

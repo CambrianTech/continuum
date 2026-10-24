@@ -5,7 +5,8 @@ const { isDeepStrictEqual } = require('node:util');
 // The crates this workflow tests, one parallel job each (longest first, so it starts first).
 // Which of them run is derived from the workspace graph at selection time, never listed here.
 const TESTED_CRATES = ['continuum-core', 'continuum-mind', 'continuum-engine', 'continuum-perception', 'continuum-genome',
-  'continuum-kernel', 'continuum-live', 'continuum-hands', 'continuum-memory', 'continuum-experience'];
+  'continuum-kernel', 'continuum-live', 'continuum-hands', 'continuum-memory', 'continuum-experience',
+  'continuum-cognition'];
 // The cargo features each crate's job builds its tests with: the crate job and the cache-warming
 // job both read this, so the cache holds exactly the units the crate jobs ask for. Core is the
 // one that compiles and tests the call (livekit-webrtc) and 3D-avatar (avatar-3d) paths a node's

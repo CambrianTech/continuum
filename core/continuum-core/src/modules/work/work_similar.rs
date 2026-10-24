@@ -404,7 +404,7 @@ impl WorkGet {
             .map(submission::WorkReviewResult::from).collect();
         // the holder's card only: a review card's next step is its verdict, not a submission
         if card.reviews.is_none() {
-            let latest = crate::persona::work_board::submissions::latest_submission(card).map(|s| s.submission_id);
+            let latest = crate::cognition::card_holder::latest_submission(card).map(|s| s.submission_id);
             let outcomes: Vec<_> = latest
                 .map(|id| board.submission_reviews_for(id).filter(|r| r.card_id == card.card_id).map(|r| r.outcome).collect())
                 .unwrap_or_default(); // unwrap_or_default: no submission, no outcomes
@@ -420,11 +420,11 @@ impl WorkGet {
         now_ms: u64,
         reader: Uuid,
     ) -> WorkGetResult {
-        let holder = crate::persona::card_holder::holder(
+        let holder = crate::cognition::card_holder::holder(
             card,
             reader,
             now_ms,
-            &crate::persona::card_holder::NoNames,
+            &crate::cognition::card_holder::NoNames,
         );
         WorkGetResult {
             reviews: Vec::new(),

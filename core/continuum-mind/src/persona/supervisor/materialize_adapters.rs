@@ -36,10 +36,10 @@ pub async fn materialize_adapters(
         // leaked per attempt, ~150 sockets/s, both descriptor tables full, the host at
         // ENFILE. A seat that will be refused must build nothing first.
         let persisted_admission = {
-            let home = crate::persona::home::PersonaHome::from_root(identity.home.clone());
+            let home = crate::cognition::home::PersonaHome::from_root(identity.home.clone());
             let recall_meta =
-                std::sync::Arc::new(crate::persona::recall_metadata::RecallMetadataRegistry::new());
-            match crate::persona::admission_state::AdmissionState::for_persona(&home, recall_meta).await
+                std::sync::Arc::new(crate::cognition::recall_metadata::RecallMetadataRegistry::new());
+            match crate::cognition::admission_state::AdmissionState::for_persona(&home, recall_meta).await
             {
                 Ok(persisted) => persisted,
                 Err(source) => {
@@ -227,7 +227,7 @@ pub async fn materialize_adapters(
         let roster_source: Arc<dyn crate::cognition::rag_budget::RagSource> =
             Arc::new(crate::persona::viewstate_rag::ViewStateRagSource::<
                 continuum_positron::RosterViewState,
-            >::per_room(crate::persona::room_substrates::global_room_substrates()));
+            >::per_room(crate::cognition::room_substrates::global_room_substrates()));
         cognition.set_roster_source(roster_source.clone());
 
 
@@ -300,12 +300,12 @@ pub async fn materialize_adapters(
             {
                 Some(bus) => {
                     let (cached, dirty) =
-                        crate::persona::cached_source::CachedRagSource::new(raw_workspace_map);
-                    crate::persona::grounding_invalidation::spawn_workspace_invalidator(
+                        crate::cognition::cached_source::CachedRagSource::new(raw_workspace_map);
+                    crate::cognition::grounding_invalidation::spawn_workspace_invalidator(
                         bus,
                         dirty.downgrade(),
                     );
-                    crate::persona::grounding_invalidation::register_workspace_map_dirty(
+                    crate::cognition::grounding_invalidation::register_workspace_map_dirty(
                         identity.peer_id.as_uuid(),
                         dirty.downgrade(),
                     );
@@ -354,12 +354,12 @@ pub async fn materialize_adapters(
         ) = match runtime.subscribe_all_rooms().await {
             Ok(stream) => {
                 let (doctrine_cached, doctrine_dirty) =
-                    crate::persona::cached_source::CachedRagSource::new(raw_doctrine);
+                    crate::cognition::cached_source::CachedRagSource::new(raw_doctrine);
                 let (wall_cached, wall_dirty) =
-                    crate::persona::cached_source::CachedRagSource::new(raw_wall);
+                    crate::cognition::cached_source::CachedRagSource::new(raw_wall);
                 // The invalidator owns a subscription to every room; it lives and dies with
                 // the runtime (aborted in the runtime's Drop), never as an orphan task.
-                runtime.own_task(crate::persona::grounding_invalidation::spawn_publish_invalidator(
+                runtime.own_task(crate::cognition::grounding_invalidation::spawn_publish_invalidator(
                     stream,
                     vec![doctrine_dirty.downgrade(), wall_dirty.downgrade()],
                 ));

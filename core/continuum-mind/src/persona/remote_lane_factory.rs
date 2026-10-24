@@ -61,7 +61,7 @@ use airc_lib::Airc;
 use crate::ai::adapter::AIProviderAdapter;
 use crate::inference::airc_remote::adapter::AircRemoteInferenceAdapter;
 use crate::inference::airc_remote::transport::AircLiveTransport;
-use crate::persona::home::PersonaHome;
+use crate::cognition::home::PersonaHome;
 use crate::persona::inference_profile::PersonaInferenceProfile;
 use crate::persona::supervisor::PersonaAdapterFactory;
 use crate::persona::PersonaModelOverride;

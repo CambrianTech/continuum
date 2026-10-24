@@ -30,7 +30,7 @@ pub(super) struct CycleInput {
 /// and report the verdict. Every non-speaking end of the turn is `Skip`.
 pub(super) async fn run_turn_cycle(
     ctx: &HostedPersona,
-    conversation: &mut dyn PersonaConversation,
+    conversation: &mut dyn CitizenConversation,
     outcome: &mut ServeOutcome,
     deferred_input: &mut crate::persona::wake_backlog::PendingInput,
     phase_timings: &mut PhaseTimings,
@@ -253,7 +253,7 @@ pub(super) async fn run_turn_cycle(
             );
             // A citizen holding a card works at that repo — in a ROOM turn too: the
             // turn is bound to her card claim's hands, admitted here.
-            let held_card = crate::cognition::persona_workspace::root_at_held_card(
+            let held_card = crate::persona::card_hands::root_at_held_card(
                 &cycle,
                 ctx.identity.peer_id.as_uuid(),
                 conversation,
@@ -276,7 +276,7 @@ pub(super) async fn run_turn_cycle(
                     LIVE_MAX_ACTS,
                     framing,
                     conversation,
-                    credit_capture.as_mut(),
+                    credit_capture.as_mut().map(|c| c as &mut dyn crate::cognition::act_observe::TurnCredit),
                 )
                 .await;
                 // The lived-turn experience write (#319) is NOT here: it lives inside
@@ -311,7 +311,7 @@ pub(super) async fn run_turn_cycle(
             // The turn's work is synced to its card's branch; her hands stay where they
             // are, because nothing moved them (card fc9e9fd7).
             if let Some(hands) = &held_card.hands {
-                crate::cognition::persona_workspace::end_card_turn(hands, turn_act_count).await;
+                crate::persona::card_hands::end_card_turn(hands, turn_act_count).await;
             }
             cycle.set_token_sink(None);
             let _ = forwarder.await;

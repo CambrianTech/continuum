@@ -35,7 +35,7 @@ pub struct HydratedLine {
     /// weigh "silent past when I expected" on events it cannot place in time.
     pub occurred_at_ms: u64,
     pub text: String,
-    pub media: Vec<super::channel_items::MediaItemRequest>,
+    pub media: Vec<crate::cognition::conversation::channel_items::MediaItemRequest>,
 }
 
 /// Read the latest lines of a room's durable transcript, chronological
@@ -66,7 +66,7 @@ pub struct RoomRow {
     pub sender: Uuid,
     pub occurred_at_ms: u64,
     pub text: String,
-    pub media: Vec<super::channel_items::MediaItemRequest>,
+    pub media: Vec<crate::cognition::conversation::channel_items::MediaItemRequest>,
 }
 
 /// The newest `limit` rows of a room's conversation from the core's OWN chat
@@ -91,7 +91,7 @@ pub async fn room_rows(room: Uuid, limit: usize) -> Result<Vec<RoomRow>, String>
     // message or invent a text-only version of an image-bearing turn.
     for message in messages {
         if let Some(media) = message.get("content").and_then(|c| c.get("media")) {
-            serde_json::from_value::<Vec<super::channel_items::MediaItemRequest>>(media.clone()) // boundary: validate media from the durable chat storage JSON format.
+            serde_json::from_value::<Vec<crate::cognition::conversation::channel_items::MediaItemRequest>>(media.clone()) // boundary: validate media from the durable chat storage JSON format.
                 .map_err(|error| format!("durable_history: invalid media references: {error}"))?;
         }
     }
@@ -145,9 +145,9 @@ pub(crate) fn event_from_row(room: Uuid, row: crate::persona::durable_history::R
             airc_protocol::HEADER_FORGE_BODY_HINT.to_string(),
             crate::routing::airc_realtime_wire::CONTINUUM_BODY_HINT.to_string(),
         );
-        (Body::Json(crate::persona::room_event::chat_transcript_envelope(
+        (Body::Json(crate::cognition::conversation::room_event::chat_transcript_envelope(
             row.id,
-            &crate::persona::room_event::ChatTranscriptLine {
+            &crate::cognition::conversation::room_event::ChatTranscriptLine {
                 room_id: room,
                 sender_id: row.sender,
                 text: &row.text,

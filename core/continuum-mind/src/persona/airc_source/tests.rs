@@ -1,5 +1,6 @@
 #![cfg(test)]
     use super::*;
+    use airc_lib::AircError;
     use crate::cognition::channel_element::ChannelElementCache;
     use crate::ai::embedding::EmbeddingProvider;
     use crate::runtime::ready_buffer::DashMapReadyBuffer;

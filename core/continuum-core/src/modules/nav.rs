@@ -19,7 +19,7 @@ use ts_rs::TS;
 use uuid::Uuid;
 
 use crate::cognition::channel_substrate::global_channel_digest_buffer;
-use crate::persona::airc_source::AircTranscriptReader;
+use crate::cognition::conversation::transcript_reader::AircTranscriptReader;
 use crate::persona::PersonaAircRuntimeRegistry;
 use crate::ipc::positron_nav_source::{global_nav_focus, NAV_CHANGED};
 use crate::ipc::positron_source::{AircChatFocused, CHAT_FOCUSED};

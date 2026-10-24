@@ -6,7 +6,7 @@ use super::*;
 /// takes never also starts a self-turn.
 #[derive(Default)]
 pub(super) struct MindWakeState {
-    wakes: Option<tokio::sync::mpsc::Receiver<crate::persona::perception_region::Wake>>,
+    wakes: Option<tokio::sync::mpsc::Receiver<crate::cognition::conversation::Wake>>,
     next_mind_check: Option<tokio::time::Instant>,
     perceive_recheck: Option<(tokio::time::Instant, uuid::Uuid)>,
 }
@@ -22,7 +22,7 @@ pub(super) enum LoopStep {
 /// wake plus the directed-pending generation observed before the wait.
 pub(super) async fn await_wake(
     ctx: &HostedPersona,
-    conversation: &mut dyn PersonaConversation,
+    conversation: &mut dyn CitizenConversation,
     outcome: &mut ServeOutcome,
     opts: &ServeOptions,
     deferred_input: &crate::persona::wake_backlog::PendingInput,
@@ -57,12 +57,12 @@ pub(super) async fn await_wake(
         },
         room = deferred_input.ready_self_room(), if !opts.quiesced.load(std::sync::atomic::Ordering::Relaxed) => Wake::Mind { why: "capacity", room: Some(room) },
         w = next_mind_wake(&mut mind.wakes), if deferred_input.permits_self_tick() => match w {
-            crate::persona::perception_region::Wake::Perceive { activity, .. } => {
+            crate::cognition::conversation::Wake::Perceive { activity, .. } => {
                 mind.perceive_recheck = Some((tokio::time::Instant::now() + PERCEIVE_SETTLE, activity));
                 Wake::Idle
             }
-            crate::persona::perception_region::Wake::Continuation => Wake::Mind { why: "continuation", room: her_continuation_room(me) },
-            crate::persona::perception_region::Wake::Resume => Wake::Mind { why: "resume", room: her_continuation_room(me) },
+            crate::cognition::conversation::Wake::Continuation => Wake::Mind { why: "continuation", room: her_continuation_room(me) },
+            crate::cognition::conversation::Wake::Resume => Wake::Mind { why: "resume", room: her_continuation_room(me) },
         },
         _ = sleep_until_some(mind.perceive_recheck.map(|(at, _)| at)), if deferred_input.permits_self_tick() => {
             let activity = mind.perceive_recheck.take().map(|(_, a)| a);
@@ -87,12 +87,12 @@ pub(super) async fn await_wake(
                 Some((wake, next)) => {
                     mind.next_mind_check = Some(next);
                     match wake {
-                        Some(crate::persona::perception_region::Wake::Perceive { activity, .. }) => {
+                        Some(crate::cognition::conversation::Wake::Perceive { activity, .. }) => {
                             mind.perceive_recheck = Some((tokio::time::Instant::now() + PERCEIVE_SETTLE, activity));
                             Wake::Idle
                         }
-                        Some(crate::persona::perception_region::Wake::Continuation) => Wake::Mind { why: "continuation", room: her_continuation_room(me) },
-                        Some(crate::persona::perception_region::Wake::Resume) => Wake::Mind { why: "resume", room: her_continuation_room(me) },
+                        Some(crate::cognition::conversation::Wake::Continuation) => Wake::Mind { why: "continuation", room: her_continuation_room(me) },
+                        Some(crate::cognition::conversation::Wake::Resume) => Wake::Mind { why: "resume", room: her_continuation_room(me) },
                         None => Wake::Idle,
                     }
                 }

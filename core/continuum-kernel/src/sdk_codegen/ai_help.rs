@@ -10,6 +10,7 @@ use serde_json::{json, Value};
 /// How many commands a lookup names at once: the nearest names to a miss, and the matches a
 /// `commands/help` query returns. Wide enough that the route survives the eight-way tie
 /// `list_cards` produced (2026-09-05, see `did_you_mean`), narrow enough to read at a glance.
+// context-budget-exempt: a count of command names shown, not a context or prompt size.
 pub const SUGGESTION_WINDOW: usize = 6;
 
 /// Closest authorized command names to a miss — same category prefix (before `/`),

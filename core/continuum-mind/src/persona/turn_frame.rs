@@ -5,7 +5,7 @@
 //! that can be recorded and replayed without booting inference.
 
 use super::inbox::PersonaInboxFrame;
-use super::types::InboxMessage;
+use crate::cognition::conversation::types::InboxMessage;
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 use uuid::Uuid;
@@ -321,7 +321,7 @@ impl ResponsePrompt {
 mod tests {
     use super::*;
     use crate::persona::inbox::{PersonaInbox, PersonaInboxFrameMetrics};
-    use crate::persona::{Modality, SenderType};
+    use crate::cognition::conversation::types::{Modality, SenderType};
 
     fn message(
         room_id: Uuid,

@@ -1,8 +1,8 @@
 //! `cognition/get-state` — read a persona's live cognitive state (typed, dep-holding).
 //!
-//! Projects the persona's [`PersonaState`](crate::persona::PersonaState) (energy,
+//! Projects the persona's [`PersonaState`](crate::cognition::conversation::types::PersonaState) (energy,
 //! attention, mood, inbox load, budget) plus the derived adaptive
-//! [`service_cadence_ms`](crate::persona::PersonaState::service_cadence_ms) into one
+//! [`service_cadence_ms`](crate::cognition::conversation::types::PersonaState::service_cadence_ms) into one
 //! camelCase wire result. Read-only: fails loud with `NotFound` when the persona has no
 //! cognition engine (never lazily creates one on a read). Captures the owning module's
 //! [`CognitionState`](crate::modules::cognition::CognitionState).
@@ -14,7 +14,7 @@ use std::sync::Arc;
 use uuid::Uuid;
 
 use crate::modules::cognition::CognitionState;
-use crate::persona::Mood;
+use crate::cognition::conversation::types::Mood;
 use crate::sdk_codegen::CommandError;
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, ts_rs::TS, schemars::JsonSchema)]
@@ -30,7 +30,7 @@ pub struct GetStateParams {
 }
 
 /// The persona's live cognitive state — a camelCase projection of
-/// [`PersonaState`](crate::persona::PersonaState) plus the derived service cadence.
+/// [`PersonaState`](crate::cognition::conversation::types::PersonaState) plus the derived service cadence.
 #[derive(Debug, Clone, serde::Serialize, ts_rs::TS)]
 #[ts(
     export,

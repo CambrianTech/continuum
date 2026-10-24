@@ -100,7 +100,7 @@ use super::*;
         );
         let store =
             reviewed::boundaries::ReviewBoundaryStore::new(executor.clone(), name.into(), persona);
-        let dream = region_over_with_store(persona, admission.clone(), Some(store.clone()));
+        let dream = region_over_with_store(persona, admission.clone(), Some(Arc::new(store.clone())));
         let create = |card, reviews| fx.create(card, reviews);
         let claim = ExactReview::claim;
         let project = |tail| fx.project(tail);
@@ -439,7 +439,7 @@ use super::*;
             .await
             .is_err());
         let dream =
-            region_over_with_store(persona, admission.clone(), Some(reopened_store.clone()));
+            region_over_with_store(persona, admission.clone(), Some(Arc::new(reopened_store.clone())));
         assert!(!dream.review_boundary_pending(persona, selection.submission_id));
         dream.tick(&RegionContext::for_persona(0, persona)).await;
         drain(&dream).await;
@@ -448,7 +448,7 @@ use super::*;
             admission
                 .recall_recent(16)
                 .iter()
-                .filter(|e| e.kind == crate::persona::engram::EngramKind::Semantic)
+                .filter(|e| e.kind == crate::cognition::engram::EngramKind::Semantic)
                 .count(),
             1
         );
@@ -469,7 +469,7 @@ use super::*;
             .unwrap()
             .pending
             .is_empty());
-        let restarted = region_over_with_store(persona, admission, Some(reopened_store));
+        let restarted = region_over_with_store(persona, admission, Some(Arc::new(reopened_store)));
         reviewed::consume_review_with_boundary(
             &refused_conn,
             name,

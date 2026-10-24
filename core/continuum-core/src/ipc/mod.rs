@@ -39,7 +39,8 @@ use crate::modules::vision::VisionModule;
 /// - JSON protocol (JTAGRequest/JTAGResponse)
 /// - Performance timing on every request
 /// - Modular runtime routes commands through ServiceModule trait (Phase 1+)
-use crate::persona::{ChannelRegistry, PersonaState};
+use crate::persona::ChannelRegistry;
+use crate::cognition::conversation::types::PersonaState;
 use crate::rag::RagEngine;
 use crate::runtime::{CommandResult, Runtime};
 use crate::system_resources::SystemResourceMonitor;

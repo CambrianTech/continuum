@@ -12,9 +12,10 @@
 //! live surface is the background `tick()` below: per-persona task polling +
 //! self-task generation, a lifecycle concern, not a command.
 
-use crate::persona::channel_items::TaskQueueItem;
+use crate::cognition::conversation::channel_items::TaskQueueItem;
 use crate::persona::self_task_generator::SelfTaskGenerator;
-use crate::persona::{ChannelRegistry, PersonaCognition, PersonaState};
+use crate::persona::{ChannelRegistry, PersonaCognition};
+use crate::cognition::conversation::types::PersonaState;
 use crate::runtime::{
     CommandResult, LateBound, ModuleConfig, ModuleContext, ModulePriority, ServiceModule,
 };

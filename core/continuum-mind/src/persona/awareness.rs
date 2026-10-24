@@ -13,8 +13,8 @@
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use super::attention::{AttentionDial, Continuation};
-use super::salience::{Salience, SalienceLevel};
+use crate::cognition::attention::{AttentionDial, Continuation};
+use crate::cognition::conversation::salience::{Salience, SalienceLevel};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ActivityLine {
@@ -147,7 +147,7 @@ impl AwarenessSnapshot {
     /// reaches a public turn's prompt or capture.
     pub fn render_lines_in(&self, persona: Uuid, room: Option<Uuid>) -> Vec<String> {
         self.render_with(|c| {
-            !crate::persona::mind_room::is_private_room(persona, c.activity) || room == Some(c.activity)
+            !crate::cognition::mind_room::is_private_room(persona, c.activity) || room == Some(c.activity)
         })
     }
 
@@ -187,8 +187,8 @@ fn short8(id: Uuid) -> String {
     id.to_string()[..8].to_string()
 }
 
-fn reason_word(r: &super::salience::SalienceReason) -> &'static str {
-    use super::salience::SalienceReason::*;
+fn reason_word(r: &crate::cognition::conversation::salience::SalienceReason) -> &'static str {
+    use crate::cognition::conversation::salience::SalienceReason::*;
     match r {
         MentionedMe { .. } => "mentioned you",
         HumanSpoke { .. } => "a human spoke",
@@ -204,7 +204,7 @@ fn reason_word(r: &super::salience::SalienceReason) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::persona::salience::SalienceReason;
+    use crate::cognition::conversation::salience::SalienceReason;
 
     fn line(name: &str, level: SalienceLevel, unread: u32, at: u64) -> ActivityLine {
         ActivityLine {
@@ -300,7 +300,7 @@ mod tests {
     #[test]
     fn a_private_continuation_shows_its_note_only_in_her_mind_room() {
         let her = Uuid::new_v4();
-        let mind = crate::persona::mind_room::mind_room_id(her);
+        let mind = crate::cognition::mind_room::mind_room_id(her);
         let c = Continuation { activity: mind, note: "a private plan".into(), expectation: None, written_at_ms: 0 };
         let snap = fold(vec![], Some(c), AttentionDial::default(), 1_000, 1);
         let public = snap.render_lines_in(her, Some(Uuid::new_v4()));

@@ -5,7 +5,6 @@
 
 pub mod advance;
 pub mod events;
-pub mod facts;
 pub mod horizon;
 pub mod review;
 pub mod submissions;

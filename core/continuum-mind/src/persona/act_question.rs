@@ -33,7 +33,7 @@
 //!   the decision and its inputs whether or not a work turn follows. A gate whose
 //!   refusal is invisible is a gate nobody can debug.
 
-use crate::persona::service_loop::{PersonaConversation, LIVE_MAX_ACTS};
+use crate::persona::service_loop::{CitizenConversation, LIVE_MAX_ACTS};
 use crate::persona::supervisor::HostedPersona;
 
 /// How many run-room rows the write-or-release gate reads to count a holder's
@@ -74,7 +74,7 @@ pub(crate) struct WorkQuestionOutcome {
 
 pub(crate) async fn ask_the_act_question(
     ctx: &HostedPersona,
-    conversation: &mut dyn PersonaConversation,
+    conversation: &mut dyn CitizenConversation,
     lamport: u64,
     turn_room: uuid::Uuid,
     directed: bool,
@@ -304,7 +304,7 @@ pub(crate) async fn ask_the_act_question(
                     // of her card's claim, standing in its checkout, never her default hands.
                     let card_turn = match held.first() {
                         Some(card) => Some(
-                            crate::cognition::persona_workspace::bind_card(
+                            crate::persona::card_hands::bind_card(
                                 &cycle,
                                 ctx.identity.peer_id.as_uuid(),
                                 card,
@@ -427,7 +427,7 @@ pub(crate) async fn ask_the_act_question(
                         LIVE_MAX_ACTS,
                         work_framing,
                         conversation,
-                        credit_capture.as_mut(),
+                        credit_capture.as_mut().map(|c| c as &mut dyn crate::cognition::act_observe::TurnCredit),
                     )
                     .await;
                     // After the card her genome is what every turn runs with (her trained
@@ -440,7 +440,7 @@ pub(crate) async fn ask_the_act_question(
                     // The turn's work is synced to its card's branch; her hands stay where
                     // they are, because nothing moved them (card fc9e9fd7).
                     if let Some(hands) = work_hands {
-                        crate::cognition::persona_workspace::end_card_turn(hands, work.acts).await;
+                        crate::persona::card_hands::end_card_turn(hands, work.acts).await;
                     }
                     if let Some(body) = cycle.acting() {
                         // One turn ended: 1-turn pins ([hands], [env]) leave now; the

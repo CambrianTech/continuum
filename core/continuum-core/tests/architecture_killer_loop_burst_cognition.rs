@@ -66,13 +66,13 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use uuid::Uuid;
 
-use continuum_core::persona::channel_items::ChatQueueItem;
+use continuum_core::cognition::conversation::channel_items::ChatQueueItem;
 use continuum_core::persona::channel_registry::{ChannelRegistry, DEFAULT_BURST_WINDOW_MS};
-use continuum_core::persona::channel_types::QueueItemBehavior;
+use continuum_core::cognition::conversation::channel_types::QueueItemBehavior;
 use continuum_core::persona::cognition::PersonaCognitionEngine;
 use continuum_core::persona::message_cache::RecentMessageCache;
-use continuum_core::persona::persona_identity::PersonaIdentity;
-use continuum_core::persona::types::{PersonaState, SenderType};
+use continuum_core::cognition::conversation::persona_identity::PersonaIdentity;
+use continuum_core::cognition::conversation::types::{PersonaState, SenderType};
 use continuum_core::persona::{analyze_burst, BurstEvaluateResult, RateLimiterState, SleepState};
 use continuum_core::rag::RagEngine;
 
