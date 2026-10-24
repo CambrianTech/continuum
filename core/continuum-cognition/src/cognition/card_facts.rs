@@ -1,5 +1,5 @@
 //! The board's plain facts: the default claim lease, a state's wire spelling, which states
-//! conclude a card, and the board's 8-char short id.
+//! conclude a card.
 
 use airc_lib::CardState;
 
