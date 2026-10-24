@@ -214,6 +214,9 @@ pub(super) async fn an_independent_signed_pass_accepts_the_issuing_turn() -> Tes
         .ok_or("work/submit published the submission")?;
 
     let (owner, reviewer) = (r.airc.peer_id(), airc_core::PeerId::new());
+    // Ordered around the real submission's wall-clock time: the card and claim before it,
+    // within the claim's lease, and the review after it.
+    let at = submitted.submitted_at_ms;
     let review_card = r.review_card(published.submission_id);
     let review_claim = airc_work::ClaimId::new();
     let repo = airc_work::RepoId::new("acme/ordinary-project")?;
@@ -225,7 +228,7 @@ pub(super) async fn an_independent_signed_pass_accepts_the_issuing_turn() -> Tes
         priority: airc_work::Priority::P1,
         lane_id: None,
         created_by: by,
-        created_at_ms: 1,
+        created_at_ms: at.saturating_sub(2),
         reviews,
         origin: None,
     });
@@ -235,8 +238,8 @@ pub(super) async fn an_independent_signed_pass_accepts_the_issuing_turn() -> Tes
         card_id,
         claim_id,
         owner: holder,
-        ttl_ms: 60_000,
-        claimed_at_ms: 2,
+        ttl_ms: 600_000,
+        claimed_at_ms: at.saturating_sub(1),
     });
     let pass = WorkSubmissionReview {
         review_id: airc_work::WorkReviewId::new(),
@@ -249,7 +252,7 @@ pub(super) async fn an_independent_signed_pass_accepts_the_issuing_turn() -> Tes
         outcome: WorkReviewOutcome::Passed,
         evidence: submitted.artifact.clone(),
         evidence_text: None,
-        reviewed_at_ms: 4,
+        reviewed_at_ms: at + 1,
     };
     let board = project_events(
         r.room.channel.as_uuid(),
