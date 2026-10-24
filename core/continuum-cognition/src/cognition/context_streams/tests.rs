@@ -3,6 +3,7 @@ use std::sync::Arc;
 use continuum_context::source::Source;
 
 use super::actions::Actions;
+use super::notices::Notices;
 use crate::cognition::working_memory::WorkingMemory;
 
 fn rendered(memory: &WorkingMemory) -> String {
@@ -76,4 +77,39 @@ fn an_unsaved_result_never_collapses_to_a_line_nothing_reopens() {
     let (_, full, pointer) = acts.last().expect("the act is on record");
     assert!(full.contains("name = \"x\""), "{full}");
     assert_eq!(pointer, full, "an unsaved result's pointer is the result itself");
+}
+
+// what this catches: her substrate's notices re-rendered as new text on every act. They were one
+// block after her view, ~3.6k chars re-prefilled per act though almost none of it changed
+// (Benchy and Aiko on the M5, 2026-10-24). As items, an act with the same notices appends
+// nothing, a new notice appends only itself, and a condition that ended is retired from her view
+// instead of reading as still holding until the next turnover.
+#[test]
+fn her_notices_append_once_and_an_ended_one_is_retired() {
+    use continuum_context::view::{Claim, View};
+
+    let memory = WorkingMemory::new(8);
+    memory.pin_fact("hands", "[hands] your hands stand in the card's checkout");
+    memory.record_fact("[rebuilt] the substrate was rebuilt while you were away");
+    let notices = Notices { memory: &memory };
+    let whole = |claims: &[Claim]| claims.iter().map(|claim| claim.full_chars).collect();
+    let (mut view, _) = View::start(Vec::new(), &[&notices as &dyn Source<_>], whole).unwrap();
+    let text = |view: &View<super::ContextMessage>| view.render().map(|m| m.text.clone()).collect::<Vec<_>>().join("\n");
+    assert!(text(&view).contains(crate::cognition::framing_echo::NOTICES_HEADER), "the framing that says these are not her words");
+
+    assert_eq!(view.advance(&[&notices as &dyn Source<_>]).chars, 0, "the same notices append nothing");
+
+    memory.record_fact("chose silence — said nothing to the room");
+    let grew = view.advance(&[&notices as &dyn Source<_>]);
+    assert_eq!(grew.items, 1, "only the new notice is appended");
+
+    memory.unpin_fact("hands");
+    let before = text(&view);
+    view.advance(&[&notices as &dyn Source<_>]);
+    let after = text(&view);
+    assert!(after.starts_with(&before) && after.contains("[ended] the notice pin/hands"), "{after}");
+    assert_eq!(view.advance(&[&notices as &dyn Source<_>]).chars, 0, "retired once");
+
+    memory.pin_fact("hands", "[hands] your hands stand in the card's checkout again");
+    assert!(memory.ended_notice_keys().is_empty(), "pinned again, it is no longer ended");
 }

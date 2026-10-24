@@ -40,6 +40,7 @@ impl WorkingMemory {
             return;
         }
         let turns = turns.max(1);
+        self.ended_pins.lock().retain(|ended| ended != key);
         let mut p = self.pinned.lock();
         if let Some(slot) = p.iter_mut().find(|f| f.key == key) {
             slot.text = t.to_string();
@@ -63,7 +64,12 @@ impl WorkingMemory {
         for f in p.iter_mut() {
             f.turns_left = f.turns_left.saturating_sub(1);
         }
+        let ended: Vec<String> = p.iter().filter(|f| f.turns_left == 0).map(|f| f.key.clone()).collect();
         p.retain(|f| f.turns_left > 0);
+        drop(p);
+        for key in ended {
+            self.pin_ended(key);
+        }
     }
 
     /// The pinned facts in pin order — what the notices open with.
@@ -78,19 +84,48 @@ impl WorkingMemory {
     /// Substrate notices use the input projection, not the optional thought bid.
     /// Their storage, scope and lifetime remain owned by this memory. The entry
     /// ring is count-bounded; neither fact text nor keyed pins have a byte ceiling.
-    pub(crate) fn notices(&self) -> Vec<String> {
+    /// Each notice under its stable key, pins first: `pin/<key>` for a pinned condition
+    /// (re-pinned text is a new version of the same notice), `fact/<text>` for a one-off
+    /// observation (it never changes once recorded).
+    pub(crate) fn notice_items(&self) -> Vec<(String, String)> {
         let scope = self.scope.lock().clone();
-        let mut notices = self.pinned_facts();
+        let mut notices: Vec<(String, String)> =
+            self.pinned.lock().iter().map(|f| (format!("pin/{}", f.key), f.text.clone())).collect();
         notices.extend(self.entries.lock().iter()
             .filter(|entry| matches!(entry.kind, WmKind::Fact)
                 && (entry.scope.is_none() || entry.scope == scope))
-            .map(|entry| entry.text.clone()));
+            .map(|entry| (format!("fact/{}", entry.text), entry.text.clone())));
         notices
+    }
+
+    /// The notice texts, in [`Self::notice_items`] order: what tests read.
+    #[cfg(test)]
+    pub(crate) fn notices(&self) -> Vec<String> {
+        self.notice_items().into_iter().map(|(_, text)| text).collect()
+    }
+
+    /// Notice keys (`pin/<key>`) whose condition ended and that are not pinned again.
+    pub(crate) fn ended_notice_keys(&self) -> Vec<String> {
+        self.ended_pins.lock().iter().map(|key| format!("pin/{key}")).collect()
+    }
+
+    fn pin_ended(&self, key: String) {
+        let mut ended = self.ended_pins.lock();
+        if !ended.contains(&key) {
+            ended.push(key);
+        }
     }
 
     /// Drop the pinned fact under `key` (the condition ended: hands restored).
     pub fn unpin_fact(&self, key: &str) {
-        self.pinned.lock().retain(|f| f.key != key);
+        let mut p = self.pinned.lock();
+        let before = p.len();
+        p.retain(|f| f.key != key);
+        let removed = p.len() < before;
+        drop(p);
+        if removed {
+            self.pin_ended(key.to_owned());
+        }
     }
 
     /// Records required prompt input. Producers must account for text size; the

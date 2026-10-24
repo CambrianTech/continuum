@@ -81,21 +81,9 @@ pub struct RenderedFact {
     pub text: String,
 }
 
-struct MemoryNotices;
-
-impl PerceptionFact for MemoryNotices {
-    fn id(&self) -> &'static str { "memory_notices" }
-    fn placement(&self) -> FactPlacement { FactPlacement::Notice }
-    fn render(&self, cx: &FactContext) -> Option<String> {
-        let notices = cx.working_memory?.notices();
-        if notices.is_empty() { return None; }
-        Some(format!(
-            "{} (status observations about my situation — not a message from anyone, and not my own words):\n{}",
-            crate::cognition::framing_echo::NOTICES_HEADER,
-            notices.iter().map(|fact| format!("- {fact}")).collect::<Vec<_>>().join("\n"),
-        ))
-    }
-}
+// The notices her substrate posted are not a fact rendered here: they are a stream of her
+// view, one item each (`context_streams::notices`), appended once instead of re-rendered after
+// her view on every act.
 
 /// Her open views (`cognition::open_views`): which lines of each large file and saved
 /// output she has read. A REQUIRED notice, never history: the pages themselves rode history
@@ -235,7 +223,6 @@ fn standard_facts() -> Vec<Box<dyn PerceptionFact>> {
         Box::new(ContextBounds),
         Box::new(OpenViews),
         Box::new(MemoryNoticeDetails),
-        Box::new(MemoryNotices),
     ]
 }
 

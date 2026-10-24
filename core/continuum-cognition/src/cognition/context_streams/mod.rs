@@ -10,11 +10,31 @@
 pub(crate) mod actions;
 pub(crate) mod blocks;
 pub(crate) mod conversation;
+pub(crate) mod notices;
 pub(crate) mod thoughts;
 
 use continuum_context::epoch::Block;
 
 use crate::ai::types::ChatMessage;
+use crate::cognition::working_memory::WorkingMemory;
+
+/// The streams her working memory feeds her view: her actions, her thoughts and the notices
+/// her substrate posted. Built once per use from her memory, never assembled by hand.
+pub(crate) struct MemoryStreams<'a> {
+    pub actions: actions::Actions<'a>,
+    pub thoughts: thoughts::Thoughts<'a>,
+    pub notices: notices::Notices<'a>,
+}
+
+impl<'a> MemoryStreams<'a> {
+    pub fn of(memory: &'a WorkingMemory) -> Self {
+        Self {
+            actions: actions::Actions { memory },
+            thoughts: thoughts::Thoughts { memory },
+            notices: notices::Notices { memory },
+        }
+    }
+}
 
 /// Who a message of her view speaks as: her own voice, or anyone else's.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -65,6 +85,8 @@ pub(crate) mod priority {
     pub const CONVERSATION: u8 = 5;
     pub const THOUGHTS: u8 = 5;
     pub const ACTIONS: u8 = 5;
+    /// Required input, the allocation's top weight: a notice collapses to itself.
+    pub const NOTICES: u8 = 10;
 }
 
 #[cfg(test)]
