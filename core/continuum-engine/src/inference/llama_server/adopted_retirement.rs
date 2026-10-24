@@ -34,9 +34,9 @@ impl LlamaServerProcess {
             Liveness::Unknown => return Err(LlamaServerError::Spawn("adopted engine identity is unverified; refusing retirement".into())),
             Liveness::Alive => {}
         }
-        // Quarantined paging cannot save: its residents are captured now, recorded only once
-        // the engine is signalled or seen dead, so a superseded or refused retirement never
-        // reports a loss (card 6b28a445).
+        // Quarantined paging cannot save: its residents are captured now and recorded only
+        // when the engine is seen dead, so a superseded, refused or still-waiting retirement
+        // never reports a loss (card 6b28a445).
         let unsaved = if endpoint.paging_recovery_required() {
             Some(endpoint.pending_discard(DiscardReason::PagingUncertain))
         } else {
@@ -66,11 +66,10 @@ impl LlamaServerProcess {
             },
         ).map_err(LlamaServerError::Spawn)?;
         // No await between signalling and retaining custody. Cancellation of the
-        // wait cannot turn this predecessor back into a serving candidate.
+        // wait cannot turn this predecessor back into a serving candidate. A signal is
+        // not a death: the residents' loss is recorded when the exit is observed.
         *self.retiring_adopted.lock() = Some(incarnation);
-        if let Some(unsaved) = unsaved {
-            unsaved.commit();
-        }
+        *self.retiring_discard.lock() = unsaved;
         self.await_adopted_exit(incarnation, Duration::from_secs(10)).await
     }
 
@@ -97,6 +96,11 @@ impl LlamaServerProcess {
                  and verifies readiness before reopening admission", incarnation.pid, incarnation.started_s
             )))??;
         *self.retiring_adopted.lock() = None;
+        // Its death is observed: the residents it held unsaved are now lost.
+        let discarded = self.retiring_discard.lock().take();
+        if let Some(discarded) = discarded {
+            discarded.commit();
+        }
         Ok(())
     }
 }
@@ -107,7 +111,9 @@ mod tests {
     use crate::inference::engine_residency::{EngineIncarnation, ProcessProbe, probe_process};
 
     // Exercise the wait against a real isolated process. Cancellation and timeout
-    // retain custody; only its observed exit permits the next launch to proceed.
+    // retain custody; only its observed exit permits the next launch to proceed. The
+    // residents it held unsaved are recorded as lost at that observed exit, never while a
+    // cancelled or timed-out wait still holds custody (card 6b28a445).
     #[tokio::test]
     async fn adopted_exit_wait_retains_custody_until_observed_exit() -> Result<(), Box<dyn std::error::Error>> {
         const CHILD: &str = "CONTINUUM_ADOPTED_EXIT_FIXTURE";
@@ -128,8 +134,14 @@ mod tests {
             return Err("fixture process identity unavailable".into());
         };
         let incarnation = EngineIncarnation { pid: child.id(), started_s, port: 0 };
-        let process = LlamaServerProcess::with_root(format!("http://exit-fixture-{}", uuid::Uuid::new_v4()));
+        let root = format!("http://exit-fixture-{}", uuid::Uuid::new_v4());
+        let process = LlamaServerProcess::with_root(root.clone());
         *process.retiring_adopted.lock() = Some(incarnation);
+        let endpoint = crate::inference::slots::directory().endpoint(&root);
+        let resident = crate::inference::slots::PageKey::mind(uuid::Uuid::new_v4()).ok_or("non-nil id")?;
+        let lost = crate::inference::slots::DiscardReason::PagingUncertain;
+        *process.retiring_discard.lock() =
+            Some(crate::inference::slots::PendingDiscard::for_test(endpoint.clone(), vec![resident], lost));
         {
             use std::future::Future;
             let wait = process.await_adopted_exit(incarnation, Duration::from_secs(10));
@@ -142,10 +154,14 @@ mod tests {
         assert_eq!(*process.retiring_adopted.lock(), Some(incarnation));
         assert!(process.await_adopted_exit(incarnation, Duration::ZERO).await.is_err());
         assert_eq!(*process.retiring_adopted.lock(), Some(incarnation));
+        assert_eq!(endpoint.admit().await?.take_relaunch_discard(&resident), None,
+            "no loss is recorded while the wait still holds custody");
         drop(child.stdin.take());
         child.wait()?;
         process.await_adopted_exit(incarnation, Duration::from_secs(1)).await?;
         assert_eq!(*process.retiring_adopted.lock(), None);
+        assert_eq!(endpoint.admit().await?.take_relaunch_discard(&resident), Some(lost),
+            "the observed exit records the loss");
         Ok(())
     }
 }

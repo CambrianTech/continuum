@@ -31,6 +31,9 @@ impl EngineGeneration {
                 // Do not mutate a ledger while an old HTTP future can still write
                 // it. Replacement readiness drains admissions and replaces it.
             }
+            drop(state);
+            // A relaunch that could not save waited for this death to record its loss.
+            endpoint.relaunch_exit_observed(self.id);
         }
     }
 }
@@ -276,21 +279,23 @@ impl EndpointTransition {
     /// Planned replacement cannot discard a healthy engine's unsaved residents.
     /// A terminal refusal resumes the exact original ledger; an uncertain write
     /// stays quarantined. Dead engines and quarantined paging use recovery instead:
-    /// nothing can be saved, so their unsaved residents come back as a
-    /// [`PendingDiscard`] the caller commits once the engine is killed (card 6b28a445).
+    /// nothing can be saved, so their unsaved residents are recorded as lost when this
+    /// generation's exit is observed, at once if it already was (card 6b28a445).
     pub(crate) async fn checkpoint_before_replacement(
         &mut self,
         client: &reqwest::Client,
         root: &str,
         current: &(dyn Fn() -> bool + Send + Sync),
-    ) -> Result<Option<PendingDiscard>, String> {
+    ) -> Result<(), String> {
         let generation = self.previous_generation().ok_or("replacement requires a known generation")?;
         if generation.has_exited() || self.endpoint.paging_recovery_required() {
-            return Ok(Some(self.endpoint.pending_discard(if generation.has_exited() {
+            let reason = if generation.has_exited() {
                 DiscardReason::EngineExited
             } else {
                 DiscardReason::PagingUncertain
-            })));
+            };
+            self.endpoint.pending_discard(reason).on_exit_of(&generation);
+            return Ok(());
         }
         let original = self.capture_suspension(&generation)?;
         let result = self.checkpoint_residents(client, root).await.map(|_| ());
@@ -303,7 +308,7 @@ impl EndpointTransition {
         if !current() {
             return Err("replacement intent changed after checkpoint".into());
         }
-        Ok(None)
+        Ok(())
     }
 
     pub(crate) fn capture_suspension(

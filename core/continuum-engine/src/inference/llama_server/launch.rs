@@ -62,8 +62,6 @@ impl LlamaServerProcess {
         // residents' slots unsaved and their next acts re-prefilled 70k-115k tokens. The
         // transition has drained every reader, so no turn is decoding. A failed save
         // defers replacement rather than destroying the only fresh resident state.
-        // Residents an exited or quarantined engine loses unsaved: recorded once it is killed.
-        let mut discarded = None;
         if had_own_child && !restoring {
             let started = std::time::Instant::now();
             let outcome = transition.checkpoint_before_replacement(&self.client, &self.root, current).await;
@@ -73,15 +71,12 @@ impl LlamaServerProcess {
                 ms = started.elapsed().as_millis() as u64,
                 "resident checkpoint decision before engine replacement"
             );
-            discarded = outcome.map_err(LlamaServerError::Spawn)?;
+            outcome.map_err(LlamaServerError::Spawn)?;
         }
         if self.is_live_lane && !had_own_child && !restoring {
             self.retire_adopted(&mut transition, current).await?;
         }
         self.kill_child();
-        if let Some(discarded) = discarded {
-            discarded.commit();
-        }
 
         // A freed listener is not proof that the predecessor stopped decoding.
         // Poll ONLY its retained owned Child; cancelled/failed transitions remain

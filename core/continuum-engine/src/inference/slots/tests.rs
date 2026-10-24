@@ -184,14 +184,15 @@ mod adopted_checkpoint;
         PageKey::mind(Uuid::from_u128(p)).expect("non-nil test id")
     }
 
-    // what this catches (card 6b28a445): a relaunch that cannot save (here, an engine that
-    // already exited) lost residents' KV with no record, so their next cold turn read as a
-    // lost page. Through the real replacement path: the loss is only CAPTURED by the
-    // checkpoint decision, and a capture dropped without commit (a superseded or refused
-    // retirement) records nothing. Committed, only minds held without a confirmed save are
-    // recorded, the record survives the pool's replacement, and it is taken exactly once.
+    // what this catches (card 6b28a445): a relaunch that cannot save (here, quarantined
+    // paging) lost residents' KV with no record, so their next cold turn read as a lost page;
+    // and, per Codex's review, a record made when the kill was SENT reports a loss that may
+    // not have happened. Through the real replacement path: nothing is recorded while the
+    // engine is only quarantined, even on re-entry; its observed exit records only the
+    // minds held without a confirmed save, once; a re-entry after the exit records nothing
+    // more; the record survives the pool's replacement and is taken exactly once.
     #[tokio::test]
-    async fn a_relaunch_records_unsaved_residents_only_when_committed_and_their_next_turn_takes_it_once() {
+    async fn a_relaunch_records_unsaved_residents_only_at_the_observed_exit_and_once() {
         let dir = SlotDirectory { endpoints: dashmap::DashMap::new() };
         let endpoint = dir.endpoint("test://relaunch");
         let mut transition = endpoint.transition().await;
@@ -202,31 +203,29 @@ mod adopted_checkpoint;
         pool.holders.lock().insert(2, key(3, 4));
         pool.note_saved(mind(2));
         endpoint.state.lock().pool = Some(Some(pool));
-        generation.observed_exit();
+        endpoint.quarantine_paging();
         let client = reqwest::Client::new();
 
-        let superseded = transition
-            .checkpoint_before_replacement(&client, "test://relaunch", &|| true)
-            .await
-            .expect("an exited engine has nothing to save")
-            .expect("its unsaved residents are captured");
-        drop(superseded);
-        assert_eq!(endpoint.discarded.lock().take(&mind(1)), None, "a capture never committed records nothing");
-
+        for _attempt in 0..2 {
+            transition
+                .checkpoint_before_replacement(&client, "test://relaunch", &|| true)
+                .await
+                .expect("quarantined paging has nothing to save");
+            assert_eq!(endpoint.discarded.lock().take(&mind(1)), None, "the kill is not the death");
+        }
+        generation.observed_exit();
         transition
             .checkpoint_before_replacement(&client, "test://relaunch", &|| true)
             .await
-            .expect("an exited engine has nothing to save")
-            .expect("its unsaved residents are captured")
-            .commit();
+            .expect("an exited engine has nothing to save");
         drop(transition);
         // The next generation's pool replaces this one; the record is the endpoint's.
         endpoint.state.lock().pool = Some(Some(Arc::new(KvSlotPool::new("test://relaunch", 4))));
         endpoint.state.lock().ready.send_replace(true); // the replacement verified ready
 
         let admission = endpoint.admit().await.expect("an open endpoint admits");
-        assert_eq!(admission.take_relaunch_discard(&mind(1)), Some(DiscardReason::EngineExited));
-        assert_eq!(admission.take_relaunch_discard(&mind(1)), None, "taken once");
+        assert_eq!(admission.take_relaunch_discard(&mind(1)), Some(DiscardReason::PagingUncertain));
+        assert_eq!(admission.take_relaunch_discard(&mind(1)), None, "recorded once, taken once");
         assert_eq!(admission.take_relaunch_discard(&mind(2)), None, "a saved page restores; nothing was lost");
         assert_eq!(admission.take_relaunch_discard(&key(3, 4)), None, "a fork dies with its core anyway");
     }
