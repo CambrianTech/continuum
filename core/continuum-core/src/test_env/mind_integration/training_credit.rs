@@ -175,8 +175,19 @@ pub(super) fn captured(
     if !served || receipt.capture.is_some() {
         return receipt;
     }
+    // One capture session per home and persona, as one turn driver keeps: every store open
+    // rotates (only the current and previous segments are kept), so a session per receipt
+    // would expire all but the last two captures before she staged them.
+    static SINKS: std::sync::LazyLock<
+        std::sync::Mutex<std::collections::HashMap<(std::path::PathBuf, Uuid), Arc<JsonlPromptCaptureSink>>>,
+    > = std::sync::LazyLock::new(Default::default);
     let dir = crate::cognition::capture::fixture_dir(FIXTURE_DIR).expect("the test home resolves"); // JUSTIFIED: test fixture
-    let sink = JsonlPromptCaptureSink::open(&dir, persona).expect("capture sink"); // JUSTIFIED: test fixture
+    let sink = SINKS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) // unwrap_or_else: a panicked test leaves the map usable
+        .entry((dir.clone(), persona))
+        .or_insert_with(|| Arc::new(JsonlPromptCaptureSink::open(&dir, persona).expect("capture sink"))) // JUSTIFIED: test fixture
+        .clone();
     let call = lived_call(&receipt);
     let prompt = PromptCall {
         request_id: receipt.submitted_request_id.clone(),
@@ -188,7 +199,7 @@ pub(super) fn captured(
         cause_root: None,
         replay_of: None,
     };
-    let mut lease = CaptureLease::start(Arc::new(sink), &prompt, &call.request);
+    let mut lease = CaptureLease::start(sink, &prompt, &call.request);
     let cursor = lease.finish(Some(&call.response), None).expect("a completed capture entry"); // JUSTIFIED: test fixture
     crate::ai::provenance::GenerationReceipt { capture: Some(cursor), ..receipt }
 }
