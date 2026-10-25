@@ -223,6 +223,58 @@ Added by the 2026-10-21 revision: the act-latency fill cap (`delib.fill.latency_
 `history_fill_cap`) and its front-drop of history, and the two duplicate renderings of her
 actions ("steps taken this session" and the action half of working memory).
 
+### Revision, 2026-10-25: one codec for every layer, owned by positron and the view
+
+Joel (10-25): "It's like any compression algorithm"; "like video it's time dependent ... prediction
+is a lot easier when you understand what changes between frames"; "make this more systematic in
+positron just like KV caching and collapsing to prevent this kind of thing."
+
+What happened without it: on the M5 (canary a59c2bf15) Aiko read one 51,827-char file whole 9
+times in 43 acts with 11 epoch turnovers, because three owners each decided a piece of what she
+sees. Working memory collapsed results against its own share. A hand table (`churn_of`) set the
+restart order. The view's start ended its keep-whole run at the first item too large. Every
+incident was fixed where it happened, so the next one appeared somewhere else.
+
+**The contract.** Every layer a mind or a human perceives is a positron layer, and every positron
+layer is a context `Source`:
+- **Keyed items, never one block.** Each item has a stable key naming its whole subject (one
+  result, one open file, one card, one roster per room). A change appends that item's new version.
+- **Levels of detail on every item:** `full`, `summary` (an outline, a digest, a thumbnail: a
+  mipmap level) and `pointer`. A `pointer` is an EXPAND HANDLE that a positron command resolves
+  back to `full`. An item whose pointer cannot be expanded is a defect, not a level.
+- **The same items for humans and minds.** A human renderer and a mind's view consume one layer at
+  the level each can afford. Screen frames, video and 3D state follow later as items too.
+
+**The one owner of the invariants**, `continuum-context` (`View`, `Epoch`, `Motion`). No layer and
+no faculty re-implements them:
+1. Within an epoch the prompt only appends. A rewrite is a turnover, and turnover is the only
+   place collapse happens.
+2. The newest arrival stays whole unless it alone exceeds what a start would grant it. In that
+   case it arrives at its summary (admission, `View::readmit`); otherwise the view turns over and
+   shrinks the oldest first (goal 7).
+3. A start gives each item the most detail that fits, newest first. One oversized item never
+   collapses the others (`levels`).
+4. Restart order comes from measured motion (`kept / (1 - p)` per source), never a label.
+5. The engine's held references (slot prefixes, checkpoints, the shared head of ~38.8k chars that
+   every resident already sends identically) are known to the encoder (`references()`, Codex), and
+   every miss is a probe with its cause.
+6. Every decision (start, lease size, order, prefetch) is an explicit action with an exact cost
+   (prefill tokens, seconds). Replaying captures is the simulator in which a learned policy must
+   beat the hand rule before it runs live (plan line 14).
+
+**Gates (source-hygiene ratchets; counts on canary a59c2bf15 + #5422, 2026-10-25):**
+
+| Gate | Today | Done |
+|---|---|---|
+| prompt messages built outside the view and the fresh tail's one renderer (`ChatMessage::text`/`tool_results` in `llm_deliberation_faculty/prompt`) | 13 | the tail's single renderer only |
+| collapse outside the view (`collapse_over` / `collapse_results_over_cap` callers) | 4 | 0: working memory bounds RAM by handle, never what she sees |
+| hand churn labels (`churn_of` callers) | 6 | 0: `Motion` orders every start |
+| positron `ViewState` kinds that are not context `Source`s | 13 | 0: one adapter, items with levels and expand handles |
+
+**Owners:** Fable (the view, the adapter, the deletions), Codex (`references()`, head/ensure,
+slot/seed), Cormac (checkpoints at the head boundary and on turnover). The replay validator
+(`continuum-context` `examples/replay.rs`) and the live 15-minute read are the receipts for each slice.
+
 ## Fault 2: engine configuration is decided in five places
 
 `lane_args`, `llama_server`, `backend_receipt`, `serving_plan` and `kv_cache_plan` each
