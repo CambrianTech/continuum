@@ -130,6 +130,10 @@ pub struct WorkSubmitParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub generation_request_id: Option<String>,
+    /// Submodule paths whose pointer you mean to move; any other move is refused.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub submodules: Option<Vec<String>>,
 }
 
 /// Where the card she named actually is, when it is not on the room she passed

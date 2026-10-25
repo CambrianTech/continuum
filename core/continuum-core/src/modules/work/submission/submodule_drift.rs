@@ -43,29 +43,32 @@ pub(super) fn submodule_moves(patch: &str) -> Vec<SubmoduleMove> {
     moves
 }
 
-/// PURE: whether the card asks for this submodule: its title or body names the path or the
-/// path's last component (e.g. "llama.cpp").
-pub(super) fn card_names(title: &str, body: Option<&str>, path: &str) -> bool {
-    let leaf = path.rsplit('/').next().filter(|leaf| !leaf.is_empty()).map_or(path, |leaf| leaf);
-    let text = format!("{title}\n{}", body.unwrap_or_default()).to_lowercase(); // unwrap_or_default: a card with no body names nothing there
-    text.contains(&path.to_lowercase()) || text.contains(&leaf.to_lowercase())
-}
-
-/// The refusal for moves the card does not name, or None.
-pub(super) fn refuse_unasked(moves: &[SubmoduleMove], title: &str, body: Option<&str>) -> Option<String> {
-    let unasked: Vec<&SubmoduleMove> = moves.iter().filter(|m| !card_names(title, body, &m.path)).collect();
-    if unasked.is_empty() {
+/// The refusal for moves she did not list in `submodules`, or None. Whether a bump is
+/// intended is HER choice, typed on the submit; no card text is read (Fable on #5402).
+/// The restore names the base pointer: `git submodule update` alone checks out what her
+/// index records, which after a committed bump is the moved pointer itself.
+pub(super) fn refuse_unlisted(moves: &[SubmoduleMove], listed: &[String], base_sha: &str) -> Option<String> {
+    let unlisted: Vec<&SubmoduleMove> = moves
+        .iter()
+        .filter(|m| !listed.iter().any(|l| l.trim_end_matches('/') == m.path))
+        .collect();
+    if unlisted.is_empty() {
         return None;
     }
     // Whole commit ids: an id is an identity, never cut short.
     let commit = |c: &Option<String>| c.as_deref().map_or("none", |c| c).to_string();
-    let listed: Vec<String> = unasked.iter().map(|m| format!("{} ({} -> {})", m.path, commit(&m.from), commit(&m.to))).collect();
-    let restore: Vec<String> = unasked.iter().map(|m| format!("git submodule update {}", m.path)).collect();
+    let named: Vec<String> = unlisted.iter().map(|m| format!("{} ({} -> {})", m.path, commit(&m.from), commit(&m.to))).collect();
+    let paths: Vec<String> = unlisted.iter().map(|m| format!("\"{}\"", m.path)).collect();
+    let restore: Vec<String> = unlisted
+        .iter()
+        .map(|m| format!("git checkout {base_sha} -- {0} && git submodule update {0}", m.path))
+        .collect();
     Some(format!(
-        "submission refused: your checkout moves submodule {}, which this card does not name. \
-         Restore it from the repo root ({}), then submit again. If the bump is intended, it \
-         belongs on a card that names it.",
-        listed.join(", "),
+        "submission refused: your checkout moves submodule {}, which you did not list. If the \
+         move is yours, submit again with submodules: [{}]. If not, restore it from the repo \
+         root ({}), commit, and submit again.",
+        named.join(", "),
+        paths.join(", "),
         restore.join("; ")
     ))
 }
@@ -80,11 +83,11 @@ diff --git a/core/vendor/llama.cpp b/core/vendor/llama.cpp\nindex 4a79fed98b..76
 +Subproject commit 76dfd6482e608eba4906d82d2cef4eda1b1181af\n";
 
     // what this catches (card b3ecd1ac): Sahar's shutdown fix carried an unasked llama.cpp
-    // pointer move. The move is found with both ends; a card that does not name it refuses,
-    // naming the path and the restore command; a card that names it (by path or leaf) passes;
-    // a patch with no submodule passes.
+    // pointer move. The move is found with both ends; a move she did not list refuses, naming
+    // the path, both ends, how to list it, and a restore to the BASE pointer; a listed move
+    // rides; a patch with no submodule, or only a dirty one, passes.
     #[test]
-    fn an_unasked_submodule_move_is_refused_by_name() {
+    fn an_unlisted_submodule_move_is_refused_by_name_and_a_listed_one_rides() {
         let moves = submodule_moves(SAHAR);
         assert_eq!(
             moves,
@@ -94,14 +97,20 @@ diff --git a/core/vendor/llama.cpp b/core/vendor/llama.cpp\nindex 4a79fed98b..76
                 to: Some("76dfd6482e608eba4906d82d2cef4eda1b1181af".into()),
             }]
         );
-        let refusal = refuse_unasked(&moves, "#3940 legacycore is decided by parsing", None).unwrap_or_default();
+        let base = "1111111111111111111111111111111111111111";
+        let refusal = refuse_unlisted(&moves, &[], base).unwrap_or_default();
         assert!(
             refusal.contains("core/vendor/llama.cpp (4a79fed98b95576a3e5965c7fcd421637c88a6ca -> 76dfd6482e608eba4906d82d2cef4eda1b1181af)"),
             "{refusal}"
         );
-        assert!(refusal.contains("git submodule update core/vendor/llama.cpp"), "{refusal}");
-        assert_eq!(refuse_unasked(&moves, "Upgrade llama.cpp to b5", None), None, "named by its leaf");
-        assert_eq!(refuse_unasked(&moves, "engine", Some("bump core/vendor/llama.cpp")), None, "named by path");
+        assert!(refusal.contains("submodules: [\"core/vendor/llama.cpp\"]"), "{refusal}");
+        assert!(
+            refusal.contains(&format!("git checkout {base} -- core/vendor/llama.cpp && git submodule update core/vendor/llama.cpp")),
+            "{refusal}"
+        );
+        assert_eq!(refuse_unlisted(&moves, &["core/vendor/llama.cpp".into()], base), None, "a listed move rides");
+        assert_eq!(refuse_unlisted(&moves, &["core/vendor/llama.cpp/".into()], base), None, "a trailing slash is the same path");
+        assert!(refuse_unlisted(&moves, &["llama.cpp".into()], base).is_some(), "the leaf alone is not the path");
         assert!(submodule_moves("diff --git a/a b/a\n-x\n+y\n").is_empty(), "no submodule, nothing to refuse");
         let dirty = "diff --git a/core/vendor/llama.cpp b/core/vendor/llama.cpp\n-Subproject commit 4a79fed98b\n+Subproject commit 4a79fed98b-dirty\n";
         assert!(submodule_moves(dirty).is_empty(), "a dirty submodule moves no pointer");
