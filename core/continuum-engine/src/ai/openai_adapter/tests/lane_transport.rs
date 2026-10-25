@@ -224,6 +224,7 @@ async fn structured_overflow_survives_adapter_and_prepared_transport_retry() {
             // existing wire floor; no readiness-patience value enters this API.
             Some(std::time::Duration::ZERO),
             crate::inference::lane_send::FillReceipt {
+                local_engine_root: None,
                 model: "fixture",
                 prompt_tokens: 4,
                 prompt_quote: Some(crate::inference::lane_send::PromptQuote {

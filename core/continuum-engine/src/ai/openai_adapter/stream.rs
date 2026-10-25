@@ -366,9 +366,8 @@ impl OpenAICompatibleAdapter {
         // text-only mind) routes to the snapshot's verified `vision_base_url`.
         // Snapshot-driven: the daemon publishes the address only after `/props`
         // confirmed sight, so this can never aim pixels at a text lane.
-        let url = self
-            .endpoints_for_model(model, &endpoints)
-            .chat_completions();
+        let request_endpoints = self.endpoints_for_model(model, &endpoints);
+        let url = request_endpoints.chat_completions();
 
         let mut request_builder = self
             .client
@@ -473,6 +472,10 @@ impl OpenAICompatibleAdapter {
             body_bytes,
             request.turn_bound,
             crate::inference::lane_send::FillReceipt {
+                // A model-specific sidecar must not condemn the main lane.
+                local_engine_root: (self.targets_local_serving_lane()
+                    && request_endpoints.root() == endpoints.root())
+                    .then_some(request_endpoints.root()),
                 model,
                 prompt_tokens,
                 prompt_quote: exact_prompt_quote
