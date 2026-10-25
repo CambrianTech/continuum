@@ -240,10 +240,12 @@ static TURNS: LazyLock<parking_lot::Mutex<TurnPrefill>> = LazyLock::new(Default:
 static KNEE: LazyLock<parking_lot::Mutex<Option<(String, u32)>>> = LazyLock::new(Default::default);
 
 /// The prefill knee of `model` on this seat: the lanes its measured server prefill can serve
-/// inside the turn budget. `None` when unmeasured or measured on another model. A window
-/// that measures no prefill keeps the last bound (see `observe_slots`).
+/// inside the turn budget. This process's last published window, else the knee an earlier
+/// boot measured on this node (`serving_rates`); `None` only when this model was never
+/// measured here. A window that measures no prefill keeps the last bound (see `observe_slots`).
 pub fn knee_for(model: &str) -> Option<u32> {
-    KNEE.lock().as_ref().filter(|(measured, _)| measured == model).map(|(_, k)| *k)
+    let live = KNEE.lock().as_ref().filter(|(measured, _)| measured == model).map(|(_, k)| *k);
+    live.or_else(|| crate::inference::serving_rates::prefill_knee_for(model))
 }
 
 /// PURE: the prefill knee after a window publishes. Only a MEASURED bound replaces the last
@@ -308,6 +310,9 @@ pub fn observe_slots(slots: &serde_json::Value, now_ms: u64, served_lanes: usize
     {
         let mut knee = KNEE.lock();
         *knee = next_knee(knee.take(), engine.as_ref(), bound);
+    }
+    if let (Some(e), Some(b)) = (&engine, bound) {
+        crate::inference::serving_rates::observe_prefill_knee(&e.model, b);
     }
     continuum_base::probe!(
         class = "serving.prefill_knee.published",

@@ -24,6 +24,14 @@ pub struct ServingRates {
     /// Clean per-stream decode tok/s by streams in flight.
     #[serde(default)]
     pub decode: DecodeCurve,
+    /// The last prefill knee a busy window measured for this model: the lanes its prefill
+    /// serves inside the turn budget (`prefill_knee`). Kept so a restarted core plans with the
+    /// measurement instead of the looser decode knee until its first window: on the M5
+    /// (2026-10-25) every core restart planned 6-8 lanes from the decode knee, seated 7-8 minds
+    /// at once, then measured 3-4 and relaunched the engine to clamp (17:11, 17:26, 17:43,
+    /// 17:47, 18:12, 19:04, 19:40, 19:56Z). Absent in a record from before this field.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prefill_knee: Option<u32>,
 }
 
 impl ServingRates {
@@ -77,6 +85,26 @@ pub fn observe_decode(model: &str, streams: u32, tps: f64, now_ms: u64) {
     save_all(&snapshot);
 }
 
+/// A prefill knee a busy window measured for `model`: kept with its rates so the next boot
+/// plans with it. Written only when it moves.
+pub fn observe_prefill_knee(model: &str, knee: u32) {
+    let snapshot = {
+        let mut rates = RATES.lock();
+        let record = rates.entry(model.to_string()).or_default();
+        if record.prefill_knee == Some(knee) {
+            return;
+        }
+        record.prefill_knee = Some(knee);
+        rates.clone()
+    };
+    save_all(&snapshot);
+}
+
+/// The prefill knee last measured for `model` on this node, this boot or an earlier one.
+pub fn prefill_knee_for(model: &str) -> Option<u32> {
+    RATES.lock().get(model).and_then(|rates| rates.prefill_knee)
+}
+
 /// The measured rates of `model` on this node; empty (every verdict unmeasured) when none.
 pub fn rates_for(model: &str) -> ModelRates {
     RATES.lock().get(model).map(ServingRates::as_model_rates).unwrap_or_default() // unwrap_or_default: an unmeasured model has no rates, and the rule reads that as unmeasured
@@ -115,6 +143,20 @@ fn save_all(rates: &BTreeMap<String, ServingRates>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // what this catches: a restarted core forgetting the prefill knee it measured and planning
+    // from the looser decode knee (the M5, 2026-10-25: 6-8 lanes after every restart, then a
+    // relaunch to 3-4). The record keeps it; one written before the field loads as unmeasured.
+    #[test]
+    fn the_prefill_knee_survives_in_the_record_and_an_older_record_reads_unmeasured() -> Result<(), serde_json::Error> {
+        let mut rates = BTreeMap::new();
+        rates.insert("m".to_string(), ServingRates { prefill_knee: Some(4), ..ServingRates::default() });
+        let restored: BTreeMap<String, ServingRates> = serde_json::from_slice(&serde_json::to_vec(&rates)?)?;
+        assert_eq!(restored.get("m").and_then(|r| r.prefill_knee), Some(4));
+        let older: BTreeMap<String, ServingRates> = serde_json::from_str(r#"{"m":{"prefill":{},"decode":{}}}"#)?;
+        assert_eq!(older.get("m").and_then(|r| r.prefill_knee), None);
+        Ok(())
+    }
 
     // what this catches: a thin or zero point read as a rate. The rule sees a prefill rate
     // only after MIN_SAMPLES windows and a decode point only after MIN_SAMPLES clean
