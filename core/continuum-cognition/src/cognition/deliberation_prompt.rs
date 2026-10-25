@@ -255,6 +255,52 @@ pub(super) fn compose_trailing(
     trailing
 }
 
+/// One standing contract in force on this turn: its header name and its body, rendered by her
+/// view as `[name]\nbody`, byte-identical to the framing block it came from.
+pub(super) struct Contract {
+    pub(super) name: &'static str,
+    pub(super) body: &'static str,
+}
+
+/// The contracts in force on this turn: own time on a self-initiated turn, and one presence
+/// contract (directed, working, or the conversational default). Their bodies are fixed text, so
+/// they enter her context view as standing blocks, once per epoch, instead of being re-sent in
+/// the fresh tail every act: on the M5's captures that repeated framing was most of the ~3.3k
+/// chars the context validator measured as 8.7% of each act's prefill (2026-10-25).
+pub(super) fn contracts_in_force(self_initiated: bool, directed: bool, holds_live_work: bool) -> Vec<Contract> {
+    let presence = if directed {
+        crate::cognition::prompt_assembly::DIRECTED_PRESENCE_BLOCK
+    } else if holds_live_work {
+        crate::cognition::prompt_assembly::WORKING_PRESENCE_BLOCK
+    } else {
+        SILENCE_AFFORDANCE_BLOCK
+    };
+    self_initiated.then_some(OWN_TIME_BLOCK).into_iter().chain([presence]).filter_map(contract_of).collect()
+}
+
+/// A framing block (`\n\n[Name]\nbody`) as its name and body.
+fn contract_of(block: &'static str) -> Option<Contract> {
+    let rest = block.trim_start().strip_prefix('[')?;
+    let (name, body) = rest.split_once("]\n")?;
+    Some(Contract { name, body })
+}
+
+/// The live framing that stays last, nearest generation: her clock and which standing contracts
+/// are in force now (their text is in her view). Short, so the ask stays the last thing she
+/// reads (the 2026-07-20 parrot fix) without re-sending the bodies every act.
+pub(super) fn compose_live_framing(now_ms: Option<u64>, contracts: &[Contract]) -> String {
+    let clock = volatile_blocks(now_ms, false, false, false).next().filter(|block| block.starts_with("[now "));
+    let mut live = clock.map(|block| block.into_owned()).unwrap_or_default(); // unwrap_or_default: no clock on an eval turn without a pinned epoch
+    if !contracts.is_empty() {
+        let names: Vec<&str> = contracts.iter().map(|contract| contract.name).collect();
+        if !live.is_empty() {
+            live.push('\n');
+        }
+        live.push_str(&format!("[In force this turn: {} (stated in your view)]", names.join("; ")));
+    }
+    live
+}
+
 /// Assemble the WHOLE system prompt as one string — `stable ++ trailing`, byte-identical
 /// to the pre-split output.
 ///
