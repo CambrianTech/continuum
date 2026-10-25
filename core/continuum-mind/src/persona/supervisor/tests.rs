@@ -24,10 +24,15 @@
         // exercise the same identity shape production sees. Per the
         // PersonaInstanceInfo doc: fixtures that bypass the runtime
         // constructor MUST keep both fields equal.
+        // Each fixture its OWN home (card ee7753e7): materialize_adapters opens the persona's
+        // admission store before the factory, and a fixed per-name path let parallel tests
+        // race one store, refusing a seat at random (seen on #5413: build_count 0, not 1).
+        let peer_id = crate::identity::PeerId::new();
+        let home = std::env::temp_dir().join("fake-supervisor-test").join(format!("{name}-{}", peer_id.as_uuid()));
         PersonaInstanceInfo {
             agent_name: name.to_string(),
-            peer_id: crate::identity::PeerId::new(),
-            home: PathBuf::from(format!("/tmp/fake-supervisor-test/{name}")),
+            peer_id,
+            home,
             default_room: Uuid::nil(),
             source: PersonaIdentitySource::FreshlyMinted,
         }
