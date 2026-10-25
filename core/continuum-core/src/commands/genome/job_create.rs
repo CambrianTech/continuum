@@ -290,24 +290,23 @@ crate::action_command! {
         // 1. Coordinator picks a provider. Any CoordinatorError (no capable
         //    adapter, preference unsatisfiable) surfaces as success=false with the
         //    error's diagnostic text.
-        let (selected_provider, adapter) = match (
-            this.coordinator.select(&p.request, p.preferred_provider.as_deref()),
-            prior.as_ref(),
-        ) {
-            (Ok((provider, adapter)), _) => (provider, Some(adapter)),
-            // A repeat answers with the job its attempt already made, whether or not that
-            // trainer is selectable now: nothing is created, so no trainer is needed.
-            (Err(_), Some(job)) => (job.provider_id.clone(), None),
-            (Err(e), None) => {
-                return Ok(JobCreateOutcome {
-                    success: false,
-                    result: None,
-                    error: Some(e.to_string()),
-                    error_kind: None,
-                    took: None,
-                    capacity_wait: None,
-                });
-            }
+        let (selected_provider, adapter) = match prior.as_ref() {
+            // A repeat answers with the job its attempt already made, under that job's own
+            // provider: no trainer is chosen, so none can be reported for it.
+            Some(job) => (job.provider_id.clone(), None),
+            None => match this.coordinator.select(&p.request, p.preferred_provider.as_deref()) {
+                Ok((provider, adapter)) => (provider, Some(adapter)),
+                Err(e) => {
+                    return Ok(JobCreateOutcome {
+                        success: false,
+                        result: None,
+                        error: Some(e.to_string()),
+                        error_kind: None,
+                        took: None,
+                        capacity_wait: None,
+                    });
+                }
+            },
         };
 
         // Capture the genome-paging context BEFORE the request moves into the

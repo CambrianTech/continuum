@@ -646,12 +646,12 @@
         assert_eq!(out.result.unwrap().selected_provider, "mistral");
     }
 
-    // what this catches (card 975d27fa, binding first): a repeat that fails trainer selection
-    // before it reads its own record. The attempt's job was made by a trainer no longer
-    // selectable (a peer whose advertisement lapsed); the repeat still answers with that job,
-    // and calls nothing.
+    // what this catches (card 975d27fa, binding first; Codex on #5412): a repeat that chooses a
+    // trainer before it reads its own record. With no trainer selectable (a peer whose
+    // advertisement lapsed) it must still answer with its job; with ANOTHER trainer selectable
+    // it must still report its own job's provider, never the one selection would pick now.
     #[tokio::test]
-    async fn a_repeat_answers_with_its_job_when_its_trainer_is_no_longer_selectable() {
+    async fn a_repeat_answers_with_its_job_and_its_provider_whatever_is_selectable_now() {
         use crate::commands::genome::attempt_ledger::{Admission, AttemptLedger, AttemptState};
         use crate::genome::fine_tuning::{FineTuningRegistry, JobHandle, TrainingJobBoard};
         let (store_adapter, _dir) = crate::orm::store::fresh_adapter().await;
@@ -683,5 +683,30 @@
             .await
             .unwrap(); // JUSTIFIED: test asserts the outcome
         assert!(out.success, "{out:?}");
-        assert_eq!(out.result.expect("the attempt's job").handle, job);
+        let result = out.result.expect("the attempt's job"); // JUSTIFIED: test asserts the result
+        assert_eq!((result.handle, result.selected_provider.as_str()), (job.clone(), "grid-peer"));
+
+        // Now another trainer IS selectable: the repeat still answers with its own job and provider.
+        let artifacts = Arc::new(tempfile::tempdir().unwrap()); // JUSTIFIED: test fixture
+        let with_another = GenomeJobCreate {
+            attempts: Arc::clone(&ledger),
+            coordinator: Arc::new(FineTuningCoordinator::new(registry_with(&["another-trainer"]))),
+            test_job_board: Arc::new(TrainingJobBoard::with_test_storage(artifacts.clone())),
+            test_artifacts: artifacts,
+        };
+        let out = with_another
+            .run(
+                &Ctx::default(),
+                JobCreateParams {
+                    trigger_attempt_id: Some(attempt),
+                    trigger_dispatch_id: None,
+                    request: request_for("qwen3.5-4b"),
+                    preferred_provider: None,
+                    dataset_name: None,
+                },
+            )
+            .await
+            .unwrap(); // JUSTIFIED: test asserts the outcome
+        let result = out.result.expect("the attempt's job"); // JUSTIFIED: test asserts the result
+        assert_eq!((result.handle, result.selected_provider.as_str()), (job, "grid-peer"), "never the newly selectable trainer");
     }

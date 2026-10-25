@@ -203,32 +203,6 @@ pub struct FineTuningCapabilities {
     pub place: TrainingPlace,
 }
 
-// ─── The trait ───────────────────────────────────────────────────────
-
-/// One adapter per (cloud-provider OR in-process-trainer). Same
-/// shape as `AIProviderAdapter` in `ai/adapter.rs`:
-/// [`crate::ai::adapter::AIProviderAdapter`] is the inference seam,
-/// `FineTuningAdapter` is the training seam. They compose — a
-/// cognitive cycle can call inference now, fine-tune later, and
-/// the substrate routes both through trait-object dispatch.
-///
-/// ## Lifetime + concurrency
-///
-/// Adapters are `Arc<dyn FineTuningAdapter>` — stored in
-/// [`super::FineTuningRegistry`] and cloned cheaply per call. The
-/// trait is `Send + Sync`; impls own a shared `reqwest::Client` (for
-/// cloud) or a shared GPU context (for local) and serialize at the
-/// concurrency layer they need.
-///
-/// ## Error contract
-///
-/// Every method returns [`FineTuningError`]. The variant taxonomy is
-/// the contract: `InvalidRequest` / `MissingCredentials` /
-/// `ProviderRejected` / `Transient` / `MalformedResponse` /
-/// `LocalTrainerFailed` / `UnknownHandle`. Callers branch on these
-/// at the kind level; the inner string is for telemetry, not control
-/// flow. Per [[no-fallbacks-ever]] no impl returns `Ok(...)` for
-/// a job it didn't actually start.
 /// Where a training job runs (card 975d27fa): on this node, or leased to one grid peer.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Destination {
@@ -265,6 +239,32 @@ pub struct JobBinding {
     pub destination: Destination,
 }
 
+// ─── The trait ───────────────────────────────────────────────────────
+
+/// One adapter per (cloud-provider OR in-process-trainer). Same
+/// shape as `AIProviderAdapter` in `ai/adapter.rs`:
+/// [`crate::ai::adapter::AIProviderAdapter`] is the inference seam,
+/// `FineTuningAdapter` is the training seam. They compose — a
+/// cognitive cycle can call inference now, fine-tune later, and
+/// the substrate routes both through trait-object dispatch.
+///
+/// ## Lifetime + concurrency
+///
+/// Adapters are `Arc<dyn FineTuningAdapter>` — stored in
+/// [`super::FineTuningRegistry`] and cloned cheaply per call. The
+/// trait is `Send + Sync`; impls own a shared `reqwest::Client` (for
+/// cloud) or a shared GPU context (for local) and serialize at the
+/// concurrency layer they need.
+///
+/// ## Error contract
+///
+/// Every method returns [`FineTuningError`]. The variant taxonomy is
+/// the contract: `InvalidRequest` / `MissingCredentials` /
+/// `ProviderRejected` / `Transient` / `MalformedResponse` /
+/// `LocalTrainerFailed` / `UnknownHandle`. Callers branch on these
+/// at the kind level; the inner string is for telemetry, not control
+/// flow. Per [[no-fallbacks-ever]] no impl returns `Ok(...)` for
+/// a job it didn't actually start.
 #[async_trait]
 pub trait FineTuningAdapter: Send + Sync {
     /// Static identity + what this adapter accepts. Called once at
