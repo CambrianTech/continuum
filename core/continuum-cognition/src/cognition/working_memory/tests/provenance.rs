@@ -167,7 +167,7 @@ fn result_provenance_survives_cross_activity_render_and_checkpoint() {
     // #2 is the active result: it renders whole as the full-result message below, so
     // the ring shows only #1 rather than paying for #2 twice.
     let expected = vec![
-        format!("[result #1; room {room_a}; operation code/search, code/read; output handle: tool/output search-output] same result"),
+        format!("[result #1; room {room_a}; operation code/search(); code/read(); output handle: tool/output search-output] same result"),
     ];
     let messages = wm.recent_results_messages();
     assert_eq!(
@@ -181,7 +181,7 @@ fn result_provenance_survives_cross_activity_render_and_checkpoint() {
         .expect("test: latest receipt is active");
     assert_eq!(
         wm.full_result_message(seq, &full),
-        format!("Full result of your most recent action (#2; room {room_b}; operation code/run):\nsame result")
+        format!("Full result of your most recent action (#2; room {room_b}; operation code/run()):\nsame result")
     );
 
     let encoded = serde_json::to_value(wm.snapshot()).expect("test: snapshot serializes");
@@ -209,7 +209,7 @@ fn result_provenance_survives_cross_activity_render_and_checkpoint() {
     }
     restored.record_settlement("reported", None);
     assert!(restored.recent_results_messages().join("\n").contains(
-        &format!("[result #1; room {room_a}; operation code/search, code/read; output handle: tool/output search-output — collapsed]")
+        &format!("[result #1; room {room_a}; operation code/search(); code/read(); output handle: tool/output search-output — collapsed]")
     ));
 
     // Regression 735a3183: Kimi's 274-line read disappeared after a poll;

@@ -302,16 +302,9 @@ impl WorkingMemory {
             let tail = a.to_string();
             // A receipt can contain several operations. Retain their typed names
             // in order instead of attributing the whole batch to its first call.
-            let mut label = String::new();
-            for act in &acts {
-                if !label.is_empty() {
-                    label.push_str(", ");
-                }
-                label.push_str(&act.call.name);
-            }
-            if label.is_empty() {
-                label.push_str("unrecorded");
-            }
+            let label = crate::cognition::act_observe::render_pointer_invocations(
+                acts.iter().map(|act| &act.call), &self.budget(),
+            );
             let children: Vec<String> = acts
                 .iter()
                 .filter_map(|act| act.output.result.custody.handle().map(str::to_owned))
