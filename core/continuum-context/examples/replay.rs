@@ -34,8 +34,8 @@ use std::collections::BTreeMap;
 
 use continuum_context::source::{Item, Source};
 
-#[path = "replay/arena.rs"]
-mod arena;
+#[path = "replay/validate.rs"]
+mod validate;
 use continuum_context::view::View;
 
 struct Captured {
@@ -204,8 +204,8 @@ struct Cut {
     sources: BTreeMap<String, Vec<Item<String>>>,
     tail: Vec<String>,
     sent: String,
-    /// The pinned result and the reads of the act this request answers (the arena).
-    act: arena::Act,
+    /// The pinned result and the reads of the act this request answers (the validator).
+    act: validate::Act,
 }
 
 /// A tail piece that repeats from act to act (the work-turn ask, the own-time framing, the
@@ -293,7 +293,7 @@ fn cut(request: &serde_json::Value, tools: &str, keyed_turn: bool) -> Cut {
         let missing = ledger.into_iter().filter(|line| !held.contains(&line.key)).collect::<Vec<_>>();
         sources.entry("actions".into()).or_default().extend(missing);
     }
-    Cut { head, sources, tail, sent, act: arena::act_of(request) }
+    Cut { head, sources, tail, sent, act: validate::act_of(request) }
 }
 
 fn shared(a: &str, b: &str) -> usize {
@@ -315,7 +315,7 @@ fn percent(values: &[f64]) -> String {
 
 /// Replay `cuts` (one resident's requests in one room, oldest first) through the view fitted
 /// to `window` characters for head, view and tail, turning over under `rule`.
-/// What a run measured, for the arena's one-line comparison of policies.
+/// What a run measured, for the validator's one-line comparison of policies.
 #[derive(Default)]
 struct Outcome {
     turnovers: usize,
@@ -325,7 +325,7 @@ struct Outcome {
 }
 
 fn replay(label: &str, cuts: &[Cut], window: usize, (rule, placed): (Rule, Order), keyed_turn: bool, admit: bool, trace: bool, share: usize) -> Result<Outcome, Box<dyn std::error::Error>> {
-    let mut restored = arena::Restored::default();
+    let mut restored = validate::Restored::default();
     let (mut rereads, mut preventable) = (0usize, 0usize);
     let mut view: Option<View<String>> = None;
     let mut previous_sent: Option<&str> = None;
@@ -455,9 +455,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // The growing sources' share of what a start leaves: `start_grants` gives them half.
     let mut share = 2usize;
     let mut priced: Option<f64> = None;
-    // `--arena <prefill tok/s>`: compare the growing shares on one line each, priced at a
+    // `--validate <prefill tok/s>`: compare the growing shares on one line each, priced at a
     // measured prefill rate (the node's `state/serving-rates.json`, or a live read).
-    let mut arena_tps: Option<f64> = None;
+    let mut validate_tps: Option<f64> = None;
     let mut fixed_tools: Option<String> = None;
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
@@ -466,7 +466,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             "--purpose" => purpose = args.next().ok_or("--purpose needs a suffix")?,
             "--keyed-turn" => keyed_turn = true,
             "--trace" => trace = true,
-            "--arena" => arena_tps = Some(args.next().ok_or("--arena needs the prefill rate in tokens/s")?.parse()?),
+            "--validate" => validate_tps = Some(args.next().ok_or("--arena needs the prefill rate in tokens/s")?.parse()?),
             "--share" => {
                 share = args.next().ok_or("--share needs a divisor")?.parse()?;
                 if share == 0 {
@@ -537,14 +537,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         100.0 * median(tool_share.clone()),
     );
     let cuts: Vec<Cut> = rows.iter().zip(&sent_tools).map(|(row, tools)| cut(&row["request"], tools, keyed_turn)).collect();
-    if let Some(tps) = arena_tps {
-        // The arena: the core's rule (reserved, settled first, admission) at each growing share,
+    if let Some(tps) = validate_tps {
+        // The validator: the core's rule (reserved, settled first, admission) at each growing share,
         // one comparable line each. Prefill seconds at the measured rate `tps`.
         let seconds_per_char = 1.0 / (chars_per_token * tps);
         for share in [2usize, 3, 4, 6] {
             let o = replay(&label, &cuts, window, (Rule::Reserved, Order::SettledFirst), keyed_turn, true, trace, share)?;
             println!(
-                "ARENA {label} share 1/{share}: {} acts, {} turnovers, prefill {:.1} s/act mean ({:.0} chars), re-reads {} preventable {}",
+                "VALIDATE {label} share 1/{share}: {} acts, {} turnovers, prefill {:.1} s/act mean ({:.0} chars), re-reads {} preventable {}",
                 cuts.len(),
                 o.turnovers,
                 mean(&o.prefill_chars) * seconds_per_char,

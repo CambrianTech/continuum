@@ -1,7 +1,7 @@
-//! The arena: what a context policy costs and what it keeps, measured on real history.
+//! The context validator: what a context policy costs and what it keeps, measured on real history.
 //!
 //! The captures hold what was SENT, so a result canary collapsed has no body left, and a
-//! policy that would have kept it could not be judged. The arena restores each result's whole
+//! policy that would have kept it could not be judged. The validator restores each result's whole
 //! text from the request where it was the pinned newest result, gives it a summary level with
 //! `continuum_context::levels`, and counts her real re-reads: a `read_file` of a path she had
 //! read before. A re-read is PREVENTABLE under a policy when that policy's previous prompt
