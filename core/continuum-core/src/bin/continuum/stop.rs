@@ -55,6 +55,14 @@ pub(super) async fn stop(options: StopOptions) -> Result<(), String> {
         GracefulStop::LegacyCore(why) => Err(format!(
             "the outgoing core could not stop gracefully ({why}); this is the one-time cost              of installing the shutdown rail, and it is still not a durable stop"
         )),
+        // Fail-closed like a first rollout, but NOT one: this is a fault in a supported core.
+        // The message must say so — an operator seeing "one-time cost of installing the rail"
+        // on every failed checkpoint would learn to ignore it.
+        GracefulStop::CannotAttest(why) => Err(format!(
+            "the core answered system/shutdown with an error and could not attest a final \
+             checkpoint ({why}); this is a fault, not a first rollout — do not reboot until it \
+             is resolved"
+        )),
     }
 }
 
@@ -206,20 +214,11 @@ pub(super) async fn stop_with_policy(keep_lanes: bool, operator_present: bool, r
     if require_durable {
         graceful.require_durable()?;
     }
-    match &graceful {
-        GracefulStop::Durable(summary) => println!("core stopped gracefully — {summary}"),
-        GracefulStop::Incomplete(summary) => {
-            eprintln!("core stopped WITH UNSAVED STATE — {summary}")
-        }
-        GracefulStop::NoAnswer(why) => {
-            eprintln!("no graceful stop ({why}); forcing — modules did not save")
-        }
-        GracefulStop::NothingRunning => {
-            println!("no core is listening; sweeping for survivors")
-        }
-        GracefulStop::LegacyCore(why) => {
-            eprintln!("FIRST UPGRADE — {why}; forcing, and its volatile state is lost")
-        }
+    let (to_stderr, line) = render_graceful_outcome(&graceful);
+    if to_stderr {
+        eprintln!("{line}")
+    } else {
+        println!("{line}")
     }
 
     let socket = socket_path();
