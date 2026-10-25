@@ -15,7 +15,7 @@ card_id: string,
  */
 submission_id?: string, 
 /**
- * Your claim — handle or UUID; defaults to board.
+ * Your claim; defaults to the board.
  */
 claim_id?: string, 
 /**
@@ -31,7 +31,7 @@ base_sha?: string,
  */
 artifact?: WorkArtifactReference, 
 /**
- * Revision UUID (not artifact/submission ID); bind before publish or no credit.
+ * Staged revision UUID; bind before publish or no credit.
  */
 staged_revision_id?: string, 
 /**
