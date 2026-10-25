@@ -222,7 +222,7 @@ fn an_oversized_arrival_is_admitted_as_its_pointer_and_the_prefix_holds() -> Res
     results.push("r2", &"x".repeat(51_827));
     view.advance(&[&results]);
     let limit = before.iter().map(String::len).sum::<usize>() + 200;
-    assert!(view.readmit(&[&results], limit).is_some(), "the unsent act is held");
+    assert!(view.readmit(&[&results], limit, limit / 2).is_some(), "the unsent act is held");
     let after: Vec<String> = view.render().cloned().collect();
     assert!(after.starts_with(&before), "admission rewrote the prefix");
     assert!(view.chars() <= limit, "the view exceeds what the act granted: {}", view.chars());
@@ -267,5 +267,41 @@ fn an_item_too_large_to_keep_whole_takes_its_summary_and_older_items_stay_whole(
     let rendered: Vec<String> = view.render().cloned().collect();
     assert_eq!(rendered, ["a small result", "outline of the file"]);
     assert_eq!((start.collapsed, start.summarized), (0, 1));
+    Ok(())
+}
+
+// what this catches: admission shrinking her NEWEST arrival because older items filled the
+// view (goal 7; Cormac on #5422). A small read stays whole and the caller turns over, which
+// shrinks the oldest; only an arrival larger than a start would grant it is reduced.
+#[test]
+fn only_an_oversized_arrival_is_reduced_and_a_small_one_stays_whole() -> Result<(), GrantMismatch> {
+    let mut results = Fake::new("results", 1);
+    results.push("old", &"o".repeat(900));
+    let (mut view, _) = View::start(Vec::new(), &[&results as &dyn Source<String>], |c| c.iter().map(|c| c.full_chars).collect())?;
+    results.push("small", &"s".repeat(300));
+    view.advance(&[&results]);
+    let limit = 1_000;
+    assert!(view.readmit(&[&results], limit, limit / 2).is_some());
+    assert_eq!(view.render().last().map(String::len), Some(300), "the small newest read stays whole");
+    assert!(view.chars() > limit, "still over: the caller turns over, shrinking the oldest");
+    let (mut view, _) = View::start(Vec::new(), &[&results as &dyn Source<String>], |c| c.iter().map(|c| c.full_chars).collect())?;
+    results.push("big", &"b".repeat(5_000));
+    view.advance(&[&results]);
+    assert!(view.readmit(&[&results], 2_000, 1_000).is_some());
+    assert_eq!(view.render().last().map(String::as_str), Some("[big: 5000 chars, reopen by key]"));
+    Ok(())
+}
+
+// what this catches: a rewind past tokens the engine already holds. Once the act's prompt is
+// sent, there is no unsent act to redo.
+#[test]
+fn a_sent_act_cannot_be_readmitted() -> Result<(), GrantMismatch> {
+    let mut results = Fake::new("results", 1);
+    results.push("r1", "one");
+    let (mut view, _) = View::start(Vec::new(), &[&results as &dyn Source<String>], |c| c.iter().map(|c| c.full_chars).collect())?;
+    results.push("r2", "two");
+    view.advance(&[&results]);
+    view.sent();
+    assert!(view.readmit(&[&results], 0, 0).is_none());
     Ok(())
 }

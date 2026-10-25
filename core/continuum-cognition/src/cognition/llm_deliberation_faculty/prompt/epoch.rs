@@ -236,11 +236,23 @@ impl LlmDeliberationFaculty {
         let mut held = self.context_view.lock();
         let view = held.as_mut()?;
         let limit = (budget_tokens as u128 * view.chars() as u128 / view_tokens.max(1) as u128) as usize;
-        view.readmit(&sources, limit)?;
+        // What a start would grant one arrival at most: `start_grants` gives her growing
+        // sources at most half of what the view may hold, so an item larger than half of it is
+        // reduced by a turnover too. Only such an arrival is reduced here; any other stays
+        // whole and the caller turns over, shrinking the oldest (goal 7).
+        view.readmit(&sources, limit, limit / 2)?;
         if let Some(memory) = memory {
             memory.keep_view(held.clone());
         }
         Some(Self::render(held.as_ref()))
+    }
+
+    /// The prompt built on this act's view is final and about to be sent: nothing may rewind
+    /// the act it appended any more ([`View::sent`]).
+    pub(in super::super) fn view_sent(&self) {
+        if let Some(view) = self.context_view.lock().as_mut() {
+            view.sent();
+        }
     }
 
     /// Start a new epoch of her view within `budget_chars`, the flexbox granting each

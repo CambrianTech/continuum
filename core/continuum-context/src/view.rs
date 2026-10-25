@@ -230,25 +230,35 @@ impl<T: Block> View<T> {
         self.append(sources, None)
     }
 
-    /// Redo this act's append within `limit` characters for the whole view: an item first
-    /// seen this act that would carry the view past `limit` arrives at its summary if that
-    /// fits, else its pointer, and keeps that level for the epoch, like an item a start
-    /// reduced. An item without a pointer arrives whole regardless. `None` when no unsent act
-    /// is held (a start, or a restored view).
+    /// Redo this act's append within `limit` characters for the whole view, reducing only an
+    /// arrival that is itself `oversized`: larger than a start would grant it, so a turnover
+    /// would reduce it too. It arrives at its summary if that fits, else its pointer, and keeps
+    /// that level for the epoch. Every other arrival stays whole even when the view is then
+    /// still over `limit`: the caller turns over, which shrinks the OLDEST items, never her
+    /// newest (goal 7; Cormac on #5422: a 3k read into a nearly full view must not come back as
+    /// an outline she reads again). An item without a pointer arrives whole regardless.
+    /// `None` when no unsent act is held (a start, a restored view, or an act already
+    /// [`sent`](View::sent)).
     ///
     /// This is admission, the alternative to a turnover: an arrival larger than what the act
     /// grants her view (a whole 760-line file read, 51,827 chars) used to arrive in full and
     /// start a new epoch, the one full re-prefill (Aiko, the M5, 2026-10-25: 11 turnovers in
     /// 43 acts). Reduced, it costs its outline or pointer, she can reopen it by its key, and
     /// the epoch keeps appending.
-    pub fn readmit(&mut self, sources: &[&dyn Source<T>], limit: usize) -> Option<Advance> {
+    pub fn readmit(&mut self, sources: &[&dyn Source<T>], limit: usize, oversized: usize) -> Option<Advance> {
         let mark = self.act?;
         self.epoch.rewind(mark);
         self.appended.pop();
-        Some(self.append(sources, Some(limit)))
+        Some(self.append(sources, Some((limit, oversized))))
     }
 
-    fn append(&mut self, sources: &[&dyn Source<T>], limit: Option<usize>) -> Advance {
+    /// The prompt rendered from this act was sent: the engine may now hold every token of it,
+    /// so nothing may rewind past it and [`View::readmit`] answers `None` until the next act.
+    pub fn sent(&mut self) {
+        self.act = None;
+    }
+
+    fn append(&mut self, sources: &[&dyn Source<T>], limit: Option<(usize, usize)>) -> Advance {
         let mut advance = Advance::default();
         for source in sources {
             for item in source.items() {
@@ -256,12 +266,13 @@ impl<T: Block> View<T> {
                 // An item with no pointer would leave her view entirely if collapsed (a peer's
                 // new turn), so it always arrives whole: admission never drops what she has
                 // not seen.
-                let fits = |chars: usize| limit.map_or(true, |limit| self.epoch.chars() + chars <= limit); // map_or: no limit admits every arrival whole
+                let fits = |chars: usize| limit.map_or(true, |(limit, _)| self.epoch.chars() + chars <= limit); // map_or: no limit admits every arrival whole
+                let oversized = limit.is_some_and(|(_, oversized)| item.full.chars() > oversized);
                 let level = if self.collapsed.contains(&id) {
                     Level::Pointer
                 } else if self.summarized.contains(&id) {
                     Level::Summary
-                } else if self.epoch.holds(&id) || item.pointer.is_none() || fits(item.full.chars()) {
+                } else if self.epoch.holds(&id) || item.pointer.is_none() || !oversized || fits(item.full.chars()) {
                     Level::Full
                 } else if item.summary.as_ref().is_some_and(|summary| fits(summary.chars())) {
                     self.summarized.insert(id.clone());

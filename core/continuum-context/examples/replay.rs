@@ -363,7 +363,7 @@ fn replay(label: &str, cuts: &[Cut], window: usize, (rule, placed): (Rule, Order
         }
         // Admission first (`View::readmit`, the core's `fit_view`): an arrival too large for
         // what the act grants arrives as its pointer, and only a view still over turns over.
-        if admit && open.chars() > head_chars + available && open.readmit(&refs, head_chars + available).is_some() && open.chars() <= head_chars + available {
+        if admit && open.chars() > head_chars + available && open.readmit(&refs, head_chars + available, (head_chars + available) / 2).is_some() && open.chars() <= head_chars + available {
             admitted += 1;
         }
         if open.chars() > head_chars + available {

@@ -14,8 +14,8 @@
 //! Placing a source with an intact prefix saves its `kept` and passes the prefix on with
 //! chance `p`, so an exchange argument orders sources by `kept / (1 - p)`, largest first; a
 //! source that never changed is infinite and leads. A source not yet measured counts as
-//! changing every start and keeping nothing: it rides after everything measured, in the
-//! caller's order.
+//! changing every start and keeping nothing: it ties with measured sources that keep nothing,
+//! and ties keep the caller's order.
 
 use std::collections::BTreeMap;
 use std::hash::{Hash, Hasher};
