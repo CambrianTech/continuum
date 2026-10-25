@@ -85,6 +85,43 @@ pub(super) fn smoke_verdict(out_tokens: u64, visible: &str, reasoning_len: usize
 }
 
 
+/// Where a synthetic smoke decode may run without destroying a mind's KV.
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+pub(super) enum SmokeSeat {
+    /// The pool's reserved scratch slot: the probe pins there.
+    Scratch(u32),
+    /// No slot holds anything (a freshly launched server): any slot is free to prove decode on.
+    Empty,
+    /// Every slot the probe could land on holds someone's tokens: a synthetic decode would
+    /// replace them (card 9e3350bd on the 5090; the M5 2026-10-25, where the reconciler's
+    /// adoption probe ran every ensure tick on an adopted engine and wiped a resident's slot
+    /// each time, so her next turn re-prefilled from 0 and her next page save captured the
+    /// probe). Liveness is then the lane's own deliveries, which the heartbeat reads.
+    Occupied,
+}
+
+/// PURE: the seat for a smoke decode, from the pool's scratch slot and the server's own
+/// `/slots` account. A slot holds something when it is processing or kept a prompt.
+pub(super) fn smoke_seat(scratch: Option<u32>, slots: &serde_json::Value) -> SmokeSeat {
+    if let Some(slot) = scratch {
+        return SmokeSeat::Scratch(slot);
+    }
+    let holds = |s: &serde_json::Value| {
+        s.get("is_processing").and_then(|p| p.as_bool()) == Some(true)
+            || s.get("n_prompt_tokens").and_then(|n| n.as_u64()).is_some_and(|n| n > 0)
+    };
+    match slots.as_array() {
+        Some(all) if !all.iter().any(holds) => SmokeSeat::Empty,
+        _ => SmokeSeat::Occupied,
+    }
+}
+
+/// The scratch slot of the pool installed for `v1_url`'s server, if it has one.
+pub(super) fn scratch_slot_for(v1_url: &str) -> Option<u32> {
+    let root = v1_url.strip_suffix("/v1")?;
+    crate::inference::slots::directory().get(root).flatten().and_then(|pool| pool.scratch_slot())
+}
+
 /// One smoke-decode HTTP attempt: POST the count-to-ten prompt with `max_tokens`,
 /// return `(completion_tokens, visible_content, reasoning_len)` — or `None` when
 /// the transport/status/schema failed (each case logged where it is detected).
@@ -110,14 +147,10 @@ pub(super) async fn smoke_attempt(
     // evict her 30k tail to prove the lane decodes — the exact "contend for a
     // slot with the work" the heartbeat's own doc warns about. Best-effort: an
     // uninstalled pool (server not yet probed by any turn) leaves it unpinned.
-    if let Some(root) = v1_url.strip_suffix("/v1") {
-        if let Some(Some(pool)) = crate::inference::slots::directory().get(root) {
-            if let Some(scratch) = pool.scratch_slot() {
-                if let Some(obj) = body.as_object_mut() {
-                    obj.insert("id_slot".to_string(), serde_json::json!(scratch));
-                    obj.insert("cache_prompt".to_string(), serde_json::json!(true));
-                }
-            }
+    if let Some(scratch) = scratch_slot_for(v1_url) {
+        if let Some(obj) = body.as_object_mut() {
+            obj.insert("id_slot".to_string(), serde_json::json!(scratch));
+            obj.insert("cache_prompt".to_string(), serde_json::json!(true));
         }
     }
     let resp = match client

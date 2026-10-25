@@ -196,6 +196,29 @@ impl LlamaServerControl for LlamaServerProcess {
         // it anyway cost two generations per readiness check, ~30 identical
         // `think_retry` rows/hour on a lane citizens were starving for. First check
         // per lane still takes the cheap path; the latch below learns from it.
+        //
+        // NEVER OVER A MIND'S KV. The seat is decided here, once, for every caller (the
+        // heartbeat, the reconciler's adoption probe, readiness): the guard used to live in
+        // the heartbeat only, and the reconciler re-probed an adopted engine every ensure
+        // tick, wiping a resident's slot each time (M5, 2026-10-25). With no free seat the
+        // lane's own `/slots` answering is the proof, and the residents' deliveries carry it.
+        let slots_url = format!("{}/slots", self.root);
+        let slots = match self.client.get(&slots_url).timeout(PROBE_TIMEOUT).send().await {
+            Ok(resp) if resp.status().is_success() => resp.json::<serde_json::Value>().await.ok(),
+            _ => None,
+        };
+        let Some(slots) = slots else {
+            return false;
+        };
+        if smoke_seat(scratch_slot_for(&self.v1_url), &slots) == SmokeSeat::Occupied {
+            continuum_base::probe!(target: "continuum_core::inference::llama_server", class = "serving.smoke.deferred_to_delivery",
+                root = %self.root,
+                "every slot holds a mind's tokens and there is no scratch slot: no synthetic \
+                 decode (it would replace her KV); the lane answered /slots, and her own \
+                 deliveries prove decode"
+            );
+            return true;
+        }
         if self
             .smoke_proven_thinking
             .load(std::sync::atomic::Ordering::Relaxed)
