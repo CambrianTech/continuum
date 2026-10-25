@@ -45,6 +45,14 @@ pub(crate) struct TrainingAttempt {
     /// The core process that admitted it, so evidence from another incarnation is never read
     /// as this one's.
     owner_generation: Uuid,
+    /// The grid peer whose attempt this is, when this node trains it on lease (card
+    /// cc34db0d); `None` for an attempt this node's own trigger made.
+    #[serde(default)]
+    origin: Option<Uuid>,
+    /// The leased payload's digest, computed HERE from the canonical request: a repeat
+    /// with the same attempt and another payload is refused.
+    #[serde(default)]
+    request_digest: Option<String>,
     #[entity(json)]
     state: AttemptState,
 }
@@ -96,6 +104,49 @@ pub(crate) enum Reconciled {
     NotCreated,
     /// The evidence does not decide it; the reason says why.
     Unknown(String),
+}
+
+/// What a recorded state means to a new create for the same attempt: the one mapping
+/// `admit`, `peek` and `admit_lease` share.
+fn admission_of(state: AttemptState) -> Admission {
+    match state {
+        AttemptState::Created { handle } => Admission::AlreadyCreated(handle),
+        AttemptState::Closed | AttemptState::Failed { .. } => Admission::Fenced,
+        AttemptState::Admitted => Admission::Unsettled,
+    }
+}
+
+/// What an existing leased record means to a create with this payload: closed or refused for
+/// certain is fenced whatever the payload; a live record from another payload is refused.
+fn lease_admission(row: TrainingAttempt, request_digest: &str) -> Result<Admission, LeaseRefusal> {
+    match row.state {
+        AttemptState::Closed | AttemptState::Failed { .. } => Ok(Admission::Fenced),
+        _ if row.request_digest.as_deref() != Some(request_digest) => Err(LeaseRefusal::PayloadChanged),
+        state => Ok(admission_of(state)),
+    }
+}
+
+/// Fixed namespace for [`lease_key`]; changing it would orphan every leased record.
+const LEASE_NAMESPACE: Uuid = Uuid::from_u128(0x6f05_b89d_cc34_4db0_8d1e_a5e0_1ea5_e001);
+
+/// A leased attempt's key on the peer training it (card cc34db0d): derived from the
+/// AUTHENTICATED origin and its attempt id, so one origin can never reach, create under,
+/// or read another origin's record by naming the same attempt id.
+pub(crate) fn lease_key(origin: Uuid, attempt: Uuid) -> Uuid {
+    let mut name = [0u8; 32];
+    name[..16].copy_from_slice(origin.as_bytes());
+    name[16..].copy_from_slice(attempt.as_bytes());
+    Uuid::new_v5(&LEASE_NAMESPACE, &name)
+}
+
+/// Why a lease could not be admitted.
+#[derive(Debug, PartialEq)]
+pub(crate) enum LeaseRefusal {
+    /// The ledger could not decide (see [`AdmitError`]).
+    Ledger(AdmitError),
+    /// This origin's attempt was admitted before with another payload: refused, so one
+    /// attempt can never stand for two trainings.
+    PayloadChanged,
 }
 
 /// The ledger. One per process, shared by `genome/job-create` and reconciliation; the
@@ -160,11 +211,7 @@ impl AttemptLedger {
             .await
             .map_err(|e| AdmitError::Unreadable(e.to_string()))?;
         match existing {
-            Some(row) => Ok(match row.state {
-                AttemptState::Created { handle } => Admission::AlreadyCreated(handle),
-                AttemptState::Closed | AttemptState::Failed { .. } => Admission::Fenced,
-                AttemptState::Admitted => Admission::Unsettled,
-            }),
+            Some(row) => Ok(admission_of(row.state)),
             None => {
                 let row = TrainingAttempt {
                     base: record_base(attempt),
@@ -172,6 +219,8 @@ impl AttemptLedger {
                     provider: provider.to_string(),
                     destination: destination.to_string(),
                     owner_generation: crate::capacity::gossip::this_process_origin(),
+                    origin: None,
+                    request_digest: None,
                     state: AttemptState::Admitted,
                 };
                 store
@@ -181,6 +230,60 @@ impl AttemptLedger {
                 Ok(Admission::Fresh)
             }
         }
+    }
+
+    /// Admit a leased create (card cc34db0d) under `key` ([`lease_key`]), recording its origin
+    /// and the payload digest this node computed. A closed or settled record answers as for
+    /// any attempt; a live record from another payload is refused.
+    pub(crate) async fn admit_lease(
+        &self,
+        key: Uuid,
+        origin: Uuid,
+        request_digest: &str,
+        provider: &str,
+    ) -> Result<Admission, LeaseRefusal> {
+        let lock = self.lock(key);
+        let _held = lock.lock().await;
+        let store = self.store.require().map_err(|e| LeaseRefusal::Ledger(AdmitError::Unreadable(e)))?;
+        let existing = store
+            .find_by_id(key)
+            .await
+            .map_err(|e| LeaseRefusal::Ledger(AdmitError::Unreadable(e.to_string())))?;
+        match existing {
+            Some(row) => lease_admission(row, request_digest),
+            None => {
+                let row = TrainingAttempt {
+                    base: record_base(key),
+                    dispatch_id: None,
+                    provider: provider.to_string(),
+                    destination: "local".to_string(),
+                    owner_generation: crate::capacity::gossip::this_process_origin(),
+                    origin: Some(origin),
+                    request_digest: Some(request_digest.to_string()),
+                    state: AttemptState::Admitted,
+                };
+                store
+                    .save(key, &row)
+                    .await
+                    .map_err(|e| LeaseRefusal::Ledger(AdmitError::Unrecorded(e.to_string())))?;
+                Ok(Admission::Fresh)
+            }
+        }
+    }
+
+    /// The existing record of a leased attempt, judged against this payload, without
+    /// recording anything: read BEFORE a trainer is chosen, so a repeat answers from its own
+    /// record (its job, a refusal, or Unknown) whatever this node's trainers are doing now.
+    /// `None` = no record; `admit_lease` still decides under the lock.
+    pub(crate) async fn lease_record(&self, key: Uuid, request_digest: &str) -> Result<Option<Admission>, LeaseRefusal> {
+        let lock = self.lock(key);
+        let _held = lock.lock().await;
+        let store = self.store.require().map_err(|e| LeaseRefusal::Ledger(AdmitError::Unreadable(e)))?;
+        let existing = store
+            .find_by_id(key)
+            .await
+            .map_err(|e| LeaseRefusal::Ledger(AdmitError::Unreadable(e.to_string())))?;
+        existing.map(|row| lease_admission(row, request_digest)).transpose()
     }
 
     /// What admission WOULD decide for `attempt`, without recording anything: lets
@@ -195,11 +298,7 @@ impl AttemptLedger {
             .find_by_id(attempt)
             .await
             .map_err(|e| AdmitError::Unreadable(e.to_string()))?;
-        Ok(existing.map(|row| match row.state {
-            AttemptState::Created { handle } => Admission::AlreadyCreated(handle),
-            AttemptState::Closed | AttemptState::Failed { .. } => Admission::Fenced,
-            AttemptState::Admitted => Admission::Unsettled,
-        }))
+        Ok(existing.map(|row| admission_of(row.state)))
     }
 
     /// Settle an admitted attempt with what the trainer returned. A failed write leaves it
@@ -244,6 +343,8 @@ impl AttemptLedger {
                     provider: String::new(),
                     destination: String::new(),
                     owner_generation: crate::capacity::gossip::this_process_origin(),
+                    origin: None,
+                    request_digest: None,
                     state: AttemptState::Closed,
                 };
                 match store.save(attempt, &row).await {
@@ -420,4 +521,47 @@ mod tests {
         assert_eq!(after.reconcile(made).await, Reconciled::Created(job));
         assert_eq!(after.admit(closed, None, "engine-local", "local").await, Ok(Admission::Fenced));
     }
+
+    // what this catches (card cc34db0d, Codex's gates for a leased attempt):
+    // - the same attempt with another payload is refused, never a second training;
+    // - a concurrent or crashed repeat (admitted, never settled) is never admitted fresh, so a
+    //   crash between the trainer starting and its handle being recorded reads unknown;
+    // - a status query for an attempt never received closes it first, so a late create is
+    //   fenced and "not created" stays true;
+    // - a forged origin derives another key: its query closes nothing of the real origin's.
+    #[tokio::test]
+    async fn a_leased_attempt_is_keyed_by_its_origin_and_never_trained_twice() {
+        let (ledger, _dir) = ledger().await;
+        let (origin, attempt) = (Uuid::new_v4(), Uuid::new_v4());
+        let key = lease_key(origin, attempt);
+        assert_eq!(ledger.admit_lease(key, origin, "digest-a", "engine-lane").await, Ok(Admission::Fresh));
+        assert_eq!(
+            ledger.admit_lease(key, origin, "digest-b", "engine-lane").await,
+            Err(LeaseRefusal::PayloadChanged),
+            "another payload under the same attempt"
+        );
+        assert_eq!(
+            ledger.admit_lease(key, origin, "digest-a", "engine-lane").await,
+            Ok(Admission::Unsettled),
+            "a repeat while the first is in flight, or after a crash, is never fresh"
+        );
+        assert!(matches!(ledger.reconcile(key).await, Reconciled::Unknown(_)), "admitted, never settled: unknown");
+
+        let forger = Uuid::new_v4();
+        assert_ne!(lease_key(forger, attempt), key);
+        assert_eq!(ledger.reconcile(lease_key(forger, attempt)).await, Reconciled::NotCreated);
+        assert!(matches!(ledger.reconcile(key).await, Reconciled::Unknown(_)), "the real record is untouched");
+
+        let never_sent = Uuid::new_v4();
+        let late_key = lease_key(origin, never_sent);
+        assert_eq!(ledger.reconcile(late_key).await, Reconciled::NotCreated, "asked before it arrived");
+        assert_eq!(ledger.admit_lease(late_key, origin, "digest-c", "engine-lane").await, Ok(Admission::Fenced), "the late create starts nothing");
+
+        ledger.settle(key, AttemptState::Created { handle: handle() }).await.expect("settled");
+        assert!(matches!(
+            ledger.admit_lease(key, origin, "digest-a", "engine-lane").await,
+            Ok(Admission::AlreadyCreated(_))
+        ));
+    }
 }
+

@@ -44,6 +44,16 @@ pub enum JobAttemptReconcileOutcome {
     },
 }
 
+impl From<Reconciled> for JobAttemptReconcileOutcome {
+    fn from(reconciled: Reconciled) -> Self {
+        match reconciled {
+            Reconciled::Created(handle) => Self::Created { handle },
+            Reconciled::NotCreated => Self::NotCreated,
+            Reconciled::Unknown(reason) => Self::Unknown { reason },
+        }
+    }
+}
+
 crate::action_command! {
     /// Prove what a training attempt did: `created` (with its job), `notCreated` (closed,
     /// so nothing can start under it), or `unknown` with the reason. Reads the attempt
@@ -54,10 +64,6 @@ crate::action_command! {
     params: JobAttemptReconcileParams,
     output: JobAttemptReconcileOutcome,
     run(this, _ctx, p) => {
-        Ok(match this.attempts.reconcile(p.attempt).await {
-            Reconciled::Created(handle) => JobAttemptReconcileOutcome::Created { handle },
-            Reconciled::NotCreated => JobAttemptReconcileOutcome::NotCreated,
-            Reconciled::Unknown(reason) => JobAttemptReconcileOutcome::Unknown { reason },
-        })
+        Ok(this.attempts.reconcile(p.attempt).await.into())
     }
 }

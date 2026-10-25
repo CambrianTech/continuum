@@ -42,6 +42,7 @@ use job_create::{ERROR_KIND_CAPACITY_PARKED, ERROR_KIND_TRAINER_UNAVAILABLE};
 
 pub(crate) mod attempt_ledger;
 pub mod job_attempt_reconcile;
+pub mod lease;
 pub mod job_cancel;
 pub mod job_create;
 pub mod job_pause;
@@ -95,6 +96,11 @@ pub(crate) fn command_objects(
         Arc::new(job_attempt_reconcile::GenomeJobAttemptReconcile {
             attempts: Arc::clone(&attempts),
         }),
+        Arc::new(lease::GenomeLeaseTrain {
+            coordinator: Arc::clone(&coordinator),
+            attempts: Arc::clone(&attempts),
+        }),
+        Arc::new(lease::GenomeLeaseStatus { attempts: Arc::clone(&attempts) }),
         Arc::new(job_create::GenomeJobCreate {
             coordinator,
             attempts,
@@ -237,7 +243,7 @@ mod tests {
         assert_eq!(GenomeJobCancel::NAME, "genome/job-cancel");
     }
 
-    // what this catches: command_objects assembles every genome/job-* verb (reconcile included) — a dropped entry
+    // what this catches: command_objects assembles every genome/job-* verb (reconcile included) and the two lease verbs — a dropped entry
     // would silently remove a genome command from the registry.
     #[test]
     fn command_objects_assembles_all_three() {
@@ -250,6 +256,6 @@ mod tests {
             Arc::new(crate::genome::fine_tuning::TrainingJobBoard::default()),
             Arc::new(tempfile::tempdir().unwrap()),
         );
-        assert_eq!(objs.len(), 6);
+        assert_eq!(objs.len(), 8);
     }
 }

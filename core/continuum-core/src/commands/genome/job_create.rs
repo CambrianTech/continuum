@@ -150,7 +150,7 @@ fn recorded_answer(
 /// Whether a trainer's refusal proves it created nothing, so its attempt settles as failed
 /// (fenced) instead of staying admitted. The same created-nothing kinds the trigger retries;
 /// `LocalTrainerFailed`, `Transient` and the rest can follow a trainer that started.
-fn settles_as_not_created(e: &crate::genome::fine_tuning::FineTuningError) -> bool {
+pub(super) fn settles_as_not_created(e: &crate::genome::fine_tuning::FineTuningError) -> bool {
     use crate::genome::fine_tuning::FineTuningError as E;
     matches!(
         e,
