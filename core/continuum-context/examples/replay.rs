@@ -466,7 +466,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             "--purpose" => purpose = args.next().ok_or("--purpose needs a suffix")?,
             "--keyed-turn" => keyed_turn = true,
             "--trace" => trace = true,
-            "--validate" => validate_tps = Some(args.next().ok_or("--arena needs the prefill rate in tokens/s")?.parse()?),
+            "--validate" => validate_tps = Some(args.next().ok_or("--validate needs the prefill rate in tokens/s")?.parse()?),
             "--share" => {
                 share = args.next().ok_or("--share needs a divisor")?.parse()?;
                 if share == 0 {
