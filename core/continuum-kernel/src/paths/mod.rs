@@ -67,11 +67,30 @@ pub fn continuum_home() -> Result<std::path::PathBuf, String> {
     if let Some(native) = NativeHomeOverride::current() {
         return Ok(native.join(".continuum"));
     }
-    std::env::var_os("CONTINUUM_HOME")
+    let home = std::env::var_os("CONTINUUM_HOME")
         .map(std::path::PathBuf::from)
         .or_else(test_home)
         .or_else(|| dirs::home_dir().map(|h| h.join(".continuum")))
-        .ok_or_else(|| "no home dir".to_string())
+        .ok_or_else(|| "no home dir".to_string())?;
+    retired_root(std::env::var_os("CONTINUUM_ROOT").as_deref(), &home)?;
+    Ok(home)
+}
+
+/// `$CONTINUUM_ROOT` was a second name for the continuum home and is no longer read (line 7). Set
+/// to anything but the home this process resolved, it would silently open another state tree, so
+/// it is refused, naming the one setting that keeps the operator on the tree they meant. Nothing
+/// is moved.
+fn retired_root(root: Option<&std::ffi::OsStr>, home: &std::path::Path) -> Result<(), String> {
+    match root {
+        Some(root) if std::path::Path::new(root) != home => Err(format!(
+            "$CONTINUUM_ROOT={} is no longer read: the continuum home is $CONTINUUM_HOME, else ~/.continuum ({} here). \
+             Set CONTINUUM_HOME={} to keep that tree, or unset CONTINUUM_ROOT; nothing was moved",
+            root.to_string_lossy(),
+            home.display(),
+            root.to_string_lossy()
+        )),
+        _ => Ok(()),
+    }
 }
 
 /// The substrate root, infallibly: the ONE continuum home, [`continuum_home`] (`$CONTINUUM_HOME`,
@@ -241,6 +260,27 @@ mod tests {
     fn the_root_is_the_one_continuum_home() {
         let _home = crate::paths::test_home::HomeGuard::preserve_blocking(); // reads the process home a guarded fixture may be swapping (card cb3221a5)
         assert_eq!(continuum_root(), continuum_home().expect("a test build always has a home")); // JUSTIFIED: test asserts the owner
+    }
+
+    // what this catches (Codex on #5420): the root escaping a test's isolation. Under a thread's
+    // native home override the root is that home's .continuum, never the operator's.
+    #[test]
+    fn the_root_follows_a_tests_native_home() {
+        let native = tempfile::tempdir().expect("native home"); // JUSTIFIED: test fixture
+        let _override = NativeHomeOverride::install(native.path());
+        assert_eq!(continuum_root(), native.path().join(".continuum"));
+    }
+
+    // what this catches (Codex on #5420): an operator's retired $CONTINUUM_ROOT silently ignored,
+    // so the core opens a different state tree. A root that is not the resolved home is refused,
+    // naming CONTINUUM_HOME=<that root>; one equal to the home, or none, passes.
+    #[test]
+    fn a_retired_root_that_names_another_tree_is_refused() {
+        let home = std::path::Path::new("/home/op/.continuum");
+        let refusal = retired_root(Some(std::ffi::OsStr::new("/srv/continuum")), home).expect_err("another tree"); // JUSTIFIED: test asserts the refusal
+        assert!(refusal.contains("CONTINUUM_HOME=/srv/continuum"), "{refusal}");
+        assert_eq!(retired_root(Some(home.as_os_str()), home), Ok(()));
+        assert_eq!(retired_root(None, home), Ok(()));
     }
 
     // what this catches (2026-09-20): a test binary resolving the OPERATOR's home — a
