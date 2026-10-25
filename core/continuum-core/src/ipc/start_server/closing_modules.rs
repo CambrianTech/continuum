@@ -38,8 +38,10 @@ pub(super) fn register_closing_modules(
     runtime.register(Arc::new(VisionModule::new(code_state.clone())));
 
     // GridModule: inter-node transport + routing (Tailscale, Reticulum)
+    // The one continuum home, or boot stops: a fallback tree here would hide a retired-root
+    // refusal (#5420) behind a second grid state (Codex on #5421).
     let grid_dir = crate::paths::continuum_home()
-        .unwrap_or_else(|_| std::path::PathBuf::from("./.continuum"))
+        .expect("the continuum home must resolve before the grid can keep its state") // JUSTIFIED: boot-time registration; the home's own error (no home, a retired CONTINUUM_ROOT) is the reason, never a guessed tree
         .join("grid");
     let local_has_gpu = gpu_manager.total_vram_bytes() > 0;
     let local_vram_mb = gpu_manager.total_vram_bytes() / (1024 * 1024);

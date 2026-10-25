@@ -132,11 +132,7 @@ crate::action_command! {
         let mouth = p.mouth;
 
         let avatar_dir = crate::paths::continuum_home()
-            .map_err(|_| {
-                crate::sdk_codegen::CommandError::Internal(
-                    "Cannot determine home directory".to_string(),
-                )
-            })?
+            .map_err(|e| crate::sdk_codegen::CommandError::Internal(format!("no continuum home for avatars: {e}")))?
             .join("avatars");
 
         // State-suffixed filename so an expression/pose caches independently of the
