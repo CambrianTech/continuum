@@ -446,6 +446,10 @@ pub struct EngineRunSpec {
     /// finish files the measured wall seconds per character the next dispatch is sized by.
     #[serde(default)]
     pub(super) corpus_chars: u64,
+    /// The weights file the run's lane was launched on, carried to the finished artifact's
+    /// metrics so a re-attached run names the same base (card 3fd98325).
+    #[serde(default)]
+    pub(super) trained_on: Option<crate::inference::weights_stamp::WeightsStamp>,
 }
 
 /// The depth a finished run actually adapted, as the shape it is recorded under: the engine's

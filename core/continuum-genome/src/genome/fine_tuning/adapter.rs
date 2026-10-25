@@ -203,6 +203,42 @@ pub struct FineTuningCapabilities {
     pub place: TrainingPlace,
 }
 
+/// Where a training job runs (card 975d27fa): on this node, or leased to one grid peer.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Destination {
+    Local,
+    Peer(uuid::Uuid),
+}
+
+impl Destination {
+    /// The attempt ledger's stored form: `local`, or `peer:<uuid>`.
+    pub fn to_ledger(&self) -> String {
+        match self {
+            Self::Local => "local".into(),
+            Self::Peer(peer) => format!("peer:{peer}"),
+        }
+    }
+
+    /// The ledger's stored form read back; `None` for a form this build does not know.
+    pub fn from_ledger(stored: &str) -> Option<Self> {
+        match stored.strip_prefix("peer:") {
+            Some(peer) => uuid::Uuid::parse_str(peer).ok().map(Self::Peer),
+            None if stored == "local" => Some(Self::Local),
+            None => None,
+        }
+    }
+}
+
+/// What `genome/job-create` bound for a job before its trainer runs: the attempt and dispatch
+/// it runs under, and where. Recorded in the attempt ledger first, so a retry finds the same
+/// destination and never chooses again.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct JobBinding {
+    pub attempt: Option<uuid::Uuid>,
+    pub dispatch: Option<uuid::Uuid>,
+    pub destination: Destination,
+}
+
 // ─── The trait ───────────────────────────────────────────────────────
 
 /// One adapter per (cloud-provider OR in-process-trainer). Same
@@ -251,6 +287,20 @@ pub trait FineTuningAdapter: Send + Sync {
     /// don't have idempotency keys; the adapter eats duplicate
     /// submissions and the substrate dedupes via its own bookkeeping.
     async fn create_job(&self, request: TrainingJobRequest) -> Result<JobHandle, FineTuningError>;
+
+    /// Where this trainer would run `request`, chosen ONCE before anything is sent and
+    /// recorded with the attempt. A trainer on this host runs it here; a grid-peer trainer
+    /// names the one peer it binds to.
+    fn destination(&self, _request: &TrainingJobRequest) -> Result<Destination, FineTuningError> {
+        Ok(Destination::Local)
+    }
+
+    /// Submit `request` under the `binding` recorded for it. A trainer on this host needs
+    /// nothing from the binding; a grid-peer trainer sends to exactly its destination, under
+    /// its attempt, and never chooses again.
+    async fn create_bound(&self, request: TrainingJobRequest, _binding: &JobBinding) -> Result<JobHandle, FineTuningError> {
+        self.create_job(request).await
+    }
 
     /// Poll the provider for current job state. Cheap — must not
     /// download weights or perform heavy work. Returns a

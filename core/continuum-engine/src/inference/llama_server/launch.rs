@@ -74,7 +74,19 @@ impl LlamaServerProcess {
             outcome.map_err(LlamaServerError::Spawn)?;
         }
         if self.is_live_lane && !had_own_child && !restoring {
-            self.retire_adopted(&mut transition, current).await?;
+            if let Err(error) = self.retire_adopted(&mut transition, current).await {
+                // Refused before the incumbent was signalled: it runs exactly as before, so
+                // its admission is handed back as this transition found it (card 931cfd22).
+                if let LlamaServerError::RetirementRefused(why) = &error {
+                    let reopened = transition.hand_back_unchanged();
+                    continuum_base::probe!(target: "continuum_core::inference::llama_server", class = "serving.replace.refused_handed_back",
+                        reopened,
+                        why = why.as_str(),
+                        "a replacement was refused before its incumbent was signalled; the endpoint is handed back as the transition found it"
+                    );
+                }
+                return Err(error);
+            }
         }
         self.kill_child();
 
@@ -194,6 +206,33 @@ impl LlamaServerProcess {
         if let Ok(inputs) = &prepared.local_inputs {
             inputs.validate().await.map_err(LlamaServerError::Spawn)?;
         }
+        // The weights file the engine is about to open, so an adapter trained in this lane names
+        // the bytes it read, not whatever the registry resolves later (card 3fd98325). A stat
+        // that fails disarms only that provenance: the lane serves either way.
+        let weights = match tokio::task::spawn_blocking({
+            let gguf = gguf.clone();
+            move || crate::inference::weights_stamp::WeightsStamp::of(&gguf)
+        })
+        .await
+        {
+            Ok(Ok(stamp)) => Some(stamp),
+            Ok(Err(e)) => {
+                continuum_base::probe!(target: "continuum_core::inference::llama_server", class = "serving.weights_unstamped",
+                    artifact = %gguf.display(),
+                    error = e.to_string().as_str(),
+                    "the lane's weights could not be stamped: adapters trained in it cannot be returned across the grid",
+                );
+                None
+            }
+            Err(e) => {
+                continuum_base::probe!(target: "continuum_core::inference::llama_server", class = "serving.weights_unstamped",
+                    artifact = %gguf.display(),
+                    error = e.to_string().as_str(),
+                    "the weights stamp task failed: adapters trained in this lane cannot be returned across the grid",
+                );
+                None
+            }
+        };
         // Clone before OS spawn, so allocation cannot strand an uninstalled child.
         let child_install = engine_install.clone();
         let child_inputs = prepared.local_inputs.as_ref().ok().cloned();
@@ -335,6 +374,7 @@ impl LlamaServerProcess {
                 // the OS start time with the pid names this exact process (residency step 1)
                 started_s: crate::inference::engine_residency::process_start_s(pid).unwrap_or(0), // unwrap_or: 0 never matches a live process, so an unreadable start time holds nothing
                 placement: Some(target.placement),
+                weights,
             };
             // Record + release under the page-dir guard (one critical section); a
             // failed write keeps the reservation for the lane's lifetime.

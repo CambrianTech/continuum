@@ -74,13 +74,33 @@ pub const RECORDING_BASE_PREFIX: &str = "recording-test";
 #[derive(Clone)]
 pub struct RecordingFineTuningAdapter {
     captures: Arc<StdMutex<Vec<TrainingJobRequest>>>,
+    /// The local artifact every job completes with, for a test that moves real files
+    /// (the cross-grid lease's return, card 3fd98325); `None` reports provider-hosted.
+    weights: Option<(std::path::PathBuf, ArtifactFormat)>,
+    /// The base weights every job reports it trained on (`JobMetrics::trained_on`).
+    trained_on: Option<crate::inference::weights_stamp::WeightsStamp>,
 }
 
 impl RecordingFineTuningAdapter {
     pub fn new() -> Self {
         Self {
             captures: Arc::new(StdMutex::new(Vec::new())),
+            weights: None,
+            trained_on: None,
         }
+    }
+
+    /// Every job completes with the artifact at `path`, in `format`, instead of a
+    /// provider-hosted one.
+    pub fn with_local_artifact(mut self, path: std::path::PathBuf, format: ArtifactFormat) -> Self {
+        self.weights = Some((path, format));
+        self
+    }
+
+    /// Every job reports it trained on the base `stamp` names.
+    pub fn trained_on(mut self, stamp: crate::inference::weights_stamp::WeightsStamp) -> Self {
+        self.trained_on = Some(stamp);
+        self
     }
 
     /// Shared handle to the captures vector. Use this on the test
@@ -157,12 +177,12 @@ impl FineTuningAdapter for RecordingFineTuningAdapter {
         Ok(TrainingStatus::Completed {
             artifact: TrainingArtifact {
                 model_id: handle.provider_job_id.clone(),
-                local_path: None,
-                // Replay fixture — no real weights, so nothing to convert or
-                // page in. Provider-hosted keeps the sentinel from expecting a
-                // local gene.
-                format: ArtifactFormat::ProviderHosted,
-                metrics: JobMetrics::default(),
+                local_path: self.weights.as_ref().map(|(path, _)| path.clone()),
+                // Replay fixture — no real weights unless a test gave some, so by
+                // default nothing to convert or page in. Provider-hosted keeps the
+                // sentinel from expecting a local gene.
+                format: self.weights.as_ref().map_or(ArtifactFormat::ProviderHosted, |(_, format)| *format),
+                metrics: JobMetrics { trained_on: self.trained_on.clone(), ..JobMetrics::default() },
             },
         })
     }

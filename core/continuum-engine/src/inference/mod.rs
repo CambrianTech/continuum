@@ -50,6 +50,7 @@ pub mod prefill_throttle;
 pub mod served_window_store;
 pub mod serving_rates;
 pub mod lane_registry;
+pub mod weights_stamp;
 pub mod engine_residency;
 pub mod llama_server;
 pub mod llamacpp_adapter;

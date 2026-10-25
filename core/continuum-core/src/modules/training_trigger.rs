@@ -203,6 +203,12 @@ pub struct TrainingTriggerState {
     pending_scan_sequence: std::sync::atomic::AtomicU64,
     active_scan_after: std::sync::Mutex<Option<String>>,
     cached_scan_after: std::sync::Mutex<Option<BucketKey>>,
+    /// The refusal recovery last reported per bucket, so an unchanged refusal is said once,
+    /// not every pass (enrico 2026-10-25: the same 9 refusals re-fired every 30 s, 792
+    /// probes in 44 min). Process-local: a restart re-reports each standing refusal once. An
+    /// entry is cleared when its bucket is revisited and no longer refuses; one whose bucket is
+    /// retired without a revisit stays until restart, one short string per such bucket.
+    reported_recovery: DashMap<BucketKey, String>,
     initial_scan: std::sync::atomic::AtomicU8,
     /// Finite admitted operations outlive a cancelled caller. Shutdown drains
     /// this set; dropping a caller never aborts a writer or releases its lease.
@@ -283,6 +289,7 @@ impl TrainingTriggerState {
             pending_scan_sequence: std::sync::atomic::AtomicU64::new(0),
             active_scan_after: std::sync::Mutex::new(None),
             cached_scan_after: std::sync::Mutex::new(None),
+            reported_recovery: DashMap::new(),
             initial_scan: std::sync::atomic::AtomicU8::new(0),
             operations: tokio::sync::Mutex::new(tokio::task::JoinSet::new()),
             #[cfg(test)]

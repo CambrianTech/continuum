@@ -405,7 +405,7 @@ use super::*;
             row(3, Some(vec![call(None)])),            // a spoken turn: kept
             row(4, Some(vec![call(None)])),            // a no-action run collapses
             row(5, Some(vec![call(None)])),
-            row(6, None),                              // unjudgeable: settles, breaks the run
+            row(6, None),                              // unjudgeable: breaks the run
             row(7, Some(vec![read(), edit()])),
             row(8, Some(vec![read()])),                // the verify re-read after the edit: kept
         ];

@@ -112,7 +112,7 @@ impl Resident {
                 claim: Some(ClaimReceipt { claim_id: self.claim.as_uuid(), owner: self.airc.peer_id(), role: CreditRole::Owner }),
             },
         );
-        if !turn.record(&settlement_acts(4), &[served_receipt(generation, "served-model")], None, true).await {
+        if !turn.record(&settlement_acts(4), &[captured(self.persona, served_receipt(generation, "served-model"))], None, true).await {
             return Err("her turn staged".into());
         }
         Ok(stored_credit_rows(&self.data(), self.name)

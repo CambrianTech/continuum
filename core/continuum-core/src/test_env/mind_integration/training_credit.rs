@@ -21,6 +21,7 @@ use crate::runtime::{CommandExecutor, InProcessTransport};
 mod automatic;
 mod bindings;
 mod directed;
+mod lived;
 mod reviewed_credit;
 mod settlement;
 mod staging;
@@ -162,6 +163,70 @@ pub(super) fn settlement_acts(count: usize) -> Vec<(String, Vec<crate::ai::types
         .collect()
 }
 
+/// `receipt`, with its call really captured under `persona` in the process home's capture
+/// directory, the way the turn driver leaves a served call: the cursor it carries reads back
+/// as the call she lived. Receipts that are not served, or already carry a cursor, pass as-is.
+pub(super) fn captured(
+    persona: Uuid,
+    receipt: crate::ai::provenance::GenerationReceipt,
+) -> crate::ai::provenance::GenerationReceipt {
+    use crate::cognition::prompt_capture::{CaptureLease, JsonlPromptCaptureSink, PromptCall, FIXTURE_DIR};
+    let served = matches!(receipt.outcome, crate::ai::provenance::GenerationOutcome::Served { .. });
+    if !served || receipt.capture.is_some() {
+        return receipt;
+    }
+    // One capture session per home and persona, as one turn driver keeps: every store open
+    // rotates (only the current and previous segments are kept), so a session per receipt
+    // would expire all but the last two captures before she staged them.
+    static SINKS: std::sync::LazyLock<
+        std::sync::Mutex<std::collections::HashMap<(std::path::PathBuf, Uuid), Arc<JsonlPromptCaptureSink>>>,
+    > = std::sync::LazyLock::new(Default::default);
+    let dir = crate::cognition::capture::fixture_dir(FIXTURE_DIR).expect("the test home resolves"); // JUSTIFIED: test fixture
+    let mut sinks = SINKS.lock().unwrap_or_else(std::sync::PoisonError::into_inner); // unwrap_or_else: a panicked test leaves the map usable
+    // Home-pinned tests run one at a time (HomeGuard): a sink of another home belongs to a
+    // finished test, and its handles go with it so its temp home can be removed.
+    sinks.retain(|(home, _), _| *home == dir);
+    let sink = sinks
+        .entry((dir.clone(), persona))
+        .or_insert_with(|| Arc::new(JsonlPromptCaptureSink::open(&dir, persona).expect("capture sink"))) // JUSTIFIED: test fixture
+        .clone();
+    drop(sinks);
+    let call = lived_call(&receipt);
+    let prompt = PromptCall {
+        request_id: receipt.submitted_request_id.clone(),
+        persona_id: persona,
+        room_id: Uuid::new_v4(),
+        cycle_id: Some(1),
+        context_window: Some(32_768),
+        cause: "fixture",
+        cause_root: None,
+        replay_of: None,
+    };
+    let mut lease = CaptureLease::start(sink, &prompt, &call.request);
+    let cursor = lease.finish(Some(&call.response), None).expect("a completed capture entry"); // JUSTIFIED: test fixture
+    crate::ai::provenance::GenerationReceipt { capture: Some(cursor), ..receipt }
+}
+
+/// A receipt naming a capture cursor that holds no call: a capture lost on the way.
+pub(super) fn uncaptured(id: &str, model: &str) -> crate::ai::provenance::GenerationReceipt {
+    crate::ai::provenance::GenerationReceipt {
+        capture: Some(format!("never-written-{id}")),
+        ..served_receipt(id, model)
+    }
+}
+
+/// Runs `staged` with the process home's capture directory moved aside, so every read
+/// back fails as an unfinished capture does, then puts it back: the capture lands late.
+pub(super) async fn captures_unreadable<T>(staged: impl std::future::Future<Output = T>) -> T {
+    let dir = crate::cognition::capture::fixture_dir(crate::cognition::prompt_capture::FIXTURE_DIR)
+        .expect("the test home resolves"); // JUSTIFIED: test fixture
+    let aside = dir.with_extension("aside");
+    std::fs::rename(&dir, &aside).expect("move the captures aside"); // JUSTIFIED: test fixture
+    let out = staged.await;
+    std::fs::rename(&aside, &dir).expect("the captures land"); // JUSTIFIED: test fixture
+    out
+}
+
 pub(super) async fn stage_settlement_fixture(
     executor: Arc<CommandExecutor>,
     persona: Uuid,
@@ -169,6 +234,7 @@ pub(super) async fn stage_settlement_fixture(
     card: Uuid,
     receipts: Vec<crate::ai::provenance::GenerationReceipt>,
 ) -> (TurnCreditCapture, StagedCredit) {
+    let receipts: Vec<_> = receipts.into_iter().map(|r| captured(persona, r)).collect();
     let mut capture = TurnCreditCapture::with_executor(
         executor.clone(),
         persona,
@@ -204,7 +270,12 @@ pub(super) fn script_settlement_reply(
 ) {
     let id = row.id;
     let model = row.served.as_ref().unwrap().model.clone();
-    let completion = row.completion.clone();
+    let captures: Vec<serde_json::Value> = row
+        .receipts
+        .iter()
+        .filter(|r| matches!(r.outcome, crate::ai::provenance::GenerationOutcome::Served { .. }))
+        .map(|r| json!(r.capture))
+        .collect();
     submit.respond_to("genome/training-trigger/submit", move |params| {
         assert_eq!(
             params["submissionId"],
@@ -216,7 +287,14 @@ pub(super) fn script_settlement_reply(
             json!(model),
             "each row supplies its actual serving model"
         );
-        assert_eq!(params["examples"][0]["completion"], json!(completion));
+        // Exact payload: the examples are this row's own captured calls, in receipt order,
+        // each completion the response she gave; never the flat prompt and completion.
+        let examples = params["examples"].as_array().cloned().unwrap_or_default(); // unwrap_or_default: a missing list fails the equality below
+        let cursors: Vec<serde_json::Value> = examples.iter().map(|e| e["lived"]["capture"].clone()).collect();
+        assert_eq!(cursors, captures, "the examples are exactly this row's captured calls");
+        for example in &examples {
+            assert_eq!(example["completion"], example["lived"]["response"]["text"], "each completion is the response she gave");
+        }
         match &reply {
             Some(value) => Ok(value.clone()),
             None => Err(ClientError::Transport(
@@ -314,6 +392,17 @@ pub(super) async fn exact_review() -> (ExactReview, TurnCreditCapture) {
 /// [`exact_review`], with the submission bound the way `work/submit` binds it: explicitly
 /// (`None`), or by recording the generation that issued it (`Some`), resolved at review.
 pub(super) async fn exact_review_bound_by(issuing: Option<&str>) -> (ExactReview, TurnCreditCapture) {
+    exact_review_staged(issuing, |_| vec![served_receipt("reviewed-request", "actual-model")], false).await
+}
+
+/// [`exact_review_bound_by`], staging the receipts `receipts` makes for the persona (each
+/// served one captured unless it already names a cursor), with the capture directory
+/// unreadable while she stages when `unreadable_at_stage`: a capture that lands late.
+pub(super) async fn exact_review_staged(
+    issuing: Option<&str>,
+    receipts: impl FnOnce(Uuid) -> Vec<crate::ai::provenance::GenerationReceipt>,
+    unreadable_at_stage: bool,
+) -> (ExactReview, TurnCreditCapture) {
     use airc_work::{WorkEvent, WorkReviewOutcome, WorkSubmissionReview};
     let home = tempfile::tempdir().unwrap();
     let guard = HomeGuard::set(home.path()).await;
@@ -326,9 +415,13 @@ pub(super) async fn exact_review_bound_by(issuing: Option<&str>) -> (ExactReview
     let card_id = airc_work::WorkCardId::new();
     let room = Uuid::new_v4();
     let name = "reviewed-project-work";
-    let receipts = vec![served_receipt("reviewed-request", "actual-model")];
-    let (capture, selected) =
-        stage_settlement_fixture(executor.clone(), persona, name, card_id.as_uuid(), receipts.clone()).await;
+    let receipts: Vec<_> = receipts(persona).into_iter().map(|r| captured(persona, r)).collect();
+    let (capture, selected) = if unreadable_at_stage {
+        captures_unreadable(stage_settlement_fixture(executor.clone(), persona, name, card_id.as_uuid(), receipts)).await
+    } else {
+        stage_settlement_fixture(executor.clone(), persona, name, card_id.as_uuid(), receipts).await
+    };
+    let receipts = selected.receipts.clone();
     let selection = reviewed::SubmissionSelection {
         submission_id: Uuid::new_v4(),
         room_id: room,
