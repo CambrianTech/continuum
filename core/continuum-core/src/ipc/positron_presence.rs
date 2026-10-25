@@ -224,7 +224,7 @@ pub(crate) fn scan_avatar_store_for_directory() -> HashMap<Uuid, String> {
 }
 
 pub(crate) fn avatar_store_dir() -> Option<PathBuf> {
-    dirs::home_dir().map(|h| h.join(".continuum").join("avatars"))
+    crate::paths::continuum_home().ok().map(|h| h.join("avatars"))
 }
 
 /// Scan the avatar store once: every `<uuid>.png` becomes `peer id →

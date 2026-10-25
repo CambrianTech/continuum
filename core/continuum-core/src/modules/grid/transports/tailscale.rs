@@ -388,9 +388,9 @@ async fn query_tailscale_file() -> Result<TailscaleStatus, TransportError> {
     // Check standard locations
     let paths = [
         std::path::PathBuf::from("/root/.continuum/grid/tailscale-status.json"),
-        dirs::home_dir()
+        crate::paths::continuum_home()
             .unwrap_or_default()
-            .join(".continuum/grid/tailscale-status.json"),
+            .join("grid/tailscale-status.json"),
     ];
 
     for path in &paths {

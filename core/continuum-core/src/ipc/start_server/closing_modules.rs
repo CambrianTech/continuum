@@ -38,9 +38,8 @@ pub(super) fn register_closing_modules(
     runtime.register(Arc::new(VisionModule::new(code_state.clone())));
 
     // GridModule: inter-node transport + routing (Tailscale, Reticulum)
-    let grid_dir = dirs::home_dir()
-        .unwrap_or_else(|| std::path::PathBuf::from("."))
-        .join(".continuum")
+    let grid_dir = crate::paths::continuum_home()
+        .unwrap_or_else(|_| std::path::PathBuf::from("./.continuum"))
         .join("grid");
     let local_has_gpu = gpu_manager.total_vram_bytes() > 0;
     let local_vram_mb = gpu_manager.total_vram_bytes() / (1024 * 1024);

@@ -197,8 +197,8 @@ pub(super) fn register_pressure_broker(
         // capture) but bounded so a runaway sprinkle / leak gets
         // visible to the broker before disk fills.
         const PROBE_POOL_SOFT_CAP_BYTES: u64 = 500 * 1024 * 1024;
-        if let Some(home) = dirs::home_dir() {
-            let probe_dir = home.join(".continuum/jtag/logs/probes");
+        if let Ok(home) = crate::paths::continuum_home() {
+            let probe_dir = home.join("jtag/logs/probes");
             broker.register(Arc::new(crate::paging::FilesystemTierPool::new(
                 "probe-jsonl",
                 probe_dir,

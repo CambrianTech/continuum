@@ -35,7 +35,6 @@
 //! as `Unmeasured` — honestly flagging the alias↔geneId join to thread in a later
 //! slice, rather than silently mis-scoring.
 
-use std::path::PathBuf;
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -159,10 +158,10 @@ impl GenomeFitnessSentinel {
     fn latest_lift_by_gene() -> std::collections::HashMap<String, f64> {
         use std::collections::HashMap;
         let mut best: HashMap<String, (u64, f64)> = HashMap::new();
-        let Some(home) = dirs_home() else {
+        let Ok(home) = crate::paths::continuum_home() else {
             return HashMap::new();
         };
-        let dir = home.join(".continuum").join("progress");
+        let dir = home.join("progress");
         let Ok(entries) = std::fs::read_dir(&dir) else {
             return HashMap::new();
         };
@@ -198,11 +197,6 @@ impl GenomeFitnessSentinel {
         }
         best.into_iter().map(|(g, (_, lift))| (g, lift)).collect()
     }
-}
-
-/// `$HOME` as a PathBuf, or `None`. Kept local so the sentinel has no new dep.
-fn dirs_home() -> Option<PathBuf> {
-    std::env::var_os("HOME").map(PathBuf::from)
 }
 
 #[async_trait]

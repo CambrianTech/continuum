@@ -73,7 +73,7 @@ impl Default for VddModule {
 /// Matches `vdd::ArtifactWriter::continuum_default()` — that's the
 /// writer's path; this is the reader's path; they must agree.
 fn default_artifact_root() -> Option<PathBuf> {
-    dirs::home_dir().map(|home| home.join(".continuum").join("vdd"))
+    crate::paths::continuum_home().ok().map(|home| home.join("vdd"))
 }
 
 #[async_trait]

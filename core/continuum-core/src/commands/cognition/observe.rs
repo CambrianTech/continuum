@@ -309,9 +309,9 @@ impl ActionCommand for CognitionObserve {
 
         // Read the persona's ledger, if a persona was named.
         let ledger_text = p.persona_id.as_ref().and_then(|pid| {
-            let home = std::env::var("HOME").ok()?;
-            let path = std::path::PathBuf::from(home)
-                .join(".continuum/progress")
+            let path = crate::paths::ContinuumLayout::home()
+                .ok()?
+                .progress()
                 .join(format!("{pid}.jsonl"));
             std::fs::read_to_string(path).ok()
         });

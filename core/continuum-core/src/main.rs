@@ -488,11 +488,8 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
     // Own background task, snapshot on a slow cadence, best-effort (a lost snapshot
     // just re-embeds). Off the boot critical path — the load is a fast file read,
     // no gateway/GPU probe.
-    if let Some(home) = dirs::home_dir() {
-        let cache_path = home
-            .join(".continuum")
-            .join("cache")
-            .join("embedding-cache.bin");
+    if let Ok(home) = continuum_core::paths::continuum_home() {
+        let cache_path = home.join("cache").join("embedding-cache.bin");
         continuum_core::ai::embedding::spawn_embedding_cache_persistence(
             continuum_core::ai::embedding::global_embedding_cache(),
             cache_path,
