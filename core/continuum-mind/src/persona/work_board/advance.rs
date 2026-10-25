@@ -256,25 +256,40 @@ pub async fn advance_card_state_effective(
         }
         return Ok(CardState::Review);
     }
-    // A FINISH THAT WOULD STRAND A MERGE: the owner's own `closed` (or `merged`) on a card whose
-    // linked PR has not merged lands in Review, and the merge finishes it, as Merged. The twin
-    // of the reviewer's-pass rule above. Closing it made `airc work merge` refuse ("state is
-    // Closed, but merge requires Review"): Kimi closed 13d7e47a and then 1fc73f18 right after
-    // their passes (2026-10-24/25), each stranding a green PR (card 4356a90f).
+    // A RESIDENT'S FINISH NEVER STRANDS OR UNDOES A MERGE (card 4356a90f). On a card whose
+    // linked PR has not merged, her `closed` (or `merged`) lands in Review and the merge
+    // finishes it, as Merged: the twin of the reviewer's-pass rule above. Closing it made
+    // `airc work merge` refuse ("state is Closed, but merge requires Review"): Kimi closed
+    // 13d7e47a and then 1fc73f18 right after their passes (2026-10-24/25). A card already
+    // Merged keeps that terminal state: her close is acknowledged, never a downgrade to
+    // Closed that a later close would read as "PR linked, not merged" and reopen (Codex on
+    // #5399). The airc card's merge fact IS its Merged state (set by PullRequestMerged).
     if finishing && via != VIA_VERDICT {
         if let Some((_, card)) = card_in_subscribed_rooms(airc, card_id).await {
-            if finish_awaits_merge(actor, card.pull_request.is_some(), &card.state) {
-                if card.state != CardState::Review {
-                    raw_advance(airc, card_id, CardState::Review, via).await?;
+            match resident_finish(actor, card.pull_request.is_some(), &card.state) {
+                ResidentFinish::AwaitMerge => {
+                    if card.state != CardState::Review {
+                        raw_advance(airc, card_id, CardState::Review, via).await?;
+                    }
+                    continuum_base::probe!(
+                        class = "work.state.close_awaits_merge",
+                        card = %short8(card_id.as_uuid()),
+                        asked = ?state,
+                        "a resident finished a card whose PR has not merged; it stays in Review \
+                         for its merge, which moves it to Merged"
+                    );
+                    return Ok(CardState::Review);
                 }
-                continuum_base::probe!(
-                    class = "work.state.close_awaits_merge",
-                    card = %short8(card_id.as_uuid()),
-                    asked = ?state,
-                    "a resident finished a card whose PR has not merged; it stays in Review for its \
-                     merge, which moves it to Merged"
-                );
-                return Ok(CardState::Review);
+                ResidentFinish::StayMerged => {
+                    continuum_base::probe!(
+                        class = "work.state.already_merged",
+                        card = %short8(card_id.as_uuid()),
+                        asked = ?state,
+                        "a resident finished a card that is already merged; it keeps Merged"
+                    );
+                    return Ok(CardState::Merged);
+                }
+                ResidentFinish::Proceed => {}
             }
         }
     }
@@ -282,175 +297,45 @@ pub async fn advance_card_state_effective(
     Ok(state)
 }
 
-/// PURE: a resident's finish on a card whose linked PR has not merged waits for the merge.
-/// The operator (no actor) is never held, and a card already Merged has nothing to wait for.
-fn finish_awaits_merge(actor: Option<Uuid>, pr_linked: bool, current: &CardState) -> bool {
-    actor.is_some() && pr_linked && *current != CardState::Merged
+/// What a resident's finish does to a card, from its PR link and current state.
+#[derive(Debug, PartialEq, Eq)]
+enum ResidentFinish {
+    /// The linked PR has not merged: wait in Review for the merge.
+    AwaitMerge,
+    /// Already merged: keep the terminal state, never downgrade it.
+    StayMerged,
+    /// No PR, or the operator: the finish proceeds as asked.
+    Proceed,
+}
+
+/// PURE: the operator (no actor) is never held; a Merged card stays Merged; a card with a linked,
+/// unmerged PR waits for its merge.
+fn resident_finish(actor: Option<Uuid>, pr_linked: bool, current: &CardState) -> ResidentFinish {
+    match (actor, current) {
+        (None, _) => ResidentFinish::Proceed,
+        (Some(_), CardState::Merged) => ResidentFinish::StayMerged,
+        (Some(_), _) if pr_linked => ResidentFinish::AwaitMerge,
+        (Some(_), _) => ResidentFinish::Proceed,
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    // what this catches (card 4356a90f): a resident's `closed` after a pass stranded a green
-    // PR, because airc work merge needs Review (Kimi, 13d7e47a and 1fc73f18). Her finish on a
-    // card with a linked, unmerged PR waits for the merge; the operator's finish, a card with
-    // no PR (a bench round's), and a card already merged are not held.
+    // what this catches (card 4356a90f, Codex on #5399): a resident's `closed` after a pass
+    // stranded a green PR (airc work merge needs Review), and a close on an already-merged
+    // card must not downgrade it to Closed, where a repeated close would reopen it.
     #[test]
-    fn a_residents_finish_waits_for_an_unmerged_pr() {
+    fn a_residents_finish_waits_for_the_merge_and_never_undoes_it() {
+        use ResidentFinish::*;
         let her = Some(Uuid::from_u128(7));
-        assert!(finish_awaits_merge(her, true, &CardState::Review), "after a pass, her close waits");
-        assert!(finish_awaits_merge(her, true, &CardState::InProgress));
-        assert!(!finish_awaits_merge(None, true, &CardState::Review), "the operator is never held");
-        assert!(!finish_awaits_merge(her, false, &CardState::Review), "no PR: a close is a close");
-        assert!(!finish_awaits_merge(her, true, &CardState::Merged), "merged has nothing to wait for");
+        assert_eq!(resident_finish(her, true, &CardState::Review), AwaitMerge, "after a pass, her close waits");
+        assert_eq!(resident_finish(her, true, &CardState::InProgress), AwaitMerge);
+        assert_eq!(resident_finish(her, true, &CardState::Merged), StayMerged, "merged stays merged");
+        assert_eq!(resident_finish(her, false, &CardState::Merged), StayMerged);
+        assert_eq!(resident_finish(her, false, &CardState::Review), Proceed, "no PR: a close is a close");
+        assert_eq!(resident_finish(None, true, &CardState::Review), Proceed, "the operator is never held");
+        assert_eq!(resident_finish(None, true, &CardState::Merged), Proceed);
     }
-}
-
-/// Post the sibling review card for `parent` into the parent's own room, as the
-/// caller's identity. The card BODY carries the reviewer's role prompt — recipe
-/// data on the card, never a code branch in cognition.
-pub(crate) async fn open_review_card(airc: &Arc<Airc>, parent: WorkCardId) -> Result<WorkCardId, String> {
-    let (room, card) = card_in_subscribed_rooms(airc, parent)
-        .await
-        .ok_or_else(|| "parent card is on no subscribed room's board".to_string())?;
-    let Some((_, instance)) = crate::recipe::bench_title::parse_card_title(&card.title) else {
-        // A room's own card (not a bench card): its review card comes from the parent
-        // itself, under the room's policy (card fa4aaaaa). The bench branch below is
-        // unchanged.
-        return open_room_review_card(airc, &room, &card, parent, crate::cognition::card_holder::latest_submission(&card).map(|s| s.submission_id)).await;
-    };
-    let owner = card
-        .owner
-        .and_then(|o| {
-            crate::persona::airc_runtime_registry::PersonaAircRuntimeRegistry::try_global()
-                .and_then(|reg| reg.get(o.as_uuid()))
-                .map(|rt| rt.agent_name().to_string())
-        })
-        .unwrap_or_else(|| "the owner".to_string()); // unwrap_or: owner not resident = a neutral name in the review body
-    let title = crate::recipe::bench_title::review_card_title(parent.as_uuid(), &instance, &owner);
-    let p8 = parent.as_uuid().simple().to_string()[..8].to_string();
-    let body = format!(
-        "Review {owner}'s fix for `{instance}` (card {p8}). You are the fresh pair of \
-         eyes: READ-ONLY. Do not edit their tree.\n\n\
-         Their checkout is {owner}'s workspace at `swe/{instance}/` — your hands are rooted \
-         there for this card. Run `git diff` to see the change; run the repo's tests for the \
-         issue.\n\n\
-         Judge the diff against the card's definition of done: does it fix the CAUSE with \
-         the smallest edit, without touching the tests, and do the tests pass?\n\n\
-         Verdict, with evidence — every claim cites a file:line or a test result:\n\
-         - PASS: say `work/state <this card's id> done` — that closes {owner}'s card and \
-         fires the grade.\n\
-         - SEND BACK: say what must change (cited), then `work/state <this card's id> \
-         blocked` — the card returns to {owner} in progress.\n\
-         Report gaps, not style."
-    );
-    // The review lands on the PARENT's board, named, never through the shared current-room
-    // pointer: parallel dones on two boards would otherwise race one join against the other
-    // (IntelMac on #4838; the race #4838 removes from work/state).
-    let mut req = CreateWorkCard::new(card.repo.clone(), title, Priority::P1).reviewing(parent);
-    req.body = Some(body);
-    airc.create_work_card_in(&room, req)
-        .await
-        .map_err(|e| e.to_string())
-}
-
-/// Post the review card for a ROOM's own card (not a bench card): titled and described
-/// from the parent, linked natively (`reviewing(parent)`).
-/// Whoever the room's policy admits reviews it with `work/review` (card fa4aaaaa).
-pub async fn open_room_review_card(
-    airc: &Arc<Airc>,
-    room: &airc_lib::Room,
-    card: &airc_lib::WorkCard,
-    parent: WorkCardId,
-    submission: Option<airc_work::SubmissionId>,
-) -> Result<WorkCardId, String> {
-    let owner = card
-        .owner
-        .and_then(|o| {
-            crate::persona::airc_runtime_registry::PersonaAircRuntimeRegistry::try_global()
-                .and_then(|reg| reg.get(o.as_uuid()))
-                .map(|rt| rt.agent_name().to_string())
-        })
-        .unwrap_or_else(|| "the owner".to_string()); // unwrap_or: owner not resident = a neutral name in the review body
-    let p8 = parent.as_uuid().simple().to_string()[..8].to_string();
-    let title: String = format!("review: {}", card.title).chars().take(160).collect();
-    let body = format!(
-        "Review {owner}'s work on card {p8} (\"{}\"). Read the latest submission          (work/submission) and the change it carries, judge it against the card, then give          your verdict with work/review (passed or failed, with evidence). This room's review          policy decides how many passing reviews finish the card and whether the author may          review her own work.",
-        card.title
-    );
-    // on the parent's board, named: never through the shared current-room pointer (#4838)
-    let mut req = CreateWorkCard::new(card.repo.clone(), title, Priority::P1).reviewing(parent);
-    req.body = Some(body);
-    match submission {
-        Some(candidate) => airc.ensure_submission_review_in(room, parent, candidate, req).await,
-        None => airc.create_work_card_in(room, req).await,
-    }.map_err(|e| e.to_string())
-}
-
-/// The card a review card reviews, by airc's native link (`reviews`).
-pub(crate) async fn native_review_parent(airc: &Arc<Airc>, card_id: WorkCardId) -> Option<Uuid> {
-    card_in_subscribed_rooms(airc, card_id)
-        .await
-        .and_then(|(_, card)| card.reviews.map(|p| p.as_uuid()))
-}
-
-/// The raw advance + the bus event — what [`advance_card_state`] was before the gate.
-pub async fn raw_advance(
-    airc: &Arc<Airc>,
-    card_id: WorkCardId,
-    state: CardState,
-    via: &'static str,
-) -> Result<(), String> {
-    // THE CARD NAMES ITS ROOM. A board she can see holds the card: mutate it THERE, without
-    // reading or moving the scope's one current-room pointer. Kimi on the 5090 (2026-10-06
-    // 22:5xZ) closed 8 duplicate cards in ONE turn, in parallel, across #continuum and
-    // #cambriantech: every call that refused in the current room "followed" its card by
-    // switching that shared pointer, and the parallel follows flipped it under each other, so
-    // 7 retries landed in the wrong room again and refused. Only a card on no visible board
-    // (a bench round's run room) still takes the current room + follow path below.
-    let mut attempt = match room_holding_card(airc, card_id).await {
-        Some(room) => {
-            airc.change_work_card_state_in(&room, ChangeWorkCardState { card_id, state })
-                .await
-        }
-        None => {
-            airc.change_work_card_state(ChangeWorkCardState { card_id, state })
-                .await
-        }
-    };
-    if matches!(
-        attempt,
-        Err(airc_lib::AircError::WorkCardNotInCurrentRoom { .. })
-    ) && follow_card_room(airc, card_id, "work/state")
-        .await
-        .is_some()
-    {
-        attempt = airc
-            .change_work_card_state(ChangeWorkCardState { card_id, state })
-            .await;
-    }
-    attempt.map_err(|e| e.to_string())?;
-    // A REOPEN MEANS NOBODY HOLDS IT, and airc's projection owns that: a transition to
-    // Open ends the claim (airc #1598, card 12afbb2f). The round tracker's settled mark
-    // is ours to clear, or the deck never offers the card again.
-    if state == CardState::Open {
-        crate::cognition::bench_round::reopen_card(card_id.as_uuid());
-    }
-    // The CARD's room, never `current_room()` — boards are per-room and the grade
-    // subscriber refuses an event with no room.
-    let room_id = room_holding_card(airc, card_id)
-        .await
-        .map(|r| r.channel.as_uuid().to_string())
-        .unwrap_or_default(); // unwrap_or: a card we cannot place carries an empty room on the bus
-    emit_card_state_changed(
-        serde_json::json!({
-            "card_id": card_id.as_uuid().to_string(),
-            "state": serde_json::to_value(state).unwrap_or(serde_json::Value::Null),  // unwrap_or: an unserializable state = null on the bus, never a panic on the verb
-            "room_id": room_id,
-        }),
-        via,
-    )
-    .await;
-    Ok(())
 }
