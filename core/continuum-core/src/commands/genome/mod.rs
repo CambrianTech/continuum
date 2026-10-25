@@ -243,7 +243,7 @@ mod tests {
         assert_eq!(GenomeJobCancel::NAME, "genome/job-cancel");
     }
 
-    // what this catches: command_objects assembles every genome/job-* verb (reconcile included) — a dropped entry
+    // what this catches: command_objects assembles every genome/job-* verb (reconcile included) and the two lease verbs — a dropped entry
     // would silently remove a genome command from the registry.
     #[test]
     fn command_objects_assembles_all_three() {
@@ -256,6 +256,6 @@ mod tests {
             Arc::new(crate::genome::fine_tuning::TrainingJobBoard::default()),
             Arc::new(tempfile::tempdir().unwrap()),
         );
-        assert_eq!(objs.len(), 6);
+        assert_eq!(objs.len(), 8);
     }
 }

@@ -84,7 +84,7 @@ fn lease_origin(caller: Option<&CallerIdentity>) -> Result<uuid::Uuid, String> {
 /// The payload's digest, computed here from the canonical request (base, method, dataset,
 /// config), never taken from the caller.
 fn request_digest(request: &TrainingJobRequest) -> Result<String, String> {
-    serde_json::to_vec(request)
+    serde_json::to_vec(request) // lease wire boundary: the digest covers the payload as it crossed the grid
         .map(|bytes| format!("{:x}", Sha256::digest(bytes)))
         .map_err(|e| format!("the request could not be encoded: {e}"))
 }
