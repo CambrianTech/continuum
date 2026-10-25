@@ -56,32 +56,44 @@ pub fn default_job_dir(
     ))
 }
 
-/// Record `request` as the job's own in `dir`, durably (written, synced, then placed whole), for
-/// a job no trainer on this node writes: a leased job, whose trainer runs on a grid peer (card
-/// 92cd2251). It is written before the lease is sent, so the directory the examiner reads for
-/// what a returned gene trained on always holds the request it was sent with.
-pub fn write_job_request(dir: &Path, request: &TrainingJobRequest) -> Result<(), String> {
+/// Publish `bytes` as `dir/name` exactly once: written, synced and placed whole, never replacing
+/// a file already there (`continuum_host::durable::publish_new`). `Ok(None)` when this call
+/// placed it; `Ok(Some(existing))` with what is already there, for the caller to compare. A
+/// leased job's binding, request and manifest are each one such file (card 92cd2251): a retry
+/// can confirm them, never rewrite them.
+pub fn publish_job_file(dir: &Path, name: &str, bytes: &[u8]) -> Result<Option<Vec<u8>>, String> {
     use std::io::Write;
     std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
-    let bytes = serde_json::to_vec(request) // disk boundary: the request.json read_job_request reads back
-        .map_err(|e| format!("the request could not be encoded: {e}"))?;
-    let (staged, placed) = (dir.join(".request.json.partial"), dir.join("request.json"));
-    let mut file = std::fs::File::create(&staged).map_err(|e| format!("{}: {e}", staged.display()))?;
-    file.write_all(&bytes).and_then(|()| file.sync_all()).map_err(|e| format!("{}: {e}", staged.display()))?;
-    continuum_host::durable::replace(&staged, &placed).map_err(|e| format!("{}: {e}", placed.display()))
+    let (staged, placed) = (dir.join(format!(".{name}.{}.partial", Uuid::new_v4())), dir.join(name));
+    let written = std::fs::File::create(&staged).and_then(|mut file| file.write_all(bytes).and_then(|()| file.sync_all()));
+    let outcome = written.and_then(|()| continuum_host::durable::publish_new(&staged, &placed));
+    let _ = std::fs::remove_file(&staged); // the staging name is never the record: gone whether the publish moved it or not
+    match outcome {
+        Ok(()) => Ok(None),
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+            std::fs::read(&placed).map(Some).map_err(|e| format!("{}: {e}", placed.display()))
+        }
+        Err(e) => Err(format!("{}: {e}", placed.display())),
+    }
 }
 
-/// The directory of job `local_id` under `root`, found by the request it holds: the lookup for an
-/// owner that keeps only the job's id (a leased job's handle names its attempt, not its persona
-/// or trait). `None` when no `<persona>/<trait>/<local_id>/` holds a request.
-pub fn find_job_dir_under(root: &Path, local_id: Uuid) -> Option<PathBuf> {
+/// The directory of job `local_id` under `root`, found by the file `anchor` it holds: the lookup
+/// for an owner that keeps only the job's id (a leased job's handle names its attempt, not its
+/// persona or trait). `Ok(None)` when no `<persona>/<trait>/<local_id>/` holds it; an error when
+/// two do, since which one is meant cannot be told.
+pub fn find_job_dir_under(root: &Path, local_id: Uuid, anchor: &str) -> Result<Option<PathBuf>, String> {
     let id = local_id.to_string();
-    std::fs::read_dir(root).ok()?.flatten().find_map(|persona| {
-        std::fs::read_dir(persona.path()).ok()?.flatten().find_map(|trait_dir| {
-            let dir = trait_dir.path().join(&id);
-            dir.join("request.json").is_file().then_some(dir)
-        })
-    })
+    let Ok(personas) = std::fs::read_dir(root) else { return Ok(None) };
+    let mut found: Vec<PathBuf> = personas
+        .flatten()
+        .filter_map(|persona| std::fs::read_dir(persona.path()).ok())
+        .flat_map(|traits| traits.flatten().map(|trait_dir| trait_dir.path().join(&id)))
+        .filter(|dir| dir.join(anchor).is_file())
+        .collect();
+    match found.len() {
+        0 | 1 => Ok(found.pop()),
+        _ => Err(format!("job {local_id} has {} directories holding {anchor}: {found:?}", found.len())),
+    }
 }
 
 /// A job's own request, read from its directory as the trigger first sent it. THE one
@@ -157,33 +169,24 @@ mod tests {
         );
     }
 
-    // what this catches (card 92cd2251): a leased job's request lost, half-written, or not found
-    // again from the attempt alone. Written durably it reads back as the same request, and the
-    // job's directory is found under the root by its id.
+    // what this catches (card 92cd2251, Codex on #5419): a leased job's record rewritten by a
+    // retry, half-written, or found ambiguously. A file publishes once and reads back whole; a
+    // second publish leaves it and returns it for comparison; the job's directory is found by its
+    // anchor, and two directories of one id are an error, never enumeration order.
     #[test]
-    fn a_leased_jobs_request_is_written_whole_and_found_by_its_id() {
+    fn a_job_file_publishes_once_and_a_job_is_found_by_its_id() {
         let root = tempfile::tempdir().expect("root"); // JUSTIFIED: test fixture
         let id = Uuid::new_v4();
-        use crate::genome::fine_tuning::types::{TrainingDataset, TrainingSource};
-        let request = TrainingJobRequest {
-            persona_id: Uuid::nil(),
-            persona_name: "kimi".into(),
-            base_model: "qwen".into(),
-            trait_kind: "code-review".into(),
-            resume_from: None,
-            parent: None,
-            dataset: TrainingDataset { examples: vec![], source: TrainingSource::OperatorCurated, validation_split: 0.0 },
-            eval_set: None,
-            lora: None,
-            schedule: None,
-            local_artifact_dir: None,
-        };
-        let dir = job_dir_under(root.path(), &request.persona_name, &request.trait_kind, id);
-        assert_eq!(find_job_dir_under(root.path(), id), None);
-        write_job_request(&dir, &request).expect("written"); // JUSTIFIED: test asserts the write
-        assert_eq!(find_job_dir_under(root.path(), id), Some(dir.clone()));
-        assert_eq!(read_job_request(&dir).expect("read").trait_kind, "code-review"); // JUSTIFIED: test asserts the read
-        assert!(!dir.join(".request.json.partial").exists(), "nothing staged is left behind");
-        assert_eq!(find_job_dir_under(root.path(), Uuid::new_v4()), None);
+        let dir = job_dir_under(root.path(), "kimi", "code-review", id);
+        assert_eq!(find_job_dir_under(root.path(), id, "lease.json"), Ok(None));
+        assert_eq!(publish_job_file(&dir, "lease.json", b"first"), Ok(None));
+        assert_eq!(publish_job_file(&dir, "lease.json", b"second"), Ok(Some(b"first".to_vec())), "never rewritten");
+        assert_eq!(std::fs::read(dir.join("lease.json")).expect("read"), b"first"); // JUSTIFIED: test asserts the bytes
+        assert!(std::fs::read_dir(&dir).expect("dir").flatten().all(|e| !e.file_name().to_string_lossy().ends_with(".partial")), "nothing staged is left");
+        assert_eq!(find_job_dir_under(root.path(), id, "lease.json"), Ok(Some(dir.clone())));
+        assert_eq!(find_job_dir_under(root.path(), Uuid::new_v4(), "lease.json"), Ok(None));
+        let other = job_dir_under(root.path(), "sahar", "code-review", id);
+        assert_eq!(publish_job_file(&other, "lease.json", b"first"), Ok(None));
+        assert!(find_job_dir_under(root.path(), id, "lease.json").is_err(), "two directories of one id are ambiguous");
     }
 }

@@ -171,7 +171,7 @@ impl FineTuningAdapter for GridPeerAdapter {
         // own directory first, where the adapter will land and the examiner reads what it
         // trained on. Unrecorded, nothing is sent.
         self.pull
-            .record_request(attempt, &request)
+            .record_request(*peer, attempt, &request)
             .map_err(|e| FineTuningError::TrainerUnavailable(format!("the lease's request could not be recorded here, nothing sent: {e}")))?;
         let params = serde_json::to_value(LeaseTrainParams { attempt, dispatch: binding.dispatch, request }) // lease wire boundary: the request crosses the grid as JSON
             .map_err(|e| FineTuningError::InvalidRequest(e.to_string()))?;
@@ -408,7 +408,10 @@ mod tests {
 
         let mut changed = lora_request();
         changed.persona_name = "someone-else".into();
-        assert!(matches!(adapter.create_bound(changed, &binding).await, Err(FineTuningError::ProviderRejected(e)) if e.contains("payload_changed")));
+        // Refused here, before anything is sent: the attempt's recorded request is never rewritten.
+        let calls = transport.called.lock().unwrap_or_else(std::sync::PoisonError::into_inner).len(); // unwrap_or_else: a test fixture's poisoned log still reads
+        assert!(matches!(adapter.create_bound(changed, &binding).await, Err(FineTuningError::TrainerUnavailable(e)) if e.contains("refused to")));
+        assert_eq!(transport.called.lock().unwrap_or_else(std::sync::PoisonError::into_inner).len(), calls, "nothing was sent"); // unwrap_or_else: a test fixture's poisoned log still reads
 
         // A new adapter instance (the origin's in-memory state gone), over the same stores.
         let restarted = adapter_over(transport.clone(), Vec::new(), 10, genome.path());
