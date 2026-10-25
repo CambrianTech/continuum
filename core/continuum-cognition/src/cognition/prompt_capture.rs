@@ -902,7 +902,7 @@ mod tests {
             2,
             "a restart continues the segment"
         );
-        let after = page(dir.path(), persona, None, false, 10).expect("history across the restart");
+        let after = store::page(dir.path(), persona, None, false, 10).expect("history across the restart");
         assert_eq!(after.entries.len(), 4);
         assert!(after.issues.is_empty(), "{:?}", after.issues);
         drop(reopened);
