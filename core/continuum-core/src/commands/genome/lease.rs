@@ -45,7 +45,7 @@ pub struct LeaseTrainParams {
 
 /// What a lease did. `created` carries the job; `refused` started nothing; `unknown` may
 /// have started a trainer and is never retried as if it had not.
-#[derive(Debug, Clone, Serialize, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../../protocol/typescript/genome/LeaseTrainOutcome.ts")]
 #[serde(tag = "outcome", rename_all = "camelCase")]
 pub enum LeaseTrainOutcome {
@@ -74,7 +74,7 @@ pub struct LeaseStatusParams {
 
 /// Where a leased job stands, asked by the peer that leased it (card ec1d8b76): `status` from
 /// its trainer, `notCreated` (closed, so nothing can start under it), or `unknown`.
-#[derive(Debug, Clone, Serialize, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../../protocol/typescript/genome/LeasePollOutcome.ts")]
 #[serde(tag = "outcome", rename_all = "camelCase")]
 pub enum LeasePollOutcome {
@@ -85,7 +85,7 @@ pub enum LeasePollOutcome {
 
 /// What cancelling a leased job did: `cancelled` (its trainer took the cancel), `notCreated`
 /// (closed, so nothing will start), or `unknown` (a trainer may still be running it).
-#[derive(Debug, Clone, Serialize, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../../protocol/typescript/genome/LeaseCancelOutcome.ts")]
 #[serde(tag = "outcome", rename_all = "camelCase")]
 pub enum LeaseCancelOutcome {

@@ -41,6 +41,7 @@ use crate::sdk_codegen::DynCommand;
 use job_create::{ERROR_KIND_CAPACITY_PARKED, ERROR_KIND_TRAINER_UNAVAILABLE};
 
 pub(crate) mod attempt_ledger;
+pub mod grid_peer_adapter;
 pub mod job_attempt_reconcile;
 pub mod lease;
 pub mod job_cancel;
@@ -89,12 +90,14 @@ pub(crate) fn command_objects(
     registry: Arc<FineTuningRegistry>,
     coordinator: Arc<FineTuningCoordinator>,
     attempts: Arc<attempt_ledger::AttemptLedger>,
+    lease_transport: Arc<dyn grid_peer_adapter::LeaseTransport>,
     #[cfg(test)] test_job_board: Arc<crate::genome::fine_tuning::TrainingJobBoard>,
     #[cfg(test)] test_artifacts: Arc<tempfile::TempDir>,
 ) -> Vec<Arc<dyn DynCommand>> {
     vec![
         Arc::new(job_attempt_reconcile::GenomeJobAttemptReconcile {
             attempts: Arc::clone(&attempts),
+            transport: lease_transport,
         }),
         Arc::new(lease::GenomeLeaseTrain {
             coordinator: Arc::clone(&coordinator),
@@ -255,6 +258,7 @@ mod tests {
             registry,
             coordinator,
             Arc::new(attempt_ledger::AttemptLedger::new()),
+            Arc::new(grid_peer_adapter::ExecutorLeaseTransport(Arc::new(crate::runtime::LateBound::new("test lease executor")))),
             Arc::new(crate::genome::fine_tuning::TrainingJobBoard::default()),
             Arc::new(tempfile::tempdir().unwrap()),
         );
