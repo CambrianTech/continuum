@@ -233,7 +233,7 @@ impl ConsumeLedger {
             serde_json::to_writer(&mut file, self).map_err(|error| format!("encode deploy ledger: {error}"))?; // boundary: durable lifecycle receipt
             file.flush().and_then(|_| file.sync_all()).map_err(|error| format!("sync deploy ledger: {error}"))?;
             drop(file);
-            continuum_base::fs_portable::durable_rename(&temporary, path).map_err(|error| format!("replace deploy ledger: {error}"))?;
+            continuum_host::durable::replace(&temporary, path).map_err(|error| format!("replace deploy ledger: {error}"))?;
             Ok(())
         })();
         if result.is_err() { let _ = std::fs::remove_file(&temporary); }

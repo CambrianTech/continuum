@@ -372,7 +372,7 @@ fn write_in(
         file.write_all(content.as_bytes())?;
         file.sync_all()?;
         drop(file);
-        continuum_base::fs_portable::durable_publish_new(&staging, &path)
+        continuum_host::durable::publish_new(&staging, &path)
     };
     if let Err(error) = publish() {
         let _ = fs::remove_file(&staging);
@@ -436,7 +436,7 @@ fn existing_matches(path: &Path, expected: &[u8]) -> std::io::Result<bool> {
     if offset != expected.len() {
         return Err(mismatch());
     }
-    continuum_base::fs_portable::sync_publication(reader.get_ref(), path)?;
+    continuum_host::durable::fence(reader.get_ref(), path)?;
     Ok(true)
 }
 fn whole_or_handle_in(root: &Path, full: String, share: usize, persona_id: Uuid, pin: &LivePin) -> Fitted {
@@ -656,7 +656,7 @@ pub fn read_extent(
         .min(capacity)
         .min((total_bytes - offset).min(usize::MAX as u64) as usize);
     let mut bytes = vec![0; len];
-    continuum_base::fs_portable::read_exact_at(&file, &mut bytes, offset)
+    continuum_host::positioned::read_exact_at(&file, &mut bytes, offset)
         .map_err(|e| format!("read saved extent at {offset}: {e}"))?;
     let end = offset + len as u64;
     let (content, encoding) = match String::from_utf8(bytes) {
@@ -734,7 +734,7 @@ impl std::io::Read for ExtentReader<'_> {
         let n = buf
             .len()
             .min(self.end.saturating_sub(self.offset).min(usize::MAX as u64) as usize);
-        continuum_base::fs_portable::read_exact_at(self.file, &mut buf[..n], self.offset)?;
+        continuum_host::positioned::read_exact_at(self.file, &mut buf[..n], self.offset)?;
         self.offset += n as u64;
         Ok(n)
     }

@@ -2810,7 +2810,6 @@ dependencies = [
  "tempfile",
  "tracing",
  "uuid",
- "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -2843,6 +2842,7 @@ dependencies = [
  "async-trait",
  "base64 0.22.1",
  "chrono",
+ "continuum-host",
  "libc",
  "same-file",
  "serde",
@@ -2912,6 +2912,7 @@ dependencies = [
  "continuum-experience",
  "continuum-genome",
  "continuum-hands",
+ "continuum-host",
  "continuum-kernel",
  "continuum-live",
  "continuum-memory",
@@ -2984,6 +2985,7 @@ dependencies = [
  "continuum-experience",
  "continuum-genome",
  "continuum-hands",
+ "continuum-host",
  "continuum-kernel",
  "continuum-live",
  "continuum-mind",
@@ -3072,6 +3074,7 @@ dependencies = [
  "continuum-airc-protocol",
  "continuum-base",
  "continuum-cli-lifecycle",
+ "continuum-host",
  "continuum-kernel",
  "continuum-tool-protocol",
  "dashmap",
@@ -3136,6 +3139,7 @@ dependencies = [
  "candle-nn",
  "continuum-base",
  "continuum-engine",
+ "continuum-host",
  "continuum-kernel",
  "dashmap",
  "futures",
@@ -3189,6 +3193,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "continuum-host"
+version = "0.1.0"
+dependencies = [
+ "tempfile",
+ "windows-sys 0.60.2",
+]
+
+[[package]]
 name = "continuum-kernel"
 version = "0.1.0"
 dependencies = [
@@ -3205,6 +3217,7 @@ dependencies = [
  "continuum-base",
  "continuum-cli-lifecycle",
  "continuum-client",
+ "continuum-host",
  "continuum-orm-derive",
  "dashmap",
  "dirs 5.0.1",
@@ -3336,6 +3349,7 @@ dependencies = [
  "continuum-experience",
  "continuum-genome",
  "continuum-hands",
+ "continuum-host",
  "continuum-kernel",
  "continuum-live",
  "continuum-memory",

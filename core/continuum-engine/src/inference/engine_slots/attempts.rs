@@ -69,7 +69,7 @@ fn write(root: &Path, slot: &str, record: &Attempt) -> Result<(), String> {
         .and_then(|_| staged.sync_all())
         .map_err(|e| format!("engine attempt write: {e}"))?;
     drop(staged);
-    continuum_base::fs_portable::durable_rename(&temporary, &path)
+    continuum_host::durable::replace(&temporary, &path)
         .map_err(|e| format!("engine attempt commit: {e}"))
 }
 

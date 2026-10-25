@@ -28,6 +28,7 @@ serde.workspace = true
 serde_json.workspace = true
 uuid.workspace = true
 continuum-base = { path = "../continuum-base" }
+continuum-host = { path = "../continuum-host" }
 continuum-context = { path = "../continuum-context" }
 tool-working-set = { path = "../tool-working-set" }  # the learned tool head: pure policy, no core dependency
 schemars = { version = "0.8", features = ["uuid1"] }
@@ -68,7 +69,7 @@ regex = "1"
 continuum-kernel = { path = "../continuum-kernel", features = ["test-fixtures"] }  # every test build of this crate gets the per-process continuum home (card d11d9827)
 tokio = { workspace = true, features = ["test-util"] }
 tempfile = "3"
-continuum-base = { path = "../continuum-base", features = ["test-fixtures"] }
+continuum-host = { path = "../continuum-host", features = ["test-fixtures"] }
 continuum-client = { path = "../../client/continuum-client", features = ["test-fixtures"] }
 continuum-positron = { path = "../continuum-positron", features = ["test-fixtures"] }
 continuum-genome = { path = "../continuum-genome", features = ["test-fixtures"] }
@@ -84,4 +85,4 @@ vulkan = ["continuum-kernel/vulkan", "continuum-engine/vulkan", "continuum-genom
 stress-tests = ["continuum-kernel/stress-tests"]
 # Test-only code (fixtures shared with core's integration tests, the heuristic adapter it
 # drives); production binaries never build with it.
-test-fixtures = ["continuum-base/test-fixtures", "continuum-kernel/test-fixtures", "continuum-engine/test-fixtures", "continuum-hands/test-fixtures", "continuum-live/test-fixtures", "continuum-perception/test-fixtures", "continuum-genome/test-fixtures", "continuum-experience/test-fixtures"]
+test-fixtures = ["continuum-host/test-fixtures", "continuum-kernel/test-fixtures", "continuum-engine/test-fixtures", "continuum-hands/test-fixtures", "continuum-live/test-fixtures", "continuum-perception/test-fixtures", "continuum-genome/test-fixtures", "continuum-experience/test-fixtures"]

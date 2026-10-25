@@ -22,7 +22,7 @@ use super::{SourceFile, SourceRule, Violation};
 
 /// Ring 0, the kernel: the machine. Nothing about models, minds, rooms or commands.
 const KERNEL: &[&str] = &[
-    "time", "identity", "fs_portable", "paths", "concurrency", "paging", "logging", "orm",
+    "time", "identity", "paths", "concurrency", "paging", "logging", "orm",
     "system_resources", "runtime", "governor", "routing", "sdk_codegen", "resources", "gpu",
 ];
 /// Ring 1, the engine: serving. Knows the kernel.

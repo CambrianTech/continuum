@@ -266,7 +266,7 @@ fn publish_to(path: &Path, temporary: &Path, placement: &Placement) -> Result<()
         .and_then(|_| file.sync_all())
         .map_err(|e| e.to_string())?;
     drop(file);
-    continuum_base::fs_portable::durable_rename(&temporary, path).map_err(|e| e.to_string())
+    continuum_host::durable::replace(&temporary, path).map_err(|e| e.to_string())
 }
 
 /// Blocking artifact-resolution boundary. Frozen and interrupted placement
@@ -468,7 +468,7 @@ fn copy_members(
             target
                 .set_permissions(source.metadata().map_err(|e| e.to_string())?.permissions())
                 .map_err(|e| e.to_string())?;
-            continuum_base::fs_portable::sync_publication(&target, &path).map_err(|e| e.to_string())?;
+            continuum_host::durable::fence(&target, &path).map_err(|e| e.to_string())?;
         }
     }
     Ok(())
@@ -611,7 +611,7 @@ fn freeze_in(
         if copy_root != &destination {
             // Directory publication fences the destination name before a
             // receipt can point to it. The source still exists on every error.
-            continuum_base::fs_portable::durable_rename(copy_root, &destination)
+            continuum_host::durable::replace(copy_root, &destination)
                 .map_err(|e| e.to_string())?;
         }
         verify_tree(root, &placement.files, false, false)?;

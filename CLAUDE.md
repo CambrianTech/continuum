@@ -55,6 +55,11 @@ Phases, in order; each owner works its area in parallel:
 - **3 Locks.** Clippy in CI on split crates, `deny(unwrap_used, expect_used, panic)` on every clean one;
   CI checks only the affected crates.
 - **4 Then pace work**, one change at a time inside its crate, validator first, then the live read.
+- **5 Patterns bubble up** (Joel, 10-24): once the crates are cut, every agent takes a crate and sweeps it for
+  repeated shapes (stores, slots, retries, OS calls, probes); a pattern found in two crates moves DOWN to one
+  owner below both: an existing floor crate (`continuum-base`, `continuum-host`, `continuum-pack`) when it fits
+  that crate's one job, otherwise a NEW shared crate named for the pattern (never a utils drawer), with adapters
+  for the diff, and the copies are deleted. Each sweep reports the pattern, its copies, and the lines removed.
 
 Measured daily: lines past 1,000, crate count, check time per crate, unwrap count, residents' acts/hour.
 
@@ -184,6 +189,12 @@ fastest persona on our hardware (Joel). Brainstorm, and add your ideas, in
   of a curve. The error bound is stated and checked by a validator, never assumed.
 - **Measure the live node before and after**: tool calls/h and seconds per act. Worse = fix it the same hour or back it out. One change per deploy.
 - **One owner per fact, no logic twice**: look up, never re-derive (model identity, rates, budgets).
+- **Design the seam before the code; adapters and subclasses are only the diff** (Joel, 10-24: "stop
+  just dumping code and think of how can I improve the modularity and adaption"). Before writing, name
+  the capability and its owner, and search for the copies that already exist. The logic lives once;
+  each OS, backend or store adapter holds only the lines that differ (`continuum-host`: `mod.rs` the
+  logic, `unix.rs`/`windows.rs` the calls). Never a `cfg(windows)` inside logic (`os_branches_in_logic`
+  ratchet), never a utils drawer. A reviewer asks what this change made reusable, not only whether it works.
 - **No constant where a measurement exists. No unwrap. Typed ids, never strings.**
 - **No claim without a receipt**: the command or file:line, the build SHA, the time.
 - **Mechanical work goes to a cheap model or a script**; the top model is for diagnosis, design, review.
