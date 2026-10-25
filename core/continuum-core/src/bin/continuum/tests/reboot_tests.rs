@@ -551,6 +551,7 @@ fn prebuilt_reboot_launch_retains_candidate_socket_and_cwd() {
     .is_ok());
 }
 
+// what this catches: an unmatched phrasing falling through to NoAnswer, which passes the reboot guard (#3940).
 // Regression for #3940 (revised): any error from a reachable core fails closed — never
 // NoAnswer, which used to be the fall-through and passes the reboot guard. Phrasings that
 // mean "this name is not in the command registry" are positive evidence of a pre-rail
@@ -581,6 +582,7 @@ fn shutdown_errors_fail_closed_never_no_answer() {
     }
 }
 
+// what this catches: recognition deciding WHETHER to fail closed — it may only pick which of the two labels (#3940).
 // Recognition only picks WHICH label, never whether to fail closed: an internal error like
 // `checkpoint not found` must still be refused, but must not carry the first-rollout claim.
 #[test]
@@ -601,6 +603,7 @@ fn pre_rail_label_is_reserved_for_unknown_verb_phrasings() {
     assert!(!fault.contains("predates this rail"));
 }
 
+// what this catches: a checkpoint-not-found fault rendered to the operator as FIRST UPGRADE / first rollout (#3940 revision).
 // What the reviewer asked for (#3940 revision): a caller/rendering regression test — not
 // just an assertion on the classifier's reason string. The checkpoint-not-found path must
 // verify BOTH that reboot is refused AND that what the operator sees carries no first-
