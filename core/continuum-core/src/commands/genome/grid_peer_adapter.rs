@@ -9,8 +9,9 @@
 //! `genome/lease/train` (card cc34db0d). Poll and cancel go to the same peer by attempt;
 //! `Cancelled` there means the peer accepted the cancel, never that training was seen to stop.
 //!
-//! Boot registers it with S3 (the artifact pull and held-out acceptance at the origin): until a
-//! leased job's adapter can come back to its origin, a peer must not spend its lane training one.
+//! Boot registers it; it selects only peers advertising `training_lease_return`, which no build
+//! emits until S3 (the artifact pull and held-out acceptance at the origin) gives a leased job's
+//! adapter a way back. Until then it is wired and serves no base, so no peer spends its lane.
 
 use std::sync::Arc;
 
@@ -26,7 +27,7 @@ use crate::genome::fine_tuning::{
 };
 
 /// This trainer's provider id: the one name a grid lease's job handle carries.
-pub const GRID_PEER_PROVIDER: &str = "grid-peer";
+pub(crate) const GRID_PEER_PROVIDER: &str = "grid-peer";
 
 /// How one command reaches one peer and comes back. Production rides the executor's airc
 /// route (`airc://{peer}/{command}`); a test drives the real receiver commands in process.
@@ -36,7 +37,7 @@ pub trait LeaseTransport: Send + Sync {
 }
 
 /// The production transport: the core's own executor, over airc, to one peer.
-pub struct ExecutorLeaseTransport(pub Arc<crate::runtime::LateBound<crate::runtime::CommandExecutor>>);
+pub(crate) struct ExecutorLeaseTransport(pub(crate) Arc<crate::runtime::LateBound<crate::runtime::CommandExecutor>>);
 
 #[async_trait]
 impl LeaseTransport for ExecutorLeaseTransport {
@@ -48,9 +49,9 @@ impl LeaseTransport for ExecutorLeaseTransport {
 }
 
 /// What the grid currently offers: (peer, offer, heard-at ms by this node's clock).
-pub type OfferSource = Arc<dyn Fn() -> Vec<(Uuid, CapacityOffer, u64)> + Send + Sync>;
+pub(crate) type OfferSource = Arc<dyn Fn() -> Vec<(Uuid, CapacityOffer, u64)> + Send + Sync>;
 
-pub struct GridPeerAdapter {
+pub(crate) struct GridPeerAdapter {
     transport: Arc<dyn LeaseTransport>,
     offers: OfferSource,
     now_ms: Arc<dyn Fn() -> u64 + Send + Sync>,
@@ -58,7 +59,7 @@ pub struct GridPeerAdapter {
 
 impl GridPeerAdapter {
     /// The production trainer: the executor's airc route and the gossip ledger's heard offers.
-    pub fn on_grid(executor: Arc<crate::runtime::LateBound<crate::runtime::CommandExecutor>>) -> Self {
+    pub(crate) fn on_grid(executor: Arc<crate::runtime::LateBound<crate::runtime::CommandExecutor>>) -> Self {
         Self::new(
             Arc::new(ExecutorLeaseTransport(executor)),
             Arc::new(|| crate::capacity::gossip::global_ledger().foreign_offers_with_age()),
@@ -66,14 +67,15 @@ impl GridPeerAdapter {
         )
     }
 
-    pub fn new(transport: Arc<dyn LeaseTransport>, offers: OfferSource, now_ms: Arc<dyn Fn() -> u64 + Send + Sync>) -> Self {
+    pub(crate) fn new(transport: Arc<dyn LeaseTransport>, offers: OfferSource, now_ms: Arc<dyn Fn() -> u64 + Send + Sync>) -> Self {
         Self { transport, offers, now_ms }
     }
 
     /// The ONE peer a job for `base` goes to: a fresh offer (heard within the freshness
-    /// window) that lists `base` as trainable AND advertises `training_lease`; ties by peer id.
+    /// window) that lists `base` as trainable AND advertises both `training_lease` and
+    /// `training_lease_return` (its adapter can come back); ties by peer id.
     /// Never a union across peers: the chosen offer satisfies the whole request by itself.
-    pub fn choose_peer(&self, base: &str) -> Option<Uuid> {
+    pub(crate) fn choose_peer(&self, base: &str) -> Option<Uuid> {
         let now = (self.now_ms)();
         (self.offers)()
             .into_iter()
@@ -81,6 +83,7 @@ impl GridPeerAdapter {
                 now.saturating_sub(*heard) <= crate::capacity::gossip::FRESHNESS_WINDOW_MS
                     && offer.trainable_bases.iter().any(|b| b == base)
                     && offer.capabilities.contains(&CapabilityId::TrainingLease)
+                    && offer.capabilities.contains(&CapabilityId::TrainingLeaseReturn)
             })
             .map(|(peer, _, _)| peer)
             .min()
@@ -96,7 +99,7 @@ impl GridPeerAdapter {
 
 /// A grid lease's handle names its peer and the origin's attempt, so poll, cancel and a
 /// restarted core reach the same job without any other state.
-pub fn lease_handle(peer: Uuid, attempt: Uuid) -> JobHandle {
+pub(crate) fn lease_handle(peer: Uuid, attempt: Uuid) -> JobHandle {
     JobHandle { provider_id: GRID_PEER_PROVIDER.into(), provider_job_id: format!("{peer}/{attempt}"), local_id: attempt }
 }
 
@@ -204,6 +207,8 @@ mod tests {
         poll: GenomeLeasePoll,
         cancel: GenomeLeaseCancel,
         drop_reply: AtomicBool,
+        /// Every peer a call was addressed to, so a call to the wrong peer is caught.
+        called: std::sync::Mutex<Vec<Uuid>>,
     }
 
     impl InProcessPeer {
@@ -217,6 +222,7 @@ mod tests {
                 poll: GenomeLeasePoll { attempts: attempts.clone(), registry: registry.clone() },
                 cancel: GenomeLeaseCancel { attempts, registry },
                 drop_reply: AtomicBool::new(false),
+                called: std::sync::Mutex::new(Vec::new()),
             }
         }
         fn as_origin(&self, origin: Uuid) -> Ctx {
@@ -228,7 +234,8 @@ mod tests {
 
     #[async_trait]
     impl LeaseTransport for InProcessPeer {
-        async fn call(&self, _peer: Uuid, command: &str, params: Value) -> Result<Value, String> {
+        async fn call(&self, peer: Uuid, command: &str, params: Value) -> Result<Value, String> {
+            self.called.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push(peer); // unwrap_or_else: a test fixture's poisoned log still reads
             let ctx = self.as_origin(self.origin);
             let err = |e: crate::sdk_codegen::CommandError| format!("{e:?}");
             let reply = match command {
@@ -263,7 +270,7 @@ mod tests {
             lane_wait_samples: 0,
             served_context_window: 0,
             decode_tps_milli: 0,
-            capabilities: if lease { vec![CapabilityId::TrainingLease] } else { Vec::new() },
+            capabilities: if lease { vec![CapabilityId::TrainingLease, CapabilityId::TrainingLeaseReturn] } else { Vec::new() },
             trainable_bases: bases.iter().map(|b| b.to_string()).collect(),
         }
     }
@@ -278,23 +285,27 @@ mod tests {
         GridPeerAdapter::new(transport, Arc::new(move || offers.clone()), Arc::new(move || now))
     }
 
-    // what this catches (card e53bb821): a lease sent to a peer that cannot take it, or to a
-    // union of peers. Only a FRESH offer listing the base AND advertising training_lease is a
-    // candidate, ties go to the lowest peer id, and with none the destination is refused.
+    // what this catches (card e53bb821): a lease sent to a peer that cannot take it or cannot
+    // return its adapter, or to a union of peers. Only a FRESH offer listing the base AND
+    // advertising training_lease AND training_lease_return is a candidate, ties go to the
+    // lowest peer id, and with none the destination is refused.
     #[test]
     fn a_lease_goes_to_one_fresh_peer_that_advertises_the_base_and_the_capability() {
-        let (low, high, stale, blind, other) = (Uuid::from_u128(1), Uuid::from_u128(2), Uuid::from_u128(0), Uuid::from_u128(3), Uuid::from_u128(4));
+        let (low, high, stale, blind, other) = (Uuid::from_u128(1), Uuid::from_u128(2), Uuid::from_u128(5), Uuid::from_u128(3), Uuid::from_u128(4));
         let now = 1_000_000;
         let window = crate::capacity::gossip::FRESHNESS_WINDOW_MS;
         let transport: Arc<dyn LeaseTransport> = Arc::new(ExecutorLeaseTransport(Arc::new(crate::runtime::LateBound::new("unused"))));
+        let mut no_return = offer(&["qwen"], true);
+        no_return.capabilities = vec![CapabilityId::TrainingLease];
         let adapter = adapter_over(transport.clone(), vec![
+            (Uuid::from_u128(0), no_return, now),
             (high, offer(&["qwen"], true), now),
             (low, offer(&["qwen"], true), now - window),
             (stale, offer(&["qwen"], true), now - window - 1),
             (blind, offer(&["qwen"], false), now),
             (other, offer(&["llama"], true), now),
         ], now);
-        assert_eq!(adapter.choose_peer("qwen"), Some(low), "fresh, advertised, lowest id; the stale and the blind are not candidates");
+        assert_eq!(adapter.choose_peer("qwen"), Some(low), "fresh, both capabilities, lowest id; the stale, the blind and the one whose adapter cannot return are not candidates");
         assert_eq!(adapter.choose_peer("mistral"), None);
         assert!(!adapter.serves_base("mistral"));
         let mut request = lora_request();
@@ -303,9 +314,10 @@ mod tests {
     }
 
     // what this catches (Codex's acceptance for S2b-2b): the lease's whole life over the real
-    // receiver: created, polled, cancelled (accepted); a changed payload under the same attempt
-    // refused; a restarted origin (a new adapter) reaching the same job from its handle alone;
-    // a forged origin reaching nothing.
+    // receiver: created, polled, cancelled (accepted), every call addressed to the bound peer; a
+    // changed payload under the same attempt refused; a new adapter instance (the origin's
+    // in-memory state gone, the stores kept) reaching the same job from its handle alone; a
+    // forged origin reaching nothing.
     #[tokio::test]
     async fn a_lease_lives_on_its_peer_and_only_its_origin_reaches_it() {
         let (peer_ledger, _dir) = ledger().await;
@@ -324,8 +336,13 @@ mod tests {
         changed.persona_name = "someone-else".into();
         assert!(matches!(adapter.create_bound(changed, &binding).await, Err(FineTuningError::ProviderRejected(e)) if e.contains("payload_changed")));
 
+        // A new adapter instance (the origin's in-memory state gone), over the same stores.
         let restarted = adapter_over(transport.clone(), Vec::new(), 10);
         assert!(matches!(restarted.poll(&handle).await, Ok(TrainingStatus::Completed { .. })), "the handle alone reaches the job");
+        assert!(
+            transport.called.lock().unwrap_or_else(std::sync::PoisonError::into_inner).iter().all(|to| *to == peer), // unwrap_or_else: a test fixture's poisoned log still reads
+            "create, poll and cancel went only to the bound peer"
+        );
 
         let forger = adapter_over(Arc::new(InProcessPeer::new(Uuid::new_v4(), peer_ledger)), Vec::new(), 10);
         assert!(matches!(forger.poll(&handle).await, Err(FineTuningError::UnknownHandle(_))), "a forged origin reaches nothing");

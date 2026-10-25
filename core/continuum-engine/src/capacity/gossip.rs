@@ -174,6 +174,11 @@ pub enum CapabilityId {
     /// lists in `trainable_bases`. A grid trainer leases only to a peer advertising this:
     /// absence means a core that predates the lease verbs, which must never be sent one.
     TrainingLease,
+    /// A leased job's trained adapter comes back to its origin (the artifact return, S3 of card
+    /// 6f05b89d). A grid trainer leases only to a peer advertising BOTH this and
+    /// `TrainingLease`: a lease whose result cannot return is lane time wasted, so no build
+    /// emits this until its return verb exists.
+    TrainingLeaseReturn,
     /// Parse-only: a name THIS build does not know (a newer core advertising a capability we
     /// predate). It never grants — membership of this list is exact-name, so an unknown name
     /// cannot stand in for another — but its presence must not drop the rest of the beacon,
