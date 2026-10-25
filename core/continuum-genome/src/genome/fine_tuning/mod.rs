@@ -109,8 +109,8 @@ pub mod training_loop;
 pub mod types;
 
 pub use adapter::{
-    ArcFineTuningAdapter, FineTuningAdapter, FineTuningCapabilities, FineTuningError,
-    TrainerHardware,
+    ArcFineTuningAdapter, Destination, FineTuningAdapter, FineTuningCapabilities, FineTuningError,
+    JobBinding, TrainerHardware,
 };
 pub use byte_tokenizer::{ByteTokenizer, BYTE_PAD_ID, BYTE_VOCAB};
 pub use coordinator::{CoordinatorError, FineTuningCoordinator};
