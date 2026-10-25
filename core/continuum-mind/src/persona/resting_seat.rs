@@ -47,7 +47,7 @@ pub fn current_build() -> &'static str {
 }
 
 fn path() -> Option<PathBuf> {
-    dirs::home_dir().map(|h| h.join(".continuum").join("state").join("resting-seats.json"))
+    crate::paths::continuum_home().ok().map(|h| h.join("state").join("resting-seats.json"))
 }
 
 /// The resting list as this process holds it — read from disk once, then held here and
