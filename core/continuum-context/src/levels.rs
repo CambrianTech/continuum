@@ -85,7 +85,9 @@ fn mark_dropped(out: &mut String, dropped: &mut Option<(u32, u32)>) {
 /// An output's head and tail within `budget`, the lines between counted.
 fn ends(full: &str, budget: usize) -> Option<String> {
     let lines: Vec<&str> = full.lines().collect();
-    let half = budget / 2;
+    // The marker between the ends is part of the summary's cost: reserve it before the ends.
+    let marker = |between: usize| format!("\n… {between} lines between (expand to read them)\n");
+    let half = budget.saturating_sub(marker(lines.len()).len()) / 2;
     let (mut head, mut head_chars) = (0, 0);
     while head < lines.len() && head_chars + lines[head].len() < half {
         head_chars += lines[head].len() + 1;
@@ -101,7 +103,7 @@ fn ends(full: &str, budget: usize) -> Option<String> {
         return None;
     }
     let mut out = lines[..head].join("\n");
-    out.push_str(&format!("\n… {between} lines between (expand to read them)\n"));
+    out.push_str(&marker(between));
     out.push_str(&lines[lines.len() - tail..].join("\n"));
     Some(out)
 }
