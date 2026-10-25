@@ -291,6 +291,18 @@ impl Observation {
         )
     }
 
+    /// This act as one part of a batch receipt's summary level: the recency header (its name and
+    /// args, the same fold) over its HUMANIZED body at `level` (its summary, else whole), so a
+    /// summary reads what the receipt shows her, never the executor's serialized JSON, where a
+    /// read's numbered lines are escaped and no code level is found (Codex on #5424).
+    pub(crate) fn render_summary_part(&self, budget: &ContextBudget, level: impl Fn(&str) -> Option<String>) -> String {
+        let args = summarize_args_for_recency(&self.call.input, Some(budget.echoed_arg_chars()));
+        let body = self.body_text();
+        let body = body.trim();
+        let shown = level(body).unwrap_or_else(|| body.to_owned()); // unwrap_or: a body with no smaller level is its own summary
+        format!("{}({})\nResult:\n{}\n\n", self.call.name, args, shown)
+    }
+
     /// The RECALL-channel rendering: the COLLAPSED reference the Episodic engram
     /// re-injects on later turns (#166 — a separate channel from recency). The
     /// Summary text may collapse; saved-result custody must remain recoverable.

@@ -335,3 +335,71 @@ fn capacity_floored_at_one() {
     wm.record("b");
     assert_eq!(wm.recent(), vec!["b"], "floor-1 buffer keeps the latest");
 }
+
+/// One typed act whose output is `content`, for a receipt that batches several.
+fn act(name: &str, input: serde_json::Value, content: String) -> crate::cognition::act_observe::Observation {
+    use crate::cognition::act_observe::{ActStatus, Observation, ToolOutput, ToolVerb};
+    Observation {
+        call: crate::ai::types::ToolCall { id: name.into(), name: name.into(), input },
+        output: ToolOutput {
+            image: None,
+            additional_images: None,
+            result: crate::ai::types::ToolResult { tool_use_id: name.into(), content, is_error: None, custody: Default::default() },
+            verb: ToolVerb::classify(name),
+            paths: Vec::new(),
+            verdict: Default::default(),
+        },
+        status: ActStatus::Executed,
+    }
+}
+
+/// A long file's `code/read` result exactly as the executor hands it back: the command's
+/// serialized `ReadResult`, its numbered lines escaped inside JSON (what `body_text` decodes).
+fn long_read(file: &str) -> String {
+    let body: String = (3..=400).map(|n| format!("{n:>6} |         let x{n} = {n};\n")).collect();
+    let content = format!("     1 | pub struct A;\n     2 | impl A {{\n{body}");
+    serde_json::to_string(&crate::code::types::ReadResult {
+        success: true,
+        content: Some(content),
+        file_path: file.into(),
+        total_lines: 400,
+        lines_returned: 400,
+        start_line: 1,
+        end_line: 400,
+        size_bytes: 14_000,
+        error: None,
+    })
+    .expect("test: encode") // JUSTIFIED: test fixture
+}
+
+// what this catches (Codex on #5422): one code outline over a whole batch receipt. The outline
+// dropped every unnumbered line after the first numbered one, so a long read followed by an
+// error, or by a second file, kept only the first read's declarations. Each operation is now
+// summarized by its own typed verb under its call's name: the error and the second file's
+// header both survive, and a lone non-read output never takes a code outline.
+#[test]
+fn a_batch_receipts_summary_keeps_every_operation() {
+    let summary_of = |acts: Vec<crate::cognition::act_observe::Observation>| {
+        let wm = WorkingMemory::new(8);
+        // The receipt as production renders it: each act's recency rendering, in order.
+        let rendered: String = acts.iter().map(|a| a.render_recency("", &wm.budget())).collect();
+        wm.record_receipt_typed(&acts, &rendered, None, Default::default());
+        let actions = wm.actions.lock();
+        actions.records().last().and_then(|record| record.summary.clone())
+    };
+
+    let error = "no such file: b.rs (did you mean src/b.rs?)";
+    let failed = serde_json::json!({ "success": false, "error": error }).to_string();
+    let read_then_error = summary_of(vec![act("code/read", serde_json::json!({ "file_path": "a.rs" }), long_read("a.rs")), act("code/read", serde_json::json!({ "file_path": "b.rs" }), failed)]).unwrap_or_default();
+    assert!(read_then_error.contains("     1 | pub struct A;"), "decoded, not escape-soup: {read_then_error}");
+    assert!(read_then_error.contains(error), "the later error survives: {read_then_error}");
+
+    let two_reads = summary_of(vec![act("code/read", serde_json::json!({ "file_path": "a.rs" }), long_read("a.rs")), act("code/read", serde_json::json!({ "file_path": "b.rs" }), long_read("b.rs"))]).unwrap_or_default();
+    // Each part keeps its own call's path (its typed args), so neither file's identity is lost.
+    assert!(two_reads.contains("a.rs") && two_reads.contains("b.rs"), "both files' paths survive: {two_reads}");
+    assert_eq!(two_reads.matches("     1 | pub struct A;").count(), 2, "each file keeps its own outline: {two_reads}");
+
+    let log: String = (0..400).map(|n| format!("step {n}\n")).collect::<String>() + "error[E0308]: mismatched types\n";
+    let shell = summary_of(vec![act("code/shell", serde_json::json!({ "command": "cargo build" }), serde_json::json!({ "success": false, "stdout": log }).to_string())]).unwrap_or_default();
+    assert!(shell.contains("error[E0308]: mismatched types") && !shell.contains("[outline"), "an output keeps its ends: {shell}");
+}

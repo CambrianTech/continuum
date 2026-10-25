@@ -331,7 +331,7 @@ impl WorkingMemory {
                     scope: scope.clone(),
                     operation: label,
                     head: Some(archive_head(seq, a, &acts, budget.trail_head_chars())),
-                    summary: result_summary(&tail),
+                    summary: result_summary(&tail, &acts, &budget),
                     result: Some(tail),
                     handle,
                     written_pointer: None,
@@ -471,9 +471,27 @@ pub(super) fn call_args(input: &serde_json::Value, value_chars: usize) -> String
     shown(input, value_chars).to_string()
 }
 
-/// A result's summary level: a numbered read's outline, else an output's head and tail; `None`
-/// when neither costs at most a quarter of it (`continuum_context::levels`).
-fn result_summary(result: &str) -> Option<String> {
-    use continuum_context::levels::{summarize, Shape};
-    summarize(result, Shape::Code(&crate::code::file_engine::gutter_split)).or_else(|| summarize(result, Shape::Output))
+/// A receipt's summary level, built per OPERATION by its typed verb (`continuum_context::levels`):
+/// a read's outline (else its ends), any other output's head and tail. A receipt of several
+/// operations summarizes each under its call's name, a part with no smaller level kept whole, so
+/// an error or a second file after a long read is never lost: one code outline over the whole
+/// batch dropped every unnumbered line after the first numbered one (Codex on #5422). `None` when
+/// the result is its own best summary (more than a quarter of it).
+fn result_summary(result: &str, acts: &[Observation], budget: &crate::cognition::context_budget::ContextBudget) -> Option<String> {
+    use continuum_context::levels::{summarize, Shape, LEVEL_RATIO};
+    let level = |text: &str, act: Option<&Observation>| {
+        let read = act.is_some_and(|act| act.output.verb == crate::cognition::act_observe::ToolVerb::Read);
+        let code = read.then(|| summarize(text, Shape::Code(&crate::code::file_engine::gutter_split))).flatten();
+        code.or_else(|| summarize(text, Shape::Output))
+    };
+    match acts {
+        [] => level(result, None),
+        [one] => level(result, Some(one)),
+        many => {
+            // Each part is the act as the receipt shows it (its header over its humanized body),
+            // at its own level: the same seam the single-act branch reads through `result`.
+            let parts: String = many.iter().map(|act| act.render_summary_part(budget, |body| level(body, Some(act)))).collect();
+            (parts.chars().count() * LEVEL_RATIO <= result.chars().count()).then_some(parts)
+        }
+    }
 }
