@@ -67,6 +67,15 @@ fn opens_with_tool_envelope(t: &str) -> bool {
                 return true;
             }
         }
+        // THIRD dialect: parenthesized call form `[verb(k=v)]` — argument opener
+        // is `(` instead of `{`, and it lives inside the brackets. Found the hard
+        // way on 2026-09-14 when Paige posted a tool call as speech:
+        //   [code/shell(cmd=# Mark ...)]
+        if let Some((verb, after)) = rest.split_once('(') {
+            if verb_ok(verb) && after.contains(')') {
+                return true;
+            }
+        }
     }
     // The canonical envelope, with or without leading whitespace inside the object.
     let compact: String = t.chars().take(24).filter(|c| !c.is_whitespace()).collect();
@@ -118,6 +127,17 @@ mod tests {
         let observed = r#"[code/read] {"file_path":"src/main.rs"}"#;
         assert_eq!(is_not_speech(observed), Some("tool_envelope"));
     }
+
+    // what this catches: the THIRD bracket dialect — parenthesized call form.
+    // Found when Paige posted a tool call as speech:
+    //   [code/shell(cmd=# Mark stale worktrees…)]
+    // The argument opener is `(` inside the brackets, not `{` after them.
+    #[test]
+    fn the_parenthesized_bracket_dialect_is_not_speech() {
+        let observed = "[code/shell(cmd=# Mark stale worktrees and prune)]";
+        assert_eq!(is_not_speech(observed), Some("tool_envelope"));
+    }
+
 
     // what this catches: the exact reply Paige posted on 2026-09-05 — Saoirse's peer
     // id followed by Saoirse's words, as Paige's own turn. This is the clause
