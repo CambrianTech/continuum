@@ -22,8 +22,15 @@ because the monolith is why every change is slow, risky and stacked on the last 
 
 Rules, in force now:
 1. No one edits a Rust file over 1,000 lines; the only change that touches one breaks it apart (CI gate).
-2. No builds on a serving node: build with serving down, in CI, or on a non-serving machine (a build
-   beside the lanes downgraded the M5's residents to a 7B on 10-20).
+2. The build loop: never build BESIDE active serving, and never avoid building to protect it. When you
+   need to compile: `continuum stop --keep-engine` (the core stops with all state durable; the engine
+   keeps its weights and every mind's KV), build and test on ALL cores, `continuum start` (adopts the
+   warm engine; measured 18 s stop to ready on the M5, 2026-10-24). Test locally first; push branches
+   without a PR while iterating (no CI runs); open the PR when green, so CI confirms rather than
+   discovers. Merge on the required checks, never on publication builds. Plain `stop` reaps the engine
+   (a model reload, every mind's KV lost): only for an engine upgrade. (A build beside the lanes
+   downgraded the M5's residents to a 7B on 10-20; avoiding builds instead made every change wait
+   hours, Joel 10-24: "build as fast as you can".)
 3. Every live change gets a 15-minute read on live residents; worse than canary means the node goes
    back to canary at once. No "clean hours", no stacked fixes.
 4. No new unwrap, fallback or head clip: the ratchets fail the build; clean crates get compiler denies.
