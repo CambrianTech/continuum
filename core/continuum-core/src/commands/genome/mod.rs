@@ -45,6 +45,7 @@ pub mod grid_peer_adapter;
 pub mod job_attempt_reconcile;
 pub mod lease;
 pub mod lease_artifact;
+pub mod lease_pull;
 pub mod job_cancel;
 pub mod job_create;
 pub mod job_pause;
@@ -107,6 +108,7 @@ pub(crate) fn command_objects(
         Arc::new(lease::GenomeLeaseStatus { attempts: Arc::clone(&attempts) }),
         Arc::new(lease::GenomeLeasePoll { attempts: Arc::clone(&attempts), registry: registry.clone() }),
         Arc::new(lease::GenomeLeaseCancel { attempts: Arc::clone(&attempts), registry: registry.clone() }),
+        Arc::new(lease::GenomeLeaseArtifact { attempts: Arc::clone(&attempts) }),
         Arc::new(job_create::GenomeJobCreate {
             coordinator,
             attempts,

@@ -19,6 +19,7 @@
 
 use std::sync::Arc;
 
+use base64::Engine as _;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -100,6 +101,45 @@ pub enum LeasePollOutcome {
 pub enum LeaseCancelOutcome {
     Cancelled,
     NotCreated,
+    Unknown { reason: String },
+}
+
+/// The most bytes one `genome/lease/artifact` answer carries. The narrowest airc route caps a
+/// whole serialized frame at 16 KiB (WebRTC data channel, airc 0763991ac
+/// `webrtc_datachannel/adapter.rs:15`, read by Codex 2026-10-25). Base64 makes 8 KiB about
+/// 10.9 KiB, under 12 KiB with its JSON, which leaves 4 KiB for the airc envelope: the largest
+/// envelope measured on this mesh was 706 bytes (32 #continuum-dev events, 2026-10-25T13:46Z,
+/// airc 0.1.0). `a_full_chunk_fits_the_narrowest_route` pins the encoded size.
+pub const MAX_ARTIFACT_CHUNK: u32 = 8 * 1024;
+
+/// The bound the encoded answer must stay under: the route's frame minus the envelope reserve.
+pub(crate) const ARTIFACT_CHUNK_FRAME_BUDGET: usize = 16 * 1024 - 4 * 1024;
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]
+#[ts(export, export_to = "../../../protocol/typescript/genome/LeaseArtifactParams.ts")]
+#[serde(rename_all = "camelCase")]
+pub struct LeaseArtifactParams {
+    /// The origin's attempt id; it is read under the caller's own lease key.
+    #[ts(type = "string")]
+    pub attempt: uuid::Uuid,
+    /// The file's name in the artifact's recorded manifest, never a path.
+    pub file: String,
+    #[ts(type = "number")]
+    pub offset: u64,
+    /// Bytes asked for, at most [`MAX_ARTIFACT_CHUNK`].
+    pub len: u32,
+}
+
+/// One range of a leased job's recorded artifact (card 92cd2251, S3-2): `bytes` (base64, fewer
+/// than asked only at the file's end), `refused` (no recorded artifact for the caller's attempt,
+/// no such file, a range past its end or over the bound, or the file no longer has its recorded
+/// size: the artifact as reported is not here), or `unknown` (it may be readable later).
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../../protocol/typescript/genome/LeaseArtifactChunk.ts")]
+#[serde(tag = "outcome", rename_all = "camelCase")]
+pub enum LeaseArtifactChunk {
+    Bytes { data: String },
+    Refused { reason: String },
     Unknown { reason: String },
 }
 
@@ -348,6 +388,60 @@ crate::action_command! {
     }
 }
 
+crate::action_command! {
+    /// A byte range of a leased job's recorded artifact, asked by the peer that leased it:
+    /// resolved through the caller's own lease key and the manifest recorded when the job was
+    /// first reported completed, by file NAME (never a path), and refused when the file no
+    /// longer has its recorded size. At most [`MAX_ARTIFACT_CHUNK`] bytes an answer.
+    pub struct GenomeLeaseArtifact { attempts: Arc<AttemptLedger> }
+    name: "genome/lease/artifact",
+    access: Privileged,
+    params: LeaseArtifactParams,
+    output: LeaseArtifactChunk,
+    run(this, ctx, p) => {
+        let refused = |reason: String| Ok(LeaseArtifactChunk::Refused { reason });
+        let origin = match lease_origin(ctx.caller.as_ref()) {
+            Ok(origin) => origin,
+            Err(reason) => return refused(reason),
+        };
+        if p.len == 0 || p.len > MAX_ARTIFACT_CHUNK {
+            return refused(format!("a range asks 1 to {MAX_ARTIFACT_CHUNK} bytes, not {}", p.len));
+        }
+        let recorded = match this.attempts.return_record(lease_key(origin, p.attempt)).await {
+            Ok(Some(ReturnRecord { returned: Some(recorded), .. })) => recorded,
+            Ok(_) => return refused(format!("attempt {} has no recorded artifact here", p.attempt)),
+            Err(reason) => return Ok(LeaseArtifactChunk::Unknown { reason }),
+        };
+        let Some(file) = recorded.artifact.files.iter().find(|f| f.name == p.file).cloned() else {
+            return refused(format!("the artifact has no file {}", p.file));
+        };
+        if p.offset > file.bytes {
+            return refused(format!("offset {} is past {}'s {} bytes", p.offset, file.name, file.bytes));
+        }
+        let len = u64::from(p.len).min(file.bytes - p.offset) as usize; // at most MAX_ARTIFACT_CHUNK (8 KiB)
+        let (path, offset) = (recorded.root.join(&file.name), p.offset);
+        let read = tokio::task::spawn_blocking(move || -> Result<Result<Vec<u8>, String>, std::io::Error> {
+            let handle = std::fs::File::open(&path)?;
+            let size = handle.metadata()?.len();
+            if size != file.bytes {
+                return Ok(Err(format!("{} is {size} bytes, not the {} reported: it changed since", file.name, file.bytes)));
+            }
+            let mut buf = vec![0u8; len];
+            continuum_host::positioned::read_exact_at(&handle, &mut buf, offset)?;
+            Ok(Ok(buf))
+        })
+        .await;
+        Ok(match read {
+            Ok(Ok(Ok(bytes))) => LeaseArtifactChunk::Bytes {
+                data: base64::engine::general_purpose::STANDARD.encode(bytes), // lease wire boundary: artifact bytes cross the grid as JSON text
+            },
+            Ok(Ok(Err(changed))) => LeaseArtifactChunk::Refused { reason: changed },
+            Ok(Err(e)) => LeaseArtifactChunk::Unknown { reason: e.to_string() },
+            Err(e) => LeaseArtifactChunk::Unknown { reason: format!("read task failed: {e}") },
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -522,6 +616,55 @@ mod tests {
             matches!(poll.run(&lease_ctx(origin), LeaseStatusParams { attempt }).await, Ok(LeasePollOutcome::Completed { artifact: again }) if again.files == artifact.files && again.base == artifact.base),
             "the first record is the report"
         );
+    }
+
+    // what this catches (card 92cd2251): an artifact range served to anyone but the leasing peer,
+    // read by a caller-named path, past the bound or the file, from a file that changed since it
+    // was reported, or encoded too large for the narrowest airc route. A full chunk's encoded
+    // answer fits ARTIFACT_CHUNK_FRAME_BUDGET; the tail answers short; everything else refuses.
+    #[tokio::test]
+    async fn an_artifact_range_is_served_only_from_the_record_and_fits_the_narrowest_route() {
+        use crate::genome::fine_tuning::{ArtifactFormat, RecordingFineTuningAdapter, RECORDING_PROVIDER_ID};
+        use crate::sdk_codegen::ActionCommand;
+        let (attempts, _dir) = ledger().await;
+        let files = tempfile::tempdir().expect("dir"); // JUSTIFIED: test fixture
+        let (adapter_file, base) = (files.path().join("adapter.gguf"), files.path().join("base.gguf"));
+        let bytes: Vec<u8> = (0..20_000u32).map(|i| (i % 251) as u8).collect();
+        std::fs::write(&adapter_file, &bytes).expect("write"); // JUSTIFIED: test fixture
+        super::super::test_support::write_base_gguf(&base, 0.0);
+        let stamp = crate::inference::weights_stamp::WeightsStamp::of(&base).expect("stamp"); // JUSTIFIED: test fixture
+        let registry = Arc::new(FineTuningRegistry::new());
+        registry.register(Arc::new(RecordingFineTuningAdapter::new().with_local_artifact(adapter_file.clone(), ArtifactFormat::GgufLora).trained_on(stamp)));
+        let (origin, attempt) = (uuid::Uuid::new_v4(), uuid::Uuid::new_v4());
+        let job = JobHandle { provider_id: RECORDING_PROVIDER_ID.into(), provider_job_id: "job-1".into(), local_id: uuid::Uuid::new_v4() };
+        attempts.admit_lease(lease_key(origin, attempt), origin, "digest", RECORDING_PROVIDER_ID, "qwen").await.expect("admitted"); // JUSTIFIED: test fixture
+        attempts.settle(lease_key(origin, attempt), AttemptState::Created { handle: job }).await.expect("settled"); // JUSTIFIED: test fixture
+        let range = GenomeLeaseArtifact { attempts: attempts.clone() };
+        let ask = |file: &str, offset: u64, len: u32| LeaseArtifactParams { attempt, file: file.into(), offset, len };
+        assert!(
+            matches!(range.run(&lease_ctx(origin), ask("adapter.gguf", 0, 16)).await, Ok(LeaseArtifactChunk::Refused { .. })),
+            "nothing is served before the artifact is reported"
+        );
+        let poll = GenomeLeasePoll { attempts: attempts.clone(), registry };
+        assert!(matches!(poll.run(&lease_ctx(origin), LeaseStatusParams { attempt }).await, Ok(LeasePollOutcome::Completed { .. })));
+
+        let full = range.run(&lease_ctx(origin), ask("adapter.gguf", 0, MAX_ARTIFACT_CHUNK)).await.expect("answered"); // JUSTIFIED: test asserts the answer
+        let encoded = serde_json::to_string(&full).expect("encode"); // JUSTIFIED: test measures the wire size
+        assert!(encoded.len() <= ARTIFACT_CHUNK_FRAME_BUDGET, "a full chunk encodes to {} bytes, over {}", encoded.len(), ARTIFACT_CHUNK_FRAME_BUDGET);
+        let LeaseArtifactChunk::Bytes { data } = full else { panic!("a full chunk is bytes") }; // JUSTIFIED: test asserts the arm
+        let decoded = base64::engine::general_purpose::STANDARD.decode(data).expect("base64"); // JUSTIFIED: test fixture
+        assert_eq!(decoded, bytes[..MAX_ARTIFACT_CHUNK as usize]);
+        let tail = range.run(&lease_ctx(origin), ask("adapter.gguf", 16_384, MAX_ARTIFACT_CHUNK)).await;
+        assert!(matches!(tail, Ok(LeaseArtifactChunk::Bytes { data }) if base64::engine::general_purpose::STANDARD.decode(&data).map(|d| d.len()) == Ok(20_000 - 16_384)));
+
+        for (file, offset, len) in [("adapter.gguf", 0, 0), ("adapter.gguf", 0, MAX_ARTIFACT_CHUNK + 1), ("adapter.gguf", 20_001, 16), ("../base.gguf", 0, 16), ("base.gguf", 0, 16)] {
+            assert!(matches!(range.run(&lease_ctx(origin), ask(file, offset, len)).await, Ok(LeaseArtifactChunk::Refused { .. })), "{file} {offset} {len}");
+        }
+        assert!(matches!(range.run(&lease_ctx(uuid::Uuid::new_v4()), ask("adapter.gguf", 0, 16)).await, Ok(LeaseArtifactChunk::Refused { .. })), "a forged origin reads nothing");
+        assert!(matches!(range.run(&crate::sdk_codegen::Ctx::default(), ask("adapter.gguf", 0, 16)).await, Ok(LeaseArtifactChunk::Refused { .. })), "a local caller has no lease");
+
+        std::fs::write(&adapter_file, b"replaced").expect("write"); // JUSTIFIED: test fixture
+        assert!(matches!(range.run(&lease_ctx(origin), ask("adapter.gguf", 0, 16)).await, Ok(LeaseArtifactChunk::Refused { reason }) if reason.contains("changed")));
     }
 }
 

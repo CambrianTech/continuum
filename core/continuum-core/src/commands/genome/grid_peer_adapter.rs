@@ -10,8 +10,10 @@
 //! `Cancelled` there means the peer accepted the cancel, never that training was seen to stop.
 //!
 //! Boot registers it; it leases only when BOTH this node and the peer emit
-//! `training_lease_return`, which no build emits until S3 (the artifact pull and held-out acceptance at the origin) gives a leased job's
-//! adapter a way back. Until then it is wired and serves no base, so no peer spends its lane.
+//! `training_lease_return`. The request is recorded in the job's own directory before the
+//! lease is sent; a completed lease's adapter is pulled, verified and placed there
+//! ([`LeasePull`], card 92cd2251), so the completion sentinel adopts it and the examiner sits
+//! it on held-out work as for any local job.
 
 use std::sync::Arc;
 
@@ -20,6 +22,7 @@ use serde_json::Value;
 use uuid::Uuid;
 
 use super::lease::{LeaseCancelOutcome, LeasePollOutcome, LeaseStatusParams, LeaseTrainOutcome, LeaseTrainParams};
+use super::lease_pull::LeasePull;
 use crate::capacity::gossip::{CapabilityId, CapacityOffer};
 use crate::genome::fine_tuning::adapter::{FineTuningCapabilities, TrainerHardware, TrainingPlace};
 use crate::genome::fine_tuning::{
@@ -59,16 +62,20 @@ pub(crate) struct GridPeerAdapter {
     /// `training_lease_return` itself). A lease needs the return on BOTH ends: an origin
     /// without it never leases, whatever a newer peer advertises (Codex on #5417).
     returns_here: bool,
+    /// Brings a completed lease's adapter back into this node's own job directory.
+    pull: Arc<LeasePull>,
 }
 
 impl GridPeerAdapter {
     /// The production trainer: the executor's airc route and the gossip ledger's heard offers.
     pub(crate) fn on_grid(executor: Arc<crate::runtime::LateBound<crate::runtime::CommandExecutor>>) -> Self {
+        let transport: Arc<dyn LeaseTransport> = Arc::new(ExecutorLeaseTransport(executor));
         Self::new(
-            Arc::new(ExecutorLeaseTransport(executor)),
+            transport.clone(),
             Arc::new(|| crate::capacity::gossip::global_ledger().foreign_offers_with_age()),
             Arc::new(|| continuum_base::time::EpochMs::now().millis()),
             crate::capacity::gossip::this_build_capabilities().contains(&CapabilityId::TrainingLeaseReturn),
+            Arc::new(LeasePull::on(transport)),
         )
     }
 
@@ -77,8 +84,9 @@ impl GridPeerAdapter {
         offers: OfferSource,
         now_ms: Arc<dyn Fn() -> u64 + Send + Sync>,
         returns_here: bool,
+        pull: Arc<LeasePull>,
     ) -> Self {
-        Self { transport, offers, now_ms, returns_here }
+        Self { transport, offers, now_ms, returns_here, pull }
     }
 
     /// The ONE peer a job for `base` goes to: a fresh offer (heard within the freshness
@@ -159,6 +167,12 @@ impl FineTuningAdapter for GridPeerAdapter {
         let (Destination::Peer(peer), Some(attempt)) = (&binding.destination, binding.attempt) else {
             return Err(FineTuningError::InvalidRequest("a grid lease needs a peer destination and an attempt".into()));
         };
+        // The request is this node's before it is anyone else's: recorded durably in the job's
+        // own directory first, where the adapter will land and the examiner reads what it
+        // trained on. Unrecorded, nothing is sent.
+        self.pull
+            .record_request(attempt, &request)
+            .map_err(|e| FineTuningError::TrainerUnavailable(format!("the lease's request could not be recorded here, nothing sent: {e}")))?;
         let params = serde_json::to_value(LeaseTrainParams { attempt, dispatch: binding.dispatch, request }) // lease wire boundary: the request crosses the grid as JSON
             .map_err(|e| FineTuningError::InvalidRequest(e.to_string()))?;
         match decode::<LeaseTrainOutcome>("genome/lease/train", self.ask(*peer, "genome/lease/train", params).await?)? {
@@ -177,11 +191,8 @@ impl FineTuningAdapter for GridPeerAdapter {
         let params = serde_json::to_value(LeaseStatusParams { attempt }).map_err(|e| FineTuningError::InvalidRequest(e.to_string()))?; // lease wire boundary
         match decode::<LeasePollOutcome>("genome/lease/poll", self.ask(peer, "genome/lease/poll", params).await?)? {
             LeasePollOutcome::Status { status } => Ok(status),
-            // Pulling and verifying the files lands with the origin's import (S3-2); until then
-            // a finished job stays pending, never failed: its artifact is kept on the peer.
-            LeasePollOutcome::Completed { .. } => {
-                Err(FineTuningError::Transient(format!("peer {peer} finished; the origin's artifact import is not wired yet")))
-            }
+            // Finished there: pulled, verified and placed here before it reads as completed.
+            LeasePollOutcome::Completed { artifact } => Ok(self.pull.status(peer, attempt, artifact)),
             LeasePollOutcome::Unreturnable { reason } => Ok(TrainingStatus::Failed { error: format!("peer {peer}: {reason}") }),
             LeasePollOutcome::NotCreated => Err(FineTuningError::UnknownHandle(handle.clone())),
             LeasePollOutcome::Unknown { reason } => Err(FineTuningError::Transient(format!("peer {peer}: {reason}"))),
@@ -203,7 +214,7 @@ impl FineTuningAdapter for GridPeerAdapter {
 mod tests {
     use super::*;
     use crate::commands::genome::attempt_ledger::AttemptLedger;
-    use crate::commands::genome::lease::{GenomeLeaseCancel, GenomeLeasePoll, GenomeLeaseStatus, GenomeLeaseTrain};
+    use crate::commands::genome::lease::{GenomeLeaseArtifact, GenomeLeaseCancel, GenomeLeasePoll, GenomeLeaseStatus, GenomeLeaseTrain};
     use crate::genome::fine_tuning::coordinator::FineTuningCoordinator;
     use crate::genome::fine_tuning::{FineTuningRegistry, RecordingFineTuningAdapter, RECORDING_BASE_PREFIX};
     use crate::sdk_codegen::{ActionCommand, Ctx};
@@ -225,22 +236,35 @@ mod tests {
         status: GenomeLeaseStatus,
         poll: GenomeLeasePoll,
         cancel: GenomeLeaseCancel,
+        artifact: GenomeLeaseArtifact,
         drop_reply: AtomicBool,
+        /// Loses the `genome/lease/artifact` reply for the range at this offset, once, after the
+        /// peer read it.
+        drop_range_at: std::sync::Mutex<Option<u64>>,
+        /// The offset of every range asked, so a resumed pull is told from a restarted one.
+        ranges: std::sync::Mutex<Vec<u64>>,
         /// Every peer a call was addressed to, so a call to the wrong peer is caught.
         called: std::sync::Mutex<Vec<Uuid>>,
     }
 
     impl InProcessPeer {
         fn new(origin: Uuid, attempts: Arc<AttemptLedger>) -> Self {
+            Self::with_trainer(origin, attempts, RecordingFineTuningAdapter::new())
+        }
+        /// A peer whose on-host trainer is `trainer` (one that leaves real files, for the return).
+        fn with_trainer(origin: Uuid, attempts: Arc<AttemptLedger>, trainer: RecordingFineTuningAdapter) -> Self {
             let registry = Arc::new(FineTuningRegistry::new());
-            registry.register(Arc::new(RecordingFineTuningAdapter::new()));
+            registry.register(Arc::new(trainer));
             Self {
                 origin,
                 train: GenomeLeaseTrain { coordinator: Arc::new(FineTuningCoordinator::new(registry.clone())), attempts: attempts.clone() },
                 status: GenomeLeaseStatus { attempts: attempts.clone() },
                 poll: GenomeLeasePoll { attempts: attempts.clone(), registry: registry.clone() },
+                artifact: GenomeLeaseArtifact { attempts: attempts.clone() },
                 cancel: GenomeLeaseCancel { attempts, registry },
                 drop_reply: AtomicBool::new(false),
+                drop_range_at: std::sync::Mutex::new(None),
+                ranges: std::sync::Mutex::new(Vec::new()),
                 called: std::sync::Mutex::new(Vec::new()),
             }
         }
@@ -255,6 +279,7 @@ mod tests {
     impl LeaseTransport for InProcessPeer {
         async fn call(&self, peer: Uuid, command: &str, params: Value) -> Result<Value, String> {
             self.called.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push(peer); // unwrap_or_else: a test fixture's poisoned log still reads
+            let asked_offset = params.get("offset").and_then(Value::as_u64);
             let ctx = self.as_origin(self.origin);
             let err = |e: crate::sdk_codegen::CommandError| format!("{e:?}");
             let reply = match command {
@@ -262,9 +287,20 @@ mod tests {
                 "genome/lease/status" => serde_json::to_value(self.status.run(&ctx, serde_json::from_value(params).map_err(|e| e.to_string())?).await.map_err(err)?),
                 "genome/lease/poll" => serde_json::to_value(self.poll.run(&ctx, serde_json::from_value(params).map_err(|e| e.to_string())?).await.map_err(err)?),
                 "genome/lease/cancel" => serde_json::to_value(self.cancel.run(&ctx, serde_json::from_value(params).map_err(|e| e.to_string())?).await.map_err(err)?),
+                "genome/lease/artifact" => serde_json::to_value(self.artifact.run(&ctx, serde_json::from_value(params).map_err(|e| e.to_string())?).await.map_err(err)?),
                 other => return Err(format!("no such lease verb {other}")),
             }
             .map_err(|e| e.to_string())?;
+            if command == "genome/lease/artifact" {
+                if let Some(offset) = asked_offset {
+                    self.ranges.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push(offset); // unwrap_or_else: a test fixture's poisoned log still reads
+                }
+                let mut drop_at = self.drop_range_at.lock().unwrap_or_else(std::sync::PoisonError::into_inner); // unwrap_or_else: a test fixture's poisoned flag still reads
+                if asked_offset.is_some() && *drop_at == asked_offset {
+                    *drop_at = None;
+                    return Err("the range reply was lost after the peer read it".into());
+                }
+            }
             if self.drop_reply.swap(false, Ordering::SeqCst) {
                 return Err("the reply was lost after the peer acted".into());
             }
@@ -300,8 +336,20 @@ mod tests {
         request
     }
 
-    fn adapter_over(transport: Arc<dyn LeaseTransport>, offers: Vec<(Uuid, CapacityOffer, u64)>, now: u64) -> GridPeerAdapter {
-        GridPeerAdapter::new(transport, Arc::new(move || offers.clone()), Arc::new(move || now), true)
+    /// The origin's pull over `transport`, under the genome root `root`, whose own base hashes to
+    /// `base_sha`.
+    fn pull_at(transport: Arc<dyn LeaseTransport>, root: &std::path::Path, base_sha: &str) -> Arc<LeasePull> {
+        let (root, base_sha) = (root.to_path_buf(), base_sha.to_string());
+        Arc::new(LeasePull::new(
+            Arc::new(super::super::lease_pull::TransportSource(transport)),
+            Arc::new(move |_: &str| Ok(base_sha.clone())),
+            Arc::new(move || Some(root.clone())),
+        ))
+    }
+
+    fn adapter_over(transport: Arc<dyn LeaseTransport>, offers: Vec<(Uuid, CapacityOffer, u64)>, now: u64, root: &std::path::Path) -> GridPeerAdapter {
+        let pull = pull_at(transport.clone(), root, "no-base");
+        GridPeerAdapter::new(transport, Arc::new(move || offers.clone()), Arc::new(move || now), true, pull)
     }
 
     // what this catches (card e53bb821): a lease sent to a peer that cannot take it or cannot
@@ -316,6 +364,7 @@ mod tests {
         let transport: Arc<dyn LeaseTransport> = Arc::new(ExecutorLeaseTransport(Arc::new(crate::runtime::LateBound::new("unused"))));
         let mut no_return = offer(&["qwen"], true);
         no_return.capabilities = vec![CapabilityId::TrainingLease];
+        let genome = tempfile::tempdir().expect("genome root"); // JUSTIFIED: test fixture
         let adapter = adapter_over(transport.clone(), vec![
             (Uuid::from_u128(0), no_return, now),
             (high, offer(&["qwen"], true), now),
@@ -323,12 +372,12 @@ mod tests {
             (stale, offer(&["qwen"], true), now - window - 1),
             (blind, offer(&["qwen"], false), now),
             (other, offer(&["llama"], true), now),
-        ], now);
+        ], now, genome.path());
         assert_eq!(adapter.choose_peer("qwen"), Some(low), "fresh, both capabilities, lowest id; the stale, the blind and the one whose adapter cannot return are not candidates");
         assert_eq!(adapter.choose_peer("mistral"), None);
         // An origin that cannot take an adapter back never leases, whatever peers advertise.
         let offers_now = vec![(low, offer(&["qwen"], true), now)];
-        let no_return_here = GridPeerAdapter::new(transport.clone(), Arc::new(move || offers_now.clone()), Arc::new(move || now), false);
+        let no_return_here = GridPeerAdapter::new(transport.clone(), Arc::new(move || offers_now.clone()), Arc::new(move || now), false, pull_at(transport.clone(), genome.path(), "no-base"));
         assert_eq!(no_return_here.choose_peer("qwen"), None, "the return is needed on both ends");
         assert!(!adapter.serves_base("mistral"));
         let mut request = lora_request();
@@ -346,7 +395,8 @@ mod tests {
         let (peer_ledger, _dir) = ledger().await;
         let (origin, peer) = (Uuid::new_v4(), Uuid::new_v4());
         let transport = Arc::new(InProcessPeer::new(origin, peer_ledger.clone()));
-        let adapter = adapter_over(transport.clone(), vec![(peer, offer(&[RECORDING_BASE_PREFIX], true), 10)], 10);
+        let genome = tempfile::tempdir().expect("genome root"); // JUSTIFIED: test fixture
+        let adapter = adapter_over(transport.clone(), vec![(peer, offer(&[RECORDING_BASE_PREFIX], true), 10)], 10, genome.path());
         let attempt = Uuid::new_v4();
         let binding = JobBinding { attempt: Some(attempt), dispatch: None, destination: Destination::Peer(peer) };
 
@@ -361,14 +411,14 @@ mod tests {
         assert!(matches!(adapter.create_bound(changed, &binding).await, Err(FineTuningError::ProviderRejected(e)) if e.contains("payload_changed")));
 
         // A new adapter instance (the origin's in-memory state gone), over the same stores.
-        let restarted = adapter_over(transport.clone(), Vec::new(), 10);
+        let restarted = adapter_over(transport.clone(), Vec::new(), 10, genome.path());
         assert!(matches!(restarted.poll(&handle).await, Ok(TrainingStatus::Failed { .. })), "the handle alone reaches the job");
         assert!(
             transport.called.lock().unwrap_or_else(std::sync::PoisonError::into_inner).iter().all(|to| *to == peer), // unwrap_or_else: a test fixture's poisoned log still reads
             "create, poll and cancel went only to the bound peer"
         );
 
-        let forger = adapter_over(Arc::new(InProcessPeer::new(Uuid::new_v4(), peer_ledger)), Vec::new(), 10);
+        let forger = adapter_over(Arc::new(InProcessPeer::new(Uuid::new_v4(), peer_ledger)), Vec::new(), 10, genome.path());
         assert!(matches!(forger.poll(&handle).await, Err(FineTuningError::UnknownHandle(_))), "a forged origin reaches nothing");
     }
 
@@ -385,7 +435,8 @@ mod tests {
         let (origin_ledger, _origin_dir) = ledger().await;
         let (origin, peer) = (Uuid::new_v4(), Uuid::new_v4());
         let transport = Arc::new(InProcessPeer::new(origin, peer_ledger));
-        let adapter = adapter_over(transport.clone(), vec![(peer, offer(&[RECORDING_BASE_PREFIX], true), 10)], 10);
+        let genome = tempfile::tempdir().expect("genome root"); // JUSTIFIED: test fixture
+        let adapter = adapter_over(transport.clone(), vec![(peer, offer(&[RECORDING_BASE_PREFIX], true), 10)], 10, genome.path());
         let reconcile = GenomeJobAttemptReconcile { attempts: origin_ledger.clone(), transport: transport.clone() };
         let destination = Destination::Peer(peer).to_ledger();
 
@@ -411,5 +462,78 @@ mod tests {
         ));
         let late = JobBinding { attempt: Some(never), dispatch: None, destination: Destination::Peer(peer) };
         assert!(matches!(adapter.create_bound(lora_request(), &late).await, Err(FineTuningError::ProviderRejected(e)) if e.contains("attempt_fenced")), "the late create is fenced at the peer");
+    }
+
+    /// Poll until the lease reads finished here (completed or failed), bounded.
+    async fn settled(adapter: &GridPeerAdapter, handle: &JobHandle) -> TrainingStatus {
+        for _ in 0..500 {
+            match adapter.poll(handle).await {
+                Ok(TrainingStatus::Running { .. }) | Err(FineTuningError::Transient(_)) => tokio::time::sleep(std::time::Duration::from_millis(10)).await,
+                Ok(done) => return done,
+                Err(other) => panic!("the lease's poll failed: {other:?}"), // JUSTIFIED: test fails loud on an unexpected arm
+            }
+        }
+        panic!("the lease did not settle within 5 s"); // JUSTIFIED: test bound
+    }
+
+    // what this catches (card 92cd2251, Codex's acceptance for S3-2): a leased adapter that never
+    // comes back, lands outside the origin's own job directory, is trusted unverified, restarts
+    // from zero after a lost reply, is pulled again after a restart, or is adopted onto a base
+    // this node does not serve. The request is recorded before the lease goes out; the adapter
+    // (three ranges) is pulled, verified and placed beside it; a lost range reply resumes from
+    // the partial file; a restarted origin finds the placed file; a base whose content is not
+    // this node's is final.
+    #[tokio::test]
+    async fn a_leased_adapter_comes_back_verified_into_the_origins_own_job_dir() {
+        use crate::commands::genome::lease::MAX_ARTIFACT_CHUNK;
+        use crate::genome::fine_tuning::ArtifactFormat;
+        use sha2::{Digest, Sha256};
+        let (peer_ledger, _dir) = ledger().await;
+        let (origin, peer) = (Uuid::new_v4(), Uuid::new_v4());
+        let files = tempfile::tempdir().expect("files"); // JUSTIFIED: test fixture
+        let bytes: Vec<u8> = (0..MAX_ARTIFACT_CHUNK as usize * 2 + 123).map(|i| (i % 251) as u8).collect();
+        let (adapter_file, base) = (files.path().join("adapter.gguf"), files.path().join("base.gguf"));
+        std::fs::write(&adapter_file, &bytes).expect("write"); // JUSTIFIED: test fixture
+        crate::commands::genome::test_support::write_base_gguf(&base, 0.0);
+        let base_sha = format!("{:x}", Sha256::digest(std::fs::read(&base).expect("read"))); // JUSTIFIED: test fixture
+        let stamp = crate::inference::weights_stamp::WeightsStamp::of(&base).expect("stamp"); // JUSTIFIED: test fixture
+        let trainer = RecordingFineTuningAdapter::new().with_local_artifact(adapter_file, ArtifactFormat::GgufLora).trained_on(stamp);
+        let transport = Arc::new(InProcessPeer::with_trainer(origin, peer_ledger, trainer));
+        let genome = tempfile::tempdir().expect("genome root"); // JUSTIFIED: test fixture
+        let offers = vec![(peer, offer(&[RECORDING_BASE_PREFIX], true), 10)];
+        let origin_over = |root: &std::path::Path, sha: &str| {
+            let offers = offers.clone();
+            GridPeerAdapter::new(transport.clone(), Arc::new(move || offers.clone()), Arc::new(|| 10u64), true, pull_at(transport.clone(), root, sha))
+        };
+        let adapter = origin_over(genome.path(), &base_sha);
+        let request = lora_request();
+        let attempt = Uuid::new_v4();
+        let binding = JobBinding { attempt: Some(attempt), dispatch: None, destination: Destination::Peer(peer) };
+        let handle = adapter.create_bound(request.clone(), &binding).await.expect("the peer took the lease"); // JUSTIFIED: test asserts the Ok arm
+        let job_dir = crate::genome::fine_tuning::job_dir::job_dir_under(genome.path(), &request.persona_name, &request.trait_kind, attempt);
+        assert!(job_dir.join("request.json").is_file(), "the request was recorded before the lease went out");
+
+        *transport.drop_range_at.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(u64::from(MAX_ARTIFACT_CHUNK)); // unwrap_or_else: a test fixture's poisoned flag still reads
+        let TrainingStatus::Completed { artifact } = settled(&adapter, &handle).await else {
+            panic!("the adapter came back"); // JUSTIFIED: test asserts the arm
+        };
+        let placed = job_dir.join("returned").join("adapter.gguf");
+        assert_eq!(artifact.local_path.as_deref(), Some(placed.as_path()));
+        assert_eq!(artifact.format, ArtifactFormat::GgufLora);
+        assert_eq!(std::fs::read(&placed).expect("placed"), bytes, "verified bytes, whole"); // JUSTIFIED: test asserts the bytes
+        let offsets = transport.ranges.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone(); // unwrap_or_else: a test fixture's poisoned log still reads
+        assert_eq!(offsets.iter().filter(|&&o| o == 0).count(), 1, "the lost reply resumed from the partial file: {offsets:?}");
+
+        let asked = offsets.len();
+        let restarted = origin_over(genome.path(), &base_sha);
+        assert!(matches!(settled(&restarted, &handle).await, TrainingStatus::Completed { .. }));
+        assert_eq!(transport.ranges.lock().unwrap_or_else(std::sync::PoisonError::into_inner).len(), asked, "a placed, verified file is not pulled again"); // unwrap_or_else: a test fixture's poisoned log still reads
+
+        let elsewhere = tempfile::tempdir().expect("another origin root"); // JUSTIFIED: test fixture
+        let other_base = origin_over(elsewhere.path(), "a-different-base");
+        let second = Uuid::new_v4();
+        let other_binding = JobBinding { attempt: Some(second), dispatch: None, destination: Destination::Peer(peer) };
+        let other_handle = other_base.create_bound(request, &other_binding).await.expect("the peer took the lease"); // JUSTIFIED: test asserts the Ok arm
+        assert!(matches!(settled(&other_base, &other_handle).await, TrainingStatus::Failed { error } if error.contains("not this node's")));
     }
 }
