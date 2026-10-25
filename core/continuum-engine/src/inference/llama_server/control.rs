@@ -25,6 +25,12 @@ pub enum LlamaServerError {
     /// ([[fallbacks-are-illegal-fail-loud]]).
     #[error("LoRA adapter file not found: {0}")]
     AdapterNotFound(String),
+    /// The incumbent engine could not be retired safely, so it was not signalled and still
+    /// runs: its residents' checkpoint custody refused, or its identity could not be verified
+    /// (card 931cfd22). Never a spawn failure: it neither condemns the incumbent nor rolls the
+    /// engine binary back.
+    #[error("retiring the incumbent engine was refused, nothing was signalled: {0}")]
+    RetirementRefused(String),
 }
 
 

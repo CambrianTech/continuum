@@ -525,6 +525,12 @@ async fn serve_or_adopt<C: LlamaServerControl + ?Sized>(
             }
         }
         Err(LlamaServerError::Superseded) => EnsureOutcome::Superseded,
+        // The incumbent could not be retired safely and was not signalled (card 931cfd22):
+        // keep serving on it when it is the target model and still proves it decodes; never
+        // condemn a working engine because a replacement was refused.
+        Err(LlamaServerError::RetirementRefused(why)) => {
+            keep_incumbent(ctrl, target, active.as_deref() == Some(target.model_id()), &why).await
+        }
         // One relaunch onto the restored engine; the engine is resolved per launch, so this
         // `serve` takes the slot the rollback made current.
         Err(reason) if roll_back_engine_after_failed_launch(&reason) => {
@@ -547,3 +553,42 @@ async fn serve_or_adopt<C: LlamaServerControl + ?Sized>(
         },
     }
 }
+
+/// The refusal last reported by [`keep_incumbent`], so an unchanged one is said once, not on
+/// every reconcile tick while the replacement keeps being wanted.
+static REPLACEMENT_REFUSED: parking_lot::Mutex<Option<String>> = parking_lot::Mutex::new(None);
+
+/// A replacement was refused before anything was signalled (card 931cfd22; enrico 2026-10-25:
+/// "adopted checkpoint requires a known pool" left a decoding engine unserved for 5 hours).
+/// The incumbent keeps serving only when it serves the target model AND passes the same decode
+/// proof adoption uses; anything else stays degraded, so a condemned engine is never
+/// advertised ready and a different model is never reported as the target.
+async fn keep_incumbent<C: LlamaServerControl + ?Sized>(
+    ctrl: &C,
+    target: &ServingTarget,
+    serves_target: bool,
+    why: &str,
+) -> EnsureOutcome {
+    if serves_target && ctrl.decode_smoke_ok().await {
+        let mut said = REPLACEMENT_REFUSED.lock();
+        if said.as_deref() != Some(why) {
+            continuum_base::probe!(target: "continuum_core::inference::llama_server", class = "serving.replace.refused_kept_incumbent",
+                model = target.model_id(),
+                why,
+                "the incumbent engine could not be retired safely and was not signalled: it \
+                 keeps serving (it decodes, on the target model); the replacement waits for its \
+                 custody to be satisfiable"
+            );
+            *said = Some(why.to_string());
+        }
+        return EnsureOutcome::AlreadyServing;
+    }
+    *REPLACEMENT_REFUSED.lock() = None;
+    EnsureOutcome::Degraded {
+        reason: format!(
+            "retiring the incumbent was refused ({why}) and it cannot serve the target: {}",
+            if serves_target { "it failed its decode proof" } else { "it serves another model" }
+        ),
+    }
+}
+
