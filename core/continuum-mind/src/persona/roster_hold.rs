@@ -57,7 +57,7 @@ impl RosterHold {
 }
 
 fn hold_path() -> Option<PathBuf> {
-    dirs::home_dir().map(|h| h.join(".continuum").join("roster-hold.json"))
+    crate::paths::continuum_home().ok().map(|h| h.join("roster-hold.json"))
 }
 
 /// The active hold, or `None` when absent, expired, or unreadable. An expired

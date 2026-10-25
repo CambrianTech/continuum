@@ -122,7 +122,7 @@ pub fn unregister(persona: Uuid) {
 /// Where her durable mind state lives: her peer dir beside the rest of what is hers.
 /// One definition, read by the region's boot and by her own writes to it.
 pub fn mind_dir(persona: Uuid) -> Option<std::path::PathBuf> {
-    crate::paths::home_dir().map(|home| home.join(".continuum/personas").join(persona.to_string()))
+    crate::paths::continuum_home().ok().map(|home| home.join("personas").join(persona.to_string()))
 }
 
 /// She took in `room` up to this line (a turn's trigger, or a line perceived mid-turn):
