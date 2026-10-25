@@ -182,12 +182,15 @@ pub(super) fn captured(
         std::sync::Mutex<std::collections::HashMap<(std::path::PathBuf, Uuid), Arc<JsonlPromptCaptureSink>>>,
     > = std::sync::LazyLock::new(Default::default);
     let dir = crate::cognition::capture::fixture_dir(FIXTURE_DIR).expect("the test home resolves"); // JUSTIFIED: test fixture
-    let sink = SINKS
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner) // unwrap_or_else: a panicked test leaves the map usable
+    let mut sinks = SINKS.lock().unwrap_or_else(std::sync::PoisonError::into_inner); // unwrap_or_else: a panicked test leaves the map usable
+    // Home-pinned tests run one at a time (HomeGuard): a sink of another home belongs to a
+    // finished test, and its handles go with it so its temp home can be removed.
+    sinks.retain(|(home, _), _| *home == dir);
+    let sink = sinks
         .entry((dir.clone(), persona))
         .or_insert_with(|| Arc::new(JsonlPromptCaptureSink::open(&dir, persona).expect("capture sink"))) // JUSTIFIED: test fixture
         .clone();
+    drop(sinks);
     let call = lived_call(&receipt);
     let prompt = PromptCall {
         request_id: receipt.submitted_request_id.clone(),

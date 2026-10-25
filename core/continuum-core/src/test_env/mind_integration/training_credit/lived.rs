@@ -46,7 +46,7 @@ pub(super) async fn an_incomplete_capture_waits_and_a_late_one_transfers_once() 
         persona,
         name,
         Uuid::new_v4(),
-        vec![late],
+        vec![late.clone()],
     ))
     .await;
     assert!(delayed.lived.is_none(), "unreadable at staging, so staged without it");
@@ -59,12 +59,21 @@ pub(super) async fn an_incomplete_capture_waits_and_a_late_one_transfers_once() 
         "the waiting row stays staged"
     );
 
+    // Exact recovery: the call submitted is the one captured for this receipt, whole: its
+    // request, her reasoning, her tool calls and her text, read back from its own cursor.
+    let written = lived_call(&late);
+    let (cursor, id) = (late.capture.clone(), delayed.id);
     let submit = continuum_client::mock::MockTransport::new();
-    script_settlement_reply(
-        &submit,
-        &delayed,
-        Some(json!({"success":true,"acceptance":{"submissionId":delayed.id,"replayed":false}})),
-    );
+    submit.respond_to("genome/training-trigger/submit", move |params| {
+        let examples = params["examples"].as_array().cloned().unwrap_or_default(); // unwrap_or_default: a missing list fails the length check
+        assert_eq!(examples.len(), 1, "one call, one example");
+        let lived = &examples[0]["lived"];
+        assert_eq!(lived["capture"], json!(cursor), "read back from this receipt's own cursor");
+        assert_eq!(lived["request"], serde_json::to_value(&written.request).unwrap(), "her exact request"); // JUSTIFIED: test fixture
+        assert_eq!(lived["response"], serde_json::to_value(&written.response).unwrap(), "her exact response: reasoning, tool calls, text"); // JUSTIFIED: test fixture
+        assert_eq!(examples[0]["completion"], json!(written.response.text));
+        Ok(json!({"success":true,"acceptance":{"submissionId":id,"replayed":false}}))
+    });
     let conn = settlement_connection(executor.clone(), persona, submit, None);
     assert!(
         settle_staged_row(&conn, &substrate, persona, name, &delayed, true).await.unwrap(), // JUSTIFIED: test asserts the Ok arm

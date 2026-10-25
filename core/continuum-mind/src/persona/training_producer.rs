@@ -118,7 +118,7 @@ pub mod test_support {
                     name: "code/read".into(),
                     input: serde_json::json!({"path": format!("src/{}.rs", receipt.submitted_request_id)}),
                 }]),
-                reasoning: None,
+                reasoning: Some(format!("the card names {}; read it before guessing", receipt.submitted_request_id)),
                 routing: None,
                 error: None,
                 timing: None,
