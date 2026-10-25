@@ -42,6 +42,7 @@ use job_create::{ERROR_KIND_CAPACITY_PARKED, ERROR_KIND_TRAINER_UNAVAILABLE};
 
 pub(crate) mod attempt_ledger;
 pub mod job_attempt_reconcile;
+pub mod lease;
 pub mod job_cancel;
 pub mod job_create;
 pub mod job_pause;
@@ -95,6 +96,11 @@ pub(crate) fn command_objects(
         Arc::new(job_attempt_reconcile::GenomeJobAttemptReconcile {
             attempts: Arc::clone(&attempts),
         }),
+        Arc::new(lease::GenomeLeaseTrain {
+            coordinator: Arc::clone(&coordinator),
+            attempts: Arc::clone(&attempts),
+        }),
+        Arc::new(lease::GenomeLeaseStatus { attempts: Arc::clone(&attempts) }),
         Arc::new(job_create::GenomeJobCreate {
             coordinator,
             attempts,
