@@ -67,25 +67,45 @@ pub fn continuum_home() -> Result<std::path::PathBuf, String> {
     if let Some(native) = NativeHomeOverride::current() {
         return Ok(native.join(".continuum"));
     }
-    std::env::var_os("CONTINUUM_HOME")
+    let home = set(std::env::var_os("CONTINUUM_HOME"))
         .map(std::path::PathBuf::from)
         .or_else(test_home)
         .or_else(|| dirs::home_dir().map(|h| h.join(".continuum")))
-        .ok_or_else(|| "no home dir".to_string())
+        .ok_or_else(|| "no home dir".to_string())?;
+    retired_root(set(std::env::var_os("CONTINUUM_ROOT")).as_deref(), &home)?;
+    Ok(home)
 }
 
-/// Resolve `~/.continuum/` (or `$CONTINUUM_ROOT` if set) for the
-/// substrate root. Matches the resolution in
-/// [`crate::modules::logger::LoggerModule::new`] — single source of
-/// truth would be nice but inline duplication is cheaper than a new
-/// crate-wide helper for two callers. If both are still around when
-/// a third caller appears, extract.
-pub fn continuum_root() -> std::path::PathBuf {
-    if let Ok(root) = std::env::var("CONTINUUM_ROOT") {
-        return std::path::PathBuf::from(root);
+/// An environment value that is set and not empty: an empty one is unset, as the shell's
+/// `${VAR:-default}` and `[ -n "$VAR" ]` read it, so the core and the lifecycle scripts never
+/// resolve two different homes from one environment (Codex on #5420).
+fn set(value: Option<std::ffi::OsString>) -> Option<std::ffi::OsString> {
+    value.filter(|v| !v.is_empty())
+}
+
+/// `$CONTINUUM_ROOT` was a second name for the continuum home and is no longer read (line 7). Set
+/// to anything but the home this process resolved, it would silently open another state tree, so
+/// it is refused, naming the one setting that keeps the operator on the tree they meant. Nothing
+/// is moved.
+fn retired_root(root: Option<&std::ffi::OsStr>, home: &std::path::Path) -> Result<(), String> {
+    match root {
+        Some(root) if std::path::Path::new(root) != home => Err(format!(
+            "$CONTINUUM_ROOT={} is no longer read: the continuum home is $CONTINUUM_HOME, else ~/.continuum ({} here). \
+             Set CONTINUUM_HOME={} to keep that tree, or unset CONTINUUM_ROOT; nothing was moved",
+            root.to_string_lossy(),
+            home.display(),
+            root.to_string_lossy()
+        )),
+        _ => Ok(()),
     }
-    let home = dirs::home_dir().expect("HOME directory is required to resolve CONTINUUM_ROOT"); // JUSTIFIED: no HOME means no persistent state at all: boot-fatal by design; 20+ callers need the infallible PathBuf
-    home.join(".continuum")
+}
+
+/// The substrate root, infallibly: the ONE continuum home, [`continuum_home`] (`$CONTINUUM_HOME`,
+/// else a test build's per-process home, else `~/.continuum`). It was a second owner reading
+/// `$CONTINUUM_ROOT` and then the real home, so its 39 callers' tests could write the operator's
+/// state (line 7 of the plan: one owner per fact).
+pub fn continuum_root() -> std::path::PathBuf {
+    continuum_home().expect("a home directory is required to resolve the continuum home") // JUSTIFIED: no home means no persistent state at all: boot-fatal by design; its callers need the infallible PathBuf
 }
 
 /// A TEST BINARY NEVER WRITES THE OPERATOR'S RECORDS (2026-09-20, the M5): a local
@@ -241,12 +261,42 @@ impl Drop for NativeHomeOverride {
 mod tests {
     use super::*;
 
+    // what this catches (line 7): two owners of the continuum home. The infallible root IS the
+    // home, so a test home (or $CONTINUUM_HOME) governs every caller of either.
     #[test]
-    fn continuum_root_respects_env_var() {
-        std::env::set_var("CONTINUUM_ROOT", "/tmp/test-root-12345");
-        let root = continuum_root();
-        assert_eq!(root, std::path::PathBuf::from("/tmp/test-root-12345"));
-        std::env::remove_var("CONTINUUM_ROOT");
+    fn the_root_is_the_one_continuum_home() {
+        let _home = crate::paths::test_home::HomeGuard::preserve_blocking(); // reads the process home a guarded fixture may be swapping (card cb3221a5)
+        assert_eq!(continuum_root(), continuum_home().expect("a test build always has a home")); // JUSTIFIED: test asserts the owner
+    }
+
+    // what this catches (Codex on #5420): the root escaping a test's isolation. Under a thread's
+    // native home override the root is that home's .continuum, never the operator's.
+    #[test]
+    fn the_root_follows_a_tests_native_home() {
+        let native = tempfile::tempdir().expect("native home"); // JUSTIFIED: test fixture
+        let _override = NativeHomeOverride::install(native.path());
+        assert_eq!(continuum_root(), native.path().join(".continuum"));
+    }
+
+    // what this catches (Codex on #5420): an operator's retired $CONTINUUM_ROOT silently ignored,
+    // so the core opens a different state tree. A root that is not the resolved home is refused,
+    // naming CONTINUUM_HOME=<that root>; one equal to the home, or none, passes.
+    #[test]
+    fn a_retired_root_that_names_another_tree_is_refused() {
+        let home = std::path::Path::new("/home/op/.continuum");
+        let refusal = retired_root(Some(std::ffi::OsStr::new("/srv/continuum")), home).expect_err("another tree"); // JUSTIFIED: test asserts the refusal
+        assert!(refusal.contains("CONTINUUM_HOME=/srv/continuum"), "{refusal}");
+        assert_eq!(retired_root(Some(home.as_os_str()), home), Ok(()));
+        assert_eq!(retired_root(None, home), Ok(()));
+    }
+
+    // what this catches (Codex on #5420): an empty CONTINUUM_HOME read as the path "" and an
+    // empty CONTINUUM_ROOT read as set, while the scripts read both as unset. Empty is unset.
+    #[test]
+    fn an_empty_value_is_unset_as_the_shell_reads_it() {
+        assert_eq!(set(Some(std::ffi::OsString::new())), None);
+        assert_eq!(set(None), None);
+        assert_eq!(set(Some("/srv/c".into())), Some("/srv/c".into()));
     }
 
     // what this catches (2026-09-20): a test binary resolving the OPERATOR's home — a

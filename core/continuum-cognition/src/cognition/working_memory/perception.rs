@@ -208,12 +208,12 @@ impl WorkingMemory {
         self.open_views.lock().out_of_scope(scope.as_deref())
     }
 
-    /// Every act she has a record of, oldest first, each in both renderings her context view
-    /// chooses between: `(seq, full, pointer)`. Full is the whole result while retained,
+    /// Every act she has a record of, oldest first, each in the renderings her context view
+    /// chooses between: `(seq, full, summary, pointer)`, the summary its shape's level (`continuum_context::levels`). Full is the whole result while retained,
     /// else what its pointer says; the pointer names the handle that reopens it, or is the
     /// ledger line when nothing was saved. The act still in flight is not among them (it
     /// rides whole as the newest message of the turn); the flag says whether there is one.
-    pub(crate) fn action_renderings(&self) -> (Vec<(u64, String, String)>, bool) {
+    pub(crate) fn action_renderings(&self) -> (Vec<(u64, String, Option<String>, String)>, bool) {
         let active = self.in_flight_action_seq();
         let actions = self.actions.lock();
         let in_flight = active.is_some_and(|seq| actions.get(seq).is_some());
@@ -236,7 +236,8 @@ impl WorkingMemory {
                     (None, None, None) => format!("[action #{}] {}", record.seq, record.operation),
                 };
                 let full = whole.unwrap_or_else(|| pointer.clone());
-                (record.seq, full, pointer)
+                let summary = record.summary.as_deref().map(|summary| format!("[result {attribution}{workspace} — summary; expand with tool/output] {summary}"));
+                (record.seq, full, summary, pointer)
             })
             .collect();
         (renderings, in_flight)

@@ -451,9 +451,8 @@ impl PersonaInstanceManagerModule {
     /// so callers can hand other modules a view of the same roster.
     /// `daemon_socket` comes from
     /// `modules::airc::AircModule`'s discovery.
-    /// `continuum_root` is where persona homes get carved out
-    /// (typically `~/.continuum/`, env-overridable via
-    /// `CONTINUUM_ROOT`). No room dep (#298): each persona's home room
+    /// `continuum_root` is where persona homes get carved out (the one
+    /// continuum home, `paths::continuum_home`). No room dep (#298): each persona's home room
     /// is her own durable subscription state, resolved inside
     /// [`PersonaAircRuntime::bootstrap`] — never the operator's
     /// discovered current room.

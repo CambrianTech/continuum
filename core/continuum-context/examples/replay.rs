@@ -97,7 +97,7 @@ impl Source<String> for Captured {
 fn item(key: String, text: String) -> Item<String> {
     let pointer: String = text.lines().next().unwrap_or_default().chars().take(185).collect();
     let pointer = if pointer.len() < text.len() { pointer } else { text.clone() };
-    Item { key, pointer: Some(pointer), full: text }
+    Item { key, pointer: Some(pointer), summary: None, full: text }
 }
 
 /// The one allocation, modelled: every source gets its floor, then the rest of `budget`
@@ -310,13 +310,14 @@ fn percent(values: &[f64]) -> String {
 
 /// Replay `cuts` (one resident's requests in one room, oldest first) through the view fitted
 /// to `window` characters for head, view and tail, turning over under `rule`.
-fn replay(label: &str, cuts: &[Cut], window: usize, (rule, placed): (Rule, Order), keyed_turn: bool, trace: bool) -> Result<(), Box<dyn std::error::Error>> {
+fn replay(label: &str, cuts: &[Cut], window: usize, (rule, placed): (Rule, Order), keyed_turn: bool, admit: bool, trace: bool) -> Result<(), Box<dyn std::error::Error>> {
     let mut view: Option<View<String>> = None;
     let mut previous_sent: Option<&str> = None;
     let mut previous_head: Option<&str> = None;
     let mut head_changes = 0usize;
     let mut previous_view = String::new();
     let (mut sent_share, mut view_share, mut view_prefill, mut turnovers) = (Vec::new(), Vec::new(), Vec::new(), 0usize);
+    let mut admitted = 0usize;
     // What each source appended per act, and the fresh tail: where the prefill goes.
     let mut held: BTreeMap<(String, String), String> = BTreeMap::new();
     let mut appended: BTreeMap<String, usize> = BTreeMap::new();
@@ -360,6 +361,11 @@ fn replay(label: &str, cuts: &[Cut], window: usize, (rule, placed): (Rule, Order
             let whole: usize = continuum_context::view::claims(&refs).iter().map(|c| c.full_chars).sum();
             eprintln!("  act: view {} chars (head included) of {} it may hold; sources whole {whole}, tail {tail_chars}", open.chars(), head_chars + available);
         }
+        // Admission first (`View::readmit`, the core's `fit_view`): an arrival too large for
+        // what the act grants arrives as its pointer, and only a view still over turns over.
+        if admit && open.chars() > head_chars + available && open.readmit(&refs, head_chars + available, (head_chars + available) / 2).is_some() && open.chars() <= head_chars + available {
+            admitted += 1;
+        }
         if open.chars() > head_chars + available {
             let per_act = open.appended_per_act();
             open.turn_over(vec![cut.head.clone()], &refs, |claims| start(rule, claims, available, per_act))?;
@@ -377,8 +383,8 @@ fn replay(label: &str, cuts: &[Cut], window: usize, (rule, placed): (Rule, Order
         previous_view = rendered;
     }
     println!(
-        "{label} [{rule:?}, {placed:?}{}]\n  {} requests, window {window} chars, {turnovers} turnovers, {head_changes} head changes\n  shared prefix per act, %: as sent [{}] mean {:.0} median {:.0}\n  shared prefix per act, %: the view [{}] mean {:.0} median {:.0}\n  the view's prefill per act, chars: median {:.0} mean {:.0}; fresh tail median {:.0} chars",
-        if keyed_turn { ", standing turn text keyed into the epoch" } else { "" },
+        "{label} [{rule:?}, {placed:?}{}]\n  {} requests, window {window} chars, {turnovers} turnovers, {admitted} admitted as pointers, {head_changes} head changes\n  shared prefix per act, %: as sent [{}] mean {:.0} median {:.0}\n  shared prefix per act, %: the view [{}] mean {:.0} median {:.0}\n  the view's prefill per act, chars: median {:.0} mean {:.0}; fresh tail median {:.0} chars",
+        format!("{}{}", if keyed_turn { ", standing turn text keyed into the epoch" } else { "" }, if admit { ", admission" } else { "" }),
         cuts.len(),
         percent(&sent_share),
         100.0 * mean(&sent_share),
@@ -487,7 +493,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cuts: Vec<Cut> = rows.iter().zip(&sent_tools).map(|(row, tools)| cut(&row["request"], tools, keyed_turn)).collect();
     for rule in [Rule::Whole, Rule::Reserved] {
         for placed in [Order::ConversationFirst, Order::SettledFirst] {
-            replay(&label, &cuts, window, (rule, placed), keyed_turn, trace)?;
+            for admit in [false, true] {
+                replay(&label, &cuts, window, (rule, placed), keyed_turn, admit, trace)?;
+            }
         }
     }
     Ok(())

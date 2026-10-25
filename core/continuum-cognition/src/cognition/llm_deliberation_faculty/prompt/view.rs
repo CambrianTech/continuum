@@ -418,6 +418,7 @@ impl LlmDeliberationFaculty {
         // Her view within what the allocation granted its sources (`epoch.rs`): the only place
         // it is ever collapsed.
         self.fit_view(&mut all_messages, view, &plan, view_room as usize, calibration);
+        self.view_sent();
         // Her view as the allocation sized it: the fit below never cuts it.
         let view_len = all_messages.grounding_at;
 

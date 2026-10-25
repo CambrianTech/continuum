@@ -272,6 +272,21 @@ It documents what a persona actually IS (embodied, multi-modal, tool-using, cont
 
 **The cost of skipping this doc and re-inferring the architecture from the bypass is rebuilding a chatbot in place of a year of substrate work.** Don't.
 
+## 🛑 STOP — If You Are About To Add Anything A Mind Perceives (a prompt block, a result, a view, a layer)
+
+**Required first read:** [docs/architecture/MIND-CONTEXT-AND-ENGINE-CONFIG.md](docs/architecture/MIND-CONTEXT-AND-ENGINE-CONFIG.md), "one codec for every layer" and "How to add a layer".
+
+A mind's context has ONE codec, `continuum-context`, built like a video codec over mipmaps:
+- keyed items that only append within an epoch;
+- levels of detail generated from each item's shape (`levels::summarize`: Code, Output, List);
+- admission instead of turnovers;
+- collapse only at a start, oldest first, never her newest;
+- a restart order measured per mind (`motion`).
+
+A new layer implements `Source`, builds its items with `levels`, and gets caching, levels and ordering for free. Never push a prompt message by hand, collapse outside the view, or order by a label. The source-hygiene ratchets `prompt_messages_outside_the_view`, `collapse_outside_the_view` and `hand_churn_labels` fail any PR that adds one.
+
+**The cost of skipping this:** Aiko read one 51,827-char file whole 9 times in 43 acts (the M5, 2026-10-25), because three owners each decided a piece of what she saw.
+
 ## 🛑 STOP — If You Are About To Add a Monitor, Broker, Pool, Region, Or Any Concurrent Concern
 
 **Required first read** before adding ANY new tokio task, watch channel, pressure source, resource pool, brain region, or background tick — or before touching any file under `core/continuum-core/src/{runtime,paging,system_resources}/`:

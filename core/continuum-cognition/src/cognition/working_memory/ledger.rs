@@ -331,6 +331,7 @@ impl WorkingMemory {
                     scope: scope.clone(),
                     operation: label,
                     head: Some(archive_head(seq, a, &acts, budget.trail_head_chars())),
+                    summary: result_summary(&tail),
                     result: Some(tail),
                     handle,
                     written_pointer: None,
@@ -468,4 +469,11 @@ pub(super) fn call_args(input: &serde_json::Value, value_chars: usize) -> String
         }
     }
     shown(input, value_chars).to_string()
+}
+
+/// A result's summary level: a numbered read's outline, else an output's head and tail; `None`
+/// when neither costs at most a quarter of it (`continuum_context::levels`).
+fn result_summary(result: &str) -> Option<String> {
+    use continuum_context::levels::{summarize, Shape};
+    summarize(result, Shape::Code(&crate::code::file_engine::gutter_split)).or_else(|| summarize(result, Shape::Output))
 }

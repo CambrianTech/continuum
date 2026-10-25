@@ -138,7 +138,7 @@ mod ops;
 mod suggest;
 use apply::*;
 use edit_checks::*;
-pub use edit_checks::gutter_line_number;
+pub use edit_checks::{gutter_line_number, gutter_split};
 use suggest::*;
 
 #[cfg(test)]
