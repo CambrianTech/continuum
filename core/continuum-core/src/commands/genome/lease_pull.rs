@@ -200,6 +200,17 @@ impl LeasePull {
             let job = Pull { peer, attempt, artifact, source, pulls: pulls.clone() };
             match job.run(&base_digest, root.as_ref()).await {
                 Ok((path, pinned)) => {
+                    continuum_base::probe!(
+                        class = "genome.lease.returned",
+                        peer = %peer,
+                        attempt = %attempt,
+                        file_sha256 = %pinned.files.first().map_or("", |f| f.sha256.as_str()), // map_or: a placed pull always has its one file; the probe never invents one
+                        bytes = pinned.files.first().map_or(0, |f| f.bytes), // map_or: as above
+                        base = %pinned.base.model_id,
+                        base_source_sha256 = %pinned.base.source_sha256,
+                        placed = %path.display(),
+                        "a leased adapter came back verified and is placed in its job directory, for the sentinel to adopt"
+                    );
                     pulls.insert(attempt, PullState::Placed { path, pinned: Box::new(pinned) });
                 }
                 Err(PullError::Final(why)) => {

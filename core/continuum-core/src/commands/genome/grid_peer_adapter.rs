@@ -173,10 +173,21 @@ impl FineTuningAdapter for GridPeerAdapter {
         self.pull
             .record_request(*peer, attempt, &request)
             .map_err(|e| FineTuningError::TrainerUnavailable(format!("the lease's request could not be recorded here, nothing sent: {e}")))?;
+        let (persona, base) = (request.persona_name.clone(), request.base_model.clone());
         let params = serde_json::to_value(LeaseTrainParams { attempt, dispatch: binding.dispatch, request }) // lease wire boundary: the request crosses the grid as JSON
             .map_err(|e| FineTuningError::InvalidRequest(e.to_string()))?;
         match decode::<LeaseTrainOutcome>("genome/lease/train", self.ask(*peer, "genome/lease/train", params).await?)? {
-            LeaseTrainOutcome::Created { .. } => Ok(lease_handle(*peer, attempt)),
+            LeaseTrainOutcome::Created { .. } => {
+                continuum_base::probe!(
+                    class = "genome.lease.sent",
+                    peer = %peer,
+                    attempt = %attempt,
+                    persona = %persona,
+                    base = %base,
+                    "a LoRA job is leased to a grid peer: it trains there and its adapter comes back here"
+                );
+                Ok(lease_handle(*peer, attempt))
+            }
             // The peer started nothing: a refusal settles the attempt (it may be retried).
             LeaseTrainOutcome::Refused { error_kind, error } => {
                 Err(FineTuningError::ProviderRejected(format!("peer {peer} refused the lease ({error_kind}): {error}")))
