@@ -41,7 +41,7 @@ impl<'a> MemoryStreams<'a> {
 }
 
 /// Who a message of her view speaks as: her own voice, or anyone else's.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum Role {
     User,
     Assistant,
@@ -58,7 +58,7 @@ impl Role {
 
 /// One message of her context view: who it speaks as, and what it says. Serializable, so her
 /// view is saved with her working memory and survives a restart.
-#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct ContextMessage {
     pub role: Role,
     pub text: String,

@@ -34,6 +34,7 @@ impl Source<String> for Fake {
             .map(|(key, text)| Item {
                 key: key.clone(),
                 full: text.clone(),
+                summary: None,
                 pointer: Some(format!("[{key}: {} chars, reopen by key]", text.len())),
             })
             .collect()
@@ -41,7 +42,7 @@ impl Source<String> for Fake {
     fn retired(&self) -> Vec<Item<String>> {
         self.retired
             .iter()
-            .map(|(key, text)| Item { key: key.clone(), full: text.clone(), pointer: Some(text.clone()) })
+            .map(|(key, text)| Item { key: key.clone(), full: text.clone(), summary: None, pointer: Some(text.clone()) })
             .collect()
     }
 }
@@ -178,7 +179,7 @@ fn an_item_without_a_pointer_leaves_the_view_when_collapsed() {
             1
         }
         fn items(&self) -> Vec<Item<String>> {
-            self.0.iter().map(|t| Item { key: (*t).to_owned(), full: (*t).to_owned(), pointer: None }).collect()
+            self.0.iter().map(|t| Item { key: (*t).to_owned(), full: (*t).to_owned(), summary: None, pointer: None }).collect()
         }
     }
     let mut turns = Turns(vec!["one", "two", "three"]);
@@ -207,4 +208,64 @@ fn a_restored_view_renders_the_same_bytes_and_keeps_appending() {
     restored.advance(&[&actions]);
     assert!(rendered(&restored).starts_with(&before), "the next act only appends");
     assert!(!rendered(&restored).contains(&"x".repeat(9_000)), "a collapsed item stays collapsed");
+}
+
+// what this catches: an oversized arrival forcing a turnover. A whole-file read arrived in full
+// and restarted the epoch (Aiko, the M5, 2026-10-25: 11 turnovers in 43 acts); admitted as its
+// pointer, the prompt before it is unchanged.
+#[test]
+fn an_oversized_arrival_is_admitted_as_its_pointer_and_the_prefix_holds() -> Result<(), GrantMismatch> {
+    let mut results = Fake::new("results", 1);
+    results.push("r1", "small result");
+    let (mut view, _) = View::start(Vec::new(), &[&results as &dyn Source<String>], |c| c.iter().map(|c| c.full_chars).collect())?;
+    let before: Vec<String> = view.render().cloned().collect();
+    results.push("r2", &"x".repeat(51_827));
+    view.advance(&[&results]);
+    let limit = before.iter().map(String::len).sum::<usize>() + 200;
+    assert!(view.readmit(&[&results], limit).is_some(), "the unsent act is held");
+    let after: Vec<String> = view.render().cloned().collect();
+    assert!(after.starts_with(&before), "admission rewrote the prefix");
+    assert!(view.chars() <= limit, "the view exceeds what the act granted: {}", view.chars());
+    assert_eq!(after.last().map(String::as_str), Some("[r2: 51827 chars, reopen by key]"));
+    Ok(())
+}
+
+/// A source whose items carry a summary level, like a file read's outline.
+struct Leveled(Vec<(&'static str, String, String)>);
+
+impl Source<String> for Leveled {
+    fn name(&self) -> &str {
+        "reads"
+    }
+    fn priority(&self) -> u8 {
+        1
+    }
+    fn items(&self) -> Vec<Item<String>> {
+        self.0
+            .iter()
+            .map(|(key, full, summary)| Item {
+                key: (*key).to_owned(),
+                full: full.clone(),
+                summary: Some(summary.clone()),
+                pointer: Some(format!("[{key}]")),
+            })
+            .collect()
+    }
+}
+
+// what this catches: one item too large to keep whole collapsing every older one with it. The
+// file she is working on keeps its outline and her small results stay whole (Aiko, the M5,
+// 2026-10-25: 9 whole reads of one 51,827-char file in 43 acts, each after a start that
+// collapsed everything).
+#[test]
+fn an_item_too_large_to_keep_whole_takes_its_summary_and_older_items_stay_whole() -> Result<(), GrantMismatch> {
+    let reads = Leveled(vec![
+        ("small", "a small result".to_owned(), "small".to_owned()),
+        ("file", "x".repeat(51_827), "outline of the file".to_owned()),
+    ]);
+    let (view, start) = View::start(Vec::new(), &[&reads as &dyn Source<String>], |_| vec![200])?;
+    let rendered: Vec<String> = view.render().cloned().collect();
+    assert_eq!(rendered, ["a small result", "outline of the file"]);
+    assert_eq!((start.collapsed, start.summarized), (0, 1));
+    Ok(())
 }

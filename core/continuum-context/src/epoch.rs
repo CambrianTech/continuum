@@ -12,7 +12,7 @@ pub struct SourceId(pub String);
 
 /// What a block holds: plain text, or a caller's richer rendering (a role-tagged message).
 /// The epoch compares blocks for equality and counts their characters; nothing else.
-pub trait Block: Clone + PartialEq {
+pub trait Block: Clone + PartialEq + std::hash::Hash {
     /// Characters this block costs the view, the unit [`Epoch::superseded_chars`] counts.
     fn chars(&self) -> usize;
 }
@@ -42,6 +42,13 @@ pub enum Observed {
     Unchanged,
     /// Appended as a new version at the end of the view.
     Appended { version: u32 },
+}
+
+/// A point in an epoch's events: what [`Epoch::rewind`] returns it to.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct Mark {
+    events: usize,
+    superseded_chars: usize,
 }
 
 /// A mind's view for one epoch.
@@ -93,6 +100,23 @@ impl<T: Block> Epoch<T> {
         let version = self.events[i].version + 1;
         self.events.push(Event { source, version, text: notice, retired: true });
         Observed::Appended { version }
+    }
+
+    /// Where the view stands now, to [`Epoch::rewind`] to before anything is sent from it.
+    pub(crate) fn mark(&self) -> Mark {
+        Mark { events: self.events.len(), superseded_chars: self.superseded_chars }
+    }
+
+    /// Drop what was appended since `mark`. Only for an act whose prompt was never sent: the
+    /// engine holds nothing past the mark, so nothing it cached moves.
+    pub(crate) fn rewind(&mut self, mark: Mark) {
+        self.events.truncate(mark.events);
+        self.superseded_chars = mark.superseded_chars;
+    }
+
+    /// Whether `source` has a version in this epoch.
+    pub(crate) fn holds(&self, source: &SourceId) -> bool {
+        self.events.iter().any(|e| &e.source == source)
     }
 
     /// The view in order: the head, then every event as it arrived.

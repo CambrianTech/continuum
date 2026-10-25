@@ -331,6 +331,7 @@ impl WorkingMemory {
                     scope: scope.clone(),
                     operation: label,
                     head: Some(archive_head(seq, a, &acts, budget.trail_head_chars())),
+                    outline: crate::code::file_engine::outline(&tail),
                     result: Some(tail),
                     handle,
                     written_pointer: None,

@@ -17,7 +17,7 @@ pub(crate) struct Notices<'a> {
 /// A notice is required input: collapsed, it is still itself, so no grant can drop it.
 fn required(key: String, text: String) -> Item<ContextMessage> {
     let message = ContextMessage::user(text);
-    Item { key, full: message.clone(), pointer: Some(message) }
+    Item { key, full: message.clone(), summary: None, pointer: Some(message) }
 }
 
 impl Source<ContextMessage> for Notices<'_> {

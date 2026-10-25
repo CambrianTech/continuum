@@ -36,6 +36,7 @@ impl Source<ContextMessage> for Conversation {
                 // Collapsed, a turn leaves her view: the room's history holds it, and the
                 // `[context]` fact says how many turns the room offered. A one-line pointer would
                 // weigh about what a short turn does, saving nothing.
+                summary: None,
                 pointer: None,
             })
             .collect()

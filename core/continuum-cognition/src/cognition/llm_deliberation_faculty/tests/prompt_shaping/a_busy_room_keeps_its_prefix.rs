@@ -27,7 +27,7 @@ impl Source<String> for Stream {
     fn items(&self) -> Vec<Item<String>> {
         self.items
             .iter()
-            .map(|(key, text)| Item { key: key.clone(), full: text.clone(), pointer: Some(format!("[{key} collapsed]")) })
+            .map(|(key, text)| Item { key: key.clone(), full: text.clone(), summary: None, pointer: Some(format!("[{key} collapsed]")) })
             .collect()
     }
 }
