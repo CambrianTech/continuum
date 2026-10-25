@@ -14,16 +14,18 @@
 //! tokenization). Only the header is read, never the weights.
 
 use std::collections::BTreeMap;
-use std::path::Path;
 
 use candle_core::quantized::gguf_file::Content;
 use sha2::{Digest, Sha256};
 
-/// The LoRA-compatibility digest of the GGUF at `path` (lowercase hex SHA-256).
-pub fn lora_base_fingerprint(path: &Path) -> Result<String, String> {
-    let mut file = std::fs::File::open(path).map_err(|e| format!("{}: {e}", path.display()))?;
-    let content = Content::read(&mut file).map_err(|e| format!("{}: not a readable GGUF header: {e}", path.display()))?;
-    fingerprint_of(&content).map_err(|e| format!("{}: {e}", path.display()))
+/// The LoRA-compatibility digest (lowercase hex SHA-256) of an open GGUF, read from its start.
+/// The handle is left wherever the header ends, so a caller reading the whole file again seeks
+/// back first. Taking a handle, not a path, lets a caller read the header through the same
+/// handle it proved to be the file it means (`WeightsStamp::read_verified`).
+pub fn lora_base_fingerprint<R: std::io::Read + std::io::Seek>(reader: &mut R) -> Result<String, String> {
+    reader.seek(std::io::SeekFrom::Start(0)).map_err(|e| e.to_string())?;
+    let content = Content::read(reader).map_err(|e| format!("not a readable GGUF header: {e}"))?;
+    fingerprint_of(&content)
 }
 
 fn fingerprint_of(content: &Content) -> Result<String, String> {

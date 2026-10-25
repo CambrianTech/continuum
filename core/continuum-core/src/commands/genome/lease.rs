@@ -514,7 +514,7 @@ mod tests {
         assert_eq!(artifact.files.len(), 1);
         assert_eq!(artifact.files[0].sha256, format!("{:x}", Sha256::digest(b"lora")));
         assert_eq!(artifact.base.model_id, "qwen");
-        assert_eq!(artifact.base.fingerprint, crate::inference_capability::gguf_fingerprint::lora_base_fingerprint(&base).expect("digest")); // JUSTIFIED: test asserts the base
+        assert_eq!(artifact.base.fingerprint, crate::inference_capability::gguf_fingerprint::lora_base_fingerprint(&mut std::fs::File::open(&base).expect("open")).expect("digest")); // JUSTIFIED: test asserts the base
         assert_eq!(artifact.base.source_sha256, format!("{:x}", Sha256::digest(std::fs::read(&base).expect("read")))); // JUSTIFIED: test asserts the base
 
         std::fs::write(&adapter_file, b"replaced").expect("write"); // JUSTIFIED: test fixture

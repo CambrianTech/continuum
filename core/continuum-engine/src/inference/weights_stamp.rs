@@ -16,7 +16,6 @@ use std::io;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 
 /// The weights file a lane was launched on.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -64,9 +63,11 @@ impl WeightsStamp {
         })
     }
 
-    /// SHA-256 of the stamped file's bytes, read through ONE handle that is proved to be the
-    /// stamped file before the read and unchanged after it. Anything else is refused.
-    pub fn content_sha256(&self) -> Result<String, StampRefusal> {
+    /// Read the stamped file through ONE handle that is proved to be the stamped file before
+    /// `read` runs and unchanged after it. A path that names another file, or none, is
+    /// `Changed` whatever `read` reported, so a replacement is never mistaken for a read error;
+    /// only then is `read`'s own failure `Unreadable`.
+    pub fn read_verified<T>(&self, read: impl FnOnce(&mut File) -> Result<T, String>) -> Result<T, StampRefusal> {
         let unreadable = |e: io::Error| StampRefusal::Unreadable(format!("{}: {e}", self.path.display()));
         let mut file = match File::open(&self.path) {
             Ok(file) => file,
@@ -76,10 +77,9 @@ impl WeightsStamp {
             Err(e) => return Err(unreadable(e)),
         };
         self.same_as(&file).map_err(unreadable)??;
-        let mut hasher = Sha256::new();
-        io::copy(&mut file, &mut hasher).map_err(unreadable)?;
+        let outcome = read(&mut file);
         self.same_as(&file).map_err(unreadable)??;
-        Ok(format!("{:x}", hasher.finalize()))
+        outcome.map_err(|e| StampRefusal::Unreadable(format!("{}: {e}", self.path.display())))
     }
 
     fn same_as(&self, file: &File) -> io::Result<Result<(), StampRefusal>> {
@@ -95,10 +95,20 @@ impl WeightsStamp {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use sha2::{Digest, Sha256};
+
+    fn sha(stamp: &WeightsStamp) -> Result<String, StampRefusal> {
+        stamp.read_verified(|file| {
+            let mut hasher = Sha256::new();
+            io::copy(file, &mut hasher).map_err(|e| e.to_string())?;
+            Ok(format!("{:x}", hasher.finalize()))
+        })
+    }
 
     // what this catches (Codex on #5418): an adapter trained on file A credited to whatever the
-    // path holds later. The stamped file hashes; the path replaced by another file (same size)
-    // is refused, never hashed as the training base; a missing file is refused as changed.
+    // path holds later. The stamped file reads; the path replaced by another file (same size)
+    // is Changed, never read as the training base, even when the reader would have failed on
+    // it; a missing file is Changed, not Unreadable.
     #[test]
     fn only_the_stamped_file_is_vouched_for() {
         let dir = tempfile::tempdir().expect("dir"); // JUSTIFIED: test fixture
@@ -106,11 +116,13 @@ mod tests {
         std::fs::write(&path, b"weights-a").expect("write"); // JUSTIFIED: test fixture
         std::fs::write(&other, b"weights-b").expect("write"); // JUSTIFIED: test fixture
         let stamp = WeightsStamp::of(&path).expect("stamp"); // JUSTIFIED: test fixture
-        assert_eq!(stamp.content_sha256(), Ok(format!("{:x}", Sha256::digest(b"weights-a"))));
+        assert_eq!(sha(&stamp), Ok(format!("{:x}", Sha256::digest(b"weights-a"))));
+        assert!(matches!(stamp.read_verified(|_| Err::<(), _>("parse failed".into())), Err(StampRefusal::Unreadable(_))), "the stamped file's own read failure may pass");
 
         std::fs::rename(&other, &path).expect("replace"); // JUSTIFIED: test fixture
-        assert!(matches!(stamp.content_sha256(), Err(StampRefusal::Changed(_))), "a replaced path is another file");
+        assert!(matches!(sha(&stamp), Err(StampRefusal::Changed(_))), "a replaced path is another file");
+        assert!(matches!(stamp.read_verified(|_| Err::<(), _>("parse failed".into())), Err(StampRefusal::Changed(_))), "a replacement outranks the reader's error");
         std::fs::remove_file(&path).expect("remove"); // JUSTIFIED: test fixture
-        assert!(matches!(stamp.content_sha256(), Err(StampRefusal::Changed(_))));
+        assert!(matches!(sha(&stamp), Err(StampRefusal::Changed(_))));
     }
 }

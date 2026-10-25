@@ -6,6 +6,7 @@
 //! The manifest is computed once, when the job is first seen completed, and recorded on the
 //! lease row: every later report, and every byte served, is checked against that one record.
 
+use std::io::Seek;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -94,13 +95,22 @@ pub(crate) async fn describe(artifact: &TrainingArtifact, base_model: &str) -> R
             .map(|(name, path)| hash_file(name, &path))
             .collect::<Result<Vec<_>, String>>()
             .map_err(DescribeError::Unread)?;
-        let fingerprint = lora_base_fingerprint(&stamp.path).map_err(DescribeError::Unread)?;
-        // After the header read: the stamped file is proved unchanged around the hash.
-        let source = stamp.content_sha256().map_err(|refusal| match refusal {
-            StampRefusal::Changed(why) => DescribeError::Unreturnable(format!("the base the trainer read is gone: {why}")),
-            StampRefusal::Unreadable(why) => DescribeError::Unread(why),
-        })?;
-        Ok::<_, DescribeError>((files, (source, fingerprint)))
+        // Header and bytes through ONE handle proved to be the stamped file around both reads:
+        // a base deleted or replaced (even by something that is not a GGUF) is final, never a
+        // retryable read error (Codex on #5418).
+        let base = stamp
+            .read_verified(|file| {
+                let fingerprint = lora_base_fingerprint(file)?;
+                file.seek(std::io::SeekFrom::Start(0)).map_err(|e| e.to_string())?;
+                let mut hasher = Sha256::new();
+                std::io::copy(file, &mut hasher).map_err(|e| e.to_string())?;
+                Ok((format!("{:x}", hasher.finalize()), fingerprint))
+            })
+            .map_err(|refusal| match refusal {
+                StampRefusal::Changed(why) => DescribeError::Unreturnable(format!("the base the trainer read is gone: {why}")),
+                StampRefusal::Unreadable(why) => DescribeError::Unread(why),
+            })?;
+        Ok::<_, DescribeError>((files, base))
     })
     .await
     .map_err(|e| DescribeError::Unread(format!("hashing task failed: {e}")))??;
@@ -164,7 +174,7 @@ mod tests {
         assert_eq!(recorded.artifact.files[0].sha256, format!("{:x}", Sha256::digest(b"lora")));
         let base_bytes = std::fs::read(&base).expect("read"); // JUSTIFIED: test fixture
         assert_eq!(recorded.artifact.base.source_sha256, format!("{:x}", Sha256::digest(&base_bytes)));
-        assert_eq!(recorded.artifact.base.fingerprint, lora_base_fingerprint(&sibling).expect("digest"), "a same-header sibling is compatible, never the same base"); // JUSTIFIED: test asserts the digest
+        assert_eq!(recorded.artifact.base.fingerprint, lora_base_fingerprint(&mut std::fs::File::open(&sibling).expect("open")).expect("digest"), "a same-header sibling is compatible, never the same base"); // JUSTIFIED: test asserts the digest
         let wire = serde_json::to_string(&recorded.artifact).expect("encode"); // JUSTIFIED: test asserts the wire shape
         assert!(!wire.contains(&dir.path().display().to_string()), "neither the adapter's nor the base's path crosses");
 
@@ -173,6 +183,13 @@ mod tests {
             matches!(describe(&artifact, "qwen").await, Err(DescribeError::Unreturnable(e)) if e.contains("gone")),
             "trained on A, the path now holds B: refused, never reported as B"
         );
+        std::fs::write(&base, b"not a gguf").expect("write"); // JUSTIFIED: test fixture
+        assert!(
+            matches!(describe(&artifact, "qwen").await, Err(DescribeError::Unreturnable(e)) if e.contains("gone")),
+            "replaced by something that is not a GGUF: final, never a retryable header error"
+        );
+        std::fs::remove_file(&base).expect("remove"); // JUSTIFIED: test fixture
+        assert!(matches!(describe(&artifact, "qwen").await, Err(DescribeError::Unreturnable(e)) if e.contains("gone")), "deleted: final");
 
         let unstamped = TrainingArtifact { metrics: JobMetrics::default(), ..artifact.clone() };
         assert!(matches!(describe(&unstamped, "qwen").await, Err(DescribeError::Unreturnable(e)) if e.contains("no base weights")));
