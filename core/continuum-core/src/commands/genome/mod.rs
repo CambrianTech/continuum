@@ -280,6 +280,7 @@ mod tests {
             Arc::new(crate::genome::fine_tuning::TrainingJobBoard::default()),
             Arc::new(tempfile::tempdir().unwrap()),
         );
-        assert_eq!(objs.len(), 10);
+        assert_eq!(objs.len(), 11);
+        assert!(objs.iter().any(|c| c.name() == "genome/lease/artifact"), "the lease's artifact ranges are served");
     }
 }

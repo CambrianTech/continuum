@@ -111,6 +111,10 @@ enum PullState {
 }
 
 /// The origin's pulls, one per leased attempt.
+///
+/// Lifecycle invariant: ONE `LeasePull` writes a given genome root (production builds it once,
+/// in `GridPeerAdapter::on_grid` at boot). Its per-attempt locks serialize recording and its map
+/// single-flights pulls only among the callers of that one instance (Codex on #5419).
 pub struct LeasePull {
     source: Arc<dyn ArtifactSource>,
     base_digest: BaseDigest,
