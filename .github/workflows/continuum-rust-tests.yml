@@ -24,6 +24,7 @@ jobs:
       crates: ${{ steps.select.outputs.crates }}
       features: ${{ steps.select.outputs.features }}
       cli: ${{ steps.select.outputs.cli }}
+      bins: ${{ steps.select.outputs.bins }}
     steps:
       - uses: actions/checkout@v4
       - run: node --test tools/scripts/tests/ci-change-scope.test.cjs tools/scripts/tests/ci-cargo-freshness.test.cjs
@@ -54,12 +55,13 @@ jobs:
             } catch (error) {
               core.warning(`Cannot classify changes; running all checks: ${error.message}`);
             }
-            core.info(`Selected crates: ${selection.crates.join(', ') || '(none)'}; CLI handoff: ${selection.cli}`);
+            core.info(`Selected crates: ${selection.crates.join(', ') || '(none)'}; CLI handoff: ${selection.cli}; binaries: ${JSON.stringify(selection.bins)}`);
             core.setOutput('rust', String(selection.rust));
             core.setOutput('installer', String(selection.installer));
             core.setOutput('crates', JSON.stringify(selection.crates));
             core.setOutput('features', JSON.stringify(TEST_FEATURES));
             core.setOutput('cli', String(selection.cli));
+            core.setOutput('bins', JSON.stringify(selection.bins));
 
   # One job per affected crate, in parallel (card 44a3c460). The selector derives the set:
   # every crate a changed path lies in plus all of its dependents, from the Cargo.toml graph.
@@ -133,6 +135,17 @@ jobs:
             ${{ env.CONTINUUM_CARGO_TIMINGS }}
           if-no-files-found: ignore
           retention-days: 1
+
+      # ---- the declared binaries this change touches (card 67bf5d81): a lib build never compiles
+      # a bin, so a PR editing src/main.rs otherwise reached canary uncompiled ----
+      - name: cargo check the binaries this change touches
+        if: ${{ fromJSON(needs.changes.outputs.bins || '{}')[matrix.crate] != null }}
+        env:
+          BINS: ${{ join(fromJSON(needs.changes.outputs.bins || '{}')[matrix.crate], ' ') }}
+        run: |
+          args=()
+          for bin in $BINS; do args+=(--bin "$bin"); done
+          cargo check -p "$CRATE" --profile dev-fast --features "$FEATURES" "${args[@]}"
 
       # ---- continuum-kernel: lib tests ----
       - name: cargo test -p continuum-kernel --lib

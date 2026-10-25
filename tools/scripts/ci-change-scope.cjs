@@ -63,18 +63,20 @@ function readWorkspace(root = '.') {
   const members = strip(read('Cargo.toml')).match(/^\s*members\s*=\s*\[([^\]]*)\]/m);
   if (!members) throw new Error('Cannot read workspace members from Cargo.toml');
   const crates = [...members[1].matchAll(/"([^"]+)"/g)].map(([, dir]) => {
-    let section = ''; let name = null; const deps = new Set();
+    let section = ''; let name = null; const deps = new Set(); const bins = [];
     for (const line of strip(read(`${dir}/Cargo.toml`)).split('\n')) {
       const header = line.match(/^\s*\[+([^\]]+)\]+/);
-      if (header) { section = header[1].trim(); continue; }
+      if (header) { section = header[1].trim(); if (section === 'bin') bins.push({}); continue; }
       if (section === 'package' && !name) name = line.match(/^\s*name\s*=\s*"([^"]+)"/)?.[1] ?? null;
+      const field = section === 'bin' && line.match(/^\s*(name|path)\s*=\s*"([^"]+)"/);
+      if (field) bins[bins.length - 1][field[1]] = field[2];
       const dependency = /(^|\.)(dev-|build-)?dependencies(\.|$)/.test(section);
       for (const [, dep] of dependency ? line.matchAll(/\bpath\s*=\s*"([^"]+)"/g) : []) {
         deps.add(path.posix.normalize(path.posix.join(dir, dep)));
       }
     }
     if (!name) throw new Error(`Cannot read the package name of ${dir}`);
-    return { name, dir, deps: [...deps] };
+    return { name, dir, deps: [...deps], bins: bins.filter(b => b.name && b.path) };
   });
   return { crates };
 }
@@ -113,12 +115,31 @@ function selectCrates(paths, workspace) {
   return { crates: TESTED_CRATES.filter(name => names.has(name)), cli: paths.some(cliPath) || names.has('continuum-cli-lifecycle') };
 }
 
+// The declared binaries (`[[bin]]`) of tested crates whose own source a change touches: the bin's
+// file, and for `src/bin/<x>.rs` its module directory `src/bin/<x>/`. Lib and lib-test builds never
+// compile a bin, so without this a PR editing `src/main.rs` reached canary uncompiled (card
+// 67bf5d81). The CLI binary is left to the handoff job, which already compiles it. A change to the
+// lib a bin uses is not covered here; the hourly core-binaries publication compiles every bin.
+function selectBins(paths, workspace, crates) {
+  const bins = {};
+  for (const c of workspace?.crates ?? []) {
+    if (!crates.includes(c.name)) continue;
+    const touched = (c.bins ?? []).filter(b => {
+      const file = path.posix.join(c.dir, b.path);
+      const moduleDir = file.endsWith('.rs') && path.posix.basename(path.posix.dirname(file)) === 'bin' ? `${file.slice(0, -3)}/` : null;
+      return paths.some(p => p === file || (moduleDir && p.startsWith(moduleDir)));
+    }).map(b => b.name).filter(name => !(c.name === 'continuum-core' && name === 'continuum'));
+    if (touched.length) bins[c.name] = touched;
+  }
+  return bins;
+}
+
 // Only explicitly covered non-Rust surfaces may skip Rust compilation.
 // Dependency, build, workflow, generated and unknown changes run the full gates.
 // `evidence.workspace` (readWorkspace) narrows Rust to the affected crates on pull requests;
 // without it, and on pushes to canary/main (the post-merge net), every crate runs.
 function selectChecks(files, evidence = {}) {
-  const full = { rust: true, installer: true, publication: true, crates: [...TESTED_CRATES], cli: true };
+  const full = { rust: true, installer: true, publication: true, crates: [...TESTED_CRATES], cli: true, bins: {} };
   if (!Array.isArray(files) || !files.length) return full;
   if (files.some(f => !f || typeof f.filename !== 'string' || !f.filename
       || (f.previous_filename !== undefined && (typeof f.previous_filename !== 'string' || !f.previous_filename)))) return full;
@@ -126,8 +147,9 @@ function selectChecks(files, evidence = {}) {
   const windows = p => /^(install\.ps1|tools\/scripts\/(lib\/(windows-(service|prepared|engine-receipt|elevation|media-reconciliation)|install-common|win-modules|win-engine)\.ps1|tests\/windows-(service|process|airc-download|xz)\.test\.ps1|sync-windows-bootstrap\.ps1|register-core-service\.ps1|run-service-hidden\.ps1))$/.test(p);
   const rustPaths = paths.filter(p => !docs(p) && !windows(p));
   const rust = rustPaths.length > 0;
-  const scope = !rust ? { crates: [], cli: false }
-    : selectCrates(rustPaths, evidence.eventName === 'push' ? null : evidence.workspace);
-  return { rust, installer: rust || paths.some(windows), publication: selectPublication(paths, evidence), ...scope };
+  const workspace = evidence.eventName === 'push' ? null : evidence.workspace;
+  const scope = !rust ? { crates: [], cli: false } : selectCrates(rustPaths, workspace);
+  const bins = selectBins(rustPaths, workspace, scope.crates);
+  return { rust, installer: rust || paths.some(windows), publication: selectPublication(paths, evidence), ...scope, bins };
 }
 module.exports = { selectChecks, readWorkspace, TESTED_CRATES, TEST_FEATURES };

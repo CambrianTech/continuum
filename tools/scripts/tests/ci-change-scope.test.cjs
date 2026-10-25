@@ -17,10 +17,10 @@ test('unknown, Rust, dependency, workflow and genome inputs retain full gates', 
     assert.deepEqual(select(file), { rust: true, installer: true, publication: true });
 });
 test('rename sources cannot hide a Rust deletion in docs', () => {
-  assert.deepEqual(selectChecks([{ filename: 'docs/old.md', previous_filename: 'core/old.rs' }]), { rust: true, installer: true, publication: true, ...ALL });
+  assert.deepEqual(selectChecks([{ filename: 'docs/old.md', previous_filename: 'core/old.rs' }]), { rust: true, installer: true, publication: true, ...ALL, bins: {} });
 });
 test('missing or malformed change evidence runs full gates', () => {
-  for (const files of [null, undefined, [], [{}]]) assert.deepEqual(selectChecks(files), { rust: true, installer: true, publication: true, ...ALL });
+  for (const files of [null, undefined, [], [{}]]) assert.deepEqual(selectChecks(files), { rust: true, installer: true, publication: true, ...ALL, bins: {} });
 });
 test('mixed changes retain all affected checks', () => {
   assert.deepEqual(select('docs/setup.md', 'install.ps1'), { rust: false, installer: true, publication: true });
@@ -143,6 +143,23 @@ test('CLI handoff regressions run for the CLI and lifecycle paths, or with every
   assert.deepEqual(scope(['core/continuum-cli-lifecycle/src/lib.rs']), { crates: TESTED_CRATES.filter(n => n !== 'continuum-base' && n !== 'continuum-host'), cli: true });
   assert.equal(scope(['core/continuum-core/src/bin/continuum_other.rs']).cli, false);
   assert.equal(scope(['core/continuum-mind/src/a.rs']).cli, false);
+});
+
+test('a PR that touches a declared binary\'s own source compiles that binary', () => {
+  // what this catches: a PR editing core/continuum-core/src/main.rs reaching canary with no
+  // compile of continuum-core-server, because every crate job builds only the lib (card 67bf5d81).
+  const bins = (paths, eventName = 'pull_request') =>
+    selectChecks(paths.map(filename => ({ filename })), { eventName, workspace }).bins;
+  const core = workspace.crates.find(c => c.name === 'continuum-core');
+  assert.ok(core.bins.some(b => b.name === 'continuum-core-server' && b.path === 'src/main.rs'));
+  assert.deepEqual(bins(['core/continuum-core/src/main.rs']), { 'continuum-core': ['continuum-core-server'] });
+  assert.deepEqual(bins(['core/continuum-core/src/bin/forge_custodian.rs', 'core/continuum-core/src/main.rs']),
+    { 'continuum-core': ['continuum-core-server', 'forge-custodian'] });
+  // A lib change, the CLI (compiled by the handoff job), docs, and pushes compile no extra binary.
+  assert.deepEqual(bins(['core/continuum-core/src/modules/chat.rs']), {});
+  assert.deepEqual(bins(['core/continuum-core/src/bin/continuum/reboot.rs']), {});
+  assert.deepEqual(bins(['docs/a.md']), {});
+  assert.deepEqual(bins(['core/continuum-core/src/main.rs'], 'push'), {});
 });
 
 test('pushes to canary/main and a missing workspace run every crate', () => {
