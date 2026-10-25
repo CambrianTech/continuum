@@ -12,6 +12,7 @@ use crate::persona::work_board::submissions::*;
 mod latest_submission;
 pub use latest_submission::*;
 mod next_after_submission;
+mod submodule_drift;
 pub use next_after_submission::*;
 mod work_submission;
 

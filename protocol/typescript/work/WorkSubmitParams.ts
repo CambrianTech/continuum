@@ -15,7 +15,7 @@ card_id: string,
  */
 submission_id?: string, 
 /**
- * Your claim — handle or UUID; defaults to board.
+ * Your claim; defaults to the board.
  */
 claim_id?: string, 
 /**
@@ -23,7 +23,7 @@ claim_id?: string,
  */
 instance?: string, 
 /**
- * Patch base; defaults to recorded creation/benchmark base. Required for legacy worktrees.
+ * Patch base; defaults to the recorded base.
  */
 base_sha?: string, 
 /**
@@ -31,10 +31,14 @@ base_sha?: string,
  */
 artifact?: WorkArtifactReference, 
 /**
- * Revision UUID (not artifact/submission ID); bind before publish or no credit.
+ * Staged revision UUID; bind before publish or no credit.
  */
 staged_revision_id?: string, 
 /**
- * Stable generation request ID from staged evidence; resolves at publish. Do not combine with staged_revision_id.
+ * Generation that issued this work; not with staged_revision_id.
  */
-generation_request_id?: string, };
+generation_request_id?: string, 
+/**
+ * Submodule paths you mean to move.
+ */
+submodules?: Array<string>, };

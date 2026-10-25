@@ -106,7 +106,7 @@ pub struct WorkSubmitParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional, type = "string")]
     pub submission_id: Option<Uuid>,
-    /// Your claim — handle or UUID; defaults to board.
+    /// Your claim; defaults to the board.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional, type = "string")]
     pub claim_id: Option<String>,
@@ -114,7 +114,7 @@ pub struct WorkSubmitParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub instance: Option<String>,
-    /// Patch base; defaults to recorded creation/benchmark base. Required for legacy worktrees.
+    /// Patch base; defaults to the recorded base.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub base_sha: Option<String>,
@@ -122,14 +122,18 @@ pub struct WorkSubmitParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub artifact: Option<WorkArtifactReference>,
-    /// Revision UUID (not artifact/submission ID); bind before publish or no credit.
+    /// Staged revision UUID; bind before publish or no credit.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional, type = "string")]
     pub staged_revision_id: Option<Uuid>,
-    /// Stable generation request ID from staged evidence; resolves at publish. Do not combine with staged_revision_id.
+    /// Generation that issued this work; not with staged_revision_id.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub generation_request_id: Option<String>,
+    /// Submodule paths you mean to move.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub submodules: Option<Vec<String>>,
 }
 
 /// Where the card she named actually is, when it is not on the room she passed
@@ -619,6 +623,7 @@ pub(super) async fn derive_submission(
     given_instance: Option<String>,
     given_base: Option<String>,
     repo: Option<&airc_work::RepoId>,
+    listed_submodules: &[String],
 ) -> Result<DerivedSubmission, CommandError> {
     let is_swe = checkout.iter().any(|c| c == "swe");
     let instance = given_instance
@@ -639,6 +644,14 @@ pub(super) async fn derive_submission(
             }
         }
     };
+    // Only the submodule moves she lists ride: one that came in from her tree unasked is
+    // refused by name, with how to list it and the restore, before any patch is read or
+    // retained (card b3ecd1ac; Codex on #5402).
+    let excludes = crate::persona::staged_workspace::SOLUTION_PATH_EXCLUDES;
+    let moves = super::submodule_drift::submodule_moves_in(checkout, &base_sha, excludes).map_err(CommandError::Internal)?;
+    if let Some(refusal) = super::submodule_drift::refuse_unlisted(&moves, listed_submodules, &base_sha) {
+        return Err(CommandError::Invalid(refusal));
+    }
     let ws = checkout.to_string_lossy().into_owned();
     let patch = crate::commands::benchmark::workspace_candidate_diff_from(&ws, Some(&base_sha))?;
     if patch.trim().is_empty() {

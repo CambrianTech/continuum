@@ -6,7 +6,7 @@ impl ActionCommand for WorkSubmit {
     const NATIVE: bool = true;
     const ACCESS: AccessLevel = AccessLevel::AiSafe;
     const DESCRIPTION: &'static str =
-        "Submit own work for review; artifact/claim default from checkout. Publication is not success.";
+        "Submit own work for review, derived from your checkout. Publication is not success.";
     type Params = WorkSubmitParams;
     type Output = WorkSubmitResult;
 
@@ -113,7 +113,8 @@ impl ActionCommand for WorkSubmit {
                 Some(path) => path,
                 None => stage_for_owner_on_demand(&runtime, card).await?,
             };
-            let d = derive_submission(&checkout, card_uuid, p.instance.clone(), p.base_sha.clone(), Some(&card.repo)).await?;
+            let listed = p.submodules.as_deref().unwrap_or_default(); // unwrap_or_default: none listed is an empty list
+            let d = derive_submission(&checkout, card_uuid, p.instance.clone(), p.base_sha.clone(), Some(&card.repo), listed).await?;
             (d.instance, d.base_sha, d.artifact)
         };
         continuum_base::probe!(
