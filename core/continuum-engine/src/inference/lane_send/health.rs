@@ -19,21 +19,35 @@ impl HttpGenerationHealth {
         Self { engine }
     }
 
-    pub(super) fn observe(self, status: StatusCode) {
+    pub(super) fn observe(self, status: StatusCode, body: &str) {
         if self.record(
             status,
+            body,
             crate::inference::llama_server::note_real_decode_failure,
         ) {
             continuum_base::probe!(
                 class = "inference.decode.failed",
-                kind = "http_internal_server_error",
+                kind = "http_engine_fault",
                 status = status.as_u16(),
-                "managed engine rejected generation before streaming; existing lane health owns recovery"
+                "managed engine reported fatal decode failure; existing lane health owns recovery"
             );
         }
     }
 
-    fn record(self, status: StatusCode, record: impl FnOnce()) -> bool {
+    fn record(self, status: StatusCode, body: &str, record: impl FnOnce()) -> bool {
+        // The fork also uses HTTP 500 for request errors (including context
+        // pressure). Only its positive fatal-decode classification is evidence
+        // against the engine. Missing, malformed and older responses fail closed.
+        let Ok(error) = serde_json::from_str::<serde_json::Value>(body) else {
+            return false;
+        };
+        if error
+            .pointer("/error/type")
+            .and_then(serde_json::Value::as_str)
+            != Some("engine_fault")
+        {
+            return false;
+        }
         let Some((root, sent_generation)) = self.engine else {
             return false;
         };
@@ -52,6 +66,7 @@ impl HttpGenerationHealth {
 #[cfg(test)]
 mod tests {
     use super::*;
+    const FATAL: &str = r#"{"error":{"type":"engine_fault","message":"Compute error."}}"#;
 
     // what this catches: missing HTTP failures and blaming a replacement, remote
     // provider, loading lane or client refusal. This unique endpoint is the only
@@ -63,15 +78,48 @@ mod tests {
         let directory = crate::inference::slots::directory();
         let endpoint = directory.endpoint(&root);
         let mut failures = 0;
-        assert!(!HttpGenerationHealth::capture(None)
-            .record(StatusCode::INTERNAL_SERVER_ERROR, || failures += 1));
-        assert!(!HttpGenerationHealth::capture(Some(&root))
-            .record(StatusCode::INTERNAL_SERVER_ERROR, || failures += 1));
+        assert!(!HttpGenerationHealth::capture(None).record(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            FATAL,
+            || failures += 1
+        ));
+        assert!(!HttpGenerationHealth::capture(Some(&root)).record(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            FATAL,
+            || failures += 1
+        ));
         let launch = endpoint.transition().await;
         let old = launch.start_generation()?;
+        // Context pressure (decode ret=1) and invalid batch (ret=-1) are
+        // server_error responses in the fork, not fatal engine evidence.
+        // Two refusals must never reach the resident recovery threshold.
+        for body in [
+            r#"{"error":{"type":"server_error","message":"Context size has been exceeded."}}"#,
+            r#"{"error":{"type":"server_error","message":"Invalid input batch."}}"#,
+            r#"{"error":{"type":"server_error","message":"Compute error."}}"#,
+            r#"{"error":{"message":"engine_fault"}}"#,
+            r#"{"error":{"type":null}}"#,
+            "not json",
+            "",
+        ] {
+            for _ in 0..2 {
+                assert!(!HttpGenerationHealth::capture(Some(&root)).record(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    body,
+                    || failures += 1
+                ));
+            }
+        }
+        assert_eq!(
+            failures, 0,
+            "unclassified failures preserve the warm engine"
+        );
         for _ in 0..2 {
-            assert!(HttpGenerationHealth::capture(Some(&root))
-                .record(StatusCode::INTERNAL_SERVER_ERROR, || failures += 1));
+            assert!(HttpGenerationHealth::capture(Some(&root)).record(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                FATAL,
+                || failures += 1
+            ));
         }
         assert_eq!(
             failures, 2,
@@ -88,12 +136,14 @@ mod tests {
             StatusCode::SERVICE_UNAVAILABLE,
             StatusCode::GATEWAY_TIMEOUT,
         ] {
-            assert!(!HttpGenerationHealth::capture(Some(&root)).record(status, || failures += 1));
+            assert!(
+                !HttpGenerationHealth::capture(Some(&root)).record(status, FATAL, || failures += 1)
+            );
         }
         let receipt = HttpGenerationHealth::capture(Some(&root));
         old.observed_exit();
         let _replacement = launch.start_generation()?;
-        assert!(!receipt.record(StatusCode::INTERNAL_SERVER_ERROR, || failures += 1));
+        assert!(!receipt.record(StatusCode::INTERNAL_SERVER_ERROR, FATAL, || failures += 1));
         assert_eq!(
             failures, 2,
             "late response cannot blame a replacement engine"

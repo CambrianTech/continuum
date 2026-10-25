@@ -310,8 +310,8 @@ pub(crate) async fn send_with_lane_retry(
     let (response, health) = response;
     if !response.status().is_success() {
         let status = response.status();
-        health.observe(status);
         let body = response.text().await.unwrap_or_default();
+        health.observe(status, &body);
         // Classify ONCE, here, where the status code and the raw body still
         // exist. Preserve the same classification for the caller's admission
         // decision; prose is only an operator-facing representation.
