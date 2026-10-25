@@ -12,42 +12,204 @@
 //! (a ring), the trigger is the newest priority line (human opportunity or a
 //! mention), and every priority line drained earns its heard receipt.
 
-use std::collections::{HashSet, VecDeque};
+use std::collections::{HashMap, VecDeque};
 
 use uuid::Uuid;
 
-use super::service_loop::IncomingMessage;
+use crate::cognition::conversation::IncomingMessage;
 use crate::cognition::workspace::TurnAttention;
 
-/// One already-admitted priority input waiting for its first model dispatch.
-/// This is loop-local custody, not durable replay or a second inbox. New arrivals
-/// remain with PersonaConversation while the ordinary beat retries this input.
+/// Loop-local custody of admitted inputs. Capacity refusals wait on their bound
+/// serving facts, not the beat, while the ordinary inbox remains reachable.
 #[derive(Default)]
 pub(crate) struct PendingInput {
-    input: Option<(IncomingMessage, Option<Uuid>, TurnAttention)>,
+    persona: Option<Uuid>,
+    inputs: VecDeque<RetainedInput>,
+    self_refusals: HashMap<Uuid, Option<crate::cognition::workspace::CapacityRefusal>>,
+    work_witnesses: VecDeque<(Uuid, crate::cognition::conversation::room_event::RoomWork)>,
+}
+struct RetainedInput {
+    message: IncomingMessage,
+    engram: Option<Uuid>,
+    attention: TurnAttention,
+    capacity: Option<crate::cognition::workspace::CapacityRefusal>,
 }
 
 impl PendingInput {
+    pub(crate) fn for_persona(persona: Uuid) -> Self {
+        Self { persona: Some(persona), ..Self::default() }
+    }
+    pub(crate) fn stop(&mut self) {
+        for input in &mut self.inputs {
+            if let Some(refusal) = input.capacity.take() {
+                refusal.note_transition(self.persona, input.message.room_id, "stopped", "stop");
+            }
+        }
+        for (room, refusal) in &mut self.self_refusals {
+            if let Some(refusal) = refusal.take() {
+                refusal.note_transition(self.persona, *room, "stopped", "stop");
+            }
+        }
+    }
+    pub(crate) fn resume_input(&mut self, message: &IncomingMessage) {
+        if let Some(input) = self.inputs.iter_mut().find(|input| input.message == *message) {
+            if let Some(reason) = input.capacity.as_ref().and_then(|r| r.readiness.as_ref())
+                .and_then(|r| r.change_reason()) {
+                if let Some(refusal) = input.capacity.take() {
+                    refusal.note_transition(self.persona, message.room_id, "resumed", reason);
+                }
+            }
+        }
+    }
+    fn park_self(&mut self, room: Uuid, refusal: &crate::cognition::workspace::CapacityRefusal) {
+        refusal.note_transition(self.persona, room, "parked", "capacity");
+        self.self_refusals.insert(room, Some(refusal.clone()));
+    }
+
+    #[cfg(test)]
     pub(crate) fn message(&self) -> Option<&IncomingMessage> {
-        self.input.as_ref().map(|(message, _, _)| message)
+        self.inputs.front().map(|input| &input.message)
     }
-
-    /// Retry on the caller's existing beat without consuming the owned input.
-    /// Cancellation, early gates and a second admission refusal leave it intact.
+    pub(crate) fn permits_self_tick(&self) -> bool {
+        self.inputs.is_empty() && self.self_refusals.is_empty()
+    }
+    pub(crate) fn wake_engram_for(&self, message: &IncomingMessage) -> Option<Uuid> {
+        self.inputs
+            .iter()
+            .find(|input| input.message == *message)
+            .and_then(|input| input.engram)
+    }
+    pub(crate) fn attention_for(&self, message: &IncomingMessage) -> Option<TurnAttention> {
+        self.inputs
+            .iter()
+            .find(|input| input.message == *message)
+            .map(|input| input.attention)
+    }
+    /// New admitted payload is a semantic change in that room. It never replaces
+    /// the old input or its engram; the old obligation gets a fresh assembly later.
+    pub(crate) fn payload_changed(&mut self, message: &IncomingMessage) {
+        for input in &mut self.inputs {
+            if input.message.room_id == message.room_id && input.message != *message {
+                if let Some(refusal) = input.capacity.take() {
+                    refusal.note_transition(self.persona, input.message.room_id, "resumed", "input");
+                }
+            }
+        }
+        if let Some(refusal) = self.self_refusals.get_mut(&message.room_id) {
+            if let Some(refusal) = refusal.take() {
+                refusal.note_transition(self.persona, message.room_id, "resumed", "input");
+            }
+        }
+    }
+    /// Typed board facts already pass through the retained inbox. Observe them
+    /// before trigger filtering; a board change need not masquerade as chat.
+    /// Lease/presence traffic is excluded by the shared decoder. Clock-only and
+    /// repeated semantic facts cannot re-arm an unchanged parked request.
+    pub(crate) fn observe_work(&mut self, message: &IncomingMessage) {
+        let Some(work) = &message.work else { return };
+        if matches!(work, crate::cognition::conversation::room_event::RoomWork::Other { .. }) { return; }
+        let key = |work: &crate::cognition::conversation::room_event::RoomWork| {
+            use crate::cognition::conversation::room_event::RoomWork;
+            match work {
+                RoomWork::Reviewed { card_id, .. } | RoomWork::StateChanged { card_id, .. }
+                | RoomWork::Submitted { card_id, .. } | RoomWork::Claimed { card_id, .. } => Some(*card_id),
+                RoomWork::Other { .. } => None,
+            }
+        };
+        let previous = self.work_witnesses.iter().position(|(room, prior)| {
+            *room == message.room_id && key(prior) == key(work)
+                && std::mem::discriminant(prior) == std::mem::discriminant(work)
+        });
+        if let Some(index) = previous {
+            if self.work_witnesses[index].1 == *work { return; }
+            self.work_witnesses.remove(index);
+        }
+        self.work_witnesses.push_back((message.room_id, work.clone()));
+        if self.work_witnesses.len() > super::perception_region::UNPERCEIVED_CAP {
+            self.work_witnesses.pop_front();
+        }
+        self.payload_changed(message);
+    }
+    pub(crate) fn take_ready_self(&mut self, room: Option<Uuid>) -> bool {
+        let Some(room) = room else { return false };
+        let ready = self.self_refusals.get(&room).is_some_and(|r| {
+            r.as_ref().map_or(true, |r| r.readiness.as_ref().is_some_and(|r| r.changed()))
+        });
+        if ready {
+            if let Some(Some(refusal)) = self.self_refusals.remove(&room) {
+                if let Some(reason) = refusal.readiness.as_ref().and_then(|r| r.change_reason()) {
+                    refusal.note_transition(self.persona, room, "resumed", reason);
+                }
+            }
+        }
+        ready
+    }
+    pub(crate) async fn ready_self_room(&self) -> Uuid {
+        use futures_util::stream::{FuturesUnordered, StreamExt};
+        let mut waits = self
+            .self_refusals
+            .iter()
+            .map(|(room, refusal)| async move {
+                if let Some(refusal) = refusal { wait_capacity(refusal).await; }
+                *room
+            })
+            .collect::<FuturesUnordered<_>>();
+        match waits.next().await {
+            Some(room) => room,
+            None => std::future::pending().await,
+        }
+    }
+    pub(crate) fn settle_work(&mut self, work: &crate::persona::act_question::WorkQuestionOutcome) {
+        if let Some(room) = work.room {
+            match &work.capacity {
+                Some(refusal) => {
+                    self.park_self(room, refusal);
+                }
+                None => {
+                    self.self_refusals.remove(&room);
+                }
+            }
+        }
+    }
+    pub(crate) fn settle_self(
+        &mut self,
+        room: Uuid,
+        step: &crate::cognition::act_observe::SettleStep,
+    ) {
+        match step {
+            crate::cognition::act_observe::SettleStep::CapacityRefused { error, .. } => {
+                self.park_self(room, error);
+            }
+            _ => {
+                self.self_refusals.remove(&room);
+            }
+        }
+    }
+    /// Cancellation never takes an input out of custody. Multiple parked inputs
+    /// wait independently; a small new request does not evict a larger old one.
     pub(crate) async fn at_next_beat(&self, beat: std::time::Duration) -> Option<IncomingMessage> {
+        use futures_util::stream::{FuturesUnordered, StreamExt};
+        if self.inputs.is_empty() {
+            if self.self_refusals.is_empty() {
         tokio::time::sleep(beat).await;
-        self.message().cloned()
+            } else {
+                std::future::pending::<()>().await;
     }
-
-    pub(crate) fn wake_engram(&self) -> Option<Uuid> {
-        self.input.as_ref().and_then(|(_, engram, _)| *engram)
+            return None;
     }
-
-    /// Preserve the admitted classification even if peer presence changes.
-    pub(crate) fn attention(&self) -> Option<TurnAttention> {
-        self.input.as_ref().map(|(_, _, attention)| *attention)
+        let mut waits = self
+            .inputs
+            .iter()
+            .map(|input| async move {
+                match &input.capacity {
+                    Some(refusal) => wait_capacity(refusal).await,
+                    None => tokio::time::sleep(beat).await,
     }
-
+                input.message.clone()
+            })
+            .collect::<FuturesUnordered<_>>();
+        waits.next().await
+    }
     pub(crate) fn settle(
         &mut self,
         message: &IncomingMessage,
@@ -55,61 +217,41 @@ impl PendingInput {
         attention: TurnAttention,
         step: &crate::cognition::act_observe::SettleStep,
     ) {
-        if matches!(step, crate::cognition::act_observe::SettleStep::DeferredBeforeDispatch) {
-            // Ambient input keeps its existing transcript/re-perception policy.
-            // Retaining it here would prevent a newer directed input waking us.
-            if attention.requires_priority() {
-                self.input = Some((message.clone(), wake_engram, attention));
+        use crate::cognition::act_observe::SettleStep;
+        self.inputs.retain(|input| input.message != *message);
+        let capacity = match step {
+            SettleStep::CapacityRefused {
+                error,
+                replay_input: true,
+            } => Some(error.clone()),
+            SettleStep::CapacityRefused {
+                error,
+                replay_input: false,
+            } => {
+                // Earlier work happened: do not replay the original message.
+                // Its continuation still waits for capacity rather than each beat.
+                self.park_self(message.room_id, error);
+                return;
             }
-        } else {
-            self.input = None;
+            SettleStep::DeferredBeforeDispatch if attention.requires_priority() => None,
+            _ => return,
+        };
+        if let Some(refusal) = &capacity {
+            refusal.note_transition(self.persona, message.room_id, "parked", "capacity");
         }
-    }
+        self.inputs.push_back(RetainedInput {
+            message: message.clone(),
+            engram: wake_engram,
+            attention,
+            capacity,
+        });
+        }
 }
-
-/// Event-id ring for replay/redelivery dedupe at the loop head. Small: the
-/// pump already dedupes the store catch-up; this catches re-open replays.
-pub(crate) struct SeenIds {
-    ring: VecDeque<Uuid>,
-    ids: HashSet<Uuid>,
-    cap: usize,
-}
-
-impl SeenIds {
-    pub(crate) fn new(cap: usize) -> Self {
-        Self {
-            ring: VecDeque::with_capacity(cap),
-            ids: HashSet::with_capacity(cap),
-            cap,
-        }
-    }
-
-    /// Note an id; `true` when it is NEW (first sight), `false` on a repeat.
-    pub(crate) fn note(&mut self, id: Uuid) -> bool {
-        if self.ids.contains(&id) {
-            return false;
-        }
-        if self.cap == 0 {
-            return true;
-        }
-        if self.ring.len() == self.cap {
-            if let Some(evicted) = self.ring.pop_front() {
-                self.ids.remove(&evicted);
-            }
-        }
-        self.ids.insert(id);
-        self.ring.push_back(id);
-        true
-    }
-}
-
-/// Is this drained line stale? By event id when the source stamps one; by the
-/// publisher clock only for id-less sources (scripted/test conversations).
-pub(crate) fn is_stale(m: &IncomingMessage, seen: &mut SeenIds, high_water: u64) -> bool {
-    if m.event_id.is_nil() {
-        m.lamport <= high_water
-    } else {
-        !seen.note(m.event_id)
+async fn wait_capacity(refusal: &crate::cognition::workspace::CapacityRefusal) {
+    match &refusal.readiness {
+        Some(readiness) => readiness.wait().await,
+        // A producer without a readiness owner must not generate a retry storm.
+        None => std::future::pending::<()>().await,
     }
 }
 
@@ -133,8 +275,8 @@ pub(crate) fn triggers_a_turn(priority: bool, sender_is_citizen: bool, is_receip
 /// of help) still wakes; a human's or a mention always does (priority).
 pub(crate) fn is_receipt(text: &str) -> bool {
     let t = text.trim_start();
-    t.starts_with(crate::persona::presence_glyph::THOUGHT)
-        || t.starts_with(crate::persona::presence_glyph::ACT)
+    t.starts_with(crate::cognition::presence_glyph::THOUGHT)
+        || t.starts_with(crate::cognition::presence_glyph::ACT)
 }
 
 /// The trigger for ONE turn over the drained backlog: the newest priority line
@@ -164,7 +306,7 @@ pub(crate) fn publish_heard(persona: Uuid, msg: &IncomingMessage) {
     }
     if let Some(bus) = crate::runtime::MessageBus::global() {
         bus.publish_async_only(
-            crate::persona::mind_events::CHAT_HEARD,
+            crate::cognition::mind_events::CHAT_HEARD,
             serde_json::json!({
                 "message_id": msg.event_id,
                 "room_id": msg.room_id,
@@ -178,43 +320,169 @@ pub(crate) fn publish_heard(persona: Uuid, msg: &IncomingMessage) {
 mod tests {
     use super::*;
 
+    // A capacity-refused original remains owned while a newer small request is
+    // answered. Prior-work refusals park continuation without replaying the input.
+    #[tokio::test(start_paused = true)]
+    async fn capacity_custody_is_quiet_and_new_input_cannot_evict_it() {
+        use crate::cognition::act_observe::SettleStep;
+        use crate::cognition::workspace::PromptCapacityError;
+        use std::time::Duration;
+        let original = line(1, 1, "large original");
+        let newer = line(2, 2, "small new input");
+        let engram = Some(Uuid::new_v4());
+        let refusal = SettleStep::CapacityRefused {
+            error: PromptCapacityError {
+                required_tokens: 8192,
+                budget_tokens: 4096,
+            }
+            .into(),
+            replay_input: true,
+        };
+        let mut pending = PendingInput::default();
+        pending.settle(&original, engram, TurnAttention::HumanOpportunity, &refusal);
+        assert!(!pending.permits_self_tick());
+        assert!(tokio::time::timeout(
+            Duration::from_secs(30),
+            pending.at_next_beat(Duration::from_secs(1))
+        )
+        .await
+        .is_err());
+        pending.settle(
+            &newer,
+            None,
+            TurnAttention::HumanOpportunity,
+            &SettleStep::Passed { reason: None },
+        );
+        assert_eq!(pending.message(), Some(&original));
+        assert_eq!(pending.wake_engram_for(&original), engram);
+        pending.payload_changed(&newer);
+        assert_eq!(
+            pending.at_next_beat(Duration::from_secs(1)).await,
+            Some(original.clone())
+        );
+        let SettleStep::CapacityRefused { error, .. } = refusal else {
+            unreachable!()
+        };
+        pending.settle(
+            &original,
+            engram,
+            TurnAttention::HumanOpportunity,
+            &SettleStep::CapacityRefused {
+                error,
+                replay_input: false,
+            },
+        );
+        assert!(pending.message().is_none());
+        assert!(!pending.permits_self_tick());
+        let mut elsewhere = newer.clone();
+        elsewhere.room_id = Uuid::new_v4();
+        pending.payload_changed(&elsewhere);
+        pending.settle_self(elsewhere.room_id, &SettleStep::Passed { reason: None });
+        pending.settle_work(&crate::persona::act_question::WorkQuestionOutcome {
+            drove: true,
+            room: Some(elsewhere.room_id),
+            capacity: None,
+            engaged: true,
+        });
+        assert!(
+            pending.self_refusals.contains_key(&original.room_id),
+            "unrelated room input and completed work cannot unpark the original continuation"
+        );
+        assert!(tokio::time::timeout(
+            Duration::from_secs(30),
+            pending.at_next_beat(Duration::from_secs(1))
+        )
+        .await
+        .is_err());
+    }
+
     // Regression 2e3f0eab: the actual wake owner waits the existing cadence,
     // retains input across cancellation/new arrivals, and clears only on handling.
     #[tokio::test(start_paused = true)]
     async fn deferred_attention_waits_without_consuming_the_trigger_or_new_input() {
         use crate::cognition::act_observe::SettleStep;
-        use crate::persona::scripted_conversation::ScriptedConversation;
-        use crate::persona::service_loop::PersonaConversation;
+        use crate::cognition::conversation::scripted_conversation::ScriptedConversation;
+        use crate::cognition::conversation::PersonaConversation;
         use std::time::Duration;
         let original = line(1, 1, "original directed request");
         let newer = line(2, 2, "newer directed request");
         let cause = Some(Uuid::new_v4());
         let mut pending = PendingInput::default();
-        pending.settle(&original, cause, TurnAttention::HumanOpportunity, &SettleStep::DeferredBeforeDispatch);
-        let mut conversation = ScriptedConversation::new().with_events(vec![Ok(Some(newer.clone()))]);
+        pending.settle(
+            &original,
+            cause,
+            TurnAttention::HumanOpportunity,
+            &SettleStep::DeferredBeforeDispatch,
+        );
+        let mut conversation =
+            ScriptedConversation::new().with_events(vec![Ok(Some(newer.clone()))]);
         conversation.prime().await.unwrap();
         let beat = Duration::from_secs(3);
         assert!(tokio::time::timeout(beat / 2, pending.at_next_beat(beat)).await.is_err());
         assert_eq!(pending.message(), Some(&original), "cancelled wake retains custody");
         let retry = pending.at_next_beat(beat).await.unwrap();
         assert_eq!(retry, original);
-        assert_eq!(pending.wake_engram(), cause);
+        assert_eq!(pending.wake_engram_for(&original), cause);
         // Presence may disappear while waiting; the admitted human opportunity
         // remains priority without becoming a literal address.
-        assert_eq!(TurnAttention::for_message(false, false), TurnAttention::Ambient);
-        assert_eq!(pending.attention(), Some(TurnAttention::HumanOpportunity));
-        assert!(pending.attention().unwrap().requires_priority());
-        assert!(!pending.attention().unwrap().is_addressed());
-        assert_eq!(conversation.perceive_ready().await.unwrap().front().map(|m| m.as_ref()), Some(&newer));
-        pending.settle(&retry, cause, TurnAttention::HumanOpportunity, &SettleStep::DeferredBeforeDispatch);
-        assert_eq!(pending.message(), Some(&original), "another refusal is not completion");
-        pending.settle(&retry, cause, TurnAttention::HumanOpportunity, &SettleStep::Passed { reason: Some("chosen silence".into()) });
-        assert!(pending.at_next_beat(beat).await.is_none(), "a genuine Pass is terminal");
-        assert!(pending.attention().is_none());
+        assert_eq!(
+            TurnAttention::for_message(false, false),
+            TurnAttention::Ambient
+        );
+        assert_eq!(
+            pending.attention_for(&original),
+            Some(TurnAttention::HumanOpportunity)
+        );
+        assert!(pending
+            .attention_for(&original)
+            .unwrap()
+            .requires_priority());
+        assert!(!pending.attention_for(&original).unwrap().is_addressed());
+        assert_eq!(
+            conversation
+                .perceive_ready()
+                .await
+                .unwrap()
+                .front()
+                .map(|m| m.as_ref()),
+            Some(&newer)
+        );
+        pending.settle(
+            &retry,
+            cause,
+            TurnAttention::HumanOpportunity,
+            &SettleStep::DeferredBeforeDispatch,
+        );
+        assert_eq!(
+            pending.message(),
+            Some(&original),
+            "another refusal is not completion"
+        );
+        pending.settle(
+            &retry,
+            cause,
+            TurnAttention::HumanOpportunity,
+            &SettleStep::Passed {
+                reason: Some("chosen silence".into()),
+            },
+        );
+        assert!(
+            pending.at_next_beat(beat).await.is_none(),
+            "a genuine Pass is terminal"
+        );
+        assert!(pending.attention_for(&original).is_none());
         assert_eq!(conversation.next_message().await.unwrap(), Some(newer));
         assert!(conversation.next_message().await.unwrap().is_none());
-        pending.settle(&original, cause, TurnAttention::Ambient, &SettleStep::DeferredBeforeDispatch);
-        assert!(pending.message().is_none(), "ambient policy does not hold off directed arrivals");
+        pending.settle(
+            &original,
+            cause,
+            TurnAttention::Ambient,
+            &SettleStep::DeferredBeforeDispatch,
+        );
+        assert!(
+            pending.message().is_none(),
+            "ambient policy does not hold off directed arrivals"
+        );
     }
 
     // what this catches (2026-09-13): a teammate's 💭/⚙ receipt admitting a turn — every
@@ -259,54 +527,13 @@ mod tests {
         assert!(triggers_a_turn(true, true, false));
     }
 
-    // what this catches: the per-publisher lamport read a human line as stale
-    // against citizens' larger clocks (the 9/4 deaf-citizens regression).
-    #[test]
-    fn a_human_line_with_a_small_publisher_clock_is_not_stale() {
-        let mut seen = SeenIds::new(8);
-        let human = line(1, 3, "Joel here — which card do you hold?");
-        assert!(!is_stale(&human, &mut seen, 157_000));
-    }
-
-    // what this catches: a re-open replay redelivering the same event id.
-    #[test]
-    fn a_replayed_event_id_is_stale_the_second_time() {
-        let mut seen = SeenIds::new(8);
-        let m = line(1, 3, "once");
-        assert!(!is_stale(&m, &mut seen, 0));
-        assert!(is_stale(&m, &mut seen, 0));
-    }
-
-    // The index must evict with the ordered ring; retained snapshots do not
-    // refresh recency or grow the bounded set on duplicate admission.
-    #[test]
-    fn seen_id_index_evicts_with_the_ring() {
-        let mut seen = SeenIds::new(2);
-        let a = Uuid::new_v4();
-        let b = Uuid::new_v4();
-        let c = Uuid::new_v4();
-        assert!(seen.note(a));
-        assert!(seen.note(b));
-        assert!(!seen.note(a));
-        assert!(seen.note(c));
-        assert!(seen.note(a));
-        assert!(!seen.note(c));
-        assert_eq!(seen.ids.len(), 2);
-        assert_eq!(seen.ring.len(), 2);
-        let mut empty = SeenIds::new(0);
-        assert!(empty.note(a));
-        assert!(empty.note(a));
-        assert!(empty.ids.is_empty());
-        assert!(empty.ring.is_empty());
-    }
-
     // what this catches: a human line without an @mention losing the turn to a
     // newer citizen work receipt.
     #[test]
     fn a_human_opportunity_wins_over_newer_citizen_chatter_without_a_mention() {
         use crate::cognition::workspace::TurnAttention;
         let identity =
-            crate::persona::persona_identity::PersonaIdentity::new(Uuid::new_v4(), "Kimi");
+            crate::cognition::conversation::persona_identity::PersonaIdentity::new(Uuid::new_v4(), "Kimi");
         let human = line(1, 3, "Joel here — which card do you hold?");
         let human_id = human.event_id;
         let receipt = line(2, 900, "💭 Let me get my bearings.");
@@ -321,5 +548,101 @@ mod tests {
             !identity.mentions(&picked.text),
             "human priority does not require a name"
         );
+    }
+
+    // what this catches (moved from cognition::act_observe with mind split step 7: custody is
+    // persona's): regression 2e3f0eab: admission refusal must retain the original directed
+    // input, even when a newer directed input arrives before the admitted retry.
+    #[tokio::test]
+    async fn starved_priority_input_survives_until_dispatch_without_replaying_actions() {
+        use crate::cognition::act_observe::test_support::{admission, body_with_wm, ActThenSpeak, RecordingExecutor};
+        use crate::cognition::act_observe::{drive_to_settle_with_input, SettleStep};
+        use crate::cognition::working_memory::{WorkingMemory, WorkingMemoryFaculty};
+        use crate::cognition::workspace::{Burst, Faculty, SalienceArbiter, TurnAttention, TurnFraming, WorkspaceCycle};
+        use std::sync::{Arc, Mutex};
+        use crate::cognition::conversation::scripted_conversation::ScriptedConversation;
+        use crate::cognition::conversation::{IncomingMessage, PersonaConversation};
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        let gate = Arc::new(AtomicBool::new(false));
+        let mut faculty = ActThenSpeak::new();
+        faculty.admission_open = Some(Arc::clone(&gate));
+        let exec = Arc::new(RecordingExecutor {
+            seen_context: Arc::new(Mutex::new(None)),
+            result_content: "4".into(),
+        });
+        let wm = Arc::new(WorkingMemory::new(8));
+        let cycle = WorkspaceCycle::new(
+            vec![
+                Arc::new(WorkingMemoryFaculty::new(Arc::clone(&wm))) as Arc<dyn Faculty>,
+                Arc::new(faculty),
+            ],
+            Arc::new(SalienceArbiter),
+            8,
+        )
+        .with_acting(body_with_wm(exec.clone(), admission(), wm));
+        let original = IncomingMessage {
+            event_id: Uuid::new_v4(), lamport: 10, peer_id: Uuid::new_v4(),
+            room_id: Uuid::new_v4(), text: "Asha, inspect this exact input".into(), work: None,
+            media: vec![crate::cognition::conversation::channel_items::MediaItemRequest {
+                kind: "image".into(), mime_type: Some("image/png".into()),
+                blob_hash: Some("sha256:retained-input".into()), url: None,
+                description: Some("original attachment".into()),
+            }],
+        };
+        let mut newer = original.clone();
+        newer.event_id = Uuid::new_v4();
+        newer.room_id = Uuid::new_v4();
+        newer.lamport += 1;
+        newer.text = "Asha, a newer directed request".into();
+        let mut conversation = ScriptedConversation::new();
+        conversation.prime().await.unwrap();
+        let mut pending = PendingInput::default();
+        let cause = Some(Uuid::new_v4());
+        let framing = TurnFraming::message(TurnAttention::for_message(true, false));
+        let burst = |message: &IncomingMessage| {
+            Burst::raw_in(
+            crate::identity::ActivityRoom::from_uuid(message.room_id).unwrap(),
+            message.render_content(),
+            )
+        };
+        let refused =
+            drive_to_settle_with_input(&cycle, burst(&original), 8, framing, &mut conversation).await;
+        assert!(refused.deferred_before_dispatch);
+        assert_eq!(refused.acts, 0);
+        assert!(exec.seen_context.lock().unwrap().is_none());
+        let (step, _, _) = SettleStep::from_settled(refused);
+        pending.settle(&original, cause, framing.attention, &step);
+        conversation.event_feed().push(Ok(Some(newer.clone())));
+        assert_eq!(pending.message(), Some(&original));
+        assert_eq!(pending.wake_engram_for(&original), cause);
+
+        // A second failed admission neither consumes nor replaces the original.
+        let retried = pending.message().unwrap().clone();
+        let refused_again = drive_to_settle_with_input(&cycle, burst(&retried), 8, framing, &mut conversation).await;
+        let (step, _, _) = SettleStep::from_settled(refused_again);
+        pending.settle(&retried, cause, framing.attention, &step);
+        assert_eq!(pending.message(), Some(&original));
+        assert!(conversation.perceive_ready().await.unwrap().iter().any(|m| **m == newer));
+
+        gate.store(true, Ordering::SeqCst);
+        let completed = drive_to_settle_with_input(
+            &cycle,
+            burst(pending.message().unwrap()),
+            8,
+            framing,
+            &mut conversation,
+        )
+        .await;
+        assert!(!completed.deferred_before_dispatch);
+        assert_eq!(completed.acts, 1, "only the admitted retry executes an action");
+        assert!(completed.room_updates.iter().any(|m| **m == newer));
+        assert_eq!(completed.room, original.room_id);
+        let (step, _, _) = SettleStep::from_settled(completed);
+        assert!(matches!(&step, SettleStep::Spoke(_)));
+        pending.settle(&original, cause, framing.attention, &step);
+        assert!(pending.message().is_none(), "completed input is not replayed");
+        assert_eq!(conversation.next_message().await.unwrap(), Some(newer));
+        assert!(conversation.next_message().await.unwrap().is_none());
     }
 }

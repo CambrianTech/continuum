@@ -55,7 +55,7 @@
 //! via the identity struct; AircCitizen carries the *live handle*.
 //! Two concerns, two types.
 
-use crate::persona::airc_source::AircTranscriptReader;
+use crate::cognition::conversation::transcript_reader::AircTranscriptReader;
 use airc_lib::{AircError, EventId, FilteredEventStream};
 use async_trait::async_trait;
 use uuid::Uuid;
@@ -147,7 +147,7 @@ pub trait AircCitizen:
 
     /// Publish a text message under the citizen's identity INTO A
     /// SPECIFIC ROOM — normally the room the turn being answered
-    /// arrived in ([`IncomingMessage::room_id`](super::service_loop::IncomingMessage),
+    /// arrived in ([`IncomingMessage::room_id`](crate::cognition::conversation::IncomingMessage),
     /// already carried since A.6).
     ///
     /// Answering is room-targeted for the same reason perception is
@@ -237,7 +237,7 @@ pub trait AircCitizen:
 
     /// The cards on `room`'s board that are takeable RIGHT NOW (Open, or held on a
     /// lapsed lease) per the ONE claimability decision
-    /// ([`crate::persona::card_holder::claimable_now`]). The pull reads THIS, not the
+    /// ([`crate::cognition::card_holder::claimable_now`]). The pull reads THIS, not the
     /// round tracker: the tracker never records a claim, so without board truth every
     /// idle resident would retry the first already-claimed card forever. Default is
     /// empty (nothing offered); the production runtime folds the room's board.
@@ -246,7 +246,7 @@ pub trait AircCitizen:
     }
 
     /// How many cards on `room`'s board are IN FLIGHT — live holds in a holder's
-    /// column, per the ONE predicate ([`crate::persona::card_holder::in_flight_now`]).
+    /// column, per the ONE predicate ([`crate::cognition::card_holder::in_flight_now`]).
     /// The WIP = lanes gate counts this, never a tracker arithmetic. Fixture default:
     /// nothing in flight; the production runtime folds the room's board.
     async fn in_flight_cards_in(&self, _room: Uuid, _now_ms: u64) -> Result<usize, AircError> {

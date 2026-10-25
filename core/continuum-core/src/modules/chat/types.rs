@@ -141,7 +141,7 @@ pub struct ChatSendParams {
     /// Media references only; bytes stay in the existing blob store. No fetch or
     /// vision inference is performed by sending a message.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub media: Vec<crate::persona::channel_items::MediaItemRequest>,
+    pub media: Vec<crate::cognition::conversation::channel_items::MediaItemRequest>,
 
     /// Optional thread anchor. When set, both the stored message and
     /// the airc-published envelope carry this as the reply-to link.
@@ -152,8 +152,8 @@ pub struct ChatSendParams {
 
 impl ChatSendParams {
     /// This send as the chat-transcript line its envelope carries.
-    pub fn transcript_line(&self) -> crate::persona::room_event::ChatTranscriptLine<'_> {
-        crate::persona::room_event::ChatTranscriptLine {
+    pub fn transcript_line(&self) -> crate::cognition::conversation::room_event::ChatTranscriptLine<'_> {
+        crate::cognition::conversation::room_event::ChatTranscriptLine {
             room_id: self.room_id,
             sender_id: self.sender_id,
             text: &self.text,

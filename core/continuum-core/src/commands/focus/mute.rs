@@ -22,7 +22,7 @@ use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 use uuid::Uuid;
 
-use crate::persona::focus::{self, MuteLevel};
+use crate::cognition::focus::{self, MuteLevel};
 use crate::routing::CallerSource;
 use crate::sdk_codegen::{ActionCommand, CommandError, Ctx};
 

@@ -34,18 +34,26 @@ pub(super) struct SavedLedgerFile {
     #[serde(default)]
     pub(super) format: u32,
     pub(super) fingerprint: String,
-    pub(super) keys: Vec<(Uuid, Uuid)>,
+    /// The minds whose page (`a-<persona>.bin`) is confirmed saved. Forks are never here:
+    /// they die with the core that ran them.
+    #[serde(default)]
+    pub(super) minds: Vec<Uuid>,
+    /// A ledger written before one page per mind: (persona, room) per activity page. Read
+    /// only to fold into [`Self::minds`] ([`fold_into_minds`]); never written again.
+    #[serde(default, rename = "keys", skip_serializing)]
+    pub(super) activities: Vec<(Uuid, Uuid)>,
     /// The engine process that wrote these pages: (pid, OS start time). A core that
     /// ADOPTS a running engine has no launch contract of its own; this is how it proves
     /// the ledger is that very process's, and so under its contract. Absent on a ledger
     /// written before the spawn stamped it: such a ledger is never adopted.
     #[serde(default)]
     pub(super) incarnation: Option<(u32, u64)>,
-    /// Which activity's KV each physical slot of that process holds: (slot, persona, room).
-    /// A core that adopts the same process resumes them in place instead of overwriting a
+    /// Which mind's KV each physical slot of that process holds: (slot, persona). A core
+    /// that adopts the same process resumes them in place instead of overwriting a
     /// resident's warm KV with an older page (or with another mind's prefill, unsaved).
+    /// A pre-mind ledger's per-activity residents are not read: its pages restore instead.
     #[serde(default)]
-    pub(super) residents: Vec<(u32, Uuid, Uuid)>,
+    pub(super) mind_residents: Vec<(u32, Uuid)>,
 }
 
 /// What a ledger fingerprint digests: 2 = the page-format identity (model, adapters and
@@ -60,16 +68,16 @@ pub(super) const SAVED_LEDGER_FILE: &str = "saved-ledger.json";
 /// One numbered state of the pool's ledger, taken under the lock that changed it.
 pub(super) struct LedgerSnapshot {
     pub(super) generation: u64,
-    pub(super) keys: Vec<(Uuid, Uuid)>,
-    pub(super) residents: Vec<(u32, Uuid, Uuid)>,
+    pub(super) minds: Vec<Uuid>,
+    pub(super) residents: Vec<(u32, Uuid)>,
 }
 
 /// What a ledger restores: the restorable keys, and (for the same engine process only)
 /// which slot each resident occupies.
 #[derive(Default)]
 pub(super) struct LoadedLedger {
-    pub(super) keys: std::collections::HashSet<ActivityKey>,
-    pub(super) residents: Vec<(u32, ActivityKey)>,
+    pub(super) keys: std::collections::HashSet<PageKey>,
+    pub(super) residents: Vec<(u32, PageKey)>,
 }
 
 impl SavedLedger {
@@ -124,14 +132,15 @@ impl SavedLedger {
         let file = SavedLedgerFile {
             format: self.format,
             fingerprint: self.fingerprint.clone(),
-            keys: snapshot.keys,
+            minds: snapshot.minds,
+            activities: Vec::new(),
             incarnation: self.incarnation.get().copied(),
-            residents: snapshot.residents,
+            mind_residents: snapshot.residents,
         };
         let bytes = serde_json::to_vec(&file)?; // file on disk: the page dir's confirmed-save ledger, read back by `load`
         let tmp = self.path.with_extension("json.tmp");
         std::fs::write(&tmp, bytes)?;
-        continuum_base::fs_portable::replace::replace_file(&tmp, &self.path)?;
+        continuum_host::durable::replace(&tmp, &self.path)?;
         *written = snapshot.generation;
         Ok(())
     }
@@ -168,64 +177,165 @@ impl SavedLedger {
         if !legacy && (file.format != self.format || file.fingerprint != self.fingerprint) {
             return unread("written under another page format");
         }
-        let listed = file.keys.len();
-        let keys: Vec<ActivityKey> = file.keys.into_iter().filter_map(|(persona, room)| ActivityKey::new(persona, room)).collect();
-        if keys.len() < listed {
-            // A key with a nil persona or room names no activity: its page re-prefills once.
+        let listed = file.minds.len() + file.activities.len();
+        let minds: Vec<MindKey> = file.minds.iter().copied().filter_map(MindKey::new).collect();
+        let activities: Vec<(MindKey, Uuid)> = file
+            .activities
+            .iter()
+            .filter(|(_, room)| !room.is_nil())
+            .filter_map(|(persona, room)| MindKey::new(*persona).map(|m| (m, *room)))
+            .collect();
+        if minds.len() + activities.len() < listed {
+            // A key with a nil persona (or a nil room, pre-mind) names nothing: its page re-prefills once.
             continuum_base::probe!(
                 class = "inference.kv_page.ledger_keys_dropped",
                 path = %self.path.display(),
-                dropped = (listed - keys.len()) as u64,
-                "confirmed-save ledger entries without an activity were dropped: their pages re-prefill once"
+                dropped = (listed - minds.len() - activities.len()) as u64,
+                "confirmed-save ledger entries without a mind were dropped: their pages re-prefill once"
             );
         }
-        let present: Vec<ActivityKey> = keys.into_iter().filter(|k| dir.join(page_filename(k)).is_file()).collect();
-        let keys: std::collections::HashSet<ActivityKey> = if legacy {
-            self.adopt_legacy(dir, present)
+        // A ledger written before the page-format identity is dated instead of compared: a
+        // page written after every identity file last changed was computed by those files.
+        // The engine still refuses, loudly, a page whose cache type, attention layout, layer
+        // shapes, window fit or adapters differ.
+        let floor = if legacy {
+            self.identity_floor.unwrap_or(std::time::SystemTime::UNIX_EPOCH) // unwrap_or: a legacy ledger with no floor returned above
         } else {
-            present.into_iter().collect()
+            std::time::SystemTime::UNIX_EPOCH
         };
+        let fold = fold_into_minds(dir, &minds, &activities, floor);
+        if legacy {
+            continuum_base::probe!(
+                class = "inference.kv_page.ledger_migrated",
+                path = %self.path.display(),
+                adopted = fold.keys.len() as u64,
+                "a ledger written before the page-format identity was adopted for the pages written after the model's files last changed; the rest re-prefill once"
+            );
+        }
+        if !activities.is_empty() {
+            continuum_base::probe!(
+                class = "inference.kv_page.ledger_folded",
+                path = %self.path.display(),
+                activities = activities.len() as u64,
+                minds = fold.keys.len() as u64,
+                renamed = fold.renamed as u64,
+                "a per-activity ledger was folded into one page per mind: each mind keeps its newest page; the other pages stay on disk, unlisted"
+            );
+        }
         // The residents were in THIS process's slots only if it is the process that wrote them.
         let same_process = self.incarnation.get().is_some() && self.incarnation.get().copied() == file.incarnation;
         let residents = if same_process && !legacy {
-            file.residents.into_iter().filter_map(|(slot, persona, room)| ActivityKey::new(persona, room).map(|k| (slot, k))).collect()
+            file.mind_residents.into_iter().filter_map(|(slot, persona)| PageKey::mind(persona).map(|k| (slot, k))).collect()
         } else {
             Vec::new()
         };
-        LoadedLedger { keys, residents }
-    }
-
-    /// A legacy ledger's fingerprint cannot be recomputed (it digested the exact window,
-    /// slot count and engine file of a launch that no longer exists), so its pages are
-    /// dated instead: a page written after every identity file last changed was computed by
-    /// those files. The engine still refuses, loudly, a page whose cache type, attention
-    /// layout, layer shapes, window fit or adapters differ.
-    fn adopt_legacy(&self, dir: &std::path::Path, present: Vec<ActivityKey>) -> std::collections::HashSet<ActivityKey> {
-        let floor = self.identity_floor.unwrap_or(std::time::SystemTime::UNIX_EPOCH); // unwrap_or: load() refuses a legacy ledger with no floor before reaching here
-        let listed = present.len();
-        let adopted: std::collections::HashSet<ActivityKey> = present
-            .into_iter()
-            .filter(|k| {
-                std::fs::metadata(dir.join(page_filename(k)))
-                    .and_then(|m| m.modified())
-                    .is_ok_and(|written| written >= floor)
-            })
-            .collect();
-        continuum_base::probe!(
-            class = "inference.kv_page.ledger_migrated",
-            path = %self.path.display(),
-            adopted = adopted.len() as u64,
-            dropped = (listed - adopted.len()) as u64,
-            "a ledger written before the page-format identity was adopted for the pages written after the model's files last changed; the rest re-prefill once"
-        );
-        adopted
+        LoadedLedger { keys: fold.keys, residents }
     }
 }
 
+/// What [`fold_into_minds`] restored, and how many pages it moved to a mind's name.
+pub(super) struct Fold {
+    pub(super) keys: std::collections::HashSet<PageKey>,
+    pub(super) renamed: usize,
+}
+
+/// ONE page per mind from a ledger's entries: each confirmed mind whose page is on disk,
+/// and each pre-mind activity page folded into its mind. Of a mind's candidate pages (its
+/// own page, if present, and each listed activity page) the NEWEST by modification time
+/// wins; an activity page that wins is renamed, with its sidecars, to the mind's name. Every
+/// other page file is left on disk, only unlisted (the page store's trim ages it out). A
+/// page modified before `floor` is never a candidate.
+///
+/// Idempotent: the mind's own page is a candidate even when the ledger does not list it, so
+/// a fold interrupted after its rename (before the folded ledger was written) finds the
+/// renamed page newest on the next load and never moves an older page over it. A crash
+/// between moving a page and its sidecars leaves that page without them (the engine then
+/// restores it with no checkpoints); the migration runs once.
+pub(super) fn fold_into_minds(
+    dir: &std::path::Path,
+    minds: &[MindKey],
+    activities: &[(MindKey, Uuid)],
+    floor: std::time::SystemTime,
+) -> Fold {
+    let written = |name: &str| -> Option<std::time::SystemTime> {
+        let md = std::fs::metadata(dir.join(name)).ok()?;
+        let at = md.modified().ok()?;
+        (md.is_file() && at >= floor).then_some(at)
+    };
+    let mut keys = std::collections::HashSet::new();
+    let mut renamed = 0;
+    for mind in minds {
+        let key = PageKey::Mind(*mind);
+        if written(&page_filename(&key)).is_some() {
+            keys.insert(key);
+        }
+    }
+    let mut by_mind: std::collections::BTreeMap<MindKey, Vec<Uuid>> = std::collections::BTreeMap::new();
+    for (mind, room) in activities {
+        by_mind.entry(*mind).or_default().push(*room);
+    }
+    for (mind, rooms) in by_mind {
+        let key = PageKey::Mind(mind);
+        let target = page_filename(&key);
+        let own = written(&target).map(|at| (at, None));
+        let newest = rooms
+            .into_iter()
+            .filter_map(|room| {
+                let name = activity_page_filename(mind.persona(), room);
+                written(&name).map(|at| (at, Some(name)))
+            })
+            .chain(own)
+            .max_by_key(|(at, _)| *at);
+        match newest {
+            None => {}
+            Some((_, None)) => {
+                keys.insert(key);
+            }
+            Some((_, Some(source))) => match move_page(dir, &source, &target) {
+                Ok(()) => {
+                    keys.insert(key);
+                    renamed += 1;
+                }
+                Err(error) => continuum_base::probe!(
+                    class = "inference.kv_page.fold_unmoved",
+                    page = %key,
+                    source = %source,
+                    error = %error,
+                    "a mind's newest per-activity page could not be moved to its mind page: it re-prefills once"
+                ),
+            },
+        }
+    }
+    Fold { keys, renamed }
+}
+
+/// Move page `source` to `target` with its sidecars ([`PAGE_SIDECARS`]): the page first,
+/// then each sidecar — moved when the source has it, else the target's stale one removed,
+/// so the target never carries another page's checkpoints or adapter vector.
+fn move_page(dir: &std::path::Path, source: &str, target: &str) -> std::io::Result<()> {
+    std::fs::rename(dir.join(source), dir.join(target))?;
+    for sidecar in PAGE_SIDECARS {
+        let from = dir.join(format!("{source}{sidecar}"));
+        let to = dir.join(format!("{target}{sidecar}"));
+        if from.is_file() {
+            std::fs::rename(from, to)?;
+        } else if let Err(error) = std::fs::remove_file(to) {
+            if error.kind() != std::io::ErrorKind::NotFound {
+                return Err(error);
+            }
+        }
+    }
+    Ok(())
+}
+
 impl KvPageContract {
-    /// A stable digest of what makes a saved page's KV valid for this engine: the model,
-    /// adapters and draft (by path, size and mtime), the KV cache type, flash attention,
-    /// and the engine build (its commit, or its file revision when the build is unknown).
+    /// A stable digest of what makes a saved page's KV valid: the model, adapters and draft
+    /// (by path, size and mtime), the KV cache type and flash attention. NOT the engine
+    /// build: a page and its checkpoint sidecar each carry the engine's own state format
+    /// (`LLAMA_STATE_SEQ_MAGIC`/`VERSION`, the fork's `CKPT` magic and version), which the
+    /// engine checks and refuses loudly on a mismatch, so keying on the build only threw
+    /// away every page at each engine upgrade (IntelMac, 2026-10-23 21:17Z: a convergence
+    /// relaunch onto the installed engine left every resident cold, 30-34 min prefills).
     /// NOT the window or the slot count: the engine refuses a page that does not fit its
     /// slot (`Restored prompt does not fit`, `not enough cells`), loudly, and keying on
     /// them made every relaunch's few-hundred-token window jitter a new ledger (the M5,
@@ -251,9 +361,6 @@ impl KvPageContract {
         }
         field("cache_type", cache_type.as_bytes());
         field("flash_attn", &[u8::from(flash_attn)]);
-        if let Some(build) = &self.engine_build {
-            field("engine_build", build.as_bytes());
-        }
         for (path, size, modified) in revisions {
             field("revision", path.as_os_str().as_encoded_bytes());
             field("size", &size.to_le_bytes());
@@ -264,14 +371,8 @@ impl KvPageContract {
     }
 
     /// The newest modification among the identity files (model, adapters, draft): the date
-    /// a legacy ledger's pages must postdate. The engine binary is not one of them.
+    /// a legacy ledger's pages must postdate.
     pub(crate) fn identity_floor(&self) -> Option<std::time::SystemTime> {
-        let engine = std::path::Path::new(&self.engine);
-        self.revisions
-            .as_ref()?
-            .iter()
-            .filter(|(path, _, _)| path.as_path() != engine)
-            .map(|(_, _, modified)| *modified)
-            .max()
+        self.revisions.as_ref()?.iter().map(|(_, _, modified)| *modified).max()
     }
 }

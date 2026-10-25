@@ -9,12 +9,13 @@ use continuum_base::time::EpochMs;
 use uuid::Uuid;
 
 use crate::cognition::persona_workspace::*;
+use crate::persona::card_hands::bind_card;
 use crate::cognition::workspace::{ActingBody, WorkspaceCycle};
-use crate::persona::admission_state::AdmissionState;
+use crate::cognition::admission_state::AdmissionState;
 use crate::modules::card_staging;
 use crate::modules::code::{CodeModule, CodeState};
 use crate::modules::grid::GridTrustAuthPolicy;
-use crate::persona::recall_metadata::RecallMetadataRegistry;
+use crate::cognition::recall_metadata::RecallMetadataRegistry;
 use crate::routing::CallerIdentity;
 use crate::cognition::tool_executor::CommandToolExecutor;
 use crate::runtime::{CommandExecutor, ModuleRegistry};

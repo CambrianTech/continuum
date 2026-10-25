@@ -284,7 +284,7 @@ async fn pinned_act_result_reaches_the_prompt_even_with_an_empty_broadcast() {
     let snapshot = DeliberationPromptView {
         refit: roomy.refit, system: String::new(), input_identity: [0; 32],
         estimated_prompt_tokens: estimate, completion_reserve: 0,
-        capacity_error: None, protocol_error: None, segments: Vec::new(),
+        capacity_error: None, budget_fault: None, protocol_error: None, segments: Vec::new(),
         messages: roomy.messages,
     };
     let corrected = faculty.refit_rejected_prompt(snapshot, estimate as u32 + 1, estimate as u32, 0).unwrap();
@@ -393,7 +393,7 @@ fn tool_surface_is_a_category_index_plus_discovery_pair() {
     // context, protecting the hands. This test USED to pin the cliff; now
     // it pins its absence.
     let native: Vec<&str> = faculty
-        .native_specs
+        .tool_surface().registry()
         .iter()
         .map(|s| s.name.as_str())
         .collect();
@@ -427,7 +427,7 @@ fn tool_surface_is_a_category_index_plus_discovery_pair() {
         )
         .with_context_window(32_768)
         .with_tools(persona_tools::native_tool_specs());
-        f.native_specs.iter().map(|s| s.name.clone()).collect()
+        f.tool_surface().registry().iter().map(|s| s.name.clone()).collect()
     };
     // Wire names are the DIALECT aliases (tool_dialect) — the coding arc
     // rides under the names the model was trained on, never our slashes.
@@ -443,7 +443,7 @@ fn tool_surface_is_a_category_index_plus_discovery_pair() {
     // only since the 2026-07-10 prompt diet; args live in commands/help + the
     // #1916 inline error-manual, never an 8k menu wall.
     let expanded = BTreeSet::from(["cat".to_string()]);
-    let framing = faculty.compose_system("", &expanded, false, false, None);
+    let framing = faculty.compose_system(&expanded, false, false, None);
     assert!(
         framing.contains("[Your tools]") && framing.contains("cat: command_0"),
         "an expanded category must name each verb under its header: {framing}"
@@ -454,7 +454,7 @@ fn tool_surface_is_a_category_index_plus_discovery_pair() {
 );
     // Collapsed (nothing expanded) the same category renders as a one-line
     // bookmark — the spine still NAMES it, so she can open it on demand.
-    let collapsed = faculty.compose_system("", &BTreeSet::new(), false, false, None);
+    let collapsed = faculty.compose_system(&BTreeSet::new(), false, false, None);
     assert!(
     collapsed.contains("cat (60 — commands/list --filter cat)"),
     "a collapsed category is a one-line bookmark naming it + its verb count: {collapsed}"
@@ -731,7 +731,11 @@ fn tool_surface_is_a_category_index_plus_discovery_pair() {
     // 17238 -> 17298 (PR #5112, 2026-10-16): work/list gains `limit` (default 40,
     // claimable first) so a board of 776 cards is never one 198k-char line again;
     // one optional field and its one-line doc, measured locally at 17298.
-    const AGENTIC_SURFACE_CEILING: u32 = 17298;
+    // 17298 -> 17335 (goal 10 slice 2, card ecd5dff3, 2026-10-24): commands/help gains
+    // `query`, the way a mind finds a verb by what she wants to do once her learned head no
+    // longer lists every verb. Its text was cut to one line (it measured 17427 first); the
+    // 37 left are the param itself, the feature. Measured locally at 17335.
+    const AGENTIC_SURFACE_CEILING: u32 = 17335;
     let surface = faculty.describe_tool_tokens() as u32 + faculty.framing_floor_tokens();
     println!("agentic surface: {surface} guard tokens; ceiling {AGENTIC_SURFACE_CEILING}");
     assert!(
@@ -770,7 +774,7 @@ fn tool_surface_is_a_category_index_plus_discovery_pair() {
         "the newest burst line must survive once the budget prices the surface it \
                  actually sends — if this regresses, the accounting is double-counting the \
                  withheld registry again (card dec1a7ff); selected={}, estimated={}, reserve={}, capacity={:?}\n{}",
-        faculty.select_tool_surface(&ws, window).tokens,
+        faculty.select_tool_surface(&ws).tokens,
         view.estimated_prompt_tokens,
         view.completion_reserve,
         view.capacity_error,

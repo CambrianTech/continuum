@@ -10,5 +10,6 @@ pub use continuum_engine::*;
 #[macro_use]
 extern crate objc;
 
+pub mod consumers;
 pub mod live;
 pub mod media;

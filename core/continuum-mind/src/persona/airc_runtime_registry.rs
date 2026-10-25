@@ -91,7 +91,7 @@ pub struct PersonaSlot {
     /// [[benchmark-is-a-governor-preemption-lease]] [[first-class-citizens-even-during-benchmarks]]
     quiesced: Arc<AtomicBool>,
     /// The role the spawner named for her (`set_role`), read by the grid allocator.
-    role: OnceLock<crate::persona::role_template::RoleId>,
+    role: OnceLock<crate::experience::role::RoleId>,
 }
 
 /// Registry of personas currently online in The Grid.
@@ -325,14 +325,14 @@ impl PersonaAircRuntimeRegistry {
     /// desired roster); the grid allocator is the reader (card ccb316a7: a mind is seated
     /// as HER role, never as the first role a seat fits). First write wins — a respawn
     /// of the same persona is the same role.
-    pub fn set_role(&self, persona_id: Uuid, role: crate::persona::role_template::RoleId) {
+    pub fn set_role(&self, persona_id: Uuid, role: crate::experience::role::RoleId) {
         if let Some(e) = self.inner.get(&persona_id) {
             let _ = e.role.set(role); // a second set is the same role; nothing to do
         }
     }
 
     /// The role she was spawned for; `None` if she is not online or was never stamped.
-    pub fn role_of(&self, persona_id: Uuid) -> Option<crate::persona::role_template::RoleId> {
+    pub fn role_of(&self, persona_id: Uuid) -> Option<crate::experience::role::RoleId> {
         self.inner.get(&persona_id).and_then(|e| e.role.get().copied())
     }
 
@@ -624,6 +624,23 @@ impl PersonaAircRuntimeRegistry {
 /// surface report a citizen who had no perception stream. See [`PersonaAircRuntimeRegistry::is_resident`].
 pub(crate) fn resident_from_loop_state(loop_finished: Option<bool>) -> bool {
     matches!(loop_finished, Some(false))
+}
+
+// ─── The channel-digest region reads her transcript and room through this registry ──
+
+impl crate::cognition::channel_digest_region::PersonaChannelReader for PersonaAircRuntimeRegistry {
+    fn live_personas(&self) -> Vec<Uuid> {
+        // Inherent method of the same name; qualify to avoid trait/inherent ambiguity.
+        PersonaAircRuntimeRegistry::live_personas(self)
+    }
+
+    fn reader_and_room(&self, persona_id: Uuid) -> Option<(Arc<dyn crate::cognition::conversation::transcript_reader::AircTranscriptReader>, Uuid)> {
+        let runtime = self.get(persona_id)?;
+        let room = runtime.default_room().as_uuid();
+        // PersonaAircRuntime: AircTranscriptReader — upcast the Arc.
+        let reader: Arc<dyn crate::cognition::conversation::transcript_reader::AircTranscriptReader> = runtime;
+        Some((reader, room))
+    }
 }
 
 #[cfg(test)]

@@ -187,26 +187,15 @@ impl OpenAICompatibleAdapter {
             // Estimate this activity's prompt size once — the eviction price basis
             // AND the overshoot-alarm input below (chars/4, deliberately conservative).
             let approx_tokens = prompt_tokens as u64;
-            // TURN ADMISSION (event-driven, bounded by the request deadline) — permit-first, then lease+pin
-            // this activity's slot and page its KV onto a now-free slot. The returned
-            // guard holds the permit + slot pin for the WHOLE generation (bound into
-            // `_admission` at function scope above). A Turn that cannot name both
-            // (persona, room) halves passes `None` and stays unpinned. Non-Turn traffic
-            // takes the permit only and lands on the scratch slot below.
-            let turn_key = match class {
-                crate::inference::slots::SlotClass::Turn => request
-                    .persona_id
-                    .as_deref()
-                    .and_then(|p| uuid::Uuid::parse_str(p).ok())
-                    .zip(
-                        request
-                            .room_id
-                            .as_deref()
-                            .and_then(|r| uuid::Uuid::parse_str(r).ok()),
-                    )
-                    .and_then(|(p, r)| crate::inference::slots::ActivityKey::new(p, r)),
-                _ => None,
-            };
+            // TURN ADMISSION (event-driven, bounded by the request deadline) — the mind's act
+            // gate, then permit-first, then lease+pin her page's slot and page its KV onto a
+            // now-free slot. The returned guard holds all of it for the WHOLE generation
+            // (bound into `_admission` at function scope above). A Turn keys on her MIND
+            // alone (one page across every room); a Fork on its own (persona, room). One that
+            // cannot name its ids passes `None` and stays unpinned. Non-page traffic takes
+            // the permit only and lands on the scratch slot below.
+            let parse = |id: Option<&str>| id.and_then(|id| uuid::Uuid::parse_str(id).ok());
+            let turn_key = class.page_key(parse(request.persona_id.as_deref()), parse(request.room_id.as_deref()));
             let root = endpoints.root();
             // Discovery: install this server's slot pool on first use (probes /props).
             // Non-Turn traffic also needs the pool on a single-slot server: it
@@ -224,21 +213,20 @@ impl OpenAICompatibleAdapter {
             .await
             .map_err(crate::ai::inference_error::InferenceError::Unavailable)?;
             let scratch = adm.scratch_slot();
-            // Only a Turn that names its activity owns a slot. A Turn with no (persona, room)
-            // key (a nil-room eval forked onto her live lane, or a caller that dropped its
-            // room) used to go out UNPINNED with cache_prompt on whenever the pool had a
+            // Only a turn that names its page owns a slot. A Turn with no persona (or a Fork
+            // with no room) used to go out UNPINNED with cache_prompt on whenever the pool had a
             // scratch slot, so the server placed it by similarity and could overwrite a
             // resident's KV (card f3ba3b56, item 4). It is placed like every other
             // unattributed request: the scratch slot, or on a pool without one, a slot its
             // admission borrowed (the resident saved and detached first) with the cache off.
-            let keyed_turn = matches!(class, crate::inference::slots::SlotClass::Turn) && turn_key.is_some();
-            if matches!(class, crate::inference::slots::SlotClass::Turn) && !keyed_turn {
+            let keyed_turn = class.holds_a_page() && turn_key.is_some();
+            if class.holds_a_page() && !keyed_turn {
                 continuum_base::probe!(
                     class = "inference.turn.keyless",
                     persona = request.persona_id.as_deref(),
                     room = request.room_id.as_deref(),
                     purpose = request.purpose.as_deref().unwrap_or("none"), // unwrap_or: an unset purpose is itself the fact to see
-                    "a Turn named no (persona, room) activity: it runs on the scratch slot, or, with none, on a slot its admission borrowed after saving that resident, never persisting a cache there"
+                    "a page-holding turn named no page (a Turn without a persona, a Fork without a room): it runs on the scratch slot, or, with none, on a slot its admission borrowed after saving that resident, never persisting a cache there"
                 );
             }
             let decided = crate::inference::slots::placement(keyed_turn, adm.slot(), scratch);

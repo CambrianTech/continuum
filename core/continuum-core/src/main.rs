@@ -477,7 +477,7 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
          in-process Qwen3-Embedding on first recall) — no gateway probe on the boot path"
     );
     let embedding_provider: Arc<dyn continuum_core::memory::EmbeddingProvider> =
-        Arc::new(continuum_core::cognition::embedding::LazyRecallEmbedder::new());
+        Arc::new(continuum_core::ai::embedding::LazyRecallEmbedder::new());
     let memory_manager = Arc::new(PersonaMemoryManager::new(embedding_provider));
 
     // Persist the process-global embedding cache across restarts. This is the ONE
@@ -493,8 +493,8 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
             .join(".continuum")
             .join("cache")
             .join("embedding-cache.bin");
-        continuum_core::cognition::embedding::spawn_embedding_cache_persistence(
-            continuum_core::cognition::embedding::global_embedding_cache(),
+        continuum_core::ai::embedding::spawn_embedding_cache_persistence(
+            continuum_core::ai::embedding::global_embedding_cache(),
             cache_path,
         );
     }
@@ -524,9 +524,18 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
     // known cache class now reports through a TrackedDir fed by the
     // DiskUsageScanner daemon (one slow walker; reporters read atomics
     // within the 100 ms budget).
-    let tracked_dirs = continuum_core::system_resources::standard_tracked_dirs(
-        &dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("/")),
-    );
+    // The continuum classes follow the one resolved continuum home (card 4dedb177): with none,
+    // nothing is tracked and it is said, rather than tracking a fabricated `/.continuum`.
+    let tracked_dirs = match continuum_core::paths::continuum_home() {
+        Ok(continuum) => continuum_core::system_resources::standard_tracked_dirs(
+            &dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("/")), // JUSTIFIED unwrap_or_else: unchanged here; with no resolvable home airc's classes point at /.airc, which nothing writes
+            &continuum,
+        ),
+        Err(error) => {
+            tracing::warn!(probe_class = "disk.tracked_dirs", %error, "no continuum home: no cache class is tracked this boot");
+            Vec::new()
+        }
+    };
     // Process-wide registry: the IPC thread's broker block fetches the
     // SAME TrackedDir instances to build eviction pools over (one
     // measurement per cache class, shared by reporter + pool).

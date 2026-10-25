@@ -147,7 +147,7 @@
             "model-a", None, 1, "peer",
         )
         .with_context_window(24_832)
-        .write(&crate::persona::home::PersonaHome::from_root(
+        .write(&crate::cognition::home::PersonaHome::from_root(
             with_window.home.clone(),
         ))
         .expect("write override");
@@ -157,7 +157,7 @@
         crate::persona::model_override::PersonaModelOverride::new_remote(
             "model-b", None, 1, "peer",
         )
-        .write(&crate::persona::home::PersonaHome::from_root(
+        .write(&crate::cognition::home::PersonaHome::from_root(
             without_window.home.clone(),
         ))
         .expect("write override");
@@ -466,7 +466,7 @@
                 assert!(registry.get(&failed_id).is_none());
                 None
             };
-            let failed_home = crate::persona::home::PersonaHome::from_root(failed.home.clone());
+            let failed_home = crate::cognition::home::PersonaHome::from_root(failed.home.clone());
             failed_home.ensure_exists().unwrap();
             let broken = failed_home.engrams_db();
             let original = b"existing engram database is not valid SQLite";
@@ -474,7 +474,7 @@
             let mut healthy = fake_instance("admission-healthy");
             healthy.home = home.path().join("healthy-persona");
             let healthy_id = healthy.peer_id.as_uuid();
-            let healthy_home = crate::persona::home::PersonaHome::from_root(healthy.home.clone());
+            let healthy_home = crate::cognition::home::PersonaHome::from_root(healthy.home.clone());
             let plans = vec![
                 MaterializedPersonaPlan {
                     role: RoleId::Helper,

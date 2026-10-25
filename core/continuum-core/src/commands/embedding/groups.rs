@@ -19,8 +19,8 @@ use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
 use super::similar::{gate_for, SimilarCandidate};
-use crate::cognition::embedding::EmbeddingProvider;
-use crate::cognition::embedding::vector_math::detect_clusters;
+use crate::ai::embedding::EmbeddingProvider;
+use crate::ai::embedding::vector_math::detect_clusters;
 use crate::sdk_codegen::{AccessLevel, ActionCommand, CommandError, Ctx};
 
 fn default_min_z() -> f32 {
@@ -185,7 +185,7 @@ mod tests {
     #[tokio::test]
     async fn the_lexical_fallback_refuses_to_group_without_an_explicit_floor() {
         let e: Arc<dyn EmbeddingProvider> =
-            Arc::new(crate::cognition::embedding::LexicalEmbedder::new());
+            Arc::new(crate::ai::embedding::LexicalEmbedder::new());
         let cands: Vec<SimilarCandidate> = [
             ("a", "the serving lane test fails on the card"),
             ("b", "the desktop build test fails on the client"),

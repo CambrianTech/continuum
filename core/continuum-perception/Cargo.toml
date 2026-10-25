@@ -1,0 +1,38 @@
+[package]
+name = "continuum-perception"
+version = "0.1.0"
+edition = "2021"
+publish = false
+repository = "https://github.com/CambrianTech/continuum"
+
+# Perception (a mind's senses: observe, look, interact, hot-edit) and RAG (the context it
+# assembles from them), cut out of continuum-mind along MODULE-ARCHITECTURE.md section 9.2.
+# Neither names cognition or persona; the mind re-exports both modules under their old paths.
+
+[dependencies]
+continuum-live = { path = "../continuum-live" }
+continuum-base = { path = "../continuum-base" }
+tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+uuid.workspace = true
+schemars = { version = "0.8", features = ["uuid1"] }
+async-trait.workspace = true
+tracing.workspace = true
+ts-rs.workspace = true  # TypeScript type generation
+inventory = "0.3"  # register_command! submits into the kernel's command registry
+image = "0.25"
+scraper = "0.21"
+base64 = "0.22"  # perception/look encodes a captured frame as a data URL
+
+[dev-dependencies]
+continuum-kernel = { path = "../continuum-kernel", features = ["test-fixtures"] }  # every test build of this crate gets the per-process continuum home (card d11d9827)
+tokio = { workspace = true, features = ["test-util"] }
+tempfile = "3"
+airc-blobs.workspace = true  # tests: frames retained into a real blob store
+
+[features]
+default = []
+# Test-only helpers of the live layer (PerceptionBuffer::seed_frame_for_test); production
+# binaries never build with it. The mind's test-fixtures forwards here.
+test-fixtures = ["continuum-live/test-fixtures"]

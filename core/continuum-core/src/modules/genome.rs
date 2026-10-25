@@ -32,6 +32,8 @@ pub struct GenomeModule {
     >,
     registry: Arc<FineTuningRegistry>,
     coordinator: Arc<FineTuningCoordinator>,
+    /// Every training attempt's evidence, written before its trainer runs (card 55d4b9e3).
+    attempts: Arc<crate::commands::genome::attempt_ledger::AttemptLedger>,
     #[cfg(test)]
     test_job_board: Arc<crate::genome::fine_tuning::TrainingJobBoard>,
     #[cfg(test)]
@@ -51,6 +53,7 @@ impl GenomeModule {
             decisions: Arc::new(crate::runtime::LateBound::new("genome recall decisions")),
             registry,
             coordinator,
+            attempts: Arc::new(crate::commands::genome::attempt_ledger::AttemptLedger::new()),
             #[cfg(test)]
             test_job_board: Arc::new(crate::genome::fine_tuning::TrainingJobBoard::default()),
             #[cfg(test)]
@@ -72,6 +75,7 @@ impl GenomeModule {
             decisions: Arc::new(crate::runtime::LateBound::new("genome recall decisions")),
             registry,
             coordinator,
+            attempts: Arc::new(crate::commands::genome::attempt_ledger::AttemptLedger::new()),
             test_job_board,
             test_artifacts,
         }
@@ -84,6 +88,24 @@ impl GenomeModule {
     ) -> Self {
         self.serving.install(serving);
         self
+    }
+
+    /// Install the training attempt ledger's store (card 55d4b9e3): boot's `initialize`, and a
+    /// test runtime that owns its database. Until installed, a create naming an attempt is
+    /// refused as unrecorded rather than run unwitnessed.
+    pub(crate) async fn install_attempt_store(
+        &self,
+        adapter: Arc<dyn crate::orm::StorageAdapter>,
+    ) -> Result<(), String> {
+        let store = crate::orm::OrmStore::new(adapter).await.map_err(|e| e.to_string())?;
+        self.attempts.install(Arc::new(store));
+        Ok(())
+    }
+
+    /// Whether a trainer on this host takes LoRA jobs for `base`: what the capacity beacon
+    /// advertises as trainable here (card 6f05b89d).
+    pub(crate) fn trains_base_here(&self, base: &str) -> bool {
+        self.coordinator.trains_base_here(base)
     }
 
     /// Visible to tests + boot. Returns the inner registry so a
@@ -119,6 +141,7 @@ impl ServiceModule for GenomeModule {
             .downcast_ref::<crate::modules::data::DataModule>()
             .ok_or_else(|| "genome data module type mismatch".to_string())?;
         let adapter = data.state.get_adapter("main").await?;
+        self.install_attempt_store(adapter.clone()).await?;
         let store = crate::orm::OrmStore::new(adapter)
             .await
             .map_err(|e| e.to_string())?;
@@ -132,6 +155,7 @@ impl ServiceModule for GenomeModule {
         let mut commands = crate::commands::genome::command_objects(
             Arc::clone(&self.registry),
             Arc::clone(&self.coordinator),
+            Arc::clone(&self.attempts),
             #[cfg(test)]
             Arc::clone(&self.test_job_board),
             #[cfg(test)]
@@ -182,7 +206,8 @@ mod tests {
     #[test]
     fn exposes_training_and_recall_commands() {
         let names: Vec<&str> = module().commands().iter().map(|c| c.name()).collect();
-        assert_eq!(names.len(), 8);
+        assert_eq!(names.len(), 9);
+        assert!(names.contains(&"genome/job-attempt-reconcile"));
         assert!(names.contains(&"genome/teach"));
         assert!(names.contains(&"genome/recall"));
         assert!(names.contains(&"genome/recall/replay"));

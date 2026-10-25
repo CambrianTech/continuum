@@ -9,6 +9,11 @@ concurrency:
   group: continuum-rust-tests-${{ github.workflow }}-${{ github.head_ref || github.run_id }}
   cancel-in-progress: true
 
+env:
+  # The shared target cache holds whole-crate artifacts; incremental state would only enlarge it.
+  # The same value in every job keeps the cached units' fingerprints matching.
+  CARGO_INCREMENTAL: 0
+
 jobs:
   changes:
     name: Select existing checks
@@ -16,15 +21,18 @@ jobs:
     outputs:
       rust: ${{ steps.select.outputs.rust }}
       installer: ${{ steps.select.outputs.installer }}
+      crates: ${{ steps.select.outputs.crates }}
+      features: ${{ steps.select.outputs.features }}
+      cli: ${{ steps.select.outputs.cli }}
     steps:
       - uses: actions/checkout@v4
-      - run: node --test tools/scripts/tests/ci-change-scope.test.cjs
+      - run: node --test tools/scripts/tests/ci-change-scope.test.cjs tools/scripts/tests/ci-cargo-freshness.test.cjs
       - uses: actions/github-script@v7
         id: select
         with:
           script: |
-            const { selectChecks } = require('./tools/scripts/ci-change-scope.cjs');
-            let selection = { rust: true, installer: true };
+            const { selectChecks, readWorkspace, TEST_FEATURES } = require('./tools/scripts/ci-change-scope.cjs');
+            let selection = selectChecks(null);
             try {
               let files;
               if (context.eventName === 'pull_request') {
@@ -40,90 +48,70 @@ jobs:
                 // comparison cannot establish the complete affected surface.
                 if (data.status === 'ahead' && data.files?.length < 300) files = data.files;
               }
-              selection = selectChecks(files);
+              // The crate graph is read from this checkout's Cargo.toml files, so the
+              // dependents of a changed crate are whatever the manifests say today.
+              selection = selectChecks(files, { eventName: context.eventName, workspace: readWorkspace('.') });
             } catch (error) {
               core.warning(`Cannot classify changes; running all checks: ${error.message}`);
             }
+            core.info(`Selected crates: ${selection.crates.join(', ') || '(none)'}; CLI handoff: ${selection.cli}`);
             core.setOutput('rust', String(selection.rust));
             core.setOutput('installer', String(selection.installer));
+            core.setOutput('crates', JSON.stringify(selection.crates));
+            core.setOutput('features', JSON.stringify(TEST_FEATURES));
+            core.setOutput('cli', String(selection.cli));
 
-  cargo-test-continuum-core:
-    name: cargo test -p continuum-core --lib
+  # One job per affected crate, in parallel (card 44a3c460). The selector derives the set:
+  # every crate a changed path lies in plus all of its dependents, from the Cargo.toml graph.
+  # Each crate's own fixtures run in its job: the training script with the genome, the native custody
+  # interop with the engine, the compile-fail doc guards with the mind, and the warning ratchet
+  # and core lib binary with core (core depends on every other tested crate, so it runs
+  # whenever any of them does). The CLI handoff regressions are their own job (cli-handoff).
+  crate-tests:
+    name: lib tests ${{ matrix.crate }}
     needs: changes
-    # A failed selector must not turn required checks into successful skips.
-    if: ${{ !cancelled() }}
+    if: ${{ needs.changes.outputs.crates != '[]' && needs.changes.outputs.crates != '' }}
     runs-on: ubuntu-latest
-    timeout-minutes: 45  # a PR that changes Cargo.lock builds from a cold cache (PR runs never save it): #5278 measured 30m15s, cancelled after every test had passed; warm runs take 16-22 min
+    # The previous single job's 70-minute allowance (cold build plus bounded setup) stays the
+    # ceiling per crate; one crate's build is a subset of what that job compiled.
+    timeout-minutes: 70
+    strategy:
+      fail-fast: false
+      matrix:
+        crate: ${{ fromJSON(needs.changes.outputs.crates) }}
     env:
-      DATABASE_URL: postgres://continuum:continuum@localhost:5432/continuum_test
-      # The crate builds headless by default (`default = []`); THIS job is the one that
-      # compiles and tests the call (livekit-webrtc) and 3D-avatar (avatar-3d) paths a
-      # node's profile turns on. Every cargo line in the job names the same set, so the
-      # library compiles once. The headless default is the Windows job's configuration.
-      CORE_FEATURES: livekit-webrtc,avatar-3d
+      CRATE: ${{ matrix.crate }}
+      # The crate's test features, from the selector (TEST_FEATURES), the same set the warming
+      # job caches. Core's are the call and 3D-avatar paths (livekit-webrtc,avatar-3d) a node's
+      # profile turns on; the crate builds headless by default (`default = []`), which is the
+      # Windows job's configuration.
+      FEATURES: ${{ fromJSON(needs.changes.outputs.features)[matrix.crate] }}
     steps:
       - uses: actions/checkout@v4
-        if: needs.changes.outputs.rust != 'false'
         with:
           submodules: recursive
 
-      - name: Install Rust toolchain from rust-toolchain.toml
-        if: needs.changes.outputs.rust != 'false'
-        run: |
-          rustup show active-toolchain || rustup show
-          rustc --version
-          cargo --version
+      - uses: ./.github/actions/rust-ci-setup
 
-      - name: System deps (mirrors docker/continuum-core.Dockerfile builder stage)
-        if: needs.changes.outputs.rust != 'false'
-        run: |
-          # A THIRD-PARTY REPO WE NEVER INSTALL FROM MUST NOT FAIL OUR BUILD.
-          # The GitHub runner image ships vendor apt repos (Chrome, Microsoft, …).
-          # `apt-get update` exits 100 if ANY index fails, so on 2026-09-09 a Hash Sum
-          # mismatch on dl.google.com/linux/chrome-stable failed this step — and with it
-          # every Rust run on every branch — for a package list nothing here reads.
-          # Drop the vendor lists first, then update only the archives we install from,
-          # with retries for genuinely transient mirror errors. A real failure to fetch
-          # OUR packages still fails the step, loudly.
-          sudo rm -f /etc/apt/sources.list.d/google-chrome.list \
-                     /etc/apt/sources.list.d/microsoft-prod.list \
-                     /etc/apt/sources.list.d/*azure-cli* 2>/dev/null || true
-          sudo apt-get update -o Acquire::Retries=3
-          sudo apt-get install -y -o Acquire::Retries=3 --no-install-recommends \
-            cmake pkg-config libssl-dev libpq-dev protobuf-compiler \
-            libclang-dev clang build-essential \
-            libglib2.0-dev libasound2-dev libva-dev
-
-      - name: Cache cargo state
-        if: needs.changes.outputs.rust != 'false'
-        uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: continuum-rust-1.95-workspace-v2
-          # PR runs restore canary's cache and never save their own: the repo's 10 GB cache
-          # quota is nearly filled by canary's caches, and one PR save evicted core-binaries.
-          save-if: ${{ github.event_name != 'pull_request' }}
-          cache-workspace-crates: true
-          cache-on-failure: true
-
+      # ---- continuum-core: script fixtures, the warnings ratchet, the core lib binary ----
       - name: cargo test -p continuum-core --lib
-        if: needs.changes.outputs.rust != 'false'
+        if: matrix.crate == 'continuum-core'
         run: |
           bash tools/scripts/tests/start-server-build-only.test.sh
           bash tools/scripts/tests/start-server-airc-recovery.test.sh
           bash tools/scripts/tests/install-llama-server-slots.test.sh
           python3 tools/scripts/tests/test_ci_lib_test_artifact.py
-          python3 -m unittest discover -s core/continuum-mind/src/genome/fine_tuning -p cuda_train_test.py -v
-          export CONTINUUM_NATIVE_CONTAINER_LEASE_TEST="$RUNNER_TEMP/continuum-container-custody-test"
-          c++ -std=c++17 -O1 -pthread -I core/vendor/llama.cpp/ggml/src -I core/vendor/llama.cpp/ggml/include \
-            core/vendor/llama.cpp/tests/test-moe-residency.cpp -o "$CONTINUUM_NATIVE_CONTAINER_LEASE_TEST"
-          "$CONTINUUM_NATIVE_CONTAINER_LEASE_TEST"
           # `json` (not `json-render-diagnostics`): the warning ratchet below reads the
           # compiler-message records, which the render-diagnostics form sends to stderr
           # as text instead. The artifact script reads compiler-artifact records, present
           # in both.
-          python3 tools/scripts/ci-lib-test-artifact.py --capture lib-artifacts.jsonl -- cargo test -p continuum-core --lib --profile dev-fast --features "$CORE_FEATURES" --no-run --timings --message-format=json
+          python3 tools/scripts/ci-lib-test-artifact.py --capture lib-artifacts.jsonl -- cargo test -p continuum-core --lib --profile dev-fast --features "$FEATURES" --no-run --timings --message-format=json
           # Warning debt is monotonic: the same stream, counted against
           # scripts/ratchets/rust-warnings-baseline.txt (grow = red; shrink = lower it here).
+          # This build compiles every crate the ratchet counts (core, engine, hands, live,
+          # mind) as core's dependencies, and core runs whenever any of them is selected,
+          # so this one stream stays the single producer of the count. Cargo replays a fresh
+          # unit's cached warnings into the stream, so a cached crate still counts.
           bash scripts/ratchets/check-rust-warnings.sh lib-artifacts.jsonl
           python3 tools/scripts/ci-lib-test-artifact.py lib-artifacts.jsonl \
             core/continuum-core "$(rustc --print target-libdir)" > lib-test.env
@@ -134,29 +122,9 @@ jobs:
             --skip 'gpu::memory_manager::' \
             --skip 'modules::gpu::' \
             --skip 'modules::persona_allocator::'
-          # The microkernel is its own crate (core/continuum-kernel): its unit tests moved out of
-          # continuum-core's run above, so they run here, same profile and fixtures (seconds).
-          cd ../..
-          cargo test -p continuum-kernel --lib --profile dev-fast --features test-fixtures -- \
-            --skip 'gpu::memory_manager::'
-          # The engine is its own crate too (core/continuum-engine: ai, inference, model_registry,
-          # capacity, sensory): its unit tests and the native/fs2 custody interop fixture run here.
-          export LD_LIBRARY_PATH="$CONTINUUM_LIB_TEST_LD_LIBRARY_PATH"
-          cargo test -p continuum-engine --lib --profile dev-fast --features test-fixtures
-          cargo test -p continuum-hands --lib --profile dev-fast --features test-fixtures
-          cargo test -p continuum-live --lib --profile dev-fast --features test-fixtures
-          # The mind (core/continuum-mind: cognition, persona, genome, memory, rag, perception,
-          # experience, recipe, context, vdd); the allocator skip moved here with persona.
-          cargo test -p continuum-mind --lib --profile dev-fast --features test-fixtures -- \
-            --skip 'persona::allocator::tests::test_allocate'
-          interop_output=$(cargo test -p continuum-engine --lib --profile dev-fast --features test-fixtures \
-            model_registry::artifacts::expert_placement::tests::fs2_and_native_container_locks_interoperate_across_processes \
-            -- --exact --ignored --nocapture 2>&1)
-          printf '%s\n' "$interop_output"
-          [[ "$interop_output" == *"1 passed;"* ]]
 
       - name: Retain Unix build evidence
-        if: always() && needs.changes.outputs.rust != 'false'
+        if: always() && matrix.crate == 'continuum-core'
         uses: actions/upload-artifact@v4
         with:
           name: unix-lib-build-evidence
@@ -166,37 +134,58 @@ jobs:
           if-no-files-found: ignore
           retention-days: 1
 
-      # --lib never runs the CLI's handoff admission tests, nor the deploy consumer's
-      # verdict and per-build attempt ledger (card f7826d97). Use this existing
-      # Linux native job/profile; Windows still type-checks its platform branches
-      # and runs the real PowerShell filesystem/lease suite below.
-      - name: CLI installed-release handoff regressions
-        if: needs.changes.outputs.rust != 'false'
+      # ---- continuum-kernel: lib tests ----
+      - name: cargo test -p continuum-kernel --lib
+        if: matrix.crate == 'continuum-kernel'
+        run: |
+          cargo test -p continuum-kernel --lib --profile dev-fast --features "$FEATURES" -- \
+            --skip 'gpu::memory_manager::'
+
+      # ---- continuum-engine: lib tests and the native/fs2 custody interop fixture ----
+      - name: cargo test -p continuum-engine --lib (and native custody interop)
+        if: matrix.crate == 'continuum-engine'
         run: |
           set -o pipefail
-          for test in \
-            tests::reboot_tests::prebuilt_reboot_options_are_explicit_and_strict \
-            tests::reboot_tests::prebuilt_reboot_launch_retains_candidate_socket_and_cwd \
-            tests::reboot_tests::service_reboot_rejects_stale_action_and_artifact_before_teardown \
-            tests::deploy_consume_tests::the_deploy_consumer_deploys_only_a_clean_checkout_toward_a_tip_not_running; do
-            cargo test -p continuum-core --bin continuum --profile dev-fast --features "$CORE_FEATURES" "$test" -- --exact 2>&1 | tee cli-handoff.log
-            if ! grep -q 'test result: ok. 1 passed;' cli-handoff.log; then
-              echo "::error::The exact CLI handoff regression did not execute: $test"
-              exit 1
-            fi
-          done
+          export CONTINUUM_NATIVE_CONTAINER_LEASE_TEST="$RUNNER_TEMP/continuum-container-custody-test"
+          c++ -std=c++17 -O1 -pthread -I core/vendor/llama.cpp/ggml/src -I core/vendor/llama.cpp/ggml/include \
+            core/vendor/llama.cpp/tests/test-moe-residency.cpp -o "$CONTINUUM_NATIVE_CONTAINER_LEASE_TEST"
+          "$CONTINUUM_NATIVE_CONTAINER_LEASE_TEST"
+          cargo test -p continuum-engine --lib --profile dev-fast --features "$FEATURES"
+          interop_output=$(cargo test -p continuum-engine --lib --profile dev-fast --features "$FEATURES" \
+            model_registry::artifacts::expert_placement::tests::fs2_and_native_container_locks_interoperate_across_processes \
+            -- --exact --ignored --nocapture 2>&1)
+          printf '%s\n' "$interop_output"
+          [[ "$interop_output" == *"1 passed;"* ]]
+
+      # ---- continuum-genome: the training script test, then lib tests ----
+      - name: cuda_train_test.py (genome fine-tuning script)
+        if: matrix.crate == 'continuum-genome'
+        run: python3 -m unittest discover -s core/continuum-genome/src/genome/fine_tuning -p cuda_train_test.py -v
+
+      # ---- continuum-hands, -live, -perception, -genome, -experience, -memory, -cognition, -academy: lib tests ----
+      - name: cargo test -p ${{ matrix.crate }} --lib
+        if: contains(fromJSON('["continuum-hands","continuum-live","continuum-perception","continuum-genome","continuum-experience","continuum-memory","continuum-cognition","continuum-academy","continuum-base","continuum-host"]'), matrix.crate)
+        run: cargo test -p "$CRATE" --lib --profile dev-fast --features "$FEATURES"
+
+      # ---- continuum-mind: lib tests, compile-fail doc guards ----
+      - name: cargo test -p continuum-mind --lib
+        if: matrix.crate == 'continuum-mind'
+        run: |
+          # The allocator skip moved here with persona.
+          cargo test -p continuum-mind --lib --profile dev-fast --features "$FEATURES" -- \
+            --skip 'persona::allocator::tests::test_allocate'
 
       # The --lib step already builds the mind rlib (test-fixtures) in this profile.
       # Reuse it here instead of recompiling it in a separate runner. --lib
       # cannot exercise compile-fail doctests; preserve their exact count.
       - name: cargo test -p continuum-mind --doc (compile-fail guards)
-        if: needs.changes.outputs.rust != 'false'
+        if: matrix.crate == 'continuum-mind'
         run: |
           set -o pipefail
           # Same profile as the --lib build above, deliberately: a different profile
           # here would be a SECOND full codegen of a 625k-line crate, not a cheap extra step.
           # The guard lives in the mind crate (persona::viewstate_rag) since the mind cut.
-          cargo test -p continuum-mind --doc --profile dev-fast --features test-fixtures BindingIsUnstatable 2>&1 | tee doc-guard.log
+          cargo test -p continuum-mind --doc --profile dev-fast --features "$FEATURES" BindingIsUnstatable 2>&1 | tee doc-guard.log
           if ! grep -q 'test result: ok. 2 passed' doc-guard.log; then
             echo "::error::expected exactly 2 BindingIsUnstatable doctests to pass."
             echo "A zero-match filter exits 0, so this is how a renamed or deleted"
@@ -204,40 +193,12 @@ jobs:
             exit 1
           fi
 
-      # These tests share a database schema; run serially and reject zero matches.
-      # The runner image's own PostgreSQL, started where the only Postgres tests run: no image
-      # pull. The service container pulled postgres:17-alpine from ECR Public on every lane,
-      # about 20 s per job (02:34:33-02:34:53Z, run 38501706412), and ECR Public's anonymous
-      # quota is not unlimited: "toomanyrequests: Data limit exceeded" failed cargo test before
-      # any build in runs 38439777300, 38471521888 and 38485397956 (card de864f39).
-      - name: Start the runner's PostgreSQL
-        if: needs.changes.outputs.rust != 'false'
-        run: |
-          psql --version
-          sudo systemctl start postgresql.service
-          sudo -u postgres psql -v ON_ERROR_STOP=1 -c "CREATE ROLE continuum WITH LOGIN SUPERUSER PASSWORD 'continuum';"
-          sudo -u postgres createdb -O continuum continuum_test
-          pg_isready -h localhost -p 5432
-
-      - name: cargo test -p continuum-kernel --lib (Postgres, --ignored)
-        if: needs.changes.outputs.rust != 'false'
-        run: |
-          set -o pipefail
-          # The ORM lives in the kernel crate; its test binary was built by the step above.
-          cargo test -p continuum-kernel --lib --profile dev-fast --features test-fixtures \
-            orm::postgres -- --ignored --test-threads=1 2>&1 | tee pg.log
-          passed=$(grep -oE 'test result: ok\. [0-9]+ passed' pg.log | grep -oE '[0-9]+' | head -1)
-          echo "postgres tests passed: ${passed:-0}"
-          if [ "${passed:-0}" -lt 1 ]; then
-            echo "::error::No Postgres tests ran. The service, the filter or the #[ignore] markers disagree — a green step here would be a lie about an unverified adapter."
-            exit 1
-          fi
-
+      # Every crate's tests regenerate the ts-rs bindings of the types it defines, so each
+      # crate job checks the drift its own run produced.
       - name: Verify protocol/typescript/ in sync with Rust source
-        if: needs.changes.outputs.rust != 'false'
         run: |
           if ! git diff --exit-code protocol/typescript/ protocol/schema/; then
-            echo "::error::ts-rs binding drift detected. Some Rust types"
+            echo "::error::ts-rs binding drift detected in $CRATE. Some Rust types"
             echo "were modified but their regenerated TypeScript bindings"
             echo "(in protocol/typescript/) were not committed."
             echo ""
@@ -251,8 +212,113 @@ jobs:
           fi
           echo "✓ protocol/typescript/ is in sync with Rust source"
 
-  # Preserve the required legacy context without another compilation. All
-  # core, CLI, doc-guard, Postgres and binding checks now share the Linux job.
+  # --lib never runs the CLI's handoff admission tests, nor the deploy consumer's verdict and
+  # per-build attempt ledger (card f7826d97). Linux native, core's features; Windows still
+  # type-checks its platform branches and runs the real PowerShell filesystem/lease suite below.
+  # Its own job, parallel to core's lib tests (it was ~5 min at the end of that job), selected
+  # when the CLI or lifecycle paths change and on every full run (pushes to canary/main included).
+  cli-handoff:
+    name: CLI installed-release handoff regressions
+    needs: changes
+    if: ${{ needs.changes.outputs.cli != 'false' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 70
+    env:
+      FEATURES: ${{ fromJSON(needs.changes.outputs.features)['continuum-core'] }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: ./.github/actions/rust-ci-setup
+      - name: CLI installed-release handoff regressions
+        run: |
+          set -o pipefail
+          for test in \
+            tests::reboot_tests::prebuilt_reboot_options_are_explicit_and_strict \
+            tests::reboot_tests::prebuilt_reboot_launch_retains_candidate_socket_and_cwd \
+            tests::reboot_tests::service_reboot_rejects_stale_action_and_artifact_before_teardown \
+            tests::deploy_consume_tests::the_deploy_consumer_deploys_only_a_clean_checkout_toward_a_tip_not_running; do
+            cargo test -p continuum-core --bin continuum --profile dev-fast --features "$FEATURES" "$test" -- --exact 2>&1 | tee cli-handoff.log
+            if ! grep -q 'test result: ok. 1 passed;' cli-handoff.log; then
+              echo "::error::The exact CLI handoff regression did not execute: $test"
+              exit 1
+            fi
+          done
+
+  # The shared target cache every Linux Rust job restores. Built COLD at one canary commit, so
+  # every unit in it is from that commit and `settle` (tools/scripts/ci-cargo-freshness.cjs) can
+  # mark exactly what differs; a cache that accumulated units across commits could not say which
+  # commit a stale unit came from. It builds what every crate job and the CLI job build, with the
+  # same features (the selector's TEST_FEATURES), then drops the test executables, which a
+  # crate job always rebuilds. Not a gate: a failed warm-up only leaves the previous cache.
+  warm-cache:
+    name: Warm the shared Rust build cache
+    if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/canary' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    # One warm-up at a time; a newer push queues behind it rather than cancelling it, so a
+    # steady stream of merges still saves a cache.
+    concurrency:
+      group: continuum-rust-warm-cache-${{ github.ref }}
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: ./.github/actions/rust-ci-setup
+        id: setup
+        with:
+          restore-target: 'false'
+          save-apt: 'true'
+      - name: Build every crate job's tests and the CLI's (no run)
+        run: |
+          mapfile -t targets < <(node -e '
+            const { TEST_FEATURES } = require("./tools/scripts/ci-change-scope.cjs");
+            for (const [crate, features] of Object.entries(TEST_FEATURES)) console.log(`${crate}\t${features}`);')
+          for target in "${targets[@]}"; do
+            IFS=$'\t' read -r crate features <<< "$target"
+            echo "::group::$crate ($features)"
+            cargo test -p "$crate" --lib --profile dev-fast --features "$features" --no-run --message-format=json >> warm.jsonl
+            echo "::endgroup::"
+          done
+          core_features=$(node -p 'require("./tools/scripts/ci-change-scope.cjs").TEST_FEATURES["continuum-core"]')
+          cargo test -p continuum-core --bin continuum --profile dev-fast --features "$core_features" --no-run --message-format=json >> warm.jsonl
+          node tools/scripts/ci-cargo-freshness.cjs prune-test-executables warm.jsonl
+          du -sh target ~/.cargo/registry ~/.cargo/git
+      - name: Save the shared target cache
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            target
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+          key: ${{ steps.setup.outputs.cache-prefix }}${{ github.sha }}
+
+  # The required check context. It passes when every selected crate job and the CLI job (when
+  # selected) passed, or when nothing was selected (docs, installer-only, or a crate nothing
+  # tested depends on). A failed selector is red, never a successful skip.
+  cargo-test-continuum-core:
+    name: cargo test -p continuum-core --lib
+    needs: [changes, crate-tests, cli-handoff]
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Require every selected crate job
+        env:
+          SELECT_RESULT: ${{ needs.changes.result }}
+          CRATES: ${{ needs.changes.outputs.crates }}
+          CRATE_RESULT: ${{ needs.crate-tests.result }}
+          CLI: ${{ needs.changes.outputs.cli }}
+          CLI_RESULT: ${{ needs.cli-handoff.result }}
+        run: |
+          echo "Selector: $SELECT_RESULT; crates: $CRATES; crate jobs: $CRATE_RESULT; CLI: $CLI -> $CLI_RESULT"
+          ok() { test "$1" = success || test "$1" = skipped; }  # skipped = nothing selected
+          test "$SELECT_RESULT" = success
+          if [ "$CRATES" = '[]' ]; then ok "$CRATE_RESULT"; else test "$CRATE_RESULT" = success; fi
+          if [ "$CLI" = 'false' ]; then ok "$CLI_RESULT"; else test "$CLI_RESULT" = success; fi
+
   ts-rs-binding-drift-detector:
     name: ts-rs binding drift detector
     needs: cargo-test-continuum-core
@@ -263,7 +329,7 @@ jobs:
       - name: Mirror the combined Rust and binding-drift verdict
         run: |
           result='${{ needs.cargo-test-continuum-core.result }}'
-          echo "Combined lib/CLI/doc/Postgres/binding checks: $result"
+          echo "Combined lib/CLI/doc/binding checks: $result"
           case "$result" in
             success) ;;
             *)
@@ -334,6 +400,8 @@ jobs:
           if ($interopResult -ne 0) { exit $interopResult }
           if (($interop -join "`n") -notmatch '1 passed;') { throw 'Native/fs2 custody fixture did not execute' }
           foreach ($test in @(
+            'inference::lane_process::kill9::windows_termination_tests::exit_between_preflight_and_termination_is_already_gone',
+            'inference::lane_process::kill9::windows_termination_tests::live_process_access_denial_remains_a_refusal',
             'model_registry::artifacts::expert_placement::tests::online_preparation_preserves_readers_until_explicit_final_exclusion',
             'model_registry::artifacts::expert_placement::tests::actual_lazy_reader_excludes_freeze_until_its_lifetime_ends',
             'inference::engine_install::tests::installed_engine_receipt_binds_bytes_and_candidate_membership'
@@ -347,6 +415,8 @@ jobs:
           # Disk eviction lives in the kernel crate (core/continuum-kernel); its native custody
           # fixtures run from there.
           foreach ($test in @(
+              'system_resources::drives::tests::cold_tier_excludes_the_resolved_system_volume_and_reverses_with_capacity',
+              'system_resources::drives::tests::the_drive_holding_a_path_is_the_longest_mount_prefix_never_a_named_root',
             'system_resources::disk_eviction::tests::broker_reclaims_release_incremental_only_after_profile_custody',
             'system_resources::disk_eviction::tests::redirected_profile_or_incremental_child_never_reaches_external_data',
             'system_resources::disk_eviction::tests::ladder_frees_in_order_and_preserves_release_outputs'

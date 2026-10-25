@@ -46,6 +46,7 @@ name = "forge-custodian"
 path = "src/bin/forge_custodian.rs"
 
 [dependencies]
+tool-working-set = { path = "../tool-working-set" }  # one relevance seam: commands/help ranks a query the way the learned tool head reads relevance
 continuum-tool-protocol = { path = "../continuum-tool-protocol" }
 tokio.workspace = true
 expert-pager-policy = { path = "../expert-pager-policy" }
@@ -54,6 +55,7 @@ serde_json.workspace = true
 ron = "0.12"     # RON scene descriptions (Bevy-idiomatic on-disk format)
 uuid.workspace = true
 continuum-base = { path = "../continuum-base" }
+continuum-host = { path = "../continuum-host" }
 continuum-kernel = { path = "../continuum-kernel" }
 continuum-mind = { path = "../continuum-mind" }
 continuum-live = { path = "../continuum-live" }
@@ -238,10 +240,6 @@ regex = "1"                      # Regex search for code search
 # Windows incremental cache masked it.
 scraper = "0.21"
 
-# ORM module — database-agnostic storage with adapter traits
-rusqlite = { version = "0.32", features = ["bundled"] }  # SQLite adapter
-deadpool-postgres.workspace = true                        # Postgres connection pool
-tokio-postgres.workspace = true                           # Postgres async driver
 rustpython-parser = "0.4.0"
 
 # jemalloc EVERYWHERE EXCEPT windows-msvc. jemalloc-sys builds its vendored
@@ -381,7 +379,7 @@ load-dynamic-ort = ["ort/load-dynamic"]
 #     via `cargo test --features test-fixtures` or `--features test-fixtures`
 #     on the bin target.
 #   - Production: heuristic adapter doesn't exist in the binary at all.
-test-fixtures = ["continuum-base/test-fixtures", "continuum-kernel/test-fixtures", "continuum-engine/test-fixtures", "continuum-hands/test-fixtures", "continuum-live/test-fixtures", "continuum-mind/test-fixtures"]
+test-fixtures = ["continuum-kernel/test-fixtures", "continuum-engine/test-fixtures", "continuum-hands/test-fixtures", "continuum-live/test-fixtures", "continuum-mind/test-fixtures"]
 
 # stress-tests: opts in concurrency / multi-thread / load tests that
 # pin substrate invariants under N-task simultaneous load. Each test
@@ -456,6 +454,9 @@ continuum-engine = { path = "../continuum-engine", features = ["test-fixtures"] 
 continuum-hands = { path = "../continuum-hands", features = ["test-fixtures"] }
 continuum-live = { path = "../continuum-live", features = ["test-fixtures"] }
 continuum-mind = { path = "../continuum-mind", features = ["test-fixtures"] }
+continuum-genome = { path = "../continuum-genome", features = ["test-fixtures"] }
+continuum-experience = { path = "../continuum-experience", features = ["test-fixtures"] }
+continuum-academy = { path = "../continuum-academy", features = ["test-fixtures"] }
 continuum-positron = { path = "../continuum-positron", features = ["test-fixtures"] }
 # The hygiene ratchets moved to their own std-only crate so a contributor learns an
 # unwrap count rose in seconds instead of after a 12.4-minute build. Two `#[cfg(test)]`
@@ -464,7 +465,6 @@ continuum-positron = { path = "../continuum-positron", features = ["test-fixture
 source-hygiene = { path = "../source-hygiene" }
 tokio-test = "0.4"
 tempfile = "3"                   # Temp directories for code module tests
-continuum-base = { path = "../continuum-base", features = ["test-fixtures"] }
 
 # Enable continuum-client's test-fixtures (the `mock` transport) in TEST builds
 # only — production links the regular dep above without it. Lets tests drive a

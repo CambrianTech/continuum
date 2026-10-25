@@ -100,7 +100,7 @@ use super::*;
         );
         let store =
             reviewed::boundaries::ReviewBoundaryStore::new(executor.clone(), name.into(), persona);
-        let dream = region_over_with_store(persona, admission.clone(), Some(store.clone()));
+        let dream = region_over_with_store(persona, admission.clone(), Some(Arc::new(store.clone())));
         let create = |card, reviews| fx.create(card, reviews);
         let claim = ExactReview::claim;
         let project = |tail| fx.project(tail);
@@ -439,7 +439,7 @@ use super::*;
             .await
             .is_err());
         let dream =
-            region_over_with_store(persona, admission.clone(), Some(reopened_store.clone()));
+            region_over_with_store(persona, admission.clone(), Some(Arc::new(reopened_store.clone())));
         assert!(!dream.review_boundary_pending(persona, selection.submission_id));
         dream.tick(&RegionContext::for_persona(0, persona)).await;
         drain(&dream).await;
@@ -448,7 +448,7 @@ use super::*;
             admission
                 .recall_recent(16)
                 .iter()
-                .filter(|e| e.kind == crate::persona::engram::EngramKind::Semantic)
+                .filter(|e| e.kind == crate::cognition::engram::EngramKind::Semantic)
                 .count(),
             1
         );
@@ -469,7 +469,7 @@ use super::*;
             .unwrap()
             .pending
             .is_empty());
-        let restarted = region_over_with_store(persona, admission, Some(reopened_store));
+        let restarted = region_over_with_store(persona, admission, Some(Arc::new(reopened_store)));
         reviewed::consume_review_with_boundary(
             &refused_conn,
             name,
@@ -631,4 +631,84 @@ use super::*;
             .await
             .unwrap();
         assert_eq!(stored_credit_rows(&data, name).await[0].id, current.id);
+    }
+
+    // what this catches (card fe8554d2, Codex on #5386): a submission bound by the generation
+    // that issued it, through the real board projection and review consumption. A row another
+    // pending submission also issued from holds and never dispatches. A review of a submission
+    // that was never published (the record landed, the publication failed) accepts nothing.
+    #[tokio::test]
+    pub(super) async fn a_review_of_a_pending_submission_holds_a_shared_or_unpublished_row(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        use airc_work::WorkEvent;
+        use reviewed::ReviewedCreditState as State;
+        let (mut fx, _capture) = exact_review_bound_by(Some("reviewed-request")).await;
+        let (executor, persona, name, room) = (fx.executor.clone(), fx.persona, fx.name, fx.room);
+        let pass = fx.pass.clone();
+        let twin_id = Uuid::new_v4();
+        let twin_published = airc_work::WorkSubmission {
+            submission_id: airc_work::SubmissionId::from_uuid(twin_id),
+            card_id: fx.card_id,
+            claim_id: airc_work::ClaimId::from_uuid(fx.selection.claim_id),
+            instance: fx.selection.instance.clone(),
+            base_sha: fx.selection.base_sha.clone(),
+            artifact: fx.selection.artifact.clone(),
+            publisher: fx.owner,
+            submitted_at_ms: 3,
+        };
+        // The twin is published too; a pending row shares a row whether or not it is.
+        let board = fx.project(vec![
+            (WorkEvent::WorkSubmitted(twin_published.clone()), fx.owner),
+            (WorkEvent::WorkSubmissionReviewed(pass.clone()), fx.reviewer),
+        ]);
+        let twin = reviewed::PendingSelection {
+            publication: reviewed::Publication::of(room, &twin_published),
+            issuing_generation: "reviewed-request".into(),
+        };
+        reviewed::record_pending(&fx.data, name, persona, twin).await?;
+        let never_submit = continuum_client::mock::MockTransport::new();
+        never_submit.respond_to("genome/training-trigger/submit", |_| panic!("held provenance must not dispatch"));
+        let held = reviewed::consume_review_with_boundary(
+            &settlement_connection(executor.clone(), persona, never_submit, None),
+            name, persona, room, &board, pass.review_id, &reviewed::SelfReview::NotAdmitted, None,
+        )
+        .await?;
+        assert_eq!(held.state, State::ProvenanceHeld, "{held:?}");
+
+        fx.prefix.retain(|(event, _)| !matches!(event, WorkEvent::WorkSubmitted(_)));
+        let unpublished = fx.project(vec![(WorkEvent::WorkSubmissionReviewed(pass.clone()), fx.reviewer)]);
+        let never = continuum_client::mock::MockTransport::new();
+        never.respond_to("genome/training-trigger/submit", |_| panic!("an unpublished submission must not dispatch"));
+        assert!(reviewed::consume_review_with_boundary(
+            &settlement_connection(executor, persona, never, None),
+            name, persona, room, &unpublished, pass.review_id, &reviewed::SelfReview::NotAdmitted, None,
+        )
+        .await
+        .is_err());
+        Ok(())
+    }
+
+    // what this catches (card fe8554d2): with no other submission on the row, a signed pass
+    // resolves the pending binding to the issuing turn's row and accepts it.
+    #[tokio::test]
+    pub(super) async fn a_review_of_a_pending_submission_accepts_the_issuing_turns_row(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        use airc_work::WorkEvent;
+        use reviewed::ReviewedCreditState as State;
+        let (fx, _capture) = exact_review_bound_by(Some("reviewed-request")).await;
+        let board = fx.project(vec![(WorkEvent::WorkSubmissionReviewed(fx.pass.clone()), fx.reviewer)]);
+        let submit = continuum_client::mock::MockTransport::new();
+        script_settlement_reply(
+            &submit,
+            &fx.selected,
+            Some(json!({"success":true,"acceptance":{"submissionId":fx.selected.id,"replayed":false}})),
+        );
+        let accepted = reviewed::consume_review_with_boundary(
+            &settlement_connection(fx.executor.clone(), fx.persona, submit, None),
+            fx.name, fx.persona, fx.room, &board, fx.pass.review_id, &reviewed::SelfReview::NotAdmitted, None,
+        )
+        .await?;
+        assert_eq!(accepted.state, State::Accepted, "{accepted:?}");
+        assert_eq!(accepted.staged_revision_id, Some(fx.selected.id), "the issuing turn's row");
+        Ok(())
     }

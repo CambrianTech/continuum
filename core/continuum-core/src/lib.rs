@@ -28,7 +28,8 @@ pub use continuum_mind::{
     cognition, context, experience, genome, memory, perception, persona, rag, recipe, vdd,
 };
 pub use continuum_kernel::{
-    concurrency, governor, gpu, identity, logging, orm, paging, paths, resources, routing, runtime,
+    concurrency, docker_tier, docker_tier_pool, entity_schemas, governor, gpu, identity, logging, orm,
+    paging, paths, probe_query, probe_stream, resource_broker, resources, routing, runtime,
     sdk_codegen, system_resources,
 };
 pub use continuum_kernel::{
@@ -53,10 +54,8 @@ pub(crate) mod test_env;
 
 pub use continuum_kernel::concurrency::*;
 pub use live::VoiceOrchestrator;
-pub use persona::{
-    CognitionDecision, InboxMessage, InboxTask, Modality, Mood, PersonaCognitionEngine,
-    PersonaInbox, PersonaState, PriorityScore, QueueItem, SenderType,
-};
+pub use cognition::conversation::types::{InboxMessage, InboxTask, Modality, Mood, PersonaState, QueueItem, SenderType};
+pub use persona::{CognitionDecision, PersonaCognitionEngine, PersonaInbox, PriorityScore};
 // Easy logging macros - auto-route to proper log files based on module_path!()
 // Usage: clog_info!("Session started"); clog_warn!("Warning"); etc.
 pub use ipc::start_server;

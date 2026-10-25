@@ -24,7 +24,14 @@ frequencyPenalty?: number,
  * by the substrate sampling defaults to catch loops whose span
  * exceeds 64 tokens (#181). Ignored by cloud OpenAI-compat providers.
  */
-repeatLastN?: number, stopSequences?: Array<string>, tools?: Array<NativeToolSpec>, toolChoice?: ToolChoice, 
+repeatLastN?: number, stopSequences?: Array<string>, tools?: Array<NativeToolSpec>, 
+/**
+ * Verbs she loaded into the TAIL this epoch: callable natively (the engine's parser and
+ * grammar accept them) but never rendered in the head, so the cached prefix is unchanged
+ * (goal 10, card ecd5dff3). Their schemas ride the conversation, after the cache point.
+ * Sent only to a llama.cpp-family server; one that predates the field ignores it.
+ */
+tailTools?: Array<NativeToolSpec>, toolChoice?: ToolChoice, 
 /**
  * Force the model to output a specific format (e.g. JSON object).
  * OpenAI-compatible: serializes as `{"type": "json_object"}` etc. The

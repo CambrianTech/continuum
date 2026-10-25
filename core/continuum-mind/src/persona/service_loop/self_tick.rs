@@ -12,18 +12,22 @@ pub(super) struct BeatClock {
 /// over the CURRENT world-state and sets the next beat from what it found.
 pub(super) async fn serve_self_tick(
     ctx: &HostedPersona,
-    conversation: &mut dyn PersonaConversation,
+    conversation: &mut dyn CitizenConversation,
     opts: &ServeOptions,
     last_burst_fp: &mut u64,
     wake_room: Option<uuid::Uuid>,
     pending_before_wake: crate::cognition::directed_pending::Observation,
     beat: &mut BeatClock,
+    pending: &mut crate::persona::wake_backlog::PendingInput,
 ) {
     // With `biased;` the inbox was polled first: a tick winning means
     // nothing admissible was queued, so any pending directed flag is
     // stale (raised for a line that filtered at the door). Clear it,
     // or every self-work lane wait yields forever.
-    crate::cognition::directed_pending::acknowledge(ctx.identity.peer_id.as_uuid(), pending_before_wake);
+    crate::cognition::directed_pending::acknowledge(
+        ctx.identity.peer_id.as_uuid(),
+        pending_before_wake,
+    );
     // (Quiescence is handled at the top of the loop — a held lease never
     // reaches here.) Heartbeat slice — the mind gets time with no inbound
     // activity sets the next beat: if it found something new to work on
@@ -72,7 +76,7 @@ pub(super) async fn serve_self_tick(
     // turn can afford (card 7496ed9d) — the message path below stays interactive.
     let starved = crate::cognition::audience::with(
         crate::inference::prefill_rate::Audience::Unattended,
-        run_self_cycle(ctx, conversation, opts, last_burst_fp, wake_room),
+        run_self_cycle(ctx, conversation, opts, last_burst_fp, wake_room, pending),
     )
     .await;
     if starved {

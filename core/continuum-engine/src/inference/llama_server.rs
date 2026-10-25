@@ -53,6 +53,7 @@ pub use liveness::{
     NeverStartedClass, RealDecodeOutcome, SmokeMissVerdict,
 };
 
+mod convergence_attempt;
 mod reconcile;
 pub use reconcile::{ensure_model_serving, ensure_model_serving_if_current};
 #[cfg(test)]
@@ -77,6 +78,8 @@ use pages::{
     PAGE_DIR_GUARD,
 };
 mod genome;
+mod gene_pages;
+pub use gene_pages::{gene_seats, page_gene, GeneMove, GenePageError, GeneSeat};
 pub(crate) use genome::gene_stage_name;
 pub use genome::{engine_accepts_train_dir, engine_train_dir, GenomeInPlace};
 use genome::{engine_help_lists_train_dir, ENGINE_TRAIN_DIR};
@@ -84,10 +87,7 @@ mod engine_install;
 #[cfg(windows)]
 pub(crate) use engine_install::engine_override;
 pub(crate) use engine_install::{installed_engine_commit, lane_runs_installed_engine};
-pub use engine_install::{
-    engine_stale, warm_build_jobs_for_memory, WARM_BUILD_FIRST_JOB_BYTES, WARM_BUILD_JOB_BYTES,
-    WARM_BUILD_MIN_FREE_BYTES, WARM_BUILD_RESERVE_BYTES, WARM_BUILD_UNCAPPED_FREE_BYTES,
-};
+pub use engine_install::engine_stale;
 use engine_install::{
     mark_engine_proven, roll_back_engine_after_failed_launch, server_bin, ENGINE_CONVERGE_TRIED,
     ENGINE_STALE,
@@ -138,6 +138,7 @@ pub use ephemeral::{
 
 mod control_impl;
 mod launch;
+mod adopted_retirement;
 mod placement_stamp;
 mod prepare;
 

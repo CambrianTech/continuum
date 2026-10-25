@@ -14,6 +14,7 @@ command-name resolver, MeshPresence, ClogSink) installed at boot.
 
 [dependencies]
 continuum-base = { path = "../continuum-base" }
+continuum-host = { path = "../continuum-host" }
 continuum-airc-protocol = { path = "../continuum-airc-protocol" }
 continuum-cli-lifecycle = { path = "../continuum-cli-lifecycle" }
 continuum-orm-derive = { path = "../continuum-orm-derive" }
@@ -33,8 +34,6 @@ tracing-appender.workspace = true
 ts-rs.workspace = true
 sha2.workspace = true
 rusqlite = { version = "0.32", features = ["bundled"] }
-deadpool-postgres.workspace = true
-tokio-postgres.workspace = true
 tokio-stream.workspace = true
 futures-util.workspace = true
 airc-core.workspace = true
@@ -79,5 +78,5 @@ default = []
 cuda = []
 vulkan = []
 ts-codegen = []
-test-fixtures = ["continuum-base/test-fixtures", "dep:tempfile"]
+test-fixtures = ["dep:tempfile"]
 stress-tests = []

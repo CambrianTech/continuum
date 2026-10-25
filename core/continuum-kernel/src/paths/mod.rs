@@ -61,6 +61,12 @@ pub fn has_path_prefix(path: &std::path::Path, base: &std::path::Path) -> bool {
 /// curriculum drain (`genome/teach --from-experience`) resolves the SAME citizen
 /// layout as the grader that wrote the stream — one layout, never two.
 pub fn continuum_home() -> Result<std::path::PathBuf, String> {
+    // A test's per-thread native home wins over process-global env (card 3c8b03ae): the
+    // captures and the recorder resolve here now, and their tests isolate per thread.
+    #[cfg(any(test, feature = "test-fixtures"))]
+    if let Some(native) = NativeHomeOverride::current() {
+        return Ok(native.join(".continuum"));
+    }
     std::env::var_os("CONTINUUM_HOME")
         .map(std::path::PathBuf::from)
         .or_else(test_home)
@@ -87,10 +93,18 @@ pub fn continuum_root() -> std::path::PathBuf {
 /// fixture's "coder-14b" into ~/.continuum/state/served-window.json; the next boot
 /// remembered that model, found no decode knee for it, planned 8 lanes unclamped on a box
 /// whose knee is 2, and swapped 4.6 GB. Every store resolves its path through this
-/// function, so under `cfg(test)` — when no `$CONTINUUM_HOME` is declared — the home is a
+/// function, so in any test build — when no `$CONTINUUM_HOME` is declared (an explicit one is
+/// always honoured, by design) — the home is a
 /// per-process directory under the system temp dir. Not configurable, not a fixture to
 /// remember: a test cannot reach the operator's state by forgetting.
-#[cfg(test)]
+///
+/// "Any test build" means `cfg(test)` OR `test-fixtures`. `cfg(test)` alone covers only the
+/// kernel's OWN tests: once the kernel was cut out of core, core's tests (the serving daemon
+/// of the incident above) and every other crate's tests built the kernel WITHOUT it and
+/// resolved the real home again (card d11d9827). Every crate's test run turns on
+/// `continuum-kernel/test-fixtures` (core and the cut crates through their dev-dependencies or
+/// their own `test-fixtures`); resolver 2 never applies it to a production build.
+#[cfg(any(test, feature = "test-fixtures"))]
 fn test_home() -> Option<std::path::PathBuf> {
     static HOME: std::sync::LazyLock<std::path::PathBuf> = std::sync::LazyLock::new(|| {
         let dir = std::env::temp_dir().join(format!("continuum-test-home-{}", std::process::id()));
@@ -99,7 +113,7 @@ fn test_home() -> Option<std::path::PathBuf> {
     });
     Some(HOME.clone())
 }
-#[cfg(not(test))]
+#[cfg(not(any(test, feature = "test-fixtures")))]
 fn test_home() -> Option<std::path::PathBuf> {
     None
 }

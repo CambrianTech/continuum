@@ -15,5 +15,17 @@ mod next_after_submission;
 pub use next_after_submission::*;
 mod work_submission;
 
+/// Her credit store, reached as her: the `@persona:` handle resolves through this identity.
+fn credit_connection(
+    executor: Option<std::sync::Arc<CommandExecutor>>,
+    persona_id: Uuid,
+) -> Result<Connection<InProcessTransport>, CommandError> {
+    let executor = executor.ok_or_else(|| CommandError::Internal("work executor is not ready".into()))?;
+    Ok(Connection::new(InProcessTransport::new(
+        executor,
+        Some(crate::routing::CallerIdentity::local_persona(crate::identity::PeerId::from_uuid(persona_id))),
+    )))
+}
+
 #[cfg(test)]
 mod tests;

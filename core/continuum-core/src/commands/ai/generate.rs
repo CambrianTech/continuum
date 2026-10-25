@@ -126,6 +126,7 @@ fn parse_request(params: &Value) -> Result<TextGenerationRequest, String> {
             .json_opt("stop_sequences")
             .or_else(|| p.json_opt("stopSequences")),
         tools: p.json_opt("tools"),
+        tail_tools: None,
         tool_choice: p.json_opt("tool_choice"),
         response_format: None,
         active_adapters: p.json_opt("activeAdapters"),

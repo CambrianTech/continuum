@@ -10,7 +10,8 @@ use std::pin::Pin;
 use uuid::Uuid;
 
 /// Stage a claimed card's work into a resident's workspace (`home`, resident, card).
-pub type CardStager = fn(PathBuf, Uuid, airc_lib::WorkCard) -> Pin<Box<dyn Future<Output = ()> + Send>>;
+pub type CardStager =
+    fn(PathBuf, Uuid, airc_lib::WorkCard) -> Pin<Box<dyn Future<Output = ()> + Send>>;
 
 static STAGER: parking_lot::RwLock<Option<CardStager>> = parking_lot::RwLock::new(None);
 
@@ -41,22 +42,44 @@ pub fn checkout_path_for(peer: &Uuid, card: &airc_lib::WorkCard) -> Option<PathB
     // A benchmark REVIEW card's work is in the OWNER's checkout (the fix under review
     // lives there), so the reviewer's hands stand in it. One rule for every turn (card
     // fc9e9fd7: the held-work turn kept its own copy of this resolver).
-    if let Some(instance) = crate::cognition::bench_title::parse_review_title(&card.title) {
+    if let Some(instance) = crate::recipe::bench_title::parse_review_title(&card.title) {
         let copies = crate::persona::staged_workspace::owners_of(&instance);
-        if let Some(copy) = copies.iter().find(|c| c.has_work).or_else(|| copies.first()) {
+        if let Some(copy) = copies
+            .iter()
+            .find(|c| c.has_work)
+            .or_else(|| copies.first())
+        {
             return Some(copy.path.clone());
         }
     }
-    if let Some((bench, _)) = crate::cognition::bench_title::parse_card_title(&card.title) {
-        let spec = crate::recipe::benchmark_catalog::known_benchmarks().iter().find(|s| s.name == bench)?;
+    if let Some((bench, _)) = crate::recipe::bench_title::parse_card_title(&card.title) {
+        let spec = crate::recipe::benchmark_catalog::known_benchmarks()
+            .iter()
+            .find(|s| s.name == bench)?;
         return if spec.swe_dataset().is_some() {
-            crate::persona::staged_workspace::workspace_for_held_cards(peer, std::iter::once(card.title.as_str()))
+            crate::persona::staged_workspace::workspace_for_held_cards(
+                peer,
+                std::iter::once(card.title.as_str()),
+            )
         } else {
             let root = gym_workspace(&crate::paths::continuum_home().ok()?, *peer);
             root.is_dir().then_some(root)
         };
     }
-    airc_lib::work_worktree::worktree_path_for(card.card_id).filter(|p| p.join(".git").exists())
+    airc_lib::work_worktree::worktree_path_for(card.card_id).filter(|p| checkout_present(p))
+}
+
+/// A clone directory is not a checkout until Git has populated its index.
+/// This cheap read-side check keeps interrupted clones out of Hands; the staging
+/// owner performs authoritative Git/evidence validation before repairing them.
+fn checkout_present(path: &Path) -> bool {
+    let git = path.join(".git");
+    if git.is_file() {
+        return true; // linked checkouts retain their existing migration path
+    }
+    git.join("index").is_file()
+        && std::fs::read_to_string(git.join("HEAD"))
+            .is_ok_and(|head| !head.trim().is_empty() && head.trim() != "ref: refs/heads/.invalid")
 }
 
 /// Gated so a tree that cannot migrate is not restaged on every turn (Fable on #5132: each
@@ -68,16 +91,23 @@ pub fn checkout_path_for(peer: &Uuid, card: &airc_lib::WorkCard) -> Option<PathB
 pub async fn restage_held_linked_checkout(peer: Uuid, card: &airc_lib::WorkCard) {
     static TRIED: std::sync::LazyLock<dashmap::DashMap<(Uuid, Uuid), std::time::Instant>> =
         std::sync::LazyLock::new(dashmap::DashMap::new);
-    let Some(existing) = checkout_path_for(&peer, card)
-        .filter(|existing| airc_lib::work_worktree::is_linked_worktree(existing))
-    else {
+    if crate::recipe::bench_title::parse_card_title(&card.title).is_some()
+        || crate::recipe::bench_title::parse_review_title(&card.title).is_some()
+    {
+        return;
+    }
+    let Some(existing) = airc_lib::work_worktree::worktree_path_for(card.card_id) else {
         return;
     };
-    use crate::persona::workspace_transfer::{current_branch, has_unpushed_work, is_dirty};
-    if !matches!(is_dirty(&existing).await, Ok(false))
-        || current_branch(&existing).await.is_none()
-        || has_unpushed_work(&existing).await
-    {
+    if airc_lib::work_worktree::is_linked_worktree(&existing) {
+        use crate::persona::workspace_transfer::{current_branch, has_unpushed_work, is_dirty};
+        if !matches!(is_dirty(&existing).await, Ok(false))
+            || current_branch(&existing).await.is_none()
+            || has_unpushed_work(&existing).await
+        {
+            return;
+        }
+    } else if checkout_present(&existing) {
         return;
     }
     let key = (peer, card.card_id.as_uuid());
@@ -98,12 +128,69 @@ pub async fn restage_held_linked_checkout(peer: Uuid, card: &airc_lib::WorkCard)
             peer = %peer,
             card = %card.card_id.as_uuid(),
             error = %error,
-            "a held linked checkout could not be restaged: no continuum home"
+            "a held checkout could not be restaged: no continuum home"
         ),
     }
 }
 
 /// The gym artifact root, shared by claim staging, hands binding and grading.
 pub fn gym_workspace(home: &Path, peer: Uuid) -> PathBuf {
-    crate::identity::citizen_peer_dir(home, crate::identity::PeerId::from_uuid(peer)).join("workspace")
+    crate::identity::citizen_peer_dir(home, crate::identity::PeerId::from_uuid(peer))
+        .join("workspace")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::checkout_present;
+
+    #[test]
+    fn interrupted_clone_is_not_a_hands_workspace() -> Result<(), Box<dyn std::error::Error>> {
+        let root = tempfile::tempdir()?;
+        let git = root.path().join(".git");
+        std::fs::create_dir(&git)?;
+        std::fs::write(git.join("HEAD"), "ref: refs/heads/.invalid\n")?;
+        assert!(!checkout_present(root.path()));
+        // A clone completed without checkout still has no working index.
+        std::fs::write(git.join("HEAD"), "ref: refs/heads/main\n")?;
+        assert!(!checkout_present(root.path()));
+        Ok(())
+    }
+
+    #[test]
+    fn real_checkout_and_dirty_work_remain_available() -> Result<(), Box<dyn std::error::Error>> {
+        let root = tempfile::tempdir()?;
+        let run = |args: &[&str]| -> Result<(), Box<dyn std::error::Error>> {
+            let output = airc_core::process::background("git")
+                .current_dir(root.path())
+                .args(args)
+                .output()?;
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            Ok(())
+        };
+        run(&["init", "--quiet"])?;
+        std::fs::write(root.path().join("work"), "original")?;
+        run(&["add", "work"])?;
+        run(&[
+            "-c",
+            "user.name=test",
+            "-c",
+            "user.email=test@example.invalid",
+            "commit",
+            "--quiet",
+            "-m",
+            "base",
+        ])?;
+        assert!(checkout_present(root.path()));
+        std::fs::write(root.path().join("work"), "unfinished")?;
+        assert!(checkout_present(root.path()));
+        assert_eq!(
+            std::fs::read_to_string(root.path().join("work"))?,
+            "unfinished"
+        );
+        Ok(())
+    }
 }

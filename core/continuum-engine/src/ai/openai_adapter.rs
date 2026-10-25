@@ -111,6 +111,8 @@ pub struct OpenAICompatibleConfig {
     /// `Provider.capabilities.llamacpp_sampling_extensions` (#55) — replaces
     /// the `id == "docker-model-runner"` `repeat_penalty` branch.
     pub llamacpp_sampling_extensions: bool,
+    /// The server accepts `tail_tools`. From `Provider.capabilities.tail_tools`.
+    pub tail_tools: bool,
 }
 
 /// What the serving backend told us when we asked it `GET /lora-adapters`.

@@ -22,44 +22,17 @@
 
 services:
 
-  # ── PostgreSQL (OPT-IN, grid deployments only) ────────────
-  # Default install uses SQLite at ~/.continuum/database/main.db — zero-dep,
-  # portable, works offline. Postgres is only needed for multi-writer grid
-  # setups where multiple continuum-core nodes share state over Tailscale.
-  #
-  # Enable with:    docker compose --profile postgres up
-  # And tell Rust to use it: DATABASE_URL=postgres://continuum:continuum@postgres:5432/continuum
-  #
-  # When this profile is inactive, `depends_on: postgres` entries on other
-  # services are auto-skipped by compose — postgres simply doesn't run.
-  postgres:
-    profiles: [postgres]
-    image: postgres:17-alpine
-    restart: unless-stopped
-    mem_limit: 512m
-    environment:
-      POSTGRES_DB: continuum
-      POSTGRES_USER: ${POSTGRES_USER:-continuum}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-continuum}
-    volumes:
-      - pgdata:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U continuum"]
-      interval: 5s
-      timeout: 3s
-      retries: 5
-
   # ── Model Init (downloads voice/avatar/scene models on first run) ──
   model-init:
     build:
       # The download scripts live in tools/scripts (#1840); models.json is in
-      # legacy/src/shared (not yet migrated). Context = the scripts' home; the
+      # docker/model-init. Context = the scripts' home; the
       # model registry rides in as the `models` additional-context. dockerfile is
       # relative to the context (tools/scripts/../../docker → repo-root/docker).
       context: ./tools/scripts
       dockerfile: ../../docker/model-init.Dockerfile
       additional_contexts:
-        models: ./legacy/src/shared
+        models: ./docker/model-init
     image: ghcr.io/cambriantech/continuum-model-init:${CONTINUUM_IMAGE_TAG:-latest}
     # One-time downloader. Fixed budget — doesn't scale with host RAM.
     mem_limit: ${MODEL_INIT_MEM:-2g}
@@ -111,9 +84,8 @@ services:
     # cuda / continuum-core-vulkan overlays) it's the actual ceiling.
     mem_limit: ${CONTINUUM_CORE_MEM:-16g}
     working_dir: /app
-    # No depends_on for services behind profiles (postgres, livekit-bridge).
-    # Core starts independently; connections to optional services (postgres
-    # pool, livekit bridge socket) retry on demand. Text chat works without
+    # No depends_on for services behind profiles (livekit-bridge).
+    # Core starts independently; connections to optional services (livekit bridge socket) retry on demand. Text chat works without
     # any profile active — voice/video requires `--profile live`.
     volumes:
       - voice-models:/app/models:ro
@@ -131,9 +103,8 @@ services:
     environment:
       # DATABASE_URL is OPTIONAL. Unset → Rust defaults to SQLite at
       # ~/.continuum/database/main.db (mounted from host via the
-      # ~/.continuum volume). Set to `postgres://continuum:continuum@postgres:5432/continuum`
-      # only when running the `postgres` compose profile. Rust's
-      # resolve_handle('main') reads this env to pick the adapter.
+      # ~/.continuum volume). Set it only to a SQLite file path; a postgres://
+      # URL is refused. Rust's resolve_handle('main') reads this env.
       - DATABASE_URL=${DATABASE_URL:-}
       - AVATAR_MODELS_DIR=/app/avatars
       - LIVEKIT_URL=${LIVEKIT_URL:-ws://livekit:7880}
@@ -183,7 +154,7 @@ services:
   # The old-Node UI serving stack (node-server WS orchestrator + widget-server
   # Vite host) is deleted: the reliable client is the native Tauri DESKTOP that
   # attaches to continuum-core's WS ingress directly (desktop-only — see
-  # [[reliability-spine-*]]). Both built from ./src (now legacy/src #1840) and
+  # [[reliability-spine-*]]). Both were built from the old ./src (tag legacy-archive-2026-10-23) and
   # served the retired web UI, so they die with it. Grid nodes run core-only; a
   # desktop connects from anywhere. Web stays a dev-only vite convenience, not a
   # container service.
@@ -309,7 +280,6 @@ services:
     command: ["-m", "/models/current.gguf", "-c", "4096", "-ngl", "99", "--port", "8090", "--host", "0.0.0.0"]
 
 volumes:
-  pgdata:
   hf-cache:
   forge-output:
   models:

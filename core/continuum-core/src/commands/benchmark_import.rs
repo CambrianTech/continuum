@@ -13,7 +13,7 @@ use crate::recipe::benchmark_catalog::known_benchmarks;
 use crate::commands::benchmark::{
     prepare_cards, CardSelection, CardWork, PreparedCard,
 };
-use crate::cognition::bench_title::parse_card_title;
+use crate::recipe::bench_title::parse_card_title;
 use crate::sdk_codegen::{AccessLevel, ActionCommand, CommandError, Ctx};
 use async_trait::async_trait;
 use schemars::JsonSchema;
@@ -288,7 +288,7 @@ crate::register_command!(CourseworkImport);
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cognition::bench_title::dispatch_card_title;
+    use crate::recipe::bench_title::dispatch_card_title;
     use crate::commands::benchmark::dispatch_swe_card_body;
 
     // what this catches: a recipe-posted card and a dispatch-posted card must be the

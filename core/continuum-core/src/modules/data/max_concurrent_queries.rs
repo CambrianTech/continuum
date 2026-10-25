@@ -107,10 +107,8 @@ pub(super) struct PaginatedQueryState {
 ///
 /// Adapter-agnostic: connection string determines which adapter is used.
 /// - File paths or `:memory:` → SqliteAdapter (worker thread with mpsc)
-/// - `postgres://` or `postgresql://` → PostgresAdapter (async connection pool)
 ///
 /// NOTE: SqliteAdapter is internally thread-safe via mpsc channels.
-/// PostgresAdapter is internally thread-safe via deadpool connection pool.
 pub struct DataState {
     /// Adapter cache: connection_string -> initialized adapter (polymorphic)
     /// Lazy initialization per unique connection string
@@ -222,7 +220,7 @@ impl DataState {
     ///
     /// Resolution rules:
     /// - `"main"` — primary database. Uses `DATABASE_URL` env when set
-    ///   (grid opt-in for Postgres / any future adapter); otherwise
+    ///   (a SQLite path); otherwise
     ///   defaults to a local SQLite file at
     ///   `$HOME/.continuum/database/main.db`.
     /// - `"@persona:<slug>"` — per-persona long-term memory DB. Resolves
@@ -239,7 +237,7 @@ impl DataState {
     /// - 36-char UUID shape — per-persona database (UUID-keyed variant).
     ///   Maps to `$HOME/.continuum/personas/<uuid>/longterm.db`. Kept
     ///   for back-compat with callers using UUIDs as identity.
-    /// - Starts with `postgres://` / `postgresql://` / filesystem path —
+    /// - Starts with a filesystem path —
     ///   legacy passthrough. Logged at WARN so remaining leak sites show
     ///   up in the next audit. Will be removed once every caller migrates.
     ///
@@ -346,9 +344,7 @@ impl DataState {
         }
 
         // Legacy passthrough — log so we can hunt remaining callers.
-        if handle.starts_with("postgres://")
-            || handle.starts_with("postgresql://")
-            || handle.starts_with('/')
+        if handle.starts_with('/')
             || handle.starts_with('.')
             || handle.contains(".db")
         {

@@ -4,11 +4,11 @@
 //! The `embedding/*` commands (similarity, similarity-matrix, top-k, cluster) are typed
 //! stateless `ActionCommand`s under `commands/embedding/*`; the vector math they call (the
 //! SIMD kernels, the pairwise matrix, top-k, `detect_clusters`) lives with the embedding
-//! owner in `cognition::embedding::vector_math`. This module's `handle_command` exists only
+//! owner in `ai::embedding::vector_math`. This module's `handle_command` exists only
 //! to fail loud if a typed registration is ever missing.
 //!
 //! Embedding *generation* is async and adapter-routed (llama-server `/v1/embeddings` via the
-//! `AIProviderAdapter`, see [`crate::cognition::embedding`]); nothing loads a model in-process.
+//! `AIProviderAdapter`, see [`crate::ai::embedding`]); nothing loads a model in-process.
 //!
 //! Priority: Normal — similarity math is CPU-bound but not time-critical.
 
@@ -24,7 +24,7 @@ use std::sync::Arc;
 /// Build the adapter-routed embedder used by background/IPC embedding work
 /// (Hippocampus boot, `vector/backfill`) — the SAME async, content-addressed,
 /// neural-or-lexical embedder the live recall path uses
-/// ([`crate::cognition::embedding::resolve_recall_embedder`]).
+/// ([`crate::ai::embedding::resolve_recall_embedder`]).
 ///
 /// Reads the served model from Contract A (the serving daemon's snapshot) and
 /// builds the gateway adapter against it. llama-server serves embeddings from the
@@ -42,7 +42,7 @@ use std::sync::Arc;
 /// is no per-module timeout to maintain — the old 5s guard existed only because an
 /// local llama-server could hold `/v1/models` open, a hazard the snapshot removes.
 pub async fn build_adapter_embedder(
-) -> Result<Arc<dyn crate::cognition::embedding::EmbeddingProvider>, String> {
+) -> Result<Arc<dyn crate::ai::embedding::EmbeddingProvider>, String> {
     // `initialize` is an `AIProviderAdapter` trait method — bring the trait into
     // scope so it resolves on the concrete adapter.
     use crate::ai::adapter::AIProviderAdapter as _;
@@ -74,7 +74,7 @@ pub async fn build_adapter_embedder(
         .initialize()
         .await
         .map_err(|e| format!("embed adapter initialize failed: {e}"))?;
-    Ok(crate::cognition::embedding::resolve_recall_embedder(Arc::new(adapter)).await)
+    Ok(crate::ai::embedding::resolve_recall_embedder(Arc::new(adapter)).await)
 }
 
 pub struct EmbeddingModule {
@@ -82,11 +82,11 @@ pub struct EmbeddingModule {
     /// embedder), handed in at registration. The text-level commands
     /// (`embedding/similar`, `embedding/groups`) score in it; the vector-math
     /// commands stay stateless.
-    embedder: Arc<dyn crate::cognition::embedding::EmbeddingProvider>,
+    embedder: Arc<dyn crate::ai::embedding::EmbeddingProvider>,
 }
 
 impl EmbeddingModule {
-    pub fn new(embedder: Arc<dyn crate::cognition::embedding::EmbeddingProvider>) -> Self {
+    pub fn new(embedder: Arc<dyn crate::ai::embedding::EmbeddingProvider>) -> Self {
         Self { embedder }
     }
 }

@@ -21,7 +21,7 @@ use uuid::Uuid;
 use super::DatasetService;
 use crate::commands::training_trigger::submit::SubmitParams;
 use crate::genome::corpus_ref::CorpusRef;
-use crate::persona::inbox_admission::content_hash_sha256;
+use crate::cognition::inbox_admission::content_hash_sha256;
 
 const SCHEMA_VERSION: u32 = 1;
 const SUBMISSION_FILE: &str = "submission.json";
@@ -230,7 +230,7 @@ fn sync_directory_chain(path: &Path) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cognition::provenance::{GenerationOutcome, GenerationReceipt};
+    use crate::ai::provenance::{GenerationOutcome, GenerationReceipt};
     use crate::genome::fine_tuning::types::{LoRAHyperparams, ScheduleParams};
     use serde_json::json;
     use tempfile::TempDir;
@@ -245,6 +245,7 @@ mod tests {
             },
             capture: None,
             genes: Vec::new(),
+            gene_scales: Vec::new(),
         };
         serde_json::from_value(json!({
             "submissionId": id,

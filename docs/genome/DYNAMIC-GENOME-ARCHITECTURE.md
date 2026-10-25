@@ -1,5 +1,8 @@
 > **Superseded by [../GENOME-ARCHITECTURE.md](GENOME-ARCHITECTURE.md)** — kept as reference
 
+> `legacy/` was deleted 2026-10-23; every `legacy/` path below is at git tag `legacy-archive-2026-10-23` (restore: `git checkout legacy-archive-2026-10-23 -- legacy/<path>`).
+
+
 # PersonaUser Dynamic Genome Architecture
 
 ## Executive Summary
@@ -472,8 +475,8 @@ Fine-tuning is a task type in PersonaUser's self-managed queue. Continuous learn
 - [DYNAMIC-COMPOSITION-ROADMAP.md](../architecture/GENOME-FOUNDRY-SENTINEL.md) - PEFT integration plan
 
 **Fine-Tuning System**:
-- [genome-fine-tuning-e2e.test.ts](../../legacy/src/tests/integration/genome-fine-tuning-e2e.test.ts) - Multi-provider training tests
-- [BaseLoRATrainerServer.ts](../../legacy/src/system/genome/fine-tuning/server/BaseLoRATrainerServer.ts) - Handle-based async pattern
+- genome-fine-tuning-e2e.test.ts (`legacy/src/tests/integration/genome-fine-tuning-e2e.test.ts`) - Multi-provider training tests
+- BaseLoRATrainerServer.ts (`legacy/src/system/genome/fine-tuning/server/BaseLoRATrainerServer.ts`) - Handle-based async pattern
 
 ---
 

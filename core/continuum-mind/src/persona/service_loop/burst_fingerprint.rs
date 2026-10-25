@@ -30,7 +30,7 @@ use super::*;
 /// change-detection over what she should be attending to.
 /// [[organic-substrate-continuous-concern-scheduler]].
 pub(super) fn burst_fingerprint(
-    deliveries: &[crate::persona::rag_budget::RagDelivery],
+    deliveries: &[crate::cognition::rag_budget::RagDelivery],
     own_peer: &str,
 ) -> u64 {
     use std::hash::{Hash, Hasher};
@@ -105,12 +105,12 @@ pub(super) fn spawn_token_forwarder(
         sender_id.as_deref().and_then(|s| Uuid::parse_str(s).ok()),
         room_id.as_deref().and_then(|r| Uuid::parse_str(r).ok()),
     ) {
-        (Some(sender), Some(room)) => crate::persona::mind_room::is_private_room(sender, room),
+        (Some(sender), Some(room)) => crate::cognition::mind_room::is_private_room(sender, room),
         _ => false,
     };
     let (citizen, room_id, sender_id) = if private {
         if let Some(sender) = sender_id.as_deref().and_then(|s| Uuid::parse_str(s).ok()) {
-            crate::persona::mind_room::note_withheld(sender, "token_stream");
+            crate::cognition::mind_room::note_withheld(sender, "token_stream");
         }
         (None, None, None)
     } else {
@@ -122,10 +122,8 @@ pub(super) fn spawn_token_forwarder(
         let mut first = true;
         let mut seq: u64 = 0;
         let mut buf = String::new();
-        let mut flush = tokio::time::interval_at(
-            tokio::time::Instant::now() + FLUSH_EVERY,
-            FLUSH_EVERY,
-        );
+        let mut flush =
+            tokio::time::interval_at(tokio::time::Instant::now() + FLUSH_EVERY, FLUSH_EVERY);
         flush.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         // Tee one flushed chunk onto the local WS rail (#170) — no-op unless this is a
         // room turn (room+sender Some) AND a browser is subscribed.
@@ -204,12 +202,13 @@ pub(super) fn spawn_token_forwarder(
 /// act question, kanban pull) always runs.
 pub(super) async fn run_self_cycle(
     ctx: &HostedPersona,
-    conversation: &mut dyn PersonaConversation,
+    conversation: &mut dyn CitizenConversation,
     opts: &ServeOptions,
     last_burst_fp: &mut u64,
     // The room her own mind woke her in (a Perceive wake): she works there this cycle,
     // and that room counts as perceived. `None` = her held claim's room, else home.
     wake_room: Option<uuid::Uuid>,
+    pending: &mut crate::persona::wake_backlog::PendingInput,
 ) -> bool {
     let now_ms = (opts.now_ms)();
     // A self-cycle IS cognition: the claim-renewal pump reads this pulse, and it
@@ -222,7 +221,13 @@ pub(super) async fn run_self_cycle(
     // Ordinary project cards are on subscribed boards, not in the benchmark
     // registry. Lease renewal is liveness, not a new focus selection.
     if let Some(room) = wake_room {
-        crate::persona::perception_feed::mark_perceived(ctx.identity.peer_id.as_uuid(), room, 0, None, now_ms);
+        crate::persona::perception_feed::mark_perceived(
+            ctx.identity.peer_id.as_uuid(),
+            room,
+            0,
+            None,
+            now_ms,
+        );
     }
     let focus_room = if wake_room.is_some() { wake_room } else { match conversation.stream_citizen() {
         Some(citizen) => match super::super::work_focus::focus_room(citizen.as_ref()).await {
@@ -266,22 +271,37 @@ pub(super) async fn run_self_cycle(
     // deck for an idle citizen; that is how ac49a7d5 landed in her hands without her
     // choosing it. Boards are in her perception; claiming is her act, with her hands.
     let work_room = focus_room.unwrap_or(ctx.identity.default_room); // unwrap_or: no held claim = home room
-    if crate::persona::act_question::ask_the_act_question(
+    // HER INITIATIVE rides this beat (`persona::initiative_turn`): with nothing held, the
+    // gate offers her a turn with her hands, paced by THIS heartbeat and no timer of its
+    // own. Not on a wake her own mind raised (a continuation, a perceive): that wake is
+    // already her choice of what to attend to, and the turn below serves it.
+    let initiative = if wake_room.is_none() {
+        crate::persona::initiative_turn::Initiative::Offered
+    } else {
+        crate::persona::initiative_turn::Initiative::NotOffered
+    };
+    let work = crate::persona::act_question::ask_the_act_question(
         ctx,
         conversation,
         now_ms, // no triggering message — the tick clock stands in for lamport
         work_room,
         false, // a self-tick is never a directed address
+        initiative,
     )
-    .await
-    {
-        // She WORKED her claim this tick — that is engagement, so the caller must
-        // keep her at the fast beat, not rest her. The caller reads BeatOutcome from
-        // whether `last_burst_fp` changed; bump it so a work turn always counts as
-        // Engaged. Without this she works one tick, is judged "nothing new", and
+    .await;
+    pending.settle_work(&work);
+    if work.drove {
+        // She WORKED this tick (her claim, or her own initiative) — that is engagement, so
+        // the caller must keep her at the fast beat, not rest her. The caller reads
+        // BeatOutcome from whether `last_burst_fp` changed; bump it so a work turn always
+        // counts as Engaged. Without this she works one tick, is judged "nothing new", and
         // backs off toward the rest cap — the opposite of "virtually no time between
         // contexts" while a card is in her hands. (LATENCY LAW / #the-build-order.)
-        *last_burst_fp = last_burst_fp.wrapping_add(1);
+        // An initiative turn she PASSED is not engagement: the beat rests, as a fruitless
+        // musing did, so an idle mind is not offered a turn every engaged beat.
+        if work.engaged {
+            *last_burst_fp = last_burst_fp.wrapping_add(1);
+        }
         return false;
     }
     // Only the MUSING tail below is ambient inference: it pays for an ambient permit
@@ -419,7 +439,7 @@ pub(super) async fn run_self_cycle(
     // BOTH this loop and the self-set tool she invokes (the brain holds no global
     // handle), so her steering and this floor read one state. Locked only across the
     // synchronous read (no await held), per the concurrency style guide.
-    let focus_handle = crate::persona::focus::registry().handle(ctx.identity.peer_id.as_uuid());
+    let focus_handle = crate::cognition::focus::registry().handle(ctx.identity.peer_id.as_uuid());
     let wakes = {
         let mut focus = focus_handle
             .lock()
@@ -547,6 +567,7 @@ pub(super) async fn run_self_cycle(
     };
     cycle.set_token_sink(None);
     let _ = forwarder.await;
+    pending.settle_self(tick_room, &step);
     match step {
         crate::cognition::act_observe::SettleStep::Spoke(text) => {
             // Never broadcast a raw tool-call envelope to the room (same guard the
@@ -608,7 +629,7 @@ pub(super) async fn run_self_cycle(
 /// + continuing. Returns `None` only when the stream is genuinely
 /// over.
 pub(super) async fn next_event(
-    conversation: &mut dyn PersonaConversation,
+    conversation: &mut dyn CitizenConversation,
     outcome: &mut ServeOutcome,
 ) -> Option<IncomingMessage> {
     loop {

@@ -95,7 +95,7 @@
     // none; more hosted than seats draws none (the shrink is the hourly rest's, not a draw).
     #[test]
     fn the_missing_plan_is_the_seats_not_yet_filled() {
-        let per = crate::persona::health_ledger::MINDS_PER_LANE_STARVED_ABOVE as usize;
+        let per = crate::cognition::health_ledger::MINDS_PER_LANE_STARVED_ABOVE as usize;
         let mut spawner = unheld(HwCapabilityTier::CpuOnly, HwTierCategory::Compat);
         spawner.set_population(12);
         spawner.serving_base_model = Some("some/model".to_string());
@@ -117,7 +117,7 @@
     #[test]
     fn a_published_allocation_owns_this_nodes_seat_count_and_the_population_still_bounds_it() {
         use crate::cognition::grid_allocation::GridRoster;
-        let per = crate::persona::health_ledger::MINDS_PER_LANE_STARVED_ABOVE as usize;
+        let per = crate::cognition::health_ledger::MINDS_PER_LANE_STARVED_ABOVE as usize;
         let mut spawner = unheld(HwCapabilityTier::CpuOnly, HwTierCategory::Compat);
         spawner.set_population(12);
         spawner.serving_base_model = Some("some/model".to_string());
@@ -135,7 +135,7 @@
 
     #[test]
     fn the_roster_is_the_population_bounded_by_the_warm_slots() {
-        let per = crate::persona::health_ledger::MINDS_PER_LANE_STARVED_ABOVE as usize;
+        let per = crate::cognition::health_ledger::MINDS_PER_LANE_STARVED_ABOVE as usize;
         let mut spawner = unheld(HwCapabilityTier::CpuOnly, HwTierCategory::Compat);
         spawner.set_population(12);
         assert_eq!(spawner.seats(), 12, "no plan and no remembered lanes: nothing is known, the population stands");
@@ -157,7 +157,7 @@
     // move together, so a non-fitting live plan seats the configured population.
     #[test]
     fn a_plan_that_stops_fitting_the_gpu_releases_the_stale_lane_cap() {
-        let per = crate::persona::health_ledger::MINDS_PER_LANE_STARVED_ABOVE as usize;
+        let per = crate::cognition::health_ledger::MINDS_PER_LANE_STARVED_ABOVE as usize;
         let mut spawner = unheld(HwCapabilityTier::CpuOnly, HwTierCategory::Compat);
         spawner.set_population(6);
         spawner.serving_base_model = Some("some/model".to_string());
@@ -449,7 +449,7 @@
     // never below the resident floor, and an unknown lane count bounds nothing.
     #[test]
     fn the_draw_is_bounded_by_the_warm_slots_and_an_unknown_lane_count_bounds_nothing() {
-        use crate::persona::health_ledger::{MINDLESS_RESIDENT_FLOOR, MINDS_PER_LANE_STARVED_ABOVE};
+        use crate::cognition::health_ledger::{MINDLESS_RESIDENT_FLOOR, MINDS_PER_LANE_STARVED_ABOVE};
         let per = MINDS_PER_LANE_STARVED_ABOVE as usize;
         assert_eq!(bounded_by_warm_slots(16, Some(2)), 2 * per, "two lanes seat two lanes' worth");
         assert_eq!(bounded_by_warm_slots(16, Some(1)), per.max(MINDLESS_RESIDENT_FLOOR as usize), "one lane: the edge, never below the floor");

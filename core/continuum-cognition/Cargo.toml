@@ -1,0 +1,88 @@
+[package]
+name = "continuum-cognition"
+version = "0.1.0"
+edition = "2021"
+publish = false
+repository = "https://github.com/CambrianTech/continuum"
+# Cognition stamps her captures, continuity and handoffs with the build they ran on
+# (CONTINUUM_BUILD_GIT_SHA): core's build script is the one owner of that identity.
+build = "../continuum-core/build.rs"
+
+# A mind's thinking (MODULE-ARCHITECTURE.md section 9.2, plan phase 2): the workspace cycle,
+# the faculties, act/observe, the conversation contract, memory admission, the dream. Cut out
+# of continuum-mind below persona: it names no persona module (source-hygiene
+# cognition_names_persona = 0); the verbs persona owns arrive through cognition::extensions,
+# which persona fills at boot. The mind re-exports it under its old path.
+
+[dependencies]
+continuum-kernel = { path = "../continuum-kernel" }
+continuum-engine = { path = "../continuum-engine" }
+continuum-hands = { path = "../continuum-hands" }
+continuum-live = { path = "../continuum-live" }
+continuum-memory = { path = "../continuum-memory" }
+continuum-perception = { path = "../continuum-perception" }
+continuum-genome = { path = "../continuum-genome" }
+continuum-experience = { path = "../continuum-experience" }
+tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+uuid.workspace = true
+continuum-base = { path = "../continuum-base" }
+continuum-host = { path = "../continuum-host" }
+continuum-context = { path = "../continuum-context" }
+tool-working-set = { path = "../tool-working-set" }  # the learned tool head: pure policy, no core dependency
+schemars = { version = "0.8", features = ["uuid1"] }
+continuum-airc-protocol = { path = "../continuum-airc-protocol" }
+continuum-positron = { path = "../continuum-positron" }
+continuum-client = { path = "../../client/continuum-client" }
+reqwest = { version = "0.12", features = ["json", "multipart", "stream"] }
+thiserror.workspace = true
+dashmap = "6.1"  # Lock-free concurrent HashMap
+inventory = "0.3"
+fs2 = "0.4"      # Cross-platform advisory file locks (flock / LockFileEx)
+toml = "0.8"
+continuum-cli-lifecycle = { path = "../continuum-cli-lifecycle" }  # the CLI's platform lifecycle; its tests must not link this crate
+base64 = "0.22"
+sha2 = "0.10"   # SHA-256 for OAuth 2.0 PKCE code challenges (RFC 7636) + L1-6 contract canonical hash
+airc-core.workspace = true
+airc-blobs.workspace = true
+airc-protocol.workspace = true
+airc-lib.workspace = true
+airc-work.workspace = true
+async-trait.workspace = true
+chrono.workspace = true
+parking_lot.workspace = true
+tokio-stream.workspace = true
+futures-util.workspace = true
+futures = "0.3"
+once_cell.workspace = true
+num_cpus = "1.16"  # CPU count detection
+dirs = "5.0"
+sysinfo = "0.33"  # Cross-platform CPU, memory, system resource monitoring
+tracing.workspace = true
+ts-rs.workspace = true  # TypeScript type generation
+arc-swap = "1.7"           # Wait-free policy publish for SubstrateGovernor (Lane H)
+image = "0.25"
+regex = "1"
+
+[dev-dependencies]
+continuum-kernel = { path = "../continuum-kernel", features = ["test-fixtures"] }  # every test build of this crate gets the per-process continuum home (card d11d9827)
+tokio = { workspace = true, features = ["test-util"] }
+tempfile = "3"
+continuum-host = { path = "../continuum-host", features = ["test-fixtures"] }
+continuum-client = { path = "../../client/continuum-client", features = ["test-fixtures"] }
+continuum-positron = { path = "../continuum-positron", features = ["test-fixtures"] }
+continuum-genome = { path = "../continuum-genome", features = ["test-fixtures"] }
+continuum-experience = { path = "../continuum-experience", features = ["test-fixtures"] }
+
+[features]
+default = []
+# The GPU backends are the engine's (llama, candle); cognition forwards them so it builds and
+# tests on its own with the same flags core takes.
+metal = ["continuum-engine/metal", "continuum-live/metal", "continuum-genome/metal"]
+cuda = ["continuum-kernel/cuda", "continuum-engine/cuda", "continuum-genome/cuda"]
+vulkan = ["continuum-kernel/vulkan", "continuum-engine/vulkan", "continuum-genome/vulkan"]
+stress-tests = ["continuum-kernel/stress-tests"]
+# Test-only code (fixtures shared with core's integration tests, the heuristic adapter it
+# drives); production binaries never build with it.
+test-fixtures = ["continuum-host/test-fixtures", "continuum-kernel/test-fixtures", "continuum-engine/test-fixtures", "continuum-hands/test-fixtures", "continuum-live/test-fixtures", "continuum-perception/test-fixtures", "continuum-genome/test-fixtures", "continuum-experience/test-fixtures"]

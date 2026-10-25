@@ -218,7 +218,7 @@ install_cuda_toolkit() {
 # Step 1: System dependencies
 # ============================================================================
 
-echo -e "${YELLOW}[1/9] System dependencies${NC}"
+echo -e "${YELLOW}[1/8] System dependencies${NC}"
 
 install_system_deps() {
   case "$PLATFORM" in
@@ -356,7 +356,7 @@ install_system_deps
 install_cuda_toolkit
 
 # CONTINUUM_DEPS_ONLY=1 — called by npm start to check deps without full build.
-# Still installs all infrastructure (Node, Rust, Python, Postgres, LiveKit, Tailscale)
+# Still installs all infrastructure (Node, Rust, Python, LiveKit, Tailscale)
 # but skips the build step (npm install, tsc, cargo build).
 if [ "${CONTINUUM_DEPS_ONLY:-0}" = "1" ]; then
   # Jump past the build step to continue with infrastructure installs
@@ -369,7 +369,7 @@ fi
 # Step 2: Node.js
 # ============================================================================
 
-echo -e "${YELLOW}[2/9] Node.js${NC}"
+echo -e "${YELLOW}[2/8] Node.js${NC}"
 
 install_node() {
   if command -v node &>/dev/null; then
@@ -412,7 +412,7 @@ install_node
 # Step 3: Rust
 # ============================================================================
 
-echo -e "${YELLOW}[3/9] Rust${NC}"
+echo -e "${YELLOW}[3/8] Rust${NC}"
 
 install_rust() {
   if command -v rustc &>/dev/null; then
@@ -433,7 +433,7 @@ export PATH="$HOME/.cargo/bin:$PATH"
 # Step 4: Python ML environment (if GPU detected)
 # ============================================================================
 
-echo -e "${YELLOW}[4/9] Python ML environment${NC}"
+echo -e "${YELLOW}[4/8] Python ML environment${NC}"
 
 VENV_DIR="$HOME/.continuum/venv"
 
@@ -486,7 +486,7 @@ fi
 # ============================================================================
 
 if [ "$SKIP_BUILD" = "0" ]; then
-  echo -e "${YELLOW}[5/9] Building Continuum${NC}"
+  echo -e "${YELLOW}[5/8] Building Continuum${NC}"
 
   # Preflight: the build needs npm. Without this check, a missing npm only
   # surfaces as "npm: command not found" swallowed by the `| tail` pipe, and
@@ -507,7 +507,7 @@ if [ "$SKIP_BUILD" = "0" ]; then
   fi
 
   # The old `build:ts` / `build:cli` scripts left with the retired Node shell
-  # (moved to legacy/src, #1840) — they no longer exist in the root package.json.
+  # (deleted, tag legacy-archive-2026-10-23, #1840) — they no longer exist in the root package.json.
   # Calling them under `set -eo pipefail` made `npm run` exit non-zero ("Missing
   # script") and ABORTED the whole native install (install-audit FATAL). The
   # current TS deliverables are the client SDK + web app; build them BEST-EFFORT
@@ -540,87 +540,10 @@ mkdir -p "$CONFIG_DIR/personas"
 mkdir -p "$CONFIG_DIR/bin"
 
 # ============================================================================
-# PostgreSQL
-# ============================================================================
-
-echo -e "${YELLOW}[6/9] PostgreSQL${NC}"
-
-install_postgres() {
-  # macOS: keg-only postgres may not be in PATH — find it
-  if [ "$PLATFORM" = "macos" ] && ! command -v psql &>/dev/null; then
-    for keg in /opt/homebrew/opt/postgresql@{16,17,15}/bin; do
-      if [ -x "$keg/psql" ]; then
-        export PATH="$keg:$PATH"
-        break
-      fi
-    done
-  fi
-
-  # Fast path: if we can already connect to the continuum database, skip everything.
-  # No sudo, no brew upgrade, no postgres user switch, no trust auth check.
-  if psql -d continuum -c "SELECT 1" &>/dev/null; then
-    echo -e "  ${GREEN}✅ PostgreSQL ready (continuum database accessible)${NC}"
-    return
-  fi
-
-  if command -v psql &>/dev/null; then
-    echo -e "  ${GREEN}✅ PostgreSQL already installed${NC}"
-  else
-    case "$PLATFORM" in
-      macos) brew install postgresql@16 && brew services start postgresql@16 ;;
-      linux|wsl)
-        # One-prompt-contract: warm sudo cache once for all postgres ops below.
-        ensure_sudo_warmed
-        sudo apt-get install -y postgresql postgresql-client
-        sudo service postgresql start 2>/dev/null || sudo pg_ctlcluster 16 main start 2>/dev/null || true
-        ;;
-    esac
-    echo -e "  ${GREEN}✅ PostgreSQL installed${NC}"
-  fi
-
-  # Trust-auth + createuser logic is Linux-only. On macOS, Homebrew postgres
-  # accepts local connections without auth by default and runs as the
-  # invoking user — `createdb continuum` works directly with no sudo. The
-  # earlier unconditional `ensure_sudo_warmed` here was the failure mode
-  # that broke `npm start` when stdin wasn't a TTY (parallel-start.sh
-  # invokes this with CONTINUUM_DEPS_ONLY=1 every restart).
-  case "$PLATFORM" in
-    macos)
-      # Homebrew postgres: peer auth, user is whoever started brew services.
-      # Just ensure the continuum database exists.
-      if ! psql -lqt 2>/dev/null | cut -d \| -f 1 | grep -qw continuum; then
-        createdb continuum 2>/dev/null || true
-      fi
-      ;;
-    linux|wsl)
-      # apt-installed postgres needs trust-auth + role setup, all sudo.
-      ensure_sudo_warmed
-      local pg_hba=$(sudo -u postgres psql -t -c "SHOW hba_file" 2>/dev/null | tr -d ' ')
-      if [ -n "$pg_hba" ] && [ -f "$pg_hba" ]; then
-        if grep -q "scram-sha-256" "$pg_hba" 2>/dev/null; then
-          sudo sed -i 's/scram-sha-256/trust/g' "$pg_hba"
-          sudo service postgresql restart 2>/dev/null || sudo pg_ctlcluster 16 main restart 2>/dev/null || true
-        fi
-      fi
-      local pg_user="${USER:-postgres}"
-      if ! sudo -u postgres psql -tc "SELECT 1 FROM pg_roles WHERE rolname='$pg_user'" 2>/dev/null | grep -q 1; then
-        sudo -u postgres createuser -s "$pg_user" 2>/dev/null || true
-      fi
-      if ! psql -lqt 2>/dev/null | cut -d \| -f 1 | grep -qw continuum; then
-        createdb continuum 2>/dev/null || sudo -u postgres createdb continuum 2>/dev/null || true
-      fi
-      ;;
-  esac
-  echo -e "  ${GREEN}✅ Database 'continuum' ready${NC}"
-}
-
-install_postgres
-
-# ============================================================================
 # LiveKit SFU server (voice/video calls)
 # ============================================================================
 
-echo -e "${YELLOW}[7/9] LiveKit SFU${NC}"
+echo -e "${YELLOW}[6/8] LiveKit SFU${NC}"
 
 install_livekit() {
   if [ -f "$PROJECT_DIR/workers/livekit-server" ] || command -v livekit-server &>/dev/null; then
@@ -649,14 +572,14 @@ install_livekit
 # Silicon. Nothing to install here — the engine comes up WITH the core. (The mlx
 # trainer wants a Python venv with mlx-lm; the core provisions
 # ~/.continuum/genome/venv lazily on the first forge/train.)
-echo -e "${YELLOW}[8/9] Inference + training engine${NC}"
+echo -e "${YELLOW}[7/8] Inference + training engine${NC}"
 echo -e "  ${GREEN}✅ native — llama-server (serving) + mlx_lm (forge) come up with the core${NC}"
 
 # ============================================================================
 # Tailscale mesh VPN (multi-tower networking)
 # ============================================================================
 
-echo -e "${YELLOW}[9/9] Tailscale (grid mode only)${NC}"
+echo -e "${YELLOW}[8/8] Tailscale (grid mode only)${NC}"
 
 # Tailscale is OPTIONAL — it's the substrate for grid (multi-machine) mode
 # where peers reach each other for forge/inference distribution. Single-
@@ -714,11 +637,8 @@ if [ ! -f "$CONFIG_FILE" ]; then
 # Storage path for models, adapters, datasets (default: ~/.continuum)
 # CONTINUUM_STORAGE_PATH=/path/to/storage
 
-# PostgreSQL (auto-configured by install script)
-# DATABASE_URL is appended below with the actual username
+# Storage is SQLite at ~/.continuum/database/main.db; no database setup needed.
 ENVEOF
-  # Append DATABASE_URL with actual username (can't use heredoc single-quotes for this)
-  echo "DATABASE_URL=postgres://${USER}@localhost:5432/continuum" >> "$CONFIG_FILE"
   echo -e "  ${YELLOW}Edit $CONFIG_FILE to add your API keys${NC}"
 fi
 

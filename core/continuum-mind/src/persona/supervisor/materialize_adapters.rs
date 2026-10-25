@@ -36,10 +36,10 @@ pub async fn materialize_adapters(
         // leaked per attempt, ~150 sockets/s, both descriptor tables full, the host at
         // ENFILE. A seat that will be refused must build nothing first.
         let persisted_admission = {
-            let home = crate::persona::home::PersonaHome::from_root(identity.home.clone());
+            let home = crate::cognition::home::PersonaHome::from_root(identity.home.clone());
             let recall_meta =
-                std::sync::Arc::new(crate::persona::recall_metadata::RecallMetadataRegistry::new());
-            match crate::persona::admission_state::AdmissionState::for_persona(&home, recall_meta).await
+                std::sync::Arc::new(crate::cognition::recall_metadata::RecallMetadataRegistry::new());
+            match crate::cognition::admission_state::AdmissionState::for_persona(&home, recall_meta).await
             {
                 Ok(persisted) => persisted,
                 Err(source) => {
@@ -197,7 +197,7 @@ pub async fn materialize_adapters(
             identity.agent_name.clone(),
             rag_engine,
         );
-        let airc_source: Arc<dyn crate::persona::rag_budget::RagSource> =
+        let airc_source: Arc<dyn crate::cognition::rag_budget::RagSource> =
             Arc::new(crate::persona::airc_source::AircRagSource::new(
                 identity.peer_id.as_uuid(),
                 runtime.clone(),
@@ -224,10 +224,10 @@ pub async fn materialize_adapters(
         // into `PerRoomSubstrates` and mirrors only the focused one onto the node
         // substrate, so #continuum's roster was being stored the whole time with
         // nobody reading it.
-        let roster_source: Arc<dyn crate::persona::rag_budget::RagSource> =
+        let roster_source: Arc<dyn crate::cognition::rag_budget::RagSource> =
             Arc::new(crate::persona::viewstate_rag::ViewStateRagSource::<
                 continuum_positron::RosterViewState,
-            >::per_room(crate::persona::room_substrates::global_room_substrates()));
+            >::per_room(crate::cognition::room_substrates::global_room_substrates()));
         cognition.set_roster_source(roster_source.clone());
 
 
@@ -235,7 +235,7 @@ pub async fn materialize_adapters(
         // loudest first, with her continuation and her dial, read from her perception
         // region by persona. The region boots when her conversation attaches; until then
         // the source delivers nothing, which is the truth.
-        let awareness_source: Arc<dyn crate::persona::rag_budget::RagSource> =
+        let awareness_source: Arc<dyn crate::cognition::rag_budget::RagSource> =
             Arc::new(crate::persona::awareness_source::AwarenessRagSource::new(
                 identity.peer_id.as_uuid(),
                 Some(runtime.clone()),
@@ -245,7 +245,7 @@ pub async fn materialize_adapters(
         // Bind the room-doctrine source from the same runtime (upcasts to
         // `AircDoctrineReader`). Grounds the persona in the room's nature
         // — the airc-published operating contract. Slice 2.
-        let raw_doctrine: Arc<dyn crate::persona::rag_budget::RagSource> = Arc::new(
+        let raw_doctrine: Arc<dyn crate::cognition::rag_budget::RagSource> = Arc::new(
             crate::persona::room_doctrine_source::RoomDoctrineSource::new(
                 identity.peer_id.as_uuid(),
                 runtime.clone(),
@@ -261,7 +261,7 @@ pub async fn materialize_adapters(
         // rooms (claimed cards + states), read from airc's work roster. The dynamic
         // fix for "misremembering my own card" — never hardcode the state; surface
         // it. Reads the persona's own airc handle (acts as itself).
-        let active_work_source: Arc<dyn crate::persona::rag_budget::RagSource> =
+        let active_work_source: Arc<dyn crate::cognition::rag_budget::RagSource> =
             Arc::new(crate::persona::active_work_source::ActiveWorkSource::new(
                 identity.peer_id.as_uuid(),
                 runtime.clone(),
@@ -287,12 +287,12 @@ pub async fn materialize_adapters(
         // persona (no hands → no bus) keeps the raw source, because her map
         // can still be mutated by OTHERS' hands and an unwired cache would be
         // stale forever.
-        let raw_workspace_map: Arc<dyn crate::persona::rag_budget::RagSource> = Arc::new(
+        let raw_workspace_map: Arc<dyn crate::cognition::rag_budget::RagSource> = Arc::new(
             crate::persona::workspace_map_source::WorkspaceMapSource::for_peer_layer(
                 identity.peer_id.as_uuid(),
             ),
         );
-        let workspace_map_source: Arc<dyn crate::persona::rag_budget::RagSource> =
+        let workspace_map_source: Arc<dyn crate::cognition::rag_budget::RagSource> =
             match tool_executor
                 .as_ref()
                 .and_then(|t| t.command_executor())
@@ -300,12 +300,12 @@ pub async fn materialize_adapters(
             {
                 Some(bus) => {
                     let (cached, dirty) =
-                        crate::persona::cached_source::CachedRagSource::new(raw_workspace_map);
-                    crate::persona::grounding_invalidation::spawn_workspace_invalidator(
+                        crate::cognition::cached_source::CachedRagSource::new(raw_workspace_map);
+                    crate::cognition::grounding_invalidation::spawn_workspace_invalidator(
                         bus,
                         dirty.downgrade(),
                     );
-                    crate::persona::grounding_invalidation::register_workspace_map_dirty(
+                    crate::cognition::grounding_invalidation::register_workspace_map_dirty(
                         identity.peer_id.as_uuid(),
                         dirty.downgrade(),
                     );
@@ -325,7 +325,7 @@ pub async fn materialize_adapters(
         // active-work + workspace-map sources. See
         // docs/grid/AIRC-NATIVE-IDENTITY-ROOMS-SECURITY.md §5 and
         // [[airc-generic-per-user-room-state]].
-        let raw_wall: Arc<dyn crate::persona::rag_budget::RagSource> = Arc::new(
+        let raw_wall: Arc<dyn crate::cognition::rag_budget::RagSource> = Arc::new(
             crate::persona::wall_source::WallSource::new(
                 identity.peer_id.as_uuid(),
                 runtime.clone(),
@@ -349,17 +349,17 @@ pub async fn materialize_adapters(
         // a recency projection that DECAYS with no event firing; a cached
         // roster shows ghosts.
         let (doctrine_source, wall_source): (
-            Arc<dyn crate::persona::rag_budget::RagSource>,
-            Arc<dyn crate::persona::rag_budget::RagSource>,
+            Arc<dyn crate::cognition::rag_budget::RagSource>,
+            Arc<dyn crate::cognition::rag_budget::RagSource>,
         ) = match runtime.subscribe_all_rooms().await {
             Ok(stream) => {
                 let (doctrine_cached, doctrine_dirty) =
-                    crate::persona::cached_source::CachedRagSource::new(raw_doctrine);
+                    crate::cognition::cached_source::CachedRagSource::new(raw_doctrine);
                 let (wall_cached, wall_dirty) =
-                    crate::persona::cached_source::CachedRagSource::new(raw_wall);
+                    crate::cognition::cached_source::CachedRagSource::new(raw_wall);
                 // The invalidator owns a subscription to every room; it lives and dies with
                 // the runtime (aborted in the runtime's Drop), never as an orphan task.
-                runtime.own_task(crate::persona::grounding_invalidation::spawn_publish_invalidator(
+                runtime.own_task(crate::cognition::grounding_invalidation::spawn_publish_invalidator(
                     stream,
                     vec![doctrine_dirty.downgrade(), wall_dirty.downgrade()],
                 ));
@@ -389,7 +389,7 @@ pub async fn materialize_adapters(
         // supertrait of AircCitizen). Enriching framing, NOT a participation
         // gate — bound brain-only + defer-tolerant like the active-work + wall
         // sources. Task #117 O6.
-        let room_board_source: Arc<dyn crate::persona::rag_budget::RagSource> = Arc::new(
+        let room_board_source: Arc<dyn crate::cognition::rag_budget::RagSource> = Arc::new(
             crate::persona::room_board_source::RoomBoardSource::new(
                 identity.peer_id.as_uuid(),
                 runtime.clone(),
@@ -419,7 +419,7 @@ pub async fn materialize_adapters(
         // is #192.
         let perception_buffer =
             crate::media::perception_registry().handle(identity.peer_id.as_uuid());
-        let media_perception_source: Arc<dyn crate::persona::rag_budget::RagSource> = Arc::new(
+        let media_perception_source: Arc<dyn crate::cognition::rag_budget::RagSource> = Arc::new(
             crate::persona::media_perception_source::MediaPerceptionSource::new(
                 identity.peer_id.as_uuid(),
                 perception_buffer,
@@ -475,7 +475,7 @@ pub async fn materialize_adapters(
             // must share one embedding space). Already cached by the
             // resolver (embed-once-per-content, shared across personas).
             embedder: Some(
-                crate::cognition::embedding::resolve_recall_embedder(adapter.clone()).await,
+                crate::ai::embedding::resolve_recall_embedder(adapter.clone()).await,
             ),
             // Roster + doctrine bridged into the brain as STANDING-FRAMING
             // grounding faculties (high salience floor). Without these the
@@ -582,6 +582,7 @@ pub async fn materialize_adapters(
             // The LIVING persona always keeps her memories — suppression is a
             // benchmark-reproducibility knob, never a life-path setting (#207).
             suppress_recall: false,
+            forked: false,
         };
         // A checkpoint can be locked by offline adoption. Waiting and reading
         // belong off the async runtime workers; registration publishes nothing

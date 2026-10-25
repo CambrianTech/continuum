@@ -25,6 +25,7 @@
 //! that is a follow-up, not a reason to hand-roll a fourth.
 
 pub mod boundary_serialization;
+pub mod cognition_names_persona;
 pub mod continuum_home;
 pub mod derived_bounds;
 pub mod grab_bag;
@@ -33,6 +34,7 @@ pub mod file_size;
 pub mod identity_discipline;
 pub mod layer_discipline;
 pub mod module_cycles;
+pub mod os_branches;
 pub mod production_reachability;
 pub mod ratchet;
 pub mod tenant_neutrality;
@@ -178,7 +180,9 @@ const SPLIT_CRATES: &[&str] = &["continuum-base"];
 /// their files are audited UNPREFIXED (`runtime/registry.rs`), exactly as before the cut.
 /// Every allow-list, ring and count stays continuous; prefixing them would drop 78k lines out
 /// of the ring table and the path allow-lists, and the counts would fall for no change.
-const MODULE_CRATES: &[&str] = &["continuum-kernel", "continuum-mind", "continuum-live", "continuum-hands", "continuum-engine"];
+/// The ONE list: continuum-core's tree-walking guards (`test_env::source_tree`) read it too,
+/// so a new cut is one line here (card 03e2a1c8: a second copy silently dropped perception).
+pub const MODULE_CRATES: &[&str] = &["continuum-kernel", "continuum-mind", "continuum-perception", "continuum-genome", "continuum-memory", "continuum-experience", "continuum-cognition", "continuum-academy", "continuum-live", "continuum-hands", "continuum-engine"];
 
 /// Every file the per-file and crate-wide rules audit: `continuum-core/src` with paths
 /// relative to it, then each split crate's `src` with its name prefixed. A listed crate

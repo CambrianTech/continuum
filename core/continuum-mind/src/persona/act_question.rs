@@ -27,11 +27,13 @@
 //! - It is a QUESTION, never an instruction. She may pass, exactly as before
 //!   ([[no-hardcoded-heuristics-to-steer-cognition]]).
 //! - It NEVER decides when to ask. The caller owns that; this module only asks.
+//! - With nothing held it offers her INITIATIVE turn (`initiative_turn.rs`) when the
+//!   caller's cadence offers one: her hands, nothing assigned, the choice hers.
 //! - It reports on EVERY path, including every decline — `persona.work.gate` carries
 //!   the decision and its inputs whether or not a work turn follows. A gate whose
 //!   refusal is invisible is a gate nobody can debug.
 
-use crate::persona::service_loop::{PersonaConversation, LIVE_MAX_ACTS};
+use crate::persona::service_loop::{CitizenConversation, LIVE_MAX_ACTS};
 use crate::persona::supervisor::HostedPersona;
 
 /// How many run-room rows the write-or-release gate reads to count a holder's
@@ -47,9 +49,9 @@ const WORK_GATE_PAGE_ROWS: usize = 400;
 ///
 /// Called from BOTH turn outcomes — after she speaks, and after she passes — because
 /// holding work is what makes the question relevant, not the speak decision.
-/// Returns `true` if she held work and a held-work turn was driven this call —
+/// Reports whether a held-work turn was driven and any typed capacity refusal —
 /// so a caller (the self-tick) can skip a redundant musing cycle when the
-/// heartbeat already advanced her claimed card. `false` when there was no cycle,
+/// heartbeat already advanced her claimed card. Undriven when there was no cycle,
 /// no citizen, or no held work.
 /// A card is in her hands when it is Claimed or InProgress — the ONE predicate the work
 /// gate, and the service loop's ambient-permit bypass, both key on (a card she has
@@ -59,13 +61,25 @@ pub fn card_is_held(c: &airc_lib::WorkCard) -> bool {
     crate::persona::work_focus::actionable(c)
 }
 
+#[derive(Default)]
+pub(crate) struct WorkQuestionOutcome {
+    pub drove: bool,
+    pub room: Option<uuid::Uuid>,
+    pub capacity: Option<crate::cognition::workspace::CapacityRefusal>,
+    /// The driven turn was engagement, so her beat stays engaged: always for held work
+    /// (a card in her hands is progress-driven), and for an initiative turn only when she
+    /// acted or spoke (a pass rests her beat).
+    pub engaged: bool,
+}
+
 pub(crate) async fn ask_the_act_question(
     ctx: &HostedPersona,
-    conversation: &mut dyn PersonaConversation,
+    conversation: &mut dyn CitizenConversation,
     lamport: u64,
     turn_room: uuid::Uuid,
     directed: bool,
-) -> bool {
+    initiative: crate::persona::initiative_turn::Initiative,
+) -> WorkQuestionOutcome {
     // Her cognition cycle, fetched the same way the turn loop fetches it — passing it
     // in would thread a borrow through the whole turn for one optional branch.
     let Some(cycle) =
@@ -77,7 +91,7 @@ pub(crate) async fn ask_the_act_question(
             decision = "no_cycle",
             "act-question skipped: no WorkspaceCycle registered for this citizen"
         );
-        return false;
+        return WorkQuestionOutcome::default();
     };
     // THE SECOND QUESTION (BigMama's gate-conflation diagnosis,
     // verified in-file 2026-08-08; the root under Joel's "missing
@@ -138,10 +152,22 @@ pub(crate) async fn ask_the_act_question(
             let held: Vec<&airc_lib::WorkCard> = crate::persona::work_focus::focus_actionable_card(claims.iter())
                 .into_iter()
                 .collect();
+            // HER INITIATIVE (Joel, 2026-10-23: "They're supposed to be as capable as you so
+            // don't constrain them"). Holding nothing used to end her moment here, so she
+            // could act only once something had handed her a card. Offered when the board
+            // answered (an unreadable board may hide a hold; the next beat asks again), the
+            // caller's cadence offers it, and she has hands to act with.
+            let hands = cycle.acting().is_some();
+            let initiative_due = held.is_empty()
+                && claims_err.is_none()
+                && hands
+                && initiative == crate::persona::initiative_turn::Initiative::Offered;
             continuum_base::probe!(
                 class = "persona.work.gate",
                 persona = %ctx.identity.agent_name,
                 directed = directed,
+                initiative = ?initiative,
+                hands = hands,
                 active_claims = claims.len(),
                 held = held.len(),
                 claims_error = claims_err.as_deref().unwrap_or(""),
@@ -150,7 +176,13 @@ pub(crate) async fn ask_the_act_question(
                     .map(|c| format!("{:?}", c.state))
                     .collect::<Vec<_>>()
                     .join(","),
-                decision = if held.is_empty() { "no_held_work" } else { "work_turn" },
+                decision = if !held.is_empty() {
+                    "work_turn"
+                } else if initiative_due {
+                    "initiative_turn"
+                } else {
+                    "no_held_work"
+                },
                 "held-work gate evaluated after a speak-pass — this row is \
                  the ONLY place the act-question's inputs are visible"
             );
@@ -171,7 +203,7 @@ pub(crate) async fn ask_the_act_question(
                                     let id8: String =
                                         c.card_id.as_uuid().to_string().chars().take(8).collect();
                                     let inst =
-                                        crate::cognition::bench_title::parse_card_title(&c.title)
+                                        crate::recipe::bench_title::parse_card_title(&c.title)
                                             .map(|(_, i)| i)
                                             .unwrap_or_default(); // unwrap_or: a non-bench title has no instance to scope on
                                     [id8, inst]
@@ -250,10 +282,7 @@ pub(crate) async fn ask_the_act_question(
                             .expect("turn_room is the service loop's non-nil turn room"), // service loop guarantees a non-nil turn room; witness re-checks
                         burst_text,
                     );
-                    // A REVIEW card's work turn carries the reviewer verbs in her hands.
-                    let work_framing = crate::cognition::workspace::TurnFraming::self_thread(false)
-                        .on_workspace()
-                        .reviewing(held.first().is_some_and(|card| card.reviews.is_some()));
+                    let work_framing = crate::cognition::workspace::TurnFraming::self_thread(false).on_workspace();
                     // HANDS FOLLOW THE CARD (#456). Her held card may be a
                     // staged benchmark checkout — a real git repo under
                     // `workspace/swe/<instance>`. Without rooting her hands
@@ -275,7 +304,12 @@ pub(crate) async fn ask_the_act_question(
                     // of her card's claim, standing in its checkout, never her default hands.
                     let card_turn = match held.first() {
                         Some(card) => Some(
-                            crate::cognition::persona_workspace::bind_card(&cycle, ctx.identity.peer_id.as_uuid(), card).await,
+                            crate::persona::card_hands::bind_card(
+                                &cycle,
+                                ctx.identity.peer_id.as_uuid(),
+                                card,
+                            )
+                            .await,
                         ),
                         None => None,
                     };
@@ -300,8 +334,8 @@ pub(crate) async fn ask_the_act_question(
                         // Prepared environments and hidden grading belong only
                         // to benchmark recipes, never to an ordinary project.
                         if held.first().is_some_and(|card| {
-                            crate::cognition::bench_title::parse_card_title(&card.title).is_some()
-                                || crate::cognition::bench_title::parse_review_title(&card.title).is_some()
+                            crate::recipe::bench_title::parse_card_title(&card.title).is_some()
+                                || crate::recipe::bench_title::parse_review_title(&card.title).is_some()
                         }) {
                             // THE ENVIRONMENT, as a fact. Live 2026-09-07: a
                             // holder ran `pip install --no-build-isolation -e .`
@@ -311,9 +345,7 @@ pub(crate) async fn ask_the_act_question(
                             // she never guesses an interpreter.
                             body.working_memory.pin_fact(
                                 "env",
-                                &crate::persona::instance_env_fact::instance_env_fact(
-                                    &ws,
-                                ),
+                                &crate::persona::instance_env_fact::instance_env_fact(&ws),
                             );
                             // THE GRADING CONTRACT, as a fact (card 2bb8ae13): the
                             // tests that grade her are not in the checkout.
@@ -322,9 +354,7 @@ pub(crate) async fn ask_the_act_question(
                             {
                                 body.working_memory.pin_fact(
                                     "grading",
-                                    &crate::persona::instance_env_fact::grading_fact(
-                                        instance,
-                                    ),
+                                    &crate::persona::instance_env_fact::grading_fact(instance),
                                 );
                             }
                         } else {
@@ -360,29 +390,22 @@ pub(crate) async fn ask_the_act_question(
                         );
                     }
                     let selected_credit = card_turn.as_ref().and_then(|t| t.credit.clone());
-                    // HER GENES RIDE HER CARD, like her hands do (integrated, not parallel:
-                    // a gene is judged in her own work). The card this turn is credited to
-                    // decides the genome: her promoted genes, plus an open trial's gene when
-                    // this card drew its arm. Pinned before the turn and put back after it,
-                    // so the genome never changes beneath a request and every receipt of
-                    // this card names the same genes (`GenerationReceipt::genes`).
+                    // HER GENES FOLLOW HER MIND, never her card (GENE-REUSE-FORK-MINT §3d):
+                    // the genes whose regions this turn's focused line is inside, weighted by
+                    // depth (`genome::composer`), and every receipt names the genes that ran
+                    // (`GenerationReceipt::genes`). Unreadable: the genome she has.
                     let persona_uuid = ctx.identity.peer_id.as_uuid();
-                    let card_uuid = held.first().map(|card| card.card_id.as_uuid());
-                    // Whatever ends this turn (settled, cancelled, a panic unwinding), her
-                    // genome goes back to what she had before it: a trial gene never leaks onto
-                    // her conversation turns (Cormac on #4474).
-                    let mut genome_back =
-                        crate::genome::gene_trial::GenomeRestore::snapshot(std::sync::Arc::clone(&cycle));
-                    if let Some(genes) = crate::genome::gene_trial::live_genes(persona_uuid) {
-                        continuum_base::probe!(
-                            class = "persona.genome.card_genes",
-                            persona = %ctx.identity.agent_name,
-                            card = %card_uuid.map(|c| c.to_string()).unwrap_or_default(), // probe field: "" = no card
-                            genes = genes.len() as u64,
-                            "the genome this work turn runs with: promoted genes plus any trial gene this card drew"
-                        );
-                        cycle.page_in(genes);
-                    }
+                    let need = crate::cognition::recall_faculty::focused_query(&burst.rendered);
+                    if let Some(phenotype) = crate::genome::composer::compose(persona_uuid, need).await {
+                continuum_base::probe!(
+                    class = "persona.genome.turn_genes",
+                    persona = %ctx.identity.agent_name,
+                    genes = phenotype.genes.len() as u64,
+                    phenotype = %crate::genome::composer::render(&phenotype),
+                    "the phenotype this turn runs with: each gene and its scale"
+                );
+                cycle.page_in(phenotype.genes);
+            }
                     let mut credit_capture =
                         crate::persona::training_producer::TurnCreditCapture::for_turn(
                             ctx.identity.peer_id.as_uuid(),
@@ -396,20 +419,13 @@ pub(crate) async fn ask_the_act_question(
                         LIVE_MAX_ACTS,
                         work_framing,
                         conversation,
-                        credit_capture.as_mut(),
+                        credit_capture.as_mut().map(|c| c as &mut dyn crate::cognition::act_observe::TurnCredit),
                     )
                     .await;
-                    // After the card her genome is what every turn runs with (her trained
-                    // genes, §3d); re-read so a gene that landed mid-turn is in her head next
-                    // turn. Unreadable: the pre-turn snapshot.
-                    if let Some(genes) = crate::genome::gene_trial::live_genes(persona_uuid) {
-                        genome_back.restore_to(genes);
-                    }
-                    drop(genome_back);
                     // The turn's work is synced to its card's branch; her hands stay where
                     // they are, because nothing moved them (card fc9e9fd7).
                     if let Some(hands) = work_hands {
-                        crate::cognition::persona_workspace::end_card_turn(hands, work.acts).await;
+                        crate::persona::card_hands::end_card_turn(hands, work.acts).await;
                     }
                     if let Some(body) = cycle.acting() {
                         // One turn ended: 1-turn pins ([hands], [env]) leave now; the
@@ -427,6 +443,13 @@ pub(crate) async fn ask_the_act_question(
                         held = held.len() as u64,
                         "held-work turn settled after its shared credit capture"
                     );
+                    let capacity = match &work_step {
+                        crate::cognition::act_observe::SettleStep::CapacityRefused {
+                            error,
+                            ..
+                        } => Some(error.clone()),
+                        _ => None,
+                    };
                     match work_step {
                         crate::cognition::act_observe::SettleStep::Spoke(text) => {
                             // She worked and has something to report —
@@ -469,7 +492,9 @@ pub(crate) async fn ask_the_act_question(
                             // recipe that OWNS it reacts to WORK_CARD_STATE_CHANGED
                             // (bench grade-on-done is one such reactor, next_unworked
                             // another). [[activity-outcome-score-is-recipe-owned-gates-multiply-objectives-weigh]]
-                            use crate::cognition::pass_intent::{classify_pass, conclude_from_pass, ConcludeAction};
+                            use crate::cognition::pass_intent::{
+                                classify_pass, conclude_from_pass, ConcludeAction,
+                            };
                             let held_ids: Vec<uuid::Uuid> =
                                 held.iter().map(|c| c.card_id.as_uuid()).collect();
                             let intent = classify_pass(reason.as_deref());
@@ -557,13 +582,30 @@ pub(crate) async fn ask_the_act_question(
                     }
                     // She held work and worked it this turn — tell the caller so
                     // a self-tick can skip the redundant musing cycle.
-                    return true;
+                    return WorkQuestionOutcome {
+                        drove: true,
+                        room: Some(turn_room),
+                        capacity,
+                        engaged: true,
+                    };
                 }
+            }
+            if initiative_due {
+                // Boxed: the settle drive is the largest future here, and nesting it by
+                // value inside this one is the layout-depth overflow CI has hit before.
+                return Box::pin(crate::persona::initiative_turn::drive_initiative_turn(
+                    ctx,
+                    &cycle,
+                    conversation,
+                    lamport,
+                    turn_room,
+                ))
+                .await;
             }
         }
     }
-    // Reached only when she held no work (or no citizen was present) — nothing
-    // was driven this call.
-    false
+    // Reached only when she held no work and no initiative was offered (or no citizen
+    // was present) — nothing was driven this call.
+    WorkQuestionOutcome::default()
 }
 

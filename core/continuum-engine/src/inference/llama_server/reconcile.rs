@@ -98,6 +98,7 @@ async fn serve_or_adopt<C: LlamaServerControl + ?Sized>(
     force_probe: bool,
     current: &ServingLifecycleCheck<'_>,
 ) -> EnsureOutcome {
+    let mut convergence_pair = None;
     let active = match ctrl.active_model().await {
         Ok(active) => active,
         Err(LlamaServerError::Unreachable(_)) => None,
@@ -400,7 +401,7 @@ async fn serve_or_adopt<C: LlamaServerControl + ?Sized>(
                 installed_engine.as_deref().unwrap_or("") // unwrap_or: as above
             );
             let engine_ok = engine_current || {
-                let mut tried = ENGINE_CONVERGE_TRIED.lock();
+                let tried = ENGINE_CONVERGE_TRIED.lock();
                 if tried.as_deref() == Some(pair.as_str()) {
                     continuum_base::probe!(target: "continuum_core::inference::llama_server", class = "serving.engine.converge_failed",
                         model = target.model_id(),
@@ -411,7 +412,7 @@ async fn serve_or_adopt<C: LlamaServerControl + ?Sized>(
                     );
                     true
                 } else {
-                    *tried = Some(pair.clone());
+                    convergence_pair = Some(pair.clone());
                     false
                 }
             };
@@ -503,6 +504,9 @@ async fn serve_or_adopt<C: LlamaServerControl + ?Sized>(
         // else: genome set differs → fall through to relaunch.
     }
 
+    // Drop also runs on cancellation: only an actual launch-stage advance consumes
+    // this pair. A refused checkpoint must remain eligible on the next tick.
+    let _attempt = super::convergence_attempt::ConvergenceAttempt::new(ctrl, convergence_pair);
     match ctrl.serve_if_current(target, current).await {
         Ok(()) => {
             // A fresh lane starts with a CLEAN failure record. `serve` kills the old

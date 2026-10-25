@@ -31,6 +31,9 @@ impl EngineGeneration {
                 // Do not mutate a ledger while an old HTTP future can still write
                 // it. Replacement readiness drains admissions and replaces it.
             }
+            drop(state);
+            // A relaunch that could not save waited for this death to record its loss.
+            endpoint.relaunch_exit_observed(self.id);
         }
     }
 }
@@ -219,6 +222,95 @@ impl EndpointSlots {
 }
 
 impl EndpointTransition {
+    /// Save an adopted engine without inventing ownership of its process. The
+    /// persisted ledger and the caller's lane record must identify the same live
+    /// incarnation. Retirement still requires a fresh identity check by its owner.
+    pub(crate) async fn checkpoint_adopted_before_replacement(
+        &mut self,
+        client: &reqwest::Client,
+        root: &str,
+        incarnation: crate::inference::engine_residency::EngineIncarnation,
+        current: &(dyn Fn() -> bool + Send + Sync),
+    ) -> Result<(), String> {
+        use crate::inference::engine_residency::Liveness;
+
+        if !Arc::ptr_eq(&directory().endpoint(root), &self.endpoint) {
+            return Err("adopted checkpoint URL does not identify the held endpoint".into());
+        }
+        let pool = {
+            let state = self.endpoint.state.lock();
+            if state.generation.is_some() || state.paging_uncertain {
+                return Err("adopted checkpoint requires an unowned, certain pool".into());
+            }
+            state.pool.as_ref().and_then(Clone::clone)
+                .ok_or("adopted checkpoint requires a known pool")?
+        };
+        let ledger = pool.ledger.get().ok_or("adopted checkpoint requires a verified ledger")?;
+        if ledger.incarnation.get().copied() != Some((incarnation.pid, incarnation.started_s)) {
+            return Err("adopted checkpoint ledger names a different process".into());
+        }
+        let verify_engine = || match incarnation.liveness() {
+            Liveness::Alive => Ok(()),
+            Liveness::Dead => Err("adopted checkpoint engine exited or PID was reused".into()),
+            Liveness::Unknown => Err("adopted checkpoint engine identity is unverified".into()),
+        };
+        verify_engine()?;
+        if !current() {
+            return Err("adopted checkpoint intent changed".into());
+        }
+        let result = self.checkpoint_pool(client, root, &pool, &verify_engine).await;
+        if result.is_err() && current() && verify_engine().is_ok() {
+            // A terminal refusal did not mutate the engine. Only reopen this
+            // exact pool; CheckpointSave quarantines cancellation/uncertainty.
+            let state = self.endpoint.state.lock();
+            if state.generation.is_none() && !state.paging_uncertain
+                && state.pool.as_ref().and_then(Option::as_ref)
+                    .is_some_and(|installed| Arc::ptr_eq(installed, &pool)) {
+                state.ready.send_replace(true);
+            }
+        }
+        result?;
+        if !current() {
+            return Err("adopted replacement intent changed after checkpoint".into());
+        }
+        Ok(())
+    }
+
+    /// Planned replacement cannot discard a healthy engine's unsaved residents.
+    /// A terminal refusal resumes the exact original ledger; an uncertain write
+    /// stays quarantined. Dead engines and quarantined paging use recovery instead:
+    /// nothing can be saved, so their unsaved residents are recorded as lost when this
+    /// generation's exit is observed, at once if it already was (card 6b28a445).
+    pub(crate) async fn checkpoint_before_replacement(
+        &mut self,
+        client: &reqwest::Client,
+        root: &str,
+        current: &(dyn Fn() -> bool + Send + Sync),
+    ) -> Result<(), String> {
+        let generation = self.previous_generation().ok_or("replacement requires a known generation")?;
+        if generation.has_exited() || self.endpoint.paging_recovery_required() {
+            let reason = if generation.has_exited() {
+                DiscardReason::EngineExited
+            } else {
+                DiscardReason::PagingUncertain
+            };
+            self.endpoint.pending_discard(reason).on_exit_of(&generation);
+            return Ok(());
+        }
+        let original = self.capture_suspension(&generation)?;
+        let result = self.checkpoint_residents(client, root).await.map(|_| ());
+        if let Err(error) = result {
+            return match self.resume_suspension(&original, current) {
+                Ok(()) => Err(format!("replacement deferred; original engine resumed: {error}")),
+                Err(resume) => Err(format!("replacement deferred; endpoint remains suspended: {error}; {resume}")),
+            };
+        }
+        if !current() {
+            return Err("replacement intent changed after checkpoint".into());
+        }
+        Ok(())
+    }
+
     pub(crate) fn capture_suspension(
         &self,
         expected: &EngineGeneration,
@@ -282,8 +374,6 @@ impl EndpointTransition {
         client: &reqwest::Client,
         root: &str,
     ) -> Result<ResidentCheckpoint<'_>, String> {
-        use super::super::turn_admission::{kv_page_action, PageOutcome};
-
         if !Arc::ptr_eq(&directory().endpoint(root), &self.endpoint) {
             return Err("checkpoint URL does not identify the held endpoint".into());
         }
@@ -315,6 +405,33 @@ impl EndpointTransition {
             state.ready.send_replace(false);
             (generation, pool)
         };
+        self.checkpoint_pool(client, root, &pool, &|| {
+            if generation.has_exited() {
+                Err("checkpoint engine exited".into())
+            } else {
+                Ok(())
+            }
+        }).await?;
+        Ok(ResidentCheckpoint {
+            transition: self,
+            generation,
+            pool,
+        })
+    }
+
+    /// One save path for a drained pool. The caller supplies its existing engine
+    /// authority: an owned generation or a verified adopted process incarnation.
+    /// Losing that authority cannot publish a successful save for its successor.
+    async fn checkpoint_pool(
+        &mut self,
+        client: &reqwest::Client,
+        root: &str,
+        pool: &Arc<KvSlotPool>,
+        verify_engine: &(dyn Fn() -> Result<(), String> + Send + Sync),
+    ) -> Result<(), String> {
+        use super::super::turn_admission::{kv_page_action, PageOutcome};
+
+        verify_engine()?;
         directory().discover_page_admission(client, root).await?;
         let mut residents: Vec<_> = pool
             .holders
@@ -324,9 +441,7 @@ impl EndpointTransition {
             .collect();
         residents.sort_unstable_by_key(|(slot, _)| *slot);
         for (slot, key) in residents {
-            if generation.has_exited() {
-                return Err("checkpoint engine exited before save".into());
-            }
+            verify_engine()?;
             pool.note_page_lost(&key);
             let mut save = CheckpointSave {
                 endpoint: self.endpoint.clone(),
@@ -334,6 +449,7 @@ impl EndpointTransition {
             };
             match kv_page_action(client, root, slot, &key, "save").await {
                 PageOutcome::Completed => {
+                    verify_engine()?;
                     save.pending = false;
                     pool.note_saved(key);
                 }
@@ -346,14 +462,7 @@ impl EndpointTransition {
                 }
             }
         }
-        if generation.has_exited() {
-            return Err("checkpoint engine exited before completion".into());
-        }
-        Ok(ResidentCheckpoint {
-            transition: self,
-            generation,
-            pool,
-        })
+        verify_engine()
     }
 
     pub(crate) fn previous_generation(&self) -> Option<EngineGeneration> {
@@ -458,7 +567,9 @@ impl SlotDirectory {
                 let (ready, ready_rx) = tokio::sync::watch::channel(true);
                 Arc::new(EndpointSlots {
                     gate: Arc::new(tokio::sync::RwLock::new(())),
+                    paging_tasks: Mutex::new(tokio::task::JoinSet::new()),
                     ready_rx,
+                    discarded: Mutex::new(DiscardLog::default()),
                     state: Mutex::new(EndpointState {
                         ready,
                         paging_uncertain: false,

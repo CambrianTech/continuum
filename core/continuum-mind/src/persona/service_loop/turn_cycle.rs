@@ -16,7 +16,7 @@ pub(super) enum CycleVerdict {
 pub(super) struct SpokenTurn {
     pub(super) response_text: String,
     pub(super) turn_credit: Option<crate::persona::training_producer::CapturedCredit>,
-    pub(super) turn_generation_receipts: Vec<crate::cognition::provenance::GenerationReceipt>,
+    pub(super) turn_generation_receipts: Vec<crate::ai::provenance::GenerationReceipt>,
 }
 
 /// What the cycle needs beyond the trigger: the burst it reasons over and the engram of
@@ -30,40 +30,45 @@ pub(super) struct CycleInput {
 /// and report the verdict. Every non-speaking end of the turn is `Skip`.
 pub(super) async fn run_turn_cycle(
     ctx: &HostedPersona,
-    conversation: &mut dyn PersonaConversation,
+    conversation: &mut dyn CitizenConversation,
     outcome: &mut ServeOutcome,
     deferred_input: &mut crate::persona::wake_backlog::PendingInput,
     phase_timings: &mut PhaseTimings,
     trigger: TurnTrigger<'_>,
     input: CycleInput,
 ) -> CycleVerdict {
-    let TurnTrigger { msg, turn_room, admitted_retry } = trigger;
-    let CycleInput { workspace_burst, wake_engram } = input;
+    let TurnTrigger {
+        msg,
+        turn_room,
+        admitted_retry,
+    } = trigger;
+    let CycleInput {
+        workspace_burst,
+        wake_engram,
+    } = input;
     let respond_started = std::time::Instant::now();
     // A turn in her mind room runs on her MIND cycle (PRIVACY-OF-THOUGHT.md §4).
     match crate::cognition::persona_workspace::global()
         .cycle_for_room(&ctx.identity.peer_id.as_uuid(), turn_room)
     {
         Some(cycle) => {
-            // HER GENES ARE IN HER HEAD ON EVERY TURN (Joel, 2026-10-10: a gene is hers
-            // once trained and follows her mind, never her workload; GENE-REUSE-FORK-MINT
-            // §3d). Pinned before the turn and put back after it, as the work turn does,
-            // so the genome never changes beneath a request. Unreadable: the genome she
-            // has. The receipt names the genes that ran (GenerationReceipt::genes).
-            let _genome_pin = {
-                let pin = crate::genome::gene_trial::GenomeRestore::snapshot(std::sync::Arc::clone(&cycle));
-                if let Some(genes) = crate::genome::gene_trial::live_genes(ctx.identity.peer_id.as_uuid()) {
-                    continuum_base::probe!(
-                        class = "persona.genome.turn_genes",
-                        persona = %ctx.identity.agent_name,
-                        room = %turn_room,
-                        genes = genes.len() as u64,
-                        "the genome this turn runs with: every gene she trained that is not retired"
-                    );
-                    cycle.page_in(genes);
-                }
-                pin
-            };
+            // HER GENES ARE IN HER HEAD ON EVERY TURN, chosen by what her mind is on
+            // (GENE-REUSE-FORK-MINT §3d): every gene whose region the turn's focused line is
+            // inside, weighted by depth (`genome::composer`). They stay on her cycle until
+            // the next turn selects, so nothing between turns flips her slot's adapters (each
+            // flip clears her KV). Unreadable: the genome she has. The receipt names the
+            // genes that ran (GenerationReceipt::genes).
+            let need = crate::cognition::recall_faculty::focused_query(&workspace_burst.rendered);
+            if let Some(phenotype) = crate::genome::composer::compose(ctx.identity.peer_id.as_uuid(), need).await {
+                continuum_base::probe!(
+                    class = "persona.genome.turn_genes",
+                    persona = %ctx.identity.agent_name,
+                    genes = phenotype.genes.len() as u64,
+                    phenotype = %crate::genome::composer::render(&phenotype),
+                    "the phenotype this turn runs with: each gene and its scale"
+                );
+                cycle.page_in(phenotype.genes);
+            }
             // Run the mind over the metadata-rich burst built above
             // (WHO/WHEN/WHAT per inbox item, own posts attributed, room as the
             // WHERE). Recall (the persona's own memories) is injected by the
@@ -106,11 +111,15 @@ pub(super) async fn run_turn_cycle(
             // store (#89); this is the addressing half, unblocked today.
             // Human opportunity retains priority, but sender kind can be stale
             // or shared across clients: it cannot assert that she was named.
-            let attention = admitted_retry.then(|| deferred_input.attention()).flatten()
-                .unwrap_or_else(|| crate::cognition::workspace::TurnAttention::for_message(
+            let attention = admitted_retry
+                .then(|| deferred_input.attention_for(msg))
+                .flatten()
+                .unwrap_or_else(|| { // A new message has no retained attention; derive it from its actual sender and mentions.
+                    crate::cognition::workspace::TurnAttention::for_message(
                     ctx.identity.persona_identity().mentions(&msg.text),
-                    crate::persona::room_directory::is_human_peer(msg.peer_id),
-                ));
+                    crate::cognition::room_directory::is_human_peer(msg.peer_id),
+                    )
+                });
             if attention.requires_priority() {
                 // Focus = she is TAKING the turn on it; the heard receipt
                 // already fired at the drain (`wake_backlog::publish_heard`).
@@ -238,7 +247,7 @@ pub(super) async fn run_turn_cycle(
             );
             // A citizen holding a card works at that repo — in a ROOM turn too: the
             // turn is bound to her card claim's hands, admitted here.
-            let held_card = crate::cognition::persona_workspace::root_at_held_card(
+            let held_card = crate::persona::card_hands::root_at_held_card(
                 &cycle,
                 ctx.identity.peer_id.as_uuid(),
                 conversation,
@@ -261,7 +270,7 @@ pub(super) async fn run_turn_cycle(
                     LIVE_MAX_ACTS,
                     framing,
                     conversation,
-                    credit_capture.as_mut(),
+                    credit_capture.as_mut().map(|c| c as &mut dyn crate::cognition::act_observe::TurnCredit),
                 )
                 .await;
                 // The lived-turn experience write (#319) is NOT here: it lives inside
@@ -296,7 +305,7 @@ pub(super) async fn run_turn_cycle(
             // The turn's work is synced to its card's branch; her hands stay where they
             // are, because nothing moved them (card fc9e9fd7).
             if let Some(hands) = &held_card.hands {
-                crate::cognition::persona_workspace::end_card_turn(hands, turn_act_count).await;
+                crate::persona::card_hands::end_card_turn(hands, turn_act_count).await;
             }
             cycle.set_token_sink(None);
             let _ = forwarder.await;
@@ -319,14 +328,17 @@ pub(super) async fn run_turn_cycle(
             }
             deferred_input.settle(msg, wake_engram, attention, &step);
             match step {
-                crate::cognition::act_observe::SettleStep::DeferredBeforeDispatch => {
+                crate::cognition::act_observe::SettleStep::CapacityRefused { .. }
+                | crate::cognition::act_observe::SettleStep::DeferredBeforeDispatch => {
                     return CycleVerdict::Skip;
                 }
-                crate::cognition::act_observe::SettleStep::Spoke(text) => CycleVerdict::Spoke(SpokenTurn {
+                crate::cognition::act_observe::SettleStep::Spoke(text) => {
+                    CycleVerdict::Spoke(SpokenTurn {
                     response_text: text,
                     turn_credit,
                     turn_generation_receipts,
-                }),
+                    })
+                }
                 crate::cognition::act_observe::SettleStep::Acted { calls, intent } => {
                     continuum_base::probe!(
                         class = "persona.turn.acted",
@@ -361,7 +373,9 @@ pub(super) async fn run_turn_cycle(
                     // act is executed (→ Acted/ActUnfulfilled), never deferred.
                     unreachable!("live settle_step always permits its one act");
                 }
-                crate::cognition::act_observe::SettleStep::Passed { reason: pass_reason } => {
+                crate::cognition::act_observe::SettleStep::Passed {
+                    reason: pass_reason,
+                } => {
                     tracing::info!(
                         lamport = msg.lamport,
                         "persona chose silence (workspace) — substrate honors decision"
@@ -372,7 +386,10 @@ pub(super) async fn run_turn_cycle(
                     // or from no decision at all). The reason is the brain's; this line
                     // only reports it.
                     let (gated, pass_detail) = match pass_reason.as_deref() {
-                        Some(r) => (r.starts_with(crate::cognition::workspace::GATE_REFUSAL_PREFIX), r),
+                        Some(r) => (
+                            r.starts_with(crate::cognition::workspace::GATE_REFUSAL_PREFIX),
+                            r,
+                        ),
                         None => (false, "no-decision"),
                     };
                     continuum_base::probe!(
@@ -389,14 +406,18 @@ pub(super) async fn run_turn_cycle(
                     // `directed` is recomputed here rather than threaded: it is a pure function of
                     // (identity, msg.text) and the binding above lives inside the cycle branch.
                     let spoke_directed = ctx.identity.persona_identity().mentions(&msg.text);
-                    crate::persona::act_question::ask_the_act_question(
+                    let work = crate::persona::act_question::ask_the_act_question(
                         ctx,
                         conversation,
                         msg.lamport,
                         turn_room,
                         spoke_directed,
+                        // A message turn never offers her initiative: the message snapped her beat to
+                        // engaged, and that beat (the self-tick) offers it.
+                        crate::persona::initiative_turn::Initiative::NotOffered,
                     )
                     .await;
+                    deferred_input.settle_work(&work);
                     outcome.turns_skipped += 1;
                     return CycleVerdict::Skip;
                 }

@@ -1,5 +1,8 @@
 # Multimodal Wiring + Self-Proof
 
+> `legacy/` was deleted 2026-10-23; every `legacy/` path below is at git tag `legacy-archive-2026-10-23` (restore: `git checkout legacy-archive-2026-10-23 -- legacy/<path>`).
+
+
 *2026-09-02. Joel: "All this multimodal worked in legacy. Need to plan how to wire all
 up… make sure readme backs up novel claims and that we've tested reliably, repeatedly…
 it can't require intervention. Needs to be automated and natural."*

@@ -407,11 +407,10 @@ impl ActionCommand for GenomePush {
         // share — never a fabricated signature.
         let (provenance_json, parent_alloy_hashes) = {
             let parents: Vec<String> = p.parent_alloy_hashes.clone();
-            let key_path = dirs::home_dir()
-                .unwrap_or_default() // no HOME → path is relative; read fails → unsigned, handled below
-                .join(".continuum/identity.key");
-            let prov = std::fs::read(&key_path)
+            // The one resolved continuum home (card 2ceab504): no home → no key → unsigned.
+            let prov = crate::paths::continuum_home()
                 .ok()
+                .and_then(|home| std::fs::read(home.join("identity.key")).ok())
                 .and_then(|b| <[u8; 32]>::try_from(b.as_slice()).ok())
                 .and_then(|seed| {
                     let key = crate::contracts::signing::ContractSigningKey::from_bytes(&seed);

@@ -36,15 +36,15 @@ pub struct InboxMessageRequest {
 
 impl InboxMessageRequest {
     /// Convert this JSON-transport request (string UUIDs, string enums) into the
-    /// domain [`InboxMessage`](crate::persona::InboxMessage). The single
+    /// domain [`InboxMessage`](crate::cognition::conversation::types::InboxMessage). The single
     /// wire→domain conversion for inbox messages — reused by every typed command
     /// that accepts an inbox message off the wire.
     ///
     /// Fails loud on a malformed UUID or an unknown `sender_type` (the legacy
     /// free-fn form silently dropped an unparseable `voice_session_id`; this
     /// surfaces it instead, per the no-silent-fallback rule).
-    pub fn to_inbox_message(&self) -> Result<crate::persona::InboxMessage, String> {
-        use crate::persona::{InboxMessage, Modality, SenderType};
+    pub fn to_inbox_message(&self) -> Result<crate::cognition::conversation::types::InboxMessage, String> {
+        use crate::cognition::conversation::types::{InboxMessage, Modality, SenderType};
 
         let sender_type = match self.sender_type.as_str() {
             "human" => SenderType::Human,

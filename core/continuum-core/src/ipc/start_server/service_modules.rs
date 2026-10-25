@@ -68,7 +68,7 @@ pub(super) fn register_code_data_and_service_modules(
     match crate::routing::installed_probe_router() {
         Some(router) => {
             runtime.register(Arc::new(
-                crate::modules::probe_stream::ProbeStreamModule::new(router),
+                crate::probe_stream::ProbeStreamModule::new(router),
             ));
         }
         None => {

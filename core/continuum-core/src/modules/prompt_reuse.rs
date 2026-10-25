@@ -92,7 +92,7 @@ fn divergence_excerpt(prev: &str, next: &str, at: usize) -> (String, String) {
 // ─────────────────────────── debug/prompt-reuse ──────────────────────────
 
 /// Score predicted KV prefix reuse over recorded prompt captures. Stateless;
-/// self-registers like [`super::probe_query::ProbeQuery`].
+/// self-registers like [`crate::probe_query::ProbeQuery`].
 #[derive(Default)]
 pub struct PromptReuse;
 
@@ -145,7 +145,7 @@ pub struct PromptReuseResult {
 }
 
 fn captures_dir() -> Result<PathBuf, CommandError> {
-    crate::persona::recorder::fixture_dir(crate::cognition::prompt_capture::FIXTURE_DIR)
+    crate::cognition::capture::fixture_dir(crate::cognition::prompt_capture::FIXTURE_DIR)
         .ok_or_else(|| CommandError::Internal("cannot resolve capture home directory".into()))
 }
 

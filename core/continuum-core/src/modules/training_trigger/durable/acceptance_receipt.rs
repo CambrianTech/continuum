@@ -144,6 +144,12 @@ pub(in crate::modules::training_trigger) struct DispatchIntent {
     #[entity(json)]
     pub(super) phase: DispatchPhase,
     pub(super) is_active: bool,
+    /// The attempt this intent is in (card 55d4b9e3): minted durably when it enters
+    /// `Dispatching`, BEFORE job-create runs, so recovery can ask the selection owner about
+    /// exactly this attempt instead of inferring from a board that only learns of a job after
+    /// `create_job` returns. `None` = written before attempts existed: its outcome is unknown,
+    /// and a stranded one is surfaced as unknown, never auto-retried.
+    pub(super) attempt: Option<Uuid>,
 }
 
 pub(in crate::modules::training_trigger) struct ActiveDispatch {

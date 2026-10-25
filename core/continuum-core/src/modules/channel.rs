@@ -12,9 +12,10 @@
 //! live surface is the background `tick()` below: per-persona task polling +
 //! self-task generation, a lifecycle concern, not a command.
 
-use crate::persona::channel_items::TaskQueueItem;
+use crate::cognition::conversation::channel_items::TaskQueueItem;
 use crate::persona::self_task_generator::SelfTaskGenerator;
-use crate::persona::{ChannelRegistry, PersonaCognition, PersonaState};
+use crate::persona::{ChannelRegistry, PersonaCognition};
+use crate::cognition::conversation::types::PersonaState;
 use crate::runtime::{
     CommandResult, LateBound, ModuleConfig, ModuleContext, ModulePriority, ServiceModule,
 };
@@ -71,7 +72,7 @@ pub struct ChannelState {
     pub self_task_generators: DashMap<Uuid, tokio::sync::Mutex<SelfTaskGenerator>>,
     /// Tick configuration — adjustable at runtime via channel/tick-config command.
     pub tick_config: std::sync::RwLock<ChannelTickConfig>,
-    /// Circuit breaker for DB-backed tick work. One failing Postgres path should
+    /// Circuit breaker for DB-backed tick work. One failing database path should
     /// not fan out into N personas × M queries every tick.
     pub db_tick_backoff: std::sync::Mutex<DbTickBackoff>,
 }
@@ -329,39 +330,6 @@ impl ServiceModule for ChannelModule {
                 }
             }
 
-            // ── 2b. Enrollment opportunity detection ─────────────────────
-            // Uses genome coverage report to find domains with activity but no adapter.
-            // Creates enroll-academy tasks when gap meets threshold.
-            if config.self_task_enabled {
-                if let Some(generator_entry) = self.state.self_task_generators.get(persona_id) {
-                    let generator = generator_entry.lock().await;
-                    if let Some(persona) = self.state.personas.get(persona_id) {
-                        let enrollment_tasks =
-                            generator.detect_enrollment_opportunities(&persona.genome_engine);
-                        if !enrollment_tasks.is_empty() {
-                            for task_json in &enrollment_tasks {
-                                if let Some(item) =
-                                    Self::json_to_task_queue_item(task_json, persona_id)
-                                {
-                                    if let Some(mut entry) =
-                                        self.state.registries.get_mut(persona_id)
-                                    {
-                                        let (registry, _state) = entry.value_mut();
-                                        let _ = registry.route(std::sync::Arc::new(item));
-                                    }
-                                }
-                            }
-                            total_self_tasks += enrollment_tasks.len() as u32;
-                            log.info(&format!(
-                                "Enrollment opportunities for {}: {} tasks",
-                                persona_id,
-                                enrollment_tasks.len()
-                            ));
-                        }
-                    }
-                }
-            }
-
             // Training readiness check used to live here. Removed in
             // task #227 — the trigger was structurally dead:
             //
@@ -538,7 +506,7 @@ mod tests {
 
     #[test]
     fn tick_db_handle_preserves_explicit_override() {
-        let db_url = "postgres://user@localhost:5432/continuum".to_string();
+        let db_url = "/var/lib/continuum/tick.db".to_string();
 
         assert_eq!(
             ChannelModule::tick_db_handle_from_env(Some(db_url.clone())),

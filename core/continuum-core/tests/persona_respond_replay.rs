@@ -107,11 +107,10 @@ async fn ensure_llamacpp_registered() {
 
 // ─── Fixture loader ───────────────────────────────────────────────────────
 
+/// Where the recorder writes turns, through the recorder's own owner (card 3c8b03ae).
 fn fixture_dir() -> PathBuf {
-    PathBuf::from(std::env::var("HOME").expect("HOME not set"))
-        .join(".continuum")
-        .join("fixtures")
-        .join("persona-respond")
+    continuum_core::cognition::capture::fixture_dir(continuum_core::persona::recorder::RESPOND_FIXTURE_DIR)
+        .expect("a continuum home to read the recorder's turns from")
 }
 
 /// Load a specific fixture filename from ~/.continuum/fixtures/persona-respond/.

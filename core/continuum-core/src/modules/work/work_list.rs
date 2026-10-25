@@ -32,14 +32,14 @@ pub(super) fn live_holder(card: &airc_work::WorkCard, now_ms: u64) -> Option<air
     // A retained lease on settled work is not claim contention. Otherwise a
     // refused re-claim becomes AlreadyYours and select_work_claim replaces the
     // useful settled-state refusal with WorkClaimNotCurrent (Kimi, 2026-09-30).
-    if crate::persona::card_holder::refused_by_claim(card.state) {
+    if crate::cognition::card_holder::refused_by_claim(card.state) {
         return None;
     }
-    match crate::persona::card_holder::hold_of(card, now_ms) {
-        crate::persona::card_holder::Hold::Held => card.owner,
+    match crate::cognition::card_holder::hold_of(card, now_ms) {
+        crate::cognition::card_holder::Hold::Held => card.owner,
         // Lapsed or unclaimed: whatever refused the claim, it was not a person.
-        crate::persona::card_holder::Hold::Lapsed
-        | crate::persona::card_holder::Hold::Unclaimed => None,
+        crate::cognition::card_holder::Hold::Lapsed
+        | crate::cognition::card_holder::Hold::Unclaimed => None,
     }
 }
 
@@ -52,8 +52,8 @@ pub(super) fn resumes_held_review(
     requested == CardState::InProgress
         && card.state == CardState::Review
         && card.owner == Some(caller)
-        && crate::persona::card_holder::hold_of(card, now_ms)
-            == crate::persona::card_holder::Hold::Held
+        && crate::cognition::card_holder::hold_of(card, now_ms)
+            == crate::cognition::card_holder::Hold::Held
 }
 
 /// What a refused claim MEANS for the citizen who made it.
@@ -268,7 +268,7 @@ impl ActionCommand for WorkList {
         let board = board_to_read(&airc, p.room.as_deref()).await?;
         let now_ms = EpochMs::now().millis();
         // Resolve every distinct owner to a published name in ONE pass, then render
-        // through the SHARED holder projection (`persona::card_holder`) — the same
+        // through the SHARED holder projection (`cognition::card_holder`) — the same
         // answer the [room-kanban] grounding block and the service-loop anchor give.
         // Before this, three surfaces computed "who holds it / is the lease live"
         // separately and a teammate always came back as 8-hex, which Joel called out
@@ -298,7 +298,7 @@ impl ActionCommand for WorkList {
             .cards
             .iter()
             .map(|c| {
-                let holder = crate::persona::card_holder::holder(c, me, now_ms, &names);
+                let holder = crate::cognition::card_holder::holder(c, me, now_ms, &names);
                 (
                     WorkListCard {
                         id: short8(c.card_id.as_uuid()),

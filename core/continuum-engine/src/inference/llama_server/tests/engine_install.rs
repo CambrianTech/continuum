@@ -1,24 +1,6 @@
 //! Engine install regression fixtures.
 #![cfg(test)]
 use super::*;
-// what this catches (2026-09-27, the M5 at 10.4 GiB free beside the 27B): a node whose
-// lane fills its memory refused every deploy. Between the floor and plenty the build takes
-// fewer jobs; with plenty, cargo's own count; the floor itself is one job plus the reserve.
-// In the lib so CI runs it (the CLI's own tests run only by name).
-#[test]
-fn a_warm_build_takes_the_jobs_its_free_memory_holds() {
-    let gib = 1024 * 1024 * 1024;
-    // measured: continuum_core's front end alone peaked at 6.4 GB, so one job needs it
-    // plus the reserve; a second job only past another 2.5 GiB
-    assert_eq!(WARM_BUILD_MIN_FREE_BYTES, 4 * gib + 6656 * 1024 * 1024);
-    assert_eq!(warm_build_jobs_for_memory(WARM_BUILD_MIN_FREE_BYTES), Some(1));
-    assert_eq!(warm_build_jobs_for_memory(WARM_BUILD_MIN_FREE_BYTES + 2560 * 1024 * 1024 - 1), Some(1));
-    assert_eq!(warm_build_jobs_for_memory(WARM_BUILD_MIN_FREE_BYTES + 2560 * 1024 * 1024), None, "where a second job would start, the build is already uncapped");
-    assert_eq!(warm_build_jobs_for_memory(12 * gib), Some(1), "under the measured uncapped need");
-    assert_eq!(warm_build_jobs_for_memory(13 * gib), None);
-    assert!(WARM_BUILD_UNCAPPED_FREE_BYTES >= WARM_BUILD_RESERVE_BYTES + 8_700_000_000, "uncapped covers its measured peak plus the reserve");
-}
-
 // what this catches (card 7c5f139d): an adopted lane left on last deploy's engine
 // forever — the M5 and IntelMac served b10765-965d38a90 (no /train) while the stamp
 // moved on. A lane whose /props build names another commit than the installed stamp is

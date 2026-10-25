@@ -98,6 +98,45 @@ fn a_lane_that_is_not_the_shared_gateway_reports_no_window_at_all() {
     );
 }
 
+// what this catches: card 7eef3e05, a wedged engine's mid-stream error frame read as an empty
+// `stop` completion (32 such acts on the M5, 2026-10-23); the act must fail with the server's
+// words so a resident never loops on empty "completed" acts.
+#[tokio::test]
+async fn a_server_error_frame_fails_the_act_never_an_empty_completion() {
+    use axum::{routing::post, Router};
+
+    const WEDGED: &str = "data: {\"choices\":[{\"finish_reason\":null,\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":null}}],\"model\":\"test-model\",\"prompt_progress\":{\"total\":113106,\"cache\":4096,\"processed\":4096,\"time_ms\":0}}\n\ndata: {\"error\":{\"code\":500,\"message\":\"decode() failed: failed to process speculative batch\",\"type\":\"server_error\"}}\n\n";
+    let app = Router::new().route(
+        "/v1/chat/completions",
+        post(|| async { ([("content-type", "text/event-stream")], WEDGED) }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("isolated HTTP fixture");
+    let address = listener.local_addr().expect("bound address");
+    let server = tokio::spawn(async move { axum::serve(listener, app).await });
+    let mut adapter = test_adapter();
+    adapter.config.base_url = format!("http://{address}");
+    let request = TextGenerationRequest {
+        messages: vec![ChatMessage::text("user", "act")],
+        ..Default::default()
+    };
+    let (sink, receiver) = tokio::sync::mpsc::unbounded_channel();
+    drop(receiver);
+    let result = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        adapter.generate_stream_checked(request, sink),
+    )
+    .await
+    .expect("bounded fixture request");
+    let error = result.expect_err("a server error frame is a failed act, never a completion");
+    assert!(
+        error.to_string().contains("failed to process speculative batch"),
+        "the server's own words reach the act's failure: {error}"
+    );
+    server.abort();
+}
+
 // what this catches: aa5888a9 — the actual HTTP boundary must preserve
 // structured counts, and a transport retry must send the same prepared bytes.
 #[tokio::test]
@@ -391,8 +430,8 @@ async fn single_slot_background_use_preserves_only_successfully_saved_activity_p
     let generation = transition.start_generation().expect("fixture engine generation");
     transition.ready(&root, &generation, crate::inference::slots::KvPageContract {
         model_id: "test-model".into(), model: "fixture.gguf".into(), adapters: vec![],
-        page_dir: None, context: 8192, slots: 1, cache_type: None, flash_attn: None, engine_build: None,
-        engine: "fixture-engine".into(), revisions: None,
+        page_dir: None, context: 8192, slots: 1, cache_type: None, flash_attn: None,
+        revisions: None,
     }).expect("fixture owned engine readiness");
     drop(transition);
     assert!(matches!(adapter.ensure_slot_pool(&adapter.endpoints()).await,
@@ -406,12 +445,12 @@ async fn single_slot_background_use_preserves_only_successfully_saved_activity_p
     let observed_service = || crate::inference::resource_admission::leased_in_sent_samples()
         .iter().filter_map(|sample| sample.served(&root, Some("test-model"))).collect::<Vec<_>>();
     let activity =
-        crate::inference::slots::ActivityKey::new(uuid::Uuid::new_v4(), uuid::Uuid::new_v4())
+        crate::inference::slots::PageKey::mind(uuid::Uuid::new_v4())
             .expect("non-nil fixture activity");
     let turn = TextGenerationRequest {
         messages: vec![ChatMessage::text("user", "activity")],
-        persona_id: Some(activity.persona.to_string()),
-        room_id: Some(activity.room.to_string()),
+        persona_id: Some(activity.persona().to_string()),
+        room_id: Some(uuid::Uuid::new_v4().to_string()),
         purpose: Some("cognition/deliberation".into()),
         ..Default::default()
     };
@@ -436,8 +475,9 @@ async fn single_slot_background_use_preserves_only_successfully_saved_activity_p
         .expect("bounded adapter fixture")
         .expect("fixture generation");
     }
+    // Another MIND's turn: hers in another room would be her own page (one page per mind).
     let failed_turn = TextGenerationRequest {
-        room_id: Some(uuid::Uuid::new_v4().to_string()),
+        persona_id: Some(uuid::Uuid::new_v4().to_string()),
         ..turn.clone()
     };
     assert!(!observed_service().is_empty(), "real adapter terminal records owned service");

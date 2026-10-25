@@ -18,7 +18,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use super::attention::{AttentionDial, Continuation};
+use crate::cognition::attention::{AttentionDial, Continuation};
 
 pub const FILE_NAME: &str = "mind-state.json";
 const VERSION: u32 = 1;
@@ -129,7 +129,7 @@ impl MindState {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::persona::salience::Expectation;
+    use crate::cognition::conversation::salience::Expectation;
 
     // what this catches: rule 8. A saved mind comes back as the same mind: cursors,
     // her note and her dial; an absent file is a fresh mind (not a crash); a

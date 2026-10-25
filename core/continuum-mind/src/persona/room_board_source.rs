@@ -60,13 +60,9 @@ use airc_work::BoardSnapshot;
 use async_trait::async_trait;
 use serde_json::json;
 
-use crate::persona::rag_budget::{ RagContext, RagDelivery, RagItem, RagSource, ResolutionPreference};
+use crate::cognition::rag_budget::{ RagContext, RagDelivery, RagItem, RagSource, ResolutionPreference};
 
-/// Source identifier — the deliberation faculty renders this delivery under a
-/// `[room-kanban]` header (generic `[<source_id>]` projection). Distinct from
-/// `active-work` (own claims) and `room-wall` (the wall, renamed from the
-/// misleading `room-board` in #3874).
-pub(crate) const SOURCE_ID: &str = "room-kanban";
+use crate::cognition::faculty_ids::ROOM_BOARD;
 
 /// Most cards this source will render in full, per turn.
 ///
@@ -98,7 +94,7 @@ pub trait RoomBoardReader: Send + Sync {
     /// The work board of `room` — folded by airc into a [`BoardSnapshot`].
     ///
     /// `room` is the id this source is BOUND to (`for_room`), i.e. the same
-    /// value [`crate::persona::rag_budget::room_scope_allows`] gates on. Passing
+    /// value [`crate::cognition::rag_budget::room_scope_allows`] gates on. Passing
     /// it is what makes gate and read one decision instead of two that merely
     /// coincide: before 2026-08-07 the read resolved airc's `current_room()`
     /// independently ("whatever my default subscription happens to be") while the
@@ -173,7 +169,7 @@ impl RoomBoardReader for airc_lib::Airc {
                 // What these marks actually established, 2026-09-05: they EXONERATED
                 // this read. Chasing a faculty rendered as `[room-board]` that pins at
                 // the 30s deadline, I assumed it was this one. It is not — that
-                // SOURCE_ID belongs to `wall_source.rs`. The proof is an ABSENCE: every
+                // source id belongs to `wall_source.rs`. The proof is an ABSENCE: every
                 // read that emitted `resolve_room` here also reached `complete`
                 // (1.4-9.9s), while the 30s deadline events carry no mark at all, not
                 // even the first. A faculty cancelled before the first line of this
@@ -294,7 +290,7 @@ impl RoomBoardSource {
 
     fn empty() -> RagDelivery {
         RagDelivery {
-            source_id: SOURCE_ID.to_string(),
+            source_id: ROOM_BOARD.to_string(),
             items: Vec::new(),
             tokens_used: 0,
             truncated: false,
@@ -307,7 +303,7 @@ impl RoomBoardSource {
     /// The whole board carries all owners, so owner is always surfaced (unlike
     /// the active-work source, which is implicitly self-owned).
     /// Holder resolution is NOT done here — it lives in
-    /// [`crate::persona::card_holder`], the ONE place every board surface
+    /// [`crate::cognition::card_holder`], the ONE place every board surface
     /// (this source, the service-loop anchor, `work/list`, the CLI) answers
     /// "who holds this, is the hold live". Rendering it locally is what let
     /// five surfaces disagree, and why a peer's card read as an 8-hex prefix
@@ -317,11 +313,11 @@ impl RoomBoardSource {
         board: &BoardSnapshot,
         self_id: uuid::Uuid,
         now_ms: u64,
-        names: &dyn crate::persona::card_holder::PeerNames,
+        names: &dyn crate::cognition::card_holder::PeerNames,
         include_submission: bool,
     ) -> String {
         let id8: String = card.card_id.as_uuid().to_string().chars().take(8).collect();
-        let held = crate::persona::card_holder::holder(card, self_id, now_ms, names);
+        let held = crate::cognition::card_holder::holder(card, self_id, now_ms, names);
         // The tag leads with what the card IS to someone deciding whether to take
         // it, not with the column it happens to sit in — a lapsed claim is takeable
         // work whose column still reads `Claimed`. See `CardHolder::state_tag`;
@@ -346,7 +342,7 @@ impl RoomBoardSource {
     /// Current signed candidate state is independent of a potentially long title.
     /// Reuse the submission owner's next-action semantics and evidence address.
     fn submission_guidance(card: &airc_work::WorkCard, board: &BoardSnapshot) -> Option<String> {
-        let candidate = crate::persona::work_board::submissions::latest_submission(card)?;
+        let candidate = crate::cognition::card_holder::latest_submission(card)?;
         let reviews: Vec<_> = board.submission_reviews.iter().filter(|review| {
             review.card_id == card.card_id && review.submission_id == candidate.submission_id
         }).collect();
@@ -372,12 +368,12 @@ impl RoomBoardSource {
 /// than imported because continuum deps airc-protocol/-core, not airc-lib; the
 /// doc-link is the drift guard.
 ///
-/// Now a one-line delegation to [`crate::persona::card_holder::hold_of`] — the
+/// Now a one-line delegation to [`crate::cognition::card_holder::hold_of`] — the
 /// predicate itself moved there so the anchor, `work/list`, and this source
 /// cannot drift apart on what "held" means. Kept as a named local so the
 /// call sites below read as liveness questions rather than enum matches.
 fn claim_is_live(card: &airc_work::WorkCard, now_ms: u64) -> bool {
-    crate::persona::card_holder::hold_of(card, now_ms) == crate::persona::card_holder::Hold::Held
+    crate::cognition::card_holder::hold_of(card, now_ms) == crate::cognition::card_holder::Hold::Held
 }
 
 /// One held card in the `[your work]` lead: its id, title and state, and the absolute path
@@ -401,12 +397,12 @@ fn held_card_line(card: &airc_work::WorkCard, checkout: Option<&std::path::Path>
 
 #[async_trait]
 impl RagSource for RoomBoardSource {
-    fn room_scope(&self) -> super::rag_budget::RagRoomScope {
-        super::rag_budget::RagRoomScope::Activity
+    fn room_scope(&self) -> crate::cognition::rag_budget::RagRoomScope {
+        crate::cognition::rag_budget::RagRoomScope::Activity
     }
 
     fn source_id(&self) -> &'static str {
-        SOURCE_ID
+        ROOM_BOARD
     }
 
     fn expand_command(&self) -> Option<&'static str> {
@@ -472,7 +468,7 @@ impl RoomBoardSource {
             Some(t) if t.is_nil() => {
                 continuum_base::probe!(
                     class = "rag.room_gate.abstain",
-                    source = SOURCE_ID,
+                    source = ROOM_BOARD,
                     bound_room = ?self.room_id,
                     turn_room = %t,
                     persona_id = %ctx.persona_id,
@@ -508,7 +504,7 @@ impl RoomBoardSource {
         if board.cards.is_empty() {
             tracing::info!(
                 probe_class = "rag.board.empty",
-                source = SOURCE_ID,
+                source = ROOM_BOARD,
                 persona_id = %self.persona_id,
                 bound_room = ?self.room_id,
                 turn_room = ?ctx.airc_room.as_ref().map(|r| r.as_uuid()),
@@ -555,7 +551,7 @@ impl RoomBoardSource {
         let open: Vec<&airc_work::WorkCard> = board
             .cards
             .iter()
-            .filter(|c| crate::persona::card_holder::claimable_now(c, now_ms))
+            .filter(|c| crate::cognition::card_holder::claimable_now(c, now_ms))
             .collect();
 
         // HEADLINE — the cheapest COMPLETE statement of this board's two facts, first,
@@ -839,7 +835,7 @@ impl RoomBoardSource {
         );
 
         RagDelivery {
-            source_id: SOURCE_ID.to_string(),
+            source_id: ROOM_BOARD.to_string(),
             items,
             tokens_used,
             truncated: false,

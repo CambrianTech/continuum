@@ -75,7 +75,7 @@ pub struct StagedCreditGeneration {
 /// Observed live 2026-09-08: a citizen accumulating toward a training threshold on a
 /// card still in `Claimed` with no settlement.
 ///
-/// Lives in the citizen's own [`crate::persona::home::PersonaHome`], alongside
+/// Lives in the citizen's own [`crate::cognition::home::PersonaHome`], alongside
 /// `engrams.sqlite` — persistence inside its existing owner, per-citizen, NOT a new
 /// global queue ([[source-drain-is-the-universal-pattern]]: the drain is settlement).
 ///
@@ -135,7 +135,7 @@ pub struct StagedCredit {
     ///
     /// The FULL receipts stay here; the child rows are references, not copies.
     #[entity(json)]
-    pub receipts: Vec<crate::cognition::provenance::GenerationReceipt>,
+    pub receipts: Vec<crate::ai::provenance::GenerationReceipt>,
 
     /// Representative served request when all usable generations agree on their
     /// model and provider. Mixed/all-faulted turns have no scalar summary; the
@@ -330,6 +330,30 @@ pub struct TurnCreditCapture {
 }
 
 impl TurnCreditCapture {
+    /// This snapshot may carry the generation a pending submission recorded; a review of it
+    /// that held because that generation was not staged yet can bind now. Re-drives through
+    /// the one replay registration uses (idempotent), only when a pending generation staged.
+    async fn redrive_held_reviews(&self, receipts: &[crate::ai::provenance::GenerationReceipt]) {
+        match reviewed::issues_pending(&self.conn, &self.persona_name, self.credit.card_id, receipts).await {
+            Ok(false) => {}
+            Ok(true) => {
+                let Some(runtime) = crate::persona::PersonaAircRuntimeRegistry::try_global()
+                    .and_then(|registry| registry.get(self.persona_id))
+                else {
+                    return; // not resident here: her next registration replays it
+                };
+                redrive::request(self.persona_id, self.persona_name.clone(), runtime);
+            }
+            Err(error) => continuum_base::probe!(
+                class = "training.credit.redrive_unreadable",
+                persona = %self.persona_name,
+                card = %self.credit.card_id,
+                error = %error,
+                "pending submissions on this card could not be read after staging: a held review waits for the next review event or registration"
+            ),
+        }
+    }
+
     pub(crate) fn for_turn(
         persona_id: Uuid,
         persona_name: &str,
@@ -387,7 +411,7 @@ impl TurnCreditCapture {
     pub async fn record(
         &mut self,
         acts: &[(String, Vec<crate::ai::types::ToolCall>)],
-        receipts: &[crate::cognition::provenance::GenerationReceipt],
+        receipts: &[crate::ai::provenance::GenerationReceipt],
         report: Option<&str>,
         final_snapshot: bool,
     ) -> bool {
@@ -439,7 +463,7 @@ impl TurnCreditCapture {
         match result {
             Ok(_) => {
                 self.superseded.clear();
-                crate::persona::health_ledger::note_credit_staged();
+                crate::cognition::health_ledger::note_credit_staged();
                 continuum_base::probe!(
                     class = "training.credit.staged",
                     persona = %self.persona_name,
@@ -451,6 +475,7 @@ impl TurnCreditCapture {
                     elapsed_ms = started.elapsed().as_millis() as u64,
                     "card-linked turn snapshot persisted; outcome remains unverified"
                 );
+                self.redrive_held_reviews(receipts).await;
                 true
             }
             Err(error) => {
@@ -474,9 +499,9 @@ impl TurnCreditCapture {
 /// changing fields. Tags and length framing distinguish optional/adjacent strings.
 pub(super) fn snapshot_digest(
     completion: &str,
-    receipts: &[crate::cognition::provenance::GenerationReceipt],
+    receipts: &[crate::ai::provenance::GenerationReceipt],
 ) -> [u8; 32] {
-    use crate::cognition::provenance::GenerationOutcome;
+    use crate::ai::provenance::GenerationOutcome;
     use sha2::{Digest, Sha256};
     fn field(hash: &mut Sha256, value: Option<&str>) {
         hash.update([u8::from(value.is_some())]);
@@ -524,7 +549,7 @@ pub fn produce(
     prompt: String,
     completion: String,
     credit: Option<CapturedCredit>,
-    generation_receipts: Vec<crate::cognition::provenance::GenerationReceipt>,
+    generation_receipts: Vec<crate::ai::provenance::GenerationReceipt>,
 ) {
     produce_with_id(
         persona_id,
@@ -551,7 +576,7 @@ pub fn produce_with_id(
     // `None` is ordinary conversation and is NOT a training example (card 8e3dd206).
     credit: Option<CapturedCredit>,
     // Every generation this turn dispatched, in order, faults included.
-    generation_receipts: Vec<crate::cognition::provenance::GenerationReceipt>,
+    generation_receipts: Vec<crate::ai::provenance::GenerationReceipt>,
     submission_id: Uuid,
     replaces: Option<Uuid>,
 ) {
@@ -711,4 +736,17 @@ pub fn received_submission_params(
         }
     }
     params
+}
+
+#[async_trait::async_trait]
+impl crate::cognition::act_observe::TurnCredit for TurnCreditCapture {
+    async fn record(
+        &mut self,
+        acts: &[(String, Vec<crate::ai::types::ToolCall>)],
+        receipts: &[crate::ai::provenance::GenerationReceipt],
+        report: Option<&str>,
+        final_snapshot: bool,
+    ) -> bool {
+        TurnCreditCapture::record(self, acts, receipts, report, final_snapshot).await
+    }
 }

@@ -125,7 +125,7 @@ impl ServiceModule for ServingDaemonModule {
     /// published serving snapshot, and its serving-plan receiver; the daemon's own
     /// plan/reconcile loop turns the suppress-set edits into actual (un)loads.
     fn commands(&self) -> Vec<Arc<dyn crate::sdk_codegen::DynCommand>> {
-        crate::commands::serving::command_objects(
+        super::commands::command_objects(
             self.intent.clone(),
             self.pin_fit_checker(),
             self.subscribe_serving(),

@@ -178,7 +178,7 @@ pub enum ToolChoice {
 // ============================================================================
 
 /// Active LoRA adapter to apply during generation
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[ts(
     export,
     export_to = "../../../protocol/typescript/ai/ActiveAdapterRequest.ts"
@@ -256,6 +256,13 @@ pub struct TextGenerationRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub tools: Option<Vec<NativeToolSpec>>,
+    /// Verbs she loaded into the TAIL this epoch: callable natively (the engine's parser and
+    /// grammar accept them) but never rendered in the head, so the cached prefix is unchanged
+    /// (goal 10, card ecd5dff3). Their schemas ride the conversation, after the cache point.
+    /// Sent only to a llama.cpp-family server; one that predates the field ignores it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub tail_tools: Option<Vec<NativeToolSpec>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub tool_choice: Option<ToolChoice>,

@@ -6,7 +6,7 @@ use crate::modules::airc::AircModule;
 use crate::modules::airc_bridge_directive::AircBridgeDirectiveModule;
 use crate::modules::airc_bridge_dispatch::AircBridgeDispatchModule;
 use crate::modules::auth::ExternalWebviewAuthModule;
-use crate::modules::avatar::AvatarModule;
+use continuum_live::consumers::avatar::AvatarModule;
 use crate::modules::channel::{ChannelModule, ChannelState};
 use crate::modules::code::{CodeModule, CodeState};
 use crate::modules::cognition::{CognitionModule, CognitionState};
@@ -39,7 +39,8 @@ use crate::modules::vision::VisionModule;
 /// - JSON protocol (JTAGRequest/JTAGResponse)
 /// - Performance timing on every request
 /// - Modular runtime routes commands through ServiceModule trait (Phase 1+)
-use crate::persona::{ChannelRegistry, PersonaState};
+use crate::persona::ChannelRegistry;
+use crate::cognition::conversation::types::PersonaState;
 use crate::rag::RagEngine;
 use crate::runtime::{CommandResult, Runtime};
 use crate::system_resources::SystemResourceMonitor;

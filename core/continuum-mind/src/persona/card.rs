@@ -8,7 +8,7 @@
 //!
 //! ### Genesis vs. persistence vs. the live registry — one card, three lives
 //!
-//! - **Genesis** ([`PersonaCard::genesis`], and the pure [`super::projection::project_persona`]):
+//! - **Genesis** ([`PersonaCard::genesis`], and the pure `project_persona` (removed: no caller)):
 //!   derive the coherent card from an identity. Pure + deterministic.
 //! - **Persistence** ([`super::seed::PersonaSeedFile::V2`]): the card written to
 //!   `seed.json`, so it is STABLE across reboots + catalog drift and becomes an
@@ -49,7 +49,7 @@ use uuid::Uuid;
 use crate::live::avatar::gender::{gender_from_identity, pronouns_for_gender, PronounSet};
 use crate::live::avatar::types::AvatarGender;
 use crate::live::avatar::names::gender_from_name;
-use crate::persona::role_template::RoleId;
+use crate::experience::role::RoleId;
 
 /// The coherent identity card. Every field agrees with `gender`, the presentation
 /// spine (avatar, voice, and pronouns all follow from it). Owned + serializable via
@@ -100,7 +100,7 @@ impl PersonaCard {
     /// Gender coheres with the NAME first (`gender_from_name`), falling back to the
     /// id-hash for a unisex/custom name — which is exactly the effective gender the
     /// live seams computed pre-Slice-1, so persisting it shifts nobody. `voice_seed`
-    /// is the identity string (matching [`super::projection::project_persona`]);
+    /// is the identity string (matching `project_persona` (removed: no caller));
     /// `role` is unknown at genesis. `avatar_vrm` is threaded in (a resumed persona's
     /// pinned face is preserved; a fresh mint passes `None` and pins later).
     pub fn genesis(

@@ -36,13 +36,11 @@ use airc_core::doctrine::RoomDoctrinePublished;
 use airc_lib::AircError;
 use async_trait::async_trait;
 
-use crate::persona::rag_budget::{
+use crate::cognition::rag_budget::{
      RagContext, RagDelivery, RagItem, RagSource, ResolutionPreference,
 };
 
-/// Source identifier — the service-loop projection routes this delivery
-/// into system-prompt grounding (a `[Room operating doctrine]` block).
-pub(crate) const SOURCE_ID: &str = "room-doctrine";
+use crate::cognition::faculty_ids::ROOM_DOCTRINE;
 
 /// Token estimate — the ONE canonical chars/4 estimator (`cognition::token_budget`),
 /// shared by every RAG source so the replay ledger's numbers match. (Was a private
@@ -246,7 +244,7 @@ impl RoomDoctrineSource {
         drop(guard);
         continuum_base::probe!(
             class = "rag.doctrine.outcome",
-            source = SOURCE_ID,
+            source = ROOM_DOCTRINE,
             persona_id = %self.persona_id,
             bound_room = ?self.room_id,
             effective_room = ?room,
@@ -319,12 +317,12 @@ impl RoomDoctrineSource {
 #[async_trait]
 impl RagSource for RoomDoctrineSource {
     fn source_id(&self) -> &'static str {
-        SOURCE_ID
+        ROOM_DOCTRINE
     }
 
-    fn budget_claim(&self, window: u32, headroom: u32) -> super::rag_budget::RagSourceBudget {
+    fn budget_claim(&self, window: u32, headroom: u32) -> crate::cognition::rag_budget::RagSourceBudget {
         // Existing task-124 allowance: 1024 at 16k, scaling with the window.
-        super::rag_budget::RagSourceBudget::floorless_share(
+        crate::cognition::rag_budget::RagSourceBudget::floorless_share(
             self.source_id(),
             window,
             headroom,
@@ -350,7 +348,7 @@ impl RagSource for RoomDoctrineSource {
         resolution: ResolutionPreference,
     ) -> RagDelivery {
         let empty = |res| RagDelivery {
-            source_id: SOURCE_ID.to_string(),
+            source_id: ROOM_DOCTRINE.to_string(),
             items: Vec::new(),
             tokens_used: 0,
             truncated: false,
@@ -373,7 +371,7 @@ impl RagSource for RoomDoctrineSource {
             Some(t) if t.is_nil() => {
                 continuum_base::probe!(
                     class = "rag.room_gate.abstain",
-                    source = SOURCE_ID,
+                    source = ROOM_DOCTRINE,
                     bound_room = ?self.room_id,
                     turn_room = %t,
                     persona_id = %ctx.persona_id,
@@ -425,7 +423,7 @@ impl RagSource for RoomDoctrineSource {
         let _ = self.report(Outcome::Delivered, effective_room, ctx.now_ms);
 
         RagDelivery {
-            source_id: SOURCE_ID.to_string(),
+            source_id: ROOM_DOCTRINE.to_string(),
             items: vec![RagItem {
                 content,
                 tokens,

@@ -8,24 +8,23 @@
 //! After: 1 DashMap<Uuid, PersonaCognition> — 1 lock, contiguous memory,
 //! atomic access to engine + rate_limiter + sleep_state + adapters + genome.
 
-use crate::persona::admission_state::AdmissionState;
+use crate::cognition::admission_state::AdmissionState;
 use crate::persona::cognition::PersonaCognitionEngine;
 use crate::persona::domain_classifier::DomainClassifier;
 use crate::persona::engram_source::EngramSource;
 use crate::persona::evaluator::{RateLimiterState, SleepState};
-use crate::persona::genome_paging::GenomePagingEngine;
 use crate::persona::inbox::PersonaInbox;
 use crate::persona::inference_profile::PersonaInferenceProfile;
 use crate::persona::message_cache::{ContentDeduplicator, RecentMessageCache};
 use crate::persona::model_selection::AdapterRegistry;
-use crate::persona::rag_budget::{
+use crate::cognition::rag_budget::{
     BudgetAllocation, FlexboxRagBudgetAdapter, RagBudgetAdapter, RagContext, RagDelivery,
     RagSource, RagSourceBudget, ReservedTokens, ResolutionPreference,
 };
 use crate::persona::rag_capture::{
     NoopRagCaptureSink, RagCaptureEvent, RagCaptureSink, RecordingRagSource,
 };
-use crate::persona::recall_metadata::RecallMetadataRegistry;
+use crate::cognition::recall_metadata::RecallMetadataRegistry;
 use crate::rag::RagEngine;
 use std::sync::Arc;
 use uuid::Uuid;
@@ -37,7 +36,6 @@ pub struct PersonaCognition {
     pub rate_limiter: RateLimiterState,
     pub sleep_state: SleepState,
     pub adapter_registry: AdapterRegistry,
-    pub genome_engine: GenomePagingEngine,
     pub domain_classifier: DomainClassifier,
     /// Per-room recent message cache — echo chamber detection & post-inference adequacy
     pub message_cache: RecentMessageCache,
@@ -109,7 +107,7 @@ pub struct PersonaCognition {
 // Self-determined attention allocation (#91) does NOT live on the brain: it must be
 // reachable by `persona_id` from BOTH the service loop and a self-set tool she invokes
 // through the command registry (which only knows her id, never holds `cognition.lock()`).
-// Its single home is `crate::persona::focus::registry()` — see that module.
+// Its single home is `crate::cognition::focus::registry()` — see that module.
 
 /// What [`PersonaCognition::compose_for_turn`] returns — the
 /// substrate's structured handoff between "brain composed a budgeted
@@ -139,19 +137,8 @@ impl PersonaCognition {
     /// Engine and inbox require persona_id; everything else uses defaults.
     /// Capture sink defaults to `NoopRagCaptureSink` (zero overhead).
     pub fn new(persona_id: Uuid, persona_name: String, rag_engine: Arc<RagEngine>) -> Self {
-        Self::with_budget(persona_id, persona_name, rag_engine, 200.0)
-    }
-
-    /// Create with a specific genome memory budget (from GPU manager).
-    /// Capture sink defaults to `NoopRagCaptureSink`.
-    pub fn with_budget(
-        persona_id: Uuid,
-        persona_name: String,
-        rag_engine: Arc<RagEngine>,
-        genome_budget_mb: f32,
-    ) -> Self {
         let sink: Arc<dyn RagCaptureSink> = Arc::new(NoopRagCaptureSink);
-        Self::with_capture_sink(persona_id, persona_name, rag_engine, genome_budget_mb, sink)
+        Self::with_capture_sink(persona_id, persona_name, rag_engine, sink)
     }
 
     /// Create with a custom capture sink — production callers swap
@@ -163,7 +150,6 @@ impl PersonaCognition {
         persona_id: Uuid,
         persona_name: String,
         rag_engine: Arc<RagEngine>,
-        genome_budget_mb: f32,
         capture_sink: Arc<dyn RagCaptureSink>,
     ) -> Self {
         let (_, shutdown_rx) = tokio::sync::watch::channel(false);
@@ -179,7 +165,6 @@ impl PersonaCognition {
             rate_limiter: RateLimiterState::default(),
             sleep_state: SleepState::default(),
             adapter_registry: AdapterRegistry::default(),
-            genome_engine: GenomePagingEngine::new(genome_budget_mb),
             domain_classifier: DomainClassifier::new(),
             message_cache: RecentMessageCache::new(),
             content_dedup: ContentDeduplicator::new(),
@@ -429,7 +414,7 @@ impl ArcRagSource {
 
 #[async_trait::async_trait]
 impl RagSource for ArcRagSource {
-    fn room_scope(&self) -> super::rag_budget::RagRoomScope {
+    fn room_scope(&self) -> crate::cognition::rag_budget::RagRoomScope {
         self.0.room_scope()
     }
 
@@ -449,7 +434,7 @@ impl RagSource for ArcRagSource {
         self.0.floor_tokens()
     }
 
-    fn budget_claim(&self, window: u32, headroom: u32) -> super::rag_budget::RagSourceBudget {
+    fn budget_claim(&self, window: u32, headroom: u32) -> crate::cognition::rag_budget::RagSourceBudget {
         self.0.budget_claim(window, headroom)
     }
 
@@ -466,8 +451,8 @@ impl RagSource for ArcRagSource {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::persona::engram::{ChatMessageRef, Engram, EngramKind, EngramOrigin, TrustState};
-    use crate::persona::rag_budget::{RagContext, RagSource, ResolutionPreference};
+    use crate::cognition::engram::{ChatMessageRef, Engram, EngramKind, EngramOrigin, TrustState};
+    use crate::cognition::rag_budget::{RagContext, RagSource, ResolutionPreference};
     use crate::persona::rag_capture::{
         InMemoryRagCaptureSink, RagCaptureEvent, RagCaptureSink,
     };
@@ -486,7 +471,6 @@ mod tests {
             crate::persona::evaluator::SleepMode::Active
         );
         assert!(pc.adapter_registry.adapters.is_empty());
-        assert!((pc.genome_engine.memory_pressure() - 0.0).abs() < 0.001);
     }
 
     // ---- Slice 10.5: RAG stack wiring (TDD) ----
@@ -572,7 +556,7 @@ mod tests {
         let rag = Arc::new(RagEngine::new());
         let sink = Arc::new(InMemoryRagCaptureSink::new());
         let sink_dyn: Arc<dyn RagCaptureSink> = sink.clone();
-        let pc = PersonaCognition::with_capture_sink(id, "TestBot".into(), rag, 200.0, sink_dyn);
+        let pc = PersonaCognition::with_capture_sink(id, "TestBot".into(), rag, sink_dyn);
 
         // Admit + register one engram.
         let now = 1_000_000_000u64;
@@ -635,7 +619,7 @@ mod tests {
     //      over engram + airc, not via inspect_persona_rag's ad-hoc seam.
 
     use crate::persona::inference_profile::PersonaInferenceProfile;
-    use crate::persona::rag_budget::{AllocationState, RagDelivery, RagItem};
+    use crate::cognition::rag_budget::{AllocationState, RagDelivery, RagItem};
     use async_trait::async_trait;
 
     /// Test source that returns a fixed budget-aware payload — proves
@@ -786,7 +770,7 @@ mod tests {
             items_offered: 3,
             share: std::num::NonZeroU32::new(64),
         });
-        let (cached, _) = crate::persona::cached_source::CachedRagSource::new(source.clone());
+        let (cached, _) = crate::cognition::cached_source::CachedRagSource::new(source.clone());
         let mut pc = PersonaCognition::new(Uuid::new_v4(), "TestBot".into(), Arc::new(RagEngine::new()));
         pc.set_roster_source(cached);
         let wrapped = pc.roster_source.as_ref().unwrap();
@@ -812,9 +796,9 @@ mod tests {
         let sink = Arc::new(InMemoryRagCaptureSink::new());
         let sink_dyn: Arc<dyn RagCaptureSink> = sink.clone();
         let mut pc =
-            PersonaCognition::with_capture_sink(id, "Kimi".into(), Arc::new(RagEngine::new()), 200.0, sink_dyn);
+            PersonaCognition::with_capture_sink(id, "Kimi".into(), Arc::new(RagEngine::new()), sink_dyn);
         pc.set_airc_source(Arc::new(CannedSource { id: "airc", tokens_per_item: 50, items_offered: 2, share: None }));
-        let mind = crate::persona::mind_room::mind_room_id(id);
+        let mind = crate::cognition::mind_room::mind_room_id(id);
         let _ = pc.compose_for_turn(&lcd_profile(), 1_000_000, Some(mind)).await;
         assert!(sink.is_empty(), "her mind room: no capture events, got {}", sink.len());
         let _ = pc.compose_for_turn(&lcd_profile(), 1_000_000, Some(Uuid::new_v4())).await;
@@ -832,7 +816,7 @@ mod tests {
         let sink = Arc::new(InMemoryRagCaptureSink::new());
         let sink_dyn: Arc<dyn RagCaptureSink> = sink.clone();
         let mut pc =
-            PersonaCognition::with_capture_sink(id, "TestBot".into(), rag, 200.0, sink_dyn);
+            PersonaCognition::with_capture_sink(id, "TestBot".into(), rag, sink_dyn);
 
         let airc = Arc::new(CannedSource {
             id: "airc",

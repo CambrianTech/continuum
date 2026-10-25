@@ -5,15 +5,20 @@ use super::*;
 /// and the L2 training producer.
 pub(super) async fn finish_spoken_turn(
     ctx: &HostedPersona,
-    conversation: &mut dyn PersonaConversation,
+    conversation: &mut dyn CitizenConversation,
     outcome: &mut ServeOutcome,
     trigger: TurnTrigger<'_>,
     spoken: SpokenTurn,
     mut phase_timings: PhaseTimings,
     turn_started: std::time::Instant,
+    pending: &mut crate::persona::wake_backlog::PendingInput,
 ) {
     let TurnTrigger { msg, turn_room, .. } = trigger;
-    let SpokenTurn { response_text, turn_credit, turn_generation_receipts } = spoken;
+    let SpokenTurn {
+        response_text,
+        turn_credit,
+        turn_generation_receipts,
+    } = spoken;
     // Invariant: a raw tool-call envelope must NEVER reach the room — from ANY
     // path. The cycle's verdict text is sometimes just `{"tool_call":…}` (an
     // un-acted call the model emitted as its "answer"); broadcasting it spams
@@ -74,14 +79,18 @@ pub(super) async fn finish_spoken_turn(
     // `directed` is recomputed here rather than threaded: it is a pure function of
     // (identity, msg.text) and the binding above lives inside the cycle branch.
     let spoke_directed = ctx.identity.persona_identity().mentions(&msg.text);
-    crate::persona::act_question::ask_the_act_question(
+    let work = crate::persona::act_question::ask_the_act_question(
         ctx,
         conversation,
         msg.lamport,
         turn_room,
         spoke_directed,
+        // A message turn never offers her initiative: the message snapped her beat to
+        // engaged, and that beat (the self-tick) offers it.
+        crate::persona::initiative_turn::Initiative::NotOffered,
     )
     .await;
+    pending.settle_work(&work);
 
     let turn_duration_ms = turn_started.elapsed().as_millis() as u64;
     outcome.turn_latency.record(turn_duration_ms);

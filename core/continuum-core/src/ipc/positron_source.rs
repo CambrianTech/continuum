@@ -86,7 +86,7 @@ use continuum_positron::{
 };
 
 use crate::experience::{Experience, ExperienceSource, Member, RecipeExperienceSource, Standing};
-use crate::persona::mind_events::{PersonaActUpdate, CHAT_HEARD, PERSONA_ACT};
+use crate::cognition::mind_events::{PersonaActUpdate, CHAT_HEARD, PERSONA_ACT};
 use crate::persona::roster_slot::provisional_sender_name;
 use crate::runtime::MessageBus;
 

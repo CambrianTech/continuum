@@ -434,8 +434,8 @@ pub fn owner_alive(pid: i32) -> bool {
 }
 
 /// The deploy in flight on this host, as the core sees it: `InProgress` while a live
-/// `continuum reboot` holds the claim (its warm build compiles beside the serving core —
-/// `rustc -j<cores>` for ten minutes), `Waiting` while that deploy only waits for CI's core
+/// `continuum reboot` holds the claim (from before its drain through the dark build and the
+/// swap), `Waiting` while that deploy only waits for CI's core
 /// (see [`WaitMarker`]), `Clear` otherwise. Abandoned claims read `Clear` here; sweeping
 /// them is the CLI's job.
 pub fn in_flight(root: &Path, now_ms: u64) -> DeployGate {

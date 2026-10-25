@@ -259,6 +259,12 @@ pub struct ProviderCapabilities {
     /// `false`.
     #[serde(default)]
     pub llamacpp_sampling_extensions: bool,
+    /// The server accepts `tail_tools` (CambrianTech/llama.cpp#71): verbs callable through its
+    /// tool-call parser and grammar without rendering them in the head. A mind's learned tool
+    /// head (goal 10) is offered only where this holds, since a verb outside the head must stay
+    /// callable. Default: `false`.
+    #[serde(default)]
+    pub tail_tools: bool,
 }
 
 /// How prompt_assembly should shape multi-party chat history when

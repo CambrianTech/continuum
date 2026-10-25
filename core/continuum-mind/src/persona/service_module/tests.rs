@@ -177,10 +177,10 @@
         assert_eq!(slot.circuit_open_until_ms, 0);
     }
 
-    use crate::persona::channel_items::ChatQueueItem;
+    use crate::cognition::conversation::channel_items::ChatQueueItem;
     use crate::persona::channel_queue::{ChannelQueue, ChannelQueueConfig};
-    use crate::persona::channel_types::ActivityDomain;
-    use crate::persona::types::SenderType;
+    use crate::cognition::conversation::channel_types::ActivityDomain;
+    use crate::cognition::conversation::types::SenderType;
 
     /// Construct a chat queue item with sensible defaults for tests.
     fn test_chat_item(content: &str, sender_human: bool, room_id: Uuid) -> ChatQueueItem {

@@ -1,5 +1,8 @@
 # Procedural Persona Genesis — coherent-random, unique personas across the misfit grid
 
+> `legacy/` was deleted 2026-10-23; every `legacy/` path below is at git tag `legacy-archive-2026-10-23` (restore: `git checkout legacy-archive-2026-10-23 -- legacy/<path>`).
+
+
 Companion to [[DYNAMIC-PERSONA-AND-MODEL.md]] (personas-as-data, model search, tier
 resolution) and the doctrine memories [[design-the-persona-as-a-being]],
 [[persona-is-a-base-plus-genome-costumes-tried-on-per-activity]],
@@ -83,7 +86,7 @@ have additions" requirement):
 - `models` — already `models.json` (chat + vision incl. YOLO change-detector for
   video), tier-resolved. **First order of business: unify the SSoT** — one catalog
   the downloader (`model-init`) AND the Rust core both read (today they diverge:
-  `models.json` in `legacy/src/shared`, Rust `model_registry` separate). Give it a
+  `models.json` in `docker/model-init`, Rust `model_registry` separate). Give it a
   new-world home so avatar/voice/name/model catalogs live together.
 
 ## Invariants (hold every line)

@@ -184,7 +184,7 @@ fn strip_leaked_tool_markup_keeps_non_section_dividers() {
 use crate::ai::types::{ContentPart, MessageContent};
 use crate::cognition::tool_executor::types::MediaItemLite;
 use crate::model_registry::Capability;
-use crate::persona::prompt_assembly::PromptMessage;
+use crate::cognition::prompt_assembly::PromptMessage;
 use std::collections::HashSet;
 
 fn pm(role: &str, text: &str) -> PromptMessage {

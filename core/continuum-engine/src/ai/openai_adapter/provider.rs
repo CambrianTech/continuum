@@ -1,7 +1,7 @@
 //! The `AIProviderAdapter` implementation for `OpenAICompatibleAdapter`.
 
-use super::*;
 use super::embedding::{build_embedding_body, parse_embedding_response, parse_embedding_usage};
+use super::*;
 
 // `apply_no_think_switch` / `close_trailing_assistant` live in `crate::inference::request_body` (S3b decompose).
 
@@ -11,6 +11,10 @@ use super::embedding::{build_embedding_body, parse_embedding_response, parse_emb
 impl AIProviderAdapter for OpenAICompatibleAdapter {
     fn provider_id(&self) -> &str {
         &self.config.provider_id
+    }
+
+    fn accepts_tail_tools(&self) -> bool {
+        self.config.tail_tools
     }
 
     /// The live set the daemon's reconcile / `/v1/models` refresh verified
@@ -38,14 +42,11 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
         &self.config.name
     }
 
-    /// Restore the next activity during prompt assembly through the same
+    /// Restore the next page during prompt assembly through the same
     /// admission and paging owner as generation. Only a completed restore or
     /// existing physical residency is warm; failure leaves the turn backstop
     /// responsible for restoring or prefilling normally.
-    fn warm_ahead(&self, persona: uuid::Uuid, room: uuid::Uuid) {
-        let Some(key) = crate::inference::slots::ActivityKey::new(persona, room) else {
-            return; // nil halves (test workspaces, roomless background) — nothing to warm
-        };
+    fn warm_ahead(&self, key: crate::inference::slots::PageKey) {
         let root = self.endpoints().root().to_string();
         // Discovery is the pin path's job — warm-ahead only acts on servers
         // whose slot pool is already installed (every server after its first
@@ -60,8 +61,7 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
             // serves two citizen slots and no scratch, so this is every act there).
             continuum_base::probe!(
                 class = "inference.kv_warm_ahead.skipped",
-                persona = %key.persona,
-                room = %key.room,
+                page = %key,
                 reason = "no_scratch_slot",
                 "warm-ahead skipped: this server has no scratch slot, so the page restore runs at admission instead of during prompt assembly"
             );
@@ -141,6 +141,29 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
         }
         let s = crate::inference::llama_server::current_serving();
         (s.ready && s.served_context_window > 0).then_some(s.served_context_window)
+    }
+
+    fn capacity_changed(
+        &self,
+        observed: Option<u32>,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + '_>> {
+        if self.dedicated_lane || !self.config.single_resident_model {
+            return Box::pin(std::future::pending());
+        }
+        let Some(mut changes) = crate::inference::llama_server::serving_state_receiver() else {
+            return Box::pin(std::future::pending());
+        };
+        Box::pin(async move {
+            loop {
+                // Subscribe first; a publish between this read and changed is retained.
+                if self.live_served_window() != observed {
+                    return;
+                }
+                if changes.changed().await.is_err() {
+                    return std::future::pending::<()>().await;
+                }
+            }
+        })
     }
 
     /// Reports the LoRA capability the endpoint DISCOVERED about itself (via the

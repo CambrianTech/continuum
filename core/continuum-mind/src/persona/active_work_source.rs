@@ -21,16 +21,11 @@ use airc_lib::{AircError, WorkCard};
 use async_trait::async_trait;
 use serde_json::json;
 
-use crate::persona::rag_budget::{
+use crate::cognition::rag_budget::{
      RagContext, RagDelivery, RagItem, RagSource, ResolutionPreference,
 };
 
-/// Source identifier — used by budget presets, telemetry, and the projection that
-/// routes this delivery into system-prompt grounding (standing framing).
-/// `pub(crate)` because the deliberation faculty's grounding floor keys on the SAME
-/// name to give a held claim's card content first call on the reservation — one
-/// constant, never a second literal that can drift.
-pub(crate) const SOURCE_ID: &str = "active-work";
+use crate::cognition::faculty_ids::ACTIVE_WORK;
 
 /// Reads THIS persona's currently-claimed work cards from airc. A supertrait of
 /// `AircCitizen` (like `AircRosterReader`): the persona's runtime implements it
@@ -119,7 +114,7 @@ impl ActiveWorkSource {
 
     fn empty() -> RagDelivery {
         RagDelivery {
-            source_id: SOURCE_ID.to_string(),
+            source_id: ACTIVE_WORK.to_string(),
             items: Vec::new(),
             tokens_used: 0,
             truncated: false,
@@ -131,7 +126,7 @@ impl ActiveWorkSource {
 #[async_trait]
 impl RagSource for ActiveWorkSource {
     fn source_id(&self) -> &'static str {
-        SOURCE_ID
+        ACTIVE_WORK
     }
 
     fn expand_command(&self) -> Option<&'static str> {
@@ -285,7 +280,7 @@ impl RagSource for ActiveWorkSource {
         );
 
         RagDelivery {
-            source_id: SOURCE_ID.to_string(),
+            source_id: ACTIVE_WORK.to_string(),
             items,
             tokens_used,
             truncated: false,
@@ -295,30 +290,10 @@ impl RagSource for ActiveWorkSource {
 
 }
 
-/// True when an [active-work] contribution's rendered content names a card this
-/// persona currently HOLDS in progress. Colocated with the `deliver` renderer above
-/// (which writes `card <id8> [{state:?}] "<title>" …` for HELD cards only — the
-/// lost-claim and rejection facts carry no state tag) so the wire format and its one
-/// reader cannot drift apart. Matching our OWN emitted format is protocol decoding,
-/// not inference about prose. Consumed by the deliberation prompt to choose the
-/// working-presence contract on undirected turns — a structural claim-state fact.
-pub(crate) fn renders_held_in_progress(active_work_content: &str) -> bool {
-    active_work_content.contains("[InProgress]")
-}
-
-/// True when the content names a card this persona HOLDS in either held state —
-/// `[Claimed]` or `[InProgress]` (the two states `card_holder` treats as held).
-/// Measured 2026-09-15 06:33Z on the M5: 11 held cards read Claimed and 3
-/// InProgress, so a predicate keyed on InProgress alone saw no work at all — every
-/// non-directed lane grant in 25 minutes was Ambient (#4058's receipt). The lane
-/// gate keys on THIS; the working-presence contract keeps its InProgress key.
-pub(crate) fn renders_held_card(active_work_content: &str) -> bool {
-    active_work_content.contains("[InProgress]") || active_work_content.contains("[Claimed]")
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::cognition::faculty_ids::{renders_held_card, renders_held_in_progress};
     use airc_work::{CardState, Priority, RepoId, WorkCardId};
     use std::sync::Mutex;
     use uuid::Uuid;

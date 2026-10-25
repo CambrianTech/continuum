@@ -2,7 +2,7 @@
 //! (typed, dep-holding).
 //!
 //! Takes the JSON-transport [`InboxMessageRequest`](crate::ipc::InboxMessageRequest),
-//! converts it to the domain [`InboxMessage`](crate::persona::InboxMessage) via the one
+//! converts it to the domain [`InboxMessage`](crate::cognition::conversation::types::InboxMessage) via the one
 //! canonical `to_inbox_message()` seam, and enqueues it on the persona's priority heap.
 //! Captures the owning module's [`CognitionState`](crate::modules::cognition::CognitionState).
 //!

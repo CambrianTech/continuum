@@ -262,7 +262,7 @@ impl ServingDaemonModule {
             // Cancellation stops new attempts, never drops an in-flight shared
             // generation and pretends that the live engine stopped decoding.
             return crate::genome::teach::synthesize_remediation_with_adapter(
-                &batch.request.tasks,
+                &crate::cognition::eval::teach_tasks(&batch.request.tasks),
                 &batch.request.teacher_model,
                 batch.request.temperature,
                 batch.request.max_fix_iters,

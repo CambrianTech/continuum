@@ -44,6 +44,19 @@ pub const TIER_NAME: &str = "inference-lanes";
 /// wrapper supplies its own.
 type ClockFn = Box<dyn Fn() -> u64 + Send + Sync>;
 
+/// Another tenant of the lanes' device budget: genes (`genome::gene_residency`) compete with
+/// minds' KV for the same device, so they report into THIS pool, never a second number beside
+/// it (Cormac, 2026-10-24). Under pressure a tenant is asked first: a gene pages out to host
+/// RAM in milliseconds (fork #72, 2-5 ms for 50 MB on the M5) while a lane's eviction costs a
+/// mind her KV and a re-prefill.
+pub trait DeviceTenant: Send + Sync {
+    /// Bytes the tenant holds on the device now.
+    fn device_bytes(&self) -> u64;
+    /// Free at least `want_bytes` of device memory if it can; returns the bytes it frees.
+    fn evict_at_least(&self, want_bytes: u64) -> u64;
+    fn snapshot(&self) -> Vec<ResourcePoolEntry>;
+}
+
 /// Wraps an `Arc<InferenceCoordinator>` as a `ResourcePool` so the
 /// PressureBroker can register + drive it.
 pub struct CoordinatorResourcePool {
@@ -58,6 +71,8 @@ pub struct CoordinatorResourcePool {
     /// while admission allows up to 64GB of lane configuration).
     /// `None` = default to `coordinator.capacity_bytes()`.
     capacity_override: Option<u64>,
+    /// The device budget's other tenants, cheapest to relieve first.
+    tenants: Vec<Arc<dyn DeviceTenant>>,
 }
 
 impl CoordinatorResourcePool {
@@ -68,7 +83,14 @@ impl CoordinatorResourcePool {
             clock: Box::new(|| continuum_base::time::EpochMs::now().millis()),
             tier_name: TIER_NAME.to_string(),
             capacity_override: None,
+            tenants: Vec::new(),
         }
+    }
+
+    /// Count `tenant` in this budget and relieve it before any lane.
+    pub fn with_tenant(mut self, tenant: Arc<dyn DeviceTenant>) -> Self {
+        self.tenants.push(tenant);
+        self
     }
 
     /// Inject a deterministic clock for tests. Production paths use
@@ -101,17 +123,30 @@ impl ResourcePool for CoordinatorResourcePool {
     }
 
     fn usage_bytes(&self) -> u64 {
-        self.coordinator.lanes_usage_bytes()
+        self.coordinator.lanes_usage_bytes() + self.tenants.iter().map(|t| t.device_bytes()).sum::<u64>()
     }
 
     fn evict_at_least(&self, want_bytes: u64) -> u64 {
+        let mut freed = 0u64;
+        for tenant in &self.tenants {
+            if freed >= want_bytes {
+                return freed;
+            }
+            freed += tenant.evict_at_least(want_bytes - freed);
+        }
+        if freed >= want_bytes {
+            return freed;
+        }
         let now_ms = (self.clock)();
-        let result = self.coordinator.evict_under_pressure(want_bytes, now_ms);
-        result.bytes_freed
+        freed + self.coordinator.evict_under_pressure(want_bytes - freed, now_ms).bytes_freed
     }
 
     fn snapshot(&self) -> Vec<ResourcePoolEntry> {
-        self.coordinator.lanes_snapshot()
+        let mut entries = self.coordinator.lanes_snapshot();
+        for tenant in &self.tenants {
+            entries.extend(tenant.snapshot());
+        }
+        entries
     }
 }
 
@@ -242,6 +277,37 @@ mod tests {
         let freed = pool.evict_at_least(1);
         assert_eq!(freed, 32 * 1024);
         assert_eq!(c.lane_count(), 1);
+    }
+
+    // what this catches: genes holding device memory beside the lanes' KV as a second budget
+    // (Cormac, 2026-10-24). A tenant's bytes count in the one pool, and pressure is relieved from
+    // the tenant (a gene pages out in ms) before any lane loses a mind's KV.
+    #[test]
+    fn a_tenant_counts_in_the_one_budget_and_is_relieved_before_any_lane() {
+        struct Genes(std::sync::atomic::AtomicU64);
+        impl DeviceTenant for Genes {
+            fn device_bytes(&self) -> u64 {
+                self.0.load(std::sync::atomic::Ordering::SeqCst)
+            }
+            fn evict_at_least(&self, want: u64) -> u64 {
+                let held = self.device_bytes();
+                let freed = held.min(want);
+                self.0.store(held - freed, std::sync::atomic::Ordering::SeqCst);
+                freed
+            }
+            fn snapshot(&self) -> Vec<ResourcePoolEntry> {
+                Vec::new()
+            }
+        }
+        let c = build_coordinator();
+        open_with_class(&c, 1, TaskKind::CodingSmall, LaneClass::Background); // 32K
+        let genes = Arc::new(Genes(std::sync::atomic::AtomicU64::new(10 * 1024)));
+        let pool = CoordinatorResourcePool::new(c.clone()).with_clock(|| 1_500_000).with_tenant(genes.clone());
+        assert_eq!(pool.usage_bytes(), 42 * 1024);
+        assert_eq!(pool.evict_at_least(4 * 1024), 4 * 1024, "the genes alone relieve it");
+        assert_eq!(c.lane_count(), 1, "no lane lost its KV");
+        assert_eq!(pool.evict_at_least(10 * 1024), 6 * 1024 + 32 * 1024, "genes first, then the lane");
+        assert_eq!(c.lane_count(), 0);
     }
 
     #[test]

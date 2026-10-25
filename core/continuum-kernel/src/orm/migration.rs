@@ -1,7 +1,6 @@
 //! Migration Engine — Streaming data transfer between ANY two StorageAdapters
 //!
-//! Works between any adapter pairing: SQLite→Postgres, Postgres→SQLite,
-//! SQLite→SQLite, future→future. Only uses the StorageAdapter trait,
+//! Works between any adapter pairing: SQLite→SQLite, future→future. Only uses the StorageAdapter trait,
 //! so any adapter works for free.
 //!
 //! Features:

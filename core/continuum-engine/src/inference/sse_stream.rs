@@ -162,6 +162,23 @@ pub(crate) struct OpenAIStreamChunk {
     /// [`OpenAIAdapter::stream_completion`].
     #[serde(default)]
     pub(crate) prompt_progress: Option<OpenAIPromptProgress>,
+    /// The server failed this request mid-stream (`data: {"error":{...}}`). It carries no
+    /// choices and no finish reason, so without this field it parsed as an empty frame and
+    /// the act ended as an empty `stop`: the M5 logged 32 such "completed" acts while its
+    /// Metal backend was wedged (2026-10-23, card 7eef3e05).
+    #[serde(default)]
+    pub(crate) error: Option<OpenAIStreamError>,
+}
+
+/// A server-side failure frame: llama.cpp's `send_error` (`code`, `message`, `type`).
+#[derive(Debug, Deserialize)]
+pub(crate) struct OpenAIStreamError {
+    #[serde(default)]
+    pub(crate) code: Option<u16>,
+    #[serde(default)]
+    pub(crate) message: String,
+    #[serde(default, rename = "type")]
+    pub(crate) kind: String,
 }
 
 /// llama.cpp's `prompt_progress` frame — the slot's ingest counter.
@@ -670,6 +687,29 @@ pub(crate) async fn consume_sse_stream(
                     Ok(p) => p,
                     Err(_) => continue, // keepalive / comment / non-JSON line
                 };
+                // A failure frame ends the act as a failure, with the server's words. It
+                // counts toward the lane's relaunch the same way a broken stream does.
+                if let Some(error) = parsed.error {
+                    if local_lane {
+                        continuum_base::probe!(
+                            class = "inference.decode.failed",
+                            kind = "server_error_frame",
+                            name = %cfg.name,
+                            code = error.code.unwrap_or(0), // unwrap_or: a frame with no code still failed; 0 = unstated
+                            error_type = %error.kind,
+                            error = %error.message,
+                            "the server sent an error frame mid-stream: the act failed, never an empty completion"
+                        );
+                        crate::inference::llama_server::note_real_decode_failure();
+                    }
+                    return Err(format!(
+                        "{}: server error {}{}: {}",
+                        cfg.name,
+                        error.code.map(|code| code.to_string()).unwrap_or_default(), // unwrap_or_default: no code renders as nothing
+                        if error.kind.is_empty() { String::new() } else { format!(" ({})", error.kind) },
+                        error.message
+                    ));
+                }
                 if resp_model.is_none() && !parsed.model.is_empty() {
                     resp_model = Some(parsed.model.clone());
                 }

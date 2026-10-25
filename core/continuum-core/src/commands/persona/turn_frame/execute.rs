@@ -188,7 +188,7 @@ crate::action_command! {
         let items = inbox_frame
             .messages
             .iter()
-            .map(|m| crate::persona::rag_budget::RagItem {
+            .map(|m| crate::cognition::rag_budget::RagItem {
                 content: m.content.clone(),
                 tokens: 0,
                 metadata: serde_json::json!({
@@ -197,12 +197,12 @@ crate::action_command! {
                 }),
             })
             .collect::<Vec<_>>();
-        let delivery = crate::persona::rag_budget::RagDelivery {
+        let delivery = crate::cognition::rag_budget::RagDelivery {
             source_id: "airc".to_string(),
             items,
             tokens_used: 0,
             truncated: false,
-            resolution_used: crate::persona::rag_budget::ResolutionPreference::Raw,
+            resolution_used: crate::cognition::rag_budget::ResolutionPreference::Raw,
         };
         // own_peer attributes the persona's OWN past posts (is_self → assistant role); a
         // command-seeded turn carries only inbound peer messages, so it's inert here but
@@ -217,7 +217,7 @@ crate::action_command! {
             .unwrap_or_default();
         let burst = crate::cognition::workspace::Burst::from_turns(
             room,
-            crate::persona::service_loop::build_workspace_turns(
+            crate::cognition::conversation::workspace_turns::build_workspace_turns(
                 std::slice::from_ref(&delivery),
                 &own_peer,
                 &agent_name,
@@ -297,6 +297,13 @@ fn settle_step_to_json(
         SettleStep::ActUnfulfilled { calls, intent } => serde_json::json!({
             "outcome": "actUnfulfilled", "intent": intent, "calls": calls.len(),
         }),
+        SettleStep::CapacityRefused {
+            error,
+            replay_input,
+        } => serde_json::json!({
+            "outcome": "capacityRefused", "requiredTokens": error.required_tokens,
+            "budgetTokens": error.budget_tokens, "replayInput": replay_input,
+        }),
         SettleStep::DeferredBeforeDispatch => serde_json::json!({
             "outcome": "deferredBeforeDispatch",
         }),
@@ -327,7 +334,8 @@ mod tests {
     use super::*;
     use crate::cognition::act_observe::SettleStep;
     use crate::cognition::workspace::TurnMetrics;
-    use crate::persona::{InboxMessage, Modality, PersonaCognition, SenderType};
+    use crate::persona::PersonaCognition;
+    use crate::cognition::conversation::types::{InboxMessage, Modality, SenderType};
     use crate::rag::RagEngine;
     use crate::sdk_codegen::{AccessLevel, ActionCommand, Ctx};
 

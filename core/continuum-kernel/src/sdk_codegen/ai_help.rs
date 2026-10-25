@@ -7,6 +7,12 @@ use std::collections::HashSet;
 
 use serde_json::{json, Value};
 
+/// How many commands a lookup names at once: the nearest names to a miss, and the matches a
+/// `commands/help` query returns. Wide enough that the route survives the eight-way tie
+/// `list_cards` produced (2026-09-05, see `did_you_mean`), narrow enough to read at a glance.
+// context-budget-exempt: a count of command names shown, not a context or prompt size.
+pub const SUGGESTION_WINDOW: usize = 6;
+
 /// Closest authorized command names to a miss — same category prefix (before `/`),
 /// or sharing a path segment. Cheap, dependency-free, and enough to unstick an agent
 /// that guessed a plausible-but-wrong name (e.g. `commands/describe` → `commands/help`).
@@ -77,7 +83,7 @@ pub fn did_you_mean<'a>(query: &str, authorized: &[&'a str]) -> Vec<&'a str> {
             .then(depth(a.1).cmp(&depth(b.1)))
             .then(a.1.cmp(b.1))
     });
-    scored.into_iter().take(6).map(|(_, n)| n).collect()
+    scored.into_iter().take(SUGGESTION_WINDOW).map(|(_, n)| n).collect()
 }
 
 /// Path segments in a command name — `work/list` is 2, `ai/providers/list` is 3.

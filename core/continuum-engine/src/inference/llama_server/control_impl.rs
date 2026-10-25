@@ -385,6 +385,10 @@ impl LlamaServerControl for LlamaServerProcess {
         self.serve_if_current(target, &|| true).await
     }
 
+    fn last_launch_generation(&self) -> Option<crate::inference::slots::EngineGeneration> {
+        self.last_started.lock().clone()
+    }
+
     async fn serve_if_current(
         &self,
         target: &ServingTarget,

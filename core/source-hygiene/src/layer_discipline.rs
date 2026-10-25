@@ -22,7 +22,7 @@ use super::{SourceFile, SourceRule, Violation};
 
 /// Ring 0, the kernel: the machine. Nothing about models, minds, rooms or commands.
 const KERNEL: &[&str] = &[
-    "time", "identity", "fs_portable", "paths", "concurrency", "paging", "logging", "orm",
+    "time", "identity", "paths", "concurrency", "paging", "logging", "orm",
     "system_resources", "runtime", "governor", "routing", "sdk_codegen", "resources", "gpu",
 ];
 /// Ring 1, the engine: serving. Knows the kernel.
@@ -60,7 +60,7 @@ fn module_of(file: &SourceFile) -> Option<&str> {
 /// a group `{cognition::x, modules::{a, b}, time}` names each head at depth one, across
 /// lines (rustfmt wraps long groups). A head followed by neither `::` nor a group end is a
 /// local item, not a module, and is skipped by `ring_of` returning `None`.
-fn named_modules(rest: &str) -> Vec<&str> {
+pub(crate) fn named_modules(rest: &str) -> Vec<&str> {
     let ident_end = |s: &str| s.find(|c: char| !(c.is_ascii_lowercase() || c == '_')).unwrap_or(s.len());
     let Some(group) = rest.strip_prefix('{') else {
         let end = ident_end(rest);

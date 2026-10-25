@@ -251,6 +251,23 @@ impl std::fmt::Debug for AircLiveTransport {
     }
 }
 
+/// PURE: the seat's reply as the requester acts on it. A typed overload refusal (card
+/// 03660a77) is [`RemoteInferenceError::SeatOverloaded`], so her next act goes home instead
+/// of asking the full seat again; every other error stays the peer's failure, by its text.
+pub(super) fn reply_result(
+    response: AircCommandResponse,
+) -> Result<serde_json::Value, RemoteInferenceError> {
+    let overloaded =
+        response.refusal() == Some(continuum_airc_protocol::GenerateRefusal::Overloaded);
+    response.into_result().map_err(|message| {
+        if overloaded {
+            RemoteInferenceError::SeatOverloaded { message }
+        } else {
+            RemoteInferenceError::PeerAdapterFailed { message }
+        }
+    })
+}
+
 /// A `CommandDeadline` this far before the real deadline is not a deadline:
 /// it is airc reporting that the per-request reply stream closed. Two seconds
 /// of slack covers clock skew between the pending's absolute deadline and ours.
@@ -466,7 +483,32 @@ impl AircInferenceTransport for AircLiveTransport {
         // place. `AircTransport::build_headers` covers path + kind +
         // body_hint identically; env is None on our envelopes so the
         // env-header branch is a no-op.
-        let headers = AircTransport::build_headers(&envelope);
+        let mut headers = AircTransport::build_headers(&envelope);
+        // The requester's own id for this generation, on the wire BEFORE publication: the
+        // seat keys the served work by it, so a cancel can name it even if this turn is
+        // dropped while airc is still publishing (card 83f774fb).
+        headers.insert(
+            continuum_airc_protocol::HEADER_GENERATE_ID.to_string(),
+            correlation_id.to_string(),
+        );
+        // ...and how long it is wanted: past this the seat refuses it, so a frame delayed
+        // in transit never starts work nobody waits for, and the cancel carries the same
+        // value so the seat remembers an early cancel exactly that long.
+        let valid_until_ms = continuum_base::time::EpochMs::now()
+            .millis()
+            .saturating_add(deadline.as_millis() as u64);
+        headers.insert(
+            continuum_airc_protocol::HEADER_GENERATE_VALID_UNTIL_MS.to_string(),
+            valid_until_ms.to_string(),
+        );
+        let seat_accepts_cancel = super::abandon::seat_accepts_cancel(
+            super::seat_deadline::heard_seat_offer(
+                target.0,
+                None,
+                continuum_base::time::EpochMs::now().millis(),
+            )
+            .as_ref(),
+        );
 
         // Subscribe BEFORE the request leaves, or the first chunks race the
         // subscription and are lost. No filter: the daemon inverted a header filter
@@ -502,20 +544,26 @@ impl AircInferenceTransport for AircLiveTransport {
         // during a long generation must not strand its durable answer.
         let dispatch = async {
             let room = self.airc.current_room().await?;
-            let pending = self
-                .airc
-                .request_in(
-                    &room,
-                    MentionTarget::Peer(target),
-                    headers,
-                    body,
-                    deadline,
-                )
-                .await?;
-            Ok::<_, airc_lib::AircError>((room, pending))
+            // Armed before publication: every path that stops waiting without a reply,
+            // including this future being dropped mid-publication, tells the seat to stop.
+            let abandon = super::abandon::AbandonGuard::new(
+                Arc::clone(&self.airc),
+                room.clone(),
+                target,
+                correlation_id,
+                valid_until_ms,
+                seat_accepts_cancel,
+            );
+            let (pending, abandon) = super::abandon::publish_armed(
+                abandon,
+                self.airc
+                    .request_in(&room, MentionTarget::Peer(target), headers, body, deadline),
+            )
+            .await?;
+            Ok::<_, airc_lib::AircError>((room, pending, abandon))
         }
         .await;
-        let (room, pending) = match dispatch {
+        let (room, pending, abandon) = match dispatch {
             Ok(p) => p,
             Err(airc_lib::AircError::NoCurrentRoom)
             | Err(airc_lib::AircError::NotSubscribed(_))
@@ -718,6 +766,8 @@ impl AircInferenceTransport for AircLiveTransport {
                 });
             }
         };
+        // The seat answered: its work is done, there is nothing left to cancel.
+        abandon.disarm();
 
         let responding_peer = reply.peer_id.0.to_string();
         let reply_body = reply.body.ok_or_else(|| RemoteInferenceError::Transport {
@@ -737,9 +787,7 @@ impl AircInferenceTransport for AircLiveTransport {
                 message: format!("decode AircCommandResponse: {e}"),
             })?;
 
-        let result_value = response
-            .into_result()
-            .map_err(|e| RemoteInferenceError::PeerAdapterFailed { message: e })?;
+        let result_value = reply_result(response)?;
 
         let mut text_response: crate::ai::types::TextGenerationResponse =
             serde_json::from_value(result_value).map_err(|e| RemoteInferenceError::Transport {

@@ -57,8 +57,10 @@
 //!   the heuristic; real-model work routes over airc to whichever
 //!   peer has capacity.
 
+mod abandon;
 pub mod adapter;
 pub mod interceptor;
+mod overload;
 pub mod peer_breaker;
 pub mod protocol;
 mod seat_deadline;
@@ -69,3 +71,6 @@ pub use protocol::{RemoteInferenceError, RemoteInferenceRequest, RemoteInference
 pub use transport::{
     AircInferenceTransport, AircLiveTransport, LocalAdapterTransport, StubInferenceTransport,
 };
+
+#[cfg(test)]
+mod capacity_tests;

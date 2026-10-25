@@ -1,7 +1,8 @@
 #![cfg(test)]
     use super::*;
+    use airc_lib::AircError;
     use crate::cognition::channel_element::ChannelElementCache;
-    use crate::cognition::embedding::EmbeddingProvider;
+    use crate::ai::embedding::EmbeddingProvider;
     use crate::runtime::ready_buffer::DashMapReadyBuffer;
     use airc_core::{
         Body, ClientId, EventId, Headers, MentionTarget, PeerId, RoomId, TranscriptKind,

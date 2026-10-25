@@ -129,9 +129,9 @@ use start::*;
 #[path = "continuum/stop.rs"]
 mod stop;
 use stop::*;
-#[path = "continuum/warm_build.rs"]
-mod warm_build;
-use warm_build::*;
+#[path = "continuum/dark_build.rs"]
+mod dark_build;
+use dark_build::*;
 #[cfg(test)]
 #[path = "continuum/tests.rs"]
 mod tests;

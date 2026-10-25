@@ -41,6 +41,7 @@ use super::*;
             submission_ids: batch.submission_ids.clone(),
             phase: DispatchPhase::Prepared,
             is_active: true,
+            attempt: None,
         };
         let dispatch_id = entity_id(&intent.base).unwrap();
         let store = old.state.durable.require().unwrap();
@@ -189,6 +190,7 @@ use super::*;
             submission_ids: batch.submission_ids,
             phase: DispatchPhase::Dispatching,
             is_active: true,
+            attempt: None,
         };
         let id = entity_id(&intent.base).unwrap();
         old.state
@@ -226,6 +228,71 @@ use super::*;
             DispatchPhase::RecoveryRequired { .. }
         ));
         assert_eq!(active.batch.examples.len(), 1);
+        drop(active);
+        // card 55d4b9e3: an intent written before attempts existed is surfaced as unknown.
+        let row = next
+            .state
+            .pending_views()
+            .into_iter()
+            .find(|row| row.dispatch_id == Some(id))
+            .expect("the stranded dispatch is listed");
+        assert!(row.unknown_legacy, "no attempt names what it may have started");
+        assert_eq!(row.dispatch_attempt, None);
+    }
+
+    // what this catches (card 55d4b9e3, IntelMac 10-24: eight buckets waited forever): an
+    // interrupted dispatch that names its attempt is no longer stranded. Its attempt never
+    // reached the ledger, so reconciliation closes it and proves "not created"; the intent
+    // becomes retryable instead of RecoveryRequired, and the closed attempt stays closed.
+    #[tokio::test]
+    pub(super) async fn an_interrupted_dispatch_with_an_unadmitted_attempt_becomes_retryable() {
+        let (adapter, _dir) = crate::orm::store::fresh_adapter().await;
+        let (old, executor) = build_runtime(adapter.clone(), false).await;
+        let persona = Uuid::new_v4();
+        let key = BucketKey {
+            persona_id: persona,
+            trait_kind: "code".into(),
+            base_model: "synthetic".into(),
+        };
+        let receipt = executor
+            .execute_json(
+                "genome/training-trigger/submit",
+                submit_params(persona, "code", vec![ex("p", "c")], Some(100)),
+            )
+            .await
+            .unwrap();
+        assert_eq!(receipt["success"], true);
+        let batch = old.state.buckets.remove(&key).unwrap().1;
+        let attempt = Uuid::new_v4();
+        let intent = DispatchIntent {
+            base: BaseEntity::for_new_record(),
+            persona_id: key.persona_id,
+            trait_kind: key.trait_kind.clone(),
+            base_model: key.base_model.clone(),
+            submission_ids: batch.submission_ids,
+            phase: DispatchPhase::Dispatching,
+            is_active: true,
+            attempt: Some(attempt),
+        };
+        let id = entity_id(&intent.base).unwrap();
+        let store = old.state.durable.require().unwrap();
+        store.dispatches.save(id, &intent).await.unwrap();
+        store.assign(&intent).await.unwrap();
+        let (next, executor) = build_runtime(adapter, true).await;
+        next.tick().await.unwrap();
+        let active = next.state.active_dispatches.get(&key).unwrap();
+        assert_eq!(entity_id(&active.intent.base).unwrap(), id);
+        // Reconciled, never stranded: retryable with the proof, or (if the same tick already
+        // retried it) dispatched under a NEW attempt. Never RecoveryRequired, never the old attempt.
+        let retried = matches!(&active.intent.phase, DispatchPhase::Retryable { error } if error.contains("not created"))
+            || (matches!(active.intent.phase, DispatchPhase::Dispatched { .. }) && active.intent.attempt != Some(attempt));
+        assert!(retried, "reconciled, not stranded: {:?} attempt {:?}", active.intent.phase, active.intent.attempt);
+        drop(active);
+        let closed = executor
+            .execute_json("genome/job-attempt-reconcile", serde_json::json!({ "attempt": attempt }))
+            .await
+            .unwrap();
+        assert_eq!(closed["outcome"], "notCreated", "the attempt stays closed");
     }
 
     // what this catches (the 5090, 2026-10-10: thirteen cargo-test fixture rows from
@@ -295,6 +362,7 @@ use super::*;
             submission_ids: batch.submission_ids,
             phase: DispatchPhase::Dispatching,
             is_active: true,
+            attempt: None,
         };
         let id = entity_id(&intent.base).unwrap();
         let store = old.state.durable.require().unwrap();

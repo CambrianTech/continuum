@@ -100,7 +100,7 @@ pub struct WorkSimilarResult {
 
 pub struct WorkSimilar {
     pub registry: PersonaAircRuntimeRegistry,
-    pub embedder: Arc<dyn crate::cognition::embedding::EmbeddingProvider>,
+    pub embedder: Arc<dyn crate::ai::embedding::EmbeddingProvider>,
 }
 
 
@@ -246,7 +246,7 @@ pub struct WorkDuplicatesResult {
 
 pub struct WorkDuplicates {
     pub registry: PersonaAircRuntimeRegistry,
-    pub embedder: Arc<dyn crate::cognition::embedding::EmbeddingProvider>,
+    pub embedder: Arc<dyn crate::ai::embedding::EmbeddingProvider>,
 }
 
 #[async_trait]
@@ -404,7 +404,7 @@ impl WorkGet {
             .map(submission::WorkReviewResult::from).collect();
         // the holder's card only: a review card's next step is its verdict, not a submission
         if card.reviews.is_none() {
-            let latest = crate::persona::work_board::submissions::latest_submission(card).map(|s| s.submission_id);
+            let latest = crate::cognition::card_holder::latest_submission(card).map(|s| s.submission_id);
             let outcomes: Vec<_> = latest
                 .map(|id| board.submission_reviews_for(id).filter(|r| r.card_id == card.card_id).map(|r| r.outcome).collect())
                 .unwrap_or_default(); // unwrap_or_default: no submission, no outcomes
@@ -420,11 +420,11 @@ impl WorkGet {
         now_ms: u64,
         reader: Uuid,
     ) -> WorkGetResult {
-        let holder = crate::persona::card_holder::holder(
+        let holder = crate::cognition::card_holder::holder(
             card,
             reader,
             now_ms,
-            &crate::persona::card_holder::NoNames,
+            &crate::cognition::card_holder::NoNames,
         );
         WorkGetResult {
             reviews: Vec::new(),
@@ -497,7 +497,7 @@ pub struct WorkModule {
     /// The ONE process-wide embedding space, handed in at construction — `work/similar`
     /// and `work/duplicates` score card text in it. Never built here: a second embedder
     /// is a second space, and vectors from two spaces compare as noise.
-    pub(super) embedder: Arc<dyn crate::cognition::embedding::EmbeddingProvider>,
+    pub(super) embedder: Arc<dyn crate::ai::embedding::EmbeddingProvider>,
     /// Late-bound substrate executor (the ChatModule pattern): benchmark/dispatch
     /// composes OTHER commands — `data/list` to load a recipe row, `serving/pin`
     /// to re-home the lane — through the universal primitive instead of
@@ -510,7 +510,7 @@ pub struct WorkModule {
 impl WorkModule {
     pub fn new(
         registry: PersonaAircRuntimeRegistry,
-        embedder: Arc<dyn crate::cognition::embedding::EmbeddingProvider>,
+        embedder: Arc<dyn crate::ai::embedding::EmbeddingProvider>,
     ) -> Self {
         Self {
             registry,

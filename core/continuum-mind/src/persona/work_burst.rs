@@ -28,7 +28,7 @@ pub(crate) fn acts_since_last_write_since(
     mine.sort_by_key(|r| r.occurred_at_ms);
     let mut n = 0usize;
     for r in mine {
-        for act in r.text.split(crate::persona::presence_glyph::ACT).skip(1) {
+        for act in r.text.split(crate::cognition::presence_glyph::ACT).skip(1) {
             let verb = act.split_whitespace().next().unwrap_or(""); // unwrap_or: a bare glyph names no verb
                         // Every write-capable hand resets the count (review on #3790: `code/write`
             // is what the one card completion tonight used — a gate that reads a
@@ -81,7 +81,7 @@ const PROGRESS_RAN_KEEP: usize = 3;
 /// `⚙ verb object ✓` segments joined by the act glyph; the object is whatever the
 /// writer put there (a path, a command, a card id), clipped for the block.
 pub(crate) fn card_progress(rows: &[crate::persona::durable_history::RoomRow], me: Uuid) -> CardProgress {
-    use crate::persona::presence_glyph::{ACT, FAIL, OK};
+    use crate::cognition::presence_glyph::{ACT, FAIL, OK};
     let mut mine: Vec<&crate::persona::durable_history::RoomRow> =
         rows.iter().filter(|r| r.sender == me && r.text.contains(ACT)).collect();
     mine.sort_by_key(|r| r.occurred_at_ms);
@@ -265,7 +265,7 @@ pub(crate) fn own_recent_thoughts_about(
 ) -> Vec<String> {
     let mut mine: Vec<&crate::persona::durable_history::RoomRow> = rows
         .iter()
-        .filter(|r| r.sender == me && r.text.starts_with(crate::persona::presence_glyph::THOUGHT))
+        .filter(|r| r.sender == me && r.text.starts_with(crate::cognition::presence_glyph::THOUGHT))
         .collect();
     if !about.is_empty() {
         let scoped: Vec<&crate::persona::durable_history::RoomRow> = mine
@@ -306,108 +306,6 @@ pub(crate) fn own_recent_thoughts_about(
             }
         })
         .collect()
-}
-
-pub(crate) fn work_board_anchor(deliveries: &[crate::persona::rag_budget::RagDelivery]) -> String {
-    // Did the board source SPEAK this turn? "The board is empty" and "I never read the
-    // board" are different facts about the world, and only one of them is knowable from an
-    // absent delivery. Glass-boxed 2026-08-06 from Benchy's live capture: `room-kanban`
-    // delivered NOTHING (grounding is last in the budget queue), the anchor rendered that
-    // as "No open cards are visible", and she then said exactly that in-room for six turns
-    // — while `work/list()` in her OWN working memory listed a full board in the same
-    // prompt. She trusted the authoritative-sounding anchor over her own receipt.
-    //
-    // Never assert a fact about the world on behalf of a source that did not speak.
-    // [[grounding-is-last-in-the-budget-queue-so-she-goes-blind-one-turn-in-ten]]
-    let board_spoke = deliveries.iter().any(|d| d.source_id == "room-kanban");
-    if !board_spoke {
-        // Say nothing rather than something false. A silent anchor leaves her own
-        // `work/list` receipt as the only board claim in the prompt — which is the truthful
-        // one. An anchor that invents emptiness actively overrides it.
-        return String::new();
-    }
-    let cards: Vec<&crate::persona::rag_budget::RagItem> = deliveries
-        .iter()
-        .filter(|d| d.source_id == "room-kanban")
-        .flat_map(|d| d.items.iter())
-        .filter(|i| i.metadata.get("card_id").is_some())
-        .collect();
-    /// The card's state as the TYPE, never as a string to be spelled correctly.
-    ///
-    /// `None` for an item whose metadata carries no parseable state — which is a real
-    /// possibility (a future variant this build doesn't know) and must read as "unknown",
-    /// never as a silent mismatch against a hardcoded spelling.
-    fn state(i: &crate::persona::rag_budget::RagItem) -> Option<airc_work::CardState> {
-        i.metadata
-            .get("state")
-            .and_then(|s| serde_json::from_value(s.clone()).ok())
-    }
-    /// Is this card's hold still good? Read as the structural fact the board source
-    /// carries, never re-derived here — `claim_is_live` is the ONE definition and
-    /// `room_board_source` already applied it. Absent (an older projection) reads as
-    /// LIVE, so a missing field can never invent availability that isn't there.
-    fn claim_live(i: &crate::persona::rag_budget::RagItem) -> bool {
-        i.metadata
-            .get("claim_live")
-            .and_then(|v| v.as_bool())
-            .unwrap_or(true)  // unwrap_or: no card named = keep every thought
-    }
-    // AVAILABLE work is not just `Open` — it is anything nobody currently holds. A card
-    // stuck in `Claimed` with a LAPSED lease is free to take, and treating it as taken is
-    // what emptied this anchor while 19 takeable cards sat on the board (2026-08-06: every
-    // resident read "nothing available" off their own expired claims and passed, for hours).
-    // `state == Open` and "unheld" are different questions; ask the second one.
-    use airc_work::CardState;
-    let unclaimed: Vec<&str> = cards
-        .iter()
-        .filter(|i| {
-            let unowned_open = state(i) == Some(CardState::Open)
-                && i.metadata.get("owner").is_none_or(|o| o.is_null());
-            // A lapsed hold on ANY non-terminal card is available work, whoever held it.
-            let lapsed = !claim_live(i)
-                && matches!(
-                    state(i),
-                    Some(CardState::Claimed | CardState::InProgress | CardState::Review)
-                );
-            unowned_open || lapsed
-        })
-        .map(|i| i.content.trim())
-        .take(2)
-        .collect();
-    // Exhaustive over the enum, so ADDING a variant to `CardState` forces a decision here
-    // instead of silently falling through as "not in flight". That is the whole point of
-    // matching the type rather than a string.
-    let in_flight: Vec<&str> = cards
-        .iter()
-        // Genuinely in flight = claimed AND the hold is still live. Without the liveness
-        // term a lapsed card counts as both available and in-flight, and the anchor would
-        // tell her the same card is free and busy in one breath.
-        .filter(|i| claim_live(i))
-        .filter(|i| match state(i) {
-            Some(CardState::Claimed | CardState::InProgress | CardState::Review) => true,
-            Some(CardState::Open | CardState::Blocked | CardState::Merged | CardState::Closed) => {
-                false
-            }
-            None => false,
-        })
-        .map(|i| i.content.trim())
-        .take(1)
-        .collect();
-    if unclaimed.is_empty() && in_flight.is_empty() {
-        // Honest empty: no cards visible (empty board, unreadable board, or a
-        // context whose board source abstained). Never invent work.
-        "[anchor] No open cards are visible on this room's board right now — \
-         proposing one (work/create) would add something new; restating prior \
-         messages adds nothing."
-            .to_string()
-    } else {
-        let facts: Vec<&str> = unclaimed.into_iter().chain(in_flight).collect();
-        format!(
-            "[anchor] Open work exists on this room's board right now: {}. \
-             Restating prior messages adds nothing; acting on a card would.",
-            facts.join("; ")
-        )
-    }
 }
 
 /// When each citizen last crossed a HOLD BOUNDARY (ms): a claim or a release, by her own

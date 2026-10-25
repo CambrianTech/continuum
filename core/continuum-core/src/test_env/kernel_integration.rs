@@ -34,13 +34,6 @@ mod gpu_base {
                 "gpu/monitor.rs",
                 "MockMonitor: a scripted test double with no device behind it",
             ),
-            (
-                "cognition/host_capability_probe.rs",
-                "a #[cfg(test)] fake device inside that module's own tests — no hardware, \
-                 no sampling loop. Found BY this guard on its first run, which is the point. \
-                 It is a second test double next to MockMonitor and should collapse into it \
-                 (CLAUDE.md: one fixture per concern) — sanctioned as a test, not as a backend.",
-            ),
         ];
 
         // Split so this file's own needle is not an impl site (the guard reads this file too).
@@ -82,7 +75,7 @@ mod memory_holders {
             .map(|h| h.id)
             .collect();
         assert!(declared.contains(&crate::modules::serving_consumer::SERVING_CONSUMER_ID));
-        assert!(declared.contains(&crate::modules::perception_consumer::PERCEPTION_CONSUMER_ID));
+        assert!(declared.contains(&continuum_live::consumers::perception_consumer::PERCEPTION_CONSUMER_ID));
         assert!(declared.contains(&crate::cognition::measurement_staging::CONSUMER_ID));
         // `embed` has a constant but is deliberately NOT declared (#225) — if someone
         // registers it as a consumer, this assertion is the reminder to move its row.

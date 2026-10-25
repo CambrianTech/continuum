@@ -38,7 +38,7 @@
         // "do NOT nest persona homes inside another scope's airc home"
         // rule at compile-ish time.
         let temp = TempDir::new().expect("tempdir");
-        let expected_home = crate::context::citizen_home_path(
+        let expected_home = crate::identity::citizen_path::citizen_home_path(
             temp.path(),
             crate::identity::IdentityKind::Persona,
             None,

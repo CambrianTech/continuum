@@ -55,6 +55,11 @@ Phases, in order; each owner works its area in parallel:
 - **3 Locks.** Clippy in CI on split crates, `deny(unwrap_used, expect_used, panic)` on every clean one;
   CI checks only the affected crates.
 - **4 Then pace work**, one change at a time inside its crate, validator first, then the live read.
+- **5 Patterns bubble up** (Joel, 10-24): once the crates are cut, every agent takes a crate and sweeps it for
+  repeated shapes (stores, slots, retries, OS calls, probes); a pattern found in two crates moves DOWN to one
+  owner below both: an existing floor crate (`continuum-base`, `continuum-host`, `continuum-pack`) when it fits
+  that crate's one job, otherwise a NEW shared crate named for the pattern (never a utils drawer), with adapters
+  for the diff, and the copies are deleted. Each sweep reports the pattern, its copies, and the lines removed.
 
 Measured daily: lines past 1,000, crate count, check time per crate, unwrap count, residents' acts/hour.
 
@@ -121,7 +126,7 @@ wait, a wait means start your next line; update this table when a line lands or 
 | 1 | The build loop: split the monolith BY THE PLACEMENT MAP (MODULE-ARCHITECTURE.md §9.2: each major module runs on any node); build with serving down or on an available non-serving executor/CI, use every grid machine | Fable (cuts), Codex (crate graph, parallel cut order) | #5194 continuum-base + gates cover split crates (CI); #5195 deletes 13,275 dead lines (CI); next: parallel cuts by several agents, own worktrees and target dirs | edit-to-checked < 2 min |
 | 2 | A mind's context as an epoch (reuse 48% -> 90%+) | Fable + Codex | continuum-context slices 1-2 pushed (replay: 92-95% reuse, ~3x less fresh); next: wire the faculty's render path into Epoch | live reuse >= 80% |
 | 3 | `EngineConfig` and KV capacity (#5188), incl. unrecorded backend -> f16/no-FA/half budget (Cormac's item 10) | Fable | resolve-then-adopt owner in inference/planning | no queue wait; warm-ahead runs |
-| 3b | One live engine, minds' memory moved by us (Joel, 10-23: "It's supposed to be quite dynamic and adapt to concerns, not be killing and starting servers. You can't optimize if you're killing and restarting."). Serving drives libllama in-process (`continuum-engine` `llamacpp_scheduler`): weights load once; context and slots resize live; each mind's KV pages GPU <-> RAM <-> disk per sequence (`llama_state_seq_*`); shared prefixes are copied (`seq_cp`), never re-prefilled; one memory budget. llama-server becomes the OpenAI-compatible adapter for external drivers (line 16); relaunch only a dead engine. Launch flags carry startup facts only | Fable (engine, paging), Codex (admission, relaunch call sites) | in-process vs llama-server side-by-side on the M5 (4 minds, growing contexts: act time, wait, reuse); port MTP and decode time-sharing before any switch | median act at 4 residents beats llama-server, reuse >= 80%, no relaunch while serving, footprint flat over 100 resize cycles |
+| 3b | One live engine, minds' memory moved by us (Joel, 10-23: "It's supposed to be quite dynamic and adapt to concerns, not be killing and starting servers. You can't optimize if you're killing and restarting."). Serving drives libllama in-process (`continuum-engine` `llamacpp_scheduler`): weights load once; context and slots resize live; each mind's KV pages GPU <-> RAM <-> disk per sequence (`llama_state_seq_*`); shared prefixes are copied (`seq_cp`), never re-prefilled; one memory budget. llama-server becomes the OpenAI-compatible adapter for external drivers (line 16); relaunch only a dead engine. Launch flags carry startup facts only | Fable (engine, paging), Codex (admission, relaunch call sites) | design: `docs/architecture/SERVING-ENGINE.md` (2026-10-24): add page/reconfigure/priority verbs to the fork's server (S1-S3, proven over today's endpoint), then a separate `continuum-serving` process hosts it with Rust policy (S5); slices S0-S7 each land with a seconds-scale validator | median act at 4 residents beats llama-server, reuse >= 80%, no relaunch while serving, footprint flat over 100 resize cycles |
 | 4 | Engine flags | Fable | DONE e678bb30c: prefill 105 -> 175-206 tok/s; decode drop under builds is line 1's | receipts on 9b9f3b59 |
 | 5 | Core CPU: cosine owner (#5189), revisioned vector corpus + BLAS + cascade, rayon spin | Codex | #5189: drop the two re-exports, then the corpus | idle-core sample near zero |
 | 6 | Every fast-path miss loud | Cormac | #5190: count resident_prefix_lost; #5191: probe wording; then the rest of the 24 | each miss class has a fixture |
@@ -184,6 +189,12 @@ fastest persona on our hardware (Joel). Brainstorm, and add your ideas, in
   of a curve. The error bound is stated and checked by a validator, never assumed.
 - **Measure the live node before and after**: tool calls/h and seconds per act. Worse = fix it the same hour or back it out. One change per deploy.
 - **One owner per fact, no logic twice**: look up, never re-derive (model identity, rates, budgets).
+- **Design the seam before the code; adapters and subclasses are only the diff** (Joel, 10-24: "stop
+  just dumping code and think of how can I improve the modularity and adaption"). Before writing, name
+  the capability and its owner, and search for the copies that already exist. The logic lives once;
+  each OS, backend or store adapter holds only the lines that differ (`continuum-host`: `mod.rs` the
+  logic, `unix.rs`/`windows.rs` the calls). Never a `cfg(windows)` inside logic (`os_branches_in_logic`
+  ratchet), never a utils drawer. A reviewer asks what this change made reusable, not only whether it works.
 - **No constant where a measurement exists. No unwrap. Typed ids, never strings.**
 - **No claim without a receipt**: the command or file:line, the build SHA, the time.
 - **Mechanical work goes to a cheap model or a script**; the top model is for diagnosis, design, review.
@@ -1444,64 +1455,14 @@ commands/example/
 > metrics) — one truth in Rust, N renderers, ts-rs exporting the type to
 > `protocol/typescript/positron/`. Not a per-client mixin.
 >
-> The mixin chain below remains accurate **only** for exposing a Rust command to the Node
-> web desktop's `./jtag` CLI. It is a presentation-tier convenience, never where behaviour
-> belongs.
+> The Node mixin chain and the `CommandGenerator` that scaffolded it are gone (the
+> generator is quarantined under `legacy/quarantine/tools-generator`; no
+> `workers/continuum-core/bindings` exists). Do not follow old `npx tsx generator/...` steps.
 
-When a command is backed by Rust (via continuum-core IPC), it requires **THREE layers**:
-
-```
-1. CommandSpec JSON   →  generator/specs/gpu-stats.json
-2. CommandGenerator   →  npx tsx generator/CommandGenerator.ts generator/specs/gpu-stats.json
-3. IPC Mixin          →  workers/continuum-core/bindings/modules/gpu.ts
-```
-
-**Step-by-step workflow:**
-
-```bash
-# 1. Create the Rust module (ServiceModule trait) with IPC commands
-#    e.g., modules/gpu.rs handles "gpu/stats", "gpu/pressure"
-
-# 2. Create a CommandSpec JSON
-cat > generator/specs/gpu-stats.json << 'EOF'
-{
-  "name": "gpu/stats",
-  "description": "Query GPU memory stats",
-  "params": [...],
-  "results": [...],
-  "examples": [...],
-  "accessLevel": "ai-safe"
-}
-EOF
-
-# 3. Run the generator (creates shared/Types, server/Command, browser/Command, README, tests)
-npx tsx generator/CommandGenerator.ts generator/specs/gpu-stats.json
-
-# 4. Create IPC mixin (snake_case Rust → camelCase TypeScript)
-#    workers/continuum-core/bindings/modules/gpu.ts
-#    Pattern: export function GpuMixin<T>(Base: T) { return class extends Base { ... } }
-
-# 5. Add mixin to RustCoreIPC.ts composition chain
-#    import { GpuMixin } from './modules/gpu';
-#    const ComposedClient = ... GpuMixin(RuntimeMixin( ... )) ...
-
-# 6. Implement server command to use mixin
-#    const stats = await this.rustClient.gpuStats();
-
-# 7. Build and verify
-continuum reboot
-continuum gpu/stats
-```
-
-**The three-layer architecture:**
-
-| Layer | File | Purpose |
-|-------|------|---------|
-| Rust IPC | `modules/gpu.rs` | ServiceModule, handles `gpu/stats` |
-| TS Mixin | `bindings/modules/gpu.ts` | snake_case→camelCase, typed wrapper |
-| TS Command | `commands/gpu/stats/` | Generated scaffold, uses mixin |
-
-**Without the mixin + command layer**, Rust IPC commands exist but are invisible to `./jtag` and the command system. The generator creates discoverability (README, help text, CLI params).
+When a command is backed by Rust, it lives in the core: a `ServiceModule` in
+`core/continuum-core/src/modules/` handles `gpu/stats` and is discovered through
+`continuum commands/list`. Clients (web, TUI, mobile) render it through a positron
+`ViewState` + source; wire types come from ts-rs. Nothing else needs registering.
 
 ---
 

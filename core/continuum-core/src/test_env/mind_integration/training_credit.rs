@@ -18,6 +18,7 @@ use crate::persona::training_producer::*;
 use crate::routing::CallerIdentity;
 use crate::runtime::{CommandExecutor, InProcessTransport};
 
+mod automatic;
 mod bindings;
 mod directed;
 mod reviewed_credit;
@@ -166,7 +167,7 @@ pub(super) async fn stage_settlement_fixture(
     persona: Uuid,
     name: &str,
     card: Uuid,
-    receipts: Vec<crate::cognition::provenance::GenerationReceipt>,
+    receipts: Vec<crate::ai::provenance::GenerationReceipt>,
 ) -> (TurnCreditCapture, StagedCredit) {
     let mut capture = TurnCreditCapture::with_executor(
         executor.clone(),
@@ -228,6 +229,30 @@ pub(super) fn script_settlement_reply(
 /// The exact-review scenario: her staged row bound to one submission on one card, a
 /// reviewer, and the room's work events up to the review. Shared by every exact-path
 /// test, so each states only its own case (CLAUDE.md: one fixture per concern).
+/// A room's board from these work events, signed by their peers, through airc's own codec and
+/// replay boundary: what any observer of the room would project.
+pub(super) fn project_events(room: Uuid, events: Vec<(airc_work::WorkEvent, airc_core::PeerId)>) -> airc_work::WorkBoardProjection {
+    airc_work::project_transcript_work_events(events.into_iter().enumerate().map(|(n, (event, peer_id))| {
+        let (headers, body) = airc_work::encode_work_event(&event).unwrap();
+        airc_core::TranscriptEvent {
+            event_id: airc_core::EventId::new(),
+            room_id: airc_core::RoomId::from_uuid(room),
+            peer_id,
+            client_id: airc_core::ClientId::new(),
+            kind: airc_core::TranscriptKind::System,
+            occurred_at_ms: event.occurred_at_ms(),
+            lamport: n as u64 + 1,
+            target: airc_core::MentionTarget::All,
+            headers,
+            body: Some(body),
+            attachment: None,
+            receipt: None,
+            metadata: serde_json::Value::Null,
+        }
+    }))
+    .unwrap()
+}
+
 pub(super) struct ExactReview {
     pub(super) _home: (HomeGuard, tempfile::TempDir),
     pub(super) executor: Arc<CommandExecutor>,
@@ -237,7 +262,7 @@ pub(super) struct ExactReview {
     pub(super) reviewer: airc_core::PeerId,
     pub(super) card_id: airc_work::WorkCardId,
     pub(super) room: Uuid,
-    pub(super) receipts: Vec<crate::cognition::provenance::GenerationReceipt>,
+    pub(super) receipts: Vec<crate::ai::provenance::GenerationReceipt>,
     pub(super) selected: StagedCredit,
     pub(super) selection: reviewed::SubmissionSelection,
     pub(super) data: Connection<InProcessTransport>,
@@ -278,31 +303,17 @@ impl ExactReview {
     /// The room's board after the scenario's events plus `tail`, through the existing
     /// codec and replay boundary, including the authoritative transcript peer.
     pub(super) fn project(&self, tail: Vec<(airc_work::WorkEvent, airc_core::PeerId)>) -> airc_work::WorkBoardProjection {
-        airc_work::project_transcript_work_events(
-            self.prefix.iter().cloned().chain(tail).enumerate().map(|(n, (event, peer_id))| {
-                let (headers, body) = airc_work::encode_work_event(&event).unwrap();
-                airc_core::TranscriptEvent {
-                    event_id: airc_core::EventId::new(),
-                    room_id: airc_core::RoomId::from_uuid(self.room),
-                    peer_id,
-                    client_id: airc_core::ClientId::new(),
-                    kind: airc_core::TranscriptKind::System,
-                    occurred_at_ms: event.occurred_at_ms(),
-                    lamport: n as u64 + 1,
-                    target: airc_core::MentionTarget::All,
-                    headers,
-                    body: Some(body),
-                    attachment: None,
-                    receipt: None,
-                    metadata: serde_json::Value::Null,
-                }
-            }),
-        )
-        .unwrap()
+        project_events(self.room, self.prefix.iter().cloned().chain(tail).collect())
     }
 }
 
 pub(super) async fn exact_review() -> (ExactReview, TurnCreditCapture) {
+    exact_review_bound_by(None).await
+}
+
+/// [`exact_review`], with the submission bound the way `work/submit` binds it: explicitly
+/// (`None`), or by recording the generation that issued it (`Some`), resolved at review.
+pub(super) async fn exact_review_bound_by(issuing: Option<&str>) -> (ExactReview, TurnCreditCapture) {
     use airc_work::{WorkEvent, WorkReviewOutcome, WorkSubmissionReview};
     let home = tempfile::tempdir().unwrap();
     let guard = HomeGuard::set(home.path()).await;
@@ -329,7 +340,28 @@ pub(super) async fn exact_review() -> (ExactReview, TurnCreditCapture) {
         artifact: serde_json::from_value(json!({"hash":"b".repeat(64),"size_bytes":12})).unwrap(),
     };
     let data = conn_as(executor.clone(), persona);
-    reviewed::bind_submission(&data, name, persona, selection.clone()).await.unwrap();
+    match issuing {
+        None => {
+            reviewed::bind_submission(&data, name, persona, selection.clone()).await.unwrap();
+        }
+        Some(generation) => {
+            let pending = reviewed::PendingSelection {
+                publication: reviewed::Publication {
+                    submission_id: selection.submission_id,
+                    room_id: room,
+                    card_id: selection.card_id,
+                    claim_id: selection.claim_id,
+                    instance: selection.instance.clone(),
+                    base_sha: selection.base_sha.clone(),
+                    artifact: selection.artifact.clone(),
+                },
+                issuing_generation: generation.into(),
+            };
+            if let Err(e) = reviewed::record_pending(&data, name, persona, pending).await {
+                panic!("the fixture records its pending binding: {e}");
+            }
+        }
+    }
     let submitted = airc_work::WorkSubmission {
         submission_id: airc_work::SubmissionId::from_uuid(selection.submission_id),
         card_id,

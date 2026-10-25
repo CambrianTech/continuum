@@ -95,8 +95,8 @@ use super::*;
         // Register her cognition cycle in the global registry the act-question
         // reads, wired to a canned adapter that answers "PASS: done" — so the
         // drive settles on a reasoned pass, not the heuristic echo (a Speak).
-        let recall_meta = Arc::new(crate::persona::recall_metadata::RecallMetadataRegistry::new());
-        let admission = Arc::new(crate::persona::admission_state::AdmissionState::new(
+        let recall_meta = Arc::new(crate::cognition::recall_metadata::RecallMetadataRegistry::new());
+        let admission = Arc::new(crate::cognition::admission_state::AdmissionState::new(
             recall_meta,
         ));
         let cfg = crate::cognition::persona_workspace::PersonaBrainConfig {
@@ -114,6 +114,7 @@ use super::*;
             defer_recall: false,
             defer_grounding: false,
             suppress_recall: false,
+            forked: false,
         };
         crate::cognition::persona_workspace::global()
             .register_from_cfg(cfg)
@@ -150,19 +151,23 @@ use super::*;
 
         // A non-nil room (the burst witness refuses nil).
         let room = Uuid::from_u128(0xABCD);
+        // Offered, on purpose: a card in her hands takes the held-work turn exactly as
+        // before, whatever the cadence offers (her initiative is for holding nothing).
         let drove = crate::persona::act_question::ask_the_act_question(
             &hosted,
             &mut conversation,
             1,
             room,
             false,
+            crate::persona::initiative_turn::Initiative::Offered,
         )
         .await;
 
         assert!(
-            drove,
+        drove.drove,
             "she held a card, so a held-work turn must have been driven"
         );
+        assert!(drove.engaged, "held work is always engagement: her beat stays engaged");
         let advanced = recorder.lock().unwrap_or_else(|p| p.into_inner()).clone(); // test: poisoned recorder lock still holds the pushes
         assert_eq!(
             advanced.len(),
@@ -192,8 +197,8 @@ use super::*;
                 persona_id: peer,
                 persona_name: "Paige".into(),
                 system_prompt: "You are Paige.".into(),
-                admission: Arc::new(crate::persona::admission_state::AdmissionState::new(
-                    Arc::new(crate::persona::recall_metadata::RecallMetadataRegistry::new()),
+                admission: Arc::new(crate::cognition::admission_state::AdmissionState::new(
+                    Arc::new(crate::cognition::recall_metadata::RecallMetadataRegistry::new()),
                 )),
                 adapter: Arc::new(
                     HeuristicInferenceAdapter::new()
@@ -208,6 +213,7 @@ use super::*;
                 defer_recall: false,
                 defer_grounding: false,
                 suppress_recall: false,
+                forked: false,
             };
             crate::cognition::persona_workspace::global()
                 .register_from_cfg(cfg)
@@ -224,8 +230,10 @@ use super::*;
                     1,
                     room,
                     false,
+                    crate::persona::initiative_turn::Initiative::NotOffered,
                 )
                 .await
+            .drove
             );
             let speech = crate::cognition::deliberation_budget::recent_own_speech(
                 crate::identity::PeerId::from_uuid(peer),
@@ -281,4 +289,377 @@ use super::*;
             submissions: Vec::new(),
             last_submission_rejection: None,
         }
+    }
+
+    // what this catches (moved from cognition::handoff when the card bind moved up, mind split
+    // step 7): a card whose hands cannot be bound must not clear the handoff's bound card.
+    #[tokio::test]
+    async fn a_failed_bind_keeps_the_bound_card_in_the_handoff() {
+        use crate::cognition::handoff::{compose, note_held, note_unbound, TornBy};
+        let me = Uuid::from_u128(1_073);
+        let current = held_card(me);
+        note_held(me, None, &current, 1_850);
+        let cycle = crate::cognition::workspace::WorkspaceCycle::new(
+            vec![],
+            Arc::new(crate::cognition::workspace::SalienceArbiter),
+            4,
+        );
+        let mut unavailable = current.clone();
+        unavailable.card_id = airc_lib::WorkCardId::new();
+        let turn = crate::persona::card_hands::bind_card(&cycle, me, &unavailable).await;
+        assert!(turn.hands.is_none(), "no checkout/hands can be bound by this fixture");
+        let root = std::path::Path::new("current-checkout");
+        let bound = compose(me, TornBy::Periodic, Some(root), None, 1_875).expect("bound").card;
+        assert_eq!(bound, Some(current));
+        note_unbound(me);
+    }
+
+// Actual wake selection stays reachable while original capacity custody waits;
+// neither a new directed input nor Stop is hidden behind the retry timer.
+#[tokio::test(start_paused = true)]
+async fn capacity_park_keeps_new_input_and_stop_reachable() {
+    use crate::cognition::act_observe::SettleStep;
+    use crate::cognition::workspace::{PromptCapacityError, TurnAttention};
+    use crate::persona::wake_backlog::PendingInput;
+    let ctx = hosted_with_heuristic(Uuid::new_v4());
+    let original = IncomingMessage {
+        event_id: Uuid::new_v4(),
+        lamport: 1,
+        peer_id: Uuid::new_v4(),
+        room_id: Uuid::new_v4(),
+        text: "original required payload".into(),
+        work: None,
+        media: Vec::new(),
+    };
+    let mut newer = original.clone();
+    newer.event_id = Uuid::new_v4();
+    newer.text = "new directed input".into();
+    let engram = Some(Uuid::new_v4());
+    let mut pending = PendingInput::default();
+    pending.settle(
+        &original,
+        engram,
+        TurnAttention::HumanOpportunity,
+        &SettleStep::CapacityRefused {
+            error: PromptCapacityError {
+                required_tokens: 8192,
+                budget_tokens: 4096,
+            }
+            .into(),
+            replay_input: true,
+        },
+    );
+    let mut conversation =
+        ScriptedConversation::new().with_events(vec![Ok(Some(newer.clone())), Ok(None)]);
+    conversation.prime().await.unwrap();
+    let mut outcome = ServeOutcome::default();
+    let mut mind = MindWakeState::default();
+    let opts = ServeOptions::default();
+    let (wake, _) = await_wake(
+        &ctx,
+        &mut conversation,
+        &mut outcome,
+        &opts,
+        &pending,
+        &mut mind,
+        std::time::Duration::from_secs(1),
+    )
+    .await;
+    assert!(matches!(wake, Wake::Msg(m) if m == newer));
+    let (wake, _) = await_wake(
+        &ctx,
+        &mut conversation,
+        &mut outcome,
+        &opts,
+        &pending,
+        &mut mind,
+        std::time::Duration::from_secs(1),
+    )
+    .await;
+    assert!(matches!(wake, Wake::Stop));
+    assert_eq!(pending.message(), Some(&original));
+    assert_eq!(pending.wake_engram_for(&original), engram);
+}
+
+// Board-only attention is perceived before trigger selection, even when it is
+// not chat that would earn a turn. The existing custody owner carries readiness.
+#[tokio::test(start_paused = true)]
+async fn capacity_park_observes_semantic_board_change_before_trigger_filter() {
+    use crate::cognition::act_observe::SettleStep;
+    use crate::cognition::workspace::{PromptCapacityError, TurnAttention};
+    use crate::persona::wake_backlog::PendingInput;
+    use crate::cognition::conversation::seen_ids::SeenIds;
+    let ctx = hosted_with_heuristic(Uuid::new_v4());
+    let room = Uuid::new_v4();
+    let original = IncomingMessage {
+        event_id: Uuid::new_v4(), lamport: 1, peer_id: Uuid::new_v4(), room_id: room,
+        text: "retained required input".into(), work: None, media: Vec::new(),
+    };
+    let refusal = SettleStep::CapacityRefused {
+        error: PromptCapacityError { required_tokens: 8192, budget_tokens: 4096 }.into(),
+        replay_input: true,
+    };
+    let mut pending = PendingInput::default();
+    let engram = Some(Uuid::new_v4());
+    let mut conversation = ScriptedConversation::new();
+    conversation.prime().await.unwrap();
+    let mut outcome = ServeOutcome::default();
+    let mut seen = SeenIds::new(256);
+    let mut water = 0;
+    let card = Uuid::new_v4();
+    use crate::cognition::conversation::room_event::RoomWork;
+    let state = |state| RoomWork::StateChanged { card_id: card, state, by: original.peer_id };
+    let submission = |id| RoomWork::Submitted {
+        card_id: card, publisher: original.peer_id, submission: Some(id),
+    };
+    let first_submission = Uuid::new_v4();
+    for (work, changed) in [
+        (state(airc_work::CardState::Open), true),
+        (state(airc_work::CardState::Open), false),
+        (state(airc_work::CardState::Claimed), true),
+        (state(airc_work::CardState::Open), true),
+        (submission(first_submission), true),
+        (submission(first_submission), false),
+        (submission(Uuid::new_v4()), true),
+    ] {
+        pending.settle(&original, engram, TurnAttention::HumanOpportunity, &refusal);
+        pending.settle_self(room, &refusal);
+        let board = IncomingMessage {
+            event_id: Uuid::new_v4(), lamport: water + 1, peer_id: original.peer_id,
+            room_id: room, text: String::new(), media: Vec::new(),
+            work: Some(work),
+        };
+        // Scripted end closes this drain; observing typed state must still happen
+        // before the non-trigger fact is discarded by the existing selector.
+        let _ = resync_to_now(&ctx, &mut conversation, &mut outcome, &mut seen,
+            &mut water, &mut pending, false, board).await;
+        let ready = tokio::time::timeout(std::time::Duration::from_secs(1), pending.ready_self_room()).await;
+        assert_eq!(ready.is_ok(), changed, "clock/new event ID is not a payload change");
+        if changed { assert_eq!(ready.unwrap(), room); }
+        assert_eq!(pending.message(), Some(&original));
+        assert_eq!(pending.wake_engram_for(&original), engram);
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn capacity_ready_self_waits_without_spinning_during_quiescence() {
+    use crate::cognition::act_observe::SettleStep;
+    use crate::cognition::workspace::PromptCapacityError;
+    use crate::persona::wake_backlog::PendingInput;
+    let ctx = hosted_with_heuristic(Uuid::new_v4());
+    let room = Uuid::new_v4();
+    let input = IncomingMessage {
+        event_id: Uuid::new_v4(), lamport: 1, peer_id: Uuid::new_v4(), room_id: room,
+        text: "new required payload".into(), work: None, media: Vec::new(),
+    };
+    let mut pending = PendingInput::default();
+    pending.settle_self(room, &SettleStep::CapacityRefused {
+        error: PromptCapacityError { required_tokens: 8192, budget_tokens: 4096 }.into(),
+        replay_input: false,
+    });
+    pending.payload_changed(&input);
+    let opts = ServeOptions::default();
+    opts.quiesced.store(true, std::sync::atomic::Ordering::Relaxed);
+    let mut conversation = ScriptedConversation::new().with_idle_inbox();
+    let mut outcome = ServeOutcome::default();
+    let mut mind = MindWakeState::default();
+    let beat = std::time::Duration::from_secs(1);
+    let start = tokio::time::Instant::now();
+    for _ in 0..3 {
+        let (wake, _) = await_wake(&ctx, &mut conversation, &mut outcome, &opts,
+            &pending, &mut mind, beat).await;
+        assert!(matches!(wake, Wake::Idle));
+    }
+    assert!(tokio::time::Instant::now().duration_since(start) >= beat * 3);
+    opts.quiesced.store(false, std::sync::atomic::Ordering::Relaxed);
+    let (wake, _) = await_wake(&ctx, &mut conversation, &mut outcome, &opts,
+        &pending, &mut mind, beat).await;
+    assert!(matches!(wake, Wake::Mind { room: Some(r), .. } if r == room));
+    assert!(pending.take_ready_self(Some(room)));
+    assert!(!pending.take_ready_self(Some(room)), "readiness consumed once");
+    opts.quiesced.store(true, std::sync::atomic::Ordering::Relaxed);
+    conversation = conversation.with_events(vec![Ok(None)]);
+    let (wake, _) = await_wake(&ctx, &mut conversation, &mut outcome, &opts,
+        &pending, &mut mind, beat).await;
+    assert!(matches!(wake, Wake::Stop));
+}
+
+// what this catches: the constraint that kept residents from working (M5, 2026-10-23:
+// four residents, ~7 acts and 0 writes an hour, every gate `no_held_work`). With nothing
+// held, her own heartbeat must give her a turn with her hands; a message turn must not
+// (the beat paces it), and a pass must not count as engagement (her beat rests). The
+// turn claims, advances and says nothing on her behalf: anything it does is her act.
+#[tokio::test(flavor = "current_thread")]
+async fn holding_nothing_her_heartbeat_offers_an_initiative_turn_with_her_hands() {
+    use crate::persona::initiative_turn::Initiative;
+    let native = tempfile::tempdir().expect("test: isolated cognition storage");
+    let _native_home = crate::paths::NativeHomeOverride::install(native.path());
+    let peer = Uuid::new_v4();
+    let hosted = hosted_with_heuristic(peer);
+    let cfg = crate::cognition::persona_workspace::PersonaBrainConfig {
+        persona_id: peer,
+        persona_name: "Aris".into(),
+        system_prompt: "You are Aris.".into(),
+        admission: Arc::new(crate::cognition::admission_state::AdmissionState::new(Arc::new(
+            crate::cognition::recall_metadata::RecallMetadataRegistry::new(),
+        ))),
+        adapter: Arc::new(
+            HeuristicInferenceAdapter::new().with_canned_response("PASS: nothing calls me right now"),
+        ),
+        capacity: None,
+        grounding_sources: Vec::new(),
+        embedder: None,
+        // Her hands: an initiative turn is offered only to a mind that can act.
+        tool_executor: Some(Arc::new(
+            crate::cognition::act_observe::test_support::ScriptedExecutor::new(["ok"]),
+        )),
+        experience: None,
+        // Roomy enough for framing + tools + a reply: a refused prompt is not what this tests.
+        context_window: 65_536,
+        defer_recall: false,
+        defer_grounding: false,
+        suppress_recall: false,
+        forked: false,
+    };
+    crate::cognition::persona_workspace::global()
+        .register_from_cfg(cfg)
+        .expect("test: register the initiative fixture");
+    let room = Uuid::new_v4();
+    for (offer, expect_turn) in [(Initiative::NotOffered, false), (Initiative::Offered, true)] {
+        let stub = StubAircCitizen::new(peer); // holds nothing
+        let advanced = stub.advance_recorder();
+        let mut conversation = ScriptedConversation::new().with_citizen(Arc::new(stub));
+        let outcome = crate::persona::act_question::ask_the_act_question(
+            &hosted,
+            &mut conversation,
+            1,
+            room,
+            false,
+            offer,
+        )
+        .await;
+        assert_eq!(outcome.drove, expect_turn, "{offer:?}: an initiative turn iff her beat offered it");
+        assert!(!outcome.engaged, "{offer:?}: a pass (or no turn) never holds her beat engaged");
+        assert!(
+            advanced.lock().unwrap_or_else(|p| p.into_inner()).is_empty(), // test: poisoned recorder lock still holds the pushes
+            "{offer:?}: no card is moved on her behalf"
+        );
+        assert!(conversation.said_in().is_empty(), "{offer:?}: she passed, so nothing is said for her");
+    }
+}
+
+    // what this catches: THE personaRag convergence seam, end to end through real
+    // code (not hand-authored roster strings). A present airc `RoomMember` flows:
+    //   RoomRosterSource.deliver  (the ONE shared `roster_slot_from_member` projection
+    //                              both the WS widget and this grounding rail use)
+    //     → project_room_roster    (the heartbeat loop's own delivery fold, extracted)
+    //       → prompt_assembly       (the [Present in this room] block)
+    // and lands with the converged line INCLUDING availability — the field the widget
+    // rail used to silently drop before the convergence (#8/#13). Connects the three
+    // separately-unit-tested halves via the exact path the live turn runs; the live
+    // core proves the plumbing, this proves it deterministically without airc presence.
+    #[tokio::test]
+    async fn present_member_reaches_present_in_room_block_end_to_end() {
+        use crate::cognition::prompt_assembly::{assemble, HistoryMessage, PromptAssemblyInput};
+        use crate::cognition::rag_budget::{RagContext, RagSource, ResolutionPreference};
+        use crate::model_registry::types::MultiPartyChatStrategy;
+        use crate::persona::room_roster_source::{AircRosterReader, RoomRosterSource};
+        use crate::cognition::conversation::workspace_turns::project_room_roster;
+        use airc_core::PeerId;
+        use airc_lib::{AgentAvailabilityState, AircError, RoomMember};
+        use async_trait::async_trait;
+        use std::sync::Arc;
+        use std::time::Duration;
+
+        // One present peer, self-reported Busy — the airc upstream both rails read.
+        struct OnePresentPeer {
+            me: PeerId,
+            other: PeerId,
+        }
+        #[async_trait]
+        impl AircRosterReader for OnePresentPeer {
+            fn self_peer_id(&self) -> PeerId {
+                self.me
+            }
+            async fn room_roster(
+                &self,
+                _within: Duration,
+                _window: usize,
+                _room: Option<uuid::Uuid>,
+            ) -> Result<Vec<RoomMember>, AircError> {
+                Ok(vec![RoomMember {
+                    peer_id: self.other,
+                    display_name: Some("win-claude".to_string()),
+                    runtime: "claude".to_string(),
+                    availability: Some(AgentAvailabilityState::Busy),
+                    last_seen_ms: 1_700_000_000_000,
+                }])
+            }
+        }
+
+        let persona = uuid::Uuid::new_v4();
+        let source = RoomRosterSource::new(
+            persona,
+            Arc::new(OnePresentPeer {
+                me: PeerId::new(),
+                other: PeerId::new(),
+            }),
+        );
+
+        // 1. Real delivery from the shared roster projection.
+        let ctx = RagContext::for_persona(persona, 1_000_000);
+        let delivery = source.deliver(&ctx, 1_000, ResolutionPreference::Raw).await;
+
+        // 2. Real loop fold: delivery → grounding consumers (the converged line +
+        //    the bare name), via the exact fn the heartbeat loop calls.
+        let proj = project_room_roster(std::slice::from_ref(&delivery));
+        // Agent-only roster ⇒ the no-human authority fact (#2113) rides FIRST in
+        // the grounding lines — it reaches the prompt through the same block —
+        // while other_persona_names stays peer-only (the fact has no
+        // display_name, so it can NEVER become a phantom "peer" name).
+        assert_eq!(proj.room_roster.len(), 2);
+        assert!(
+            proj.room_roster[0].contains("No human is present"),
+            "authority fact first: {}",
+            proj.room_roster[0]
+        );
+        assert_eq!(
+            proj.room_roster[1], "win-claude [claude] — busy",
+            "converged line (availability = airc's neutral 'busy', not Debug 'Busy')"
+        );
+        assert_eq!(proj.other_persona_names, vec!["win-claude".to_string()]);
+
+        // 3. Real assembly: grounding lines → the [Present in this room] block.
+        let input = PromptAssemblyInput {
+            persona_name: "Asha".to_string(),
+            system_prompt: "You are Asha.".to_string(),
+            matched_angle: String::new(),
+            history: vec![],
+            current_message: HistoryMessage {
+                role: "user".to_string(),
+                name: None,
+                content: "who is here?".to_string(),
+                timestamp_ms: None,
+            },
+            is_voice: false,
+            social_signals: None,
+            multi_party_strategy: MultiPartyChatStrategy::default(),
+            other_persona_names: proj.other_persona_names,
+            recalled_engrams: vec![],
+            room_roster: proj.room_roster,
+            room_doctrine: None,
+        };
+        let assembled = assemble(&input);
+        assert!(
+            assembled.system_message.contains("[Present in this room]"),
+            "roster block missing from live-path assembly:\n{}",
+            assembled.system_message
+        );
+        assert!(
+            assembled
+                .system_message
+                .contains("win-claude [claude] — busy"),
+            "converged roster line (with availability) did not reach the prompt:\n{}",
+            assembled.system_message
+        );
     }

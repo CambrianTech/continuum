@@ -50,9 +50,9 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 
-use crate::persona::admission_state::AdmissionState;
-use crate::persona::engram::Engram;
-use crate::persona::rag_budget::{
+use crate::cognition::admission_state::AdmissionState;
+use crate::cognition::engram::Engram;
+use crate::cognition::rag_budget::{
      RagContext, RagDelivery, RagItem, RagSource, ResolutionPreference,
 };
 
@@ -61,8 +61,7 @@ use crate::persona::rag_budget::{
 /// component. Tunable via future `MemoryParameterAdapter`.
 const RECENCY_WINDOW_MS: u64 = 24 * 60 * 60 * 1000;
 
-/// Source identifier — referenced by budget presets and telemetry.
-pub(crate) const SOURCE_ID: &str = "engrams";
+use crate::cognition::faculty_ids::ENGRAMS;
 
 /// Token estimate — the ONE canonical chars/4 estimator (`cognition::token_budget`),
 /// shared by every RAG source so the replay ledger's numbers match. (Was a private
@@ -192,7 +191,7 @@ impl EngramSource {
     ) -> RagDelivery {
         let truncated = next_rank < scored_len;
         RagDelivery {
-            source_id: SOURCE_ID.to_string(),
+            source_id: ENGRAMS.to_string(),
             items,
             tokens_used,
             truncated,
@@ -204,7 +203,7 @@ impl EngramSource {
 #[async_trait]
 impl RagSource for EngramSource {
     fn source_id(&self) -> &'static str {
-        SOURCE_ID
+        ENGRAMS
     }
 
     fn expand_command(&self) -> Option<&'static str> {
@@ -227,7 +226,7 @@ impl RagSource for EngramSource {
         // Defense-in-depth: refuse calls with the wrong persona ctx.
         if ctx.persona_id != self.persona_id {
             return RagDelivery {
-                source_id: SOURCE_ID.to_string(),
+                source_id: ENGRAMS.to_string(),
                 items: Vec::new(),
                 tokens_used: 0,
                 truncated: false,
@@ -245,9 +244,9 @@ impl RagSource for EngramSource {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::persona::admission_state::EngramOriginKind;
-    use crate::persona::engram::{ChatMessageRef, Engram, EngramKind, EngramOrigin, TrustState};
-    use crate::persona::recall_metadata::{RecallMetadata, RecallMetadataRegistry};
+    use crate::cognition::admission_state::EngramOriginKind;
+    use crate::cognition::engram::{ChatMessageRef, Engram, EngramKind, EngramOrigin, TrustState};
+    use crate::cognition::recall_metadata::{RecallMetadata, RecallMetadataRegistry};
     use uuid::Uuid;
 
     /// Build an AdmissionState wrapped in Arc, with `count` engrams

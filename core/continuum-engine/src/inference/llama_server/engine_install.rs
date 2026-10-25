@@ -131,51 +131,6 @@ pub(super) fn installed_engine_stamp() -> Option<String> {
 }
 
 
-/// Free memory at which a warm build beside a serving core runs at cargo's own job count:
-/// the measured uncapped peak (8.7 GB, every rustc together, the M5 on 2026-09-27) plus the
-/// reserve, rounded up (Cormac on #4479: at 12 the uncapped build would eat into the
-/// reserve). It coincides with where a second budgeted job would start, so between the
-/// floor and here the build takes one job.
-pub const WARM_BUILD_UNCAPPED_FREE_BYTES: u64 = 13 * 1024 * 1024 * 1024;
-
-/// Below that, the build takes fewer jobs instead of refusing: each rustc job (and the
-/// codegen threads the jobserver lends it) is budgeted this much, after a reserve kept for
-/// the citizens and the core. Refusing outright at 12 GiB meant a node whose lane fills its
-/// memory NEVER deploys: the M5 serving the 27B at 4 lanes (llama-server 29.5 GB, core
-/// 4.4 GB) sat at 10.4 GiB free, and every tracker pass from 19:33Z on 2026-09-27 was
-/// refused, leaving it on c9ee8b1cc under a day of merges.
-///
-/// MEASURED (the pre-registered check on #4478), the M5's warm build of 4284ebe4f at
-/// 20:14-20:25Z on 2026-09-27, sampled every 10 s: the largest single rustc peaked at
-/// 6.4 GB (continuum_core, one process whatever the job count) and every rustc together
-/// at 8.7 GB. So the budget is not a flat per-job figure: the FIRST job is continuum_core's
-/// front end, each further job a smaller crate beside it.
-pub const WARM_BUILD_FIRST_JOB_BYTES: u64 = 6656 * 1024 * 1024;
-
-pub const WARM_BUILD_JOB_BYTES: u64 = 2560 * 1024 * 1024;
-
-pub const WARM_BUILD_RESERVE_BYTES: u64 = 4 * 1024 * 1024 * 1024;
-
-/// The floor: the first job plus the reserve. Below it the warm build refuses.
-pub const WARM_BUILD_MIN_FREE_BYTES: u64 = WARM_BUILD_RESERVE_BYTES + WARM_BUILD_FIRST_JOB_BYTES;
-
-
-/// PURE: the job count a warm build takes with `free_bytes` free beside the serving core.
-/// `None` = cargo's own count (plenty free); otherwise the first job (continuum_core's
-/// front end) plus one per [`WARM_BUILD_JOB_BYTES`] of what is left above the reserve, at
-/// least one. The refusal below [`WARM_BUILD_MIN_FREE_BYTES`] is the CLI's gate.
-pub fn warm_build_jobs_for_memory(free_bytes: u64) -> Option<u32> {
-    if free_bytes >= WARM_BUILD_UNCAPPED_FREE_BYTES {
-        return None;
-    }
-    let beyond_first = free_bytes
-        .saturating_sub(WARM_BUILD_RESERVE_BYTES)
-        .saturating_sub(WARM_BUILD_FIRST_JOB_BYTES);
-    let jobs = 1 + beyond_first / WARM_BUILD_JOB_BYTES;
-    Some(u32::try_from(jobs).unwrap_or(u32::MAX)) // unwrap_or: a count past u32 is plenty; the cap then does nothing
-}
-
-
 /// PURE: whether a running lane's `/props` `build_info` (`b10765-965d38a90`) names the
 /// installed engine commit, compared with the ONE SHA rule `deploy_provenance::sha_matches`
 /// (prefix either way, credible hex). A lane is stale only when both commits are credible

@@ -22,21 +22,21 @@
 //! - `cognition/track-response`: Track response for rate limiting
 //! - `cognition/set-sleep-mode`: Set voluntary sleep mode
 //! - `cognition/configure-rate-limiter`: Configure rate limiter params
-//! - `cognition/select-model`: 4-tier model priority chain
+//! - `cognition/select-model`: 3-tier model priority chain
 //! - `cognition/sync-adapters`: Sync adapter registry from TypeScript
 //! - `cognition/check-adequacy`: Batch adequacy check
 //!
-//! The `cognition/genome-*` family (activate-skill, sync, state, evict-under-pressure,
-//! record-activity, coverage-report) migrated to the typed DynCommand registry —
-//! see `commands/cognition/` and `command_objects` there.
+//! The TS-era `cognition/genome-*` family and `sync-domain-classifier` are deleted: which genes
+//! a turn runs is `genome::composer`, where they live is `genome::gene_residency`.
 //! - `inbox/create`: Create persona inbox (alias for create-engine)
 //!
 //! Uses `Params` helper for typed parameter extraction.
 
 use crate::gpu::GpuMemoryManager;
 use crate::logging::TimingGuard;
-use crate::persona::text_analysis::LoopDetector;
-use crate::persona::{InboxMessage, Modality, PersonaCognition, PersonaInboxFrame, PersonaTurnFrame, PersonaTurnFrameReplayRecord, SenderType};
+use crate::cognition::text_analysis::LoopDetector;
+use crate::persona::{PersonaCognition, PersonaInboxFrame, PersonaTurnFrame, PersonaTurnFrameReplayRecord};
+use crate::cognition::conversation::types::{InboxMessage, Modality, SenderType};
 use crate::rag::RagEngine;
 use crate::runtime;
 use crate::runtime::{CommandResult, LateBound, ModuleConfig, ModuleContext, ModulePriority, ServiceModule};
@@ -99,24 +99,10 @@ impl CognitionState {
         &self,
         persona_uuid: Uuid,
     ) -> dashmap::mapref::one::RefMut<'_, Uuid, PersonaCognition> {
-        // Compute the budget BEFORE acquiring the entry shard-lock.
-        // `per_persona_budget_mb()` reads `self.personas.len()`, which read-locks
-        // EVERY shard. `DashMap::entry()` holds a WRITE lock on the target key's
-        // shard; calling `len()` inside `or_insert_with` re-enters that same shard
-        // lock, and parking_lot's RwLock is not reentrant → self-deadlock. This is
-        // silent in tests (no GpuMemoryManager → the `None` arm skips `len()`) and
-        // only bites the live core where `gpu_manager` is `Some`. Hoisting the read
-        // out means no lock is held when `len()` runs. The budget is computed even
-        // on the cache-hit path (a cheap shard-count sum) but only consumed on
-        // insert; correctness over shaving one `len()` off the hit path.
-        let budget = self.per_persona_budget_mb();
+        // No lock is held across anything but the insert (a `len()` inside `or_insert_with`
+        // re-entered the shard lock and self-deadlocked the live core once).
         self.personas.entry(persona_uuid).or_insert_with(|| {
-            PersonaCognition::with_budget(
-                persona_uuid,
-                String::new(),
-                self.rag_engine.clone(),
-                budget,
-            )
+            PersonaCognition::new(persona_uuid, String::new(), self.rag_engine.clone())
         })
     }
 }
@@ -445,10 +431,6 @@ impl ServiceModule for CognitionModule {
             // Genome Paging (LRU eviction + memory budget decisions)
             // =================================================================
             // Migrated to the typed DynCommand registry (Slice 4):
-            //   cognition/genome-activate-skill      → commands/cognition/genome_activate_skill.rs
-            //   cognition/genome-sync                → commands/cognition/genome_sync.rs
-            //   cognition/genome-state               → commands/cognition/genome_state.rs
-            //   cognition/genome-evict-under-pressure → commands/cognition/genome_evict_under_pressure.rs
             // Exposed via commands/cognition/mod.rs::command_objects (dep-holding on CognitionState).
 
             // MIGRATED to typed ActionCommand (task #62):
@@ -495,7 +477,6 @@ impl ServiceModule for CognitionModule {
             // =================================================================
             // Migrated to the typed DynCommand registry (Slice 5):
             //   cognition/classify-domain          → commands/cognition/classify_domain.rs
-            //   cognition/sync-domain-classifier   → commands/cognition/sync_domain_classifier.rs
             //   cognition/register-domain-keywords → commands/cognition/register_domain_keywords.rs
             // Exposed via commands/cognition/mod.rs::command_objects (dep-holding on CognitionState).
 
@@ -503,8 +484,6 @@ impl ServiceModule for CognitionModule {
             // Domain Activity Tracking & Gap Detection
             // =================================================================
             // Migrated to the typed DynCommand registry (Slice 4):
-            //   cognition/genome-record-activity  → commands/cognition/genome_record_activity.rs
-            //   cognition/genome-coverage-report  → commands/cognition/genome_coverage_report.rs
             // Exposed via commands/cognition/mod.rs::command_objects (dep-holding on CognitionState).
 
             // =================================================================

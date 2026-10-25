@@ -53,9 +53,9 @@
 //! her learning. Now `Completed { artifact }` does three things and decides nothing:
 //! a cheap pre-filter (reported validation or training loss must be finite), register
 //! the gene so the serving engine loads it in place and dormant, and open a
-//! [`GeneTrial`](crate::genome::gene_trial::GeneTrial). From then on each card she works
-//! draws an arm; the room's outcome for the card, credited through the receipts' `genes`,
-//! is what promotes or retires it.
+//! [`GeneTrial`](crate::genome::gene_trial::GeneTrial). The examiner
+//! (`genome::examiner`) then sits the continual-learning acceptance test on it and its
+//! verdict promotes or retires it.
 //!
 //! ## Off-tick chain
 //!
@@ -192,17 +192,25 @@ impl TrainingCompletionSentinel {
             }
 
 
-            // INTEGRATED, NOT PARALLEL (Joel, 2026-09-27). The gene is registered, so the serving
-            // engine loads it in place, dormant (#4467), and a TRIAL opens: from now on each
-            // card she works draws an arm, and the room's outcome for the card is what promotes
-            // or retires it (genome/gene_trial.rs). No eval copy of her mind scores it beside
-            // her life. The same seam a reuse decision adopts an existing gene through.
+            // The gene is registered, so the serving engine loads it in place, dormant (#4467),
+            // and a TRIAL opens; the adoption wakes the examiner (genome/examiner), whose
+            // acceptance test on her own turns promotes or retires it. The same seam a reuse
+            // decision adopts an existing gene through.
+            // The job's own directory: its request.json names what the gene trained on, so the
+            // examiner can hold out exactly what it never saw.
+            let trained_from = crate::genome::fine_tuning::job_dir::default_job_dir(
+                &job.persona_name,
+                &job.trait_kind,
+                job.handle.local_id,
+            )
+            .filter(|dir| dir.join("request.json").is_file());
             let adopted = crate::genome::gene_trial::Adoption::default_paths().and_then(|a| {
                 a.adopt(
                     job.persona_id,
                     &job.trait_kind,
                     std::path::Path::new(&path_str),
                     &job.base_model,
+                    trained_from.as_deref(),
                     continuum_base::time::EpochMs::now().millis(),
                 )
             });
@@ -225,10 +233,10 @@ impl TrainingCompletionSentinel {
                 gene = job.trait_kind.as_str(),
                 trial = %trial.id,
                 base = job.base_model.as_str(),
-                share_milli = trial.share_milli as u64,
                 loss = loss.unwrap_or_default(), // probe field: guarded finite above
                 loss_source = loss_source,
-                "a trained gene opened a trial: it now works a share of her cards, and her work's outcomes decide it"
+                provenance = trained_from.is_some(),
+                "a trained gene opened a trial: it is in her head now, and the examiner's acceptance test decides it"
             );
 
         });

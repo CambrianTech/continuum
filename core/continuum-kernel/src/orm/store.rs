@@ -63,7 +63,7 @@ pub enum OrmStoreError {
 
     /// An adapter CRUD call returned `success: false`. We propagate
     /// the adapter's error verbatim — diagnosing the underlying
-    /// (sqlite vs postgres vs grid-replicated) failure is the
+    /// (sqlite vs grid-replicated) failure is the
     /// adapter's responsibility, not ours.
     #[error("adapter {operation} failed for collection {collection}: {detail}")]
     AdapterFailed {
@@ -288,7 +288,7 @@ where
 
 /// An entity's row as the storage adapter takes it: the ONE place a store encodes a row.
 fn row_data<P: Serialize>(entity: &P) -> Result<serde_json::Value, OrmStoreError> {
-    serde_json::to_value(entity).map_err(OrmStoreError::SerializeFailed) // storage boundary: the adapter's row format (SQLite/Postgres JSON)
+    serde_json::to_value(entity).map_err(OrmStoreError::SerializeFailed) // storage boundary: the adapter's row format (SQLite JSON)
 }
 
 /// Apply `operations` (built by stores sharing `adapter`) ATOMICALLY: every one commits, or none

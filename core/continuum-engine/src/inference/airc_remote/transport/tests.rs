@@ -240,6 +240,7 @@ fn req(text: &str) -> RemoteInferenceRequest {
         repeat_last_n: None,
         stop_sequences: None,
         tools: None,
+        tail_tools: None,
         tool_choice: None,
         response_format: None,
         active_adapters: None,
@@ -390,4 +391,31 @@ async fn local_adapter_transport_preserves_correlation_id() {
     let expected_cid = request.correlation_id;
     let resp = transport.send_request(request).await.unwrap();
     assert_eq!(resp.correlation_id, expected_cid);
+}
+
+// what this catches (card 03660a77, IntelMac 10-23): a seat's typed overload refusal must
+// reach the requester as SeatOverloaded, not as a peer failure read from its text, or her
+// next act asks the full seat again (Paige: 13 refusals before she moved). Any other
+// refusal, and an older seat's untyped error, stays PeerAdapterFailed.
+#[test]
+fn a_typed_overload_refusal_is_seat_overloaded_and_nothing_else_is() {
+    use continuum_airc_protocol::GenerateRefusal;
+    let full =
+        AircCommandResponse::refused("seat overloaded: 2 of 2", GenerateRefusal::Overloaded);
+    assert!(matches!(
+        reply_result(full),
+        Err(RemoteInferenceError::SeatOverloaded { message }) if message.contains("2 of 2")
+    ));
+    for other in [
+        AircCommandResponse::refused("late", GenerateRefusal::Expired),
+        AircCommandResponse::error("seat overloaded: an older seat, untyped"),
+    ] {
+        assert!(matches!(
+            reply_result(other),
+            Err(RemoteInferenceError::PeerAdapterFailed { .. })
+        ));
+    }
+    let wire = serde_json::json!({"status": "error", "message": "old"});
+    let old: AircCommandResponse = serde_json::from_value(wire).expect("decodes"); // boundary: an older seat's wire error
+    assert_eq!(old.refusal(), None);
 }

@@ -12,7 +12,6 @@ use std::collections::HashMap;
 use std::time::Instant;
 use ts_rs::TS;
 
-use super::genome_paging::GenomeAdapterInfo;
 
 // =============================================================================
 // TYPES (ts-rs generated)
@@ -269,33 +268,6 @@ impl DomainClassifier {
         }
     }
 
-    /// Rebuild domain→adapter mappings from current adapter state.
-    /// Call after genome sync or adapter registration.
-    pub fn sync_from_adapters(&mut self, adapters: &[GenomeAdapterInfo]) {
-        // Clear all adapter mappings first
-        for vocab in self.domains.values_mut() {
-            vocab.adapter_name = None;
-        }
-
-        for adapter in adapters {
-            let domain = adapter.domain.to_lowercase();
-
-            // If domain already exists, just update the adapter mapping
-            if let Some(vocab) = self.domains.get_mut(&domain) {
-                vocab.adapter_name = Some(adapter.name.clone());
-            } else {
-                // New domain from adapter — create vocabulary with adapter name as keyword
-                self.domains.insert(
-                    domain.clone(),
-                    DomainVocabulary {
-                        keywords: vec![domain.clone(), adapter.name.to_lowercase()],
-                        adapter_name: Some(adapter.name.clone()),
-                    },
-                );
-            }
-        }
-    }
-
     /// Classify text into a skill domain.
     /// Returns the best-matching domain with confidence and adapter info.
     ///
@@ -537,19 +509,6 @@ pub fn score_interaction_quality(
 mod tests {
     use super::*;
 
-    fn make_adapter(name: &str, domain: &str) -> GenomeAdapterInfo {
-        GenomeAdapterInfo {
-            name: name.to_string(),
-            domain: domain.to_string(),
-            size_mb: 50.0,
-            priority: 0.5,
-            is_loaded: false,
-            last_used_ms: 0,
-            trained_model_name: None,
-            compaction: None,
-        }
-    }
-
     #[test]
     fn test_classify_code_domain() {
         let classifier = DomainClassifier::new();
@@ -611,32 +570,6 @@ mod tests {
     }
 
     #[test]
-    fn test_sync_from_adapters_maps_domains() {
-        let mut classifier = DomainClassifier::new();
-        let adapters = vec![
-            make_adapter("ts-expert", "code"),
-            make_adapter("chat-bot", "conversation"),
-        ];
-        classifier.sync_from_adapters(&adapters);
-
-        let result = classifier.classify("Fix this TypeScript import error in the API endpoint");
-        assert_eq!(result.domain, "code");
-        assert_eq!(result.adapter_name, Some("ts-expert".to_string()));
-    }
-
-    #[test]
-    fn test_sync_from_adapters_creates_new_domain() {
-        let mut classifier = DomainClassifier::new();
-        let adapters = vec![make_adapter("plumbing-expert", "plumbing")];
-        classifier.sync_from_adapters(&adapters);
-
-        // "plumbing" keyword should now be recognized
-        let result = classifier.classify("I need help with plumbing under the sink");
-        assert_eq!(result.domain, "plumbing");
-        assert_eq!(result.adapter_name, Some("plumbing-expert".to_string()));
-    }
-
-    #[test]
     fn test_register_domain_keywords() {
         let mut classifier = DomainClassifier::new();
         classifier.register_domain_keywords(
@@ -661,16 +594,6 @@ mod tests {
     }
 
     #[test]
-    fn test_adapter_for_domain() {
-        let mut classifier = DomainClassifier::new();
-        assert!(classifier.adapter_for_domain("code").is_none());
-
-        classifier.sync_from_adapters(&[make_adapter("ts-expert", "code")]);
-        assert_eq!(classifier.adapter_for_domain("code"), Some("ts-expert"));
-        assert!(classifier.adapter_for_domain("unknown").is_none());
-    }
-
-    #[test]
     fn test_classification_speed() {
         let classifier = DomainClassifier::new();
         // Warm up — first call may be slow due to cache effects
@@ -690,44 +613,6 @@ mod tests {
             "Classification should be <{}us, was {}us",
             threshold,
             result.decision_time_us
-        );
-    }
-
-    #[test]
-    fn test_domain_summary() {
-        let mut classifier = DomainClassifier::new();
-        classifier.sync_from_adapters(&[make_adapter("ts-expert", "code")]);
-
-        let summary = classifier.domain_summary();
-        let code_entry = summary.iter().find(|(d, _)| d == "code");
-        assert!(code_entry.is_some());
-        assert!(code_entry.unwrap().1, "Code domain should have adapter");
-
-        let conv_entry = summary.iter().find(|(d, _)| d == "conversation");
-        assert!(conv_entry.is_some());
-        assert!(
-            !conv_entry.unwrap().1,
-            "Conversation domain should NOT have adapter"
-        );
-    }
-
-    #[test]
-    fn test_resync_clears_old_mappings() {
-        let mut classifier = DomainClassifier::new();
-
-        // First sync: code has adapter
-        classifier.sync_from_adapters(&[make_adapter("ts-expert", "code")]);
-        assert_eq!(classifier.adapter_for_domain("code"), Some("ts-expert"));
-
-        // Second sync: different adapter set, code no longer covered
-        classifier.sync_from_adapters(&[make_adapter("chat-bot", "conversation")]);
-        assert!(
-            classifier.adapter_for_domain("code").is_none(),
-            "Code adapter should be cleared after resync"
-        );
-        assert_eq!(
-            classifier.adapter_for_domain("conversation"),
-            Some("chat-bot")
         );
     }
 

@@ -60,17 +60,21 @@ impl LlamaServerProcess {
         // any page on disk. Save each attributed resident before the kill, through the same
         // owner the restore session uses: on the M5 at 2026-10-23 05:09Z a relaunch killed two
         // residents' slots unsaved and their next acts re-prefilled 70k-115k tokens. The
-        // transition has drained every reader, so no turn is decoding. A refusal (no page
-        // dir, an exited engine, an uncertain save) is said and the relaunch goes on.
+        // transition has drained every reader, so no turn is decoding. A failed save
+        // defers replacement rather than destroying the only fresh resident state.
         if had_own_child && !restoring {
             let started = std::time::Instant::now();
-            let outcome = transition.checkpoint_residents(&self.client, &self.root).await.map(|_| ());
+            let outcome = transition.checkpoint_before_replacement(&self.client, &self.root, current).await;
             continuum_base::probe!(target: "continuum_core::inference::llama_server", class = "inference.kv_page.relaunch_checkpoint",
                 ok = outcome.is_ok(),
                 error = %outcome.as_ref().err().map_or("", String::as_str),
                 ms = started.elapsed().as_millis() as u64,
-                "residents' KV saved to their pages before the engine was replaced"
+                "resident checkpoint decision before engine replacement"
             );
+            outcome.map_err(LlamaServerError::Spawn)?;
+        }
+        if self.is_live_lane && !had_own_child && !restoring {
+            self.retire_adopted(&mut transition, current).await?;
         }
         self.kill_child();
 
@@ -98,69 +102,22 @@ impl LlamaServerProcess {
                 })?;
         }
 
-        // Fresh claim on the live lane: reap a crashed predecessor's orphaned
-        // llama-server if its pidfile still names one holding our port, so the
-        // bind below succeeds instead of failing loud against it. This is reached
-        // ONLY when reconcile decided NOT to adopt (wrong model/genome, or the
-        // port is unreachable) — a HEALTHY orphan serving the right model is
-        // adopted for free upstream (`ensure_model_serving` → `AlreadyServing`,
-        // zero reload) and never reaches `serve`. The reap is identity-verified
-        // (never a reused pid) and a no-op when there is nothing to reclaim; if a
-        // FOREIGN squatter we can't reclaim holds the port, the spawn's bind fails
-        // loud rather than fleeing to a GPU-competing port
-        // ([[fallbacks-are-illegal-fail-loud]]).
-        if self.is_live_lane && !had_own_child && !restoring {
-            let outcome = crate::inference::lane_pidfile::reclaim(port).await;
-            continuum_base::probe!(target: "continuum_core::inference::llama_server", class = "serving.lane_reclaim",
-                port = port,
-                outcome = format!("{outcome:?}").as_str(),
-                "fresh-claim reclaim of canonical serving port before spawn",
-            );
-        }
-
-        // KILL-VERIFY GATE (2026-07-23 ready-flap case): llama-server does NOT
-        // retry a lost bind — spawned against a still-held port it exits
-        // instantly and `wait_ready` burns its whole budget polling a corpse,
-        // which is the flap that killed 3,318 live turns in one day. Verify the
-        // port is actually free BEFORE spawning: a short grace absorbs a normal
-        // teardown (a Metal-resident model takes seconds to release); if the
-        // port is STILL held, name the holder — a verified llama-server (the
-        // predecessor whose pidfile was disarmed, an adopted-then-churned
-        // orphan) is reaped and re-verified; anything else fails loud now
-        // instead of wasting the ready budget ([[fallbacks-are-illegal-fail-loud]]).
+        // An occupied listener without retirement authority is never reaped by
+        // command name. Owned and adopted predecessors were handled above.
         if !crate::inference::lane_process::wait_port_free(port, Duration::from_secs(8)).await {
-            if restoring {
-                return Err(LlamaServerError::Spawn(
-                    "restoration refuses an occupied endpoint; no unowned process is reaped".into(),
-                ));
-            }
-            match crate::inference::lane_process::pid_listening_on_port(port) {
-                Some(pid) if crate::inference::lane_process::is_llama_server(pid) => {
-                    continuum_base::probe!(target: "continuum_core::inference::llama_server", class = "serving.lane_kill_verify",
-                        port = port,
-                        holder_pid = pid,
-                        "port still held after teardown grace — reaping the verified llama-server holder",
-                    );
-                    crate::inference::lane_process::kill9(pid);
-                    if !crate::inference::lane_process::wait_port_free(
-                        port,
-                        Duration::from_secs(10),
-                    )
-                    .await
-                    {
-                        return Err(LlamaServerError::Spawn(format!(
-                            "port {port} still held after verified reap of llama-server pid {pid} — refusing to spawn against a bound port"
-                        )));
-                    }
-                }
-                holder => {
-                    return Err(LlamaServerError::Spawn(format!(
-                        "port {port} held by {holder:?} (not a verifiable llama-server) — refusing a blind spawn that would flap ready; free the port or change the lane plan"
-                    )));
-                }
-            }
+            let occupant = match crate::inference::lane_process::pid_listening_on_port(port) {
+                Some(pid) => match crate::inference::lane_process::command_name(pid) {
+                    Some(command) => format!("pid {pid}, command {command:?}"),
+                    None => format!("pid {pid}, command unavailable"),
+                },
+                None => "listener identity unavailable".to_owned(),
+            };
+            return Err(LlamaServerError::Spawn(format!(
+                "port {port} remains occupied ({occupant}); no retirement authority for this listener. \
+                 Have its machine/deployment owner stop it through its supported lifecycle, \
+                 verify the port is free, then retry serving reconciliation"
+            )));
         }
-
         self.mmproj_on_lane.store(
             if prepared.mmproj { 2 } else { 1 },
             std::sync::atomic::Ordering::Relaxed,
@@ -568,26 +525,15 @@ impl LlamaServerProcess {
         if restoring {
             prepared.verify_geometry(context, slots)?;
         }
-        // The engine build the running server reports (`b10765-965d38a90`): its commit names
-        // the state format a page is written in, and a reinstall of the same commit (a new
-        // file mtime) is the same format. Unknown → the engine FILE stands in for it below.
-        let engine_build = self
-            .served_engine_build()
-            .await
-            .ok()
-            .flatten()
-            .and_then(|build| build.rsplit('-').next().map(str::to_string))
-            .filter(|commit| commit.len() >= 7 && commit.bytes().all(|b| b.is_ascii_hexdigit()));
         // Cold lifecycle metadata for paths already resolved by this launcher: the files
         // whose identity a page's KV rests on (model, adapters, MTP draft). If any revision
-        // is unreadable (including a PATH-only engine name), do not carry saved eligibility
-        // across engines. Never probe to rediscover it.
-        let engine_file = engine_build.is_none().then(|| PathBuf::from(&prepared.engine_program));
+        // is unreadable, do not carry saved eligibility across engines. Never probe to
+        // rediscover it. The engine itself is not one: its pages carry their own state
+        // format, which it checks on restore (`KvPageContract::fingerprint`).
         let revisions = match revision_evidence(
             std::iter::once(gguf.clone())
                 .chain(target.adapters.iter().map(|adapter| adapter.path.clone()))
-                .chain(prepared.mtp_draft.iter().cloned())
-                .chain(engine_file),
+                .chain(prepared.mtp_draft.iter().cloned()),
         ) {
             Ok(revisions) => Some(revisions),
             Err((path, error)) => {
@@ -616,8 +562,6 @@ impl LlamaServerProcess {
                     slots,
                     cache_type: page_cache_type,
                     flash_attn: prepared.page_flash_attn,
-                    engine_build,
-                    engine: prepared.engine_program.clone(),
                     revisions,
                 },
             )

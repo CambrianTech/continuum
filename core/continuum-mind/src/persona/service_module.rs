@@ -54,13 +54,13 @@ use uuid::Uuid;
 use crate::cognition::response_orchestrator::PersonaSlot as ResponderPersona;
 use crate::model_registry::Capability;
 use crate::persona::channel_registry::{ChannelRegistry, DEFAULT_BURST_WINDOW_MS};
-use crate::persona::channel_types::ActivityDomain;
+use crate::cognition::conversation::channel_types::ActivityDomain;
 use crate::persona::channel_view::CoherentInput;
 use crate::persona::evaluator::{analyze_burst, BurstEvaluateResult, BurstRespondContext};
-use crate::persona::persona_identity::PersonaIdentity;
+use crate::cognition::conversation::persona_identity::PersonaIdentity;
 use crate::persona::response::{PersonaResponse, RespondInput};
 use crate::persona::turn_context::TurnContext;
-use crate::persona::types::PersonaState;
+use crate::cognition::conversation::types::PersonaState;
 use crate::persona::unified::PersonaCognition;
 use std::collections::HashSet;
 

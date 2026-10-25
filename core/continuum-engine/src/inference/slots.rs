@@ -13,9 +13,10 @@
 //!
 //! **And the key law:** *"we do NOT use strings for keys, we use roomId … the
 //! moment you start prepending strings to uuids is the moment it falls
-//! apart."* The unit of warmth is the ACTIVITY — a persona's conversation in a
-//! room (rooms are 1:1 with activities) — so the key is the typed
-//! [`ActivityKey`] struct of UUIDs. Its predecessor, a
+//! apart."* The unit of warmth is the MIND — one resident's acts in every room
+//! share one page ([`PageKey::Mind`]); a fork acting beside her keeps a page per
+//! room ([`PageKey::Fork`]) — and the key is that typed enum of UUIDs. Its
+//! predecessor, a
 //! `format!("{persona}@{room}")` string, lived half a day; the
 //! `no_string_composite_id_keys_in_serving` ratchet keeps it dead.
 //!
@@ -39,6 +40,10 @@ use crate::paging::pool::{PagedResourcePool, PinHandle, PoolConfig};
 
 mod citizen_slots;
 pub use citizen_slots::*;
+mod page_key;
+pub use page_key::*;
+mod mind_gate;
+pub(crate) use mind_gate::MindTurn;
 mod kv_slot_pool;
 pub use kv_slot_pool::*;
 mod saved_ledger;
@@ -47,6 +52,9 @@ use saved_ledger::{LedgerSnapshot, LoadedLedger};
 #[cfg(test)]
 use saved_ledger::{SavedLedgerFile, LEDGER_FORMAT, SAVED_LEDGER_FILE};
 mod engine_generation;
+mod relaunch_discard;
+pub(crate) use relaunch_discard::{DiscardReason, PendingDiscard};
+use relaunch_discard::DiscardLog;
 pub use engine_generation::*;
 mod placement;
 pub use placement::*;

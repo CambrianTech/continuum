@@ -24,7 +24,7 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
-use crate::persona::focus;
+use crate::cognition::focus;
 use crate::routing::CallerSource;
 use crate::sdk_codegen::{ActionCommand, CommandError, Ctx};
 

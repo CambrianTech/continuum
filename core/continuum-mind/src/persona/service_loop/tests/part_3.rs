@@ -418,7 +418,7 @@ use super::*;
     /// stays complete by construction.
     #[test]
     pub(super) fn role_as_str_preserves_pre_slice3_specialty_format_for_each_role() {
-        // RoleId is already in scope via `use crate::persona::role_template::RoleId`
+        // RoleId is already in scope via `use crate::experience::role::RoleId`
         // at the top of the test module — no per-test import needed.
         let variants: &[RoleId] = &[
             RoleId::Helper,

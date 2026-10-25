@@ -18,3 +18,5 @@ mod bridge_review;
 pub use bridge_review::*;
 mod consume_review_credit;
 pub use consume_review_credit::*;
+mod pending_binding;
+pub use pending_binding::*;

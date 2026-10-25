@@ -57,7 +57,7 @@ use std::time::Duration;
 use uuid::Uuid;
 
 use crate::ipc::positron_source::{AircPresenceUpdate, PRESENCE_UPDATED};
-use crate::persona::room_directory::{load_directory, persist_directory};
+use crate::cognition::room_directory::{load_directory, persist_directory};
 use crate::persona::room_roster_source::AircRosterReader;
 use crate::persona::room_roster_source::{PRESENCE_WINDOW, ROSTER_SCAN};
 use crate::runtime::MessageBus;
@@ -497,7 +497,7 @@ const NODE_PRESENCE_READER_NAME: &str = "continuum-node";
 /// The widget roster must survive **zero resident personas** — a chat
 /// window with no persona present still shows its human occupants. So the
 /// reader is node-scoped, not borrowed from a persona lifecycle. It reuses
-/// the exact non-persona attach shape [`crate::context::agent`] uses
+/// the exact non-persona attach shape the removed agent context used
 /// (`Airc::attach_as` → `AircHandleAdapter`), attaching a heartbeat-less
 /// lurker at a stable node home. `room_roster` routes through the daemon
 /// (`page_recent` is daemon-aware), so the lurker reads every *other*
@@ -546,7 +546,7 @@ pub fn spawn_node_presence_emitter(
         };
         // Join by NAME (never UUID-as-string, which derives a *different*
         // channel — the recurring hazard documented in
-        // `context::agent` + `PersonaAircRuntime`). The reader must share
+        // the removed agent context + `PersonaAircRuntime`). The reader must share
         // the operator's channel or its roster reads land in an empty
         // derived room.
         if let Err(err) = airc.join(&room_name).await {

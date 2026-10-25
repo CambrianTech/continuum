@@ -1,0 +1,39 @@
+[package]
+name = "continuum-experience"
+version = "0.1.0"
+edition = "2021"
+publish = false
+repository = "https://github.com/CambrianTech/continuum"
+
+# Experiences and recipes (THE-JOIN-CONTRACT.md: a room's typed manifest, the recipe it projects
+# from, and the recipe executor that runs a room's pipeline), cut out of continuum-mind along
+# MODULE-ARCHITECTURE.md section 9.2. experience and recipe name each other, so they are one
+# crate; they name nothing in cognition or persona. The mind re-exports both under their old
+# paths.
+
+[dependencies]
+continuum-kernel = { path = "../continuum-kernel" }  # the ORM derive names it (recipe runs)
+continuum-base = { path = "../continuum-base" }
+tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+uuid.workspace = true
+schemars = { version = "0.8", features = ["uuid1"] }
+thiserror.workspace = true
+async-trait.workspace = true
+airc-core.workspace = true
+airc-lib.workspace = true
+tracing.workspace = true
+ts-rs.workspace = true  # TypeScript type generation
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }
+tempfile = "3"
+continuum-kernel = { path = "../continuum-kernel", features = ["test-fixtures"] }
+continuum-positron = { path = "../continuum-positron", features = ["test-fixtures"] }
+
+[features]
+default = []
+# Test-only code (the fixed room-purpose source, the executor's test hooks); production
+# binaries never build with it. The mind's test-fixtures forwards here.
+test-fixtures = ["continuum-kernel/test-fixtures"]

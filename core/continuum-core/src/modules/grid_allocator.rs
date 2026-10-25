@@ -139,7 +139,7 @@ pub(crate) struct GridFacts {
     /// Each local mind's OWN role, as the spawner stamped it on the live roster (card
     /// ccb316a7). A mind absent here is seated as the first role — the pre-card
     /// behaviour, kept only for a mind the spawner never stamped.
-    pub mind_roles: Vec<(Uuid, crate::persona::role_template::RoleId)>,
+    pub mind_roles: Vec<(Uuid, crate::experience::role::RoleId)>,
     /// The recipe's resident citizens — role + what each DECLARES of a lane
     /// (`CitizenRequirement`). The allocator's roles and floors are `roles_from` over
     /// exactly these (#4271), never a second fold.
@@ -262,7 +262,7 @@ pub(crate) fn build_inputs(f: &GridFacts, book: &mut OfferBook) -> GridInputs {
         roles,
         minds,
         nodes,
-        minds_per_lane: crate::persona::health_ledger::MINDS_PER_LANE_STARVED_ABOVE as u32,
+        minds_per_lane: crate::cognition::health_ledger::MINDS_PER_LANE_STARVED_ABOVE as u32,
         holds,
         floors,
     }
@@ -404,7 +404,7 @@ impl Inner {
             .collect();
         let registry = crate::persona::airc_runtime_registry::PersonaAircRuntimeRegistry::try_global();
         let minds: Vec<Uuid> = registry.as_ref().map(|r| r.live_personas()).unwrap_or_default(); // unwrap_or_default: no registry = no residents yet
-        let mind_roles: Vec<(Uuid, crate::persona::role_template::RoleId)> = registry
+        let mind_roles: Vec<(Uuid, crate::experience::role::RoleId)> = registry
             .as_ref()
             .map(|r| minds.iter().filter_map(|&id| r.role_of(id).map(|role| (id, role))).collect())
             .unwrap_or_default(); // unwrap_or_default: no registry = no residents, no roles
@@ -683,7 +683,7 @@ mod tests {
             peers,
             minds,
             mind_roles: vec![],
-            citizens: vec![CitizenRecipe { role: crate::persona::role_template::RoleId::Coder, requirement: None }],
+            citizens: vec![CitizenRecipe { role: crate::experience::role::RoleId::Coder, requirement: None }],
             undeclared_window: Some(70_000),
             hold: None,
         }
@@ -699,7 +699,7 @@ mod tests {
     #[test]
     fn a_mind_is_seated_as_her_own_role_and_a_small_seat_never_holds_a_coder() {
         use crate::experience::recipe::CitizenRequirement;
-        use crate::persona::role_template::RoleId;
+        use crate::experience::role::RoleId;
         let me = Uuid::new_v4();
         let small = Uuid::new_v4();
         let kimi = Uuid::new_v4();

@@ -2,15 +2,15 @@
 //! message (typed, dep-holding).
 //!
 //! Converts the JSON-transport [`InboxMessageRequest`](crate::ipc::InboxMessageRequest)
-//! to the domain [`InboxMessage`](crate::persona::InboxMessage) via the one canonical
+//! to the domain [`InboxMessage`](crate::cognition::conversation::types::InboxMessage) via the one canonical
 //! `to_inbox_message()` seam, then runs the persona's admission gate
-//! ([`admit`](crate::persona::admission_state)) — recording side-effects (admitted
+//! ([`admit`](crate::cognition::admission_state)) — recording side-effects (admitted
 //! engram → store, content_hash → dedup, AIRC event_id → replay-protection). Returns
-//! the typed [`AdmissionDecision`](crate::persona::AdmissionDecision) plus funnel
+//! the typed [`AdmissionDecision`](crate::cognition::engram::AdmissionDecision) plus funnel
 //! telemetry (engram count, trace seam count). Captures the owning module's
 //! [`CognitionState`](crate::modules::cognition::CognitionState).
 //!
-//! A [`CognitionTrace`](crate::persona::trace::CognitionTrace) is built and threaded
+//! A [`CognitionTrace`](crate::cognition::trace::CognitionTrace) is built and threaded
 //! through so the seam count comes back in the response (the TS/IPC caller surfaces
 //! admission-funnel telemetry). Read-only persona lookup: fails loud with `NotFound`
 //! when the persona has no cognition engine (created via `cognition/create-engine`).
@@ -23,8 +23,8 @@ use uuid::Uuid;
 
 use crate::ipc::InboxMessageRequest;
 use crate::modules::cognition::CognitionState;
-use crate::persona::trace::CognitionTrace;
-use crate::persona::AdmissionDecision;
+use crate::cognition::trace::CognitionTrace;
+use crate::cognition::engram::AdmissionDecision;
 use crate::sdk_codegen::CommandError;
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, ts_rs::TS, schemars::JsonSchema)]

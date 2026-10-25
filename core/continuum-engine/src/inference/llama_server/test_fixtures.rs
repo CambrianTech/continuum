@@ -334,15 +334,13 @@ where
                 slots: 4,
                 cache_type: Some("q8_0".into()),
                 flash_attn: Some(true),
-                engine_build: None,
-                engine: process.engine_bin().unwrap(),
                 revisions: Some(vec![]),
             },
         )
         .unwrap();
     drop(transition);
     let pool = endpoint.admit().await.unwrap().pool.unwrap();
-    let key = crate::inference::slots::ActivityKey::new(uuid::Uuid::new_v4(), uuid::Uuid::new_v4())
+    let key = crate::inference::slots::PageKey::mind(uuid::Uuid::new_v4())
         .unwrap();
     let sem = Arc::new(tokio::sync::Semaphore::new(4));
     let mut turn = crate::inference::turn_admission::admit_turn(

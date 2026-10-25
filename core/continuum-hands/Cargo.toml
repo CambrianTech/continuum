@@ -35,6 +35,7 @@ syn = { version = "2", features = ["full", "parsing", "extra-traits"] }
 proc-macro2 = { version = "1.0.107", features = ["span-locations"] }  # Span::start for line numbers in the Rust syntax reader
 
 [dev-dependencies]
+continuum-kernel = { path = "../continuum-kernel", features = ["test-fixtures"] }  # every test build of this crate gets the per-process continuum home (card d11d9827)
 tokio = { workspace = true, features = ["test-util"] }
 tempfile = "3"                   # Temp directories for code module tests
 futures = "0.3"

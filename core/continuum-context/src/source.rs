@@ -29,6 +29,13 @@ pub trait Source<T: Block> {
     /// What the allocator weighs this source by at an epoch start; higher keeps detail longer.
     fn priority(&self) -> u8;
 
+    /// Whether its items are input she must read (a notice from her substrate, which lines of
+    /// a file she has open). The allocator grants a required source its floor before any
+    /// optional one, and a window that cannot is a loud under-provision, never a shed.
+    fn required(&self) -> bool {
+        false
+    }
+
     /// The source's current items, oldest first. An item that left the source's state (a
     /// result that aged out) is simply absent: what the view already holds stays until the
     /// next turnover.

@@ -171,14 +171,17 @@ pub(crate) mod test_support {
             crate::genome::fine_tuning::TrainingJobBoard::with_test_storage(artifacts.clone()),
         );
         let trigger = Arc::new(TrainingTriggerModule::with_test_board(job_board.clone()));
-        trigger.state.initialize_storage(adapter).await.unwrap();
+        trigger.state.initialize_storage(adapter.clone()).await.unwrap();
         registry.register(trigger.clone());
         if let Some(ft_registry) = genome {
-            registry.register(Arc::new(GenomeModule::with_test_storage(
+            let genome = Arc::new(GenomeModule::with_test_storage(
                 ft_registry,
                 job_board,
                 artifacts,
-            )));
+            ));
+            // The attempt ledger shares the fixture's database, so a restart reads it back.
+            genome.install_attempt_store(adapter).await.unwrap();
+            registry.register(genome);
         }
         let executor = Arc::new(CommandExecutor::new(registry.clone()));
         registry.install_executor_on_all(executor.clone());

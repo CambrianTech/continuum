@@ -214,7 +214,7 @@ pub enum PersonaResponse {
 /// the caller for proper user-facing error reporting; we don't
 /// silently fall back to "Silent" because that would hide real bugs.
 pub async fn respond(input: RespondInput) -> Result<PersonaResponse, String> {
-    use crate::persona::trace::CognitionTrace;
+    use crate::cognition::trace::CognitionTrace;
 
     let total_start = EpochMs::now().millis();
     let mut trace = CognitionTrace::new();
@@ -250,10 +250,10 @@ pub async fn respond(input: RespondInput) -> Result<PersonaResponse, String> {
 /// later seam fails — partial traces are the diagnostic value.
 async fn respond_inner(
     input: &RespondInput,
-    trace: &mut crate::persona::trace::CognitionTrace,
+    trace: &mut crate::cognition::trace::CognitionTrace,
     total_start: u64,
 ) -> Result<PersonaResponse, String> {
-    use crate::persona::trace::{SEAM_ANALYZE, SEAM_INFERENCE, SEAM_POST_PROCESS};
+    use crate::cognition::trace::{SEAM_ANALYZE, SEAM_INFERENCE, SEAM_POST_PROCESS};
 
     // RTOS-debugger breakpoint: respond cycle entry. Captures who's
     // responding to what, plus the size of the contextual inputs the
@@ -446,7 +446,7 @@ async fn respond_inner(
     // Rust-side gate. The condition is whether the brain's own
     // output matches the documented silence vocabulary — the
     // decision was made inside the LLM, not by us.
-    if crate::persona::prompt_assembly::looks_like_silence_token(&visible_text) {
+    if crate::cognition::prompt_assembly::looks_like_silence_token(&visible_text) {
         // RTOS-debugger breakpoint: the persona chose silence via
         // the PASS affordance. The `reason` is observable so a
         // training loop can analyze when personas use the signal
@@ -526,7 +526,7 @@ async fn run_render(
 ) -> Result<RawRenderOutput, String> {
     use crate::ai::adapter::InferenceDevice;
     use crate::ai::types::TextGenerationRequest;
-    use crate::persona::prompt_assembly::{assemble, HistoryMessage, PromptAssemblyInput};
+    use crate::cognition::prompt_assembly::{assemble, HistoryMessage, PromptAssemblyInput};
 
     // 1. The matched angle for this persona's specialty. Empty string
     //    means "no specific angle" — assemble() handles that gracefully
@@ -691,6 +691,7 @@ async fn run_render(
         repeat_last_n: Some(sampling.repeat_last_n),
         stop_sequences: None,
         tools: None,
+        tail_tools: None,
         tool_choice: None,
         response_format: None,
         active_adapters: None,
@@ -786,7 +787,7 @@ async fn run_render(
 ///   - no user-role messages found → media silently dropped (rare —
 ///     would mean the assembler produced an unusual shape).
 pub fn build_messages_with_media(
-    prompt_messages: Vec<crate::persona::prompt_assembly::PromptMessage>,
+    prompt_messages: Vec<crate::cognition::prompt_assembly::PromptMessage>,
     media: &[MediaItemLite],
     model_caps: &std::collections::HashSet<crate::model_registry::Capability>,
 ) -> Vec<crate::ai::types::ChatMessage> {

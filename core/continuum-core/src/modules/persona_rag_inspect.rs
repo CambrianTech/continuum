@@ -43,7 +43,7 @@ use ts_rs::TS;
 use uuid::Uuid;
 
 use crate::ai::adapter::AIProviderAdapter;
-use crate::persona::airc_source::AircTranscriptReader;
+use crate::cognition::conversation::transcript_reader::AircTranscriptReader;
 use crate::persona::rag_inspect::{
     inspect_persona_rag_with_inference, RagInspection, RagInspectionRequest,
 };
@@ -344,8 +344,8 @@ impl RagInspectResult {
     }
 }
 
-fn allocation_state_to_str(state: crate::persona::rag_budget::AllocationState) -> &'static str {
-    use crate::persona::rag_budget::AllocationState as S;
+fn allocation_state_to_str(state: crate::cognition::rag_budget::AllocationState) -> &'static str {
+    use crate::cognition::rag_budget::AllocationState as S;
     match state {
         S::Satisfied => "satisfied",
         S::FloorOnly => "floor_only",
@@ -468,7 +468,7 @@ pub(crate) async fn inspect_persona(
 mod tests {
     use super::*;
     use crate::commands::persona::rag_inspect::PersonaRagInspect;
-    use crate::persona::airc_source::AircTranscriptReader;
+    use crate::cognition::conversation::transcript_reader::AircTranscriptReader;
     use crate::sdk_codegen::{ActionCommand, Ctx};
     use airc_core::{
         Body, ClientId, EventId, Headers, MentionTarget, PeerId, RoomId, TranscriptEvent,

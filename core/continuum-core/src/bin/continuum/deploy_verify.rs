@@ -26,8 +26,8 @@ use super::*;
 pub(super) const CLI_BUILD_SHA: &str = env!("CONTINUUM_BUILD_GIT_SHA");
 
 /// The build a rollback put back, proven: the restored slot binary's embedded SHA must be
-/// the one the answering core reports. `Ok(sha)` only when they match.
-#[cfg(any(windows, target_os = "macos"))]
+/// the one the answering core reports. `Ok(sha)` only when they match. Every platform: the
+/// dark reboot's rollback (`dark_build::PreviousCore::restore`) proves what came back with it.
 pub(super) async fn restored_build_identity(slot: &Path) -> Result<String, String> {
     let expected = binary_build_sha(slot).await?;
     let actual = running_core_build_sha("restore-verify").await?.unwrap_or_default(); // unwrap_or_default: an absent sha is the mismatch the check below names

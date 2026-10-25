@@ -19,8 +19,8 @@ async fn directed_credit_survives_partial_cancellation_and_atomic_retry() {
         FinishReason, TextGenerationRequest, TextGenerationResponse, UsageMetrics,
     };
     use crate::cognition::llm_deliberation_faculty::LlmDeliberationFaculty;
-    use crate::persona::scripted_conversation::ScriptedConversation;
-    use crate::persona::service_loop::PersonaConversation;
+    use crate::cognition::conversation::scripted_conversation::ScriptedConversation;
+    use crate::cognition::conversation::PersonaConversation;
     use crate::persona::training_producer::{
         CapturedCredit, StagedCredit, StagedCreditGeneration,
     };
@@ -153,7 +153,7 @@ async fn directed_credit_survives_partial_cancellation_and_atomic_retry() {
     );
     for (n, receipt) in partial.receipts.iter().enumerate() {
         assert!(matches!(&receipt.outcome,
-            crate::cognition::provenance::GenerationOutcome::Served { model, provider, provider_request_id }
+            crate::ai::provenance::GenerationOutcome::Served { model, provider, provider_request_id }
                 if model == "actual-served-model" && provider == "fixture"
                     && provider_request_id.as_deref() == Some(format!("provider-{n}").as_str())));
     }
@@ -187,7 +187,7 @@ async fn directed_credit_survives_partial_cancellation_and_atomic_retry() {
         "rollback preserves the previous whole row"
     );
     let mut final_receipts = partial.receipts.clone();
-    final_receipts.push(crate::cognition::provenance::GenerationReceipt::faulted(
+    final_receipts.push(crate::ai::provenance::GenerationReceipt::faulted(
         "fault-after-four",
         "transport refused",
     ));

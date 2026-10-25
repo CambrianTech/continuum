@@ -121,7 +121,7 @@ Two facts decide the design:
 | `continuum-context` crate: `epoch` | head plus append-only events (exists, 238 lines, tested) | nothing |
 | `continuum-context`: `stream` | the `Stream` trait, cursors, `Resolution` | nothing |
 | `continuum-context`: `view` | one mind's epoch, its streams, turnover; renders head, events, then the fresh tail | `epoch`, `stream`, `flex` |
-| `continuum-context`: `flex` | the one allocator (`flex_allocate` moves here from `persona::rag_budget`) | nothing |
+| `continuum-context`: `flex` | the one allocator (`flex_allocate` moves here from `cognition::rag_budget`) | nothing |
 | `cognition/context_streams/*` (core) | one adapter per source: action log, open views, notices, board, wall, map, recall, roster, room messages | the source's existing owner |
 | `llm_deliberation_faculty/prompt/view.rs` | asks the view for messages; deletes its own fill, cap and collapse logic | `view` |
 

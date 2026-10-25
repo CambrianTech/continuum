@@ -26,7 +26,7 @@ use crate::runtime::{CommandResult, CommandSchema, ModuleConfig, ModulePriority,
 use std::any::Any;
 use std::sync::atomic::Ordering;
 
-use crate::persona::health_ledger::*;
+use crate::cognition::health_ledger::*;
 mod rest_seats;
 pub use rest_seats::*;
 

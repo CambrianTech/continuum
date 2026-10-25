@@ -40,8 +40,9 @@ use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::persona::airc_source::{AircRagSource, AircTranscriptReader};
-use crate::persona::rag_budget::{
+use crate::cognition::conversation::transcript_reader::AircTranscriptReader;
+use crate::persona::airc_source::AircRagSource;
+use crate::cognition::rag_budget::{
     BudgetAllocation, FlexboxRagBudgetAdapter, RagBudgetAdapter, RagContext, RagSource,
     RagSourceBudget, ReservedTokens, ResolutionPreference,
 };
@@ -493,7 +494,7 @@ pub async fn inspect_persona_rag_with_inference(
 async fn run_inference_probe(
     adapter: Arc<dyn crate::ai::adapter::AIProviderAdapter>,
     persona_name: &str,
-    items: &[crate::persona::rag_budget::RagItem],
+    items: &[crate::cognition::rag_budget::RagItem],
 ) -> Result<ModelResponseInspection, String> {
     use crate::ai::types::{ChatMessage, MessageContent, ResponseFormat, TextGenerationRequest};
     let adapter_id = adapter.provider_id().to_string();
@@ -549,6 +550,7 @@ async fn run_inference_probe(
         repeat_last_n: None,
         stop_sequences: None,
         tools: None,
+        tail_tools: None,
         tool_choice: None,
         // The substrate's cognition contract: JSON-grammar-constrained
         // output. LlamaCpp wires this to GBNF grammar so the sampler

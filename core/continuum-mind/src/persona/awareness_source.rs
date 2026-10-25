@@ -7,10 +7,10 @@
 use std::sync::Arc;
 
 use crate::persona::active_work_source::AircWorkReader;
-use crate::persona::rag_budget::{ RagContext, RagDelivery, RagItem, RagSource, ResolutionPreference};
+use crate::cognition::rag_budget::{ RagContext, RagDelivery, RagItem, RagSource, ResolutionPreference};
 use crate::persona::viewstate_rag::estimate_tokens;
 
-pub(crate) const SOURCE_ID: &str = "awareness";
+use crate::cognition::faculty_ids::AWARENESS;
 
 /// The heading the block renders under; fixed, so the prefix bytes are stable.
 const HEADING: &str = "Across your activities (loudest first):";
@@ -91,12 +91,12 @@ impl AwarenessRagSource {
 #[async_trait::async_trait]
 impl RagSource for AwarenessRagSource {
     fn source_id(&self) -> &'static str {
-        SOURCE_ID
+        AWARENESS
     }
 
-    fn budget_claim(&self, window: u32, headroom: u32) -> super::rag_budget::RagSourceBudget {
+    fn budget_claim(&self, window: u32, headroom: u32) -> crate::cognition::rag_budget::RagSourceBudget {
         // Existing strip allowance: one short line per activity, window / 48.
-        super::rag_budget::RagSourceBudget::floorless_share(
+        crate::cognition::rag_budget::RagSourceBudget::floorless_share(
             self.source_id(),
             window,
             headroom,
@@ -115,7 +115,7 @@ impl RagSource for AwarenessRagSource {
 
     async fn deliver(&self, ctx: &RagContext, budget: u32, resolution: ResolutionPreference) -> RagDelivery {
         let empty = |res| RagDelivery {
-            source_id: SOURCE_ID.to_string(),
+            source_id: AWARENESS.to_string(),
             items: Vec::new(),
             tokens_used: 0,
             truncated: false,
@@ -152,7 +152,7 @@ impl RagSource for AwarenessRagSource {
             "her awareness strip is in this turn's grounding"
         );
         RagDelivery {
-            source_id: SOURCE_ID.to_string(),
+            source_id: AWARENESS.to_string(),
             items: vec![RagItem {
                 content,
                 tokens,

@@ -12,7 +12,6 @@ use crate::orm::{
     migration::{
         MigrationConfig, MigrationEngine, MigrationHandle, MigrationProgress, MigrationVerification,
     },
-    postgres::PostgresAdapter,
     query::{FieldFilter, SortDirection, SortSpec, StorageQuery},
     sqlite::SqliteAdapter,
     types::{BatchOperation, DataRecord, RecordMetadata, StorageResult, UUID},

@@ -100,7 +100,7 @@ impl ResumeOrMintProvider {
         // self-determination (a persona's identity.key + engrams.sqlite were on
         // disk but unseen). `citizens_kind_dir` is the single source of truth, so
         // the read path can't drift from the write path again.
-        let personas_dir = crate::context::citizens_kind_dir(
+        let personas_dir = crate::identity::citizen_path::citizens_kind_dir(
             continuum_root,
             crate::identity::IdentityKind::Persona,
         );
@@ -487,7 +487,7 @@ mod tests {
         // different literal than the writer — a hardcoded `personas/` here would
         // re-introduce exactly that blind spot).
         let personas_dir =
-            crate::context::citizens_kind_dir(temp.path(), crate::identity::IdentityKind::Persona)
+            crate::identity::citizen_path::citizens_kind_dir(temp.path(), crate::identity::IdentityKind::Persona)
                 .join("Pax");
         let seed_path = personas_dir.join("seed.json");
         let seed = PersonaSeedFile::V1 {
@@ -528,7 +528,7 @@ mod tests {
         // Three seeds on disk with floor=1: every resumed citizen gets a slot.
         // Same production layout + writer helper as the other resume tests.
         let dir =
-            crate::context::citizens_kind_dir(temp.path(), crate::identity::IdentityKind::Persona);
+            crate::identity::citizen_path::citizens_kind_dir(temp.path(), crate::identity::IdentityKind::Persona);
         for i in 0..3u32 {
             let name = format!("Citizen{i}");
             let seed = PersonaSeedFile::V1 {
@@ -559,7 +559,7 @@ mod tests {
         // different literal than the writer — a hardcoded `personas/` here would
         // re-introduce exactly that blind spot).
         let personas_dir =
-            crate::context::citizens_kind_dir(temp.path(), crate::identity::IdentityKind::Persona)
+            crate::identity::citizen_path::citizens_kind_dir(temp.path(), crate::identity::IdentityKind::Persona)
                 .join("Pax");
         let seed_path = personas_dir.join("seed.json");
         let seed = PersonaSeedFile::V1 {
@@ -587,7 +587,7 @@ mod tests {
         let temp = TempDir::new().unwrap();
         // Canonical citizen layout (same helper production scans).
         let citizens =
-            crate::context::citizens_kind_dir(temp.path(), crate::identity::IdentityKind::Persona);
+            crate::identity::citizen_path::citizens_kind_dir(temp.path(), crate::identity::IdentityKind::Persona);
         // Good persona.
         let good = citizens.join("Pax").join("seed.json");
         let seed = PersonaSeedFile::V1 {
@@ -646,7 +646,7 @@ mod tests {
         assert_eq!(empty.identities_available(), 0, "the plan is sized to what will be yielded: nothing");
         assert!(empty.next_persona().await.unwrap().is_none(), "no mint while a team is seated elsewhere");
 
-        let dir = crate::context::citizens_kind_dir(temp.path(), crate::identity::IdentityKind::Persona);
+        let dir = crate::identity::citizen_path::citizens_kind_dir(temp.path(), crate::identity::IdentityKind::Persona);
         for id in ["9d17560c-dbb4-4f9e-86f0-4ceac5d2aff7", "1c1d7cc2-7b4a-4f2e-9f7a-1c1d7cc27b4a"] {
             let pid = Uuid::parse_str(id).unwrap();
             let seed = PersonaSeedFile::V1 { persona_id: pid, agent_name: format!("R{}", &id[..2]), created_at_ms: 1, avatar_vrm: None };

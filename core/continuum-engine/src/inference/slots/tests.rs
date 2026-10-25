@@ -2,6 +2,7 @@
 
 // The confirmed-save ledger: its page format, legacy migration and resident resume.
 mod ledger;
+mod adopted_checkpoint;
 
     // what this catches (card 9e3350bd; the 5090 2026-10-11, build 6148): the heartbeat's smoke
     // probe ran on a one-slot lane's only slot, replacing the resident's KV, and the next save
@@ -172,8 +173,100 @@ mod ledger;
         assert!(samples.len() <= STATE_DIRS, "bounded by dirs");
     }
 
-    fn key(p: u128, r: u128) -> ActivityKey {
-        ActivityKey::new(Uuid::from_u128(p), Uuid::from_u128(r)).expect("non-nil test ids")
+    /// A distinct page per (p, r). The pool is agnostic to the key class, so these tests
+    /// key distinct pages as forks of one persona; one page per mind is tested on its own.
+    fn key(p: u128, r: u128) -> PageKey {
+        PageKey::fork(Uuid::from_u128(p), Uuid::from_u128(r)).expect("non-nil test ids")
+    }
+
+    /// A resident mind's page: what the ledger persists.
+    fn mind(p: u128) -> PageKey {
+        PageKey::mind(Uuid::from_u128(p)).expect("non-nil test id")
+    }
+
+    // what this catches (card 6b28a445): a relaunch that cannot save (here, quarantined
+    // paging) lost residents' KV with no record, so their next cold turn read as a lost page;
+    // and, per Codex's review, a record made when the kill was SENT reports a loss that may
+    // not have happened. Through the real replacement path: nothing is recorded while the
+    // engine is only quarantined, even on re-entry; its observed exit records only the
+    // minds held without a confirmed save, once; a re-entry after the exit records nothing
+    // more; the record survives the pool's replacement and is taken exactly once.
+    #[tokio::test]
+    async fn a_relaunch_records_unsaved_residents_only_at_the_observed_exit_and_once() {
+        let dir = SlotDirectory { endpoints: dashmap::DashMap::new() };
+        let endpoint = dir.endpoint("test://relaunch");
+        let mut transition = endpoint.transition().await;
+        let generation = transition.start_generation().expect("first generation");
+        let pool = Arc::new(KvSlotPool::new("test://relaunch", 4));
+        pool.holders.lock().insert(0, mind(1));
+        pool.holders.lock().insert(1, mind(2));
+        pool.holders.lock().insert(2, key(3, 4));
+        pool.note_saved(mind(2));
+        endpoint.state.lock().pool = Some(Some(pool));
+        endpoint.quarantine_paging();
+        let client = reqwest::Client::new();
+
+        for _attempt in 0..2 {
+            transition
+                .checkpoint_before_replacement(&client, "test://relaunch", &|| true)
+                .await
+                .expect("quarantined paging has nothing to save");
+            assert_eq!(endpoint.discarded.lock().take(&mind(1)), None, "the kill is not the death");
+        }
+        generation.observed_exit();
+        transition
+            .checkpoint_before_replacement(&client, "test://relaunch", &|| true)
+            .await
+            .expect("an exited engine has nothing to save");
+        drop(transition);
+        // The next generation's pool replaces this one; the record is the endpoint's.
+        endpoint.state.lock().pool = Some(Some(Arc::new(KvSlotPool::new("test://relaunch", 4))));
+        endpoint.state.lock().ready.send_replace(true); // the replacement verified ready
+
+        let admission = endpoint.admit().await.expect("an open endpoint admits");
+        assert_eq!(admission.take_relaunch_discard(&mind(1)), Some(DiscardReason::PagingUncertain));
+        assert_eq!(admission.take_relaunch_discard(&mind(1)), None, "recorded once, taken once");
+        assert_eq!(admission.take_relaunch_discard(&mind(2)), None, "a saved page restores; nothing was lost");
+        assert_eq!(admission.take_relaunch_discard(&key(3, 4)), None, "a fork dies with its core anyway");
+    }
+
+    // what this catches (card 6b28a445, Codex's review): minds discarded by one relaunch that
+    // never return stayed recorded forever, across every later generation. Retention is one
+    // pool's worth of slots: the latest relaunch is kept whole, older records are evicted
+    // oldest first, and an empty capture evicts nothing.
+    #[tokio::test]
+    async fn discard_records_keep_one_pool_of_slots_across_generations() {
+        let dir = SlotDirectory { endpoints: dashmap::DashMap::new() };
+        let endpoint = dir.endpoint("test://retention");
+        let relaunch = |minds: &[u128]| {
+            let pool = Arc::new(KvSlotPool::new("test://retention", 3));
+            for (slot, m) in minds.iter().enumerate() {
+                pool.holders.lock().insert(slot as u32, mind(*m));
+            }
+            endpoint.state.lock().pool = Some(Some(pool));
+            endpoint.pending_discard(DiscardReason::PagingUncertain).commit();
+        };
+        // One mind per relaunch, so "oldest" is defined: the first is evicted by the fourth.
+        for m in [1, 2, 3, 4] {
+            relaunch(&[m]);
+        }
+        {
+            let mut log = endpoint.discarded.lock();
+            assert_eq!(log.take(&mind(1)), None, "oldest evicted first");
+            for kept in [2, 3, 4] {
+                assert_eq!(log.take(&mind(kept)), Some(DiscardReason::PagingUncertain), "mind {kept} kept");
+            }
+        }
+        relaunch(&[5, 6]);
+        relaunch(&[7, 8, 9]); // a whole pool of slots: the latest relaunch is kept whole
+        relaunch(&[]); // nothing lost evicts nothing
+        let mut log = endpoint.discarded.lock();
+        for evicted in [5, 6] {
+            assert_eq!(log.take(&mind(evicted)), None, "mind {evicted} evicted by a newer relaunch");
+        }
+        for kept in [7, 8, 9] {
+            assert_eq!(log.take(&mind(kept)), Some(DiscardReason::PagingUncertain), "mind {kept} kept");
+        }
     }
 
     // regression for card 6102ac09 (BigMama, 2026-09-26 12:28Z): a turn that reached a
@@ -197,8 +290,6 @@ mod ledger;
             slots: 2,
             cache_type: Some("q8_0".into()),
             flash_attn: Some(true),
-            engine_build: None,
-            engine: "fixture-engine".into(),
             revisions: Some(vec![(
                 "fixture.gguf".into(),
                 73,
@@ -257,8 +348,6 @@ mod ledger;
             slots: 2,
             cache_type: Some("q8_0".into()),
             flash_attn: Some(true),
-            engine_build: None,
-            engine: "fixture-engine".into(),
             revisions: Some(vec![(
                 "fixture.gguf".into(),
                 73,
@@ -322,8 +411,9 @@ mod ledger;
         let fourth = pool.lease(key(7, 4)).await.expect("evicts, not refuses");
         assert!(fourth < 3, "the 4th activity takes a citizen slot, never scratch");
         // Nil is unrepresentable.
-        assert!(ActivityKey::new(Uuid::from_u128(7), Uuid::nil()).is_none());
-        assert!(ActivityKey::new(Uuid::nil(), Uuid::from_u128(1)).is_none());
+        assert!(PageKey::fork(Uuid::from_u128(7), Uuid::nil()).is_none());
+        assert!(PageKey::fork(Uuid::nil(), Uuid::from_u128(1)).is_none());
+        assert!(PageKey::mind(Uuid::nil()).is_none());
     }
 
     // what this catches: eviction leaking slot indices. When a 5th activity
@@ -388,7 +478,10 @@ mod ledger;
         tokio::time::sleep(std::time::Duration::from_millis(5)).await;
         let pa4 = pool.lease_paged(a).await.expect("a after lost page");
         assert!(!pa4.restore, "a lost page must not be offered again");
-        assert_eq!(page_filename(&a), format!("a-{}-{}.bin", a.persona.simple(), a.room.simple()));
+        assert_eq!(
+            page_filename(&a),
+            format!("a-{}-fork-{}.bin", Uuid::from_u128(1).simple(), Uuid::from_u128(1).simple())
+        );
     }
 
     // what this catches: the scratch reservation and the placement law. On a
@@ -416,6 +509,37 @@ mod ledger;
         assert_eq!(class_for(Some("some-future-producer")), SlotClass::Background,
             "unknown purposes default AWAY from citizen slots");
         assert_eq!(class_for(None), SlotClass::Background);
+    }
+
+    // what this catches: a resident's acts in two rooms keyed as two pages (the per-room key
+    // this replaced: every move between rooms paid a restore or a cold prefill for a prefix
+    // her epoch view already shares), and a fork keyed onto her page (an eval exam would
+    // overwrite her warm view and wait behind her act). Plan line 3b, card 424e0961.
+    #[tokio::test]
+    async fn one_mind_acting_in_two_rooms_warms_one_page_and_a_fork_never_shares_it() {
+        use crate::inference::request_body::{ACT_PURPOSE, DELIBERATION_PURPOSE, FORK_ACT_PURPOSE, FORK_DELIBERATION_PURPOSE};
+        let (her, general, academy) = (Uuid::from_u128(31), Uuid::from_u128(32), Uuid::from_u128(33));
+        let act = class_for(Some(ACT_PURPOSE));
+        let pass = class_for(Some(DELIBERATION_PURPOSE));
+        let in_general = act.page_key(Some(her), Some(general)).expect("her act in general has a page");
+        assert_eq!(pass.page_key(Some(her), Some(academy)), Some(in_general), "two rooms, one page");
+        assert_eq!(act.page_key(Some(her), None), Some(in_general), "a mind's page needs no room");
+        assert_eq!(page_filename(&in_general), format!("a-{}.bin", her.simple()));
+
+        let fork = class_for(Some(FORK_ACT_PURPOSE));
+        assert_eq!(fork, class_for(Some(FORK_DELIBERATION_PURPOSE)));
+        assert!(fork.holds_a_page() && act.holds_a_page() && !class_for(Some("cognition/should-respond")).holds_a_page());
+        let exam = fork.page_key(Some(her), Some(general)).expect("a fork in a room has a page");
+        assert_ne!(exam, in_general, "a fork never warms her page");
+        assert_ne!(fork.page_key(Some(her), Some(academy)), Some(exam), "each fork room is its own page");
+        assert_eq!(fork.page_key(Some(her), None), None, "a fork without a room has no page");
+        assert_ne!(page_filename(&exam), page_filename(&in_general));
+
+        // One slot holds her across both rooms: the second room's act is a warm re-lease.
+        let pool = KvSlotPool::new("test://one-mind", 2);
+        let first = pool.lease_paged(in_general).await.expect("general leases");
+        let second = pool.lease_paged(act.page_key(Some(her), Some(academy)).expect("academy page")).await.expect("academy leases");
+        assert_eq!((second.slot, second.already_resident, second.save_first), (first.slot, true, None));
     }
 
     // what this catches: KV-CACHE-ECONOMY §2's arithmetic, as a pinned test. A
@@ -510,8 +634,6 @@ mod ledger;
             slots: 2,
             cache_type: Some("q8_0".into()),
             flash_attn: Some(true),
-            engine_build: None,
-            engine: "fixture-engine".into(),
             revisions: Some(vec![(
                 "fixture.gguf".into(),
                 73,

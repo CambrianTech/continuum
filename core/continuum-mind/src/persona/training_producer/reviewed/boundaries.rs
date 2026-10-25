@@ -3,6 +3,7 @@
 //! training job ran, weights changed, or a candidate earned adoption.
 
 use super::*;
+use crate::cognition::dream_consolidation::BoundaryPage;
 
 const RECOVERY_PAGE_BUDGET: std::time::Duration = std::time::Duration::from_secs(1);
 const RECOVERY_ROW_BUDGET: std::time::Duration = std::time::Duration::from_millis(250);
@@ -28,12 +29,6 @@ pub struct ReviewBoundaryStore {
     executor: Arc<CommandExecutor>,
     persona_name: String,
     persona_id: Uuid,
-}
-
-#[derive(Debug)]
-pub struct BoundaryPage {
-    pub pending: Vec<Uuid>,
-    pub next: Option<String>,
 }
 
 impl ReviewBoundaryStore {
@@ -204,6 +199,21 @@ async fn validate_acceptance<T: Transport>(
     read_one::<_, CreditReviewAcceptance>(conn, name, &key)
         .await?
         .ok_or_else(|| ClientError::Transport("review boundary acceptance disappeared".into()))
+}
+
+#[async_trait::async_trait]
+impl crate::cognition::dream_consolidation::ReviewBoundaryLedger for ReviewBoundaryStore {
+    async fn prepare(&self) -> Result<(), ClientError> {
+        ReviewBoundaryStore::prepare(self).await
+    }
+
+    async fn page(&self, after: Option<String>, limit: usize) -> Result<BoundaryPage, ClientError> {
+        ReviewBoundaryStore::page(self, after, limit).await
+    }
+
+    async fn finish(&self, ids: &[Uuid], eligible_clusters: usize) -> Result<(), ClientError> {
+        ReviewBoundaryStore::finish(self, ids, eligible_clusters).await
+    }
 }
 
 pub(super) async fn is_processed<T: Transport>(

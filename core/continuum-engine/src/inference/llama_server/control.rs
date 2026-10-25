@@ -193,6 +193,12 @@ pub trait LlamaServerControl: Send + Sync {
         Ok(())
     }
 
+    /// Physical launch-stage receipt, advanced immediately before OS spawn.
+    /// Checkpoint refusal and deferred preparation must leave this unchanged.
+    fn last_launch_generation(&self) -> Option<crate::inference::slots::EngineGeneration> {
+        None
+    }
+
     async fn serve_if_current(
         &self,
         target: &ServingTarget,

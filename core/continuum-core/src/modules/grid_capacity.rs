@@ -34,6 +34,9 @@ pub struct GridCapacityModule {
     /// The node's discovered default room — where the grid rendezvous happens today.
     room: RoomId,
     executor_slot: Arc<LateBound<CommandExecutor>>,
+    /// The module registry, to ask the genome module which bases this host trains (card
+    /// 6f05b89d). Read at offer time, so the order modules initialize in never matters.
+    modules: LateBound<crate::runtime::ModuleRegistry>,
     /// Last probed free-GB value — the glass box speaks on CHANGE, not on every beat
     /// (a steady offer is silence; u64::MAX = never probed, so the first beat speaks).
     last_probed_free_gb: AtomicU64,
@@ -45,6 +48,7 @@ impl GridCapacityModule {
             resource_daemon,
             room,
             executor_slot: Arc::new(LateBound::new("grid-capacity::executor")),
+            modules: LateBound::new("grid-capacity::modules"),
             last_probed_free_gb: AtomicU64::new(u64::MAX),
         }
     }
@@ -54,7 +58,18 @@ impl GridCapacityModule {
     /// and offering a guess would be exactly the fabricated-capacity lie the grid's
     /// per-node-fit honesty exists to prevent.
     fn current_offer(&self) -> Option<CapacityOffer> {
-        offer_from_board(&self.resource_daemon.board(), EpochMs::now().millis())
+        offer_from_board(&self.resource_daemon.board(), EpochMs::now().millis(), |base| self.trains_base_here(base))
+    }
+
+    /// Whether a trainer on this host takes LoRA jobs for `base`. Without the genome module
+    /// (not registered, or not yet initialized) nothing is trainable here: the honest answer.
+    fn trains_base_here(&self, base: &str) -> bool {
+        self.modules.cloned().and_then(|modules| modules.get_by_name("genome")).is_some_and(|module| {
+            module
+                .as_any()
+                .downcast_ref::<crate::modules::genome::GenomeModule>()
+                .is_some_and(|genome| genome.trains_base_here(base))
+        })
     }
 }
 
@@ -72,7 +87,8 @@ impl ServiceModule for GridCapacityModule {
         }
     }
 
-    async fn initialize(&self, _ctx: &crate::runtime::ModuleContext) -> Result<(), String> {
+    async fn initialize(&self, ctx: &crate::runtime::ModuleContext) -> Result<(), String> {
+        self.modules.install(Arc::clone(&ctx.registry));
         Ok(())
     }
 
@@ -155,7 +171,11 @@ impl ServiceModule for GridCapacityModule {
 /// lie the grid's per-node-fit honesty exists to prevent). Before 2026-09-14 a
 /// RAM-only host (IntelMac's CPU node) never beaconed at all — one offer all day,
 /// invisible to grid/nodes, the fleet fold and placement (card deb26770).
-pub(crate) fn offer_from_board(board: &crate::resources::LeaseBoard, at_ms: u64) -> Option<CapacityOffer> {
+pub(crate) fn offer_from_board(
+    board: &crate::resources::LeaseBoard,
+    at_ms: u64,
+    trains_here: impl Fn(&str) -> bool,
+) -> Option<CapacityOffer> {
     let serving = crate::inference::llama_server::current_serving();
     let vram = board.kinds.iter().find(|k| k.kind == ResourceKind::Vram);
     let ram = board.kinds.iter().find(|k| k.kind == ResourceKind::Ram);
@@ -192,6 +212,9 @@ pub(crate) fn offer_from_board(board: &crate::resources::LeaseBoard, at_ms: u64)
         // a gate checks membership here and refuses on absence; an older core advertises
         // nothing (serde default), so typed absence is safe by construction.
         capabilities: crate::capacity::gossip::this_build_capabilities(),
+        // What a peer may lease training to us for (card 6f05b89d): the served base, when a
+        // trainer here would take it. A node with no such trainer (IntelMac) advertises none.
+        trainable_bases: serving.active_model.iter().filter(|base| trains_here(base)).cloned().collect(),
     })
 }
 
@@ -208,9 +231,9 @@ mod tests {
             leases: Vec::new(),
             attributions: Vec::new(),
         };
-        let o = offer_from_board(&ram_only, 7).expect("RAM alone is a capacity"); // JUSTIFIED: the invariant under test
+        let o = offer_from_board(&ram_only, 7, |_| false).expect("RAM alone is a capacity"); // JUSTIFIED: the invariant under test
         assert_eq!(o.gpu_total_bytes, 0);
         assert_eq!(o.system_ram_free_bytes, 8 << 30);
-        assert!(offer_from_board(&LeaseBoard { kinds: Vec::new(), leases: Vec::new(), attributions: Vec::new() }, 7).is_none(), "nothing governed = no offer");
+        assert!(offer_from_board(&LeaseBoard { kinds: Vec::new(), leases: Vec::new(), attributions: Vec::new() }, 7, |_| false).is_none(), "nothing governed = no offer");
     }
 }

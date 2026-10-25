@@ -23,7 +23,7 @@
 
     fn plan_named(name: &str) -> crate::persona::spawner_module::MaterializedPersonaPlan {
         crate::persona::spawner_module::MaterializedPersonaPlan {
-            role: crate::persona::role_template::RoleId::Helper,
+            role: crate::experience::role::RoleId::Helper,
             instance: crate::persona::instance_manager::PersonaInstanceInfo {
                 agent_name: name.to_string(),
                 peer_id: crate::identity::PeerId::from_uuid(uuid::Uuid::new_v4()),

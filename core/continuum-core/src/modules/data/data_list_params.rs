@@ -52,7 +52,7 @@ pub struct DataListParams {
 #[serde(rename_all = "camelCase")]
 #[ts(export, export_to = "../../../protocol/typescript/data/AdapterInfo.ts")]
 pub struct AdapterInfo {
-    /// The adapter implementation name (e.g. "sqlite", "postgres").
+    /// The adapter implementation name (e.g. "sqlite").
     pub adapter: String,
     /// The storage handle this info describes.
     pub handle: String,

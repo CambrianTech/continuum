@@ -9,10 +9,10 @@ use crate::ai::types::{
     TextGenerationResponse,
 };
 use crate::inference::airc_remote::AircRemoteInferenceAdapter;
+use crate::cognition::home::PersonaHome;
 use crate::persona::inference_profile::PersonaInferenceProfile;
-use crate::persona::supervisor::PersonaAdapterFactory;
-use crate::persona::home::PersonaHome;
 use crate::persona::model_override::PersonaModelOverride;
+use crate::persona::supervisor::PersonaAdapterFactory;
 use airc_lib::Airc;
 use async_trait::async_trait;
 use std::sync::atomic::{AtomicU64, AtomicU8, Ordering};
@@ -40,6 +40,8 @@ pub struct PlacementSwitch {
     /// Her home dir, for persisting an offload as her override.
     home: Option<PersonaHome>,
     seat: AtomicU8,
+    capacity_changes: tokio::sync::watch::Sender<()>,
+    unavailable: Arc<dyn AIProviderAdapter>,
     moved_at_ms: AtomicU64,
     /// Has a retirement of her bound seat already been SAID? The retirement itself stays
     /// idempotent and unconditional (the self-seat path needs the second call — the first
@@ -73,7 +75,15 @@ impl PlacementSwitch {
         airc: Option<Arc<tokio::sync::OnceCell<Arc<Airc>>>>,
         home: Option<PersonaHome>,
     ) -> Self {
-        let mut me = Self::home(persona_id, persona_name, None, local_factory, profile, airc, home);
+        let mut me = Self::home(
+            persona_id,
+            persona_name,
+            None,
+            local_factory,
+            profile,
+            airc,
+            home,
+        );
         *me.peer.get_mut().unwrap_or_else(|p| p.into_inner()) = Some(peer); // JUSTIFIED unwrap_or_else: a poisoned lock still holds the value; the switch is bookkeeping, never truth
         *me.remote.get_mut().unwrap_or_else(|p| p.into_inner()) = Some(remote); // JUSTIFIED unwrap_or_else: a poisoned lock still holds the value; the switch is bookkeeping, never truth
         me.seat = AtomicU8::new(Seat::Remote as u8);
@@ -97,6 +107,8 @@ impl PlacementSwitch {
         }
         Self {
             persona_id,
+            capacity_changes: tokio::sync::watch::channel(()).0,
+            unavailable: Arc::new(NoSeat(persona_name.clone())),
             provider_label: "placement-switch".to_string(),
             name_label: format!("placement switch for {persona_name}"),
             home_model: profile.model_id.clone(),
@@ -175,7 +187,12 @@ impl PlacementSwitch {
         *self.peer.write().unwrap_or_else(|p| p.into_inner()) = Some(peer); // JUSTIFIED unwrap_or_else: a poisoned lock still holds the value; the switch is bookkeeping, never truth
         self.set_seat(Seat::Remote, now_ms);
         if let Some(home) = &self.home {
-            let over = PersonaModelOverride::new_remote(model, Some("placement:fleet".to_string()), now_ms, &peer.to_string());
+            let over = PersonaModelOverride::new_remote(
+                model,
+                Some("placement:fleet".to_string()),
+                now_ms,
+                &peer.to_string(),
+            );
             if let Err(e) = over.write(home) {
                 continuum_base::probe!(
                     class = "persona.placement.override_unpersisted",
@@ -309,17 +326,21 @@ impl PlacementSwitch {
 
     fn current(&self) -> Arc<dyn AIProviderAdapter> {
         let home = || self.local.get().and_then(|l| l.clone());
-        let remote = || self.remote_adapter().map(|r| r as Arc<dyn AIProviderAdapter>);
+        let remote = || {
+            self.remote_adapter()
+                .map(|r| r as Arc<dyn AIProviderAdapter>)
+        };
         match self.seat() {
             Seat::Home => home().or_else(remote),
             Seat::Remote => remote().or_else(home),
         }
-        .unwrap_or_else(|| Arc::new(NoSeat(self.persona_name.clone()))) // JUSTIFIED unwrap_or_else: no seat at all answers by NAME on every generation, never silently
+        .unwrap_or_else(|| self.unavailable.clone()) // JUSTIFIED unwrap_or_else: no seat at all answers by NAME on every generation, never silently
     }
 
     fn set_seat(&self, seat: Seat, now_ms: u64) {
         self.seat.store(seat as u8, Ordering::Relaxed);
         self.moved_at_ms.store(now_ms, Ordering::Relaxed);
+        self.capacity_changes.send_replace(());
     }
 
     /// Apply one decided move. Returns the org-room line for a move, `None` for Stay/Park
@@ -345,7 +366,7 @@ impl PlacementSwitch {
                     return None;
                 }
                 self.set_seat(Seat::Home, now_ms);
-                crate::persona::health_ledger::note_move(false);
+                crate::cognition::health_ledger::note_move(false);
                 continuum_base::probe!(
                     class = "persona.placement.fell_home",
                     persona = %self.persona_name,
@@ -372,7 +393,7 @@ impl PlacementSwitch {
             }
             PlacementMove::ReturnRemote => {
                 self.set_seat(Seat::Remote, now_ms);
-                crate::persona::health_ledger::note_move(false);
+                crate::cognition::health_ledger::note_move(false);
                 continuum_base::probe!(
                     class = "persona.placement.returned",
                     persona = %self.persona_name,
@@ -405,29 +426,59 @@ impl AIProviderAdapter for NoSeat {
     fn default_model(&self) -> &str {
         ""
     }
-    async fn generate_text(&self, _request: TextGenerationRequest) -> Result<TextGenerationResponse, String> {
-        Err(format!("{}: no seat — her home adapter could not be built and no remote lane is bound", self.0))
+    async fn generate_text(
+        &self,
+        _request: TextGenerationRequest,
+    ) -> Result<TextGenerationResponse, String> {
+        Err(format!(
+            "{}: no seat — her home adapter could not be built and no remote lane is bound",
+            self.0
+        ))
     }
 }
 
 #[async_trait]
 impl AIProviderAdapter for PlacementSwitch {
     async fn prepare_generation(&self) {
-        if self.seat() == Seat::Remote && self.lane_cold() {
-            // A cold breaker is typed, pre-dispatch evidence. Do not spend another
-            // act asking the same peer, or wait for the next placement beacon.
-            // FallHome retains the remote adapter and its breaker; ordinary
-            // placement policy still owns returning to that peer later.
-            // This changes inference routing only: RemoteInferenceRequest carries
-            // a prompt and returns text, while residency, hands and workspace
-            // remain here. It therefore does not require workspace migration.
-            // The synchronous request path records the existing fell_home probe;
-            // unlike the grid tick, it does not publish an org-room announcement.
-            let _ = self.apply(
-                &PlacementMove::FallHome { reason: "remote circuit breaker cold before generation" },
-                continuum_base::time::EpochMs::now().millis(),
-                SeatFit::default(),
-            ).await;
+        if self.seat() != Seat::Remote {
+            return;
+        }
+        // Typed, pre-dispatch evidence that the seat cannot serve this act. Do not spend
+        // another act asking the same peer, or wait for the next placement beacon:
+        // - a cold breaker (deadline misses in a row);
+        // - the seat refused her last request with every lane busy (card 03660a77:
+        //   IntelMac 10-23, Paige asked a full M5 13 times before the placement tick
+        //   moved her). Cleared only once she has actually moved: with no home lane, or
+        //   this future dropped mid-build, the refusal stands for her next act.
+        // FallHome retains the remote adapter and its breaker; ordinary placement policy
+        // (a beacon offering a slot, the move cooldown) still owns returning her. This
+        // changes inference routing only: RemoteInferenceRequest carries a prompt and
+        // returns text, while residency, hands and workspace remain here, so it needs no
+        // workspace migration. The synchronous request path records the existing
+        // fell_home probe; unlike the grid tick, it does not publish an org-room line.
+        let overloaded = self
+            .remote_adapter()
+            .filter(|remote| remote.seat_overloaded());
+        let reason = if self.lane_cold() {
+            "remote circuit breaker cold before generation"
+        } else if overloaded.is_some() {
+            SEAT_OVERLOADED_REASON
+        } else {
+            return;
+        };
+        let now = continuum_base::time::EpochMs::now().millis();
+        let _ = self
+            .apply(&PlacementMove::FallHome { reason }, now, SeatFit::default())
+            .await;
+        if self.seat() == Seat::Home {
+            if let Some(remote) = overloaded {
+                remote.clear_seat_overloaded();
+            }
+        } else {
+            // No home lane: she stays on the seat, said so by name. The refusal stands.
+            let _ = self
+                .apply(&PlacementMove::Park { reason }, now, SeatFit::default())
+                .await;
         }
     }
 
@@ -447,9 +498,31 @@ impl AIProviderAdapter for PlacementSwitch {
     fn api_style(&self) -> ApiStyle {
         self.current().api_style()
     }
-    fn warm_ahead(&self, persona: Uuid, room: Uuid) {
-        self.current().warm_ahead(persona, room)
+    fn warm_ahead(&self, page: crate::inference::slots::PageKey) {
+        self.current().warm_ahead(page)
     }
+    fn capacity_changed(
+        &self,
+        observed: Option<u32>,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + '_>> {
+        let mut routes = self.capacity_changes.subscribe();
+        let target = self.current();
+        Box::pin(async move {
+            loop {
+                let changed = target.capacity_changed(observed);
+                if !Arc::ptr_eq(&target, &self.current()) || self.live_served_window() != observed {
+                    return;
+                }
+                tokio::select! {
+                    result = routes.changed() => {
+                        if result.is_err() { return std::future::pending::<()>().await; }
+                    }
+                    _ = changed => return,
+                }
+            }
+        })
+    }
+
     fn live_served_window(&self) -> Option<u32> {
         self.current().live_served_window()
     }
@@ -470,7 +543,10 @@ impl AIProviderAdapter for PlacementSwitch {
     ) -> Result<TextGenerationResponse, crate::ai::inference_error::InferenceError> {
         self.current().generate_stream_checked(request, sink).await
     }
-    async fn generate_text(&self, request: TextGenerationRequest) -> Result<TextGenerationResponse, String> {
+    async fn generate_text(
+        &self,
+        request: TextGenerationRequest,
+    ) -> Result<TextGenerationResponse, String> {
         self.current().generate_text(request).await
     }
     async fn generate_stream(
@@ -480,7 +556,10 @@ impl AIProviderAdapter for PlacementSwitch {
     ) -> Result<TextGenerationResponse, String> {
         self.current().generate_stream(request, sink).await
     }
-    async fn create_embedding(&self, request: EmbeddingRequest) -> Result<EmbeddingResponse, String> {
+    async fn create_embedding(
+        &self,
+        request: EmbeddingRequest,
+    ) -> Result<EmbeddingResponse, String> {
         self.current().create_embedding(request).await
     }
     async fn health_check(&self) -> HealthStatus {

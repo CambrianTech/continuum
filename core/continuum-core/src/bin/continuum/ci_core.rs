@@ -170,7 +170,7 @@ pub(super) async fn prepare_ci_core(repo: &Path, tip: &str, platform: &str, down
         let expected = git_in(repo, &["rev-parse", "HEAD:core/vendor/llama.cpp"])?;
         continuum_cli_lifecycle::prebuilt_artifact::fresh_engine_verdict(&manifest, expected.trim())?;
     }
-    let root = continuum_core::paths::artifacts::root(Path::new(&home_dir()?))?;
+    let root = continuum_core::paths::artifacts::root_under(&continuum_core::paths::continuum_home()?)?;
     check_capacity(&root, 0).await?;
     let dir = root.join(format!("{}-{}", &tip[..12], uuid::Uuid::new_v4()));
     if let Err(error) = std::fs::create_dir_all(&root) { return Err(write_failure(&root, 0, error).await); }

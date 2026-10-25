@@ -2,10 +2,11 @@
 //! shares with the one before it: the design gate of MIND-CONTEXT-AND-ENGINE-CONFIG.md
 //! ("offline replay at >= 90% prefix").
 //!
-//! `cargo run -p continuum-context --example replay -- [--room <id prefix>] [--purpose <suffix>] <prompt-capture.jsonl>...`
+//! `cargo run -p continuum-context --example replay -- [--room <id prefix>] [--purpose <suffix>] [--tools <schemas.json>] <prompt-capture.jsonl>...`
 //!
-//! Each captured request is cut the way the prompt assembly builds it: the system prompt is
-//! the head; room turns (`[occurred <when>] <who>:`) are her conversation, keyed by when and
+//! Each captured request is cut the way the prompt assembly builds it: the system prompt and
+//! then the tool schemas, where the chat template renders them, are the head (a head that
+//! changes between acts restarts the view: nothing after it is reusable); room turns (`[occurred <when>] <who>:`) are her conversation, keyed by when and
 //! who; results, pointers, the steps ledger and the action lines of working memory are ONE
 //! action log keyed by `#n`; each `[faculty]` block and each list-shaped block (open views,
 //! notices, recall, thoughts) is a source of `- ` items; whatever is left (facts, clock, the
@@ -17,7 +18,13 @@
 //! over the way the core's `fit_view` does, under two rules: `whole` (before 2026-10-23: a
 //! source granted all it wants restarts whole, a cut one at half its grant) and `reserved`
 //! (`start_grants`: the grounding blocks whole; the conversation, results and thoughts at
-//! most half of what is left, and at most that less one act's appends).
+//! most half of what is left, and at most that less one act's appends). Each rule runs under
+//! two source orders (`Order`): her conversation first (before 2026-10-24), and the settled
+//! blocks first, as the core's `view_sources` now places them.
+//!
+//! `--tools <schemas.json>` sends every act this one tool surface instead of the one it
+//! captured: the stable surface of goal 10, where the schemas are the same bytes on every act.
+//! Each run prints the tool share of the prompt (schema chars over request chars).
 //!
 //! `--chars-per-token <r>` prices the window at the core's own estimate instead of the
 //! engine's bill; `--keyed-turn` keys the standing turn text into the epoch; `--trace`
@@ -42,14 +49,34 @@ fn priority(source: &str) -> u8 {
     }
 }
 
-/// Where a source renders, as the core's `view_sources` orders them: her conversation, her
-/// actions, each standing block, her thoughts.
-fn order(source: &str) -> u8 {
-    match source {
-        "conversation" => 0,
-        "actions" => 1,
-        "working-memory" => 3,
-        _ => 2,
+/// Where the view's sources render at an epoch start.
+#[derive(Clone, Copy, Debug)]
+enum Order {
+    /// Before 2026-10-24: her conversation, her actions, each block, her thoughts.
+    ConversationFirst,
+    /// The core's `view_sources`: the settled blocks (standing and board churn, as
+    /// `deliberation_prompt::churn_of` classes them), her actions, her conversation, the
+    /// blocks that count or change within an epoch (the kanban, recall), her thoughts. A turnover keeps the prefix up to the
+    /// first source whose front changed, and a growing source changes at its front.
+    SettledFirst,
+}
+
+fn order(rule: Order, source: &str) -> u8 {
+    match rule {
+        Order::ConversationFirst => match source {
+            "conversation" => 0,
+            "actions" => 1,
+            "working-memory" => 3,
+            _ => 2,
+        },
+        Order::SettledFirst => match source {
+            "room-doctrine" | "room-roster" | "media-perception" | "mission" | "workspace-map" => 0,
+            "roster" | "room-wall" | "active-work" => 1,
+            "actions" => 3,
+            "conversation" => 4,
+            "working-memory" => 6,
+            _ => 5,
+        },
     }
 }
 
@@ -195,8 +222,8 @@ fn turn_key(text: &str) -> Option<String> {
     Some(format!("{when} {who}"))
 }
 
-fn cut(request: &serde_json::Value, keyed_turn: bool) -> Cut {
-    let head = request["systemPrompt"].as_str().unwrap_or_default().to_owned();
+fn cut(request: &serde_json::Value, tools: &str, keyed_turn: bool) -> Cut {
+    let head = format!("{}\n{tools}", request["systemPrompt"].as_str().unwrap_or_default());
     let mut sources: BTreeMap<String, Vec<Item<String>>> = BTreeMap::new();
     let mut tail = Vec::new();
     let mut sent = head.clone();
@@ -212,7 +239,7 @@ fn cut(request: &serde_json::Value, keyed_turn: bool) -> Cut {
             push("conversation", vec![item(key, text)]);
         } else if let Some(seq) = seq_after(&text, "[result #") {
             push("actions", vec![item(seq.to_string(), text)]);
-        } else if text.starts_with("Recent results of your own actions") {
+        } else if text.starts_with("Recent results of your own actions") || text.starts_with("[actions] ") {
             push("actions", vec![item("banner".into(), text)]);
         } else if text.starts_with("Older results, collapsed to pointers") {
             for line in text.lines().skip(1) {
@@ -234,6 +261,11 @@ fn cut(request: &serde_json::Value, keyed_turn: bool) -> Cut {
                 .filter(|item| !item.full.starts_with("- [action #"))
                 .collect();
             push("working-memory", thoughts);
+        } else if text.starts_with("My own recent thoughts") {
+            push("working-memory", vec![item("working-memory/header".into(), text)]);
+        } else if text.starts_with("- ") {
+            // One of her thoughts, a message of its own since the view keyed them.
+            push("working-memory", vec![item(text.clone(), text)]);
         } else if text.starts_with("[open views]") {
             push("open-views", bullets("open-views", &text));
         } else if text.starts_with("Notices my substrate posted") {
@@ -278,9 +310,11 @@ fn percent(values: &[f64]) -> String {
 
 /// Replay `cuts` (one resident's requests in one room, oldest first) through the view fitted
 /// to `window` characters for head, view and tail, turning over under `rule`.
-fn replay(label: &str, cuts: &[Cut], window: usize, rule: Rule, keyed_turn: bool, trace: bool) -> Result<(), Box<dyn std::error::Error>> {
+fn replay(label: &str, cuts: &[Cut], window: usize, (rule, placed): (Rule, Order), keyed_turn: bool, trace: bool) -> Result<(), Box<dyn std::error::Error>> {
     let mut view: Option<View<String>> = None;
     let mut previous_sent: Option<&str> = None;
+    let mut previous_head: Option<&str> = None;
+    let mut head_changes = 0usize;
     let mut previous_view = String::new();
     let (mut sent_share, mut view_share, mut view_prefill, mut turnovers) = (Vec::new(), Vec::new(), Vec::new(), 0usize);
     // What each source appended per act, and the fresh tail: where the prefill goes.
@@ -290,7 +324,7 @@ fn replay(label: &str, cuts: &[Cut], window: usize, rule: Rule, keyed_turn: bool
     for cut in cuts {
         let mut sources: Vec<Captured> =
             cut.sources.iter().map(|(name, items)| Captured { name: name.clone(), items: items.clone() }).collect();
-        sources.sort_by_key(|source| order(&source.name));
+        sources.sort_by_key(|source| order(placed, &source.name));
         let refs: Vec<&dyn Source<String>> = sources.iter().map(|s| s as &dyn Source<String>).collect();
         let tail = cut.tail.join("\n");
         let tail_chars = tail.chars().count();
@@ -306,6 +340,12 @@ fn replay(label: &str, cuts: &[Cut], window: usize, rule: Rule, keyed_turn: bool
         }
         // What the window leaves her view's sources this act, and the view whole (head
         // included) may grow to before it turns over: the core's `granted + room`.
+        // The head is fixed for an epoch: one that changed re-prefills everything after it.
+        if previous_head.is_some_and(|head| head != cut.head) {
+            view = None;
+            head_changes += 1;
+        }
+        previous_head = Some(&cut.head);
         let head_chars = cut.head.chars().count();
         let available = window.saturating_sub(head_chars + tail_chars);
         let whole = |claims: &[continuum_context::view::Claim]| claims.iter().map(|claim| claim.full_chars).collect();
@@ -337,7 +377,7 @@ fn replay(label: &str, cuts: &[Cut], window: usize, rule: Rule, keyed_turn: bool
         previous_view = rendered;
     }
     println!(
-        "{label} [{rule:?}{}]\n  {} requests, window {window} chars, {turnovers} turnovers\n  shared prefix per act, %: as sent [{}] mean {:.0} median {:.0}\n  shared prefix per act, %: the view [{}] mean {:.0} median {:.0}\n  the view's prefill per act, chars: median {:.0} mean {:.0}; fresh tail median {:.0} chars",
+        "{label} [{rule:?}, {placed:?}{}]\n  {} requests, window {window} chars, {turnovers} turnovers, {head_changes} head changes\n  shared prefix per act, %: as sent [{}] mean {:.0} median {:.0}\n  shared prefix per act, %: the view [{}] mean {:.0} median {:.0}\n  the view's prefill per act, chars: median {:.0} mean {:.0}; fresh tail median {:.0} chars",
         if keyed_turn { ", standing turn text keyed into the epoch" } else { "" },
         cuts.len(),
         percent(&sent_share),
@@ -356,8 +396,8 @@ fn replay(label: &str, cuts: &[Cut], window: usize, rule: Rule, keyed_turn: bool
     Ok(())
 }
 
-/// Characters a request sends: the system prompt, every message, and the tool schemas.
-fn request_chars(request: &serde_json::Value) -> usize {
+/// Characters a request sends: the system prompt, every message, and `tools`.
+fn request_chars(request: &serde_json::Value, tools: &str) -> usize {
     let messages: usize = request["messages"]
         .as_array()
         .into_iter()
@@ -367,12 +407,13 @@ fn request_chars(request: &serde_json::Value) -> usize {
             other => other.to_string().chars().count(),
         })
         .sum();
-    request["systemPrompt"].as_str().map_or(0, |text| text.chars().count()) + messages + request["tools"].to_string().chars().count()
+    request["systemPrompt"].as_str().map_or(0, |text| text.chars().count()) + messages + tools.chars().count()
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let (mut room, mut purpose, mut keyed_turn, mut trace, mut paths) = (String::new(), String::from("deliberation"), false, false, Vec::new());
     let mut priced: Option<f64> = None;
+    let mut fixed_tools: Option<String> = None;
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         match arg.as_str() {
@@ -380,6 +421,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             "--purpose" => purpose = args.next().ok_or("--purpose needs a suffix")?,
             "--keyed-turn" => keyed_turn = true,
             "--trace" => trace = true,
+            "--tools" => fixed_tools = Some(std::fs::read_to_string(args.next().ok_or("--tools needs a schemas file")?)?.trim().to_owned()),
             "--chars-per-token" => priced = Some(args.next().ok_or("--chars-per-token needs a number")?.parse()?),
             _ => paths.push(arg),
         }
@@ -405,7 +447,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .iter()
         .filter_map(|row| {
             let tokens = billed.get(row["request_id"].as_str()?)?;
-            Some(request_chars(&row["request"]) as f64 / *tokens.max(&1) as f64)
+            Some(request_chars(&row["request"], &row["request"]["tools"].to_string()) as f64 / *tokens.max(&1) as f64)
         })
         .collect();
     // The core prices its claims with its own estimator, not the engine's bill: pass its
@@ -421,16 +463,32 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     rows.sort_by_key(|row| row["captured_at_ms"].as_u64());
     let context_window = rows.iter().filter_map(|row| row["context_window"].as_u64()).max().unwrap_or(0); // unwrap_or: no rows in the room, nothing replays
     let reply = rows.iter().filter_map(|row| row["request"]["maxTokens"].as_u64()).max().unwrap_or(0); // unwrap_or: no rows in the room, nothing replays
-    let tools = median(rows.iter().map(|row| row["request"]["tools"].to_string().chars().count() as f64).collect());
-    let window = (context_window.saturating_sub(reply) as f64 * chars_per_token - tools).max(0.0) as usize;
+    // The schemas each act sends: the captured ones, or the one stable surface under `--tools`.
+    let sent_tools: Vec<String> =
+        rows.iter().map(|row| match &fixed_tools {
+            Some(tools) => tools.clone(),
+            None => row["request"]["tools"].to_string(),
+        }).collect();
+    let tool_share: Vec<f64> = rows
+        .iter()
+        .zip(&sent_tools)
+        .map(|(row, tools)| tools.chars().count() as f64 / request_chars(&row["request"], tools).max(1) as f64)
+        .collect();
+    // The head carries the schemas, so the window is not pre-reduced by them.
+    let window = (context_window.saturating_sub(reply) as f64 * chars_per_token).max(0.0) as usize;
     let label = format!(
-        "{} room {room} purpose {purpose}: window {context_window} - reply {reply} tokens at {chars_per_token:.2} chars/token ({} billed rows), tools {tools:.0} chars",
+        "{} room {room} purpose {purpose}: window {context_window} - reply {reply} tokens at {chars_per_token:.2} chars/token ({} billed rows), {}; tool share of the prompt mean {:.0}% median {:.0}%",
         paths.join(" "),
-        per_token.len()
+        per_token.len(),
+        if fixed_tools.is_some() { "one stable tool surface (--tools)" } else { "tools as captured" },
+        100.0 * mean(&tool_share),
+        100.0 * median(tool_share.clone()),
     );
-    let cuts: Vec<Cut> = rows.iter().map(|row| cut(&row["request"], keyed_turn)).collect();
+    let cuts: Vec<Cut> = rows.iter().zip(&sent_tools).map(|(row, tools)| cut(&row["request"], tools, keyed_turn)).collect();
     for rule in [Rule::Whole, Rule::Reserved] {
-        replay(&label, &cuts, window, rule, keyed_turn, trace)?;
+        for placed in [Order::ConversationFirst, Order::SettledFirst] {
+            replay(&label, &cuts, window, (rule, placed), keyed_turn, trace)?;
+        }
     }
     Ok(())
 }

@@ -1,4 +1,4 @@
-use super::types::InboxMessage;
+use crate::cognition::conversation::types::InboxMessage;
 use serde::{Deserialize, Serialize};
 use std::collections::BinaryHeap;
 use std::sync::Mutex;
@@ -171,7 +171,7 @@ impl PersonaInbox {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::persona::{Modality, SenderType};
+    use crate::cognition::conversation::types::{Modality, SenderType};
 
     fn message(
         room_id: Uuid,

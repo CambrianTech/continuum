@@ -123,6 +123,11 @@ pub enum RemoteInferenceError {
     /// [[personas-are-citizens-airc-is-identity-provider]],
     /// quota exceeded, target peer not accepting remote inference).
     PolicyDenied { reason: String },
+    /// The seat refused at admission because every lane it serves already holds a
+    /// generation (`GenerateRefusal::Overloaded`, card 03660a77). Not a fault and not a
+    /// deadline: the peer answered at once. Her next act runs at home instead of asking
+    /// the full seat again.
+    SeatOverloaded { message: String },
 }
 
 impl std::fmt::Display for RemoteInferenceError {
@@ -144,6 +149,9 @@ impl std::fmt::Display for RemoteInferenceError {
             }
             Self::PolicyDenied { reason } => {
                 write!(f, "remote inference policy denied: {reason}")
+            }
+            Self::SeatOverloaded { message } => {
+                write!(f, "remote seat refused, every lane busy: {message}")
             }
         }
     }
@@ -175,6 +183,7 @@ mod tests {
             repeat_last_n: None,
             stop_sequences: None,
             tools: None,
+            tail_tools: None,
             tool_choice: None,
             response_format: None,
             active_adapters: None,

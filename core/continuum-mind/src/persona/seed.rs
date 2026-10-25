@@ -50,7 +50,7 @@ use uuid::Uuid;
 
 use crate::live::avatar::types::AvatarGender;
 use crate::persona::card::PersonaCard;
-use crate::persona::role_template::RoleId;
+use crate::experience::role::RoleId;
 
 /// The on-disk seed record. Schema-versioned so we can evolve
 /// fields without breaking older installs.
@@ -388,14 +388,14 @@ pub async fn write_seed_atomic(
         })?;
     drop(file);
 
-    // The rename made durable on EVERY platform (`fs_portable::durable_rename`:
+    // The rename made durable on EVERY platform (`continuum_host::durable::replace`:
     // POSIX rename + parent fsync; Windows `MoveFileExW` write-through). This used
     // to open the parent directory as a File and `sync_all` it — the POSIX idiom —
     // which is `AccessDenied` on Windows, where the same guarantee lives in the
     // rename call itself (2026-09-21, the Windows grid node's seed tests). Errors
     // are surfaced: failure to durably persist is signal, not noise.
     let (tmp, dst) = (tmp_path.clone(), path.to_path_buf());
-    tokio::task::spawn_blocking(move || continuum_base::fs_portable::durable_rename(&tmp, &dst))
+    tokio::task::spawn_blocking(move || continuum_host::durable::replace(&tmp, &dst))
         .await
         .map_err(|e| PersonaSeedError::Io {
             path: tmp_path.clone(),

@@ -1,0 +1,15 @@
+[package]
+name = "continuum-host"
+version = "0.1.0"
+edition = "2021"
+description = "The host OS seam: one module per capability whose behaviour differs by OS (durable placement, positioned reads). Each module holds its contract and logic once; its unix.rs/windows.rs hold only the calls that differ. Depends on nothing in Continuum, so every crate may use it."
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.60", features = ["Win32_Storage_FileSystem", "Win32_Foundation"] }
+
+[features]
+# Fault injection for tests in this crate and its dependents; never in a release.
+test-fixtures = []
+
+[dev-dependencies]
+tempfile = "3"

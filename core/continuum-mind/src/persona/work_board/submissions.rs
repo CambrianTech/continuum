@@ -1,16 +1,10 @@
-//! Reading a card's submissions: the latest candidate, and what its holder does next.
+//! Reading a card's submissions: what its holder does next. The latest candidate is
+//! `cognition::card_holder::latest_submission`.
 
 use airc_lib::WorkCardId;
 use uuid::Uuid;
 
-use super::facts::short8;
-
-/// Latest accepted candidate in the board's transcript order. AIRC projects submissions
-/// newest first; publisher wall clocks do not define recency. Keep handoff and review
-/// consumers on this contract so a resumed citizen sees the candidate being reviewed.
-pub fn latest_submission(card: &airc_lib::WorkCard) -> Option<&airc_work::WorkSubmission> {
-    card.submissions.first()
-}
+use crate::cognition::card_facts::short8;
 
 /// PURE: what happens next for the holder of a card whose latest submission is `latest`, given
 /// the outcomes its reviews have reached and whether it is a bench card. The ONE place this is

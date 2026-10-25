@@ -39,7 +39,7 @@ pub mod submission;
 
 use crate::persona::work_board::advance::*;
 use crate::persona::work_board::events::*;
-use crate::persona::work_board::facts::*;
+use crate::cognition::card_facts::*;
 use crate::persona::work_board::horizon::*;
 
 mod work_card_state_changed;

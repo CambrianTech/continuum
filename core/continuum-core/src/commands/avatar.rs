@@ -1,7 +1,7 @@
 //! `avatar/snapshot` — render a persona's 3D avatar to a profile PNG.
 //!
 //! Stateless: the Bevy-render domain logic lives on
-//! [`crate::modules::avatar::AvatarModule`] (shared with its tick-driven
+//! [`continuum_live::consumers::avatar::AvatarModule`] (shared with its tick-driven
 //! auto-refresh); this command orchestrates the on-disk cache check and runs the
 //! blocking capture off the async thread.
 
@@ -39,7 +39,7 @@ async fn pin_from_live_runtime(uuid: uuid::Uuid) -> Option<String> {
 /// disk, so a cold render is still correct — no re-derivation, no thrash.
 async fn pin_from_seed_scan(uuid: uuid::Uuid) -> Option<String> {
     let root = dirs::home_dir()?.join(".continuum");
-    let dir = crate::context::citizen_path::citizens_kind_dir(
+    let dir = crate::identity::citizen_path::citizens_kind_dir(
         &root,
         crate::identity::IdentityKind::Persona,
     );
@@ -172,7 +172,7 @@ crate::action_command! {
         // Bevy slot allocation + frame capture is blocking — off the async thread.
         let stem_for_task = stem.clone();
         let relative_path = tokio::task::spawn_blocking(move || {
-            crate::modules::avatar::AvatarModule::capture_snapshot(
+            continuum_live::consumers::avatar::AvatarModule::capture_snapshot(
                 &identity, width, height, &avatar_dir, pinned, expression, pose, mouth,
                 &stem_for_task,
             )

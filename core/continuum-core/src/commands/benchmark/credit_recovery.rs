@@ -2,7 +2,7 @@
 //! No grader, inference, claim mutation, or training flush is invoked here.
 
 use super::*;
-use crate::cognition::bench_title::parse_card_title;
+use crate::recipe::bench_title::parse_card_title;
 use crate::orm::OrmEntity;
 use crate::persona::training_producer::{self as credit, graded, reviewed};
 use graded::{BenchmarkCreditAttribution, LegacyGradeEvidence};

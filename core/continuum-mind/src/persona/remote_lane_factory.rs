@@ -61,7 +61,7 @@ use airc_lib::Airc;
 use crate::ai::adapter::AIProviderAdapter;
 use crate::inference::airc_remote::adapter::AircRemoteInferenceAdapter;
 use crate::inference::airc_remote::transport::AircLiveTransport;
-use crate::persona::home::PersonaHome;
+use crate::cognition::home::PersonaHome;
 use crate::persona::inference_profile::PersonaInferenceProfile;
 use crate::persona::supervisor::PersonaAdapterFactory;
 use crate::persona::PersonaModelOverride;
@@ -91,7 +91,7 @@ pub(crate) fn is_remote_bound(
     continuum_root: &std::path::Path,
     persona_name: &str,
 ) -> Result<bool, crate::persona::model_override::PersonaModelOverrideError> {
-    let airc_dir = crate::context::citizen_home_path(
+    let airc_dir = crate::identity::citizen_path::citizen_home_path(
         continuum_root,
         crate::identity::IdentityKind::Persona,
         None,
@@ -128,7 +128,7 @@ impl RemoteLaneAdapterFactory {
     /// and the reader must agree on the path or the override is written where nobody
     /// looks.
     fn resolve_home(&self, persona_name: &str) -> Option<PersonaHome> {
-        let airc_dir = crate::context::citizen_home_path(
+        let airc_dir = crate::identity::citizen_path::citizen_home_path(
             &self.continuum_root,
             crate::identity::IdentityKind::Persona,
             None,
@@ -398,7 +398,7 @@ mod tests {
     #[test]
     fn a_remote_override_on_disk_is_seen_by_the_rehome() {
         let root = tempfile::tempdir().expect("root");
-        let home_root = crate::context::citizen_home_path(
+        let home_root = crate::identity::citizen_path::citizen_home_path(
             root.path(),
             crate::identity::IdentityKind::Persona,
             None,
@@ -504,7 +504,7 @@ pub mod test_support {
     }
 
     pub fn home_for(root: &std::path::Path, name: &str) -> PersonaHome {
-        let airc_dir = crate::context::citizen_home_path(
+        let airc_dir = crate::identity::citizen_path::citizen_home_path(
             root,
             crate::identity::IdentityKind::Persona,
             None,

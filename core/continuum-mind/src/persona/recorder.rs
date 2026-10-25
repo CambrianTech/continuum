@@ -54,14 +54,14 @@
 //! and the turn returns its real result.
 
 use continuum_base::time::EpochMs;
+use crate::cognition::capture::fixture_dir;
 use crate::cognition::tool_executor::types::MediaItemLite;
 use crate::persona::response::{PersonaResponse, RespondInput};
-use crate::persona::trace::CognitionTrace;
-use crate::persona::{PersonaTurnFrame, PersonaTurnFrameReplayRecord, PERSONA_TURN_FRAME_REPLAY_SCHEMA_VERSION};
+use crate::cognition::trace::CognitionTrace;
+use crate::persona::PersonaTurnFrameReplayRecord;
 use crate::runtime;
 use serde::Serialize;
 use serde_json::json;
-use std::fmt;
 use std::path::{Path, PathBuf};
 use uuid::Uuid;
 
@@ -70,8 +70,10 @@ use uuid::Uuid;
 /// retention window for incident analysis, copy fixtures out before
 /// the cap rotates them.
 const FIXTURE_CAP_PER_DIR: usize = 200;
-const RESPOND_FIXTURE_DIR: &str = ".continuum/fixtures/persona-respond";
-const TURN_FRAME_FIXTURE_DIR: &str = ".continuum/fixtures/persona-turn-frame";
+/// Where the recorder writes each turn, resolved by `capture::fixture_dir`; `dataset/from-turns`
+/// reads the same place through the same owner (card 2ceab504).
+pub const RESPOND_FIXTURE_DIR: &str = "fixtures/persona-respond";
+const TURN_FRAME_FIXTURE_DIR: &str = "fixtures/persona-turn-frame";
 
 /// Env var to fully disable recording. Set to `1` / `true` for hosts
 /// that don't want disk writes (perf benchmarks, ephemeral CLI runs).
@@ -229,8 +231,8 @@ pub fn record_turn_frame_replay(record: &PersonaTurnFrameReplayRecord) {
     if disabled() {
         return;
     }
-    if crate::persona::mind_room::is_private_room(record.persona_id, record.room_id) {
-        crate::persona::mind_room::note_withheld(record.persona_id, "turn_frame_recorder");
+    if crate::cognition::mind_room::is_private_room(record.persona_id, record.room_id) {
+        crate::cognition::mind_room::note_withheld(record.persona_id, "turn_frame_recorder");
         return;
     }
     let dir = match fixture_dir(TURN_FRAME_FIXTURE_DIR) {
@@ -241,125 +243,14 @@ pub fn record_turn_frame_replay(record: &PersonaTurnFrameReplayRecord) {
     persist_json_payload(&dir, &fname, record);
 }
 
-#[derive(Debug)]
-pub enum TurnFrameReplayLoadError {
-    Read {
-        path: PathBuf,
-        source: std::io::Error,
-    },
-    Parse {
-        path: PathBuf,
-        source: serde_json::Error,
-    },
-    UnsupportedSchema {
-        path: PathBuf,
-        expected: u32,
-        actual: u32,
-    },
-    InvalidRecord {
-        path: PathBuf,
-        reason: String,
-    },
-}
-
-impl fmt::Display for TurnFrameReplayLoadError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Read { path, source } => {
-                write!(
-                    f,
-                    "turn-frame fixture read failed for {}: {source}",
-                    path.display()
-                )
-            }
-            Self::Parse { path, source } => {
-                write!(
-                    f,
-                    "turn-frame fixture parse failed for {}: {source}",
-                    path.display()
-                )
-            }
-            Self::UnsupportedSchema {
-                path,
-                expected,
-                actual,
-            } => write!(
-                f,
-                "turn-frame fixture {} has schemaVersion {actual}, expected {expected}",
-                path.display()
-            ),
-            Self::InvalidRecord { path, reason } => {
-                write!(
-                    f,
-                    "turn-frame fixture {} is invalid: {reason}",
-                    path.display()
-                )
-            }
-        }
-    }
-}
-
-impl std::error::Error for TurnFrameReplayLoadError {}
-
-pub fn validate_turn_frame_replay_record(
-    path: impl AsRef<Path>,
-    record: &PersonaTurnFrameReplayRecord,
-) -> Result<(), TurnFrameReplayLoadError> {
-    let path = path.as_ref();
-    if record.schema_version != PERSONA_TURN_FRAME_REPLAY_SCHEMA_VERSION {
-        return Err(TurnFrameReplayLoadError::UnsupportedSchema {
-            path: path.to_path_buf(),
-            expected: PERSONA_TURN_FRAME_REPLAY_SCHEMA_VERSION,
-            actual: record.schema_version,
-        });
-    }
-    if record.persona_id != record.inbox_frame.persona_id {
-        return invalid_record(path, "personaId does not match inboxFrame.personaId");
-    }
-    if record.room_id != record.inbox_frame.room_id {
-        return invalid_record(path, "roomId does not match inboxFrame.roomId");
-    }
-
-    let turn_frame = PersonaTurnFrame::from_inbox_frame(record.inbox_frame.clone());
-    let expected_consolidated =
-        turn_frame
-            .consolidated_inbox()
-            .ok_or_else(|| TurnFrameReplayLoadError::InvalidRecord {
-                path: path.to_path_buf(),
-                reason: "inboxFrame is empty".to_string(),
-            })?;
-    if record.consolidated_inbox != expected_consolidated {
-        return invalid_record(path, "consolidatedInbox does not match inboxFrame");
-    }
-
-    let expected_rag_seed =
-        turn_frame
-            .rag_seed()
-            .ok_or_else(|| TurnFrameReplayLoadError::InvalidRecord {
-                path: path.to_path_buf(),
-                reason: "ragSeed cannot be derived from inboxFrame".to_string(),
-            })?;
-    if record.rag_seed != expected_rag_seed {
-        return invalid_record(path, "ragSeed does not match inboxFrame");
-    }
-
-    Ok(())
-}
-
-fn invalid_record<T>(path: &Path, reason: &str) -> Result<T, TurnFrameReplayLoadError> {
-    Err(TurnFrameReplayLoadError::InvalidRecord {
-        path: path.to_path_buf(),
-        reason: reason.to_string(),
-    })
-}
 
 fn persist_turn_payload(input: &RespondInput, payload: serde_json::Value) {
     if disabled() {
         return;
     }
     // A turn in her mind room is hers (PRIVACY-OF-THOUGHT.md §4, sink 1): not recorded.
-    if crate::persona::mind_room::is_private_room(input.persona.persona_id, input.turn_context.room_id) {
-        crate::persona::mind_room::note_withheld(input.persona.persona_id, "turn_recorder");
+    if crate::cognition::mind_room::is_private_room(input.persona.persona_id, input.turn_context.room_id) {
+        crate::cognition::mind_room::note_withheld(input.persona.persona_id, "turn_recorder");
         return;
     }
     let dir = match fixture_dir(RESPOND_FIXTURE_DIR) {
@@ -430,12 +321,6 @@ fn disabled() -> bool {
     std::env::var(DISABLE_ENV)
         .map(|v| matches!(v.as_str(), "1" | "true" | "TRUE"))
         .unwrap_or(false)
-}
-
-/// Shared fixture policy for live capture and its readers. Explicit HOME keeps
-/// its existing override semantics; native hosts need not inherit a shell HOME.
-pub fn fixture_dir(relative: &str) -> Option<PathBuf> {
-    crate::paths::home_dir().map(|h| h.join(relative))
 }
 
 /// Reuses the recorder's per-thread fixture isolation for capture/read tests.
@@ -547,7 +432,8 @@ mod tests {
     use crate::cognition::PersonaSlot;
     use crate::persona::inbox::{PersonaInboxFrame, PersonaInboxFrameMetrics};
     use crate::persona::response::PersonaResponse;
-    use crate::persona::{InboxMessage, Modality, PersonaTurnFrame, SenderType};
+    use crate::cognition::conversation::types::{InboxMessage, Modality, SenderType};
+    use crate::persona::PersonaTurnFrame;
     use std::collections::HashSet;
     use tempfile::tempdir;
 
@@ -753,7 +639,7 @@ mod tests {
     /// turns left no fixture and the most diagnostic captures were lost.
     #[test]
     fn record_failed_turn_writes_error_with_partial_trace() {
-        use crate::persona::trace::SEAM_ANALYZE;
+        use crate::cognition::trace::SEAM_ANALYZE;
         let tmp = tempdir().expect("temp home");
         let _restore = EnvRestore::install(tmp.path(), None);
         let input = fake_input();
@@ -803,7 +689,7 @@ mod tests {
 
         record_turn_frame_replay(&record);
 
-        let dir = tmp.path().join(TURN_FRAME_FIXTURE_DIR);
+        let dir = fixture_dir(TURN_FRAME_FIXTURE_DIR).expect("the test home resolves"); // the recorder's own owner
         let entries: Vec<_> = std::fs::read_dir(&dir)
             .expect("turn-frame fixture dir exists")
             .map(|e| e.expect("fixture entry").path())
@@ -843,7 +729,7 @@ mod tests {
 
         record_turn_frame_replay(&fake_turn_frame_replay_record());
 
-        let dir = tmp.path().join(TURN_FRAME_FIXTURE_DIR);
+        let dir = fixture_dir(TURN_FRAME_FIXTURE_DIR).expect("the test home resolves"); // the recorder's own owner
         assert!(!dir.exists());
     }
 

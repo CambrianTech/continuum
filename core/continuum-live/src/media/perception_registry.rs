@@ -9,7 +9,7 @@
 //! delivers. This registry is that single seam — one `Arc<PerceptionBuffer>` per
 //! persona, resolved by id from both sides. It is NOT a parallel copy of any state;
 //! it is the single home for a persona's perception hold, the same "one home, two
-//! reachers by id" shape as [`persona::focus::registry()`](crate::persona::focus)
+//! reachers by id" shape as [`cognition::focus::registry()`](crate::cognition::focus)
 //! and [`persona_workspace::global()`](crate::cognition::persona_workspace).
 //!
 //! The cells inside each buffer resolve on the ONE runtime
@@ -118,7 +118,7 @@ impl PerceptionRegistry {
 }
 
 /// Process-global perception registry. Same `OnceLock` shape as
-/// `persona::focus::registry()` — the single seam between the media ingest that
+/// `cognition::focus::registry()` — the single seam between the media ingest that
 /// warms a persona's perception and the source that reads it.
 pub fn registry() -> Arc<PerceptionRegistry> {
     static GLOBAL: OnceLock<Arc<PerceptionRegistry>> = OnceLock::new();

@@ -116,6 +116,7 @@ impl OpenAICompatibleAdapter {
             single_resident_model: provider.capabilities.single_resident_model,
             dynamic_model_catalog: provider.capabilities.dynamic_model_catalog,
             llamacpp_sampling_extensions: provider.capabilities.llamacpp_sampling_extensions,
+            tail_tools: provider.capabilities.tail_tools,
         })
     }
 

@@ -4,6 +4,15 @@
 use crate::orm::types::CollectionSchema;
     mod vector;
 
+    // what this catches: a stale postgres:// DATABASE_URL must fail loudly, never fall back to SQLite.
+    #[test]
+    pub(super) fn postgres_connection_strings_are_rejected() {
+        for url in ["postgres://localhost/continuum", "postgresql://localhost/continuum"] {
+            assert!(crate::modules::data::adapters::reject_unsupported_backend(url).unwrap_err().contains("no longer supported"));
+        }
+        assert!(crate::modules::data::adapters::reject_unsupported_backend("/tmp/x.db").is_ok());
+    }
+
     #[tokio::test]
     pub(super) async fn node_local_catalog_cannot_follow_a_remote_main_database() {
         let node = tempfile::tempdir().unwrap();
@@ -11,7 +20,7 @@ use crate::orm::types::CollectionSchema;
         // guard through adapter I/O so another fixture cannot remove its home
         // between path resolution and SQLite open (5067 hosted regression).
         let _home = crate::paths::test_home::HomeGuard::set(node.path()).await;
-        let remote = "postgres://shared.example/fleet";
+        let remote = "/shared/fleet/main.db";
         let backend = || DataState::resolve_handle_with("main", |key| {
             assert_eq!(key, "DATABASE_URL");
             Some(remote.to_string())
@@ -344,7 +353,7 @@ use crate::orm::types::CollectionSchema;
             }
         }
 
-        let url = "postgres://localhost/continuum";
+        let url = "/var/shared/continuum.db";
         assert_eq!(
             DataState::resolve_handle_with(
                 "main",
@@ -376,7 +385,7 @@ use crate::orm::types::CollectionSchema;
                 .is_err());
             }
         }
-        for legacy in [url, "postgresql://localhost/continuum", "/tmp/legacy.db"] {
+        for legacy in [url, "/tmp/legacy.db"] {
             assert_eq!(
                 DataState::resolve_handle_with(
                     legacy,

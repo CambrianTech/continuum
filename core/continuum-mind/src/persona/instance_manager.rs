@@ -147,8 +147,8 @@ impl PersonaInstanceInfo {
     /// identity by hand ([[strong-typing-across-boundaries]]).
     /// `PersonaIdentity` is cheap to clone, so returning an owned value
     /// is fine on the per-tick service loop.
-    pub fn persona_identity(&self) -> crate::persona::persona_identity::PersonaIdentity {
-        crate::persona::persona_identity::PersonaIdentity::new(
+    pub fn persona_identity(&self) -> crate::cognition::conversation::persona_identity::PersonaIdentity {
+        crate::cognition::conversation::persona_identity::PersonaIdentity::new(
             self.peer_id.as_uuid(),
             &self.agent_name,
         )
@@ -523,8 +523,9 @@ impl PersonaInstanceManagerModule {
     }
 }
 
-fn role_bio_template(role: crate::persona::role_template::RoleId) -> String {
-    use crate::persona::role_template::{coder_template, designer_template, helper_template, RoleId};
+fn role_bio_template(role: crate::experience::role::RoleId) -> String {
+    use crate::experience::role::RoleId;
+    use crate::persona::role_template::{coder_template, designer_template, helper_template};
     match role {
         RoleId::Helper => helper_template().identity.bio_template,
         RoleId::Coder => coder_template().identity.bio_template,
