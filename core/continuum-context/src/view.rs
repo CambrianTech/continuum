@@ -101,24 +101,35 @@ enum Level {
 
 /// The level a `grant` of characters gives each item. Every item starts at its pointer (the
 /// floor); what the grant leaves above it is spent newest first, each item taking the most
-/// detail that still fits: whole, else its summary, else its pointer. An item too large for
-/// what is left no longer collapses every older one with it: a 51,827-char file read that
-/// could not be kept whole used to end the run, and every result she had collapsed to a
-/// line, the file included, so she read it again (Aiko, the M5, 2026-10-25: 9 whole reads of
-/// one file in 43 acts).
+/// detail that still fits, and never more detail than the item after it: shrinking is oldest
+/// first (goal 7), so an older item is never kept more whole than a newer one.
+///
+/// One item too large to keep whole takes its summary instead of collapsing every older item
+/// to a line with it (a 51,827-char file read that ended the run left Aiko nothing of it, so
+/// she read it whole 9 times in 43 acts, the M5, 2026-10-25). It still caps the older ones:
+/// filling them past it doubled the size of every start (median 14,238 -> 27,696 chars) and
+/// the median act went 83-111 s -> 140 s under the same eleven residents (canary 28bf81fa7 vs
+/// 3cd34f87c, the M5, 2026-10-25 17:00-18:06Z).
 fn levels<T: Block>(items: &[Item<T>], grant: usize) -> Vec<Level> {
     let floor: usize = items.iter().map(pointer_chars).sum();
     let mut spare = grant.saturating_sub(floor);
     let mut levels = vec![Level::Pointer; items.len()];
+    let mut ceiling = Level::Full;
     for (item, level) in items.iter().zip(levels.iter_mut()).rev() {
         let full = item.full.chars().saturating_sub(pointer_chars(item));
         let summary = item.summary.as_ref().map(|s| s.chars().saturating_sub(pointer_chars(item)));
-        if full <= spare {
+        if ceiling == Level::Full && full <= spare {
             spare -= full;
             *level = Level::Full;
-        } else if let Some(summary) = summary.filter(|summary| *summary <= spare) {
-            spare -= summary;
-            *level = Level::Summary;
+            continue;
+        }
+        match summary.filter(|summary| ceiling != Level::Pointer && *summary <= spare) {
+            Some(summary) => {
+                spare -= summary;
+                *level = Level::Summary;
+                ceiling = Level::Summary;
+            }
+            None => ceiling = Level::Pointer,
         }
     }
     levels

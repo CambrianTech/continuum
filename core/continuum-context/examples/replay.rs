@@ -135,7 +135,7 @@ enum Rule {
 
 /// The grants a turnover starts the next epoch at, `available` being what the window leaves
 /// the view this act.
-fn start(rule: Rule, claims: &[continuum_context::view::Claim], available: usize, per_act: Option<usize>) -> Vec<usize> {
+fn start(rule: Rule, claims: &[continuum_context::view::Claim], available: usize, per_act: Option<usize>, share: usize) -> Vec<usize> {
     match rule {
         Rule::Whole => {
             let granted = allocate(claims, available);
@@ -153,7 +153,7 @@ fn start(rule: Rule, claims: &[continuum_context::view::Claim], available: usize
             let grounding: usize =
                 claims.iter().zip(&granted).filter(|(claim, _)| claim.priority > lowest).map(|(_, grant)| grant).sum();
             let growable = available.saturating_sub(grounding);
-            let growing = (growable / 2).min(per_act.map_or(growable, |chars| growable.saturating_sub(chars))); // map_or: no act measured, the half start alone
+            let growing = (growable / share).min(per_act.map_or(growable, |chars| growable.saturating_sub(chars))); // map_or: no act measured, the half start alone
             allocate(claims, grounding + growing)
         }
     }
@@ -310,7 +310,7 @@ fn percent(values: &[f64]) -> String {
 
 /// Replay `cuts` (one resident's requests in one room, oldest first) through the view fitted
 /// to `window` characters for head, view and tail, turning over under `rule`.
-fn replay(label: &str, cuts: &[Cut], window: usize, (rule, placed): (Rule, Order), keyed_turn: bool, admit: bool, trace: bool) -> Result<(), Box<dyn std::error::Error>> {
+fn replay(label: &str, cuts: &[Cut], window: usize, (rule, placed): (Rule, Order), keyed_turn: bool, admit: bool, trace: bool, share: usize) -> Result<(), Box<dyn std::error::Error>> {
     let mut view: Option<View<String>> = None;
     let mut previous_sent: Option<&str> = None;
     let mut previous_head: Option<&str> = None;
@@ -318,6 +318,7 @@ fn replay(label: &str, cuts: &[Cut], window: usize, (rule, placed): (Rule, Order
     let mut previous_view = String::new();
     let (mut sent_share, mut view_share, mut view_prefill, mut turnovers) = (Vec::new(), Vec::new(), Vec::new(), 0usize);
     let mut admitted = 0usize;
+    let (mut collapsed_at_starts, mut summarized_at_starts) = (0usize, 0usize);
     // What each source appended per act, and the fresh tail: where the prefill goes.
     let mut held: BTreeMap<(String, String), String> = BTreeMap::new();
     let mut appended: BTreeMap<String, usize> = BTreeMap::new();
@@ -368,7 +369,9 @@ fn replay(label: &str, cuts: &[Cut], window: usize, (rule, placed): (Rule, Order
         }
         if open.chars() > head_chars + available {
             let per_act = open.appended_per_act();
-            open.turn_over(vec![cut.head.clone()], &refs, |claims| start(rule, claims, available, per_act))?;
+            let begun = open.turn_over(vec![cut.head.clone()], &refs, |claims| start(rule, claims, available, per_act, share))?;
+            collapsed_at_starts += begun.collapsed;
+            summarized_at_starts += begun.summarized;
             turnovers += 1;
         }
         let rendered = format!("{}\n{tail}", open.render().cloned().collect::<Vec<_>>().join("\n"));
@@ -383,7 +386,7 @@ fn replay(label: &str, cuts: &[Cut], window: usize, (rule, placed): (Rule, Order
         previous_view = rendered;
     }
     println!(
-        "{label} [{rule:?}, {placed:?}{}]\n  {} requests, window {window} chars, {turnovers} turnovers, {admitted} admitted as pointers, {head_changes} head changes\n  shared prefix per act, %: as sent [{}] mean {:.0} median {:.0}\n  shared prefix per act, %: the view [{}] mean {:.0} median {:.0}\n  the view's prefill per act, chars: median {:.0} mean {:.0}; fresh tail median {:.0} chars",
+        "{label} [{rule:?}, {placed:?}{}]\n  {} requests, window {window} chars, growing share 1/{share}, {turnovers} turnovers ({collapsed_at_starts} items collapsed and {summarized_at_starts} summarized at starts), {admitted} admitted as pointers, {head_changes} head changes\n  shared prefix per act, %: as sent [{}] mean {:.0} median {:.0}\n  shared prefix per act, %: the view [{}] mean {:.0} median {:.0}\n  the view's prefill per act, chars: median {:.0} mean {:.0}; fresh tail median {:.0} chars",
         format!("{}{}", if keyed_turn { ", standing turn text keyed into the epoch" } else { "" }, if admit { ", admission" } else { "" }),
         cuts.len(),
         percent(&sent_share),
@@ -418,6 +421,8 @@ fn request_chars(request: &serde_json::Value, tools: &str) -> usize {
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let (mut room, mut purpose, mut keyed_turn, mut trace, mut paths) = (String::new(), String::from("deliberation"), false, false, Vec::new());
+    // The growing sources' share of what a start leaves: `start_grants` gives them half.
+    let mut share = 2usize;
     let mut priced: Option<f64> = None;
     let mut fixed_tools: Option<String> = None;
     let mut args = std::env::args().skip(1);
@@ -427,6 +432,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             "--purpose" => purpose = args.next().ok_or("--purpose needs a suffix")?,
             "--keyed-turn" => keyed_turn = true,
             "--trace" => trace = true,
+            "--share" => share = args.next().ok_or("--share needs a divisor")?.parse()?,
             "--tools" => fixed_tools = Some(std::fs::read_to_string(args.next().ok_or("--tools needs a schemas file")?)?.trim().to_owned()),
             "--chars-per-token" => priced = Some(args.next().ok_or("--chars-per-token needs a number")?.parse()?),
             _ => paths.push(arg),
@@ -494,7 +500,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     for rule in [Rule::Whole, Rule::Reserved] {
         for placed in [Order::ConversationFirst, Order::SettledFirst] {
             for admit in [false, true] {
-                replay(&label, &cuts, window, (rule, placed), keyed_turn, admit, trace)?;
+                replay(&label, &cuts, window, (rule, placed), keyed_turn, admit, trace, share)?;
             }
         }
     }

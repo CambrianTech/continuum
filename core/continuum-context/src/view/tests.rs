@@ -253,20 +253,22 @@ impl Source<String> for Leveled {
     }
 }
 
-// what this catches: one item too large to keep whole collapsing every older one with it. The
-// file she is working on keeps its outline and her small results stay whole (Aiko, the M5,
-// 2026-10-25: 9 whole reads of one 51,827-char file in 43 acts, each after a start that
-// collapsed everything).
+// what this catches: one item too large to keep whole collapsing every item with it (Aiko, the
+// M5, 2026-10-25: 9 whole reads of one 51,827-char file in 43 acts), and the opposite error,
+// older items kept more whole than a newer one, which doubled every start (median 14,238 ->
+// 27,696 chars, the median act 83-111 s -> 140 s). The file keeps its outline; nothing older is
+// more detailed than it.
 #[test]
-fn an_item_too_large_to_keep_whole_takes_its_summary_and_older_items_stay_whole() -> Result<(), GrantMismatch> {
+fn an_item_too_large_to_keep_whole_takes_its_summary_and_caps_the_older_ones() -> Result<(), GrantMismatch> {
     let reads = Leveled(vec![
+        ("older", "an older result".to_owned(), "older".to_owned()),
         ("small", "a small result".to_owned(), "small".to_owned()),
         ("file", "x".repeat(51_827), "outline of the file".to_owned()),
     ]);
     let (view, start) = View::start(Vec::new(), &[&reads as &dyn Source<String>], |_| vec![200])?;
     let rendered: Vec<String> = view.render().cloned().collect();
-    assert_eq!(rendered, ["a small result", "outline of the file"]);
-    assert_eq!((start.collapsed, start.summarized), (0, 1));
+    assert_eq!(rendered, ["older", "small", "outline of the file"]);
+    assert_eq!((start.collapsed, start.summarized), (0, 3));
     Ok(())
 }
 
