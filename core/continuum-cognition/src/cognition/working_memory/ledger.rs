@@ -331,7 +331,7 @@ impl WorkingMemory {
                     scope: scope.clone(),
                     operation: label,
                     head: Some(archive_head(seq, a, &acts, budget.trail_head_chars())),
-                    summary: result_summary(&tail, &acts),
+                    summary: result_summary(&tail, &acts, &budget),
                     result: Some(tail),
                     handle,
                     written_pointer: None,
@@ -477,7 +477,7 @@ pub(super) fn call_args(input: &serde_json::Value, value_chars: usize) -> String
 /// an error or a second file after a long read is never lost: one code outline over the whole
 /// batch dropped every unnumbered line after the first numbered one (Codex on #5422). `None` when
 /// the result is its own best summary (more than a quarter of it).
-fn result_summary(result: &str, acts: &[Observation]) -> Option<String> {
+fn result_summary(result: &str, acts: &[Observation], budget: &crate::cognition::context_budget::ContextBudget) -> Option<String> {
     use continuum_context::levels::{summarize, Shape, LEVEL_RATIO};
     let level = |text: &str, act: Option<&Observation>| {
         let read = act.is_some_and(|act| act.output.verb == crate::cognition::act_observe::ToolVerb::Read);
@@ -488,12 +488,9 @@ fn result_summary(result: &str, acts: &[Observation]) -> Option<String> {
         [] => level(result, None),
         [one] => level(result, Some(one)),
         many => {
-            let mut parts = String::new();
-            for act in many {
-                let content = act.output.result.content.as_str();
-                let part = level(content, Some(act)).unwrap_or_else(|| content.to_owned()); // unwrap_or: a part with no smaller level is its own summary
-                parts.push_str(&format!("[{}]\n{part}\n", act.call.name));
-            }
+            // Each part is the act as the receipt shows it (its header over its humanized body),
+            // at its own level: the same seam the single-act branch reads through `result`.
+            let parts: String = many.iter().map(|act| act.render_summary_part(budget, |body| level(body, Some(act)))).collect();
             (parts.chars().count() * LEVEL_RATIO <= result.chars().count()).then_some(parts)
         }
     }
