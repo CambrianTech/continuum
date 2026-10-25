@@ -187,35 +187,6 @@ fn opens_with_tool_envelope(t: &str) -> bool {
             {
                 return true;
             }
-            // THE THIRD DIALECT, and by 2026-09-15 the DOMINANT one: no object
-            // follows at all. Measured over 24h across the 8 citizens on IntelMac —
-            // 241 spoken lines, 48 opening with a `[verb]` bracket, of which the two
-            // object-bearing forms above caught 16. The other 32 open like this:
-            //
-            //   [code/run]
-            //   [work/list]
-            //   [code/run]\n[invalid] command_run: unsupported lang '…' — supported: rust, python.
-            //   [code/run]\n\n# Code executed successfully. …
-            //
-            // A bare verb cannot be matched on SHAPE alone, because the same shape
-            // carries things that ARE speech and must survive: `[answer]`, `[pass]`,
-            // and `[repetition] your last message and …` (the perception brick) all
-            // satisfy `verb_ok`. What separates them is the NAMESPACE — every command
-            // in this system is `namespace/verb`, which is what the command system IS,
-            // so the slash is a property of the command surface and not a phrase list.
-            // Of the 48 bracket-openers, this takes the gate 16 → 33; the 15 it still
-            // leaves alone are exactly the verdict dialect and the brick, which are
-            // other gates' business (#4067) and must not be silenced here.
-            //
-            // I audited all 17 lines this newly catches before writing it: code/run
-            // ×14, work/list ×2, command/run ×1, every one a tool envelope posted where
-            // prose belongs, no false positive among them. Still ANCHORED — only a
-            // LEADING bracket counts, so a citizen writing about a tool mid-sentence is
-            // untouched, which is the `framing_echo` lesson (un-anchoring silences the
-            // citizens who REPORT the problem).
-            if verb_ok(verb) && verb.contains('/') {
-                return true;
-            }
         }
         // THE FIFTH DIALECT (Saoirse, Intel Mac, 2026-09-16 23:0xZ, into #cambriantech):
         // the CALL written inside the bracket — `[code/read({"file_path":"src/main.rs"})]`
