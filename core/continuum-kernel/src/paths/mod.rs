@@ -67,13 +67,20 @@ pub fn continuum_home() -> Result<std::path::PathBuf, String> {
     if let Some(native) = NativeHomeOverride::current() {
         return Ok(native.join(".continuum"));
     }
-    let home = std::env::var_os("CONTINUUM_HOME")
+    let home = set(std::env::var_os("CONTINUUM_HOME"))
         .map(std::path::PathBuf::from)
         .or_else(test_home)
         .or_else(|| dirs::home_dir().map(|h| h.join(".continuum")))
         .ok_or_else(|| "no home dir".to_string())?;
-    retired_root(std::env::var_os("CONTINUUM_ROOT").as_deref(), &home)?;
+    retired_root(set(std::env::var_os("CONTINUUM_ROOT")).as_deref(), &home)?;
     Ok(home)
+}
+
+/// An environment value that is set and not empty: an empty one is unset, as the shell's
+/// `${VAR:-default}` and `[ -n "$VAR" ]` read it, so the core and the lifecycle scripts never
+/// resolve two different homes from one environment (Codex on #5420).
+fn set(value: Option<std::ffi::OsString>) -> Option<std::ffi::OsString> {
+    value.filter(|v| !v.is_empty())
 }
 
 /// `$CONTINUUM_ROOT` was a second name for the continuum home and is no longer read (line 7). Set
@@ -281,6 +288,15 @@ mod tests {
         assert!(refusal.contains("CONTINUUM_HOME=/srv/continuum"), "{refusal}");
         assert_eq!(retired_root(Some(home.as_os_str()), home), Ok(()));
         assert_eq!(retired_root(None, home), Ok(()));
+    }
+
+    // what this catches (Codex on #5420): an empty CONTINUUM_HOME read as the path "" and an
+    // empty CONTINUUM_ROOT read as set, while the scripts read both as unset. Empty is unset.
+    #[test]
+    fn an_empty_value_is_unset_as_the_shell_reads_it() {
+        assert_eq!(set(Some(std::ffi::OsString::new())), None);
+        assert_eq!(set(None), None);
+        assert_eq!(set(Some("/srv/c".into())), Some("/srv/c".into()));
     }
 
     // what this catches (2026-09-20): a test binary resolving the OPERATOR's home — a
