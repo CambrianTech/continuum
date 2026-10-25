@@ -38,7 +38,9 @@ pub(super) async fn stop(options: StopOptions) -> Result<(), String> {
     // "the process is gone"; it now means "the process is gone AND every module's state
     // reached disk", which is the question anyone typing `stop` before an upgrade is
     // actually asking. A stop that could not save is a failure the shell can see.
-    match stop_with(false).await? {
+    // `--keep-engine` leaves the live serving lane for the next core to adopt (the reboot
+    // path): a build costs no model reload and nobody's KV. Plain `stop` reaps it.
+    match stop_with(options.keep_engine).await? {
         // Nothing ran, so nothing was lost. Exiting non-zero here would report a data
         // loss that did not happen, and `stop` is used in scripts that would then treat a
         // clean no-op as a failure.

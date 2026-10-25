@@ -52,6 +52,11 @@ pub struct TeardownPlan {
 /// does not know it exists.
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct StopOptions {
+    /// `--keep-engine`: stop the core and leave the live serving lane (the engine, its loaded
+    /// weights and every mind's KV) running for the next core to adopt, as `reboot` does.
+    /// The build loop: stop the core, build on every core, start it again, with no model
+    /// reload and nobody's KV lost.
+    pub keep_engine: bool,
     pub elevated: bool,
     pub plan: Option<String>,
     pub plan_sha: Option<String>,
@@ -63,6 +68,7 @@ impl StopOptions {
         let mut args = args.peekable();
         while let Some(arg) = args.next() {
             match arg.as_str() {
+                "--keep-engine" => options.keep_engine = true,
                 "--elevated" => options.elevated = true,
                 "--plan" => options.plan = args.next(),
                 "--plan-sha" => options.plan_sha = args.next(),
@@ -79,6 +85,9 @@ impl StopOptions {
                  exactly one process, bound by its digest)"
                     .to_string(),
             );
+        }
+        if options.keep_engine && options.elevated {
+            return Err("stop: --keep-engine is an operator's stop; the consented child ends exactly one process".to_string());
         }
         Ok(options)
     }
@@ -282,6 +291,10 @@ mod tests {
             "there is no operator-facing escalate verb — `continuum install` is the one command",
         );
         assert!(unknown.contains("unknown option"), "{unknown}");
+
+        let keep = parse(&["--keep-engine"]).expect("an operator's stop that keeps the engine");
+        assert!(keep.keep_engine && !keep.elevated);
+        assert!(parse(&["--keep-engine", "--elevated", "--plan", "p.json", "--plan-sha", "abc"]).is_err());
 
         let child = parse(&["--elevated", "--plan", "p.json", "--plan-sha", "abc"])
             .expect("the bound child parses");
