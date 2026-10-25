@@ -114,7 +114,7 @@ pub struct WorkSubmitParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub instance: Option<String>,
-    /// Patch base; defaults to recorded creation/benchmark base. Required for legacy worktrees.
+    /// Patch base; defaults to the recorded base.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub base_sha: Option<String>,
@@ -126,11 +126,11 @@ pub struct WorkSubmitParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional, type = "string")]
     pub staged_revision_id: Option<Uuid>,
-    /// Stable generation request ID from staged evidence; resolves at publish. Do not combine with staged_revision_id.
+    /// Generation that issued this work; not with staged_revision_id.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub generation_request_id: Option<String>,
-    /// Submodule paths whose pointer you mean to move; any other move is refused.
+    /// Submodule paths you mean to move.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub submodules: Option<Vec<String>>,

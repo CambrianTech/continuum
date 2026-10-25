@@ -23,7 +23,7 @@ claim_id?: string,
  */
 instance?: string, 
 /**
- * Patch base; defaults to recorded creation/benchmark base. Required for legacy worktrees.
+ * Patch base; defaults to the recorded base.
  */
 base_sha?: string, 
 /**
@@ -35,10 +35,10 @@ artifact?: WorkArtifactReference,
  */
 staged_revision_id?: string, 
 /**
- * Stable generation request ID from staged evidence; resolves at publish. Do not combine with staged_revision_id.
+ * Generation that issued this work; not with staged_revision_id.
  */
 generation_request_id?: string, 
 /**
- * Submodule paths whose pointer you mean to move; any other move is refused.
+ * Submodule paths you mean to move.
  */
 submodules?: Array<string>, };

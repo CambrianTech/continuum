@@ -6,7 +6,7 @@ impl ActionCommand for WorkSubmit {
     const NATIVE: bool = true;
     const ACCESS: AccessLevel = AccessLevel::AiSafe;
     const DESCRIPTION: &'static str =
-        "Submit own work for review; artifact/claim default from checkout. Publication is not success.";
+        "Submit own work for review, derived from your checkout. Publication is not success.";
     type Params = WorkSubmitParams;
     type Output = WorkSubmitResult;
 
