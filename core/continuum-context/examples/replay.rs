@@ -458,6 +458,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // `--validate <prefill tok/s>`: compare the growing shares on one line each, priced at a
     // measured prefill rate (the node's `state/serving-rates.json`, or a live read).
     let mut validate_tps: Option<f64> = None;
+    let mut reply_override: Option<u64> = None;
     let mut fixed_tools: Option<String> = None;
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
@@ -466,6 +467,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             "--purpose" => purpose = args.next().ok_or("--purpose needs a suffix")?,
             "--keyed-turn" => keyed_turn = true,
             "--trace" => trace = true,
+            "--reply" => reply_override = Some(args.next().ok_or("--reply needs a token count")?.parse()?),
             "--validate" => validate_tps = Some(args.next().ok_or("--validate needs the prefill rate in tokens/s")?.parse()?),
             "--share" => {
                 share = args.next().ok_or("--share needs a divisor")?.parse()?;
@@ -514,7 +516,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     });
     rows.sort_by_key(|row| row["captured_at_ms"].as_u64());
     let context_window = rows.iter().filter_map(|row| row["context_window"].as_u64()).max().unwrap_or(0); // unwrap_or: no rows in the room, nothing replays
-    let reply = rows.iter().filter_map(|row| row["request"]["maxTokens"].as_u64()).max().unwrap_or(0); // unwrap_or: no rows in the room, nothing replays
+    let captured_reply = rows.iter().filter_map(|row| row["request"]["maxTokens"].as_u64()).max().unwrap_or(0); // unwrap_or: no rows in the room, nothing replays
+    // `--reply <tokens>` replays with another reply reserve: what a reserve sized from her
+    // measured output would give her view (the captured one held 12,288 on the M5, 2026-10-25,
+    // while acts produced ~250-700).
+    let reply = reply_override.unwrap_or(captured_reply);
     // The schemas each act sends: the captured ones, or the one stable surface under `--tools`.
     let sent_tools: Vec<String> =
         rows.iter().map(|row| match &fixed_tools {
