@@ -60,11 +60,17 @@ pub enum CoordinatorError {
     /// Candle isn't online.
     #[error(
         "no fine-tuning adapter advertises capability for base_model={base_model:?} \
-         (registered providers: {registered:?}; supported base prefixes by provider: {supported_prefixes:?})"
+         (registered providers: {registered:?}; supported base prefixes by provider: {supported_prefixes:?}; \
+         matching this request but not serving this base now: {not_serving_now:?})"
     )]
     NoCapableAdapter {
         base_model: String,
         registered: Vec<String>,
+        /// Trainers whose capabilities match this request but whose live state said no at
+        /// this selection (`serves_base`, read once per selection): `grid-peer` with no fresh peer advertising the base, an in-engine
+        /// trainer with no lane serving it. An empty prefix list means "any base, gated live",
+        /// so without this the refusal read as if nothing could ever train the base.
+        not_serving_now: Vec<String>,
         /// Per-provider list of `supported_base_model_prefixes`. Lets
         /// the caller see *exactly* which prefix string would have
         /// routed to which adapter — surfaces wire literals like
@@ -148,21 +154,22 @@ impl FineTuningCoordinator {
     ) -> Result<(String, ArcFineTuningAdapter), CoordinatorError> {
         let all_ids = self.registry.list();
 
-        // Compute the capable set once.
-        let capable: Vec<(String, ArcFineTuningAdapter, FineTuningCapabilities)> = all_ids
-            .iter()
-            .filter_map(|id| self.registry.get(id).map(|a| (id.clone(), a)))
-            .filter_map(|(id, adapter)| {
-                let caps = adapter.capabilities();
-                // A trainer bound to live state (the in-engine one) is asked whether it
-                // serves THIS base now, so it is never chosen for a job it would refuse.
-                if admits(&caps) && self.caps_match(&caps, request) && adapter.serves_base(&request.base_model) {
-                    Some((id, adapter, caps))
-                } else {
-                    None
-                }
-            })
-            .collect();
+        // Compute the capable set once. A trainer bound to live state (the in-engine one, a
+        // grid peer) is asked ONCE whether it serves THIS base now, so it is never chosen for a
+        // job it would refuse, and a refusal names it from that same answer.
+        let mut capable: Vec<(String, ArcFineTuningAdapter, FineTuningCapabilities)> = Vec::new();
+        let mut not_serving_now: Vec<String> = Vec::new();
+        for (id, adapter) in all_ids.iter().filter_map(|id| self.registry.get(id).map(|a| (id.clone(), a))) {
+            let caps = adapter.capabilities();
+            if !(admits(&caps) && self.caps_match(&caps, request)) {
+                continue;
+            }
+            if adapter.serves_base(&request.base_model) {
+                capable.push((id, adapter, caps));
+            } else {
+                not_serving_now.push(id);
+            }
+        }
 
         // Honor caller preference if it's in the capable set.
         if let Some(pref) = preferred_provider {
@@ -202,6 +209,7 @@ impl FineTuningCoordinator {
                     base_model: request.base_model.clone(),
                     registered: all_ids,
                     supported_prefixes,
+                    not_serving_now,
                 })
             }
         }
@@ -293,12 +301,16 @@ mod tests {
 
     /// Configurable stub: capabilities are set at construction time
     /// so each test can isolate one selection rule.
-    struct StubWithCaps(FineTuningCapabilities);
+    /// The second field is its live answer to `serves_base`.
+    struct StubWithCaps(FineTuningCapabilities, bool);
 
     #[async_trait]
     impl FineTuningAdapter for StubWithCaps {
         fn capabilities(&self) -> FineTuningCapabilities {
             self.0.clone()
+        }
+        fn serves_base(&self, _base_model: &str) -> bool {
+            self.1
         }
         async fn create_job(&self, _r: TrainingJobRequest) -> Result<JobHandle, FineTuningError> {
             unimplemented!()
@@ -354,7 +366,7 @@ mod tests {
     fn registry_with(adapters: Vec<(&str, FineTuningCapabilities)>) -> Arc<FineTuningRegistry> {
         let reg = Arc::new(FineTuningRegistry::new());
         for (_id, c) in adapters {
-            reg.register(Arc::new(StubWithCaps(c)));
+            reg.register(Arc::new(StubWithCaps(c, true)));
         }
         reg
     }
@@ -581,5 +593,22 @@ mod tests {
             ("local", caps("local", true, true, true, &["qwen"])),
         ]));
         assert_eq!(both.select_here(&req).map(|(id, _)| id).ok().as_deref(), Some("local"));
+    }
+
+    // what this catches (card 7c296a5d): a refusal that hides why. enrico's 0.5b jobs refused
+    // listing only base prefixes, where grid-peer's empty list means "any base, gated live",
+    // so the reason (no fresh peer advertises the base) was invisible. A trainer that matches
+    // but is not serving the base now is named; one that does not match at all is not.
+    #[test]
+    fn a_refusal_names_the_trainers_that_match_but_are_not_serving_the_base_now() {
+        let mut grid = caps("grid-peer", true, true, true, &[]);
+        grid.place = TrainingPlace::GridPeer;
+        let reg = Arc::new(FineTuningRegistry::new());
+        reg.register(Arc::new(StubWithCaps(grid, false)));
+        reg.register(Arc::new(StubWithCaps(caps("local-candle", true, true, true, &["synthetic"]), true)));
+        let err = FineTuningCoordinator::new(reg).select(&base_request("qwen2.5-coder-0.5b"), None).err().expect("must reject");
+        let CoordinatorError::NoCapableAdapter { not_serving_now, .. } = &err else { panic!("{err:?}") };
+        assert_eq!(not_serving_now, &vec!["grid-peer".to_string()]);
+        assert!(err.to_string().contains("not serving this base now: [\"grid-peer\"]"), "{err}");
     }
 }
