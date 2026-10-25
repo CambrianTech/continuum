@@ -116,6 +116,16 @@ fn admission_of(state: AttemptState) -> Admission {
     }
 }
 
+/// What an existing leased record means to a create with this payload: closed or refused for
+/// certain is fenced whatever the payload; a live record from another payload is refused.
+fn lease_admission(row: TrainingAttempt, request_digest: &str) -> Result<Admission, LeaseRefusal> {
+    match row.state {
+        AttemptState::Closed | AttemptState::Failed { .. } => Ok(Admission::Fenced),
+        _ if row.request_digest.as_deref() != Some(request_digest) => Err(LeaseRefusal::PayloadChanged),
+        state => Ok(admission_of(state)),
+    }
+}
+
 /// Fixed namespace for [`lease_key`]; changing it would orphan every leased record.
 const LEASE_NAMESPACE: Uuid = Uuid::from_u128(0x6f05_b89d_cc34_4db0_8d1e_a5e0_1ea5_e001);
 
@@ -240,10 +250,7 @@ impl AttemptLedger {
             .await
             .map_err(|e| LeaseRefusal::Ledger(AdmitError::Unreadable(e.to_string())))?;
         match existing {
-            // Closed by a status query before this create arrived, or refused for certain.
-            Some(row) if matches!(row.state, AttemptState::Closed | AttemptState::Failed { .. }) => Ok(Admission::Fenced),
-            Some(row) if row.request_digest.as_deref() != Some(request_digest) => Err(LeaseRefusal::PayloadChanged),
-            Some(row) => Ok(admission_of(row.state)),
+            Some(row) => lease_admission(row, request_digest),
             None => {
                 let row = TrainingAttempt {
                     base: record_base(key),
@@ -262,6 +269,21 @@ impl AttemptLedger {
                 Ok(Admission::Fresh)
             }
         }
+    }
+
+    /// The existing record of a leased attempt, judged against this payload, without
+    /// recording anything: read BEFORE a trainer is chosen, so a repeat answers from its own
+    /// record (its job, a refusal, or Unknown) whatever this node's trainers are doing now.
+    /// `None` = no record; `admit_lease` still decides under the lock.
+    pub(crate) async fn lease_record(&self, key: Uuid, request_digest: &str) -> Result<Option<Admission>, LeaseRefusal> {
+        let lock = self.lock(key);
+        let _held = lock.lock().await;
+        let store = self.store.require().map_err(|e| LeaseRefusal::Ledger(AdmitError::Unreadable(e)))?;
+        let existing = store
+            .find_by_id(key)
+            .await
+            .map_err(|e| LeaseRefusal::Ledger(AdmitError::Unreadable(e.to_string())))?;
+        existing.map(|row| lease_admission(row, request_digest)).transpose()
     }
 
     /// What admission WOULD decide for `attempt`, without recording anything: lets

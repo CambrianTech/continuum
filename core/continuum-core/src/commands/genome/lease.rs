@@ -93,6 +93,28 @@ fn refused(error_kind: &str, error: impl Into<String>) -> LeaseTrainOutcome {
     LeaseTrainOutcome::Refused { error_kind: error_kind.into(), error: error.into() }
 }
 
+/// The answer an attempt's record already gives, or `None` when it was just admitted fresh
+/// and its trainer should start. An admitted, never-settled record may have started one: it
+/// is Unknown, never refused and never started again.
+fn recorded_answer(admission: Admission, attempt: uuid::Uuid) -> Option<LeaseTrainOutcome> {
+    match admission {
+        Admission::Fresh => None,
+        Admission::AlreadyCreated(handle) => Some(LeaseTrainOutcome::Created { handle }),
+        Admission::Fenced => Some(refused("attempt_fenced", format!("attempt {attempt} was closed or refused here; nothing started"))),
+        Admission::Unsettled => Some(LeaseTrainOutcome::Unknown { reason: format!("attempt {attempt} was admitted here and never settled: a trainer may have started") }),
+    }
+}
+
+/// A lease the ledger would not admit: a changed payload starts nothing, an unreadable record
+/// may hold a started trainer (Unknown), an unwritable new record started nothing.
+fn refusal_answer(refusal: LeaseRefusal, attempt: uuid::Uuid) -> LeaseTrainOutcome {
+    match refusal {
+        LeaseRefusal::PayloadChanged => refused("payload_changed", format!("attempt {attempt} was leased here with another payload")),
+        LeaseRefusal::Ledger(AdmitError::Unreadable(e)) => LeaseTrainOutcome::Unknown { reason: format!("attempt record unreadable: {e}") },
+        LeaseRefusal::Ledger(AdmitError::Unrecorded(e)) => refused("attempt_unrecorded", format!("could not be admitted, nothing started: {e}")),
+    }
+}
+
 crate::action_command! {
     /// Train a LoRA job a grid peer already decided on, on a trainer on this host (never
     /// passed on). Keyed by the authenticated peer and its attempt: a repeat returns the same
@@ -121,24 +143,28 @@ crate::action_command! {
         let key = lease_key(origin, p.attempt);
         // One create per leased attempt at a time: a concurrent repeat waits, then reads it.
         let _run = this.attempts.run(key).await;
+        // Binding first: an attempt this node already holds answers from its own record,
+        // checked against this payload, before any trainer is chosen (Codex on #5409).
+        match this.attempts.lease_record(key, &digest).await {
+            Ok(None) => {}
+            Ok(Some(existing)) => {
+                if let Some(answer) = recorded_answer(existing, p.attempt) {
+                    return Ok(answer);
+                }
+            }
+            Err(refusal) => return Ok(refusal_answer(refusal, p.attempt)),
+        }
         let (provider, adapter) = match this.coordinator.select_here(&p.request) {
             Ok(selected) => selected,
-            Err(e) => {
-                // A repeat of a job already made answers with it even if the trainer is busy now.
-                if let Ok(Some(Admission::AlreadyCreated(handle))) = this.attempts.peek(key).await {
-                    return Ok(LeaseTrainOutcome::Created { handle });
-                }
-                return Ok(refused("no_trainer_here", e.to_string()));
-            }
+            Err(e) => return Ok(refused("no_trainer_here", e.to_string())),
         };
         match this.attempts.admit_lease(key, origin, &digest, &provider).await {
-            Ok(Admission::Fresh) => {}
-            Ok(Admission::AlreadyCreated(handle)) => return Ok(LeaseTrainOutcome::Created { handle }),
-            Ok(Admission::Fenced) => return Ok(refused("attempt_fenced", format!("attempt {} was closed or refused here; nothing started", p.attempt))),
-            Ok(Admission::Unsettled) => return Ok(LeaseTrainOutcome::Unknown { reason: format!("attempt {} was admitted here and never settled: a trainer may have started", p.attempt) }),
-            Err(LeaseRefusal::PayloadChanged) => return Ok(refused("payload_changed", format!("attempt {} was leased here with another payload", p.attempt))),
-            Err(LeaseRefusal::Ledger(AdmitError::Unreadable(e))) => return Ok(LeaseTrainOutcome::Unknown { reason: format!("attempt record unreadable: {e}") }),
-            Err(LeaseRefusal::Ledger(AdmitError::Unrecorded(e))) => return Ok(refused("attempt_unrecorded", format!("could not be admitted, nothing started: {e}"))),
+            Ok(admission) => {
+                if let Some(answer) = recorded_answer(admission, p.attempt) {
+                    return Ok(answer);
+                }
+            }
+            Err(refusal) => return Ok(refusal_answer(refusal, p.attempt)),
         }
         continuum_base::probe!(
             class = "genome.lease.admitted",
@@ -210,4 +236,83 @@ mod tests {
         assert!(lease_origin(Some(&CallerIdentity::local_persona(peer()))).is_err(), "a resident has no lease to give");
         assert!(lease_origin(None).is_err(), "this node's own code has no lease to give");
     }
+
+    /// A lease through the command itself, from `origin`, on a node with no trainer that may
+    /// take it (the stub trainers are cloud-placed, which `select_here` never chooses).
+    async fn lease_without_a_trainer(
+        attempts: Arc<AttemptLedger>,
+        origin: uuid::Uuid,
+        attempt: uuid::Uuid,
+        request: TrainingJobRequest,
+    ) -> LeaseTrainOutcome {
+        use crate::sdk_codegen::{ActionCommand, Ctx};
+        let command = GenomeLeaseTrain {
+            coordinator: Arc::new(FineTuningCoordinator::new(super::super::test_support::registry_with(&["cloud-only"]))),
+            attempts,
+        };
+        let mut ctx = Ctx::default();
+        ctx.caller = Some(CallerIdentity::airc(crate::identity::PeerId::from_uuid(origin)));
+        command
+            .run(&ctx, LeaseTrainParams { attempt, dispatch: None, request })
+            .await
+            .expect("a lease answers with an outcome") // JUSTIFIED: test asserts the answer
+    }
+
+    fn lora_request(persona: &str) -> TrainingJobRequest {
+        let mut request = super::super::test_support::request_for("qwen3.5-4b");
+        request.persona_name = persona.into();
+        request.lora = Some(crate::genome::fine_tuning::LoRAHyperparams { rank: 8, alpha: 16, dropout: 0.0, target_modules: vec![], top_layers: None });
+        request
+    }
+
+    async fn ledger() -> (Arc<AttemptLedger>, tempfile::TempDir) {
+        let (adapter, dir) = crate::orm::store::fresh_adapter().await;
+        let ledger = AttemptLedger::new();
+        ledger.install(Arc::new(crate::orm::OrmStore::new(adapter).await.expect("attempt store"))); // JUSTIFIED: test fixture
+        (Arc::new(ledger), dir)
+    }
+
+    // what this catches (Codex on #5409, binding first): a repeat answered from whatever this
+    // node's trainers do NOW instead of from its own record. With no trainer available, an
+    // attempt already created answers with its job, the same attempt with another payload is
+    // refused, an admitted never-settled one is Unknown (never refused: a trainer may have
+    // started), an unreadable ledger is Unknown, and only a new attempt is "no trainer here".
+    #[tokio::test]
+    async fn a_repeat_answers_from_its_record_before_any_trainer_is_chosen() {
+        let (attempts, _dir) = ledger().await;
+        let origin = uuid::Uuid::new_v4();
+        let request = lora_request("kimi");
+        let digest = request_digest(&request).expect("digest"); // JUSTIFIED: test fixture
+
+        let created = uuid::Uuid::new_v4();
+        let job = JobHandle { provider_id: "engine-lane".into(), provider_job_id: "job-1".into(), local_id: uuid::Uuid::new_v4() };
+        attempts.admit_lease(lease_key(origin, created), origin, &digest, "engine-lane").await.expect("admitted"); // JUSTIFIED: test fixture
+        attempts.settle(lease_key(origin, created), AttemptState::Created { handle: job.clone() }).await.expect("settled"); // JUSTIFIED: test fixture
+        assert!(matches!(
+            lease_without_a_trainer(attempts.clone(), origin, created, request.clone()).await,
+            LeaseTrainOutcome::Created { handle } if handle == job
+        ));
+        assert!(matches!(
+            lease_without_a_trainer(attempts.clone(), origin, created, lora_request("sahar")).await,
+            LeaseTrainOutcome::Refused { error_kind, .. } if error_kind == "payload_changed"
+        ));
+
+        let admitted = uuid::Uuid::new_v4();
+        attempts.admit_lease(lease_key(origin, admitted), origin, &digest, "engine-lane").await.expect("admitted"); // JUSTIFIED: test fixture
+        assert!(matches!(
+            lease_without_a_trainer(attempts.clone(), origin, admitted, request.clone()).await,
+            LeaseTrainOutcome::Unknown { .. }
+        ));
+
+        assert!(matches!(
+            lease_without_a_trainer(Arc::new(AttemptLedger::new()), origin, uuid::Uuid::new_v4(), request.clone()).await,
+            LeaseTrainOutcome::Unknown { .. }
+        ), "an unreadable ledger may hold a started trainer");
+
+        assert!(matches!(
+            lease_without_a_trainer(attempts, origin, uuid::Uuid::new_v4(), request).await,
+            LeaseTrainOutcome::Refused { error_kind, .. } if error_kind == "no_trainer_here"
+        ));
+    }
 }
+
