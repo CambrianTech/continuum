@@ -253,13 +253,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if applied > 0 {
         eprintln!("continuum-core: applied {applied} assignment(s) from config.env");
     }
+    // The one continuum home, resolved once config.env has had its say and before anything
+    // reads it. A retired $CONTINUUM_ROOT, or no home at all, refuses the boot here with the
+    // reason, instead of each later `continuum_home().ok()` quietly switching its feature off
+    // (card e7c258a5).
+    let home = continuum_core::paths::continuum_home()
+        .map_err(|error| format!("continuum-core: {error}"))?;
     tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?
-        .block_on(async_main())
+        .block_on(async_main(home))
 }
 
-async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
+async fn async_main(home: std::path::PathBuf) -> Result<(), Box<dyn std::error::Error>> {
     let boot_entry = std::time::Instant::now();
     continuum_core::runtime::boot_clock::mark();
     // Raise our own fd ceiling BEFORE opening any socket or file sink. The core is the
@@ -488,13 +494,10 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
     // Own background task, snapshot on a slow cadence, best-effort (a lost snapshot
     // just re-embeds). Off the boot critical path — the load is a fast file read,
     // no gateway/GPU probe.
-    if let Ok(home) = continuum_core::paths::continuum_home() {
-        let cache_path = home.join("cache").join("embedding-cache.bin");
-        continuum_core::ai::embedding::spawn_embedding_cache_persistence(
-            continuum_core::ai::embedding::global_embedding_cache(),
-            cache_path,
-        );
-    }
+    continuum_core::ai::embedding::spawn_embedding_cache_persistence(
+        continuum_core::ai::embedding::global_embedding_cache(),
+        home.join("cache").join("embedding-cache.bin"),
+    );
 
     // Capture tokio runtime handle for async operations from IPC thread
     let rt_handle = tokio::runtime::Handle::current();
@@ -521,18 +524,11 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
     // known cache class now reports through a TrackedDir fed by the
     // DiskUsageScanner daemon (one slow walker; reporters read atomics
     // within the 100 ms budget).
-    // The continuum classes follow the one resolved continuum home (card 4dedb177): with none,
-    // nothing is tracked and it is said, rather than tracking a fabricated `/.continuum`.
-    let tracked_dirs = match continuum_core::paths::continuum_home() {
-        Ok(continuum) => continuum_core::system_resources::standard_tracked_dirs(
-            &dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("/")), // JUSTIFIED unwrap_or_else: unchanged here; with no resolvable home airc's classes point at /.airc, which nothing writes
-            &continuum,
-        ),
-        Err(error) => {
-            tracing::warn!(probe_class = "disk.tracked_dirs", %error, "no continuum home: no cache class is tracked this boot");
-            Vec::new()
-        }
-    };
+    // The continuum classes follow the one resolved continuum home (card 4dedb177).
+    let tracked_dirs = continuum_core::system_resources::standard_tracked_dirs(
+        &dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("/")), // JUSTIFIED unwrap_or_else: unchanged here; with no resolvable home airc's classes point at /.airc, which nothing writes
+        &home,
+    );
     // Process-wide registry: the IPC thread's broker block fetches the
     // SAME TrackedDir instances to build eviction pools over (one
     // measurement per cache class, shared by reporter + pool).
