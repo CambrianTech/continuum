@@ -129,6 +129,12 @@ pub fn load_from(path: &Path) -> BTreeMap<String, ServingRates> {
 
 fn save_all(rates: &BTreeMap<String, ServingRates>) {
     let Some(path) = default_path() else { return };
+    save_to(&path, rates);
+}
+
+/// Write every model's rates to `path` (through a temp file and a rename), the file the next
+/// boot loads with [`load_from`].
+pub fn save_to(path: &Path, rates: &BTreeMap<String, ServingRates>) {
     if let Some(dir) = path.parent() {
         let _ = std::fs::create_dir_all(dir);
     }
@@ -154,6 +160,11 @@ mod tests {
         let restored: BTreeMap<String, ServingRates> = serde_json::from_slice(&serde_json::to_vec(&rates)?)?;
         assert_eq!(restored.get("m").and_then(|r| r.prefill_knee), Some(4));
         // The M5's own record before this field (state/serving-rates.json, 2026-10-25).
+        // Through the real file the next boot loads (Codex on #5427): saved, then loaded fresh.
+        let dir = tempfile::tempdir().map_err(serde_json::Error::io)?;
+        let path = dir.path().join("state").join("serving-rates.json");
+        save_to(&path, &rates);
+        assert_eq!(load_from(&path).get("m").and_then(|r| r.prefill_knee), Some(4), "a restarted node reads its knee");
         let older: BTreeMap<String, ServingRates> = serde_json::from_str(
             r#"{"m":{"prefill":{"samples":90,"tps_ema":373.1,"last_ms":1792958628941},"decode":{"points":{}}}}"#,
         )?;
