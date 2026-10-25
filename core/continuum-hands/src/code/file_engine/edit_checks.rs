@@ -560,6 +560,15 @@ pub fn gutter_line_number(rendered: &str) -> Option<u32> {
     (rest.starts_with(" | ") || rest == " |").then(|| t[..digits].parse().ok()).flatten()
 }
 
+/// A [`numbered_line`] split into its line number and its code: the parser the context
+/// crate's code level (`continuum_context::levels::Shape::Code`) takes, so the gutter format
+/// stays owned here.
+pub fn gutter_split(rendered: &str) -> Option<(u32, &str)> {
+    let number = gutter_line_number(rendered)?;
+    let code = rendered.split_once(" | ").map_or("", |(_, code)| code); // map_or: an empty source line renders with no code
+    Some((number, code))
+}
+
 /// Do these bytes look like `code/read` OUTPUT rather than file CONTENT?
 ///
 /// The hazard that arrives with numbered reads: read a file, hand the numbered text

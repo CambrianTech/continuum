@@ -209,7 +209,7 @@ impl WorkingMemory {
     }
 
     /// Every act she has a record of, oldest first, each in the renderings her context view
-    /// chooses between: `(seq, full, summary, pointer)`, the summary a large read's outline. Full is the whole result while retained,
+    /// chooses between: `(seq, full, summary, pointer)`, the summary its shape's level (`continuum_context::levels`). Full is the whole result while retained,
     /// else what its pointer says; the pointer names the handle that reopens it, or is the
     /// ledger line when nothing was saved. The act still in flight is not among them (it
     /// rides whole as the newest message of the turn); the flag says whether there is one.
@@ -236,7 +236,7 @@ impl WorkingMemory {
                     (None, None, None) => format!("[action #{}] {}", record.seq, record.operation),
                 };
                 let full = whole.unwrap_or_else(|| pointer.clone());
-                let summary = record.outline.as_deref().map(|outline| format!("[result {attribution}{workspace} — outline of a read] {outline}"));
+                let summary = record.summary.as_deref().map(|summary| format!("[result {attribution}{workspace} — summary; expand with tool/output] {summary}"));
                 (record.seq, full, summary, pointer)
             })
             .collect();

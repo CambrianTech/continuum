@@ -135,12 +135,10 @@ mod apply;
 mod edit_checks;
 mod introspect;
 mod ops;
-mod outline;
 mod suggest;
 use apply::*;
 use edit_checks::*;
-pub use edit_checks::gutter_line_number;
-pub use outline::outline;
+pub use edit_checks::{gutter_line_number, gutter_split};
 use suggest::*;
 
 #[cfg(test)]

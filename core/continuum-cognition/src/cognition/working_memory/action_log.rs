@@ -36,11 +36,11 @@ pub(crate) struct ActionRecord {
     /// checkpoint: its operation and workspace live only in that text.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub written_pointer: Option<String>,
-    /// The result's outline when it is a large numbered read (`file_engine::outline`): the
-    /// level her view gives it when it cannot keep it whole. Kept after the result collapses,
-    /// so the file she read stays addressable by line.
+    /// The result's summary level (`continuum_context::levels`): a numbered read's outline,
+    /// else an output's head and tail; what her view gives it when it cannot keep it whole.
+    /// Kept after the result collapses, so what she read stays addressable.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub outline: Option<String>,
+    pub summary: Option<String>,
 }
 
 impl ActionRecord {
