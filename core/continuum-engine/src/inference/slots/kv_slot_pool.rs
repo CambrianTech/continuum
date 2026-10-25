@@ -519,6 +519,9 @@ impl EndpointSlots {
 pub struct EndpointTransition {
     pub(super) endpoint: Arc<EndpointSlots>,
     pub(super) _guard: tokio::sync::OwnedRwLockWriteGuard<()>,
+    /// Whether the endpoint was open when this writer closed it: what
+    /// [`EndpointTransition::hand_back_unchanged`] restores when its operation changed nothing.
+    pub(super) found_ready: bool,
 }
 
 /// Confirmed saves of every attributed resident. Retains the exclusive writer

@@ -43,6 +43,8 @@ struct FakeControl {
     placements_recorded: AtomicUsize,
     /// `serve` refuses to retire the incumbent and signals nothing (card 931cfd22).
     retirement_refused: bool,
+    /// The loaded adapter set cannot be read (an unknown genome).
+    adapters_unreadable: bool,
 }
 
 impl FakeControl {
@@ -62,7 +64,13 @@ impl FakeControl {
             in_place: GenomeInPlace::Unsupported,
             placements_recorded: AtomicUsize::new(0),
             retirement_refused: false,
+            adapters_unreadable: false,
         }
+    }
+    /// Model an engine whose loaded adapter set cannot be read.
+    fn adapters_unreadable(mut self) -> Self {
+        self.adapters_unreadable = true;
+        self
     }
     /// Model a replacement whose incumbent cannot be retired safely: `serve` refuses before
     /// signalling it, as `retire_adopted` does when checkpoint custody refuses.
@@ -147,6 +155,9 @@ impl LlamaServerControl for FakeControl {
         }
     }
     async fn active_adapters(&self) -> Result<Vec<String>, LlamaServerError> {
+        if self.adapters_unreadable {
+            return Err(LlamaServerError::Unreachable("adapter set unreadable".into()));
+        }
         Ok(self.active_adapters.clone())
     }
     async fn adopt_genome_in_place(

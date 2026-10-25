@@ -185,10 +185,11 @@ impl EndpointSlots {
         if !current() {
             return Err(());
         }
-        self.state.lock().ready.send_replace(false);
+        let found_ready = self.state.lock().ready.send_replace(false);
         Ok(EndpointTransition {
             endpoint: self.clone(),
             _guard: guard,
+            found_ready,
         })
     }
 
@@ -202,26 +203,42 @@ impl EndpointSlots {
         if !current() {
             return Err(());
         }
-        self.state.lock().ready.send_replace(false);
+        let found_ready = self.state.lock().ready.send_replace(false);
         Ok(EndpointTransition {
             endpoint: self.clone(),
             _guard: guard,
+            found_ready,
         })
     }
 
     pub async fn transition(self: &Arc<Self>) -> EndpointTransition {
-        self.state.lock().ready.send_replace(false);
+        let found_ready = self.state.lock().ready.send_replace(false);
         let guard = self.gate.clone().write_owned().await;
         // A preceding transition might have reopened while this writer waited.
         self.state.lock().ready.send_replace(false);
         EndpointTransition {
             endpoint: self.clone(),
             _guard: guard,
+            found_ready,
         }
     }
 }
 
 impl EndpointTransition {
+    /// Hand the endpoint back as this writer found it when its operation changed nothing
+    /// (card 931cfd22): a replacement refused before its incumbent was signalled. "The writer
+    /// that closed the endpoint reopens it", and only to what it was: open only if it was
+    /// open when this writer took it, and only while nothing owned took its place (no owned
+    /// generation, certain paging), which is an adopted incumbent left exactly as it was.
+    pub(crate) fn hand_back_unchanged(&self) -> bool {
+        let state = self.endpoint.state.lock();
+        if !self.found_ready || state.generation.is_some() || state.paging_uncertain {
+            return false;
+        }
+        state.ready.send_replace(true);
+        true
+    }
+
     /// Save an adopted engine without inventing ownership of its process. The
     /// persisted ledger and the caller's lane record must identify the same live
     /// incarnation. Retirement still requires a fresh identity check by its owner.

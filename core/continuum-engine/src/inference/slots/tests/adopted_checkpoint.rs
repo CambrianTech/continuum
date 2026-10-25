@@ -89,3 +89,36 @@ async fn adopted_checkpoint_uses_its_ledger_and_classifies_save_completion() -> 
     }
     Ok(())
 }
+
+// what this catches (card 931cfd22; Codex on #5413): a replacement refused before its adopted
+// incumbent was signalled leaving the endpoint closed, so a resident could not be admitted to
+// an engine that still runs (enrico 2026-10-25). The writer hands back what it found: an open
+// endpoint refused with no known pool reopens and admits a turn; one already closed when the
+// writer took it stays closed.
+#[tokio::test]
+async fn a_refused_adopted_replacement_hands_the_endpoint_back_as_found() -> Result<(), Box<dyn std::error::Error>> {
+    let root = format!("test://refused-handback-{}", Uuid::new_v4());
+    let endpoint = directory().endpoint(&root);
+    assert!(endpoint.is_ready(), "an adopted engine's endpoint starts open");
+    let mut transition = endpoint.transition().await;
+    assert!(!endpoint.is_ready(), "the replacement's writer closed it");
+    let process = crate::inference::engine_residency::EngineIncarnation::of(std::process::id(), 1)
+        .ok_or("fixture process identity unavailable")?;
+    let refused = transition
+        .checkpoint_adopted_before_replacement(&reqwest::Client::new(), &root, process, &|| true)
+        .await;
+    assert_eq!(refused.err().as_deref(), Some("adopted checkpoint requires a known pool"));
+    assert!(transition.hand_back_unchanged(), "nothing changed: handed back open");
+    drop(transition);
+    assert!(endpoint.is_ready());
+    assert!(endpoint.admit().await.is_ok(), "a resident's turn is admitted again");
+
+    let closes = endpoint.transition().await;
+    drop(closes); // a transition that never hands back leaves the endpoint closed
+    assert!(!endpoint.is_ready());
+    let found_closed = endpoint.transition().await;
+    assert!(!found_closed.hand_back_unchanged(), "closed when found stays closed");
+    drop(found_closed);
+    assert!(!endpoint.is_ready());
+    Ok(())
+}

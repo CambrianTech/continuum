@@ -545,5 +545,22 @@ async fn a_refused_replacement_keeps_a_verified_incumbent_and_only_that() {
         matches!(ensure_model_serving(&other_model, &target("coder-14b"), false).await, EnsureOutcome::Degraded { .. }),
         "another model is never reported as the target"
     );
+
+    // Codex on #5413: a replacement wanted for the GENOME. Keeping the incumbent would publish
+    // the target's genes as loaded; a different or unreadable set stays degraded.
+    let other_genes = FakeControl::probe(Ok(Some("coder-14b".into())))
+        .with_active_adapters(vec!["/genes/old.gguf".into()])
+        .retirement_refused();
+    assert!(
+        matches!(ensure_model_serving(&other_genes, &target("coder-14b"), false).await, EnsureOutcome::Degraded { .. }),
+        "the target's genes are never reported as loaded on an incumbent that holds others"
+    );
+    let unknown_genes = FakeControl::probe(Ok(Some("coder-14b".into())))
+        .adapters_unreadable()
+        .retirement_refused();
+    assert!(
+        matches!(ensure_model_serving(&unknown_genes, &target("coder-14b"), false).await, EnsureOutcome::Degraded { .. }),
+        "an unknown gene set is never assumed to be the target's"
+    );
 }
 
