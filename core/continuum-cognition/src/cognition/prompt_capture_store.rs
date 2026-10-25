@@ -152,8 +152,39 @@ impl Store {
             max_entries: MAX_ENTRIES,
             max_bytes: MAX_PAYLOAD_BYTES,
         };
-        store.rotate()?;
+        if !store.resume()? {
+            store.rotate()?;
+        }
         Ok(store)
+    }
+
+    /// Continue the current segment when it is whole and has room: a core restart keeps a
+    /// mind's history instead of rolling it. Opening used to rotate, so every restart moved the
+    /// current segment to `.prev` and deleted the older one: the M5's eight restarts on
+    /// 2026-10-25 left 4-8 acts per resident, too few to replay (Aiko's 43-act morning was
+    /// gone). A segment with any integrity issue, or none, rotates exactly as before.
+    fn resume(&mut self) -> io::Result<bool> {
+        let mut issues = Vec::new();
+        let segment = match Segment::open(&self.dir, self.persona, false, &mut issues) {
+            Ok(Some(segment)) => segment,
+            Ok(None) | Err(_) => return Ok(false),
+        };
+        let (data_path, index_path) = paths(&self.dir, self.persona, false);
+        if !issues.is_empty()
+            || segment.entries >= self.max_entries
+            || std::fs::metadata(&data_path)?.len() >= self.max_bytes
+        {
+            return Ok(false);
+        }
+        let mut data = OpenOptions::new().read(true).write(true).open(data_path)?;
+        data.seek(SeekFrom::End(0))?;
+        let mut index = OpenOptions::new().read(true).write(true).open(index_path)?;
+        index.seek(SeekFrom::End(0))?;
+        self.data = Some(BufWriter::with_capacity(64 * 1024, data));
+        self.index = Some(index);
+        self.generation = segment.generation;
+        self.entries = segment.entries;
+        Ok(true)
     }
     fn rotate(&mut self) -> io::Result<()> {
         self.data.take();
@@ -669,6 +700,25 @@ mod tests {
                 .count(),
             4
         );
+    }
+
+    // what this catches: a restart rolling a mind's history away. Reopening continues the
+    // whole current segment (one generation, every row readable, no `.prev` made), so the
+    // replay validator keeps a resident's acts across restarts.
+    #[test]
+    fn a_reopened_store_continues_its_whole_segment() {
+        let dir = tempfile::tempdir().expect("capture directory");
+        let persona = Uuid::new_v4();
+        let mut store = Store::open(dir.path(), persona).expect("capture store");
+        store.append(&row(0), header(0), false).expect("before the restart");
+        drop(store);
+        let mut store = Store::open(dir.path(), persona).expect("reopened store");
+        store.append(&row(1), header(1), false).expect("after the restart");
+        let all = page(dir.path(), persona, None, false, 999).expect("history");
+        let ids: Vec<&str> = all.entries.iter().map(|e| e.request_id.as_str()).collect();
+        assert_eq!(ids, ["request-0", "request-1"]);
+        assert!(all.issues.is_empty(), "{:?}", all.issues);
+        assert!(!paths(dir.path(), persona, true).0.exists(), "nothing rolled to .prev");
     }
 
     #[test]
