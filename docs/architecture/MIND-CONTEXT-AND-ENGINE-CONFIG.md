@@ -271,6 +271,20 @@ no faculty re-implements them:
 | hand churn labels (`churn_of` callers) | 6 | 0: `Motion` orders every start |
 | positron `ViewState` kinds that are not context `Source`s | 13 | 0: one adapter, items with levels and expand handles |
 
+**How to add a layer (the whole recipe; everything else is free):**
+1. Implement `continuum_context::source::Source` for it. `name` and `priority` are required;
+   set `required` only for input she must read.
+2. `items()` returns one `Item` per subject, under a key that names that whole subject. Build its
+   `summary` with `continuum_context::levels::summarize(full, Shape::…)` (`Code` with the producer's
+   line parser, `Output`, `List`). Its `pointer` names the handle that expands it.
+3. Add the source to the view's source list. Never push a prompt message, never collapse, never
+   pick an order: the view appends, levels, admits, orders by measured motion and turns over.
+4. Prove it with a fixture in the source's test mod, then with the replay validator.
+
+What you get for free: append-only caching within an epoch, levels of detail that never
+collapse the newest, admission instead of turnovers, a restart order measured per mind, and
+(with Codex's engine verbs) the shared head across minds.
+
 **Owners:** Fable (the view, the adapter, the deletions), Codex (`references()`, head/ensure,
 slot/seed), Cormac (checkpoints at the head boundary and on turnover). The replay validator
 (`continuum-context` `examples/replay.rs`) and the live 15-minute read are the receipts for each slice.
