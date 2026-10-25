@@ -153,7 +153,10 @@ mod tests {
         rates.insert("m".to_string(), ServingRates { prefill_knee: Some(4), ..ServingRates::default() });
         let restored: BTreeMap<String, ServingRates> = serde_json::from_slice(&serde_json::to_vec(&rates)?)?;
         assert_eq!(restored.get("m").and_then(|r| r.prefill_knee), Some(4));
-        let older: BTreeMap<String, ServingRates> = serde_json::from_str(r#"{"m":{"prefill":{},"decode":{}}}"#)?;
+        // The M5's own record before this field (state/serving-rates.json, 2026-10-25).
+        let older: BTreeMap<String, ServingRates> = serde_json::from_str(
+            r#"{"m":{"prefill":{"samples":90,"tps_ema":373.1,"last_ms":1792958628941},"decode":{"points":{}}}}"#,
+        )?;
         assert_eq!(older.get("m").and_then(|r| r.prefill_knee), None);
         Ok(())
     }
