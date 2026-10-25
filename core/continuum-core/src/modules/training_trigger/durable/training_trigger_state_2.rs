@@ -429,10 +429,18 @@ impl TrainingTriggerState {
                     }
                 })
                 .await?;
-            if let DispatchResult::Failed { kind, error } = result {
-                continuum_base::probe!(class = "training.recovery.pending", persona = %report_key.persona_id,
-                    trait_kind = %report_key.trait_kind, kind, error = %error,
-                    "accepted training remains owned by the durable trigger");
+            match result {
+                DispatchResult::Failed { kind, error } => {
+                    let said = format!("{kind}: {error}");
+                    if refusal_is_news(&self.reported_recovery, &report_key, said) {
+                        continuum_base::probe!(class = "training.recovery.pending", persona = %report_key.persona_id,
+                            trait_kind = %report_key.trait_kind, kind, error = %error,
+                            "accepted training remains owned by the durable trigger");
+                    }
+                }
+                _ => {
+                    self.reported_recovery.remove(&report_key);
+                }
             }
         }
         Ok(())
@@ -567,4 +575,15 @@ impl TrainingTriggerState {
         .await
         .map_err(|e| ("RecoveryRequired", e))?
     }
+}
+
+/// Whether a bucket's refusal is news: recorded per bucket, an unchanged refusal is said once
+/// and a changed one again. The caller clears a bucket's entry when it recovers, so a later
+/// recurrence is news too.
+pub(super) fn refusal_is_news<K: std::hash::Hash + Eq + Clone>(
+    reported: &dashmap::DashMap<K, String>,
+    key: &K,
+    said: String,
+) -> bool {
+    reported.insert(key.clone(), said.clone()).as_ref() != Some(&said)
 }

@@ -604,3 +604,19 @@ use super::*;
         assert!(!intent.is_active);
         assert!(next.state.active_dispatches.get(&key).is_none_or(|a| entity_id(&a.intent.base).ok() != Some(id)));
     }
+
+    // what this catches (enrico 2026-10-25: 9 unchanged refusals re-fired every 30 s, 792
+    // probes in 44 min): recovery re-reporting a refusal nothing changed. Said once; a changed
+    // refusal is said again; after the bucket recovers (its entry cleared), a recurrence is news.
+    #[test]
+    pub(super) fn an_unchanged_recovery_refusal_is_said_once() {
+        use super::super::training_trigger_state_2::refusal_is_news;
+        let reported = dashmap::DashMap::new();
+        assert!(refusal_is_news(&reported, &"kimi/code", "RecoveryRequired: no confirmed result".into()));
+        assert!(!refusal_is_news(&reported, &"kimi/code", "RecoveryRequired: no confirmed result".into()));
+        assert!(refusal_is_news(&reported, &"kimi/code", "RecoveryRequired: no trainer".into()), "a changed refusal is news");
+        assert!(refusal_is_news(&reported, &"sahar/code", "RecoveryRequired: no trainer".into()), "per bucket");
+        reported.remove(&"kimi/code");
+        assert!(refusal_is_news(&reported, &"kimi/code", "RecoveryRequired: no trainer".into()), "a recurrence after recovery");
+    }
+
