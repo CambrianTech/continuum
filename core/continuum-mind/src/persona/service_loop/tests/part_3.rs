@@ -16,10 +16,9 @@ fn test_obligations(hosted: &HostedPersona) -> crate::persona::obligation::Oblig
     // [[test-fixtures-are-system-primitives]]. The substrate's
     // ubiquitous primitives now power every test below:
     //   * `ScriptedConversation` for the `PersonaConversation` impl
-    //     (with `.with_events`, `.with_high_water`,
-    //     `.with_prime_failure`, `.require_prime_before_next_message`)
-    //   * `HeuristicInferenceAdapter` for the adapter (with
-    //     `.with_delay_ms` for the honest-latency test)
+    //     (with `.with_events`, `.with_prime_failure`,
+    //     `.require_prime_before_next_message`)
+    //   * `HeuristicInferenceAdapter` for the adapter
     //   * `StubAircCitizen` for the AircTranscriptReader — citizens
     //     are also transcript readers via the trait's supertrait
     //     bound, so it doubles as the empty-transcript reader
@@ -92,13 +91,6 @@ fn test_obligations(hosted: &HostedPersona) -> crate::persona::obligation::Oblig
 
     pub(super) fn hosted_with_heuristic(persona_peer_id: Uuid) -> HostedPersona {
         hosted_with_adapter(persona_peer_id, Arc::new(HeuristicInferenceAdapter::new()))
-    }
-
-    pub(super) fn hosted_with_delay_ms(persona_peer_id: Uuid, delay_ms: u64) -> HostedPersona {
-        hosted_with_adapter(
-            persona_peer_id,
-            Arc::new(HeuristicInferenceAdapter::new().with_delay_ms(delay_ms)),
-        )
     }
 
     pub(super) fn fixed_now() -> u64 {
