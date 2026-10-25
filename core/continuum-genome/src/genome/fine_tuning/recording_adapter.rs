@@ -77,6 +77,8 @@ pub struct RecordingFineTuningAdapter {
     /// The local artifact every job completes with, for a test that moves real files
     /// (the cross-grid lease's return, card 3fd98325); `None` reports provider-hosted.
     weights: Option<(std::path::PathBuf, ArtifactFormat)>,
+    /// The base weights every job reports it trained on (`JobMetrics::trained_on`).
+    trained_on: Option<crate::inference::weights_stamp::WeightsStamp>,
 }
 
 impl RecordingFineTuningAdapter {
@@ -84,6 +86,7 @@ impl RecordingFineTuningAdapter {
         Self {
             captures: Arc::new(StdMutex::new(Vec::new())),
             weights: None,
+            trained_on: None,
         }
     }
 
@@ -91,6 +94,12 @@ impl RecordingFineTuningAdapter {
     /// provider-hosted one.
     pub fn with_local_artifact(mut self, path: std::path::PathBuf, format: ArtifactFormat) -> Self {
         self.weights = Some((path, format));
+        self
+    }
+
+    /// Every job reports it trained on the base `stamp` names.
+    pub fn trained_on(mut self, stamp: crate::inference::weights_stamp::WeightsStamp) -> Self {
+        self.trained_on = Some(stamp);
         self
     }
 
@@ -173,7 +182,7 @@ impl FineTuningAdapter for RecordingFineTuningAdapter {
                 // default nothing to convert or page in. Provider-hosted keeps the
                 // sentinel from expecting a local gene.
                 format: self.weights.as_ref().map_or(ArtifactFormat::ProviderHosted, |(_, format)| *format),
-                metrics: JobMetrics::default(),
+                metrics: JobMetrics { trained_on: self.trained_on.clone(), ..JobMetrics::default() },
             },
         })
     }

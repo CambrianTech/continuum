@@ -263,6 +263,7 @@ use super::*;
             model_id: format!("{PROVIDER_ID}:code:{job}"),
             corpus_chars: 0,
             walk: None,
+            trained_on: None,
             shape: Shape { model: "m".into(), window: 256, rank: 8, targets: "attn_q,attn_v".into(), depth: None, exact: false, chunk: TRAINING_CHUNK, recompute: false },
         };
         let bound = crate::inference::engine_residency::ResidentWork {
@@ -320,6 +321,7 @@ use super::*;
             model_id: format!("{PROVIDER_ID}:code:{job}"),
             corpus_chars: 0,
             walk: None,
+            trained_on: None,
             shape: Shape { model: "m".into(), window: 256, rank: 8, targets: "attn_q,attn_v".into(), depth: None, exact: false, chunk: TRAINING_CHUNK, recompute: false },
         };
         let work = crate::inference::engine_residency::ResidentWork {
@@ -764,6 +766,7 @@ use super::*;
             lanes: 2,
             page_dir: None,
             engine_bin: None,
+            weights: None,
             started_s: 1_700_000_000,
             placement: None,
         };
@@ -795,6 +798,7 @@ use super::*;
             lanes: 2,
             page_dir: None,
             engine_bin: None,
+            weights: None,
             started_s: 1_700_000_000,
             placement,
         };

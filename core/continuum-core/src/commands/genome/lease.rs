@@ -147,23 +147,12 @@ fn recorded_answer(admission: Admission, attempt: uuid::Uuid) -> Option<LeaseTra
     }
 }
 
-/// How this node finds its GGUF of a base model: the model registry's resolver in production.
-#[derive(Clone)]
-pub(crate) struct BaseGguf(pub(crate) Arc<dyn Fn(&str) -> Option<std::path::PathBuf> + Send + Sync>);
-
-impl BaseGguf {
-    pub(crate) fn registry() -> Self {
-        Self(Arc::new(crate::model_registry::artifacts::resolve_gguf_for_model_id))
-    }
-}
-
 /// A completed job's artifact, described and recorded once: the first description recorded
 /// is what every later poll reports and what serving the bytes is checked against. A file
 /// unreadable now, or a record that could not be written, is Unknown (it may pass); an
 /// artifact with no local gene is final.
 async fn returned_artifact(
     attempts: &AttemptLedger,
-    bases: &BaseGguf,
     key: uuid::Uuid,
     base_model: Option<&str>,
     artifact: &crate::genome::fine_tuning::TrainingArtifact,
@@ -172,8 +161,7 @@ async fn returned_artifact(
     let Some(base_model) = base_model else {
         return LeasePollOutcome::Unreturnable { reason: "the lease record names no base model to fingerprint".into() };
     };
-    let (find, id) = (bases.0.clone(), base_model.to_string());
-    let described = match describe(artifact, base_model, move || find(&id)).await {
+    let described = match describe(artifact, base_model).await {
         Ok(described) => described,
         Err(DescribeError::Unreturnable(reason)) => return LeasePollOutcome::Unreturnable { reason },
         Err(DescribeError::Unread(reason)) => return LeasePollOutcome::Unknown { reason },
@@ -307,8 +295,6 @@ crate::action_command! {
     pub struct GenomeLeasePoll {
         attempts: Arc<AttemptLedger>,
         registry: Arc<FineTuningRegistry>,
-        /// Finds this node's GGUF of a base, to fingerprint it ([`BaseGguf::registry`]).
-        bases: BaseGguf,
     }
     name: "genome/lease/poll",
     access: Privileged,
@@ -331,7 +317,7 @@ crate::action_command! {
             return Ok(LeasePollOutcome::Unknown { reason: format!("trainer {} is not registered here", handle.provider_id) });
         };
         Ok(match adapter.poll(&handle).await {
-            Ok(TrainingStatus::Completed { artifact }) => returned_artifact(&this.attempts, &this.bases, key, base_model.as_deref(), &artifact).await,
+            Ok(TrainingStatus::Completed { artifact }) => returned_artifact(&this.attempts, key, base_model.as_deref(), &artifact).await,
             Ok(status) => LeasePollOutcome::Status { status },
             Err(e) => LeasePollOutcome::Unknown { reason: e.to_string() },
         })
@@ -472,7 +458,7 @@ mod tests {
         use crate::sdk_codegen::ActionCommand;
         let (attempts, _dir) = ledger().await;
         let registry = super::super::test_support::registry_with(&["engine-lane"]);
-        let poll = GenomeLeasePoll { attempts: attempts.clone(), registry: registry.clone(), bases: BaseGguf::registry() };
+        let poll = GenomeLeasePoll { attempts: attempts.clone(), registry: registry.clone() };
         let cancel = GenomeLeaseCancel { attempts: attempts.clone(), registry };
         let (origin, attempt) = (uuid::Uuid::new_v4(), uuid::Uuid::new_v4());
         let job = JobHandle { provider_id: "engine-lane".into(), provider_job_id: "job-1".into(), local_id: uuid::Uuid::new_v4() };
@@ -512,9 +498,11 @@ mod tests {
         std::fs::write(&adapter_file, b"lora").expect("write"); // JUSTIFIED: test fixture
         super::super::test_support::write_base_gguf(&base, 0.0);
         let registry = Arc::new(FineTuningRegistry::new());
-        registry.register(Arc::new(RecordingFineTuningAdapter::new().with_local_artifact(adapter_file.clone(), ArtifactFormat::GgufLora)));
-        let found = base.clone();
-        let poll = GenomeLeasePoll { attempts: attempts.clone(), registry, bases: BaseGguf(Arc::new(move |_: &str| Some(found.clone()))) };
+        let stamp = crate::inference::weights_stamp::WeightsStamp::of(&base).expect("stamp"); // JUSTIFIED: test fixture
+        registry.register(Arc::new(
+            RecordingFineTuningAdapter::new().with_local_artifact(adapter_file.clone(), ArtifactFormat::GgufLora).trained_on(stamp),
+        ));
+        let poll = GenomeLeasePoll { attempts: attempts.clone(), registry };
         let (origin, attempt) = (uuid::Uuid::new_v4(), uuid::Uuid::new_v4());
         let job = JobHandle { provider_id: RECORDING_PROVIDER_ID.into(), provider_job_id: "job-1".into(), local_id: uuid::Uuid::new_v4() };
         attempts.admit_lease(lease_key(origin, attempt), origin, "digest", RECORDING_PROVIDER_ID, "qwen").await.expect("admitted"); // JUSTIFIED: test fixture

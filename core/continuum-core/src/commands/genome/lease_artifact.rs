@@ -13,6 +13,7 @@ use sha2::{Digest, Sha256};
 use ts_rs::TS;
 
 use crate::genome::fine_tuning::{ArtifactFormat, JobMetrics, TrainingArtifact};
+use crate::inference::weights_stamp::StampRefusal;
 use crate::inference_capability::gguf_fingerprint::lora_base_fingerprint;
 
 /// One file of a returned artifact.
@@ -67,19 +68,15 @@ pub(crate) struct RecordedArtifact {
 }
 
 /// Describe a completed artifact trained on `base_model`: the files its format names, each
-/// hashed, and the base the GGUF `base_gguf` finds for it on this node (`None` when it has
-/// none), all off the async runtime (finding a GGUF walks directories, hashing it reads it).
-/// `Err(Unreturnable)` is final; `Err(Unread)` may pass (a file or the base is unreadable now).
+/// hashed, and the base weights its trainer's engine was launched on (`metrics.trained_on`, the
+/// lane's stamp), all off the async runtime. The base is the file the trainer READ: it is
+/// hashed only while its path still names the stamped file, never resolved from the registry
+/// now (Codex on #5418). `Err(Unreturnable)` is final (no local gene, no recorded base, or the
+/// base file is gone from its path); `Err(Unread)` may pass (a file is unreadable now).
 ///
-/// Only a GGUF LoRA is returned: its trainer read the base GGUF this node serves, so that
-/// file's digest is the training base's identity. An MLX or PEFT trainer resolves an HF
-/// snapshot when it starts and records no revision, so any revision read here afterwards
-/// would be a guess; those stay here until their trainers record it.
-pub(crate) async fn describe(
-    artifact: &TrainingArtifact,
-    base_model: &str,
-    base_gguf: impl FnOnce() -> Option<PathBuf> + Send + 'static,
-) -> Result<RecordedArtifact, DescribeError> {
+/// Only a GGUF LoRA is returned: an MLX or PEFT trainer resolves an HF snapshot when it starts
+/// and records no revision (card d3889a9e).
+pub(crate) async fn describe(artifact: &TrainingArtifact, base_model: &str) -> Result<RecordedArtifact, DescribeError> {
     let payload = artifact.payload().map_err(DescribeError::Unreturnable)?;
     if artifact.format != ArtifactFormat::GgufLora {
         return Err(DescribeError::Unreturnable(format!(
@@ -87,17 +84,26 @@ pub(crate) async fn describe(
             artifact.format
         )));
     }
+    let stamp = artifact.metrics.trained_on.clone().ok_or_else(|| {
+        DescribeError::Unreturnable("the trainer recorded no base weights file, so the base it read cannot be named".into())
+    })?;
     let root = payload.root.clone();
-    let base_id = base_model.to_string();
     let (files, (source_sha256, fingerprint)) = tokio::task::spawn_blocking(move || {
-        let files = payload.paths().map(|(name, path)| hash_file(name, &path)).collect::<Result<Vec<_>, String>>()?;
-        let gguf = base_gguf().ok_or_else(|| format!("no local GGUF of base {base_id} to identify"))?;
-        let source = hash_file("base", &gguf)?.sha256;
-        Ok::<_, String>((files, (source, lora_base_fingerprint(&gguf)?)))
+        let files = payload
+            .paths()
+            .map(|(name, path)| hash_file(name, &path))
+            .collect::<Result<Vec<_>, String>>()
+            .map_err(DescribeError::Unread)?;
+        let fingerprint = lora_base_fingerprint(&stamp.path).map_err(DescribeError::Unread)?;
+        // After the header read: the stamped file is proved unchanged around the hash.
+        let source = stamp.content_sha256().map_err(|refusal| match refusal {
+            StampRefusal::Changed(why) => DescribeError::Unreturnable(format!("the base the trainer read is gone: {why}")),
+            StampRefusal::Unreadable(why) => DescribeError::Unread(why),
+        })?;
+        Ok::<_, DescribeError>((files, (source, fingerprint)))
     })
     .await
-    .map_err(|e| DescribeError::Unread(format!("hashing task failed: {e}")))?
-    .map_err(DescribeError::Unread)?;
+    .map_err(|e| DescribeError::Unread(format!("hashing task failed: {e}")))??;
     Ok(RecordedArtifact {
         root,
         artifact: LeaseArtifact {
@@ -105,7 +111,8 @@ pub(crate) async fn describe(
             base: LeaseArtifactBase { model_id: base_model.to_string(), source_sha256, fingerprint },
             format: artifact.format,
             files,
-            metrics: artifact.metrics.clone(),
+            // The stamp names this node's path: the base crosses as its digests above.
+            metrics: JobMetrics { trained_on: None, ..artifact.metrics.clone() },
         },
     })
 }
@@ -130,38 +137,50 @@ mod tests {
     use super::*;
 
     // what this catches (card 3fd98325, Codex on #5418): a report that names the trainer's
-    // path or a digest that is not the bytes; a base identified only by its header, so a
-    // fine-tuned sibling with the same architecture, tokenizer and shapes passes as the base;
-    // an adapter whose training base was never recorded reported as verifiable.
+    // path or a digest that is not the bytes; a base named by whatever the path holds at poll
+    // time (trained on A, the path replaced by a same-header sibling B before the first poll:
+    // refused, never reported as B); an adapter whose base was never recorded, or whose trainer
+    // records no source revision, reported as verifiable.
     #[tokio::test]
-    async fn a_completed_artifact_is_described_by_its_bytes_and_its_exact_base() {
+    async fn a_completed_artifact_is_described_by_its_bytes_and_the_base_its_trainer_read() {
+        use crate::inference::weights_stamp::WeightsStamp;
         let dir = tempfile::tempdir().expect("dir"); // JUSTIFIED: test fixture
         let adapter = dir.path().join("adapter.gguf");
         std::fs::write(&adapter, b"lora").expect("write"); // JUSTIFIED: test fixture
         let (base, sibling) = (dir.path().join("base.gguf"), dir.path().join("sibling.gguf"));
         crate::commands::genome::test_support::write_base_gguf(&base, 0.0);
         crate::commands::genome::test_support::write_base_gguf(&sibling, 1.0);
-        let artifact = TrainingArtifact { model_id: "m".into(), local_path: Some(adapter.clone()), format: ArtifactFormat::GgufLora, metrics: JobMetrics::default() };
-        let at = |path: &Path| { let path = path.to_path_buf(); move || Some(path) };
+        let stamp = WeightsStamp::of(&base).expect("stamp"); // JUSTIFIED: test fixture
+        let artifact = TrainingArtifact {
+            model_id: "m".into(),
+            local_path: Some(adapter.clone()),
+            format: ArtifactFormat::GgufLora,
+            metrics: JobMetrics { trained_on: Some(stamp), ..JobMetrics::default() },
+        };
 
-        let recorded = describe(&artifact, "qwen", at(&base)).await.expect("described"); // JUSTIFIED: test asserts the manifest
+        let recorded = describe(&artifact, "qwen").await.expect("described"); // JUSTIFIED: test asserts the manifest
         assert_eq!(recorded.root, dir.path());
         assert_eq!(recorded.artifact.files.len(), 1);
-        assert_eq!(recorded.artifact.files[0].bytes, 4);
         assert_eq!(recorded.artifact.files[0].sha256, format!("{:x}", Sha256::digest(b"lora")));
+        let base_bytes = std::fs::read(&base).expect("read"); // JUSTIFIED: test fixture
+        assert_eq!(recorded.artifact.base.source_sha256, format!("{:x}", Sha256::digest(&base_bytes)));
+        assert_eq!(recorded.artifact.base.fingerprint, lora_base_fingerprint(&sibling).expect("digest"), "a same-header sibling is compatible, never the same base"); // JUSTIFIED: test asserts the digest
         let wire = serde_json::to_string(&recorded.artifact).expect("encode"); // JUSTIFIED: test asserts the wire shape
-        assert!(!wire.contains(&dir.path().display().to_string()), "the trainer's path never crosses");
+        assert!(!wire.contains(&dir.path().display().to_string()), "neither the adapter's nor the base's path crosses");
 
-        let on_sibling = describe(&artifact, "qwen", at(&sibling)).await.expect("described"); // JUSTIFIED: test asserts the manifest
-        assert_eq!(recorded.artifact.base.fingerprint, on_sibling.artifact.base.fingerprint, "same header: compatible");
-        assert_ne!(recorded.artifact.base.source_sha256, on_sibling.artifact.base.source_sha256, "other weights: another base");
+        std::fs::rename(&sibling, &base).expect("replace"); // JUSTIFIED: test fixture
+        assert!(
+            matches!(describe(&artifact, "qwen").await, Err(DescribeError::Unreturnable(e)) if e.contains("gone")),
+            "trained on A, the path now holds B: refused, never reported as B"
+        );
 
-        assert!(matches!(describe(&artifact, "qwen", || None).await, Err(DescribeError::Unread(e)) if e.contains("no local GGUF")));
+        let unstamped = TrainingArtifact { metrics: JobMetrics::default(), ..artifact.clone() };
+        assert!(matches!(describe(&unstamped, "qwen").await, Err(DescribeError::Unreturnable(e)) if e.contains("no base weights")));
         let mlx = TrainingArtifact { local_path: Some(dir.path().to_path_buf()), format: ArtifactFormat::MlxAdapterDir, ..artifact.clone() };
-        assert!(matches!(describe(&mlx, "qwen", at(&base)).await, Err(DescribeError::Unreturnable(e)) if e.contains("source revision")));
+        assert!(matches!(describe(&mlx, "qwen").await, Err(DescribeError::Unreturnable(e)) if e.contains("source revision")));
         let hosted = TrainingArtifact { format: ArtifactFormat::ProviderHosted, ..artifact.clone() };
-        assert!(matches!(describe(&hosted, "qwen", at(&base)).await, Err(DescribeError::Unreturnable(_))));
+        assert!(matches!(describe(&hosted, "qwen").await, Err(DescribeError::Unreturnable(_))));
         std::fs::remove_file(&adapter).expect("remove"); // JUSTIFIED: test fixture
-        assert!(matches!(describe(&artifact, "qwen", at(&base)).await, Err(DescribeError::Unread(_))));
+        assert!(matches!(describe(&artifact, "qwen").await, Err(DescribeError::Unread(_))));
     }
 }

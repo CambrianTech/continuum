@@ -105,7 +105,7 @@ pub(crate) fn command_objects(
             attempts: Arc::clone(&attempts),
         }),
         Arc::new(lease::GenomeLeaseStatus { attempts: Arc::clone(&attempts) }),
-        Arc::new(lease::GenomeLeasePoll { attempts: Arc::clone(&attempts), registry: registry.clone(), bases: lease::BaseGguf::registry() }),
+        Arc::new(lease::GenomeLeasePoll { attempts: Arc::clone(&attempts), registry: registry.clone() }),
         Arc::new(lease::GenomeLeaseCancel { attempts: Arc::clone(&attempts), registry: registry.clone() }),
         Arc::new(job_create::GenomeJobCreate {
             coordinator,
