@@ -169,6 +169,11 @@ pub enum CapabilityId {
     /// sends the cancel only to a seat advertising this; absence means it would be ignored,
     /// and a seat that never learned the command must not be sent one.
     RemoteGenerateCancel,
+    /// The node trains a LoRA job another node leases to it (`genome/lease/train`, with
+    /// `lease/status`, `lease/poll` and `lease/cancel`; cards cc34db0d, ec1d8b76) for a base it
+    /// lists in `trainable_bases`. A grid trainer leases only to a peer advertising this:
+    /// absence means a core that predates the lease verbs, which must never be sent one.
+    TrainingLease,
     /// Parse-only: a name THIS build does not know (a newer core advertising a capability we
     /// predate). It never grants — membership of this list is exact-name, so an unknown name
     /// cannot stand in for another — but its presence must not drop the rest of the beacon,
@@ -188,6 +193,7 @@ pub fn this_build_capabilities() -> Vec<CapabilityId> {
         CapabilityId::LaneWaitReporting,
         CapabilityId::PlacementReservationGrant,
         CapabilityId::RemoteGenerateCancel,
+        CapabilityId::TrainingLease,
     ]
 }
 
@@ -878,7 +884,7 @@ mod tests {
         let wire = serde_json::to_string(&this_build_capabilities())?;
         assert_eq!(
             wire,
-            "[\"served_window_stamp\",\"lane_wait_reporting\",\"placement_reservation_grant\",\"remote_generate_cancel\"]"
+            "[\"served_window_stamp\",\"lane_wait_reporting\",\"placement_reservation_grant\",\"remote_generate_cancel\",\"training_lease\"]"
         );
         assert!(!this_build_capabilities().contains(&CapabilityId::Unknown), "emission never advertises Unknown");
 

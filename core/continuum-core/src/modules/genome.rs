@@ -206,10 +206,12 @@ mod tests {
     #[test]
     fn exposes_training_and_recall_commands() {
         let names: Vec<&str> = module().commands().iter().map(|c| c.name()).collect();
-        assert_eq!(names.len(), 11);
+        assert_eq!(names.len(), 13);
         assert!(names.contains(&"genome/job-attempt-reconcile"));
         assert!(names.contains(&"genome/lease/train"));
         assert!(names.contains(&"genome/lease/status"));
+        assert!(names.contains(&"genome/lease/poll"));
+        assert!(names.contains(&"genome/lease/cancel"));
         assert!(names.contains(&"genome/teach"));
         assert!(names.contains(&"genome/recall"));
         assert!(names.contains(&"genome/recall/replay"));

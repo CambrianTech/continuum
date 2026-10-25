@@ -25,7 +25,7 @@ use ts_rs::TS;
 
 use super::attempt_ledger::{lease_key, AdmitError, Admission, AttemptLedger, AttemptState, LeaseRefusal};
 use super::job_attempt_reconcile::JobAttemptReconcileOutcome;
-use crate::genome::fine_tuning::{coordinator::FineTuningCoordinator, JobHandle, TrainingJobRequest};
+use crate::genome::fine_tuning::{coordinator::FineTuningCoordinator, FineTuningRegistry, JobHandle, TrainingJobRequest, TrainingStatus};
 use crate::routing::{CallerIdentity, CallerSource};
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]
@@ -70,6 +70,39 @@ pub struct LeaseStatusParams {
     /// The origin's attempt id; it is read under the caller's own lease key.
     #[ts(type = "string")]
     pub attempt: uuid::Uuid,
+}
+
+/// Where a leased job stands, asked by the peer that leased it (card ec1d8b76): `status` from
+/// its trainer, `notCreated` (closed, so nothing can start under it), or `unknown`.
+#[derive(Debug, Clone, Serialize, TS)]
+#[ts(export, export_to = "../../../protocol/typescript/genome/LeasePollOutcome.ts")]
+#[serde(tag = "outcome", rename_all = "camelCase")]
+pub enum LeasePollOutcome {
+    Status { status: TrainingStatus },
+    NotCreated,
+    Unknown { reason: String },
+}
+
+/// What cancelling a leased job did: `cancelled` (its trainer took the cancel), `notCreated`
+/// (closed, so nothing will start), or `unknown` (a trainer may still be running it).
+#[derive(Debug, Clone, Serialize, TS)]
+#[ts(export, export_to = "../../../protocol/typescript/genome/LeaseCancelOutcome.ts")]
+#[serde(tag = "outcome", rename_all = "camelCase")]
+pub enum LeaseCancelOutcome {
+    Cancelled,
+    NotCreated,
+    Unknown { reason: String },
+}
+
+/// The leased attempt's job, read under the caller's OWN lease key: an attempt never received
+/// is closed first (so a late create is fenced), and a forged origin derives another key.
+async fn leased_job(attempts: &AttemptLedger, caller: Option<&CallerIdentity>, attempt: uuid::Uuid) -> Result<Option<JobHandle>, String> {
+    let origin = lease_origin(caller)?;
+    match attempts.reconcile(lease_key(origin, attempt)).await {
+        super::attempt_ledger::Reconciled::Created(handle) => Ok(Some(handle)),
+        super::attempt_ledger::Reconciled::NotCreated => Ok(None),
+        super::attempt_ledger::Reconciled::Unknown(reason) => Err(reason),
+    }
 }
 
 /// The origin of a lease: the authenticated grid peer that sent it, never a parameter. A
@@ -221,6 +254,54 @@ crate::action_command! {
     }
 }
 
+crate::action_command! {
+    /// Where a leased job stands, asked by the peer that leased it: its trainer's status,
+    /// `notCreated`, or `unknown`. Read under the caller's own lease key only.
+    pub struct GenomeLeasePoll { attempts: Arc<AttemptLedger>, registry: Arc<FineTuningRegistry> }
+    name: "genome/lease/poll",
+    access: Privileged,
+    params: LeaseStatusParams,
+    output: LeasePollOutcome,
+    run(this, ctx, p) => {
+        let handle = match leased_job(&this.attempts, ctx.caller.as_ref(), p.attempt).await {
+            Ok(Some(handle)) => handle,
+            Ok(None) => return Ok(LeasePollOutcome::NotCreated),
+            Err(reason) => return Ok(LeasePollOutcome::Unknown { reason }),
+        };
+        let Some(adapter) = this.registry.get(&handle.provider_id) else {
+            return Ok(LeasePollOutcome::Unknown { reason: format!("trainer {} is not registered here", handle.provider_id) });
+        };
+        Ok(match adapter.poll(&handle).await {
+            Ok(status) => LeasePollOutcome::Status { status },
+            Err(e) => LeasePollOutcome::Unknown { reason: e.to_string() },
+        })
+    }
+}
+
+crate::action_command! {
+    /// Cancel a leased job, asked by the peer that leased it: `cancelled`, `notCreated`
+    /// (closed, so nothing will start), or `unknown`. Only the caller's own lease key.
+    pub struct GenomeLeaseCancel { attempts: Arc<AttemptLedger>, registry: Arc<FineTuningRegistry> }
+    name: "genome/lease/cancel",
+    access: Privileged,
+    params: LeaseStatusParams,
+    output: LeaseCancelOutcome,
+    run(this, ctx, p) => {
+        let handle = match leased_job(&this.attempts, ctx.caller.as_ref(), p.attempt).await {
+            Ok(Some(handle)) => handle,
+            Ok(None) => return Ok(LeaseCancelOutcome::NotCreated),
+            Err(reason) => return Ok(LeaseCancelOutcome::Unknown { reason }),
+        };
+        let Some(adapter) = this.registry.get(&handle.provider_id) else {
+            return Ok(LeaseCancelOutcome::Unknown { reason: format!("trainer {} is not registered here", handle.provider_id) });
+        };
+        Ok(match adapter.cancel(&handle).await {
+            Ok(()) => LeaseCancelOutcome::Cancelled,
+            Err(e) => LeaseCancelOutcome::Unknown { reason: e.to_string() },
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -313,6 +394,46 @@ mod tests {
             lease_without_a_trainer(attempts, origin, uuid::Uuid::new_v4(), request).await,
             LeaseTrainOutcome::Refused { error_kind, .. } if error_kind == "no_trainer_here"
         ));
+    }
+
+    fn lease_ctx(origin: uuid::Uuid) -> crate::sdk_codegen::Ctx {
+        let mut ctx = crate::sdk_codegen::Ctx::default();
+        ctx.caller = Some(CallerIdentity::airc(crate::identity::PeerId::from_uuid(origin)));
+        ctx
+    }
+
+    // what this catches (card ec1d8b76): a leased job polled or cancelled by anyone but the
+    // peer that leased it, or an attempt never received answered as if it might exist. Under
+    // the origin's own key a created job reports its trainer's status and takes the cancel; an
+    // attempt never received is notCreated (and closed, so a late create is fenced); a forged
+    // origin reaches nothing of the real one's.
+    #[tokio::test]
+    async fn only_the_leasing_peer_polls_or_cancels_its_job() {
+        use crate::sdk_codegen::ActionCommand;
+        let (attempts, _dir) = ledger().await;
+        let registry = super::super::test_support::registry_with(&["engine-lane"]);
+        let poll = GenomeLeasePoll { attempts: attempts.clone(), registry: registry.clone() };
+        let cancel = GenomeLeaseCancel { attempts: attempts.clone(), registry };
+        let (origin, attempt) = (uuid::Uuid::new_v4(), uuid::Uuid::new_v4());
+        let job = JobHandle { provider_id: "engine-lane".into(), provider_job_id: "job-1".into(), local_id: uuid::Uuid::new_v4() };
+        attempts.admit_lease(lease_key(origin, attempt), origin, "digest", "engine-lane").await.expect("admitted"); // JUSTIFIED: test fixture
+        attempts.settle(lease_key(origin, attempt), AttemptState::Created { handle: job }).await.expect("settled"); // JUSTIFIED: test fixture
+        let ask = || LeaseStatusParams { attempt };
+
+        assert!(matches!(poll.run(&lease_ctx(origin), ask()).await, Ok(LeasePollOutcome::Status { .. })));
+        assert!(matches!(cancel.run(&lease_ctx(origin), ask()).await, Ok(LeaseCancelOutcome::Cancelled)));
+
+        let forger = uuid::Uuid::new_v4();
+        assert!(matches!(poll.run(&lease_ctx(forger), ask()).await, Ok(LeasePollOutcome::NotCreated)));
+        assert!(matches!(cancel.run(&lease_ctx(forger), ask()).await, Ok(LeaseCancelOutcome::NotCreated)));
+        assert!(matches!(poll.run(&lease_ctx(origin), ask()).await, Ok(LeasePollOutcome::Status { .. })), "the forger touched nothing");
+
+        let never = LeaseStatusParams { attempt: uuid::Uuid::new_v4() };
+        assert!(matches!(poll.run(&lease_ctx(origin), never).await, Ok(LeasePollOutcome::NotCreated)));
+        assert!(matches!(
+            poll.run(&crate::sdk_codegen::Ctx::default(), ask()).await,
+            Ok(LeasePollOutcome::Unknown { .. })
+        ), "a local caller has no lease to ask about");
     }
 }
 
