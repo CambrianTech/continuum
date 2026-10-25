@@ -114,6 +114,12 @@ impl ActionCommand for WorkSubmit {
                 None => stage_for_owner_on_demand(&runtime, card).await?,
             };
             let d = derive_submission(&checkout, card_uuid, p.instance.clone(), p.base_sha.clone(), Some(&card.repo)).await?;
+            // Only what the card is about: a submodule pointer that rode in from her tree is
+            // refused by name, with the restore command (card b3ecd1ac).
+            let moves = super::submodule_drift::submodule_moves(&d.patch);
+            if let Some(refusal) = super::submodule_drift::refuse_unasked(&moves, &card.title, card.body.as_deref()) {
+                return Err(CommandError::Invalid(refusal));
+            }
             (d.instance, d.base_sha, d.artifact)
         };
         continuum_base::probe!(

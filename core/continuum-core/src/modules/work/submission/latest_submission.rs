@@ -326,6 +326,8 @@ pub(super) struct DerivedSubmission {
     pub(super) instance: String,
     pub(super) base_sha: String,
     pub(super) artifact: WorkArtifactReference,
+    /// The candidate patch the artifact retains, for checks on what it carries.
+    pub(super) patch: String,
 }
 
 /// The all-zero hash the AI manual's example showed and citizens copied verbatim, or a
@@ -657,6 +659,7 @@ pub(super) async fn derive_submission(
         instance,
         base_sha,
         artifact,
+        patch,
     })
 }
 
