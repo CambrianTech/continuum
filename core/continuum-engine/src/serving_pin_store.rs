@@ -169,7 +169,6 @@ mod tests {
             "continuum_home",
             "home_dir",
             "CONTINUUM_HOME",
-            "CONTINUUM_ROOT",
         ] {
             assert!(
                 !production.contains(reach),

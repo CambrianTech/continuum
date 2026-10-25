@@ -74,18 +74,12 @@ pub fn continuum_home() -> Result<std::path::PathBuf, String> {
         .ok_or_else(|| "no home dir".to_string())
 }
 
-/// Resolve `~/.continuum/` (or `$CONTINUUM_ROOT` if set) for the
-/// substrate root. Matches the resolution in
-/// [`crate::modules::logger::LoggerModule::new`] — single source of
-/// truth would be nice but inline duplication is cheaper than a new
-/// crate-wide helper for two callers. If both are still around when
-/// a third caller appears, extract.
+/// The substrate root, infallibly: the ONE continuum home, [`continuum_home`] (`$CONTINUUM_HOME`,
+/// else a test build's per-process home, else `~/.continuum`). It was a second owner reading
+/// `$CONTINUUM_ROOT` and then the real home, so its 39 callers' tests could write the operator's
+/// state (line 7 of the plan: one owner per fact).
 pub fn continuum_root() -> std::path::PathBuf {
-    if let Ok(root) = std::env::var("CONTINUUM_ROOT") {
-        return std::path::PathBuf::from(root);
-    }
-    let home = dirs::home_dir().expect("HOME directory is required to resolve CONTINUUM_ROOT"); // JUSTIFIED: no HOME means no persistent state at all: boot-fatal by design; 20+ callers need the infallible PathBuf
-    home.join(".continuum")
+    continuum_home().expect("a home directory is required to resolve the continuum home") // JUSTIFIED: no home means no persistent state at all: boot-fatal by design; its callers need the infallible PathBuf
 }
 
 /// A TEST BINARY NEVER WRITES THE OPERATOR'S RECORDS (2026-09-20, the M5): a local
@@ -241,12 +235,12 @@ impl Drop for NativeHomeOverride {
 mod tests {
     use super::*;
 
+    // what this catches (line 7): two owners of the continuum home. The infallible root IS the
+    // home, so a test home (or $CONTINUUM_HOME) governs every caller of either.
     #[test]
-    fn continuum_root_respects_env_var() {
-        std::env::set_var("CONTINUUM_ROOT", "/tmp/test-root-12345");
-        let root = continuum_root();
-        assert_eq!(root, std::path::PathBuf::from("/tmp/test-root-12345"));
-        std::env::remove_var("CONTINUUM_ROOT");
+    fn the_root_is_the_one_continuum_home() {
+        let _home = crate::paths::test_home::HomeGuard::preserve_blocking(); // reads the process home a guarded fixture may be swapping (card cb3221a5)
+        assert_eq!(continuum_root(), continuum_home().expect("a test build always has a home")); // JUSTIFIED: test asserts the owner
     }
 
     // what this catches (2026-09-20): a test binary resolving the OPERATOR's home — a

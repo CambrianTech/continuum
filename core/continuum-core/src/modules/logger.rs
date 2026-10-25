@@ -662,10 +662,7 @@ impl LoggerModule {
     }
 
     pub fn new() -> Self {
-        let continuum_root = std::env::var("CONTINUUM_ROOT").unwrap_or_else(|_| {
-            let home = dirs::home_dir().expect("Failed to resolve home directory");
-            home.join(".continuum").to_string_lossy().to_string()
-        });
+        let continuum_root = crate::paths::continuum_root();
 
         let log_dir = std::env::var("JTAG_LOG_DIR").unwrap_or_else(|_| {
             PathBuf::from(&continuum_root)
