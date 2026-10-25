@@ -256,8 +256,55 @@ pub async fn advance_card_state_effective(
         }
         return Ok(CardState::Review);
     }
+    // A FINISH THAT WOULD STRAND A MERGE: the owner's own `closed` (or `merged`) on a card whose
+    // linked PR has not merged lands in Review, and the merge finishes it, as Merged. The twin
+    // of the reviewer's-pass rule above. Closing it made `airc work merge` refuse ("state is
+    // Closed, but merge requires Review"): Kimi closed 13d7e47a and then 1fc73f18 right after
+    // their passes (2026-10-24/25), each stranding a green PR (card 4356a90f).
+    if finishing && via != VIA_VERDICT {
+        if let Some((_, card)) = card_in_subscribed_rooms(airc, card_id).await {
+            if finish_awaits_merge(actor, card.pull_request.is_some(), &card.state) {
+                if card.state != CardState::Review {
+                    raw_advance(airc, card_id, CardState::Review, via).await?;
+                }
+                continuum_base::probe!(
+                    class = "work.state.close_awaits_merge",
+                    card = %short8(card_id.as_uuid()),
+                    asked = ?state,
+                    "a resident finished a card whose PR has not merged; it stays in Review for its \
+                     merge, which moves it to Merged"
+                );
+                return Ok(CardState::Review);
+            }
+        }
+    }
     raw_advance(airc, card_id, state, via).await?;
     Ok(state)
+}
+
+/// PURE: a resident's finish on a card whose linked PR has not merged waits for the merge.
+/// The operator (no actor) is never held, and a card already Merged has nothing to wait for.
+fn finish_awaits_merge(actor: Option<Uuid>, pr_linked: bool, current: &CardState) -> bool {
+    actor.is_some() && pr_linked && *current != CardState::Merged
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // what this catches (card 4356a90f): a resident's `closed` after a pass stranded a green
+    // PR, because airc work merge needs Review (Kimi, 13d7e47a and 1fc73f18). Her finish on a
+    // card with a linked, unmerged PR waits for the merge; the operator's finish, a card with
+    // no PR (a bench round's), and a card already merged are not held.
+    #[test]
+    fn a_residents_finish_waits_for_an_unmerged_pr() {
+        let her = Some(Uuid::from_u128(7));
+        assert!(finish_awaits_merge(her, true, &CardState::Review), "after a pass, her close waits");
+        assert!(finish_awaits_merge(her, true, &CardState::InProgress));
+        assert!(!finish_awaits_merge(None, true, &CardState::Review), "the operator is never held");
+        assert!(!finish_awaits_merge(her, false, &CardState::Review), "no PR: a close is a close");
+        assert!(!finish_awaits_merge(her, true, &CardState::Merged), "merged has nothing to wait for");
+    }
 }
 
 /// Post the sibling review card for `parent` into the parent's own room, as the
