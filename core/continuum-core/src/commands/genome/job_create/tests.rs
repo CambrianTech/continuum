@@ -645,3 +645,68 @@
         assert!(out.success);
         assert_eq!(out.result.unwrap().selected_provider, "mistral");
     }
+
+    // what this catches (card 975d27fa, binding first; Codex on #5412): a repeat that chooses a
+    // trainer before it reads its own record. With no trainer selectable (a peer whose
+    // advertisement lapsed) it must still answer with its job; with ANOTHER trainer selectable
+    // it must still report its own job's provider, never the one selection would pick now.
+    #[tokio::test]
+    async fn a_repeat_answers_with_its_job_and_its_provider_whatever_is_selectable_now() {
+        use crate::commands::genome::attempt_ledger::{Admission, AttemptLedger, AttemptState};
+        use crate::genome::fine_tuning::{FineTuningRegistry, JobHandle, TrainingJobBoard};
+        let (store_adapter, _dir) = crate::orm::store::fresh_adapter().await;
+        let ledger = Arc::new(AttemptLedger::new());
+        ledger.install(Arc::new(crate::orm::OrmStore::new(store_adapter).await.unwrap())); // JUSTIFIED: test fixture
+        let artifacts = Arc::new(tempfile::tempdir().unwrap()); // JUSTIFIED: test fixture
+        let command = GenomeJobCreate {
+            attempts: Arc::clone(&ledger),
+            coordinator: Arc::new(FineTuningCoordinator::new(Arc::new(FineTuningRegistry::new()))),
+            test_job_board: Arc::new(TrainingJobBoard::with_test_storage(artifacts.clone())),
+            test_artifacts: artifacts,
+        };
+        let attempt = uuid::Uuid::new_v4();
+        let id = uuid::Uuid::new_v4();
+        let job = JobHandle { provider_id: "grid-peer".into(), provider_job_id: id.to_string(), local_id: id };
+        assert_eq!(ledger.admit(attempt, None, "grid-peer", "peer:00000000-0000-0000-0000-000000000001").await, Ok(Admission::Fresh));
+        ledger.settle(attempt, AttemptState::Created { handle: job.clone() }).await.unwrap(); // JUSTIFIED: test fixture
+        let out = command
+            .run(
+                &Ctx::default(),
+                JobCreateParams {
+                    trigger_attempt_id: Some(attempt),
+                    trigger_dispatch_id: None,
+                    request: request_for("qwen3.5-4b"),
+                    preferred_provider: None,
+                    dataset_name: None,
+                },
+            )
+            .await
+            .unwrap(); // JUSTIFIED: test asserts the outcome
+        assert!(out.success, "{out:?}");
+        let result = out.result.expect("the attempt's job"); // JUSTIFIED: test asserts the result
+        assert_eq!((result.handle, result.selected_provider.as_str()), (job.clone(), "grid-peer"));
+
+        // Now another trainer IS selectable: the repeat still answers with its own job and provider.
+        let artifacts = Arc::new(tempfile::tempdir().unwrap()); // JUSTIFIED: test fixture
+        let with_another = GenomeJobCreate {
+            attempts: Arc::clone(&ledger),
+            coordinator: Arc::new(FineTuningCoordinator::new(registry_with(&["another-trainer"]))),
+            test_job_board: Arc::new(TrainingJobBoard::with_test_storage(artifacts.clone())),
+            test_artifacts: artifacts,
+        };
+        let out = with_another
+            .run(
+                &Ctx::default(),
+                JobCreateParams {
+                    trigger_attempt_id: Some(attempt),
+                    trigger_dispatch_id: None,
+                    request: request_for("qwen3.5-4b"),
+                    preferred_provider: None,
+                    dataset_name: None,
+                },
+            )
+            .await
+            .unwrap(); // JUSTIFIED: test asserts the outcome
+        let result = out.result.expect("the attempt's job"); // JUSTIFIED: test asserts the result
+        assert_eq!((result.handle, result.selected_provider.as_str()), (job, "grid-peer"), "never the newly selectable trainer");
+    }

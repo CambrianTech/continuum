@@ -268,24 +268,45 @@ crate::action_command! {
             (None, false) => {}
         }
 
+        // card 55d4b9e3: an attempt that already made its job, or was fenced, answers BEFORE the
+        // reuse/join decisions below, which would otherwise "join" the attempt's own job and hand
+        // its batch back to the bucket (to be trained twice). Read BEFORE a trainer is chosen
+        // (card 975d27fa, binding first): a repeat answers from its own record even when the
+        // trainer that made its job is no longer selectable (a peer whose advertisement lapsed).
+        let attempt = p.trigger_attempt_id;
+        // One create per attempt at a time, for the whole command (see AttemptLedger::run).
+        let _attempt_run = match attempt {
+            Some(attempt) => Some(this.attempts.run(attempt).await),
+            None => None,
+        };
+        let mut prior: Option<crate::genome::fine_tuning::JobHandle> = None;
+        if let Some(attempt) = attempt {
+            match recorded_answer(this.attempts.peek(attempt).await, attempt, &p.request) {
+                Ok(job) => prior = job,
+                Err(refusal) => return refusal,
+            }
+        }
+
         // 1. Coordinator picks a provider. Any CoordinatorError (no capable
         //    adapter, preference unsatisfiable) surfaces as success=false with the
         //    error's diagnostic text.
-        let (selected_provider, adapter) = match this
-            .coordinator
-            .select(&p.request, p.preferred_provider.as_deref())
-        {
-            Ok(pair) => pair,
-            Err(e) => {
-                return Ok(JobCreateOutcome {
-                    success: false,
-                    result: None,
-                    error: Some(e.to_string()),
-                    error_kind: None,
-                    took: None,
-                    capacity_wait: None,
-                });
-            }
+        let (selected_provider, adapter) = match prior.as_ref() {
+            // A repeat answers with the job its attempt already made, under that job's own
+            // provider: no trainer is chosen, so none can be reported for it.
+            Some(job) => (job.provider_id.clone(), None),
+            None => match this.coordinator.select(&p.request, p.preferred_provider.as_deref()) {
+                Ok((provider, adapter)) => (provider, Some(adapter)),
+                Err(e) => {
+                    return Ok(JobCreateOutcome {
+                        success: false,
+                        result: None,
+                        error: Some(e.to_string()),
+                        error_kind: None,
+                        took: None,
+                        capacity_wait: None,
+                    });
+                }
+            },
         };
 
         // Capture the genome-paging context BEFORE the request moves into the
@@ -351,22 +372,6 @@ crate::action_command! {
             this.test_artifacts.path().join("adapters.json"),
             crate::genome::gene_trial::GeneTrials::at(this.test_artifacts.path().join("trials.json")),
         ));
-        // card 55d4b9e3: an attempt that already made its job, or was fenced, answers BEFORE the
-        // reuse/join decisions below, which would otherwise "join" the attempt's own job and hand
-        // its batch back to the bucket (to be trained twice).
-        let attempt = p.trigger_attempt_id;
-        // One create per attempt at a time, for the whole command (see AttemptLedger::run).
-        let _attempt_run = match attempt {
-            Some(attempt) => Some(this.attempts.run(attempt).await),
-            None => None,
-        };
-        let mut prior: Option<crate::genome::fine_tuning::JobHandle> = None;
-        if let Some(attempt) = attempt {
-            match recorded_answer(this.attempts.peek(attempt).await, attempt, &p.request) {
-                Ok(job) => prior = job,
-                Err(refusal) => return refusal,
-            }
-        }
         let decision = match watched_signature.as_ref().filter(|_| prior.is_none()) {
             None => None,
             Some(sig) => {
@@ -628,10 +633,29 @@ crate::action_command! {
         //    FineTuningError carries a stable errorKind slug callers branch on.
         // Admit the attempt under its lock, unless the early read already found its job.
         let needs_admission = prior.is_none();
+        // Where a new job runs, chosen ONCE by its trainer before anything is recorded or sent
+        // (card 975d27fa): recorded with the attempt, handed to the trainer with it, never
+        // chosen again by a retry.
+        let destination = match (&adapter, needs_admission) {
+            (Some(adapter), true) => match adapter.destination(&p.request) {
+                Ok(destination) => destination,
+                Err(e) => {
+                    return Ok(JobCreateOutcome {
+                        success: false,
+                        result: None,
+                        error: Some(e.to_string()),
+                        error_kind: Some(fine_tuning_error_kind(&e).to_string()),
+                        took: None,
+                        capacity_wait: None,
+                    });
+                }
+            },
+            _ => crate::genome::fine_tuning::Destination::Local,
+        };
         if let (Some(attempt), true) = (attempt, needs_admission) {
             let admitted = this
                 .attempts
-                .admit(attempt, p.trigger_dispatch_id, &selected_provider, "local")
+                .admit(attempt, p.trigger_dispatch_id, &selected_provider, &destination.to_ledger())
                 .await
                 .map(Some);
             match recorded_answer(admitted, attempt, &p.request) {
@@ -640,9 +664,21 @@ crate::action_command! {
             }
         }
         let repeated = prior.is_some();
-        let created = match prior {
-            Some(handle) => Ok(handle),
-            None => adapter.create_job(p.request).await,
+        let created = match (prior, adapter) {
+            (Some(handle), _) => Ok(handle),
+            (None, Some(adapter)) => {
+                let binding = crate::genome::fine_tuning::JobBinding {
+                    attempt,
+                    dispatch: p.trigger_dispatch_id,
+                    destination,
+                };
+                adapter.create_bound(p.request, &binding).await
+            }
+            // Unreachable by construction (no trainer is only accepted for a repeat), and
+            // still answered as a refusal rather than a panic.
+            (None, None) => Err(crate::genome::fine_tuning::FineTuningError::InvalidRequest(
+                "no trainer was selected for a new job".into(),
+            )),
         };
         if let (Some(attempt), false) = (attempt, repeated) {
             use super::attempt_ledger::AttemptState;
