@@ -100,7 +100,8 @@ async fn a_refused_adopted_replacement_hands_the_endpoint_back_as_found() -> Res
     let root = format!("test://refused-handback-{}", Uuid::new_v4());
     let endpoint = directory().endpoint(&root);
     assert!(endpoint.is_ready(), "an adopted engine's endpoint starts open");
-    let mut transition = endpoint.transition().await;
+    // The launch path's conditional writer, which reads what it takes over under the guard.
+    let mut transition = endpoint.transition_if(&|| true).await.map_err(|()| "transition refused")?;
     assert!(!endpoint.is_ready(), "the replacement's writer closed it");
     let process = crate::inference::engine_residency::EngineIncarnation::of(std::process::id(), 1)
         .ok_or("fixture process identity unavailable")?;
@@ -113,10 +114,13 @@ async fn a_refused_adopted_replacement_hands_the_endpoint_back_as_found() -> Res
     assert!(endpoint.is_ready());
     assert!(endpoint.admit().await.is_ok(), "a resident's turn is admitted again");
 
-    let closes = endpoint.transition().await;
-    drop(closes); // a transition that never hands back leaves the endpoint closed
+    // From an OPEN endpoint, the unconditional writer still never hands back: it closed
+    // readiness before it held the guard, so it does not know what it took over.
+    let unconditional = endpoint.transition().await;
+    assert!(!unconditional.hand_back_unchanged(), "the unconditional writer never hands back");
+    drop(unconditional); // and leaves the endpoint closed
     assert!(!endpoint.is_ready());
-    let found_closed = endpoint.transition().await;
+    let found_closed = endpoint.transition_if(&|| true).await.map_err(|()| "transition refused")?;
     assert!(!found_closed.hand_back_unchanged(), "closed when found stays closed");
     drop(found_closed);
     assert!(!endpoint.is_ready());

@@ -212,14 +212,18 @@ impl EndpointSlots {
     }
 
     pub async fn transition(self: &Arc<Self>) -> EndpointTransition {
-        let found_ready = self.state.lock().ready.send_replace(false);
+        self.state.lock().ready.send_replace(false);
         let guard = self.gate.clone().write_owned().await;
         // A preceding transition might have reopened while this writer waited.
         self.state.lock().ready.send_replace(false);
         EndpointTransition {
             endpoint: self.clone(),
             _guard: guard,
-            found_ready,
+            // This writer closes readiness BEFORE it holds the guard, so what it saw is not
+            // what it took over (a preceding writer may reopen or close it meanwhile; Codex on
+            // #5413). It never hands back: only the conditional writers, which read under the
+            // guard, do.
+            found_ready: false,
         }
     }
 }
