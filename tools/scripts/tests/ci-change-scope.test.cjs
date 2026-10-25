@@ -155,6 +155,9 @@ test('a PR that touches a declared binary\'s own source compiles that binary', (
   assert.deepEqual(bins(['core/continuum-core/src/main.rs']), { 'continuum-core': ['continuum-core-server'] });
   assert.deepEqual(bins(['core/continuum-core/src/bin/forge_custodian.rs', 'core/continuum-core/src/main.rs']),
     { 'continuum-core': ['continuum-core-server', 'forge-custodian'] });
+  // The manifest declares the bins: changing it checks every declared one but the CLI.
+  assert.deepEqual(bins(['core/continuum-core/Cargo.toml'])['continuum-core'],
+    core.bins.map(b => b.name).filter(name => name !== 'continuum'));
   // A lib change, the CLI (compiled by the handoff job), docs, and pushes compile no extra binary.
   assert.deepEqual(bins(['core/continuum-core/src/modules/chat.rs']), {});
   assert.deepEqual(bins(['core/continuum-core/src/bin/continuum/reboot.rs']), {});

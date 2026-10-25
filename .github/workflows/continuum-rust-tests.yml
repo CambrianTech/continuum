@@ -145,7 +145,7 @@ jobs:
         run: |
           args=()
           for bin in $BINS; do args+=(--bin "$bin"); done
-          cargo check -p "$CRATE" --profile dev-fast --features "$FEATURES" "${args[@]}"
+          cargo check --locked -p "$CRATE" --profile dev-fast --features "$FEATURES" "${args[@]}"
 
       # ---- continuum-kernel: lib tests ----
       - name: cargo test -p continuum-kernel --lib

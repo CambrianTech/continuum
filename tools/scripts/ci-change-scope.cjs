@@ -116,7 +116,9 @@ function selectCrates(paths, workspace) {
 }
 
 // The declared binaries (`[[bin]]`) of tested crates whose own source a change touches: the bin's
-// file, and for `src/bin/<x>.rs` its module directory `src/bin/<x>/`. Lib and lib-test builds never
+// file, and for `src/bin/<x>.rs` its module directory `src/bin/<x>/`; a change to the crate's
+// Cargo.toml, where the declarations live, selects all of them. Implicit (undeclared) bins are not
+// read. Lib and lib-test builds never
 // compile a bin, so without this a PR editing `src/main.rs` reached canary uncompiled (card
 // 67bf5d81). The CLI binary is left to the handoff job, which already compiles it. A change to the
 // lib a bin uses is not covered here; the hourly core-binaries publication compiles every bin.
@@ -127,7 +129,7 @@ function selectBins(paths, workspace, crates) {
     const touched = (c.bins ?? []).filter(b => {
       const file = path.posix.join(c.dir, b.path);
       const moduleDir = file.endsWith('.rs') && path.posix.basename(path.posix.dirname(file)) === 'bin' ? `${file.slice(0, -3)}/` : null;
-      return paths.some(p => p === file || (moduleDir && p.startsWith(moduleDir)));
+      return paths.some(p => p === file || p === `${c.dir}/Cargo.toml` || (moduleDir && p.startsWith(moduleDir)));
     }).map(b => b.name).filter(name => !(c.name === 'continuum-core' && name === 'continuum'));
     if (touched.length) bins[c.name] = touched;
   }
