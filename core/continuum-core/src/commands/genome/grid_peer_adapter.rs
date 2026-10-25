@@ -177,6 +177,12 @@ impl FineTuningAdapter for GridPeerAdapter {
         let params = serde_json::to_value(LeaseStatusParams { attempt }).map_err(|e| FineTuningError::InvalidRequest(e.to_string()))?; // lease wire boundary
         match decode::<LeasePollOutcome>("genome/lease/poll", self.ask(peer, "genome/lease/poll", params).await?)? {
             LeasePollOutcome::Status { status } => Ok(status),
+            // Pulling and verifying the files lands with the origin's import (S3-2); until then
+            // a finished job stays pending, never failed: its artifact is kept on the peer.
+            LeasePollOutcome::Completed { .. } => {
+                Err(FineTuningError::Transient(format!("peer {peer} finished; the origin's artifact import is not wired yet")))
+            }
+            LeasePollOutcome::Unreturnable { reason } => Ok(TrainingStatus::Failed { error: format!("peer {peer}: {reason}") }),
             LeasePollOutcome::NotCreated => Err(FineTuningError::UnknownHandle(handle.clone())),
             LeasePollOutcome::Unknown { reason } => Err(FineTuningError::Transient(format!("peer {peer}: {reason}"))),
         }
@@ -232,7 +238,7 @@ mod tests {
                 origin,
                 train: GenomeLeaseTrain { coordinator: Arc::new(FineTuningCoordinator::new(registry.clone())), attempts: attempts.clone() },
                 status: GenomeLeaseStatus { attempts: attempts.clone() },
-                poll: GenomeLeasePoll { attempts: attempts.clone(), registry: registry.clone() },
+                poll: GenomeLeasePoll { attempts: attempts.clone(), registry: registry.clone(), bases: crate::commands::genome::lease::BaseGguf::registry() },
                 cancel: GenomeLeaseCancel { attempts, registry },
                 drop_reply: AtomicBool::new(false),
                 called: std::sync::Mutex::new(Vec::new()),
@@ -346,7 +352,8 @@ mod tests {
 
         let handle = adapter.create_bound(lora_request(), &binding).await.expect("the peer took the lease"); // JUSTIFIED: test asserts the Ok arm
         assert_eq!(handle, lease_handle(peer, attempt));
-        assert!(matches!(adapter.poll(&handle).await, Ok(TrainingStatus::Completed { .. })));
+        // The fixture's trainer keeps no local weights: the peer reports it unreturnable, final.
+        assert!(matches!(adapter.poll(&handle).await, Ok(TrainingStatus::Failed { error }) if error.contains("no local gene")));
         assert!(adapter.cancel(&handle).await.is_ok(), "accepted by the peer");
 
         let mut changed = lora_request();
@@ -355,7 +362,7 @@ mod tests {
 
         // A new adapter instance (the origin's in-memory state gone), over the same stores.
         let restarted = adapter_over(transport.clone(), Vec::new(), 10);
-        assert!(matches!(restarted.poll(&handle).await, Ok(TrainingStatus::Completed { .. })), "the handle alone reaches the job");
+        assert!(matches!(restarted.poll(&handle).await, Ok(TrainingStatus::Failed { .. })), "the handle alone reaches the job");
         assert!(
             transport.called.lock().unwrap_or_else(std::sync::PoisonError::into_inner).iter().all(|to| *to == peer), // unwrap_or_else: a test fixture's poisoned log still reads
             "create, poll and cancel went only to the bound peer"

@@ -14,7 +14,8 @@
 //!   late is refused, and "not created" stays true.
 //!
 //! The job is not registered on this node's training board: adoption (the sentinel, the gene
-//! trial) belongs to the origin, which pulls the artifact back (S3).
+//! trial) belongs to the origin, which pulls the artifact back (S3). A completed job is
+//! reported by its artifact's recorded manifest ([`LeaseArtifact`]), never this node's path.
 
 use std::sync::Arc;
 
@@ -23,8 +24,9 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use ts_rs::TS;
 
-use super::attempt_ledger::{lease_key, AdmitError, Admission, AttemptLedger, AttemptState, LeaseRefusal};
+use super::attempt_ledger::{lease_key, AdmitError, Admission, AttemptLedger, AttemptState, LeaseRefusal, ReturnRecord};
 use super::job_attempt_reconcile::JobAttemptReconcileOutcome;
+use super::lease_artifact::{describe, DescribeError, LeaseArtifact};
 use crate::genome::fine_tuning::{coordinator::FineTuningCoordinator, FineTuningRegistry, JobHandle, TrainingJobRequest, TrainingStatus};
 use crate::routing::{CallerIdentity, CallerSource};
 
@@ -73,12 +75,19 @@ pub struct LeaseStatusParams {
 }
 
 /// Where a leased job stands, asked by the peer that leased it (card ec1d8b76): `status` from
-/// its trainer, `notCreated` (closed, so nothing can start under it), or `unknown`.
+/// its trainer, `completed` with its artifact's manifest, `unreturnable`, `notCreated` (closed,
+/// so nothing can start under it), or `unknown`.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../../protocol/typescript/genome/LeasePollOutcome.ts")]
 #[serde(tag = "outcome", rename_all = "camelCase")]
 pub enum LeasePollOutcome {
+    /// Not finished: queued, waiting, running, failed or cancelled.
     Status { status: TrainingStatus },
+    /// Finished: the artifact by its recorded files and digests, never this node's path
+    /// (card 3fd98325). Every later poll answers from the same record.
+    Completed { artifact: LeaseArtifact },
+    /// Finished with no local gene to return (a provider-hosted or skeleton artifact): final.
+    Unreturnable { reason: String },
     NotCreated,
     Unknown { reason: String },
 }
@@ -96,10 +105,10 @@ pub enum LeaseCancelOutcome {
 
 /// The leased attempt's job, read under the caller's OWN lease key: an attempt never received
 /// is closed first (so a late create is fenced), and a forged origin derives another key.
-async fn leased_job(attempts: &AttemptLedger, caller: Option<&CallerIdentity>, attempt: uuid::Uuid) -> Result<Option<JobHandle>, String> {
-    let origin = lease_origin(caller)?;
-    match attempts.reconcile(lease_key(origin, attempt)).await {
-        super::attempt_ledger::Reconciled::Created(handle) => Ok(Some(handle)),
+async fn leased_job(attempts: &AttemptLedger, caller: Option<&CallerIdentity>, attempt: uuid::Uuid) -> Result<Option<(uuid::Uuid, JobHandle)>, String> {
+    let key = lease_key(lease_origin(caller)?, attempt);
+    match attempts.reconcile(key).await {
+        super::attempt_ledger::Reconciled::Created(handle) => Ok(Some((key, handle))),
         super::attempt_ledger::Reconciled::NotCreated => Ok(None),
         super::attempt_ledger::Reconciled::Unknown(reason) => Err(reason),
     }
@@ -135,6 +144,43 @@ fn recorded_answer(admission: Admission, attempt: uuid::Uuid) -> Option<LeaseTra
         Admission::AlreadyCreated(handle) => Some(LeaseTrainOutcome::Created { handle }),
         Admission::Fenced => Some(refused("attempt_fenced", format!("attempt {attempt} was closed or refused here; nothing started"))),
         Admission::Unsettled => Some(LeaseTrainOutcome::Unknown { reason: format!("attempt {attempt} was admitted here and never settled: a trainer may have started") }),
+    }
+}
+
+/// How this node finds its GGUF of a base model: the model registry's resolver in production.
+#[derive(Clone)]
+pub(crate) struct BaseGguf(pub(crate) Arc<dyn Fn(&str) -> Option<std::path::PathBuf> + Send + Sync>);
+
+impl BaseGguf {
+    pub(crate) fn registry() -> Self {
+        Self(Arc::new(crate::model_registry::artifacts::resolve_gguf_for_model_id))
+    }
+}
+
+/// A completed job's artifact, described and recorded once: the first description recorded
+/// is what every later poll reports and what serving the bytes is checked against. A file
+/// unreadable now, or a record that could not be written, is Unknown (it may pass); an
+/// artifact with no local gene is final.
+async fn returned_artifact(
+    attempts: &AttemptLedger,
+    bases: &BaseGguf,
+    key: uuid::Uuid,
+    base_model: Option<&str>,
+    artifact: &crate::genome::fine_tuning::TrainingArtifact,
+) -> LeasePollOutcome {
+    // A lease admitted before its base was recorded cannot name the base it fits: final.
+    let Some(base_model) = base_model else {
+        return LeasePollOutcome::Unreturnable { reason: "the lease record names no base model to fingerprint".into() };
+    };
+    let (find, id) = (bases.0.clone(), base_model.to_string());
+    let described = match describe(artifact, base_model, move || find(&id)).await {
+        Ok(described) => described,
+        Err(DescribeError::Unreturnable(reason)) => return LeasePollOutcome::Unreturnable { reason },
+        Err(DescribeError::Unread(reason)) => return LeasePollOutcome::Unknown { reason },
+    };
+    match attempts.record_return(key, described).await {
+        Ok(recorded) => LeasePollOutcome::Completed { artifact: recorded.artifact },
+        Err(reason) => LeasePollOutcome::Unknown { reason: format!("the artifact could not be recorded: {reason}") },
     }
 }
 
@@ -191,7 +237,7 @@ crate::action_command! {
             Ok(selected) => selected,
             Err(e) => return Ok(refused("no_trainer_here", e.to_string())),
         };
-        match this.attempts.admit_lease(key, origin, &digest, &provider).await {
+        match this.attempts.admit_lease(key, origin, &digest, &provider, &p.request.base_model).await {
             Ok(admission) => {
                 if let Some(answer) = recorded_answer(admission, p.attempt) {
                     return Ok(answer);
@@ -255,23 +301,37 @@ crate::action_command! {
 }
 
 crate::action_command! {
-    /// Where a leased job stands, asked by the peer that leased it: its trainer's status,
-    /// `notCreated`, or `unknown`. Read under the caller's own lease key only.
-    pub struct GenomeLeasePoll { attempts: Arc<AttemptLedger>, registry: Arc<FineTuningRegistry> }
+    /// Where a leased job stands, asked by the peer that leased it: its trainer's status, its
+    /// artifact's recorded manifest once completed, `unreturnable`, `notCreated`, or `unknown`.
+    /// Read under the caller's own lease key only.
+    pub struct GenomeLeasePoll {
+        attempts: Arc<AttemptLedger>,
+        registry: Arc<FineTuningRegistry>,
+        /// Finds this node's GGUF of a base, to fingerprint it ([`BaseGguf::registry`]).
+        bases: BaseGguf,
+    }
     name: "genome/lease/poll",
     access: Privileged,
     params: LeaseStatusParams,
     output: LeasePollOutcome,
     run(this, ctx, p) => {
-        let handle = match leased_job(&this.attempts, ctx.caller.as_ref(), p.attempt).await {
-            Ok(Some(handle)) => handle,
+        let (key, handle) = match leased_job(&this.attempts, ctx.caller.as_ref(), p.attempt).await {
+            Ok(Some(job)) => job,
             Ok(None) => return Ok(LeasePollOutcome::NotCreated),
+            Err(reason) => return Ok(LeasePollOutcome::Unknown { reason }),
+        };
+        // A recorded artifact is the answer, whatever the trainer remembers now.
+        let base_model = match this.attempts.return_record(key).await {
+            Ok(Some(ReturnRecord { returned: Some(recorded), .. })) => return Ok(LeasePollOutcome::Completed { artifact: recorded.artifact }),
+            Ok(Some(ReturnRecord { returned: None, base_model })) => base_model,
+            Ok(None) => None,
             Err(reason) => return Ok(LeasePollOutcome::Unknown { reason }),
         };
         let Some(adapter) = this.registry.get(&handle.provider_id) else {
             return Ok(LeasePollOutcome::Unknown { reason: format!("trainer {} is not registered here", handle.provider_id) });
         };
         Ok(match adapter.poll(&handle).await {
+            Ok(TrainingStatus::Completed { artifact }) => returned_artifact(&this.attempts, &this.bases, key, base_model.as_deref(), &artifact).await,
             Ok(status) => LeasePollOutcome::Status { status },
             Err(e) => LeasePollOutcome::Unknown { reason: e.to_string() },
         })
@@ -287,8 +347,8 @@ crate::action_command! {
     params: LeaseStatusParams,
     output: LeaseCancelOutcome,
     run(this, ctx, p) => {
-        let handle = match leased_job(&this.attempts, ctx.caller.as_ref(), p.attempt).await {
-            Ok(Some(handle)) => handle,
+        let (_, handle) = match leased_job(&this.attempts, ctx.caller.as_ref(), p.attempt).await {
+            Ok(Some(job)) => job,
             Ok(None) => return Ok(LeaseCancelOutcome::NotCreated),
             Err(reason) => return Ok(LeaseCancelOutcome::Unknown { reason }),
         };
@@ -367,7 +427,7 @@ mod tests {
 
         let created = uuid::Uuid::new_v4();
         let job = JobHandle { provider_id: "engine-lane".into(), provider_job_id: "job-1".into(), local_id: uuid::Uuid::new_v4() };
-        attempts.admit_lease(lease_key(origin, created), origin, &digest, "engine-lane").await.expect("admitted"); // JUSTIFIED: test fixture
+        attempts.admit_lease(lease_key(origin, created), origin, &digest, "engine-lane", "qwen3.5-4b").await.expect("admitted"); // JUSTIFIED: test fixture
         attempts.settle(lease_key(origin, created), AttemptState::Created { handle: job.clone() }).await.expect("settled"); // JUSTIFIED: test fixture
         assert!(matches!(
             lease_without_a_trainer(attempts.clone(), origin, created, request.clone()).await,
@@ -379,7 +439,7 @@ mod tests {
         ));
 
         let admitted = uuid::Uuid::new_v4();
-        attempts.admit_lease(lease_key(origin, admitted), origin, &digest, "engine-lane").await.expect("admitted"); // JUSTIFIED: test fixture
+        attempts.admit_lease(lease_key(origin, admitted), origin, &digest, "engine-lane", "qwen3.5-4b").await.expect("admitted"); // JUSTIFIED: test fixture
         assert!(matches!(
             lease_without_a_trainer(attempts.clone(), origin, admitted, request.clone()).await,
             LeaseTrainOutcome::Unknown { .. }
@@ -412,21 +472,22 @@ mod tests {
         use crate::sdk_codegen::ActionCommand;
         let (attempts, _dir) = ledger().await;
         let registry = super::super::test_support::registry_with(&["engine-lane"]);
-        let poll = GenomeLeasePoll { attempts: attempts.clone(), registry: registry.clone() };
+        let poll = GenomeLeasePoll { attempts: attempts.clone(), registry: registry.clone(), bases: BaseGguf::registry() };
         let cancel = GenomeLeaseCancel { attempts: attempts.clone(), registry };
         let (origin, attempt) = (uuid::Uuid::new_v4(), uuid::Uuid::new_v4());
         let job = JobHandle { provider_id: "engine-lane".into(), provider_job_id: "job-1".into(), local_id: uuid::Uuid::new_v4() };
-        attempts.admit_lease(lease_key(origin, attempt), origin, "digest", "engine-lane").await.expect("admitted"); // JUSTIFIED: test fixture
+        attempts.admit_lease(lease_key(origin, attempt), origin, "digest", "engine-lane", "qwen3.5-4b").await.expect("admitted"); // JUSTIFIED: test fixture
         attempts.settle(lease_key(origin, attempt), AttemptState::Created { handle: job }).await.expect("settled"); // JUSTIFIED: test fixture
         let ask = || LeaseStatusParams { attempt };
 
-        assert!(matches!(poll.run(&lease_ctx(origin), ask()).await, Ok(LeasePollOutcome::Status { .. })));
+        // The stub trainer's job finished provider-hosted: nothing to return, final.
+        assert!(matches!(poll.run(&lease_ctx(origin), ask()).await, Ok(LeasePollOutcome::Unreturnable { .. })));
         assert!(matches!(cancel.run(&lease_ctx(origin), ask()).await, Ok(LeaseCancelOutcome::Cancelled)));
 
         let forger = uuid::Uuid::new_v4();
         assert!(matches!(poll.run(&lease_ctx(forger), ask()).await, Ok(LeasePollOutcome::NotCreated)));
         assert!(matches!(cancel.run(&lease_ctx(forger), ask()).await, Ok(LeaseCancelOutcome::NotCreated)));
-        assert!(matches!(poll.run(&lease_ctx(origin), ask()).await, Ok(LeasePollOutcome::Status { .. })), "the forger touched nothing");
+        assert!(matches!(poll.run(&lease_ctx(origin), ask()).await, Ok(LeasePollOutcome::Unreturnable { .. })), "the forger touched nothing");
 
         let never = LeaseStatusParams { attempt: uuid::Uuid::new_v4() };
         assert!(matches!(poll.run(&lease_ctx(origin), never).await, Ok(LeasePollOutcome::NotCreated)));
@@ -434,6 +495,44 @@ mod tests {
             poll.run(&crate::sdk_codegen::Ctx::default(), ask()).await,
             Ok(LeasePollOutcome::Unknown { .. })
         ), "a local caller has no lease to ask about");
+    }
+
+    // what this catches (card 3fd98325): a completed lease reported by the trainer's path, by
+    // a digest that is not the bytes, or by a report that changes after it was first given.
+    // The first poll describes and records the artifact (its files and its base's fingerprint);
+    // a later poll answers from that record even after the file on disk changed, so serving
+    // the bytes can refuse what no longer matches.
+    #[tokio::test]
+    async fn a_completed_lease_is_reported_by_its_recorded_manifest() {
+        use crate::genome::fine_tuning::{ArtifactFormat, RecordingFineTuningAdapter, RECORDING_PROVIDER_ID};
+        use crate::sdk_codegen::ActionCommand;
+        let (attempts, _dir) = ledger().await;
+        let files = tempfile::tempdir().expect("dir"); // JUSTIFIED: test fixture
+        let (adapter_file, base) = (files.path().join("adapter.gguf"), files.path().join("base.gguf"));
+        std::fs::write(&adapter_file, b"lora").expect("write"); // JUSTIFIED: test fixture
+        super::super::test_support::write_base_gguf(&base);
+        let registry = Arc::new(FineTuningRegistry::new());
+        registry.register(Arc::new(RecordingFineTuningAdapter::new().with_local_artifact(adapter_file.clone(), ArtifactFormat::GgufLora)));
+        let found = base.clone();
+        let poll = GenomeLeasePoll { attempts: attempts.clone(), registry, bases: BaseGguf(Arc::new(move |_: &str| Some(found.clone()))) };
+        let (origin, attempt) = (uuid::Uuid::new_v4(), uuid::Uuid::new_v4());
+        let job = JobHandle { provider_id: RECORDING_PROVIDER_ID.into(), provider_job_id: "job-1".into(), local_id: uuid::Uuid::new_v4() };
+        attempts.admit_lease(lease_key(origin, attempt), origin, "digest", RECORDING_PROVIDER_ID, "qwen").await.expect("admitted"); // JUSTIFIED: test fixture
+        attempts.settle(lease_key(origin, attempt), AttemptState::Created { handle: job }).await.expect("settled"); // JUSTIFIED: test fixture
+
+        let Ok(LeasePollOutcome::Completed { artifact }) = poll.run(&lease_ctx(origin), LeaseStatusParams { attempt }).await else {
+            panic!("a completed job with local weights is reported by its manifest"); // JUSTIFIED: test asserts the arm
+        };
+        assert_eq!(artifact.files.len(), 1);
+        assert_eq!(artifact.files[0].sha256, format!("{:x}", Sha256::digest(b"lora")));
+        assert_eq!(artifact.base.model_id, "qwen");
+        assert_eq!(artifact.base.fingerprint, crate::inference_capability::gguf_fingerprint::lora_base_fingerprint(&base).expect("digest")); // JUSTIFIED: test asserts the base
+
+        std::fs::write(&adapter_file, b"replaced").expect("write"); // JUSTIFIED: test fixture
+        assert!(
+            matches!(poll.run(&lease_ctx(origin), LeaseStatusParams { attempt }).await, Ok(LeasePollOutcome::Completed { artifact: again }) if again.files == artifact.files && again.base == artifact.base),
+            "the first record is the report"
+        );
     }
 }
 

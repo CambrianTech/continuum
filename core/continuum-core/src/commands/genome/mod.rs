@@ -44,6 +44,7 @@ pub(crate) mod attempt_ledger;
 pub mod grid_peer_adapter;
 pub mod job_attempt_reconcile;
 pub mod lease;
+pub mod lease_artifact;
 pub mod job_cancel;
 pub mod job_create;
 pub mod job_pause;
@@ -104,7 +105,7 @@ pub(crate) fn command_objects(
             attempts: Arc::clone(&attempts),
         }),
         Arc::new(lease::GenomeLeaseStatus { attempts: Arc::clone(&attempts) }),
-        Arc::new(lease::GenomeLeasePoll { attempts: Arc::clone(&attempts), registry: registry.clone() }),
+        Arc::new(lease::GenomeLeasePoll { attempts: Arc::clone(&attempts), registry: registry.clone(), bases: lease::BaseGguf::registry() }),
         Arc::new(lease::GenomeLeaseCancel { attempts: Arc::clone(&attempts), registry: registry.clone() }),
         Arc::new(job_create::GenomeJobCreate {
             coordinator,
@@ -217,6 +218,19 @@ pub(crate) mod test_support {
             schedule: None,
             local_artifact_dir: None,
         }
+    }
+
+    /// A header-only base GGUF: an architecture and a tokenizer are all a base fingerprint
+    /// reads (`lora_base_fingerprint`).
+    pub(crate) fn write_base_gguf(path: &std::path::Path) {
+        use candle_core::quantized::gguf_file::{self, Value};
+        let md = [
+            ("general.architecture", Value::String("qwen2".into())),
+            ("tokenizer.ggml.tokens", Value::Array(vec![Value::String("a".into())])),
+        ];
+        let refs: Vec<(&str, &Value)> = md.iter().map(|(k, v)| (*k, v)).collect();
+        let mut file = std::fs::File::create(path).expect("create"); // JUSTIFIED: test fixture
+        gguf_file::write(&mut file, &refs, &[]).expect("write"); // JUSTIFIED: test fixture
     }
 
     /// A registry seeded with one stub adapter per id.

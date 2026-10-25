@@ -74,13 +74,24 @@ pub const RECORDING_BASE_PREFIX: &str = "recording-test";
 #[derive(Clone)]
 pub struct RecordingFineTuningAdapter {
     captures: Arc<StdMutex<Vec<TrainingJobRequest>>>,
+    /// The local artifact every job completes with, for a test that moves real files
+    /// (the cross-grid lease's return, card 3fd98325); `None` reports provider-hosted.
+    weights: Option<(std::path::PathBuf, ArtifactFormat)>,
 }
 
 impl RecordingFineTuningAdapter {
     pub fn new() -> Self {
         Self {
             captures: Arc::new(StdMutex::new(Vec::new())),
+            weights: None,
         }
+    }
+
+    /// Every job completes with the artifact at `path`, in `format`, instead of a
+    /// provider-hosted one.
+    pub fn with_local_artifact(mut self, path: std::path::PathBuf, format: ArtifactFormat) -> Self {
+        self.weights = Some((path, format));
+        self
     }
 
     /// Shared handle to the captures vector. Use this on the test
@@ -157,11 +168,11 @@ impl FineTuningAdapter for RecordingFineTuningAdapter {
         Ok(TrainingStatus::Completed {
             artifact: TrainingArtifact {
                 model_id: handle.provider_job_id.clone(),
-                local_path: None,
-                // Replay fixture — no real weights, so nothing to convert or
-                // page in. Provider-hosted keeps the sentinel from expecting a
-                // local gene.
-                format: ArtifactFormat::ProviderHosted,
+                local_path: self.weights.as_ref().map(|(path, _)| path.clone()),
+                // Replay fixture — no real weights unless a test gave some, so by
+                // default nothing to convert or page in. Provider-hosted keeps the
+                // sentinel from expecting a local gene.
+                format: self.weights.as_ref().map_or(ArtifactFormat::ProviderHosted, |(_, format)| *format),
                 metrics: JobMetrics::default(),
             },
         })

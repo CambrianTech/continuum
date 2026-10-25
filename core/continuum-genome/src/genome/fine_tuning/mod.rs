@@ -84,6 +84,7 @@
 //!   cloud, and cross-grid impls are peers, not a hierarchy.
 
 pub mod adapter;
+pub mod artifact_payload;
 pub mod byte_tokenizer;
 pub mod coordinator;
 pub mod job_actor;
