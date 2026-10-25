@@ -23,7 +23,6 @@ impl Source<ContextMessage> for Thoughts<'_> {
     }
 
     fn items(&self) -> Vec<Item<ContextMessage>> {
-        let head = self.memory.budget().trail_head_chars();
         let thoughts: Vec<String> = self
             .memory
             .recent_entries()
@@ -42,10 +41,15 @@ impl Source<ContextMessage> for Thoughts<'_> {
         );
         let mut items = vec![Item { key: "banner".to_owned(), full: banner.clone(), pointer: Some(banner) }];
         items.extend(thoughts.into_iter().map(|text| {
-            // Keyed by what it says: a thought, once recorded, does not change.
+            // Keyed by what it says: a thought, once recorded, does not change, and neither may
+            // its rendering. Full is the whole thought; how much of her thoughts she reads is the
+            // one allocation's call at an epoch start (collapsed to `pointer`), never a per-act
+            // head here. Cut to a share of the served window, the same thought rendered 1,284
+            // chars on one act and 1,445 on the next, so every act re-appended every thought
+            // (Benchy on the M5, 2026-10-24 22:3xZ: ~7k chars of unchanged thoughts per act).
             Item {
                 key: text.clone(),
-                full: ContextMessage::user(format!("- {}", collapse_thought(&text, head))),
+                full: ContextMessage::user(format!("- {text}")),
                 pointer: Some(ContextMessage::user(format!("- {}", collapse_thought(&text, POINTER_KEEP)))),
             }
         }));

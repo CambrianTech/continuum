@@ -115,3 +115,23 @@ fn her_notices_append_once_and_an_ended_one_is_retired() {
     memory.pin_fact("hands", "[hands] your hands stand in the card's checkout again");
     assert!(memory.ended_notice_keys().is_empty(), "pinned again, it is no longer ended");
 }
+
+// what this catches: a thought re-rendered by the act's budget, so the view appends every
+// unchanged thought again on every act. Cut to a share of the served window, the same thought
+// rendered 1,284 chars on one act and 1,445 on the next (Benchy on the M5, 2026-10-24, ~7k chars
+// of unchanged thoughts re-prefilled per act). Its item must not depend on the window: how much
+// of it she reads is the one allocation's call at an epoch start.
+#[test]
+fn a_thought_renders_the_same_whatever_the_served_window() {
+    use super::thoughts::Thoughts;
+
+    let memory = WorkingMemory::new(8);
+    memory.record(&"a long line of reasoning about the failing test. ".repeat(80));
+    let render = |memory: &WorkingMemory| {
+        Thoughts { memory }.items().into_iter().map(|item| item.full.text).collect::<Vec<_>>()
+    };
+    memory.set_served_window(32_768);
+    let narrow = render(&memory);
+    memory.set_served_window(131_072);
+    assert_eq!(render(&memory), narrow, "the window changed and the thought's rendering did not");
+}
