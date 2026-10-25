@@ -66,8 +66,8 @@ pub enum CoordinatorError {
     NoCapableAdapter {
         base_model: String,
         registered: Vec<String>,
-        /// Trainers whose capabilities match this request but whose live state says no now
-        /// (`serves_base`): `grid-peer` with no fresh peer advertising the base, an in-engine
+        /// Trainers whose capabilities match this request but whose live state said no at
+        /// this selection (`serves_base`, read once per selection): `grid-peer` with no fresh peer advertising the base, an in-engine
         /// trainer with no lane serving it. An empty prefix list means "any base, gated live",
         /// so without this the refusal read as if nothing could ever train the base.
         not_serving_now: Vec<String>,
@@ -154,21 +154,22 @@ impl FineTuningCoordinator {
     ) -> Result<(String, ArcFineTuningAdapter), CoordinatorError> {
         let all_ids = self.registry.list();
 
-        // Compute the capable set once.
-        let capable: Vec<(String, ArcFineTuningAdapter, FineTuningCapabilities)> = all_ids
-            .iter()
-            .filter_map(|id| self.registry.get(id).map(|a| (id.clone(), a)))
-            .filter_map(|(id, adapter)| {
-                let caps = adapter.capabilities();
-                // A trainer bound to live state (the in-engine one) is asked whether it
-                // serves THIS base now, so it is never chosen for a job it would refuse.
-                if admits(&caps) && self.caps_match(&caps, request) && adapter.serves_base(&request.base_model) {
-                    Some((id, adapter, caps))
-                } else {
-                    None
-                }
-            })
-            .collect();
+        // Compute the capable set once. A trainer bound to live state (the in-engine one, a
+        // grid peer) is asked ONCE whether it serves THIS base now, so it is never chosen for a
+        // job it would refuse, and a refusal names it from that same answer.
+        let mut capable: Vec<(String, ArcFineTuningAdapter, FineTuningCapabilities)> = Vec::new();
+        let mut not_serving_now: Vec<String> = Vec::new();
+        for (id, adapter) in all_ids.iter().filter_map(|id| self.registry.get(id).map(|a| (id.clone(), a))) {
+            let caps = adapter.capabilities();
+            if !(admits(&caps) && self.caps_match(&caps, request)) {
+                continue;
+            }
+            if adapter.serves_base(&request.base_model) {
+                capable.push((id, adapter, caps));
+            } else {
+                not_serving_now.push(id);
+            }
+        }
 
         // Honor caller preference if it's in the capable set.
         if let Some(pref) = preferred_provider {
@@ -203,16 +204,6 @@ impl FineTuningCoordinator {
                             .get(id)
                             .map(|a| (id.clone(), a.capabilities().supported_base_model_prefixes))
                     })
-                    .collect();
-                let not_serving_now = all_ids
-                    .iter()
-                    .filter(|id| {
-                        self.registry.get(id).is_some_and(|adapter| {
-                            let caps = adapter.capabilities();
-                            admits(&caps) && self.caps_match(&caps, request) && !adapter.serves_base(&request.base_model)
-                        })
-                    })
-                    .cloned()
                     .collect();
                 Err(CoordinatorError::NoCapableAdapter {
                     base_model: request.base_model.clone(),
