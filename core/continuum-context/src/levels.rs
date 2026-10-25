@@ -35,13 +35,15 @@ pub enum Shape<'a> {
 
 /// The item's summary level, or `None` when no summary of its shape costs at most a quarter of it.
 pub fn summarize(full: &str, shape: Shape<'_>) -> Option<String> {
-    let budget = full.len() / LEVEL_RATIO;
+    // Characters, the unit the view counts every block in (`Block::chars`); bytes would weigh
+    // non-ASCII text heavier than the view does (Cormac on #5422).
+    let budget = full.chars().count() / LEVEL_RATIO;
     let summary = match shape {
         Shape::Code(split) => outline(full, split)?,
         Shape::Output => ends(full, budget)?,
         Shape::List => head(full, budget)?,
     };
-    (summary.len() <= budget).then_some(summary)
+    (summary.chars().count() <= budget).then_some(summary)
 }
 
 /// A code item's outline: its header lines, its declarations at their lines, the rest marked.
@@ -60,7 +62,7 @@ fn outline(full: &str, split: NumberedLine<'_>) -> Option<String> {
         numbered = true;
         let trimmed = code.trim();
         let declaration = !trimmed.is_empty()
-            && code.len() - code.trim_start().len() <= DECLARATION_INDENT
+            && indent(code) <= DECLARATION_INDENT
             && !trimmed.starts_with(['}', ')', ']', '*'])
             && !trimmed.starts_with("//")
             && !trimmed.starts_with("/*");
@@ -76,6 +78,15 @@ fn outline(full: &str, split: NumberedLine<'_>) -> Option<String> {
     numbered.then_some(out)
 }
 
+/// A line's indent in columns, a tab counting as one indent level (four spaces), so tab-indented
+/// code reads at the same depth as space-indented code (Cormac on #5422).
+fn indent(code: &str) -> usize {
+    code.chars()
+        .take_while(|c| c.is_whitespace())
+        .map(|c| if c == '\t' { DECLARATION_INDENT } else { 1 })
+        .sum()
+}
+
 fn mark_dropped(out: &mut String, dropped: &mut Option<(u32, u32)>) {
     if let Some((a, b)) = dropped.take() {
         out.push_str(&format!("       … lines {a}-{b}\n"));
@@ -87,15 +98,15 @@ fn ends(full: &str, budget: usize) -> Option<String> {
     let lines: Vec<&str> = full.lines().collect();
     // The marker between the ends is part of the summary's cost: reserve it before the ends.
     let marker = |between: usize| format!("\n… {between} lines between (expand to read them)\n");
-    let half = budget.saturating_sub(marker(lines.len()).len()) / 2;
+    let half = budget.saturating_sub(marker(lines.len()).chars().count()) / 2;
     let (mut head, mut head_chars) = (0, 0);
-    while head < lines.len() && head_chars + lines[head].len() < half {
-        head_chars += lines[head].len() + 1;
+    while head < lines.len() && head_chars + lines[head].chars().count() < half {
+        head_chars += lines[head].chars().count() + 1;
         head += 1;
     }
     let (mut tail, mut tail_chars) = (0, 0);
-    while tail < lines.len() - head && tail_chars + lines[lines.len() - 1 - tail].len() < half {
-        tail_chars += lines[lines.len() - 1 - tail].len() + 1;
+    while tail < lines.len() - head && tail_chars + lines[lines.len() - 1 - tail].chars().count() < half {
+        tail_chars += lines[lines.len() - 1 - tail].chars().count() + 1;
         tail += 1;
     }
     let between = lines.len() - head - tail;
@@ -112,8 +123,8 @@ fn ends(full: &str, budget: usize) -> Option<String> {
 fn head(full: &str, budget: usize) -> Option<String> {
     let lines: Vec<&str> = full.lines().collect();
     let (mut kept, mut chars) = (0, 0);
-    while kept < lines.len() && chars + lines[kept].len() < budget {
-        chars += lines[kept].len() + 1;
+    while kept < lines.len() && chars + lines[kept].chars().count() < budget {
+        chars += lines[kept].chars().count() + 1;
         kept += 1;
     }
     let more = lines.len() - kept;
@@ -154,6 +165,16 @@ mod tests {
         let Some(summary) = summarize(&log, Shape::Output) else { panic!("a long log has ends") };
         assert!(summary.starts_with("Compiling a") && summary.ends_with("error[E0308]: mismatched types"));
         assert!(summary.contains("lines between"));
+    }
+
+    // what this catches: tab-indented code read as deeper than it is, so a method's signature was
+    // dropped and the outline fell to the pointer (Cormac on #5422).
+    #[test]
+    fn tab_indented_declarations_are_kept() {
+        let body = "\t\tlet x = 1;\n".repeat(60);
+        let source = format!("impl A {{\n\tfn f(&self) {{\n{body}\t}}\n}}\n");
+        let Some(outline) = summarize(&numbered(&source), Shape::Code(&split)) else { panic!("a long read has an outline") };
+        assert!(outline.contains("     2 | \tfn f(&self) {"), "{outline}");
     }
 
     // what this catches: a level offered where it saves nothing (it would cost the view a version).
