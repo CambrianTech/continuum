@@ -57,8 +57,9 @@ pub(super) fn refuse_unasked(moves: &[SubmoduleMove], title: &str, body: Option<
     if unasked.is_empty() {
         return None;
     }
-    let short = |c: &Option<String>| c.as_deref().map_or("none".to_string(), |c| c.chars().take(10).collect());
-    let listed: Vec<String> = unasked.iter().map(|m| format!("{} ({} -> {})", m.path, short(&m.from), short(&m.to))).collect();
+    // Whole commit ids: an id is an identity, never cut short.
+    let commit = |c: &Option<String>| c.as_deref().map_or("none", |c| c).to_string();
+    let listed: Vec<String> = unasked.iter().map(|m| format!("{} ({} -> {})", m.path, commit(&m.from), commit(&m.to))).collect();
     let restore: Vec<String> = unasked.iter().map(|m| format!("git submodule update {}", m.path)).collect();
     Some(format!(
         "submission refused: your checkout moves submodule {}, which this card does not name. \
@@ -94,7 +95,10 @@ diff --git a/core/vendor/llama.cpp b/core/vendor/llama.cpp\nindex 4a79fed98b..76
             }]
         );
         let refusal = refuse_unasked(&moves, "#3940 legacycore is decided by parsing", None).unwrap_or_default();
-        assert!(refusal.contains("core/vendor/llama.cpp (4a79fed98b -> 76dfd6482e)"), "{refusal}");
+        assert!(
+            refusal.contains("core/vendor/llama.cpp (4a79fed98b95576a3e5965c7fcd421637c88a6ca -> 76dfd6482e608eba4906d82d2cef4eda1b1181af)"),
+            "{refusal}"
+        );
         assert!(refusal.contains("git submodule update core/vendor/llama.cpp"), "{refusal}");
         assert_eq!(refuse_unasked(&moves, "Upgrade llama.cpp to b5", None), None, "named by its leaf");
         assert_eq!(refuse_unasked(&moves, "engine", Some("bump core/vendor/llama.cpp")), None, "named by path");
