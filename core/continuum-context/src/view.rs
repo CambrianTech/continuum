@@ -123,14 +123,27 @@ fn levels<T: Block>(items: &[Item<T>], grant: usize) -> Vec<Level> {
             *level = Level::Full;
             continue;
         }
-        match summary.filter(|summary| ceiling != Level::Pointer && *summary <= spare) {
-            Some(summary) => {
-                spare -= summary;
-                *level = Level::Summary;
-                ceiling = Level::Summary;
+        if ceiling == Level::Summary || ceiling == Level::Full {
+            match summary {
+                Some(summary) if summary <= spare => {
+                    spare -= summary;
+                    *level = Level::Summary;
+                    ceiling = Level::Summary;
+                    continue;
+                }
+                // An item with no smaller level is its own summary: under a summary ceiling a
+                // short result stays whole when it fits, and the ceiling holds. Without this a
+                // short result older than one big read fell to its pointer and collapsed every
+                // older item with it (Cormac on #5426).
+                None if ceiling == Level::Summary && full <= spare => {
+                    spare -= full;
+                    *level = Level::Full;
+                    continue;
+                }
+                _ => {}
             }
-            None => ceiling = Level::Pointer,
         }
+        ceiling = Level::Pointer;
     }
     levels
 }

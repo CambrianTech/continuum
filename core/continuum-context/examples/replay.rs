@@ -432,7 +432,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             "--purpose" => purpose = args.next().ok_or("--purpose needs a suffix")?,
             "--keyed-turn" => keyed_turn = true,
             "--trace" => trace = true,
-            "--share" => share = args.next().ok_or("--share needs a divisor")?.parse()?,
+            "--share" => {
+                share = args.next().ok_or("--share needs a divisor")?.parse()?;
+                if share == 0 {
+                    return Err("--share is a divisor of the free room: 1 or more".into());
+                }
+            }
             "--tools" => fixed_tools = Some(std::fs::read_to_string(args.next().ok_or("--tools needs a schemas file")?)?.trim().to_owned()),
             "--chars-per-token" => priced = Some(args.next().ok_or("--chars-per-token needs a number")?.parse()?),
             _ => paths.push(arg),
