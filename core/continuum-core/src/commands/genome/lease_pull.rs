@@ -65,6 +65,8 @@ impl ArtifactSource for TransportSource {
 /// The lease's binding, published once in its job directory: the anchor its directory is found
 /// by, and what a retry of its attempt must match.
 const LEASE_FILE: &str = "lease.json";
+/// The request the examiner reads what a returned gene trained on from (`job_dir::read_job_request`).
+const REQUEST_FILE: &str = "request.json";
 /// The manifest the pull verifies against, pinned once at its start.
 const MANIFEST_FILE: &str = "manifest.json";
 /// The returned adapter's local name: fixed, so no name a peer sends ever reaches a path here.
@@ -115,11 +117,15 @@ pub struct LeasePull {
     /// The genome root job directories live under (`job_dir::genome_root` in production).
     root: Arc<dyn Fn() -> Option<PathBuf> + Send + Sync>,
     pulls: Arc<DashMap<Uuid, PullState>>,
+    /// One recording at a time per attempt: the scan for an existing directory and the publish
+    /// are one step, so two first records under different personas cannot both win (Codex on
+    /// #5419). One core runs per node, so an in-process lock covers every writer.
+    records: DashMap<Uuid, Arc<std::sync::Mutex<()>>>,
 }
 
 impl LeasePull {
     pub fn new(source: Arc<dyn ArtifactSource>, base_digest: BaseDigest, root: Arc<dyn Fn() -> Option<PathBuf> + Send + Sync>) -> Self {
-        Self { source, base_digest, root, pulls: Arc::new(DashMap::new()) }
+        Self { source, base_digest, root, pulls: Arc::new(DashMap::new()), records: DashMap::new() }
     }
 
     /// Production: ranges over `transport`, the served base's digest, this node's genome root.
@@ -135,6 +141,8 @@ impl LeasePull {
     pub fn record_request(&self, peer: Uuid, attempt: Uuid, request: &TrainingJobRequest) -> Result<(), String> {
         use crate::genome::fine_tuning::job_dir::{find_job_dir_under, job_dir_under, publish_job_file};
         let root = (self.root)().ok_or("this node has no genome root to record the lease's request in")?;
+        let lock = Arc::clone(self.records.entry(attempt).or_default().value());
+        let _recording = lock.lock().unwrap_or_else(std::sync::PoisonError::into_inner); // unwrap_or_else: a panicked recorder left files, which the compare below reads
         let dir = job_dir_under(&root, &request.persona_name, &request.trait_kind, attempt);
         if let Some(recorded) = find_job_dir_under(&root, attempt, LEASE_FILE)? {
             if recorded != dir {
@@ -152,8 +160,12 @@ impl LeasePull {
                 return Err(format!("attempt {attempt} was leased to {} with request {}; refused to {peer} with {}", recorded.peer, recorded.request_sha256, binding.request_sha256));
             }
         }
-        // The binding names the request by digest: an existing request.json is that request.
-        publish_job_file(&dir, "request.json", &request_bytes).map(|_| ())
+        // The binding names the request by digest: an existing request.json must be that request.
+        match publish_job_file(&dir, REQUEST_FILE, &request_bytes)? {
+            None => Ok(()),
+            Some(existing) if format!("{:x}", Sha256::digest(&existing)) == binding.request_sha256 => Ok(()),
+            Some(_) => Err(format!("{} holds another request than the one attempt {attempt} is bound to", dir.join(REQUEST_FILE).display())),
+        }
     }
 
     /// What a peer's completed lease is HERE: still pulling (Running), placed and verified (a
@@ -234,6 +246,7 @@ impl Pull {
             .map_err(|e| PullError::Transient(e.to_string()))?
             .map_err(PullError::Final)?
             .ok_or_else(|| PullError::Final(format!("no job directory holds attempt {attempt}'s lease: it was never recorded here")))?;
+        self.check_binding(&dir).await?;
         let pinned = self.pin(&dir).await?;
         if pinned.format != ArtifactFormat::GgufLora || pinned.files.len() != 1 {
             return Err(PullError::Final(format!("a returned adapter is one GGUF LoRA file, not {:?} in {} files", pinned.format, pinned.files.len())));
@@ -266,6 +279,34 @@ impl Pull {
             .map_err(|e| PullError::Transient(e.to_string()))?
             .map_err(|e| PullError::Transient(format!("{}: {e}", placed.display())))?;
         Ok((placed, pinned))
+    }
+
+    /// The directory's lease must be THIS one: bound to this peer and attempt, its request the one
+    /// the binding names by digest, and trained on the base the manifest names. Checked before
+    /// anything is pinned or pulled (Codex on #5419).
+    async fn check_binding(&self, dir: &Path) -> Result<(), PullError> {
+        let (dir_owned, peer, attempt, base) = (dir.to_path_buf(), self.peer, self.attempt, self.artifact.base.model_id.clone());
+        tokio::task::spawn_blocking(move || -> Result<(), String> {
+            let binding: LeaseBinding = std::fs::read(dir_owned.join(LEASE_FILE))
+                .map_err(|e| e.to_string())
+                .and_then(|bytes| serde_json::from_slice(&bytes).map_err(|e| e.to_string())) // disk boundary: the binding recorded before sending
+                .map_err(|e| format!("{}: unreadable lease binding: {e}", dir_owned.display()))?;
+            if binding.peer != peer || binding.attempt != attempt {
+                return Err(format!("attempt {attempt}'s lease is bound to peer {} attempt {}, not {peer}", binding.peer, binding.attempt));
+            }
+            let request_bytes = std::fs::read(dir_owned.join(REQUEST_FILE)).map_err(|e| format!("{}: {e}", dir_owned.join(REQUEST_FILE).display()))?;
+            if format!("{:x}", Sha256::digest(&request_bytes)) != binding.request_sha256 {
+                return Err(format!("{} is not the request attempt {attempt} was bound to", dir_owned.join(REQUEST_FILE).display()));
+            }
+            let request = crate::genome::fine_tuning::job_dir::read_job_request(&dir_owned)?;
+            if request.base_model != base {
+                return Err(format!("the adapter names base {base}, but attempt {attempt} asked for {}", request.base_model));
+            }
+            Ok(())
+        })
+        .await
+        .map_err(|e| PullError::Transient(e.to_string()))?
+        .map_err(PullError::Final)
     }
 
     /// The manifest this attempt's pull verifies against: published once at the first pull, and
@@ -462,5 +503,49 @@ mod tests {
         let restarted = pull_over(peer(data.clone(), true), root.path());
         let changed = manifest("adapter.gguf", b"other bytes");
         assert!(matches!(settled(&restarted, peer_id, attempt, &changed).await, TrainingStatus::Failed { error } if error.contains("pinned")));
+    }
+
+    // what this catches (Codex on #5419, delta): two first records of one attempt under
+    // different personas both winning, a request.json that is not the one the binding names
+    // accepted on a retry, and a pull that imports without checking its lease. Two concurrent
+    // changed-persona records: exactly one wins. A tampered request.json fails the retry and the
+    // pull. A pull for another peer than the binding, or a manifest naming another base than the
+    // request, is final before anything is pinned or pulled.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_lease_records_once_under_a_race_and_a_pull_checks_its_binding() {
+        let root = tempfile::tempdir().expect("root"); // JUSTIFIED: test fixture
+        let (peer_id, attempt) = (Uuid::new_v4(), Uuid::new_v4());
+        let pull = Arc::new(pull_over(peer(b"lora".to_vec(), true), root.path()));
+        let barrier = Arc::new(std::sync::Barrier::new(2));
+        let racers: Vec<_> = ["kimi", "sahar"]
+            .into_iter()
+            .map(|persona| {
+                let (pull, barrier) = (pull.clone(), barrier.clone());
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    pull.record_request(peer_id, attempt, &request(persona, "act")).is_ok()
+                })
+            })
+            .collect();
+        let won: Vec<bool> = racers.into_iter().map(|r| r.join().expect("joined")).collect(); // JUSTIFIED: test fixture
+        assert_eq!(won.iter().filter(|&&w| w).count(), 1, "exactly one first record: {won:?}");
+
+        let dir = crate::genome::fine_tuning::job_dir::find_job_dir_under(root.path(), attempt, LEASE_FILE).expect("found").expect("one"); // JUSTIFIED: test fixture
+        let winner = crate::genome::fine_tuning::job_dir::read_job_request(&dir).expect("read"); // JUSTIFIED: test fixture
+        let wrong_base = LeaseArtifact { base: LeaseArtifactBase { model_id: "llama".into(), ..manifest("adapter.gguf", b"lora").base }, ..manifest("adapter.gguf", b"lora") };
+        assert!(matches!(settled(&pull, peer_id, attempt, &wrong_base).await, TrainingStatus::Failed { error } if error.contains("asked for")));
+
+        let fresh = Uuid::new_v4();
+        let pull = pull_over(peer(b"lora".to_vec(), true), root.path());
+        pull.record_request(peer_id, fresh, &winner).expect("recorded"); // JUSTIFIED: test fixture
+        assert!(matches!(settled(&pull, Uuid::new_v4(), fresh, &manifest("adapter.gguf", b"lora")).await, TrainingStatus::Failed { error } if error.contains("bound to peer")));
+
+        let tampered = Uuid::new_v4();
+        let pull = pull_over(peer(b"lora".to_vec(), true), root.path());
+        pull.record_request(peer_id, tampered, &winner).expect("recorded"); // JUSTIFIED: test fixture
+        let tampered_dir = crate::genome::fine_tuning::job_dir::find_job_dir_under(root.path(), tampered, LEASE_FILE).expect("found").expect("one"); // JUSTIFIED: test fixture
+        std::fs::write(tampered_dir.join(REQUEST_FILE), b"{}").expect("tamper"); // JUSTIFIED: test fixture
+        assert!(pull.record_request(peer_id, tampered, &winner).is_err(), "a request.json the binding does not name fails the retry");
+        assert!(matches!(settled(&pull, peer_id, tampered, &manifest("adapter.gguf", b"lora")).await, TrainingStatus::Failed { error } if error.contains("not the request")));
     }
 }

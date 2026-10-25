@@ -410,7 +410,7 @@ mod tests {
         changed.persona_name = "someone-else".into();
         // Refused here, before anything is sent: the attempt's recorded request is never rewritten.
         let calls = transport.called.lock().unwrap_or_else(std::sync::PoisonError::into_inner).len(); // unwrap_or_else: a test fixture's poisoned log still reads
-        assert!(matches!(adapter.create_bound(changed, &binding).await, Err(FineTuningError::TrainerUnavailable(e)) if e.contains("refused to")));
+        assert!(matches!(adapter.create_bound(changed, &binding).await, Err(FineTuningError::TrainerUnavailable(e)) if e.contains("nothing sent")));
         assert_eq!(transport.called.lock().unwrap_or_else(std::sync::PoisonError::into_inner).len(), calls, "nothing was sent"); // unwrap_or_else: a test fixture's poisoned log still reads
 
         // A new adapter instance (the origin's in-memory state gone), over the same stores.
