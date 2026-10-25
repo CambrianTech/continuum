@@ -316,8 +316,13 @@ impl Confinement {
     }
 
     /// Every other citizen's workspace: the commons she reads and writes like her own.
+    ///
+    /// Only a REAL directory counts, never a symlink, and only when its real path stays inside
+    /// that citizen's own directory: a citizen controls her directory, so a `workspace` she
+    /// re-points at another citizen's private state or a credential root would otherwise be
+    /// granted as a read-write root (independent review of #5383, 2026-10-24).
     pub fn shared_workspaces(&self) -> Vec<PathBuf> {
-        let mut shared: Vec<PathBuf> = self.other_citizens().map(|dir| dir.join(WORKSPACE)).filter(|ws| ws.is_dir()).collect();
+        let mut shared: Vec<PathBuf> = self.other_citizens().filter_map(|dir| shared_workspace_of(&dir)).collect();
         canonical_all(&mut shared);
         shared
     }
@@ -464,14 +469,26 @@ fn mirror_object_dirs(home: &Path) -> Vec<PathBuf> {
         .collect()
 }
 
+/// The one entry of a citizen's directory other citizens may read and write.
+const WORKSPACE: &str = "workspace";
+
+/// `citizen_dir`'s workspace when it is a real directory (not a symlink) whose real path lies
+/// inside `citizen_dir`'s real path; `None` otherwise (absent, a link, or escaping).
+fn shared_workspace_of(citizen_dir: &Path) -> Option<PathBuf> {
+    let ws = citizen_dir.join(WORKSPACE);
+    let meta = std::fs::symlink_metadata(&ws).ok()?;
+    if !meta.is_dir() || meta.file_type().is_symlink() {
+        return None;
+    }
+    let (real, home) = (ws.canonicalize().ok()?, citizen_dir.canonicalize().ok()?);
+    real.starts_with(&home).then_some(real)
+}
+
 /// Replace every granted root that CONTAINS a carve-out by its children minus the
 /// carve-out (down to the carve-out's parent), so an allow-only enforcer grants
 /// `~/.cache/huggingface/hub` and never `~/.cache/huggingface/token`. A root equal to
 /// a carve-out is dropped. Children that appear after this spawn are seen by the next.
 /// Returns the directories it descended through: listable, never granted beneath.
-/// The one entry of a citizen's directory other citizens may read.
-const WORKSPACE: &str = "workspace";
-
 fn carve(roots: &mut Vec<PathBuf>, deny: &[PathBuf]) -> Vec<PathBuf> {
     let mut descended: Vec<PathBuf> = Vec::new();
     let mut out: Vec<PathBuf> = Vec::with_capacity(roots.len());
@@ -645,6 +662,32 @@ mod tests {
     // another citizen's directory; or refusing her own workspace (a card worktree under
     // `~/.airc`, a denied-by-omission dot entry), her citizen directory, the toolchains
     // or the shared caches.
+    // what this catches (independent review of #5383): a citizen re-pointing her own
+    // `workspace` at another citizen's private state (or anywhere else) to have it granted as a
+    // shared read-write root. Only a real directory inside its own citizen's directory counts.
+    #[cfg(unix)]
+    #[test]
+    fn a_symlinked_or_escaping_workspace_is_never_shared() {
+        let (me, honest, linker, victim) = (uuid::Uuid::from_u128(7), uuid::Uuid::from_u128(8), uuid::Uuid::from_u128(9), uuid::Uuid::from_u128(10));
+        let home = home_with(&[
+            &format!(".continuum/citizens/peers/{me}/workspace/"),
+            &format!(".continuum/citizens/peers/{honest}/workspace/src.rs"),
+            &format!(".continuum/citizens/peers/{linker}/notes"),
+            &format!(".continuum/citizens/peers/{victim}/experience.jsonl"),
+        ]);
+        let h = home.path().canonicalize().expect("test: canonical");
+        let peers = h.join(".continuum/citizens/peers");
+        std::os::unix::fs::symlink(peers.join(victim.to_string()), peers.join(linker.to_string()).join("workspace"))
+            .expect("test: the linker re-points her workspace at the victim's directory");
+        let ws = peers.join(me.to_string()).join("workspace");
+        let c = Confinement::for_caller(&h, &h.join(".continuum"), &me.to_string(), &ws);
+        let shared = c.shared_workspaces();
+        assert!(shared.contains(&peers.join(honest.to_string()).join("workspace")), "a real workspace is shared: {shared:?}");
+        assert!(!shared.iter().any(|p| p.starts_with(peers.join(victim.to_string()))), "the victim's private state is never shared: {shared:?}");
+        let list = c.materialize();
+        assert!(!list.permits_read(&peers.join(victim.to_string()).join("experience.jsonl")), "nor readable through the allow list");
+    }
+
     #[test]
     fn a_citizens_allow_list_holds_her_roots_and_nothing_of_the_operators() {
         let me = uuid::Uuid::from_u128(7);
