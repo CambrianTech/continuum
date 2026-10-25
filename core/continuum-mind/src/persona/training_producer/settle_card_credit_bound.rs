@@ -376,7 +376,8 @@ pub async fn settle_staged_row<T: Transport, S: Transport>(
     }
     // The params take the calls she lived; the reservation below snapshots the row as
     // stored, so its digest still matches what a binding recorded.
-    let params = match staged_submission_params(persona_id, persona_name, &with_lived(persona_id, persona_name, row).await, verdict) {
+    let resolved = with_lived(persona_id, persona_name, row).await;
+    let params = match staged_submission_params(persona_id, persona_name, &*resolved, verdict) {
         Ok(params) => params,
         Err(reason) => {
             // SAY IT. A staged credit that can never settle is a citizen's work

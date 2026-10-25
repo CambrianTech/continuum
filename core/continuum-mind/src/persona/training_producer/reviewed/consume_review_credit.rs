@@ -120,7 +120,8 @@ pub(super) async fn consume_review_credit<T: Transport>(
     }
     // The snapshot stays the bound evidence; only the params read back calls a capture
     // completed after staging.
-    let mut params = match staged_submission_params(persona_id, persona_name, &with_lived(persona_id, persona_name, row).await, true) {
+    let resolved = with_lived(persona_id, persona_name, row).await;
+    let mut params = match staged_submission_params(persona_id, persona_name, &*resolved, true) {
         Ok(params) => params,
         Err(reason) => {
             // This path ALREADY named its state (`IneligibleEvidence`), so it was
