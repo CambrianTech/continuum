@@ -13,6 +13,16 @@
 //! cached, only 8,162 fresh tokens, because 11-14 minds shared the GPU; the same act alone is
 //! ~15-20 s. The policy question is how many minds act at once, and whether the mind a person is
 //! working with goes first.
+//!
+//! The answer it gave, with no number to configure (Joel: "not some arbitrary threshold or
+//! you'd have to code literally every model"): PREEMPTIVE PRIORITY, WORK-CONSERVING. The mind a
+//! person works with prefills first; every other mind is admitted and fills what she leaves. On
+//! the M5's probes (15 minds, 2 h): foreground act 39 s vs 199 s all at once, background 167 s vs
+//! 160 s, 144 acts/h, the most of any policy. Measured and rejected, so nobody rebuilds them:
+//! caps of 2-4 (foreground 226-237 s: a cap without priority does not help her), a background
+//! grant grown while it did not measurably stretch her (foreground 26 s, 119 acts/h), and one
+//! climbed on measured throughput (25 s, 109 acts/h): throughput is flat once anything runs in
+//! her gaps, so there is no gradient to settle on.
 
 use super::service_rate::{ModelRates, Workload};
 
@@ -34,12 +44,6 @@ pub enum Policy {
     /// Mind `mind` (the one a person works with) is always admitted and prefills first;
     /// at most `background` other acts run beside her.
     Foreground { mind: usize, background: usize },
-    /// Foreground first, and the background grant SETTLES from measurement instead of being
-    /// set: after each of her acts it grows by one while her act stayed inside `budget_secs`
-    /// (the plan's act gate) and halves when it overran. Additive increase, multiplicative
-    /// decrease: the grant converges on the most background work the engine absorbs without
-    /// her feeling it, and moves again when the load, the model or the hardware does.
-    Settle { mind: usize, budget_secs: u32 },
 }
 
 /// What a replay measured.
@@ -49,8 +53,6 @@ pub struct Replayed {
     pub foreground: Vec<f64>,
     /// Latency of every other mind's acts, seconds.
     pub background: Vec<f64>,
-    /// The background grant after each foreground act, under [`Policy::Settle`].
-    pub grants: Vec<usize>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -71,11 +73,9 @@ pub fn replay(minds: &[MindLoop], rates: &ModelRates, policy: Policy, horizon_se
     let prefill_tps = rates.prefill_tps.filter(|r| r.is_finite() && *r > 0.0)?;
     rates.decode_at(1)?;
     let foreground = match policy {
-        Policy::Foreground { mind, .. } | Policy::Settle { mind, .. } => mind,
+        Policy::Foreground { mind, .. } => mind,
         _ => 0,
     };
-    // The settling grant starts with nothing beside her and earns its way up.
-    let mut grant = 0usize;
     let mut phase: Vec<Phase> = minds.iter().map(|_| Phase::Waiting { since: 0.0 }).collect();
     let mut next_act: Vec<usize> = vec![0; minds.len()];
     let mut out = Replayed::default();
@@ -100,10 +100,6 @@ pub fn replay(minds: &[MindLoop], rates: &ModelRates, policy: Policy, horizon_se
                     let others = phase.iter().enumerate().filter(|(j, p)| *j != mind && matches!(p, Phase::Prefill { .. } | Phase::Decode { .. })).count();
                     i == mind || others < background
                 }
-                Policy::Settle { mind, .. } => {
-                    let others = phase.iter().enumerate().filter(|(j, p)| *j != mind && matches!(p, Phase::Prefill { .. } | Phase::Decode { .. })).count();
-                    i == mind || others < grant
-                }
             };
             if admit {
                 phase[i] = Phase::Prefill { left: minds[i].acts[next_act[i] % minds[i].acts.len()].prefill_tokens, since };
@@ -118,7 +114,7 @@ pub fn replay(minds: &[MindLoop], rates: &ModelRates, policy: Policy, horizon_se
             (true, false) => (0.0, STEP_SECS),
             (true, true) => (0.0, 0.0),
         };
-        let first = matches!(policy, Policy::Foreground { .. } | Policy::Settle { .. }) && prefilling.contains(&foreground);
+        let first = matches!(policy, Policy::Foreground { .. }) && prefilling.contains(&foreground);
         for &i in &prefilling {
             let share = if first {
                 if i == foreground { 1.0 } else { 0.0 }
@@ -144,10 +140,7 @@ pub fn replay(minds: &[MindLoop], rates: &ModelRates, policy: Policy, horizon_se
                     let latency = now + STEP_SECS - since;
                     if i == foreground {
                         out.foreground.push(latency);
-                        if let Policy::Settle { budget_secs, .. } = policy {
-                            grant = if latency <= f64::from(budget_secs) { grant + 1 } else { grant / 2 };
-                            out.grants.push(grant);
-                        }
+
                     } else {
                         out.background.push(latency);
                     }
@@ -191,29 +184,18 @@ mod tests {
         assert!((median(r.foreground.clone()) - 14.0).abs() < 0.5, "{:?}", r.foreground);
     }
 
-    // what this catches: the M5's shape. Twelve minds at once stretch every act several-fold, and
-    // putting the mind a person works with first brings hers back near her lone speed while the
-    // background still advances.
+    // what this catches: the M5's shape and its answer. Twelve minds at once stretch every act
+    // several-fold; preemptive priority with every other mind admitted (work-conserving, no cap)
+    // brings hers back near her lone speed and the node completes no fewer acts.
     #[test]
-    fn many_minds_stretch_every_act_and_foreground_restores_hers() {
+    fn preemptive_priority_restores_her_speed_without_losing_the_nodes_acts() {
         let minds: Vec<MindLoop> = (0..12).map(|_| mind(50)).collect();
         let all = replay(&minds, &rates(), Policy::AllAtOnce, 1800.0).expect("measured rates");
-        let fg = replay(&minds, &rates(), Policy::Foreground { mind: 0, background: 3 }, 1800.0).expect("measured rates");
+        let fg = replay(&minds, &rates(), Policy::Foreground { mind: 0, background: usize::MAX }, 1800.0).expect("measured rates");
         assert!(median(all.foreground.clone()) > 3.0 * 14.0, "all at once: {}", median(all.foreground));
         assert!(median(fg.foreground.clone()) < 2.0 * 14.0, "foreground: {}", median(fg.foreground));
-        assert!(!fg.background.is_empty(), "the background still acts");
-    }
-
-    // what this catches: a grant that does not settle. Under a budget the foreground meets alone,
-    // the grant climbs until background work pushes her past it, then backs off, and her median
-    // act stays inside the budget while the background still advances.
-    #[test]
-    fn the_background_grant_settles_under_her_budget() {
-        let minds: Vec<MindLoop> = (0..12).map(|_| mind(200)).collect();
-        let r = replay(&minds, &rates(), Policy::Settle { mind: 0, budget_secs: 30 }, 3600.0).expect("measured rates");
-        assert!(median(r.foreground.clone()) <= 30.0, "foreground {}", median(r.foreground.clone()));
-        assert!(r.grants.iter().any(|g| *g > 0), "the grant grew: {:?}", r.grants);
-        assert!(!r.background.is_empty());
+        let done = |r: &Replayed| r.foreground.len() + r.background.len();
+        assert!(done(&fg) >= done(&all), "work-conserving: {} vs {}", done(&fg), done(&all));
     }
 
     // what this catches: a dyno run on a guessed rate.

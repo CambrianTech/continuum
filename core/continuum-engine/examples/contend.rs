@@ -72,15 +72,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         ("foreground + 3", Policy::Foreground { mind: 0, background: 3 }),
         ("foreground + 2", Policy::Foreground { mind: 0, background: 2 }),
         ("foreground + 1", Policy::Foreground { mind: 0, background: 1 }),
-        ("settle (60 s)", Policy::Settle { mind: 0, budget_secs: 60 }),
-        ("settle (30 s)", Policy::Settle { mind: 0, budget_secs: 30 }),
+        ("foreground + all", Policy::Foreground { mind: 0, background: usize::MAX }),
     ];
     println!("{:16} {:>14} {:>14} {:>14}", "policy", "fg act med s", "bg act med s", "acts/hour");
     for (name, policy) in policies {
         let Some(r) = replay(&loops, &rates, policy, horizon) else { return Err("unmeasured rate".into()) };
         let total = (r.foreground.len() + r.background.len()) as f64 / hours;
-        let settled = if r.grants.is_empty() { String::new() } else { format!("   grant settles near {} (median), range {}-{}", median(r.grants.iter().map(|g| *g as f64).collect()), r.grants.iter().min().unwrap_or(&0), r.grants.iter().max().unwrap_or(&0)) }; // unwrap_or: grants checked non-empty
-        println!("{:16} {:>14.0} {:>14.0} {:>14.0}{settled}", name, median(r.foreground.clone()), median(r.background.clone()), total);
+        println!("{:16} {:>14.0} {:>14.0} {:>14.0}", name, median(r.foreground.clone()), median(r.background.clone()), total);
     }
     Ok(())
 }
