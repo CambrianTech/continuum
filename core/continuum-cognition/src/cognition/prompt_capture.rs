@@ -890,14 +890,21 @@ mod tests {
         }
         drop(first);
         drop(second);
+        // A new owner after the last drop (a core restart) continues the whole segment: her
+        // history survives the restart instead of rolling to `.prev` (prompt_capture_store
+        // `resume`), and every row stays readable.
         let reopened =
             JsonlPromptCaptureSink::open(dir.path(), persona).expect("new owner after last drop");
         assert_eq!(
             std::fs::read_dir(dir.path())
-                .expect("rotated files")
+                .expect("retained files")
                 .count(),
-            4
+            2,
+            "a restart continues the segment"
         );
+        let after = store::page(dir.path(), persona, None, false, 10).expect("history across the restart");
+        assert_eq!(after.entries.len(), 4);
+        assert!(after.issues.is_empty(), "{:?}", after.issues);
         drop(reopened);
     }
 
