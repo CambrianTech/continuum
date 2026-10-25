@@ -245,32 +245,21 @@ pub(super) async fn run_turn_cycle(
                 Some(turn_room.to_string()),
                 Some(ctx.identity.peer_id.to_string()),
             );
-            // A citizen holding a card works at that repo — in a ROOM turn too: the
-            // turn is bound to her card claim's hands, admitted here.
-            let held_card = crate::persona::card_hands::root_at_held_card(
-                &cycle,
-                ctx.identity.peer_id.as_uuid(),
-                conversation,
-            )
-            .await;
-            let mut credit_capture =
-                crate::persona::training_producer::TurnCreditCapture::for_turn(
+            let turn_act_count;
+            let (step, turn_metrics, settled_receipts, turn_credit) = {
+                // A citizen holding a card works at that repo, in a ROOM turn too: the turn
+                // is bound to her card claim's hands (card fc9e9fd7), its credit captured on
+                // her act, and its work synced to the card's branch, by the one owner her
+                // own-time turn uses as well (card 959f3d5c).
+                let (outcome, credit) = crate::persona::card_hands::drive_in_held_card(
+                    &cycle,
                     ctx.identity.peer_id.as_uuid(),
                     &ctx.identity.agent_name,
                     &msg.render_content(),
-                    held_card.credit.as_ref(),
-                );
-            let turn_act_count;
-            let (step, turn_metrics, settled_receipts) = {
-                let outcome = crate::cognition::act_observe::drive_to_settle_with_credit(
-                    &cycle,
-                    // The turn acts in the hands it was admitted to: her card claim's, or
-                    // her default ones (card fc9e9fd7).
-                    workspace_burst.in_hands(held_card.turn_hands()),
-                    LIVE_MAX_ACTS,
+                    workspace_burst,
                     framing,
+                    LIVE_MAX_ACTS,
                     conversation,
-                    credit_capture.as_mut().map(|c| c as &mut dyn crate::cognition::act_observe::TurnCredit),
                 )
                 .await;
                 // The lived-turn experience write (#319) is NOT here: it lives inside
@@ -280,17 +269,13 @@ pub(super) async fn run_turn_cycle(
                 // and got no record, so nothing on disk ever described a lived turn.
                 // The driver stays a driver: no learning policy at any call site.
                 turn_act_count = outcome.acts;
-                crate::cognition::act_observe::SettleStep::from_settled(outcome)
+                let (step, metrics, receipts) = crate::cognition::act_observe::SettleStep::from_settled(outcome);
+                (step, metrics, receipts, credit)
             };
-            // Captured HERE, where both facts still exist. The credit is read off
-            // her hands — NOT back out of `acting_card_of`, which is a mutable
-            // persona-global that a later focus rebind would re-attribute to the
-            // wrong card (card 0d51573a).
-            // From the CARD, not from her hands: a missing checkout or a failed
-            // rooting leaves `hands` None while the card stays known, and reading
-            // credit off the hands would turn that workspace failure into "ordinary
-            // conversation" and submit the turn immediately (Astra/S6 on 799b8fe9).
-            let turn_credit = held_card.credit.clone();
+            // The credit is the turn's held CARD, captured with it, NOT read back out of
+            // `acting_card_of`, a mutable persona-global that a later focus rebind would
+            // re-attribute to the wrong card (card 0d51573a); and not off her hands, which a
+            // failed rooting leaves None while the card stays known (Astra/S6 on 799b8fe9).
             let turn_generation_receipts = settled_receipts;
             continuum_base::probe!(
                 class = "training.hook.directed_turn",
@@ -302,11 +287,6 @@ pub(super) async fn run_turn_cycle(
             // Turn done: drop the cycle's sink so the forwarder's channel closes,
             // then join it (all `tok_tx` clones are gone once the turn's Workspaces
             // dropped inside `drive_to_settle`).
-            // The turn's work is synced to its card's branch; her hands stay where they
-            // are, because nothing moved them (card fc9e9fd7).
-            if let Some(hands) = &held_card.hands {
-                crate::persona::card_hands::end_card_turn(hands, turn_act_count).await;
-            }
             cycle.set_token_sink(None);
             let _ = forwarder.await;
             phase_timings.respond_ms = respond_started.elapsed().as_millis() as u64;
