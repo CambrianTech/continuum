@@ -84,30 +84,21 @@ pub(crate) async fn drive_initiative_turn(
     // HER OWN TIME CAN BE CARD WORK, and card work is credit-bearing (card 959f3d5c). Driven
     // without a credit capture, Sahar's own-time submit (2026-10-25, act 0 of an initiative
     // turn) was never staged: its issuing generation was never indexed, so its review held
-    // forever. Bound to her held card's hands and credit exactly as a room turn is; with no
-    // card held this is her default hands and no capture, as before. Bookkeeping on her own
-    // act: it changes neither her framing nor what she is told.
-    let held_card = crate::persona::card_hands::root_at_held_card(cycle, ctx.identity.peer_id.as_uuid(), &*conversation).await;
-    let mut credit_capture = crate::persona::training_producer::TurnCreditCapture::for_turn(
+    // forever. Her held card's turn, exactly as a room turn drives it; with no card held this
+    // is her default hands and no capture, as before. Bookkeeping on her own act: it changes
+    // neither her framing nor what she is told.
+    let (settled, _) = crate::persona::card_hands::drive_in_held_card(
+        cycle,
         ctx.identity.peer_id.as_uuid(),
         &ctx.identity.agent_name,
         INITIATIVE_MOMENT,
-        held_card.credit.as_ref(),
-    );
-    let settled = crate::cognition::act_observe::drive_to_settle_with_credit(
-        cycle,
-        burst.in_hands(held_card.turn_hands()),
-        LIVE_MAX_ACTS,
+        burst,
         crate::cognition::workspace::TurnFraming::initiative(),
+        LIVE_MAX_ACTS,
         conversation,
-        credit_capture.as_mut().map(|c| c as &mut dyn crate::cognition::act_observe::TurnCredit),
     )
     .await;
     let acts = settled.acts;
-    // Her work is synced to its card's branch, as at the end of a room turn.
-    if let Some(hands) = &held_card.hands {
-        crate::persona::card_hands::end_card_turn(hands, acts).await;
-    }
     let (step, _, _) = SettleStep::from_settled(settled);
     let capacity = match &step {
         SettleStep::CapacityRefused { error, .. } => Some(error.clone()),
