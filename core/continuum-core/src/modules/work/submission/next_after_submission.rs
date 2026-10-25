@@ -487,14 +487,20 @@ impl ActionCommand for WorkReview {
             let hint = card_elsewhere(airc, &p.review_card_id, room.channel.as_uuid()).await;
             return Err(with_hint(absent, hint));
         };
+        // The review card's own parent decides what is reviewed: there is no out-of-band
+        // review (airc's candidate_for_review refuses a card that reviews nothing), so a
+        // refusal never offers one (the 1->2 loop Benchy and Atlas hit on the M5, 2026-10-24).
+        let reviews = review_card.reviews.ok_or_else(|| {
+            CommandError::Invalid(format!(
+                "card {} (\"{}\") reviews no card, so it is not a review card. A review is filed on the \
+                 review card a submission opened (titled \"review: ...\"); find it with work/list",
+                airc_core::shown_id::shown_form(review_card.card_id.as_uuid()),
+                review_card.title
+            ))
+        })?;
         let card_id = match p.card_id.as_deref() {
             Some(c) => WorkCardId::from_uuid(resolve_shown(c, &shown, "card")?),
-            None => review_card.reviews.ok_or_else(|| {
-                CommandError::Invalid(
-                    "the card you named is not a review card (it reviews nothing) — pass card_id if you are reviewing out of band"
-                        .to_string(),
-                )
-            })?,
+            None => reviews,
         };
         let review_claim_id = match p.review_claim_id {
             Some(c) => ClaimId::from_uuid(c),
@@ -512,11 +518,44 @@ impl ActionCommand for WorkReview {
                 }
             },
         };
-        if review_card.reviews != Some(card_id) {
-            return Err(CommandError::Invalid("review card does not review the named parent".into()));
+        if reviews != card_id {
+            // Name both ends, so the way forward is in the refusal (Benchy and Atlas on the M5,
+            // 2026-10-24: ~10 acts each following refusals that never named the parent).
+            return Err(CommandError::Invalid(format!(
+                "review card {} reviews card {}, not card {} you named; omit card_id to review what it reviews",
+                airc_core::shown_id::shown_form(review_card.card_id.as_uuid()),
+                airc_core::shown_id::shown_form(reviews.as_uuid()),
+                airc_core::shown_id::shown_form(card_id.as_uuid())
+            )));
         }
         let submission = board.candidate_for_review(review_card.card_id, p.submission_id.map(airc_work::SubmissionId::from_uuid))
-            .map_err(|e| CommandError::Invalid(format!("review candidate: {e}")))?;
+            .map_err(|e| {
+                // The parent and what it holds: a review card whose parent is itself a review
+                // card (its submissions sit one card further up) reads as "no submissions"
+                // unless the refusal says which card it looked at.
+                let parent = board.card(card_id);
+                let on_card: Vec<(Uuid, Uuid)> = parent
+                    .iter()
+                    .flat_map(|c| c.submissions.iter())
+                    .map(|s| (s.submission_id.as_uuid(), s.publisher.as_uuid()))
+                    .collect();
+                let nested = match parent.and_then(|c| c.reviews) {
+                    Some(up) => format!("; card {} is itself a review card, reviewing card {}", airc_core::shown_id::shown_form(card_id.as_uuid()), airc_core::shown_id::shown_form(up.as_uuid())),
+                    None => String::new(),
+                };
+                CommandError::Invalid(format!(
+                    "review candidate: {e} (review card {} reviews card {}{}); {}",
+                    airc_core::shown_id::shown_form(review_card.card_id.as_uuid()),
+                    airc_core::shown_id::shown_form(card_id.as_uuid()),
+                    nested,
+                    // A reviewer is never told to publish: the card simply has nothing yet.
+                    if on_card.is_empty() {
+                        format!("card {} has no submission yet, so there is nothing to review", airc_core::shown_id::shown_form(card_id.as_uuid()))
+                    } else {
+                        submissions_on_card(&on_card)
+                    }
+                ))
+            })?;
         // SELF-REVIEW IS THE ROOM'S CALL (card fa4aaaaa). The author reviewing her own
         // submission is admitted only where the room's policy says `self`; a room that
         // declares no policy keeps today's behaviour. Refused up front, by name, rather
