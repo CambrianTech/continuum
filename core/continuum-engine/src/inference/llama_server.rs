@@ -61,7 +61,8 @@ pub(crate) use reconcile::{grow_refused_by_memory_gate, lane_grow_would_narrow_t
 
 mod smoke;
 use smoke::{
-    smoke_attempt, smoke_verdict, SmokeVerdict, QUICK_SMOKE_BUDGET, THINKING_SMOKE_BUDGET,
+    scratch_slot_for, smoke_attempt, smoke_seat, smoke_verdict, SmokeSeat, SmokeVerdict,
+    QUICK_SMOKE_BUDGET, THINKING_SMOKE_BUDGET,
 };
 mod target;
 pub use target::{
