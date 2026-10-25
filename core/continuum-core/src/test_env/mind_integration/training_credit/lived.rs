@@ -121,7 +121,8 @@ async fn consume_own_review(
 }
 
 // what this catches: the reviewed path passing a bound snapshot whose capture is incomplete
-// as flat text, or failing to complete one whose capture landed after she staged.
+// as flat text, failing to complete one whose capture landed after she staged, or
+// dispatching it again after a restart on either path.
 #[tokio::test]
 pub(super) async fn a_reviewed_snapshot_without_its_lived_calls_is_ineligible_until_they_land() {
     use reviewed::ReviewedCreditState as State;
@@ -153,6 +154,19 @@ pub(super) async fn a_reviewed_snapshot_without_its_lived_calls_is_ineligible_un
     );
     let conn = settlement_connection(late.executor.clone(), late.persona, submit, None);
     assert_eq!(consume_own_review(&late, &conn).await, State::Accepted, "the landed capture completes the snapshot's params");
-    let replay = settlement_connection(late.executor.clone(), late.persona, never_submit(), None);
+    // Restart: a new runtime over the same store. The recovered calls fed only the params, so
+    // the stored row still holds no lived copy; the accepted transfer is what marks it done,
+    // and neither path dispatches it again.
+    let reopened = data_runtime();
+    let reopened_data = conn_as(reopened.clone(), late.persona);
+    let stored = stored_credit_rows(&reopened_data, late.name).await;
+    let row = stored.iter().find(|r| r.id == late.selected.id).expect("the reviewed row is stored"); // JUSTIFIED: test fixture
+    assert!(row.lived.is_none(), "the stored row was never rewritten");
+    assert!(reviewed::transfer_accepted(&reopened_data, late.name, row.id).await.unwrap()); // JUSTIFIED: test asserts the Ok arm
+    let replay = settlement_connection(reopened.clone(), late.persona, never_submit(), None);
     assert_eq!(consume_own_review(&late, &replay).await, State::Accepted, "and it transfers once");
+    assert!(
+        !settle_staged_row(&replay, &substrate_conn(&reopened), late.persona, late.name, row, true).await.unwrap(), // JUSTIFIED: test asserts the Ok arm
+        "the ordinary path meets the same accepted transfer"
+    );
 }
