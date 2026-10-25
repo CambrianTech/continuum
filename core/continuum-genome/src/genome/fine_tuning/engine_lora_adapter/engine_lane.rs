@@ -145,6 +145,7 @@ mod tests {
             lanes: 2,
             page_dir: None,
             engine_bin: None,
+            weights: None,
             started_s: 1_700_000_000,
             placement: None,
         }

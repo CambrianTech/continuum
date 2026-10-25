@@ -44,6 +44,7 @@ pub(crate) mod attempt_ledger;
 pub mod grid_peer_adapter;
 pub mod job_attempt_reconcile;
 pub mod lease;
+pub mod lease_artifact;
 pub mod job_cancel;
 pub mod job_create;
 pub mod job_pause;
@@ -217,6 +218,21 @@ pub(crate) mod test_support {
             schedule: None,
             local_artifact_dir: None,
         }
+    }
+
+    /// A base GGUF with one tensor filled with `weight`: the same header for every `weight`
+    /// (architecture, tokenizer, shapes), other weights, so a fine-tuned sibling is one call.
+    pub(crate) fn write_base_gguf(path: &std::path::Path, weight: f32) {
+        use candle_core::quantized::{gguf_file, GgmlDType, QTensor};
+        let md = [
+            ("general.architecture", gguf_file::Value::String("qwen2".into())),
+            ("tokenizer.ggml.tokens", gguf_file::Value::Array(vec![gguf_file::Value::String("a".into())])),
+        ];
+        let refs: Vec<(&str, &gguf_file::Value)> = md.iter().map(|(k, v)| (*k, v)).collect();
+        let weights = candle_core::Tensor::full(weight, (4, 32), &candle_core::Device::Cpu).expect("tensor"); // JUSTIFIED: test fixture
+        let q = QTensor::quantize(&weights, GgmlDType::F32).expect("quantize"); // JUSTIFIED: test fixture
+        let mut file = std::fs::File::create(path).expect("create"); // JUSTIFIED: test fixture
+        gguf_file::write(&mut file, &refs, &[("blk.0.attn_q.weight", &q)]).expect("write"); // JUSTIFIED: test fixture
     }
 
     /// A registry seeded with one stub adapter per id.

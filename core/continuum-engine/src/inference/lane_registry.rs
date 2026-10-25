@@ -112,6 +112,12 @@ pub struct LaneRecord {
     /// configuration (Codex on #5264). `None` for lanes recorded before this field existed.
     #[serde(default)]
     pub placement: Option<crate::inference::llama_server::LanePlacement>,
+    /// The weights file the engine was launched on, stamped before spawn: what an adapter
+    /// trained in this lane names as its base (card 3fd98325). `None` for lanes recorded before
+    /// this field existed, or whose file could not be stamped; their adapters stay where they
+    /// were trained.
+    #[serde(default)]
+    pub weights: Option<crate::inference::weights_stamp::WeightsStamp>,
 }
 
 impl LaneRecord {

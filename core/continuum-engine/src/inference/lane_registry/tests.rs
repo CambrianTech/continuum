@@ -19,6 +19,7 @@ fn a_malformed_record_fails_the_checked_census_and_only_that_one() {
         lanes: 1,
         page_dir: None,
         engine_bin: None,
+        weights: None,
         started_s: 0,
         placement: None,
     };
@@ -77,6 +78,7 @@ fn rec(pid: u32, port: u16, role: LaneRole) -> LaneRecord {
         lanes: 4,
         page_dir: None,
         engine_bin: None,
+        weights: None,
         started_s: 0,
         placement: None,
     }
@@ -455,6 +457,7 @@ mod census_for_admission {
                     lanes: 1,
                     page_dir: None,
                     engine_bin: None,
+                    weights: None,
                     started_s: 0,
                     placement: None,
                 },
@@ -500,6 +503,7 @@ mod census_for_admission {
                 lanes: 1,
                 page_dir: None,
                 engine_bin: None,
+                weights: None,
                 started_s: 0,
                 placement: None,
             },
