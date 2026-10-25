@@ -268,7 +268,7 @@ no faculty re-implements them:
 |---|---|---|
 | prompt messages built outside the view and the fresh tail's one renderer (`ChatMessage::text`/`tool_results` in `llm_deliberation_faculty/prompt`) | 13 | the tail's single renderer only |
 | collapse outside the view (`collapse_over` / `collapse_results_over_cap` callers) | 4 | 0: working memory bounds RAM by handle, never what she sees |
-| hand churn labels (`churn_of` callers) | 6 | 0: `Motion` orders every start |
+| hand churn labels (`churn_of` callers; production lines, ratchet `hand_churn_labels`) | 3 | 0: `Motion` orders every start |
 | positron `ViewState` kinds that are not context `Source`s | 13 | 0: one adapter, items with levels and expand handles |
 
 **How to add a layer (the whole recipe; everything else is free):**
