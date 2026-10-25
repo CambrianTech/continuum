@@ -20,8 +20,7 @@ use uuid::Uuid;
 /// One provisional-label source for every reader (the chat projection, the presence
 /// emitter, the persona's grounding roster): compression principle.
 pub fn provisional_sender_name(sender_id: Uuid) -> String {
-    let simple = sender_id.simple().to_string();
-    format!("peer-{}", &simple[..8]) // head-cut-ok: the board's 8-char id rendering of a label, never prompt content cut short
+    format!("peer-{}", airc_core::shown_id::shown_form(sender_id))
 }
 
 /// airc's `AgentAvailabilityState` → its stable neutral wire label — airc's

@@ -714,8 +714,7 @@ mod tests {
             2,
             "the no-human fact + the unnamed peer"
         );
-        let simple = other.as_uuid().simple().to_string();
-        let expected_label = format!("peer-{}", &simple[..8]);
+        let expected_label = format!("peer-{}", airc_core::shown_id::shown_form(other.as_uuid()));
         assert_eq!(
             delivery.items[1].content,
             format!("{expected_label} [codex]"),

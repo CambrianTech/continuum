@@ -139,8 +139,8 @@ fn ledgers_for_context(posts: Vec<WallPostPublished>, labels: Option<&CardLabels
             let Ok(ledger) = serde_json::from_str::<crate::experience::ledger::CardLedger>(&post.body) else {
                 return Some(post); // an unreadable ledger renders as it is, unlabelled
             };
-            let short = ledger.card_id.simple().to_string();
-            let short = &short[..8];
+            let short = airc_core::shown_id::shown_form(ledger.card_id);
+            let short = short.as_str();
             let head = match labels.get(&ledger.card_id) {
                 Some((_, state)) if crate::cognition::card_facts::is_concluded(state) => return None,
                 Some((title, state)) => {
