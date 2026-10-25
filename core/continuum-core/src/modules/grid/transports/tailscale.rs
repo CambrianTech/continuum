@@ -385,13 +385,12 @@ async fn query_tailscale_cli() -> Result<TailscaleStatus, TransportError> {
 
 /// Read cached `tailscale-status.json` written by host.
 async fn query_tailscale_file() -> Result<TailscaleStatus, TransportError> {
-    // Check standard locations
-    let paths = [
-        std::path::PathBuf::from("/root/.continuum/grid/tailscale-status.json"),
-        dirs::home_dir()
-            .unwrap_or_default()
-            .join(".continuum/grid/tailscale-status.json"),
-    ];
+    // The status file under the one continuum home (in a container whose home is /root, that is
+    // /root/.continuum): never a relative path or a hard-coded tree ahead of the configured
+    // home (Codex on #5421).
+    let paths = [crate::paths::continuum_home()
+        .map_err(|e| TransportError::NotReady(format!("no continuum home for the tailscale status file: {e}")))?
+        .join("grid/tailscale-status.json")];
 
     for path in &paths {
         if let Ok(bytes) = tokio::fs::read(path).await {

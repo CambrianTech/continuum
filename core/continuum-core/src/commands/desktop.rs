@@ -70,10 +70,9 @@ struct DesktopSession {
 }
 
 fn session_path() -> Result<PathBuf, CommandError> {
-    let home = dirs::home_dir().ok_or_else(|| {
-        CommandError::Internal("no home directory for the desktop session marker".into())
-    })?;
-    Ok(home.join(".continuum").join("desktop").join("session.json"))
+    let home = crate::paths::continuum_home()
+        .map_err(|e| CommandError::Internal(format!("no continuum home for the desktop session marker: {e}")))?;
+    Ok(home.join("desktop").join("session.json"))
 }
 
 /// Resolve the URL: explicit param → `CONTINUUM_DESKTOP_URL` → built-in default.

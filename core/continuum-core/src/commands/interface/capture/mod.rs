@@ -91,13 +91,9 @@ pub struct CaptureResult {
 /// path can register it with the `PressureBroker` for eviction (single source for
 /// the path). Fails loud with no home dir [[fallbacks-are-illegal-fail-loud]].
 pub fn capture_root() -> std::io::Result<PathBuf> {
-    let home = dirs::home_dir().ok_or_else(|| {
-        std::io::Error::new(
-            std::io::ErrorKind::NotFound,
-            "no home directory — cannot store captures",
-        )
-    })?;
-    Ok(home.join(".continuum").join("captures"))
+    let home = crate::paths::continuum_home()
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::NotFound, format!("no continuum home, cannot store captures: {e}")))?;
+    Ok(home.join("captures"))
 }
 
 /// Capture-dir scope for a caller: a persona's `peer_id`, or `"local"` for the

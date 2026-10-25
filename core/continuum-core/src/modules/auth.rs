@@ -814,10 +814,7 @@ fn delete_tokens_from_config(provider_id: &str) -> Result<(), String> {
     .into_iter()
     .collect();
 
-    let config_path = dirs::home_dir()
-        .ok_or("Cannot determine home directory")?
-        .join(".continuum")
-        .join("config.env");
+    let config_path = crate::paths::continuum_home()?.join("config.env");
 
     if !config_path.exists() {
         return Ok(());
@@ -846,10 +843,7 @@ fn delete_tokens_from_config(provider_id: &str) -> Result<(), String> {
 /// Update or append `key=value` pairs in `~/.continuum/config.env`.
 /// Existing lines with matching keys are replaced in-place; new keys are appended.
 fn write_config_env_keys(updates: Vec<(String, String)>) -> Result<(), String> {
-    let config_path = dirs::home_dir()
-        .ok_or("Cannot determine home directory")?
-        .join(".continuum")
-        .join("config.env");
+    let config_path = crate::paths::continuum_home()?.join("config.env");
 
     if let Some(parent) = config_path.parent() {
         fs::create_dir_all(parent)

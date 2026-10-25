@@ -38,9 +38,8 @@ impl SentinelModule {
         Self {
             sentinels: Arc::new(DashMap::new()),
             logs_base_dir: RwLock::new({
-                let home = dirs::home_dir().expect("Failed to resolve home directory"); // JUSTIFIED: module constructed once at boot; no HOME means no log storage, boot-fatal by design
-                home.join(".continuum")
-                    .join("jtag")
+                let home = crate::paths::continuum_home().expect("Failed to resolve home directory"); // JUSTIFIED: module constructed once at boot; no HOME means no log storage, boot-fatal by design
+                home.join("jtag")
                     .join("logs")
                     .join("system")
                     .join("sentinels")

@@ -18,8 +18,8 @@ fn checkpoints_dir() -> PathBuf {
     if let Some(override_dir) = std::env::var_os("CONTINUUM_CHECKPOINT_DIR") {
         return PathBuf::from(override_dir);
     }
-    let home = dirs::home_dir().expect("Failed to resolve home directory");
-    home.join(".continuum").join("sentinel").join("checkpoints")
+    let home = crate::paths::continuum_home().expect("Failed to resolve home directory");
+    home.join("sentinel").join("checkpoints")
 }
 
 /// Ensure the checkpoints directory exists
