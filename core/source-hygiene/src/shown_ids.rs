@@ -20,7 +20,9 @@ pub struct HandRolledShortIds;
 /// Whether a code line renders an id's leading 8 characters by hand, or defines a private
 /// short-id helper.
 fn hand_rolled(code: &str) -> bool {
-    let slices = ["to_string()[..8]", "simple().to_string()[..8]", "chars().take(8)", "[..SHORT_ID_LEN]"];
+    // `&simple[..8]` / `&short[..8]`: the two-line form (render to a String, slice it on the
+    // next line) the single-line patterns missed (independent review of #5389).
+    let slices = ["to_string()[..8]", "simple().to_string()[..8]", "chars().take(8)", "[..SHORT_ID_LEN]", "&simple[..8]", "&short[..8]"];
     let helpers = ["fn short8(", "fn short_id(", "fn id8(", "fn short_uuid(", "let short = |"];
     slices.iter().chain(helpers.iter()).any(|p| code.contains(p))
 }
@@ -67,6 +69,7 @@ mod tests {
         assert_eq!(check("let s = &id.to_string()[..8];"), 1);
         assert_eq!(check("let s: String = id.to_string().chars().take(8).collect();"), 1);
         assert_eq!(check("fn short8(id: &Uuid) -> String {"), 1);
+        assert_eq!(check("format!(\"peer-{}\", &simple[..8])"), 1, "the two-line form, sliced on its second line");
         assert_eq!(check("let short = |id: Uuid| id.to_string();"), 1);
         assert_eq!(check("let s = airc_core::shown_id::shown_form(id);"), 0);
         assert_eq!(check("let first: Vec<_> = items.iter().take(8).collect();"), 0);
