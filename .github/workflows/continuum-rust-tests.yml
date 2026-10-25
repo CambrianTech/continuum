@@ -61,10 +61,14 @@ jobs:
             core.setOutput('crates', JSON.stringify(selection.crates));
             core.setOutput('features', JSON.stringify(TEST_FEATURES));
             core.setOutput('cli', String(selection.cli));
-            // `core` when continuum-core is selected; `rest` when any other crate is.
+            // `core` (continuum-core), `mind` (mind, cognition, academy, verbs: the second-longest
+            // chain) and `rest` (every other crate), each present only when one of its crates is
+            // selected. Measured on #5394's two-shard run: `rest` alone was the 10.6 min long pole.
+            const MIND = ['continuum-mind', 'continuum-cognition', 'continuum-academy', 'continuum-cognition-verbs'];
             const shards = [];
             if (selection.crates.includes('continuum-core')) shards.push('core');
-            if (selection.crates.some(c => c !== 'continuum-core')) shards.push('rest');
+            if (selection.crates.some(c => MIND.includes(c))) shards.push('mind');
+            if (selection.crates.some(c => c !== 'continuum-core' && !MIND.includes(c))) shards.push('rest');
             core.setOutput('shards', JSON.stringify(shards));
 
   # Two shards, not one job per crate (card 44a3c460's matrix, measured 2026-10-24: in each crate
@@ -138,14 +142,14 @@ jobs:
 
       # ---- continuum-kernel: lib tests ----
       - name: cargo test -p continuum-kernel --lib
-        if: matrix.shard == 'rest' && contains(fromJSON(needs.changes.outputs.crates), 'continuum-kernel')
+        if: ${{ !cancelled() && matrix.shard == 'rest' && contains(fromJSON(needs.changes.outputs.crates), 'continuum-kernel') }}
         run: |
           cargo test -p continuum-kernel --lib --profile dev-fast --features "${{ fromJSON(needs.changes.outputs.features)['continuum-kernel'] }}" -- \
             --skip 'gpu::memory_manager::'
 
       # ---- continuum-engine: lib tests and the native/fs2 custody interop fixture ----
       - name: cargo test -p continuum-engine --lib (and native custody interop)
-        if: matrix.shard == 'rest' && contains(fromJSON(needs.changes.outputs.crates), 'continuum-engine')
+        if: ${{ !cancelled() && matrix.shard == 'rest' && contains(fromJSON(needs.changes.outputs.crates), 'continuum-engine') }}
         run: |
           set -o pipefail
           export CONTINUUM_NATIVE_CONTAINER_LEASE_TEST="$RUNNER_TEMP/continuum-container-custody-test"
@@ -161,27 +165,39 @@ jobs:
 
       # ---- continuum-genome: the training script test, then lib tests ----
       - name: cuda_train_test.py (genome fine-tuning script)
-        if: matrix.shard == 'rest' && contains(fromJSON(needs.changes.outputs.crates), 'continuum-genome')
+        if: ${{ !cancelled() && matrix.shard == 'rest' && contains(fromJSON(needs.changes.outputs.crates), 'continuum-genome') }}
         run: python3 -m unittest discover -s core/continuum-genome/src/genome/fine_tuning -p cuda_train_test.py -v
 
       # ---- every other selected crate with no fixture of its own: lib tests, one after another ----
-      - name: cargo test --lib (hands, live, perception, genome, experience, memory, cognition, academy, ...)
-        if: matrix.shard == 'rest'
+      - name: cargo test --lib, every other selected crate in this shard
+        if: ${{ !cancelled() && matrix.shard != 'core' }}
         run: |
-          set -euo pipefail
+          set -uo pipefail
+          # Every crate runs; the step fails at the end naming each failure, so one PR's broken
+          # crates all show in one round instead of the first hiding the rest.
+          mind_side=" continuum-cognition continuum-academy continuum-cognition-verbs "
+          failed=()
           for crate in $(jq -r '.[]' <<<"$CRATES"); do
             case "$crate" in
               continuum-core|continuum-kernel|continuum-engine|continuum-mind) continue ;;
             esac
+            in_mind=no; [[ "$mind_side" == *" $crate "* ]] && in_mind=yes
+            if [[ "${{ matrix.shard }}" == mind && $in_mind == no ]] || [[ "${{ matrix.shard }}" == rest && $in_mind == yes ]]; then
+              continue
+            fi
             features=$(jq -r --arg c "$crate" '.[$c] // ""' <<<"$FEATURE_MAP")
             echo "::group::cargo test -p $crate --lib"
-            cargo test -p "$crate" --lib --profile dev-fast --features "$features"
+            cargo test -p "$crate" --lib --profile dev-fast --features "$features" || failed+=("$crate")
             echo "::endgroup::"
           done
+          if (( ${#failed[@]} )); then
+            echo "::error::lib tests failed in: ${failed[*]}"
+            exit 1
+          fi
 
       # ---- continuum-mind: lib tests, compile-fail doc guards ----
       - name: cargo test -p continuum-mind --lib
-        if: matrix.shard == 'rest' && contains(fromJSON(needs.changes.outputs.crates), 'continuum-mind')
+        if: ${{ !cancelled() && matrix.shard == 'mind' && contains(fromJSON(needs.changes.outputs.crates), 'continuum-mind') }}
         run: |
           # The allocator skip moved here with persona.
           cargo test -p continuum-mind --lib --profile dev-fast --features "${{ fromJSON(needs.changes.outputs.features)['continuum-mind'] }}" -- \
@@ -191,7 +207,7 @@ jobs:
       # Reuse it here instead of recompiling it in a separate runner. --lib
       # cannot exercise compile-fail doctests; preserve their exact count.
       - name: cargo test -p continuum-mind --doc (compile-fail guards)
-        if: matrix.shard == 'rest' && contains(fromJSON(needs.changes.outputs.crates), 'continuum-mind')
+        if: ${{ !cancelled() && matrix.shard == 'mind' && contains(fromJSON(needs.changes.outputs.crates), 'continuum-mind') }}
         run: |
           set -o pipefail
           # Same profile as the --lib build above, deliberately: a different profile
