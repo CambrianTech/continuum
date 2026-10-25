@@ -68,8 +68,8 @@ pub(super) async fn stop(options: StopOptions) -> Result<(), String> {
     }
 }
 
-/// The one teardown, parameterized by lane fate. `keep_lanes: true` is the
-/// REBOOT path: a healthy llama-server about to be wanted again by the next
+/// The one teardown, parameterized by lane fate. `keep_lanes: true` keeps the engine for the
+/// next core (reboot, the install handoff, `stop --keep-engine`): a healthy llama-server about to be wanted again by the next
 /// core stays up, and boot's serve-or-adopt reconcile adopts it at zero
 /// relaunches when the shape matches (regression-pinned:
 /// a_past_form_of_ourself_serving_enough_lanes_is_adopted_not_reaped) or
@@ -211,11 +211,10 @@ pub(super) async fn stop_with_policy(keep_lanes: bool, operator_present: bool, r
         }
         request_graceful_stop(&may_drain).await
     };
-    // `keep_lanes` IS the reboot flag — see this function's doc: "`keep_lanes: true` is the
-    // REBOOT path". Named `reboot` on the guard because that is the property it reasons about,
-    // and passed `keep_lanes` because today the two callers are exactly reboot(true)/stop(false).
-    // A third caller that wants lanes kept for some OTHER reason must pass the reboot-ness
-    // separately rather than reuse this argument.
+    // `keep_lanes`: the engine stays for the next core to adopt. Its callers are reboot, the
+    // install handoff and `stop --keep-engine`; all three need what the guard checks (a core that
+    // can attest its final checkpoint before its engine is handed on), so the one argument
+    // serves all three. Plain `stop` passes false.
     graceful.ensure_teardown_supported(keep_lanes)?;
     if require_durable {
         graceful.require_durable()?;

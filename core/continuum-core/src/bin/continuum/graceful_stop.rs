@@ -83,8 +83,9 @@ impl GracefulStop {
     pub(super) fn ensure_teardown_supported(&self, reboot: bool) -> Result<(), String> {
         if let (true, Self::LegacyCore(reason) | Self::CannotAttest(reason)) = (reboot, self) {
             return Err(format!(
-                "reboot refused before teardown: {reason}. The existing core is still running. \
-                 Use `continuum stop`, preserve the outgoing checkpoints, and use \
+                "keeping the engine refused before teardown (reboot, install handoff or \
+                 `stop --keep-engine`): {reason}. The existing core is still running. Use plain \
+                 `continuum stop`, preserve the outgoing checkpoints, and use \
                  `continuum checkpoint inspect` / `continuum checkpoint adopt` where recovery \
                  is needed before running `continuum reboot` again."
             ));
