@@ -174,10 +174,10 @@ pub enum CapabilityId {
     /// lists in `trainable_bases`. A grid trainer leases only to a peer advertising this:
     /// absence means a core that predates the lease verbs, which must never be sent one.
     TrainingLease,
-    /// A leased job's trained adapter comes back to its origin (the artifact return, S3 of card
-    /// 6f05b89d). A grid trainer leases only to a peer advertising BOTH this and
-    /// `TrainingLease`: a lease whose result cannot return is lane time wasted, so no build
-    /// emits this until its return verb exists.
+    /// A leased job's trained adapter comes back to its origin (S3 of card 6f05b89d): the node
+    /// serves `genome/lease/artifact` ranges of a recorded manifest, and as an origin pulls,
+    /// verifies and places a returned adapter in its own job directory for adoption (card
+    /// 92cd2251). A grid trainer leases only when BOTH ends advertise this and `TrainingLease`.
     TrainingLeaseReturn,
     /// Parse-only: a name THIS build does not know (a newer core advertising a capability we
     /// predate). It never grants — membership of this list is exact-name, so an unknown name
@@ -199,6 +199,7 @@ pub fn this_build_capabilities() -> Vec<CapabilityId> {
         CapabilityId::PlacementReservationGrant,
         CapabilityId::RemoteGenerateCancel,
         CapabilityId::TrainingLease,
+        CapabilityId::TrainingLeaseReturn,
     ]
 }
 
@@ -889,7 +890,7 @@ mod tests {
         let wire = serde_json::to_string(&this_build_capabilities())?;
         assert_eq!(
             wire,
-            "[\"served_window_stamp\",\"lane_wait_reporting\",\"placement_reservation_grant\",\"remote_generate_cancel\",\"training_lease\"]"
+            "[\"served_window_stamp\",\"lane_wait_reporting\",\"placement_reservation_grant\",\"remote_generate_cancel\",\"training_lease\",\"training_lease_return\"]"
         );
         assert!(!this_build_capabilities().contains(&CapabilityId::Unknown), "emission never advertises Unknown");
 

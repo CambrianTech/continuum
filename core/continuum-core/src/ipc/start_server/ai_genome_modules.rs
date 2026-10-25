@@ -112,8 +112,8 @@ pub(super) fn register_ai_provider_and_genome_modules(
         let genome = crate::modules::genome::GenomeModule::new(ft_registry.clone())
             .with_teacher_serving(serving_daemon.clone());
         // The grid-peer trainer (card e53bb821): leases a LoRA job to one fresh peer that
-        // advertises the base, training_lease and training_lease_return. No build emits the
-        // last until the artifact return (S3), so today it serves no base.
+        // advertises the base, training_lease and training_lease_return, and pulls its adapter
+        // back into this node's job directory for adoption (card 92cd2251).
         ft_registry.register(Arc::new(
             crate::commands::genome::grid_peer_adapter::GridPeerAdapter::on_grid(genome.lease_executor()),
         ));
