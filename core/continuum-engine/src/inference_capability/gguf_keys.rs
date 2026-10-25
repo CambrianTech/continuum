@@ -371,6 +371,20 @@ pub fn kv_bytes_per_token_f16(ct: &Content, arch: &str) -> Option<u64> {
     (rate > 0).then_some(rate)
 }
 
+/// Does the artifact carry RECURRENT state (SSM / Gated DeltaNet / RWKV layers)
+/// beside, or instead of, per-token KV? Read from the header's own declarations,
+/// never a family name: an `ssm.*` or `wkv.*` geometry key, a hybrid's
+/// `full_attention_interval` above 1, or a zero in the per-layer KV-head array.
+/// llama.cpp cannot shift such a memory (`llama_memory_can_shift` is false), so
+/// `--cache-reuse` chunk shifting never runs on it; its reuse is prefix + context
+/// checkpoints.
+pub fn holds_recurrent_state(ct: &Content, arch: &str) -> bool {
+    ct.metadata.contains_key(&format!("{arch}.ssm.state_size"))
+        || ct.metadata.contains_key(&format!("{arch}.wkv.head_size"))
+        || full_attention_interval(ct, arch).is_some_and(|i| i > 1)
+        || attention_head_count_kv_per_layer(ct, arch).is_some_and(|l| l.contains(&0))
+}
+
 /// `{arch}.expert_count` — the total number of routed experts in an MoE
 /// model (e.g. 896 for a K3-class model, 128 for a Qwen3-MoE). `None` on a
 /// dense model that never wrote the key — the caller's cue to treat the
@@ -455,6 +469,31 @@ mod tests {
         gguf_file::write(&mut buf, &refs, &[]).unwrap();
         buf.set_position(0);
         Content::read(&mut buf).unwrap()
+    }
+
+    // what this catches: a hybrid is recognized from its header alone (the
+    // Qwen3.6 header declares `ssm.*` keys and `full_attention_interval`), and a
+    // dense header is not — the projector decision rides this (cache_reuse is
+    // inert on a memory that cannot shift).
+    #[test]
+    fn recurrent_state_is_read_from_the_header() {
+        let qwen36 = content_with(vec![
+            ("qwen35moe.ssm.state_size", Value::U32(128)),
+            ("qwen35moe.full_attention_interval", Value::U32(4)),
+        ]);
+        assert!(holds_recurrent_state(&qwen36, "qwen35moe"));
+        let interval_only = content_with(vec![("qwen35.full_attention_interval", Value::U32(4))]);
+        assert!(holds_recurrent_state(&interval_only, "qwen35"));
+        let per_layer = content_with(vec![(
+            "kimi.attention.head_count_kv",
+            Value::Array(vec![Value::U32(0), Value::U32(8)]),
+        )]);
+        assert!(holds_recurrent_state(&per_layer, "kimi"));
+        let dense = content_with(vec![
+            ("qwen3.attention.head_count_kv", Value::U32(8)),
+            ("qwen3.full_attention_interval", Value::U32(1)),
+        ]);
+        assert!(!holds_recurrent_state(&dense, "qwen3"));
     }
 
     // what this catches: the architecture string is read from the artifact's

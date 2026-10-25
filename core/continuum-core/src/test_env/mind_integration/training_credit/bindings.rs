@@ -270,7 +270,7 @@ use super::*;
                 persona,
                 name,
                 Uuid::new_v4(),
-                receipts.clone(),
+                receipts,
             )
             .await;
             let submit = continuum_client::mock::MockTransport::new();
@@ -280,8 +280,8 @@ use super::*;
                 settle_staged_row(&conn, &substrate_conn(&executor), persona, name, &original, true).await,
                 Ok(true)
             ));
-            let mut later_receipts = receipts;
-            later_receipts.push(served_receipt("later-generation", "actual-model"));
+            let mut later_receipts = original.receipts.clone();
+            later_receipts.push(captured(persona, served_receipt("later-generation", "actual-model")));
             assert!(
                 capture
                     .record(
@@ -372,7 +372,7 @@ use super::*;
             .map(|n| served_receipt(&format!("generation-{n}"), "model-a"))
             .collect();
         let (mut capture, older) =
-            stage_settlement_fixture(executor.clone(), persona, name, card, receipts.clone()).await;
+            stage_settlement_fixture(executor.clone(), persona, name, card, receipts).await;
         let submit = continuum_client::mock::MockTransport::new();
         script_settlement_reply(
             &submit,
@@ -397,9 +397,9 @@ use super::*;
             result = &mut drain => panic!("drain settled before its paused receipt: {result:?}"),
             _ = tokio::time::sleep(std::time::Duration::from_secs(10)) => panic!("drain never submitted"),
         }
-        let mut later_receipts = receipts;
+        let mut later_receipts = older.receipts.clone();
         later_receipts
-            .extend((4..8).map(|n| served_receipt(&format!("generation-{n}"), "model-a")));
+            .extend((4..8).map(|n| captured(persona, served_receipt(&format!("generation-{n}"), "model-a"))));
         assert!(
             capture
                 .record(

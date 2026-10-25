@@ -155,7 +155,9 @@ pub struct StagedCredit {
     /// hours and a card can settle days later. `None` when no call could be read back
     /// (no capture installed, or the read failed, which is probed at stage time), and
     /// cleared once the destination durably accepts the transfer, so a settled row
-    /// does not keep a second copy of what the trainer already holds.
+    /// does not keep a second copy of what the trainer already holds. A row staged
+    /// `None` never trains as flat text: settlement re-reads its own receipts' cursors
+    /// and holds it, named, until the record is complete.
     #[entity(json)]
     #[serde(default)]
     pub lived: Option<Vec<crate::genome::fine_tuning::LivedCall>>,

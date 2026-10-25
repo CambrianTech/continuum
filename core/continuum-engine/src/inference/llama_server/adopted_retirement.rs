@@ -20,7 +20,7 @@ impl LlamaServerProcess {
             return Ok(());
         };
         if lane.root_url() != self.root {
-            return Err(LlamaServerError::Spawn("recorded live lane belongs to another endpoint".into()));
+            return Err(LlamaServerError::RetirementRefused("recorded live lane belongs to another endpoint".into()));
         }
         let incarnation = lane.incarnation();
         use crate::inference::slots::DiscardReason;
@@ -31,7 +31,7 @@ impl LlamaServerProcess {
                 endpoint.pending_discard(DiscardReason::AdoptedEngineDead).commit();
                 return Ok(());
             }
-            Liveness::Unknown => return Err(LlamaServerError::Spawn("adopted engine identity is unverified; refusing retirement".into())),
+            Liveness::Unknown => return Err(LlamaServerError::RetirementRefused("adopted engine identity is unverified".into())),
             Liveness::Alive => {}
         }
         // Quarantined paging cannot save: its residents are captured now and recorded only
@@ -42,7 +42,7 @@ impl LlamaServerProcess {
         } else {
             transition.checkpoint_adopted_before_replacement(
                 &self.client, &self.root, incarnation, current,
-            ).await.map_err(LlamaServerError::Spawn)?;
+            ).await.map_err(LlamaServerError::RetirementRefused)?;
             None
         };
         if !current() {
@@ -56,7 +56,7 @@ impl LlamaServerProcess {
                 }
                 return Ok(());
             }
-            Liveness::Unknown => return Err(LlamaServerError::Spawn("adopted engine identity became unverified after checkpoint".into())),
+            Liveness::Unknown => return Err(LlamaServerError::RetirementRefused("adopted engine identity became unverified after checkpoint".into())),
             Liveness::Alive => {}
         }
         crate::inference::lane_process::signal_if_same(

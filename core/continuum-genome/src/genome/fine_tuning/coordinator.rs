@@ -104,6 +104,12 @@ pub struct FineTuningCoordinator {
     host: HardwareProfile,
 }
 
+/// A trainer that runs on THIS host: its resident weights, an engine lane, its own copy or
+/// its CPU. A grid-peer or cloud trainer only passes the job on.
+fn on_this_host(caps: &FineTuningCapabilities) -> bool {
+    !matches!(caps.place, TrainingPlace::GridPeer | TrainingPlace::Cloud)
+}
+
 impl FineTuningCoordinator {
     /// Production constructor — probes the real host hardware once.
     pub fn new(registry: Arc<FineTuningRegistry>) -> Self {
@@ -121,6 +127,25 @@ impl FineTuningCoordinator {
         request: &TrainingJobRequest,
         preferred_provider: Option<&str>,
     ) -> Result<(String, ArcFineTuningAdapter), CoordinatorError> {
+        self.select_where(request, preferred_provider, |_| true)
+    }
+
+    /// [`select`](Self::select) among the trainers on THIS host only: a grid-peer or cloud
+    /// trainer is never chosen. A peer serving a leased job uses it (card cc34db0d), so a
+    /// lease is trained here or refused, and never passed on to a third node or a cloud.
+    pub fn select_here(
+        &self,
+        request: &TrainingJobRequest,
+    ) -> Result<(String, ArcFineTuningAdapter), CoordinatorError> {
+        self.select_where(request, None, on_this_host)
+    }
+
+    fn select_where(
+        &self,
+        request: &TrainingJobRequest,
+        preferred_provider: Option<&str>,
+        admits: impl Fn(&FineTuningCapabilities) -> bool,
+    ) -> Result<(String, ArcFineTuningAdapter), CoordinatorError> {
         let all_ids = self.registry.list();
 
         // Compute the capable set once.
@@ -131,7 +156,7 @@ impl FineTuningCoordinator {
                 let caps = adapter.capabilities();
                 // A trainer bound to live state (the in-engine one) is asked whether it
                 // serves THIS base now, so it is never chosen for a job it would refuse.
-                if self.caps_match(&caps, request) && adapter.serves_base(&request.base_model) {
+                if admits(&caps) && self.caps_match(&caps, request) && adapter.serves_base(&request.base_model) {
                     Some((id, adapter, caps))
                 } else {
                     None
@@ -189,7 +214,7 @@ impl FineTuningCoordinator {
     pub fn trains_base_here(&self, base: &str) -> bool {
         self.registry.list().iter().filter_map(|id| self.registry.get(id)).any(|adapter| {
             let caps = adapter.capabilities();
-            !matches!(caps.place, TrainingPlace::GridPeer | TrainingPlace::Cloud)
+            on_this_host(&caps)
                 && caps.supports_lora
                 && self.runs_base_here(&caps, base)
                 && adapter.serves_base(base)
@@ -534,5 +559,27 @@ mod tests {
         let coord = FineTuningCoordinator::new(local);
         assert!(coord.trains_base_here("qwen3.5-4b"));
         assert!(!coord.trains_base_here("llama-3-8b"), "another base, and the wildcard trainer has no LoRA");
+    }
+
+    // what this catches (card cc34db0d): a leased job passed on. A peer serving a lease
+    // selects among its own trainers only, so a grid-peer trainer (which would forward it to a
+    // third node) or a cloud trainer is never chosen, even when it would rank first or is the
+    // only one capable; with a trainer on this host, that one is chosen.
+    #[test]
+    fn a_lease_is_trained_on_this_host_or_refused() {
+        let mut grid = caps("grid-peer", true, true, true, &[]);
+        grid.place = TrainingPlace::GridPeer;
+        let req = base_request("qwen3.5-4b");
+        let only_remote = FineTuningCoordinator::new(registry_with(vec![("grid-peer", grid.clone())]));
+        assert_eq!(only_remote.select(&req, None).map(|(id, _)| id).ok().as_deref(), Some("grid-peer"));
+        assert!(
+            matches!(only_remote.select_here(&req), Err(CoordinatorError::NoCapableAdapter { .. })),
+            "a lease never goes on to another node"
+        );
+        let both = FineTuningCoordinator::new(registry_with(vec![
+            ("grid-peer", grid),
+            ("local", caps("local", true, true, true, &["qwen"])),
+        ]));
+        assert_eq!(both.select_here(&req).map(|(id, _)| id).ok().as_deref(), Some("local"));
     }
 }

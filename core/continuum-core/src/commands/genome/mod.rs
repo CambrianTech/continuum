@@ -41,7 +41,11 @@ use crate::sdk_codegen::DynCommand;
 use job_create::{ERROR_KIND_CAPACITY_PARKED, ERROR_KIND_TRAINER_UNAVAILABLE};
 
 pub(crate) mod attempt_ledger;
+pub mod grid_peer_adapter;
 pub mod job_attempt_reconcile;
+pub mod lease;
+pub mod lease_artifact;
+pub mod lease_pull;
 pub mod job_cancel;
 pub mod job_create;
 pub mod job_pause;
@@ -88,13 +92,23 @@ pub(crate) fn command_objects(
     registry: Arc<FineTuningRegistry>,
     coordinator: Arc<FineTuningCoordinator>,
     attempts: Arc<attempt_ledger::AttemptLedger>,
+    lease_transport: Arc<dyn grid_peer_adapter::LeaseTransport>,
     #[cfg(test)] test_job_board: Arc<crate::genome::fine_tuning::TrainingJobBoard>,
     #[cfg(test)] test_artifacts: Arc<tempfile::TempDir>,
 ) -> Vec<Arc<dyn DynCommand>> {
     vec![
         Arc::new(job_attempt_reconcile::GenomeJobAttemptReconcile {
             attempts: Arc::clone(&attempts),
+            transport: lease_transport,
         }),
+        Arc::new(lease::GenomeLeaseTrain {
+            coordinator: Arc::clone(&coordinator),
+            attempts: Arc::clone(&attempts),
+        }),
+        Arc::new(lease::GenomeLeaseStatus { attempts: Arc::clone(&attempts) }),
+        Arc::new(lease::GenomeLeasePoll { attempts: Arc::clone(&attempts), registry: registry.clone() }),
+        Arc::new(lease::GenomeLeaseCancel { attempts: Arc::clone(&attempts), registry: registry.clone() }),
+        Arc::new(lease::GenomeLeaseArtifact { attempts: Arc::clone(&attempts) }),
         Arc::new(job_create::GenomeJobCreate {
             coordinator,
             attempts,
@@ -208,6 +222,21 @@ pub(crate) mod test_support {
         }
     }
 
+    /// A base GGUF with one tensor filled with `weight`: the same header for every `weight`
+    /// (architecture, tokenizer, shapes), other weights, so a fine-tuned sibling is one call.
+    pub(crate) fn write_base_gguf(path: &std::path::Path, weight: f32) {
+        use candle_core::quantized::{gguf_file, GgmlDType, QTensor};
+        let md = [
+            ("general.architecture", gguf_file::Value::String("qwen2".into())),
+            ("tokenizer.ggml.tokens", gguf_file::Value::Array(vec![gguf_file::Value::String("a".into())])),
+        ];
+        let refs: Vec<(&str, &gguf_file::Value)> = md.iter().map(|(k, v)| (*k, v)).collect();
+        let weights = candle_core::Tensor::full(weight, (4, 32), &candle_core::Device::Cpu).expect("tensor"); // JUSTIFIED: test fixture
+        let q = QTensor::quantize(&weights, GgmlDType::F32).expect("quantize"); // JUSTIFIED: test fixture
+        let mut file = std::fs::File::create(path).expect("create"); // JUSTIFIED: test fixture
+        gguf_file::write(&mut file, &refs, &[("blk.0.attn_q.weight", &q)]).expect("write"); // JUSTIFIED: test fixture
+    }
+
     /// A registry seeded with one stub adapter per id.
     pub(crate) fn registry_with(ids: &[&'static str]) -> Arc<FineTuningRegistry> {
         let reg = Arc::new(FineTuningRegistry::new());
@@ -237,7 +266,7 @@ mod tests {
         assert_eq!(GenomeJobCancel::NAME, "genome/job-cancel");
     }
 
-    // what this catches: command_objects assembles every genome/job-* verb (reconcile included) — a dropped entry
+    // what this catches: command_objects assembles every genome/job-* verb (reconcile included) and the two lease verbs — a dropped entry
     // would silently remove a genome command from the registry.
     #[test]
     fn command_objects_assembles_all_three() {
@@ -247,9 +276,11 @@ mod tests {
             registry,
             coordinator,
             Arc::new(attempt_ledger::AttemptLedger::new()),
+            Arc::new(grid_peer_adapter::ExecutorLeaseTransport(Arc::new(crate::runtime::LateBound::new("test lease executor")))),
             Arc::new(crate::genome::fine_tuning::TrainingJobBoard::default()),
             Arc::new(tempfile::tempdir().unwrap()),
         );
-        assert_eq!(objs.len(), 6);
+        assert_eq!(objs.len(), 11);
+        assert!(objs.iter().any(|c| c.name() == "genome/lease/artifact"), "the lease's artifact ranges are served");
     }
 }

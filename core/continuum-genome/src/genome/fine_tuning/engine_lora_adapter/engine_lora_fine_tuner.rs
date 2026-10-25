@@ -39,7 +39,7 @@ impl FineTuningAdapter for EngineLoraFineTuner {
         let targets = gguf_targets(&lora.target_modules).map_err(FineTuningError::InvalidRequest)?;
         let LaneLease { choice, hold: lane_hold, still_bound } =
             self.lane.acquire(&request.base_model).await?;
-        let LaneChoice { url: lane, window: served_window, engine, build, memory } = choice;
+        let LaneChoice { url: lane, window: served_window, engine, build, memory, weights } = choice;
         let train_dir = self
             .train_dir
             .clone()
@@ -359,6 +359,7 @@ impl FineTuningAdapter for EngineLoraFineTuner {
             shape: shape.clone(),
             corpus_chars,
             walk: Some(walk),
+            trained_on: weights,
         };
         Ok(self.jobs.prepare(id, move |progress| async move {
             if let Some(why) = unrunnable {
@@ -614,6 +615,7 @@ pub(super) fn finish_run(
                 final_validation_loss,
                 wall_clock_ms,
                 layers_adapted: status.layers_adapted.or(status.n_layer),
+                trained_on: spec.trained_on.clone(),
                 ..Default::default()
             },
         })

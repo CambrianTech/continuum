@@ -108,6 +108,11 @@ impl GenomeModule {
         self.coordinator.trains_base_here(base)
     }
 
+    /// The executor slot boot fills for this module: the grid-peer trainer leases over it.
+    pub(crate) fn lease_executor(&self) -> Arc<crate::runtime::LateBound<crate::runtime::CommandExecutor>> {
+        Arc::clone(&self.executor)
+    }
+
     /// Visible to tests + boot. Returns the inner registry so a
     /// caller can introspect or register adapters after
     /// construction (substrate hot-reload future work; not used in
@@ -156,6 +161,8 @@ impl ServiceModule for GenomeModule {
             Arc::clone(&self.registry),
             Arc::clone(&self.coordinator),
             Arc::clone(&self.attempts),
+            // A leased attempt is reconciled with its peer over this module's own executor.
+            Arc::new(crate::commands::genome::grid_peer_adapter::ExecutorLeaseTransport(Arc::clone(&self.executor))),
             #[cfg(test)]
             Arc::clone(&self.test_job_board),
             #[cfg(test)]
@@ -206,8 +213,13 @@ mod tests {
     #[test]
     fn exposes_training_and_recall_commands() {
         let names: Vec<&str> = module().commands().iter().map(|c| c.name()).collect();
-        assert_eq!(names.len(), 9);
+        assert_eq!(names.len(), 14);
         assert!(names.contains(&"genome/job-attempt-reconcile"));
+        assert!(names.contains(&"genome/lease/artifact"));
+        assert!(names.contains(&"genome/lease/train"));
+        assert!(names.contains(&"genome/lease/status"));
+        assert!(names.contains(&"genome/lease/poll"));
+        assert!(names.contains(&"genome/lease/cancel"));
         assert!(names.contains(&"genome/teach"));
         assert!(names.contains(&"genome/recall"));
         assert!(names.contains(&"genome/recall/replay"));

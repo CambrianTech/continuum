@@ -4,4 +4,5 @@
 //! no code outside this crate branches on the OS for these capabilities.
 
 pub mod durable;
+pub mod file_identity;
 pub mod positioned;

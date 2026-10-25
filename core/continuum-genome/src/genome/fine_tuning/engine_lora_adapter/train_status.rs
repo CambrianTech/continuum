@@ -222,13 +222,16 @@ pub(super) struct LaneChoice {
     /// The governed pool its bytes live in (`Vram` for a GPU-placed lane, `Ram` for a
     /// CPU-placed one): what a run in it leases and fits its chunk against.
     pub(super) memory: crate::resources::ResourceKind,
+    /// The weights file the lane's engine was launched on (its record's stamp): what an adapter
+    /// trained in it names as its base (card 3fd98325). `None` for a lane recorded without one.
+    pub(super) weights: Option<crate::inference::weights_stamp::WeightsStamp>,
 }
 
 /// A test's lane at `url` with a `window`: no engine, no build, on the card.
 #[cfg(test)]
 impl LaneChoice {
     pub(super) fn at(url: String, window: u32) -> Self {
-        Self { url, window, engine: None, build: None, memory: crate::resources::ResourceKind::Vram }
+        Self { url, window, engine: None, build: None, memory: crate::resources::ResourceKind::Vram, weights: None }
     }
 }
 
@@ -268,6 +271,7 @@ pub(super) fn lane_choice(rec: crate::inference::lane_registry::LaneRecord, base
         engine: incarnation_of(&rec),
         build: rec.engine_bin.as_deref().and_then(crate::inference::engine_slots::stamp_of_bin),
         memory,
+        weights: rec.weights.clone(),
     })
 }
 

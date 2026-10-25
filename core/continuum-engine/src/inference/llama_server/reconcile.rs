@@ -525,6 +525,12 @@ async fn serve_or_adopt<C: LlamaServerControl + ?Sized>(
             }
         }
         Err(LlamaServerError::Superseded) => EnsureOutcome::Superseded,
+        // The incumbent could not be retired safely and was not signalled (card 931cfd22):
+        // keep serving on it when it is the target model and still proves it decodes; never
+        // condemn a working engine because a replacement was refused.
+        Err(LlamaServerError::RetirementRefused(why)) => {
+            keep_incumbent(ctrl, target, active.as_deref() == Some(target.model_id()), &why).await
+        }
         // One relaunch onto the restored engine; the engine is resolved per launch, so this
         // `serve` takes the slot the rollback made current.
         Err(reason) if roll_back_engine_after_failed_launch(&reason) => {
@@ -545,5 +551,52 @@ async fn serve_or_adopt<C: LlamaServerControl + ?Sized>(
         Err(reason) => EnsureOutcome::Degraded {
             reason: reason.to_string(),
         },
+    }
+}
+
+/// The refusal last reported by [`keep_incumbent`], so an unchanged one is said once, not on
+/// every reconcile tick while the replacement keeps being wanted.
+static REPLACEMENT_REFUSED: parking_lot::Mutex<Option<String>> = parking_lot::Mutex::new(None);
+
+/// A replacement was refused before anything was signalled (card 931cfd22; enrico 2026-10-25:
+/// "adopted checkpoint requires a known pool" left a decoding engine unserved for 5 hours).
+/// The incumbent keeps serving only when it is exactly what the target asks for: the target
+/// model, the KNOWN loaded adapter set equal to the target's (an unreadable or different set
+/// never passes, so target genes are never published as loaded), and the decode proof
+/// adoption uses, on every refusal (`decode_smoke_ok`: its seat is the scratch slot, an empty
+/// engine, or the lane's own `/slots` account when every slot holds a mind, so it never decodes
+/// over a mind's KV, #5405). Anything else stays degraded: a condemned engine is never
+/// advertised ready. The probe below says each refusal once.
+async fn keep_incumbent<C: LlamaServerControl + ?Sized>(
+    ctrl: &C,
+    target: &ServingTarget,
+    serves_target: bool,
+    why: &str,
+) -> EnsureOutcome {
+    let genome_is_target = matches!(ctrl.active_adapters().await, Ok(active) if active == target.adapter_paths());
+    let decodes = serves_target && genome_is_target && ctrl.decode_smoke_ok().await;
+    if decodes {
+        if REPLACEMENT_REFUSED.lock().as_deref() != Some(why) {
+            continuum_base::probe!(target: "continuum_core::inference::llama_server", class = "serving.replace.refused_kept_incumbent",
+                model = target.model_id(),
+                why,
+                "the incumbent engine could not be retired safely and was not signalled: it \
+                 keeps serving (the target model, the target genes, and it decodes); the \
+                 replacement waits until its custody can be satisfied"
+            );
+            *REPLACEMENT_REFUSED.lock() = Some(why.to_string());
+        }
+        return EnsureOutcome::AlreadyServing;
+    }
+    *REPLACEMENT_REFUSED.lock() = None;
+    let unfit = if !serves_target {
+        "it serves another model"
+    } else if !genome_is_target {
+        "its loaded genes are not known to be the target's"
+    } else {
+        "it failed its decode proof"
+    };
+    EnsureOutcome::Degraded {
+        reason: format!("retiring the incumbent was refused ({why}) and it cannot serve the target: {unfit}"),
     }
 }
