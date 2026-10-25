@@ -56,6 +56,7 @@ fn opens_with_tool_envelope(t: &str) -> bool {
                 && v.len() <= 64
                 && v.chars()
                     .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || "/_-.".contains(c))
+                && v.contains(|c: char| c == '/' || c == '_' || c == '-')
         };
         if let Some((verb, after)) = rest.split_once(',') {
             if verb_ok(verb) && after.trim_start().starts_with('{') {
@@ -72,7 +73,14 @@ fn opens_with_tool_envelope(t: &str) -> bool {
         // way on 2026-09-14 when Paige posted a tool call as speech:
         //   [code/shell(cmd=# Mark ...)]
         if let Some((verb, after)) = rest.split_once('(') {
-            if verb_ok(verb) && after.contains(')') {
+            // Require `/` namespace evidence: prose like `[note(see above)]`
+            // passes verb_ok (contains `(_)`) and the paren check but must NOT
+            // match — only namespaced tool verbs have a `/`.  This narrows
+            // only this branch; comma/bracket dialects still use verb_ok alone.
+            if verb_ok(verb)
+                && verb.contains('/')
+                && after.contains(')')
+            {
                 return true;
             }
         }
@@ -159,6 +167,10 @@ mod tests {
             "Looking at code/read now to confirm the seam.",
             "{ this is just a brace }",
             "b6dcfc8e is the peer I was replying to, and I disagree with it.",
+            // Bracketed prose — single-word verbs must not match tool envelopes.
+            "[note(see above)]",
+            "[tip(useful advice)]",
+            "[warning(careful now)]",
             "",
         ] {
             assert_eq!(is_not_speech(ok), None, "false positive on: {ok:?}");
