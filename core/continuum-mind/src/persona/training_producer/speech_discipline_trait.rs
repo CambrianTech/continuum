@@ -385,7 +385,7 @@ pub(super) async fn read_lived(
                 persona = %persona_name,
                 reason = %reason,
                 read = calls.len() as u64,
-                "the staged turn holds no lived record; only its flat prompt and completion"
+                "the staged turn holds no lived record yet; settlement holds it until a read completes one"
             );
             (calls, false)
         }

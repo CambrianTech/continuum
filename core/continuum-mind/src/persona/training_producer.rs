@@ -94,6 +94,38 @@ pub mod test_support {
         }
     }
 
+    /// The call a served receipt records, as the capture holds it: her request and her
+    /// response, linked to the receipt by its cursor (empty until one is captured).
+    pub fn lived_call(receipt: &crate::ai::provenance::GenerationReceipt) -> crate::genome::fine_tuning::LivedCall {
+        use crate::ai::types::{ChatMessage, TextGenerationRequest, TextGenerationResponse};
+        crate::genome::fine_tuning::LivedCall {
+            capture: receipt.capture.clone().unwrap_or_default(), // unwrap_or_default: a cursorless receipt reads back as no call
+            request: TextGenerationRequest {
+                messages: vec![ChatMessage::text("user", "card: verify the regression")],
+                ..Default::default()
+            },
+            response: TextGenerationResponse {
+                text: format!("read the source before answering ({})", receipt.submitted_request_id),
+                finish_reason: crate::ai::FinishReason::ToolUse,
+                model: "fixture-model".into(),
+                provider: "fixture-provider".into(),
+                usage: crate::ai::UsageMetrics::default(),
+                response_time_ms: 0,
+                request_id: receipt.submitted_request_id.clone(),
+                content: None,
+                tool_calls: Some(vec![crate::ai::ToolCall {
+                    id: receipt.submitted_request_id.clone(),
+                    name: "code/read".into(),
+                    input: serde_json::json!({"path": format!("src/{}.rs", receipt.submitted_request_id)}),
+                }]),
+                reasoning: None,
+                routing: None,
+                error: None,
+                timing: None,
+            },
+        }
+    }
+
     /// A claimed card for the staging tests.
     ///
     // THE FIXTURE MUST CLEAR THE QUALITY GATE ON ITS OWN (the cc34ac0f lesson below):
