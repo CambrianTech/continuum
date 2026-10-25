@@ -147,7 +147,7 @@ twelve yielded every tick and never reached the pull (31 yields / 10 min). Fix, 
 place each: eligibility = room residency (`pullable_cards`); the CLAIM stages the claimer's
 workspace per the card's recipe (`modules/card_staging.rs`, two callers: `work/claim` and a
 detached-solve dispatch); the pull reads claimability from the board
-(`AircCitizen::claimable_cards_in` → `claimable_now`); the pull rides `work/claim` through
+(`claimable_now`; the automatic pull and its `claimable_cards_in` were deleted in #5387, a mind claims by choice); `work/claim` rides through
 the citizen's executor (one claim path, driver-gated); the ambient permit gates only the
 musing tail. Live: a 12-card citizen round to 12 residents, no teammates — 7 distinct
 pullers across two boots (vs. the assignee-only ~3), each staged `Ready` in her own

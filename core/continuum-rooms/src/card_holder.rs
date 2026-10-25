@@ -149,36 +149,6 @@ pub fn refused_by_claim(state: airc_work::model::CardState) -> bool {
 /// re-deriving it: before 2026-08-07 `room_board_source` and `CardHolder` each
 /// filtered terminal states by hand, both missed `Review`, and the board offered
 /// 11 unclaimable cards to citizens who had no way to know.
-/// How long a RESIDENT owner's lapsed hold stays hers before anyone else may take it —
-/// the one number the verdict sweep (close/reopen) and the pull (claimability) share.
-/// A lease lapses whenever cognition pauses for the TTL — a reboot's dark window, a
-/// long build — and the owner's own pump reclaims it on her next tick; a peer who takes
-/// it first strands her diff (2026-09-13: Atlas's django and Joaquin's validated astropy
-/// fix both changed hands at a boot within seconds of the core answering).
-pub const RESIDENT_OWNER_GRACE_MS: u64 = 30 * 60 * 1000;
-
-/// A lapsed hold still inside its resident owner's grace.
-pub fn lapsed_within_owner_grace(card: &WorkCard, now_ms: u64) -> bool {
-    hold_of(card, now_ms) == Hold::Lapsed
-        && card
-            .claim_expires_at_ms
-            .is_some_and(|e| now_ms.saturating_sub(e) < RESIDENT_OWNER_GRACE_MS)
-}
-
-/// May `me` take this card right now? [`claimable_now`] plus the resident owner's grace:
-/// her own lapsed card is always hers; another resident's lapsed card is not takeable
-/// until the grace runs out (her pump reclaims it first). An ABSENT owner's lapsed card
-/// is the deck's at once — the sweep reopens it, the pull may take it.
-pub fn claimable_by(card: &WorkCard, now_ms: u64, me: airc_core::PeerId, owner_resident: bool) -> bool {
-    if !claimable_now(card, now_ms) {
-        return false;
-    }
-    if card.owner == Some(me) {
-        return true;
-    }
-    !(owner_resident && lapsed_within_owner_grace(card, now_ms))
-}
-
 pub fn claimable_now(card: &WorkCard, now_ms: u64) -> bool {
     claimable_hold(hold_of(card, now_ms), card.state)
 }
@@ -195,21 +165,6 @@ fn claimable_hold(hold: Hold, state: airc_work::model::CardState) -> bool {
         Hold::Lapsed => true,
         Hold::Unclaimed => state == airc_work::model::CardState::Open,
     }
-}
-
-/// Is this card IN FLIGHT — a live hold in a holder's column (Claimed/InProgress on
-/// an unexpired lease)? The WIP = lanes gate counts THESE and nothing else. Its
-/// previous proxy, `dispatched − settled − claimable`, counted every card that was
-/// merely not takeable: ownerless review cards, lapsed holds of citizens no longer
-/// resident, reviews under way — measured 2026-09-13 07:16Z on the M5: in_flight 5 of
-/// lanes 5 with ONE live hold on the board, and every resident's pull deferred while
-/// three cards sat open. A review card is never in flight for this gate (the 09-06
-/// rule: a done must free the slot its review needs).
-pub fn in_flight_now(card: &WorkCard, now_ms: u64) -> bool {
-    matches!(
-        card.state,
-        airc_work::model::CardState::Claimed | airc_work::model::CardState::InProgress
-    ) && hold_of(card, now_ms) == Hold::Held
 }
 
 /// How a holder with no published name is said in a sentence (see [`CardHolder::display`]).
@@ -269,9 +224,6 @@ impl CardHolder {
     /// is lying about what is available ([[the-compression-principle]]): on
     /// 2026-10-06 work/get said `claimable: true` for a dormant peer's lapsed card
     /// while the gate refused it, and Kimi sat idle behind it for a day.
-    ///
-    /// The automatic PULL is a different question (which card should a scheduler hand
-    /// her) and stays on [`claimable_by`]: it never takes a live hold from anyone.
     pub fn claimable(&self) -> bool {
         !refused_by_claim(self.state)
     }
@@ -411,47 +363,6 @@ mod tests {
         }
     }
 
-    // what this catches (2026-09-13): the WIP gate counting cards that nobody holds —
-    // an ownerless review, a lapsed hold, an open card — as in flight, which filled
-    // every lane on paper and deferred every pull while three cards sat open.
-    #[test]
-    fn only_a_live_hold_in_a_holders_column_is_in_flight() {
-        let now = 1_000;
-        let live = card(Some(PeerId::new()), true, Some(now + 60_000));
-        assert!(in_flight_now(&live, now), "a live claimed hold is in flight");
-        let mut in_progress = card(Some(PeerId::new()), true, Some(now + 60_000));
-        in_progress.state = CardState::InProgress;
-        assert!(in_flight_now(&in_progress, now));
-        let lapsed = card(Some(PeerId::new()), true, Some(now - 1));
-        assert!(!in_flight_now(&lapsed, now), "a lapsed hold is the deck's, not a lane's");
-        let mut review = card(Some(PeerId::new()), true, Some(now + 60_000));
-        review.state = CardState::Review;
-        assert!(!in_flight_now(&review, now), "a review never counts against the lanes");
-        let open = card(None, false, None);
-        assert!(!in_flight_now(&open, now));
-    }
-
-    // what this catches (2026-09-13): a peer taking a RESIDENT owner's lapsed hold at a
-    // boot before her pump reclaims it — the maker's diff stranded twice in one day. The
-    // owner's own lapsed card stays hers; a peer waits out the grace; an absent owner's
-    // card is the deck's at once.
-    #[test]
-    fn a_resident_owners_lapsed_hold_stays_hers_for_the_grace() {
-        let now = 10_000_000;
-        let owner = PeerId::new();
-        let peer = PeerId::new();
-        let just_lapsed = card(Some(owner), true, Some(now - 60_000));
-        assert!(lapsed_within_owner_grace(&just_lapsed, now));
-        assert!(claimable_by(&just_lapsed, now, owner, true), "her own lapsed card is hers");
-        assert!(!claimable_by(&just_lapsed, now, peer, true), "a peer waits out a resident owner's grace");
-        assert!(claimable_by(&just_lapsed, now, peer, false), "an absent owner's lapsed card is the deck's");
-        let long_lapsed = card(Some(owner), true, Some(now - RESIDENT_OWNER_GRACE_MS - 1));
-        assert!(!lapsed_within_owner_grace(&long_lapsed, now));
-        assert!(claimable_by(&long_lapsed, now, peer, true), "after the grace anyone may take it");
-        let live = card(Some(owner), true, Some(now + 60_000));
-        assert!(!claimable_by(&live, now, peer, false), "a live hold is never claimable");
-    }
-
     // what this catches: a card the WRITE side refuses being advertised by a READ
     // surface as available work. `work/claim` rejects Review|Merged|Closed outright
     // (airc-lib WorkCardNotClaimable); before this, `claimable()` asked only
@@ -588,8 +499,7 @@ mod tests {
     fn a_live_claim_is_takeable_and_says_so_and_an_open_card_always_is() {
         // what this catches (Joel, 2026-10-06): a live hold read as off-limits. Anyone
         // may take any card that is not settled; the board must say so, name who holds
-        // it, and say they will see the release — while the pull still never offers a
-        // live hold (claimable_by), so no scheduler yanks a turn in flight.
+        // it, and say they will see the release.
         let peer = PeerId::new();
         let me = uuid::Uuid::new_v4();
         let c = card(Some(peer), true, Some(u64::MAX));
@@ -597,7 +507,6 @@ mod tests {
         assert_eq!(live.hold, Hold::Held);
         assert!(live.claimable());
         assert!(live.render().contains("take it over"), "{}", live.render());
-        assert!(!claimable_by(&c, 1_000, PeerId::new(), false), "the pull never takes a live hold");
 
         let open = holder(&card(None, false, None), me, 1_000, &NoNames);
         assert_eq!(open.hold, Hold::Unclaimed);
