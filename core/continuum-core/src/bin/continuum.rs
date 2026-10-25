@@ -8,7 +8,8 @@
 //!                     # refuses while training (mlx_lm) is live — `--force` overrides
 //! continuum reboot --prebuilt <path> # validate that core first, then hand off without rebuilding
 //!                     # Windows: --service hands off to the installer's prepared task
-//! continuum stop             # stop the running core
+//! continuum stop             # stop the running core and its engine
+//! continuum stop --keep-engine  # stop the core only; the engine (weights + every mind's KV) stays for the next core to adopt
 //! continuum ping             # dispatch a command to the running core
 //! continuum ping '{"message":"hi"}'
 //! continuum data/list '{"collection":"users"}'
