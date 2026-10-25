@@ -156,6 +156,8 @@ impl ServiceModule for GenomeModule {
             Arc::clone(&self.registry),
             Arc::clone(&self.coordinator),
             Arc::clone(&self.attempts),
+            // A leased attempt is reconciled with its peer over this module's own executor.
+            Arc::new(crate::commands::genome::grid_peer_adapter::ExecutorLeaseTransport(Arc::clone(&self.executor))),
             #[cfg(test)]
             Arc::clone(&self.test_job_board),
             #[cfg(test)]

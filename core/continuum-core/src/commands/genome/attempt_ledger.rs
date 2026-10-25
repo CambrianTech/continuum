@@ -316,6 +316,16 @@ impl AttemptLedger {
         store.update(attempt, &row).await.map_err(|e| e.to_string())
     }
 
+    /// Where `attempt` was recorded to run (`Destination::to_ledger`: `local` or `peer:<uuid>`),
+    /// or `None` with no record. Read by reconciliation, so a lease's outcome is asked of its
+    /// peer instead of guessed here (card e53bb821).
+    pub(crate) async fn destination_of(&self, attempt: Uuid) -> Result<Option<String>, String> {
+        let lock = self.lock(attempt);
+        let _held = lock.lock().await;
+        let store = self.store.require()?;
+        Ok(store.find_by_id(attempt).await.map_err(|e| e.to_string())?.map(|row| row.destination))
+    }
+
     /// Prove what `attempt` did. With no row, the attempt is CLOSED here first, under the same
     /// lock admission takes, so a delayed create can no longer start it: only then is "no
     /// admission" proof of NotCreated. An unreadable ledger is Unknown, never absent.
