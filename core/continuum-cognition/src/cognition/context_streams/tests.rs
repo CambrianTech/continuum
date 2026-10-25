@@ -76,7 +76,7 @@ fn an_unsaved_result_never_collapses_to_a_line_nothing_reopens() {
     memory.record_receipt("I ran code/shell(cat Cargo.toml) Result: [package] name = \"x\"");
     memory.record_settlement("read the manifest", None);
     let (acts, _) = memory.action_renderings();
-    let (_, full, pointer) = acts.last().expect("the act is on record");
+    let (_, full, _, pointer) = acts.last().expect("the act is on record");
     assert!(full.contains("name = \"x\""), "{full}");
     assert_eq!(pointer, full, "an unsaved result's pointer is the result itself");
 }

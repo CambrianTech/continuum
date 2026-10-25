@@ -117,6 +117,29 @@ impl LlmDeliberationFaculty {
         if view_tokens <= granted + room {
             return;
         }
+        // Admission before a turnover: redo this act's append within what the act granted her
+        // view, an arrival too large for it reduced to its outline or pointer
+        // (`View::readmit`). An act that started the view has nothing to redo.
+        if !view.started {
+            if let Some(admitted) = self.admit_view(&prompt.streams, view_tokens, granted + room) {
+                let admitted_tokens = calibration.charge(Self::messages_cost(&admitted));
+                if admitted_tokens <= granted + room {
+                    continuum_base::probe!(
+                        class = "delib.view.admitted",
+                        persona = %self.persona_name,
+                        view_tokens,
+                        admitted_tokens,
+                        granted,
+                        room,
+                        "an arrival too large for what the act granted her view came in reduced; \
+                         the epoch keeps appending instead of turning over"
+                    );
+                    prompt.grounding_at = admitted.len();
+                    prompt.history.splice(0..view.len, admitted);
+                    return;
+                }
+            }
+        }
         // What the epoch being replaced appended per act: the growth the next one reserves.
         let appended_per_act = self.context_view.lock().as_ref().and_then(View::appended_per_act);
         // A source the allocation could not grant its floor is shed from this epoch: its
@@ -201,6 +224,35 @@ impl LlmDeliberationFaculty {
             memory.keep_view(held.clone());
         }
         (Self::render(held.as_ref()), started)
+    }
+
+    /// Redo this act's append to her view within `budget_tokens`, converted to characters at
+    /// the view's own measured ratio (ballpark: an arrival is admitted or reduced whole, and
+    /// the caller re-checks the result in tokens). `None` when there is no unsent act to redo.
+    fn admit_view(&self, streams: &Streams, view_tokens: usize, budget_tokens: usize) -> Option<Vec<ChatMessage>> {
+        let memory = self.working_memory.as_deref();
+        let memory_streams = memory.map(MemoryStreams::of);
+        let sources = Self::view_sources(streams, memory_streams.as_ref());
+        let mut held = self.context_view.lock();
+        let view = held.as_mut()?;
+        let limit = (budget_tokens as u128 * view.chars() as u128 / view_tokens.max(1) as u128) as usize;
+        // What a start would grant one arrival at most: `start_grants` gives her growing
+        // sources at most half of what the view may hold, so an item larger than half of it is
+        // reduced by a turnover too. Only such an arrival is reduced here; any other stays
+        // whole and the caller turns over, shrinking the oldest (goal 7).
+        view.readmit(&sources, limit, limit / 2)?;
+        if let Some(memory) = memory {
+            memory.keep_view(held.clone());
+        }
+        Some(Self::render(held.as_ref()))
+    }
+
+    /// The prompt built on this act's view is final and about to be sent: nothing may rewind
+    /// the act it appended any more ([`View::sent`]).
+    pub(in super::super) fn view_sent(&self) {
+        if let Some(view) = self.context_view.lock().as_mut() {
+            view.sent();
+        }
     }
 
     /// Start a new epoch of her view within `budget_chars`, the flexbox granting each

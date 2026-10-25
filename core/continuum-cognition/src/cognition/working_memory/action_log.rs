@@ -36,6 +36,11 @@ pub(crate) struct ActionRecord {
     /// checkpoint: its operation and workspace live only in that text.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub written_pointer: Option<String>,
+    /// The result's summary level (`continuum_context::levels`): a numbered read's outline,
+    /// else an output's head and tail; what her view gives it when it cannot keep it whole.
+    /// Kept after the result collapses, so what she read stays addressable.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summary: Option<String>,
 }
 
 impl ActionRecord {

@@ -15,6 +15,10 @@ pub struct Item<T> {
     pub key: String,
     /// The item itself.
     pub full: T,
+    /// A coarser rendering between whole and pointer (a file's outline and the lines she
+    /// works in), like a mipmap level: what the view gives an item too large to keep whole
+    /// before it gives it only its pointer. `None` when the item has no such level.
+    pub summary: Option<T>,
     /// What it is and how to reopen it: what the item costs once collapsed. `None` when the
     /// item leaves the view entirely once collapsed (a conversation turn whose room history
     /// holds it, where a one-line pointer would cost about what the turn does).
