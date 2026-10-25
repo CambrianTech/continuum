@@ -66,8 +66,9 @@ const GIT_READ_DEADLINE: std::time::Duration = std::time::Duration::from_secs(10
 /// seam's capture bound (64 KiB, about 500 changed paths of raw diff) is an error: the moves
 /// cannot be vouched for, so the submit fails closed.
 fn git_read(dir: &Path, args: &[&str]) -> Result<String, String> {
-    let dir_text = dir.to_string_lossy();
-    let mut full = vec!["-C", dir_text.as_ref()];
+    // Never a lossy rendering: two directories must not read as one.
+    let dir_text = dir.to_str().ok_or_else(|| format!("{} is not valid UTF-8, so git cannot be pointed at it exactly", dir.display()))?;
+    let mut full = vec!["-C", dir_text];
     full.extend_from_slice(args);
     let probed = crate::system_resources::bounded_command::probe("git", &full, GIT_READ_DEADLINE);
     probed
@@ -90,6 +91,12 @@ pub(super) fn submodule_moves_in(ws: &Path, base: &str, excludes: &[&str]) -> Re
             continue;
         }
         let path = String::from_utf8(entry.path).map_err(|e| format!("a submodule path is not UTF-8, so it cannot be named: {e}"))?;
+        // The seam renders git's output lossily, so a replacement character may stand for bytes
+        // that were never text: such a path is refused, never named as another path that reads
+        // the same (Codex on #5402).
+        if path.contains(char::REPLACEMENT_CHARACTER) {
+            return Err(format!("a submodule path holds bytes that cannot be read exactly ({path:?}); restore or rename it and submit again"));
+        }
         let to = match named(&entry.new_sha) {
             Some(sha) => Some(sha),
             None if entry.new_mode == GITLINK => submodule_head(&ws.join(&path))?,
@@ -217,5 +224,42 @@ mod tests {
         assert_eq!(shell_word("a b"), "'a b'");
         assert_eq!(shell_word("it's"), r"'it'\''s'");
         assert_eq!(shell_word("$(rm -rf x)"), "'$(rm -rf x)'");
+    }
+
+    // what this catches (Codex on #5402): the bounded seam renders git's output lossily, so a
+    // gitlink path holding bytes that are not UTF-8 and a different path holding a literal
+    // replacement character read as the same text. Neither is named or approved by its
+    // rendering: each is refused.
+    #[cfg(unix)]
+    #[test]
+    fn a_submodule_path_that_cannot_be_read_exactly_is_refused_never_aliased() {
+        use std::os::unix::ffi::OsStringExt;
+        for raw_path in [b"vendor/bad\xff".to_vec(), "vendor/bad\u{FFFD}".as_bytes().to_vec()] {
+            let root = tempfile::tempdir().expect("root"); // JUSTIFIED: test fixture
+            let repo = root.path().to_path_buf();
+            git(&repo, &["init", "-q"]);
+            let mut cacheinfo = b"160000,aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa,".to_vec();
+            cacheinfo.extend_from_slice(&raw_path);
+            let added = std::process::Command::new("git")
+                .arg("update-index")
+                .arg("--add")
+                .arg("--cacheinfo")
+                .arg(std::ffi::OsString::from_vec(cacheinfo))
+                .current_dir(&repo)
+                .status()
+                .expect("git runs"); // JUSTIFIED: test fixture
+            assert!(added.success());
+            git(&repo, &["commit", "-q", "-m", "base with an odd gitlink"]);
+            let base = head(&repo);
+            let removed = std::process::Command::new("git")
+                .arg("update-index")
+                .arg("--force-remove")
+                .arg(std::ffi::OsString::from_vec(raw_path.clone()))
+                .current_dir(&repo)
+                .status()
+                .expect("git runs"); // JUSTIFIED: test fixture
+            assert!(removed.success());
+            assert!(submodule_moves_in(&repo, &base, &[]).is_err(), "refused, never named: {:?}", String::from_utf8_lossy(&raw_path));
+        }
     }
 }
