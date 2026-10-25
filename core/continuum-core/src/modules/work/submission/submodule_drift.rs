@@ -103,7 +103,8 @@ fn submodule_head(dir: &Path) -> Result<Option<String>, String> {
     Ok(Some(String::from_utf8_lossy(&out.stdout).trim().to_string()))
 }
 
-/// A path as one POSIX shell word: single-quoted, with any `'` closed, escaped and reopened.
+/// A path as one POSIX shell word: single-quoted, with any `'` closed, escaped and reopened
+/// (POSIX sh syntax; PowerShell quotes differently, so the refusal says which shell it is for).
 fn shell_word(path: &str) -> String {
     format!("'{}'", path.replace('\'', r"'\''"))
 }
@@ -131,7 +132,7 @@ pub(super) fn refuse_unlisted(moves: &[SubmoduleMove], listed: &[String], base_s
     Some(format!(
         "submission refused: your checkout moves submodule {}, which you did not list. If the \
          move is yours, submit again with submodules: [{}]. If not, restore it from the repo \
-         root ({}), commit, and submit again.",
+         root (POSIX shell: {}), commit, and submit again.",
         named.join(", "),
         paths.join(", "),
         restore.join("; ")
