@@ -231,7 +231,7 @@ fn an_oversized_arrival_is_admitted_as_its_pointer_and_the_prefix_holds() -> Res
 }
 
 /// A source whose items carry a summary level, like a file read's outline.
-struct Leveled(Vec<(&'static str, String, String)>);
+struct Leveled(Vec<(&'static str, String, Option<String>)>);
 
 impl Source<String> for Leveled {
     fn name(&self) -> &str {
@@ -246,27 +246,29 @@ impl Source<String> for Leveled {
             .map(|(key, full, summary)| Item {
                 key: (*key).to_owned(),
                 full: full.clone(),
-                summary: Some(summary.clone()),
+                summary: summary.clone(),
                 pointer: Some(format!("[{key}]")),
             })
             .collect()
     }
 }
 
-// what this catches: one item too large to keep whole collapsing every older one with it. The
-// file she is working on keeps its outline and her small results stay whole (Aiko, the M5,
-// 2026-10-25: 9 whole reads of one 51,827-char file in 43 acts, each after a start that
-// collapsed everything).
+// what this catches: one item too large to keep whole collapsing every item with it (Aiko, the
+// M5, 2026-10-25: 9 whole reads of one 51,827-char file in 43 acts), and the opposite error,
+// older items kept more whole than a newer one, which doubled every start (median 14,238 ->
+// 27,696 chars, the median act 83-111 s -> 140 s). The file keeps its outline; nothing older is
+// more detailed than it.
 #[test]
-fn an_item_too_large_to_keep_whole_takes_its_summary_and_older_items_stay_whole() -> Result<(), GrantMismatch> {
+fn an_item_too_large_to_keep_whole_takes_its_summary_and_caps_the_older_ones() -> Result<(), GrantMismatch> {
     let reads = Leveled(vec![
-        ("small", "a small result".to_owned(), "small".to_owned()),
-        ("file", "x".repeat(51_827), "outline of the file".to_owned()),
+        ("older", "an older result".to_owned(), Some("older".to_owned())),
+        ("small", "a small result".to_owned(), Some("small".to_owned())),
+        ("file", "x".repeat(51_827), Some("outline of the file".to_owned())),
     ]);
     let (view, start) = View::start(Vec::new(), &[&reads as &dyn Source<String>], |_| vec![200])?;
     let rendered: Vec<String> = view.render().cloned().collect();
-    assert_eq!(rendered, ["a small result", "outline of the file"]);
-    assert_eq!((start.collapsed, start.summarized), (0, 1));
+    assert_eq!(rendered, ["older", "small", "outline of the file"]);
+    assert_eq!((start.collapsed, start.summarized), (0, 3));
     Ok(())
 }
 
@@ -303,5 +305,23 @@ fn a_sent_act_cannot_be_readmitted() -> Result<(), GrantMismatch> {
     view.advance(&[&results]);
     view.sent();
     assert!(view.readmit(&[&results], 0, 0).is_none());
+    Ok(())
+}
+
+// what this catches: a short production result (no summary: it is its own) falling to its pointer
+// under a big read's summary ceiling and collapsing every older item with it, the original
+// re-read loop (Cormac on #5426). Production-shaped: most items carry no summary.
+#[test]
+fn a_short_item_without_a_summary_stays_whole_under_a_summary_ceiling() -> Result<(), GrantMismatch> {
+    let reads = Leveled(vec![
+        ("oldest", "a short old result".to_owned(), None),
+        ("big", "y".repeat(5_000), Some("outline of the big result".to_owned())),
+        ("short", "a short result".to_owned(), None),
+        ("file", "x".repeat(51_827), Some("outline of the file".to_owned())),
+    ]);
+    let (view, start) = View::start(Vec::new(), &[&reads as &dyn Source<String>], |_| vec![300])?;
+    let rendered: Vec<String> = view.render().cloned().collect();
+    assert_eq!(rendered, ["a short old result", "outline of the big result", "a short result", "outline of the file"]);
+    assert_eq!((start.collapsed, start.summarized), (0, 2));
     Ok(())
 }
