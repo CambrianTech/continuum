@@ -377,6 +377,13 @@ impl PerceptionRegion {
         self.publish(now_ms);
     }
 
+    /// Give a cut turn's trigger back: the activity's cursor returns to `before` (see
+    /// [`MindState::give_back`]), so the line wakes the same turn after the restart.
+    pub fn give_back(&mut self, activity: Uuid, before: Option<ActivityCursor>, now_ms: u64) {
+        self.state.give_back(activity, before);
+        self.publish(now_ms);
+    }
+
     /// Her act: what she is working on and what she expects next.
     pub fn set_continuation(&mut self, continuation: Option<Continuation>, now_ms: u64) {
         continuum_base::probe!(class = "mind.continuation.written", persona = %self.me, present = continuation.is_some(), "written by her act");

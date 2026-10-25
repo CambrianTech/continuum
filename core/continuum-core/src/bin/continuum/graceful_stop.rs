@@ -274,7 +274,9 @@ pub(super) async fn exited_within(pid: i32, deadline: Duration) -> Result<(), St
     Ok(())
 }
 
-pub(super) async fn request_graceful_stop(_authority_preflighted: &MayDrain) -> GracefulStop {
+/// `prompt`: the engine is kept (reboot, deploys, `stop --keep-engine`), so turns are cut at
+/// once and give their triggers back instead of being waited on (`ShutdownSettle::Prompt`).
+pub(super) async fn request_graceful_stop(_authority_preflighted: &MayDrain, prompt: bool) -> GracefulStop {
     // Ask whether anything is listening BEFORE spending the stop budget on a socket
     // nobody holds. Without this, `stop` on an already-stopped node waits the full
     // graceful budget and then reports state loss — 20 seconds to be told, wrongly, that
@@ -339,8 +341,11 @@ pub(super) async fn request_graceful_stop(_authority_preflighted: &MayDrain) -> 
     }
     let conn = connection();
     let cmds = conn.commands();
-    let req = cmds.execute_value("system/shutdown", Value::Object(Default::default()));
-    say_turns_may_settle();
+    let params = if prompt { serde_json::json!({ "settle": "prompt" }) } else { Value::Object(Default::default()) };
+    let req = cmds.execute_value("system/shutdown", params);
+    if !prompt {
+        say_turns_may_settle();
+    }
     match tokio::time::timeout(GRACEFUL_STOP_BUDGET, req).await {
         Ok(Ok(value)) => {
             let durable = value

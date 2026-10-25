@@ -99,7 +99,7 @@ crate::action_command! {
     output: ShutdownResult,
     run(_this, ctx, p) => {
         validate_target(&p, shutdown_target())?;
-        <SystemShutdown as crate::sdk_codegen::ActionCommand>::run(&SystemShutdown, ctx, SystemQuery {}).await
+        <SystemShutdown as crate::sdk_codegen::ActionCommand>::run(&SystemShutdown, ctx, SystemShutdownParams::default()).await
     }
 }
 
@@ -138,15 +138,38 @@ pub struct ShutdownResult {
     pub receipt: ShutdownReceipt,
 }
 
+/// How the stop treats turns still running. `turns` (the default) waits for them, bounded by
+/// their measured remaining time and `TURN_SETTLE_CAP`, for a stop that loses the engine (a
+/// re-run would be cold). `prompt` closes the door and cuts at once, for a stop that keeps the
+/// engine (`stop --keep-engine`, reboot, deploys): a cut turn gives its trigger back
+/// (`persona::turn_trigger_custody`) and re-runs on warm KV, so waiting up to 300 s buys
+/// nothing (the M5, 2026-10-24: stops waited the full cap and still cut 2 turns).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, TS, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+#[ts(export, export_to = "../../../protocol/typescript/system/ShutdownSettle.ts")]
+pub enum ShutdownSettle {
+    #[default]
+    Turns,
+    Prompt,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, TS, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../../../protocol/typescript/system/SystemShutdownParams.ts")]
+pub struct SystemShutdownParams {
+    #[serde(default)]
+    pub settle: ShutdownSettle,
+}
+
 crate::action_command! {
     /// Drain, save and join every module. Return the retained shutdown receipt before
     /// the calling CLI tears down the process.
     pub struct SystemShutdown;
     name: "system/shutdown",
     access: Privileged,
-    params: SystemQuery,
+    params: SystemShutdownParams,
     output: ShutdownResult,
-    run(_this, _ctx, _p) => {
+    run(_this, _ctx, p) => {
         // TRIGGER AND OBSERVE — the operation itself belongs to the runtime.
         //
         // This handler used to run the broadcast inline, and a socket handler is
@@ -170,7 +193,10 @@ crate::action_command! {
         }
         // The settle comes first (card 32fa22ba): admitted turns finish, bounded by their
         // measured remaining time and capped by TURN_SETTLE_CAP, before any module saves.
-        let settle = crate::cognition::turn_ingress::TURN_SETTLE_CAP;
+        let settle = match p.settle {
+            ShutdownSettle::Turns => crate::cognition::turn_ingress::TURN_SETTLE_CAP,
+            ShutdownSettle::Prompt => std::time::Duration::ZERO,
+        };
         let rx = crate::runtime::begin_shutdown(settle);
 
         // Bounded so a wedged module cannot hold the connection open forever. A timeout
@@ -283,7 +309,7 @@ mod tests {
         // this assertion would be about a live runtime, so it checks the branch it can.
         if crate::runtime::signal_runtime().is_none() {
             let err = SystemShutdown
-                .run(&Ctx::default(), SystemQuery {})
+                .run(&Ctx::default(), SystemShutdownParams::default())
                 .await
                 .expect_err("no runtime must refuse");
             // Matched on the VARIANT, not on formatted text: `Internal` is the category

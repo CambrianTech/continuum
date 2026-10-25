@@ -40,6 +40,9 @@ pub(crate) fn install_kernel_extensions() {
     crate::runtime::dispatch_hook::install(Arc::new(crate::persona::cognition_pulse::CardWorkPulse));
     crate::runtime::extensions::install_command_name_resolver(crate::ai::tool_dialect::resolve_wire_name);
     crate::runtime::extensions::install_settle_before_stop(Arc::new(crate::cognition::turn_ingress::TurnsSettle));
+    // After the turns settle (install order), before anything saves: a turn the settle cut
+    // gives its trigger back, so the line wakes it again after the restart.
+    crate::runtime::extensions::install_settle_before_stop(Arc::new(crate::persona::turn_trigger_custody::TriggerCustodySettle));
     crate::runtime::extensions::install_turns_in_flight(crate::cognition::turn_ingress::in_flight);
     crate::persona::command_inbound_pump::install_command_handler(|airc, executor, grants| {
         crate::ipc::command_ingress::CommandRequestHandler::with_grant_authorizer(airc, executor, grants)

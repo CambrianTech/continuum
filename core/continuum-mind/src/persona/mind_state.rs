@@ -124,6 +124,20 @@ impl MindState {
     pub fn perceived(&mut self, activity: Uuid, seen: &ActivityCursor) {
         self.cursors.entry(activity).or_default().advance_to(seen);
     }
+
+    /// The ONE backward move: her cursor into `activity` returns to `before`, for a turn a stop
+    /// cut after it took in its trigger and before it answered (`turn_trigger_custody`), so the
+    /// line is unread again after the restart. `None` = she had never perceived the activity.
+    pub fn give_back(&mut self, activity: Uuid, before: Option<ActivityCursor>) {
+        match before {
+            Some(cursor) => {
+                self.cursors.insert(activity, cursor);
+            }
+            None => {
+                self.cursors.remove(&activity);
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -169,7 +183,24 @@ mod tests {
     // older file) advancing her position backwards would make her re-perceive a
     // day of a room as new and act on it twice.
     #[test]
-    fn cursors_only_move_forward() {
+    fn a_given_back_cursor_returns_exactly_to_where_it_was() {
+        // what this catches: the one backward move landing anywhere but the cursor a cut turn
+        // recorded, or leaving a cursor where she had none (she would skip the room forever).
+        let room = Uuid::from_u128(9);
+        let before = ActivityCursor { chat_lamport: 10, chat_event_id: Some(Uuid::from_u128(1)), views: Default::default() };
+        let mut m = MindState::default();
+        m.perceived(room, &before);
+        m.perceived(room, &ActivityCursor { chat_lamport: 12, chat_event_id: Some(Uuid::from_u128(2)), views: Default::default() });
+        m.give_back(room, Some(before.clone()));
+        assert_eq!(m.cursors.get(&room), Some(&before));
+        let fresh = Uuid::from_u128(10);
+        m.perceived(fresh, &ActivityCursor { chat_lamport: 3, chat_event_id: None, views: Default::default() });
+        m.give_back(fresh, None);
+        assert_eq!(m.cursors.get(&fresh), None, "a room she had never perceived is unread again");
+    }
+
+    #[test]
+        fn cursors_only_move_forward() {
         let mut c = ActivityCursor { chat_lamport: 10, chat_event_id: Some(Uuid::from_u128(1)), views: [("kanban".to_string(), 5u64)].into() };
         c.advance_to(&ActivityCursor { chat_lamport: 3, chat_event_id: Some(Uuid::from_u128(2)), views: [("kanban".to_string(), 2u64), ("wall".to_string(), 1u64)].into() });
         assert_eq!(c.chat_lamport, 10);

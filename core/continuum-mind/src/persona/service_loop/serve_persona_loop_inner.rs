@@ -271,6 +271,9 @@ pub(super) async fn serve_persona_loop_inner(
             ctx.identity.peer_id.as_uuid(),
             EpochMs::now().millis(),
         );
+        // Her custody of the trigger while the turn runs: a stop that cuts the turn gives the
+        // line back (turn_trigger_custody); every exit below drops it, as `_turn_in_flight`.
+        let _trigger_hold = crate::persona::turn_trigger_custody::hold(ctx.identity.peer_id.as_uuid(), turn_room);
         announce_turn_start(ctx, trigger, &opts);
 
         // ===========================================================

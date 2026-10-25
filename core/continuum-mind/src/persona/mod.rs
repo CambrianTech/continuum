@@ -112,6 +112,7 @@ pub mod supervisor;
 pub mod training_producer;
 pub mod turn_context;
 pub mod turn_frame;
+pub mod turn_trigger_custody;
 pub mod unified;
 pub mod wall_source;
 pub mod workspace_map_source;

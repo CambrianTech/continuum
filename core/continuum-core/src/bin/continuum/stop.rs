@@ -21,7 +21,7 @@ pub(super) async fn stop(options: StopOptions) -> Result<(), String> {
             return elevated_teardown::teardown_elevated(Path::new(&plan), &sha, || async {
                 format!(
                     "{:?}",
-                    request_graceful_stop(&MayDrain::proven_by_held_handle()).await
+                    request_graceful_stop(&MayDrain::proven_by_held_handle(), false).await
                 )
             })
             .await;
@@ -201,7 +201,7 @@ pub(super) async fn stop_with_policy(keep_lanes: bool, operator_present: bool, r
                 ));
             }
         }
-        request_graceful_stop(&may_drain).await
+        request_graceful_stop(&may_drain, keep_lanes).await
     };
     // `keep_lanes` IS the reboot flag — see this function's doc: "`keep_lanes: true` is the
     // REBOOT path". Named `reboot` on the guard because that is the property it reasons about,
