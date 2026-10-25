@@ -256,6 +256,12 @@ pub(super) fn script_settlement_reply(
 ) {
     let id = row.id;
     let model = row.served.as_ref().unwrap().model.clone();
+    let captures: Vec<serde_json::Value> = row
+        .receipts
+        .iter()
+        .filter(|r| matches!(r.outcome, crate::ai::provenance::GenerationOutcome::Served { .. }))
+        .map(|r| json!(r.capture))
+        .collect();
     submit.respond_to("genome/training-trigger/submit", move |params| {
         assert_eq!(
             params["submissionId"],
@@ -267,12 +273,14 @@ pub(super) fn script_settlement_reply(
             json!(model),
             "each row supplies its actual serving model"
         );
-        assert!(
-            params["examples"].as_array().is_some_and(|examples| {
-                !examples.is_empty() && examples.iter().all(|example| example["lived"].is_object())
-            }),
-            "every example is a call she lived, never the flat prompt and completion"
-        );
+        // Exact payload: the examples are this row's own captured calls, in receipt order,
+        // each completion the response she gave; never the flat prompt and completion.
+        let examples = params["examples"].as_array().cloned().unwrap_or_default(); // unwrap_or_default: a missing list fails the equality below
+        let cursors: Vec<serde_json::Value> = examples.iter().map(|e| e["lived"]["capture"].clone()).collect();
+        assert_eq!(cursors, captures, "the examples are exactly this row's captured calls");
+        for example in &examples {
+            assert_eq!(example["completion"], example["lived"]["response"]["text"], "each completion is the response she gave");
+        }
         match &reply {
             Some(value) => Ok(value.clone()),
             None => Err(ClientError::Transport(
