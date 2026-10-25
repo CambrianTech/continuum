@@ -625,6 +625,7 @@ pub(super) async fn derive_submission(
     given_instance: Option<String>,
     given_base: Option<String>,
     repo: Option<&airc_work::RepoId>,
+    listed_submodules: &[String],
 ) -> Result<DerivedSubmission, CommandError> {
     let is_swe = checkout.iter().any(|c| c == "swe");
     let instance = given_instance
@@ -645,6 +646,14 @@ pub(super) async fn derive_submission(
             }
         }
     };
+    // Only the submodule moves she lists ride: one that came in from her tree unasked is
+    // refused by name, with how to list it and the restore, before any patch is read or
+    // retained (card b3ecd1ac; Codex on #5402).
+    let excludes = crate::persona::staged_workspace::SOLUTION_PATH_EXCLUDES;
+    let moves = super::submodule_drift::submodule_moves_in(checkout, &base_sha, excludes).map_err(CommandError::Internal)?;
+    if let Some(refusal) = super::submodule_drift::refuse_unlisted(&moves, listed_submodules, &base_sha) {
+        return Err(CommandError::Invalid(refusal));
+    }
     let ws = checkout.to_string_lossy().into_owned();
     let patch = crate::commands::benchmark::workspace_candidate_diff_from(&ws, Some(&base_sha))?;
     if patch.trim().is_empty() {

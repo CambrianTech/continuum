@@ -435,7 +435,7 @@
         let add = run(&["add", "solution.py"]);
         assert!(add.status.success());
         let card = uuid::Uuid::new_v4();
-        let derived = super::derive_submission(dir.path(), card, None, Some(base.clone()), None).await.expect("derive without ambient hands");
+        let derived = super::derive_submission(dir.path(), card, None, Some(base.clone()), None, &[]).await.expect("derive without ambient hands");
         assert_eq!(derived.instance, card.to_string());
         assert_eq!(derived.base_sha, base);
         let expected = String::from_utf8(run(&["diff", "--binary", "--full-index", "--no-ext-diff", "--no-textconv", "--no-color", "--src-prefix=a/", "--dst-prefix=b/", "HEAD", "--", "solution.py"]).stdout).expect("diff");
@@ -447,11 +447,11 @@
         // must neither swallow committed work nor change the stored creation base.
         assert!(run(&["update-ref", airc_lib::work_worktree::CREATION_BASE_REF, &base, ""]).status.success());
         assert!(run(&["update-ref", "refs/remotes/origin/HEAD", "HEAD"]).status.success());
-        let recorded = super::derive_submission(dir.path(), card, None, None, None).await.expect("recorded base includes committed work");
+        let recorded = super::derive_submission(dir.path(), card, None, None, None, &[]).await.expect("recorded base includes committed work");
         assert_eq!(recorded.base_sha, base);
         assert_eq!(recorded.artifact.hash, derived.artifact.hash);
         assert_eq!(recorded.artifact.size_bytes, derived.artifact.size_bytes);
-        let empty = super::derive_submission(dir.path(), card, None, Some(clean_base), None).await.err().expect("clean checkout refused");
+        let empty = super::derive_submission(dir.path(), card, None, Some(clean_base), None, &[]).await.err().expect("clean checkout refused");
         assert!(empty.to_string().contains("nothing to submit"));
         // Regression for 6dd8befa: a valid empty submission is not malformed
         // arguments. The real refusal reaches her without advice to retry its schema.
