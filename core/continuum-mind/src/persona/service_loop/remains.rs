@@ -25,6 +25,18 @@ pub(crate) async fn publish_own_speech(
     room: Uuid,
     text: &str,
 ) -> Result<(), String> {
+    // After the seam wrote her handoff the next life answers what this one still held; a
+    // cut turn that finishes late must not answer it too (TURNS-RESUME-ACROSS-A-STOP.md).
+    if !crate::cognition::unanswered::may_answer(peer.as_uuid()) {
+        continuum_base::probe!(
+            class = "persona.turn.sealed",
+            persona_id = %peer.as_uuid(),
+            room_id = %room,
+            text_len = text.len(),
+            "a cut turn finished after the seam; the next life answers its input"
+        );
+        return Err("the seam handed this life's unanswered input to the next life; it answers".to_string());
+    }
     conversation.say_in(room, text).await?;
     crate::cognition::deliberation_budget::record_own_speech(peer, room, text);
     Ok(())

@@ -31,24 +31,28 @@ gains one field:
 pub unanswered: Vec<IncomingMessage>,
 ```
 
-- **Write.** `PendingInput` stamps each admitted input into the handoff seed as it retains it,
-  and the turn stamps its trigger at `announce_turn_start`. When the turn's reply is published
-  (or the input is dropped by her own decision), the input is cleared. Writes come from state
-  the loop already holds; nothing walks history.
+- **Write.** One ledger, `cognition/unanswered.rs`, with two owners. The running turn holds an
+  `InFlight` guard for its trigger from `announce_turn_start` until the turn ends, on any exit.
+  `PendingInput` publishes its parked inputs whole each time they change. What is owed is the
+  in-flight input first, then the parked ones. Nothing walks history.
 - **Save.** The existing seam write saves it. The periodic write saves it too, so a crash loses
   at most one checkpoint interval.
 - **Resume.** `handoff::reload` hands the inputs to the loop. The loop seeds `PendingInput` with
   them, so the first wakes are `Wake::Retry(msg)`. That is the existing admitted-retry path,
   which already bypasses the high-water skip and the loop-filler dedup.
-- **No duplicate.** A turn cut during the drain can still publish before the process exits.
-  Resume checks whether the room already holds her reply to that trigger (her line replying to
-  that event id) and drops the input if it does. This check runs in the new process, after the
-  old one is gone, so no in-process race remains.
+- **No duplicate.** The seam's write SEALS the ledger in the same lock as it reads it. From
+  then on `publish_own_speech`, the one boundary every resident speech path shares, refuses
+  (`persona.turn.sealed`). A cut turn that finishes late cannot answer what the next life will
+  answer, and nothing can land between the read and the refusal.
 
 Shutdown keeps its measured settle (up to 300 s). A turn that finishes in time answers normally
 and clears its input. Only a turn the stop really cuts is resumed.
 
 ## What this does not do
+
+- It does not undo acts. A cut turn that ran a tool before the seam may run it again when its
+  input is re-answered. Her hands see the world as the act left it, so an act that already
+  landed is what she reads first.
 
 - It does not restore a half-generated reply. The turn re-runs from its input. On the in-process
   engine, her KV pages restore from disk (SERVING-ENGINE.md S4), so the re-run reuses the

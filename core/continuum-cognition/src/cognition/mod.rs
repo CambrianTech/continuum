@@ -87,6 +87,8 @@ pub mod persona_workspace;
 /// The handoff record: her state at the seam, written before a stop, read first on wake
 /// (card 49b5e806).
 pub mod handoff;
+/// The inputs she admitted and has not answered, handed across a stop (TURNS-RESUME-ACROSS-A-STOP.md).
+pub mod unanswered;
 /// Bounded per-room diagnostics state, with the eviction decision CLAUDE.md
 /// requires of anything that accumulates (#3903 review).
 pub mod bounded_room_ledger;

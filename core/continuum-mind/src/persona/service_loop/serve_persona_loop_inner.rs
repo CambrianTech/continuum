@@ -272,6 +272,8 @@ pub(super) async fn serve_persona_loop_inner(
             EpochMs::now().millis(),
         );
         announce_turn_start(ctx, trigger, &opts);
+        // Owed an answer until this turn ends; the seam hands it to the next life if it is cut.
+        let _owed = crate::cognition::unanswered::begin(ctx.identity.peer_id.as_uuid(), &msg);
 
         // ===========================================================
         // The brain services the turn through the WorkspaceCycle:

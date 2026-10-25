@@ -92,6 +92,10 @@ pub struct Handoff {
     pub staged: Option<Staged>,
     /// Review cards she holds (owed by her) and her own cards in Review (owed to her).
     pub obligations: Vec<airc_lib::WorkCard>,
+    /// Inputs admitted and not yet answered, whole: the next life answers them
+    /// (`unanswered`, TURNS-RESUME-ACROSS-A-STOP.md). Absent in records written before it.
+    #[serde(default)]
+    pub unanswered: Vec<crate::cognition::conversation::IncomingMessage>,
 }
 
 /// What her turns stamp here as they go, so the seam composes from memory in microseconds.
@@ -203,6 +207,7 @@ pub fn reload(persona: Uuid, previous: &Handoff) {
         s.ledger = previous.ledger.clone();
         s.obligations = previous.obligations.clone();
     });
+    crate::cognition::unanswered::hand_over(persona, &previous.unanswered);
 }
 
 /// What tears this life, decided the way every other caller decides "is a deploy in
@@ -253,7 +258,12 @@ pub fn compose(
     now_ms: u64,
 ) -> Option<Handoff> {
     let seed = with_seed(persona, |s| s.clone());
-    if seed.card.is_none() && seed.ledger.is_none() && acting_root.is_none() {
+    // A seam seals: from this record on, the next life answers. A periodic write only reads.
+    let unanswered = match &torn_by {
+        TornBy::Periodic => crate::cognition::unanswered::owed(persona),
+        TornBy::Deploy(_) | TornBy::Stop => crate::cognition::unanswered::seal(persona),
+    };
+    if seed.card.is_none() && seed.ledger.is_none() && acting_root.is_none() && unanswered.is_empty() {
         return None;
     }
     let acts_after_ledger = match (&seed.ledger, seed.rooted_at_ms) {
@@ -276,6 +286,7 @@ pub fn compose(
             },
         }),
         obligations: seed.obligations,
+        unanswered,
     })
 }
 
@@ -451,6 +462,12 @@ pub fn render_on_wake(h: &Handoff, current_build: &str, now_ms: u64) -> String {
         "[handoff] written {age} on build {}: {torn}.",
         short(&h.build_sha)
     );
+    if !h.unanswered.is_empty() {
+        out.push_str(&format!(
+            "\n  {} line(s) you had taken and not yet answered are in front of you again, in the order you took them.",
+            h.unanswered.len()
+        ));
+    }
     match &h.card {
         Some(card) => {
             let id8: String = card
@@ -905,6 +922,7 @@ mod tests {
             acts_after_ledger: false,
             staged: None,
             obligations: vec![],
+            unanswered: Vec::new(),
         };
         let landed = render_on_wake(&h, "abcdef123", 60_000 + 5 * 60_000);
         assert!(landed.contains("LANDED"), "{landed}");

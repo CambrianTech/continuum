@@ -36,8 +36,32 @@ struct RetainedInput {
 }
 
 impl PendingInput {
+    /// Custody for `persona`, holding first what her previous life took and never answered
+    /// (the handoff hands them over; TURNS-RESUME-ACROSS-A-STOP.md). Each wakes as a retry,
+    /// past the high-water skip, at the first beat.
     pub(crate) fn for_persona(persona: Uuid) -> Self {
-        Self { persona: Some(persona), ..Self::default() }
+        let inputs = crate::cognition::unanswered::take_resumed(persona)
+            .into_iter()
+            .map(|message| {
+                continuum_base::probe!(
+                    class = "persona.turn.resumed",
+                    persona_id = %persona,
+                    room_id = %message.room_id,
+                    event_id = %message.event_id,
+                    "a line her previous life took and never answered is in custody again"
+                );
+                RetainedInput { message, engram: None, attention: TurnAttention::default(), capacity: None }
+            })
+            .collect();
+        let custody = Self { persona: Some(persona), inputs, ..Self::default() };
+        custody.publish();
+        custody
+    }
+    /// The parked inputs, whole, to the one ledger the seam writes.
+    fn publish(&self) {
+        if let Some(persona) = self.persona {
+            crate::cognition::unanswered::set_parked(persona, self.inputs.iter().map(|i| i.message.clone()).collect());
+        }
     }
     pub(crate) fn stop(&mut self) {
         for input in &mut self.inputs {
@@ -211,6 +235,16 @@ impl PendingInput {
         waits.next().await
     }
     pub(crate) fn settle(
+        &mut self,
+        message: &IncomingMessage,
+        wake_engram: Option<Uuid>,
+        attention: TurnAttention,
+        step: &crate::cognition::act_observe::SettleStep,
+    ) {
+        self.retain_or_release(message, wake_engram, attention, step);
+        self.publish();
+    }
+    fn retain_or_release(
         &mut self,
         message: &IncomingMessage,
         wake_engram: Option<Uuid>,
@@ -644,5 +678,22 @@ mod tests {
         assert!(pending.message().is_none(), "completed input is not replayed");
         assert_eq!(conversation.next_message().await.unwrap(), Some(newer));
         assert!(conversation.next_message().await.unwrap().is_none());
+    }
+
+    // what this catches (TURNS-RESUME-ACROSS-A-STOP.md): a line the previous life took and
+    // never answered, handed over at wake, is the first retry of the next life's custody and
+    // is owed until a turn settles it; the ledger the seam writes then holds nothing.
+    #[tokio::test(start_paused = true)]
+    async fn a_handed_over_line_is_the_first_retry_and_is_owed_until_settled() {
+        let me = Uuid::from_u128(0x7e5e);
+        let asked = line(3, 40, "did the fix land?");
+        crate::cognition::unanswered::hand_over(me, std::slice::from_ref(&asked));
+        let mut pending = PendingInput::for_persona(me);
+        assert_eq!(crate::cognition::unanswered::owed(me), vec![asked.clone()], "owed in this life too");
+        let beat = std::time::Duration::from_millis(10);
+        assert_eq!(pending.at_next_beat(beat).await, Some(asked.clone()), "it wakes as a retry");
+        pending.settle(&asked, None, TurnAttention::default(), &crate::cognition::act_observe::SettleStep::Spoke("yes".into()));
+        assert!(crate::cognition::unanswered::owed(me).is_empty(), "answered, nothing owed at the next seam");
+        assert!(PendingInput::for_persona(me).message().is_none(), "and nothing is handed over twice");
     }
 }
