@@ -1,11 +1,12 @@
-//! The base a LoRA fits, as one digest read from a GGUF header (card 3fd98325, S3 of the
-//! cross-grid training lease).
+//! Whether a LoRA can load on a base, as one digest read from a GGUF header (card 3fd98325,
+//! S3 of the cross-grid training lease).
 //!
-//! A LoRA trained on one node is served on another's copy of "the same" base. What it must
-//! match is the tokenizer and the tensor shapes; the quantization does not matter (the adapter
-//! adds f16 deltas to whatever the base dequantizes to). A model id names a row, not bytes, and
-//! a GGUF LoRA may omit tokenizer metadata, so the trainer reports this digest of its base and
-//! the origin refuses an adapter whose digest differs from its own base's.
+//! A LoRA loads on any base with its tokenizer and tensor shapes; the quantization does not
+//! matter (the adapter adds f16 deltas to whatever the base dequantizes to). A GGUF LoRA may
+//! omit tokenizer metadata, so the trainer reports this digest of its base beside the base's
+//! content digest. This is COMPATIBILITY evidence, never identity: a fine-tuned sibling with
+//! the same architecture, tokenizer and shapes has the same digest (Codex on #5418), so which
+//! base an adapter was trained on is decided by the content digest, not this one.
 //!
 //! The digest covers, in sorted order: `general.architecture`, every `{arch}.*` hyperparameter,
 //! every `tokenizer.ggml.*` value, and every tensor's name and shape. It leaves out tensor types

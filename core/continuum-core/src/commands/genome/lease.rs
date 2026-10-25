@@ -510,7 +510,7 @@ mod tests {
         let files = tempfile::tempdir().expect("dir"); // JUSTIFIED: test fixture
         let (adapter_file, base) = (files.path().join("adapter.gguf"), files.path().join("base.gguf"));
         std::fs::write(&adapter_file, b"lora").expect("write"); // JUSTIFIED: test fixture
-        super::super::test_support::write_base_gguf(&base);
+        super::super::test_support::write_base_gguf(&base, 0.0);
         let registry = Arc::new(FineTuningRegistry::new());
         registry.register(Arc::new(RecordingFineTuningAdapter::new().with_local_artifact(adapter_file.clone(), ArtifactFormat::GgufLora)));
         let found = base.clone();
@@ -527,6 +527,7 @@ mod tests {
         assert_eq!(artifact.files[0].sha256, format!("{:x}", Sha256::digest(b"lora")));
         assert_eq!(artifact.base.model_id, "qwen");
         assert_eq!(artifact.base.fingerprint, crate::inference_capability::gguf_fingerprint::lora_base_fingerprint(&base).expect("digest")); // JUSTIFIED: test asserts the base
+        assert_eq!(artifact.base.source_sha256, format!("{:x}", Sha256::digest(std::fs::read(&base).expect("read")))); // JUSTIFIED: test asserts the base
 
         std::fs::write(&adapter_file, b"replaced").expect("write"); // JUSTIFIED: test fixture
         assert!(

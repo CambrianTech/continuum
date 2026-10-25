@@ -28,14 +28,18 @@ pub struct LeaseArtifactFile {
     pub sha256: String,
 }
 
-/// The base an artifact fits: the registry id it was trained against and the digest of that
-/// base's tokenizer and tensor shapes ([`lora_base_fingerprint`]), so the origin refuses an
-/// adapter for a base that only shares a name with its own.
+/// The base an artifact was trained on: the registry id the lease named, the exact weights
+/// the trainer read, and a compatibility digest. The origin requires `source_sha256` to equal
+/// its own base's; the header digest alone cannot tell a base from a fine-tuned sibling with
+/// the same architecture, tokenizer and shapes (Codex on #5418).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../../protocol/typescript/genome/LeaseArtifactBase.ts")]
 #[serde(rename_all = "camelCase")]
 pub struct LeaseArtifactBase {
     pub model_id: String,
+    /// SHA-256 of the whole base GGUF the adapter was trained against: its identity.
+    pub source_sha256: String,
+    /// [`lora_base_fingerprint`] of that GGUF: tokenizer and shapes, compatibility evidence only.
     pub fingerprint: String,
 }
 
@@ -63,22 +67,33 @@ pub(crate) struct RecordedArtifact {
 }
 
 /// Describe a completed artifact trained on `base_model`: the files its format names, each
-/// hashed, and the base's fingerprint from the GGUF `base_gguf` finds for it on this node
-/// (`None` when it has none), all off the async runtime (finding a GGUF walks directories).
-/// `Err(Unreturnable)` is final (no local gene exists); `Err(Unread)` may pass (a file or the
-/// base GGUF is unreadable now).
+/// hashed, and the base the GGUF `base_gguf` finds for it on this node (`None` when it has
+/// none), all off the async runtime (finding a GGUF walks directories, hashing it reads it).
+/// `Err(Unreturnable)` is final; `Err(Unread)` may pass (a file or the base is unreadable now).
+///
+/// Only a GGUF LoRA is returned: its trainer read the base GGUF this node serves, so that
+/// file's digest is the training base's identity. An MLX or PEFT trainer resolves an HF
+/// snapshot when it starts and records no revision, so any revision read here afterwards
+/// would be a guess; those stay here until their trainers record it.
 pub(crate) async fn describe(
     artifact: &TrainingArtifact,
     base_model: &str,
     base_gguf: impl FnOnce() -> Option<PathBuf> + Send + 'static,
 ) -> Result<RecordedArtifact, DescribeError> {
     let payload = artifact.payload().map_err(DescribeError::Unreturnable)?;
+    if artifact.format != ArtifactFormat::GgufLora {
+        return Err(DescribeError::Unreturnable(format!(
+            "a {:?} adapter's training base has no recorded source revision, so the origin could not verify it",
+            artifact.format
+        )));
+    }
     let root = payload.root.clone();
     let base_id = base_model.to_string();
-    let (files, fingerprint) = tokio::task::spawn_blocking(move || {
+    let (files, (source_sha256, fingerprint)) = tokio::task::spawn_blocking(move || {
         let files = payload.paths().map(|(name, path)| hash_file(name, &path)).collect::<Result<Vec<_>, String>>()?;
-        let gguf = base_gguf().ok_or_else(|| format!("no local GGUF of base {base_id} to fingerprint"))?;
-        Ok::<_, String>((files, lora_base_fingerprint(&gguf)?))
+        let gguf = base_gguf().ok_or_else(|| format!("no local GGUF of base {base_id} to identify"))?;
+        let source = hash_file("base", &gguf)?.sha256;
+        Ok::<_, String>((files, (source, lora_base_fingerprint(&gguf)?)))
     })
     .await
     .map_err(|e| DescribeError::Unread(format!("hashing task failed: {e}")))?
@@ -87,7 +102,7 @@ pub(crate) async fn describe(
         root,
         artifact: LeaseArtifact {
             model_id: artifact.model_id.clone(),
-            base: LeaseArtifactBase { model_id: base_model.to_string(), fingerprint },
+            base: LeaseArtifactBase { model_id: base_model.to_string(), source_sha256, fingerprint },
             format: artifact.format,
             files,
             metrics: artifact.metrics.clone(),
@@ -114,38 +129,39 @@ fn hash_file(name: &str, path: &Path) -> Result<LeaseArtifactFile, String> {
 mod tests {
     use super::*;
 
-    // what this catches (card 3fd98325): a report that names the trainer's path or skips a
-    // file, a digest that is not the file's bytes, or an artifact with nothing to return
-    // answered as retryable.
+    // what this catches (card 3fd98325, Codex on #5418): a report that names the trainer's
+    // path or a digest that is not the bytes; a base identified only by its header, so a
+    // fine-tuned sibling with the same architecture, tokenizer and shapes passes as the base;
+    // an adapter whose training base was never recorded reported as verifiable.
     #[tokio::test]
-    async fn a_completed_artifact_is_described_by_name_size_and_digest() {
+    async fn a_completed_artifact_is_described_by_its_bytes_and_its_exact_base() {
         let dir = tempfile::tempdir().expect("dir"); // JUSTIFIED: test fixture
-        std::fs::write(dir.path().join("adapters.safetensors"), b"weights").expect("write"); // JUSTIFIED: test fixture
-        std::fs::write(dir.path().join("adapter_config.json"), b"{}").expect("write"); // JUSTIFIED: test fixture
-        std::fs::write(dir.path().join("0000300_adapters.safetensors"), b"checkpoint").expect("write"); // JUSTIFIED: test fixture
-        let artifact = TrainingArtifact {
-            model_id: "m".into(),
-            local_path: Some(dir.path().to_path_buf()),
-            format: ArtifactFormat::MlxAdapterDir,
-            metrics: JobMetrics::default(),
-        };
+        let adapter = dir.path().join("adapter.gguf");
+        std::fs::write(&adapter, b"lora").expect("write"); // JUSTIFIED: test fixture
+        let (base, sibling) = (dir.path().join("base.gguf"), dir.path().join("sibling.gguf"));
+        crate::commands::genome::test_support::write_base_gguf(&base, 0.0);
+        crate::commands::genome::test_support::write_base_gguf(&sibling, 1.0);
+        let artifact = TrainingArtifact { model_id: "m".into(), local_path: Some(adapter.clone()), format: ArtifactFormat::GgufLora, metrics: JobMetrics::default() };
+        let at = |path: &Path| { let path = path.to_path_buf(); move || Some(path) };
 
-        let base = dir.path().join("base.gguf");
-        crate::commands::genome::test_support::write_base_gguf(&base);
-        let recorded = describe(&artifact, "qwen", { let base = base.clone(); move || Some(base) }).await.expect("described"); // JUSTIFIED: test asserts the manifest
-        assert_eq!(recorded.artifact.base, LeaseArtifactBase { model_id: "qwen".into(), fingerprint: lora_base_fingerprint(&base).expect("digest") }); // JUSTIFIED: test asserts the base
+        let recorded = describe(&artifact, "qwen", at(&base)).await.expect("described"); // JUSTIFIED: test asserts the manifest
         assert_eq!(recorded.root, dir.path());
-        let names: Vec<_> = recorded.artifact.files.iter().map(|f| f.name.as_str()).collect();
-        assert_eq!(names, ["adapters.safetensors", "adapter_config.json"], "the intermediate checkpoint stays here");
-        assert_eq!(recorded.artifact.files[0].bytes, 7);
-        assert_eq!(recorded.artifact.files[0].sha256, format!("{:x}", Sha256::digest(b"weights")));
+        assert_eq!(recorded.artifact.files.len(), 1);
+        assert_eq!(recorded.artifact.files[0].bytes, 4);
+        assert_eq!(recorded.artifact.files[0].sha256, format!("{:x}", Sha256::digest(b"lora")));
         let wire = serde_json::to_string(&recorded.artifact).expect("encode"); // JUSTIFIED: test asserts the wire shape
         assert!(!wire.contains(&dir.path().display().to_string()), "the trainer's path never crosses");
 
-        assert!(matches!(describe(&artifact, "qwen", || None).await, Err(DescribeError::Unread(e)) if e.contains("no local GGUF")), "no base here to fingerprint");
-        std::fs::remove_file(dir.path().join("adapter_config.json")).expect("remove"); // JUSTIFIED: test fixture
-        assert!(matches!(describe(&artifact, "qwen", { let base = base.clone(); move || Some(base) }).await, Err(DescribeError::Unread(_))));
-        let hosted = TrainingArtifact { format: ArtifactFormat::ProviderHosted, ..artifact };
-        assert!(matches!(describe(&hosted, "qwen", move || Some(base)).await, Err(DescribeError::Unreturnable(_))));
+        let on_sibling = describe(&artifact, "qwen", at(&sibling)).await.expect("described"); // JUSTIFIED: test asserts the manifest
+        assert_eq!(recorded.artifact.base.fingerprint, on_sibling.artifact.base.fingerprint, "same header: compatible");
+        assert_ne!(recorded.artifact.base.source_sha256, on_sibling.artifact.base.source_sha256, "other weights: another base");
+
+        assert!(matches!(describe(&artifact, "qwen", || None).await, Err(DescribeError::Unread(e)) if e.contains("no local GGUF")));
+        let mlx = TrainingArtifact { local_path: Some(dir.path().to_path_buf()), format: ArtifactFormat::MlxAdapterDir, ..artifact.clone() };
+        assert!(matches!(describe(&mlx, "qwen", at(&base)).await, Err(DescribeError::Unreturnable(e)) if e.contains("source revision")));
+        let hosted = TrainingArtifact { format: ArtifactFormat::ProviderHosted, ..artifact.clone() };
+        assert!(matches!(describe(&hosted, "qwen", at(&base)).await, Err(DescribeError::Unreturnable(_))));
+        std::fs::remove_file(&adapter).expect("remove"); // JUSTIFIED: test fixture
+        assert!(matches!(describe(&artifact, "qwen", at(&base)).await, Err(DescribeError::Unread(_))));
     }
 }

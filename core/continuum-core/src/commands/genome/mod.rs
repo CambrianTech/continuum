@@ -220,17 +220,19 @@ pub(crate) mod test_support {
         }
     }
 
-    /// A header-only base GGUF: an architecture and a tokenizer are all a base fingerprint
-    /// reads (`lora_base_fingerprint`).
-    pub(crate) fn write_base_gguf(path: &std::path::Path) {
-        use candle_core::quantized::gguf_file::{self, Value};
+    /// A base GGUF with one tensor filled with `weight`: the same header for every `weight`
+    /// (architecture, tokenizer, shapes), other weights, so a fine-tuned sibling is one call.
+    pub(crate) fn write_base_gguf(path: &std::path::Path, weight: f32) {
+        use candle_core::quantized::{gguf_file, GgmlDType, QTensor};
         let md = [
-            ("general.architecture", Value::String("qwen2".into())),
-            ("tokenizer.ggml.tokens", Value::Array(vec![Value::String("a".into())])),
+            ("general.architecture", gguf_file::Value::String("qwen2".into())),
+            ("tokenizer.ggml.tokens", gguf_file::Value::Array(vec![gguf_file::Value::String("a".into())])),
         ];
-        let refs: Vec<(&str, &Value)> = md.iter().map(|(k, v)| (*k, v)).collect();
+        let refs: Vec<(&str, &gguf_file::Value)> = md.iter().map(|(k, v)| (*k, v)).collect();
+        let weights = candle_core::Tensor::full(weight, (4, 32), &candle_core::Device::Cpu).expect("tensor"); // JUSTIFIED: test fixture
+        let q = QTensor::quantize(&weights, GgmlDType::F32).expect("quantize"); // JUSTIFIED: test fixture
         let mut file = std::fs::File::create(path).expect("create"); // JUSTIFIED: test fixture
-        gguf_file::write(&mut file, &refs, &[]).expect("write"); // JUSTIFIED: test fixture
+        gguf_file::write(&mut file, &refs, &[("blk.0.attn_q.weight", &q)]).expect("write"); // JUSTIFIED: test fixture
     }
 
     /// A registry seeded with one stub adapter per id.
