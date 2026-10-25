@@ -57,6 +57,25 @@ fn named(sha: &str) -> Option<String> {
     (!sha.bytes().all(|b| b == b'0')).then(|| sha.to_string())
 }
 
+/// The same conservative local-metadata deadline `workspace_candidate_diff_from` gives git: a
+/// safety bound, not a prediction of git's latency.
+const GIT_READ_DEADLINE: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// `git -C dir args…` through the one bounded subprocess seam: its stdout when git answered
+/// whole and successfully. A timeout, an unstartable git, a refusal, or an answer past the
+/// seam's capture bound (64 KiB, about 500 changed paths of raw diff) is an error: the moves
+/// cannot be vouched for, so the submit fails closed.
+fn git_read(dir: &Path, args: &[&str]) -> Result<String, String> {
+    let dir_text = dir.to_string_lossy();
+    let mut full = vec!["-C", dir_text.as_ref()];
+    full.extend_from_slice(args);
+    let probed = crate::system_resources::bounded_command::probe("git", &full, GIT_READ_DEADLINE);
+    probed
+        .stdout_if_ok()
+        .map(str::to_string)
+        .ok_or_else(|| format!("git {} in {} did not answer whole: {}", args.first().copied().unwrap_or_default(), dir.display(), probed.outcome())) // unwrap_or_default: a label for the error only
+}
+
 /// Every submodule pointer the checkout at `ws` moves against `base`, over the same paths the
 /// submitted patch covers (`excludes` as pathspecs). The working tree's side of a submodule is
 /// the commit its own HEAD names (git reports none for an unstaged gitlink); a submodule whose
@@ -64,12 +83,9 @@ fn named(sha: &str) -> Option<String> {
 pub(super) fn submodule_moves_in(ws: &Path, base: &str, excludes: &[&str]) -> Result<Vec<SubmoduleMove>, String> {
     let mut args = vec!["diff", "--raw", "-z", "--no-abbrev", "--no-renames", "--no-ext-diff", "--no-textconv", base, "--", "."];
     args.extend_from_slice(excludes);
-    let out = std::process::Command::new("git").args(&args).current_dir(ws).output().map_err(|e| format!("could not read {}'s raw diff: {e}", ws.display()))?;
-    if !out.status.success() {
-        return Err(format!("could not read {}'s raw diff against {base}: {}", ws.display(), String::from_utf8_lossy(&out.stderr).trim()));
-    }
+    let raw = git_read(ws, &args)?;
     let mut moves = Vec::new();
-    for entry in parse_raw(&out.stdout)? {
+    for entry in parse_raw(raw.as_bytes())? {
         if entry.old_mode != GITLINK && entry.new_mode != GITLINK {
             continue;
         }
@@ -92,15 +108,7 @@ fn submodule_head(dir: &Path) -> Result<Option<String>, String> {
     if !dir.join(".git").exists() {
         return Ok(None);
     }
-    let out = std::process::Command::new("git")
-        .args(["rev-parse", "--verify", "HEAD"])
-        .current_dir(dir)
-        .output()
-        .map_err(|e| format!("could not read {}'s HEAD: {e}", dir.display()))?;
-    if !out.status.success() {
-        return Err(format!("could not read {}'s HEAD: {}", dir.display(), String::from_utf8_lossy(&out.stderr).trim()));
-    }
-    Ok(Some(String::from_utf8_lossy(&out.stdout).trim().to_string()))
+    Ok(Some(git_read(dir, &["rev-parse", "--verify", "HEAD"])?.trim().to_string()))
 }
 
 /// A path as one POSIX shell word: single-quoted, with any `'` closed, escaped and reopened
