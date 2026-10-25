@@ -101,6 +101,8 @@ pub(crate) fn command_objects(
             attempts: Arc::clone(&attempts),
         }),
         Arc::new(lease::GenomeLeaseStatus { attempts: Arc::clone(&attempts) }),
+        Arc::new(lease::GenomeLeasePoll { attempts: Arc::clone(&attempts), registry: registry.clone() }),
+        Arc::new(lease::GenomeLeaseCancel { attempts: Arc::clone(&attempts), registry: registry.clone() }),
         Arc::new(job_create::GenomeJobCreate {
             coordinator,
             attempts,
@@ -256,6 +258,6 @@ mod tests {
             Arc::new(crate::genome::fine_tuning::TrainingJobBoard::default()),
             Arc::new(tempfile::tempdir().unwrap()),
         );
-        assert_eq!(objs.len(), 8);
+        assert_eq!(objs.len(), 10);
     }
 }
