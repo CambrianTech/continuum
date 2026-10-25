@@ -9,8 +9,8 @@
 //! `genome/lease/train` (card cc34db0d). Poll and cancel go to the same peer by attempt;
 //! `Cancelled` there means the peer accepted the cancel, never that training was seen to stop.
 //!
-//! Boot registers it; it selects only peers advertising `training_lease_return`, which no build
-//! emits until S3 (the artifact pull and held-out acceptance at the origin) gives a leased job's
+//! Boot registers it; it leases only when BOTH this node and the peer emit
+//! `training_lease_return`, which no build emits until S3 (the artifact pull and held-out acceptance at the origin) gives a leased job's
 //! adapter a way back. Until then it is wired and serves no base, so no peer spends its lane.
 
 use std::sync::Arc;
@@ -55,6 +55,10 @@ pub(crate) struct GridPeerAdapter {
     transport: Arc<dyn LeaseTransport>,
     offers: OfferSource,
     now_ms: Arc<dyn Fn() -> u64 + Send + Sync>,
+    /// Whether THIS node can take a leased job's adapter back (it emits
+    /// `training_lease_return` itself). A lease needs the return on BOTH ends: an origin
+    /// without it never leases, whatever a newer peer advertises (Codex on #5417).
+    returns_here: bool,
 }
 
 impl GridPeerAdapter {
@@ -64,11 +68,17 @@ impl GridPeerAdapter {
             Arc::new(ExecutorLeaseTransport(executor)),
             Arc::new(|| crate::capacity::gossip::global_ledger().foreign_offers_with_age()),
             Arc::new(|| continuum_base::time::EpochMs::now().millis()),
+            crate::capacity::gossip::this_build_capabilities().contains(&CapabilityId::TrainingLeaseReturn),
         )
     }
 
-    pub(crate) fn new(transport: Arc<dyn LeaseTransport>, offers: OfferSource, now_ms: Arc<dyn Fn() -> u64 + Send + Sync>) -> Self {
-        Self { transport, offers, now_ms }
+    pub(crate) fn new(
+        transport: Arc<dyn LeaseTransport>,
+        offers: OfferSource,
+        now_ms: Arc<dyn Fn() -> u64 + Send + Sync>,
+        returns_here: bool,
+    ) -> Self {
+        Self { transport, offers, now_ms, returns_here }
     }
 
     /// The ONE peer a job for `base` goes to: a fresh offer (heard within the freshness
@@ -76,6 +86,9 @@ impl GridPeerAdapter {
     /// `training_lease_return` (its adapter can come back); ties by peer id.
     /// Never a union across peers: the chosen offer satisfies the whole request by itself.
     pub(crate) fn choose_peer(&self, base: &str) -> Option<Uuid> {
+        if !self.returns_here {
+            return None;
+        }
         let now = (self.now_ms)();
         (self.offers)()
             .into_iter()
@@ -282,7 +295,7 @@ mod tests {
     }
 
     fn adapter_over(transport: Arc<dyn LeaseTransport>, offers: Vec<(Uuid, CapacityOffer, u64)>, now: u64) -> GridPeerAdapter {
-        GridPeerAdapter::new(transport, Arc::new(move || offers.clone()), Arc::new(move || now))
+        GridPeerAdapter::new(transport, Arc::new(move || offers.clone()), Arc::new(move || now), true)
     }
 
     // what this catches (card e53bb821): a lease sent to a peer that cannot take it or cannot
@@ -307,6 +320,10 @@ mod tests {
         ], now);
         assert_eq!(adapter.choose_peer("qwen"), Some(low), "fresh, both capabilities, lowest id; the stale, the blind and the one whose adapter cannot return are not candidates");
         assert_eq!(adapter.choose_peer("mistral"), None);
+        // An origin that cannot take an adapter back never leases, whatever peers advertise.
+        let offers_now = vec![(low, offer(&["qwen"], true), now)];
+        let no_return_here = GridPeerAdapter::new(transport.clone(), Arc::new(move || offers_now.clone()), Arc::new(move || now), false);
+        assert_eq!(no_return_here.choose_peer("qwen"), None, "the return is needed on both ends");
         assert!(!adapter.serves_base("mistral"));
         let mut request = lora_request();
         request.base_model = "mistral".into();
