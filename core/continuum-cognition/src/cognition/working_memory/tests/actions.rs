@@ -335,3 +335,54 @@ fn capacity_floored_at_one() {
     wm.record("b");
     assert_eq!(wm.recent(), vec!["b"], "floor-1 buffer keeps the latest");
 }
+
+/// One typed act whose output is `content`, for a receipt that batches several.
+fn act(name: &str, content: String) -> crate::cognition::act_observe::Observation {
+    use crate::cognition::act_observe::{ActStatus, Observation, ToolOutput, ToolVerb};
+    Observation {
+        call: crate::ai::types::ToolCall { id: name.into(), name: name.into(), input: serde_json::json!({}) },
+        output: ToolOutput {
+            image: None,
+            additional_images: None,
+            result: crate::ai::types::ToolResult { tool_use_id: name.into(), content, is_error: None, custody: Default::default() },
+            verb: ToolVerb::classify(name),
+            paths: Vec::new(),
+            verdict: Default::default(),
+        },
+        status: ActStatus::Executed,
+    }
+}
+
+/// A numbered read of a long file: two declarations and a long body each.
+fn long_read(file: &str) -> String {
+    let body: String = (3..=400).map(|n| format!("{n:>6} |         let x{n} = {n};\n")).collect();
+    format!("file_path: {file}\n     1 | pub struct A;\n     2 | impl A {{\n{body}")
+}
+
+// what this catches (Codex on #5422): one code outline over a whole batch receipt. The outline
+// dropped every unnumbered line after the first numbered one, so a long read followed by an
+// error, or by a second file, kept only the first read's declarations. Each operation is now
+// summarized by its own typed verb under its call's name: the error and the second file's
+// header both survive, and a lone non-read output never takes a code outline.
+#[test]
+fn a_batch_receipts_summary_keeps_every_operation() {
+    let summary_of = |acts: Vec<crate::cognition::act_observe::Observation>| {
+        let rendered: String = acts.iter().map(|a| a.output.result.content.clone()).collect::<Vec<_>>().join("\n");
+        let wm = WorkingMemory::new(8);
+        wm.record_receipt_typed(&acts, &rendered, None, Default::default());
+        let actions = wm.actions.lock();
+        actions.records().last().and_then(|record| record.summary.clone())
+    };
+
+    let error = "error: no such file: b.rs (did you mean src/b.rs?)".to_string();
+    let read_then_error = summary_of(vec![act("code/read", long_read("a.rs")), act("code/read", error.clone())]).unwrap_or_default();
+    assert!(read_then_error.contains("     1 | pub struct A;"), "{read_then_error}");
+    assert!(read_then_error.contains(&error), "the later error survives: {read_then_error}");
+
+    let two_reads = summary_of(vec![act("code/read", long_read("a.rs")), act("code/read", long_read("b.rs"))]).unwrap_or_default();
+    assert!(two_reads.contains("file_path: a.rs") && two_reads.contains("file_path: b.rs"), "both files' headers survive: {two_reads}");
+
+    let log: String = (0..400).map(|n| format!("step {n}\n")).collect::<String>() + "error[E0308]: mismatched types\n";
+    let shell = summary_of(vec![act("code/shell", log)]).unwrap_or_default();
+    assert!(shell.ends_with("error[E0308]: mismatched types") && !shell.contains("[outline"), "an output keeps its ends: {shell}");
+}
