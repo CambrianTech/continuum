@@ -487,14 +487,16 @@ fn shared_workspace_of(citizen_dir: &Path) -> Option<PathBuf> {
 /// Replace every granted root that CONTAINS a carve-out by its children minus the
 /// carve-out (down to the carve-out's parent), so an allow-only enforcer grants
 /// `~/.cache/huggingface/hub` and never `~/.cache/huggingface/token`. A root equal to
-/// a carve-out is dropped. Children that appear after this spawn are seen by the next.
+/// a carve-out, or inside one, is dropped. Children that appear after this spawn are seen by the next.
 /// Returns the directories it descended through: listable, never granted beneath.
 fn carve(roots: &mut Vec<PathBuf>, deny: &[PathBuf]) -> Vec<PathBuf> {
     let mut descended: Vec<PathBuf> = Vec::new();
     let mut out: Vec<PathBuf> = Vec::with_capacity(roots.len());
     let mut pending: Vec<PathBuf> = std::mem::take(roots);
     while let Some(root) = pending.pop() {
-        if deny.iter().any(|d| d == &root) {
+        // A root equal to a carve-out, or INSIDE one, is never granted: an allow-only
+        // enforcer (landlock) would otherwise hand over what the carve-out denies.
+        if deny.iter().any(|d| root.starts_with(d)) {
             continue;
         }
         let Some(inside) = deny.iter().find(|d| d.starts_with(&root) && *d != &root) else {

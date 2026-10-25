@@ -30,6 +30,17 @@
     // another citizen's directory; or refusing her own workspace (a card worktree under
     // `~/.airc`, a denied-by-omission dot entry), her citizen directory, the toolchains
     // or the shared caches.
+    // what this catches (independent review of #5383): a granted root lying INSIDE a carve-out
+    // was kept whole, so an allow-only enforcer (landlock) granted what the carve-out denies.
+    #[test]
+    fn a_root_inside_a_carve_out_is_never_granted() {
+        let home = home_with(&[".ssh/keys/id_ed25519", "Documents/letter.txt"]);
+        let h = home.path().canonicalize().expect("test: canonical");
+        let mut roots = vec![h.join(".ssh/keys"), h.join("Documents")];
+        carve(&mut roots, &[h.join(".ssh")]);
+        assert_eq!(roots, vec![h.join("Documents")], "the root inside .ssh is dropped, the other kept");
+    }
+
     // what this catches (independent review of #5383): a citizen re-pointing her own
     // `workspace` at another citizen's private state (or anywhere else) to have it granted as a
     // shared read-write root. Only a real directory inside its own citizen's directory counts.
@@ -110,6 +121,8 @@
         assert!(ok(".continuum/cache/cargo-target/debug"), "the shared build cache");
         assert!(ok(".continuum/citizens/humans/joel"), "citizens that are not peers");
         assert!(ok(&format!(".continuum/citizens/peers/{other}/workspace/src.rs")), "ANOTHER citizen's workspace: the commons (2026-10-24)");
+        let commons = h.join(format!(".continuum/citizens/peers/{other}/workspace/src.rs"));
+        assert!(list.write.iter().any(|r| commons.starts_with(r)), "and writable, not only readable: the commons is a write root");
         // never
         assert!(!ok(".airc/identity/key"), "airc's identity, beside her worktree");
         assert!(!ok(&format!(".continuum/citizens/peers/{other}/experience.jsonl")), "ANOTHER citizen's private state");
