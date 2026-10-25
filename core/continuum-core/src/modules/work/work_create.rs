@@ -186,7 +186,7 @@ impl ActionCommand for WorkState {
     const ACCESS: AccessLevel = AccessLevel::AiSafe;
     const DESCRIPTION: &'static str =
         "Move a work card through its lifecycle: in_progress when you start, review when a PR is up, \
-         blocked if stuck, closed when done. States: open|claimed|in_progress|blocked|review|merged|closed.";
+         blocked if stuck, closed when done (a card with a PR closes when it merges).";
     type Params = WorkStateParams;
     type Output = WorkStateResult;
 

@@ -256,8 +256,67 @@ pub async fn advance_card_state_effective(
         }
         return Ok(CardState::Review);
     }
+    // A RESIDENT'S FINISH NEVER STRANDS OR UNDOES A MERGE (card 4356a90f). On a card whose
+    // linked PR has not merged, her `closed` (or `merged`) lands in Review and the merge
+    // finishes it, as Merged: the twin of the reviewer's-pass rule above. Closing it made
+    // `airc work merge` refuse ("state is Closed, but merge requires Review"): Kimi closed
+    // 13d7e47a and then 1fc73f18 right after their passes (2026-10-24/25). A card already
+    // Merged keeps that terminal state: her close is acknowledged, never a downgrade to
+    // Closed that a later close would read as "PR linked, not merged" and reopen (Codex on
+    // #5399). The airc card's merge fact IS its Merged state (set by PullRequestMerged).
+    if finishing && via != VIA_VERDICT {
+        if let Some((_, card)) = card_in_subscribed_rooms(airc, card_id).await {
+            match resident_finish(actor, card.pull_request.is_some(), &card.state) {
+                ResidentFinish::AwaitMerge => {
+                    if card.state != CardState::Review {
+                        raw_advance(airc, card_id, CardState::Review, via).await?;
+                    }
+                    continuum_base::probe!(
+                        class = "work.state.close_awaits_merge",
+                        card = %short8(card_id.as_uuid()),
+                        asked = ?state,
+                        "a resident finished a card whose PR has not merged; it stays in Review \
+                         for its merge, which moves it to Merged"
+                    );
+                    return Ok(CardState::Review);
+                }
+                ResidentFinish::StayMerged => {
+                    continuum_base::probe!(
+                        class = "work.state.already_merged",
+                        card = %short8(card_id.as_uuid()),
+                        asked = ?state,
+                        "a resident finished a card that is already merged; it keeps Merged"
+                    );
+                    return Ok(CardState::Merged);
+                }
+                ResidentFinish::Proceed => {}
+            }
+        }
+    }
     raw_advance(airc, card_id, state, via).await?;
     Ok(state)
+}
+
+/// What a resident's finish does to a card, from its PR link and current state.
+#[derive(Debug, PartialEq, Eq)]
+enum ResidentFinish {
+    /// The linked PR has not merged: wait in Review for the merge.
+    AwaitMerge,
+    /// Already merged: keep the terminal state, never downgrade it.
+    StayMerged,
+    /// No PR, or the operator: the finish proceeds as asked.
+    Proceed,
+}
+
+/// PURE: the operator (no actor) is never held; a Merged card stays Merged; a card with a linked,
+/// unmerged PR waits for its merge.
+fn resident_finish(actor: Option<Uuid>, pr_linked: bool, current: &CardState) -> ResidentFinish {
+    match (actor, current) {
+        (None, _) => ResidentFinish::Proceed,
+        (Some(_), CardState::Merged) => ResidentFinish::StayMerged,
+        (Some(_), _) if pr_linked => ResidentFinish::AwaitMerge,
+        (Some(_), _) => ResidentFinish::Proceed,
+    }
 }
 
 /// Post the sibling review card for `parent` into the parent's own room, as the
@@ -406,4 +465,25 @@ pub async fn raw_advance(
     )
     .await;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // what this catches (card 4356a90f, Codex on #5399): a resident's `closed` after a pass
+    // stranded a green PR (airc work merge needs Review), and a close on an already-merged
+    // card must not downgrade it to Closed, where a repeated close would reopen it.
+    #[test]
+    fn a_residents_finish_waits_for_the_merge_and_never_undoes_it() {
+        use ResidentFinish::*;
+        let her = Some(Uuid::from_u128(7));
+        assert_eq!(resident_finish(her, true, &CardState::Review), AwaitMerge, "after a pass, her close waits");
+        assert_eq!(resident_finish(her, true, &CardState::InProgress), AwaitMerge);
+        assert_eq!(resident_finish(her, true, &CardState::Merged), StayMerged, "merged stays merged");
+        assert_eq!(resident_finish(her, false, &CardState::Merged), StayMerged);
+        assert_eq!(resident_finish(her, false, &CardState::Review), Proceed, "no PR: a close is a close");
+        assert_eq!(resident_finish(None, true, &CardState::Review), Proceed, "the operator is never held");
+        assert_eq!(resident_finish(None, true, &CardState::Merged), Proceed);
+    }
 }
