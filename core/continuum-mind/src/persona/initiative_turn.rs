@@ -55,8 +55,9 @@ pub(crate) const INITIATIVE_MOMENT: &str = "[initiative] Nothing is assigned to 
      one is waiting on you. This moment and your hands are yours: what you do with them, \
      or whether you do anything, is your choice.";
 
-/// Drive her initiative turn in `turn_room` with her default hands. Reports `drove`
-/// always, and `engaged` only when she acted or spoke, so her beat rests after a pass.
+/// Drive her initiative turn in `turn_room`: in her held card's hands when she holds one, her
+/// default hands otherwise. Reports `drove` always, and `engaged` only when she acted or spoke,
+/// so her beat rests after a pass.
 pub(crate) async fn drive_initiative_turn(
     ctx: &HostedPersona,
     cycle: &crate::cognition::workspace::WorkspaceCycle,
@@ -80,15 +81,33 @@ pub(crate) async fn drive_initiative_turn(
         Some(continuum_base::time::EpochMs::now().millis()),
         crate::cognition::workspace::Cause::Ambient,
     );
-    let settled = crate::cognition::act_observe::drive_to_settle_with_input(
+    // HER OWN TIME CAN BE CARD WORK, and card work is credit-bearing (card 959f3d5c). Driven
+    // without a credit capture, Sahar's own-time submit (2026-10-25, act 0 of an initiative
+    // turn) was never staged: its issuing generation was never indexed, so its review held
+    // forever. Bound to her held card's hands and credit exactly as a room turn is; with no
+    // card held this is her default hands and no capture, as before. Bookkeeping on her own
+    // act: it changes neither her framing nor what she is told.
+    let held_card = crate::persona::card_hands::root_at_held_card(cycle, ctx.identity.peer_id.as_uuid(), &*conversation).await;
+    let mut credit_capture = crate::persona::training_producer::TurnCreditCapture::for_turn(
+        ctx.identity.peer_id.as_uuid(),
+        &ctx.identity.agent_name,
+        INITIATIVE_MOMENT,
+        held_card.credit.as_ref(),
+    );
+    let settled = crate::cognition::act_observe::drive_to_settle_with_credit(
         cycle,
-        burst,
+        burst.in_hands(held_card.turn_hands()),
         LIVE_MAX_ACTS,
         crate::cognition::workspace::TurnFraming::initiative(),
         conversation,
+        credit_capture.as_mut().map(|c| c as &mut dyn crate::cognition::act_observe::TurnCredit),
     )
     .await;
     let acts = settled.acts;
+    // Her work is synced to its card's branch, as at the end of a room turn.
+    if let Some(hands) = &held_card.hands {
+        crate::persona::card_hands::end_card_turn(hands, acts).await;
+    }
     let (step, _, _) = SettleStep::from_settled(settled);
     let capacity = match &step {
         SettleStep::CapacityRefused { error, .. } => Some(error.clone()),
