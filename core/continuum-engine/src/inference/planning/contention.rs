@@ -34,6 +34,12 @@ pub enum Policy {
     /// Mind `mind` (the one a person works with) is always admitted and prefills first;
     /// at most `background` other acts run beside her.
     Foreground { mind: usize, background: usize },
+    /// Foreground first, and the background grant SETTLES from measurement instead of being
+    /// set: after each of her acts it grows by one while her act stayed inside `budget_secs`
+    /// (the plan's act gate) and halves when it overran. Additive increase, multiplicative
+    /// decrease: the grant converges on the most background work the engine absorbs without
+    /// her feeling it, and moves again when the load, the model or the hardware does.
+    Settle { mind: usize, budget_secs: u32 },
 }
 
 /// What a replay measured.
@@ -43,6 +49,8 @@ pub struct Replayed {
     pub foreground: Vec<f64>,
     /// Latency of every other mind's acts, seconds.
     pub background: Vec<f64>,
+    /// The background grant after each foreground act, under [`Policy::Settle`].
+    pub grants: Vec<usize>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -63,9 +71,11 @@ pub fn replay(minds: &[MindLoop], rates: &ModelRates, policy: Policy, horizon_se
     let prefill_tps = rates.prefill_tps.filter(|r| r.is_finite() && *r > 0.0)?;
     rates.decode_at(1)?;
     let foreground = match policy {
-        Policy::Foreground { mind, .. } => mind,
+        Policy::Foreground { mind, .. } | Policy::Settle { mind, .. } => mind,
         _ => 0,
     };
+    // The settling grant starts with nothing beside her and earns its way up.
+    let mut grant = 0usize;
     let mut phase: Vec<Phase> = minds.iter().map(|_| Phase::Waiting { since: 0.0 }).collect();
     let mut next_act: Vec<usize> = vec![0; minds.len()];
     let mut out = Replayed::default();
@@ -90,6 +100,10 @@ pub fn replay(minds: &[MindLoop], rates: &ModelRates, policy: Policy, horizon_se
                     let others = phase.iter().enumerate().filter(|(j, p)| *j != mind && matches!(p, Phase::Prefill { .. } | Phase::Decode { .. })).count();
                     i == mind || others < background
                 }
+                Policy::Settle { mind, .. } => {
+                    let others = phase.iter().enumerate().filter(|(j, p)| *j != mind && matches!(p, Phase::Prefill { .. } | Phase::Decode { .. })).count();
+                    i == mind || others < grant
+                }
             };
             if admit {
                 phase[i] = Phase::Prefill { left: minds[i].acts[next_act[i] % minds[i].acts.len()].prefill_tokens, since };
@@ -104,7 +118,7 @@ pub fn replay(minds: &[MindLoop], rates: &ModelRates, policy: Policy, horizon_se
             (true, false) => (0.0, STEP_SECS),
             (true, true) => (0.0, 0.0),
         };
-        let first = matches!(policy, Policy::Foreground { .. }) && prefilling.contains(&foreground);
+        let first = matches!(policy, Policy::Foreground { .. } | Policy::Settle { .. }) && prefilling.contains(&foreground);
         for &i in &prefilling {
             let share = if first {
                 if i == foreground { 1.0 } else { 0.0 }
@@ -128,7 +142,15 @@ pub fn replay(minds: &[MindLoop], rates: &ModelRates, policy: Policy, horizon_se
                     phase[i] = Phase::Decode { left, since };
                 } else {
                     let latency = now + STEP_SECS - since;
-                    if i == foreground { out.foreground.push(latency) } else { out.background.push(latency) }
+                    if i == foreground {
+                        out.foreground.push(latency);
+                        if let Policy::Settle { budget_secs, .. } = policy {
+                            grant = if latency <= f64::from(budget_secs) { grant + 1 } else { grant / 2 };
+                            out.grants.push(grant);
+                        }
+                    } else {
+                        out.background.push(latency);
+                    }
                     next_act[i] += 1;
                     phase[i] = Phase::Gap(minds[i].gap_secs);
                 }
@@ -180,6 +202,18 @@ mod tests {
         assert!(median(all.foreground.clone()) > 3.0 * 14.0, "all at once: {}", median(all.foreground));
         assert!(median(fg.foreground.clone()) < 2.0 * 14.0, "foreground: {}", median(fg.foreground));
         assert!(!fg.background.is_empty(), "the background still acts");
+    }
+
+    // what this catches: a grant that does not settle. Under a budget the foreground meets alone,
+    // the grant climbs until background work pushes her past it, then backs off, and her median
+    // act stays inside the budget while the background still advances.
+    #[test]
+    fn the_background_grant_settles_under_her_budget() {
+        let minds: Vec<MindLoop> = (0..12).map(|_| mind(200)).collect();
+        let r = replay(&minds, &rates(), Policy::Settle { mind: 0, budget_secs: 30 }, 3600.0).expect("measured rates");
+        assert!(median(r.foreground.clone()) <= 30.0, "foreground {}", median(r.foreground.clone()));
+        assert!(r.grants.iter().any(|g| *g > 0), "the grant grew: {:?}", r.grants);
+        assert!(!r.background.is_empty());
     }
 
     // what this catches: a dyno run on a guessed rate.
