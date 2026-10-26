@@ -14,7 +14,7 @@ use crate::orm::{
     },
     query::{FieldFilter, SortDirection, SortSpec, StorageQuery},
     sqlite::SqliteAdapter,
-    types::{BatchOperation, DataRecord, RecordMetadata, StorageResult, UUID},
+    types::{DataRecord, StorageResult, UUID},
 };
 use crate::runtime::{CommandRequest, CommandResponse, CommandResult, ModuleContext};
 use crate::{log_error, log_info};
