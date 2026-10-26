@@ -8,6 +8,7 @@
 //! Phase 3: voice, code, memory, models (remaining core domains)
 //! Phase 4: data, embedding, inference, search, training, logger (absorb external workers)
 
+pub mod acting_provider;
 pub mod agent;
 pub mod ai_provider;
 pub mod airc;

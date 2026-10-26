@@ -37,7 +37,6 @@ pub use continuum_kernel::{
     log_warn, register_command, register_event, register_outcome, register_stateless_command, stack,
     time_async, time_section,
 };
-pub mod acting_provider;
 pub mod airc;
 pub mod commands;
 pub mod comms;

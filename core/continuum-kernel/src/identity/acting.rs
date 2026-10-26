@@ -52,28 +52,22 @@ impl From<ActingError> for CommandError {
 }
 
 /// An install-once slot for the provider.
-pub struct ActingSlot {
+struct ActingSlot {
     slot: OnceLock<Arc<dyn ActingProvider>>,
 }
 
 impl ActingSlot {
-    pub const fn new() -> Self {
+    const fn new() -> Self {
         Self { slot: OnceLock::new() }
     }
 
     /// Install the provider; a second install is ignored (the first wins).
-    pub fn install(&self, provider: Arc<dyn ActingProvider>) {
+    fn install(&self, provider: Arc<dyn ActingProvider>) {
         let _ = self.slot.set(provider);
     }
 
-    pub fn require(&self) -> Result<&Arc<dyn ActingProvider>, ActingError> {
+    fn require(&self) -> Result<&Arc<dyn ActingProvider>, ActingError> {
         self.slot.get().ok_or(ActingError::NotInstalled)
-    }
-}
-
-impl Default for ActingSlot {
-    fn default() -> Self {
-        Self::new()
     }
 }
 
