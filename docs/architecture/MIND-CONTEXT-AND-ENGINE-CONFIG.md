@@ -281,6 +281,14 @@ the engine only honours the per-request token budget it is handed. Measured 2026
 an avatar at ~200 image tokens was described correctly (prefill 2.5 s, decode 2.8 s), the
 grounding level is what desktop and UI work needs.
 
+These are OPEN VIEWS, multimedia (Joel: "like our views from before, but multimedia. Then audio
+too"): a mind keeps open views of the streams she is in (a screen, a camera, her avatar's eye in a
+3D world, a call, a room), keyed by stream and time, paged like a file she reads. Audio is the same
+codec: keyed segments by time with levels: a glance ("someone spoke", or the transcript), closer
+(the transcript with speaker and tone), full (the audio tokens, for a model that hears natively),
+and silence as nothing. Her body and voice are her hands: actions through the same command
+surface, observed back through her eyes and ears.
+
 **How to add a layer (the whole recipe; everything else is free):**
 1. Implement `continuum_context::source::Source` for it. `name` and `priority` are required;
    set `required` only for input she must read.
