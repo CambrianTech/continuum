@@ -53,6 +53,9 @@ pub struct Replayed {
     pub foreground: Vec<f64>,
     /// Latency of every other mind's acts, seconds.
     pub background: Vec<f64>,
+    /// Each mind's own act latencies, in the order of `minds`: the fairness view (no mind's
+    /// acts may starve under a policy that looks good on the median).
+    pub per_mind: Vec<Vec<f64>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -71,22 +74,42 @@ enum Phase {
 // the step itself is derived from the measured work and rates.
 const STEPS_PER_MEDIAN_ACT: f64 = 100.0;
 
+/// The most steps one replay may take: bounds its work whatever the inputs (a tiny median act
+/// over a long horizon would otherwise run unbounded), by coarsening the step instead.
+// derived-or-floor: a FLOOR on the simulation's work (steps), not a substrate threshold; at a
+// million steps the replay of an hour still resolves a 15 s act in ~4 steps or finer.
+const MAX_STEPS: f64 = 1_000_000.0;
+
 /// PURE: replay `minds` on one engine with `rates` under `policy` for `horizon_secs`. `None`
-/// when a rate is unmeasured: the dyno never runs on a guessed rate.
+/// when a rate is unmeasured or an input is not a finite, non-negative quantity (a horizon that
+/// is not positive, a negative gap, a NaN in a workload): the dyno never runs on a guessed rate
+/// or a broken input (Codex on #5435).
 pub fn replay(minds: &[MindLoop], rates: &ModelRates, policy: Policy, horizon_secs: f64) -> Option<Replayed> {
     let prefill_tps = rates.prefill_tps.filter(|r| r.is_finite() && *r > 0.0)?;
-    rates.decode_at(1)?;
+    rates.decode_at(1).filter(|d| d.is_finite() && *d > 0.0)?;
+    let finite = |x: f64| x.is_finite() && x >= 0.0;
+    let valid = horizon_secs.is_finite()
+        && horizon_secs > 0.0
+        && minds.iter().all(|m| finite(m.gap_secs) && m.acts.iter().all(|w| finite(w.prefill_tokens) && finite(w.decode_tokens)));
+    if !valid {
+        return None;
+    }
     let solo_of = |w: &Workload| w.prefill_tokens / prefill_tps + w.decode_tokens / rates.decode_at(1).unwrap_or(f64::INFINITY); // unwrap_or: checked measured above
     let mut solos: Vec<f64> = minds.iter().flat_map(|m| m.acts.iter().map(solo_of)).filter(|t| t.is_finite() && *t > 0.0).collect();
     solos.sort_by(f64::total_cmp);
-    let step = solos.get(solos.len() / 2).map_or(1.0, |median| median / STEPS_PER_MEDIAN_ACT); // map_or: no work to replay steps by the second
+    let step = solos.get(solos.len() / 2).map_or(1.0, |median| median / STEPS_PER_MEDIAN_ACT) // map_or: no work to replay steps by the second
+        .max(horizon_secs / MAX_STEPS);
+    // A subnormal step would never advance `now` (Codex on #5435).
+    if !(step.is_finite() && step > 0.0 && step.is_normal()) {
+        return None;
+    }
     let foreground = match policy {
         Policy::Foreground { mind, .. } => mind,
         _ => 0,
     };
     let mut phase: Vec<Phase> = minds.iter().map(|_| Phase::Waiting { since: 0.0 }).collect();
     let mut next_act: Vec<usize> = vec![0; minds.len()];
-    let mut out = Replayed::default();
+    let mut out = Replayed { per_mind: vec![Vec::new(); minds.len()], ..Replayed::default() };
     let mut now = 0.0;
     while now < horizon_secs {
         // Admission: who among the waiting starts an act now.
@@ -146,12 +169,8 @@ pub fn replay(minds: &[MindLoop], rates: &ModelRates, policy: Policy, horizon_se
                     phase[i] = Phase::Decode { left, since };
                 } else {
                     let latency = now + step - since;
-                    if i == foreground {
-                        out.foreground.push(latency);
-
-                    } else {
-                        out.background.push(latency);
-                    }
+                    if i == foreground { out.foreground.push(latency) } else { out.background.push(latency) }
+                    out.per_mind[i].push(latency);
                     next_act[i] += 1;
                     phase[i] = Phase::Gap(minds[i].gap_secs);
                 }
@@ -206,6 +225,19 @@ mod tests {
         assert!(median(fg.foreground.clone()) < 2.0 * 14.0, "foreground: {}", median(fg.foreground));
         let done = |r: &Replayed| r.foreground.len() + r.background.len();
         assert!(done(&fg) as f64 >= 0.95 * done(&all) as f64, "work-conserving: {} vs {}", done(&fg), done(&all));
+    }
+
+    // what this catches: a broken input running the replay (a NaN workload, a negative gap, a
+    // horizon that is not positive) instead of refusing it.
+    #[test]
+    fn a_broken_input_gives_no_replay() {
+        let mut bad = mind(1);
+        bad.acts[0].prefill_tokens = f64::NAN;
+        assert!(replay(&[bad], &rates(), Policy::AllAtOnce, 10.0).is_none());
+        let mut gap = mind(1);
+        gap.gap_secs = -1.0;
+        assert!(replay(&[gap], &rates(), Policy::AllAtOnce, 10.0).is_none());
+        assert!(replay(&[mind(1)], &rates(), Policy::AllAtOnce, 0.0).is_none());
     }
 
     // what this catches: a dyno run on a guessed rate.
