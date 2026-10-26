@@ -130,7 +130,7 @@ impl ActionCommand for CodeEdit {
         reject_placeholder_path(&p.file_path)?;
         let engine = engine!(self, ctx);
         let edit = CanonicalEdit::try_from(p)?;
-        let scope = read_scope_of(ctx, &engine.workspace_root());
+        let scope = read_scope_of(ctx, &engine.workspace_root())?;
         engine
             .edit_in(&edit.file_path, &edit.edit_mode, edit.description.as_deref(), &scope)
             .map_err(engine_err)
@@ -707,7 +707,7 @@ impl ActionCommand for CodeShellPoll {
         // moved to claim B; an isolated eval reaches only itself (Astra on #5026).
         let state_arc = self
             .state
-            .with_execution(&hands_of(ctx), &p.execution_id, |s, id| s.get_execution_state(id))
+            .with_execution(&hands_of(ctx)?, &p.execution_id, |s, id| s.get_execution_state(id))
             .map_err(execution_lookup_error)?;
         let s = state_arc
             .lock()

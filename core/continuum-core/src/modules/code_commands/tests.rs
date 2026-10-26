@@ -7,6 +7,7 @@
     // still stand where they were bound.
     #[tokio::test]
     async fn create_workspace_binds_hands_once_and_refuses_to_move_them() {
+        crate::acting_provider::install();
         let (bound, other) = (tempfile::tempdir().expect("test: a"), tempfile::tempdir().expect("test: b"));
         let state = Arc::new(CodeState::new(
             Arc::new(dashmap::DashMap::new()),
@@ -29,7 +30,7 @@
         cmd.run(&ctx, at(bound.path())).await.expect("the same root again is a no-op");
         let moved = cmd.run(&ctx, at(other.path())).await;
         assert!(matches!(moved, Err(CommandError::Invalid(ref why)) if why.contains("bound once")), "{moved:?}");
-        let key = hands_of(&ctx).map_key();
+        let key = hands_of(&ctx).expect("test: acting installed").map_key();
         let root = state.file_engines.get(&key).map(|e| e.workspace_root()).expect("an engine");
         assert_eq!(std::fs::canonicalize(root).unwrap(), std::fs::canonicalize(bound.path()).unwrap(), "still where they were bound");
     }
@@ -40,21 +41,22 @@
     // The operator is never confined. The decision is the caller's identity, never a params field.
     #[test]
     fn a_resident_reaches_the_host_but_its_credentials_and_an_outside_peer_is_confined() {
+        crate::acting_provider::install();
         let _home = crate::paths::test_home::HomeGuard::preserve_blocking(); // reads the process home a guarded fixture may be swapping (card cb3221a5)
         let ws = tempfile::tempdir().expect("test: ws");
-        assert!(confinement_of(&Ctx::default(), ws.path()).is_none(), "the operator");
+        assert!(confinement_of(&Ctx::default(), ws.path()).expect("test: acting installed").is_none(), "the operator");
         let resident = Ctx {
             caller: Some(crate::routing::CallerIdentity::local_persona(crate::identity::PeerId::from_uuid(uuid::Uuid::from_u128(0xC1)))),
             ..Ctx::default()
         };
-        let hers = confinement_of(&resident, ws.path()).expect("a resident carries the credential boundary");
+        let hers = confinement_of(&resident, ws.path()).expect("test: acting installed").expect("a resident carries the credential boundary");
         assert!(hers.reaches_host(), "this node's resident reaches the whole host");
-        assert!(matches!(read_scope_of(&resident, ws.path()), crate::code::path_security::ReadScope::Host { .. }), "her file verbs reach the host too");
+        assert!(matches!(read_scope_of(&resident, ws.path()).expect("test: acting installed"), crate::code::path_security::ReadScope::Host { .. }), "her file verbs reach the host too");
         let outside = Ctx {
             caller: Some(crate::routing::CallerIdentity::airc(crate::identity::PeerId::from_uuid(uuid::Uuid::from_u128(0xA1)))),
             ..Ctx::default()
         };
-        let confined = confinement_of(&outside, ws.path()).expect("a peer from outside this node is confined");
+        let confined = confinement_of(&outside, ws.path()).expect("test: acting installed").expect("a peer from outside this node is confined");
         assert!(!confined.reaches_host(), "held to her workspace");
         assert_eq!(confined.workspace(), ws.path());
     }
@@ -64,6 +66,7 @@
     // apparent reason so be it"), while a caller from outside this node still is refused.
     #[test]
     fn a_resident_writes_where_she_names_and_an_outside_peer_is_held_to_the_workspace() {
+        crate::acting_provider::install();
         use crate::code::path_security::PathSecurity;
         let ws = tempfile::tempdir().expect("test: ws");
         let elsewhere = tempfile::tempdir().expect("test: elsewhere");
@@ -73,14 +76,14 @@
             caller: Some(crate::routing::CallerIdentity::local_persona(crate::identity::PeerId::from_uuid(uuid::Uuid::from_u128(0xC1)))),
             ..Ctx::default()
         };
-        let scope = read_scope_of(&resident, ws.path());
+        let scope = read_scope_of(&resident, ws.path()).expect("test: acting installed");
         let resolved = security.validate_write_in(target.to_str().unwrap(), &scope).expect("a resident's absolute path resolves");
         assert_eq!(resolved, elsewhere.path().canonicalize().unwrap().join("note.txt"));
         let outside = Ctx {
             caller: Some(crate::routing::CallerIdentity::airc(crate::identity::PeerId::from_uuid(uuid::Uuid::from_u128(0xA1)))),
             ..Ctx::default()
         };
-        let confined = read_scope_of(&outside, ws.path());
+        let confined = read_scope_of(&outside, ws.path()).expect("test: acting installed");
         assert!(security.validate_write_in(target.to_str().unwrap(), &confined).is_err(), "an outside peer is held to the workspace");
     }
 
