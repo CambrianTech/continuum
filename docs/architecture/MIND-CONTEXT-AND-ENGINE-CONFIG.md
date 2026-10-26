@@ -317,6 +317,11 @@ that reserved 12,288 of a 58,880 window for replies that measured p50 268, p90 7
 1,202, max 1,526 (1,063 completions over 24 h, reasoning tokens included:
 `usage.outputTokens` equals the engine's decoded tokens on every row).
 
+The room left for her view and history, from 30 `delib.window.flex` rows at that window, is
+58,880 − framing − required input − the reply's grant. Framing (13,463) already includes the
+tool schemas. The median was 30.3k with the 12,288 reserve, and 40.8k with each mind's measured
+max × 5/4 (about 1.8-1.9k) in its place: +10.5k, or +35%.
+
 Now they are separate:
 
 - **Reserve** (sizes the view): the max of her last 64 measured outputs × 5/4

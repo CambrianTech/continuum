@@ -3,8 +3,8 @@
 //! The reserve is the room her view leaves for the reply. It was a constant, the act's
 //! runaway bound (12,288 tokens), on a window of 58,880 whose replies measured p99 1,202
 //! and max 1,526 (the M5, 24 h to 2026-10-26, 1,063 completions, reasoning included): a
-//! fifth of the window held for a reply eight times longer than any she wrote, so her
-//! view turned over every 2-4 acts.
+//! fifth of the window held for a reply eight times longer than any she wrote, leaving
+//! her view and history a median 30.3k (30 `delib.window.flex` rows).
 //!
 //! The reserve is now the max of her last [`REPLY_TAIL_SAMPLES`] measured outputs × 5/4.
 //! Its error bound is stated and checked: replayed over those captures (each reserve read

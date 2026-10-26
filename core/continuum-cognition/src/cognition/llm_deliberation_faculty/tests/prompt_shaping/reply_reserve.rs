@@ -267,7 +267,7 @@ fn measured_reserve_recovers_past_a_censored_large_reply() {
 
 // what this catches: an act reserving its runaway bound. On the M5 (2026-10-26) every
 // act reserved 12,288 of a 58,880 window for replies measured at p99 1,202 and max
-// 1,526, leaving her view ~22k, so it turned over every 2-4 acts. The reserve is her
+// 1,526, leaving her view and history a median 30.3k of it. The reserve is her
 // measured tail (max × 5/4); the request still carries the window's physical room, so a
 // reply past the tail is never cut by it.
 #[test]

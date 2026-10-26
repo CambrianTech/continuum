@@ -316,8 +316,9 @@ impl LlmDeliberationFaculty {
         // after framing, tools and the required input. Its UNCLIPPED floor is her need.
         let reply_need = reply.floor_tokens;
         // The reply claims her measured RESERVE (`reply_claim`), never the runaway bound:
-        // reserving 12,288 for replies measured at p99 1,202 left her view ~22k of a 58,880
-        // window (the M5, 2026-10-26). A reply past the reserve is not cut by it (Aris's act
+        // reserving 12,288 for replies measured at p99 1,202 left her view and history a
+        // median 30.3k of a 58,880 window (the M5, 2026-10-26, 30 `delib.window.flex` rows;
+        // framing 13,463 there already includes the tool schemas). A reply past the reserve is not cut by it (Aris's act
         // cut at 5,316 granted, 2026-10-22, was the reserve bounding the request): the
         // request carries the window's physical room after the prompt
         // (`DeliberationPromptView::reply_allowance`).
