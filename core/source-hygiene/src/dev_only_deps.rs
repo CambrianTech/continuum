@@ -80,8 +80,14 @@ pub fn names_crate(code: &str, krate: &str) -> bool {
         let start = from + at;
         let end = start + krate.len();
         from = end;
+        let ident = |b: u8| b.is_ascii_alphanumeric() || b == b'_';
         let before = start.checked_sub(1).map(|i| bytes[i]);
-        if before.is_some_and(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b':') {
+        // `::krate::` is an absolute path to the crate; `a::krate::` is a module of `a`.
+        let absolute = before == Some(b':')
+            && start >= 2
+            && bytes[start - 2] == b':'
+            && start.checked_sub(3).map(|i| bytes[i]).is_none_or(|b| !ident(b) && b != b'>');
+        if before.is_some_and(|b| ident(b) || b == b':') && !absolute {
             continue;
         }
         let rest = &code[end..];
@@ -98,15 +104,68 @@ pub fn names_crate(code: &str, krate: &str) -> bool {
     false
 }
 
-/// Whether an attribute line gates its item to test builds: any `#[cfg(…)]` whose predicate
-/// names `test` (`test`, `all(test, …)`, `any(test, feature = "test-fixtures")`) and does not
-/// negate it. The fixtures feature counts, as it does for the other scans: no release build
-/// enables it.
+/// Whether an attribute line gates its item to test builds: a `#[cfg(…)]` whose predicate
+/// IMPLIES `test`, so no non-test build compiles the item. `test`, `all(test, …)` and
+/// `any(test, feature = "test-fixtures")` do; `any(test, unix)` does not (a normal Unix build
+/// compiles it), and neither does anything under `not(…)`. The fixtures feature counts as
+/// test, as it does for the other scans: no release build enables it.
 pub fn is_test_gate(code: &str) -> bool {
-    let Some(predicate) = code.trim().strip_prefix("#[cfg(") else {
+    test_gate_rest(code).is_some()
+}
+
+/// For a test-gate attribute line, whatever follows the attribute on the same line (the
+/// gated item when it starts there, as in `#[cfg(test)] field: T,`); `None` otherwise.
+fn test_gate_rest(code: &str) -> Option<&str> {
+    let rest = code.trim().strip_prefix("#[cfg(")?;
+    let mut depth = 1usize;
+    let close = rest.char_indices().find_map(|(i, c)| {
+        match c {
+            '(' => depth += 1,
+            ')' => depth -= 1,
+            _ => {}
+        }
+        (depth == 0).then_some(i)
+    })?;
+    let after = rest[close + 1..].strip_prefix(']')?;
+    implies_test(&rest[..close]).then_some(after.trim())
+}
+
+/// Whether a cfg predicate can only hold in a test build.
+fn implies_test(predicate: &str) -> bool {
+    let predicate = predicate.trim();
+    if predicate == "test" || predicate.replace(' ', "") == "feature=\"test-fixtures\"" {
+        return true;
+    }
+    let Some((op, inner)) = predicate.split_once('(') else {
         return false;
     };
-    !predicate.contains("not(test") && predicate.split(|c: char| !(c.is_ascii_alphanumeric() || c == '_')).any(|word| word == "test")
+    let Some(inner) = inner.strip_suffix(')') else {
+        return false;
+    };
+    let args = split_top_level(inner);
+    match op.trim() {
+        "all" => args.iter().any(|a| implies_test(a)),
+        "any" => !args.is_empty() && args.iter().all(|a| implies_test(a)),
+        _ => false, // `not(…)` and anything unknown never imply test
+    }
+}
+
+/// A cfg argument list split on its top-level commas.
+fn split_top_level(list: &str) -> Vec<&str> {
+    let (mut depth, mut start, mut out) = (0usize, 0usize, Vec::new());
+    for (i, c) in list.char_indices() {
+        match c {
+            '(' => depth += 1,
+            ')' => depth = depth.saturating_sub(1),
+            ',' if depth == 0 => {
+                out.push(&list[start..i]);
+                start = i + 1;
+            }
+            _ => {}
+        }
+    }
+    out.push(&list[start..]);
+    out.into_iter().map(str::trim).filter(|a| !a.is_empty()).collect()
 }
 
 /// The module a test-gated `mod name;` declares, if this line is one.
@@ -140,23 +199,35 @@ fn test_regions(file: &SourceFile) -> (Vec<bool>, Vec<String>) {
     let mut gated_children = Vec::new();
     let mut i = 0;
     while i < lines.len() {
-        if !is_test_gate(split_code_and_comment(lines[i]).0) {
+        let Some(same_line) = test_gate_rest(split_code_and_comment(lines[i]).0) else {
             i += 1;
             continue;
-        }
-        let Some(head) = (i + 1..lines.len()).find(|&k| {
-            let code = split_code_and_comment(lines[k]).0.trim();
-            !code.is_empty() && !code.starts_with("#[")
-        }) else {
-            break;
         };
-        let code = split_code_and_comment(lines[head]).0.trim();
+        // The gated item starts after the attribute, on its own line or the next code line.
+        let head = if same_line.is_empty() {
+            let Some(head) = (i + 1..lines.len()).find(|&k| {
+                let code = split_code_and_comment(lines[k]).0.trim();
+                !code.is_empty() && !code.starts_with("#[")
+            }) else {
+                break;
+            };
+            head
+        } else {
+            i
+        };
+        let code = if head == i { same_line } else { split_code_and_comment(lines[head]).0.trim() };
         if let Some(name) = declared_module(code) {
             gated_children.push(format!("{}{name}", child_dir(&file.rel)));
         }
         // A gated field, struct-literal entry, statement or `mod x;` is its one line; a
-        // gated block item runs to its close.
-        let end = if code.ends_with(',') || code.ends_with(';') { head } else { crate::gated_item_end(&lines, head) };
+        // gated block item runs to its close (read from the item, not the attribute).
+        let end = if code.ends_with(',') || code.ends_with(';') {
+            head
+        } else {
+            let mut item = lines[head..].to_vec();
+            item[0] = code;
+            head + crate::gated_item_end(&item, 0)
+        };
         test_only[i..=end].iter_mut().for_each(|t| *t = true);
         i = end + 1;
     }
@@ -267,8 +338,29 @@ mod tests {
         assert!(names_crate("use tempfile;", "tempfile"));
         assert!(names_crate("extern crate tempfile as tf;", "tempfile"));
         assert!(!names_crate("use crate::genome::tempfile::X;", "tempfile"));
+        // regression (Codex on #5460): a leading `::` is an absolute path to the crate.
+        assert!(names_crate("let d = ::tempfile::tempdir()?;", "tempfile"));
+        assert!(names_crate("use ::tempfile::TempDir;", "tempfile"));
+        assert!(!names_crate("let d = <T as X>::tempfile::y();", "tempfile"));
         assert!(!names_crate("let my_tempfile = 1;", "tempfile"));
         assert!(!names_crate("fn tempfile_path() {}", "tempfile"));
+    }
+
+    // what this catches: a gate that merely MENTIONS test read as test-only (Codex on #5460:
+    // `any(test, unix)` compiles in every Unix build, so a dev-only crate under it breaks).
+    #[test]
+    fn only_a_predicate_that_implies_test_is_a_test_gate() {
+        assert!(is_test_gate("#[cfg(test)]"));
+        assert!(is_test_gate("    #[cfg(all(test, feature = \"stress-tests\"))]"));
+        assert!(is_test_gate("#[cfg(any(test, feature = \"test-fixtures\"))]"));
+        assert!(is_test_gate("#[cfg(all(unix, any(test, feature = \"test-fixtures\")))]"));
+        assert!(!is_test_gate("#[cfg(any(test, unix))]"));
+        assert!(!is_test_gate("#[cfg(not(test))]"));
+        assert!(!is_test_gate("#[cfg(feature = \"testing\")]"));
+        assert!(!is_test_gate("#[cfg(unix)]"));
+        let declared = DeclaredCrates::parse("[dev-dependencies]\ntempfile = \"3\"\n");
+        let file = SourceFile::for_test("a.rs", "#[cfg(any(test, unix))]\nfn f() { let _ = ::tempfile::tempdir(); }\n");
+        assert_eq!(violations_in("c", &declared, &[file]).len(), 1, "a Unix build compiles f");
     }
 
     // what this catches: the #5452 shape itself, from manifest to line.
@@ -281,6 +373,7 @@ mod tests {
             SourceFile::for_test("y.rs", "#[cfg(all(test, feature = \"stress-tests\"))]\nmod harness;\n#[cfg(test)]\nmod tests;\n"),
             SourceFile::for_test("y/harness.rs", "use continuum_academy::hf;\n"),
             SourceFile::for_test("y/tests.rs", "fn t() { continuum_academy::hf::x(); }\n"),
+            SourceFile::for_test("w.rs", "struct W {\n    #[cfg(test)] dir: continuum_academy::Dir,\n}\n#[cfg(test)] fn g() {\n    continuum_academy::x();\n}\n"),
             SourceFile::for_test(
                 "z.rs",
                 "struct S {\n    a: u8,\n    #[cfg(test)]\n    dir: continuum_academy::Dir,\n}\n\
