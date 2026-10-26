@@ -612,7 +612,7 @@ mod tests {
             contracts_in_force(self_initiated, directed, live).iter().map(|c| c.name).collect()
         };
         assert_eq!(names(false, false, false), ["Conversational Presence"]);
-        assert_eq!(names(false, true, false), ["Conversational Presence"]);
+        assert_eq!(names(false, true, false), ["Directed Presence"], "a directed turn has its own contract, so a flip never re-appends one key");
         assert_eq!(names(false, false, true), ["Working Presence"]);
         assert_eq!(names(true, false, false), ["Your own time", "Conversational Presence"]);
         assert_eq!(names(true, false, true), ["Your own time", "Working Presence"]);
@@ -705,6 +705,7 @@ mod tests {
         // The hard-flipping framing carries NONE of its markers in the cacheable prefix…
         assert!(
             !baseline.contains("[Conversational Presence]")
+                && !baseline.contains("[Directed Presence]")
                 && !baseline.contains("[Your own time]"),
             "the per-turn framing must not sit in the cacheable prefix: {baseline}"
         );
