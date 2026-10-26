@@ -2,7 +2,7 @@
 
 use super::{search_hub, HfSearchParams, HfSearchResult, HubKind};
 
-crate::action_command! {
+continuum_kernel::action_command! {
     /// Search HuggingFace Hub for DATASETS by keyword — instruction corpora,
     /// dialogue sets, domain data to learn from. Returns the top dataset repos
     /// with downloads, likes and tags, each with its Hub URL and the
