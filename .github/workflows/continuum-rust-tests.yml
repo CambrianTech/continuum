@@ -255,6 +255,9 @@ jobs:
         run: |
           set -o pipefail
           for test in \
+            tests::reboot_tests::shutdown_errors_fail_closed_never_no_answer \
+            tests::reboot_tests::pre_rail_label_is_reserved_for_unknown_verb_phrasings \
+            tests::reboot_tests::cannot_attest_refuses_reboot_and_never_renders_as_first_rollout \
             tests::reboot_tests::prebuilt_reboot_options_are_explicit_and_strict \
             tests::reboot_tests::prebuilt_reboot_launch_retains_candidate_socket_and_cwd \
             tests::reboot_tests::service_reboot_rejects_stale_action_and_artifact_before_teardown \
