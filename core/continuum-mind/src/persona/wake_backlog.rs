@@ -27,7 +27,13 @@ pub(crate) struct PendingInput {
     inputs: VecDeque<RetainedInput>,
     self_refusals: HashMap<Uuid, Option<crate::cognition::workspace::CapacityRefusal>>,
     work_witnesses: VecDeque<(Uuid, crate::cognition::conversation::room_event::RoomWork)>,
+    /// Interrupted turns that recorded an effect (stop-drain S3): never retried, owed one
+    /// completed turn on the cycle that carries their notice, then closed. `(row, room)`.
+    uncertain: Vec<(Uuid, Uuid)>,
+    /// Uncertain rows a completed turn has answered: the loop closes them.
+    answered: Vec<Uuid>,
 }
+mod recovered;
 struct RetainedInput {
     message: IncomingMessage,
     engram: Option<Uuid>,

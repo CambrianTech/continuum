@@ -302,6 +302,8 @@ pub(super) async fn run_turn_cycle(
                 );
             }
             deferred_input.settle(msg, wake_engram, attention, &step);
+            // The room that chose this turn's cycle above, so the notices it read are the ones answered.
+            deferred_input.notices_read(turn_room, &turn_generation_receipts);
             match step {
                 crate::cognition::act_observe::SettleStep::CapacityRefused { .. }
                 | crate::cognition::act_observe::SettleStep::DeferredBeforeDispatch => {

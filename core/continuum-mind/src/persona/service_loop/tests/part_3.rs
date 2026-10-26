@@ -4,16 +4,11 @@ use super::*;
 /// A loop needs its obligation store (cards 920619c5, 68811445), and a turn runs only on a
 /// CONFIRMED obligation, so these tests write through the real store's data module.
 fn test_obligations(hosted: &HostedPersona) -> crate::persona::obligation::Obligations {
-    fn substrate_entities() -> Result<usize, String> {
-        crate::persona::register_substrate_orm_entities(crate::orm::OrmEntityRegistry::global())
-            .map(|()| crate::persona::SUBSTRATE_ORM_COLLECTIONS.len())
-            .map_err(|e| e.to_string())
-    }
-    let registry = std::sync::Arc::new(crate::runtime::ModuleRegistry::new());
-    registry.register(std::sync::Arc::new(continuum_store::DataModule::new(substrate_entities)));
-    let executor = std::sync::Arc::new(crate::runtime::CommandExecutor::new(registry.clone()));
-    registry.install_executor_on_all(executor.clone());
-    crate::persona::obligation::Obligations::new(&executor, hosted.identity.peer_id.as_uuid(), &hosted.identity.agent_name)
+    crate::persona::obligation::Obligations::new(
+        &crate::persona::obligation::test_store_executor(),
+        hosted.identity.peer_id.as_uuid(),
+        &hosted.identity.agent_name,
+    )
 }
 
     // Bespoke `StubConversation` / `CannedAdapter` / `EmptyReader` /

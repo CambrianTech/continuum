@@ -287,10 +287,33 @@ pub struct Obligations {
     /// Consecutive store failures, shared with the turn marks: the backoff and the health
     /// probe read it, so a store that keeps failing slows her down loudly instead of spinning.
     failures: Arc<effects::Failures>,
+    /// The interrupted rows whose notice this start pinned, by row id, with the room whose
+    /// cycle carries it: closing a row unpins its notice, and only then (stop-drain S3).
+    pinned: parking_lot::Mutex<std::collections::HashMap<Uuid, Uuid>>,
+}
+
+/// An executor over the real store's data module: what a loop's obligations write through.
+/// Shared by every test that needs a CONFIRMED obligation (cards 920619c5, 68811445, afaa0a3e).
+#[cfg(test)]
+pub(crate) fn test_store_executor() -> Arc<CommandExecutor> {
+    fn substrate_entities() -> Result<usize, String> {
+        crate::persona::register_substrate_orm_entities(crate::orm::OrmEntityRegistry::global())
+            .map(|()| crate::persona::SUBSTRATE_ORM_COLLECTIONS.len())
+            .map_err(|e| e.to_string())
+    }
+    // Registered before the first command, as boot does: the module only reads the registry.
+    substrate_entities().unwrap(); // unwrap: test fixture
+    let registry = Arc::new(crate::runtime::ModuleRegistry::new());
+    registry.register(Arc::new(continuum_store::DataModule::new(substrate_entities)));
+    let executor = Arc::new(CommandExecutor::new(registry.clone()));
+    registry.install_executor_on_all(executor.clone());
+    executor
 }
 
 mod effects;
+mod recover;
 pub use effects::ObligationMark;
+pub use recover::Interrupted;
 
 impl Obligations {
     pub fn new(executor: &Arc<CommandExecutor>, persona_id: Uuid, persona_name: &str) -> Self {
@@ -299,6 +322,7 @@ impl Obligations {
             persona_name: persona_name.to_string(),
             conn: Arc::new(substrate_connection(executor)),
             failures: Arc::default(),
+            pinned: parking_lot::Mutex::default(),
         }
     }
 
@@ -313,9 +337,10 @@ impl Obligations {
         )))
     }
 
-    /// At loop start: ensure the collection, then report and stamp what the last stop left open.
+    /// At loop start: ensure the collection, then report and stamp what the last stop left open,
+    /// and hand back the open rows (oldest first) for recovery.
     /// `None` when the store could not be read: unknown, never a count of zero (Codex on #5480).
-    pub async fn report_interrupted(&self, now_ms: u64) -> Option<InterruptedReport> {
+    pub async fn report_interrupted(&self, now_ms: u64) -> Option<Interrupted> {
         let conn = self.conn.as_ref();
         let rows = match ensure_storage(conn, &self.persona_name).await {
             Ok(()) => open(conn, &self.persona_name, self.persona_id).await,
@@ -344,7 +369,7 @@ impl Obligations {
                 self.fault("mark", Some(row.id), &error);
             }
         }
-        Some(report)
+        Some(Interrupted { report, rows })
     }
 
     /// At admission, before her context is composed. `None` when unrecorded (named by a probe).
@@ -378,8 +403,10 @@ impl Obligations {
         let started = std::time::Instant::now();
         let closed = close(conn, &self.persona_name, turn).await;
         self.timed("close", started);
-        if let Err(error) = closed {
-            self.fault("close", Some(turn), &error);
+        match closed {
+            // A row that failed to close keeps its notice: the next start finds it and re-pins.
+            Ok(()) => self.unpin(turn),
+            Err(error) => self.fault("close", Some(turn), &error),
         }
     }
 
@@ -450,7 +477,7 @@ mod tests {
     async fn an_unreadable_store_reports_unknown_not_zero() {
         let executor = Arc::new(CommandExecutor::new(Arc::new(crate::runtime::ModuleRegistry::new())));
         let obligations = Obligations::new(&executor, Uuid::new_v4(), "no-store");
-        assert_eq!(obligations.report_interrupted(1).await, None);
+        assert!(obligations.report_interrupted(1).await.is_none());
     }
 
     // what this catches: the trigger losing a field on its way through the store, so a later

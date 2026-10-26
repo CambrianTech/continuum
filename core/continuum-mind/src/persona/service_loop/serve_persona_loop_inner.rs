@@ -27,8 +27,11 @@ pub(super) async fn serve_persona_loop_inner(
     // input and Stop stay reachable without replacing an older trigger's custody.
     let mut deferred_input = crate::persona::wake_backlog::PendingInput::for_persona(ctx.identity.peer_id.as_uuid());
     // Its durable half (card 920619c5): each admitted turn is a row until it ends, so the
-    // turns the last stop cut are named here, at the start, instead of vanishing.
-    obligations.report_interrupted((opts.now_ms)()).await;
+    // turns the last stop cut are named here, at the start, instead of vanishing. Stop-drain
+    // S3: each gets a notice; an untouched one is handed back, one that began an effect never is.
+    obligations
+        .recover((opts.now_ms)(), &mut deferred_input, |trigger| new_message_attention(ctx, trigger))
+        .await;
 
     // The persona's adapter (`ctx.adapter`) is reached by the
     // cognition layer through the global provider registry — slice
@@ -93,6 +96,10 @@ pub(super) async fn serve_persona_loop_inner(
     // their recheck so a line her inbox takes never also starts a self-turn.
     let mut mind = MindWakeState::default();
     loop {
+        // An interrupted turn that began an effect closes after a completed turn read its notice.
+        for answered in deferred_input.take_answered() {
+            obligations.close(Some(answered)).await;
+        }
         let (wake, pending_before_wake) = await_wake(
             ctx,
             conversation,
