@@ -94,7 +94,7 @@ mod tests {
         ));
         let h = ModuleHarness::with_modules([
             fresh_memory_module(),
-            Arc::new(crate::modules::data::DataModule::new())
+            Arc::new(crate::modules::data_wiring::data_module())
                 as Arc<dyn crate::runtime::ServiceModule>,
         ])
         .await;
@@ -182,7 +182,7 @@ mod tests {
         {
             let h = ModuleHarness::with_modules([
                 fresh_memory_module(),
-                Arc::new(crate::modules::data::DataModule::new())
+                Arc::new(crate::modules::data_wiring::data_module())
                     as Arc<dyn crate::runtime::ServiceModule>,
             ])
             .await;
@@ -219,7 +219,7 @@ mod tests {
         {
             let h = ModuleHarness::with_modules([
                 fresh_memory_module(),
-                Arc::new(crate::modules::data::DataModule::new())
+                Arc::new(crate::modules::data_wiring::data_module())
                     as Arc<dyn crate::runtime::ServiceModule>,
             ])
             .await;

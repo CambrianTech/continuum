@@ -31,7 +31,7 @@ mod staging;
 /// not pass here merely because the fixture omitted the grid trust policy.
 pub(super) fn data_runtime() -> Arc<CommandExecutor> {
     let registry = Arc::new(crate::runtime::ModuleRegistry::new());
-    registry.register(Arc::new(crate::modules::data::DataModule::new()));
+    registry.register(Arc::new(crate::modules::data_wiring::data_module()));
     let executor = Arc::new(
         CommandExecutor::new(registry.clone())
             .with_policy(Arc::new(crate::modules::grid::GridTrustAuthPolicy::new())),

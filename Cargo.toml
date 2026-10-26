@@ -24,6 +24,7 @@ members = [
     "core/continuum-core",
     "core/continuum-sentinel",
     "core/continuum-kernel",
+    "core/continuum-store",
     "core/continuum-mind",
     "core/continuum-dreaming",
     "core/continuum-perception",

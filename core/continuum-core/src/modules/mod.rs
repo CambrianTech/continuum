@@ -37,7 +37,14 @@ pub mod channel;
 pub use continuum_mind::chat;
 pub use continuum_hands::modules::{code, code_commands, python_adapter};
 pub use continuum_mind::modules::cognition;
-pub mod data;
+/// The data layer (continuum-store, card 2709ec6d), at its old path: the store's state and
+/// helpers, and the module shell that the store keeps above them.
+pub mod data {
+    pub use continuum_store::data::*;
+    pub use continuum_store::module::{DataModule, SubstrateEntities};
+}
+/// Core's half of the store's boot seam: the substrate entities the layers above the store own.
+pub mod data_wiring;
 pub use continuum_dreaming::modules::dataset;
 pub use continuum_embedding::module as embedding;
 pub mod events;
