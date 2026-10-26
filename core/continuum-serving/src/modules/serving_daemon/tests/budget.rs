@@ -517,6 +517,56 @@ async fn without_a_past_form_of_ourself_a_six_gigabyte_box_really_does_downshift
     );
 }
 
+// A published target must not manufacture free memory before its process starts.
+// The candidate is memory-bound below bootstrap demand, so the old second-pass
+// weight credit changes geometry even though every measured input is identical.
+#[tokio::test]
+async fn publishing_a_target_does_not_credit_unallocated_weights() -> Result<(), String> {
+    let mut daemon = daemon_on_card(
+        Arc::new(FakeServer::healthy(Arc::new(AtomicUsize::new(0)), true)),
+        8 * GB,
+    );
+    let candidates = [ModelFootprint {
+        model_id: "credit-regression".into(),
+        weights_bytes: 3 * GB,
+        kv_per_token: 100_000,
+        context_window: 131_072,
+        capability_rank: 10,
+        fixed_per_lane_bytes: 0,
+    }];
+    let publish = |daemon: &ServingDaemonModule| {
+        daemon.publish_plan(
+            HostBudget {
+                usable_bytes: 4 * GB,
+                perf_cores: 1,
+            },
+            &candidates,
+            &candidates,
+        );
+        daemon
+            .plan_tx
+            .borrow()
+            .plan
+            .clone()
+            .ok_or("missing test plan".to_string())
+    };
+    let first = publish(&daemon)?;
+    let second = publish(&daemon)?;
+    assert_eq!(first.lanes, second.lanes);
+    assert_eq!(first.served_context_window, second.served_context_window);
+
+    // A live process for another model is not evidence that this target's
+    // weights were allocated either. Keep preference and residency distinct.
+    daemon.set_inherited_lane(Arc::new(|| Some(inherited_27b())));
+    let different_resident = publish(&daemon)?;
+    assert_eq!(first.lanes, different_resident.lanes);
+    assert_eq!(
+        first.served_context_window,
+        different_resident.served_context_window
+    );
+    Ok(())
+}
+
 // what this catches (2026-09-16): the same 6 GB reading on a 53 GB card is a
 // TRANSIENT, and with no incumbent to defend (a fresh boot, an unload that
 // suppressed the 27B) every other guard is disarmed. The host floor is not: the

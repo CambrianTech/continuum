@@ -115,13 +115,14 @@ impl ServingDaemonModule {
         // successor sampled `usable_gb=6`, downshifted to a 14B at MIN_SERVE_CTX, and reclaimed
         // the 27B 1.2s later — freeing 45 GB it could no longer use. An inherited lane is not an
         // external squeeze; it is a past form of ourself, and it is the incumbent.
+        let resident = (self.inherited_lane)();
         let incumbent = incumbent_for_plan(
             self.plan_tx
                 .borrow()
                 .plan
                 .as_ref()
                 .map(|p| p.base_model.model_id.clone()),
-            (self.inherited_lane)().as_ref(),
+            resident.as_ref(),
         );
         // Remembered geometry is a cache preference, never capacity or demand.
         // The current roster, knee and admission budget decide lanes and width.
@@ -130,9 +131,9 @@ impl ServingDaemonModule {
         let seat_model = incumbent
             .as_deref()
             .or(remembered.as_ref().map(|g| g.model_id.as_str()));
-        let demand = self
-            .serving_demand()
-            .with_sticky_window(seat_model.and_then(crate::inference::served_window_store::load_for));
+        let demand = self.serving_demand().with_sticky_window(
+            seat_model.and_then(crate::inference::served_window_store::load_for),
+        );
         // THE INCUMBENT'S OWN BYTES ARE CREDITED BACK EXACTLY ONCE. `budget` is the
         // ledger's replace-myself budget: serving's own measured footprint added back,
         // capped at the device. Once serving has REPORTED that footprint (steady state,
@@ -150,7 +151,7 @@ impl ServingDaemonModule {
         // These two arms differ by exactly ONE engine footprint: `at_rest` trusts that the
         // ledger has already credited serving's own bytes back, `stable` credits them here.
         // Taking the wrong one puts the budget off by a whole engine in one direction or the
-        // other — and the selector is a board attribution, so which arm ran is OBSERVABLE and
+        // other — the selectors are board attribution and verified residency, so the arm is OBSERVABLE and
         // was being inferred instead. Measured that night on the M5: the engine held a SETTLED
         // 3 lanes at 78,592 while the plan said 1 (`bound_by=host-fit`, `demand_lanes=2`) with
         // one lane of KV costing 2.4 GiB against 13.9 GiB available. Two confident explanations
@@ -159,7 +160,14 @@ impl ServingDaemonModule {
         // reading the guards that prevent them (#232's `apply_kv_quantization`, and the
         // credit-back-exactly-once ledger above). Nobody could say which arm had run, because
         // nothing said so. This says it.
-        let stable = if ledger_credited {
+        // Publishing a target does not allocate its weights. Only the canonical,
+        // process-identity-verified live lane can justify the planner's credit.
+        // A different resident cannot credit the preferred target's weight size.
+        let planner_credited = !ledger_credited
+            && resident
+                .as_ref()
+                .is_some_and(|lane| incumbent.as_deref() == Some(lane.model.as_str()));
+        let stable = if !planner_credited {
             plan_serving_at_rest(&budget, candidates, incumbent.as_deref(), &demand)
         } else {
             plan_serving_stable(&budget, candidates, incumbent.as_deref(), &demand)
@@ -183,14 +191,15 @@ impl ServingDaemonModule {
             // which arm ran, and what it produced. The budget is CONTEXT for reading that
             // decision, carried as fields, and a budget that drifts while the arm and the
             // plan hold steady is not a new fact about the planner.
-            static LAST_BRANCH: parking_lot::Mutex<Option<(bool, Option<(u32, u32)>)>> =
+            static LAST_BRANCH: parking_lot::Mutex<Option<(bool, bool, Option<(u32, u32)>)>> =
                 parking_lot::Mutex::new(None);
-            let now = Some((ledger_credited, planned));
+            let now = Some((ledger_credited, planner_credited, planned));
             if say_on_change(&mut *LAST_BRANCH.lock(), now).is_some() {
                 continuum_base::probe!(
                     target: "continuum_core::modules::serving_daemon", class = "serving.plan.branch",
-                    branch = if ledger_credited { "at_rest" } else { "stable" },
+                    branch = if planner_credited { "stable" } else { "at_rest" },
                     ledger_credited = ledger_credited,
+                    planner_credited = planner_credited,
                     credited_bytes = credited_bytes,
                     usable_bytes = budget.usable_bytes,
                     perf_cores = budget.perf_cores as u64,
@@ -322,9 +331,10 @@ impl ServingDaemonModule {
                         // PHYSICAL budget at the geometry it is running. Adopt, or say why not.
                         if self.plan_tx.borrow().plan.is_none() {
                             if let Some(inc) = incumbent.as_deref() {
-                                let geometry = crate::inference::served_window_store::load_geometry()
-                                    .filter(|g| g.model_id == inc)
-                                    .and_then(|g| g.cache_geometry());
+                                let geometry =
+                                    crate::inference::served_window_store::load_geometry()
+                                        .filter(|g| g.model_id == inc)
+                                        .and_then(|g| g.cache_geometry());
                                 match incumbent_adoption_plan(
                                     &self.physical_budget(),
                                     candidates,
