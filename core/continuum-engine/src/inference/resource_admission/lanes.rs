@@ -407,6 +407,7 @@ impl LaneAdmission {
         expected_occupancy: Option<std::time::Duration>,
     ) -> (super::LaneWait, impl std::future::Future<Output = ServingLanePermit> + Send) {
         let (observer, progress) = self.observe(persona, priority);
+        let aging = observer.clone();
         let acquire = async move {
         let queued_at = std::time::Instant::now();
         let directed = priority.is_directed();
@@ -460,7 +461,7 @@ impl LaneAdmission {
                     }
                 }
             }
-            LanePriority::Ambient => (Some(self.acquire_nondirected_as_ambient().await), None),
+            LanePriority::Ambient => (Some(self.acquire_aged_ambient(&aging).await), None),
         };
         progress.physical(nondirected.is_some());
         let lane = match lent_lane {
@@ -526,9 +527,8 @@ impl LaneAdmission {
 
     /// An ambient caller never enters the semaphore's queue: it takes a permit only when
     /// one is free AND no held-work caller is waiting, otherwise it parks on the release
-    /// signal (a 1 s tick guards against a missed wake). Bounded fairness comes from the
-    /// work queue draining: every release re-checks, and work waiters are counted down
-    /// as they are served.
+    /// signal (a 1 s tick guards against a missed wake). This opportunistic path alone
+    /// can starve; acquire_aged_ambient promotes into FIFO after the initial cohort.
     pub(super) async fn acquire_nondirected_as_ambient(&self) -> tokio::sync::OwnedSemaphorePermit {
         let sem = self.nondirected_lanes().clone();
         let mut yielded = false;
@@ -552,6 +552,25 @@ impl LaneAdmission {
             let _ =
                 tokio::time::timeout(std::time::Duration::from_secs(1), self.released.notified())
                     .await;
+        }
+    }
+
+    /// Let the initial cohort go first, then join its FIFO rather than waiting for
+    /// an indefinitely replenished work queue to empty. Directed capacity is unchanged.
+    async fn acquire_aged_ambient(&self, observer: &super::LaneWait) -> tokio::sync::OwnedSemaphorePermit {
+        let cohort = self.work_waiting().saturating_add(self.nondirected_budget()).max(1) as u64;
+        let origin = observer.ambient_origin(cohort);
+        let opportunistic = self.acquire_nondirected_as_ambient();
+        tokio::pin!(opportunistic);
+        loop {
+            if observer.ambient_aged(origin) {
+                return self.acquire_nondirected_as_work().await;
+            }
+            tokio::select! {
+                permit = &mut opportunistic => return permit,
+                _ = self.released.notified() => {},
+                _ = tokio::time::sleep(std::time::Duration::from_secs(1)) => {},
+            }
         }
     }
 

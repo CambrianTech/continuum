@@ -8,6 +8,7 @@ pub(super) struct ProgressLedger {
     physical_grants: u64,
     budget_grants: u64,
     entries: BTreeMap<u64, Entry>,
+    ambient_age: BTreeMap<uuid::Uuid, (u64, u64)>,
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Phase {
@@ -46,6 +47,8 @@ impl ProgressGuard {
     }
     pub(super) fn granted(&self) {
         let mut ledger = self.gate.progress.lock();
+        let persona = ledger.entries.get(&self.id).and_then(|entry| entry.persona);
+        if let Some(persona) = persona { ledger.ambient_age.remove(&persona); }
         let budget = if let Some(entry) = ledger.entries.get_mut(&self.id) {
             entry.phase = Phase::Granted;
             entry.budget
@@ -127,11 +130,30 @@ impl ProgressLedger {
             physical_grants: 0,
             budget_grants: 0,
             entries: BTreeMap::new(),
+            ambient_age: BTreeMap::new(),
         }
     }
 }
 impl std::fmt::Debug for ProgressGuard {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_tuple("ProgressGuard").field(&self.id).finish()
+    }
+}
+
+impl LaneWait {
+    /// One initial cohort may pass before ambient joins the ordinary non-directed FIFO.
+    /// A cancelled attempt retains its origin for this resident; an actual grant clears it.
+    pub(super) fn ambient_origin(&self, cohort: u64) -> (u64, u64) {
+        let mut ledger = self.gate.progress.lock();
+        let now = ledger.budget_grants;
+        let persona = ledger.entries.get(&self.id).and_then(|entry| entry.persona);
+        match persona {
+            Some(persona) => *ledger.ambient_age.entry(persona).or_insert((now, cohort.max(1))),
+            None => (now, cohort.max(1)),
+        }
+    }
+
+    pub(super) fn ambient_aged(&self, origin: (u64, u64)) -> bool {
+        self.gate.progress.lock().budget_grants.wrapping_sub(origin.0) >= origin.1
     }
 }
