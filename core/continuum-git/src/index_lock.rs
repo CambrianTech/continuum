@@ -64,23 +64,61 @@ pub struct GitProcess<'a> {
     pub env: &'a [String],
 }
 
+/// PURE: `path` joined onto `base` and normalized lexically (`.` dropped, `..` pops), so a
+/// relative `--git-dir=.git/worktrees/tree` from cwd `/repo` compares as
+/// `/repo/.git/worktrees/tree` without touching the filesystem.
+fn resolve(base: &Path, path: &str) -> PathBuf {
+    let mut out = PathBuf::new();
+    for part in base.join(path).components() {
+        match part {
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                out.pop();
+            }
+            other => out.push(other),
+        }
+    }
+    out
+}
+
 /// PURE: whether this git might be working on the tree whose work root is `root` and whose
 /// administrative gitdir (where the lock lives) is `gitdir`. A git is judged by every way it can
-/// name the tree: its cwd inside either directory, `--git-dir` / `--work-tree` / `-C` arguments,
-/// or `GIT_DIR` / `GIT_WORK_TREE` in its environment, each by the path as given or canonical. A
-/// git launched from elsewhere with `--git-dir=<a worktree's gitdir>` names no work root, so the
-/// gitdir must be matched too (Codex on #5464). An unreadable cwd is never evidence of absence.
+/// name the tree, each resolved the way git resolves it (Codex on #5464):
+/// - its cwd, and each `-C <dir>` in order, inside either directory;
+/// - `--git-dir` / `--work-tree` (`=value` or separate) resolved against the cwd after the `-C`s;
+/// - `GIT_DIR` / `GIT_WORK_TREE` in its environment, resolved against both the process cwd and the
+///   cwd after the `-C`s (conservative: either reading counts).
+/// Paths compare as given and canonical. An unreadable cwd is never evidence of absence.
 pub fn may_work_on(git: &GitProcess<'_>, root: &Path, gitdir: &Path) -> bool {
     let canonical = |p: &Path| p.canonicalize().unwrap_or_else(|_| p.to_path_buf()); // unwrap_or_else: an uncanonicalizable path still compares as given
     let dirs = [root.to_path_buf(), canonical(root), gitdir.to_path_buf(), canonical(gitdir)];
-    let spellings: Vec<String> = dirs.iter().map(|d| d.to_string_lossy().into_owned()).collect();
-    let names_tree = |text: &str| spellings.iter().any(|s| !s.is_empty() && text.contains(s.as_str()));
+    let inside = |p: &Path| dirs.iter().any(|d| p.starts_with(d) || canonical(p).starts_with(d));
     let Some(cwd) = git.cwd else {
         return true; // unreadable: it may be working here
     };
-    dirs.iter().any(|d| cwd.starts_with(d))
-        || git.cmd.iter().any(|arg| names_tree(arg))
-        || git.env.iter().filter(|var| var.starts_with("GIT_DIR=") || var.starts_with("GIT_WORK_TREE=")).any(|var| names_tree(var))
+    let mut base = cwd.to_path_buf();
+    let mut named = Vec::new();
+    let mut args = git.cmd.iter().skip(1);
+    while let Some(arg) = args.next() {
+        if arg == "-C" {
+            if let Some(dir) = args.next() {
+                base = resolve(&base, dir);
+                named.push(base.clone());
+            }
+        } else if let Some(option) = ["--git-dir", "--work-tree"].iter().find(|o| arg == **o || arg.starts_with(&format!("{o}="))) {
+            let value = arg.strip_prefix(&format!("{option}=")).map(str::to_string).or_else(|| args.next().cloned());
+            if let Some(value) = value {
+                named.push(resolve(&base, &value));
+            }
+        }
+    }
+    for var in git.env {
+        if let Some(value) = var.strip_prefix("GIT_DIR=").or_else(|| var.strip_prefix("GIT_WORK_TREE=")) {
+            named.push(resolve(cwd, value));
+            named.push(resolve(&base, value));
+        }
+    }
+    inside(cwd) || inside(&base) || named.iter().any(|p| inside(p))
 }
 
 /// Whether any running `git` might be working on the tree (see [`may_work_on`]).
@@ -131,14 +169,20 @@ pub fn settle(root: &Path, stale_after: Duration) -> Settled {
     else {
         return Settled::Absent;
     };
-    // The file judged, by identity: a lock removed and re-created by a live git between the
-    // scan and the unlink is another file, and it is left alone (Codex on #5464).
-    let judged = identity_of(&lock);
+    // The file judged, held open by identity: a lock removed and re-created by a live git between
+    // the scan and the unlink is another file and is left alone. The handle stays open until the
+    // unlink, so the judged file's identity cannot be reused by a new file meanwhile (Codex on
+    // #5464). What remains is the instant between the last identity read and the unlink: a
+    // replacement landing exactly there would be removed. Portable code cannot unlink by handle,
+    // and that window is a few syscalls against the minutes a stale lock must already have sat.
+    let Some(judged) = open_identity(&lock) else {
+        return Settled::Held { lock, age };
+    };
     let gitdir = lock.parent().unwrap_or(root); // unwrap_or: a lock path always has a parent directory
     match verdict(Some(age), stale_after, age >= stale_after && git_running_in(root, gitdir)) {
         IndexLock::Absent => Settled::Absent,
         IndexLock::Held => Settled::Held { lock, age },
-        IndexLock::Stale if judged.is_none() || identity_of(&lock) != judged => Settled::Held { lock, age },
+        IndexLock::Stale if open_identity(&lock).map(|(_, id)| id) != Some(judged.1) => Settled::Held { lock, age },
         IndexLock::Stale => match std::fs::remove_file(&lock) {
             Ok(()) => Settled::Cleared { lock, age },
             Err(error) => Settled::Failed { lock, age, error: error.to_string() },
@@ -146,10 +190,13 @@ pub fn settle(root: &Path, stale_after: Duration) -> Settled {
     }
 }
 
-/// The lock file's identity on its volume, `None` when it cannot be opened (gone, or unreadable:
-/// either way it is not removed on this pass).
-fn identity_of(lock: &Path) -> Option<continuum_host::file_identity::FileIdentity> {
-    std::fs::File::open(lock).ok().and_then(|file| continuum_host::file_identity::of(&file).ok())
+/// The lock file, opened, with its identity on its volume. `None` when it cannot be opened (gone,
+/// or unreadable: either way it is not removed on this pass). The handle is returned so the
+/// caller keeps the judged file alive while it decides.
+fn open_identity(lock: &Path) -> Option<(std::fs::File, continuum_host::file_identity::FileIdentity)> {
+    let file = std::fs::File::open(lock).ok()?;
+    let identity = continuum_host::file_identity::of(&file).ok()?;
+    Some((file, identity))
 }
 
 #[cfg(test)]
@@ -191,11 +238,14 @@ mod tests {
         assert!(matches!(settle(worktree.path(), STALE_INDEX_LOCK), Settled::Held { .. }), "young under the default bound: left");
         assert!(gitdir.path().join("index.lock").exists());
 
-        // the same lock re-created between judgment and unlink is another file: left in place
-        let first = identity_of(&gitdir.path().join("index.lock"));
+        // the same lock re-created while the judged one is still held open is another file (the held
+        // handle keeps its identity from being reused): left in place
+        let (held, first) = open_identity(&gitdir.path().join("index.lock")).expect("judged lock");
         std::fs::remove_file(gitdir.path().join("index.lock")).expect("remove");
         std::fs::write(gitdir.path().join("index.lock"), b"").expect("re-create");
-        assert_ne!(first, identity_of(&gitdir.path().join("index.lock")), "a re-created lock reads as another file");
+        let (_, second) = open_identity(&gitdir.path().join("index.lock")).expect("re-created lock");
+        assert_ne!(first, second, "a lock re-created while the judged one is open is another file");
+        drop(held);
 
         let plain = tempfile::tempdir().expect("plain");
         assert_eq!(lock_path(plain.path()), None, "not a git tree");
@@ -220,5 +270,14 @@ mod tests {
         assert!(git(&["git", "gc"], Some(Path::new("/repo/.git/worktrees/tree")), &[]), "cwd inside the gitdir");
         assert!(git(&["git", "status"], None, &[]), "unreadable cwd: may be working here");
         assert!(!git(&["git", "status"], Some(elsewhere), &["GIT_DIR=/other/.git"]), "a git on another tree");
+        // relative paths, resolved as git resolves them (Codex on #5464)
+        let repo = Path::new("/repo");
+        assert!(git(&["git", "--git-dir=.git/worktrees/tree", "status"], Some(repo), &[]), "relative --git-dir=");
+        assert!(git(&["git", "--git-dir", ".git/worktrees/tree", "status"], Some(repo), &[]), "relative --git-dir, separate value");
+        assert!(git(&["git", "status"], Some(repo), &["GIT_DIR=.git/worktrees/tree"]), "relative GIT_DIR");
+        assert!(git(&["git", "-C", "/repo", "--git-dir=.git/worktrees/tree", "add", "."], Some(elsewhere), &[]), "-C then relative --git-dir");
+        assert!(git(&["git", "-C", "/w", "-C", "tree", "status"], Some(elsewhere), &[]), "ordered -C into the root");
+        assert!(git(&["git", "--git-dir=../repo/.git/worktrees/tree", "log"], Some(Path::new("/w")), &[]), "a .. path normalizes");
+        assert!(!git(&["git", "--git-dir=.git", "status"], Some(Path::new("/other")), &[]), "relative to another tree");
     }
 }
