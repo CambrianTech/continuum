@@ -101,7 +101,12 @@ function deriveCrates(workspace, policy) {
   const libTests = Object.fromEntries(tested.map(name => [name, !policy.own_lib_test_step.includes(name)]));
   // What the warnings ratchet counts: both spellings, since rustc reports the underscore form.
   const warned = tested.filter(name => !policy.warnings_uncounted.includes(name));
-  return { tested, features, libTests, warned: warned.flatMap(name => [name, name.replace(/-/g, '_')]) };
+  // The per-file ratchets audit (by directory) every tested crate but the unaudited: the split
+  // crates prefixed, the others cut from core unprefixed.
+  const audited = members.filter(c => !policy.unaudited.includes(c.name));
+  const split = audited.filter(c => policy.split_prefixed.includes(c.name)).map(c => path.posix.basename(c.dir));
+  const modules = audited.filter(c => c.name !== 'continuum-core' && !policy.split_prefixed.includes(c.name)).map(c => path.posix.basename(c.dir));
+  return { tested, features, libTests, split, modules, warned: warned.flatMap(name => [name, name.replace(/-/g, '_')]) };
 }
 
 const repoRoot = path.resolve(__dirname, '../..');
@@ -187,5 +192,9 @@ function selectChecks(files, evidence = {}) {
 }
 module.exports = { selectChecks, readWorkspace, readPolicy, deriveCrates, TESTED_CRATES, TEST_FEATURES, LIB_TESTS };
 
-// The warnings ratchet (a shell script) reads its crate set from here, as JSON.
+// Shell and Rust readers take the derived sets from here, as JSON: `warning-crates` (the warnings
+// ratchet), `crate-sets` (source-hygiene's guard, which checks its own Rust derivation against it).
 if (require.main === module && process.argv[2] === 'warning-crates') console.log(JSON.stringify(derived.warned));
+if (require.main === module && process.argv[2] === 'crate-sets') {
+  console.log(JSON.stringify({ tested: derived.tested, warned: derived.warned, split: derived.split, modules: derived.modules }));
+}

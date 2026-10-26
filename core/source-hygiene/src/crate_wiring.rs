@@ -15,7 +15,7 @@
 use std::collections::BTreeSet;
 use std::path::Path;
 
-use crate::crate_policy::{read_members, tested, parse_policy};
+use crate::crate_policy::{modules, parse_policy, read_members, split, tested, warned};
 
 /// The crates named by `matrix.crate == 'x'` in the test workflow: its own per-crate steps.
 pub fn own_step_crates(workflow: &str) -> BTreeSet<String> {
@@ -34,6 +34,28 @@ pub fn hand_listed_crates(text: &str) -> Vec<String> {
         .filter(|line| line.matches("\"continuum-").count() + line.matches("'continuum-").count() >= 2)
         .map(|line| line.trim().chars().take(100).collect())
         .collect()
+}
+
+/// The quoted strings of `"key":[...]` in the selector's `crate-sets` JSON line.
+pub fn json_names(json: &str, key: &str) -> BTreeSet<String> {
+    let Some((_, rest)) = json.split_once(&format!("\"{key}\":[")) else {
+        return BTreeSet::new();
+    };
+    rest.split(']').next().unwrap_or("").split('"').skip(1).step_by(2).map(str::to_string).collect() // unwrap_or: split always yields one piece
+}
+
+/// The selector's derivation, run through node: the CI side of the same rule.
+fn selector_sets(repo: &Path) -> Result<String, String> {
+    let out = std::process::Command::new("node")
+        .arg("tools/scripts/ci-change-scope.cjs")
+        .arg("crate-sets")
+        .current_dir(repo)
+        .output()
+        .map_err(|e| format!("node is required to check the selector against the Rust derivation (CI installs it): {e}"))?;
+    if !out.status.success() {
+        return Err(format!("ci-change-scope.cjs crate-sets failed: {}", String::from_utf8_lossy(&out.stderr)));
+    }
+    Ok(String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
 /// Every wiring gap, as one message per problem.
@@ -82,6 +104,24 @@ pub fn gaps(repo: &Path) -> Result<Vec<String>, String> {
             out.push(format!("{file} lists crates by hand again (derive from the workspace instead): {line}"));
         }
     }
+    // The two derivers (this crate's and the selector's) must agree, or the rule lives twice.
+    let json = selector_sets(repo)?;
+    let rust_underscored = |names: Vec<&crate::crate_policy::Member>| -> BTreeSet<String> {
+        names.iter().flat_map(|m| [m.name.clone(), m.name.replace('-', "_")]).collect()
+    };
+    let rust_dirs = |names: Vec<&crate::crate_policy::Member>| -> BTreeSet<String> { names.iter().map(|m| m.dir.clone()).collect() };
+    let checks = [
+        ("tested", tested(&members, &policy).iter().map(|m| m.name.clone()).collect::<BTreeSet<_>>()),
+        ("warned", rust_underscored(warned(&members, &policy))),
+        ("split", rust_dirs(split(&members, &policy))),
+        ("modules", rust_dirs(modules(&members, &policy))),
+    ];
+    for (key, rust) in checks {
+        let node = json_names(&json, key);
+        if node != rust {
+            out.push(format!("ci-change-scope.cjs and source-hygiene derive different `{key}` crates: selector {node:?}, rust {rust:?}"));
+        }
+    }
     Ok(out)
 }
 
@@ -107,6 +147,8 @@ mod tests {
         let workflow = "        if: matrix.crate == 'continuum-core'\n        if: matrix.crate == 'continuum-mind'\n";
         assert_eq!(own_step_crates(workflow), ["continuum-core", "continuum-mind"].map(String::from).into());
         assert_eq!(hand_listed_crates("if: contains(fromJSON('[\"continuum-hands\",\"continuum-live\"]'), matrix.crate)").len(), 1);
+        assert_eq!(json_names("{\"tested\":[\"a\",\"b\"],\"split\":[]}", "tested"), ["a", "b"].map(String::from).into());
+        assert!(json_names("{\"split\":[]}", "split").is_empty());
         assert!(hand_listed_crates("    # \"continuum-a\" \"continuum-b\" in a comment\n  const x = 'continuum-core';").is_empty());
     }
 }
