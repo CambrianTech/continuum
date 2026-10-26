@@ -23,6 +23,7 @@ use continuum_context::source::{Item, Source};
 use continuum_context::view::{claims, View};
 
 use super::outline::{self, Mode, Paging};
+use super::paged::{self, Pager};
 use super::sediment::{self, Sediment};
 use super::{growable, median, order, shared, start, validate, Captured, Cut, Order, Rule};
 
@@ -36,6 +37,8 @@ const LOOP: &str = "act-loop";
 pub struct Options {
     pub outline: Mode,
     pub generational: bool,
+    /// Unranged reads answer with their first page (`replay/paged.rs`).
+    pub paged: bool,
 }
 
 /// One request under both prompts.
@@ -61,6 +64,12 @@ pub struct Summary {
     pub paged: usize,
     /// The per-act headroom each oversized-result decision read, in characters.
     pub headroom: Vec<f64>,
+    /// Reads answered with a first page, how many of those held every line she later used, and
+    /// the extra requests that appended a later page.
+    pub paged_reads: usize,
+    pub first_page_held: usize,
+    pub used_later: usize,
+    pub extra_requests: usize,
 }
 
 /// The tail's pieces not yet in this epoch's view, each once, in the order they were sent.
@@ -73,27 +82,44 @@ fn chars(pieces: &[String]) -> usize {
     pieces.iter().map(|piece| piece.chars().count()).sum::<usize>() + pieces.len().saturating_sub(1)
 }
 
-/// `pieces` as this request sends them: whole, or under [`Mode::Strict`] past `headroom` at
-/// their outline. Each piece is paired with its outline, if the rule gave it one.
-fn shown(pieces: Vec<String>, mode: Mode, headroom: Option<usize>) -> Vec<(String, Option<outline::Outlined>)> {
+/// One tail piece as this request handles it: the piece as captured (the epoch's key for it),
+/// its unranged reads at their first page, and its outline, if the rules gave them.
+struct Shown {
+    piece: String,
+    paged: Option<paged::Paged>,
+    outlined: Option<outline::Outlined>,
+}
+
+impl Shown {
+    /// What her own act reads: the piece, its reads at their first page under `--paged-reads`.
+    fn answered(&self) -> &str {
+        self.paged.as_ref().map_or(&self.piece, |paged| &paged.piece) // map_or: an unpaged piece is answered as captured
+    }
+}
+
+/// `pieces` as this request sends them: unranged reads past their share of `headroom` at their
+/// first page (when `options.paged`), then, past `headroom`, results at their outline.
+fn shown(pieces: Vec<String>, options: Options, headroom: Option<usize>, whole_reads: &HashSet<String>) -> Vec<Shown> {
     pieces
         .into_iter()
         .map(|piece| {
-            let outlined = match (mode, headroom) {
+            let paged = headroom.filter(|_| options.paged).and_then(|headroom| paged::page(&piece, whole_reads, headroom));
+            let mut shown = Shown { piece, paged, outlined: None };
+            shown.outlined = match (options.outline, headroom) {
                 (Mode::Whole, _) | (_, None) => None,
-                (_, Some(headroom)) => outline::outline(&piece, headroom),
+                (_, Some(headroom)) => outline::outline(shown.answered(), headroom),
             };
-            (piece, outlined)
+            shown
         })
         .collect()
 }
 
-/// What a request's tail sends: the outline under [`Mode::Strict`], else the piece whole.
-fn sent(tail: &[(String, Option<outline::Outlined>)], mode: Mode) -> Vec<String> {
+/// What a request's tail sends: the outline under [`Mode::Strict`], else what the tool answered.
+fn sent(tail: &[Shown], mode: Mode) -> Vec<String> {
     tail.iter()
-        .map(|(piece, outlined)| match outlined {
+        .map(|shown| match &shown.outlined {
             Some(outlined) if mode == Mode::Strict => outlined.piece.clone(),
-            _ => piece.clone(),
+            _ => shown.answered().to_owned(),
         })
         .collect()
 }
@@ -104,6 +130,7 @@ pub fn replay(label: &str, cuts: &[Cut], window: usize, share: usize, (chars_per
     let mut view: Option<View<String>> = None;
     let mut sediment = Sediment::default();
     let mut paging = Paging::default();
+    let mut pager = Pager::default();
     let mut looped: Vec<Item<String>> = Vec::new();
     let mut held: HashSet<String> = HashSet::new();
     let mut carried_headroom: Option<usize> = None;
@@ -112,6 +139,8 @@ pub fn replay(label: &str, cuts: &[Cut], window: usize, share: usize, (chars_per
     let mut rows = Vec::with_capacity(cuts.len());
     for (n, cut) in cuts.iter().enumerate() {
         paging.said(n, &cut.said);
+        // The pages her last act needed past a first page: one extra request each, appended.
+        let extra_pages = if options.paged { pager.said(n, &cut.said, &cut.reads) } else { Vec::new() };
         let action_keys: Vec<String> = cut.sources.get("actions").into_iter().flatten().map(|item| item.key.clone()).collect();
         restored.learn(&action_keys, &cut.act);
         let mut sources: Vec<Captured> = cut
@@ -140,9 +169,9 @@ pub fn replay(label: &str, cuts: &[Cut], window: usize, share: usize, (chars_per
         // The per-act headroom: what one act of this epoch appends (median), carried over a start.
         let headroom = view.as_ref().and_then(View::appended_per_act).or(carried_headroom);
         carried_headroom = headroom;
-        let mut tail = shown(unsent(&cut.tail, &held), options.outline, headroom);
+        let mut tail = shown(unsent(&cut.tail, &held), options, headroom, &cut.reads.whole);
         let mut head_chars = cut.head.chars().count() + sediment.chars();
-        let mut available = window.saturating_sub(head_chars + chars(&sent(&tail, options.outline)));
+        let mut available = window.saturating_sub(head_chars + chars(&sent(&tail, options.outline)) + chars(&extra_pages));
         let mut turnover = view.is_none();
         if turnover {
             let every: Vec<&dyn Source<String>> = sources.iter().map(|s| s as &dyn Source<String>).collect();
@@ -165,8 +194,8 @@ pub fn replay(label: &str, cuts: &[Cut], window: usize, share: usize, (chars_per
         if open.chars() > limit {
             // A start renders from the sources: the loop is dropped, the action log takes it
             // back, and this request's tail is sent whole again.
-            tail = shown(unsent(&cut.tail, &HashSet::new()), options.outline, headroom);
-            available = window.saturating_sub(head_chars + chars(&sent(&tail, options.outline)));
+            tail = shown(unsent(&cut.tail, &HashSet::new()), options, headroom, &cut.reads.whole);
+            available = window.saturating_sub(head_chars + chars(&sent(&tail, options.outline)) + chars(&extra_pages));
             let per_act = open.appended_per_act();
             if options.generational {
                 // The young generation's oldest items settle into the sediment, at the grants
@@ -184,7 +213,7 @@ pub fn replay(label: &str, cuts: &[Cut], window: usize, share: usize, (chars_per
                     sediment.rerender(&offered, sediment_share);
                 }
                 head_chars = cut.head.chars().count() + sediment.chars();
-                available = window.saturating_sub(head_chars + chars(&sent(&tail, options.outline)));
+                available = window.saturating_sub(head_chars + chars(&sent(&tail, options.outline)) + chars(&extra_pages));
             }
             let every: Vec<&dyn Source<String>> = sources.iter().map(|s| s as &dyn Source<String>).collect();
             open.turn_over(sediment.heads(&cut.head), &every, |claims| start(Rule::Reserved, claims, available, per_act, share))?;
@@ -195,7 +224,8 @@ pub fn replay(label: &str, cuts: &[Cut], window: usize, share: usize, (chars_per
             held.clear();
             paging.turned_over();
         }
-        let sending = sent(&tail, options.outline);
+        let mut sending = sent(&tail, options.outline);
+        sending.extend(extra_pages.iter().cloned());
         let rendered = format!("{}\n{}", open.render().cloned().collect::<Vec<_>>().join("\n"), sending.join("\n"));
         let rendered_chars = rendered.chars().count();
         let sent_chars = cut.sent.chars().count();
@@ -209,16 +239,24 @@ pub fn replay(label: &str, cuts: &[Cut], window: usize, share: usize, (chars_per
         open.sent();
         // From the next act on, an outlined result stands at its outline in either mode; her act
         // on the next request is the first that read it whole (next-act) or never did (strict).
-        for (piece, outlined) in tail {
-            held.insert(piece.clone());
-            let full = match &outlined {
+        for shown in tail {
+            held.insert(shown.piece.clone());
+            // Her act on the next request is the first that read the page.
+            if let Some(paged) = &shown.paged {
+                headrooms.push(headroom.unwrap_or_default() as f64); // unwrap_or_default: a page is only cut under a measured headroom
+                paged.reads.iter().for_each(|read| pager.register(n + 1, read));
+            }
+            let full = match &shown.outlined {
                 Some(outlined) => {
                     headrooms.push(headroom.unwrap_or_default() as f64); // unwrap_or_default: an outline is only chosen under a measured headroom
                     paging.outlined(if options.outline == Mode::Strict { n + 1 } else { n + 2 }, outlined);
                     outlined.piece.clone()
                 }
-                None => piece,
+                None => shown.answered().to_owned(),
             };
+            looped.push(Item { key: looped.len().to_string(), pointer: None, summary: None, full });
+        }
+        for full in extra_pages {
             looped.push(Item { key: looped.len().to_string(), pointer: None, summary: None, full });
         }
         previous_sent = Some(&cut.sent);
@@ -239,6 +277,10 @@ pub fn replay(label: &str, cuts: &[Cut], window: usize, share: usize, (chars_per
         outlined: paging.outlined,
         paged: paging.paged,
         headroom: headrooms,
+        paged_reads: pager.totals().0,
+        first_page_held: pager.totals().1,
+        used_later: pager.totals().2,
+        extra_requests: pager.extra,
     })
 }
 
@@ -246,8 +288,9 @@ pub fn replay(label: &str, cuts: &[Cut], window: usize, share: usize, (chars_per
 pub fn line(resident: &str, variant: &str, summary: &Summary, tps: f64) -> String {
     let per_request = summary.tokens / tps / summary.requests.max(1) as f64;
     let per_turnover = summary.turnover_tokens.iter().sum::<f64>() / summary.turnover_tokens.len().max(1) as f64;
+    let with_extras = summary.tokens / tps / (summary.requests + summary.extra_requests).max(1) as f64;
     format!(
-        "TABLE {resident} | {variant} | prefill {:.0} tok | {per_request:.0} s/request | {} turnovers | re-prefill {per_turnover:.0} tok/turnover (median {:.0}) | sediment re-renders {} (handles dropped {}) | outlined {}, paged back {} | headroom median {:.0} chars",
+        "TABLE {resident} | {variant} | prefill {:.0} tok | {per_request:.0} s/request ({with_extras:.0} counting extra requests) | {} turnovers | re-prefill {per_turnover:.0} tok/turnover (median {:.0}) | sediment re-renders {} (handles dropped {}) | outlined {}, paged back {} | headroom median {:.0} chars | paged reads {} (first page held every used line in {}; {} used later at all) | extra page requests {}",
         summary.tokens,
         summary.turnovers,
         median(summary.turnover_tokens.clone()),
@@ -256,6 +299,10 @@ pub fn line(resident: &str, variant: &str, summary: &Summary, tps: f64) -> Strin
         summary.outlined,
         summary.paged,
         median(summary.headroom.clone()),
+        summary.paged_reads,
+        summary.first_page_held,
+        summary.used_later,
+        summary.extra_requests,
     )
 }
 

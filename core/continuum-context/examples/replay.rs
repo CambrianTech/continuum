@@ -34,7 +34,10 @@
 //! at its outline, whole on its own act and outlined from the next (`replay/outline.rs`), and
 //! the strict variant outlined even on its own act. `--generational` (with `--append-tail`) also
 //! replays a sediment of handles frozen after the head, so a turnover re-prefills only the young
-//! generation (`replay/sediment.rs`, card f746143e). Each run prints one `TABLE` line.
+//! generation (`replay/sediment.rs`, card f746143e). `--paged-reads` (with `--append-tail`) also
+//! replays a read with no range answering with its first page and the line naming the rest,
+//! charging each later page her acts show she needed as an extra request (`replay/paged.rs`).
+//! Each run prints one `TABLE` line.
 //!
 //! `--chars-per-token <r>` prices the window at the core's own estimate instead of the
 //! engine's bill; `--keyed-turn` keys the standing turn text into the epoch; `--trace`
@@ -50,6 +53,8 @@ mod validate;
 mod append;
 #[path = "replay/outline.rs"]
 mod outline;
+#[path = "replay/paged.rs"]
+mod paged;
 #[path = "replay/sediment.rs"]
 mod sediment;
 use continuum_context::view::View;
@@ -229,6 +234,8 @@ struct Cut {
     act: validate::Act,
     /// The quotable lines of the act it carries (the outline mode's paging proxy).
     said: Vec<String>,
+    /// Its read calls (`--paged-reads`).
+    reads: paged::Reads,
 }
 
 /// A tail piece that repeats from act to act (the work-turn ask, the own-time framing, the
@@ -316,7 +323,7 @@ fn cut(request: &serde_json::Value, tools: &str, keyed_turn: bool) -> Cut {
         let missing = ledger.into_iter().filter(|line| !held.contains(&line.key)).collect::<Vec<_>>();
         sources.entry("actions".into()).or_default().extend(missing);
     }
-    Cut { head, sources, tail, sent, act: validate::act_of(request), said: outline::said(request) }
+    Cut { head, sources, tail, sent, act: validate::act_of(request), said: outline::said(request), reads: paged::reads(request) }
 }
 
 fn shared(a: &str, b: &str) -> usize {
@@ -491,7 +498,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut append_tps: Option<f64> = None;
     let mut reply_override: Option<u64> = None;
     let mut fixed_tools: Option<String> = None;
-    let (mut outline_results, mut generational) = (false, false);
+    let (mut outline_results, mut generational, mut paged_reads) = (false, false, false);
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         match arg.as_str() {
@@ -500,6 +507,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             "--keyed-turn" => keyed_turn = true,
             "--outline-results" => outline_results = true,
             "--generational" => generational = true,
+            "--paged-reads" => paged_reads = true,
             "--trace" => trace = true,
             "--reply" => reply_override = Some(args.next().ok_or("--reply needs a token count")?.parse()?),
             "--validate" => {
@@ -603,7 +611,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let today = replay(&label, &cuts, window, (Rule::Reserved, Order::SettledFirst), keyed_turn, true, trace, share)?;
         let resident = paths.iter().map(|path| path.rsplit('/').next().unwrap_or(path).chars().take(8).collect::<String>()).collect::<Vec<_>>().join("+"); // unwrap_or: rsplit always yields one piece
         let rate = (chars_per_token, tps);
-        let whole = append::Options { outline: outline::Mode::Whole, generational: false };
+        let whole = append::Options { outline: outline::Mode::Whole, generational: false, paged: false };
         let base = append::replay(&label, &cuts, window, share, rate, whole, true)?;
         let tokens = |chars: &[f64]| chars.iter().sum::<f64>() / chars_per_token;
         let per_turnover = tokens(&today.turnover_prefill) / today.turnover_prefill.len().max(1) as f64;
@@ -617,12 +625,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("{}", append::line(&resident, "append-tail", &base, tps));
         let mut variants = Vec::new();
         if outline_results {
-            variants.push(("append-tail + outline from the next act", append::Options { outline: outline::Mode::NextAct, generational: false }));
-            variants.push(("append-tail + outline strict (own act too)", append::Options { outline: outline::Mode::Strict, generational: false }));
+            variants.push(("append-tail + outline from the next act", append::Options { outline: outline::Mode::NextAct, generational: false, paged: false }));
+            variants.push(("append-tail + outline strict (own act too)", append::Options { outline: outline::Mode::Strict, generational: false, paged: false }));
+        }
+        if paged_reads {
+            variants.push(("append-tail + paged reads", append::Options { outline: outline::Mode::Whole, generational: false, paged: true }));
+            variants.push(("append-tail + paged reads + outline from the next act", append::Options { outline: outline::Mode::NextAct, generational: false, paged: true }));
         }
         if generational {
-            variants.push(("append-tail + generational", append::Options { outline: outline::Mode::Whole, generational: true }));
-            variants.push(("append-tail + generational + outline from the next act", append::Options { outline: outline::Mode::NextAct, generational: true }));
+            variants.push(("append-tail + generational", append::Options { outline: outline::Mode::Whole, generational: true, paged: false }));
+            variants.push(("append-tail + generational + outline from the next act", append::Options { outline: outline::Mode::NextAct, generational: true, paged: false }));
         }
         for (variant, options) in variants {
             let summary = append::replay(&label, &cuts, window, share, rate, options, false)?;

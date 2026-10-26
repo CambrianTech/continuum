@@ -60,7 +60,7 @@ fn handle_of(text: &str) -> Option<String> {
     (!id.is_empty()).then_some(id)
 }
 
-fn quotable(line: &str) -> Option<String> {
+pub fn quotable(line: &str) -> Option<String> {
     let code = gutter(line).map_or(line, |(_, code)| code).trim(); // map_or: a line without the gutter is its own code
     (code.chars().count() >= QUOTE_CHARS).then(|| code.to_owned())
 }

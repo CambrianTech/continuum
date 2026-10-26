@@ -45,7 +45,7 @@ impl Act {
 /// The read tool's names as the captures record them: the native name and the command path.
 /// Exact names only: a tool merely containing "read" (a thread, a ready check) is not a read
 /// (Cormac on #5432).
-const READ_TOOLS: [&str; 2] = ["read_file", "code/read"];
+pub const READ_TOOLS: [&str; 2] = ["read_file", "code/read"];
 
 /// The act a request carries: the `tool_use` calls of its last assistant turn, each paired by
 /// `tool_use_id` with the `tool_result` that answered it (Codex and Cormac on #5432: reads had
