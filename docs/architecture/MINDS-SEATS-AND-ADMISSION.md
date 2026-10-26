@@ -100,6 +100,11 @@ away; when it returns, the away come back, most wanted first. Engagement is meas
 list: a person talking with her now, live work in hand, how recently she was addressed, and the
 owner's stated wishes.
 
+**Sticky, never thrashing.** Capacity shrinking puts the least active to sleep first; growing
+wakes the most wanted first (Joel: "less capacity just starts sleeping inactive yeah or vice
+versa"). Each move waits for the change to hold past a measured margin (the node's own capacity
+noise), so a mind does not flip awake and asleep on every wobble ([[never-thrash-sticky-hysteresis-on-every-lane]]).
+
 **Away is not idle.** Slack (a quiet night, the gaps while active minds run tools, spare CPU
 on small nodes) gives away minds turns in rotation: catching up on their rooms, finishing a
 card, dreaming (learning) on CPU stages. The allocator's existing dormant order is that rotation.
