@@ -548,7 +548,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         100.0 * mean(&tool_share),
         100.0 * median(tool_share.clone()),
     );
-    let cuts: Vec<Cut> = rows.iter().zip(&sent_tools).map(|(row, tools)| cut(&row["request"], tools, keyed_turn)).collect();
+    let cuts: Vec<Cut> = rows
+        .iter()
+        .zip(&sent_tools)
+        .map(|(row, tools)| {
+            let mut cut = cut(&row["request"], tools, keyed_turn);
+            cut.act = std::mem::take(&mut cut.act).at(row);
+            cut
+        })
+        .collect();
     if let Some(tps) = validate_tps {
         // The validator: the core's rule (reserved, settled first, admission) at each growing share,
         // one comparable line each. Prefill seconds at the measured rate `tps`.

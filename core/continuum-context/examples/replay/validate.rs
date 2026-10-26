@@ -22,6 +22,24 @@ use continuum_context::source::Item;
 pub struct Act {
     pub result: Option<String>,
     pub reads: Vec<String>,
+    /// Where this capture sits: its session and its act cycle, which counts up by one per act
+    /// within a session (every act capture on the M5 steps by exactly 1). The next capture
+    /// continues this one only when it is the very next cycle of the same session, so a skipped
+    /// capture is a broken chain, never a result filed under the wrong action (Cormac on #5432).
+    pub cycle: Option<(String, u64)>,
+}
+
+impl Act {
+    /// Stamp the act with its capture row's session and cycle.
+    pub fn at(mut self, row: &serde_json::Value) -> Self {
+        self.cycle = row["session_id"].as_str().zip(row["cycle_id"].as_u64()).map(|(session, cycle)| (session.to_owned(), cycle));
+        self
+    }
+
+    /// Whether this act's capture is the one right after `previous`'s.
+    fn follows(&self, previous: &Option<(String, u64)>) -> bool {
+        matches!((&self.cycle, previous), (Some((session, cycle)), Some((was, then))) if session == was && *cycle == then + 1)
+    }
 }
 
 /// The read tool's names as the captures record them: the native name and the command path.
@@ -39,7 +57,8 @@ pub fn act_of(request: &serde_json::Value) -> Act {
         return Act::default();
     };
     let parts = |m: &serde_json::Value| m["content"].as_array().cloned().unwrap_or_default(); // unwrap_or_default: a text message carries no tool parts
-    let calls: Vec<serde_json::Value> = parts(messages[last_assistant]).into_iter().filter(|p| p["type"] == "tool_use").collect();
+    let calls_of = |m: &serde_json::Value| -> Vec<serde_json::Value> { parts(m).into_iter().filter(|p| p["type"] == "tool_use").collect() };
+    let calls = calls_of(messages[last_assistant]);
     let mut act = Act::default();
     let mut answered = Vec::new();
     for message in &messages[last_assistant + 1..] {
@@ -79,7 +98,8 @@ fn gutter(line: &str) -> Option<(u32, &str)> {
 pub struct Restored {
     by_seq: BTreeMap<String, String>,
     seen: HashSet<String>,
-    pending: Option<(String, Vec<String>)>,
+    /// The previous capture's act: its result, its reads and where it sits.
+    pending: Option<(String, Vec<String>, Option<(String, u64)>)>,
     read_seq: BTreeMap<String, String>,
     /// Acts whose result could not be tied to exactly one action: more than one new action
     /// key, or a capture missing between two (Codex on #5432). Counted, never restored.
@@ -97,15 +117,17 @@ pub struct Rereads {
 }
 
 impl Restored {
-    /// Feed one request's action keys. Exactly one action first seen now is the act the
-    /// previous request answered, so it owns that result and the paths that act read. Any other
-    /// count (two new actions, or none because a capture is missing) is AMBIGUOUS: counted and
-    /// not restored, so no body is ever filed under an unrelated action (Codex on #5432).
+    /// Feed one request's action keys. The previous capture's result is restored only when the
+    /// chain is proven: this capture is the very next cycle of the same session (no capture
+    /// skipped between), and exactly one action is new, so that action is the act. A
+    /// gap, two new actions, or none is AMBIGUOUS: counted and never restored, so no body is
+    /// filed under an unrelated action (Codex and Cormac on #5432).
     pub fn learn(&mut self, action_keys: &[String], act: &Act) {
         let new: Vec<&String> = action_keys.iter().filter(|key| !self.seen.contains(*key) && key.parse::<u64>().is_ok()).collect();
-        if let Some((result, reads)) = self.pending.take() {
+        if let Some((result, reads, cycle)) = self.pending.take() {
+            let chained = act.follows(&cycle);
             match new.as_slice() {
-                [only] => {
+                [only] if chained => {
                     for path in reads {
                         self.read_seq.insert(path, (*only).clone());
                     }
@@ -116,7 +138,7 @@ impl Restored {
         }
         self.seen.extend(action_keys.iter().cloned());
         if let Some(result) = &act.result {
-            self.pending = Some((result.clone(), act.reads.clone()));
+            self.pending = Some((result.clone(), act.reads.clone(), act.cycle.clone()));
         }
     }
 
@@ -191,14 +213,19 @@ mod tests {
     #[test]
     fn ambiguous_batches_and_gaps_are_counted_not_restored() {
         let mut restored = Restored::default();
-        let act = |path: &str| Act { result: Some(format!("{path} body")), reads: vec![path.to_owned()] };
-        restored.learn(&["1".into()], &act("a.rs"));
-        restored.learn(&["1".into(), "2".into()], &act("b.rs"));
-        assert_eq!(restored.by_seq.get("2").map(String::as_str), Some("a.rs body"));
-        restored.learn(&["1".into(), "2".into(), "3".into(), "4".into()], &act("c.rs"));
+        let act = |path: &str, cycle: u64| Act { result: Some(format!("{path} body")), reads: vec![path.to_owned()], cycle: Some(("s".into(), cycle)) };
+        let keys = |n: u32| -> Vec<String> { (1..=n).map(|k| k.to_string()).collect() };
+        restored.learn(&keys(1), &act("a.rs", 1));
+        restored.learn(&keys(2), &act("b.rs", 2));
+        assert_eq!(restored.by_seq.get("2").map(String::as_str), Some("a.rs body"), "a proven chain restores");
+        restored.learn(&keys(4), &act("c.rs", 3));
         assert_eq!(restored.ambiguous, 1, "two new actions are ambiguous");
-        restored.learn(&["1".into(), "2".into(), "3".into(), "4".into()], &Act::default());
-        assert_eq!(restored.ambiguous, 2, "a capture gap (no new action) is ambiguous");
-        assert!(!restored.by_seq.contains_key("3") && !restored.by_seq.contains_key("4"));
+        // Cormac's case: one new key after a skipped capture. Cycle 4 was never captured, so
+        // c's body (cycle 3) must not land on key 5, which cycle 5 shows.
+        restored.learn(&keys(5), &act("d.rs", 5));
+        assert_eq!(restored.ambiguous, 2, "a single new key after a gap is ambiguous");
+        restored.learn(&keys(5), &act("e.rs", 6));
+        assert_eq!(restored.ambiguous, 3, "no new action is ambiguous");
+        assert!(["3", "4", "5"].iter().all(|k| !restored.by_seq.contains_key(*k)));
     }
 }
