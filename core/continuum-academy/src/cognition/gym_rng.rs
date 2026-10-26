@@ -4,7 +4,7 @@
 //! selection on every machine, every OS, every build, forever. Platform `rand`
 //! can't promise that across versions; this LCG can (Knuth MMIX constants).
 //! One implementation (compression principle) — the vision-qa generator and
-//! `benchmark/dispatch --sample` draw from THIS, never a private copy.
+//! a round's `sample` param (`benchmark/import`) draw from THIS, never a private copy.
 
 /// Tiny deterministic LCG — no rand dependency, byte-stable selections forever.
 pub struct Lcg(u64);

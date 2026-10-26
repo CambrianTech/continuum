@@ -108,9 +108,9 @@ pub(crate) struct CardSelection {
 
 /// THE ONE WRITER of benchmark cards: task + oracle only, projected into the
 /// title/body a citizen sees and the grader keys on (`[bench <suite>] <task>: …`).
-/// No side effects — no room, no board, no env pre-warm — so `benchmark/import`
-/// (the recipe path, S4) and `benchmark/dispatch` (the Rust path) post IDENTICAL
-/// cards for the same selection by construction, not by a test that compares them.
+/// No side effects — no room, no board, no env pre-warm. `benchmark/import` (the
+/// `benchmark/round` recipe's import step) is its one caller, so every round posts the
+/// same cards for the same selection by construction.
 pub(crate) async fn prepare_cards(
     spec: &BenchmarkSpec,
     selection: &CardSelection,
