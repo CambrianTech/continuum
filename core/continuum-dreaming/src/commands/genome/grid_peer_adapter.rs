@@ -54,7 +54,7 @@ impl LeaseTransport for ExecutorLeaseTransport {
 /// What the grid currently offers: (peer, offer, heard-at ms by this node's clock).
 pub(crate) type OfferSource = Arc<dyn Fn() -> Vec<(Uuid, CapacityOffer, u64)> + Send + Sync>;
 
-pub(crate) struct GridPeerAdapter {
+pub struct GridPeerAdapter {
     transport: Arc<dyn LeaseTransport>,
     offers: OfferSource,
     now_ms: Arc<dyn Fn() -> u64 + Send + Sync>,
@@ -68,7 +68,7 @@ pub(crate) struct GridPeerAdapter {
 
 impl GridPeerAdapter {
     /// The production trainer: the executor's airc route and the gossip ledger's heard offers.
-    pub(crate) fn on_grid(executor: Arc<crate::runtime::LateBound<crate::runtime::CommandExecutor>>) -> Self {
+    pub fn on_grid(executor: Arc<crate::runtime::LateBound<crate::runtime::CommandExecutor>>) -> Self {
         let transport: Arc<dyn LeaseTransport> = Arc::new(ExecutorLeaseTransport(executor));
         Self::new(
             transport.clone(),
