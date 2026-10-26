@@ -164,6 +164,41 @@ wait, a wait means start your next line; update this table when a line lands or 
 | 15 | Distributable modules: headless default (`default = []`; avatar-3d and livekit enabled per node by deploy profile), grid trust (every node reads `blocked` on 10-19), checks dispatched to idle grid nodes | Fable (default + profiles), Codex (trust), peers on the 5090/IntelMac (take checks) | profiles first, then flip the default with a before/after check time | a node joins by capability; an AWS box builds the core with no renderer |
 | 16 | Be the addendum: a Hermes driver on our seams. (a) Serving: Hermes on our engine vs Hermes on a stock server, same model and tasks, speed before/after; (b) Learning: once the acceptance test passes (a reviewed correction on unseen tasks, retained after restart, vs the base without the gene), Hermes sessions become perception and its corrections become genes. Drivers reach seams, not machines, so this is cross-grid by placement; and the agents developing continuum (Claude Code, Codex) are drivers too: our own dev sessions become the Matrix Dojo curriculum and we are the seams' first heavy users (Joel: "a good way to develop our own system") | OPEN: claim it after the queue clears | (a) first, needs no learning claim | Hermes users get our speed, then learning, by pointing at continuum |
 
+**The speed path** (Joel, 10-26: "we know what to work on to get speed ups... including the
+brainstormed work we can just iterate forward"). Rows are priorities, not a strict sequence: the offline
+validators run in parallel. Each line starts with a replay validator on captured sessions (the dyno,
+never the live node first), then a bounded live trial with rollback. GATE: S7 (stop-drain) is the
+prerequisite of every live restart actuation in S2 (recovery) and S3 (upward trials); until its durable
+admission and pre-effect reconciliation are proven, those produce proposals only. Measured
+10-26 on the M5 (Qwen3.6-35B-A3B): median generation 66-88 s healthy; Benchy re-prefills ~75% of her
+prompt at every act boundary; a degraded engine ran 3 h at 54 generations/h unnoticed.
+
+**Control both ways** (Joel, 10-26: "If you don't go both ways, especially with a dynamically scaling
+grid you will inevitably always end up at your lowest number"; "a control system for a rocket that
+could only ever reduce fuel flow... would always fall out of the sky"). Every adaptive decision that
+steps down under pressure has a scheduled upward test: chosen by replay evidence, bounded in time with
+a supported rollback, compared after warm-up to a HEALTHY matched incumbent, kept only if measured
+better. Context size follows each activity's measured need, so a uniform plan set once at start is
+never the answer. Upward or downward, the measured incumbent context is preserved: a plan that cannot
+fit every active mind's measured need in the joint memory ceiling refuses admission or abstains; it never
+treats a smaller context as feasible.
+
+| # | Lever | Validator first | Owner | Card |
+|---|---|---|---|---|
+| S1 | Act-boundary reuse: the prior act's loop must append to her view in the bytes it was sent, not be re-rendered | replay Benchy's captures at act boundaries | Fable; Cormac (does the cache survive thinking-on turns) | f2782aad |
+| S2 | The node notices its own slowdown and recovers | replay 10-26: fires after the 12:15Z burst, silent on warm-up | Fable (sample, baseline, detector #5477), Codex (reaction) | 1c157668 |
+| S3 | Upward re-plan on restarts already paid for, and when memory or nodes return | the dyno's candidate at 10-26's four restarts, end state scored | Codex, Fable | b8bfddb3 |
+| S4 | Context by need: one KV pool allocated by demand, never N equal lanes | pooled vs uniform allocator over per-mind view sizes | Fable, Codex | c73380d3 |
+| S5 | Shared prefixes across minds (SGLang radix cache) | cross-mind shared-prefix tokens and prefill saved | Fable | f272eb40 |
+| S6 | Batched decode and the one admission queue (vLLM continuous batching, paged KV) | contention replay: acts/h, per-mind p50/p90 | Codex | 31b675ef |
+| S7 | Stop-drain: a restart keeps every in-flight turn (preservation first); target: build windows and trials cost seconds, not the 335 s dark windows measured on loaded enrico 10-26 | 4-case fixture (2 in flight, crash after output, after a tool, two restarts), then a measured loaded stop/dark-time gate | Cormac | 920619c5 |
+| S8 | Experts placed by measured use (Strata), on the expert pager we already have | routing histograms, then cache hit rate per VRAM size | Fable, Codex | 2e23c67b |
+| S9 | The public comparison: us vs tuned llama.cpp and vLLM, multi-mind, thinking on, soak | the published harness on the 5090 | BigMama | e1fc7880 |
+
+Borrowed ideas and the learned policies are in `docs/planning/SPEED-BRAINSTORM.md` ("Borrow from"
+and "Learned, not tuned"); every row above becomes a policy learned on our own receipts once its
+validator exists, the reward always the system's service, never a grade on a citizen.
+
 **Goal 11 workstreams** (10-19; each card carries its receipts). Obsess over making this the
 fastest persona on our hardware (Joel). Brainstorm, and add your ideas, in
 `docs/planning/SPEED-BRAINSTORM.md` before and while you work:
