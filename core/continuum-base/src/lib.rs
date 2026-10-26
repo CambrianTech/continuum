@@ -4,6 +4,7 @@
 
 pub mod audio_constants;
 pub mod config_env;
+pub mod home;
 pub mod id_resolve;
 pub mod probe;
 pub mod secrets;
