@@ -45,6 +45,7 @@ pub const AUDITED_ELSEWHERE: &[(&str, &str)] = &[
 
 /// Audited crates whose warnings the warning ratchet does not count yet, each with the reason.
 pub const WARNINGS_UNCOUNTED: &[(&str, &str)] = &[
+    ("continuum-base", "pending: a split crate outside the warning count; count it (card 996e3537)"),
     ("continuum-kernel", "pending: ~13 warnings outside the count; fix them, then count it (card 996e3537)"),
 ];
 
@@ -143,7 +144,8 @@ pub fn gaps(repo: &Path) -> Result<Vec<String>, String> {
             out.push(format!("{name} is not in source_hygiene::MODULE_CRATES or SPLIT_CRATES: the per-file ratchets do not see its files"));
         }
     }
-    for name in std::iter::once(crate::AUDITED_CRATE).chain(crate::MODULE_CRATES.iter().copied()) {
+    // every audited crate, split or module (Codex on #5463: SPLIT_CRATES was missed here)
+    for name in std::iter::once(crate::AUDITED_CRATE).chain(audited.iter().copied()) {
         if !warned.contains(name) && !exempt(WARNINGS_UNCOUNTED, name) {
             out.push(format!("{name} is audited but not counted by scripts/ratchets/check-rust-warnings.sh"));
         }
