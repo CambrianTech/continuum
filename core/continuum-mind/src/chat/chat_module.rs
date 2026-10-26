@@ -48,7 +48,7 @@ impl ServiceModule for ChatModule {
             // ── Migrated to the typed object registry ───────────────
             //
             // `chat/poll` + `chat/send` are now typed self-routing
-            // `ActionCommand`s (see `crate::commands::chat`) that route
+            // `ActionCommand`s (see `crate::chat::commands`) that route
             // via `route_object` — the module contributes them through
             // `commands()`, capturing this module's shared executor slot.
             // Reaching this legacy path means a descriptor failed to
@@ -110,7 +110,7 @@ impl ServiceModule for ChatModule {
     /// still own their TS implementations until their own follow-up PRs
     /// — they are NOT contributed here.)
     fn commands(&self) -> Vec<Arc<dyn DynCommand>> {
-        crate::commands::chat::command_objects(self.executor_slot.clone())
+        crate::chat::commands::command_objects(self.executor_slot.clone())
     }
 
     fn as_any(&self) -> &dyn std::any::Any {

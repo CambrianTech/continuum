@@ -220,7 +220,7 @@ pub const CHAT_MESSAGES_COLLECTION: &str = "chat_messages";
 pub const DEFAULT_POLL_LIMIT: usize = 50;
 
 // The `chat/send` + `chat/poll` descriptors are now published by the typed
-// `ActionCommand`s in `crate::commands::chat` (each `action_command!` block
+// `ActionCommand`s in `crate::chat::commands` (each `action_command!` block
 // emits its own `register_command!`), so the registry self-assembles from the
 // SAME site that owns the runtime object. The old enveloped `CommandSpec`
 // stubs that used to live here were deleted in the DynCommand migration — a

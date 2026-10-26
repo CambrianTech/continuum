@@ -449,6 +449,30 @@ pub fn operator_runtime() -> Option<Arc<PersonaAircRuntime>> {
     OPERATOR.get().cloned()
 }
 
+/// Resolve the caller's runtime, retaining the owner of live membership changes.
+/// A caller-less command uses the operator self-peer; an authenticated caller
+/// must resolve its own runtime and can never fall through to another identity.
+pub fn persona_runtime(
+    registry: &crate::persona::PersonaAircRuntimeRegistry,
+    ctx: &crate::sdk_codegen::Ctx,
+    // What the CALLER actually invoked, for the refusal text (#358).
+    family: &str,
+) -> Result<Arc<PersonaAircRuntime>, crate::sdk_codegen::CommandError> {
+    // ONE resolver (`acting_runtime`): a persona acts as herself, an agent session as the
+    // agent self-peer, a caller-less session as the operator.
+    acting_runtime(registry, ctx, family).map(|(rt, _)| rt)
+}
+
+/// Read/write the caller's own airc handle. Membership mutations use
+/// [`persona_runtime`] instead so they also notify its live subscriptions.
+pub fn persona_airc(
+    registry: &crate::persona::PersonaAircRuntimeRegistry,
+    ctx: &crate::sdk_codegen::Ctx,
+    family: &str,
+) -> Result<Arc<airc_lib::Airc>, crate::sdk_codegen::CommandError> {
+    Ok(persona_runtime(registry, ctx, family)?.airc().clone())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
