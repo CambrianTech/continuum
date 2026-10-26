@@ -22,6 +22,7 @@ pub mod benchmark;
 pub mod benchmark_import;
 pub mod benchmark_verify;
 pub mod genome_recall;
+pub mod genome_push;
 pub mod genome_share;
 pub mod capacity;
 pub mod catalog;
