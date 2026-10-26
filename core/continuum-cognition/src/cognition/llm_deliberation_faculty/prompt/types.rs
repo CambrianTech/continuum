@@ -292,8 +292,9 @@ impl PromptMessages {
     }
 
     /// The irreducible payload by part, so a turn over its window can say WHICH part is too
-    /// large (Aris on the M5, 2026-10-26: required 105k tokens on a 58,880 window, refused or
-    /// starved every act for hours, and nothing said what the 105k was).
+    /// large (Aris on the M5, 2026-10-26: on resume after a restart her required payload was
+    /// 105k tokens on a 58,880 window, and her loop spun 25 over-window refusals in one second
+    /// before it cleared; nothing said what the 105k was).
     pub fn required_parts(&self) -> RequiredParts {
         let cost = |messages: &mut dyn Iterator<Item = &ChatMessage>| -> usize {
             messages.map(|message| LlmDeliberationFaculty::messages_cost(std::slice::from_ref(message))).sum()
