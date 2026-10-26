@@ -85,7 +85,8 @@ fn resolve(base: &Path, path: &str) -> PathBuf {
 /// administrative gitdir (where the lock lives) is `gitdir`. A git is judged by every way it can
 /// name the tree, each resolved the way git resolves it (Codex on #5464):
 /// - its cwd, and each `-C <dir>` in order, inside either directory;
-/// - `--git-dir` / `--work-tree` (`=value` or separate) resolved against the cwd after the `-C`s;
+/// - `--git-dir` / `--work-tree` (`=value` or separate) resolved against the cwd after ALL the
+///   `-C`s (git applies them first, wherever the option sits), and against the cwd where it sits;
 /// - `GIT_DIR` / `GIT_WORK_TREE` in its environment, resolved against both the process cwd and the
 ///   cwd after the `-C`s (conservative: either reading counts).
 /// Paths compare as given and canonical. An unreadable cwd is never evidence of absence.
@@ -98,6 +99,7 @@ pub fn may_work_on(git: &GitProcess<'_>, root: &Path, gitdir: &Path) -> bool {
     };
     let mut base = cwd.to_path_buf();
     let mut named = Vec::new();
+    let mut options = Vec::new();
     let mut args = git.cmd.iter().skip(1);
     while let Some(arg) = args.next() {
         if arg == "-C" {
@@ -108,10 +110,14 @@ pub fn may_work_on(git: &GitProcess<'_>, root: &Path, gitdir: &Path) -> bool {
         } else if let Some(option) = ["--git-dir", "--work-tree"].iter().find(|o| arg == **o || arg.starts_with(&format!("{o}="))) {
             let value = arg.strip_prefix(&format!("{option}=")).map(str::to_string).or_else(|| args.next().cloned());
             if let Some(value) = value {
+                // git applies every -C before resolving this, so the FINAL directory decides;
+                // the directory at this point is kept too, conservatively (Codex on #5464)
                 named.push(resolve(&base, &value));
+                options.push(value);
             }
         }
     }
+    named.extend(options.iter().map(|value| resolve(&base, value)));
     for var in git.env {
         if let Some(value) = var.strip_prefix("GIT_DIR=").or_else(|| var.strip_prefix("GIT_WORK_TREE=")) {
             named.push(resolve(cwd, value));
@@ -277,6 +283,7 @@ mod tests {
         assert!(git(&["git", "status"], Some(repo), &["GIT_DIR=.git/worktrees/tree"]), "relative GIT_DIR");
         assert!(git(&["git", "-C", "/repo", "--git-dir=.git/worktrees/tree", "add", "."], Some(elsewhere), &[]), "-C then relative --git-dir");
         assert!(git(&["git", "-C", "/w", "-C", "tree", "status"], Some(elsewhere), &[]), "ordered -C into the root");
+        assert!(git(&["git", "--git-dir=.git/worktrees/tree", "-C", "/repo", "status"], Some(elsewhere), &[]), "a -C after --git-dir still applies to it");
         assert!(git(&["git", "--git-dir=../repo/.git/worktrees/tree", "log"], Some(Path::new("/w")), &[]), "a .. path normalizes");
         assert!(!git(&["git", "--git-dir=.git", "status"], Some(Path::new("/other")), &[]), "relative to another tree");
     }
