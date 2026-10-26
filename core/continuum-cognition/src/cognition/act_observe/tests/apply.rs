@@ -16,6 +16,39 @@ use async_trait::async_trait;
 use std::sync::Arc;
 use std::sync::Mutex;
 
+// what this catches (stop-drain S2, Codex): a tool batch running unrecorded. When the turn's
+// pre-effect mark cannot be confirmed, nothing is dispatched (the executor is never called),
+// the act is unfulfilled, and she is told why in working memory instead of losing it silently.
+#[tokio::test]
+async fn a_batch_whose_effect_mark_is_refused_never_reaches_the_executor() {
+    struct Refused;
+    #[async_trait]
+    impl crate::cognition::act_observe::EffectMark for Refused {
+        fn turn(&self) -> Uuid {
+            Uuid::nil()
+        }
+        async fn before(&self, _effect: &crate::cognition::act_observe::Effect) -> Result<(), String> {
+            Err("obligation store unreachable".into())
+        }
+    }
+    let exec = Arc::new(RecordingExecutor {
+        seen_context: Arc::new(Mutex::new(None)),
+        result_content: "4\n".into(),
+    });
+    let adm = admission();
+    let cycle = WorkspaceCycle::new(Vec::new(), Arc::new(SalienceArbiter), 8)
+        .with_acting(body(exec.clone(), adm.clone()));
+    let chain = ActChain::new().with_effects(Some(crate::cognition::act_observe::EffectGate(Arc::new(Refused))));
+    let outcome = apply_act(&cycle, &[tool_call()], "check the math", Uuid::new_v4(), &chain, None, None).await;
+    assert!(!outcome.produced_an_act(), "a refused mark is an unfulfilled act: {outcome:?}");
+    assert!(exec.seen_context.lock().unwrap().is_none(), "the executor was never called");
+    let told = cycle.acting().map(|body| body.working_memory.recent_entries()).unwrap_or_default();
+    assert!(
+        told.iter().any(|entry| entry.text.contains("[not run]") && entry.text.contains("obligation store unreachable")),
+        "she perceives why her batch did not run"
+    );
+}
+
 // what this catches: an act is scoped to the room it is FOR (one mind is in
 // many rooms — the body is room-agnostic, `room_id` flows per-call), the
 // observation correlates each call to its result in first person, and the

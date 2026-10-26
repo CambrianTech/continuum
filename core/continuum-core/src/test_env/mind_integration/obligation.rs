@@ -75,8 +75,9 @@ async fn an_admitted_turn_survives_restarts_and_each_restart_reports_it_once() {
     let loop_one = Obligations::new(&before_stop, persona, name);
     let report = loop_one.report_interrupted(1).await;
     assert_eq!(report, Some(InterruptedReport { open: 0, newly_interrupted: 0 }), "a fresh store owes nothing");
-    let turn = loop_one.admit(room, &trigger(room, "cut by the stop"), None, 2).await;
-    assert!(turn.is_some(), "the turn is recorded before her context is composed");
+    let Admission::Confirmed(turn) = loop_one.admit(room, &trigger(room, "cut by the stop"), None, 2).await else {
+        panic!("the turn is recorded and confirmed before her context is composed");
+    };
     drop(loop_one);
     drop(before_stop);
 
@@ -97,7 +98,92 @@ async fn an_admitted_turn_survives_restarts_and_each_restart_reports_it_once() {
         Some(InterruptedReport { open: 1, newly_interrupted: 0 }),
         "a second restart still owes it but does not count it again"
     );
-    loop_three.close(turn).await;
+    loop_three.close(Some(turn)).await;
     let conn = substrate_connection(&second_restart);
     assert!(open(&conn, name, persona).await.unwrap().is_empty(), "closing settles it"); // unwrap: the store under test
+}
+
+/// The store answers, then the reply is lost: `data/create` commits and the caller sees an
+/// error. Every other call passes through.
+struct LostCreateReply(crate::runtime::InProcessTransport);
+
+#[async_trait::async_trait]
+impl continuum_client::Transport for LostCreateReply {
+    async fn execute(&self, command: &str, params: serde_json::Value) -> Result<serde_json::Value, continuum_client::ClientError> {
+        let answer = self.0.execute(command, params).await;
+        if command == "data/create" {
+            answer?;
+            return Err(continuum_client::ClientError::Transport("reply lost after commit".into()));
+        }
+        answer
+    }
+    async fn subscribe(&self, class: &str) -> Result<continuum_client::event::EventStream, continuum_client::ClientError> {
+        self.0.subscribe(class).await
+    }
+    async fn emit(&self, class: &str, payload: serde_json::Value) -> Result<(), continuum_client::ClientError> {
+        self.0.emit(class, payload).await
+    }
+    async fn provide(&self, command: &str, handler: std::sync::Arc<dyn continuum_client::ServeHandler>) -> Result<(), continuum_client::ClientError> {
+        self.0.provide(command, handler).await
+    }
+    async fn revoke(&self, command: &str) -> Result<(), continuum_client::ClientError> {
+        self.0.revoke(command).await
+    }
+    async fn close(&self) -> Result<(), continuum_client::ClientError> {
+        self.0.close().await
+    }
+}
+
+// what this catches (Codex on S2): "the write failed" read as "no row". A create that
+// committed but whose reply was lost must be reconciled to Confirmed by reading the row back,
+// or its turn would be refused while a row a later start re-admits sits on disk.
+#[tokio::test]
+async fn a_committed_admission_whose_reply_was_lost_is_reconciled_to_confirmed() {
+    let home = tempfile::tempdir().unwrap(); // unwrap: test fixture
+    let _home = HomeGuard::set(home.path()).await;
+    crate::persona::register_substrate_orm_entities(crate::orm::OrmEntityRegistry::global()).unwrap(); // unwrap: test fixture
+    let executor = super::training_credit::data_runtime();
+    let (name, persona, room) = ("obligation-lost-reply", Uuid::new_v4(), Uuid::new_v4());
+    ensure_storage(&substrate_connection(&executor), name).await.unwrap(); // unwrap: the store under test
+    let lossy = continuum_client::Connection::new(LostCreateReply(crate::runtime::InProcessTransport::new(executor.clone(), None)));
+    let row = PersonaObligation::admitted(persona, room, &trigger(room, "answered then lost"), None, 1);
+    assert!(record(&lossy, name, &row).await.is_err(), "the caller sees the lost reply as a failure");
+    assert_eq!(admit_reconciled(&lossy, name, &row).await, Admission::Confirmed(row.id), "the row is there: confirmed");
+    assert_eq!(find(&substrate_connection(&executor), name, row.id).await.unwrap().map(|found| found.id), Some(row.id)); // unwrap: the store under test
+}
+
+// what this catches (stop-drain S2): an effect that reaches the world unrecorded. Each mark is
+// written before its effect, the first sets effectAtMs and every one is kept in order (with the
+// batch's call ids, so recovery can find receipts), and a mark on a row the store does not hold
+// is refused without advancing the in-memory record.
+#[tokio::test]
+async fn effects_are_recorded_in_order_and_a_mark_without_a_row_is_refused() {
+    use crate::cognition::act_observe::{Effect, EffectMark};
+    let home = tempfile::tempdir().unwrap(); // unwrap: test fixture
+    let _home = HomeGuard::set(home.path()).await;
+    crate::persona::register_substrate_orm_entities(crate::orm::OrmEntityRegistry::global()).unwrap(); // unwrap: test fixture
+    let executor = super::training_credit::data_runtime();
+    let (name, persona, room) = ("obligation-effects", Uuid::new_v4(), Uuid::new_v4());
+    let obligations = Obligations::new(&executor, persona, name);
+    assert!(obligations.report_interrupted(0).await.is_some(), "the store is readable");
+    let Admission::Confirmed(turn) = obligations.admit(room, &trigger(room, "act then speak"), None, 1).await else {
+        panic!("a healthy store confirms admission");
+    };
+    let gate = obligations.gate_for(turn);
+    let batch = Effect::ToolBatch { calls: vec![("toolu_1".into(), "code/edit".into())] };
+    gate.0.before(&batch).await.unwrap(); // unwrap: the mark under test
+    gate.0.before(&Effect::Speech).await.unwrap(); // unwrap: the mark under test
+    let row = find(&substrate_connection(&executor), name, turn).await.unwrap().unwrap(); // unwrap: the store under test
+    assert!(row.effect_at_ms.is_some(), "the first effect is stamped");
+    assert_eq!(
+        row.effects,
+        Some(vec![
+            RecordedEffect::ToolBatch { calls: vec![("toolu_1".into(), "code/edit".into())] },
+            RecordedEffect::Speech
+        ]),
+        "every effect, in order, with the batch's call ids"
+    );
+
+    let orphan = obligations.gate_for(Uuid::new_v4());
+    assert!(orphan.0.before(&Effect::Speech).await.is_err(), "no row: refused, never permission");
 }

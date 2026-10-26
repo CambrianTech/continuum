@@ -12,7 +12,8 @@ pub(super) async fn finish_spoken_turn(
     mut phase_timings: PhaseTimings,
     turn_started: std::time::Instant,
     pending: &mut crate::persona::wake_backlog::PendingInput,
-) {
+    effects: &crate::cognition::act_observe::EffectGate,
+) -> SpeechMark {
     let TurnTrigger { msg, turn_room, .. } = trigger;
     let SpokenTurn {
         response_text,
@@ -32,9 +33,28 @@ pub(super) async fn finish_spoken_turn(
             "verdict was a raw tool-call envelope — not broadcasting"
         );
         outcome.turns_skipped += 1;
-        return;
+        return SpeechMark::Done;
     }
 
+    // Stop-drain S2: her reply is recorded on the turn's obligation BEFORE it is posted, so a
+    // stop after this point is known to have spoken and the turn is never re-run blindly. An
+    // unconfirmed mark withholds the post (fail closed): nothing reaches the room unrecorded.
+    if let Err(refusal) = crate::cognition::act_observe::EffectGate::before(
+        Some(effects),
+        &crate::cognition::act_observe::Effect::Speech,
+    )
+    .await
+    {
+        continuum_base::probe!(
+            class = "persona.turn.speech_unmarked",
+            persona = %ctx.identity.agent_name,
+            room_id = %turn_room,
+            error = %refusal,
+            "her reply could not be recorded before posting, so it was not posted (fail closed)"
+        );
+        outcome.turns_errored += 1;
+        return SpeechMark::Refused;
+    }
     // Per #195 slice 1: time the airc publish + downstream ack.
     let say_started = std::time::Instant::now();
     // Into the room the trigger arrived in (A.6 `turn_room`), which is the
@@ -66,7 +86,7 @@ pub(super) async fn finish_spoken_turn(
             "airc publish failed"
         );
         outcome.turns_errored += 1;
-        return;
+        return SpeechMark::Done;
     }
     // SHE SPOKE — and she may ALSO hold work. Ask the act-question here too.
     //
@@ -165,4 +185,13 @@ pub(super) async fn finish_spoken_turn(
         say_ms = phase_timings.say_ms,
         "turn complete — substrate's per-reply cost recorded with phase decomposition"
     );
+    SpeechMark::Done
+}
+
+/// Whether her reply's pre-effect mark was refused (stop-drain S2). `Refused` keeps the turn's
+/// obligation open: nothing was posted and no effect was recorded for it, so a later start may
+/// re-admit it. `Done` covers every other end of the turn, posted or not.
+pub(super) enum SpeechMark {
+    Done,
+    Refused,
 }

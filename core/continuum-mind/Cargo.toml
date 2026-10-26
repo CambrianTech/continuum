@@ -72,6 +72,9 @@ continuum-client = { path = "../../client/continuum-client", features = ["test-f
 continuum-positron = { path = "../continuum-positron", features = ["test-fixtures"] }
 continuum-genome = { path = "../continuum-genome", features = ["test-fixtures"] }
 continuum-experience = { path = "../continuum-experience", features = ["test-fixtures"] }
+# The real store, so loop tests write obligations through the same data module production uses
+# (stop-drain S2: a turn runs only on a confirmed obligation). The store sits below the mind.
+continuum-store = { path = "../continuum-store", features = ["test-fixtures"] }
 
 [features]
 default = []

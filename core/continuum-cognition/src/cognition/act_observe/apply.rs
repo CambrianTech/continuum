@@ -58,7 +58,7 @@ fn is_long_running(command: &str) -> bool {
 /// cross turns or rooms by construction — the wire is the scope, never an
 /// inference over timestamps.
 #[derive(Default)]
-pub struct ActChain(std::sync::Mutex<Option<Uuid>>);
+pub struct ActChain(std::sync::Mutex<Option<Uuid>>, Option<super::EffectGate>);
 
 impl ActChain {
     /// A chain with no recorded antecedent — its first act links to nothing.
@@ -80,7 +80,19 @@ impl ActChain {
     /// what counts as a root lives in ONE place (`Cause::root`) instead of at every
     /// driver that builds a chain.
     pub fn rooted_in(cause: &crate::cognition::workspace::Cause) -> Self {
-        Self(std::sync::Mutex::new(cause.root()))
+        Self(std::sync::Mutex::new(cause.root()), None)
+    }
+
+    /// The turn's pre-effect mark (stop-drain S2): held by the chain the turn owns, so it is
+    /// dropped when the turn settles and can never mark another turn's effects.
+    pub fn with_effects(mut self, gate: Option<super::EffectGate>) -> Self {
+        self.1 = gate;
+        self
+    }
+
+    /// Record `effect` before it happens, through this turn's mark when it has one.
+    pub async fn mark_before(&self, effect: &super::Effect) -> Result<(), String> {
+        super::EffectGate::before(self.1.as_ref(), effect).await
     }
 
     /// The CAUSE of whatever act comes next in this chain: the latest admitted act
@@ -179,6 +191,34 @@ pub async fn apply_act(
     // pure-background batch (no foreground calls) can still emit a typed act, keeping
     // `produced_an_act()` true exactly as the old `Some(bg_notes)` return did.
     let mut dispatched_calls: Vec<ToolCall> = Vec::new();
+    // Stop-drain S2: the batch is recorded BEFORE anything is dispatched, foreground or
+    // background, so a turn the stop cuts after this point is known to have acted and is never
+    // re-run blindly. An unconfirmed mark refuses the whole batch: nothing runs unrecorded.
+    let effect = super::Effect::ToolBatch {
+        calls: calls.iter().map(|call| (call.id.clone(), call.name.clone())).collect(),
+    };
+    if let Err(refusal) = chain.mark_before(&effect).await {
+        continuum_base::probe!(
+            class = "persona.act.effect_unmarked",
+            persona = %body.persona_name,
+            tools = calls.len(),
+            error = %refusal,
+            "the tool batch could not be recorded before it ran, so it did not run (fail closed)"
+        );
+        // She perceives it: an unfulfilled act otherwise drops its message.
+        body.working_memory.record_fact(&format!(
+            "[not run] my last {} tool call(s) did not run: the substrate could not record them \
+             before running them ({refusal})",
+            calls.len()
+        ));
+        return ActOutcome::ExecutorError {
+            calls: calls.to_vec(),
+            message: format!(
+                "this batch did not run: the substrate could not record it before running it, \
+                 so a restart could not tell whether it happened ({refusal})"
+            ),
+        };
+    }
     let fg_calls: Vec<ToolCall> = match executor.command_executor() {
         Some(exec) => {
             let mut fg = Vec::with_capacity(calls.len());

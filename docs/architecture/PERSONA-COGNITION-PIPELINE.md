@@ -477,11 +477,22 @@ row per admitted turn, written after `admit_trigger` and before `compose_turn` (
 marks the trigger read), and deleted when the turn ends. An input `PendingInput` still
 retains (a capacity refusal, a deferral) keeps its row, and its retry continues it.
 A row still open at the loop's next start names a turn a stop or crash cut; the start
-reports it once (`persona.obligation.interrupted`) and stamps it. This slice changes
-no turn. Re-admitting an interrupted turn waits on marks committed before each effect
-(the token forwarder's first public chunk, the tool executor's dispatch), so a turn
-that already spoke or acted is never run blindly twice; it then reaches her through
-an obligation `Source` in the context codec, never as hand-pushed prompt text. Writes
+reports it once (`persona.obligation.interrupted`) and stamps it.
+
+Effects are marked before they happen (S2, card 68811445). A turn runs only on a
+CONFIRMED obligation: a write whose reply was lost is read back by its id before the
+turn is refused, since "the write failed" is not "no row". Each effect is recorded on
+the row first: the tool batch before `apply_act` dispatches anything (foreground or
+background, with its call ids) and her reply before `publish_own_speech`. The live
+typing preview is visible but is not a durable post, so it is not a boundary. The mark
+rides the turn (`Burst::effects` into its `ActChain`), so it can never mark another
+turn's effects. A mark that cannot be confirmed refuses the effect: a tool batch does
+not run and she is told why in working memory; a reply is not posted and its row stays
+open. Store failures back off (doubling, capped) and raise
+`persona.obligation.unconfirmed`, so a failing store slows her loudly and never spins.
+Re-admitting an interrupted turn (S3) will take only rows with no recorded effect, and
+reach her through an obligation `Source` in the context codec, never as hand-pushed
+prompt text. Writes
 use the substrate connection: her own identity is Trusted, and Trusted may not update
 or delete. The supervisor builds the store from the executor boot wired and hands it to
 the loop as a required argument, so a loop that records nothing cannot be constructed.

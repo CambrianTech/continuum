@@ -24,7 +24,7 @@ pub(super) async fn settle_to_outcome<'c>(
     // ROOTED in what caused this turn, so the first act chains to its trigger rather
     // than starting mid-air — the link that makes "which acts were done for this card"
     // a graph query instead of an inference.
-    let chain = super::super::apply::ActChain::rooted_in(&burst.cause);
+    let chain = super::super::apply::ActChain::rooted_in(&burst.cause).with_effects(burst.effects.clone());
     // How many turns actually run with a head on their thread — the measurement that
     // tells us whether the causal graph is CONNECTED in the live system, rather than
     // connected in the one path I happened to wire by hand

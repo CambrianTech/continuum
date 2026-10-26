@@ -50,6 +50,29 @@ pub struct PersonaObligation {
     pub admitted_at_ms: u64,
     /// Set once, by the first start that found this row open: the turn was interrupted.
     pub interrupted_at_ms: Option<u64>,
+    /// Stop-drain S2: when the turn's first effect was recorded, BEFORE it happened. `None`
+    /// means nothing it did had reached the world, which is what lets S3 re-admit it.
+    pub effect_at_ms: Option<u64>,
+    /// Every effect recorded so far, in order: `speech`, or a tool batch's (call id, tool).
+    #[entity(json)]
+    pub effects: Option<Vec<RecordedEffect>>,
+}
+
+/// One effect as recorded before it happened, with what recovery needs to find its receipt.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum RecordedEffect {
+    ToolBatch { calls: Vec<(String, String)> },
+    Speech,
+}
+
+impl From<&crate::cognition::act_observe::Effect> for RecordedEffect {
+    fn from(effect: &crate::cognition::act_observe::Effect) -> Self {
+        match effect {
+            crate::cognition::act_observe::Effect::ToolBatch { calls } => Self::ToolBatch { calls: calls.clone() },
+            crate::cognition::act_observe::Effect::Speech => Self::Speech,
+        }
+    }
 }
 
 impl PersonaObligation {
@@ -62,6 +85,8 @@ impl PersonaObligation {
             wake_engram,
             admitted_at_ms: now_ms,
             interrupted_at_ms: None,
+            effect_at_ms: None,
+            effects: None,
         }
     }
 }
@@ -151,6 +176,70 @@ pub fn whole_page(returned: usize, total: usize) -> Result<(), ClientError> {
     })
 }
 
+/// One row by id, through `data/list` so an absent row is an answer (`Ok(None)`), never
+/// confused with a failed read.
+pub async fn find<T: Transport>(conn: &Connection<T>, persona_name: &str, id: Uuid) -> Result<Option<PersonaObligation>, ClientError> {
+    let value = conn
+        .commands()
+        .execute_value(
+            "data/list",
+            json!({
+                "collection": PersonaObligation::COLLECTION,
+                "dbPath": handle(persona_name),
+                "filter": { "id": id.to_string() },
+            }),
+        )
+        .await?;
+    let listed: crate::orm::list_result::DataListResult = serde_json::from_value(value)?; // ORM boundary: the typed list result
+    whole_page(listed.items.len(), listed.total as usize)?;
+    match listed.items.into_iter().next() {
+        None => Ok(None),
+        Some(item) => {
+            let record: crate::orm::types::DataRecord = serde_json::from_value(item)?; // ORM boundary
+            Ok(Some(serde_json::from_value(record.data)?)) // ORM boundary: the row as written
+        }
+    }
+}
+
+/// Whether a turn's obligation is known to be on disk. Only `Confirmed` may run: a write
+/// whose reply was lost may still have committed, so "the write failed" is not "no row"
+/// (Codex on S2), and a turn with an unknown row could be re-run by S3 after it acted.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Admission {
+    Confirmed(Uuid),
+    Unconfirmed,
+}
+
+/// Record `row`; when the write's answer is lost or refused, read the row back by its id
+/// before deciding. Confirmed only when the store says the row is there.
+pub async fn admit_reconciled<T: Transport>(conn: &Connection<T>, persona_name: &str, row: &PersonaObligation) -> Admission {
+    if record(conn, persona_name, row).await.is_ok() {
+        return Admission::Confirmed(row.id);
+    }
+    match find(conn, persona_name, row.id).await {
+        Ok(Some(_)) => Admission::Confirmed(row.id),
+        Ok(None) | Err(_) => Admission::Unconfirmed,
+    }
+}
+
+/// Record an effect on a turn's row before it happens: the first sets `effectAtMs`, and each
+/// appends to `effects`. Replaces the whole list with `all`, the mark's in-memory record.
+pub async fn mark_effect<T: Transport>(conn: &Connection<T>, persona_name: &str, id: Uuid, first_at_ms: u64, all: &[RecordedEffect]) -> Result<(), ClientError> {
+    let result = conn
+        .commands()
+        .execute_value(
+            "data/update",
+            json!({
+                "collection": PersonaObligation::COLLECTION,
+                "id": id,
+                "data": { "effectAtMs": first_at_ms, "effects": all },
+                "dbPath": handle(persona_name),
+            }),
+        )
+        .await?;
+    storage_ok(&result, "data/update", PersonaObligation::COLLECTION)
+}
+
 pub async fn mark_interrupted<T: Transport>(conn: &Connection<T>, persona_name: &str, id: Uuid, now_ms: u64) -> Result<(), ClientError> {
     let result = conn
         .commands()
@@ -187,18 +276,40 @@ pub fn newly_interrupted(rows: &[PersonaObligation]) -> impl Iterator<Item = &Pe
 pub struct Obligations {
     persona_id: Uuid,
     persona_name: String,
-    conn: Connection<crate::runtime::InProcessTransport>,
+    conn: Arc<Connection<crate::runtime::InProcessTransport>>,
+    /// Consecutive store failures, shared with the turn marks: the backoff and the health
+    /// probe read it, so a store that keeps failing slows her down loudly instead of spinning.
+    failures: Arc<effects::Failures>,
 }
+
+mod effects;
+pub use effects::ObligationMark;
 
 impl Obligations {
     pub fn new(executor: &Arc<CommandExecutor>, persona_id: Uuid, persona_name: &str) -> Self {
-        Self { persona_id, persona_name: persona_name.to_string(), conn: substrate_connection(executor) }
+        Self {
+            persona_id,
+            persona_name: persona_name.to_string(),
+            conn: Arc::new(substrate_connection(executor)),
+            failures: Arc::default(),
+        }
+    }
+
+    /// The turn's pre-effect mark (stop-drain S2), built from its confirmed obligation and
+    /// carried in its burst, so it is dropped with the turn and cannot mark another's effects.
+    pub fn gate_for(&self, turn: Uuid) -> crate::cognition::act_observe::EffectGate {
+        crate::cognition::act_observe::EffectGate(Arc::new(ObligationMark::new(
+            self.conn.clone(),
+            &self.persona_name,
+            turn,
+            self.failures.clone(),
+        )))
     }
 
     /// At loop start: ensure the collection, then report and stamp what the last stop left open.
     /// `None` when the store could not be read: unknown, never a count of zero (Codex on #5480).
     pub async fn report_interrupted(&self, now_ms: u64) -> Option<InterruptedReport> {
-        let conn = &self.conn;
+        let conn = self.conn.as_ref();
         let rows = match ensure_storage(conn, &self.persona_name).await {
             Ok(()) => open(conn, &self.persona_name, self.persona_id).await,
             Err(error) => Err(error),
@@ -230,25 +341,26 @@ impl Obligations {
     }
 
     /// At admission, before her context is composed. `None` when unrecorded (named by a probe).
-    pub async fn admit(&self, room_id: Uuid, trigger: &IncomingMessage, wake_engram: Option<Uuid>, now_ms: u64) -> Option<Uuid> {
-        let conn = &self.conn;
+    /// At admission, before her context is composed. Only `Confirmed` lets the turn run; an
+    /// unconfirmed write backs off (shared with the marks) and is named by a probe.
+    pub async fn admit(&self, room_id: Uuid, trigger: &IncomingMessage, wake_engram: Option<Uuid>, now_ms: u64) -> Admission {
         let row = PersonaObligation::admitted(self.persona_id, room_id, trigger, wake_engram, now_ms);
         let started = std::time::Instant::now();
-        let recorded = record(conn, &self.persona_name, &row).await;
+        let admission = admit_reconciled(self.conn.as_ref(), &self.persona_name, &row).await;
         self.timed("admit", started);
-        match recorded {
-            Ok(()) => Some(row.id),
-            Err(error) => {
-                self.fault("record", Some(row.id), &error);
-                None
+        match admission {
+            Admission::Confirmed(_) => self.failures.succeeded(),
+            Admission::Unconfirmed => {
+                self.failures.failed(&self.persona_name, "admit", row.id).await;
             }
         }
+        admission
     }
 
     /// When the turn ends, however it ended.
     pub async fn close(&self, turn: Option<Uuid>) {
         let Some(turn) = turn else { return };
-        let conn = &self.conn;
+        let conn = self.conn.as_ref();
         let started = std::time::Instant::now();
         let closed = close(conn, &self.persona_name, turn).await;
         self.timed("close", started);
