@@ -39,6 +39,7 @@ pub use types::{SettleOutcome, SettleStep};
 
 mod apply;
 pub(crate) mod disk_change;
+mod page_budget;
 pub use apply::{apply_act, ActChain};
 
 mod settle;
