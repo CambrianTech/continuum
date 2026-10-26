@@ -41,8 +41,8 @@ async fn a_batch_whose_effect_mark_is_refused_never_reaches_the_executor() {
     let chain = ActChain::new().with_effects(Some(crate::cognition::act_observe::EffectGate(Arc::new(Refused))));
     let outcome = apply_act(&cycle, &[tool_call()], "check the math", Uuid::new_v4(), &chain, None, None).await;
     assert!(!outcome.produced_an_act(), "a refused mark is an unfulfilled act: {outcome:?}");
-    assert!(exec.seen_context.lock().unwrap().is_none(), "the executor was never called");
-    let told = cycle.acting().map(|body| body.working_memory.recent_entries()).unwrap_or_default();
+    assert!(exec.seen_context.lock().unwrap().is_none(), "the executor was never called"); // unwrap: test lock
+    let told = cycle.acting().expect("the test cycle has hands").working_memory.recent_entries(); // expect: built with_acting above
     assert!(
         told.iter().any(|entry| entry.text.contains("[not run]") && entry.text.contains("obligation store unreachable")),
         "she perceives why her batch did not run"

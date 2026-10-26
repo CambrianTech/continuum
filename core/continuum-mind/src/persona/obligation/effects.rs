@@ -22,6 +22,7 @@ pub struct Failures(AtomicU32);
 /// generation 66-88 s healthy on the M5, measured 10-26, CLAUDE.md "The speed path"), so a
 /// backoff never costs more than the turn it guards; the probe's `streak` says how long the
 /// store has been failing.
+// derived-or-floor: a ceiling — below one generation on the fastest tier (66-88 s median, M5 10-26); it only bounds a backoff wait.
 const BACKOFF_CAP_SECS: u64 = 30;
 
 impl Failures {
@@ -31,7 +32,7 @@ impl Failures {
 
     pub async fn failed(&self, persona: &str, step: &'static str, turn: Uuid) {
         let streak = self.0.fetch_add(1, Ordering::Relaxed) + 1;
-        let wait = 1u64.checked_shl(streak.saturating_sub(1)).unwrap_or(u64::MAX).min(BACKOFF_CAP_SECS);
+        let wait = (1u64 << streak.saturating_sub(1).min(u64::BITS - 1)).min(BACKOFF_CAP_SECS);
         continuum_base::probe!(
             class = "persona.obligation.unconfirmed",
             persona = %persona,
@@ -71,14 +72,14 @@ impl EffectMark for ObligationMark {
         let (first_at, mut all) = self
             .recorded
             .lock()
-            .unwrap_or_else(|p| p.into_inner())
+            .unwrap_or_else(|p| p.into_inner()) // poisoned: the record is plain data, still the truth of what was confirmed
             .clone()
             .unwrap_or_else(|| (continuum_base::time::EpochMs::now().millis(), Vec::new())); // unwrap_or_else: the first effect of the turn starts its record now
         all.push(RecordedEffect::from(effect));
         match mark_effect(self.conn.as_ref(), &self.persona_name, self.turn, first_at, &all).await {
             Ok(()) => {
                 // The in-memory record moves only after the store confirmed it.
-                *self.recorded.lock().unwrap_or_else(|p| p.into_inner()) = Some((first_at, all));
+                *self.recorded.lock().unwrap_or_else(|p| p.into_inner()) = Some((first_at, all)); // poisoned: plain data, overwritten whole
                 self.failures.succeeded();
                 Ok(())
             }
