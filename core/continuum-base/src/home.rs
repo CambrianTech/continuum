@@ -65,6 +65,47 @@ mod tests {
         assert_eq!(retired_root(None, home), Ok(()));
     }
 
+    /// The env var that puts this test's child process in "assert" mode, naming its scratch home.
+    const CHILD: &str = "CONTINUUM_BASE_HOME_TEST_CHILD";
+
+    // what this catches (card f04a437f, receipt on enrico 9e303fbad): config.env and secrets read
+    // from the operator's ~/.continuum while $CONTINUUM_HOME names another tree. The env is
+    // process-global, so the assertions run in a child process (this test binary, re-run on this
+    // test alone) with CONTINUUM_HOME set to a scratch home: config_path is that home's file,
+    // secrets come from it, and an empty home applies nothing.
+    #[test]
+    fn config_env_and_secrets_follow_an_explicit_home() {
+        if let Some(home) = std::env::var_os(CHILD) {
+            let home = PathBuf::from(home);
+            assert_eq!(crate::config_env::config_path(), Some(home.join("config.env")));
+            if home.join("config.env").exists() {
+                assert_eq!(crate::secrets::get_secret("CONTINUUM_F04A437F_TEST_API_KEY"), Some("from-scratch"));
+            } else {
+                assert!(crate::config_env::read_all().is_empty(), "an empty home applies nothing");
+            }
+            // Proof the child ran these assertions: a filter that matched no test would pass empty.
+            std::fs::write(home.join("child-ran"), "").expect("scratch home is writable"); // expect: test-only scratch dir
+            return;
+        }
+        for with_config in [true, false] {
+            let scratch = tempfile::tempdir().expect("temp dir is creatable"); // expect: test-only, the OS temp dir is writable
+            if with_config {
+                std::fs::write(scratch.path().join("config.env"), "CONTINUUM_F04A437F_TEST_API_KEY=\"from-scratch\"\n")
+                    .expect("scratch config.env is writable"); // expect: test-only scratch dir
+            }
+            let status = std::process::Command::new(std::env::current_exe().expect("the test binary has a path")) // expect: test-only
+                .args(["home::tests::config_env_and_secrets_follow_an_explicit_home", "--exact", "--nocapture"])
+                .env("CONTINUUM_HOME", scratch.path())
+                .env(CHILD, scratch.path())
+                .env_remove("CONTINUUM_ROOT")
+                .env_remove("CONTINUUM_F04A437F_TEST_API_KEY")
+                .status()
+                .expect("the child test runs"); // expect: test-only
+            assert!(status.success(), "child assertions failed (with_config={with_config})");
+            assert!(scratch.path().join("child-ran").exists(), "the child ran no test (with_config={with_config})");
+        }
+    }
+
     // what this catches (Codex on #5420): an empty CONTINUUM_HOME read as the path "" and an
     // empty CONTINUUM_ROOT read as set, while the scripts read both as unset. Empty is unset.
     #[test]
