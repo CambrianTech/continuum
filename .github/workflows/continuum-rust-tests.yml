@@ -23,6 +23,7 @@ jobs:
       installer: ${{ steps.select.outputs.installer }}
       crates: ${{ steps.select.outputs.crates }}
       features: ${{ steps.select.outputs.features }}
+      lib_tests: ${{ steps.select.outputs.lib_tests }}
       cli: ${{ steps.select.outputs.cli }}
       bins: ${{ steps.select.outputs.bins }}
     steps:
@@ -32,7 +33,7 @@ jobs:
         id: select
         with:
           script: |
-            const { selectChecks, readWorkspace, TEST_FEATURES } = require('./tools/scripts/ci-change-scope.cjs');
+            const { selectChecks, readWorkspace, TEST_FEATURES, LIB_TESTS } = require('./tools/scripts/ci-change-scope.cjs');
             let selection = selectChecks(null);
             try {
               let files;
@@ -60,6 +61,7 @@ jobs:
             core.setOutput('installer', String(selection.installer));
             core.setOutput('crates', JSON.stringify(selection.crates));
             core.setOutput('features', JSON.stringify(TEST_FEATURES));
+            core.setOutput('lib_tests', JSON.stringify(LIB_TESTS));
             core.setOutput('cli', String(selection.cli));
             core.setOutput('bins', JSON.stringify(selection.bins));
 
@@ -175,9 +177,10 @@ jobs:
         if: matrix.crate == 'continuum-genome'
         run: python3 -m unittest discover -s core/continuum-genome/src/genome/fine_tuning -p cuda_train_test.py -v
 
-      # ---- continuum-hands, -live, -perception, -genome, -experience, -memory, -cognition, -academy, -dreaming, -sentinel, -embedding, -models: lib tests ----
+      # ---- every other tested crate: lib tests. The selector decides (lib_tests in the root Cargo.toml's
+      # [workspace.metadata.ci] own_lib_test_step names the crates with their own steps above and below) ----
       - name: cargo test -p ${{ matrix.crate }} --lib
-        if: contains(fromJSON('["continuum-hands","continuum-live","continuum-perception","continuum-genome","continuum-experience","continuum-memory","continuum-cognition","continuum-academy","continuum-dreaming","continuum-sentinel","continuum-base","continuum-host","continuum-embedding","continuum-models"]'), matrix.crate)
+        if: fromJSON(needs.changes.outputs.lib_tests)[matrix.crate]
         run: cargo test -p "$CRATE" --lib --profile dev-fast --features "$FEATURES"
 
       # ---- continuum-mind: lib tests, compile-fail doc guards ----

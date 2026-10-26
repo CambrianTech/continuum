@@ -2,19 +2,6 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { isDeepStrictEqual } = require('node:util');
 
-// The crates this workflow tests, one parallel job each (longest first, so it starts first).
-// Which of them run is derived from the workspace graph at selection time, never listed here.
-const TESTED_CRATES = ['continuum-core', 'continuum-mind', 'continuum-dreaming', 'continuum-engine', 'continuum-perception', 'continuum-genome',
-  'continuum-kernel', 'continuum-live', 'continuum-hands', 'continuum-memory', 'continuum-experience',
-  'continuum-cognition', 'continuum-academy', 'continuum-sentinel', 'continuum-base', 'continuum-host', 'continuum-embedding', 'continuum-models'];
-// The cargo features each crate's job builds its tests with: the crate job and the cache-warming
-// job both read this, so the cache holds exactly the units the crate jobs ask for. Core is the
-// one that compiles and tests the call (livekit-webrtc) and 3D-avatar (avatar-3d) paths a node's
-// profile turns on; memory, base, sentinel, embedding and models have no fixtures feature; the rest test with their fixtures.
-const NO_FIXTURES = new Set(['continuum-memory', 'continuum-base', 'continuum-sentinel', 'continuum-embedding', 'continuum-models']);
-const TEST_FEATURES = Object.fromEntries(TESTED_CRATES.map(c => [c,
-  c === 'continuum-core' ? 'livekit-webrtc,avatar-3d' : NO_FIXTURES.has(c) ? '' : 'test-fixtures']));
-
 const publisherPath = '.github/workflows/core-binaries.yml';
 const publicationGate = "${{ !cancelled() && needs.publication-scope.outputs.publication != 'false' }}";
 const schedulingPaths = new Set([
@@ -63,11 +50,12 @@ function readWorkspace(root = '.') {
   const members = strip(read('Cargo.toml')).match(/^\s*members\s*=\s*\[([^\]]*)\]/m);
   if (!members) throw new Error('Cannot read workspace members from Cargo.toml');
   const crates = [...members[1].matchAll(/"([^"]+)"/g)].map(([, dir]) => {
-    let section = ''; let name = null; const deps = new Set(); const bins = [];
+    let section = ''; let name = null; const deps = new Set(); const bins = []; const features = [];
     for (const line of strip(read(`${dir}/Cargo.toml`)).split('\n')) {
       const header = line.match(/^\s*\[+([^\]]+)\]+/);
       if (header) { section = header[1].trim(); if (section === 'bin') bins.push({}); continue; }
       if (section === 'package' && !name) name = line.match(/^\s*name\s*=\s*"([^"]+)"/)?.[1] ?? null;
+      if (section === 'features') { const f = line.match(/^\s*([A-Za-z0-9_-]+)\s*=/); if (f) features.push(f[1]); }
       const field = section === 'bin' && line.match(/^\s*(name|path)\s*=\s*"([^"]+)"/);
       if (field) bins[bins.length - 1][field[1]] = field[2];
       const dependency = /(^|\.)(dev-|build-)?dependencies(\.|$)/.test(section);
@@ -76,10 +64,59 @@ function readWorkspace(root = '.') {
       }
     }
     if (!name) throw new Error(`Cannot read the package name of ${dir}`);
-    return { name, dir, deps: [...deps], bins: bins.filter(b => b.name && b.path) };
+    return { name, dir, deps: [...deps], features, bins: bins.filter(b => b.name && b.path) };
   });
   return { crates };
 }
+
+// The crate policy: the exceptions named under [workspace.metadata.ci] in the root Cargo.toml,
+// the one place crates are named (see the comments there). Arrays of quoted names, by key.
+function readPolicy(root = '.') {
+  let section = ''; let body = '';
+  for (const line of fs.readFileSync(path.join(root, 'Cargo.toml'), 'utf8').split('\n')) {
+    const header = line.match(/^\s*\[+([^\]]+)\]+/);
+    if (header) section = header[1].trim();
+    else if (section === 'workspace.metadata.ci') body += `${line.replace(/#.*$/, '')}\n`;
+  }
+  const policy = Object.fromEntries([...body.matchAll(/(\w+)\s*=\s*\[([^\]]*)\]/g)]
+    .map(([, key, list]) => [key, [...list.matchAll(/"([^"]+)"/g)].map(([, name]) => name)]));
+  for (const key of ['by_nature', 'pending', 'own_lib_test_step', 'longest_first', 'split_prefixed', 'unaudited', 'warnings_uncounted']) {
+    if (!Array.isArray(policy[key])) throw new Error(`Cannot read ${key} from [workspace.metadata.ci] in Cargo.toml`);
+  }
+  policy.untested = [...policy.by_nature, ...policy.pending];
+  return policy;
+}
+
+// Core is the one crate that tests the call (livekit-webrtc) and 3D-avatar (avatar-3d) paths a
+// node's profile turns on; every other crate builds with its own `test-fixtures` feature, if any.
+const FEATURE_OVERRIDES = { 'continuum-core': 'livekit-webrtc,avatar-3d' };
+
+// Everything CI derives from the workspace: no crate is listed here. Every `core/` member is
+// tested unless the policy excepts it; the crate job and the cache-warming job both read `features`.
+function deriveCrates(workspace, policy) {
+  const members = workspace.crates.filter(c => c.dir.startsWith('core/') && !policy.untested.includes(c.name));
+  const first = policy.longest_first.filter(name => members.some(c => c.name === name));
+  const tested = [...first, ...members.map(c => c.name).filter(name => !first.includes(name))];
+  const features = Object.fromEntries(tested.map(name => [name, FEATURE_OVERRIDES[name]
+    ?? (members.find(c => c.name === name).features.includes('test-fixtures') ? 'test-fixtures' : '')]));
+  const libTests = Object.fromEntries(tested.map(name => [name, !policy.own_lib_test_step.includes(name)]));
+  // What the warnings ratchet counts: both spellings, since rustc reports the underscore form.
+  const warned = tested.filter(name => !policy.warnings_uncounted.includes(name));
+  // The per-file ratchets audit (by directory) every tested crate but the unaudited: the split
+  // crates prefixed, the others cut from core unprefixed.
+  const audited = members.filter(c => !policy.unaudited.includes(c.name));
+  const split = audited.filter(c => policy.split_prefixed.includes(c.name)).map(c => path.posix.basename(c.dir));
+  const modules = audited.filter(c => c.name !== 'continuum-core' && !policy.split_prefixed.includes(c.name)).map(c => path.posix.basename(c.dir));
+  return { tested, features, libTests, split, modules, warned: warned.flatMap(name => [name, name.replace(/-/g, '_')]) };
+}
+
+const repoRoot = path.resolve(__dirname, '../..');
+const derived = deriveCrates(readWorkspace(repoRoot), readPolicy(repoRoot));
+const TESTED_CRATES = derived.tested;
+// The cargo features each crate's job builds its tests with (see deriveCrates).
+const TEST_FEATURES = derived.features;
+// Whether the generic `cargo test -p <crate> --lib` step runs it (false: its own steps do).
+const LIB_TESTS = derived.libTests;
 
 // Paths whose effect on compilation is not confined to one crate: they select every crate.
 const global = p => p === 'Cargo.lock' || p === 'Cargo.toml' || p === 'rust-toolchain.toml'
@@ -154,4 +191,11 @@ function selectChecks(files, evidence = {}) {
   const bins = selectBins(rustPaths, workspace, scope.crates);
   return { rust, installer: rust || paths.some(windows), publication: selectPublication(paths, evidence), ...scope, bins };
 }
-module.exports = { selectChecks, readWorkspace, TESTED_CRATES, TEST_FEATURES };
+module.exports = { selectChecks, readWorkspace, readPolicy, deriveCrates, TESTED_CRATES, TEST_FEATURES, LIB_TESTS };
+
+// Shell and Rust readers take the derived sets from here, as JSON: `warning-crates` (the warnings
+// ratchet), `crate-sets` (source-hygiene's guard, which checks its own Rust derivation against it).
+if (require.main === module && process.argv[2] === 'warning-crates') console.log(JSON.stringify(derived.warned));
+if (require.main === module && process.argv[2] === 'crate-sets') {
+  console.log(JSON.stringify({ tested: derived.tested, warned: derived.warned, split: derived.split, modules: derived.modules }));
+}

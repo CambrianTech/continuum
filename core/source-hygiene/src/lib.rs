@@ -28,6 +28,7 @@ pub mod boundary_serialization;
 pub mod cognition_names_persona;
 pub mod context_codec;
 pub mod continuum_home;
+pub mod crate_policy;
 pub mod crate_wiring;
 pub mod derived_bounds;
 pub mod dev_only_deps;
@@ -175,32 +176,38 @@ pub(crate) const AUDITED_CRATE: &str = "continuum-core";
 /// Crates split out of `continuum-core` (card a31492cb). A split must never move code out
 /// of the gates' sight, so their files are audited too, with the crate name as a path
 /// prefix (`continuum-base/time/mod.rs`): totals stay continuous across a cut and every
-/// per-path rule stays unambiguous.
-pub(crate) const SPLIT_CRATES: &[&str] = &["continuum-base"];
+/// per-path rule stays unambiguous. Derived from the workspace ([`crate_policy`]).
+pub fn split_crates() -> Result<Vec<String>, crate_policy::PolicyError> {
+    let (members, policy) = crate_policy::workspace()?;
+    Ok(crate_policy::split(members, policy).iter().map(|m| m.dir.clone()).collect())
+}
 
 /// Crates cut out of `continuum-core` that keep core's module names: `continuum-kernel`'s
 /// `runtime/`, `routing/`, `orm/`… are re-exported by core as `crate::runtime` and so on, so
 /// their files are audited UNPREFIXED (`runtime/registry.rs`), exactly as before the cut.
 /// Every allow-list, ring and count stays continuous; prefixing them would drop 78k lines out
 /// of the ring table and the path allow-lists, and the counts would fall for no change.
-/// The ONE list: continuum-core's tree-walking guards (`test_env::source_tree`) read it too,
-/// so a new cut is one line here (card 03e2a1c8: a second copy silently dropped perception).
-pub const MODULE_CRATES: &[&str] = &["continuum-kernel", "continuum-mind", "continuum-perception", "continuum-genome", "continuum-memory", "continuum-experience", "continuum-cognition", "continuum-academy", "continuum-live", "continuum-hands", "continuum-engine", "continuum-dreaming", "continuum-sentinel", "continuum-embedding", "continuum-models"];
+/// Derived from the workspace ([`crate_policy`]), never listed: a new cut is one `members`
+/// line. continuum-core's tree-walking guards (`test_env::source_tree`) read it too.
+pub fn module_crates() -> Result<Vec<String>, crate_policy::PolicyError> {
+    let (members, policy) = crate_policy::workspace()?;
+    Ok(crate_policy::modules(members, policy).iter().map(|m| m.dir.clone()).collect())
+}
 
 /// Every file the per-file and crate-wide rules audit: `continuum-core/src` with paths
 /// relative to it, then each split crate's `src` with its name prefixed. A listed crate
 /// whose `src` is missing fails loudly rather than auditing nothing.
-pub fn audited_files() -> Vec<SourceFile> {
+pub fn audited_files() -> Result<Vec<SourceFile>, crate_policy::PolicyError> {
     let mut files = collect_files(&crate_src_root());
     let Some(core_dir) = audited_crate_root().parent().map(Path::to_path_buf) else {
         panic!("{AUDITED_CRATE} has no parent directory: the split crates cannot be found");
     };
-    for name in SPLIT_CRATES {
+    for name in &split_crates()? {
         let src = core_dir.join(name).join("src");
         assert!(src.is_dir(), "split crate {name} has no src at {}: the gates would audit nothing", src.display());
         files.extend(collect_files(&src).into_iter().map(|f| SourceFile { rel: format!("{name}/{}", f.rel), ..f }));
     }
-    for name in MODULE_CRATES {
+    for name in &module_crates()? {
         // A tree from before the cut has no such crate: its modules are still in
         // continuum-core/src and were collected above, so nothing goes unaudited.
         let src = core_dir.join(name).join("src");
@@ -208,7 +215,13 @@ pub fn audited_files() -> Vec<SourceFile> {
             files.extend(collect_files(&src).into_iter().filter(|f| f.rel != "lib.rs"));
         }
     }
-    files
+    Ok(files)
+}
+
+/// What a scan reports when the crates to audit cannot be derived: one violation naming the
+/// manifest, so the ratchet fails loudly and nothing is silently skipped.
+fn unreadable_policy(error: &crate_policy::PolicyError) -> Vec<Violation> {
+    vec![Violation { rule: "crate_policy", file: error.manifest.display().to_string(), line: 0, source: error.reason.clone() }]
 }
 
 /// The repository root, found by ANCHOR rather than by counting directories up.
@@ -224,7 +237,16 @@ pub fn audited_files() -> Vec<SourceFile> {
 /// `None` when no ancestor carries the anchor, which callers turn into a loud failure
 /// rather than a silent empty scan.
 pub fn repo_root() -> Option<PathBuf> {
-    let start = audited_crate_root();
+    workspace_root_above(&audited_crate_root())
+}
+
+/// The repository root of THIS checkout (the rules), whatever tree is being audited.
+pub fn checkout_root() -> Option<PathBuf> {
+    workspace_root_above(Path::new(env!("CARGO_MANIFEST_DIR")))
+}
+
+/// The one anchor walk: the nearest ancestor of `start` holding the workspace manifest.
+fn workspace_root_above(start: &Path) -> Option<PathBuf> {
     start
         .ancestors()
         .find(|dir| dir.join(WORKSPACE_ANCHOR).is_file() && dir.join("core").is_dir())
@@ -549,7 +571,10 @@ pub fn collect_files(root: &Path) -> Vec<SourceFile> {
 
 /// Walk this crate's `src/` once and apply every per-file rule to every `.rs` file.
 pub fn scan(rules: &[&dyn SourceRule]) -> Vec<Violation> {
-    let files = audited_files();
+    let files = match audited_files() {
+        Ok(files) => files,
+        Err(e) => return unreadable_policy(&e),
+    };
     let mut out = Vec::new();
     for file in &files {
         for rule in rules {
@@ -580,7 +605,10 @@ pub trait CrateRule {
 /// Apply crate-wide rules. Reads this crate once for violations and the workspace once
 /// for references.
 pub fn scan_crate(rules: &[&dyn CrateRule]) -> Vec<Violation> {
-    let files = audited_files();
+    let files = match audited_files() {
+        Ok(files) => files,
+        Err(e) => return unreadable_policy(&e),
+    };
     // The reference corpus is RAW file text — production AND test halves.
     //
     // This asymmetry against `files` (production-only, the violation source) is

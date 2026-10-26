@@ -1,7 +1,7 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const path = require('node:path');
-const { selectChecks, readWorkspace, TESTED_CRATES, TEST_FEATURES } = require('../ci-change-scope.cjs');
+const { selectChecks, readWorkspace, readPolicy, deriveCrates, TESTED_CRATES, TEST_FEATURES, LIB_TESTS } = require('../ci-change-scope.cjs');
 const ALL = { crates: TESTED_CRATES, cli: true };
 const NONE = { crates: [], cli: false };
 const select = (...paths) => {
@@ -189,4 +189,46 @@ test('every tested crate names the features its tests build with', () => {
   // it without its fixtures, or two different feature sets for the two.
   assert.deepEqual(Object.keys(TEST_FEATURES), TESTED_CRATES);
   for (const crate of TESTED_CRATES) assert.equal(typeof TEST_FEATURES[crate], 'string', crate);
+});
+
+test('a crate dropped into the workspace is tested, featured and counted with no list edited', () => {
+  // what this catches: the hand-kept crate lists (review missed an entry twice on 2026-10-26,
+  // #5456 and #5465): a new member must reach the matrix, its features, the generic lib-test
+  // step and the warnings ratchet from `members` alone.
+  const fs = require('node:fs'); const os = require('node:os');
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'ws-'));
+  const crate = (dir, name, extra = '') => {
+    fs.mkdirSync(path.join(root, dir), { recursive: true });
+    fs.writeFileSync(path.join(root, dir, 'Cargo.toml'), `[package]\nname = "${name}"\n${extra}`);
+  };
+  fs.writeFileSync(path.join(root, 'Cargo.toml'), `[workspace]
+members = ["core/continuum-core", "core/continuum-brand-new", "core/continuum-plain", "core/vendored-thing", "apps/cli"]
+[workspace.metadata.ci]
+by_nature = ["vendored-thing"]
+pending = []
+own_lib_test_step = ["continuum-core"]
+longest_first = ["continuum-core"]
+split_prefixed = []
+unaudited = []
+warnings_uncounted = ["continuum-plain"]
+`);
+  crate('core/continuum-core', 'continuum-core');
+  crate('core/continuum-brand-new', 'continuum-brand-new', '[features]\ntest-fixtures = []\n');
+  crate('core/continuum-plain', 'continuum-plain');
+  crate('core/vendored-thing', 'vendored-thing');
+  crate('apps/cli', 'cli');
+  const got = deriveCrates(readWorkspace(root), readPolicy(root));
+  assert.deepEqual(got.tested, ['continuum-core', 'continuum-brand-new', 'continuum-plain']);
+  assert.equal(got.features['continuum-brand-new'], 'test-fixtures');
+  assert.equal(got.features['continuum-plain'], '');
+  assert.deepEqual(got.libTests, { 'continuum-core': false, 'continuum-brand-new': true, 'continuum-plain': true });
+  assert.deepEqual(got.warned, ['continuum-core', 'continuum_core', 'continuum-brand-new', 'continuum_brand_new']);
+  fs.writeFileSync(path.join(root, 'Cargo.toml'), '[workspace]\nmembers = []\n');
+  assert.throws(() => readPolicy(root), /by_nature/);
+  fs.rmSync(root, { recursive: true });
+});
+
+test('the real workspace derives a lib-test flag for every tested crate', () => {
+  assert.deepEqual(Object.keys(LIB_TESTS), TESTED_CRATES);
+  for (const own of readPolicy(repo).own_lib_test_step) assert.equal(LIB_TESTS[own], false, own);
 });
