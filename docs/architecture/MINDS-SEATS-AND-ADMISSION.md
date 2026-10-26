@@ -109,7 +109,11 @@ Instead every mind has a presence:
   once the outgoing mind's work is safe and her placement is accepted. Her saved state restores
   in seconds when a compatible page or checkpoint exists (RAM or disk, the shared head
   boundary); when none does (disk admission refused, the page incompatible or missing), she
-  wakes cold and the wake says so.
+  wakes cold and the wake says so. Restored is not warm (Cormac, #5436: enrico restored 2/2
+  pages on 10-26 yet reused ~7% after a layout change): every wake reports the prefix reuse it
+  measured, and a low one is reported as a cold wake with its cause. The outgoing mind's save is
+  part of the move: it commits on a confirmed save receipt, or it commits recording that she
+  wakes cold next time and why, never silently.
 - **Offline.** Her owner switched her off; only the owner brings her back.
 
 **Minds wake minds too** (Joel: "You can just at them no? So a persona can also do this"). An
