@@ -108,14 +108,18 @@ pub fn deliberation_reasoning_budget(max_tokens: u64) -> Option<u64> {
 }
 
 /// `tail_tools`: whether the engine this request is routed to takes our fork's `tail_tools`
-/// (the adapter's `takes_tail_tools_for`, the same decision the learned head was built on).
+/// (the adapter's `route_now`, decided with the URL from one snapshot). A request that carries
+/// a tail the body cannot send is refused as [`InferenceError::TailToolsUnreachable`]: dropping
+/// it would leave her a head without verbs she was told she could call.
+///
+/// [`InferenceError::TailToolsUnreachable`]: crate::ai::inference_error::InferenceError::TailToolsUnreachable
 pub(crate) fn finish_body(
     cfg: &OpenAICompatibleConfig,
     request: &TextGenerationRequest,
     model: &str,
     tail_tools: bool,
     body: &mut Value,
-) {
+) -> Result<(), crate::ai::inference_error::InferenceError> {
     // Thinking suppression — the REAL lever for qwen3-family forged templates.
     // When this gateway suppresses reasoning, the adapter already appends the
     // `/no_think` soft-switch to the last user turn (build path above). But the
@@ -232,7 +236,18 @@ pub(crate) fn finish_body(
         temperature = body.get("temperature").and_then(|t| t.as_f64()).unwrap_or(-1.0),
         "outbound chat request tool surface"
     );
-
+    let carried_tail = request.tail_tools.as_deref().is_some_and(|tail| !tail.is_empty());
+    if carried_tail && body.get("tail_tools").is_none() {
+        // Every path that leaves a requested tail off the wire lands here: refused, never dropped.
+        continuum_base::probe!(
+            class = "ai.request.tail_tools_unreachable",
+            model = %model,
+            tail_tools_accepted = tail_tools,
+            "the request carries tail verbs its destination cannot take: refused for a rebuild"
+        );
+        return Err(crate::ai::inference_error::InferenceError::TailToolsUnreachable { model: model.to_owned() });
+    }
+    Ok(())
 }
 
 // ── the head of assembly (carve 4): messages → base body ─────────────────────────
@@ -694,8 +709,8 @@ mod tests {
     }
 
     // what this catches: a tail-loaded verb not reaching a llama.cpp-family server (she could
-    // read its schema and never call it), or the non-standard field going to a cloud provider
-    // that rejects unknown fields.
+    // read its schema and never call it), the non-standard field going to a cloud provider
+    // that rejects unknown fields, or a tail silently dropped (Codex on #5491).
     #[test]
     fn tail_tools_reach_only_a_llamacpp_family_server_and_never_join_the_head() {
         let spec = |name: &str| crate::ai::types::NativeToolSpec {
@@ -731,11 +746,16 @@ mod tests {
             tail_tools: llamacpp,
         };
         let mut served = json!({ "model": "m" });
-        finish_body(&cfg(true), &request, "m", true, &mut served);
+        assert!(finish_body(&cfg(true), &request, "m", true, &mut served).is_ok());
         assert_eq!(served["tools"].as_array().map(Vec::len), Some(1), "the head holds only its own verbs");
         assert_eq!(served["tail_tools"][0]["function"]["name"], "code_git_apply");
+        // A tail the destination cannot take is refused for a rebuild, never silently dropped.
         let mut cloud = json!({ "model": "m" });
-        finish_body(&cfg(false), &request, "m", false, &mut cloud);
-        assert!(cloud.get("tail_tools").is_none(), "{cloud}");
+        assert_eq!(
+            finish_body(&cfg(false), &request, "m", false, &mut cloud),
+            Err(crate::ai::inference_error::InferenceError::TailToolsUnreachable { model: "m".into() })
+        );
+        let headless = TextGenerationRequest { tail_tools: None, ..request.clone() };
+        assert!(finish_body(&cfg(false), &headless, "m", false, &mut json!({ "model": "m" })).is_ok(), "no tail, nothing to refuse");
     }
 }

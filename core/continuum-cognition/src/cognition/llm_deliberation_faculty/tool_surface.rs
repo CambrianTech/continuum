@@ -101,6 +101,13 @@ impl LlmDeliberationFaculty {
     /// consecutive acts in one activity send byte-identical schemas, so the prefix after the
     /// system prompt survives (goal 10; [`crate::cognition::tool_surface`] has the why).
     pub fn select_tool_surface(&self, ws: &Workspace) -> SelectedSurface<'_> {
+        self.with_learned_head(self.select_activity_surface(ws), ws)
+    }
+
+    /// The activity's own surface, without her learned head: what she is offered when her
+    /// destination refused the tail (`InferenceError::TailToolsUnreachable`), so every verb she
+    /// sees is one she can call.
+    pub(super) fn select_activity_surface(&self, ws: &Workspace) -> SelectedSurface<'_> {
         let selected = self.surface.select(&ws.room_affordances, self.binding.load().context_window);
         if !ws.room_affordances.is_empty()
             && !matches!(selected.reason, SurfaceReason::RoomAffordances | SurfaceReason::NoTools)
@@ -114,7 +121,7 @@ impl LlmDeliberationFaculty {
                  the rule binds nothing here; offering her hands instead"
             );
         }
-        self.with_learned_head(selected, ws)
+        selected
     }
 
     /// Her view started a new epoch, the one moment her head may change: her tool head learns

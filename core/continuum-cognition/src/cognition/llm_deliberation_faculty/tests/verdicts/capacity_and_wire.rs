@@ -548,3 +548,46 @@ fn an_over_budget_prompt_is_a_budget_fault_never_a_clipped_prompt() {
     assert!(fault.contains("prompt budget violated"), "{fault}");
     assert!(view.messages.first().is_some_and(|m| m.content_text().contains("turn_0 ")), "nothing was cut to comply");
 }
+
+// what this catches (Codex on #5491): a tail her destination can no longer take, either silently
+// dropped (she is offered a head missing verbs she was told she had) or turned into a lost turn.
+// The typed refusal rebuilds her request ONCE on the activity's own surface, with no tail, and
+// sends it; a second refusal after that rebuild is a named fault, never a loop.
+#[tokio::test]
+async fn a_refused_tail_rebuilds_her_request_without_it_once() {
+    use crate::ai::inference_error::InferenceError;
+    use crate::cognition::workspace::Burst;
+
+    for refusals in [1usize, 2] {
+        let persona = Uuid::new_v4();
+        let adapter = Arc::new(ScriptedAdapter::new(vec![make_response(FinishReason::Stop, "PASS", None)]));
+        let mut left = refusals;
+        *adapter.on_request.lock().expect("fixture request hook") = Some(Box::new(move |_request| {
+            (left > 0).then(|| {
+                left -= 1;
+                InferenceError::TailToolsUnreachable { model: "scripted".into() }
+            })
+        }));
+        let faculty = LlmDeliberationFaculty::new(persona, "Ivar", "You are Ivar.", adapter.clone())
+            .with_context_window(32_768)
+            .with_tools(vec![read_tool()]);
+        let ws = Workspace::new(Burst::from_turns(
+            crate::identity::ActivityRoom::mint(),
+            vec![BurstTurn::attributed(false, "Peer", "Read src/lib.rs and tell me what it exports.", Some(1))],
+        ));
+        let contribution = faculty.contribute(&ws).await.expect("a verdict or named fault");
+        let seen = adapter.seen.lock().expect("fixture requests");
+        assert_eq!(seen.len(), 2, "one refusal, one rebuilt send: never a third ({refusals} refusals)");
+        let rebuilt = &seen[1];
+        assert!(rebuilt.tail_tools.is_none(), "the rebuilt request carries no tail");
+        let offered: Vec<&str> = rebuilt.tools.iter().flatten().map(|tool| tool.name.as_str()).collect();
+        let activity = faculty.select_activity_surface(&ws);
+        let expected: Vec<&str> = activity.specs.iter().flat_map(|specs| specs.iter()).map(|tool| tool.name.as_str()).collect();
+        assert!(!offered.is_empty() && offered == expected, "she is offered exactly her activity's surface: {offered:?}");
+        if refusals == 1 {
+            assert!(contribution.fault.is_none(), "the rebuilt request answered: {:?}", contribution.fault);
+        } else {
+            assert!(contribution.fault.is_some(), "a refusal after the rebuild is a named fault");
+        }
+    }
+}

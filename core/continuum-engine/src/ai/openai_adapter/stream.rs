@@ -358,8 +358,10 @@ impl OpenAICompatibleAdapter {
 
         // Finish the body for the wire (thinking policy, response_format, native tools,
         // tool-surface probe) — `inference::request_body`.
-        let tail_tools = self.takes_tail_tools_for(model);
-        crate::inference::request_body::finish_body(&self.config, &request, model, tail_tools, &mut body);
+        // ONE snapshot decides both where this request goes and whether it may carry its tail;
+        // a tail the destination cannot take is refused, never dropped (Codex on #5491).
+        let route = self.route_now(model, &endpoints);
+        crate::inference::request_body::finish_body(&self.config, &request, model, route.tail_tools, &mut body)?;
 
         // Make request — the endpoint base for THIS request's model. Normally the
         // runtime/config base; for the local serving gateway, a request for the
@@ -367,9 +369,7 @@ impl OpenAICompatibleAdapter {
         // text-only mind) routes to the snapshot's verified `vision_base_url`.
         // Snapshot-driven: the daemon publishes the address only after `/props`
         // confirmed sight, so this can never aim pixels at a text lane.
-        let url = self
-            .endpoints_for_model(model, &endpoints)
-            .chat_completions();
+        let url = route.base.chat_completions();
 
         let mut request_builder = self
             .client

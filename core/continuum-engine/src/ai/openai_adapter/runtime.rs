@@ -180,32 +180,38 @@ impl OpenAICompatibleAdapter {
         base.clone()
     }
 
-    /// Whether a request for `model` may carry `tail_tools` right now: the ONE decision both the
-    /// learned head (`accepts_tail_tools`) and the wire (`finish_body`) read.
-    pub(super) fn takes_tail_tools_for(&self, model: &str) -> bool {
-        self.tail_tools_reach(
+    /// The route a request for `model` takes NOW, and whether it may carry `tail_tools`, from ONE
+    /// serving snapshot and one evidence read: the head (`accepts_tail_tools`) and the send
+    /// (`stream_checked`) both take this pair, so the wire URL and the tail gate never come from
+    /// two different snapshots (Codex on #5491).
+    pub(super) fn route_now(&self, model: &str, base: &OpenAiBase) -> RequestRoute {
+        self.route_for(
             model,
+            base,
             &crate::inference::llama_server::current_serving(),
             crate::inference::llama_server::serving_engine_takes_tail_tools(),
         )
     }
 
-    /// PURE: the request for `model` reaches, by the route it actually takes
-    /// ([`Self::endpoints_for_model_in`]), the serving lane whose own reported build takes
+    /// PURE: [`Self::route_now`] over one `snap`. The tail gate holds only where the route
+    /// ([`Self::endpoints_for_model_in`]) reaches the serving lane whose own reported build takes
     /// `tail_tools` (`engine_takes`). That evidence is about the main lane only, so a request
-    /// routed to the vision sidecar, a dedicated lane, or any other base answers `false`
-    /// (Codex on #5491), as does a provider outside the fork-gateway family.
-    pub(super) fn tail_tools_reach(
+    /// routed to the vision sidecar, a dedicated lane, or any other base gets `false`, as does a
+    /// provider outside the fork-gateway family.
+    pub(super) fn route_for(
         &self,
         model: &str,
+        base: &OpenAiBase,
         snap: &crate::inference::llama_server::ServingSnapshot,
         engine_takes: bool,
-    ) -> bool {
-        if !self.config.tail_tools || self.dedicated_lane || !engine_takes || snap.base_url.is_empty() {
-            return false;
-        }
-        let route = self.endpoints_for_model_in(model, &self.endpoints(), snap);
-        route.root() == OpenAiBase::new(&snap.base_url).root()
+    ) -> RequestRoute {
+        let route = self.endpoints_for_model_in(model, base, snap);
+        let tail_tools = self.config.tail_tools
+            && !self.dedicated_lane
+            && engine_takes
+            && !snap.base_url.is_empty()
+            && route.root() == OpenAiBase::new(&snap.base_url).root();
+        RequestRoute { base: route, tail_tools }
     }
 
     /// Fetch the live model list from the provider's /v1/models endpoint.
@@ -463,4 +469,13 @@ impl OpenAICompatibleAdapter {
         );
         Ok(pool)
     }
+}
+
+
+/// Where one request goes and whether it may carry `tail_tools`, decided together from one
+/// snapshot ([`OpenAICompatibleAdapter::route_now`]).
+#[derive(Debug, Clone)]
+pub(super) struct RequestRoute {
+    pub(super) base: OpenAiBase,
+    pub(super) tail_tools: bool,
 }

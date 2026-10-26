@@ -121,6 +121,9 @@ impl LlmDeliberationFaculty {
         let mut rejected_prompt_tokens = None;
         let mut rejected_measured_tokens = None;
         let mut request_template: Option<TextGenerationRequest> = None;
+        // Her destination refused the tail her learned head promised: rebuilt once on the
+        // activity's own surface, so she is never offered a verb she cannot call.
+        let mut tail_refused = false;
         let mut view =
             self.prompt_view_with_visual_feedback(ws, fit_window, calibration, visual.as_ref());
         let mut gen_await_ms = 0u64;
@@ -207,7 +210,7 @@ impl LlmDeliberationFaculty {
             // [`Self::select_tool_surface`] so the budget in `prompt_view_within` reaches the
             // SAME answer (card dec1a7ff).
             if request_template.is_none() {
-                let mut selected = self.select_tool_surface(ws);
+                let mut selected = if tail_refused { self.select_activity_surface(ws) } else { self.select_tool_surface(ws) };
                 // Verbs she loaded into the tail ride beside the head, callable natively.
                 let tail = std::mem::take(&mut selected.tail);
                 if selected.reason == SurfaceReason::CoreHandsForWindow {
@@ -334,6 +337,17 @@ impl LlmDeliberationFaculty {
                             )
                         }
                     };
+                }
+                Err(crate::ai::inference_error::InferenceError::TailToolsUnreachable { model }) if !tail_refused => {
+                    continuum_base::probe!(
+                        class = "delib.tool_head.tail_refused",
+                        persona = %self.persona_name,
+                        model = %model,
+                        "the engine her request reaches cannot take her tail verbs now: rebuilding \
+                         on the activity's surface, never sending a head missing verbs she was offered"
+                    );
+                    tail_refused = true;
+                    request_template = None;
                 }
                 Err(error) => {
                     return Some(Contribution::deliberation_fault(error.to_string()));

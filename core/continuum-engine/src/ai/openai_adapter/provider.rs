@@ -14,9 +14,9 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
     }
 
     /// The provider declares the family (our fork's gateway); the engine the request for `model`
-    /// actually reaches decides, by the build that engine itself reports (`tail_tools_reach`).
+    /// actually reaches decides, by the build that engine itself reports (`route_now`).
     fn accepts_tail_tools(&self, model: &str) -> bool {
-        self.takes_tail_tools_for(model)
+        self.route_now(model, &self.endpoints()).tail_tools
     }
 
     /// The live set the daemon's reconcile / `/v1/models` refresh verified
