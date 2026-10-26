@@ -29,6 +29,7 @@ pub mod cognition_names_persona;
 pub mod context_codec;
 pub mod continuum_home;
 pub mod derived_bounds;
+pub mod dev_only_deps;
 pub mod grab_bag;
 pub mod head_cuts;
 pub mod file_size;
@@ -390,7 +391,7 @@ fn significant_word(src: &str) -> (Option<&str>, &str) {
 /// test module's multi-line string fixtures (JSON, source snippets, raw strings) carry
 /// braces that a per-line count read as the module's end, leaking the rest of the tests
 /// into production. An item that never closes runs to the end of the file.
-fn gated_item_end(lines: &[&str], from: usize) -> usize {
+pub(crate) fn gated_item_end(lines: &[&str], from: usize) -> usize {
     let last = lines.len().saturating_sub(1);
     let Some(head) = (from..lines.len()).find(|&k| {
         let code = split_code_and_comment(lines[k]).0.trim();
