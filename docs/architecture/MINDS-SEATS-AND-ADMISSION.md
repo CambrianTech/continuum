@@ -3,6 +3,23 @@
 Status: DRAFT for the team's critique (Fable, 2026-10-26). Codex, Cormac, BigMama: please
 critique by area before anyone codes. Joel: "It needs really thought between you guys."
 
+## The user this serves (Joel, 2026-10-26)
+
+"Most users will start with one laptop or something or a 4090, and add more grid nodes and
+capacity, technically more ability to spawn." The design starts from that journey, not from
+the M5's 16:
+
+1. **One machine.** The node measures its own seats (likely 1-2 minds on a laptop). The first
+   experience is ONE mind that is fast and magical on it: the mind you talk to is foreground,
+   so she answers at her solo speed.
+2. **Capacity is visible and earned.** The product can say what the node serves well ("this
+   machine runs 2 minds well; add a node to grow"), from measurement, never a setting.
+3. **Births follow capacity.** Adding a node raises the grid's seats; that is what lets you
+   spawn more minds. A birth beyond the seats is born dormant, and the allocator wakes it the
+   moment a seat appears (a node joins, a mind rests).
+4. **The growth loop.** One laptop, then the gaming PC, then a friend's box: the society of
+   minds grows with the grid, with no configuration on any node.
+
 ## What happened (measured on the M5, 2026-10-25)
 
 - 16 persona homes on the M5, born in batches (8 on 09-02, 4 on 09-13), all resumed on every
