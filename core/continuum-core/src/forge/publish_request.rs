@@ -84,47 +84,11 @@ impl std::fmt::Display for PublishError {
 }
 impl std::error::Error for PublishError {}
 
-/// A validated repository id (`namespace/name`): an HF repo or a GitHub `owner/repo`. A
-/// newtype so an unchecked string can never reach a transport. Both segments must be
-/// non-empty and use only `[A-Za-z0-9._-]` (the set both providers allow), with no path
-/// traversal. Provider-neutral: it names WHERE, and each publisher addresses it its own way.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RepoId(String);
+pub use continuum_base::repo_id::{InvalidRepoId, RepoId};
 
-impl RepoId {
-    pub fn parse(raw: &str) -> Result<Self, PublishError> {
-        let raw = raw.trim();
-        let bad = |reason: &str| PublishError::InvalidRepoId {
-            repo_id: raw.to_string(),
-            reason: reason.to_string(),
-        };
-        let (ns, name) = raw
-            .split_once('/')
-            .ok_or_else(|| bad("expected 'namespace/name'"))?;
-        if name.contains('/') {
-            return Err(bad("more than one '/' — expected exactly 'namespace/name'"));
-        }
-        for (seg, label) in [(ns, "namespace"), (name, "name")] {
-            if seg.is_empty() {
-                return Err(bad(&format!("{label} segment is empty")));
-            }
-            if !seg
-                .chars()
-                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
-            {
-                return Err(bad(&format!(
-                    "{label} '{seg}' has characters outside [A-Za-z0-9._-]"
-                )));
-            }
-            if seg == "." || seg == ".." {
-                return Err(bad(&format!("{label} may not be '.' or '..'")));
-            }
-        }
-        Ok(Self(raw.to_string()))
-    }
-
-    pub fn as_str(&self) -> &str {
-        &self.0
+impl From<InvalidRepoId> for PublishError {
+    fn from(e: InvalidRepoId) -> Self {
+        Self::InvalidRepoId { repo_id: e.repo_id, reason: e.reason }
     }
 }
 
