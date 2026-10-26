@@ -62,6 +62,9 @@ Phases, in order; each owner works its area in parallel:
   and 51k of commands on 10-26). The command substrate (`sdk_codegen`, `register_*`) is already in continuum-kernel.
   Leaves first as pure moves (models, gpu, embedding, vdd, search, web; code into continuum-hands); a coordinator
   (serving_daemon ~60 imports, work ~40, grid ~30) gets its seam designed before it moves.
+  **A new worktree builds in seconds:** its vendored engines are submodules; init them from the main checkout's
+  objects (3.6 s measured, 10-26), never by hand-symlinking or a network clone:
+  `git submodule update --init --reference <main>/core/vendor/llama.cpp core/vendor/llama.cpp` (same for whisper.cpp).
   Serving, Mind, Grid/airc, Clients. Pure moves plus import paths, one owner per cut;
   `layer_discipline` forbids upward imports; each crate checks in seconds.
 - **3 Locks.** Clippy in CI on split crates, `deny(unwrap_used, expect_used, panic)` on every clean one;
