@@ -603,6 +603,24 @@ pub(super) const WORKING_CONTEXT_HEADER: &str = "\n\n[What you are working with 
 mod tests {
     use super::*;
 
+    // what this catches: a contract silently missing from her prompt. Every contract block must
+    // keep its `[Name]` header shape, or `contract_of` drops it (Cormac on #5434). Each turn kind
+    // yields exactly the contracts it should, by name.
+    #[test]
+    fn every_turn_kind_carries_its_contracts_by_name() {
+        let names = |self_initiated, directed, live| -> Vec<&'static str> {
+            contracts_in_force(self_initiated, directed, live).iter().map(|c| c.name).collect()
+        };
+        assert_eq!(names(false, false, false), ["Conversational Presence"]);
+        assert_eq!(names(false, true, false), ["Conversational Presence"]);
+        assert_eq!(names(false, false, true), ["Working Presence"]);
+        assert_eq!(names(true, false, false), ["Your own time", "Conversational Presence"]);
+        assert_eq!(names(true, false, true), ["Your own time", "Working Presence"]);
+        for (s_i, d, l) in [(false, false, false), (false, true, false), (false, false, true), (true, true, true)] {
+            assert!(contracts_in_force(s_i, d, l).iter().all(|c| !c.body.trim().is_empty()), "a contract body is empty");
+        }
+    }
+
     // what this catches: COMPOSER/GATE DRIFT. `framing_echo` gates the role preamble by
     // matching two sentences; this block is where those sentences are EMITTED. Until this
     // test, the gate's doc comment claimed the two "cannot drift" while the composer held
