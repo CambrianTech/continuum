@@ -1,5 +1,5 @@
 use super::*;
-use crate::sample::{Builds, Demand, EngineIncarnation, ServingConfig, Window, Workload};
+use crate::sample::{Builds, Demand, EngineIncarnation, Prediction, ServingConfig, Window, Workload};
 
 const MIN: u64 = 60_000;
 
@@ -36,7 +36,7 @@ fn window(at_min: u64, config: &ServingConfig, pid: u32, p50_ms: u64, predicted_
         failures: 0,
         latency_p50_ms: p50_ms,
         latency_p90_ms: p50_ms * 2,
-        predicted_p50_ms: Some(predicted_ms),
+        prediction: Some(Prediction { p50_ms: predicted_ms, calibration: "dyno-v1".into() }),
         warmup: Warmup::Warm,
         memory_ceiling_bytes: 40_300_000_000,
     }
@@ -149,4 +149,84 @@ fn a_configurations_fingerprint_is_stable_and_tells_settings_apart() {
     let mut q8 = config(2, 58_880);
     q8.kv_type = "q8_0".into();
     assert_ne!(q8.fingerprint(), config(2, 58_880).fingerprint());
+}
+
+// what this catches (Codex on #5477): the same window fed twice. A repeated slow window must
+// not grow a streak into a "sustained" regression, and a repeated healthy one must not pad the
+// evidence; anything that does not start after the node's last window is refused untouched.
+#[test]
+fn a_duplicate_or_out_of_order_window_is_refused_before_it_is_judged_or_learned() {
+    let (mut state, policy) = (ServiceState::default(), policy());
+    let two = config(2, 58_880);
+    for i in 0..3 {
+        observe(&mut state, &policy, &window(i * 10, &two, 1, 86_000, 80_000));
+    }
+    let slow = window(30, &two, 1, 170_000, 80_000);
+    assert!(matches!(observe(&mut state, &policy, &slow), Verdict::Suspect { streak: 1, .. }));
+    assert_eq!(
+        observe(&mut state, &policy, &slow),
+        Verdict::Insufficient(Insufficient::NotAfterLast { start_ms: 30 * MIN, last_end_ms: 40 * MIN }),
+        "the same window again is refused, not a second slow window"
+    );
+    assert!(matches!(observe(&mut state, &policy, &window(5, &two, 1, 86_000, 80_000)), Verdict::Insufficient(Insufficient::NotAfterLast { .. })));
+    assert_eq!(state.baselines.values().map(|b| b.references.len()).sum::<usize>(), 3, "nothing refused was learned");
+}
+
+// what this catches (Codex on #5477): a streak counted across windows that are not consecutive
+// time on one engine. Slow, then a warm-up window, then slow is two separate slow windows; so is
+// slow, a gap, slow; and a restart between them starts the run again.
+#[test]
+fn a_streak_needs_adjacent_judged_windows_on_one_engine() {
+    let two = config(2, 58_880);
+    let warmed = |state: &mut ServiceState| {
+        for i in 0..3 {
+            observe(state, &policy(), &window(i * 10, &two, 1, 86_000, 80_000));
+        }
+    };
+    let (mut state, policy) = (ServiceState::default(), policy());
+    warmed(&mut state);
+    assert!(matches!(observe(&mut state, &policy, &window(30, &two, 1, 170_000, 80_000)), Verdict::Suspect { streak: 1, .. }));
+    let mut warming = window(40, &two, 1, 170_000, 80_000);
+    warming.warmup = Warmup::WarmingUp;
+    observe(&mut state, &policy, &warming);
+    assert!(matches!(observe(&mut state, &policy, &window(50, &two, 1, 170_000, 80_000)), Verdict::Suspect { streak: 1, .. }), "an ineligible window ends the run");
+
+    let mut state = ServiceState::default();
+    warmed(&mut state);
+    observe(&mut state, &policy, &window(30, &two, 1, 170_000, 80_000));
+    assert!(matches!(observe(&mut state, &policy, &window(60, &two, 1, 170_000, 80_000)), Verdict::Suspect { streak: 1, .. }), "a gap ends the run");
+
+    let mut state = ServiceState::default();
+    warmed(&mut state);
+    observe(&mut state, &policy, &window(30, &two, 1, 170_000, 80_000));
+    assert!(matches!(observe(&mut state, &policy, &window(40, &two, 2, 170_000, 80_000)), Verdict::Suspect { streak: 1, .. }), "a restart ends the run");
+}
+
+// what this catches (Codex on #5477): an engine that completes nothing while work waits. That
+// is the worst slowdown, and it must never read as an idle (NoDemand) or healthy window.
+#[test]
+fn demand_with_no_completions_is_a_stall_never_idle() {
+    let (mut state, policy) = (ServiceState::default(), policy());
+    let mut stalled = window(0, &config(2, 58_880), 1, 0, 80_000);
+    stalled.generations = 0;
+    stalled.failures = 12;
+    assert_eq!(observe(&mut state, &policy, &stalled), Verdict::Stalled { offered: 12, failures: 12 });
+    assert!(state.baselines.is_empty(), "a stall is never learned");
+}
+
+// what this catches (Codex on #5477): a recalibrated predictor read as a change in the engine. A
+// new calibration is a new ratio baseline, so a configuration without history waits for evidence
+// under it instead of being judged by ratios the old predictor produced.
+#[test]
+fn a_recalibrated_prediction_starts_new_ratios_instead_of_judging_against_the_old_ones() {
+    let (mut state, policy) = (ServiceState::default(), policy());
+    let five = config(5, 50_432);
+    for i in 0..3 {
+        observe(&mut state, &policy, &window(i * 10, &five, 1, 62_000, 60_000));
+    }
+    let mut recalibrated = window(30, &config(2, 58_880), 1, 170_000, 80_000);
+    if let Some(p) = recalibrated.prediction.as_mut() {
+        p.calibration = "dyno-v2".into();
+    }
+    assert_eq!(observe(&mut state, &policy, &recalibrated), Verdict::Insufficient(Insufficient::NoReference));
 }

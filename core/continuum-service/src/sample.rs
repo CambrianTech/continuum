@@ -79,6 +79,17 @@ pub enum Warmup {
     Unknown,
 }
 
+/// What the node's measured engine rates predict for a window's median generation
+/// (`serving_rates` and the contention dyno, computed by the caller). It makes windows of
+/// different configurations comparable. `calibration` names the predictor's version: ratios are
+/// only compared under one calibration, so a recalibrated predictor never reads as an engine
+/// that got faster or slower.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Prediction {
+    pub p50_ms: u64,
+    pub calibration: String,
+}
+
 /// The window the sample covers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Window {
@@ -114,11 +125,9 @@ pub struct ServiceSample {
     pub failures: u32,
     pub latency_p50_ms: u64,
     pub latency_p90_ms: u64,
-    /// What the node's measured engine rates predict for this workload's median generation
-    /// (`serving_rates` and the contention dyno, computed by the caller). It makes windows of
-    /// different configurations comparable, so a configuration with no history of its own is
-    /// still judged; `None` when the rates are unmeasured.
-    pub predicted_p50_ms: Option<u64>,
+    /// What the node's measured engine rates predict for this workload's median generation; `None`
+    /// when the rates are unmeasured.
+    pub prediction: Option<Prediction>,
     pub warmup: Warmup,
     pub memory_ceiling_bytes: u64,
 }
@@ -126,7 +135,7 @@ pub struct ServiceSample {
 impl ServiceSample {
     /// Observed over predicted median latency: 1.0 is the engine at its measured speed.
     pub fn prediction_ratio(&self) -> Option<f64> {
-        let predicted = self.predicted_p50_ms.filter(|p| *p > 0)?;
+        let predicted = self.prediction.as_ref().map(|p| p.p50_ms).filter(|p| *p > 0)?;
         Some(self.latency_p50_ms as f64 / predicted as f64)
     }
 

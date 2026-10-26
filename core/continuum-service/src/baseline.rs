@@ -75,12 +75,10 @@ impl Reference {
     }
 }
 
-/// The healthy windows one key remembers, newest last, and how many windows in a row have
-/// fallen outside them.
+/// The healthy windows one key remembers, newest last.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct Baseline {
     pub references: VecDeque<Reference>,
-    pub streak: u32,
 }
 
 impl Baseline {

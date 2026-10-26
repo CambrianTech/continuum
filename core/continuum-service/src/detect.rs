@@ -1,11 +1,17 @@
 //! Judging one window against what its configuration and workload measured before.
+//!
+//! Windows arrive as one stream per node. A window is ADJACENT to the last one judged when it
+//! starts where that one ended and runs on the same engine incarnation; only adjacent slow
+//! windows make a streak. A duplicate, overlapping or out-of-order window is refused before it
+//! can be judged or learned, and a gap, a restart or a window that cannot be judged ends a
+//! streak, so "sustained" always means consecutive real time on one engine.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
 
 use serde::{Deserialize, Serialize};
 
 use crate::baseline::{self, Baseline, BaselineKey};
-use crate::sample::{ServiceSample, Warmup, SCHEMA};
+use crate::sample::{Builds, EngineIncarnation, ServiceSample, Warmup, SCHEMA};
 
 /// The caller's bounds. None is a constant here: the node's owner (and, later, a learned
 /// policy) sets them, and every test names the values it uses.
@@ -15,37 +21,47 @@ pub struct ServicePolicy {
     pub history: usize,
     /// Healthy windows a key needs before a window can be judged against it.
     pub min_evidence: usize,
-    /// Windows in a row outside the envelope before it is a regression, not a wobble.
+    /// Adjacent windows in a row outside the envelope before it is a regression, not a wobble.
     pub sustained: u32,
 }
 
-/// Every key's baseline, and per node, model and builds the prediction ratios its healthy
-/// windows measured. The caller owns it (no global state) and may persist it.
+/// Every key's baseline, the node's healthy prediction ratios, and each node stream's position.
+/// The caller owns it (no global state) and may persist it.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct ServiceState {
     pub baselines: BTreeMap<BaselineKey, Baseline>,
     pub ratios: BTreeMap<RatioKey, RatioBaseline>,
+    pub streams: BTreeMap<String, StreamPosition>,
 }
 
-/// What prediction ratios are compared across: one node, model and builds, any configuration.
+/// Where one node's stream of windows stands, and the slow run it is in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StreamPosition {
+    pub last_end_ms: u64,
+    pub incarnation: EngineIncarnation,
+    pub streak: u32,
+}
+
+/// What prediction ratios are compared across: one node, model, builds and predictor calibration.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct RatioKey {
     pub node: String,
     pub model: String,
-    pub builds: crate::sample::Builds,
+    pub builds: Builds,
+    pub calibration: String,
 }
 
 impl RatioKey {
-    fn of(sample: &ServiceSample) -> Self {
-        Self { node: sample.node.clone(), model: sample.model.clone(), builds: sample.builds.clone() }
+    fn of(sample: &ServiceSample) -> Option<Self> {
+        let calibration = sample.prediction.as_ref()?.calibration.clone();
+        Some(Self { node: sample.node.clone(), model: sample.model.clone(), builds: sample.builds.clone(), calibration })
     }
 }
 
-/// Healthy windows' observed-over-predicted ratios, newest last, and the run outside them.
+/// Healthy windows' observed-over-predicted ratios, newest last.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct RatioBaseline {
-    pub ratios: std::collections::VecDeque<f64>,
-    pub streak: u32,
+    pub ratios: VecDeque<f64>,
 }
 
 impl RatioBaseline {
@@ -65,6 +81,8 @@ impl RatioBaseline {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Insufficient {
     UnknownSchema(u16),
+    /// The window starts before the node's last window ended: a duplicate, an overlap or out of order.
+    NotAfterLast { start_ms: u64, last_end_ms: u64 },
     /// Neither this configuration's history nor the node's prediction ratios are enough yet.
     NoReference,
     /// The window spans more than one incarnation or configuration.
@@ -114,6 +132,8 @@ pub enum Verdict {
     /// Outside the envelope, not yet for long enough to be a regression.
     Suspect { streak: u32, sustained: u32 },
     Regressed(Regression),
+    /// Work was asked for and nothing completed: the worst slowdown, never idle, never healthy.
+    Stalled { offered: u32, failures: u32 },
     Insufficient(Insufficient),
 }
 
@@ -121,13 +141,22 @@ pub enum Verdict {
 /// against the node's healthy prediction ratios; learn from it only when it is healthy. A slow
 /// window never joins either baseline, so a degraded engine cannot become its own reference.
 pub fn observe(state: &mut ServiceState, policy: &ServicePolicy, sample: &ServiceSample) -> Verdict {
-    if let Some(reason) = unjudgeable(sample) {
-        return Verdict::Insufficient(reason);
+    if sample.schema != SCHEMA {
+        return Verdict::Insufficient(Insufficient::UnknownSchema(sample.schema));
+    }
+    let streak = match advance(state, sample) {
+        Ok(streak) => streak,
+        Err(refused) => return Verdict::Insufficient(refused),
+    };
+    if let Some(verdict) = unjudgeable(sample) {
+        set_streak(state, sample, 0);
+        return verdict;
     }
     let key = BaselineKey::of(sample);
-    let own = state.baselines.entry(key.clone()).or_default();
-    let ratios = state.ratios.entry(RatioKey::of(sample)).or_default();
+    let ratio_key = RatioKey::of(sample);
     let ratio = sample.prediction_ratio();
+    let own = state.baselines.entry(key.clone()).or_default();
+    let ratios = ratio_key.as_ref().map(|k| state.ratios.entry(k.clone()).or_default().clone()).unwrap_or_default();
     let judged = if own.references.len() >= policy.min_evidence {
         own.envelope().map(|(fastest, slowest)| {
             (sample.latency_p50_ms > slowest, Reference::OwnHistory { fastest_ms: fastest, slowest_ms: slowest })
@@ -144,45 +173,83 @@ pub fn observe(state: &mut ServiceState, policy: &ServicePolicy, sample: &Servic
         // reference. Known limit: a node degraded from its very first window on new builds
         // learns that as its normal. The prediction ratios keep a new CONFIGURATION on known
         // builds honest; a new build needs one healthy start to be judged against.
-        own.remember(baseline::Reference::of(sample), policy.history);
-        if let Some(r) = ratio {
-            ratios.remember(r, policy.history);
-        }
+        learn(state, policy, sample, &key, ratio_key.as_ref(), ratio);
+        set_streak(state, sample, 0);
         return Verdict::Insufficient(Insufficient::NoReference);
     };
     if !slow {
-        own.streak = 0;
-        own.remember(baseline::Reference::of(sample), policy.history);
-        if let Some(r) = ratio {
-            ratios.remember(r, policy.history);
-        }
+        learn(state, policy, sample, &key, ratio_key.as_ref(), ratio);
+        set_streak(state, sample, 0);
         return Verdict::Healthy;
     }
-    own.streak += 1;
-    if own.streak < policy.sustained {
-        return Verdict::Suspect { streak: own.streak, sustained: policy.sustained };
+    let streak = streak + 1;
+    set_streak(state, sample, streak);
+    if streak < policy.sustained {
+        return Verdict::Suspect { streak, sustained: policy.sustained };
     }
-    let causes = causes(own, ratios, sample);
-    Verdict::Regressed(Regression { key, observed_p50_ms: sample.latency_p50_ms, against, streak: own.streak, causes })
+    let own = state.baselines.get(&key).cloned().unwrap_or_default();
+    let causes = causes(&own, &ratios, sample);
+    Verdict::Regressed(Regression { key, observed_p50_ms: sample.latency_p50_ms, against, streak, causes })
+}
+
+/// Move the node's stream to `sample`, returning the slow streak it continues (0 after a gap or
+/// a restart), or refuse a window that does not come after the last one.
+fn advance(state: &mut ServiceState, sample: &ServiceSample) -> Result<u32, Insufficient> {
+    let previous = state.streams.get(&sample.node).copied();
+    if let Some(last) = previous {
+        if sample.window.start_ms < last.last_end_ms {
+            return Err(Insufficient::NotAfterLast { start_ms: sample.window.start_ms, last_end_ms: last.last_end_ms });
+        }
+    }
+    let streak = previous
+        .filter(|last| last.last_end_ms == sample.window.start_ms && last.incarnation == sample.incarnation)
+        .map_or(0, |last| last.streak);
+    state.streams.insert(
+        sample.node.clone(),
+        StreamPosition { last_end_ms: sample.window.end_ms, incarnation: sample.incarnation, streak },
+    );
+    Ok(streak)
+}
+
+fn set_streak(state: &mut ServiceState, sample: &ServiceSample, streak: u32) {
+    if let Some(position) = state.streams.get_mut(&sample.node) {
+        position.streak = streak;
+    }
+}
+
+fn learn(
+    state: &mut ServiceState,
+    policy: &ServicePolicy,
+    sample: &ServiceSample,
+    key: &BaselineKey,
+    ratio_key: Option<&RatioKey>,
+    ratio: Option<f64>,
+) {
+    state.baselines.entry(key.clone()).or_default().remember(baseline::Reference::of(sample), policy.history);
+    if let (Some(k), Some(r)) = (ratio_key, ratio) {
+        state.ratios.entry(k.clone()).or_default().remember(r, policy.history);
+    }
 }
 
 fn milli(ratio: f64) -> u64 {
     (ratio * 1000.0).round().max(0.0) as u64
 }
 
-fn unjudgeable(sample: &ServiceSample) -> Option<Insufficient> {
-    if sample.schema != SCHEMA {
-        return Some(Insufficient::UnknownSchema(sample.schema));
-    }
+/// A window that cannot describe the engine's speed, with what it is instead.
+fn unjudgeable(sample: &ServiceSample) -> Option<Verdict> {
     if sample.mixed {
-        return Some(Insufficient::Mixed);
+        return Some(Verdict::Insufficient(Insufficient::Mixed));
     }
     match sample.warmup {
-        Warmup::WarmingUp => return Some(Insufficient::WarmingUp),
-        Warmup::Unknown => return Some(Insufficient::UnknownWarmup),
+        Warmup::WarmingUp => return Some(Verdict::Insufficient(Insufficient::WarmingUp)),
+        Warmup::Unknown => return Some(Verdict::Insufficient(Insufficient::UnknownWarmup)),
         Warmup::Warm => {}
     }
-    (sample.demand.offered == 0 || sample.generations == 0).then_some(Insufficient::NoDemand)
+    match (sample.demand.offered, sample.generations) {
+        (0, _) => Some(Verdict::Insufficient(Insufficient::NoDemand)),
+        (offered, 0) => Some(Verdict::Stalled { offered, failures: sample.failures }),
+        _ => None,
+    }
 }
 
 fn causes(baseline: &Baseline, ratios: &RatioBaseline, sample: &ServiceSample) -> Vec<CauseHint> {
