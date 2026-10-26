@@ -34,7 +34,7 @@
 
 use crate::gpu::GpuMemoryManager;
 use crate::logging::TimingGuard;
-use crate::cognition::text_analysis::LoopDetector;
+use continuum_text_analysis::LoopDetector;
 use crate::persona::{PersonaCognition, PersonaInboxFrame, PersonaTurnFrame, PersonaTurnFrameReplayRecord};
 use crate::cognition::conversation::types::{InboxMessage, Modality, SenderType};
 use crate::rag::RagEngine;

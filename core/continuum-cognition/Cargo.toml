@@ -34,6 +34,7 @@ tool-working-set = { path = "../tool-working-set" }  # the learned tool head: pu
 schemars = { version = "0.8", features = ["uuid1"] }
 continuum-airc-protocol = { path = "../continuum-airc-protocol" }
 continuum-positron = { path = "../continuum-positron" }
+continuum-text-analysis = { path = "../continuum-text-analysis" }
 continuum-client = { path = "../../client/continuum-client" }
 reqwest = { version = "0.12", features = ["json", "multipart", "stream"] }
 thiserror.workspace = true

@@ -9,7 +9,7 @@
 
 use super::workspace::Decision;
 use crate::cognition::prompt_assembly::{looks_like_silence_token, SILENCE_TOKEN};
-use crate::cognition::text_analysis::clean_response;
+use continuum_text_analysis::clean_response;
 
 /// Map a model's raw output to a participation [`Decision`].
 ///

@@ -2918,6 +2918,7 @@ dependencies = [
  "continuum-memory",
  "continuum-perception",
  "continuum-positron",
+ "continuum-text-analysis",
  "dashmap",
  "dirs 5.0.1",
  "fs2",
@@ -2991,6 +2992,7 @@ dependencies = [
  "continuum-mind",
  "continuum-orm-derive",
  "continuum-positron",
+ "continuum-text-analysis",
  "continuum-tool-protocol",
  "crossbeam-channel",
  "csv",
@@ -3355,6 +3357,7 @@ dependencies = [
  "continuum-memory",
  "continuum-perception",
  "continuum-positron",
+ "continuum-text-analysis",
  "dashmap",
  "dirs 5.0.1",
  "fs2",
@@ -3425,6 +3428,17 @@ dependencies = [
  "serde_json",
  "tokio",
  "tracing",
+ "ts-rs 12.0.1",
+ "uuid",
+]
+
+[[package]]
+name = "continuum-text-analysis"
+version = "0.1.0"
+dependencies = [
+ "dashmap",
+ "regex",
+ "serde",
  "ts-rs 12.0.1",
  "uuid",
 ]

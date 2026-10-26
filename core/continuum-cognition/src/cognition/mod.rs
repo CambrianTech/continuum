@@ -131,7 +131,6 @@ pub mod prompt_assembly;
 pub mod rag_budget;
 pub mod redaction;
 pub mod room_directory;
-pub mod text_analysis;
 
 pub use model_resolver::*;
 pub use response_orchestrator::{

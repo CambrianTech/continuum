@@ -80,6 +80,7 @@ continuum-airc-protocol = { path = "../continuum-airc-protocol" }
 # `WsServerMessage`. The `CommandDispatch` seam keeps continuum-positron free
 # of a continuum-core dependency (no cycle — this crate implements the trait).
 continuum-positron = { path = "../continuum-positron" }
+continuum-text-analysis = { path = "../continuum-text-analysis" }
 # The client SDK. `InProcessTransport` (runtime/in_process_transport.rs)
 # implements `continuum_client::Transport` so an in-core citizen (persona,
 # foundry) holds the SAME `Connection` every external client uses — citizens
