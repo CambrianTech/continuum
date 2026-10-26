@@ -707,7 +707,7 @@ impl ActionCommand for CodeShellPoll {
         // moved to claim B; an isolated eval reaches only itself (Astra on #5026).
         let state_arc = self
             .state
-            .with_execution(&hands_of(ctx)?, &p.execution_id, |s, id| s.get_execution_state(id))
+            .with_execution(&hands_of(&self.state, ctx), &p.execution_id, |s, id| s.get_execution_state(id))
             .map_err(execution_lookup_error)?;
         let s = state_arc
             .lock()

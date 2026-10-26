@@ -1,9 +1,8 @@
 //! Core's answer to `identity::acting`: who is acting and where, from the persona airc
 //! registry, the acting-root record that live above the kernel.
-//! Boot installs it once; every domain crate that left core asks through the kernel seam.
+//! Boot hands it to each domain state at construction; every domain crate that left core asks through the kernel seam.
 
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 
 use uuid::Uuid;
 
@@ -11,7 +10,7 @@ use crate::identity::acting::ActingProvider;
 use crate::identity::hands_context::HandsContext;
 use crate::sdk_codegen::Ctx;
 
-struct CoreActing;
+pub struct CoreActing;
 
 impl ActingProvider for CoreActing {
     fn acting_peer_id(&self, ctx: &Ctx) -> Option<Uuid> {
@@ -29,9 +28,4 @@ impl ActingProvider for CoreActing {
     fn instance_python(&self, checkout: &Path) -> Option<PathBuf> {
         crate::persona::instance_env_fact::instance_python(checkout)
     }
-}
-
-/// Install core's provider (idempotent; the first install wins).
-pub fn install() {
-    crate::identity::acting::install(Arc::new(CoreActing));
 }

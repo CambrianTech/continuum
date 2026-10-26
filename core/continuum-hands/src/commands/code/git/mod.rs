@@ -46,7 +46,7 @@ use status::CodeGitStatus;
 /// Returns an OWNED [`PathBuf`] so the `DashMap` ref guard is dropped before the
 /// caller awaits its git — never a lock held across a shell-out.
 pub(crate) async fn workspace_root_for(state: &CodeState, ctx: &Ctx) -> Result<PathBuf, CommandError> {
-    let key = crate::modules::code_commands::hands_of(ctx)?;
+    let key = crate::modules::code_commands::hands_of(state, ctx);
     ensure_engine(state, &key).await?;
     let engine = state
         .file_engines

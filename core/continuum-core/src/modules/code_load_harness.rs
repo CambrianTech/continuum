@@ -61,6 +61,7 @@ fn substrate() -> Arc<CommandExecutor> {
         Arc::new(DashMap::new()),
         Arc::new(DashMap::new()),
         tokio::runtime::Handle::current(),
+        Arc::new(crate::modules::acting_provider::CoreActing),
     ));
     registry.register(Arc::new(CodeModule::new(state)));
     Arc::new(CommandExecutor::new(registry))

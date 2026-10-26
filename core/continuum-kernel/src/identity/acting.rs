@@ -1,16 +1,15 @@
 //! Who is acting, and where: the contract every domain's commands (code, work, ...) need
-//! from the layers above the kernel, installed once at boot. The persona airc registry,
-//! the acting-root record live above the kernel; a domain crate
-//! below them asks through this seam instead of importing them. Not installed is a typed
-//! error ([`ActingError::NotInstalled`]), never a default identity. Trust is not here: it has one owner, the executor's policy.
+//! from the layers above the kernel. The persona airc registry and the acting-root record
+//! live above the kernel; a domain crate below them asks through this seam instead of
+//! importing them. The provider is handed to its consumer at construction (a field of the
+//! domain's state), never a global: there is no default identity and no ambient slot.
+//! Trust is not here: it has one owner, the executor's policy.
 
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, OnceLock};
-
 use uuid::Uuid;
 
 use super::hands_context::HandsContext;
-use crate::sdk_codegen::{CommandError, Ctx};
+use crate::sdk_codegen::Ctx;
 
 /// What the layers above the kernel answer about the acting caller.
 pub trait ActingProvider: Send + Sync {
@@ -22,73 +21,4 @@ pub trait ActingProvider: Send + Sync {
     fn acting_root_in(&self, persona: Uuid, context: Option<HandsContext>) -> Option<PathBuf>;
     /// The prepared instance environment's python for a checkout, if it has one.
     fn instance_python(&self, checkout: &Path) -> Option<PathBuf>;
-}
-
-/// Why the acting seam could not answer.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ActingError {
-    /// Boot has not installed the provider yet.
-    NotInstalled,
-}
-
-impl std::fmt::Display for ActingError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::NotInstalled => f.write_str("acting provider not installed yet (identity::acting)"),
-        }
-    }
-}
-
-impl std::error::Error for ActingError {}
-
-impl From<ActingError> for CommandError {
-    fn from(e: ActingError) -> Self {
-        CommandError::Internal(e.to_string())
-    }
-}
-
-/// An install-once slot for the provider.
-struct ActingSlot {
-    slot: OnceLock<Arc<dyn ActingProvider>>,
-}
-
-impl ActingSlot {
-    const fn new() -> Self {
-        Self { slot: OnceLock::new() }
-    }
-
-    /// Install the provider; a second install is ignored (the first wins).
-    fn install(&self, provider: Arc<dyn ActingProvider>) {
-        let _ = self.slot.set(provider);
-    }
-
-    fn require(&self) -> Result<&Arc<dyn ActingProvider>, ActingError> {
-        self.slot.get().ok_or(ActingError::NotInstalled)
-    }
-}
-
-static ACTING: ActingSlot = ActingSlot::new();
-
-/// Boot installs the provider here.
-pub fn install(provider: Arc<dyn ActingProvider>) {
-    ACTING.install(provider);
-}
-
-/// The installed provider, or [`ActingError::NotInstalled`].
-pub fn provider() -> Result<&'static Arc<dyn ActingProvider>, ActingError> {
-    ACTING.require()
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    // what this catches: a missing provider answering with a default identity or trust
-    // (an unconfined owner) instead of failing as a typed error.
-    #[test]
-    fn not_installed_is_a_typed_error() {
-        let slot = ActingSlot::new();
-        assert_eq!(slot.require().err(), Some(ActingError::NotInstalled));
-        assert!(matches!(CommandError::from(ActingError::NotInstalled), CommandError::Internal(_)));
-    }
 }

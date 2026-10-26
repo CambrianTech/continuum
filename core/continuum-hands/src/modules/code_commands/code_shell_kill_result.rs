@@ -20,7 +20,7 @@ impl ActionCommand for CodeShellKill {
         p: CodeShellKillParams,
     ) -> Result<CodeShellKillResult, CommandError> {
         self.state
-            .with_execution(&hands_of(ctx)?, &p.execution_id, |s, id| s.kill(id))
+            .with_execution(&hands_of(&self.state, ctx), &p.execution_id, |s, id| s.kill(id))
             .map_err(execution_lookup_error)?;
         Ok(CodeShellKillResult { killed: true })
     }
@@ -221,7 +221,7 @@ impl ActionCommand for CodeReleaseHands {
     type Output = ReleaseHandsResult;
 
     async fn run(&self, ctx: &Ctx, _p: CodeReleaseHandsParams) -> Result<ReleaseHandsResult, CommandError> {
-        let key = hands_of(ctx)?;
+        let key = hands_of(&self.state, ctx);
         let Some(context) = key.context else {
             return Err(CommandError::Invalid(
                 "code/release-hands ends an acting context's hands; these are the caller's default \
@@ -408,7 +408,7 @@ impl ActionCommand for CodeCreateWorkspace {
     ) -> Result<CreateWorkspaceResult, CommandError> {
         // These hands, in this caller's acting context: an eval's create-workspace roots the
         // eval's hands, never her live ones (docs/architecture/HER-HANDS.md).
-        let key = &hands_of(ctx)?;
+        let key = &hands_of(&self.state, ctx);
         // The OWNER of a workspace refuses one for a card turn's unbound stand-in: those hands
         // exist so code tools refuse rather than act anywhere (Astra on #5026).
         if key.context.is_some_and(|c| c.kind() == crate::identity::hands_context::ContextKind::Unbound) {

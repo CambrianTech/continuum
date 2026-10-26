@@ -54,7 +54,7 @@ use crate::sdk_codegen::{AccessLevel, ActionCommand, CommandError, Ctx, DynComma
 /// `DashMap` ref guard the caller borrows the engine through.
 macro_rules! engine {
     ($self:ident, $ctx:ident) => {{
-        let key = hands_of($ctx)?;
+        let key = hands_of(&$self.state, $ctx);
         ensure_engine(&$self.state, &key).await?;
         $self
             .state

@@ -38,6 +38,7 @@ fn core_with_code() -> (Arc<CommandExecutor>, Arc<CodeState>) {
         Arc::new(DashMap::new()),
         Arc::new(DashMap::new()),
         tokio::runtime::Handle::current(),
+        Arc::new(crate::modules::acting_provider::CoreActing),
     ));
     registry.register(Arc::new(CodeModule::new(state.clone())));
     // The PRODUCTION authorization policy, not an AllowAll fixture: the fixture hid

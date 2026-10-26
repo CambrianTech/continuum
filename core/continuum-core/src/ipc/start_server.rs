@@ -37,8 +37,6 @@ mod ws_ingress;
 pub(crate) fn install_kernel_extensions() {
     crate::runtime::dispatch_hook::install(Arc::new(crate::code::hands::HandsAdmission));
     crate::persona::cognition_extensions::install();
-    // who is acting and where (identity::acting), for the domain crates below core
-    crate::modules::acting_provider::install();
     crate::runtime::dispatch_hook::install(Arc::new(crate::persona::cognition_pulse::CardWorkPulse));
     crate::runtime::extensions::install_command_name_resolver(crate::ai::tool_dialect::resolve_wire_name);
     crate::runtime::extensions::install_settle_before_stop(Arc::new(crate::cognition::turn_ingress::TurnsSettle));

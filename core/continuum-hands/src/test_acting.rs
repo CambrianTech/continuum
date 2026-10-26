@@ -1,4 +1,4 @@
-//! The acting provider hands' tests install: the shape of core's answers without the persona
+//! The acting provider hands' tests hand to `CodeState`: the shape of core's answers without the persona
 //! registry, or the acting-root record (those live above this crate).
 
 use std::path::{Path, PathBuf};
@@ -10,7 +10,7 @@ use crate::identity::acting::ActingProvider;
 use crate::identity::hands_context::HandsContext;
 use crate::sdk_codegen::Ctx;
 
-struct TestActing;
+pub(crate) struct TestActing;
 
 impl ActingProvider for TestActing {
     fn acting_peer_id(&self, ctx: &Ctx) -> Option<Uuid> {
@@ -30,11 +30,6 @@ impl ActingProvider for TestActing {
     }
 }
 
-/// Install the test provider (idempotent).
-pub(crate) fn install() {
-    crate::identity::acting::install(Arc::new(TestActing));
-}
-
 /// A code state whose executor is bound to the kernel's default test policy
 /// (`AllowAllPolicy`: the substrate and a `Local` caller are the owner, every other source
 /// resolves no trust). The one place a hands test gets trust, as production does: from the
@@ -44,6 +39,7 @@ pub(crate) fn state_with_default_policy(rt: tokio::runtime::Handle) -> Arc<crate
         Arc::new(dashmap::DashMap::new()),
         Arc::new(dashmap::DashMap::new()),
         rt,
+        Arc::new(crate::test_acting::TestActing),
     ));
     state.executor.install(Arc::new(crate::runtime::CommandExecutor::new(Arc::new(crate::runtime::ModuleRegistry::new()))));
     state

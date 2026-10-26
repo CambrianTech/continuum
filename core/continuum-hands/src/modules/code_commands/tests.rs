@@ -7,12 +7,12 @@
     // still stand where they were bound.
     #[tokio::test]
     async fn create_workspace_binds_hands_once_and_refuses_to_move_them() {
-        crate::test_acting::install();
         let (bound, other) = (tempfile::tempdir().expect("test: a"), tempfile::tempdir().expect("test: b"));
         let state = Arc::new(CodeState::new(
             Arc::new(dashmap::DashMap::new()),
             Arc::new(dashmap::DashMap::new()),
             tokio::runtime::Handle::current(),
+            Arc::new(crate::test_acting::TestActing),
         ));
         let cmd = CodeCreateWorkspace { state: state.clone() };
         let persona = crate::identity::PeerId::from_uuid(uuid::Uuid::new_v4());
@@ -30,7 +30,7 @@
         cmd.run(&ctx, at(bound.path())).await.expect("the same root again is a no-op");
         let moved = cmd.run(&ctx, at(other.path())).await;
         assert!(matches!(moved, Err(CommandError::Invalid(ref why)) if why.contains("bound once")), "{moved:?}");
-        let key = hands_of(&ctx).expect("test: acting installed").map_key();
+        let key = hands_of(&state, &ctx).map_key();
         let root = state.file_engines.get(&key).map(|e| e.workspace_root()).expect("an engine");
         assert_eq!(std::fs::canonicalize(root).unwrap(), std::fs::canonicalize(bound.path()).unwrap(), "still where they were bound");
     }
@@ -41,7 +41,6 @@
     // The operator is never confined. The decision is the caller's identity, never a params field.
     #[test]
     fn a_resident_reaches_the_host_but_its_credentials_and_an_outside_peer_is_confined() {
-        crate::test_acting::install();
         let rt = tokio::runtime::Runtime::new().expect("test: runtime");
         let state = crate::test_acting::state_with_default_policy(rt.handle().clone());
         let _home = crate::paths::test_home::HomeGuard::preserve_blocking(); // reads the process home a guarded fixture may be swapping (card cb3221a5)
@@ -69,7 +68,6 @@
     // apparent reason so be it"), while a caller from outside this node still is refused.
     #[test]
     fn a_resident_writes_where_she_names_and_an_outside_peer_is_held_to_the_workspace() {
-        crate::test_acting::install();
         let rt = tokio::runtime::Runtime::new().expect("test: runtime");
         let state = crate::test_acting::state_with_default_policy(rt.handle().clone());
         use crate::code::path_security::PathSecurity;
@@ -99,9 +97,8 @@
     // sandbox and a confinement, never the host.
     #[test]
     fn an_unresolvable_trust_is_the_sandbox_never_the_host() {
-        crate::test_acting::install();
         let rt = tokio::runtime::Runtime::new().expect("test: runtime");
-        let unbound = CodeState::new(Arc::new(dashmap::DashMap::new()), Arc::new(dashmap::DashMap::new()), rt.handle().clone());
+        let unbound = CodeState::new(Arc::new(dashmap::DashMap::new()), Arc::new(dashmap::DashMap::new()), rt.handle().clone(), Arc::new(crate::test_acting::TestActing));
         let bound = crate::test_acting::state_with_default_policy(rt.handle().clone());
         let _home = crate::paths::test_home::HomeGuard::preserve_blocking();
         let ws = tempfile::tempdir().expect("test: ws");
@@ -412,6 +409,7 @@
             file_engines,
             Arc::new(DashMap::new()),
             tokio::runtime::Handle::current(),
+            Arc::new(crate::test_acting::TestActing),
         ));
         let cmd = CodeSearch { state };
         let out = cmd
@@ -548,6 +546,7 @@
             file_engines,
             Arc::new(DashMap::new()),
             tokio::runtime::Handle::current(),
+            Arc::new(crate::test_acting::TestActing),
         ));
         let cmd = CodeList { state };
 
@@ -608,6 +607,7 @@
             file_engines,
             Arc::new(DashMap::new()),
             tokio::runtime::Handle::current(),
+            Arc::new(crate::test_acting::TestActing),
         ))
     }
 

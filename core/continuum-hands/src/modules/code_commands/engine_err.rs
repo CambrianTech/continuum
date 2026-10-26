@@ -47,7 +47,7 @@ pub async fn resolve_readable_path(
     ctx: &Ctx,
     path: &str,
 ) -> Result<std::path::PathBuf, CommandError> {
-    let key = hands_of(ctx)?;
+    let key = hands_of(state, ctx);
     ensure_engine(state, &key).await?;
     let engine = state
         .file_engines
@@ -64,14 +64,15 @@ pub async fn resolve_readable_path(
 /// (an airc `peer_id`), never a params field. `None` caller is the
 /// substrate-local owner. This is the single point that maps the gated identity
 /// to the per-caller workspace; nothing trusts caller-supplied identity.
-pub(crate) fn caller_id(ctx: &Ctx) -> Result<String, CommandError> {
+pub(crate) fn caller_id(state: &CodeState, ctx: &Ctx) -> String {
     // ONE resolver (`operator_peer::acting_peer_id`): the same peer the work verbs
     // claim as. `LOCAL_OWNER` survives only for the boot window before the
     // self-peers are online.
-    Ok(crate::identity::acting::provider()?
+    state
+        .acting
         .acting_peer_id(ctx)
         .map(|p| p.to_string())
-        .unwrap_or_else(|| LOCAL_OWNER.to_string())) // unwrap_or_else: boot window, no self-peer yet — the core's cwd, named below
+        .unwrap_or_else(|| LOCAL_OWNER.to_string()) // unwrap_or_else: boot window, no self-peer yet — the core's cwd, named below
 }
 
 pub(crate) const LOCAL_OWNER: &str = "local-owner";
@@ -80,8 +81,8 @@ pub(crate) const LOCAL_OWNER: &str = "local-owner";
 /// bound to (`CallerIdentity::hands`, set by the kernel side, never by params). The one
 /// key every hands map uses; the caller alone stays the authorization identity
 /// ([`caller_id`]). See [`crate::code::hands`].
-pub(crate) fn hands_of(ctx: &Ctx) -> Result<HandsKey, CommandError> {
-    Ok(HandsKey::new(caller_id(ctx)?, ctx.caller.as_ref().and_then(|c| c.hands)))
+pub(crate) fn hands_of(state: &CodeState, ctx: &Ctx) -> HandsKey {
+    HandsKey::new(caller_id(state, ctx), ctx.caller.as_ref().and_then(|c| c.hands))
 }
 
 /// Lazily ensure a workspace [`FileEngine`] exists for `who`. The local operator
@@ -100,7 +101,7 @@ pub(crate) async fn ensure_engine(state: &CodeState, key: &HandsKey) -> Result<(
     if state.file_engines.contains_key(who) {
         return Ok(());
     }
-    let local = is_local_who(caller)?;
+    let local = is_local_who(state, caller);
     let root = match key.context {
         // An acting context's workspace is what it was rooted at; it never falls back to her
         // home layer, which would put a fork's or a card's edits on her desk. Fail closed and
@@ -146,12 +147,11 @@ pub(crate) async fn ensure_engine(state: &CodeState, key: &HandsKey) -> Result<(
 
 /// Is `who` a LOCAL identity — the boot-window `LOCAL_OWNER`, or the operator / agent
 /// self-peer? Local identities work in the core's own checkout; everyone else in a layer.
-pub(super) fn is_local_who(who: &str) -> Result<bool, CommandError> {
-    let acting = crate::identity::acting::provider()?;
-    Ok(who == LOCAL_OWNER
+pub(super) fn is_local_who(state: &CodeState, who: &str) -> bool {
+    who == LOCAL_OWNER
         || uuid::Uuid::parse_str(who)
-            .map(|peer| acting.is_local_identity(peer))
-            .unwrap_or(false)) // unwrap_or: not a uuid = not a self-peer
+            .map(|peer| state.acting.is_local_identity(peer))
+            .unwrap_or(false) // unwrap_or: not a uuid = not a self-peer
 }
 
 /// Where THESE hands stand, for a command that runs outside the engine (`code/run`): the
@@ -160,23 +160,19 @@ pub(super) fn is_local_who(who: &str) -> Result<bool, CommandError> {
 /// are rooted through. A context that was never rooted gets `None` (its snippet runs in
 /// scratch), never the live checkout (Astra's review of #5005). The caller's default context
 /// keeps the local identity's held-card lookup.
-pub(crate) async fn held_root_for(ctx: &Ctx) -> Result<Option<std::path::PathBuf>, CommandError> {
-    let key = hands_of(ctx)?;
-    let Ok(persona) = uuid::Uuid::parse_str(&key.caller) else {
-        return Ok(None);
-    };
-    Ok(crate::identity::acting::provider()?.acting_root_in(persona, key.context))
+pub(crate) fn held_root_for(state: &CodeState, ctx: &Ctx) -> Option<std::path::PathBuf> {
+    let key = hands_of(state, ctx);
+    let persona = uuid::Uuid::parse_str(&key.caller).ok()?;
+    state.acting.acting_root_in(persona, key.context)
 }
 
 /// The prepared instance environment's python for the root these hands stand at
 /// ([`held_root_for`]), if it has one: the interpreter `code/run` runs a snippet with (card
 /// 533c2d78). `None` = no root, or no prepared env, and the caller falls back to the PATH
 /// interpreter, named.
-pub(crate) async fn held_env_python_for(ctx: &Ctx) -> Result<Option<std::path::PathBuf>, CommandError> {
-    let Some(root) = held_root_for(ctx).await? else {
-        return Ok(None);
-    };
-    Ok(crate::identity::acting::provider()?.instance_python(&root))
+pub(crate) fn held_env_python_for(state: &CodeState, ctx: &Ctx) -> Option<std::path::PathBuf> {
+    let root = held_root_for(state, ctx)?;
+    state.acting.instance_python(&root)
 }
 
 /// Lazily ensure shell execution state exists for `who`, rooted at the
@@ -190,7 +186,7 @@ pub(crate) async fn held_env_python_for(ctx: &Ctx) -> Result<Option<std::path::P
 /// into this registry or into later calls.
 pub(super) async fn ensure_shell(state: &CodeState, ctx: &Ctx) -> Result<String, CommandError> {
     // The hands this call is bound to: the shell is provisioned in exactly those.
-    let key = &hands_of(ctx)?;
+    let key = &hands_of(state, ctx);
     let map_key = key.map_key();
     let who = map_key.as_str();
     // The ENGINE decides the root, once for these hands' life, and the shell opens there.
@@ -239,7 +235,7 @@ pub(crate) fn confinement_of(state: &CodeState, ctx: &Ctx, workspace: &std::path
     let Ok(continuum_root) = crate::paths::continuum_home() else {
         return Ok(None);
     };
-    let confinement = crate::system_resources::confinement::Confinement::for_caller(&home, &continuum_root, &caller_id(ctx)?, workspace);
+    let confinement = crate::system_resources::confinement::Confinement::for_caller(&home, &continuum_root, &caller_id(state, ctx), workspace);
     Ok(Some(if resident { confinement.reaching_host() } else { confinement }))
 }
 

@@ -140,7 +140,7 @@ crate::action_command! {
         }
 
         let confinement = crate::modules::code_commands::confinement_of(&this.state, ctx, &root)?;
-        let run = run_cargo(&root, &args, timeout, confinement.as_ref(), &crate::modules::code_commands::caller_id(ctx)?).await?;
+        let run = run_cargo(&root, &args, timeout, confinement.as_ref(), &crate::modules::code_commands::caller_id(&this.state, ctx)).await?;
         let diagnostics = parse_diagnostics(&run.stdout);
         let build_errors = diagnostics.iter().filter(|d| d.level == "error").count();
         let compiled = build_errors == 0 && !run.timed_out;

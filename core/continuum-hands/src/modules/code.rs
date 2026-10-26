@@ -31,6 +31,9 @@ pub struct CodeState {
     /// The executor, bound at boot: its policy is the ONE owner of caller trust
     /// ([`Self::caller_trust`]). Unbound resolves no trust.
     pub executor: LateBound<CommandExecutor>,
+    /// Who is acting and where, handed in at construction by the layer above the kernel
+    /// (never a global).
+    pub acting: Arc<dyn crate::identity::acting::ActingProvider>,
 }
 
 impl CodeState {
@@ -38,8 +41,10 @@ impl CodeState {
         file_engines: Arc<DashMap<String, FileEngine>>,
         shell_sessions: Arc<DashMap<String, ShellSession>>,
         rt_handle: tokio::runtime::Handle,
+        acting: Arc<dyn crate::identity::acting::ActingProvider>,
     ) -> Self {
         Self {
+            acting,
             file_engines,
             shell_sessions,
             rt_handle,
@@ -247,7 +252,7 @@ mod tests {
         use crate::identity::hands_context::HandsContext;
         let rt = tokio::runtime::Handle::current();
         let root = tempfile::tempdir().unwrap();
-        let state = CodeState::new(Arc::new(DashMap::new()), Arc::new(DashMap::new()), rt.clone());
+        let state = CodeState::new(Arc::new(DashMap::new()), Arc::new(DashMap::new()), rt.clone(), Arc::new(crate::test_acting::TestActing));
         let home = HandsKey::new("kimi".into(), None);
         let mut shell = ShellSession::new("s0", "kimi", root.path()).expect("session");
         let exec = shell.execute("sleep 30", Some(60_000), &rt).expect("a long command starts");
@@ -293,7 +298,7 @@ mod tests {
         crate::system_resources::disk_reporters::prepare_writer_fixture().await;
         let rt = tokio::runtime::Handle::current();
         let root = tempfile::tempdir().unwrap();
-        let state = CodeState::new(Arc::new(DashMap::new()), Arc::new(DashMap::new()), rt.clone());
+        let state = CodeState::new(Arc::new(DashMap::new()), Arc::new(DashMap::new()), rt.clone(), Arc::new(crate::test_acting::TestActing));
         let who = "kimi#context";
         let mut shell = ShellSession::new("s0", who, root.path()).expect("session");
         let running = shell.execute("sleep 30", Some(60_000), &rt).expect("a command starts");
@@ -331,6 +336,7 @@ mod tests {
             Arc::new(DashMap::new()),
             Arc::new(DashMap::new()),
             tokio::runtime::Handle::current(),
+            Arc::new(crate::test_acting::TestActing),
         ));
         CodeModule::new(state)
     }
