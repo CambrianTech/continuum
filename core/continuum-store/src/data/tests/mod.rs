@@ -1,6 +1,7 @@
 #![cfg(test)]
 
     use super::*;
+    pub(crate) use crate::module::{no_substrate_entities, DataModule};
 use crate::orm::types::CollectionSchema;
     mod vector;
 

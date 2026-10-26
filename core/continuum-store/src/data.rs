@@ -16,17 +16,12 @@ use crate::orm::{
     sqlite::SqliteAdapter,
     types::{BatchOperation, DataRecord, RecordMetadata, StorageResult, UUID},
 };
-use crate::runtime::{
-    CommandRequest, CommandResponse, CommandResult, ModuleConfig, ModuleContext, ModulePriority,
-    ServiceModule,
-};
+use crate::runtime::{CommandRequest, CommandResponse, CommandResult, ModuleContext};
 use crate::{log_error, log_info};
-use async_trait::async_trait;
 use chrono;
 use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
-use std::any::Any;
+use serde_json::Value;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, RwLock};

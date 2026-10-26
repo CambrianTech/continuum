@@ -5,6 +5,9 @@
 pub use continuum_kernel::*;
 
 pub mod data;
+pub mod module;
+
+pub use module::{DataModule, SubstrateEntities};
 
 /// The commands `DataModule` builds: data/*, vector/*, adapter/* and migration/*.
 pub mod commands {

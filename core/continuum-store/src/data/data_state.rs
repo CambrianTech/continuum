@@ -11,7 +11,7 @@ impl DataState {
     /// touches. Each typed `data/*` command in `commands/data/*` calls the
     /// corresponding `handle_*` directly, bypassing this string match — this
     /// stays only until every arm is migrated and Registry A is retired.
-    pub(super) async fn dispatch(&self, command: &str, params: Value) -> Result<CommandResult, String> {
+    pub(crate) async fn dispatch(&self, command: &str, params: Value) -> Result<CommandResult, String> {
         log_info!(
             "data",
             "handle_command",
