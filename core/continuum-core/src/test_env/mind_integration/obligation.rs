@@ -75,7 +75,7 @@ async fn an_admitted_turn_survives_restarts_and_each_restart_reports_it_once() {
     let loop_one = Obligations::new(&before_stop, persona, name);
     let report = loop_one.report_interrupted(1).await;
     assert_eq!(report, Some(InterruptedReport { open: 0, newly_interrupted: 0 }), "a fresh store owes nothing");
-    let Admission::Confirmed(turn) = loop_one.admit(room, &trigger(room, "cut by the stop"), None, 2).await else {
+    let Admission::Confirmed(turn) = loop_one.admit(room, &trigger(room, "cut by the stop"), None, 2, None).await else {
         panic!("the turn is recorded and confirmed before her context is composed");
     };
     drop(loop_one);
@@ -105,11 +105,14 @@ async fn an_admitted_turn_survives_restarts_and_each_restart_reports_it_once() {
 
 /// The store answers, then the reply is lost: `data/create` commits and the caller sees an
 /// error. Every other call passes through.
-struct LostCreateReply(crate::runtime::InProcessTransport);
+struct LostCreateReply(crate::runtime::InProcessTransport, bool);
 
 #[async_trait::async_trait]
 impl continuum_client::Transport for LostCreateReply {
     async fn execute(&self, command: &str, params: serde_json::Value) -> Result<serde_json::Value, continuum_client::ClientError> {
+        if self.1 && command == "data/list" {
+            return Err(continuum_client::ClientError::Transport("read-back lost too".into()));
+        }
         let answer = self.0.execute(command, params).await;
         if command == "data/create" {
             answer?;
@@ -145,7 +148,7 @@ async fn a_committed_admission_whose_reply_was_lost_is_reconciled_to_confirmed()
     let executor = super::training_credit::data_runtime();
     let (name, persona, room) = ("obligation-lost-reply", Uuid::new_v4(), Uuid::new_v4());
     ensure_storage(&substrate_connection(&executor), name).await.unwrap(); // unwrap: the store under test
-    let lossy = continuum_client::Connection::new(LostCreateReply(crate::runtime::InProcessTransport::new(executor.clone(), None)));
+    let lossy = continuum_client::Connection::new(LostCreateReply(crate::runtime::InProcessTransport::new(executor.clone(), None), false));
     let row = PersonaObligation::admitted(persona, room, &trigger(room, "answered then lost"), None, 1);
     assert!(record(&lossy, name, &row).await.is_err(), "the caller sees the lost reply as a failure");
     assert_eq!(admit_reconciled(&lossy, name, &row).await, Admission::Confirmed(row.id), "the row is there: confirmed");
@@ -158,7 +161,7 @@ async fn a_committed_admission_whose_reply_was_lost_is_reconciled_to_confirmed()
 // is refused without advancing the in-memory record.
 #[tokio::test]
 async fn effects_are_recorded_in_order_and_a_mark_without_a_row_is_refused() {
-    use crate::cognition::act_observe::{Effect, EffectMark};
+    use crate::cognition::act_observe::Effect;
     let home = tempfile::tempdir().unwrap(); // unwrap: test fixture
     let _home = HomeGuard::set(home.path()).await;
     crate::persona::register_substrate_orm_entities(crate::orm::OrmEntityRegistry::global()).unwrap(); // unwrap: test fixture
@@ -166,7 +169,7 @@ async fn effects_are_recorded_in_order_and_a_mark_without_a_row_is_refused() {
     let (name, persona, room) = ("obligation-effects", Uuid::new_v4(), Uuid::new_v4());
     let obligations = Obligations::new(&executor, persona, name);
     assert!(obligations.report_interrupted(0).await.is_some(), "the store is readable");
-    let Admission::Confirmed(turn) = obligations.admit(room, &trigger(room, "act then speak"), None, 1).await else {
+    let Admission::Confirmed(turn) = obligations.admit(room, &trigger(room, "act then speak"), None, 1, None).await else {
         panic!("a healthy store confirms admission");
     };
     let gate = obligations.gate_for(turn);
@@ -186,4 +189,34 @@ async fn effects_are_recorded_in_order_and_a_mark_without_a_row_is_refused() {
 
     let orphan = obligations.gate_for(Uuid::new_v4());
     assert!(orphan.0.before(&Effect::Speech).await.is_err(), "no row: refused, never permission");
+}
+
+// what this catches (Codex on #5492): a retry minting a SECOND row. The create commits, but its
+// reply and the read-back are both lost, so the attempt is Unconfirmed(A). The retry must
+// reconcile A itself: confirm A, leave exactly one row, never mint B beside an open A that a
+// later start would replay as untouched.
+#[tokio::test]
+async fn a_retry_reconciles_the_same_candidate_and_never_mints_a_second_row() {
+    let home = tempfile::tempdir().unwrap(); // unwrap: test fixture
+    let _home = HomeGuard::set(home.path()).await;
+    crate::persona::register_substrate_orm_entities(crate::orm::OrmEntityRegistry::global()).unwrap(); // unwrap: test fixture
+    let executor = super::training_credit::data_runtime();
+    let (name, persona, room) = ("obligation-candidate", Uuid::new_v4(), Uuid::new_v4());
+    let healthy = substrate_connection(&executor);
+    ensure_storage(&healthy, name).await.unwrap(); // unwrap: the store under test
+    let blind = continuum_client::Connection::new(LostCreateReply(crate::runtime::InProcessTransport::new(executor.clone(), None), true));
+    let row = PersonaObligation::admitted(persona, room, &trigger(room, "committed unseen"), None, 1);
+    let Admission::Unconfirmed(candidate) = admit_reconciled(&blind, name, &row).await else {
+        panic!("no reply and no read-back: unconfirmed");
+    };
+    assert_eq!(candidate, row.id, "the attempt names its candidate");
+
+    let obligations = Obligations::new(&executor, persona, name);
+    assert_eq!(
+        obligations.admit(room, &trigger(room, "committed unseen"), None, 2, Some(candidate)).await,
+        Admission::Confirmed(candidate),
+        "the retry confirms the same row"
+    );
+    let rows = open(&healthy, name, persona).await.unwrap(); // unwrap: the store under test
+    assert_eq!(rows.iter().map(|r| r.id).collect::<Vec<_>>(), vec![candidate], "one row, never a second");
 }

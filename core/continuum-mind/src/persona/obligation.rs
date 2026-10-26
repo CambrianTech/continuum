@@ -77,8 +77,14 @@ impl From<&crate::cognition::act_observe::Effect> for RecordedEffect {
 
 impl PersonaObligation {
     pub fn admitted(persona_id: Uuid, room_id: Uuid, trigger: &IncomingMessage, wake_engram: Option<Uuid>, now_ms: u64) -> Self {
+        Self::admitted_as(Uuid::new_v4(), persona_id, room_id, trigger, wake_engram, now_ms)
+    }
+
+    /// The same row under a turn id already minted: a retry reconciles THIS id, never a new one,
+    /// so a create that committed unseen cannot be left open beside a second row (Codex on #5492).
+    pub fn admitted_as(id: Uuid, persona_id: Uuid, room_id: Uuid, trigger: &IncomingMessage, wake_engram: Option<Uuid>, now_ms: u64) -> Self {
         Self {
-            id: Uuid::new_v4(),
+            id,
             persona_id,
             room_id,
             trigger: trigger.clone(),
@@ -207,7 +213,8 @@ pub async fn find<T: Transport>(conn: &Connection<T>, persona_name: &str, id: Uu
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Admission {
     Confirmed(Uuid),
-    Unconfirmed,
+    /// Not known to be on disk. Carries the candidate id: the retry must reconcile this same id.
+    Unconfirmed(Uuid),
 }
 
 /// Record `row`; when the write's answer is lost or refused, read the row back by its id
@@ -218,7 +225,7 @@ pub async fn admit_reconciled<T: Transport>(conn: &Connection<T>, persona_name: 
     }
     match find(conn, persona_name, row.id).await {
         Ok(Some(_)) => Admission::Confirmed(row.id),
-        Ok(None) | Err(_) => Admission::Unconfirmed,
+        Ok(None) | Err(_) => Admission::Unconfirmed(row.id),
     }
 }
 
@@ -342,16 +349,23 @@ impl Obligations {
 
     /// At admission, before her context is composed. `None` when unrecorded (named by a probe).
     /// At admission, before her context is composed. Only `Confirmed` lets the turn run; an
-    /// unconfirmed write backs off (shared with the marks) and is named by a probe.
-    pub async fn admit(&self, room_id: Uuid, trigger: &IncomingMessage, wake_engram: Option<Uuid>, now_ms: u64) -> Admission {
-        let row = PersonaObligation::admitted(self.persona_id, room_id, trigger, wake_engram, now_ms);
+    /// unconfirmed write starts a backoff (shared with the marks, no sleep) and is probed.
+    /// `candidate`: the id an earlier attempt for this same input minted. A retry reconciles it
+    /// (re-create, else read back) instead of minting a second row.
+    pub async fn admit(&self, room_id: Uuid, trigger: &IncomingMessage, wake_engram: Option<Uuid>, now_ms: u64, candidate: Option<Uuid>) -> Admission {
+        let id = candidate.unwrap_or_else(Uuid::new_v4); // unwrap_or_else: a first attempt mints the turn's id
+        // While a backoff runs the store is not tried; the input is retained with its id.
+        if self.failures.backing_off().is_some() {
+            return Admission::Unconfirmed(id);
+        }
+        let row = PersonaObligation::admitted_as(id, self.persona_id, room_id, trigger, wake_engram, now_ms);
         let started = std::time::Instant::now();
         let admission = admit_reconciled(self.conn.as_ref(), &self.persona_name, &row).await;
         self.timed("admit", started);
         match admission {
             Admission::Confirmed(_) => self.failures.succeeded(),
-            Admission::Unconfirmed => {
-                self.failures.failed(&self.persona_name, "admit", row.id).await;
+            Admission::Unconfirmed(_) => {
+                self.failures.failed(&self.persona_name, "admit", row.id);
             }
         }
         admission
