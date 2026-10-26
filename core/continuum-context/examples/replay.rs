@@ -30,6 +30,12 @@
 //! bytes it was sent instead of re-rendered (`replay/append.rs`), and prints each request's
 //! fresh tokens now and append-tail, priced at the measured prefill rate.
 //!
+//! `--outline-results` (with `--append-tail`) also replays an oversized result entering her view
+//! at its outline, whole on its own act and outlined from the next (`replay/outline.rs`), and
+//! the strict variant outlined even on its own act. `--generational` (with `--append-tail`) also
+//! replays a sediment of handles frozen after the head, so a turnover re-prefills only the young
+//! generation (`replay/sediment.rs`, card f746143e). Each run prints one `TABLE` line.
+//!
 //! `--chars-per-token <r>` prices the window at the core's own estimate instead of the
 //! engine's bill; `--keyed-turn` keys the standing turn text into the epoch; `--trace`
 //! prints each act's view against what it may hold.
@@ -42,6 +48,10 @@ use continuum_context::source::{Item, Source};
 mod validate;
 #[path = "replay/append.rs"]
 mod append;
+#[path = "replay/outline.rs"]
+mod outline;
+#[path = "replay/sediment.rs"]
+mod sediment;
 use continuum_context::view::View;
 
 struct Captured {
@@ -133,6 +143,15 @@ fn allocate(claims: &[continuum_context::view::Claim], budget: usize) -> Vec<usi
     grants
 }
 
+/// What the grounding blocks (every source above the lowest priority) are granted of
+/// `available`, and the room the growing sources share once they have it.
+fn growable(claims: &[continuum_context::view::Claim], available: usize) -> (usize, usize) {
+    let granted = allocate(claims, available);
+    let lowest = claims.iter().map(|claim| claim.priority).min().unwrap_or(0); // unwrap_or: no claims means nothing to grant
+    let grounding: usize = claims.iter().zip(&granted).filter(|(claim, _)| claim.priority > lowest).map(|(_, grant)| grant).sum();
+    (grounding, available.saturating_sub(grounding))
+}
+
 #[derive(Clone, Copy, Debug)]
 enum Rule {
     /// Before 2026-10-23: a source granted all it wants restarts whole, a cut one at half.
@@ -157,11 +176,7 @@ fn start(rule: Rule, claims: &[continuum_context::view::Claim], available: usize
         Rule::Reserved => {
             // The grounding blocks start whole at their grant; the growing sources (the
             // lowest priority) start at half of what is left, less one act's appends.
-            let granted = allocate(claims, available);
-            let lowest = claims.iter().map(|claim| claim.priority).min().unwrap_or(0); // unwrap_or: no claims means nothing to grant
-            let grounding: usize =
-                claims.iter().zip(&granted).filter(|(claim, _)| claim.priority > lowest).map(|(_, grant)| grant).sum();
-            let growable = available.saturating_sub(grounding);
+            let (grounding, growable) = growable(claims, available);
             let growing = (growable / share).min(per_act.map_or(growable, |chars| growable.saturating_sub(chars))); // map_or: no act measured, the half start alone
             allocate(claims, grounding + growing)
         }
@@ -212,6 +227,8 @@ struct Cut {
     sent: String,
     /// The pinned result and the reads of the act this request answers (the validator).
     act: validate::Act,
+    /// The quotable lines of the act it carries (the outline mode's paging proxy).
+    said: Vec<String>,
 }
 
 /// A tail piece that repeats from act to act (the work-turn ask, the own-time framing, the
@@ -299,7 +316,7 @@ fn cut(request: &serde_json::Value, tools: &str, keyed_turn: bool) -> Cut {
         let missing = ledger.into_iter().filter(|line| !held.contains(&line.key)).collect::<Vec<_>>();
         sources.entry("actions".into()).or_default().extend(missing);
     }
-    Cut { head, sources, tail, sent, act: validate::act_of(request) }
+    Cut { head, sources, tail, sent, act: validate::act_of(request), said: outline::said(request) }
 }
 
 fn shared(a: &str, b: &str) -> usize {
@@ -328,6 +345,8 @@ struct Outcome {
     prefill_chars: Vec<f64>,
     rereads: usize,
     retained: usize,
+    /// The view's prefill on each act that turned over.
+    turnover_prefill: Vec<f64>,
 }
 
 fn replay(label: &str, cuts: &[Cut], window: usize, (rule, placed): (Rule, Order), keyed_turn: bool, admit: bool, trace: bool, share: usize) -> Result<Outcome, Box<dyn std::error::Error>> {
@@ -345,6 +364,7 @@ fn replay(label: &str, cuts: &[Cut], window: usize, (rule, placed): (Rule, Order
     let mut held: BTreeMap<(String, String), String> = BTreeMap::new();
     let mut appended: BTreeMap<String, usize> = BTreeMap::new();
     let mut tails = Vec::new();
+    let mut turnover_prefill = Vec::new();
     for cut in cuts {
         let action_keys: Vec<String> = cut.sources.get("actions").into_iter().flatten().map(|item| item.key.clone()).collect();
         restored.learn(&action_keys, &cut.act);
@@ -403,7 +423,8 @@ fn replay(label: &str, cuts: &[Cut], window: usize, (rule, placed): (Rule, Order
         if admit && open.chars() > head_chars + available && open.readmit(&refs, head_chars + available, (head_chars + available) / 2).is_some() && open.chars() <= head_chars + available {
             admitted += 1;
         }
-        if open.chars() > head_chars + available {
+        let turned = open.chars() > head_chars + available;
+        if turned {
             let per_act = open.appended_per_act();
             let begun = open.turn_over(vec![cut.head.clone()], &refs, |claims| start(rule, claims, available, per_act, share))?;
             collapsed_at_starts += begun.collapsed;
@@ -416,6 +437,9 @@ fn replay(label: &str, cuts: &[Cut], window: usize, (rule, placed): (Rule, Order
             let length = rendered.chars().count();
             let kept = shared(&previous_view, &rendered);
             view_prefill.push((length - kept) as f64);
+            if turned {
+                turnover_prefill.push((length - kept) as f64);
+            }
             view_share.push(kept as f64 / length.max(1) as f64);
         }
         previous_sent = Some(&cut.sent);
@@ -439,7 +463,7 @@ fn replay(label: &str, cuts: &[Cut], window: usize, (rule, placed): (Rule, Order
     let line: Vec<String> = appended.iter().map(|(name, chars)| format!("{name} {}", chars / acts)).collect();
     println!("  appended per act by source: {}", line.join(", "));
     println!("  her re-reads of a file read before: {rereads}, of which the prompt still held the earlier read whole or as its outline (a retention proxy): {retained}; acts whose result was ambiguous (not restored): {}", restored.ambiguous);
-    Ok(Outcome { turnovers, prefill_chars: view_prefill, rereads, retained })
+    Ok(Outcome { turnovers, prefill_chars: view_prefill, rereads, retained, turnover_prefill })
 }
 
 /// Characters a request sends: the system prompt, every message, and `tools`.
@@ -467,12 +491,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut append_tps: Option<f64> = None;
     let mut reply_override: Option<u64> = None;
     let mut fixed_tools: Option<String> = None;
+    let (mut outline_results, mut generational) = (false, false);
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--room" => room = args.next().ok_or("--room needs an id prefix")?,
             "--purpose" => purpose = args.next().ok_or("--purpose needs a suffix")?,
             "--keyed-turn" => keyed_turn = true,
+            "--outline-results" => outline_results = true,
+            "--generational" => generational = true,
             "--trace" => trace = true,
             "--reply" => reply_override = Some(args.next().ok_or("--reply needs a token count")?.parse()?),
             "--validate" => {
@@ -573,8 +600,35 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .collect();
     if let Some(tps) = append_tps {
         // The core's rule as it renders today, then the same rule with the act loop appended.
-        replay(&label, &cuts, window, (Rule::Reserved, Order::SettledFirst), keyed_turn, true, trace, share)?;
-        return append::replay(&label, &cuts, window, share, chars_per_token, tps);
+        let today = replay(&label, &cuts, window, (Rule::Reserved, Order::SettledFirst), keyed_turn, true, trace, share)?;
+        let resident = paths.iter().map(|path| path.rsplit('/').next().unwrap_or(path).chars().take(8).collect::<String>()).collect::<Vec<_>>().join("+"); // unwrap_or: rsplit always yields one piece
+        let rate = (chars_per_token, tps);
+        let whole = append::Options { outline: outline::Mode::Whole, generational: false };
+        let base = append::replay(&label, &cuts, window, share, rate, whole, true)?;
+        let tokens = |chars: &[f64]| chars.iter().sum::<f64>() / chars_per_token;
+        let per_turnover = tokens(&today.turnover_prefill) / today.turnover_prefill.len().max(1) as f64;
+        println!(
+            "TABLE {resident} | today (as sent; turnovers as the core's rule replays them) | prefill {:.0} tok | {:.0} s/request | {} turnovers | re-prefill {per_turnover:.0} tok/turnover (median {:.0})",
+            base.now_tokens,
+            base.now_tokens / tps / base.requests.max(1) as f64,
+            today.turnovers,
+            median(today.turnover_prefill.clone()) / chars_per_token,
+        );
+        println!("{}", append::line(&resident, "append-tail", &base, tps));
+        let mut variants = Vec::new();
+        if outline_results {
+            variants.push(("append-tail + outline from the next act", append::Options { outline: outline::Mode::NextAct, generational: false }));
+            variants.push(("append-tail + outline strict (own act too)", append::Options { outline: outline::Mode::Strict, generational: false }));
+        }
+        if generational {
+            variants.push(("append-tail + generational", append::Options { outline: outline::Mode::Whole, generational: true }));
+            variants.push(("append-tail + generational + outline from the next act", append::Options { outline: outline::Mode::NextAct, generational: true }));
+        }
+        for (variant, options) in variants {
+            let summary = append::replay(&label, &cuts, window, share, rate, options, false)?;
+            println!("{}", append::line(&resident, variant, &summary, tps));
+        }
+        return Ok(());
     }
     if let Some(tps) = validate_tps {
         // The validator: the core's rule (reserved, settled first, admission) at each growing share,

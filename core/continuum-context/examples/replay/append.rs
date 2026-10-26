@@ -20,13 +20,23 @@
 use std::collections::HashSet;
 
 use continuum_context::source::{Item, Source};
-use continuum_context::view::View;
+use continuum_context::view::{claims, View};
 
-use super::{median, order, shared, start, validate, Captured, Cut, Order, Rule};
+use super::outline::{self, Mode, Paging};
+use super::sediment::{self, Sediment};
+use super::{growable, median, order, shared, start, validate, Captured, Cut, Order, Rule};
 
-/// The source the act loop's pieces arrive through: the bytes she was sent, whole. No
-/// pointer, so admission never reduces them (a reduced piece would not be the bytes sent).
+/// The source the act loop's pieces arrive through: the bytes she was sent, whole (or, under
+/// `--outline-results`, at the outline the act's rule chose). No pointer, so admission never
+/// reduces them further.
 const LOOP: &str = "act-loop";
+
+/// What one append-tail run models beyond the bytes she was sent.
+#[derive(Clone, Copy, Debug)]
+pub struct Options {
+    pub outline: Mode,
+    pub generational: bool,
+}
 
 /// One request under both prompts.
 struct Row {
@@ -35,6 +45,22 @@ struct Row {
     view: usize,
     tail: usize,
     turnover: bool,
+}
+
+/// One run's totals, in tokens, for the comparison table.
+pub struct Summary {
+    pub requests: usize,
+    pub now_tokens: f64,
+    pub tokens: f64,
+    pub turnovers: usize,
+    /// Fresh tokens of each request that turned over.
+    pub turnover_tokens: Vec<f64>,
+    pub sediment_rerenders: usize,
+    pub sediment_dropped: usize,
+    pub outlined: usize,
+    pub paged: usize,
+    /// The per-act headroom each oversized-result decision read, in characters.
+    pub headroom: Vec<f64>,
 }
 
 /// The tail's pieces not yet in this epoch's view, each once, in the order they were sent.
@@ -47,15 +73,45 @@ fn chars(pieces: &[String]) -> usize {
     pieces.iter().map(|piece| piece.chars().count()).sum::<usize>() + pieces.len().saturating_sub(1)
 }
 
-/// Replay `cuts` with the act loop appended; print each request and the totals.
-pub fn replay(label: &str, cuts: &[Cut], window: usize, share: usize, chars_per_token: f64, tps: f64) -> Result<(), Box<dyn std::error::Error>> {
+/// `pieces` as this request sends them: whole, or under [`Mode::Strict`] past `headroom` at
+/// their outline. Each piece is paired with its outline, if the rule gave it one.
+fn shown(pieces: Vec<String>, mode: Mode, headroom: Option<usize>) -> Vec<(String, Option<outline::Outlined>)> {
+    pieces
+        .into_iter()
+        .map(|piece| {
+            let outlined = match (mode, headroom) {
+                (Mode::Whole, _) | (_, None) => None,
+                (_, Some(headroom)) => outline::outline(&piece, headroom),
+            };
+            (piece, outlined)
+        })
+        .collect()
+}
+
+/// What a request's tail sends: the outline under [`Mode::Strict`], else the piece whole.
+fn sent(tail: &[(String, Option<outline::Outlined>)], mode: Mode) -> Vec<String> {
+    tail.iter()
+        .map(|(piece, outlined)| match outlined {
+            Some(outlined) if mode == Mode::Strict => outlined.piece.clone(),
+            _ => piece.clone(),
+        })
+        .collect()
+}
+
+/// Replay `cuts` with the act loop appended; print each request (when `table`) and the totals.
+pub fn replay(label: &str, cuts: &[Cut], window: usize, share: usize, (chars_per_token, tps): (f64, f64), options: Options, table: bool) -> Result<Summary, Box<dyn std::error::Error>> {
     let mut restored = validate::Restored::default();
     let mut view: Option<View<String>> = None;
+    let mut sediment = Sediment::default();
+    let mut paging = Paging::default();
     let mut looped: Vec<Item<String>> = Vec::new();
     let mut held: HashSet<String> = HashSet::new();
+    let mut carried_headroom: Option<usize> = None;
+    let mut headrooms = Vec::new();
     let (mut previous_head, mut previous_sent, mut previous_rendered): (Option<&str>, Option<&str>, Option<String>) = (None, None, None);
     let mut rows = Vec::with_capacity(cuts.len());
-    for cut in cuts {
+    for (n, cut) in cuts.iter().enumerate() {
+        paging.said(n, &cut.said);
         let action_keys: Vec<String> = cut.sources.get("actions").into_iter().flatten().map(|item| item.key.clone()).collect();
         restored.learn(&action_keys, &cut.act);
         let mut sources: Vec<Captured> = cut
@@ -72,20 +128,26 @@ pub fn replay(label: &str, cuts: &[Cut], window: usize, share: usize, chars_per_
         sources.sort_by_key(|source| order(Order::SettledFirst, &source.name));
         if previous_head.is_some_and(|head| head != cut.head) {
             view = None;
+            sediment.restart();
         }
         previous_head = Some(&cut.head);
         if view.is_none() {
             looped.clear();
             held.clear();
         }
-        let head_chars = cut.head.chars().count();
-        let mut tail = unsent(&cut.tail, &held);
-        let mut available = window.saturating_sub(head_chars + chars(&tail));
-        let every: Vec<&dyn Source<String>> = sources.iter().map(|s| s as &dyn Source<String>).collect();
+        let offered = sediment::offered(&sources);
+        sediment.filter(&mut sources);
+        // The per-act headroom: what one act of this epoch appends (median), carried over a start.
+        let headroom = view.as_ref().and_then(View::appended_per_act).or(carried_headroom);
+        carried_headroom = headroom;
+        let mut tail = shown(unsent(&cut.tail, &held), options.outline, headroom);
+        let mut head_chars = cut.head.chars().count() + sediment.chars();
+        let mut available = window.saturating_sub(head_chars + chars(&sent(&tail, options.outline)));
         let mut turnover = view.is_none();
         if turnover {
+            let every: Vec<&dyn Source<String>> = sources.iter().map(|s| s as &dyn Source<String>).collect();
             let whole = |claims: &[continuum_context::view::Claim]| claims.iter().map(|claim| claim.full_chars).collect();
-            view = Some(View::start(vec![cut.head.clone()], &every, whole)?.0);
+            view = Some(View::start(sediment.heads(&cut.head), &every, whole)?.0);
         }
         let Some(open) = view.as_mut() else { continue };
         let limit = head_chars + available;
@@ -103,36 +165,98 @@ pub fn replay(label: &str, cuts: &[Cut], window: usize, share: usize, chars_per_
         if open.chars() > limit {
             // A start renders from the sources: the loop is dropped, the action log takes it
             // back, and this request's tail is sent whole again.
-            tail = unsent(&cut.tail, &HashSet::new());
-            available = window.saturating_sub(head_chars + chars(&tail));
+            tail = shown(unsent(&cut.tail, &HashSet::new()), options.outline, headroom);
+            available = window.saturating_sub(head_chars + chars(&sent(&tail, options.outline)));
             let per_act = open.appended_per_act();
-            open.turn_over(vec![cut.head.clone()], &every, |claims| start(Rule::Reserved, claims, available, per_act, share))?;
+            if options.generational {
+                // The young generation's oldest items settle into the sediment, at the grants
+                // the start would give them; a sediment past its share re-renders.
+                let (asked, grants) = {
+                    let every: Vec<&dyn Source<String>> = sources.iter().map(|s| s as &dyn Source<String>).collect();
+                    let asked = claims(&every);
+                    let grants = start(Rule::Reserved, &asked, available, per_act, share);
+                    (asked, grants)
+                };
+                let by_source = sediment::grants_by_source(&sources, &asked, &grants);
+                sediment.settle(&mut sources, &by_source);
+                let sediment_share = growable(&asked, available).1 / share;
+                if sediment.overgrown(sediment_share) {
+                    sediment.rerender(&offered, sediment_share);
+                }
+                head_chars = cut.head.chars().count() + sediment.chars();
+                available = window.saturating_sub(head_chars + chars(&sent(&tail, options.outline)));
+            }
+            let every: Vec<&dyn Source<String>> = sources.iter().map(|s| s as &dyn Source<String>).collect();
+            open.turn_over(sediment.heads(&cut.head), &every, |claims| start(Rule::Reserved, claims, available, per_act, share))?;
             turnover = true;
         }
         if turnover {
             looped.clear();
             held.clear();
+            paging.turned_over();
         }
-        let rendered = format!("{}\n{}", open.render().cloned().collect::<Vec<_>>().join("\n"), tail.join("\n"));
+        let sending = sent(&tail, options.outline);
+        let rendered = format!("{}\n{}", open.render().cloned().collect::<Vec<_>>().join("\n"), sending.join("\n"));
         let rendered_chars = rendered.chars().count();
         let sent_chars = cut.sent.chars().count();
         rows.push(Row {
             now: sent_chars - previous_sent.map_or(0, |before| shared(before, &cut.sent)), // map_or: the first request is fresh whole
             append: rendered_chars - previous_rendered.as_deref().map_or(0, |before| shared(before, &rendered)), // map_or: the first request is fresh whole
             view: open.chars(),
-            tail: chars(&tail),
+            tail: chars(&sending),
             turnover,
         });
         open.sent();
-        for piece in tail {
+        // From the next act on, an outlined result stands at its outline in either mode; her act
+        // on the next request is the first that read it whole (next-act) or never did (strict).
+        for (piece, outlined) in tail {
             held.insert(piece.clone());
-            looped.push(Item { key: looped.len().to_string(), pointer: None, summary: None, full: piece });
+            let full = match &outlined {
+                Some(outlined) => {
+                    headrooms.push(headroom.unwrap_or_default() as f64); // unwrap_or_default: an outline is only chosen under a measured headroom
+                    paging.outlined(if options.outline == Mode::Strict { n + 1 } else { n + 2 }, outlined);
+                    outlined.piece.clone()
+                }
+                None => piece,
+            };
+            looped.push(Item { key: looped.len().to_string(), pointer: None, summary: None, full });
         }
         previous_sent = Some(&cut.sent);
         previous_rendered = Some(rendered);
     }
-    print(label, &rows, window, chars_per_token, tps);
-    Ok(())
+    if table {
+        print(label, &rows, window, chars_per_token, tps);
+    }
+    let tokens = |chars: usize| chars as f64 / chars_per_token;
+    Ok(Summary {
+        requests: rows.len(),
+        now_tokens: rows.iter().map(|row| tokens(row.now)).sum(),
+        tokens: rows.iter().map(|row| tokens(row.append)).sum(),
+        turnovers: rows.iter().filter(|row| row.turnover).count(),
+        turnover_tokens: rows.iter().filter(|row| row.turnover).map(|row| tokens(row.append)).collect(),
+        sediment_rerenders: sediment.rerenders,
+        sediment_dropped: sediment.dropped,
+        outlined: paging.outlined,
+        paged: paging.paged,
+        headroom: headrooms,
+    })
+}
+
+/// One line of the comparison table: `variant`'s prefill, pace and turnovers.
+pub fn line(resident: &str, variant: &str, summary: &Summary, tps: f64) -> String {
+    let per_request = summary.tokens / tps / summary.requests.max(1) as f64;
+    let per_turnover = summary.turnover_tokens.iter().sum::<f64>() / summary.turnover_tokens.len().max(1) as f64;
+    format!(
+        "TABLE {resident} | {variant} | prefill {:.0} tok | {per_request:.0} s/request | {} turnovers | re-prefill {per_turnover:.0} tok/turnover (median {:.0}) | sediment re-renders {} (handles dropped {}) | outlined {}, paged back {} | headroom median {:.0} chars",
+        summary.tokens,
+        summary.turnovers,
+        median(summary.turnover_tokens.clone()),
+        summary.sediment_rerenders,
+        summary.sediment_dropped,
+        summary.outlined,
+        summary.paged,
+        median(summary.headroom.clone()),
+    )
 }
 
 fn print(label: &str, rows: &[Row], window: usize, chars_per_token: f64, tps: f64) {
