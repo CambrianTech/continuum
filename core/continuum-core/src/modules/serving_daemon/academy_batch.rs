@@ -2,7 +2,7 @@
 //! Only a corpus leaves this module; the private borrower never enters a pool.
 
 use super::*;
-use crate::cognition::eval::{EvalTask, PrivateTeacherLane};
+use crate::cognition::eval::{PrivateTeacherLane, TeacherBatchRequest};
 use crate::genome::teach::RemediationCorpus;
 use crate::inference::llama_server::{EngineRetirementStatus, OwnedRestoreSession};
 use crate::sdk_codegen::CommandError;
@@ -10,11 +10,16 @@ use futures::FutureExt;
 use std::panic::AssertUnwindSafe;
 use tokio::sync::{oneshot, Mutex};
 
-pub(crate) struct TeacherBatchRequest {
-    pub tasks: Vec<EvalTask>,
-    pub teacher_model: String,
-    pub temperature: f32,
-    pub max_fix_iters: u32,
+/// The serving daemon behind the academy's [`TeacherServing`](crate::cognition::eval::TeacherServing)
+/// seam: `genome/teach` reaches the exclusive teacher window through it, never by naming this
+/// module (card dc3e9f6f). The batch takes the daemon by `Arc`, so the seam wraps one.
+pub(crate) struct ServingTeacher(pub(crate) Arc<ServingDaemonModule>);
+
+#[async_trait::async_trait]
+impl crate::cognition::eval::TeacherServing for ServingTeacher {
+    async fn run_teacher_batch(&self, request: TeacherBatchRequest) -> Result<RemediationCorpus, CommandError> {
+        self.0.run_teacher_batch(request).await
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]

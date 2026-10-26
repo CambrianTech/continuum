@@ -271,7 +271,7 @@ pub(crate) async fn exercise_cancelled_exclusive_teacher(
     checkpoint_http: JoinHandle<()>,
     saves: Arc<AtomicUsize>,
 ) {
-    use crate::modules::serving_daemon::academy_batch::TeacherBatchRequest;
+    use crate::cognition::eval::TeacherBatchRequest;
     let original = server.owned_serving_target().unwrap();
     let mut teacher = original.target.model.clone();
     teacher.id = "exclusive-teacher-fixture".into();
