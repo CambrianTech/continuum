@@ -77,7 +77,7 @@ impl LlmDeliberationFaculty {
             u32::try_from(budget).unwrap_or(u32::MAX), // unwrap_or: a share past u32 bounds nothing a schema set can reach
             &cost,
         );
-        if !binding.adapter.accepts_tail_tools() {
+        if !binding.adapter.accepts_tail_tools(binding.requested_model()) {
             return selected;
         }
         let reserve = next.as_ref().map_or(0, |next| next.tokens() as usize); // map_or: no next head reserves nothing beyond this one
@@ -131,7 +131,7 @@ impl LlmDeliberationFaculty {
         continuum_base::probe!(
             class = "delib.tool_head.epoch",
             persona = %self.persona_name,
-            sent = self.binding.load().adapter.accepts_tail_tools(),
+            sent = { let binding = self.binding.load(); binding.adapter.accepts_tail_tools(binding.requested_model()) },
             learned = cost.learned,
             calls = cost.calls,
             misses = cost.misses,

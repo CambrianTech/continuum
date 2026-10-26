@@ -18,6 +18,7 @@ mod lane_transport;
 mod lora_page_in;
 mod prefill_progress_is_liveness;
 mod request_shaping;
+mod tail_tools_reach_the_verified_lane_only;
 mod unguaranteed_model_refusal_says_which_situation;
 
 /// Minimal adapter for pure payload-assembly tests — no network, no registry.

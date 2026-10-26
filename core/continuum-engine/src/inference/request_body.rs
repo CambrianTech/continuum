@@ -107,10 +107,13 @@ pub fn deliberation_reasoning_budget(max_tokens: u64) -> Option<u64> {
     Some(max_tokens - answer_share)
 }
 
+/// `tail_tools`: whether the engine this request is routed to takes our fork's `tail_tools`
+/// (the adapter's `takes_tail_tools_for`, the same decision the learned head was built on).
 pub(crate) fn finish_body(
     cfg: &OpenAICompatibleConfig,
     request: &TextGenerationRequest,
     model: &str,
+    tail_tools: bool,
     body: &mut Value,
 ) {
     // Thinking suppression — the REAL lever for qwen3-family forged templates.
@@ -189,9 +192,9 @@ pub(crate) fn finish_body(
         {
             body["tools"] = json!(openai_tools(tools));
             if let Some(tail) = request.tail_tools.as_deref().filter(|tail| !tail.is_empty()) {
-                // Our fork's field: only a server that declares it gets it (a cloud provider
+                // Our fork's field: only an engine verified to take it gets it (a cloud provider
                 // would reject an unknown field, a stock llama-server would ignore it).
-                if cfg.tail_tools {
+                if tail_tools {
                     body["tail_tools"] = json!(openai_tools(tail));
                 }
             }
@@ -728,11 +731,11 @@ mod tests {
             tail_tools: llamacpp,
         };
         let mut served = json!({ "model": "m" });
-        finish_body(&cfg(true), &request, "m", &mut served);
+        finish_body(&cfg(true), &request, "m", true, &mut served);
         assert_eq!(served["tools"].as_array().map(Vec::len), Some(1), "the head holds only its own verbs");
         assert_eq!(served["tail_tools"][0]["function"]["name"], "code_git_apply");
         let mut cloud = json!({ "model": "m" });
-        finish_body(&cfg(false), &request, "m", &mut cloud);
+        finish_body(&cfg(false), &request, "m", false, &mut cloud);
         assert!(cloud.get("tail_tools").is_none(), "{cloud}");
     }
 }

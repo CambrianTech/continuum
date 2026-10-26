@@ -358,7 +358,8 @@ impl OpenAICompatibleAdapter {
 
         // Finish the body for the wire (thinking policy, response_format, native tools,
         // tool-surface probe) — `inference::request_body`.
-        crate::inference::request_body::finish_body(&self.config, &request, model, &mut body);
+        let tail_tools = self.takes_tail_tools_for(model);
+        crate::inference::request_body::finish_body(&self.config, &request, model, tail_tools, &mut body);
 
         // Make request — the endpoint base for THIS request's model. Normally the
         // runtime/config base; for the local serving gateway, a request for the

@@ -155,8 +155,19 @@ impl OpenAICompatibleAdapter {
     /// name sniffing), and the address exists only when `/props` confirmed
     /// sight, so pixels can never be aimed at a text lane.
     pub(super) fn endpoints_for_model(&self, model: &str, base: &OpenAiBase) -> OpenAiBase {
+        self.endpoints_for_model_in(model, base, &crate::inference::llama_server::current_serving())
+    }
+
+    /// PURE over `snap`: [`Self::endpoints_for_model`] against one snapshot, so a decision
+    /// about the destination (which engine a request reaches) reads the same route the
+    /// request takes.
+    pub(super) fn endpoints_for_model_in(
+        &self,
+        model: &str,
+        base: &OpenAiBase,
+        snap: &crate::inference::llama_server::ServingSnapshot,
+    ) -> OpenAiBase {
         if self.config.provider_id == crate::inference::llama_server::PROVIDER_ID {
-            let snap = crate::inference::llama_server::current_serving();
             if snap.vision_ready
                 && snap.vision_model.as_deref() == Some(model)
                 && snap.active_model.as_deref() != Some(model)
@@ -167,6 +178,34 @@ impl OpenAICompatibleAdapter {
             }
         }
         base.clone()
+    }
+
+    /// Whether a request for `model` may carry `tail_tools` right now: the ONE decision both the
+    /// learned head (`accepts_tail_tools`) and the wire (`finish_body`) read.
+    pub(super) fn takes_tail_tools_for(&self, model: &str) -> bool {
+        self.tail_tools_reach(
+            model,
+            &crate::inference::llama_server::current_serving(),
+            crate::inference::llama_server::serving_engine_takes_tail_tools(),
+        )
+    }
+
+    /// PURE: the request for `model` reaches, by the route it actually takes
+    /// ([`Self::endpoints_for_model_in`]), the serving lane whose own reported build takes
+    /// `tail_tools` (`engine_takes`). That evidence is about the main lane only, so a request
+    /// routed to the vision sidecar, a dedicated lane, or any other base answers `false`
+    /// (Codex on #5491), as does a provider outside the fork-gateway family.
+    pub(super) fn tail_tools_reach(
+        &self,
+        model: &str,
+        snap: &crate::inference::llama_server::ServingSnapshot,
+        engine_takes: bool,
+    ) -> bool {
+        if !self.config.tail_tools || self.dedicated_lane || !engine_takes || snap.base_url.is_empty() {
+            return false;
+        }
+        let route = self.endpoints_for_model_in(model, &self.endpoints(), snap);
+        route.root() == OpenAiBase::new(&snap.base_url).root()
     }
 
     /// Fetch the live model list from the provider's /v1/models endpoint.
