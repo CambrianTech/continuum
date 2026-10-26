@@ -717,6 +717,48 @@ where
     wait_while_engine_progresses(receipt, bound, progress, on_busy).await
 }
 
+/// Why a page save's size quote gave no size: each a different fault, so the refusal names which
+/// (card 8fa1c147; enrico 2026-10-25/26: 11 refusals and 13 cold turns read only "quote
+/// unavailable", and nothing said whether the engine refused, answered for another slot, or was
+/// still busy with a prefill when the bound passed).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum QuoteMiss {
+    /// The request did not reach the engine or its reply did not arrive.
+    Unsent(String),
+    /// The engine answered with a non-success status.
+    Status(u16),
+    /// The engine answered for another slot or another file.
+    Mismatch,
+    /// The answer named no positive size.
+    NoSize,
+    /// The engine stopped making progress (or stopped answering) before it quoted.
+    EngineStopped,
+}
+
+impl std::fmt::Display for QuoteMiss {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Unsent(error) => write!(f, "request not delivered: {error}"),
+            Self::Status(status) => write!(f, "engine answered HTTP {status}"),
+            Self::Mismatch => f.write_str("engine answered for another slot or file"),
+            Self::NoSize => f.write_str("engine named no positive size"),
+            Self::EngineStopped => f.write_str("engine stopped progressing before it quoted"),
+        }
+    }
+}
+
+/// PURE: the size an engine's `save-size` reply quotes for exactly this slot and file.
+pub(crate) fn read_quote(status: u16, body: Option<&serde_json::Value>, slot: u32, filename: &str) -> Result<u64, QuoteMiss> {
+    if !(200..300).contains(&status) {
+        return Err(QuoteMiss::Status(status));
+    }
+    let body = body.ok_or(QuoteMiss::NoSize)?;
+    if body["id_slot"].as_u64() != Some(u64::from(slot)) || body["filename"].as_str() != Some(filename) {
+        return Err(QuoteMiss::Mismatch);
+    }
+    body["projected_bytes"].as_u64().filter(|bytes| *bytes > 0).ok_or(QuoteMiss::NoSize)
+}
+
 // The page-action boundary accepts capacity evidence from its existing owner;
 // HTTP fixtures can exercise the same protocol without a global monitor override.
 async fn kv_page_action_with_capacity(
@@ -756,21 +798,18 @@ async fn kv_page_action_with_capacity(
         let quote = async {
             // The quote names the same checkpoint subset as the write, or the admitted bytes lie.
             let response = client.post(format!("{}/slots/{slot}?action=save-size", root.trim_end_matches('/')))
-                .json(&json!({ "filename": filename, "keep_newest_checkpoints": PAGE_CHECKPOINTS_NEWEST })).send().await.ok()?;
-            if !response.status().is_success() {
-                return None;
-            }
-            let body = response.json::<serde_json::Value>().await.ok()?;
-            (body["id_slot"].as_u64() == Some(slot as u64)
-                && body["filename"].as_str() == Some(filename.as_str()))
-                .then(|| body["projected_bytes"].as_u64()).flatten().filter(|bytes| *bytes > 0)
+                .json(&json!({ "filename": filename, "keep_newest_checkpoints": PAGE_CHECKPOINTS_NEWEST })).send().await
+                .map_err(|error| QuoteMiss::Unsent(error.to_string()))?;
+            let status = response.status().as_u16();
+            let body = response.json::<serde_json::Value>().await.ok();
+            read_quote(status, body.as_ref(), slot, &filename)
         };
         let projected = wait_while_engine_progresses(
             quote, bound,
             || crate::inference::llama_server::engine_probe(root.trim_end_matches('/'), client),
             |_| {},
-        ).await.flatten();
-        let admission = projected.ok_or_else(|| "exact page file quote unavailable; no write requested".to_string())
+        ).await.unwrap_or(Err(QuoteMiss::EngineStopped)); // unwrap_or: the wait gives up only when the engine stopped progressing or answering
+        let admission = projected.map_err(|miss| format!("exact page file quote unavailable ({miss}); no write requested"))
             .and_then(|bytes| { admit_bytes(bytes)?; Ok(bytes) });
         match admission {
             Ok(bytes) => payload["admitted_bytes"] = json!(bytes),

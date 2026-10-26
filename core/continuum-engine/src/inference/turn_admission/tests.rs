@@ -217,6 +217,21 @@
         server.abort();
     }
 
+    // what this catches (card 8fa1c147): a refused page save that cannot say why. Each way a
+    // save-size reply fails to quote reads as its own miss, so the refusal probe names it.
+    #[test]
+    fn a_page_quote_names_how_it_failed() {
+        let ok = json!({"id_slot": 1, "filename": "mind-a.bin", "projected_bytes": 4096});
+        assert_eq!(read_quote(200, Some(&ok), 1, "mind-a.bin"), Ok(4096));
+        assert_eq!(read_quote(501, Some(&ok), 1, "mind-a.bin"), Err(QuoteMiss::Status(501)));
+        assert_eq!(read_quote(200, Some(&ok), 0, "mind-a.bin"), Err(QuoteMiss::Mismatch), "another slot");
+        assert_eq!(read_quote(200, Some(&ok), 1, "mind-b.bin"), Err(QuoteMiss::Mismatch), "another file");
+        let zero = json!({"id_slot": 1, "filename": "mind-a.bin", "projected_bytes": 0});
+        assert_eq!(read_quote(200, Some(&zero), 1, "mind-a.bin"), Err(QuoteMiss::NoSize));
+        assert_eq!(read_quote(200, None, 1, "mind-a.bin"), Err(QuoteMiss::NoSize), "an unreadable body");
+        assert!(QuoteMiss::EngineStopped.to_string().contains("stopped progressing"));
+    }
+
     // what this catches: the restore-into-busy-slot bug at its source — while a turn
     // holds its admission (permit + pin), a second activity contending for the SAME
     // single slot must NOT be able to evict the pinned slot out from under it. Only
