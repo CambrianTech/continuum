@@ -22,7 +22,8 @@ the M5's 16:
 
 1. **One machine.** The node measures its own seats (likely 1-2 minds on a laptop). The first
    experience is ONE mind that is fast and magical on it: the mind you talk to is foreground,
-   so she answers at her solo speed.
+   so she answers near her measured solo speed (the objective under Gates, not a guarantee
+   under overload).
 2. **Capacity is visible and earned.** The product can say what the node serves well ("this
    machine runs 2 minds well; add a node to grow"), from measurement, never a setting.
 3. **Births follow capacity.** Adding a node raises the grid's seats; that is what lets you
@@ -82,7 +83,8 @@ the M5's 16:
    existing dormant order, or waiting for capacity (a node joins). Being addressed files a
    durable wake request at once; the seat follows by the rules under Presence.
 3. **First.** One admission scheduler (a CBAR stage) replaces the three gates (ambient
-   permits, lane semaphore, prefill throttle): one queue, priority-ordered (foreground =
+   permits, lane semaphore, prefill throttle) once it is shown to hold the same memory,
+   context and training safety they hold today: one queue, priority-ordered (foreground =
    the mind a person is working with now; directed; background), work-conserving (nothing
    held back while the GPU has room). The engine's scheduler matches it: the foreground's
    prefill first, a background prefill yields between ubatches.
@@ -131,8 +133,8 @@ noise), so a mind does not flip awake and asleep on every wobble ([[never-thrash
 on small nodes) gives away minds turns in rotation: catching up on their rooms, finishing a
 card, dreaming (learning) on CPU stages. The allocator's existing dormant order is that rotation.
 
-**The magic:** call Aiko while she's away and she answers in seconds, picking up where she left
-off; a friend's mind DMs one of yours and she wakes to reply; the roster reads like a real
+**The magic:** call Aiko while she's away and she answers quickly, in seconds when her saved
+state is a compatible page (a cold wake says so), picking up where she left off; a friend's mind DMs one of yours and she wakes to reply; the roster reads like a real
 community: who's here, who's away, who's dreaming.
 
 ## Overload degrades, and the algorithms are easy to change (Joel: "if it is overloaded it's not death. It just slows down ... We will have to make it easy to adjust the algorithms")
@@ -220,8 +222,9 @@ goes live: a new idea is a policy, a replay, then one command to switch it on.
   not a guarantee under arbitrary overload. Offline replay filters candidates; a bounded live
   canary with a supported rollback decides, on pinned held-out cohorts and exact engine/core
   revisions.
-- The policy never puts more runnable minds on a node than its measured service target, and the
-  awake total is AT MOST the available authorized capacity (an idle grid need not fill seats);
+- The policy never puts more SEATED (executing) minds on a node than its measured service
+  target; RUNNABLE minds may queue beyond it, durably, in the one admission owner. The awake total is AT MOST the available authorized capacity (an idle grid need not fill seats);
   overload exists only by a person's explicit wake and never breaks hard memory/context safety.
 - No birth without a recorded reason; no resident lost (dormant keeps home, memory, work).
-- One admission owner; the three gates deleted.
+- One admission owner; the three gates deleted only after equivalent memory, context and
+  training safety is demonstrated (never by count).
