@@ -24,7 +24,6 @@ pub mod airc_bridge_dispatch;
 // production v5 migration can ship without that scope.
 // #[cfg(test)]
 // mod airc_runtime_e2e_tests;
-pub mod activity;
 pub mod ext_commands;
 pub mod auth;
 pub mod benchmark_grade;
@@ -85,6 +84,7 @@ pub mod serving_daemon;
 pub mod system_resources;
 pub mod training_completion_sentinel;
 pub use continuum_dreaming::modules::training_trigger;
+pub use continuum_mind::activity;
 pub use continuum_mind::vdd::module as vdd;
 pub mod vision;
 pub mod verdict_board;
