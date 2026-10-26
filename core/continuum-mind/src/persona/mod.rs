@@ -15,6 +15,7 @@ pub mod awareness;
 pub mod awareness_source;
 pub mod airc_admission;
 pub mod airc_citizen;
+pub mod citizen_dir;
 pub mod airc_persona_conversation;
 pub mod airc_runtime;
 pub mod operator_avatar_seed;
