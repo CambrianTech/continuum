@@ -225,23 +225,23 @@ jobs:
       # Every crate's tests regenerate the ts-rs bindings of the types it defines, so each
       # crate job checks the drift its own run produced.
       - name: Prove published-target credit regression detects the old behavior
-        if: matrix.crate == 'continuum-core' && github.head_ref == 'fix/verified-resident-plan-credit'
+        if: matrix.crate == 'continuum-serving' && github.head_ref == 'fix/verified-resident-plan-credit'
         shell: bash
         run: |
           set -o pipefail
-          file=core/continuum-core/src/modules/serving_daemon/planning.rs
+          file=core/continuum-serving/src/modules/serving_daemon/planning.rs
           cp "$file" "$RUNNER_TEMP/planning.rs.original"
           trap 'cp "$RUNNER_TEMP/planning.rs.original" "$file"' EXIT
           python3 - <<'PY'
           from pathlib import Path
-          p = Path('core/continuum-core/src/modules/serving_daemon/planning.rs')
+          p = Path('core/continuum-serving/src/modules/serving_daemon/planning.rs')
           s = p.read_text()
           start = s.index('        let planner_credited = !ledger_credited')
           end = s.index('        let stable =', start)
           p.write_text(s[:start] + '        let planner_credited = !ledger_credited;\n' + s[end:])
           PY
           set +e
-          cargo test -p continuum-core --lib --profile dev-fast --features "$FEATURES" publishing_a_target_does_not_credit_unallocated_weights -- --nocapture 2>&1 | tee mutation.log
+          cargo test -p continuum-serving --lib --profile dev-fast --features "$FEATURES" publishing_a_target_does_not_credit_unallocated_weights -- --nocapture 2>&1 | tee mutation.log
           status=${PIPESTATUS[0]}
           set -e
           test "$status" -eq 101
