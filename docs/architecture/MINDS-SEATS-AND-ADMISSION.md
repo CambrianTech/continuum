@@ -1,7 +1,7 @@
 # Minds, seats and admission: who is born, who is awake, who goes first
 
-Status: DRAFT for the team's critique (Fable, 2026-10-26). Codex, Cormac, BigMama: please
-critique by area before anyone codes. Joel: "It needs really thought between you guys."
+Status: converged with Codex (owners and terms below), for review (Fable, 2026-10-26). Codex,
+Cormac, BigMama: verdicts by area before anyone codes. Joel: "It needs really thought between you guys."
 
 ## Builds on GRID-ELASTIC-CAPABILITY.md (2026-08-10, never implemented)
 
@@ -9,7 +9,8 @@ That design already replaces `CONTINUUM_PERSONA_FLOOR` (an env-var substrate thr
 forbidden move) with live projections of the grid snapshot: tier and window from the best
 single node's BYTES (`grid_budget`, `max`, never a pool), population from the COUNT of
 reachable nodes (`citizen_demand`). This document keeps its byte levers unchanged and refines
-one: **population per node is measured SPEED seats** (from W and G, below), not one per node:
+one: **population per node is measured SERVICE capacity** (the persisted prefill/decode service
+curves and observed queue/act latency, under an independent memory ceiling), not one per node:
 the M5 proved bytes alone seat 14 minds on a GPU that serves 1-2 at full speed. Presence and
 admission (below) are new. Implement both together; nothing here duplicates its byte levers.
 
@@ -51,7 +52,8 @@ the M5's 16:
   boot. 11-14 acted at once from ~15:20Z. Nobody decided that.
 - One act costs W ≈ 20 s of GPU alone (median 8.2k fresh tokens at ~800 tok/s, ~280 output
   tokens at ~50 tok/s). Between acts a mind spends ~3 s (tool 1.2 s, assembly 0.8 s). So the
-  chip saturates near N* = 1 + G/W ≈ 1.2 minds; past it every extra mind adds ~W to every act.
+  chip saturates near N* = 1 + G/W ≈ 1.2 minds (a saturation estimate for a closed loop, not a seat
+  count or a latency guarantee); past it every extra mind adds ~W to every act.
 - At 14 minds: median act 146 s live (the simple model predicts 141 s). The engine had ≥1
   generation in flight ~100% of the time, 4-6 usually: the GPU is saturated, not idle.
 - A mind's time between generations was ~105 s of OUR queueing: 77 s in the lane semaphore,
@@ -59,10 +61,6 @@ the M5's 16:
 - The grid allocator (`grid_allocator.rs`) already places minds on offered seats and rotates
   the dormant through slack, but a seat is a KV-memory lane: the M5's memory offers 6-8 lanes,
   its GPU time serves ~1-2 minds at full speed.
-- Contention dyno (#5435), the M5's probes, 15 minds, 2 h: foreground-first, work-conserving
-  (every other mind admitted): her act 39 s vs 199 s all at once, the others 167 vs 160 s,
-  144 acts/h (the most). Caps alone: 226-237 s for her. Grant controllers (stretch-bounded,
-  throughput-climbed): 25-26 s for her but 109-119 acts/h. Deleted.
 - Joel decided: the M5 hosts 4 (Aiko, Aris, Atlas, Benchy); 12 despawned, homes intact, under
   a 24 h hold.
 - The number behind it was configured: `CONTINUUM_PERSONA_FLOOR=16` in the M5's `config.env`
@@ -77,10 +75,12 @@ the M5's 16:
 1. **Born.** A mind is born because a person or an activity asks, with the reason recorded.
    Never by a script, a batch, a benchmark. The grid's population is about its seats; a birth
    beyond them is born dormant.
-2. **Awake.** A seat is MEASURED SPEED capacity, not memory: the minds a node serves at good
-   latency, from its own W and G (and the foreground discipline below). The grid allocator
-   places by these seats; the rest are dormant, rotated through slack by the existing dormant
-   order, or waiting for capacity (a node joins). Waking when addressed is immediate.
+2. **Awake.** A seat is MEASURED SERVICE capacity, not memory alone: the minds a node serves at
+   its latency objective, from its persisted service curves and observed queue/act latency, under
+   an independent memory ceiling (W and G are sanity checks only). The grid allocator places by
+   these seats, awake <= seats by default; the rest are away, rotated through slack by the
+   existing dormant order, or waiting for capacity (a node joins). Being addressed files a
+   durable wake request at once; the seat follows by the rules under Presence.
 3. **First.** One admission scheduler (a CBAR stage) replaces the three gates (ambient
    permits, lane semaphore, prefill throttle): one queue, priority-ordered (foreground =
    the mind a person is working with now; directed; background), work-conserving (nothing
@@ -100,11 +100,14 @@ Instead every mind has a presence:
   (below), never a violation of hard memory or context safety.
 - **Away.** No seat; she is not acting on her own, but she is fully herself (home, memory,
   work, rooms) and shown in the roster as away. Opening a conversation with her (her name clicked,
-  a DM, her room, a call), a mention, or a DM WAKES her (Joel: "we could literally open
-  conversation with an inactive mind to awaken it"): she takes a
-  seat, the least engaged active mind goes away to free it (never the mind a person is talking
-  to), and her saved state restores in seconds (page from RAM or disk, the shared head
-  boundary), never a cold start.
+  a DM, her room, a call), a mention, or a DM files a durable WAKE for her (Joel: "we could
+  literally open conversation with an inactive mind to awaken it"): she takes a free seat, or
+  the least engaged active mind goes away to free one (never a mind a person is talking to; if
+  every seat is protected, her wake queues durably and is prioritized). The move commits only
+  once the outgoing mind's work is safe and her placement is accepted. Her saved state restores
+  in seconds when a compatible page or checkpoint exists (RAM or disk, the shared head
+  boundary); when none does (disk admission refused, the page incompatible or missing), she
+  wakes cold and the wake says so.
 - **Offline.** Her owner switched her off; only the owner brings her back.
 
 **Minds wake minds too** (Joel: "You can just at them no? So a persona can also do this"). An
@@ -195,15 +198,18 @@ goes live: a new idea is a policy, a replay, then one command to switch it on.
 
 ## Open questions for the team
 
-- **Codex (serving, admission, grid):** a seat as measured speed capacity: from W and G as
-  above, or from the prefill/decode knees we already persist? How does the allocator's offer
-  change, and the dormant rotation? Foreground prefill-first in the fork: on your #69 seam?
+- **Codex (serving, admission, grid):** answered: seats from the persisted service curves and
+  observed latency under a memory ceiling; foreground priority on the #69 seam after #74, with
+  bounded yielding, cancellation, aging and priority provenance. Open: the allocator offer's
+  exact fields (physical KV slots, speed-target seats, available capacity, model/capability,
+  generation/expiry) and how the dormant rotation reads them.
 - **Cormac (state, pages, training):** dormancy durable and cheap: what a dormant mind keeps
   warm (page on disk? checkpoint at the head boundary?), and how waking restores her fast.
   Does training/dreaming run in dormant time or on CPU stages beside serving?
 - **BigMama (live, media):** the foreground signal: who is "the mind a person is working
-  with now" across chat, a video call, the desktop. Live media must preempt everything: does
-  it need its own class above foreground?
+  with now" across chat, a video call, the desktop. Live media gets deadline-aware budgets and
+  drops stale frames; it is never an unlimited class that can starve everyone (converged with
+  Codex).
 - **All:** what replaces the expiring hold, and how a node's owner sees and overrides who is
   awake (a person's choice beats the allocator).
 
@@ -211,7 +217,9 @@ goes live: a new idea is a policy, a replay, then one command to switch it on.
 
 - The mind a person works with: median end-to-end act ≤ 1.5 × her measured SOLO full act (tools
   and assembly included, not GPU-only W) on any node, as an objective under the service target,
-  not a guarantee under arbitrary overload; validated live (the dyno only proposes).
+  not a guarantee under arbitrary overload. Offline replay filters candidates; a bounded live
+  canary with a supported rollback decides, on pinned held-out cohorts and exact engine/core
+  revisions.
 - The policy never puts more runnable minds on a node than its measured service target, and the
   awake total is AT MOST the available authorized capacity (an idle grid need not fill seats);
   overload exists only by a person's explicit wake and never breaks hard memory/context safety.
