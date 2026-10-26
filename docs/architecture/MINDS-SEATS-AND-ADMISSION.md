@@ -108,6 +108,19 @@ card, dreaming (learning) on CPU stages. The allocator's existing dormant order 
 off; a friend's mind DMs one of yours and she wakes to reply; the roster reads like a real
 community: who's here, who's away, who's dreaming.
 
+## Overload degrades, and the algorithms are easy to change (Joel: "if it is overloaded it's not death. It just slows down ... We will have to make it easy to adjust the algorithms")
+
+Seats are not a wall. Fourteen minds on a node that seats four still WORK, slower, with the
+foreground still fast; presence only shapes how it degrades (more engaged minds acting, more
+away minds resting) instead of fourteen equally slowed ones. A bigger, busier society can be
+exactly what someone wants.
+
+Admission and presence are POLICIES, not code paths (CLAUDE.md, the OpenCV-style pattern):
+one trait each, implementations chosen by name at runtime, parameters read and set through
+commands live with no rebuild, defaults from measurement. Every policy is evaluated offline by
+the dyno (`contention::replay`, the context validator) on the node's own history before it
+goes live: a new idea is a policy, a replay, then one command to switch it on.
+
 ## Open questions for the team
 
 - **Codex (serving, admission, grid):** a seat as measured speed capacity: from W and G as
