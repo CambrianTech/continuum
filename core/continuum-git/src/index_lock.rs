@@ -180,7 +180,9 @@ pub fn settle(root: &Path, stale_after: Duration) -> Settled {
     // unlink, so the judged file's identity cannot be reused by a new file meanwhile (Codex on
     // #5464). What remains is the instant between the last identity read and the unlink: a
     // replacement landing exactly there would be removed. Portable code cannot unlink by handle,
-    // and that window is a few syscalls against the minutes a stale lock must already have sat.
+    // so this is a limitation, narrowed (a few syscalls) but not eliminated. On the zero-bound
+    // path, right after this process ended a git, the lock may be seconds old; what protects a
+    // live git there is the scan finding it, not the lock's age.
     let Some(judged) = open_identity(&lock) else {
         return Settled::Held { lock, age };
     };
