@@ -9,6 +9,19 @@ export const transcriptStyles = css`
       max-width: 880px;
       margin: 0 auto;
     }
+    /* "N new messages · Jump to present": a reader parked far up (transcriptPager.ts). */
+    .jump-present {
+      display: block;
+      margin: 0 auto var(--spacing-xs);
+      padding: 4px 12px;
+      border: 1px solid var(--border-color, #384350);
+      border-radius: 999px;
+      background: var(--surface-raised, #1d2430);
+      color: var(--content-accent, #35d0e0);
+      font: inherit;
+      font-size: 0.85rem;
+      cursor: pointer;
+    }
     /* Stands in for rows outside the rendered window (transcriptWindow.ts). */
     .messages > .transcript-spacer {
       list-style: none;

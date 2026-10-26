@@ -12,18 +12,19 @@
  */
 import type { ReactiveController, ReactiveControllerHost } from 'lit';
 import type { ChatViewModel, MessageRowVM, RosterMemberVM } from '@continuum/chat-view';
-import { HISTORY_PAGE_ROWS, RoomHistory } from './roomHistory';
+import { RoomHistory, type HistoryCursor } from './roomHistory';
 import { RowHeights, windowFor, type TranscriptWindow, type Viewport } from './transcriptWindow';
 
-/** The scroll-back fetch the host injects (`chat/history { beforeMessageId, limit }`).
- *  Resolves to one page of RAW stored entities strictly OLDER than the anchor (the
- *  newest page when the anchor is absent), chronological; a page shorter than
- *  `limit` means the room's start was reached. */
+/** The history fetch the host injects (`chat/history { beforeMessageId |
+ *  afterMessageId, limit }`). Resolves to one page of RAW stored entities adjacent to
+ *  the cursor (the newest page with no cursor), chronological; a page shorter than
+ *  `limit` means the room's start (or the present) was reached. */
 export type HistoryHandler = (
   roomId: string,
-  beforeMessageId: string | undefined,
+  cursor: HistoryCursor,
   limit: number,
 ) => Promise<readonly unknown[]>;
+export type { HistoryCursor } from './roomHistory';
 
 /** "At the live edge" tolerance: sub-pixel rounding and a trailing margin must not
  *  read as the reader having scrolled up. */
@@ -43,6 +44,9 @@ type PagerHost = ReactiveControllerHost & { readonly renderRoot: ParentNode };
 export class TranscriptPager implements ReactiveController {
   private readonly rooms = new Map<string, RoomHistory>();
   private roomId: string | undefined;
+  /** Incremented on every room enter: a page that lands in a later visit (A, B, A
+   *  again) neither moves the reader nor changes the buffer. */
+  private visit = 0;
   private readonly heights = new RowHeights();
   private viewport: Viewport = { scrollTop: 0, clientHeight: 0 };
   private ids: readonly string[] = [];
@@ -72,21 +76,49 @@ export class TranscriptPager implements ReactiveController {
     this.scrollHost = undefined;
   }
 
-  /** The room on screen changed. The room left keeps only its newest page (paged
-   *  back if its reader returns); the room entered starts at its live edge. */
+  /** The room on screen changed. The room left keeps only its newest page (or, if
+   *  its reader was parked far up, nothing: it reopens at the present); the room
+   *  entered starts at its live edge, in a new visit. */
   enterRoom(roomId: string): void {
     if (this.roomId === roomId) return;
-    if (this.roomId !== undefined) this.rooms.get(this.roomId)?.dropOldest(HISTORY_PAGE_ROWS);
+    if (this.roomId !== undefined) this.rooms.get(this.roomId)?.leave();
     this.roomId = roomId;
+    this.visit += 1;
+    this.keep = undefined;
     this.following = true;
     this.window = undefined;
+    this.live = [];
   }
 
-  /** The new live rows arrived: rows that left the live window join the history. */
+  /** The reader's span no longer reaches the live window (they are parked far up). */
+  get detached(): boolean {
+    return !(this.current()?.joined ?? true);
+  }
+
+  /** Live rows that arrived while detached ("N new messages"). */
+  get unseen(): number {
+    return this.current()?.unseen ?? 0;
+  }
+
+  /** Drop the span and follow the live window again. */
+  jumpToPresent(): void {
+    this.current()?.jumpToPresent();
+    this.following = true;
+    this.keep = undefined;
+    this.host.requestUpdate();
+  }
+
+  /** The new live rows arrived: rows that left the live window join the history
+   *  (or, detached, the arrivals are counted). */
   retire(liveNow: readonly MessageRowVM[]): void {
     if (this.live.length === 0) return;
-    const ids = new Set(liveNow.map((r) => r.id));
-    this.current()?.retire(this.live.filter((r) => !ids.has(r.id)));
+    const now = liveNow.filter((r) => !r.id.startsWith('typing:'));
+    const ids = new Set(now.map((r) => r.id));
+    const before = new Set(this.live.map((r) => r.id));
+    this.current()?.retire(
+      this.live.filter((r) => !ids.has(r.id)),
+      now.filter((r) => !before.has(r.id)).length,
+    );
   }
 
   /** The view model to render: history rows above the live ones, windowed to the
@@ -96,15 +128,20 @@ export class TranscriptPager implements ReactiveController {
     this.members = vm.members;
     if (!transcript) return vm;
     const liveIds = new Set(vm.messages.map((m) => m.id));
-    const older = (this.current()?.rows ?? []).filter((r) => !liveIds.has(r.id));
+    const history = this.current();
+    const older = (history?.rows ?? []).filter((r) => !liveIds.has(r.id));
+    // Detached, the live rows sit beyond a gap the reader has not paged through:
+    // they are counted, not drawn.
+    const joined = history?.joined ?? true;
+    const below = joined ? vm.transcript : [];
     const full: ChatViewModel =
-      older.length === 0
+      older.length === 0 && joined
         ? vm
         : {
             ...vm,
             messages: [...older, ...vm.messages],
-            transcript: [...older.map((r) => ({ row: 'message' as const, ...r })), ...vm.transcript],
-            isEmpty: false,
+            transcript: [...older.map((r) => ({ row: 'message' as const, ...r })), ...below],
+            isEmpty: older.length === 0 && below.length === 0,
           };
     this.ids = full.transcript.map((r) => r.id);
     this.heights.retain(new Set(this.ids));
@@ -142,9 +179,12 @@ export class TranscriptPager implements ReactiveController {
 
     this.trim(el);
     if (this.windowMoved()) this.host.requestUpdate();
-    // A transcript shorter than its viewport has no scrollbar to scroll up with:
-    // page until it fills the viewport or the room's start is reached.
-    if (el.scrollHeight <= el.clientHeight) void this.pageOlder(el);
+    // A transcript shorter than its viewport has no scrollbar to scroll with: page
+    // until it fills the viewport or the room's start (or the present) is reached.
+    if (el.scrollHeight <= el.clientHeight) {
+      if (this.detached) void this.pageNewer();
+      else void this.pageOlder(el);
+    }
   }
 
   private readonly onScroll = (e: Event): void => {
@@ -152,9 +192,12 @@ export class TranscriptPager implements ReactiveController {
     this.viewport = { scrollTop: el.scrollTop, clientHeight: el.clientHeight };
     if (this.windowMoved()) this.host.requestUpdate();
     if (this.programmatic) return;
-    this.following = el.scrollTop + el.clientHeight >= el.scrollHeight - LIVE_EDGE_SLACK_PX;
-    // Within one viewport of the top: the next older page is about to be needed.
+    const atBottom = el.scrollTop + el.clientHeight >= el.scrollHeight - LIVE_EDGE_SLACK_PX;
+    this.following = atBottom && !this.detached;
+    // Within one viewport of either end of the span: the next page that way is
+    // about to be needed.
     if (el.scrollTop < el.clientHeight) void this.pageOlder(el);
+    else if (this.detached && el.scrollTop + 2 * el.clientHeight >= el.scrollHeight) void this.pageNewer();
   };
 
   private current(): RoomHistory | undefined {
@@ -170,32 +213,59 @@ export class TranscriptPager implements ReactiveController {
   private async pageOlder(el: Element): Promise<void> {
     const handler = this.fetchHandler();
     const room = this.roomId;
+    const visit = this.visit;
     const history = this.current();
-    if (!handler || room === undefined || !history?.canPage) return;
+    if (!handler || room === undefined || !history?.canPageOlder) return;
     try {
       const added = await history.pageOlder(
         this.live[0]?.id,
-        (before, limit) => handler(room, before, limit),
+        (cursor, limit) => handler(room, cursor, limit),
         this.members,
         new Set(this.live.map((r) => r.id)),
       );
-      if (added === 0 || room !== this.roomId) return;
+      // A page from an earlier visit never moves the reader of this one.
+      if (added === 0 || visit !== this.visit) return;
       this.holdReaderRow(el, added * this.heights.mean);
       this.host.requestUpdate();
     } catch (err) {
+      if (visit !== this.visit) return;
       this.onError(`History load failed: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
 
-  /** Drop history rows far above the reader (see `RoomHistory.trimAbove`). */
+  /** Page down toward the present (rows append below the reader: nothing to hold). */
+  private async pageNewer(): Promise<void> {
+    const handler = this.fetchHandler();
+    const room = this.roomId;
+    const visit = this.visit;
+    const history = this.current();
+    if (!handler || room === undefined || !history?.canPageNewer) return;
+    try {
+      const added = await history.pageNewer(
+        new Set(this.live.map((r) => r.id)),
+        (cursor, limit) => handler(room, cursor, limit),
+        this.members,
+      );
+      if (visit !== this.visit) return;
+      if (added > 0 || history.joined) this.host.requestUpdate();
+    } catch (err) {
+      if (visit !== this.visit) return;
+      this.onError(`History load failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
+  /** Bound the span to the reader (see `RoomHistory.trimAround`). */
   private trim(el: Element): void {
     const history = this.current();
-    if (!this.window || !history || history.loading) return;
+    if (!this.window || !history) return;
     const ids = this.ids;
-    const dropped = history.trimAbove(this.window.start);
-    if (dropped === 0) return;
-    const px = ids.slice(0, dropped).reduce((sum, id) => sum + this.heights.of(id), 0);
-    this.holdReaderRow(el, -px);
+    const rows = history.rows.length;
+    const dropped = history.trimAround(this.window.start, this.window.end);
+    if (dropped === 0 && history.rows.length === rows) return;
+    if (dropped > 0) {
+      const px = ids.slice(0, dropped).reduce((sum, id) => sum + this.heights.of(id), 0);
+      this.holdReaderRow(el, -px);
+    }
     this.host.requestUpdate();
   }
 

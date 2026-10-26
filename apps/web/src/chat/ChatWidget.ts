@@ -842,7 +842,17 @@ export class ChatWidget extends LitElement {
       responders.length === 0 || composerHidden
         ? nothing
         : html`<div class="responding-line wave-active">(${responders.join(', ')}) is responding…</div>`;
+    // A reader parked far up holds a span detached from the live window: the
+    // present is one click away, with what arrived since counted.
+    const unseen = this.pager.unseen;
+    const jumpBar =
+      this._transcriptFace && this.pager.detached
+        ? html`<button type="button" class="jump-present" @click=${this.onJumpToPresent}>
+            ${unseen > 0 ? `${unseen} new message${unseen === 1 ? '' : 's'} · ` : ''}Jump to present
+          </button>`
+        : nothing;
     const centerFooter = html`
+      ${jumpBar}
       ${respondingLine}
       ${this._selectError ? html`<div class="send-error">${this._selectError}</div>` : nothing}
       ${this._sendError ? html`<div class="send-error">${this._sendError}</div>` : nothing}
@@ -1109,6 +1119,10 @@ export class ChatWidget extends LitElement {
       }
     }
   }
+
+  private onJumpToPresent = (): void => {
+    this.pager.jumpToPresent();
+  };
 
   private onInput = (e: Event): void => {
     this._draft = (e.target as HTMLInputElement).value;
