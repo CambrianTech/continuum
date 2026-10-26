@@ -7,8 +7,8 @@
 //! Two REAL airc peers over the loopback fixture (mutual enrolment + LAN), the
 //! production install path (`PersonaCommandInboundPump` + `build_grant_authorizer`),
 //! the production gate (`GridTrustAuthPolicy`), and the production send path
-//! (`AircTransport` + `InMemoryPresentedGrantStore`). No mock transport, no manual
-//! handler wiring.
+//! (`AircTransport` + `InMemoryPresentedGrantStore`). No mock transport or
+//! mock handlers; the fixture installs the same handler factory as boot.
 //!
 //! what this catches: a regression anywhere in issue → present → verify → dispatch
 //! that would either (a) let a tier-denied command through WITHOUT a grant
@@ -68,6 +68,15 @@ impl ServiceModule for EchoModule {
 
 #[tokio::test]
 async fn owner_signed_grant_lets_grantee_run_a_tier_denied_command() {
+    // This integration-test process does not execute start_server. Install its
+    // production responder before the pump checks the required boot dependency.
+    continuum_core::persona::command_inbound_pump::install_command_handler(
+        |airc, executor, grants| {
+            continuum_core::ipc::command_ingress::CommandRequestHandler::with_grant_authorizer(
+                airc, executor, grants,
+            )
+        },
+    );
     let loop_back = TwoAircLoopback::new().await.expect("loopback fixture");
     let owner = loop_back.peer_a(); // issuer + verifier (the compute seller)
     let grantee = loop_back.peer_b(); // buyer presenting the grant
