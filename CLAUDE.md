@@ -28,7 +28,8 @@ Rules, in force now:
    rules because you lack common sense ... You can build either way too. Ideally you were supposed to
    break this up into much smaller crates so it wouldn't be so bad." This rule never limits a
    persona: she codes continuum on the node that hosts her, so she builds while it serves ("Let them
-   build"). Never gate, redirect or cancel a citizen's build.
+   build"). Never gate, redirect or cancel a citizen's build; if hers slows serving, that is the
+   scheduler's to share, never a rule to enforce on her.
 3. Every live change gets a 15-minute read on live residents; worse than canary means the node goes
    back to canary at once. No "clean hours", no stacked fixes.
 4. No new unwrap, fallback or head clip: the ratchets fail the build; clean crates get compiler denies.
