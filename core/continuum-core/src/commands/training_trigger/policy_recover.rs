@@ -69,8 +69,14 @@ crate::action_command! {
     params: PolicyRecoverParams,
     output: PolicyRecoverOutcome,
     run(this, ctx, p) => {
-        if crate::modules::grid::trust_policy::caller_trust(ctx.caller.as_ref()) != crate::routing::trust_level::TrustLevel::Owner {
-            return Err(CommandError::Denied("policy recovery requires the operator".into()));
+        // The executor's own policy resolves her trust (the grid's on a node); one that cannot
+        // resolve it, or no executor, refuses: an owner-only operation is never assumed.
+        let executor = this.state.executor.require()
+            .map_err(|e| CommandError::Denied(format!("policy recovery requires the operator, and trust is unresolvable here: {e}")))?;
+        match executor.caller_trust(ctx.caller.as_ref()) {
+            Some(crate::routing::trust_level::TrustLevel::Owner) => {}
+            Some(_) => return Err(CommandError::Denied("policy recovery requires the operator".into())),
+            None => return Err(CommandError::Denied("policy recovery requires the operator, and this executor's policy cannot resolve trust".into())),
         }
         let actor = crate::persona::operator_peer::acting_now(ctx, "genome/training-trigger/policy-recover")?.peer;
         this.state.recover_return_policy(p, actor).await.map_err(CommandError::Invalid)

@@ -233,6 +233,13 @@ pub fn caller_trust(caller: Option<&CallerIdentity>) -> TrustLevel {
 }
 
 impl AuthPolicy for GridTrustAuthPolicy {
+    /// The static resolution [`caller_trust`] already gives handlers, unchanged: a command cut out
+    /// of the core reaches it through its executor instead of naming this module (card 2a69e6ba).
+    /// The gate's own bridge-consulting `resolve_trust` stays the gate's.
+    fn caller_trust(&self, caller: Option<&CallerIdentity>) -> Option<crate::routing::trust_level::TrustLevel> {
+        Some(caller_trust(caller))
+    }
+
     fn gate(&self, decision: &RouteDecision, caller: Option<&CallerIdentity>) -> Verdict {
         // Per-peer resolution (the trust bridge): a known remote peer gets its real
         // trust (capped at Trusted); Blocked is denied; unknown → Provisional.
@@ -528,6 +535,31 @@ mod tests {
             ),
             "a Blocked peer stays denied even with a conferring grant"
         );
+    }
+
+    // what this catches (card 2a69e6ba): a command cut out of the core asking its executor for
+    // trust and getting a different answer than the static resolution it replaced. The policy's
+    // `caller_trust` is that resolution for every source, and only the substrate itself or a Local
+    // caller is the owner: a resident (blocked or not, she resolves below Owner) and every remote
+    // or unauthenticated source are refused an owner-only operation.
+    #[test]
+    fn the_policy_resolves_trust_exactly_as_the_static_path() {
+        let policy = GridTrustAuthPolicy::new();
+        let peer = crate::identity::PeerId::new();
+        let callers = [
+            None,
+            Some(CallerIdentity::local(peer)),
+            Some(CallerIdentity::local_persona(peer)),
+            Some(CallerIdentity::airc(peer)),
+            Some(CallerIdentity::tcp(peer)),
+            Some(CallerIdentity::ws(peer)),
+            Some(CallerIdentity::positron_observer(peer, "obs".into())),
+        ];
+        for caller in &callers {
+            assert_eq!(policy.caller_trust(caller.as_ref()), Some(caller_trust(caller.as_ref())), "{caller:?}");
+        }
+        let owners: Vec<_> = callers.iter().filter(|c| policy.caller_trust(c.as_ref()) == Some(TrustLevel::Owner)).collect();
+        assert_eq!(owners.len(), 2, "only the substrate and a Local caller are the owner: {owners:?}");
     }
 
     // what this catches: THE local-persona trust tier — Asha. A local in-process
