@@ -18,7 +18,7 @@ use super::remember::build_agent_record;
 use crate::log_info;
 use crate::logging::TimingGuard;
 use crate::memory::CorpusMemory;
-use crate::modules::memory::MemoryState;
+use crate::state::MemoryState;
 use crate::sdk_codegen::CommandError;
 
 fn default_pattern() -> String {

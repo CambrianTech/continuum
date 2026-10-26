@@ -9,7 +9,7 @@ use ts_rs::TS;
 use crate::log_info;
 use crate::logging::TimingGuard;
 use crate::memory::{CorpusMemory, CorpusTimelineEvent, LoadCorpusResponse};
-use crate::modules::memory::MemoryState;
+use crate::state::MemoryState;
 
 /// Params for `memory/load-corpus`. Wire keys are snake_case (the ORM IPC contract).
 // No `Default`: a persona reference has no sensible default, and an empty one

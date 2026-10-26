@@ -26,7 +26,7 @@ use super::AppendResult;
 use crate::log_info;
 use crate::logging::TimingGuard;
 use crate::memory::{CorpusMemory, MemoryRecord};
-use crate::modules::memory::MemoryState;
+use crate::state::MemoryState;
 use crate::sdk_codegen::CommandError;
 
 fn default_importance() -> f64 {
