@@ -87,7 +87,7 @@ pub mod serving_daemon;
 pub mod system_resources;
 pub mod training_completion_sentinel;
 pub use continuum_dreaming::modules::training_trigger;
-pub mod vdd;
+pub use continuum_mind::vdd::module as vdd;
 pub mod vision;
 pub mod verdict_board;
 pub mod work;

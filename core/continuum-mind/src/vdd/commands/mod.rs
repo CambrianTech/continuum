@@ -4,7 +4,7 @@
 //! Two verbs, two shapes:
 //! - **`vdd/report`** (dep-holding) — reads telemetry records from the artifact
 //!   store (`~/.continuum/vdd`). Captures the artifact root the
-//!   [`VddModule`](crate::modules::vdd::VddModule) owns, so tests can point it at a
+//!   [`VddModule`](crate::vdd::module::VddModule) owns, so tests can point it at a
 //!   temp dir. Contributed via [`command_objects`].
 //! - **`vdd/score`** (stateless) — a pure deterministic scorer for the
 //!   self-evolving-genome A/B. No module state, so it self-registers via
@@ -20,7 +20,7 @@ pub mod score;
 
 use report::VddReportQuery;
 
-/// The dep-holding `vdd/*` family the [`VddModule`](crate::modules::vdd::VddModule)
+/// The dep-holding `vdd/*` family the [`VddModule`](crate::vdd::module::VddModule)
 /// contributes to the kernel's typed object map. Only `vdd/report` holds state (the
 /// artifact root); `vdd/score` is stateless and self-registers.
 pub fn command_objects(artifact_root: PathBuf) -> Vec<Arc<dyn DynCommand>> {

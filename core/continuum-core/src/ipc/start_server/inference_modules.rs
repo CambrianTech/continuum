@@ -72,5 +72,5 @@ pub(super) fn register_inference_modules(runtime: &Arc<Runtime>) {
     // for first-token-ms" with a single command return. PR-body
     // VDD claims become `./jtag vdd/report --git_sha=<sha>`,
     // not pasted terminal text.
-    runtime.register(Arc::new(crate::modules::vdd::VddModule::new()));
+    runtime.register(Arc::new(continuum_mind::vdd::module::VddModule::new()));
 }

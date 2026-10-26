@@ -4,7 +4,7 @@
 //!
 //! Dep-holding: the command captures the artifact root (`~/.continuum/vdd` in
 //! production; a temp dir under test) handed in by
-//! [`VddModule`](crate::modules::vdd::VddModule)'s `commands()`. The read +
+//! [`VddModule`](crate::vdd::module::VddModule)'s `commands()`. The read +
 //! projection are pure functions over [`crate::vdd::reader`]; this is the typed
 //! surface over them.
 //!

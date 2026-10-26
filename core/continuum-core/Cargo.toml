@@ -57,6 +57,7 @@ uuid.workspace = true
 continuum-base = { path = "../continuum-base" }
 continuum-host = { path = "../continuum-host" }
 continuum-kernel = { path = "../continuum-kernel" }
+continuum-perception = { path = "../continuum-perception" }
 continuum-mind = { path = "../continuum-mind" }
 continuum-academy = { path = "../continuum-academy" }  # commands::hf re-exports its hf/* (#5452): a normal dependency, not only a test one
 continuum-dreaming = { path = "../continuum-dreaming" }

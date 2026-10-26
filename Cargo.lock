@@ -2992,6 +2992,7 @@ dependencies = [
  "continuum-live",
  "continuum-mind",
  "continuum-orm-derive",
+ "continuum-perception",
  "continuum-positron",
  "continuum-text-analysis",
  "continuum-tool-protocol",

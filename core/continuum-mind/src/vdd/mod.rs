@@ -9,6 +9,8 @@ pub mod reader;
 pub mod record;
 pub mod registry;
 pub mod turn_replay;
+pub mod commands;
+pub mod module;
 
 pub use artifacts::{ArtifactBundle, ArtifactWriter};
 pub use chat_roundtrip::{
