@@ -16,39 +16,52 @@ use std::collections::{BTreeMap, HashSet};
 use continuum_context::levels::{summarize, Shape};
 use continuum_context::source::Item;
 
-/// What one request adds beyond its prompt: the pinned newest result's whole text, and the
-/// files the act it answers read.
+/// What one request adds beyond its prompt: the act it answers (its LAST assistant turn), as
+/// that turn's pinned result and the files that turn read.
 #[derive(Default)]
 pub struct Act {
     pub result: Option<String>,
     pub reads: Vec<String>,
 }
 
-/// The act a request carries: its last `tool_result` text and its last assistant turn's
-/// `read_file` paths.
+/// The read tool's names as the captures record them: the native name and the command path.
+/// Exact names only: a tool merely containing "read" (a thread, a ready check) is not a read
+/// (Cormac on #5432).
+const READ_TOOLS: [&str; 2] = ["read_file", "code/read"];
+
+/// The act a request carries: the `tool_use` calls of its last assistant turn, each paired by
+/// `tool_use_id` with the `tool_result` that answered it (Codex and Cormac on #5432: reads had
+/// accumulated across all history, and the result was simply the last one). Its result is the
+/// text answering those calls; its reads are the paths of those calls that were reads.
 pub fn act_of(request: &serde_json::Value) -> Act {
+    let messages: Vec<&serde_json::Value> = request["messages"].as_array().into_iter().flatten().collect();
+    let Some(last_assistant) = messages.iter().rposition(|m| m["role"] == "assistant") else {
+        return Act::default();
+    };
+    let parts = |m: &serde_json::Value| m["content"].as_array().cloned().unwrap_or_default(); // unwrap_or_default: a text message carries no tool parts
+    let calls: Vec<serde_json::Value> = parts(messages[last_assistant]).into_iter().filter(|p| p["type"] == "tool_use").collect();
     let mut act = Act::default();
-    for message in request["messages"].as_array().into_iter().flatten() {
-        let Some(parts) = message["content"].as_array() else { continue };
-        for part in parts {
-            match part["type"].as_str() {
-                Some("tool_result") => {
-                    let text = match &part["content"] {
-                        serde_json::Value::String(text) => text.clone(),
-                        other => other.to_string(),
-                    };
-                    act.result = Some(text);
+    let mut answered = Vec::new();
+    for message in &messages[last_assistant + 1..] {
+        for part in parts(message) {
+            if part["type"] != "tool_result" {
+                continue;
+            }
+            let Some(call) = calls.iter().find(|c| c["id"] == part["tool_use_id"]) else { continue };
+            let text = match &part["content"] {
+                serde_json::Value::String(text) => text.clone(),
+                other => other.to_string(),
+            };
+            answered.push(text);
+            if call["name"].as_str().is_some_and(|name| READ_TOOLS.contains(&name)) {
+                if let Some(path) = call["input"]["file_path"].as_str().or(call["input"]["path"].as_str()) {
+                    act.reads.push(path.to_owned());
                 }
-                Some("tool_use") if message["role"] == "assistant" => {
-                    if part["name"].as_str().is_some_and(|name| name.contains("read")) {
-                        if let Some(path) = part["input"]["file_path"].as_str().or(part["input"]["path"].as_str()) {
-                            act.reads.push(path.to_owned());
-                        }
-                    }
-                }
-                _ => {}
             }
         }
+    }
+    if !answered.is_empty() {
+        act.result = Some(answered.join("\n"));
     }
     act
 }
