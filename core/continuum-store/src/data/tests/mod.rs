@@ -41,6 +41,27 @@ use crate::orm::types::CollectionSchema;
         assert!(Arc::ptr_eq(&first, &second));
     }
 
+    // What this catches: a substrate-entity registration conflict booting a data module anyway.
+    // Codex on #5472: the registrar seam must be exercised through `initialize`, not by calling
+    // a successful registrar directly. The refusal must reach the runtime's init result, naming
+    // the module, and no module context may be published for a refused store.
+    #[tokio::test]
+    async fn a_failing_substrate_registrar_refuses_initialize_and_publishes_no_context() {
+        fn conflicting() -> Result<usize, String> {
+            Err("staged_credit registered twice with two shapes".to_string())
+        }
+        let module = Arc::new(DataModule::new(conflicting));
+        let runtime = crate::runtime::runtime::Runtime::new();
+        runtime.register(module.clone());
+
+        let refused = runtime.initialize().await.expect_err("a registrar conflict must refuse init"); // expect: the invariant under test
+        assert!(refused.contains("data") && refused.contains("staged_credit registered twice"), "{refused}");
+        assert!(
+            module.state.context.read().unwrap_or_else(|e| e.into_inner()).is_none(),
+            "a refused data module must not publish its context"
+        );
+    }
+
     // What this catches: generic data/vector commands cannot bypass the owning
     // recall command's authorization or mutate its retained decisions.
     #[tokio::test]
