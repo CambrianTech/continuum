@@ -63,15 +63,23 @@ enum Phase {
     Decode { left: f64, since: f64 },
 }
 
-/// The step the replay advances by. A tenth of a second is far below an act (15-150 s) and far
-/// above a decode step, so the shares it averages are the engine's, not an artifact of the step.
-const STEP_SECS: f64 = 0.1;
+/// How many steps the replay spends on its median act: the step is the median act's predicted
+/// solo time over this, so the shares it averages are the engine's, not an artifact of the
+/// step, on any rates and any work (the median, not the shortest: a few-token act would make
+/// the step microscopic and the replay slow for nothing).
+// derived-or-floor: a RESOLUTION of the simulation (steps per act), not a substrate threshold;
+// the step itself is derived from the measured work and rates.
+const STEPS_PER_MEDIAN_ACT: f64 = 100.0;
 
 /// PURE: replay `minds` on one engine with `rates` under `policy` for `horizon_secs`. `None`
 /// when a rate is unmeasured: the dyno never runs on a guessed rate.
 pub fn replay(minds: &[MindLoop], rates: &ModelRates, policy: Policy, horizon_secs: f64) -> Option<Replayed> {
     let prefill_tps = rates.prefill_tps.filter(|r| r.is_finite() && *r > 0.0)?;
     rates.decode_at(1)?;
+    let solo_of = |w: &Workload| w.prefill_tokens / prefill_tps + w.decode_tokens / rates.decode_at(1).unwrap_or(f64::INFINITY); // unwrap_or: checked measured above
+    let mut solos: Vec<f64> = minds.iter().flat_map(|m| m.acts.iter().map(solo_of)).filter(|t| t.is_finite() && *t > 0.0).collect();
+    solos.sort_by(f64::total_cmp);
+    let step = solos.get(solos.len() / 2).map_or(1.0, |median| median / STEPS_PER_MEDIAN_ACT); // map_or: no work to replay steps by the second
     let foreground = match policy {
         Policy::Foreground { mind, .. } => mind,
         _ => 0,
@@ -109,9 +117,9 @@ pub fn replay(minds: &[MindLoop], rates: &ModelRates, policy: Policy, horizon_se
         let prefilling: Vec<usize> = (0..minds.len()).filter(|i| matches!(phase[*i], Phase::Prefill { .. })).collect();
         let decoding: Vec<usize> = (0..minds.len()).filter(|i| matches!(phase[*i], Phase::Decode { .. })).collect();
         let (prefill_time, decode_time) = match (prefilling.is_empty(), decoding.is_empty()) {
-            (false, false) => (STEP_SECS / 2.0, STEP_SECS / 2.0),
-            (false, true) => (STEP_SECS, 0.0),
-            (true, false) => (0.0, STEP_SECS),
+            (false, false) => (step / 2.0, step / 2.0),
+            (false, true) => (step, 0.0),
+            (true, false) => (0.0, step),
             (true, true) => (0.0, 0.0),
         };
         let first = matches!(policy, Policy::Foreground { .. }) && prefilling.contains(&foreground);
@@ -137,7 +145,7 @@ pub fn replay(minds: &[MindLoop], rates: &ModelRates, policy: Policy, horizon_se
                 if left > 0.0 {
                     phase[i] = Phase::Decode { left, since };
                 } else {
-                    let latency = now + STEP_SECS - since;
+                    let latency = now + step - since;
                     if i == foreground {
                         out.foreground.push(latency);
 
@@ -151,10 +159,10 @@ pub fn replay(minds: &[MindLoop], rates: &ModelRates, policy: Policy, horizon_se
         }
         for p in phase.iter_mut() {
             if let Phase::Gap(left) = *p {
-                *p = if left - STEP_SECS > 0.0 { Phase::Gap(left - STEP_SECS) } else { Phase::Waiting { since: now + STEP_SECS } };
+                *p = if left - step > 0.0 { Phase::Gap(left - step) } else { Phase::Waiting { since: now + step } };
             }
         }
-        now += STEP_SECS;
+        now += step;
     }
     Some(out)
 }
