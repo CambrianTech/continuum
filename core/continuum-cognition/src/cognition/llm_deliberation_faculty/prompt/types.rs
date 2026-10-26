@@ -288,18 +288,48 @@ impl PromptMessages {
     }
 
     pub fn required_tokens(&self) -> usize {
-        self.stimulus
-            .iter()
-            .chain(self.room_updates.iter())
-            .chain(self.action_statement.iter())
-            .chain(self.latest_result.iter())
-            .map(|message| LlmDeliberationFaculty::messages_cost(std::slice::from_ref(message)))
-            .sum::<usize>()
-            + self.grounding_tokens
+        self.required_parts().total()
+    }
+
+    /// The irreducible payload by part, so a turn over its window can say WHICH part is too
+    /// large (Aris on the M5, 2026-10-26: on resume after a restart her required payload was
+    /// 105k tokens on a 58,880 window, and her loop spun 25 over-window refusals in one second
+    /// before it cleared; nothing said what the 105k was).
+    pub fn required_parts(&self) -> RequiredParts {
+        let cost = |messages: &mut dyn Iterator<Item = &ChatMessage>| -> usize {
+            messages.map(|message| LlmDeliberationFaculty::messages_cost(std::slice::from_ref(message))).sum()
+        };
+        RequiredParts {
+            stimulus: cost(&mut self.stimulus.iter()),
+            room_updates: cost(&mut self.room_updates.iter()),
+            room_update_count: self.room_updates.len(),
+            action_statement: cost(&mut self.action_statement.iter()),
+            latest_result: cost(&mut self.latest_result.iter()),
+            latest_result_count: self.latest_result.len(),
+            grounding: self.grounding_tokens,
+        }
     }
 
     pub fn tokens(&self) -> usize {
         LlmDeliberationFaculty::messages_cost(&self.history) + self.required_tokens()
+    }
+}
+
+/// The irreducible payload's parts, in tokens.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct RequiredParts {
+    pub stimulus: usize,
+    pub room_updates: usize,
+    pub room_update_count: usize,
+    pub action_statement: usize,
+    pub latest_result: usize,
+    pub latest_result_count: usize,
+    pub grounding: usize,
+}
+
+impl RequiredParts {
+    pub fn total(&self) -> usize {
+        self.stimulus + self.room_updates + self.action_statement + self.latest_result + self.grounding
     }
 }
 
