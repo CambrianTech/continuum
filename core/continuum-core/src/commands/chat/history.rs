@@ -46,10 +46,39 @@ pub struct ChatHistoryParams {
     /// The room whose transcript to read.
     #[ts(type = "string")]
     pub room_id: uuid::Uuid,
-    /// Max messages to return (newest window). Defaults to 50.
+    /// Max messages to return. Defaults to 50.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional, type = "number")]
     pub limit: Option<u32>,
+    /// The scroll-back cursor: the oldest message the reader already holds. The page
+    /// is the `limit` messages just before it; absent = the newest page. Without it
+    /// every scroll-up re-read the newest page, the reader deduped it to nothing and
+    /// took the room's history for exhausted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional, type = "string")]
+    pub before_message_id: Option<uuid::Uuid>,
+    /// The page-down cursor: the newest message the reader holds when it dropped the
+    /// rows below it (a reader parked far up keeps a bounded span). The page is the
+    /// `limit` messages just after it. Mutually exclusive with `beforeMessageId`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional, type = "string")]
+    pub after_message_id: Option<uuid::Uuid>,
+}
+
+impl ChatHistoryParams {
+    /// The page the cursors name; both at once has no coherent order.
+    fn page(&self) -> Result<crate::persona::durable_history::RoomPage, CommandError> {
+        use crate::persona::durable_history::RoomPage;
+        match (self.before_message_id, self.after_message_id) {
+            (Some(_), Some(_)) => Err(CommandError::Invalid(
+                "chat/history: beforeMessageId and afterMessageId are mutually exclusive — page one direction at a time"
+                    .to_string(),
+            )),
+            (Some(anchor), None) => Ok(RoomPage::Before(anchor)),
+            (None, Some(anchor)) => Ok(RoomPage::After(anchor)),
+            (None, None) => Ok(RoomPage::Newest),
+        }
+    }
 }
 
 /// One durable transcript row — the wire twin of the live `chat:posted`
@@ -98,13 +127,13 @@ crate::action_command! {
     output: ChatHistoryResult,
     run(_this, _ctx, p) => {
         let limit = p.limit.unwrap_or(50).min(500) as usize; // JUSTIFIED unwrap_or: the declared wire default (param doc says 50)
-        let mut rows = crate::persona::durable_history::room_rows(p.room_id, limit)
+        let rows = crate::persona::durable_history::room_rows(p.room_id, p.page()?, limit)
             .await
             .map_err(|e| CommandError::Internal(format!(
                 "chat/history: durable page failed for room {}: {e}",
                 p.room_id
             )))?;
-        rows.sort_by_key(|r| r.occurred_at_ms);
+        // chat/poll already returns the page in its (timestamp, id) order.
         let messages: Vec<ChatHistoryMessage> = rows
             .into_iter()
             .map(|r| ChatHistoryMessage {
@@ -130,5 +159,35 @@ mod tests {
     fn history_is_aisafe_under_its_wire_name() {
         assert_eq!(ChatHistory::NAME, "chat/history");
         assert_eq!(ChatHistory::ACCESS, AccessLevel::AiSafe);
+    }
+
+    // what this catches: the cursors' wire names. The web sends `beforeMessageId`
+    // and `afterMessageId`; a snake_case or misspelled field deserializes to None, and
+    // every scroll-up silently re-reads the newest page (the bug this field fixed).
+    #[test]
+    fn the_cursors_arrive_under_their_camel_case_wire_names() {
+        let anchor = uuid::Uuid::new_v4();
+        let p: ChatHistoryParams = serde_json::from_value(serde_json::json!({
+            "roomId": uuid::Uuid::new_v4(), "beforeMessageId": anchor, "limit": 50,
+        }))
+        .expect("the web's chat/history params parse");
+        assert_eq!(p.page().ok(), Some(crate::persona::durable_history::RoomPage::Before(anchor)));
+        let down: ChatHistoryParams = serde_json::from_value(serde_json::json!({
+            "roomId": uuid::Uuid::new_v4(), "afterMessageId": anchor,
+        }))
+        .expect("the page-down params parse");
+        assert_eq!(down.page().ok(), Some(crate::persona::durable_history::RoomPage::After(anchor)));
+    }
+
+    // what this catches: both cursors at once silently picking one direction. The
+    // request must be refused before any read.
+    #[test]
+    fn both_cursors_at_once_are_refused() {
+        let anchor = uuid::Uuid::new_v4();
+        let p: ChatHistoryParams = serde_json::from_value(serde_json::json!({
+            "roomId": uuid::Uuid::new_v4(), "beforeMessageId": anchor, "afterMessageId": anchor,
+        }))
+        .expect("parses");
+        assert!(matches!(p.page(), Err(CommandError::Invalid(_))));
     }
 }

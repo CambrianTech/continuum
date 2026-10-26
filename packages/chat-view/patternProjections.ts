@@ -34,6 +34,7 @@ import type {
   MessageRowVM,
   RosterMemberVM,
   TranscriptRowVM,
+  TranscriptSpacers,
 } from './chatViewModel';
 import { ARENA_PURPOSE, CANVAS_PURPOSE, GRID_PURPOSE, LIVE_PURPOSE, PERSONA_PURPOSE, SERVING_PURPOSE, SETTINGS_PURPOSE, contentFamilyOf, type ArenaContentBody as ArenaContentBodyT, type CanvasContentBody, type GridContentBody, type GridNodeVM, type ServingContentBody, type ServingNodeVM, type SettingsContentBody } from '@continuum/patterns';
 import type { LiveContentBody, PersonaContentBody } from '@continuum/patterns';
@@ -446,6 +447,8 @@ export interface ChatContentBody {
    *  what the center pane draws. `messages` stays for speech-only consumers. */
   readonly transcript: readonly TranscriptRowVM[];
   readonly isEmpty: boolean;
+  /** The rows of the full transcript not drawn here (see `ChatViewModel`). */
+  readonly spacers?: TranscriptSpacers;
 }
 
 /** The whole chat room as a `Workspace` — nav (rooms) + left (people) + content
@@ -546,7 +549,12 @@ export function chatWorkspace(vm: ChatViewModel, live?: WorkspaceLive): Workspac
                     ? { purpose: PROJECT_PURPOSE, body: projectContentBody(vm, live?.board) }
                   : {
                       purpose: contentFamilyOf(vm.purpose),
-                      body: { messages: vm.messages, transcript: vm.transcript, isEmpty: vm.isEmpty },
+                      body: {
+                        messages: vm.messages,
+                        transcript: vm.transcript,
+                        isEmpty: vm.isEmpty,
+                        ...(vm.transcriptSpacers ? { spacers: vm.transcriptSpacers } : {}),
+                      },
                     };
   // The ACTIVE nav cell follows the citizen's current tab: the persona tab
   // when a persona home is focused, else the chat room on screen.

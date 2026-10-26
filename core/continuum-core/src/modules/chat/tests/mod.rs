@@ -374,102 +374,8 @@
         .expect("room-filtered poll must succeed");
     }
 
-    // ── chat/poll: after_message_id path ──────────────────────────────
-    #[tokio::test]
-    pub(super) async fn poll_with_anchor_looks_up_timestamp_then_filters_gt() {
-        let anchor_id = Uuid::new_v4();
-        let anchor_str = anchor_id.to_string();
-        // Stub fires for BOTH queries (anchor lookup + main query); the
-        // closure dispatches by inspecting the inbound filter shape.
-        let chat = chat_with_stubs(vec![Arc::new(StubDataModule::query_only(move |params| {
-            let filter = &params["filter"];
-
-            // Anchor lookup: filter on `id`, limit 1.
-            if let Some(id_filter) = filter.get("id") {
-                assert_eq!(id_filter["$eq"], anchor_str);
-                assert_eq!(params["limit"], 1);
-                return json!({
-                    "success": true,
-                    "data": [{
-                        "id": anchor_str,
-                        "data": { "id": anchor_str, "timestamp": "2026-05-30T12:00:00Z" }
-                    }]
-                });
-            }
-
-            // Main query: must carry a `$gt` timestamp filter derived
-            // from the anchor's timestamp, and must sort ASC.
-            assert_eq!(filter["timestamp"]["$gt"], "2026-05-30T12:00:00Z");
-            assert_eq!(params["sort"][0]["direction"], "asc");
-            json!({
-                "success": true,
-                "data": [
-                    { "id": "after-1", "data": { "id": "after-1", "timestamp": "2026-05-30T12:30:00Z" } }
-                ]
-            })
-        }))]);
-
-        let result = chat
-            .poll(ChatPollParams {
-                after_message_id: Some(anchor_id),
-                ..Default::default()
-            })
-            .await
-            .expect("anchor poll must succeed when the anchor exists");
-        assert_eq!(result.count, 1);
-        assert_eq!(result.after_message_id, Some(anchor_id));
-    }
-
-    // ── chat/poll: before_message_id path (the scroll-back cursor) ────
-    // what this catches: the endless-scroll page — `beforeMessageId` must
-    // resolve the anchor's timestamp, filter `$lt` (strictly OLDER), and
-    // query DESC (the page immediately preceding the anchor, not the
-    // oldest N in history). A regression here turns scroll-back into
-    // either a forward page or a jump to the beginning of time.
-    #[tokio::test]
-    pub(super) async fn poll_with_before_anchor_filters_lt_and_queries_desc() {
-        let anchor_id = Uuid::new_v4();
-        let anchor_str = anchor_id.to_string();
-        let chat = chat_with_stubs(vec![Arc::new(StubDataModule::query_only(move |params| {
-            let filter = &params["filter"];
-
-            // Anchor lookup: filter on `id`, limit 1.
-            if let Some(id_filter) = filter.get("id") {
-                assert_eq!(id_filter["$eq"], anchor_str);
-                return json!({
-                    "success": true,
-                    "data": [{
-                        "id": anchor_str,
-                        "data": { "id": anchor_str, "timestamp": "2026-05-30T12:00:00Z" }
-                    }]
-                });
-            }
-
-            // Main query: `$lt` bound from the anchor's timestamp, DESC.
-            assert_eq!(filter["timestamp"]["$lt"], "2026-05-30T12:00:00Z");
-            assert_eq!(params["sort"][0]["direction"], "desc");
-            json!({
-                "success": true,
-                "data": [
-                    { "id": "old-2", "data": { "id": "old-2", "timestamp": "2026-05-30T11:59:00Z" } },
-                    { "id": "old-1", "data": { "id": "old-1", "timestamp": "2026-05-30T11:58:00Z" } }
-                ]
-            })
-        }))]);
-
-        let result = chat
-            .poll(ChatPollParams {
-                before_message_id: Some(anchor_id),
-                ..Default::default()
-            })
-            .await
-            .expect("before-anchor poll must succeed when the anchor exists");
-        assert_eq!(result.count, 2);
-        assert_eq!(result.before_message_id, Some(anchor_id));
-        // Chronological normalization holds for the backward page too.
-        assert_eq!(result.messages[0]["id"], "old-1");
-        assert_eq!(result.messages[1]["id"], "old-2");
-    }
+    // ── chat/poll: cursor pages (both directions) live in `paging.rs`, run over
+    // an in-memory store that evaluates the filters and sorts the queries send.
 
     // what this catches: the two cursors are opposite scroll directions —
     // accepting both would silently produce an incoherent page. Must
@@ -755,5 +661,6 @@
         assert!(legacy.media.is_empty());
     }
 
+mod paging;
 mod part_2;
 mod part_3;
