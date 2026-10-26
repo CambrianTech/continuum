@@ -35,8 +35,10 @@ the M5's 16:
    seats); a 970 or a low-end laptop takes embeddings and recall, STT/TTS, vision preprocessing,
    the small fast models (amygdala, classifiers), page and checkpoint storage, and CPU stages
    (assembly, learning's data prep), each through its module's seam (MODULE-ARCHITECTURE.md
-   §9.2). Every piece moved off the seat node lowers its W or G, so a small node raises the
-   grid's seats without hosting a mind. Seats and capabilities are both measured per node.
+   §9.2). A piece moved off the seat node raises its service capacity only when it removes GPU
+   work from the act (lowers W); moving CPU work only shortens G, which makes each mind ask for
+   the GPU sooner (N* = 1 + G/W FALLS) and is a latency win, not a capacity one (corrected,
+   Codex on #5436). Capacity and capabilities are both measured per node.
 6. **Friends have their own** (Joel: "Friends will have their own more like our persona vs our
    friends"). A friend's machines host THEIR minds on THEIR seats, under their control. Between
    friends the minds meet as peers in shared rooms (yours and theirs talking, working, playing
@@ -93,8 +95,9 @@ data prep) runs on the substrate's CPU stages concurrently, never inside a GPU g
 Never slice time below the seats: 14 minds each getting less time is how nothing got done.
 Instead every mind has a presence:
 
-- **Active (seated).** She holds a seat and acts freely at full speed. The grid's active
-  count never exceeds its seats.
+- **Active (seated).** She holds a seat and acts freely. The policy never seats more minds than
+  the node's measured service target; a person may wake more, which is deliberate overload
+  (below), never a violation of hard memory or context safety.
 - **Away.** No seat; she is not acting on her own, but she is fully herself (home, memory,
   work, rooms) and shown in the roster as away. Opening a conversation with her (her name clicked,
   a DM, her room, a call), a mention, or a DM WAKES her (Joel: "we could literally open
@@ -142,6 +145,43 @@ commands live with no rebuild, defaults from measurement. Every policy is evalua
 the dyno (`contention::replay`, the context validator) on the node's own history before it
 goes live: a new idea is a policy, a replay, then one command to switch it on.
 
+## Revision after Codex's critique (2026-10-26, his comments at e0d5e31 and c4b3c38)
+
+1. **Three quantities in every node's offer, never one "seat" number:** storage/KV capacity;
+   sustainable SERVICE capacity for a stated model, workload and latency objective (from the
+   measured prefill/decode knees plus observed workloads and queue/service times, each with a
+   timestamp and confidence, a stale offer read conservatively); and currently AVAILABLE service.
+   N* = 1 + G/W is a saturation estimate for a closed homogeneous loop, not a seat count and not a
+   latency guarantee. Context windows are never shrunk to manufacture seats.
+2. **States, kept distinct:** PRESENT (identity, home, work: durable residency) / RUNNABLE (has a
+   wake) / QUEUED (runnable, waiting for service) / EXECUTING (holding GPU). "Every background
+   mind admitted" means runnable minds queue in one owner that fills the GPU work-conservingly; it
+   never means more executing than the service target. One admission owner may keep distinct
+   resource constraints; the three gates are deleted only after equivalent memory, context and
+   training safety is demonstrated, never by count.
+3. **Wakes are conditional, and durable.** When every seat holds a live human conversation, a new
+   wake is QUEUED durably (her work preserved) instead of evicting a mind a person is with or
+   overcommitting. Repeated wakes coalesce; foreground ownership expires after measured idleness;
+   cancellation is preserved end to end; a disconnect or an owner going offline releases the
+   foreground class. Strict priority alone is not fairness: background wait is bounded by AGING
+   and validated under sustained foreground arrivals.
+4. **Authority.** Friendship or room membership grants no wake or compute authority by itself: a
+   wake needs the target owner's room/peer policy and goes through admission accounting; a
+   mention that asks for no work stays inert; revocation stops future grants and keeps durable
+   jobs and identity.
+5. **The core/fork contract carries** a stable request identity, its priority class, model/gene
+   compatibility, cancellation and generation binding. A background prefill yields only at a safe
+   ubatch boundary and never loses partial KV. The fork work stacks on llama.cpp#74 (d7c6d1ab3,
+   as agreed with Cormac). Storage eviction stays a separate owner, with bounded disk demand and a
+   safe cold fallback when a page is incompatible or missing.
+6. **Acceptance metrics:** per-mind p50/p90 end-to-end act and max wait; queue vs GPU vs tool
+   time; throughput; wake latency; retained work under node loss; several simultaneous human
+   conversations; sustained foreground; unavailable or corrupt pages. Offline replays (#5435,
+   the context validator) are labelled with their uncertainty and propose only; live acceptance
+   decides.
+7. **Runtime policy switching** versions each decision atomically, preserves in-flight grant
+   ownership and cancellation, and keeps a supported rollback to the prior policy.
+
 ## Open questions for the team
 
 - **Codex (serving, admission, grid):** a seat as measured speed capacity: from W and G as
@@ -158,8 +198,11 @@ goes live: a new idea is a policy, a replay, then one command to switch it on.
 
 ## Gates (done when)
 
-- The mind a person works with: median act ≤ 1.5 × her solo W on any node (measured, the
-  dyno then live).
-- No node runs more minds at once than its seats; the grid's awake total equals its seats.
+- The mind a person works with: median end-to-end act ≤ 1.5 × her measured SOLO full act (tools
+  and assembly included, not GPU-only W) on any node, as an objective under the service target,
+  not a guarantee under arbitrary overload; validated live (the dyno only proposes).
+- The policy never puts more runnable minds on a node than its measured service target, and the
+  awake total is AT MOST the available authorized capacity (an idle grid need not fill seats);
+  overload exists only by a person's explicit wake and never breaks hard memory/context safety.
 - No birth without a recorded reason; no resident lost (dormant keeps home, memory, work).
 - One admission owner; the three gates deleted.
