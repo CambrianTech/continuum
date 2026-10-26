@@ -1,169 +1,85 @@
 //! A crate is tested and audited by construction, never by a reviewer's checklist.
 //!
-//! A crate cut out of `continuum-core` must be named in four lists, or part of it goes
-//! unwatched while every check stays green:
-//! 1. `tools/scripts/ci-change-scope.cjs` `TESTED_CRATES`, or CI never runs its tests;
-//! 2. a job in `.github/workflows/continuum-rust-tests.yml` (its own `matrix.crate == '…'`
-//!    steps, or the generic allowlist), or the selected crate runs nothing;
-//! 3. [`crate::MODULE_CRATES`] / `SPLIT_CRATES`, or every per-file ratchet stops seeing its
-//!    files and their counts fall for no change;
-//! 4. `scripts/ratchets/check-rust-warnings.sh`, or its warnings go uncounted.
+//! Every `core/` workspace member is tested (CI), audited (per-file ratchets) and counted
+//! (warnings ratchet) unless the root `Cargo.toml` `[workspace.metadata.ci]` names it as an
+//! exception, so cutting a crate is one `members` line ([`crate::crate_policy`]). Before this,
+//! a cut had to edit four hand-kept lists and review caught a missed entry twice on
+//! 2026-10-26: #5456 (continuum-dreaming, all four) and #5450 (continuum-sentinel: 122 tests
+//! in no CI job, and two `loose_id_guard` entries that vanished because their files left the
+//! scan). Card 85138cb9.
 //!
-//! Review caught a missing entry on 2026-10-26, twice: #5456 (continuum-dreaming, all four)
-//! and #5450 (continuum-sentinel: 122 tests in no CI job, and two `loose_id_guard` entries
-//! that vanished because their files left the scan, not because the code changed). Card
-//! 85138cb9. This rule reads the four lists and the workspace, so the next cut fails in
-//! seconds instead.
+//! This rule is the guard that the derivation stays the only source: no consumer may grow a
+//! hand-kept crate list again, every exception names a real crate, and every crate the
+//! workflow gives its own steps is one the policy says has them.
 
 use std::collections::BTreeSet;
 use std::path::Path;
 
-/// Workspace crates with tests that the crate matrix does not select, each with the reason.
-/// The list only shrinks: a crate leaves it when it joins `TESTED_CRATES`.
-pub const UNSELECTED_WITH_TESTS: &[(&str, &str)] = &[
-    ("airc-test-fixtures", "pending: never selected by any CI job (card 996e3537)"),
-    ("continuum-airc-protocol", "pending: never selected by any CI job (card 996e3537)"),
-    ("continuum-cli-lifecycle", "its own job: continuum-rust-tests.yml runs `cargo test -p continuum-cli-lifecycle`"),
-    ("continuum-context", "pending: never selected by any CI job (card 996e3537)"),
-    ("continuum-orm-derive", "pending: never selected by any CI job (card 996e3537)"),
-    ("continuum-positron", "pending: never selected by any CI job (card 996e3537)"),
-    ("continuum-text-analysis", "pending: never selected by any CI job (card 996e3537)"),
-    ("continuum-tool-protocol", "pending: never selected by any CI job (card 996e3537)"),
-    ("expert-pager-policy", "pending: never selected by any CI job (card 996e3537)"),
-    ("inference-grpc", "pending: never selected by any CI job (card 996e3537)"),
-    ("livekit-protocol", "pending: never selected by any CI job (card 996e3537)"),
-    ("llama", "pending: never selected by any CI job (card 996e3537)"),
-    ("serving-replay", "pending: never selected by any CI job (card 996e3537)"),
-    ("source-hygiene", "its own workflow: source-hygiene.yml runs this crate's tests against the base tree"),
-    ("tool-working-set", "pending: never selected by any CI job (card 996e3537)"),
-];
+use crate::crate_policy::{read_members, tested, parse_policy};
 
-/// Selected crates that keep their own audit outside core's ratchets, each with the reason.
-pub const AUDITED_ELSEWHERE: &[(&str, &str)] = &[
-    ("continuum-host", "pending: in no per-file ratchet yet; add it to SPLIT_CRATES (card 996e3537)"),
-];
-
-/// Audited crates whose warnings the warning ratchet does not count yet, each with the reason.
-pub const WARNINGS_UNCOUNTED: &[(&str, &str)] = &[
-    ("continuum-base", "pending: a split crate outside the warning count; count it (card 996e3537)"),
-    ("continuum-kernel", "pending: ~13 warnings outside the count; fix them, then count it (card 996e3537)"),
-];
-
-/// The quoted `continuum-…`/crate names inside `text[start..]` up to the first `end`.
-fn quoted_names(text: &str, start: &str, end: &str) -> Option<BTreeSet<String>> {
-    let from = text.find(start)? + start.len();
-    let body = &text[from..from + text[from..].find(end)?];
-    Some(
-        body.split(['\'', '"'])
-            .skip(1)
-            .step_by(2)
-            .filter(|name| !name.is_empty())
-            .map(str::to_string)
-            .collect(),
-    )
-}
-
-/// `TESTED_CRATES` from the selector script.
-pub fn tested_crates(selector: &str) -> Option<BTreeSet<String>> {
-    quoted_names(selector, "const TESTED_CRATES = [", "];")
-}
-
-/// Every crate the test workflow has a job for: its own `matrix.crate == 'x'` steps, or the
-/// generic `contains(fromJSON('[…]'), matrix.crate)` allowlist.
-pub fn workflow_crates(workflow: &str) -> BTreeSet<String> {
-    let mut out = BTreeSet::new();
-    for line in workflow.lines() {
-        if let Some((_, rest)) = line.split_once("matrix.crate == '") {
-            if let Some((name, _)) = rest.split_once('\'') {
-                out.insert(name.to_string());
-            }
-        }
-        if line.contains("matrix.crate)") {
-            if let Some(names) = quoted_names(line, "fromJSON('[", "]'") {
-                out.extend(names);
-            }
-        }
-    }
-    out
-}
-
-/// The crates whose warnings the warning ratchet counts (hyphenated spelling).
-pub fn warning_crates(script: &str) -> BTreeSet<String> {
-    script
+/// The crates named by `matrix.crate == 'x'` in the test workflow: its own per-crate steps.
+pub fn own_step_crates(workflow: &str) -> BTreeSet<String> {
+    workflow
         .lines()
-        .filter(|line| line.contains(".get(\"name\") not in ("))
-        .flat_map(|line| line.split('"').skip(1).step_by(2).map(str::to_string).collect::<Vec<_>>())
-        .filter(|name| name.contains('-'))
+        .filter_map(|line| line.split_once("matrix.crate == '"))
+        .filter_map(|(_, rest)| rest.split_once('\'').map(|(name, _)| name.to_string()))
         .collect()
 }
 
-/// The workspace member directories under `core/`, read from the root manifest.
-pub fn core_members(manifest: &str) -> BTreeSet<String> {
-    manifest
-        .lines()
-        .map(|line| line.split('#').next().unwrap_or("").trim()) // unwrap_or: split always yields one piece
-        .filter_map(|line| line.strip_prefix("\"core/"))
-        .filter_map(|rest| rest.split_once('"').map(|(name, _)| name.to_string()))
+/// Whether `text` hand-lists crates: a quoted `continuum-…` name inside a bracketed or
+/// parenthesised list of two or more quoted names on one line.
+pub fn hand_listed_crates(text: &str) -> Vec<String> {
+    text.lines()
+        .filter(|line| !line.trim_start().starts_with(['#', '/']) || line.contains("fromJSON('[") )
+        .filter(|line| line.matches("\"continuum-").count() + line.matches("'continuum-").count() >= 2)
+        .map(|line| line.trim().chars().take(100).collect())
         .collect()
 }
 
-/// Whether a crate's `src/` declares any test.
-pub fn has_tests(src: &Path) -> bool {
-    crate::collect_files(src).iter().any(|file| file.raw.contains("#[test]") || file.raw.contains("#[tokio::test"))
-}
-
-/// Every wiring gap, as one message per missing entry.
+/// Every wiring gap, as one message per problem.
 pub fn gaps(repo: &Path) -> Result<Vec<String>, String> {
     let read = |rel: &str| std::fs::read_to_string(repo.join(rel)).map_err(|e| format!("{rel}: {e}"));
-    let tested = tested_crates(&read("tools/scripts/ci-change-scope.cjs")?).ok_or("no TESTED_CRATES in the selector")?;
-    let jobs = workflow_crates(&read(".github/workflows/continuum-rust-tests.yml")?);
-    let warned = warning_crates(&read("scripts/ratchets/check-rust-warnings.sh")?);
-    let members = core_members(&read("Cargo.toml")?);
-    if tested.is_empty() || jobs.is_empty() || warned.is_empty() || members.is_empty() {
-        return Err(format!(
-            "a list read empty (tested {}, jobs {}, warned {}, members {}): the parse no longer matches its file",
-            tested.len(), jobs.len(), warned.len(), members.len()
-        ));
-    }
-    let audited: BTreeSet<&str> = crate::MODULE_CRATES.iter().chain(crate::SPLIT_CRATES).copied().collect();
-    let exempt = |list: &[(&str, &str)], name: &str| list.iter().any(|(crate_name, _)| *crate_name == name);
+    let root = read("Cargo.toml")?;
+    let policy = parse_policy(&root)?;
+    let members = read_members(repo)?;
+    let workflow = read(".github/workflows/continuum-rust-tests.yml")?;
+    let script = read("scripts/ratchets/check-rust-warnings.sh")?;
+    let selector = read("tools/scripts/ci-change-scope.cjs")?;
+    let known: BTreeSet<&str> = members.iter().map(|m| m.name.as_str()).collect();
+    let tested_names: BTreeSet<&str> = tested(&members, &policy).iter().map(|m| m.name.as_str()).collect();
     let mut out = Vec::new();
-    for name in &members {
-        if !tested.contains(name) && !exempt(UNSELECTED_WITH_TESTS, name) && has_tests(&repo.join("core").join(name).join("src")) {
-            out.push(format!("{name} has tests but is not in TESTED_CRATES (tools/scripts/ci-change-scope.cjs): CI never runs them"));
+
+    let named = [
+        ("untested", &policy.untested),
+        ("own_lib_test_step", &policy.own_lib_test_step),
+        ("split_prefixed", &policy.split_prefixed),
+        ("unaudited", &policy.unaudited),
+        ("warnings_uncounted", &policy.warnings_uncounted),
+    ];
+    for (key, names) in named {
+        for name in names.iter().filter(|n| !known.contains(n.as_str())) {
+            out.push(format!("[workspace.metadata.ci] {key} names {name}, which is not a core/ workspace crate: delete the stale entry"));
         }
     }
-    for name in &tested {
-        if !jobs.contains(name) {
-            out.push(format!("{name} is selected but has no job in continuum-rust-tests.yml (own steps or the generic allowlist)"));
-        }
-        if name == crate::AUDITED_CRATE || exempt(AUDITED_ELSEWHERE, name) {
-            continue;
-        }
-        if !audited.contains(name.as_str()) {
-            out.push(format!("{name} is not in source_hygiene::MODULE_CRATES or SPLIT_CRATES: the per-file ratchets do not see its files"));
+    for name in policy.own_lib_test_step.iter().filter(|n| !tested_names.contains(n.as_str())) {
+        out.push(format!("{name} has own lib-test steps but is not a tested crate"));
+    }
+    let own = own_step_crates(&workflow);
+    for name in &policy.own_lib_test_step {
+        if !own.contains(name) {
+            out.push(format!("{name} is in own_lib_test_step but continuum-rust-tests.yml has no `matrix.crate == '{name}'` step: it runs no lib tests"));
         }
     }
-    // every audited crate, split or module (Codex on #5463: SPLIT_CRATES was missed here)
-    for name in std::iter::once(crate::AUDITED_CRATE).chain(audited.iter().copied()) {
-        if !warned.contains(name) && !exempt(WARNINGS_UNCOUNTED, name) {
-            out.push(format!("{name} is audited but not counted by scripts/ratchets/check-rust-warnings.sh"));
-        }
+    for name in own.iter().filter(|n| !tested_names.contains(n.as_str())) {
+        out.push(format!("continuum-rust-tests.yml has steps for {name}, which is not a tested crate"));
     }
-    // an exemption whose gap is closed must go, or the list stops meaning anything
-    for (name, _) in UNSELECTED_WITH_TESTS {
-        if tested.contains(*name) {
-            out.push(format!("{name} is selected now: delete its UNSELECTED_WITH_TESTS entry"));
-        }
-    }
-    for (name, _) in AUDITED_ELSEWHERE {
-        if audited.contains(name) {
-            out.push(format!("{name} is audited now: delete its AUDITED_ELSEWHERE entry"));
-        }
-    }
-    for (name, _) in WARNINGS_UNCOUNTED {
-        if warned.contains(*name) {
-            out.push(format!("{name} is counted now: delete its WARNINGS_UNCOUNTED entry"));
+    for (file, text) in [
+        ("continuum-rust-tests.yml", &workflow),
+        ("check-rust-warnings.sh", &script),
+        ("ci-change-scope.cjs", &selector),
+    ] {
+        for line in hand_listed_crates(text) {
+            out.push(format!("{file} lists crates by hand again (derive from the workspace instead): {line}"));
         }
     }
     Ok(out)
@@ -173,10 +89,10 @@ pub fn gaps(repo: &Path) -> Result<Vec<String>, String> {
 mod tests {
     use super::*;
 
-    // what this catches: a crate cut from core that is missing from any of the four lists
-    // (#5456, #5450): its tests unrun, its files unaudited, or its warnings uncounted.
+    // what this catches: a hand-kept crate list creeping back into a consumer, or a policy
+    // exception that names a crate that is gone (#5456, #5450).
     #[test]
-    fn every_crate_is_tested_audited_and_counted() {
+    fn crate_lists_are_derived_and_the_policy_names_real_crates() {
         let Some(repo) = crate::repo_root() else {
             panic!("no repository root above the audited crate: the lists cannot be read");
         };
@@ -184,17 +100,13 @@ mod tests {
         assert!(gaps.is_empty(), "crate wiring gaps:\n  {}", gaps.join("\n  "));
     }
 
-    // what this catches: a parser drifting from its file's shape, so a list reads empty or
-    // partial and every gap goes silent.
+    // what this catches: the two readers drifting from the shapes their files use, so a list
+    // reads empty and every gap goes silent.
     #[test]
-    fn each_list_is_read_in_the_shape_its_file_writes_it() {
-        let selector = "const TESTED_CRATES = ['continuum-core', 'continuum-mind',\n  'continuum-dreaming'];\nconst X = ['other'];";
-        assert_eq!(tested_crates(selector).unwrap(), ["continuum-core", "continuum-dreaming", "continuum-mind"].map(String::from).into());
-        let workflow = "        if: matrix.crate == 'continuum-core'\n        if: contains(fromJSON('[\"continuum-hands\",\"continuum-live\"]'), matrix.crate)\n";
-        assert_eq!(workflow_crates(workflow), ["continuum-core", "continuum-hands", "continuum-live"].map(String::from).into());
-        let script = "    if (rec.get(\"target\") or {}).get(\"name\") not in (\"continuum-core\", \"continuum_core\", \"continuum-mind\", \"continuum_mind\"):";
-        assert_eq!(warning_crates(script), ["continuum-core", "continuum-mind"].map(String::from).into());
-        let manifest = "members = [\n    # core/ — substrate\n    \"core/continuum-base\",\n    # \"core/archive\" removed\n    \"core/llama\",\n    \"apps/cli\",\n]";
-        assert_eq!(core_members(manifest), ["continuum-base", "llama"].map(String::from).into());
+    fn the_readers_match_the_shapes_their_files_use() {
+        let workflow = "        if: matrix.crate == 'continuum-core'\n        if: matrix.crate == 'continuum-mind'\n";
+        assert_eq!(own_step_crates(workflow), ["continuum-core", "continuum-mind"].map(String::from).into());
+        assert_eq!(hand_listed_crates("if: contains(fromJSON('[\"continuum-hands\",\"continuum-live\"]'), matrix.crate)").len(), 1);
+        assert!(hand_listed_crates("    # \"continuum-a\" \"continuum-b\" in a comment\n  const x = 'continuum-core';").is_empty());
     }
 }
