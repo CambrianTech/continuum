@@ -40,7 +40,7 @@ pub fn seed_device_vram_prior(total_bytes: u64) {
 /// fraction is the tighter bound keeps the mode alone (the band is absolute; the mode
 /// scales). Discrete VRAM is a different pool from host memory: the band does not apply.
 pub fn plan_fill(live: u64, fraction: f64, unified: bool) -> u64 {
-    use crate::provisioning::model_catalog::{PowerMode, ECO_EXIT_BYTES};
+    use crate::capacity::power_mode::{PowerMode, ECO_EXIT_BYTES};
     let by_mode = (live as f64 * fraction) as u64;
     if !unified {
         return by_mode;
@@ -61,7 +61,7 @@ pub fn plan_fill(live: u64, fraction: f64, unified: bool) -> u64 {
 /// overhead (the CUDA context, the Metal heap) — BigMama's condition on #4230: no
 /// production `HostBudget` hands the plan 1.0.
 pub fn plan_fraction(headroom: f64) -> f64 {
-    headroom.min(crate::provisioning::model_catalog::PowerMode::Performance.serving_fraction())
+    headroom.min(crate::capacity::power_mode::PowerMode::Performance.serving_fraction())
 }
 
 /// The governed VRAM ceiling RIGHT NOW: the resource authority's `available(Vram)`

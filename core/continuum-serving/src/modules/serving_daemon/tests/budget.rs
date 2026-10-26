@@ -168,7 +168,7 @@ fn pin_swap_down_credits_the_evicted_incumbents_weights() {
 #[test]
 fn a_unified_plan_never_fills_within_the_eco_band() {
     use crate::inference::planning::serving_plan::ModelFootprint;
-    use crate::provisioning::model_catalog::{PowerMode, ECO_EXIT_BYTES};
+    use crate::capacity::power_mode::{PowerMode, ECO_EXIT_BYTES};
     let live = 40_300_000_000u64; // the M5 at rest: available 13.4 GB + serving 26.9 GB
     let comfort = PowerMode::Comfort.serving_fraction();
     let fill = plan_fill(live, comfort, true);
@@ -226,7 +226,7 @@ fn a_unified_plan_never_fills_within_the_eco_band() {
 // process's fixed overhead is not in the footprint, and 100% of the ceiling is an OOM.
 #[test]
 fn a_foundry_headroom_of_one_still_keeps_the_process_overhead() {
-    use crate::provisioning::model_catalog::PowerMode;
+    use crate::capacity::power_mode::PowerMode;
     assert_eq!(
         plan_fraction(1.0),
         PowerMode::Performance.serving_fraction()

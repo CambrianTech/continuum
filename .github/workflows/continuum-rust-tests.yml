@@ -477,7 +477,7 @@ jobs:
       - name: Windows connected teacher restoration regression
         if: needs.changes.outputs.rust != 'false'
         run: |
-          $output = & cargo test -p continuum-core --lib --profile dev-fast --features test-fixtures 'modules::serving_daemon::tests::cancelled_exclusive_teacher_restores_real_owned_child' -- --exact 2>&1
+          $output = & cargo test -p continuum-serving --lib --profile dev-fast --features test-fixtures 'modules::serving_daemon::tests::cancelled_exclusive_teacher_restores_real_owned_child' -- --exact 2>&1
           $result = $LASTEXITCODE
           $output | Write-Output
           if ($result -ne 0) { exit $result }

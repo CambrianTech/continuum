@@ -61,7 +61,7 @@ pub mod rag;
 pub mod resources;
 pub mod runtime;
 pub use continuum_perception::search;
-pub use crate::modules::serving_daemon::commands as serving;
+pub use continuum_serving::modules::serving_daemon::commands as serving;
 pub mod system;
 pub mod tool;
 pub use continuum_dreaming::commands::training_trigger;

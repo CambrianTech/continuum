@@ -21,7 +21,7 @@
 //! no lock held across await — the `watch::Sender` is the only shared state and
 //! its `send` takes `&self`. cbar's pipeline-stage pattern in Rust dress.
 
-pub(crate) mod academy_batch;
+pub mod academy_batch;
 pub mod commands;
 mod footprint;
 

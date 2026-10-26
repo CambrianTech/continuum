@@ -537,7 +537,7 @@ fn the_discrete_footprint_arm_is_the_device_delta_beyond_the_weights() {
 // a real cache where there is room (the 46 GB reading gets more than the 20 GB one).
 #[test]
 fn a_full_cache_never_steps_the_serving_mode_down_by_itself() {
-    use crate::provisioning::model_catalog::ECO_EXIT_BYTES;
+    use crate::capacity::power_mode::ECO_EXIT_BYTES;
     let fp = crate::inference::planning::serving_plan::ModelFootprint {
         model_id: "eco-fixture".into(),
         weights_bytes: 16 << 30,

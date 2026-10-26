@@ -231,22 +231,22 @@ impl ServingDaemonModule {
         static LAST_PRESSURE_MODE_ECO: std::sync::atomic::AtomicBool =
             std::sync::atomic::AtomicBool::new(false);
         let previous = if LAST_PRESSURE_MODE_ECO.load(Ordering::Relaxed) {
-            Some(crate::provisioning::model_catalog::PowerMode::Eco)
+            Some(crate::capacity::power_mode::PowerMode::Eco)
         } else {
-            Some(crate::provisioning::model_catalog::PowerMode::Comfort)
+            Some(crate::capacity::power_mode::PowerMode::Comfort)
         };
         let pressure_mode =
-            crate::provisioning::serving_mode_for_pressure_from(available, previous);
+            crate::capacity::power_mode::serving_mode_for_pressure_from(available, previous);
         LAST_PRESSURE_MODE_ECO.store(
-            pressure_mode == crate::provisioning::model_catalog::PowerMode::Eco,
+            pressure_mode == crate::capacity::power_mode::PowerMode::Eco,
             Ordering::Relaxed,
         );
         // Ludicrous (an exam) floors it; pressure (Eco) drops it; otherwise the
         // operator's headroom policy names the everyday mode — the SAME knob the pin
         // fit-gate budgets with, composed here as a mode rather than stacked under one.
         let mode = if serving_ludicrous_active() {
-            crate::provisioning::model_catalog::PowerMode::Performance
-        } else if pressure_mode == crate::provisioning::model_catalog::PowerMode::Eco {
+            crate::capacity::power_mode::PowerMode::Performance
+        } else if pressure_mode == crate::capacity::power_mode::PowerMode::Eco {
             pressure_mode
         } else {
             everyday_drive_mode()
@@ -314,7 +314,7 @@ impl ServingDaemonModule {
         // (2026-09-17: 32 GB × 0.80 = 27 GB bound vs a Performance plan). Physical
         // capacity, current mode; never the live free reading.
         let mode = if serving_ludicrous_active() {
-            crate::provisioning::model_catalog::PowerMode::Performance
+            crate::capacity::power_mode::PowerMode::Performance
         } else {
             everyday_drive_mode()
         };

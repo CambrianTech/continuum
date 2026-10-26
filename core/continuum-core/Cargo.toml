@@ -68,6 +68,7 @@ continuum-live = { path = "../continuum-live" }
 continuum-hands = { path = "../continuum-hands" }
 continuum-engine = { path = "../continuum-engine" }
 continuum-models = { path = "../continuum-models" }
+continuum-serving = { path = "../continuum-serving" }
 continuum-embedding = { path = "../continuum-embedding" }
 continuum-store = { path = "../continuum-store" }  # the data layer and its commands (card 2709ec6d)
 continuum-grid = { path = "../continuum-grid" }  # grid discovery, trust and routing with their commands (plan phase 2)
@@ -340,7 +341,7 @@ pocket-tts = ["continuum-live/pocket-tts"]
 # and web depend on. Regenerate after a command changes:
 # `cargo test -p continuum-core --features ts-codegen generates_live_typescript_sdk`.
 ts-codegen = ["continuum-kernel/ts-codegen"]
-metal = ["candle-core/metal", "candle-nn/metal", "candle-transformers/metal", "llama/metal", "ort/coreml", "continuum-engine/metal", "continuum-live/metal", "continuum-mind/metal", "continuum-dreaming/metal", "continuum-grid/metal"]
+metal = ["candle-core/metal", "candle-nn/metal", "candle-transformers/metal", "llama/metal", "ort/coreml", "continuum-engine/metal", "continuum-serving/metal", "continuum-live/metal", "continuum-mind/metal", "continuum-dreaming/metal", "continuum-grid/metal"]
 cuda = ["candle-core/cuda", "candle-nn/cuda", "candle-transformers/cuda", "llama/cuda", "ort/cuda", "continuum-kernel/cuda", "continuum-engine/cuda", "continuum-mind/cuda", "continuum-dreaming/cuda", "continuum-grid/cuda"]
 # Vulkan is llama.cpp-only (Candle has no Vulkan backend). Used by the
 # Mac-Carl-in-container path: Podman + krunkit routes Vulkan API calls out
@@ -390,7 +391,7 @@ load-dynamic-ort = ["ort/load-dynamic"]
 #     via `cargo test --features test-fixtures` or `--features test-fixtures`
 #     on the bin target.
 #   - Production: heuristic adapter doesn't exist in the binary at all.
-test-fixtures = ["continuum-kernel/test-fixtures", "continuum-engine/test-fixtures", "continuum-hands/test-fixtures", "continuum-live/test-fixtures", "continuum-mind/test-fixtures", "continuum-dreaming/test-fixtures", "continuum-store/test-fixtures", "continuum-grid/test-fixtures"]
+test-fixtures = ["continuum-kernel/test-fixtures", "continuum-engine/test-fixtures", "continuum-serving/test-fixtures", "continuum-hands/test-fixtures", "continuum-live/test-fixtures", "continuum-mind/test-fixtures", "continuum-dreaming/test-fixtures", "continuum-store/test-fixtures", "continuum-grid/test-fixtures"]
 
 # stress-tests: opts in concurrency / multi-thread / load tests that
 # pin substrate invariants under N-task simultaneous load. Each test
@@ -462,6 +463,7 @@ unexpected_cfgs = "allow"
 [dev-dependencies]
 continuum-kernel = { path = "../continuum-kernel", features = ["test-fixtures"] }
 continuum-engine = { path = "../continuum-engine", features = ["test-fixtures"] }
+continuum-serving = { path = "../continuum-serving", features = ["test-fixtures"] }
 continuum-hands = { path = "../continuum-hands", features = ["test-fixtures"] }
 continuum-live = { path = "../continuum-live", features = ["test-fixtures"] }
 continuum-mind = { path = "../continuum-mind", features = ["test-fixtures"] }

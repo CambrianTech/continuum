@@ -90,6 +90,7 @@ impl FrozenSlots {
 pub(super) const HEALTH_FAILS_TO_RELAUNCH: u8 = 2;
 
 impl ServingDaemonModule {
+    #[cfg(test)]
     pub(super) fn set_decode_age_source(&mut self, source: DecodeAgeSource) {
         self.decode_age = source;
     }

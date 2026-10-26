@@ -19,7 +19,7 @@ pub(super) fn grantable_from_available(physical: u64, available: u64) -> u64 {
     grantable(
         available
             .saturating_sub(host_os_floor_bytes(physical))
-            .min(available.saturating_sub(crate::provisioning::model_catalog::ECO_EXIT_BYTES)),
+            .min(available.saturating_sub(crate::capacity::power_mode::ECO_EXIT_BYTES)),
     )
 }
 use super::*;

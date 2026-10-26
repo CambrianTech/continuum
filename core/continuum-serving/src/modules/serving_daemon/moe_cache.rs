@@ -42,8 +42,8 @@ pub(super) fn serve_host_bytes(
 /// The everyday drive mode this node's operator asked for, from
 /// `CONTINUUM_VRAM_HEADROOM` (default 0.8 → Comfort; a dedicated node at 1.0 →
 /// Performance). One reader, cached by `config_env`.
-pub(super) fn everyday_drive_mode() -> crate::provisioning::model_catalog::PowerMode {
-    crate::provisioning::model_catalog::PowerMode::everyday_for_headroom(
+pub(super) fn everyday_drive_mode() -> crate::capacity::power_mode::PowerMode {
+    crate::capacity::power_mode::PowerMode::everyday_for_headroom(
         continuum_base::config_env::vram_headroom(),
     )
 }

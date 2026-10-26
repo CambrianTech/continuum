@@ -39,6 +39,7 @@ members = [
     "core/continuum-hands",
     "core/continuum-engine",
     "core/continuum-models",
+    "core/continuum-serving",
     "core/continuum-embedding",
     "core/continuum-service",
     "core/expert-pager-policy",
