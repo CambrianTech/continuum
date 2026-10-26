@@ -185,7 +185,7 @@ pub(super) async fn run_pass(
         // result as memory, and re-perceive — the live act→observe motion, paced
         // by the grader because the eval room has no metronome.
         // Pose the task as an EXAMINER'S REQUEST TO HER, not a bare imperative. The
-        // shared [Conversational Presence] block answers "a task → answer it now" only
+        // [Directed Presence] block answers "a task → answer it now" only
         // when the model RECOGNIZES the message as asking something OF IT; a terse gym
         // imperative ("Implement `fn eval`…") reads to a coder model as ambient text
         // "about" a task, so it takes the pleasantry-rest PASS hatch and scores 0

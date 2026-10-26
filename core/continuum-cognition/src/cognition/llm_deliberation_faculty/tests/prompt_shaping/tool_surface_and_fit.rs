@@ -38,12 +38,25 @@ fn mixed_thread_attributes_self_to_assistant_and_peers_to_user() {
     // WorkingMemory (this harness faculty has none), so no ledger
     // message here — the ledger-specific behavior is pinned in
     // steps_ledger_renders_receipts_and_explicit_zero_case below.
-    // …plus the volatile presence-framing turn (2026-09-01: it rides the
-    // facts phase instead of churning the system prefix), still ask-last.
+    // …plus the presence contract, which now stands in her view as its own
+    // block (cached once per epoch, not re-sent each act), and the short live
+    // line naming it, still ask-last (the 2026-10-25 framing split).
     assert_eq!(
         roles,
-        vec!["user", "assistant", "user", "user", "user"],
+        vec!["user", "assistant", "user", "user", "user", "user"],
         "view: {view:?}"
+    );
+    let text_of = |m: &crate::ai::types::ChatMessage| match &m.content {
+        crate::ai::types::MessageContent::Text(t) => t.clone(),
+        _ => String::new(),
+    };
+    assert!(
+        view.messages.iter().any(|m| text_of(m).starts_with("[Conversational Presence]\n")),
+        "the presence contract stands in her view as its block"
+    );
+    assert!(
+        view.messages.iter().any(|m| text_of(m).contains("[In force this turn: Conversational Presence")),
+        "the live line names the contract in force"
     );
     assert!(
         view.messages
@@ -71,12 +84,13 @@ fn mixed_thread_attributes_self_to_assistant_and_peers_to_user() {
     // Perception facts are GROUNDING inserted BEFORE the final ask (the last user
     // turn), so the ask stays LAST where the model answers it — not the bracketed
     // meta, which it would otherwise parrot (2026-07-20 humaneval parrot fix). Here
-    // the layout is [Joel, Asha(assistant), [context]-fact, Joel-ask]: the grounding
-    // sits at [2], the ask is last.
+    // the layout is [Joel, Asha(assistant), [Conversational Presence] (the standing
+    // contract, in her view), [context]-fact, the live line, Joel-ask]: the grounding
+    // sits at [3], after her view and before the ask, and the ask is last.
     assert!(
-        view.messages[2].content_text().starts_with("[context]"),
-        "grounding fact sits just before the ask: {:?}",
-        view.messages[2]
+        view.messages[3].content_text().starts_with("[context]"),
+        "grounding fact sits after her view and before the ask: {:?}",
+        view.messages[3]
     );
     assert!(
         view.messages

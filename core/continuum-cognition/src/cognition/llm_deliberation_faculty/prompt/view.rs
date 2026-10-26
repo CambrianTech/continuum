@@ -158,20 +158,25 @@ impl LlmDeliberationFaculty {
                 .stable,
         );
 
-        // The volatile framing (clock + own-time/presence) rides the FACTS phase
-        // of the conversation — flicker-class content, before the ask — never the
-        // system message it invalidated on every act (see the split note below).
-        let trailing_framing = deliberation_prompt::compose_trailing(
-            ws.now_ms,
-            ws.self_initiated,
-            ws.directed_at_self(),
-            holds_live_work,
-        );
+        // The contracts in force (own time, presence) are fixed text: each enters her view
+        // as a standing block, once per epoch, and stays cached. Only the clock and the line
+        // naming what is in force ride the fresh tail, so the ask stays last (the parrot fix)
+        // without re-sending the bodies every act (context validator, 2026-10-25: 8.7% of an
+        // act's prefill on the M5's captures).
+        let contracts = deliberation_prompt::contracts_in_force(ws.self_initiated, ws.directed_at_self(), holds_live_work);
+        let trailing_framing = deliberation_prompt::compose_live_framing(ws.now_ms, &contracts);
         let mut all_messages = self.messages_with_visual_feedback(
             ws,
             (!trailing_framing.is_empty()).then_some(trailing_framing.as_str()),
             visual,
         );
+        all_messages.streams.blocks.extend(contracts.into_iter().map(|contract| {
+            crate::cognition::context_streams::blocks::Grounding {
+                faculty: contract.name.to_owned(),
+                text: contract.body.to_owned(),
+                minimum: contract.body.to_owned(),
+            }
+        }));
         // Her view leads the history: this act appends to it, and everything after it (the
         // standing grounding, facts, the clock) is this act's fresh tail.
         let view = self.place_view(&mut all_messages);

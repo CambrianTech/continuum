@@ -75,7 +75,7 @@ pub const SILENCE_AFFORDANCE_BLOCK: &str = "\n\n[Conversational Presence]\n\
 /// never-ghost-a-question rule explicit. A framing fact fed to the mind — the
 /// choice stays hers; never a filter on her output
 /// ([[no-hardcoded-heuristics-to-steer-cognition]]).
-pub const DIRECTED_PRESENCE_BLOCK: &str = "\n\n[Conversational Presence]\n\
+pub const DIRECTED_PRESENCE_BLOCK: &str = "\n\n[Directed Presence]\n\
     This message names you. If it asks something of you — a question, a request, \
     a task — answer it now; never leave a question put to you hanging. But being \
     named is not the same as being asked: if it asks nothing (an appreciation, a \
