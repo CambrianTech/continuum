@@ -13,7 +13,7 @@
 
 use crate::code::{FileEngine, ShellSession};
 use crate::log_info;
-use crate::runtime::{CommandResult, ModuleConfig, ModuleContext, ModulePriority, ServiceModule};
+use crate::runtime::{CommandExecutor, CommandResult, LateBound, ModuleConfig, ModuleContext, ModulePriority, ServiceModule};
 use async_trait::async_trait;
 use dashmap::DashMap;
 use serde_json::Value;
@@ -28,6 +28,12 @@ pub struct CodeState {
     pub shell_sessions: Arc<DashMap<String, ShellSession>>,
     /// Tokio runtime handle for spawning async shell execution tasks.
     pub rt_handle: tokio::runtime::Handle,
+    /// The executor, bound at boot: its policy is the ONE owner of caller trust
+    /// ([`Self::caller_trust`]). Unbound resolves no trust.
+    pub executor: LateBound<CommandExecutor>,
+    /// Who is acting and where, handed in at construction by the layer above the kernel
+    /// (never a global).
+    pub acting: Arc<dyn crate::identity::acting::ActingProvider>,
 }
 
 impl CodeState {
@@ -35,12 +41,22 @@ impl CodeState {
         file_engines: Arc<DashMap<String, FileEngine>>,
         shell_sessions: Arc<DashMap<String, ShellSession>>,
         rt_handle: tokio::runtime::Handle,
+        acting: Arc<dyn crate::identity::acting::ActingProvider>,
     ) -> Self {
         Self {
+            acting,
             file_engines,
             shell_sessions,
             rt_handle,
+            executor: LateBound::new("code::executor"),
         }
+    }
+
+    /// The trust the executor's policy resolves for `caller`. `None` (an unbound executor,
+    /// or a policy that cannot resolve) is LEAST privilege: callers treat it as no grant,
+    /// never as the owner.
+    pub fn caller_trust(&self, caller: Option<&crate::routing::CallerIdentity>) -> Option<crate::routing::trust_level::TrustLevel> {
+        self.executor.get().and_then(|e| e.caller_trust(caller))
     }
 
     /// Begin ending one set of hands: an acting context that is over (an eval or a fork
@@ -205,18 +221,18 @@ impl ServiceModule for CodeModule {
         objs.extend(crate::commands::code::cargo::command_objects(
             self.state.clone(),
         ));
+        objs.push(Arc::new(crate::commands::code::run::CodeRun { state: self.state.clone() }));
         objs
+    }
+
+    fn install_executor(&self, executor: Arc<CommandExecutor>) {
+        self.state.executor.install(executor);
     }
 
     fn as_any(&self) -> &dyn Any {
         self
     }
 }
-
-/// Realistic 50-persona load/profiling harness (real CodeModule, real payloads, through a
-/// mind's tool executor). Gated `stress-tests` per the test doctrine; profiling runs only.
-#[cfg(all(test, feature = "stress-tests"))]
-mod load_harness;
 
 #[cfg(test)]
 mod tests {
@@ -236,7 +252,7 @@ mod tests {
         use crate::identity::hands_context::HandsContext;
         let rt = tokio::runtime::Handle::current();
         let root = tempfile::tempdir().unwrap();
-        let state = CodeState::new(Arc::new(DashMap::new()), Arc::new(DashMap::new()), rt.clone());
+        let state = CodeState::new(Arc::new(DashMap::new()), Arc::new(DashMap::new()), rt.clone(), Arc::new(crate::test_acting::TestActing));
         let home = HandsKey::new("kimi".into(), None);
         let mut shell = ShellSession::new("s0", "kimi", root.path()).expect("session");
         let exec = shell.execute("sleep 30", Some(60_000), &rt).expect("a long command starts");
@@ -282,7 +298,7 @@ mod tests {
         crate::system_resources::disk_reporters::prepare_writer_fixture().await;
         let rt = tokio::runtime::Handle::current();
         let root = tempfile::tempdir().unwrap();
-        let state = CodeState::new(Arc::new(DashMap::new()), Arc::new(DashMap::new()), rt.clone());
+        let state = CodeState::new(Arc::new(DashMap::new()), Arc::new(DashMap::new()), rt.clone(), Arc::new(crate::test_acting::TestActing));
         let who = "kimi#context";
         let mut shell = ShellSession::new("s0", who, root.path()).expect("session");
         let running = shell.execute("sleep 30", Some(60_000), &rt).expect("a command starts");
@@ -320,6 +336,7 @@ mod tests {
             Arc::new(DashMap::new()),
             Arc::new(DashMap::new()),
             tokio::runtime::Handle::current(),
+            Arc::new(crate::test_acting::TestActing),
         ));
         CodeModule::new(state)
     }

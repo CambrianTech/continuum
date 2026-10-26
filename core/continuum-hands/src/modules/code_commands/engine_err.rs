@@ -22,35 +22,38 @@ pub(super) fn engine_err(e: crate::code::file_engine::FileEngineError) -> Comman
 /// to the same roots, card d598c806, so the reads are too); the sandbox for everyone
 /// else. Asked through the gate's own resolvers, so the read scope can never be wider
 /// than the shell grant.
-pub(super) fn read_scope_of(ctx: &Ctx, workspace: &std::path::Path) -> crate::code::path_security::ReadScope {
+pub(super) fn read_scope_of(state: &CodeState, ctx: &Ctx, workspace: &std::path::Path) -> Result<crate::code::path_security::ReadScope, CommandError> {
     use crate::code::path_security::ReadScope;
-    let trust = crate::modules::grid::trust_policy::caller_trust(ctx.caller.as_ref());
+    // no resolved trust (executor unbound, or a policy that cannot resolve) is the sandbox
+    let Some(trust) = state.caller_trust(ctx.caller.as_ref()) else {
+        return Ok(ReadScope::Sandbox);
+    };
     if !crate::routing::command_acl::is_command_authorized("code/shell", trust) {
-        return ReadScope::Sandbox;
+        return Ok(ReadScope::Sandbox);
     }
-    match confinement_of(ctx, workspace) {
+    Ok(match confinement_of(state, ctx, workspace)? {
         None => ReadScope::Host { deny: Vec::new() },
         Some(confinement) if confinement.reaches_host() => ReadScope::Host { deny: confinement.host_denials() },
         Some(confinement) => ReadScope::Confined(confinement.materialize()),
-    }
+    })
 }
 
 /// THE one resolver for a verb that takes a path from its caller and reads the file
 /// itself (`vision/look`, and any later one): the caller's engine, the caller's read
 /// scope, the engine's own security. Returns the absolute canonical path, or the same
 /// refusal `code/read` gives — named, correctable, never a bare I/O error.
-pub(crate) async fn resolve_readable_path(
+pub async fn resolve_readable_path(
     state: &CodeState,
     ctx: &Ctx,
     path: &str,
 ) -> Result<std::path::PathBuf, CommandError> {
-    let key = hands_of(ctx);
+    let key = hands_of(state, ctx);
     ensure_engine(state, &key).await?;
     let engine = state
         .file_engines
         .get(&key.map_key())
         .ok_or_else(|| CommandError::Internal("workspace vanished after provisioning".into()))?;
-    let scope = read_scope_of(ctx, &engine.workspace_root());
+    let scope = read_scope_of(state, ctx, &engine.workspace_root())?;
     engine
         .security()
         .validate_read_in(path, scope)
@@ -61,11 +64,13 @@ pub(crate) async fn resolve_readable_path(
 /// (an airc `peer_id`), never a params field. `None` caller is the
 /// substrate-local owner. This is the single point that maps the gated identity
 /// to the per-caller workspace; nothing trusts caller-supplied identity.
-pub(crate) fn caller_id(ctx: &Ctx) -> String {
+pub(crate) fn caller_id(state: &CodeState, ctx: &Ctx) -> String {
     // ONE resolver (`operator_peer::acting_peer_id`): the same peer the work verbs
     // claim as. `LOCAL_OWNER` survives only for the boot window before the
     // self-peers are online.
-    crate::persona::operator_peer::acting_peer_id(ctx)
+    state
+        .acting
+        .acting_peer_id(ctx)
         .map(|p| p.to_string())
         .unwrap_or_else(|| LOCAL_OWNER.to_string()) // unwrap_or_else: boot window, no self-peer yet — the core's cwd, named below
 }
@@ -76,8 +81,8 @@ pub(crate) const LOCAL_OWNER: &str = "local-owner";
 /// bound to (`CallerIdentity::hands`, set by the kernel side, never by params). The one
 /// key every hands map uses; the caller alone stays the authorization identity
 /// ([`caller_id`]). See [`crate::code::hands`].
-pub(crate) fn hands_of(ctx: &Ctx) -> HandsKey {
-    HandsKey::new(caller_id(ctx), ctx.caller.as_ref().and_then(|c| c.hands))
+pub(crate) fn hands_of(state: &CodeState, ctx: &Ctx) -> HandsKey {
+    HandsKey::new(caller_id(state, ctx), ctx.caller.as_ref().and_then(|c| c.hands))
 }
 
 /// Lazily ensure a workspace [`FileEngine`] exists for `who`. The local operator
@@ -96,7 +101,7 @@ pub(crate) async fn ensure_engine(state: &CodeState, key: &HandsKey) -> Result<(
     if state.file_engines.contains_key(who) {
         return Ok(());
     }
-    let local = is_local_who(caller);
+    let local = is_local_who(state, caller);
     let root = match key.context {
         // An acting context's workspace is what it was rooted at; it never falls back to her
         // home layer, which would put a fork's or a card's edits on her desk. Fail closed and
@@ -142,10 +147,10 @@ pub(crate) async fn ensure_engine(state: &CodeState, key: &HandsKey) -> Result<(
 
 /// Is `who` a LOCAL identity — the boot-window `LOCAL_OWNER`, or the operator / agent
 /// self-peer? Local identities work in the core's own checkout; everyone else in a layer.
-pub(super) fn is_local_who(who: &str) -> bool {
+pub(super) fn is_local_who(state: &CodeState, who: &str) -> bool {
     who == LOCAL_OWNER
         || uuid::Uuid::parse_str(who)
-            .map(crate::persona::operator_peer::is_local_identity)
+            .map(|peer| state.acting.is_local_identity(peer))
             .unwrap_or(false) // unwrap_or: not a uuid = not a self-peer
 }
 
@@ -155,19 +160,19 @@ pub(super) fn is_local_who(who: &str) -> bool {
 /// are rooted through. A context that was never rooted gets `None` (its snippet runs in
 /// scratch), never the live checkout (Astra's review of #5005). The caller's default context
 /// keeps the local identity's held-card lookup.
-pub(crate) async fn held_root_for(ctx: &Ctx) -> Option<std::path::PathBuf> {
-    let key = hands_of(ctx);
+pub(crate) fn held_root_for(state: &CodeState, ctx: &Ctx) -> Option<std::path::PathBuf> {
+    let key = hands_of(state, ctx);
     let persona = uuid::Uuid::parse_str(&key.caller).ok()?;
-    crate::cognition::persona_workspace::acting_root_in(persona, key.context)
+    state.acting.acting_root_in(persona, key.context)
 }
 
 /// The prepared instance environment's python for the root these hands stand at
 /// ([`held_root_for`]), if it has one: the interpreter `code/run` runs a snippet with (card
 /// 533c2d78). `None` = no root, or no prepared env, and the caller falls back to the PATH
 /// interpreter, named.
-pub(crate) async fn held_env_python_for(ctx: &Ctx) -> Option<std::path::PathBuf> {
-    let root = held_root_for(ctx).await?;
-    crate::persona::instance_env_fact::instance_python(&root)
+pub(crate) fn held_env_python_for(state: &CodeState, ctx: &Ctx) -> Option<std::path::PathBuf> {
+    let root = held_root_for(state, ctx)?;
+    state.acting.instance_python(&root)
 }
 
 /// Lazily ensure shell execution state exists for `who`, rooted at the
@@ -181,7 +186,7 @@ pub(crate) async fn held_env_python_for(ctx: &Ctx) -> Option<std::path::PathBuf>
 /// into this registry or into later calls.
 pub(super) async fn ensure_shell(state: &CodeState, ctx: &Ctx) -> Result<String, CommandError> {
     // The hands this call is bound to: the shell is provisioned in exactly those.
-    let key = &hands_of(ctx);
+    let key = &hands_of(state, ctx);
     let map_key = key.map_key();
     let who = map_key.as_str();
     // The ENGINE decides the root, once for these hands' life, and the shell opens there.
@@ -201,7 +206,7 @@ pub(super) async fn ensure_shell(state: &CodeState, ctx: &Ctx) -> Result<String,
         .map_err(|e| CommandError::Internal(format!("shell init failed: {e}")))?;
     // A citizen's shell is confined to her roots (card d598c806); the operator's is the
     // operator's. Decided by the SAME trust the gate saw, never by a params field.
-    if let Some(confinement) = confinement_of(ctx, &root) {
+    if let Some(confinement) = confinement_of(state, ctx, &root)? {
         shell.confine(confinement);
     }
     state.shell_sessions.entry(who.to_string()).or_insert(shell);
@@ -217,16 +222,21 @@ pub(super) async fn ensure_shell(state: &CodeState, ctx: &Ctx) -> Result<String,
 /// credential paths and other citizens' directories (Joel 2026-10-18: "keep creds
 /// off-limits"): she quotes tool output into rooms, and a room reaches every enrolled
 /// peer. Her shell also never inherits the core's secrets (`strip_secret_env`).
-pub(crate) fn confinement_of(ctx: &Ctx, workspace: &std::path::Path) -> Option<crate::system_resources::confinement::Confinement> {
+pub(crate) fn confinement_of(state: &CodeState, ctx: &Ctx, workspace: &std::path::Path) -> Result<Option<crate::system_resources::confinement::Confinement>, CommandError> {
     let resident = ctx.caller.as_ref().is_some_and(|c| c.source == crate::routing::auth_policy::CallerSource::LocalPersona);
-    let trust = crate::modules::grid::trust_policy::caller_trust(ctx.caller.as_ref());
-    if !resident && trust == crate::routing::trust_level::TrustLevel::Owner {
-        return None;
+    // only a RESOLVED owner is unconfined; no resolved trust confines
+    let trust = state.caller_trust(ctx.caller.as_ref());
+    if !resident && trust == Some(crate::routing::trust_level::TrustLevel::Owner) {
+        return Ok(None);
     }
-    let home = crate::paths::home_dir()?;
-    let continuum_root = crate::paths::continuum_home().ok()?;
-    let confinement = crate::system_resources::confinement::Confinement::for_caller(&home, &continuum_root, &caller_id(ctx), workspace);
-    Some(if resident { confinement.reaching_host() } else { confinement })
+    let Some(home) = crate::paths::home_dir() else {
+        return Ok(None);
+    };
+    let Ok(continuum_root) = crate::paths::continuum_home() else {
+        return Ok(None);
+    };
+    let confinement = crate::system_resources::confinement::Confinement::for_caller(&home, &continuum_root, &caller_id(state, ctx), workspace);
+    Ok(Some(if resident { confinement.reaching_host() } else { confinement }))
 }
 
 /// How long `code/shell` waits INLINE for completion before handing back a handle
@@ -270,7 +280,7 @@ impl ActionCommand for CodeRead {
     async fn run(&self, ctx: &Ctx, p: CodeReadParams) -> Result<ReadResult, CommandError> {
         let engine = engine!(self, ctx);
         engine
-            .read_in(&p.file_path, p.start_line, p.end_line, read_scope_of(ctx, &engine.workspace_root()))
+            .read_in(&p.file_path, p.start_line, p.end_line, read_scope_of(&self.state, ctx, &engine.workspace_root())?)
             .map_err(engine_err)
     }
 }
@@ -317,7 +327,7 @@ impl ActionCommand for CodeWrite {
         let before = std::fs::metadata(engine.workspace_root().join(&p.file_path))
             .ok()
             .map(|m| m.len());
-        let scope = read_scope_of(ctx, &engine.workspace_root());
+        let scope = read_scope_of(&self.state, ctx, &engine.workspace_root())?;
         let out = engine
             .write_in(&p.file_path, &p.content, p.description.as_deref(), &scope)
             .map_err(engine_err);

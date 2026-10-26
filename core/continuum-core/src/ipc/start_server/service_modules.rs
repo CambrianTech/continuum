@@ -27,6 +27,7 @@ pub(super) fn register_code_data_and_service_modules(
         file_engines.clone(),
         shell_sessions.clone(),
         rt_handle.clone(),
+        Arc::new(crate::modules::acting_provider::CoreActing),
     ));
     runtime.register(Arc::new(CodeModule::new(code_state.clone())));
 

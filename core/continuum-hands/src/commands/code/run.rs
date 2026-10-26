@@ -89,9 +89,10 @@ pub struct CodeRunResult {
     pub interpreter: String,
 }
 
-/// `code/run` — run a snippet, report stdout/stderr/exit/duration. Stateless, AiSafe.
-#[derive(Default)]
-pub struct CodeRun;
+/// `code/run` — run a snippet, report stdout/stderr/exit/duration. AiSafe; holds the code state for the caller's trust (the executor's policy).
+pub struct CodeRun {
+    pub state: std::sync::Arc<crate::modules::code::CodeState>,
+}
 
 #[async_trait]
 impl ActionCommand for CodeRun {
@@ -138,7 +139,7 @@ impl ActionCommand for CodeRun {
                 // the snippet ran in a temp dir, relative paths meant nothing, and some
                 // walked OTHER citizens' workspaces. Python is the right scratch language;
                 // it must run where her hands stand.
-                let cwd = crate::modules::code_commands::held_root_for(ctx).await;
+                let cwd = crate::modules::code_commands::held_root_for(&self.state, ctx);
                 // THE HELD CHECKOUT'S ENVIRONMENT, NOT THE PATH's python3 (card 533c2d78,
                 // finder Mara 2026-09-15): two citizens spent ~79-act loops on
                 // matplotlib-24177 whose repro scripts died on "no module named numpy" —
@@ -146,7 +147,7 @@ impl ActionCommand for CodeRun {
                 // env; the snippet runner ran the system python. Same resolver as the
                 // [env] fact: the caller's rooted card checkout → its prepared env.
                 let interpreter =
-                    match crate::modules::code_commands::held_env_python_for(ctx).await {
+                    match crate::modules::code_commands::held_env_python_for(&self.state, ctx) {
                         Some(interpreter) => Ok(interpreter),
                         None => crate::modules::python_adapter::find_python_async()
                             .await
@@ -160,7 +161,7 @@ impl ActionCommand for CodeRun {
                     chars = params.code.chars().count() as u64,
                     "what a python snippet is — a program, or the tree walked / a shell called from python"
                 );
-                let hands = Hands::of(ctx, cwd.as_deref().unwrap_or(&dir));
+                let hands = Hands::of(&self.state, ctx, cwd.as_deref().unwrap_or(&dir))?;
                 let result = match interpreter {
                     Ok(interpreter) => {
                         run_python(&dir, cwd.as_deref(), &params.code, timeout, &interpreter, &hands).await
@@ -204,7 +205,7 @@ impl ActionCommand for CodeRun {
             CommandError::Internal(format!("code/run: temp dir create failed: {e}"))
         })?;
 
-        let hands = Hands::of(ctx, &dir);
+        let hands = Hands::of(&self.state, ctx, &dir)?;
         let result = compile_and_run_rust(&dir, &params.code, timeout, &hands).await;
         let _ = std::fs::remove_dir_all(&dir);
         result
@@ -335,11 +336,11 @@ pub(crate) struct Hands {
 }
 
 impl Hands {
-    pub(crate) fn of(ctx: &Ctx, workspace: &std::path::Path) -> Self {
-        Self {
-            confinement: crate::modules::code_commands::confinement_of(ctx, workspace),
-            who: crate::modules::code_commands::caller_id(ctx),
-        }
+    pub(crate) fn of(state: &crate::modules::code::CodeState, ctx: &Ctx, workspace: &std::path::Path) -> Result<Self, CommandError> {
+        Ok(Self {
+            confinement: crate::modules::code_commands::confinement_of(state, ctx, workspace)?,
+            who: crate::modules::code_commands::caller_id(state, ctx),
+        })
     }
 
     #[cfg(test)]
@@ -412,7 +413,7 @@ impl crate::sdk_codegen::ProjectsOutcome for CodeRun {
     }
 }
 
-crate::register_stateless_command!(CodeRun);
+crate::register_command!(CodeRun);
 crate::register_outcome!(CodeRun);
 
 #[cfg(test)]
@@ -424,7 +425,7 @@ mod tests {
     // working: she can see what her code printed instead of guessing.
     #[tokio::test]
     async fn compiles_and_runs_rust_capturing_stdout() {
-        let out = CodeRun
+        let out = CodeRun { state: crate::test_acting::state_with_default_policy(tokio::runtime::Handle::current()) }
             .run(
                 &Ctx::default(),
                 CodeRunParams {
@@ -451,7 +452,7 @@ mod tests {
     async fn a_snippet_cannot_see_credential_shaped_variables_of_the_core() {
         std::env::set_var("CU_TEST_HF_TOKEN", "never-on-the-wire");
         std::env::set_var("CU_TEST_PLAIN_DIR", "visible");
-        let out = CodeRun
+        let out = CodeRun { state: crate::test_acting::state_with_default_policy(tokio::runtime::Handle::current()) }
             .run(
                 &Ctx::default(),
                 CodeRunParams {
@@ -472,7 +473,7 @@ mod tests {
     // back to coding blind.
     #[tokio::test]
     async fn surfaces_panic_on_runtime_error() {
-        let out = CodeRun
+        let out = CodeRun { state: crate::test_acting::state_with_default_policy(tokio::runtime::Handle::current()) }
             .run(
                 &Ctx::default(),
                 CodeRunParams {
@@ -499,7 +500,7 @@ mod tests {
     // Err would make `code/run` unusable as a learning hand.
     #[tokio::test]
     async fn surfaces_compile_error_as_result() {
-        let out = CodeRun
+        let out = CodeRun { state: crate::test_acting::state_with_default_policy(tokio::runtime::Handle::current()) }
             .run(
                 &Ctx::default(),
                 CodeRunParams {
@@ -575,7 +576,7 @@ mod tests {
             "use std::io::Write;\nfn main() {{\n    let mut f = std::fs::File::create(r\"{}\").unwrap();\n    write!(f, \"{{}}\", std::process::id()).unwrap();\n    f.flush().unwrap();\n    loop {{ std::hint::spin_loop(); }}\n}}\n",
             pidfile.display()
         );
-        let out = CodeRun
+        let out = CodeRun { state: crate::test_acting::state_with_default_policy(tokio::runtime::Handle::current()) }
             .run(
                 &Ctx::default(),
                 CodeRunParams {
@@ -624,7 +625,7 @@ mod tests {
     // permanent no-Python-on-the-exec-path rule. `python` must be rejected, not run.
     #[tokio::test]
     async fn non_rust_lang_fails_loud() {
-        let err = CodeRun
+        let err = CodeRun { state: crate::test_acting::state_with_default_policy(tokio::runtime::Handle::current()) }
             .run(
                 &Ctx::default(),
                 CodeRunParams {
@@ -651,7 +652,7 @@ mod tests {
     // where python3 may be an unusable App Execution Alias while python works.
     #[tokio::test]
     async fn python_runs_and_returns_ground_truth() {
-        let r = CodeRun
+        let r = CodeRun { state: crate::test_acting::state_with_default_policy(tokio::runtime::Handle::current()) }
             .run(
                 &Ctx::default(),
                 CodeRunParams {

@@ -214,6 +214,7 @@ mod tests {
             Arc::new(dashmap::DashMap::new()),
             Arc::new(dashmap::DashMap::new()),
             tokio::runtime::Handle::current(),
+            Arc::new(crate::test_acting::TestActing),
         ));
         let cmd = CodeGithubPrCreate { state };
         let err = cmd

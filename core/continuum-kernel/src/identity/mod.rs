@@ -85,6 +85,7 @@ use uuid::Uuid;
 /// generated TS shape is unchanged.
 pub use airc_core::PeerId;
 
+pub mod acting;
 pub mod hands_context;
 pub mod hands_gate;
 pub mod activity;
