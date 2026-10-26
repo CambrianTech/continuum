@@ -277,12 +277,10 @@ impl ActionCommand for CodeRead {
     const ALIASES: &'static [&'static str] = &["read_file", "view", "cat", "open_file"];
     const NATIVE: bool = true; // core agentic working set — offered natively (auto-derived)
     const DESCRIPTION: &'static str =
-        "Read a file from the workspace, optionally a line range. Content comes back with \
-         each line NUMBERED (`   12 | text`) — those numbers are the same ones code/edit's \
-         line_range and insert_at address, so you never have to count. The `N | ` gutter is \
-         display, not file content: never write it back into a file. With no range, a file \
-         larger than this act can take answers with its first page, and its last line says \
-         which lines you got and how to read more.";
+        "Read a file from the workspace, optionally a line range; a large file without one \
+         returns its first page. Lines come back NUMBERED (`   12 | text`), the numbers \
+         code/edit's line_range and insert_at address. The `N | ` gutter is display: never \
+         write it back into a file.";
     type Params = CodeReadParams;
     type Output = ReadResult;
 
