@@ -62,12 +62,12 @@ use std::sync::{Arc, OnceLock};
 ///
 /// `T` is the dependency type (not `Arc<T>`); `LateBound` handles the
 /// Arc internally so callers don't repeat it.
-pub struct LateBound<T> {
+pub struct LateBound<T: ?Sized> {
     slot: OnceLock<Arc<T>>,
     name: &'static str,
 }
 
-impl<T> LateBound<T> {
+impl<T: ?Sized> LateBound<T> {
     /// Create an empty slot. `name` appears in `.require()` error
     /// messages — pick something diagnostic, typically the module
     /// name plus the dependency kind (e.g. `"sentinel::executor"`).
@@ -135,7 +135,7 @@ const _: fn() = || {
     assert_send_sync::<LateBound<crate::runtime::CommandExecutor>>();
 };
 
-impl<T> std::fmt::Debug for LateBound<T> {
+impl<T: ?Sized> std::fmt::Debug for LateBound<T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("LateBound")
             .field("name", &self.name)

@@ -41,15 +41,7 @@ impl ServiceModule for RecipeService {
     }
 
     async fn initialize(&self, ctx: &ModuleContext) -> Result<(), String> {
-        let module = ctx
-            .registry
-            .get_by_name("data")
-            .ok_or_else(|| "recipe requires the data module".to_string())?;
-        let data = module
-            .as_any()
-            .downcast_ref::<crate::modules::data::DataModule>()
-            .ok_or_else(|| "recipe: data module type mismatch".to_string())?;
-        let runs = RecipeRuns::open(data.state.get_adapter("main").await?).await?;
+        let runs = RecipeRuns::open(ctx.storage("recipe")?.adapter("main").await?).await?;
         let (recovery, interrupted) = runs.expose_interrupted().await?;
         continuum_base::probe!(
             class = "recipe.boot.exposed",

@@ -87,3 +87,12 @@ pub(super) fn reject_unsupported_backend(connection_string: &str) -> Result<(), 
     }
     Ok(())
 }
+
+/// Other modules reach named adapters through this trait, never by naming `DataModule` (card
+/// 39f08cda): the same resolution and cache as [`DataState::get_adapter`].
+#[async_trait::async_trait]
+impl crate::runtime::StorageProvider for DataState {
+    async fn adapter(&self, handle: &str) -> Result<Arc<dyn StorageAdapter>, String> {
+        self.get_adapter(handle).await
+    }
+}

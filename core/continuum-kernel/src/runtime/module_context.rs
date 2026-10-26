@@ -51,6 +51,15 @@ impl ModuleContext {
         }
     }
 
+    /// Bind to the node's storage: the registry's `data` module, as its
+    /// [`StorageProvider`](super::StorageProvider). No I/O: the caller resolves a handle
+    /// (`.adapter("main")`) when it is ready, so a module that retries later keeps that timing.
+    /// `who` names the caller in the refusal, as each caller's own message did (card 39f08cda).
+    pub fn storage(&self, who: &str) -> Result<Arc<dyn super::StorageProvider>, String> {
+        let module = self.registry.get_by_name("data").ok_or_else(|| format!("{who} requires the data module"))?;
+        module.as_storage().ok_or_else(|| format!("{who}: the data module offers no storage"))
+    }
+
     /// Get or create a logger for a module.
     /// Each module gets its own log file: .continuum/jtag/logs/system/modules/{name}.log
     pub fn logger(&self, module_name: &'static str) -> Arc<ModuleLogger> {

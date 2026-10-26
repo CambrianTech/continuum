@@ -137,15 +137,7 @@ impl ServiceModule for GenomeModule {
     }
 
     async fn initialize(&self, ctx: &ModuleContext) -> Result<(), String> {
-        let module = ctx
-            .registry
-            .get_by_name("data")
-            .ok_or_else(|| "genome requires the data module".to_string())?;
-        let data = module
-            .as_any()
-            .downcast_ref::<crate::modules::data::DataModule>()
-            .ok_or_else(|| "genome data module type mismatch".to_string())?;
-        let adapter = data.state.get_adapter("main").await?;
+        let adapter = ctx.storage("genome")?.adapter("main").await?;
         self.install_attempt_store(adapter.clone()).await?;
         let store = crate::orm::OrmStore::new(adapter)
             .await

@@ -66,6 +66,7 @@ pub mod runtime;
 pub mod service_module;
 pub mod share_controller;
 pub mod shared_compute;
+pub mod storage_provider;
 pub mod params;
 
 pub use boot_mode::{extract_boot_mode, BootMode, BootModeParseError};
@@ -93,6 +94,7 @@ pub use in_process_transport::InProcessTransport;
 pub use late_bound::LateBound;
 pub use message_bus::{BusEvent, MessageBus};
 pub use module_context::ModuleContext;
+pub use storage_provider::StorageProvider;
 pub use module_logger::ModuleLogger;
 pub use module_metrics::{CommandTiming, ModuleMetrics, ModuleStats};
 pub use orientation_shares::{

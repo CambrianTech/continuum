@@ -139,7 +139,7 @@ impl TrainingTriggerState {
             return self.initialize_storage(adapter.clone()).await;
         }
         let data = self.data.require()?;
-        self.initialize_storage(data.get_adapter("main").await?)
+        self.initialize_storage(data.adapter("main").await?)
             .await
     }
 
