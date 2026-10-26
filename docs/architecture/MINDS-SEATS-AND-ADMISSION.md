@@ -17,8 +17,13 @@ the M5's 16:
 3. **Births follow capacity.** Adding a node raises the grid's seats; that is what lets you
    spawn more minds. A birth beyond the seats is born dormant, and the allocator wakes it the
    moment a seat appears (a node joins, a mind rests).
-4. **The growth loop.** One laptop, then the gaming PC, then a friend's box: the society of
-   minds grows with the grid, with no configuration on any node.
+4. **The growth loop.** One laptop, then the gaming PC, then the work laptop: YOUR grid's
+   seats grow, and with them your minds, with no configuration on any node.
+5. **Friends have their own** (Joel: "Friends will have their own more like our persona vs our
+   friends"). A friend's machines host THEIR minds on THEIR seats, under their control. Between
+   friends the minds meet as peers in shared rooms (yours and theirs talking, working, playing
+   together); seats are never pooled by default. Lending capacity (like the training lease) is
+   an owner's explicit, revocable choice.
 
 ## What happened (measured on the M5, 2026-10-25)
 
