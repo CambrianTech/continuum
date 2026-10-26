@@ -132,7 +132,6 @@ mod tests {
     use std::sync::Arc;
 
     use super::*;
-    use crate::cognition::act_observe::SettleStep;
     use crate::persona::obligation::{open, record, test_store_executor};
 
     fn trigger(room: Uuid, text: &str) -> IncomingMessage {
@@ -149,6 +148,10 @@ mod tests {
 
     /// A resident with hands, so her live cycle has the working memory notices are pinned in.
     fn resident(persona: Uuid) -> Arc<crate::cognition::workspace::WorkspaceCycle> {
+        resident_with(persona, crate::ai::HeuristicInferenceAdapter::new())
+    }
+
+    fn resident_with(persona: Uuid, adapter: crate::ai::HeuristicInferenceAdapter) -> Arc<crate::cognition::workspace::WorkspaceCycle> {
         let cfg = crate::cognition::persona_workspace::PersonaBrainConfig {
             persona_id: persona,
             persona_name: "Rhea".into(),
@@ -156,13 +159,14 @@ mod tests {
             admission: Arc::new(crate::cognition::admission_state::AdmissionState::new(Arc::new(
                 crate::cognition::recall_metadata::RecallMetadataRegistry::new(),
             ))),
-            adapter: Arc::new(crate::ai::HeuristicInferenceAdapter::new()),
+            adapter: Arc::new(adapter),
             capacity: None,
             grounding_sources: Vec::new(),
             embedder: None,
             tool_executor: Some(Arc::new(crate::cognition::act_observe::test_support::ScriptedExecutor::new(["ok"]))),
             experience: None,
-            context_window: crate::inference::planning::MIN_SERVE_CTX,
+            // Roomy enough for framing + tools + a reply: a refused prompt is not what these test.
+            context_window: 65_536,
             defer_recall: false,
             defer_grounding: false,
             suppress_recall: false,
@@ -222,8 +226,9 @@ mod tests {
 
     // what this catches (stop-drain S3): a turn that began an effect being run a second time, or
     // closed before she was told. Speech and a tool batch are never handed back; the notice names
-    // what was begun (with the batch's call ids); a deferred turn does not count as her reading
-    // it, and the rows close only after a completed turn on the cycle carrying the notice.
+    // what was begun (with the batch's call ids); a turn whose inference failed before any
+    // generation was served does not answer it, and a restart then still owes it with the same
+    // notice (Codex on #5497); the rows close only after a served generation on her live cycle.
     #[tokio::test]
     async fn begun_effects_are_never_retried_and_close_after_a_completed_turn() {
         let home = tempfile::tempdir().unwrap(); // unwrap: test fixture
@@ -259,9 +264,19 @@ mod tests {
         assert!(notices.iter().any(|n| n.contains("posting my reply")), "{notices:?}");
         assert!(notices.iter().any(|n| n.contains("code/edit (call toolu_1)") && n.contains("a minute ago")), "{notices:?}");
 
-        pending.settle_self(room, &SettleStep::DeferredBeforeDispatch);
-        assert!(pending.take_answered().is_empty(), "a deferred turn read nothing");
-        pending.settle_self(room, &SettleStep::Passed { reason: None });
+        use crate::persona::training_producer::test_support::{receipt, served_receipt};
+        pending.notices_read(room, &[receipt("failed before generation")]);
+        assert!(pending.take_answered().is_empty(), "a failed inference read nothing");
+
+        // A restart before any generation was served: the rows are still owed, notices still one each.
+        let restarted = Obligations::new(&executor, persona, name);
+        let mut pending = PendingInput::for_persona(persona);
+        let report = restarted.recover(120_000, &mut pending, |_| TurnAttention::default()).await;
+        assert_eq!(report.map(|r| r.open), Some(2), "nothing was closed by the failed turn");
+        assert_eq!(interrupted_notices(&cycle).len(), 2, "re-pinned, not added");
+        let obligations = restarted;
+
+        pending.notices_read(room, &[served_receipt("live", "qwen")]);
         let answered = pending.take_answered();
         assert_eq!(answered.len(), 2, "a completed turn on her live cycle answers both");
         for row in answered {
@@ -269,6 +284,57 @@ mod tests {
         }
         assert!(interrupted_notices(&cycle).is_empty(), "closed rows take their notices");
         assert!(open(obligations.conn.as_ref(), name, persona).await.unwrap().is_empty()); // unwrap: the store under test
+    }
+
+    // what this catches (Codex on #5497): a row answered by a generation whose prompt did not
+    // carry its notice. One real turn on her live cycle after recovery: the request the engine
+    // served contains the notice (with the call id), and that turn's served receipt answers it.
+    #[tokio::test]
+    async fn the_served_turn_that_answers_a_row_carried_its_notice() {
+        use crate::cognition::act_observe::{drive_to_settle_with_input, SettleStep};
+        use crate::cognition::conversation::PersonaConversation;
+        let home = tempfile::tempdir().unwrap(); // unwrap: test fixture
+        let _home = crate::paths::test_home::HomeGuard::set(home.path()).await;
+        let executor = test_store_executor();
+        let (persona, room, name) = (Uuid::new_v4(), Uuid::new_v4(), "recover-served");
+        let requests = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let cycle = resident_with(
+            persona,
+            crate::ai::HeuristicInferenceAdapter::new().with_canned_response("PASS: noted").with_request_recorder(requests.clone()),
+        );
+        let row = PersonaObligation {
+            effect_at_ms: Some(2),
+            effects: Some(vec![RecordedEffect::ToolBatch { calls: vec![("toolu_9".into(), "code/shell".into())] }]),
+            ..PersonaObligation::admitted(persona, room, &trigger(room, "run the tests"), None, 1)
+        };
+        let obligations = Obligations::new(&executor, persona, name);
+        assert!(obligations.report_interrupted(0).await.is_some(), "the store is readable");
+        record(obligations.conn.as_ref(), name, &row).await.unwrap(); // unwrap: the store under test
+        let mut pending = PendingInput::for_persona(persona);
+        obligations.recover(3, &mut pending, |_| TurnAttention::default()).await;
+
+        let mut conversation = crate::cognition::conversation::scripted_conversation::ScriptedConversation::new();
+        conversation.prime().await.unwrap(); // unwrap: test fixture
+        let burst = crate::cognition::workspace::Burst::raw_in(
+            crate::identity::ActivityRoom::from_uuid(room).unwrap(), // unwrap: a fresh uuid is a valid room
+            "a new line in the room".into(),
+        );
+        let framing = crate::cognition::workspace::TurnFraming::message(TurnAttention::default());
+        let settled = drive_to_settle_with_input(&cycle, burst, 8, framing, &mut conversation).await;
+        let (_, _, receipts) = SettleStep::from_settled(settled);
+        let served: Vec<String> = requests
+            .lock()
+            .unwrap() // unwrap: test fixture
+            .iter()
+            .map(|request| serde_json::to_string(request).unwrap()) // unwrap: test fixture
+            .collect();
+        assert!(!served.is_empty(), "the turn reached the engine");
+        assert!(
+            served.iter().all(|request| request.contains("[interrupted]") && request.contains("code/shell (call toolu_9)")),
+            "every prompt this turn served carried the notice"
+        );
+        pending.notices_read(room, &receipts);
+        assert_eq!(pending.take_answered(), vec![row.id], "and its served receipt answers the row");
     }
 
     // what this catches: a row whose close failed losing its notice while it stays owed. The

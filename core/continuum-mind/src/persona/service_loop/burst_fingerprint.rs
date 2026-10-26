@@ -554,7 +554,7 @@ pub(super) async fn run_self_cycle(
     }
     let forwarder =
         spawn_token_forwarder(tok_rx, None, ctx.identity.agent_name.clone(), None, None);
-    let (step, _turn_metrics, _generation_receipts) = {
+    let (step, _turn_metrics, generation_receipts) = {
         let outcome = crate::cognition::act_observe::drive_to_settle_with_input(
             &cycle,
             burst,
@@ -568,6 +568,7 @@ pub(super) async fn run_self_cycle(
     cycle.set_token_sink(None);
     let _ = forwarder.await;
     pending.settle_self(tick_room, &step);
+    pending.notices_read(tick_room, &generation_receipts);
     match step {
         crate::cognition::act_observe::SettleStep::Spoke(text) => {
             // Never broadcast a raw tool-call envelope to the room (same guard the

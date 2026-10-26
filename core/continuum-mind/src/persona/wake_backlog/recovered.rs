@@ -8,7 +8,7 @@
 use uuid::Uuid;
 
 use super::{PendingInput, RetainedInput};
-use crate::cognition::act_observe::SettleStep;
+use crate::ai::provenance::{GenerationOutcome, GenerationReceipt};
 use crate::cognition::conversation::IncomingMessage;
 use crate::cognition::workspace::TurnAttention;
 
@@ -40,10 +40,12 @@ impl PendingInput {
         std::mem::take(&mut self.answered)
     }
 
-    /// A turn that reached a decision (not deferred, not refused for capacity) read her
-    /// notices on its cycle: her mind cycle in her private room, her live cycle elsewhere.
-    pub(super) fn turn_completed(&mut self, room: Uuid, step: &SettleStep) {
-        if matches!(step, SettleStep::DeferredBeforeDispatch | SettleStep::CapacityRefused { .. }) {
+    /// A turn that SERVED a generation read her notices: they are required prompt input on the
+    /// cycle that carries them (her mind cycle in her private room, her live cycle elsewhere).
+    /// The step's kind is not evidence the model read anything; a served receipt is (Codex on
+    /// #5497: a failed inference must never answer a row she was never shown).
+    pub(crate) fn notices_read(&mut self, room: Uuid, receipts: &[GenerationReceipt]) {
+        if !receipts.iter().any(|r| matches!(r.outcome, GenerationOutcome::Served { .. })) {
             return;
         }
         let Some(persona) = self.persona else { return };
@@ -84,18 +86,23 @@ mod tests {
     }
 
     // what this catches: an uncertain row closed by a turn that could not have read its notice:
-    // her private mind room runs another cycle with its own working memory.
+    // one that served nothing (a failed inference, a pass with no generation; Codex on #5497),
+    // or one on her private mind room's cycle, which has its own working memory.
     #[test]
-    fn only_a_turn_on_the_cycle_carrying_the_notice_answers_it() {
+    fn only_a_served_generation_on_the_cycle_carrying_the_notice_answers_it() {
+        use crate::persona::training_producer::test_support::{receipt, served_receipt};
         let persona = Uuid::new_v4();
         let mut pending = PendingInput::for_persona(persona);
         let (public, row) = (Uuid::new_v4(), Uuid::new_v4());
         pending.hold_uncertain(row, public);
         pending.hold_uncertain(row, public);
+        pending.notices_read(public, &[receipt("faulted")]);
+        pending.notices_read(public, &[]);
+        assert!(pending.take_answered().is_empty(), "nothing served: the model read nothing");
         let private = crate::cognition::mind_room::mind_room_id(persona);
-        pending.settle_self(private, &SettleStep::Passed { reason: None });
+        pending.notices_read(private, &[served_receipt("mind", "m")]);
         assert!(pending.take_answered().is_empty(), "her mind cycle never saw the live cycle's notice");
-        pending.settle_self(Uuid::new_v4(), &SettleStep::Passed { reason: None });
+        pending.notices_read(Uuid::new_v4(), &[receipt("faulted"), served_receipt("live", "m")]);
         assert_eq!(pending.take_answered(), vec![row], "held once, answered once");
     }
 }

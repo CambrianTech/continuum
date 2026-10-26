@@ -203,7 +203,6 @@ impl PendingInput {
         room: Uuid,
         step: &crate::cognition::act_observe::SettleStep,
     ) {
-        self.turn_completed(room, step);
         match step {
             crate::cognition::act_observe::SettleStep::CapacityRefused { error, .. } => {
                 self.park_self(room, error);
@@ -246,7 +245,6 @@ impl PendingInput {
         step: &crate::cognition::act_observe::SettleStep,
     ) {
         use crate::cognition::act_observe::SettleStep;
-        self.turn_completed(message.room_id, step);
         // A re-retained input keeps its durable row: a second refusal is the same obligation.
         let obligation = self.obligation_for(message);
         self.inputs.retain(|input| input.message != *message);

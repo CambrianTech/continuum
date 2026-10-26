@@ -500,8 +500,10 @@ capacity-retry path and reconciles its own row; its attention is derived again f
 stored trigger by the same function, never stored twice. A row that recorded an effect
 is never retried: the notice names what was begun (her reply, or each tool with its call
 id), `persona.obligation.uncertain` is raised, and `PendingInput` holds the row until a
-turn that reached a decision completes on the cycle that carries the notice (her mind
-cycle in her private room, her live cycle elsewhere); then the row closes. Writes
+turn on the cycle that carries the notice (her mind cycle in her private room, her live
+cycle elsewhere) SERVES a generation: the notice is required prompt input there, so a
+served receipt is the evidence she read it; a failed inference or a pass that served
+nothing answers nothing. Then the row closes. Writes
 use the substrate connection: her own identity is Trusted, and Trusted may not update
 or delete. The supervisor builds the store from the executor boot wired and hands it to
 the loop as a required argument, so a loop that records nothing cannot be constructed.
