@@ -57,6 +57,8 @@ Phases, in order; each owner works its area in parallel:
   directory). Owners: Fable (cognition, persona, code, ai, positron), Codex (serving, inference, grid,
   routing), Cormac (genome, training), BigMama (live, media). Done when `file_size` reads 0.
 - **2 Crates by the placement map**, floor up: continuum-base (#5194), Store, Perception/RAG, Hands,
+  Serving, Mind, Grid/airc, Clients. Pure moves plus import paths, one owner per cut;
+  `layer_discipline` forbids upward imports; each crate checks in seconds.
   **Commands by module** (Joel, 10-26): a domain's service and its commands are one crate. `commands/<x>` moves
   WITH `modules/<x>` into that domain's crate, never into a shared commands crate (core held 90k lines of services
   and 51k of commands on 10-26). The command substrate (`sdk_codegen`, `register_*`) is already in continuum-kernel.
@@ -65,8 +67,11 @@ Phases, in order; each owner works its area in parallel:
   **A new worktree builds in seconds:** its vendored engines are submodules; init them from the main checkout's
   objects (3.6 s measured, 10-26), never by hand-symlinking or a network clone:
   `git submodule update --init --reference <main>/core/vendor/llama.cpp core/vendor/llama.cpp` (same for whisper.cpp).
-  Serving, Mind, Grid/airc, Clients. Pure moves plus import paths, one owner per cut;
-  `layer_discipline` forbids upward imports; each crate checks in seconds.
+  **Each worktree builds into its own target dir**, never the shared one: workspace crates get the same artifact
+  names in every worktree, so a shared dir hands one worktree another's stale build (`cannot find home in
+  continuum_base` on 10-26, twice in one hour). Seed it as a copy-on-write clone (`cp -c -R -p <shared>/debug
+  <wt-target>/debug`, 5.6 s for 32 GB, no disk until written), touch the worktree's own lib roots once so its
+  crates rebuild from its source (registry deps and the engine build stay), and delete the dir with the worktree.
 - **3 Locks.** Clippy in CI on split crates, `deny(unwrap_used, expect_used, panic)` on every clean one;
   CI checks only the affected crates.
 - **4 Then pace work**, one change at a time inside its crate, validator first, then the live read.
