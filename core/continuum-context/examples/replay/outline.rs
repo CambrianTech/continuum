@@ -27,7 +27,12 @@ use serde_json::Value;
 
 use super::validate::gutter;
 
-/// The paging proxy's matching rule: the shortest line it counts as a quote.
+/// The paging proxy's matching rule: the shortest line it counts as a quote. A chosen floor, not
+/// a measured separator: on Benchy's 67 distinct tool results (M5 captures, 2026-10-26) about 22%
+/// of lines recur across results at every length from 10 to 60 characters, because she re-reads
+/// the same files, so length does not tell a chance match from a real one. The floor only keeps
+/// one-token lines (`}`) out; the proxy is a lower bound either way (a page she needed without
+/// quoting is not counted), and its counts (0-2 per resident) are reported as such.
 pub const QUOTE_CHARS: usize = 40;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
