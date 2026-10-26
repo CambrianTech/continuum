@@ -31,6 +31,8 @@ pub(crate) struct PendingInput {
 struct RetainedInput {
     message: IncomingMessage,
     engram: Option<Uuid>,
+    /// Its durable row (`persona::obligation`, card 920619c5), kept open while retained.
+    obligation: Option<Uuid>,
     attention: TurnAttention,
     capacity: Option<crate::cognition::workspace::CapacityRefusal>,
 }
@@ -78,6 +80,25 @@ impl PendingInput {
             .iter()
             .find(|input| input.message == *message)
             .and_then(|input| input.engram)
+    }
+    /// The durable row of a retained input, so its retry continues the same obligation.
+    pub(crate) fn obligation_for(&self, message: &IncomingMessage) -> Option<Uuid> {
+        self.inputs
+            .iter()
+            .find(|input| input.message == *message)
+            .and_then(|input| input.obligation)
+    }
+    /// After a turn that settled without finishing: when the input is still retained (a
+    /// capacity refusal or a deferral), it keeps `obligation` and the row stays open; returns
+    /// whether it did. A `false` means the input is done and its row may close.
+    pub(crate) fn keep_obligation(&mut self, message: &IncomingMessage, obligation: Option<Uuid>) -> bool {
+        match self.inputs.iter_mut().find(|input| input.message == *message) {
+            Some(input) => {
+                input.obligation = obligation.or(input.obligation);
+                true
+            }
+            None => false,
+        }
     }
     pub(crate) fn attention_for(&self, message: &IncomingMessage) -> Option<TurnAttention> {
         self.inputs
@@ -218,6 +239,8 @@ impl PendingInput {
         step: &crate::cognition::act_observe::SettleStep,
     ) {
         use crate::cognition::act_observe::SettleStep;
+        // A re-retained input keeps its durable row: a second refusal is the same obligation.
+        let obligation = self.obligation_for(message);
         self.inputs.retain(|input| input.message != *message);
         let capacity = match step {
             SettleStep::CapacityRefused {
@@ -242,6 +265,7 @@ impl PendingInput {
         self.inputs.push_back(RetainedInput {
             message: message.clone(),
             engram: wake_engram,
+            obligation,
             attention,
             capacity,
         });
@@ -483,6 +507,28 @@ mod tests {
             pending.message().is_none(),
             "ambient policy does not hold off directed arrivals"
         );
+    }
+
+    // what this catches (Codex on #5480): a deferred input's durable obligation closing while
+    // the input is still owed. The retained input keeps the row across another refusal, its
+    // retry reads the same row back, and only a terminal settle releases it.
+    #[test]
+    fn a_retained_input_keeps_its_obligation_until_a_terminal_settle() {
+        use crate::cognition::act_observe::SettleStep;
+        let original = line(1, 1, "original directed request");
+        let row = Some(Uuid::new_v4());
+        let mut pending = PendingInput::default();
+        assert!(!pending.keep_obligation(&original, row), "nothing retained: the row may close");
+        let deferred = SettleStep::DeferredBeforeDispatch;
+        pending.settle(&original, None, TurnAttention::HumanOpportunity, &deferred);
+        assert!(pending.keep_obligation(&original, row), "retained: the row stays open");
+        assert_eq!(pending.obligation_for(&original), row, "its retry continues the same row");
+        pending.settle(&original, None, TurnAttention::HumanOpportunity, &deferred);
+        assert!(pending.keep_obligation(&original, None), "another refusal is not completion");
+        assert_eq!(pending.obligation_for(&original), row, "a refusal never forgets the row");
+        let pass = SettleStep::Passed { reason: Some("chosen silence".into()) };
+        pending.settle(&original, None, TurnAttention::HumanOpportunity, &pass);
+        assert!(!pending.keep_obligation(&original, row), "a terminal settle releases it to close");
     }
 
     // what this catches (2026-09-13): a teammate's 💭/⚙ receipt admitting a turn — every

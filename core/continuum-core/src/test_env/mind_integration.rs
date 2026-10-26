@@ -12,6 +12,7 @@ mod finish_awaits_merge;
 mod recipe;
 mod registry;
 mod hands_isolation;
+mod obligation;
 mod remote_lane;
 mod source_guards;
 mod teach;

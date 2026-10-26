@@ -73,6 +73,7 @@ use uuid::Uuid;
 pub async fn spawn_persona_service(
     ctx: HostedPersona,
     opts: ServeOptions,
+    obligations: crate::persona::obligation::Obligations,
     rt_handle: tokio::runtime::Handle,
 ) -> Result<JoinHandle<Result<ServeOutcome, String>>, String> {
     // `ctx.runtime: Arc<dyn AircCitizen>` — slice 13.5 trait extraction; the
@@ -106,7 +107,7 @@ pub async fn spawn_persona_service(
     Ok(rt_handle.spawn(async move {
         use futures::FutureExt;
         let outcome =
-            std::panic::AssertUnwindSafe(serve_persona_loop(&ctx, &mut conversation, opts))
+            std::panic::AssertUnwindSafe(serve_persona_loop(&ctx, &mut conversation, opts, obligations))
                 .catch_unwind()
                 .await;
         match outcome {
@@ -290,8 +291,9 @@ impl PersonaSpawnSupervisor {
         // The substrate's wired `CommandExecutor` (GridTrustAuthPolicy +
         // interceptors), delivered through the executor-ready oneshot. Each
         // persona's HANDS are built over it (identity-scoped), so the ACL gates
-        // what they may do. `None` → personas spawn speak-only (no hands).
-        tool_command_executor: Option<Arc<crate::runtime::CommandExecutor>>,
+        // what they may do, and each loop's obligation store rides it too (card
+        // 920619c5), so a hosted persona without one cannot be constructed.
+        tool_command_executor: Arc<crate::runtime::CommandExecutor>,
     ) -> BootSummary {
         // Draw only the seats not yet filled: at boot that is every seat; on a later
         // serving edge it is the seats a bigger plan just opened. Live identities are
@@ -527,7 +529,7 @@ impl PersonaSpawnSupervisor {
     /// unattended returns an empty summary.
     pub async fn host_unattended(
         &self,
-        tool_command_executor: Option<Arc<crate::runtime::CommandExecutor>>,
+        tool_command_executor: Arc<crate::runtime::CommandExecutor>,
     ) -> BootSummary {
         let mut summary = BootSummary::default();
         let mut unattended = Vec::new();
@@ -636,7 +638,7 @@ impl PersonaSpawnSupervisor {
     async fn host_plans(
         &self,
         plans: Vec<crate::persona::spawner_module::MaterializedPersonaPlan>,
-        tool_command_executor: Option<Arc<crate::runtime::CommandExecutor>>,
+        tool_command_executor: Arc<crate::runtime::CommandExecutor>,
         summary: &mut BootSummary,
     ) {
         let registry_for_lookup = self.registry.clone();
@@ -648,9 +650,8 @@ impl PersonaSpawnSupervisor {
         // runtime is one impl among future BaseUser variants.
         // Per-persona HANDS: a CommandToolExecutor over the wired executor,
         // scoped to the persona's identity (so the ACL gates it). Cheap — each is
-        // an Arc bump on the shared executor + connection. `None` executor →
-        // every persona is speak-only.
-        let tool_exec_source = tool_command_executor;
+        // an Arc bump on the shared executor + connection.
+        let tool_exec_source = tool_command_executor.clone();
         let hosted_results = materialize_adapters(
             plans,
             &*self.factory,
@@ -660,11 +661,9 @@ impl PersonaSpawnSupervisor {
                     .map(|r| r as Arc<dyn crate::persona::airc_citizen::AircCitizen>)
             },
             move |pid| {
-                tool_exec_source.clone().map(|ex| {
-                    Arc::new(
-                        crate::cognition::tool_executor::CommandToolExecutor::for_persona(ex, pid),
-                    ) as Arc<dyn crate::cognition::tool_executor::ToolExecutor>
-                })
+                Some(Arc::new(
+                    crate::cognition::tool_executor::CommandToolExecutor::for_persona(tool_exec_source.clone(), pid),
+                ) as Arc<dyn crate::cognition::tool_executor::ToolExecutor>)
             },
         )
         .await;
@@ -673,7 +672,7 @@ impl PersonaSpawnSupervisor {
             match result {
                 Ok(ctx) => {
                     self.clear_slot_failure(ctx.identity.peer_id.as_uuid());
-                    self.spawn_and_attach(slot_idx, ctx, summary).await
+                    self.spawn_and_attach(slot_idx, ctx, &tool_command_executor, summary).await
                 }
                 Err(err) => {
                     let (slot_index, role) = supervisor_error_facts(&err);
@@ -716,6 +715,7 @@ impl PersonaSpawnSupervisor {
         &self,
         slot_idx: usize,
         ctx: PersonaContext,
+        executor: &Arc<crate::runtime::CommandExecutor>,
         summary: &mut BootSummary,
     ) {
         let persona_id = ctx.identity.peer_id.as_uuid();
@@ -732,12 +732,15 @@ impl PersonaSpawnSupervisor {
             .registry
             .quiesced_flag(persona_id)
             .unwrap_or_else(|| std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)));
+        // Her obligation store (card 920619c5), on the same wired executor her hands use.
+        let obligations = crate::persona::obligation::Obligations::new(executor, persona_id, &agent_name);
         let handle = match spawn_persona_service(
             ctx,
             ServeOptions {
                 quiesced,
                 ..ServeOptions::default()
             },
+            obligations,
             self.rt_handle.clone(),
         )
         .await
