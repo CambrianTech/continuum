@@ -427,7 +427,7 @@ pub(super) fn prompt_cache_decision(
         // after it fills, so a full cache can never step the mode down by itself.
         let afford = if available_bytes > 0 {
             afford.min(
-                available_bytes.saturating_sub(crate::provisioning::model_catalog::ECO_EXIT_BYTES),
+                available_bytes.saturating_sub(crate::capacity::power_mode::ECO_EXIT_BYTES),
             )
         } else {
             afford

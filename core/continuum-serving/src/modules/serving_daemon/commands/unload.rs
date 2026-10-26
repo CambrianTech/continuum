@@ -1,6 +1,6 @@
 //! `serving/unload` — free a model's VRAM lane at runtime. The VRAM-axis "free",
 //! counterpart to [`serving/load`](super::load) (and the sibling of the disk-axis
-//! [`models/remove`](crate::commands::models::remove)).
+//! `models/remove`).
 //!
 //! ## What it does
 //!

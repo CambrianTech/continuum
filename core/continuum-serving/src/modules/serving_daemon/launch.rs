@@ -626,7 +626,7 @@ impl ServingDaemonModule {
                 // covenant-gated, idempotent, once per (process, model),
                 // detached (never blocks the reconcile).
                 if let Some(model) = snapshot.active_model.as_deref() {
-                    crate::commands::genome_share::spawn_bootstrap(model.to_string());
+                    continuum_dreaming::commands::genome_share::spawn_bootstrap(model.to_string());
                 }
             }
             let capture = if current() {

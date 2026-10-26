@@ -13,7 +13,7 @@ use tokio::sync::{oneshot, Mutex};
 /// The serving daemon behind the academy's [`TeacherServing`](crate::cognition::eval::TeacherServing)
 /// seam: `genome/teach` reaches the exclusive teacher window through it, never by naming this
 /// module (card dc3e9f6f). The batch takes the daemon by `Arc`, so the seam wraps one.
-pub(crate) struct ServingTeacher(pub(crate) Arc<ServingDaemonModule>);
+pub struct ServingTeacher(pub Arc<ServingDaemonModule>);
 
 #[async_trait::async_trait]
 impl crate::cognition::eval::TeacherServing for ServingTeacher {
