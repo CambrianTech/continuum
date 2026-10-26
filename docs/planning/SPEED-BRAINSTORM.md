@@ -119,6 +119,32 @@ tried live with a before/after receipt.
 - **Coarse-to-exact cutoffs:** how many coarse candidates the exact pass reranks, learned
   from the recall it costs.
 
+## Borrow from: open-source engines (10-26; Joel: "we can borrow their open source ideas just fine")
+
+License first, read their code (not the blog), port into our seams with credit, replay-measure
+before and after, send improvements back upstream (Codex submits).
+
+| Source | Idea | Where it lands | License | Card |
+|---|---|---|---|---|
+| SGLang | radix-tree prefix cache shared across requests | shared prefixes across minds in one engine | Apache-2.0 | f272eb40 |
+| vLLM | paged KV blocks, continuous batching | per-mind KV paging, batched decode across minds | Apache-2.0 | 31b675ef |
+| Strata | hot MoE experts in VRAM, the rest in RAM, by measured use | `core/expert-pager-policy` (shipped for streaming MoE, control law in EXPERT-PAGING-CONTROL-LAW.md) extended to live serving, one budget with KV and genes | check before reading code | 2e23c67b |
+| Gufo | prompt-cache restore with thinking on (their reuse died after turn one; TTFT 199 s -> 4.1 s once fixed); the multi-hour soak method | our act-boundary reuse and the comparison harness | MIT | f2782aad |
+| llama.cpp | everything we ride on | keep the fork close, upstream our proven work | MIT | |
+
+What none of them attempts, and our edge: many persistent minds with senses sharing one engine,
+each with her own memory paged across GPU, RAM and disk; learning on the weights being served;
+one budget and scheduler across a grid of misfit hardware.
+
+## Control both ways (10-26)
+
+A controller that can only step down ratchets to its lowest number. Every adaptive decision here
+(lanes and context, seats and placement, expert/KV/gene residency, admission, recovery) gets the
+upward path: a candidate chosen by replay, a trial bounded in time with a supported rollback,
+compared after warm-up to a healthy matched incumbent, kept only if better. Receipt: on 10-26 the
+M5 came back from a build window at 3 lanes x 16,384 ctx on a transient 23.7 GB budget; on the
+settled machine the same plan read 41.4 GB and served 5 x 58,880. Nothing would have re-planned up.
+
 ## Built and not finished: take these to the finish line (inventory 10-19)
 
 | Built | What is missing | Where |
