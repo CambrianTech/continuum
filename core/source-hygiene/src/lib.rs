@@ -237,7 +237,16 @@ fn unreadable_policy(error: &crate_policy::PolicyError) -> Vec<Violation> {
 /// `None` when no ancestor carries the anchor, which callers turn into a loud failure
 /// rather than a silent empty scan.
 pub fn repo_root() -> Option<PathBuf> {
-    let start = audited_crate_root();
+    workspace_root_above(&audited_crate_root())
+}
+
+/// The repository root of THIS checkout (the rules), whatever tree is being audited.
+pub fn checkout_root() -> Option<PathBuf> {
+    workspace_root_above(Path::new(env!("CARGO_MANIFEST_DIR")))
+}
+
+/// The one anchor walk: the nearest ancestor of `start` holding the workspace manifest.
+fn workspace_root_above(start: &Path) -> Option<PathBuf> {
     start
         .ancestors()
         .find(|dir| dir.join(WORKSPACE_ANCHOR).is_file() && dir.join("core").is_dir())

@@ -149,7 +149,9 @@ pub fn read_members(repo: &Path) -> Result<Vec<Member>, PolicyError> {
 /// judged by measuring the base tree with the head's rules (`ratchet.rs`), and the base tree
 /// may predate `[workspace.metadata.ci]`.
 pub fn checkout_policy() -> Result<Policy, PolicyError> {
-    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../Cargo.toml");
+    let root = crate::checkout_root()
+        .ok_or_else(|| error(Path::new(env!("CARGO_MANIFEST_DIR")), "no workspace root above this crate"))?
+        .join("Cargo.toml");
     let text = std::fs::read_to_string(&root).map_err(|e| error(&root, e.to_string()))?;
     parse_policy(&root, &text)
 }
