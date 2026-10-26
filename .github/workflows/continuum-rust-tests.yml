@@ -97,6 +97,11 @@ jobs:
 
       - uses: ./.github/actions/rust-ci-setup
 
+      # The signed-grant loop is an integration target, not part of --lib.
+      - name: capability grant end-to-end trust gate
+        if: matrix.crate == 'continuum-core'
+        run: cargo test -p continuum-core --test capability_grant_e2e --profile dev-fast --features "$FEATURES"
+
       # ---- continuum-core: script fixtures, the warnings ratchet, the core lib binary ----
       - name: cargo test -p continuum-core --lib
         if: matrix.crate == 'continuum-core'
