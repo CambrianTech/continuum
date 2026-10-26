@@ -249,6 +249,12 @@ impl WorkingMemory {
         *self.view.lock() = view;
     }
 
+    /// Her view's measured per-act headroom: the median characters one act of its epoch
+    /// appended (`View::appended_per_act`). `None` until an act of the epoch is measured.
+    pub fn view_headroom(&self) -> Option<usize> {
+        self.view.lock().as_ref().and_then(|view| view.appended_per_act())
+    }
+
     /// Her context view as a checkpoint restored it, taken once by the act that resumes it.
     pub fn take_view(&self) -> Option<ContextView> {
         self.view.lock().take()

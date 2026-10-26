@@ -42,6 +42,7 @@ mod apply;
 pub mod effect_mark;
 pub use effect_mark::{Effect, EffectGate, EffectMark};
 pub(crate) mod disk_change;
+mod page_budget;
 pub use apply::{apply_act, ActChain};
 
 mod settle;

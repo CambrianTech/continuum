@@ -286,10 +286,14 @@ pub async fn apply_act(
     // Every result this batch saves stays live from before its file is written until working
     // memory has recorded the batch below (card 12b080c3).
     let pin = crate::cognition::tool_executor::spill::LivePin::new();
+    // Her reads with no range answer with their first page when the whole file is more than
+    // their share of her view's measured per-act headroom (plan S1): the tool answering a
+    // smaller question, never her view cutting a result. Only this dispatched copy carries it.
+    let dispatched = super::page_budget::with_page_budgets(&fg_calls, body.working_memory.view_headroom());
     let batch_result = tokio::time::timeout(
         TOOL_BATCH_CEILING,
         executor
-            .execute_native_batch_pinned(&fg_calls, &ctx, budget.latest_action_chars(), &pin),
+            .execute_native_batch_pinned(&dispatched, &ctx, budget.latest_action_chars(), &pin),
     )
     .await
     .unwrap_or_else(|_| { // timeout elapsed = the hang this bound exists to convert; the closure builds the honest error

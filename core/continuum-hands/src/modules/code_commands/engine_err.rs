@@ -262,6 +262,13 @@ pub struct CodeReadParams {
     /// 1-indexed last line to return (inclusive). Omit to read to the end.
     #[serde(default)]
     pub end_line: Option<u32>,
+    /// With no range, the most characters this read answers with: the reading mind's share
+    /// of her view's measured per-act headroom, filled by her act layer on the call it
+    /// dispatches, never by her (so not in the schema she is shown). Absent: whole.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(skip)]
+    #[ts(skip)]
+    pub page_budget: Option<crate::code::file_engine::PageBudget>,
 }
 
 #[async_trait]
@@ -270,18 +277,19 @@ impl ActionCommand for CodeRead {
     const ALIASES: &'static [&'static str] = &["read_file", "view", "cat", "open_file"];
     const NATIVE: bool = true; // core agentic working set — offered natively (auto-derived)
     const DESCRIPTION: &'static str =
-        "Read a file from the workspace, optionally a line range. Content comes back with \
-         each line NUMBERED (`   12 | text`) — those numbers are the same ones code/edit's \
-         line_range and insert_at address, so you never have to count. The `N | ` gutter is \
-         display, not file content: never write it back into a file.";
+        "Read a file from the workspace, optionally a line range; a large file without one \
+         returns its first page. Lines come back NUMBERED (`   12 | text`), the numbers \
+         code/edit's line_range and insert_at address. The `N | ` gutter is display: never \
+         write it back into a file.";
     type Params = CodeReadParams;
     type Output = ReadResult;
 
     async fn run(&self, ctx: &Ctx, p: CodeReadParams) -> Result<ReadResult, CommandError> {
         let engine = engine!(self, ctx);
-        engine
+        let read = engine
             .read_in(&p.file_path, p.start_line, p.end_line, read_scope_of(&self.state, ctx, &engine.workspace_root())?)
-            .map_err(engine_err)
+            .map_err(engine_err)?;
+        Ok(crate::code::file_engine::PageBudget::answer(read, p.start_line, p.end_line, p.page_budget))
     }
 }
 
