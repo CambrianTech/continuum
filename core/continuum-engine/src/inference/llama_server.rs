@@ -66,7 +66,7 @@ use smoke::{
 };
 mod target;
 pub use target::{
-    cold_expert_offload_ot, main_lane_placement, placement_from_config, AdapterEntry,
+    cold_expert_offload_ot, main_lane_placement, placement_from_config, serving_pool_kind, AdapterEntry,
     LanePlacement, ServingTarget,
 };
 mod kv_support;

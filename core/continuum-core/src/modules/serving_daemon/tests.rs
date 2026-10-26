@@ -573,7 +573,6 @@ pub(super) fn production_source() -> &'static str {
                 include_str!("lifecycle.rs"),
                 include_str!("demand.rs"),
                 include_str!("budget.rs"),
-                include_str!("holds.rs"),
                 include_str!("device_budget.rs"),
                 include_str!("consumer.rs"),
                 include_str!("prompt_cache.rs"),
