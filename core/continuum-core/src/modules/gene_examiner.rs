@@ -29,15 +29,7 @@ impl ServiceModule for GeneExaminerModule {
     }
 
     async fn initialize(&self, ctx: &ModuleContext) -> Result<(), String> {
-        let module = ctx
-            .registry
-            .get_by_name("data")
-            .ok_or_else(|| "the gene examiner requires the data module".to_string())?;
-        let data = module
-            .as_any()
-            .downcast_ref::<crate::modules::data::DataModule>()
-            .ok_or_else(|| "gene examiner: data module type mismatch".to_string())?;
-        let adapter = data.state.get_adapter("main").await?;
+        let adapter = ctx.storage("the gene examiner")?.adapter("main").await?;
         let receipts = crate::orm::OrmStore::<GeneExamReceipt>::new(adapter).await.map_err(|e| e.to_string())?;
         let trials = GeneTrials::default_store().ok_or_else(|| "gene examiner: no home for the trial file".to_string())?;
         let examiner = Examiner::new(

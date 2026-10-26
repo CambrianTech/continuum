@@ -481,6 +481,10 @@ impl ServiceModule for DataModule {
         objects
     }
 
+    fn as_storage(&self) -> Option<Arc<dyn crate::runtime::StorageProvider>> {
+        Some(self.state.clone())
+    }
+
     fn as_any(&self) -> &dyn Any {
         self
     }

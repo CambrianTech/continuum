@@ -496,6 +496,13 @@ pub trait ServiceModule: Send + Sync + Any {
         Vec::new()
     }
 
+    /// The node's named storage adapters, when this module owns them (the data module).
+    /// Default: none. Other modules bind through [`ModuleContext::storage`](super::ModuleContext::storage)
+    /// instead of downcasting the owner to its concrete type (card 39f08cda).
+    fn as_storage(&self) -> Option<std::sync::Arc<dyn super::StorageProvider>> {
+        None
+    }
+
     /// Downcast support for typed discovery.
     /// Enables registry.module_as::<VoiceModule>() — like CBAR's getAnalyzerOfType<T>().
     fn as_any(&self) -> &dyn Any;
@@ -828,5 +835,80 @@ mod tests {
         let from_wire: HandleRef = serde_json::from_str(&echoed).unwrap();
         assert_eq!(from_wire, original);
         assert_eq!(from_wire.id.as_uuid(), id);
+    }
+
+    // what this catches (card 39f08cda): a module reaching the node's storage by downcasting its
+    // owner, or a binding that invents a fallback. ModuleContext::storage refuses when no `data`
+    // module exists or it offers no storage, naming the caller; an adapter the owner cannot
+    // resolve stays an error; and every bind is the owner's one provider, so every caller
+    // shares the same backing.
+    mod storage_binding {
+        use super::*;
+        use crate::orm::StorageAdapter;
+        use crate::runtime::{ModuleContext, StorageProvider};
+
+        struct Provider;
+        #[async_trait]
+        impl StorageProvider for Provider {
+            async fn adapter(&self, handle: &str) -> Result<Arc<dyn StorageAdapter>, String> {
+                Err(format!("{handle} is not ready"))
+            }
+        }
+
+        struct Data(Option<Arc<dyn StorageProvider>>);
+        #[async_trait]
+        impl ServiceModule for Data {
+            fn config(&self) -> ModuleConfig {
+                ModuleConfig {
+                    name: "data",
+                    priority: ModulePriority::Normal,
+                    command_prefixes: &[],
+                    event_subscriptions: &[],
+                    needs_dedicated_thread: false,
+                    max_concurrency: 0,
+                    tick_interval: None,
+                }
+            }
+            async fn initialize(&self, _ctx: &ModuleContext) -> Result<(), String> {
+                Ok(())
+            }
+            async fn handle_command(&self, _: &str, _: Value) -> Result<CommandResult, String> {
+                Err("not handled".to_string())
+            }
+            fn as_storage(&self) -> Option<Arc<dyn StorageProvider>> {
+                self.0.clone()
+            }
+            fn as_any(&self) -> &dyn Any {
+                self
+            }
+        }
+
+        fn context_with(data: Option<Data>) -> ModuleContext {
+            let registry = Arc::new(crate::runtime::registry::ModuleRegistry::new());
+            if let Some(data) = data {
+                registry.register(Arc::new(data));
+            }
+            ModuleContext::new(
+                registry,
+                Arc::new(crate::runtime::MessageBus::new()),
+                Arc::new(crate::runtime::shared_compute::SharedCompute::new()),
+                tokio::runtime::Handle::current(),
+            )
+        }
+
+        #[tokio::test]
+        async fn storage_binds_the_owners_provider_or_refuses_by_name() {
+            let none = context_with(None).storage("ports").err();
+            assert_eq!(none.as_deref(), Some("ports requires the data module"));
+            let silent = context_with(Some(Data(None))).storage("recipe").err();
+            assert_eq!(silent.as_deref(), Some("recipe: the data module offers no storage"));
+
+            let provider: Arc<dyn StorageProvider> = Arc::new(Provider);
+            let ctx = context_with(Some(Data(Some(provider.clone()))));
+            let (a, b) = (ctx.storage("genome").expect("bound"), ctx.storage("training-trigger").expect("bound")); // expect: test-only
+            assert!(Arc::ptr_eq(&a, &provider) && Arc::ptr_eq(&b, &provider), "one provider for every caller");
+            let unready = a.adapter("main").await.err();
+            assert_eq!(unready.as_deref(), Some("main is not ready"), "an unresolved adapter stays an error, never a fallback");
+        }
     }
 }

@@ -193,7 +193,7 @@ pub struct TrainingTriggerState {
     active_dispatches: DashMap<BucketKey, Arc<durable::ActiveDispatch>>,
     hydrating: DashMap<BucketKey, durable::BucketHydration>,
     hydrated: dashmap::DashSet<BucketKey>,
-    data: LateBound<crate::modules::data::DataState>,
+    data: LateBound<dyn crate::runtime::StorageProvider>,
     initialization: tokio::sync::Mutex<()>,
     initial_adapter: std::sync::OnceLock<Arc<dyn crate::orm::StorageAdapter>>,
     recovery: tokio::sync::Mutex<()>,
@@ -881,15 +881,7 @@ impl ServiceModule for TrainingTriggerModule {
     }
 
     async fn initialize(&self, ctx: &ModuleContext) -> Result<(), String> {
-        let module = ctx
-            .registry
-            .get_by_name("data")
-            .ok_or_else(|| "training-trigger requires the data module".to_string())?;
-        let data = module
-            .as_any()
-            .downcast_ref::<crate::modules::data::DataModule>()
-            .ok_or_else(|| "training-trigger data module type mismatch".to_string())?;
-        self.state.data.install(data.state.clone());
+        self.state.data.install(ctx.storage("training-trigger")?);
         self.state.ensure_storage().await
     }
 
