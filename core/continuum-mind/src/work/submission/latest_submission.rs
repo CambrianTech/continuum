@@ -367,11 +367,11 @@ pub(super) async fn stage_for_owner_on_demand(
     runtime: &std::sync::Arc<crate::persona::PersonaAircRuntime>,
     card: &airc_lib::WorkCard,
 ) -> Result<std::path::PathBuf, CommandError> {
-    use crate::modules::card_staging::Staging;
+    use crate::work::card_staging::Staging;
     let home = crate::paths::continuum_home()
         .map_err(|e| CommandError::Internal(format!("continuum home: {e}")))?;
     let card_uuid = card.card_id.as_uuid();
-    match crate::modules::card_staging::stage_for_card(&home, runtime.persona_id(), card).await {
+    match crate::work::card_staging::stage_for_card(&home, runtime.persona_id(), card).await {
         Staging::Ready { path } => {
             continuum_base::probe!(
                 class = "work.submit.staged_on_demand",
@@ -607,7 +607,7 @@ pub(super) async fn submission_repository_url(checkout: &std::path::Path, repo: 
     // Conservative metadata-only network bound approved for this owner: not a latency
     // estimate or a new background retry policy. Failure leaves the submission unmade.
     let args = vec!["repo".into(), "view".into(), repo.to_string(), "--json".into(), "url".into(), "--jq".into(), ".url".into()];
-    let url = crate::commands::code::github::run_gh_within(checkout, &args, std::time::Duration::from_secs(30))
+    let url = continuum_hands::commands::code::github::run_gh_within(checkout, &args, std::time::Duration::from_secs(30))
         .await.map_err(CommandError::from)?;
     if !crate::code::repo_registry::network_repo_identity(&url).is_some_and(|(_, _, name)| name == repo.as_str()) {
         return Err(CommandError::Invalid("GitHub repository authority returned an invalid or mismatched URL".into()));

@@ -33,7 +33,6 @@ pub mod deploy_tracker;
 pub mod deploy_candidate;
 pub mod floor_fetch;
 pub mod card_carry;
-pub use continuum_mind::work::card_staging;
 pub mod channel;
 pub use continuum_mind::chat;
 pub use continuum_hands::modules::{code, code_commands, python_adapter};
@@ -88,7 +87,8 @@ pub use continuum_mind::activity;
 pub use continuum_mind::vdd::module as vdd;
 pub mod vision;
 pub mod verdict_board;
-pub mod work;
+pub use continuum_mind::work;
+pub use continuum_mind::work::card_staging;
 pub mod work_seams;
 
 /// Realistic 50-persona load/profiling harness (real CodeModule, real payloads, through a

@@ -1,7 +1,7 @@
 //! Claim-time provisioning receipts and recovery for an already-held claim.
 
 use super::*;
-use crate::modules::card_staging::Staging;
+use crate::work::card_staging::Staging;
 use std::path::PathBuf;
 
 #[derive(Debug, Clone, Serialize, TS, PartialEq, Eq)]
@@ -53,7 +53,7 @@ pub(super) async fn for_claim(
         .flatten();
     let staging = provision(existing, || async {
         match crate::paths::continuum_home() {
-            Ok(home) => crate::modules::card_staging::stage_for_card(&home, peer, &card).await,
+            Ok(home) => crate::work::card_staging::stage_for_card(&home, peer, &card).await,
             Err(error) => Staging::Failed {
                 stage: "home",
                 error: error.to_string(),

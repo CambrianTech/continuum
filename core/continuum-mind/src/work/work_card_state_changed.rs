@@ -1,6 +1,6 @@
 use super::*;
 
-pub(crate) use continuum_mind::persona::operator_peer::{persona_airc, persona_runtime};
+pub(crate) use crate::persona::operator_peer::{persona_airc, persona_runtime};
 
 pub(super) fn priority_str(p: Priority) -> &'static str {
     match p {
