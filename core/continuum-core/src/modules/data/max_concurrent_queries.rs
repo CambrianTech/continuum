@@ -1,4 +1,5 @@
 use super::*;
+use crate::identity::is_uuid_shape;
 
 /// Max concurrent query operations. Limits peak heap from personas × N queries
 /// all materializing result sets simultaneously. Without this, RSS spikes
@@ -365,20 +366,6 @@ impl DataState {
     }
 
 
-}
-
-/// Check if a string matches the 36-char UUID shape `8-4-4-4-12` hex.
-/// Intentionally simple — avoids pulling uuid crate just for a shape check.
-/// `pub(crate)` so `commands/memory` derives the SAME per-persona handle
-/// mapping `resolve_handle` uses (one shape check, one place).
-pub(crate) fn is_uuid_shape(s: &str) -> bool {
-    if s.len() != 36 {
-        return false;
-    }
-    s.chars().enumerate().all(|(i, c)| match i {
-        8 | 13 | 18 | 23 => c == '-',
-        _ => c.is_ascii_hexdigit(),
-    })
 }
 
 impl Default for DataModule {

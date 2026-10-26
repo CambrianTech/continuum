@@ -10,7 +10,7 @@ use super::AppendResult;
 use crate::log_debug;
 use crate::logging::TimingGuard;
 use crate::memory::CorpusMemory;
-use crate::modules::memory::MemoryState;
+use crate::state::MemoryState;
 use crate::sdk_codegen::CommandError;
 
 /// Params for `memory/append-memory`. Wire keys are snake_case.

@@ -367,17 +367,9 @@ fn has_namespaced_call_with_object(t: &str) -> bool {
 /// citizen's own reply. Checked by SHAPE, not against the room roster — a reply
 /// opening with any peer id is a rendered transcript line whoever it names, and
 /// keeping it roster-free means the gate cannot go quiet when the roster is late.
-fn is_uuid_shaped(s: &str) -> bool {
-    s.len() == 36
-        && s.chars().enumerate().all(|(i, c)| match i {
-            8 | 13 | 18 | 23 => c == '-',
-            _ => c.is_ascii_hexdigit(),
-        })
-}
-
 fn opens_with_peer_id(t: &str) -> bool {
     let Some(head) = t.get(..36) else { return false };
-    if !is_uuid_shaped(head) {
+    if !continuum_kernel::identity::is_uuid_shape(head) {
         return false;
     }
     // A bare id with nothing after it is not a transcript line; the colon is what
@@ -458,7 +450,7 @@ const MAX_WRAPPER_DEPTH: usize = 4;
 /// keeps a citizen's own `[re: <room-uuid>] …` aside out of the predicate.
 fn header_names_a_peer(header: &str) -> bool {
     let Some(at) = header.find("peer ") else { return false };
-    is_uuid_shaped(header[at + "peer ".len()..].trim_start().get(..36).unwrap_or(""))
+    continuum_kernel::identity::is_uuid_shape(header[at + "peer ".len()..].trim_start().get(..36).unwrap_or(""))
 }
 
 #[cfg(test)]

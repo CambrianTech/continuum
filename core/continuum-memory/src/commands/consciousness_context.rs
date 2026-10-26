@@ -9,7 +9,7 @@ use ts_rs::TS;
 use crate::log_info;
 use crate::logging::TimingGuard;
 use crate::memory::{ConsciousnessContextRequest, ConsciousnessContextResponse};
-use crate::modules::memory::MemoryState;
+use crate::state::MemoryState;
 use crate::sdk_codegen::CommandError;
 
 /// Params for `memory/consciousness-context`. Wire keys are snake_case.

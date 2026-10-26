@@ -90,6 +90,8 @@ pub mod hands_context;
 pub mod hands_gate;
 pub mod activity;
 pub mod citizen_path;
+pub mod uuid_shape;
+pub use uuid_shape::is_uuid_shape;
 pub use activity::{ActivityRoom, RoomlessTurn};
 
 /// The durable on-disk home of one citizen: `<root>/citizens/peers/<peer_id>`.

@@ -9,7 +9,7 @@ use ts_rs::TS;
 use crate::log_info;
 use crate::logging::TimingGuard;
 use crate::memory::{MemoryRecallResponse, MultiLayerRecallRequest};
-use crate::modules::memory::MemoryState;
+use crate::state::MemoryState;
 use crate::sdk_codegen::CommandError;
 
 fn default_max_results() -> usize {

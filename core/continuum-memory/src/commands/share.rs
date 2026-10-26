@@ -23,7 +23,7 @@ use super::AppendResult;
 use crate::log_info;
 use crate::logging::TimingGuard;
 use crate::memory::{CorpusMemory, MemoryRecord};
-use crate::modules::memory::MemoryState;
+use crate::state::MemoryState;
 use crate::sdk_codegen::CommandError;
 
 fn default_importance() -> f64 {
@@ -60,7 +60,7 @@ pub struct MemoryShareParams {
 /// shared-by provenance. Separated from the command so the provenance shaping is
 /// unit-testable without the manager. `id` + `timestamp` are passed in (the command
 /// generates them) to keep this deterministic.
-pub(super) fn build_shared_record(
+pub fn build_shared_record(
     to_persona_id: &str,
     from_persona_id: &str,
     content: String,

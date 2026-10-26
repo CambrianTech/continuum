@@ -211,7 +211,7 @@ fn src_root() -> PathBuf {
 /// - `modules/embedding.rs::{MODEL_CACHE, EMBEDDING_GPU_MANAGER, EMBEDDING_POOL}`
 /// - `modules/sentinel/mod.rs::GLOBAL_SENTINEL` (read by signal handlers
 ///   — the trickiest one; needs a different shutdown plumbing)
-const GRANDFATHERED_VIOLATIONS: usize = 3;
+const GRANDFATHERED_VIOLATIONS: usize = 2;
 
 // proves: localized state per citizen (no NEW static singleton substrate
 // state; grandfathered count ratchets only down)
