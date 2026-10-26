@@ -84,13 +84,13 @@ impl LlamaServerProcess {
             loop {
                 match incarnation.liveness() {
                     Liveness::Dead => return Ok(()),
-                    Liveness::Unknown => return Err(LlamaServerError::RetirementRefused("adopted engine exit is unverified".into())),
+                    Liveness::Unknown => return Err(LlamaServerError::RetirementPending("adopted engine exit is unverified".into())),
                     Liveness::Alive => tokio::time::sleep(Duration::from_millis(100)).await,
                 }
             }
         };
         tokio::time::timeout(budget, wait).await
-            .map_err(|_| LlamaServerError::RetirementRefused(format!(
+            .map_err(|_| LlamaServerError::RetirementPending(format!(
                 "adopted engine pid {} started {} exit timed out; endpoint remains suspended. \
                  Next serving reconciliation resumes exact-process exit observation, then launches \
                  and verifies readiness before reopening admission", incarnation.pid, incarnation.started_s
@@ -158,7 +158,19 @@ mod tests {
             let _ = child.wait();
             return Err("a live predecessor unexpectedly retired".into());
         };
-        assert!(matches!(error, LlamaServerError::RetirementRefused(_)));
+        assert!(matches!(error, LlamaServerError::RetirementPending(_)));
+        let closed = crate::inference::slots::directory().endpoint(&format!("{root}-admission"));
+        let transition = closed.transition_if(&|| true).await.map_err(|()| "transition refused")?;
+        super::super::launch::handle_retirement_failure(&transition, &error);
+        drop(transition);
+        assert!(!closed.is_ready(), "post-signal uncertainty must keep admission closed");
+        assert!(closed.admit().await.is_err());
+        let untouched = crate::inference::slots::directory().endpoint(&format!("{root}-untouched"));
+        let transition = untouched.transition_if(&|| true).await.map_err(|()| "transition refused")?;
+        super::super::launch::handle_retirement_failure(&transition,
+            &LlamaServerError::RetirementRefused("checkpoint refused before signal".into()));
+        drop(transition);
+        assert!(untouched.admit().await.is_ok(), "pre-signal refusal still hands admission back");
         assert!(!super::super::engine_install::roll_back_engine_after_failed_launch(&error),
             "failure to retire the predecessor cannot demote the candidate engine");
         assert_eq!(*process.retiring_adopted.lock(), Some(incarnation));
