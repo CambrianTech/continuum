@@ -1,0 +1,152 @@
+use super::*;
+use crate::sample::{Builds, Demand, EngineIncarnation, ServingConfig, Window, Workload};
+
+const MIN: u64 = 60_000;
+
+fn policy() -> ServicePolicy {
+    ServicePolicy { history: 8, min_evidence: 3, sustained: 2 }
+}
+
+fn config(lanes: u32, ctx: u32) -> ServingConfig {
+    ServingConfig {
+        lanes,
+        ctx_per_lane: ctx,
+        cache_ram_mib: 4365,
+        kv_type: "f16".into(),
+        backend: "metal".into(),
+        expert_residency: String::new(),
+    }
+}
+
+/// One 10-minute window on the M5 serving the 35B MoE.
+fn window(at_min: u64, config: &ServingConfig, pid: u32, p50_ms: u64, predicted_ms: u64) -> ServiceSample {
+    ServiceSample {
+        schema: SCHEMA,
+        node: "m5".into(),
+        model: "qwen3.6-35b-a3b".into(),
+        builds: Builds { core: "8e38ada8d".into(), engine: "b0".into() },
+        config: config.clone(),
+        incarnation: EngineIncarnation { pid, started_ms: u64::from(pid) },
+        mixed: false,
+        window: Window { start_ms: at_min * MIN, end_ms: (at_min + 10) * MIN },
+        workload: Workload { residents_active: 3, prompt_tokens_p50: 24_000, output_tokens_p50: 300, cached_ratio_p50: 0.7 },
+        demand: Demand { offered: 12, queued_ms_p50: 2_000 },
+        generations: 12,
+        acts: 4,
+        failures: 0,
+        latency_p50_ms: p50_ms,
+        latency_p90_ms: p50_ms * 2,
+        predicted_p50_ms: Some(predicted_ms),
+        warmup: Warmup::Warm,
+        memory_ceiling_bytes: 40_300_000_000,
+    }
+}
+
+// what this catches: the M5 on 2026-10-26. A configuration first seen DEGRADED (the 2-lane plan
+// went live in a relaunch after a Compute-error burst) has no history of its own, so a
+// per-configuration baseline alone would learn 174 s as normal and never fire. The node's
+// healthy prediction ratios catch it, the slow windows never join any baseline, and the same
+// configuration after a clean restart reads healthy.
+#[test]
+fn a_configuration_first_seen_degraded_is_caught_by_the_nodes_prediction_ratios() {
+    let (mut state, policy) = (ServiceState::default(), policy());
+    let five = config(5, 50_432);
+    for (i, p50) in [62_000, 66_000, 64_000, 63_000].into_iter().enumerate() {
+        let v = observe(&mut state, &policy, &window(i as u64 * 10, &five, 100, p50, 60_000));
+        assert!(matches!(v, Verdict::Healthy | Verdict::Insufficient(Insufficient::NoReference)), "{v:?}");
+    }
+
+    let two = config(2, 58_880);
+    let mut degraded = window(200, &two, 200, 174_000, 80_000);
+    degraded.failures = 0;
+    assert_eq!(observe(&mut state, &policy, &degraded), Verdict::Suspect { streak: 1, sustained: 2 }, "one slow window is a wobble");
+    let mut next = window(210, &two, 200, 180_000, 80_000);
+    next.failures = 3;
+    let Verdict::Regressed(r) = observe(&mut state, &policy, &next) else { panic!("sustained slowdown on a new configuration must regress") };
+    assert!(matches!(r.against, Reference::PredictionRatio { .. }), "judged by the ratios: {r:?}");
+    assert!(r.causes.contains(&CauseHint::Failures(3)), "{r:?}");
+    assert!(r.causes.iter().any(|c| matches!(c, CauseHint::SlowerThanItsRates { .. })), "{r:?}");
+    assert!(state.baselines.values().all(|b| b.references.iter().all(|x| x.latency_p50_ms < 100_000)), "no slow window became a reference");
+
+    // The clean restart: same configuration, new incarnation, at its measured speed.
+    assert_eq!(observe(&mut state, &policy, &window(400, &two, 300, 86_000, 80_000)), Verdict::Healthy);
+}
+
+// what this catches: an engine that comes back slower than its OWN configuration's healthy
+// windows, judged against that history, with the restart named as the candidate cause.
+#[test]
+fn the_same_configuration_slower_after_a_restart_regresses_and_names_the_restart() {
+    let (mut state, policy) = (ServiceState::default(), policy());
+    let two = config(2, 58_880);
+    for (i, p50) in [86_000, 88_000, 90_000].into_iter().enumerate() {
+        observe(&mut state, &policy, &window(i as u64 * 10, &two, 300, p50, 80_000));
+    }
+    assert!(matches!(observe(&mut state, &policy, &window(100, &two, 400, 170_000, 80_000)), Verdict::Suspect { .. }));
+    let Verdict::Regressed(r) = observe(&mut state, &policy, &window(110, &two, 400, 175_000, 80_000)) else { panic!("must regress") };
+    assert_eq!(r.against, Reference::OwnHistory { fastest_ms: 86_000, slowest_ms: 90_000 });
+    assert!(r.causes.contains(&CauseHint::EngineRestartedSinceBaseline), "{r:?}");
+}
+
+// what this catches: windows that cannot describe the engine's speed being judged anyway, or
+// learned. Warm-up, unknown warm-up, a window spanning two incarnations and an idle window
+// are each Insufficient, never Healthy, and none of them becomes a reference.
+#[test]
+fn warmup_unknown_mixed_and_idle_windows_are_never_judged_or_learned() {
+    let (mut state, policy) = (ServiceState::default(), policy());
+    let two = config(2, 58_880);
+    let mut warming = window(0, &two, 1, 300_000, 80_000);
+    warming.warmup = Warmup::WarmingUp;
+    let mut unknown = window(10, &two, 1, 80_000, 80_000);
+    unknown.warmup = Warmup::Unknown;
+    let mut mixed = window(20, &two, 1, 80_000, 80_000);
+    mixed.mixed = true;
+    let mut idle = window(30, &two, 1, 0, 80_000);
+    idle.demand.offered = 0;
+    idle.generations = 0;
+    assert_eq!(observe(&mut state, &policy, &warming), Verdict::Insufficient(Insufficient::WarmingUp));
+    assert_eq!(observe(&mut state, &policy, &unknown), Verdict::Insufficient(Insufficient::UnknownWarmup));
+    assert_eq!(observe(&mut state, &policy, &mixed), Verdict::Insufficient(Insufficient::Mixed));
+    assert_eq!(observe(&mut state, &policy, &idle), Verdict::Insufficient(Insufficient::NoDemand));
+    assert!(state.baselines.is_empty() && state.ratios.is_empty(), "nothing learned: {state:?}");
+}
+
+// what this catches: an upgrade read as a sick engine. New builds are a new baseline and new
+// ratios, so a slower window right after an upgrade is not enough evidence, never a regression.
+#[test]
+fn new_builds_start_their_own_baseline_instead_of_regressing() {
+    let (mut state, policy) = (ServiceState::default(), policy());
+    let two = config(2, 58_880);
+    for i in 0..3 {
+        observe(&mut state, &policy, &window(i * 10, &two, 1, 86_000, 80_000));
+    }
+    let mut upgraded = window(100, &two, 2, 140_000, 80_000);
+    upgraded.builds.core = "f00dfeed".into();
+    assert_eq!(observe(&mut state, &policy, &upgraded), Verdict::Insufficient(Insufficient::NoReference));
+}
+
+// what this catches: a heavier hour (twice the fresh tokens per act) read as a slower engine. It
+// lands in its own stratum, where the node's prediction ratio, which normalizes the workload,
+// judges it healthy.
+#[test]
+fn a_heavier_workload_is_its_own_stratum_and_judged_by_prediction() {
+    let (mut state, policy) = (ServiceState::default(), policy());
+    let two = config(2, 58_880);
+    for i in 0..3 {
+        observe(&mut state, &policy, &window(i * 10, &two, 1, 86_000, 80_000));
+    }
+    let mut heavy = window(100, &two, 1, 160_000, 150_000);
+    heavy.workload.prompt_tokens_p50 = 48_000;
+    assert_ne!(BaselineKey::of(&heavy), BaselineKey::of(&window(0, &two, 1, 86_000, 80_000)));
+    assert_eq!(observe(&mut state, &policy, &heavy), Verdict::Healthy);
+}
+
+// what this catches: a configuration's identity drifting (two runs disagreeing on its
+// fingerprint, so restarts never match), or two different configurations colliding.
+#[test]
+fn a_configurations_fingerprint_is_stable_and_tells_settings_apart() {
+    assert_eq!(config(2, 58_880).fingerprint(), config(2, 58_880).fingerprint());
+    assert_ne!(config(2, 58_880).fingerprint(), config(5, 50_432).fingerprint());
+    let mut q8 = config(2, 58_880);
+    q8.kv_type = "q8_0".into();
+    assert_ne!(q8.fingerprint(), config(2, 58_880).fingerprint());
+}

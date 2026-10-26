@@ -40,6 +40,7 @@ members = [
     "core/continuum-engine",
     "core/continuum-models",
     "core/continuum-embedding",
+    "core/continuum-service",
     "core/expert-pager-policy",
     "core/source-hygiene",
     "core/tool-working-set",
