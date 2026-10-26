@@ -64,7 +64,7 @@ impl LlamaServerProcess {
                 pid: incarnation.pid,
                 start_time: incarnation.started_s,
             },
-        ).map_err(LlamaServerError::Spawn)?;
+        ).map_err(LlamaServerError::RetirementRefused)?;
         // No await between signalling and retaining custody. Cancellation of the
         // wait cannot turn this predecessor back into a serving candidate. A signal is
         // not a death: the residents' loss is recorded when the exit is observed.
@@ -84,13 +84,13 @@ impl LlamaServerProcess {
             loop {
                 match incarnation.liveness() {
                     Liveness::Dead => return Ok(()),
-                    Liveness::Unknown => return Err(LlamaServerError::Spawn("adopted engine exit is unverified".into())),
+                    Liveness::Unknown => return Err(LlamaServerError::RetirementRefused("adopted engine exit is unverified".into())),
                     Liveness::Alive => tokio::time::sleep(Duration::from_millis(100)).await,
                 }
             }
         };
         tokio::time::timeout(budget, wait).await
-            .map_err(|_| LlamaServerError::Spawn(format!(
+            .map_err(|_| LlamaServerError::RetirementRefused(format!(
                 "adopted engine pid {} started {} exit timed out; endpoint remains suspended. \
                  Next serving reconciliation resumes exact-process exit observation, then launches \
                  and verifies readiness before reopening admission", incarnation.pid, incarnation.started_s
@@ -152,7 +152,15 @@ mod tests {
             }).await;
         }
         assert_eq!(*process.retiring_adopted.lock(), Some(incarnation));
-        assert!(process.await_adopted_exit(incarnation, Duration::ZERO).await.is_err());
+        let error = process.await_adopted_exit(incarnation, Duration::ZERO).await;
+        let Err(error) = error else {
+            drop(child.stdin.take());
+            let _ = child.wait();
+            return Err("a live predecessor unexpectedly retired".into());
+        };
+        assert!(matches!(error, LlamaServerError::RetirementRefused(_)));
+        assert!(!super::super::engine_install::roll_back_engine_after_failed_launch(&error),
+            "failure to retire the predecessor cannot demote the candidate engine");
         assert_eq!(*process.retiring_adopted.lock(), Some(incarnation));
         assert_eq!(endpoint.admit().await?.take_relaunch_discard(&resident), None,
             "no loss is recorded while the wait still holds custody");
