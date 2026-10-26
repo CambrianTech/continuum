@@ -212,6 +212,15 @@ fn demand_with_no_completions_is_a_stall_never_idle() {
     stalled.failures = 12;
     assert_eq!(observe(&mut state, &policy, &stalled), Verdict::Stalled { offered: 12, failures: 12 });
     assert!(state.baselines.is_empty(), "a stall is never learned");
+
+    // what this catches: Kimi's shape, refused before inference, so her window has no reuse to
+    // call warm. Warm-up and a mixed window qualify a speed; they never excuse zero completions.
+    let mut unwarmed = window(10, &config(2, 58_880), 1, 0, 80_000);
+    unwarmed.generations = 0;
+    unwarmed.failures = 12;
+    unwarmed.warmup = Warmup::Unknown;
+    unwarmed.mixed = true;
+    assert_eq!(observe(&mut state, &policy, &unwarmed), Verdict::Stalled { offered: 12, failures: 12 });
 }
 
 // what this catches (Codex on #5477): a recalibrated predictor read as a change in the engine. A

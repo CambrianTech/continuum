@@ -237,7 +237,14 @@ impl ServiceModule for CitizenHealthModule {
             verdict = v.as_str(),
             "the hour's citizen health — the substrate's own read"
         );
+        // Each resident's own hour (card 1c157668): a mind asked for work and given none is
+        // named on the line and on the beacon, never found by someone asking.
+        let stuck = super::resident_service::judge_residents(EpochMs::now().millis()).await;
         let mut said = line(&h, &v);
+        if !stuck.is_empty() {
+            let named: Vec<String> = stuck.iter().map(|a| a.line()).collect();
+            said.push_str(&format!(" · residents stuck: {}", named.join("; ")));
+        }
         said.push_str(&continuum_cli_lifecycle::deploy_health::read(
             &crate::paths::continuum_root(),
             env!("CONTINUUM_BUILD_GIT_SHA"),

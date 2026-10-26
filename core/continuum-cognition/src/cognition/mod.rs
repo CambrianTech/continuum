@@ -130,6 +130,7 @@ pub mod presence_glyph;
 pub mod prompt_assembly;
 pub mod rag_budget;
 pub mod redaction;
+pub mod resident_service;
 pub mod room_directory;
 
 pub use model_resolver::*;

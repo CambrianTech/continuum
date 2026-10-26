@@ -125,6 +125,7 @@ impl NodeRegistry {
                 served_model: None,
                 lanes: 0,
                 residents: 0,
+                resident_alarms: Vec::new(),
                 silent_secs: 0,
                 stale: false,
                 behind: false,
@@ -147,30 +148,24 @@ impl NodeRegistry {
             .map(|r| r.value().clone())
     }
 
-    /// Ensure a grid node exists for a peer known ONLY by its durable airc `PeerId` — the
-    /// automatic path: a capacity beacon arrives over airc carrying the authenticated PeerId
-    /// (no transport address), and the grid FIGURES OUT the node identity from it rather than
-    /// waiting for a manual `grid/pair` (#2228). If a node already carries this `peer_id` this
-    /// is a no-op; otherwise a node is self-registered keyed by the PeerId (a beaconing peer
-    /// IS a grid node, identity-first). Trust is left at the DEFAULT — discovery is not
-    /// authorization, so the node is visible to `get_by_peer`/pricing but is not sent work
-    /// until the trust bridge (#38) elevates it. `vram_mb` seeds a Compute capability from the
-    /// offer so the router can weigh it. Returns true when a node was newly created.
     /// Record the build a peer's beacon reported (and that it was just heard).
     pub fn note_peer_build(&self, peer: &PeerId, build_sha: Option<String>, build_number: u64, heard_at_ms: u64) {
-        self.note_peer_beacon(peer, build_sha, build_number, None, 0, 0, heard_at_ms);
+        self.fold_peer(peer, build_sha, build_number, None, heard_at_ms);
     }
 
-    /// Fold one heard beacon into the node: build, and what the node serves.
-    #[allow(clippy::too_many_arguments)]
-    pub fn note_peer_beacon(
+    /// Fold one heard beacon into the node: its build, what it serves, and the residents it
+    /// judged stalled or regressed (card 1c157668), so `grid/nodes` on any node names them.
+    pub fn note_peer_beacon(&self, peer: &PeerId, offer: &crate::capacity::gossip::CapacityOffer, heard_at_ms: u64) {
+        let build_sha = crate::capacity::gossip::build_hex(offer.build);
+        self.fold_peer(peer, build_sha, offer.build_number, Some(offer), heard_at_ms);
+    }
+
+    fn fold_peer(
         &self,
         peer: &PeerId,
         build_sha: Option<String>,
         build_number: u64,
-        served_model: Option<String>,
-        lanes: u32,
-        residents: u32,
+        offer: Option<&crate::capacity::gossip::CapacityOffer>,
         heard_at_ms: u64,
     ) {
         for mut r in self.nodes.iter_mut() {
@@ -182,10 +177,15 @@ impl NodeRegistry {
                 if build_number != 0 {
                     n.build_number = build_number;
                 }
-                if served_model.is_some() {
-                    n.served_model = served_model.clone();
-                    n.lanes = lanes;
-                    n.residents = residents;
+                if let Some(offer) = offer {
+                    if offer.served_model.is_some() {
+                        n.served_model = offer.served_model.clone();
+                        n.lanes = offer.lanes;
+                        n.residents = offer.residents;
+                    }
+                    // Every beacon is the node's current judgement: an empty list clears the
+                    // last one (her stall ended, or the node no longer hosts her).
+                    n.resident_alarms = offer.resident_alarms.clone();
                 }
                 n.last_seen = n.last_seen.max(heard_at_ms);
             }
@@ -227,6 +227,15 @@ impl NodeRegistry {
         out
     }
 
+    /// Ensure a grid node exists for a peer known ONLY by its durable airc `PeerId` — the
+    /// automatic path: a capacity beacon arrives over airc carrying the authenticated PeerId
+    /// (no transport address), and the grid FIGURES OUT the node identity from it rather than
+    /// waiting for a manual `grid/pair` (#2228). If a node already carries this `peer_id` this
+    /// is a no-op; otherwise a node is self-registered keyed by the PeerId (a beaconing peer
+    /// IS a grid node, identity-first). Trust is left at the DEFAULT — discovery is not
+    /// authorization, so the node is visible to `get_by_peer`/pricing but is not sent work
+    /// until the trust bridge (#38) elevates it. `vram_mb` seeds a Compute capability from the
+    /// offer so the router can weigh it. Returns true when a node was newly created.
     pub fn ensure_peer_node(&self, peer: PeerId, vram_mb: Option<u64>) -> bool {
         if self.get_by_peer(&peer).is_some() {
             return false;
@@ -256,6 +265,7 @@ impl NodeRegistry {
                 served_model: None,
                 lanes: 0,
                 residents: 0,
+                resident_alarms: Vec::new(),
                 silent_secs: 0,
                 stale: false,
                 behind: false,
@@ -403,12 +413,35 @@ mod tests {
         let peer = PeerId::from_uuid(uuid::Uuid::from_u128(21));
         assert!(reg.ensure_peer_node(peer, None));
         let t0 = EpochMs::now().millis();
-        reg.note_peer_beacon(&peer, Some("269cefdec".into()), 5322, Some("Qwen3.8-27B".into()), 2, 0, t0);
+        // Kimi on the 5090, 2026-10-26: refused before inference every turn, on the beacon.
+        let kimi = serde_json::json!({
+            "persona_id": uuid::Uuid::from_u128(0x5090), "name": "Kimi", "state": { "kind": "stalled" },
+            "window_start_ms": t0, "window_end_ms": t0 + 3_600_000, "demand": 12, "completions": 0,
+            "refusals": 12, "parked": true,
+            "refusal": { "class": "prompt_capacity", "required_tokens": 26_101, "budget_tokens": 17_829, "context_window": 49_152 },
+        });
+        let beacon = |alarms: serde_json::Value| -> crate::capacity::gossip::CapacityOffer {
+            serde_json::from_value(serde_json::json!({
+                "gpuTotalBytes": 1, "gpuFreeBytesLive": 0, "systemRamFreeBytes": 0, "atMs": t0,
+                "build": 0x269cefdec_u64, "buildNumber": 5322, "servedModel": "Qwen3.8-27B", "lanes": 2,
+                "residents": 0, "residentAlarms": alarms,
+            }))
+            .expect("the wire shape of a seat's beacon")
+        };
+        reg.note_peer_beacon(&peer, &beacon(serde_json::json!([kimi])), t0);
         let n = reg.all_nodes().into_iter().find(|n| n.peer_id == Some(peer)).expect("node");
         assert_eq!((n.served_model.as_deref(), n.lanes, n.residents), (Some("Qwen3.8-27B"), 2, 0));
+        assert_eq!(n.build_sha.as_deref(), Some("269cefdec"));
+        // what this catches (card 1c157668): another node's stalled resident shows in grid/nodes.
+        assert_eq!(n.resident_alarms.iter().map(|a| a.line()).collect::<Vec<_>>(),
+            vec!["Kimi stalled: 12 asked, 0 completed, prompt capacity 26101 > 17829 at context 49152, parked".to_string()]);
         reg.note_peer_build(&peer, Some("269cefdec".into()), 5322, t0 + 1000);
         let n = reg.all_nodes().into_iter().find(|n| n.peer_id == Some(peer)).expect("node");
         assert_eq!(n.lanes, 2, "an older beacon shape leaves the served facts alone");
+        assert_eq!(n.resident_alarms.len(), 1, "a build-only fold leaves the judgement alone");
+        reg.note_peer_beacon(&peer, &beacon(serde_json::json!([])), t0 + 2000);
+        let n = reg.all_nodes().into_iter().find(|n| n.peer_id == Some(peer)).expect("node");
+        assert!(n.resident_alarms.is_empty(), "the next beacon's judgement replaces the last");
     }
 
     /// what this catches: a peer on a NEWER build called "behind" because its sha
