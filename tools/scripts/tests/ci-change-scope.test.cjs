@@ -100,10 +100,10 @@ test('a crate-local change runs that crate and every crate that depends on it', 
   assert.deepEqual(scope(['core/continuum-live/src/lib.rs']), crates('continuum-live', 'continuum-perception', 'continuum-cognition', 'continuum-academy', 'continuum-mind', 'continuum-dreaming', 'continuum-core'));
   assert.deepEqual(scope(['core/continuum-perception/src/lib.rs']), crates('continuum-perception', 'continuum-cognition', 'continuum-academy', 'continuum-mind', 'continuum-dreaming', 'continuum-core'));
   assert.deepEqual(scope(['core/continuum-genome/src/lib.rs']), crates('continuum-genome', 'continuum-cognition', 'continuum-academy', 'continuum-mind', 'continuum-dreaming', 'continuum-core'));
-  assert.deepEqual(scope(['core/continuum-memory/src/lib.rs']), crates('continuum-memory', 'continuum-cognition', 'continuum-academy', 'continuum-mind', 'continuum-dreaming', 'continuum-core'));
+  assert.deepEqual(scope(['core/continuum-memory/src/lib.rs']), crates('continuum-memory', 'continuum-embedding', 'continuum-cognition', 'continuum-academy', 'continuum-mind', 'continuum-dreaming', 'continuum-core'));
   assert.deepEqual(scope(['core/continuum-experience/src/lib.rs']), crates('continuum-experience', 'continuum-cognition', 'continuum-academy', 'continuum-mind', 'continuum-dreaming', 'continuum-core'));
   assert.deepEqual(scope(['core/continuum-cognition/src/lib.rs']), crates('continuum-cognition', 'continuum-academy', 'continuum-mind', 'continuum-dreaming', 'continuum-core'));
-  const belowMind = crates('continuum-engine', 'continuum-hands', 'continuum-live', 'continuum-perception', 'continuum-genome', 'continuum-memory', 'continuum-cognition', 'continuum-academy', 'continuum-sentinel', 'continuum-mind', 'continuum-dreaming', 'continuum-core');
+  const belowMind = crates('continuum-engine', 'continuum-embedding', 'continuum-models', 'continuum-hands', 'continuum-live', 'continuum-perception', 'continuum-genome', 'continuum-memory', 'continuum-cognition', 'continuum-academy', 'continuum-sentinel', 'continuum-mind', 'continuum-dreaming', 'continuum-core');
   assert.deepEqual(scope(['core/continuum-engine/src/lib.rs']), belowMind);
   // The floor crates (base, host) sit below the kernel: a kernel change runs everything above them.
   const aboveFloor = TESTED_CRATES.filter(n => n !== 'continuum-base' && n !== 'continuum-host');
