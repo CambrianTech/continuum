@@ -226,11 +226,15 @@ single source of truth and this file must not drift from it.
 
 ## Machine-level conventions you cannot infer from the code
 
-**Cargo target dir — always export it first.**
+**Cargo target dir — always set it first.** In the main checkout:
 
 ```bash
 export CARGO_TARGET_DIR="$HOME/.continuum/cache/cargo-target"
 ```
+
+In a worktree, build into its own copy-on-write clone of that dir instead (CLAUDE.md plan
+phase 2, "Each worktree builds into its own target dir"): a shared dir hands one worktree
+another's stale workspace-crate build.
 
 Without it cargo writes a ghost `target/` per invocation. A `cargo test` of
 continuum-core is ~10 GB of artifacts; this project has hit a day of disk runway from

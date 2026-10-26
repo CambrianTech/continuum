@@ -59,6 +59,22 @@ Phases, in order; each owner works its area in parallel:
 - **2 Crates by the placement map**, floor up: continuum-base (#5194), Store, Perception/RAG, Hands,
   Serving, Mind, Grid/airc, Clients. Pure moves plus import paths, one owner per cut;
   `layer_discipline` forbids upward imports; each crate checks in seconds.
+  **Commands by module** (Joel, 10-26): a domain's service and its commands are one crate. `commands/<x>` moves
+  WITH `modules/<x>` into that domain's crate, never into a shared commands crate (core held 90k lines of services
+  and 51k of commands on 10-26). The command substrate (`sdk_codegen`, `register_*`) is already in continuum-kernel.
+  Leaves first as pure moves (models, gpu, embedding, vdd, search, web; code into continuum-hands); a coordinator
+  (serving_daemon ~60 imports, work ~40, grid ~30) gets its seam designed before it moves.
+  **A new worktree builds in seconds:** its vendored engines are submodules; init them from the main checkout's
+  objects (3.6 s measured on the M5, 10-26), never by hand-symlinking or a network clone:
+  `git submodule update --init --reference <main>/core/vendor/llama.cpp core/vendor/llama.cpp` (same for whisper.cpp).
+  **Each worktree builds into its own target dir**, never the shared one: workspace crates get the same artifact
+  names in every worktree, so a shared dir hands one worktree another's stale build (`cannot find home in
+  continuum_base` on 10-26, twice in one hour). Seed it as a copy-on-write clone (`cp -c -R -p <shared>/debug
+  <wt-target>/debug`, 5.6 s for 32 GB on the M5 10-26, no disk until written), touch the worktree's own lib roots
+  once so its crates rebuild from its source (registry deps and the engine build stay), and delete the dir with
+  the worktree. `cp -c` is an APFS clone (macOS); on Linux use `cp --reflink=auto` (a clone on btrfs/xfs, a copy
+  elsewhere), and on Windows or any filesystem without clones start an empty per-worktree dir. The main checkout
+  keeps the shared dir; this paragraph is the one owner of the rule, the build lines below point here.
 - **3 Locks.** Clippy in CI on split crates, `deny(unwrap_used, expect_used, panic)` on every clean one;
   CI checks only the affected crates.
 - **4 Then pace work**, one change at a time inside its crate, validator first, then the live read.
@@ -777,8 +793,9 @@ because a binary you built by hand exists only on your machine, and the next per
 clone the repo gets a system that doesn't work. Anything a running core needs must be
 wired into the path `continuum start` / `continuum reboot` actually takes, so a fresh
 clone works with no manual steps (#291). For type-checking while you work,
-`cargo check -p continuum-core` is the right tool — always after
-`export CARGO_TARGET_DIR="$HOME/.continuum/cache/cargo-target"`.
+`cargo check -p continuum-core` is the right tool — always with a target dir set: in the main
+checkout `export CARGO_TARGET_DIR="$HOME/.continuum/cache/cargo-target"`, in a worktree its own
+clone of it (plan phase 2, "Each worktree builds into its own target dir").
 
 **`npm` is for building the web client, and only that.** If you are changing core
 behaviour and find yourself running `npm start`, you are in the wrong tier.
@@ -1937,7 +1954,7 @@ Generators and OOP are intertwined parallel forces:
 
 **File reduced from 61k to ~20k characters**
 - if you only edit a test, and not the api itself, you don't need to redeploy — just run the test again (`cargo test -p continuum-core --lib <filter>`)
-- type-check before you deploy: `cargo check -p continuum-core` (after `export CARGO_TARGET_DIR="$HOME/.continuum/cache/cargo-target"`). `npm run build:ts` checks the WEB CLIENT only — it says nothing about whether the core compiles
+- type-check before you deploy: `cargo check -p continuum-core` (with the main checkout's shared target dir, or a worktree's own clone of it: plan phase 2). `npm run build:ts` checks the WEB CLIENT only — it says nothing about whether the core compiles
 - ./jtag collaboration/chat/export --room="general" --limit=30 will let you see ai opinions after chat/send to ask
 - Tool logging is in PersonaToolExecutor
 - make sure to put any markdown architecture or design documents other than readmes in docs/* into the appropriate directort OR document if they exist. run tree there.
@@ -1947,5 +1964,5 @@ Generators and OOP are intertwined parallel forces:
 - never commit code until you validate it works. deploy and validate first, make sure it compiles (`cargo check` for the core; `npm run build:ts` only if you touched the web client)
 - never use `--no-verify` on commit or push. If hooks fail because of a stale worktree, missing submodule, missing generated file, or a bug in the hook itself, fix the underlying problem; never bypass the shared validation path.
 - commit often per logical unit once validated. merging to main is the only step that requires my approval — commits to feature branches do not.
-- **clean as you go.** Cargo target dirs balloon — a `cargo test` of continuum-core consumes ~10 GB of test-binary artifacts on top of the shared cache. Discipline: (1) ALWAYS `export CARGO_TARGET_DIR="$HOME/.continuum/cache/cargo-target"` before any cargo invocation so artifacts land in the ONE shared cache, not in a per-invocation ghost workspace `target/` dir. (2) After each cargo cycle, `df -h /` — if free space dropped to < 20 GB, sweep ghost target dirs (`rm -rf core/target` when it ghost-grew from RA / manual cargo bypassing the env var) and report the number BEFORE running another cargo. (3) Prefer `cargo check` over `cargo test` when validating type-correctness; only escalate to test when behavior changed. (4) Slice 3 in `core/.cargo/config.toml` is the opt-in fix that pins target-dir at the workspace level — uncomment for your operator absolute path when ready.
+- **clean as you go.** Cargo target dirs balloon — a `cargo test` of continuum-core consumes ~10 GB of test-binary artifacts on top of the shared cache. Discipline: (1) ALWAYS set a target dir before any cargo invocation, never a per-invocation ghost workspace `target/` dir: the main checkout builds into the shared cache `$HOME/.continuum/cache/cargo-target`; a worktree builds into its own copy-on-write clone of it (plan phase 2), deleted with the worktree. (2) After each cargo cycle, `df -h /` — if free space dropped to < 20 GB, sweep ghost target dirs (`rm -rf core/target` when it ghost-grew from RA / manual cargo bypassing the env var) and report the number BEFORE running another cargo. (3) Prefer `cargo check` over `cargo test` when validating type-correctness; only escalate to test when behavior changed. (4) Slice 3 in `core/.cargo/config.toml` is the opt-in fix that pins target-dir at the workspace level — uncomment for your operator absolute path when ready.
 - **no new cache dir without an eviction decision.** (2026-07-13 incident: 460 GB of derived artifacts — unswept cargo-target at 363 GB, per-persona repo copies — took the disk to a day of runway while `DiskPressureMonitor` logged `level=high [no reporters]` and the `PressureBroker` emitted zero-byte "nobody owns the eviction" alerts. Every component was built and green; the WIRING was missing.) The rule: any new directory the substrate writes unbounded data into gets (1) a `TrackedDir` row in `system_resources/disk_reporters.rs::standard_tracked_dirs` and (2) an eviction decision in `disk_eviction.rs::every_cache_class_has_a_decided_eviction_story` — an owner `ResourcePool` with real `evict_at_least`, or an explicit deferred entry naming the owning task. That test FAILS on an undecided class; do not weaken it — it is the difference between a red test and a user's trashed machine. Chain-level guard: `broker_relieve_actually_deletes_from_an_over_budget_pool` pins pressure→broker→real deletion end-to-end; unit-green components with dead wiring is the exact failure shape this catches.
