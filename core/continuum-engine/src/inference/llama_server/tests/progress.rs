@@ -206,4 +206,7 @@ fn the_work_window_is_two_ubatches_at_the_measured_prefill_rate() {
     assert_eq!(window_at_rate(idle, Some(2_000.0)), idle, "a fast lane keeps the idle bound");
     assert_eq!(window_at_rate(idle, None), idle, "no rate measured keeps the idle bound");
     assert_eq!(window_at_rate(idle, Some(1e-300)), UNMOVED_CEILING, "a vanishing rate is capped, never a Duration overflow panic");
+    // the ceiling caps the rate's part, never the caller's own floor (Codex on #5462)
+    let above = UNMOVED_CEILING + std::time::Duration::from_secs(1);
+    assert_eq!(window_at_rate(above, Some(1e-300)), above, "a floor above the ceiling stands");
 }

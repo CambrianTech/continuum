@@ -215,7 +215,9 @@ pub(crate) const UNMOVED_CEILING: std::time::Duration = crate::inference::turn_b
 
 /// THE window in which a processing engine may show no `/slots` counter movement and still
 /// be working: `floor`, or TWO batches at `model`'s measured prefill rate, whichever is
-/// longer, capped at [`UNMOVED_CEILING`]. The counters advance a whole batch at a time
+/// longer. [`UNMOVED_CEILING`] caps the RATE-derived part only; a caller's floor above it
+/// stands (the window never shortens a bound the caller already chose), so the result is
+/// `max(floor, min(two batches, ceiling))`. The counters advance a whole batch at a time
 /// (`lane_args::UBATCH_TOKENS`), so a lane prefilling one 2,048-token chunk every ~176 s (the
 /// IntelMac at 11.6 tok/s; measured chunk gaps 124 / 168 / 214 / 171 s, Cormac on #4506)
 /// shows no move for most of any shorter window. One owner for every wait that reads
@@ -237,7 +239,7 @@ pub(crate) fn unmoved_window(floor: std::time::Duration, model: Option<&str>) ->
     window_at_rate(floor, rate)
 }
 
-/// PURE: [`unmoved_window`] at a known rate.
+/// PURE: [`unmoved_window`] at a known rate: `max(floor, min(two batches, UNMOVED_CEILING))`.
 pub(crate) fn window_at_rate(floor: std::time::Duration, prefill_tps: Option<f64>) -> std::time::Duration {
     prefill_tps
         .filter(|r| r.is_finite() && *r > 0.0)
