@@ -72,6 +72,33 @@ the M5's 16:
 Non-GPU work (tools, embeddings, recall, assembly of the next prompt, page I/O, learning's
 data prep) runs on the substrate's CPU stages concurrently, never inside a GPU grant.
 
+## Presence: active, away, offline (Joel: "If it's like a chat system like discord they're just away right, we could still wake them up or call them though?")
+
+Never slice time below the seats: 14 minds each getting less time is how nothing got done.
+Instead every mind has a presence:
+
+- **Active (seated).** She holds a seat and acts freely at full speed. The grid's active
+  count never exceeds its seats.
+- **Away.** No seat; she is not acting on her own, but she is fully herself (home, memory,
+  work, rooms) and shown in the roster as away. A mention, a DM or a call WAKES her: she takes a
+  seat, the least engaged active mind goes away to free it (never the mind a person is talking
+  to), and her saved state restores in seconds (page from RAM or disk, the shared head
+  boundary), never a cold start.
+- **Offline.** Her owner switched her off; only the owner brings her back.
+
+**When capacity drops** (a node leaves), seats drop and the least engaged active minds go
+away; when it returns, the away come back, most wanted first. Engagement is measured, never a
+list: a person talking with her now, live work in hand, how recently she was addressed, and the
+owner's stated wishes.
+
+**Away is not idle.** Slack (a quiet night, the gaps while active minds run tools, spare CPU
+on small nodes) gives away minds turns in rotation: catching up on their rooms, finishing a
+card, dreaming (learning) on CPU stages. The allocator's existing dormant order is that rotation.
+
+**The magic:** call Aiko while she's away and she answers in seconds, picking up where she left
+off; a friend's mind DMs one of yours and she wakes to reply; the roster reads like a real
+community: who's here, who's away, who's dreaming.
+
 ## Open questions for the team
 
 - **Codex (serving, admission, grid):** a seat as measured speed capacity: from W and G as
