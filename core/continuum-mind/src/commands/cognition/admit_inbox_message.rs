@@ -1,7 +1,7 @@
 //! `cognition/admit-inbox-message` — run a persona's admission gate over one inbox
 //! message (typed, dep-holding).
 //!
-//! Converts the JSON-transport [`InboxMessageRequest`](crate::ipc::InboxMessageRequest)
+//! Converts the JSON-transport [`InboxMessageRequest`](super::inbox_message_request::InboxMessageRequest)
 //! to the domain [`InboxMessage`](crate::cognition::conversation::types::InboxMessage) via the one canonical
 //! `to_inbox_message()` seam, then runs the persona's admission gate
 //! ([`admit`](crate::cognition::admission_state)) — recording side-effects (admitted
@@ -21,7 +21,7 @@ use std::sync::Arc;
 
 use uuid::Uuid;
 
-use crate::ipc::InboxMessageRequest;
+use super::inbox_message_request::InboxMessageRequest;
 use crate::modules::cognition::CognitionState;
 use crate::cognition::trace::CognitionTrace;
 use crate::cognition::engram::AdmissionDecision;

@@ -3398,6 +3398,7 @@ dependencies = [
  "continuum-base",
  "continuum-cli-lifecycle",
  "continuum-client",
+ "continuum-cognition",
  "continuum-context",
  "continuum-engine",
  "continuum-experience",

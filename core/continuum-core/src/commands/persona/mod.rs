@@ -24,17 +24,10 @@ use crate::persona::PersonaAircRuntimeRegistry;
 use crate::runtime::{CommandExecutor, LateBound};
 use crate::sdk_codegen::DynCommand;
 
+// Moved to continuum-mind (plan phase 2); the old paths still resolve.
+pub use continuum_mind::commands::persona::{allocate, catalog, identity, instances, live_state, placement_reserve, rag_inspect, reassign_model, spawn, turn_frame};
+
 pub mod vitals;
-pub mod allocate;
-pub mod catalog;
-pub mod identity;
-pub mod instances;
-pub mod live_state;
-pub mod placement_reserve;
-pub mod rag_inspect;
-pub mod reassign_model;
-pub mod spawn;
-pub mod turn_frame;
 pub mod wall;
 
 use reassign_model::PersonaReassignModel;

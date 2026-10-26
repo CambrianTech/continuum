@@ -107,7 +107,7 @@ pub mod ws;
 
 use diagnostics::{current_rss_mb, dump_memory_report, log_command_rss_delta};
 
-pub use protocol::InboxMessageRequest;
+pub use continuum_mind::commands::cognition::inbox_message_request::InboxMessageRequest;
 
 use protocol::Response;
 
