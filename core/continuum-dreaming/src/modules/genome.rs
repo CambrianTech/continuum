@@ -109,7 +109,7 @@ impl GenomeModule {
     }
 
     /// The executor slot boot fills for this module: the grid-peer trainer leases over it.
-    pub(crate) fn lease_executor(&self) -> Arc<crate::runtime::LateBound<crate::runtime::CommandExecutor>> {
+    pub fn lease_executor(&self) -> Arc<crate::runtime::LateBound<crate::runtime::CommandExecutor>> {
         Arc::clone(&self.executor)
     }
 
