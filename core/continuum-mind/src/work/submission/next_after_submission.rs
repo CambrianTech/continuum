@@ -287,7 +287,7 @@ impl ActionCommand for WorkSubmit {
         // card that is not a SWE bench card returns at once.
         let benchmark = Arc::clone(&self.benchmark);
         let grade_airc = Arc::clone(airc);
-        let grade_room = room.channel.as_uuid();
+        let grade_room = room.channel;
         let grade_instance = published.instance.clone();
         tokio::spawn(async move {
             benchmark.grade_hand_in(grade_airc, grade_room, grade_title, grade_instance, grade_patch).await;

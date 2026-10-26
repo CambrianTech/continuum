@@ -2,10 +2,10 @@
 //! a submission, and the four core-owned commands that register beside the work verbs.
 //! One constructor, so the live server and the test kernel build the same module.
 
+use std::path::Path;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use uuid::Uuid;
 
 use crate::ai::embedding::EmbeddingProvider;
 use crate::persona::PersonaAircRuntimeRegistry;
@@ -18,23 +18,30 @@ pub struct CoreBenchmarkSubmission;
 
 #[async_trait]
 impl BenchmarkSubmissionAdapter for CoreBenchmarkSubmission {
-    async fn base_commit(&self, instance: &str) -> Option<String> {
-        crate::commands::benchmark::swe_base_commit_for(instance).await
+    async fn base_commit(&self, instance: &str) -> Result<Option<airc_work::GitObjectId>, CommandError> {
+        crate::commands::benchmark::swe_base_commit_for(instance)
+            .await
+            .map(|sha| {
+                airc_work::GitObjectId::new(&sha).map_err(|e| {
+                    CommandError::Internal(format!("dataset base commit {sha:?} for {instance} is not a git object id: {e}"))
+                })
+            })
+            .transpose()
     }
 
-    fn candidate_diff(&self, workspace: &str, base: Option<&str>) -> Result<String, CommandError> {
-        crate::commands::benchmark::workspace_candidate_diff_from(workspace, base)
+    fn candidate_diff(&self, workspace: &Path, base: Option<&airc_work::GitObjectId>) -> Result<String, CommandError> {
+        crate::commands::benchmark::workspace_candidate_diff_from(&workspace.to_string_lossy(), base.map(|b| b.as_str()))
     }
 
     async fn grade_hand_in(
         &self,
         airc: Arc<airc_lib::Airc>,
-        room_id: Uuid,
+        room: airc_lib::RoomId,
         card_title: String,
         instance: String,
         patch: airc_blobs::MediaRef,
     ) {
-        super::benchmark_grade::grade_submission(airc, room_id, card_title, instance, patch).await;
+        super::benchmark_grade::grade_submission(airc, room.as_uuid(), card_title, instance, patch).await;
     }
 }
 

@@ -73,20 +73,20 @@
 
     #[async_trait::async_trait]
     impl super::BenchmarkSubmissionAdapter for GitDiffBenchmark {
-        async fn base_commit(&self, _instance: &str) -> Option<String> {
-            None
+        async fn base_commit(&self, _instance: &str) -> Result<Option<airc_work::GitObjectId>, super::CommandError> {
+            Ok(None)
         }
 
-        fn candidate_diff(&self, workspace: &str, base: Option<&str>) -> Result<String, super::CommandError> {
+        fn candidate_diff(&self, workspace: &std::path::Path, base: Option<&airc_work::GitObjectId>) -> Result<String, super::CommandError> {
             let out = std::process::Command::new("git")
-                .args(["diff", "--binary", "--full-index", "--no-ext-diff", "--no-textconv", "--no-color", "--src-prefix=a/", "--dst-prefix=b/", base.unwrap_or("HEAD"), "--", "."])
+                .args(["diff", "--binary", "--full-index", "--no-ext-diff", "--no-textconv", "--no-color", "--src-prefix=a/", "--dst-prefix=b/", base.map_or("HEAD", |b| b.as_str()), "--", "."])
                 .current_dir(workspace)
                 .output()
                 .map_err(|e| super::CommandError::Internal(e.to_string()))?;
             String::from_utf8(out.stdout).map_err(|e| super::CommandError::Internal(e.to_string()))
         }
 
-        async fn grade_hand_in(&self, _airc: std::sync::Arc<airc_lib::Airc>, _room: uuid::Uuid, _title: String, _instance: String, _patch: airc_blobs::MediaRef) {}
+        async fn grade_hand_in(&self, _airc: std::sync::Arc<airc_lib::Airc>, _room: airc_lib::RoomId, _title: String, _instance: String, _patch: airc_blobs::MediaRef) {}
     }
 
     // what this catches (card aff659aa; the 5090 2026-10-11, Kimi on 27f133e4): ~5 h of work turns

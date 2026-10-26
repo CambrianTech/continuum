@@ -61,3 +61,19 @@ impl RepoId {
         &self.0
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // what this catches: malformed targets never reach the network or a clone path
+    // (moved from the forge's publish_request tests with the validator).
+    #[test]
+    fn malformed_repo_ids_are_refused() {
+        for bad in ["noSlash", "too/many/slashes", "/name", "ns/", "ns/na me", "ns/../x"] {
+            assert!(RepoId::parse(bad).is_err(), "'{bad}' should be rejected");
+        }
+        // a normal one parses.
+        assert!(RepoId::parse("continuum-ai/qwen3-coder-30b").is_ok());
+    }
+}

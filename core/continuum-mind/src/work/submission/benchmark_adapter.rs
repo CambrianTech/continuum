@@ -6,7 +6,6 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use uuid::Uuid;
 
 use crate::sdk_codegen::CommandError;
 
@@ -14,17 +13,17 @@ use crate::sdk_codegen::CommandError;
 pub trait BenchmarkSubmissionAdapter: Send + Sync {
     /// The base commit a benchmark instance's checkout stands on; `None` when no dataset
     /// names it (an absence, never a guessed HEAD).
-    async fn base_commit(&self, instance: &str) -> Option<String>;
+    async fn base_commit(&self, instance: &str) -> Result<Option<airc_work::GitObjectId>, CommandError>;
 
     /// The transferable candidate patch of `workspace` against `base` (HEAD when `None`).
-    fn candidate_diff(&self, workspace: &str, base: Option<&str>) -> Result<String, CommandError>;
+    fn candidate_diff(&self, workspace: &std::path::Path, base: Option<&airc_work::GitObjectId>) -> Result<String, CommandError>;
 
     /// Grade a hand-in on a bench card, where the artifact lives. A card that is not a
     /// graded bench card returns at once.
     async fn grade_hand_in(
         &self,
         airc: Arc<airc_lib::Airc>,
-        room_id: Uuid,
+        room: airc_lib::RoomId,
         card_title: String,
         instance: String,
         patch: airc_blobs::MediaRef,

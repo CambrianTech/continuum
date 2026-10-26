@@ -469,7 +469,8 @@ pub(super) fn instance_of_checkout(checkout: &std::path::Path, card_id: Uuid) ->
 pub(super) async fn base_sha_of(benchmark: &dyn BenchmarkSubmissionAdapter, checkout: &std::path::Path, instance: &str, is_swe: bool) -> Result<String, CommandError> {
     if is_swe {
         return benchmark.base_commit(instance)
-            .await
+            .await?
+            .map(|base| base.to_string())
             .ok_or_else(|| {
                 CommandError::Invalid(format!(
                     "no dataset row names instance {instance}, so its base commit is unknown — pass base_sha"
@@ -654,8 +655,9 @@ pub(super) async fn derive_submission(
     if let Some(refusal) = super::submodule_drift::refuse_unlisted(&moves, listed_submodules, &base_sha) {
         return Err(CommandError::Invalid(refusal));
     }
-    let ws = checkout.to_string_lossy().into_owned();
-    let patch = benchmark.candidate_diff(&ws, Some(&base_sha))?;
+    let base = airc_work::GitObjectId::new(&base_sha)
+        .map_err(|e| CommandError::Invalid(format!("candidate base must name a single git commit: {e}")))?;
+    let patch = benchmark.candidate_diff(checkout, Some(&base))?;
     if patch.trim().is_empty() {
         return Err(CommandError::Invalid(format!(
             "nothing to submit: {} has no changes since {} (substrate paths excluded) — \
