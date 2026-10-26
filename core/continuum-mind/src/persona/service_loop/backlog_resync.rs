@@ -35,7 +35,7 @@ pub(super) fn trigger_inbox_message(
         sender_name: roster_names
             .get(&msg.peer_id)
             .cloned()
-            .unwrap_or_else(|| format!("peer-{}", &msg.peer_id.to_string()[..8])),
+            .unwrap_or_else(|| crate::persona::roster_slot::provisional_sender_name(msg.peer_id)),
         sender_type: crate::cognition::conversation::types::SenderType::Persona,
         content: msg.render_content(),
         timestamp: now_ms,

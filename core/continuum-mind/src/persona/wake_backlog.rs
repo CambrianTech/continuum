@@ -27,7 +27,13 @@ pub(crate) struct PendingInput {
     inputs: VecDeque<RetainedInput>,
     self_refusals: HashMap<Uuid, Option<crate::cognition::workspace::CapacityRefusal>>,
     work_witnesses: VecDeque<(Uuid, crate::cognition::conversation::room_event::RoomWork)>,
+    /// Interrupted turns that recorded an effect (stop-drain S3): never retried, owed one
+    /// completed turn on the cycle that carries their notice, then closed. `(row, room)`.
+    uncertain: Vec<(Uuid, Uuid)>,
+    /// Uncertain rows a completed turn has answered: the loop closes them.
+    answered: Vec<Uuid>,
 }
+mod recovered;
 struct RetainedInput {
     message: IncomingMessage,
     engram: Option<Uuid>,
@@ -197,6 +203,7 @@ impl PendingInput {
         room: Uuid,
         step: &crate::cognition::act_observe::SettleStep,
     ) {
+        self.turn_completed(room, step);
         match step {
             crate::cognition::act_observe::SettleStep::CapacityRefused { error, .. } => {
                 self.park_self(room, error);
@@ -239,6 +246,7 @@ impl PendingInput {
         step: &crate::cognition::act_observe::SettleStep,
     ) {
         use crate::cognition::act_observe::SettleStep;
+        self.turn_completed(message.room_id, step);
         // A re-retained input keeps its durable row: a second refusal is the same obligation.
         let obligation = self.obligation_for(message);
         self.inputs.retain(|input| input.message != *message);

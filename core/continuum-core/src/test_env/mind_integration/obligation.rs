@@ -73,7 +73,7 @@ async fn an_admitted_turn_survives_restarts_and_each_restart_reports_it_once() {
 
     let before_stop = super::training_credit::data_runtime();
     let loop_one = Obligations::new(&before_stop, persona, name);
-    let report = loop_one.report_interrupted(1).await;
+    let report = loop_one.report_interrupted(1).await.map(|found| found.report);
     assert_eq!(report, Some(InterruptedReport { open: 0, newly_interrupted: 0 }), "a fresh store owes nothing");
     let Admission::Confirmed(turn) = loop_one.admit(room, &trigger(room, "cut by the stop"), None, 2, None).await else {
         panic!("the turn is recorded and confirmed before her context is composed");
@@ -84,7 +84,7 @@ async fn an_admitted_turn_survives_restarts_and_each_restart_reports_it_once() {
     let first_restart = super::training_credit::data_runtime();
     let loop_two = Obligations::new(&first_restart, persona, name);
     assert_eq!(
-        loop_two.report_interrupted(10).await,
+        loop_two.report_interrupted(10).await.map(|found| found.report),
         Some(InterruptedReport { open: 1, newly_interrupted: 1 }),
         "the restart names the turn the stop cut"
     );
@@ -94,7 +94,7 @@ async fn an_admitted_turn_survives_restarts_and_each_restart_reports_it_once() {
     let second_restart = super::training_credit::data_runtime();
     let loop_three = Obligations::new(&second_restart, persona, name);
     assert_eq!(
-        loop_three.report_interrupted(20).await,
+        loop_three.report_interrupted(20).await.map(|found| found.report),
         Some(InterruptedReport { open: 1, newly_interrupted: 0 }),
         "a second restart still owes it but does not count it again"
     );

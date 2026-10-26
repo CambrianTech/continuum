@@ -490,9 +490,18 @@ turn's effects. A mark that cannot be confirmed refuses the effect: a tool batch
 not run and she is told why in working memory; a reply is not posted and its row stays
 open. Store failures back off (doubling, capped) and raise
 `persona.obligation.unconfirmed`, so a failing store slows her loudly and never spins.
-Re-admitting an interrupted turn (S3) will take only rows with no recorded effect, and
-reach her through an obligation `Source` in the context codec, never as hand-pushed
-prompt text. Writes
+
+Recovery at start (S3, card afaa0a3e, `obligation/recover.rs`): every open row gets a
+notice in her existing notices stream (`pin_fact("obligation:<row>")`, rendered from the
+row's fields, so a second start re-pins the same notice rather than adding one; closing
+the row unpins it). A row with no recorded effect is handed back through
+`PendingInput::readmit` with its original engram and row id, so it is retried on the
+capacity-retry path and reconciles its own row; its attention is derived again from the
+stored trigger by the same function, never stored twice. A row that recorded an effect
+is never retried: the notice names what was begun (her reply, or each tool with its call
+id), `persona.obligation.uncertain` is raised, and `PendingInput` holds the row until a
+turn that reached a decision completes on the cycle that carries the notice (her mind
+cycle in her private room, her live cycle elsewhere); then the row closes. Writes
 use the substrate connection: her own identity is Trusted, and Trusted may not update
 or delete. The supervisor builds the store from the executor boot wired and hands it to
 the loop as a required argument, so a loop that records nothing cannot be constructed.
