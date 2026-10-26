@@ -9,11 +9,11 @@
 //! We just do TCP with length-prefixed JSON frames over Tailscale IPs.
 //! Port 7117 is the default Grid service port.
 
-use crate::modules::grid::frame::GridFrame;
-use crate::modules::grid::node::{
+use crate::grid::frame::GridFrame;
+use crate::grid::node::{
     DiscoveredNode, NodeCapability, TransportAddress, DEFAULT_GRID_PORT,
 };
-use crate::modules::grid::transport::{GridConnection, GridTransport, TransportError};
+use crate::grid::transport::{GridConnection, GridTransport, TransportError};
 use async_trait::async_trait;
 use serde::Deserialize;
 use std::sync::Arc;

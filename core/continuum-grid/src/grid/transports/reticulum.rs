@@ -18,8 +18,8 @@
 //! - Connection: Reticulum "link" vs TCP stream
 //! - Identity: Ed25519 keypair file vs Tailscale account
 
-use crate::modules::grid::node::{DiscoveredNode, NodeCapability, TransportAddress};
-use crate::modules::grid::transport::{GridConnection, GridTransport, TransportError};
+use crate::grid::node::{DiscoveredNode, NodeCapability, TransportAddress};
+use crate::grid::transport::{GridConnection, GridTransport, TransportError};
 use async_trait::async_trait;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};

@@ -527,7 +527,7 @@ mod tests {
 
         // Address trust stays untouched; correlated aliases share ONE access decision.
         use super::super::handlers::nodes::GridNodeView;
-        use crate::modules::grid::access_decision::{AccessDecision, AccessPolicy, LocalInboundAircAuthorization};
+        use crate::grid::access_decision::{AccessDecision, AccessPolicy, LocalInboundAircAuthorization};
         let mut policy = AccessPolicy::default();
         let unrecorded = GridNodeView::from_policy(found.clone(), &policy);
         assert_eq!(unrecorded.node.trust_level, TrustLevel::Blocked);

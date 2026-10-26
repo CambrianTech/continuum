@@ -1,4 +1,4 @@
-//! GridInterceptor — bridges the existing [`crate::modules::grid`] routing
+//! GridInterceptor — bridges the existing [`crate::grid`] routing
 //! into the kernel's [`crate::runtime::CommandInterceptor`]
 //! chain.
 //!
@@ -7,10 +7,10 @@
 //! The grid module already owns the routing policy + the send-frame
 //! dispatch:
 //!
-//! - `crate::modules::grid::router::GridRouter::route(command, params, registry)`
+//! - `crate::grid::router::GridRouter::route(command, params, registry)`
 //!   returns `Local`, `Remote { node }`, or `Refused` based on explicit `nodeId`
 //!   params, `routingHint` hints, and capability matching.
-//! - `crate::modules::grid::handlers::dispatch_to_node(state, node, cmd, params)`
+//! - `crate::grid::handlers::dispatch_to_node(state, node, cmd, params)`
 //!   opens a transport connection, sends a CommandRequest frame, awaits
 //!   the matching CommandResult frame, audits the round-trip, returns
 //!   the deserialized result.
@@ -48,7 +48,7 @@ use serde_json::Value;
 use std::sync::Arc;
 
 use crate::runtime::{CommandInterceptor, InterceptorOutcome};
-use crate::modules::grid::GridState;
+use crate::grid::GridState;
 
 /// GridInterceptor — wraps `GridState::try_route_remote` and bridges it
 /// into the kernel dispatch chain.
@@ -91,7 +91,7 @@ mod tests {
     //! router decision is `Local` (no remote node configured).
 
     use super::*;
-    use crate::modules::grid::GridModule;
+    use crate::grid::GridModule;
 
     fn make_state() -> Arc<GridState> {
         // Construct a GridModule without a GPU + minimal grid_dir.
@@ -100,7 +100,7 @@ mod tests {
         let tmpdir =
             std::env::temp_dir().join(format!("grid-interceptor-test-{}", std::process::id()));
         let _ = std::fs::create_dir_all(&tmpdir);
-        let module = GridModule::new(tmpdir, false, 0);
+        let module = GridModule::new(tmpdir, false, 0, crate::grid::LocalBuild { git_sha: "test", number: "0" });
         module.state()
     }
 
@@ -168,9 +168,9 @@ mod tests {
         // Control commands interpret nodeId themselves; they must reach the
         // local handler, including when the named node cannot be routed.
         for command in [
-            crate::modules::grid::commands::TRUST,
-            crate::modules::grid::commands::SEND,
-            crate::modules::grid::commands::ROUTE,
+            crate::grid::commands::TRUST,
+            crate::grid::commands::SEND,
+            crate::grid::commands::ROUTE,
         ] {
             let outcome = interceptor
                 .try_route(command, &serde_json::json!({"nodeId": "nonexistent-node-id"}), None)

@@ -9,14 +9,11 @@
 //! - GridRouter routing decisions with live registry
 //! - AuditLog write and read
 
-#[cfg(test)]
-mod acl;
-
 mod tailscale_transport_integration {
-    use crate::modules::grid::frame::{FrameType, GridFrame, GridPayload};
-    use crate::modules::grid::node::TransportAddress;
-    use crate::modules::grid::transport::GridTransport;
-    use crate::modules::grid::transports::tailscale::TailscaleTransport;
+    use crate::grid::frame::{FrameType, GridFrame, GridPayload};
+    use crate::grid::node::TransportAddress;
+    use crate::grid::transport::GridTransport;
+    use crate::grid::transports::tailscale::TailscaleTransport;
     use std::sync::Arc;
 
     /// Find a free port by binding to port 0.
@@ -307,9 +304,9 @@ mod tailscale_transport_integration {
 
 #[cfg(test)]
 mod reticulum_transport_integration {
-    use crate::modules::grid::node::TransportAddress;
-    use crate::modules::grid::transport::GridTransport;
-    use crate::modules::grid::transports::reticulum::ReticulumTransport;
+    use crate::grid::node::TransportAddress;
+    use crate::grid::transport::GridTransport;
+    use crate::grid::transports::reticulum::ReticulumTransport;
 
     #[tokio::test]
     async fn test_identity_persists_across_restarts() {
@@ -387,9 +384,9 @@ mod reticulum_transport_integration {
 
 #[cfg(test)]
 mod registry_integration {
-    use crate::modules::grid::node::*;
+    use crate::grid::node::*;
     use crate::routing::trust_level::TrustLevel;
-    use crate::modules::grid::registry::NodeRegistry;
+    use crate::grid::registry::NodeRegistry;
 
     // what this catches: an org-room line ([memory], [fleet]) that doesn't say whose
     // node it is about. IntelMac's "this node's 32 GB" read to Kimi on the 5090 as her
@@ -398,13 +395,13 @@ mod registry_integration {
     fn an_org_room_line_names_the_node_that_says_it() {
         let line = "[memory] rustc (pid 48264) holds 8 GB of this node's 32 GB";
         assert_eq!(
-            crate::modules::grid::signed_by_this_node(Some("MacBookPro.lan"), line),
+            crate::grid::signed_by_this_node(Some("MacBookPro.lan"), line),
             format!("[MacBookPro] {line}"),
             "the short host name, without the domain, leads the line"
         );
-        assert_eq!(crate::modules::grid::signed_by_this_node(Some("BIGMAMA"), line), format!("[BIGMAMA] {line}"));
+        assert_eq!(crate::grid::signed_by_this_node(Some("BIGMAMA"), line), format!("[BIGMAMA] {line}"));
         assert_eq!(
-            crate::modules::grid::signed_by_this_node(None, line),
+            crate::grid::signed_by_this_node(None, line),
             format!("[unnamed node] {line}"),
             "a host with no name says so; it never reads as the listener's own node"
         );
@@ -607,7 +604,7 @@ mod registry_integration {
 
 #[cfg(test)]
 mod audit_integration {
-    use crate::modules::grid::audit::*;
+    use crate::grid::audit::*;
 
     #[tokio::test]
     async fn test_audit_write_and_read() {
@@ -664,10 +661,10 @@ mod audit_integration {
 
 #[cfg(test)]
 mod router_integration {
-    use crate::modules::grid::node::*;
+    use crate::grid::node::*;
     use crate::routing::trust_level::TrustLevel;
-    use crate::modules::grid::registry::NodeRegistry;
-    use crate::modules::grid::router::{GridRouter, RouteDecision};
+    use crate::grid::registry::NodeRegistry;
+    use crate::grid::router::{GridRouter, RouteDecision};
 
     fn setup_router_with_5090() -> (GridRouter, NodeRegistry) {
         let dir = std::env::temp_dir().join("grid-test-router-int");

@@ -51,7 +51,12 @@ pub(super) fn register_closing_modules(
     // GridInterceptor below. The interceptor needs the same router +
     // node registry + transports the GridModule itself runs on; using
     // the public `state()` getter avoids duplicating any of that.
-    let grid_module = Arc::new(GridModule::new(grid_dir, local_has_gpu, local_vram_mb));
+    let grid_module = Arc::new(GridModule::new(
+        grid_dir,
+        local_has_gpu,
+        local_vram_mb,
+        crate::modules::grid::LocalBuild { git_sha: env!("CONTINUUM_BUILD_GIT_SHA"), number: env!("CONTINUUM_BUILD_NUMBER") },
+    ));
     let grid_state = grid_module.state();
     runtime.register(grid_module);
     grid_state

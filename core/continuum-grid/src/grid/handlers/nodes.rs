@@ -1,6 +1,6 @@
 //! Fleet discovery and local inbound AIRC policy are distinct facts.
 use super::{CommandResult, GridNode, GridState, Arc};
-use crate::modules::grid::access_decision::{self, AccessPolicy, LocalInboundAircAuthorization};
+use crate::grid::access_decision::{self, AccessPolicy, LocalInboundAircAuthorization};
 use serde::Serialize;
 
 #[derive(Debug, Serialize)]
