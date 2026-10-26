@@ -156,7 +156,7 @@ async fn a_header_wait_rides_a_moving_engine_and_ends_on_a_quiet_one() {
 #[tokio::test(start_paused = true)]
 async fn a_switch_behind_a_slow_batch_rides_it_and_a_stuck_engine_still_ends() {
     let checkpoint = std::time::Duration::from_millis(16_830);
-    let bounds = WaitBounds { checkpoint, unmoved: window_at_rate(checkpoint, Some(10.4)) };
+    let bounds = WaitBounds { checkpoint, unmoved: window_at_rate(checkpoint, Some(10.4)), unmoved_rate: Some(10.4), unmoved_rate_source: "per_request" };
     assert!(bounds.unmoved > std::time::Duration::from_secs(200), "two batches at 10.4 tok/s: {:?}", bounds.unmoved);
 
     // the other slot's batch completes at 190 s (the counters move), then the save answers
@@ -209,4 +209,21 @@ fn the_work_window_is_two_ubatches_at_the_measured_prefill_rate() {
     // the ceiling caps the rate's part, never the caller's own floor (Codex on #5462)
     let above = UNMOVED_CEILING + std::time::Duration::from_secs(1);
     assert_eq!(window_at_rate(above, Some(1e-300)), above, "a floor above the ceiling stands");
+}
+
+// what this catches (card e1a5a21a, enrico 2026-10-26 13:15-14:15Z on 0eeceda84): the window
+// sized from the server-total prefill rate (implied 64-174 tok/s) while fresh prefill ran at
+// 9.7-16.2 tok/s, so 3 saves were refused 23-64 s into a ~250-420 s batch. The window takes the
+// slower measurement, names its source, and ignores an unusable one.
+#[test]
+fn the_window_is_sized_from_the_slower_measured_rate() {
+    assert_eq!(window_rate(Some(68.0), Some(9.7)), (Some(9.7), "per_request"), "enrico: the per-request rate is the slower");
+    assert_eq!(window_rate(Some(9.7), Some(68.0)), (Some(9.7), "server_total"), "whichever is slower");
+    assert_eq!(window_rate(Some(68.0), None), (Some(68.0), "server_total"));
+    assert_eq!(window_rate(None, Some(9.7)), (Some(9.7), "per_request"));
+    assert_eq!(window_rate(Some(f64::NAN), Some(0.0)), (None, "none"), "neither usable: the floor");
+    let checkpoint = std::time::Duration::from_millis(16_830);
+    let (rate, _) = window_rate(Some(68.0), Some(9.7));
+    assert!(window_at_rate(checkpoint, rate) > std::time::Duration::from_secs(400), "two 2,048-token batches at 9.7 tok/s");
+    assert!(window_at_rate(checkpoint, Some(68.0)) < std::time::Duration::from_secs(65), "the old server-total window: about 60 s, shorter than one batch here");
 }

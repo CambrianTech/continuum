@@ -828,6 +828,8 @@ async fn kv_page_action_with_capacity(
             Err(reason) => {
                 continuum_base::probe!(class = "inference.kv_page.admission_refused", slot = slot as u64,
                     reason = %reason, unmoved_ms = bounds.unmoved.as_millis() as u64,
+                    unmoved_rate_tps = bounds.unmoved_rate.unwrap_or(0.0), // unwrap_or: 0 = no rate measured, named by the source field
+                    unmoved_rate_source = bounds.unmoved_rate_source,
                     "page save refused before any checkpoint file write");
                 return PageOutcome::Rejected;
             }
@@ -851,6 +853,7 @@ async fn kv_page_action_with_capacity(
                 waited_ms = started.elapsed().as_millis() as u64,
                 bound_ms = bound.as_millis() as u64,
                 unmoved_ms = bounds.unmoved.as_millis() as u64,
+                unmoved_rate_source = bounds.unmoved_rate_source,
                 busy_checkpoints,
                 "a page switch outlived its bound while the engine's queue kept moving \
                  — waiting on it, not replacing the engine",
