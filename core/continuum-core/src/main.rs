@@ -547,12 +547,14 @@ async fn async_main(home: std::path::PathBuf) -> Result<(), Box<dyn std::error::
     // can evict them (the M5, 2026-10-26: ~110 GB of unnamed build caches, KV page saves refused).
     // The listing reads the filesystem: off the async runtime (Cormac on #5439).
     let cache = home.join("cache");
-    let discovered = tokio::task::spawn_blocking(move || continuum_core::system_resources::cargo_discovery::cargo_targets_under(&cache))
-        .await
-        .unwrap_or_else(|error| {
+    // A panicked or cancelled listing discovers nothing; the named classes stand.
+    let discovered = match tokio::task::spawn_blocking(move || continuum_core::system_resources::cargo_discovery::cargo_targets_under(&cache)).await {
+        Ok(found) => found,
+        Err(error) => {
             eprintln!("Cargo build-tree discovery did not finish: {error}");
             Vec::new()
-        }); // JUSTIFIED unwrap_or_else: a panicked or cancelled listing discovers nothing; the named classes stand
+        }
+    };
     for target in discovered {
         if let Err(error) = continuum_core::system_resources::disk_reporters::register_cargo_target(&target).await {
             eprintln!("Discovered Cargo root {} could not be registered: {error}", target.display());
