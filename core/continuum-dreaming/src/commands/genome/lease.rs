@@ -112,9 +112,6 @@ pub enum LeaseCancelOutcome {
 /// airc 0.1.0). `a_full_chunk_fits_the_narrowest_route` pins the encoded size.
 pub const MAX_ARTIFACT_CHUNK: u32 = 8 * 1024;
 
-/// The bound the encoded answer must stay under: the route's frame minus the envelope reserve.
-pub(crate) const ARTIFACT_CHUNK_FRAME_BUDGET: usize = 16 * 1024 - 4 * 1024;
-
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]
 #[ts(export, export_to = "../../../protocol/typescript/genome/LeaseArtifactParams.ts")]
 #[serde(rename_all = "camelCase")]
@@ -445,6 +442,10 @@ crate::action_command! {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The bound a full chunk's encoded answer must stay under: the narrowest route's 16 KiB frame
+    /// minus the 4 KiB envelope reserve ([`MAX_ARTIFACT_CHUNK`]'s doc). Only this test reads it.
+    const ARTIFACT_CHUNK_FRAME_BUDGET: usize = 16 * 1024 - 4 * 1024;
 
     // what this catches (card cc34db0d): a lease taking its origin from anything but the
     // authenticated airc sender. A local caller (a resident, this node's code) is refused, and
