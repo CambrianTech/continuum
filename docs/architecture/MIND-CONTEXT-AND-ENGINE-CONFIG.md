@@ -271,6 +271,16 @@ no faculty re-implements them:
 | hand churn labels (`churn_of` callers; production lines, ratchet `hand_churn_labels`) | 3 | 0: `Motion` orders every start |
 | positron `ViewState` kinds that are not context `Source`s | 13 | 0: one adapter, items with levels and expand handles |
 
+**Media is the same codec** (Joel, 2026-10-26: "Should be positron. This is common across so
+much."). A frame (a screen, a camera, a room the minds share, an image in chat) is a positron
+item with LEVELS by image-token budget: a glance (low tokens: faces, rooms, live calls),
+grounding (at least 1,024 tokens: the Qwen-VL floor for pointing at UI elements, which the M5's
+engine warns about on every load), full, and an unchanged frame as its content hash alone. The
+view chooses the level per mind, task and budget through the same allocation as text levels;
+the engine only honours the per-request token budget it is handed. Measured 2026-10-26 on the M5:
+an avatar at ~200 image tokens was described correctly (prefill 2.5 s, decode 2.8 s), the
+grounding level is what desktop and UI work needs.
+
 **How to add a layer (the whole recipe; everything else is free):**
 1. Implement `continuum_context::source::Source` for it. `name` and `priority` are required;
    set `required` only for input she must read.
