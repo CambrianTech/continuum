@@ -201,3 +201,18 @@ impl ActionCommand for GenomePush {
 }
 
 crate::register_stateless_command!(GenomePush);
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // what this catches: genome/push's identity and its help naming both gates, opt-in consent and
+    // receipts, so the commons' rules are learnable from --help alone (moved with the command from
+    // genome_share's discoverability test, card 539a94b5).
+    #[test]
+    fn push_is_discoverable_and_names_its_gates() {
+        assert_eq!(GenomePush::NAME, "genome/push");
+        assert!(GenomePush::DESCRIPTION.contains("OPT-IN"));
+        assert!(GenomePush::DESCRIPTION.contains("receipts"));
+    }
+}

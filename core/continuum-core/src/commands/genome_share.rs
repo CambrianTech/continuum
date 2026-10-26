@@ -759,10 +759,7 @@ mod tests {
     #[test]
     fn the_verbs_are_discoverable_and_name_their_gates() {
         assert_eq!(GenomeList::NAME, "genome/list");
-        assert_eq!(GenomePush::NAME, "genome/push");
         assert_eq!(GenomePull::NAME, "genome/pull");
-        assert!(GenomePush::DESCRIPTION.contains("OPT-IN"));
-        assert!(GenomePush::DESCRIPTION.contains("receipts"));
         assert!(GenomePull::DESCRIPTION.contains("genome/pull --repo"));
         assert!(GenomeList::DESCRIPTION.contains("genome/list"));
     }
