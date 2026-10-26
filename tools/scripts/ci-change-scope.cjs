@@ -80,9 +80,10 @@ function readPolicy(root = '.') {
   }
   const policy = Object.fromEntries([...body.matchAll(/(\w+)\s*=\s*\[([^\]]*)\]/g)]
     .map(([, key, list]) => [key, [...list.matchAll(/"([^"]+)"/g)].map(([, name]) => name)]));
-  for (const key of ['untested', 'own_lib_test_step', 'longest_first', 'split_prefixed', 'unaudited', 'warnings_uncounted']) {
+  for (const key of ['by_nature', 'pending', 'own_lib_test_step', 'longest_first', 'split_prefixed', 'unaudited', 'warnings_uncounted']) {
     if (!Array.isArray(policy[key])) throw new Error(`Cannot read ${key} from [workspace.metadata.ci] in Cargo.toml`);
   }
+  policy.untested = [...policy.by_nature, ...policy.pending];
   return policy;
 }
 

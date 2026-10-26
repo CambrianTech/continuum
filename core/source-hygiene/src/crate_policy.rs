@@ -13,6 +13,11 @@ use std::path::Path;
 /// The exceptions under `[workspace.metadata.ci]`, by package name.
 #[derive(Debug, Default, Clone)]
 pub struct Policy {
+    /// Permanent exceptions (vendored, tool, no tests, own job).
+    pub by_nature: BTreeSet<String>,
+    /// Tests exist but no job selects them yet: debt that only shrinks.
+    pub pending: BTreeSet<String>,
+    /// `by_nature` and `pending` together: what the crate matrix leaves out.
     pub untested: BTreeSet<String>,
     pub own_lib_test_step: BTreeSet<String>,
     pub split_prefixed: BTreeSet<String>,
@@ -74,13 +79,24 @@ pub fn parse_policy(root_manifest: &str) -> Result<Policy, String> {
             .map(|names| names.into_iter().collect::<BTreeSet<_>>())
             .ok_or_else(|| format!("no `{key}` under [workspace.metadata.ci] in the root Cargo.toml"))
     };
+    let (by_nature, pending) = (get("by_nature")?, get("pending")?);
     Ok(Policy {
-        untested: get("untested")?,
+        untested: by_nature.union(&pending).cloned().collect(),
+        by_nature,
+        pending,
         own_lib_test_step: get("own_lib_test_step")?,
         split_prefixed: get("split_prefixed")?,
         unaudited: get("unaudited")?,
         warnings_uncounted: get("warnings_uncounted")?,
     })
+}
+
+/// Whether a member has a lib target (`src/lib.rs` or a `[lib]` section), so a lib-test job has
+/// something to test.
+pub fn has_lib(repo: &Path, dir: &str) -> bool {
+    let crate_dir = repo.join("core").join(dir);
+    crate_dir.join("src/lib.rs").is_file()
+        || std::fs::read_to_string(crate_dir.join("Cargo.toml")).is_ok_and(|m| m.lines().any(|l| l.trim() == "[lib]"))
 }
 
 /// A crate manifest's `[package] name`.
@@ -161,7 +177,7 @@ mod tests {
     use super::*;
 
     const ROOT: &str = "[workspace]\nmembers = [\n  \"core/continuum-core\", # the audited crate\n  \"core/continuum-base\",\n  \"core/continuum-host\",\n  \"core/continuum-new\",\n  \"core/llama\",\n  \"apps/cli\",\n]\n\
-[workspace.metadata.ci]\n# comment [\"not-a-name\"]\nuntested = [\"llama\"]\nown_lib_test_step = [\"continuum-core\"]\nsplit_prefixed = [\"continuum-base\"]\nunaudited = [\"continuum-host\"]\nwarnings_uncounted = [\"continuum-base\", \"continuum-host\"]\n";
+[workspace.metadata.ci]\n# comment [\"not-a-name\"]\nby_nature = [\"llama\"]\npending = []\nown_lib_test_step = [\"continuum-core\"]\nsplit_prefixed = [\"continuum-base\"]\nunaudited = [\"continuum-host\"]\nwarnings_uncounted = [\"continuum-base\", \"continuum-host\"]\n";
 
     fn fixture() -> std::path::PathBuf {
         let dir = std::env::temp_dir().join(format!("crate-policy-{}", std::process::id()));

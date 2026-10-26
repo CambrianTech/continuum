@@ -463,15 +463,19 @@ authors = ["JTAG Team"]
 # Per-crate facts come from each crate's own Cargo.toml: a `test-fixtures` feature means its
 # tests build with it. Entries only ever leave these lists.
 [workspace.metadata.ci]
-# Not in the crate-test matrix (package names; continuum-bridge-protocol is core/livekit-protocol). Vendored or tool crates, and crates with no tests, by nature:
-#   llama (vendored bindings), jtag-mcp and livekit-bridge (no tests), source-hygiene (its own
-#   workflow, source-hygiene.yml), continuum-cli-lifecycle (its own job: `cargo test -p
-#   continuum-cli-lifecycle`). The rest have tests no job selects yet (pending, card 996e3537).
-untested = [
-    "airc-test-fixtures", "continuum-airc-protocol", "continuum-cli-lifecycle", "continuum-context",
+# Not in the crate-test matrix, in two lists (package names; continuum-bridge-protocol is
+# core/livekit-protocol). A crate that is bin-only (no lib target) must be named in by_nature:
+# the lib-test job has nothing to test in it (crate_wiring says so).
+# by_nature: permanent, with the reason: llama (vendored bindings), jtag-mcp and livekit-bridge
+# (no tests), source-hygiene (its own workflow, source-hygiene.yml), continuum-cli-lifecycle
+# (its own job: `cargo test -p continuum-cli-lifecycle`).
+by_nature = ["continuum-cli-lifecycle", "jtag-mcp", "livekit-bridge", "llama", "source-hygiene"]
+# pending: tests exist but no job selects them yet (card 996e3537). Debt that only shrinks: an
+# entry leaves by being deleted, and crate_wiring fails if this list grows past its ceiling.
+pending = [
+    "airc-test-fixtures", "continuum-airc-protocol", "continuum-bridge-protocol", "continuum-context",
     "continuum-orm-derive", "continuum-positron", "continuum-text-analysis", "continuum-tool-protocol",
-    "continuum-bridge-protocol", "expert-pager-policy", "inference-grpc", "jtag-mcp", "livekit-bridge",
-    "llama", "serving-replay", "source-hygiene", "tool-working-set",
+    "expert-pager-policy", "inference-grpc", "serving-replay", "tool-working-set",
 ]
 # Tested crates whose lib tests run in their own steps (`matrix.crate == '...'`) in
 # continuum-rust-tests.yml, not in the generic `cargo test -p <crate> --lib` step.

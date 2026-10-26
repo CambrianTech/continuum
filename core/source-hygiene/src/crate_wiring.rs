@@ -15,7 +15,7 @@
 use std::collections::BTreeSet;
 use std::path::Path;
 
-use crate::crate_policy::{modules, parse_policy, read_members, split, tested, warned};
+use crate::crate_policy::{has_lib, modules, parse_policy, read_members, split, tested, warned, Member, Policy};
 
 /// The crates named by `matrix.crate == 'x'` in the test workflow: its own per-crate steps.
 pub fn own_step_crates(workflow: &str) -> BTreeSet<String> {
@@ -34,6 +34,35 @@ pub fn hand_listed_crates(text: &str) -> Vec<String> {
         .filter(|line| line.matches("\"continuum-").count() + line.matches("'continuum-").count() >= 2)
         .map(|line| line.trim().chars().take(100).collect())
         .collect()
+}
+
+/// The most crates `pending` may name: debt only shrinks. Lower it when an entry leaves.
+pub const PENDING_MAX: usize = 12;
+
+/// Gaps in the exceptions themselves: a bin-only crate in the default tested set (no lib target,
+/// so `cargo test -p <crate> --lib` has nothing to build), a pending crate with no tests (that is
+/// by nature, not debt), and a pending list that grew.
+pub fn policy_gaps(repo: &Path, members: &[Member], policy: &Policy) -> Vec<String> {
+    let mut out = Vec::new();
+    for m in tested(members, policy) {
+        if !has_lib(repo, &m.dir) {
+            out.push(format!("{} is bin-only (no lib target) but in the default tested set: `cargo test -p {0} --lib` cannot run. Name it in [workspace.metadata.ci] by_nature with the reason, or give it a lib", m.name));
+        }
+    }
+    for m in members.iter().filter(|m| policy.pending.contains(&m.name)) {
+        if !has_tests(&repo.join("core").join(&m.dir).join("src")) {
+            out.push(format!("{} is in pending but has no tests: it is by_nature, not debt", m.name));
+        }
+    }
+    if policy.pending.len() > PENDING_MAX {
+        out.push(format!("pending names {} crates, over the ceiling {PENDING_MAX}: pending only shrinks. Select the crate in CI (delete it from the lists) or put it in by_nature with a reason", policy.pending.len()));
+    }
+    out
+}
+
+/// Whether a crate's `src/` declares any test.
+pub fn has_tests(src: &Path) -> bool {
+    crate::collect_files(src).iter().any(|file| file.raw.contains("#[test]") || file.raw.contains("#[tokio::test"))
 }
 
 /// The quoted strings of `"key":[...]` in the selector's `crate-sets` JSON line.
@@ -72,7 +101,8 @@ pub fn gaps(repo: &Path) -> Result<Vec<String>, String> {
     let mut out = Vec::new();
 
     let named = [
-        ("untested", &policy.untested),
+        ("by_nature", &policy.by_nature),
+        ("pending", &policy.pending),
         ("own_lib_test_step", &policy.own_lib_test_step),
         ("split_prefixed", &policy.split_prefixed),
         ("unaudited", &policy.unaudited),
@@ -83,6 +113,7 @@ pub fn gaps(repo: &Path) -> Result<Vec<String>, String> {
             out.push(format!("[workspace.metadata.ci] {key} names {name}, which is not a core/ workspace crate: delete the stale entry"));
         }
     }
+    out.extend(policy_gaps(repo, &members, &policy));
     for name in policy.own_lib_test_step.iter().filter(|n| !tested_names.contains(n.as_str())) {
         out.push(format!("{name} has own lib-test steps but is not a tested crate"));
     }
@@ -138,6 +169,33 @@ mod tests {
         };
         let gaps = gaps(&repo).unwrap_or_else(|e| panic!("{e}"));
         assert!(gaps.is_empty(), "crate wiring gaps:\n  {}", gaps.join("\n  "));
+    }
+
+    // what this catches: a bin-only crate dropped into the workspace, which the derivation would
+    // select for a lib-test job that cannot run, and a pending list that grows or hides a no-test crate.
+    #[test]
+    fn a_bin_only_crate_and_a_growing_pending_list_are_named_gaps() {
+        let repo = std::env::temp_dir().join(format!("wiring-bin-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&repo);
+        for (dir, lib) in [("has-lib", true), ("only-bin", false)] {
+            let src = repo.join("core").join(dir).join("src");
+            std::fs::create_dir_all(&src).unwrap_or_else(|e| panic!("{e}"));
+            std::fs::write(repo.join("core").join(dir).join("Cargo.toml"), format!("[package]\nname = \"{dir}\"\n")).unwrap_or_else(|e| panic!("{e}"));
+            std::fs::write(src.join(if lib { "lib.rs" } else { "main.rs" }), "fn f() {}\n").unwrap_or_else(|e| panic!("{e}"));
+        }
+        let members: Vec<Member> = ["has-lib", "only-bin"].map(|d| Member { name: d.into(), dir: d.into() }).into();
+        let mut policy = Policy::default();
+        let gaps = policy_gaps(&repo, &members, &policy);
+        assert_eq!(gaps.len(), 1, "{gaps:?}");
+        assert!(gaps[0].contains("only-bin") && gaps[0].contains("by_nature"), "{gaps:?}");
+        policy.by_nature.insert("only-bin".into());
+        policy.untested = policy.by_nature.clone();
+        assert!(policy_gaps(&repo, &members, &policy).is_empty());
+        policy.pending.insert("has-lib".into()); // no #[test] in it: misfiled
+        assert!(policy_gaps(&repo, &members, &policy).iter().any(|g| g.contains("has no tests")));
+        policy.pending.extend((0..PENDING_MAX).map(|i| format!("p{i}")));
+        assert!(policy_gaps(&repo, &members, &policy).iter().any(|g| g.contains("ceiling")));
+        let _ = std::fs::remove_dir_all(&repo);
     }
 
     // what this catches: the two readers drifting from the shapes their files use, so a list

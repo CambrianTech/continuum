@@ -204,7 +204,8 @@ test('a crate dropped into the workspace is tested, featured and counted with no
   fs.writeFileSync(path.join(root, 'Cargo.toml'), `[workspace]
 members = ["core/continuum-core", "core/continuum-brand-new", "core/continuum-plain", "core/vendored-thing", "apps/cli"]
 [workspace.metadata.ci]
-untested = ["vendored-thing"]
+by_nature = ["vendored-thing"]
+pending = []
 own_lib_test_step = ["continuum-core"]
 longest_first = ["continuum-core"]
 split_prefixed = []
@@ -223,7 +224,7 @@ warnings_uncounted = ["continuum-plain"]
   assert.deepEqual(got.libTests, { 'continuum-core': false, 'continuum-brand-new': true, 'continuum-plain': true });
   assert.deepEqual(got.warned, ['continuum-core', 'continuum_core', 'continuum-brand-new', 'continuum_brand_new']);
   fs.writeFileSync(path.join(root, 'Cargo.toml'), '[workspace]\nmembers = []\n');
-  assert.throws(() => readPolicy(root), /untested/);
+  assert.throws(() => readPolicy(root), /by_nature/);
   fs.rmSync(root, { recursive: true });
 });
 
