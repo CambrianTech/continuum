@@ -31,7 +31,7 @@ async fn explicit_teacher_batch_keeps_shared_generation_owned_until_terminal() {
     }
     crate::model_registry::init_global().expect("model registry for real teacher adapter");
     use crate::cognition::eval::EvalTask;
-    use crate::modules::serving_daemon::academy_batch::TeacherBatchRequest;
+    use crate::cognition::eval::TeacherBatchRequest;
     use axum::{routing::post, Router};
     let entered = Arc::new(tokio::sync::Notify::new());
     let release = Arc::new(tokio::sync::Semaphore::new(0));

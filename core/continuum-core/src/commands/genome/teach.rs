@@ -197,9 +197,7 @@ pub struct GenomeTeachResult {
 /// Dataset-only teaching does not require that executor.
 #[derive(Clone)]
 pub struct GenomeTeach {
-    pub(crate) serving: std::sync::Arc<
-        crate::runtime::LateBound<crate::modules::serving_daemon::ServingDaemonModule>,
-    >,
+    pub(crate) serving: std::sync::Arc<crate::runtime::LateBound<dyn crate::cognition::eval::TeacherServing>>,
     pub(crate) executor: std::sync::Arc<crate::runtime::LateBound<crate::runtime::CommandExecutor>>,
 }
 
@@ -304,7 +302,7 @@ impl GenomeTeach {
             })?;
             serving
                 .run_teacher_batch(
-                    crate::modules::serving_daemon::academy_batch::TeacherBatchRequest {
+                    crate::cognition::eval::TeacherBatchRequest {
                         tasks: tasks.clone(),
                         teacher_model: teacher_model.clone(),
                         temperature,

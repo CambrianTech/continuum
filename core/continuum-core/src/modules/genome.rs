@@ -25,7 +25,7 @@ use crate::runtime::{CommandResult, ModuleConfig, ModuleContext, ModulePriority,
 use crate::sdk_codegen::DynCommand;
 
 pub struct GenomeModule {
-    serving: Arc<crate::runtime::LateBound<crate::modules::serving_daemon::ServingDaemonModule>>,
+    serving: Arc<crate::runtime::LateBound<dyn crate::cognition::eval::TeacherServing>>,
     executor: Arc<crate::runtime::LateBound<crate::runtime::CommandExecutor>>,
     decisions: Arc<
         crate::runtime::LateBound<crate::orm::OrmStore<crate::genome::recall_impl::RecallDecision>>,
@@ -84,7 +84,7 @@ impl GenomeModule {
     /// Inject the existing lifecycle owner for explicit teacher windows.
     pub(crate) fn with_teacher_serving(
         self,
-        serving: Arc<crate::modules::serving_daemon::ServingDaemonModule>,
+        serving: Arc<dyn crate::cognition::eval::TeacherServing>,
     ) -> Self {
         self.serving.install(serving);
         self
