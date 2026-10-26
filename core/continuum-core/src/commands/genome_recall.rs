@@ -320,16 +320,13 @@ impl ActionCommand for GenomeRecallReplay {
             .map_err(|e| CommandError::Invalid(e.to_string()))?;
         // Capture includes the caller's need/context. Verified peers can inspect
         // their own decisions; local substrate/operator retains mechanic access.
-        // The executor's policy says whether she is the owner; no executor, or a policy that
-        // cannot resolve it, is not the owner, so she replays only her own decision.
+        // Fail closed (Codex on #5451): replay only when the executor's policy resolves the caller
+        // as the owner, or the caller IS the decision's persona. No executor, a policy that cannot
+        // resolve trust, and no caller at all without a resolved owner are each refused.
         let owner = self.executor.cloned().and_then(|executor| executor.caller_trust(ctx.caller.as_ref()))
             == Some(crate::routing::trust_level::TrustLevel::Owner);
-        if !owner
-            && ctx
-                .caller
-                .as_ref()
-                .is_some_and(|c| c.peer_id != decision.context.persona)
-        {
+        let hers = ctx.caller.as_ref().is_some_and(|c| c.peer_id == decision.context.persona);
+        if !(owner || hers) {
             return Err(CommandError::Denied(
                 "recall decision belongs to a different caller".into(),
             ));
@@ -450,8 +447,21 @@ mod tests {
             ..Ctx::default()
         };
         assert!(
-            command.run(&operator, params).await.is_ok(),
+            command.run(&operator, params.clone()).await.is_ok(),
             "the authenticated local owner retains glass-box inspection"
         );
+        // Fail closed (Codex on #5451): with no executor nothing resolves the owner, so the
+        // substrate's own call (no caller) and an operator are refused, while her own decision stays
+        // hers. A remote caller the policy cannot resolve is not the owner either.
+        let unwired = GenomeRecallReplay {
+            decisions: Arc::clone(&command.decisions),
+            executor: Arc::new(LateBound::new("no executor")),
+        };
+        assert!(unwired.run(&Ctx::default(), params.clone()).await.is_err(), "no caller and no executor is refused");
+        assert!(unwired.run(&operator, params.clone()).await.is_err(), "no executor resolves no owner");
+        assert!(unwired.run(&ctx(owner), params.clone()).await.is_ok(), "her own decision stays hers");
+        let unresolved = Ctx { caller: Some(crate::routing::CallerIdentity::airc(other)), ..Ctx::default() };
+        assert!(command.run(&unresolved, params.clone()).await.is_err(), "an unresolved remote caller is not the owner");
+        assert!(command.run(&Ctx::default(), params).await.is_ok(), "the substrate's own call resolves as owner through the executor");
     }
 }
