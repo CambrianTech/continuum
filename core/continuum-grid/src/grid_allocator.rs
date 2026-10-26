@@ -58,7 +58,7 @@ const ONE_OWNER: Uuid = Uuid::nil();
 
 /// A mind with no seat, and how long since her last turn began (since boot when none).
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct DormantMind {
+pub struct DormantMind {
     pub mind: Uuid,
     pub last_turn_age_ms: u64,
 }
@@ -66,7 +66,7 @@ pub(crate) struct DormantMind {
 /// What the daemon publishes: the allocation, the key it was computed from, and the
 /// dormant order the slack owes a clip to.
 #[derive(Clone, Debug)]
-pub(crate) struct Published {
+pub struct Published {
     pub allocation: GridAllocation,
     /// The exact hard minima and measured targets used for this allocation.
     pub roles: Vec<Role>,
@@ -83,15 +83,15 @@ pub(crate) struct Published {
 }
 
 impl Published {
-    pub(crate) fn oldest_dormant_turn_age_ms(&self) -> Option<u64> {
+    pub fn oldest_dormant_turn_age_ms(&self) -> Option<u64> {
         self.dormant_by_age.first().map(|d| d.last_turn_age_ms)
     }
     /// This node's roster as the allocation reads it — the spawner's seat count once
     /// published (`None` = this node made no offer; the spawner keeps its own prior).
-    pub(crate) fn roster_here(&self) -> Option<GridRoster> {
+    pub fn roster_here(&self) -> Option<GridRoster> {
         self.allocation.roster_on(self.this_node, self.owner)
     }
-    pub(crate) fn is_this_node(&self, node: Uuid) -> bool {
+    pub fn is_this_node(&self, node: Uuid) -> bool {
         node == self.this_node || crate::persona::self_peer::is_this_node(node)
     }
 }
@@ -102,18 +102,18 @@ fn channel() -> &'static watch::Sender<Option<Arc<Published>>> {
 }
 
 /// The latest published allocation, borrowed lock-free; `None` before the first publish.
-pub(crate) fn current() -> Option<Arc<Published>> {
+pub fn current() -> Option<Arc<Published>> {
     channel().borrow().clone()
 }
 
 /// Subscribe to publishes — the reconciler parks on this beside the serving plan.
-pub(crate) fn subscribe() -> watch::Receiver<Option<Arc<Published>>> {
+pub fn subscribe() -> watch::Receiver<Option<Arc<Published>>> {
     channel().subscribe()
 }
 
 /// One peer's offer as the tick read it off the ledger.
 #[derive(Clone, Debug, PartialEq)]
-pub(crate) struct PeerFacts {
+pub struct PeerFacts {
     pub node: Uuid,
     /// `None` = the beacon named no served model or no width (an older core): nothing
     /// placeable, the node is heard but offers no plan.
@@ -127,7 +127,7 @@ pub(crate) struct PeerFacts {
 /// What one pass GATHERS, once, then hands to the pure builder — so the decision is
 /// testable with no globals.
 #[derive(Clone, Debug)]
-pub(crate) struct GridFacts {
+pub struct GridFacts {
     pub now_ms: u64,
     pub this_node: Uuid,
     pub local_plan: Option<LanePlan>,
@@ -169,7 +169,7 @@ pub(crate) struct GridFacts {
 /// `None` in a requirement is Unknown — not yet measured — and an absence is never a
 /// number, so an unmeasured mind is never named. A grid offering no plan at all
 /// (`widest == 0`) names nobody either: there is no width to exceed.
-pub(crate) fn minds_over_the_grid(
+pub fn minds_over_the_grid(
     requirements: &[crate::inference::planning::window_allocator::LaneRequirement],
     widest_window: u32,
 ) -> Vec<(Uuid, u32)> {
@@ -187,7 +187,7 @@ pub(crate) fn minds_over_the_grid(
         .collect()
 }
 
-pub(crate) fn build_inputs(f: &GridFacts, book: &mut OfferBook) -> GridInputs {
+pub fn build_inputs(f: &GridFacts, book: &mut OfferBook) -> GridInputs {
     // This node is heard every pass, plan or not: between plans (a relaunch) its last
     // rank still bounds the coder floor; the offer itself is dropped below (no seat).
     book.hear(NodeOffer { node: f.this_node, owner: ONE_OWNER, terms: OfferTerms::open(), plans: f.local_plan.iter().cloned().collect() }, f.now_ms);
@@ -270,7 +270,7 @@ pub(crate) fn build_inputs(f: &GridFacts, book: &mut OfferBook) -> GridInputs {
 
 /// The dormant minds ordered by last-turn age, oldest first — the slow clip's queue.
 /// `last_turn_ms` = when her last turn began, `None` = none since boot (aged from boot).
-pub(crate) fn dormant_by_age(dormant: &[Uuid], now_ms: u64, boot_ms: u64, last_turn_ms: impl Fn(Uuid) -> Option<u64>) -> Vec<DormantMind> {
+pub fn dormant_by_age(dormant: &[Uuid], now_ms: u64, boot_ms: u64, last_turn_ms: impl Fn(Uuid) -> Option<u64>) -> Vec<DormantMind> {
     let mut out: Vec<DormantMind> = dormant
         .iter()
         .map(|&mind| DormantMind { mind, last_turn_age_ms: now_ms.saturating_sub(last_turn_ms(mind).unwrap_or(boot_ms)) }) // unwrap_or: no turn yet is aged from boot
@@ -282,14 +282,14 @@ pub(crate) fn dormant_by_age(dormant: &[Uuid], now_ms: u64, boot_ms: u64, last_t
 /// The grid's SLACK in seats: every open seat weighted by its node's idle fraction
 /// (`free_slots_live / lanes` — the seat's own admission truth, so a lane a leased-in
 /// generate is using counts less than an empty one).
-pub(crate) fn slack_seats(open: &[OpenSeats], idle_fraction_of: impl Fn(Uuid) -> f64) -> f64 {
+pub fn slack_seats(open: &[OpenSeats], idle_fraction_of: impl Fn(Uuid) -> f64) -> f64 {
     open.iter().map(|o| o.count as f64 * idle_fraction_of(o.node).clamp(0.0, 1.0)).sum()
 }
 
 /// How often the slack can give each dormant mind a turn: the typical turn, times the
 /// dormant population, over the slack — derived, never a constant. `None` when there is
 /// no slack, nobody dormant, or no turn measured yet.
-pub(crate) fn clip_interval_ms(dormant: usize, slack: f64, typical_turn_ms: Option<u64>) -> Option<u64> {
+pub fn clip_interval_ms(dormant: usize, slack: f64, typical_turn_ms: Option<u64>) -> Option<u64> {
     if dormant == 0 || slack <= 0.0 {
         return None;
     }
@@ -306,14 +306,14 @@ struct Inner {
     skipped: AtomicU64,
 }
 
-pub(crate) struct GridAllocatorModule {
+pub struct GridAllocatorModule {
     inner: Arc<Inner>,
 }
 
 impl GridAllocatorModule {
     /// `plan_rx` = the serving daemon's published plan (`ServingDaemonModule::subscribe`);
     /// `citizens` = the recipe's resident roles (the same list the spawner hosts).
-    pub(crate) fn new(plan_rx: watch::Receiver<Option<ServingPlan>>, citizens: Vec<CitizenRecipe>) -> Self {
+    pub fn new(plan_rx: watch::Receiver<Option<ServingPlan>>, citizens: Vec<CitizenRecipe>) -> Self {
         Self {
             inner: Arc::new(Inner {
                 plan_rx,

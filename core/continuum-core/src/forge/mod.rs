@@ -9,9 +9,9 @@
 //! entity registry registration plus the `forge/run` IPC.
 
 pub mod artifact;
-pub mod custodian_client;
+pub use continuum_grid::forge::custodian_client;
 pub mod custodian_supervisor;
-pub mod endpoint;
+pub use continuum_grid::forge::endpoint;
 pub mod gene_handle;
 pub mod grid_custodian;
 pub mod gene_bundle;
@@ -19,7 +19,7 @@ pub mod gh_publisher;
 pub mod hf_publisher;
 pub mod lora_convert;
 pub mod mlx_job;
-pub mod protocol;
+pub use continuum_grid::forge::protocol;
 pub mod publish_request;
 pub mod publish_tags;
 pub mod publisher;

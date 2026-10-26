@@ -257,8 +257,8 @@ mod tests {
 
     #[test]
     fn test_carrier_needs_a_started_transport_of_the_same_kind() {
-        use crate::modules::grid::transport::GridTransport;
-        use crate::modules::grid::transports::tailscale::TailscaleTransport;
+        use crate::grid::transport::GridTransport;
+        use crate::grid::transports::tailscale::TailscaleTransport;
         let transports: Vec<std::sync::Arc<dyn GridTransport>> =
             vec![std::sync::Arc::new(TailscaleTransport::with_default_port())];
         let ts_addr = TransportAddress::Tailscale { ip: "100.1.2.3".into(), port: 7117, machine_name: None };

@@ -63,7 +63,17 @@ use tokio::sync::{oneshot, Mutex, RwLock};
 // ============================================================================
 
 /// State shared across GridModule handlers and connection tasks.
+/// The build THIS node runs (the core's `CONTINUUM_BUILD_GIT_SHA` and `CONTINUUM_BUILD_NUMBER`, stamped by
+/// the core's build script): handed in at construction, because the grid crate has no build script of its own
+/// and must judge a peer's build against the node's, never its own.
+#[derive(Clone, Copy, Debug)]
+pub struct LocalBuild {
+    pub git_sha: &'static str,
+    pub number: &'static str,
+}
+
 pub struct GridState {
+    pub(crate) local_build: LocalBuild,
     pub(crate) transports: Vec<Arc<dyn GridTransport>>,
     pub(crate) registry: Arc<NodeRegistry>,
     pub(crate) router: GridRouter,
@@ -91,7 +101,7 @@ pub struct GridModule {
 }
 
 impl GridModule {
-    pub fn new(grid_dir: PathBuf, local_has_gpu: bool, local_vram_mb: u64) -> Self {
+    pub fn new(grid_dir: PathBuf, local_has_gpu: bool, local_vram_mb: u64, local_build: LocalBuild) -> Self {
         let registry = Arc::new(NodeRegistry::new(&grid_dir));
         let router = GridRouter::new(local_has_gpu, local_vram_mb);
         let audit = Arc::new(AuditLog::new(&grid_dir));
@@ -111,6 +121,7 @@ impl GridModule {
 
         Self {
             state: Arc::new(GridState {
+                local_build,
                 transports: vec![tailscale, reticulum],
                 registry,
                 router,
@@ -366,7 +377,7 @@ impl ServiceModule for GridModule {
         let transitions = self.state.registry.fold_liveness(
             EpochMs::now().millis(),
             FLEET_SILENT_AFTER_MS,
-            env!("CONTINUUM_BUILD_NUMBER").parse().unwrap_or(0), // JUSTIFIED unwrap_or: no number = judge nobody as behind
+            self.state.local_build.number.parse().unwrap_or(0), // JUSTIFIED unwrap_or: no number = judge nobody as behind
         );
         // PLACEMENT FOLLOWS THE FLEET (2026-09-14): remote-bound minds fall home when
         // their seat goes dark and return when it beacons again — the two hand moves of
@@ -438,12 +449,12 @@ impl ServiceModule for GridModule {
             let line = match t.kind {
                 registry::FleetChange::WentStale => format!("[fleet] {} has been silent {} h — treat as DOWN until it beacons again", t.node, t.silent_secs / 3600),
                 registry::FleetChange::BackFresh => format!("[fleet] {} is back (heard {} s ago)", t.node, t.silent_secs),
-                registry::FleetChange::FellBehind => format!("[fleet] {} runs build {} (#{}) while this node runs {} (#{}) — behind; `continuum reboot` there", t.node, t.build_sha.clone().unwrap_or_else(|| "?".into()), t.build_number, env!("CONTINUUM_BUILD_GIT_SHA"), env!("CONTINUUM_BUILD_NUMBER")), // JUSTIFIED unwrap_or_else: "?" for a build never beaconed
+                registry::FleetChange::FellBehind => format!("[fleet] {} runs build {} (#{}) while this node runs {} (#{}) — behind; `continuum reboot` there", t.node, t.build_sha.clone().unwrap_or_else(|| "?".into()), t.build_number, self.state.local_build.git_sha, self.state.local_build.number), // JUSTIFIED unwrap_or_else: "?" for a build never beaconed
                 // The PEER's build, never this node's: the old line printed the local sha
                 // after "caught up to", and a peer read it as "the M5 runs my local-only
                 // commit" (Cormac, 2026-09-15 — an hour of two nodes chasing a leak that
                 // was a pronoun).
-                registry::FleetChange::CaughtUp => format!("[fleet] {} caught up: runs build {} (#{}) — this node runs {} (#{})", t.node, t.build_sha.clone().unwrap_or_else(|| "?".into()), t.build_number, env!("CONTINUUM_BUILD_GIT_SHA"), env!("CONTINUUM_BUILD_NUMBER")), // JUSTIFIED unwrap_or_else: "?" for a build never beaconed
+                registry::FleetChange::CaughtUp => format!("[fleet] {} caught up: runs build {} (#{}) — this node runs {} (#{})", t.node, t.build_sha.clone().unwrap_or_else(|| "?".into()), t.build_number, self.state.local_build.git_sha, self.state.local_build.number), // JUSTIFIED unwrap_or_else: "?" for a build never beaconed
             };
             say_in_org_room(&line).await;
         }
@@ -571,7 +582,7 @@ fn signed_by_this_node(host: Option<&str>, line: &str) -> String {
 /// subscribes at boot), as the operator, signed with this node's name. No operator
 /// online or no org room = the probe alone carries the transition; never a panic,
 /// never a retry loop.
-pub(crate) async fn say_in_org_room(line: &str) {
+pub async fn say_in_org_room(line: &str) {
     let line = signed_by_this_node(THIS_HOST.as_deref(), line);
     let line = line.as_str();
     // EVERY leg that can lose the line names itself (card 11b66313): this used to

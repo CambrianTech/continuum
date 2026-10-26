@@ -22,7 +22,7 @@ use std::sync::Arc;
 use tokio::net::UdpSocket;
 use tokio::sync::RwLock;
 
-use super::super::frame::{GridFrame, GridPayload};
+use super::super::frame::GridFrame;
 use crate::runtime;
 
 /// Maximum UDP payload size (conservative for all networks).
@@ -187,6 +187,7 @@ fn make_event_frame(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::grid::frame::GridPayload;
 
     #[test]
     fn test_pattern_matching() {

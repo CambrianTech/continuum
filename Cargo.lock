@@ -2988,6 +2988,7 @@ dependencies = [
  "continuum-experience",
  "continuum-genome",
  "continuum-git",
+ "continuum-grid",
  "continuum-hands",
  "continuum-host",
  "continuum-kernel",
@@ -3222,6 +3223,32 @@ dependencies = [
  "continuum-host",
  "sysinfo",
  "tempfile",
+]
+
+[[package]]
+name = "continuum-grid"
+version = "0.1.0"
+dependencies = [
+ "airc-core",
+ "async-trait",
+ "continuum-base",
+ "continuum-cli-lifecycle",
+ "continuum-engine",
+ "continuum-kernel",
+ "continuum-mind",
+ "dashmap",
+ "futures",
+ "libc",
+ "rand 0.8.6",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sysinfo",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+ "ts-rs 12.0.1",
+ "uuid",
 ]
 
 [[package]]

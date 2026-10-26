@@ -11,7 +11,7 @@ use crate::persona::placement_switch::{
 pub(crate) async fn follow_the_allocation(now_ms: u64) -> Vec<String> {
     use crate::cognition::turn_ledger::{turn_in_flight, turn_shape_of};
     let mut lines = Vec::new();
-    let Some(p) = crate::modules::grid_allocator::current() else {
+    let Some(p) = crate::grid_allocator::current() else {
         return lines;
     };
     let working_set = crate::cognition::working_set::global();
