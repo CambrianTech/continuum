@@ -166,6 +166,7 @@ impl ServiceModule for GenomeModule {
         commands.push(Arc::new(
             crate::commands::genome_recall::GenomeRecallReplay {
                 decisions: Arc::clone(&self.decisions),
+                executor: Arc::clone(&self.executor),
             },
         ));
         commands.push(Arc::new(crate::commands::genome::teach::GenomeTeach {
