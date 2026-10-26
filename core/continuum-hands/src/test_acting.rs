@@ -1,5 +1,5 @@
 //! The acting provider hands' tests install: the shape of core's answers without the persona
-//! registry, the acting-root record or the grid policy (those live above this crate).
+//! registry, or the acting-root record (those live above this crate).
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -8,8 +8,6 @@ use uuid::Uuid;
 
 use crate::identity::acting::ActingProvider;
 use crate::identity::hands_context::HandsContext;
-use crate::routing::auth_policy::{CallerIdentity, CallerSource};
-use crate::routing::trust_level::TrustLevel;
 use crate::sdk_codegen::Ctx;
 
 struct TestActing;
@@ -30,20 +28,23 @@ impl ActingProvider for TestActing {
     fn instance_python(&self, _checkout: &Path) -> Option<PathBuf> {
         None
     }
-
-    fn caller_trust(&self, caller: Option<&CallerIdentity>) -> TrustLevel {
-        let Some(caller) = caller else {
-            return TrustLevel::Owner;
-        };
-        match caller.source {
-            CallerSource::Local => TrustLevel::Owner,
-            CallerSource::LocalPersona => TrustLevel::Trusted,
-            _ => TrustLevel::Provisional,
-        }
-    }
 }
 
 /// Install the test provider (idempotent).
 pub(crate) fn install() {
     crate::identity::acting::install(Arc::new(TestActing));
+}
+
+/// A code state whose executor is bound to the kernel's default test policy
+/// (`AllowAllPolicy`: the substrate and a `Local` caller are the owner, every other source
+/// resolves no trust). The one place a hands test gets trust, as production does: from the
+/// executor's policy.
+pub(crate) fn state_with_default_policy(rt: tokio::runtime::Handle) -> Arc<crate::modules::code::CodeState> {
+    let state = Arc::new(crate::modules::code::CodeState::new(
+        Arc::new(dashmap::DashMap::new()),
+        Arc::new(dashmap::DashMap::new()),
+        rt,
+    ));
+    state.executor.install(Arc::new(crate::runtime::CommandExecutor::new(Arc::new(crate::runtime::ModuleRegistry::new()))));
+    state
 }

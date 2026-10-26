@@ -13,7 +13,7 @@
 
 use crate::code::{FileEngine, ShellSession};
 use crate::log_info;
-use crate::runtime::{CommandResult, ModuleConfig, ModuleContext, ModulePriority, ServiceModule};
+use crate::runtime::{CommandExecutor, CommandResult, LateBound, ModuleConfig, ModuleContext, ModulePriority, ServiceModule};
 use async_trait::async_trait;
 use dashmap::DashMap;
 use serde_json::Value;
@@ -28,6 +28,9 @@ pub struct CodeState {
     pub shell_sessions: Arc<DashMap<String, ShellSession>>,
     /// Tokio runtime handle for spawning async shell execution tasks.
     pub rt_handle: tokio::runtime::Handle,
+    /// The executor, bound at boot: its policy is the ONE owner of caller trust
+    /// ([`Self::caller_trust`]). Unbound resolves no trust.
+    pub executor: LateBound<CommandExecutor>,
 }
 
 impl CodeState {
@@ -40,7 +43,15 @@ impl CodeState {
             file_engines,
             shell_sessions,
             rt_handle,
+            executor: LateBound::new("code::executor"),
         }
+    }
+
+    /// The trust the executor's policy resolves for `caller`. `None` (an unbound executor,
+    /// or a policy that cannot resolve) is LEAST privilege: callers treat it as no grant,
+    /// never as the owner.
+    pub fn caller_trust(&self, caller: Option<&crate::routing::CallerIdentity>) -> Option<crate::routing::trust_level::TrustLevel> {
+        self.executor.get().and_then(|e| e.caller_trust(caller))
     }
 
     /// Begin ending one set of hands: an acting context that is over (an eval or a fork
@@ -205,7 +216,12 @@ impl ServiceModule for CodeModule {
         objs.extend(crate::commands::code::cargo::command_objects(
             self.state.clone(),
         ));
+        objs.push(Arc::new(crate::commands::code::run::CodeRun { state: self.state.clone() }));
         objs
+    }
+
+    fn install_executor(&self, executor: Arc<CommandExecutor>) {
+        self.state.executor.install(executor);
     }
 
     fn as_any(&self) -> &dyn Any {

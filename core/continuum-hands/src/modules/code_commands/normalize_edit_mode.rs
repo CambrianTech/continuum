@@ -130,7 +130,7 @@ impl ActionCommand for CodeEdit {
         reject_placeholder_path(&p.file_path)?;
         let engine = engine!(self, ctx);
         let edit = CanonicalEdit::try_from(p)?;
-        let scope = read_scope_of(ctx, &engine.workspace_root())?;
+        let scope = read_scope_of(&self.state, ctx, &engine.workspace_root())?;
         engine
             .edit_in(&edit.file_path, &edit.edit_mode, edit.description.as_deref(), &scope)
             .map_err(engine_err)

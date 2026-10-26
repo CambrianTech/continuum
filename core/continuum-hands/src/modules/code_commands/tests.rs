@@ -42,21 +42,24 @@
     #[test]
     fn a_resident_reaches_the_host_but_its_credentials_and_an_outside_peer_is_confined() {
         crate::test_acting::install();
+        let rt = tokio::runtime::Runtime::new().expect("test: runtime");
+        let state = crate::test_acting::state_with_default_policy(rt.handle().clone());
         let _home = crate::paths::test_home::HomeGuard::preserve_blocking(); // reads the process home a guarded fixture may be swapping (card cb3221a5)
         let ws = tempfile::tempdir().expect("test: ws");
-        assert!(confinement_of(&Ctx::default(), ws.path()).expect("test: acting installed").is_none(), "the operator");
+        assert!(confinement_of(&state, &Ctx::default(), ws.path()).expect("test: acting installed").is_none(), "the operator");
         let resident = Ctx {
             caller: Some(crate::routing::CallerIdentity::local_persona(crate::identity::PeerId::from_uuid(uuid::Uuid::from_u128(0xC1)))),
             ..Ctx::default()
         };
-        let hers = confinement_of(&resident, ws.path()).expect("test: acting installed").expect("a resident carries the credential boundary");
+        let hers = confinement_of(&state, &resident, ws.path()).expect("test: acting installed").expect("a resident carries the credential boundary");
         assert!(hers.reaches_host(), "this node's resident reaches the whole host");
-        assert!(matches!(read_scope_of(&resident, ws.path()).expect("test: acting installed"), crate::code::path_security::ReadScope::Host { .. }), "her file verbs reach the host too");
+        // the default test policy resolves no trust for a resident, so her reads stay in the sandbox: least privilege, never the host
+        assert!(matches!(read_scope_of(&state, &resident, ws.path()).expect("test: acting installed"), crate::code::path_security::ReadScope::Sandbox), "no resolved trust: her file verbs stay in the sandbox");
         let outside = Ctx {
             caller: Some(crate::routing::CallerIdentity::airc(crate::identity::PeerId::from_uuid(uuid::Uuid::from_u128(0xA1)))),
             ..Ctx::default()
         };
-        let confined = confinement_of(&outside, ws.path()).expect("test: acting installed").expect("a peer from outside this node is confined");
+        let confined = confinement_of(&state, &outside, ws.path()).expect("test: acting installed").expect("a peer from outside this node is confined");
         assert!(!confined.reaches_host(), "held to her workspace");
         assert_eq!(confined.workspace(), ws.path());
     }
@@ -67,6 +70,8 @@
     #[test]
     fn a_resident_writes_where_she_names_and_an_outside_peer_is_held_to_the_workspace() {
         crate::test_acting::install();
+        let rt = tokio::runtime::Runtime::new().expect("test: runtime");
+        let state = crate::test_acting::state_with_default_policy(rt.handle().clone());
         use crate::code::path_security::PathSecurity;
         let ws = tempfile::tempdir().expect("test: ws");
         let elsewhere = tempfile::tempdir().expect("test: elsewhere");
@@ -76,15 +81,40 @@
             caller: Some(crate::routing::CallerIdentity::local_persona(crate::identity::PeerId::from_uuid(uuid::Uuid::from_u128(0xC1)))),
             ..Ctx::default()
         };
-        let scope = read_scope_of(&resident, ws.path()).expect("test: acting installed");
+        // a resident whose trust admits code/shell is read-scoped by her confinement (read_scope_of's trusted branch), which reaches the host
+        let hers = confinement_of(&state, &resident, ws.path()).expect("test: acting installed").expect("a resident carries the credential boundary");
+        let scope = crate::code::path_security::ReadScope::Host { deny: hers.host_denials() };
         let resolved = security.validate_write_in(target.to_str().unwrap(), &scope).expect("a resident's absolute path resolves");
         assert_eq!(resolved, elsewhere.path().canonicalize().unwrap().join("note.txt"));
         let outside = Ctx {
             caller: Some(crate::routing::CallerIdentity::airc(crate::identity::PeerId::from_uuid(uuid::Uuid::from_u128(0xA1)))),
             ..Ctx::default()
         };
-        let confined = read_scope_of(&outside, ws.path()).expect("test: acting installed");
+        let confined = read_scope_of(&state, &outside, ws.path()).expect("test: acting installed");
         assert!(security.validate_write_in(target.to_str().unwrap(), &confined).is_err(), "an outside peer is held to the workspace");
+    }
+
+    // what this catches: a caller whose trust cannot be resolved (an executor not yet bound,
+    // or a policy that resolves none for her) being treated as the owner: she must get the
+    // sandbox and a confinement, never the host.
+    #[test]
+    fn an_unresolvable_trust_is_the_sandbox_never_the_host() {
+        crate::test_acting::install();
+        let rt = tokio::runtime::Runtime::new().expect("test: runtime");
+        let unbound = CodeState::new(Arc::new(dashmap::DashMap::new()), Arc::new(dashmap::DashMap::new()), rt.handle().clone());
+        let bound = crate::test_acting::state_with_default_policy(rt.handle().clone());
+        let _home = crate::paths::test_home::HomeGuard::preserve_blocking();
+        let ws = tempfile::tempdir().expect("test: ws");
+        let operator = Ctx::default();
+        let outside = Ctx {
+            caller: Some(crate::routing::CallerIdentity::airc(crate::identity::PeerId::from_uuid(uuid::Uuid::from_u128(0xA1)))),
+            ..Ctx::default()
+        };
+        for (which, state, ctx) in [("unbound executor, operator", &unbound, &operator), ("policy resolves none, outside peer", &*bound, &outside)] {
+            assert!(matches!(read_scope_of(state, ctx, ws.path()).expect("test: acting installed"), crate::code::path_security::ReadScope::Sandbox), "{which}: sandbox");
+            assert!(confinement_of(state, ctx, ws.path()).expect("test: acting installed").is_some(), "{which}: confined");
+        }
+        assert!(confinement_of(&bound, &operator, ws.path()).expect("test: acting installed").is_none(), "a resolved owner is the one unconfined caller");
     }
 
     // what this catches (Kimi, 2026-10-05): a write outside her workspace, a missing file

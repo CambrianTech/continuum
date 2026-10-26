@@ -22,13 +22,16 @@ pub(super) fn engine_err(e: crate::code::file_engine::FileEngineError) -> Comman
 /// to the same roots, card d598c806, so the reads are too); the sandbox for everyone
 /// else. Asked through the gate's own resolvers, so the read scope can never be wider
 /// than the shell grant.
-pub(super) fn read_scope_of(ctx: &Ctx, workspace: &std::path::Path) -> Result<crate::code::path_security::ReadScope, CommandError> {
+pub(super) fn read_scope_of(state: &CodeState, ctx: &Ctx, workspace: &std::path::Path) -> Result<crate::code::path_security::ReadScope, CommandError> {
     use crate::code::path_security::ReadScope;
-    let trust = crate::identity::acting::provider()?.caller_trust(ctx.caller.as_ref());
+    // no resolved trust (executor unbound, or a policy that cannot resolve) is the sandbox
+    let Some(trust) = state.caller_trust(ctx.caller.as_ref()) else {
+        return Ok(ReadScope::Sandbox);
+    };
     if !crate::routing::command_acl::is_command_authorized("code/shell", trust) {
         return Ok(ReadScope::Sandbox);
     }
-    Ok(match confinement_of(ctx, workspace)? {
+    Ok(match confinement_of(state, ctx, workspace)? {
         None => ReadScope::Host { deny: Vec::new() },
         Some(confinement) if confinement.reaches_host() => ReadScope::Host { deny: confinement.host_denials() },
         Some(confinement) => ReadScope::Confined(confinement.materialize()),
@@ -50,7 +53,7 @@ pub async fn resolve_readable_path(
         .file_engines
         .get(&key.map_key())
         .ok_or_else(|| CommandError::Internal("workspace vanished after provisioning".into()))?;
-    let scope = read_scope_of(ctx, &engine.workspace_root())?;
+    let scope = read_scope_of(state, ctx, &engine.workspace_root())?;
     engine
         .security()
         .validate_read_in(path, scope)
@@ -207,7 +210,7 @@ pub(super) async fn ensure_shell(state: &CodeState, ctx: &Ctx) -> Result<String,
         .map_err(|e| CommandError::Internal(format!("shell init failed: {e}")))?;
     // A citizen's shell is confined to her roots (card d598c806); the operator's is the
     // operator's. Decided by the SAME trust the gate saw, never by a params field.
-    if let Some(confinement) = confinement_of(ctx, &root)? {
+    if let Some(confinement) = confinement_of(state, ctx, &root)? {
         shell.confine(confinement);
     }
     state.shell_sessions.entry(who.to_string()).or_insert(shell);
@@ -223,10 +226,11 @@ pub(super) async fn ensure_shell(state: &CodeState, ctx: &Ctx) -> Result<String,
 /// credential paths and other citizens' directories (Joel 2026-10-18: "keep creds
 /// off-limits"): she quotes tool output into rooms, and a room reaches every enrolled
 /// peer. Her shell also never inherits the core's secrets (`strip_secret_env`).
-pub(crate) fn confinement_of(ctx: &Ctx, workspace: &std::path::Path) -> Result<Option<crate::system_resources::confinement::Confinement>, CommandError> {
+pub(crate) fn confinement_of(state: &CodeState, ctx: &Ctx, workspace: &std::path::Path) -> Result<Option<crate::system_resources::confinement::Confinement>, CommandError> {
     let resident = ctx.caller.as_ref().is_some_and(|c| c.source == crate::routing::auth_policy::CallerSource::LocalPersona);
-    let trust = crate::identity::acting::provider()?.caller_trust(ctx.caller.as_ref());
-    if !resident && trust == crate::routing::trust_level::TrustLevel::Owner {
+    // only a RESOLVED owner is unconfined; no resolved trust confines
+    let trust = state.caller_trust(ctx.caller.as_ref());
+    if !resident && trust == Some(crate::routing::trust_level::TrustLevel::Owner) {
         return Ok(None);
     }
     let Some(home) = crate::paths::home_dir() else {
@@ -280,7 +284,7 @@ impl ActionCommand for CodeRead {
     async fn run(&self, ctx: &Ctx, p: CodeReadParams) -> Result<ReadResult, CommandError> {
         let engine = engine!(self, ctx);
         engine
-            .read_in(&p.file_path, p.start_line, p.end_line, read_scope_of(ctx, &engine.workspace_root())?)
+            .read_in(&p.file_path, p.start_line, p.end_line, read_scope_of(&self.state, ctx, &engine.workspace_root())?)
             .map_err(engine_err)
     }
 }
@@ -327,7 +331,7 @@ impl ActionCommand for CodeWrite {
         let before = std::fs::metadata(engine.workspace_root().join(&p.file_path))
             .ok()
             .map(|m| m.len());
-        let scope = read_scope_of(ctx, &engine.workspace_root())?;
+        let scope = read_scope_of(&self.state, ctx, &engine.workspace_root())?;
         let out = engine
             .write_in(&p.file_path, &p.content, p.description.as_deref(), &scope)
             .map_err(engine_err);

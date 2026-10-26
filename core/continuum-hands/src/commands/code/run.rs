@@ -89,9 +89,10 @@ pub struct CodeRunResult {
     pub interpreter: String,
 }
 
-/// `code/run` — run a snippet, report stdout/stderr/exit/duration. Stateless, AiSafe.
-#[derive(Default)]
-pub struct CodeRun;
+/// `code/run` — run a snippet, report stdout/stderr/exit/duration. AiSafe; holds the code state for the caller's trust (the executor's policy).
+pub struct CodeRun {
+    pub state: std::sync::Arc<crate::modules::code::CodeState>,
+}
 
 #[async_trait]
 impl ActionCommand for CodeRun {
@@ -160,7 +161,7 @@ impl ActionCommand for CodeRun {
                     chars = params.code.chars().count() as u64,
                     "what a python snippet is — a program, or the tree walked / a shell called from python"
                 );
-                let hands = Hands::of(ctx, cwd.as_deref().unwrap_or(&dir))?;
+                let hands = Hands::of(&self.state, ctx, cwd.as_deref().unwrap_or(&dir))?;
                 let result = match interpreter {
                     Ok(interpreter) => {
                         run_python(&dir, cwd.as_deref(), &params.code, timeout, &interpreter, &hands).await
@@ -204,7 +205,7 @@ impl ActionCommand for CodeRun {
             CommandError::Internal(format!("code/run: temp dir create failed: {e}"))
         })?;
 
-        let hands = Hands::of(ctx, &dir)?;
+        let hands = Hands::of(&self.state, ctx, &dir)?;
         let result = compile_and_run_rust(&dir, &params.code, timeout, &hands).await;
         let _ = std::fs::remove_dir_all(&dir);
         result
@@ -335,9 +336,9 @@ pub(crate) struct Hands {
 }
 
 impl Hands {
-    pub(crate) fn of(ctx: &Ctx, workspace: &std::path::Path) -> Result<Self, CommandError> {
+    pub(crate) fn of(state: &crate::modules::code::CodeState, ctx: &Ctx, workspace: &std::path::Path) -> Result<Self, CommandError> {
         Ok(Self {
-            confinement: crate::modules::code_commands::confinement_of(ctx, workspace)?,
+            confinement: crate::modules::code_commands::confinement_of(state, ctx, workspace)?,
             who: crate::modules::code_commands::caller_id(ctx)?,
         })
     }
@@ -412,7 +413,7 @@ impl crate::sdk_codegen::ProjectsOutcome for CodeRun {
     }
 }
 
-crate::register_stateless_command!(CodeRun);
+crate::register_command!(CodeRun);
 crate::register_outcome!(CodeRun);
 
 #[cfg(test)]
@@ -425,7 +426,7 @@ mod tests {
     #[tokio::test]
     async fn compiles_and_runs_rust_capturing_stdout() {
         crate::test_acting::install();
-        let out = CodeRun
+        let out = CodeRun { state: crate::test_acting::state_with_default_policy(tokio::runtime::Handle::current()) }
             .run(
                 &Ctx::default(),
                 CodeRunParams {
@@ -453,7 +454,7 @@ mod tests {
         crate::test_acting::install();
         std::env::set_var("CU_TEST_HF_TOKEN", "never-on-the-wire");
         std::env::set_var("CU_TEST_PLAIN_DIR", "visible");
-        let out = CodeRun
+        let out = CodeRun { state: crate::test_acting::state_with_default_policy(tokio::runtime::Handle::current()) }
             .run(
                 &Ctx::default(),
                 CodeRunParams {
@@ -475,7 +476,7 @@ mod tests {
     #[tokio::test]
     async fn surfaces_panic_on_runtime_error() {
         crate::test_acting::install();
-        let out = CodeRun
+        let out = CodeRun { state: crate::test_acting::state_with_default_policy(tokio::runtime::Handle::current()) }
             .run(
                 &Ctx::default(),
                 CodeRunParams {
@@ -503,7 +504,7 @@ mod tests {
     #[tokio::test]
     async fn surfaces_compile_error_as_result() {
         crate::test_acting::install();
-        let out = CodeRun
+        let out = CodeRun { state: crate::test_acting::state_with_default_policy(tokio::runtime::Handle::current()) }
             .run(
                 &Ctx::default(),
                 CodeRunParams {
@@ -580,7 +581,7 @@ mod tests {
             "use std::io::Write;\nfn main() {{\n    let mut f = std::fs::File::create(r\"{}\").unwrap();\n    write!(f, \"{{}}\", std::process::id()).unwrap();\n    f.flush().unwrap();\n    loop {{ std::hint::spin_loop(); }}\n}}\n",
             pidfile.display()
         );
-        let out = CodeRun
+        let out = CodeRun { state: crate::test_acting::state_with_default_policy(tokio::runtime::Handle::current()) }
             .run(
                 &Ctx::default(),
                 CodeRunParams {
@@ -629,7 +630,7 @@ mod tests {
     // permanent no-Python-on-the-exec-path rule. `python` must be rejected, not run.
     #[tokio::test]
     async fn non_rust_lang_fails_loud() {
-        let err = CodeRun
+        let err = CodeRun { state: crate::test_acting::state_with_default_policy(tokio::runtime::Handle::current()) }
             .run(
                 &Ctx::default(),
                 CodeRunParams {
@@ -657,7 +658,7 @@ mod tests {
     #[tokio::test]
     async fn python_runs_and_returns_ground_truth() {
         crate::test_acting::install();
-        let r = CodeRun
+        let r = CodeRun { state: crate::test_acting::state_with_default_policy(tokio::runtime::Handle::current()) }
             .run(
                 &Ctx::default(),
                 CodeRunParams {

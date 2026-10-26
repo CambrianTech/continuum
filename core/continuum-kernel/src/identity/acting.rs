@@ -1,8 +1,8 @@
 //! Who is acting, and where: the contract every domain's commands (code, work, ...) need
 //! from the layers above the kernel, installed once at boot. The persona airc registry,
-//! the acting-root record and the grid trust policy live above the kernel; a domain crate
+//! the acting-root record live above the kernel; a domain crate
 //! below them asks through this seam instead of importing them. Not installed is a typed
-//! error ([`ActingError::NotInstalled`]), never a default identity or a default trust.
+//! error ([`ActingError::NotInstalled`]), never a default identity. Trust is not here: it has one owner, the executor's policy.
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
@@ -10,8 +10,6 @@ use std::sync::{Arc, OnceLock};
 use uuid::Uuid;
 
 use super::hands_context::HandsContext;
-use crate::routing::auth_policy::CallerIdentity;
-use crate::routing::trust_level::TrustLevel;
 use crate::sdk_codegen::{CommandError, Ctx};
 
 /// What the layers above the kernel answer about the acting caller.
@@ -24,8 +22,6 @@ pub trait ActingProvider: Send + Sync {
     fn acting_root_in(&self, persona: Uuid, context: Option<HandsContext>) -> Option<PathBuf>;
     /// The prepared instance environment's python for a checkout, if it has one.
     fn instance_python(&self, checkout: &Path) -> Option<PathBuf>;
-    /// The trust tier of a caller (`None` = the substrate-local owner).
-    fn caller_trust(&self, caller: Option<&CallerIdentity>) -> TrustLevel;
 }
 
 /// Why the acting seam could not answer.
