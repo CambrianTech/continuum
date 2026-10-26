@@ -4,6 +4,9 @@ version = "0.1.0"
 edition = "2021"
 publish = false
 repository = "https://github.com/CambrianTech/continuum"
+# The moved teach bridge stamps what it produces with the build it ran on (CONTINUUM_BUILD_GIT_SHA):
+# core's build script is the one owner of that identity, as for cognition.
+build = "../continuum-core/build.rs"
 
 # Dreaming (MODULE-ARCHITECTURE.md section 9.2): gene training on the served weights, as one domain with
 # its commands (Joel: a domain's service and its commands are ONE crate). The training trigger, the

@@ -4,7 +4,7 @@ const { isDeepStrictEqual } = require('node:util');
 
 // The crates this workflow tests, one parallel job each (longest first, so it starts first).
 // Which of them run is derived from the workspace graph at selection time, never listed here.
-const TESTED_CRATES = ['continuum-core', 'continuum-mind', 'continuum-engine', 'continuum-perception', 'continuum-genome',
+const TESTED_CRATES = ['continuum-core', 'continuum-mind', 'continuum-dreaming', 'continuum-engine', 'continuum-perception', 'continuum-genome',
   'continuum-kernel', 'continuum-live', 'continuum-hands', 'continuum-memory', 'continuum-experience',
   'continuum-cognition', 'continuum-academy', 'continuum-base', 'continuum-host'];
 // The cargo features each crate's job builds its tests with: the crate job and the cache-warming
