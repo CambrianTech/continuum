@@ -10,7 +10,7 @@ impl SentinelModule {
     ///
     /// Non-blocking: doesn't wait for processes to exit (caller sleeps 2s then exits).
     pub fn shutdown_all(&self) {
-        let log = crate::runtime::logger("sentinel");
+        let log = continuum_kernel::runtime::logger("sentinel");
         let mut killed = 0;
 
         // Phase 1: Broadcast shutdown event so TS side can save persona state, flush logs
@@ -66,7 +66,7 @@ impl SentinelModule {
     pub(super) async fn resume_from_checkpoint(&self, params: Value) -> Result<CommandResult, String> {
         let p = Params::new(&params);
         let handle_id = p.str("handle")?;
-        let log = crate::runtime::logger("sentinel");
+        let log = continuum_kernel::runtime::logger("sentinel");
 
         let cp = checkpoint::load_checkpoint(handle_id)?
             .ok_or_else(|| format!("No checkpoint found for handle: {handle_id}"))?;
@@ -135,7 +135,7 @@ impl SentinelModule {
         let executor_for_task = self.executor.cloned();
 
         tokio::spawn(async move {
-            let log = crate::runtime::logger("sentinel");
+            let log = continuum_kernel::runtime::logger("sentinel");
             let registry = match registry {
                 Some(r) => r,
                 None => {
@@ -440,7 +440,7 @@ impl ServiceModule for SentinelModule {
     }
 
     async fn initialize(&self, ctx: &ModuleContext) -> Result<(), String> {
-        let log = crate::runtime::logger("sentinel");
+        let log = continuum_kernel::runtime::logger("sentinel");
 
         *self.bus.write() = Some(Arc::clone(&ctx.bus));
         *self.registry.write() = Some(Arc::clone(&ctx.registry));
@@ -478,7 +478,7 @@ impl ServiceModule for SentinelModule {
                     let executor_for_resume = self.executor.cloned();
                     tokio::spawn(async move {
                         tokio::time::sleep(std::time::Duration::from_secs(5)).await;
-                        let log = crate::runtime::logger("sentinel");
+                        let log = continuum_kernel::runtime::logger("sentinel");
                         for handle_id in handles_to_resume {
                             log.info(&format!(
                                 "[{handle_id}] Auto-resuming interrupted pipeline..."
@@ -585,35 +585,11 @@ impl ServiceModule for SentinelModule {
             "sentinel/logs/read" => logs::read_log(&logs_base_dir, params).await,
             "sentinel/logs/tail" => logs::tail_log(&logs_base_dir, params).await,
 
-            // Local inference HTTP endpoint management
-            "sentinel/local-inference-port" => match crate::http::port().await {
-                Some(port) => Ok(CommandResult::Json(serde_json::json!({
-                    "success": true,
-                    "port": port,
-                    "url": format!("http://127.0.0.1:{}", port)
-                }))),
-                None => Ok(CommandResult::Json(serde_json::json!({
-                    "success": false,
-                    "error": "HTTP inference server not started"
-                }))),
-            },
-            "sentinel/local-inference-start" => match crate::http::start_if_needed().await {
-                Ok(port) => Ok(CommandResult::Json(serde_json::json!({
-                    "success": true,
-                    "port": port,
-                    "url": format!("http://127.0.0.1:{}", port)
-                }))),
-                Err(e) => Ok(CommandResult::Json(serde_json::json!({
-                    "success": false,
-                    "error": e
-                }))),
-            },
-
             _ => Err(format!("Unknown sentinel command: {command}")),
         }
     }
 
-    fn install_executor(&self, executor: Arc<crate::runtime::CommandExecutor>) {
+    fn install_executor(&self, executor: Arc<continuum_kernel::runtime::CommandExecutor>) {
         self.executor.install(executor);
     }
 

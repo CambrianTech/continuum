@@ -8,8 +8,8 @@
 use serde_json::Value;
 use std::time::Instant;
 
-use crate::modules::sentinel::interpolation;
-use crate::modules::sentinel::types::{step_err, ExecutionContext, PipelineContext, StepResult};
+use crate::interpolation;
+use crate::types::{step_err, ExecutionContext, PipelineContext, StepResult};
 
 /// Execute a command step via TypeScript CommandRouterServer.
 ///
@@ -25,7 +25,7 @@ pub async fn execute(
     ctx: &mut ExecutionContext,
     pipeline_ctx: &PipelineContext<'_>,
 ) -> Result<StepResult, String> {
-    use crate::runtime;
+    use continuum_kernel::runtime;
     let log = runtime::logger("sentinel");
     let start = Instant::now();
 

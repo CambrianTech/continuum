@@ -525,8 +525,8 @@ pub struct ExecutionContext {
 /// Groups the references that every recursive step needs.
 pub struct PipelineContext<'a> {
     pub handle_id: &'a str,
-    pub registry: &'a std::sync::Arc<crate::runtime::ModuleRegistry>,
-    pub bus: Option<&'a std::sync::Arc<crate::runtime::message_bus::MessageBus>>,
+    pub registry: &'a std::sync::Arc<continuum_kernel::runtime::ModuleRegistry>,
+    pub bus: Option<&'a std::sync::Arc<continuum_kernel::runtime::message_bus::MessageBus>>,
     /// Path to steps.jsonl for real-time sub-step logging.
     /// When set, loop/condition/parallel steps flush results as they complete.
     pub steps_log_path: Option<&'a std::path::Path>,
@@ -535,7 +535,7 @@ pub struct PipelineContext<'a> {
     /// escalation) call `executor.execute_ts_json(...)` instead of the
     /// deleted free-function helper (task #224). `None` only in tests
     /// that don't exercise the TS bridge.
-    pub executor: Option<&'a std::sync::Arc<crate::runtime::CommandExecutor>>,
+    pub executor: Option<&'a std::sync::Arc<continuum_kernel::runtime::CommandExecutor>>,
 }
 
 /// When a sentinel's terminal state should wake up the owning persona's

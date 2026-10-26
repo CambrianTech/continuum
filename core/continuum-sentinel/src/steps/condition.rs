@@ -3,8 +3,8 @@
 use serde_json::json;
 use std::time::Instant;
 
-use crate::modules::sentinel::interpolation;
-use crate::modules::sentinel::types::{
+use crate::interpolation;
+use crate::types::{
     ExecutionContext, PipelineContext, PipelineStep, StepResult,
 };
 
@@ -69,8 +69,8 @@ pub async fn execute(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::modules::sentinel::types::{ExecutionContext, PipelineStep};
-    use crate::runtime::{message_bus::MessageBus, ModuleRegistry};
+    use crate::types::{ExecutionContext, PipelineStep};
+    use continuum_kernel::runtime::{message_bus::MessageBus, ModuleRegistry};
     use std::collections::HashMap;
     use std::path::PathBuf;
     use std::sync::Arc;

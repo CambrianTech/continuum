@@ -83,7 +83,7 @@ fn install_shutdown_handlers() {
                 // modules), then the fast _exit that skips llama.cpp's
                 // double-free-prone static destructors (note above).
                 continuum_core::runtime::run_signal_shutdown().await;
-                continuum_core::modules::sentinel::shutdown_all_sentinels();
+                continuum_sentinel::shutdown_all_sentinels();
                 unsafe { libc::_exit(0) };
             }
         });
@@ -96,7 +96,7 @@ fn install_shutdown_handlers() {
                 sig.recv().await;
                 eprintln!("[continuum-core] SIGINT — save-and-join broadcast, then exit");
                 continuum_core::runtime::run_signal_shutdown().await;
-                continuum_core::modules::sentinel::shutdown_all_sentinels();
+                continuum_sentinel::shutdown_all_sentinels();
                 unsafe { libc::_exit(0) };
             }
         });
@@ -153,7 +153,7 @@ fn install_shutdown_handlers() {
             // are killed after (they are children, not modules), then the fast `_exit`
             // that skips llama.cpp's double-free-prone static destructors.
             continuum_core::runtime::run_signal_shutdown().await;
-            continuum_core::modules::sentinel::shutdown_all_sentinels();
+            continuum_sentinel::shutdown_all_sentinels();
             unsafe { libc::_exit(0) };
         });
     }

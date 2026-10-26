@@ -6,8 +6,8 @@
 use serde_json::json;
 use std::time::{Duration, Instant};
 
-use crate::modules::sentinel::interpolation;
-use crate::modules::sentinel::types::{step_err, ExecutionContext, PipelineContext, StepResult};
+use crate::interpolation;
+use crate::types::{step_err, ExecutionContext, PipelineContext, StepResult};
 
 /// Default timeout for watch step: 5 minutes
 const DEFAULT_WATCH_TIMEOUT_SECS: u64 = 300;
@@ -20,7 +20,7 @@ pub async fn execute(
     ctx: &mut ExecutionContext,
     pipeline_ctx: &PipelineContext<'_>,
 ) -> Result<StepResult, String> {
-    use crate::runtime;
+    use continuum_kernel::runtime;
     let log = runtime::logger("sentinel");
     let start = Instant::now();
 
@@ -181,8 +181,8 @@ fn event_matches(event_name: &str, pattern: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::modules::sentinel::types::ExecutionContext;
-    use crate::runtime::{message_bus::MessageBus, ModuleRegistry};
+    use crate::types::ExecutionContext;
+    use continuum_kernel::runtime::{message_bus::MessageBus, ModuleRegistry};
     use std::collections::HashMap;
     use std::path::PathBuf;
     use std::sync::Arc;

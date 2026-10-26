@@ -32,6 +32,9 @@
 
 pub mod desktop;
 
+mod local_inference_module;
+pub use local_inference_module::LocalInferenceModule;
+
 pub mod anthropic_compat;
 
 use anthropic_compat::{

@@ -19,7 +19,7 @@ use super::types::{
     step_type_name, BudgetConsumed, BudgetLimits, ExecutionContext, Pipeline, PipelineCheckpoint,
     PipelineContext, PipelineResult, PipelineStatus, StepResult,
 };
-use crate::runtime::{self, message_bus::MessageBus, ModuleRegistry};
+use continuum_kernel::runtime::{self, message_bus::MessageBus, ModuleRegistry};
 
 /// Execute a multi-step pipeline with LLM, conditions, loops
 pub async fn execute_pipeline(
@@ -29,7 +29,7 @@ pub async fn execute_pipeline(
     working_dir: PathBuf,
     bus: Option<Arc<MessageBus>>,
     registry: Option<Arc<ModuleRegistry>>,
-    executor: Option<Arc<crate::runtime::CommandExecutor>>,
+    executor: Option<Arc<continuum_kernel::runtime::CommandExecutor>>,
 ) -> Result<(i32, String), String> {
     let log = runtime::logger("sentinel");
 
@@ -811,7 +811,7 @@ pub async fn execute_pipeline_direct(
     pipeline: Pipeline,
     bus: Option<&Arc<MessageBus>>,
     registry: Option<&Arc<ModuleRegistry>>,
-    executor: Option<&Arc<crate::runtime::CommandExecutor>>,
+    executor: Option<&Arc<continuum_kernel::runtime::CommandExecutor>>,
 ) -> PipelineResult {
     let log = runtime::logger("sentinel");
     let start_time = Instant::now();

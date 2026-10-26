@@ -21,6 +21,7 @@ members = [
     "core/continuum-host",
     "core/continuum-context",
     "core/continuum-core",
+    "core/continuum-sentinel",
     "core/continuum-kernel",
     "core/continuum-mind",
     "core/continuum-dreaming",

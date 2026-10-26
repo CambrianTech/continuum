@@ -4,8 +4,8 @@ use serde_json::{json, Value};
 use std::path::Path;
 
 use super::types::LogStreamInfo;
-use crate::runtime::CommandResult;
-use crate::runtime::params::Params;
+use continuum_kernel::runtime::CommandResult;
+use continuum_kernel::runtime::params::Params;
 
 /// List log streams for a sentinel handle
 pub async fn list_logs(logs_base_dir: &Path, params: Value) -> Result<CommandResult, String> {

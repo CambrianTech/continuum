@@ -20,7 +20,7 @@
 //! The TS version branched on `getPersonaInbox(...)` — online personas
 //! got an in-memory `inbox.enqueue`, offline personas got a `DataCreate`.
 //! Two code paths, same outcome. The substrate-native version unifies
-//! on `data/create` because [`super::super::channel::ChannelModule::tick`]
+//! on `data/create` because `ChannelModule::tick` (continuum-core `modules::channel`)
 //! polls the `tasks` collection on every tick and routes pending tasks
 //! into the live `PersonaInbox` per persona. The channel tick IS the
 //! online/offline rendezvous — escalation doesn't need to know.
@@ -59,7 +59,7 @@ use serde_json::json;
 use tracing::warn;
 use uuid::Uuid;
 
-use crate::runtime::CommandExecutor;
+use continuum_kernel::runtime::CommandExecutor;
 
 use super::types::{default_escalation_rules, EscalationAction, EscalationCondition, EscalationRule, SentinelEscalation};
 
@@ -157,7 +157,7 @@ struct SentinelExecutionResult {
 }
 
 /// One row in the `tasks` collection. Shape matches what
-/// [`super::super::channel::ChannelModule::data_to_task_queue_item`]
+/// `ChannelModule::data_to_task_queue_item` (continuum-core `modules::channel`)
 /// reads out, plus the sentinel-specific metadata bundle.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -176,7 +176,7 @@ struct InboxTaskRecord {
     /// (the persona's subconscious sentinel created it).
     assignee_id: Uuid,
     created_by: Uuid,
-    /// `"sentinel"` so [`super::super::channel::ChannelModule::tick`]
+    /// `"sentinel"` so `ChannelModule::tick` (continuum-core `modules::channel`)
     /// can filter by domain.
     domain: &'static str,
     /// `"sentinel-complete"` / `"sentinel-failed"` /
@@ -552,7 +552,7 @@ mod tests {
     // across the migration boundary.
     #[test]
     fn inbox_priority_matches_ts_map() {
-        use crate::modules::sentinel::types::EscalationPriority;
+        use crate::types::EscalationPriority;
         assert!((EscalationPriority::Low.inbox_priority() - 0.3).abs() < f64::EPSILON);
         assert!((EscalationPriority::Normal.inbox_priority() - 0.5).abs() < f64::EPSILON);
         assert!((EscalationPriority::High.inbox_priority() - 0.7).abs() < f64::EPSILON);
@@ -604,7 +604,7 @@ mod tests {
     // "fall-through to default rules" path.
     #[test]
     fn default_rules_include_complete_notify() {
-        use crate::modules::sentinel::types::EscalationPriority;
+        use crate::types::EscalationPriority;
         let rules = default_escalation_rules();
         let complete = rules
             .iter()

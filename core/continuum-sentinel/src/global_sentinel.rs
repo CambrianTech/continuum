@@ -30,7 +30,7 @@ pub struct SentinelModule {
     pub(super) registry: RwLock<Option<Arc<ModuleRegistry>>>,
     /// Substrate-wide command executor — installed by `start_server`
     /// after the executor is built (task #224).
-    pub(super) executor: LateBound<crate::runtime::CommandExecutor>,
+    pub(super) executor: LateBound<continuum_kernel::runtime::CommandExecutor>,
 }
 
 impl SentinelModule {
@@ -38,7 +38,7 @@ impl SentinelModule {
         Self {
             sentinels: Arc::new(DashMap::new()),
             logs_base_dir: RwLock::new({
-                let home = crate::paths::continuum_home().expect("Failed to resolve home directory"); // JUSTIFIED: module constructed once at boot; no HOME means no log storage, boot-fatal by design
+                let home = continuum_kernel::paths::continuum_home().expect("Failed to resolve home directory"); // JUSTIFIED: module constructed once at boot; no HOME means no log storage, boot-fatal by design
                 home.join("jtag")
                     .join("logs")
                     .join("system")
@@ -55,7 +55,7 @@ impl SentinelModule {
     /// call sites generally tolerate a `None` executor (the memory check
     /// is a guard, not load-bearing); this helper makes the intent
     /// explicit at the call site.
-    pub(super) fn executor_or_err(&self) -> Result<Arc<crate::runtime::CommandExecutor>, String> {
+    pub(super) fn executor_or_err(&self) -> Result<Arc<continuum_kernel::runtime::CommandExecutor>, String> {
         self.executor
             .cloned()
             .ok_or_else(|| "sentinel: CommandExecutor not yet installed".to_string())
@@ -79,7 +79,7 @@ impl SentinelModule {
 
     /// Run a sentinel (async execution) — handles both shell commands and pipelines
     pub(super) async fn run_sentinel(&self, params: Value) -> Result<CommandResult, String> {
-        use crate::runtime;
+        use continuum_kernel::runtime;
         let log = runtime::logger("sentinel");
 
         // Check concurrent limit
@@ -181,7 +181,7 @@ impl SentinelModule {
                 let parsed_rules = p.json_opt("escalationRules").and_then(|raw| {
                     serde_json::from_value::<Vec<types::EscalationRule>>(raw).map_or_else(
                         |e| {
-                            crate::runtime::logger("sentinel").warn(&format!(
+                            continuum_kernel::runtime::logger("sentinel").warn(&format!(
                                 "escalationRules param failed typed parse ({e}); \
                                  dispatcher will use defaults"
                             ));
