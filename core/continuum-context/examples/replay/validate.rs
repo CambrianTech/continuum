@@ -88,7 +88,7 @@ pub fn act_of(request: &serde_json::Value) -> Act {
 }
 
 /// The hands gutter, `  N | code`: what a numbered read renders.
-fn gutter(line: &str) -> Option<(u32, &str)> {
+pub fn gutter(line: &str) -> Option<(u32, &str)> {
     let (number, code) = line.split_once(" | ")?;
     Some((number.trim().parse().ok()?, code))
 }
