@@ -3,7 +3,7 @@ use super::*;
 /// Resolve the CALLING peer's own airc handle so the room is created as THEIR
 /// identity — the creator is a real peer, never the substrate acting anonymously.
 ///
-/// One resolver, not two: this is [`crate::modules::work::persona_airc`], which
+/// One resolver, not two: this is [`crate::persona::operator_peer::persona_airc`], which
 /// already routes a caller-less invocation to the OPERATOR SELF-PEER (#27). The
 /// private duplicate that lived here predated the self-peer and still carried
 /// the denial — so the human could dispatch work but could not start an
@@ -14,7 +14,7 @@ pub(super) fn caller_airc(
     registry: &PersonaAircRuntimeRegistry,
     ctx: &Ctx,
 ) -> Result<Arc<Airc>, CommandError> {
-    crate::modules::work::persona_airc(registry, ctx, "activity verbs")
+    crate::persona::operator_peer::persona_airc(registry, ctx, "activity verbs")
 }
 
 // ─────────────────────────── activity/spawn ───────────────────────────

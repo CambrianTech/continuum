@@ -12,6 +12,7 @@ pub use continuum_experience::{experience, recipe};
 pub use continuum_perception::{perception, rag};
 
 pub use continuum_academy::cognition;
+pub mod activity;
 pub mod chat;
 pub mod commands;
 pub mod context;
