@@ -2998,6 +2998,7 @@ dependencies = [
  "continuum-perception",
  "continuum-positron",
  "continuum-sentinel",
+ "continuum-store",
  "continuum-text-analysis",
  "continuum-tool-protocol",
  "crossbeam-channel",
@@ -3525,6 +3526,30 @@ dependencies = [
  "serde",
  "serde_json",
  "sysinfo",
+ "tempfile",
+ "tokio",
+ "tracing",
+ "ts-rs 12.0.1",
+ "uuid",
+]
+
+[[package]]
+name = "continuum-store"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "continuum-base",
+ "continuum-embedding",
+ "continuum-genome",
+ "continuum-kernel",
+ "dashmap",
+ "futures",
+ "inventory",
+ "rayon",
+ "schemars",
+ "serde",
+ "serde_json",
  "tempfile",
  "tokio",
  "tracing",

@@ -33,7 +33,7 @@ pub(super) fn register_code_data_and_service_modules(
 
     // Phase 4: DataModule (database-agnostic storage via ORM adapters)
     // DB path is passed per-request from TypeScript - NO defaults
-    runtime.register(Arc::new(DataModule::new()));
+    runtime.register(Arc::new(crate::modules::data_wiring::data_module()));
     // RecipeModule: the node's durable recipe runs (`recipe_runs`) and the recipe/*
     // verbs. Its store opens through DataModule's adapter at initialize.
     runtime.register(Arc::new(crate::modules::recipe::RecipeService(crate::recipe::runs_owner::RecipeModule::new())));

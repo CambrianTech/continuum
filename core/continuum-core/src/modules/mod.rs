@@ -39,7 +39,9 @@ pub mod channel;
 pub mod chat;
 pub use continuum_hands::modules::{code, code_commands, python_adapter};
 pub use continuum_mind::modules::cognition;
-pub mod data;
+pub use continuum_store::data;
+/// Core's half of the store's boot seam: the substrate entities the layers above the store own.
+pub mod data_wiring;
 pub use continuum_dreaming::modules::dataset;
 pub use continuum_embedding::module as embedding;
 pub mod events;

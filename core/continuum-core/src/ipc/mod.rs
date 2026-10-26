@@ -10,7 +10,6 @@ use continuum_live::consumers::avatar::AvatarModule;
 use crate::modules::channel::{ChannelModule, ChannelState};
 use crate::modules::code::{CodeModule, CodeState};
 use crate::modules::cognition::{CognitionModule, CognitionState};
-use crate::modules::data::DataModule;
 use crate::modules::dataset::DatasetModule;
 use crate::modules::embedding::EmbeddingModule;
 use crate::modules::events::EventsModule;
