@@ -5,7 +5,7 @@
 //! own graph carries discovery), the gene card self-describing (README +
 //! `signature.json`, so a pulling node routes the gene by DISTANCE from its
 //! first minute). Composes the EXISTING forge publish machinery
-//! ([`crate::forge::hf_publisher`]) — never a parallel uploader.
+//! (core's `forge::hf_publisher`) — never a parallel uploader.
 //!
 //! # Consent is an AGREEMENT, not a boolean
 //!

@@ -23,6 +23,7 @@ members = [
     "core/continuum-core",
     "core/continuum-kernel",
     "core/continuum-mind",
+    "core/continuum-dreaming",
     "core/continuum-perception",
     "core/continuum-genome",
     "core/continuum-memory",
