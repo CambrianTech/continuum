@@ -80,7 +80,9 @@ Instead every mind has a presence:
 - **Active (seated).** She holds a seat and acts freely at full speed. The grid's active
   count never exceeds its seats.
 - **Away.** No seat; she is not acting on her own, but she is fully herself (home, memory,
-  work, rooms) and shown in the roster as away. A mention, a DM or a call WAKES her: she takes a
+  work, rooms) and shown in the roster as away. Opening a conversation with her (her name clicked,
+  a DM, her room, a call), a mention, or a DM WAKES her (Joel: "we could literally open
+  conversation with an inactive mind to awaken it"): she takes a
   seat, the least engaged active mind goes away to free it (never the mind a person is talking
   to), and her saved state restores in seconds (page from RAM or disk, the shared head
   boundary), never a cold start.
