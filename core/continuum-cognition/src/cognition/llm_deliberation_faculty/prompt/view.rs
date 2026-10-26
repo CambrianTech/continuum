@@ -192,7 +192,8 @@ impl LlmDeliberationFaculty {
         // died: "over by 31,000" and "exactly at the line" both arrive as `0`, so the one
         // number that says HOW BADLY the turn is over its window was destroyed at the
         // moment it was computed. Subtract in two steps and probe the remainder.
-        let required_payload = all_messages.required_tokens();
+        let required = all_messages.required_parts();
+        let required_payload = required.total();
         let after_reserves = calibration
             .prompt_budget(
                 (context_window as usize).saturating_sub(Self::COMPLETION_FLOOR_TOKENS as usize),
@@ -211,6 +212,13 @@ impl LlmDeliberationFaculty {
                 context_window,
                 framing_tokens,
                 tool_tokens = selected.tokens,
+                stimulus_tokens = required.stimulus,
+                room_update_tokens = required.room_updates,
+                room_updates = required.room_update_count,
+                action_statement_tokens = required.action_statement,
+                latest_result_tokens = required.latest_result,
+                latest_results = required.latest_result_count,
+                grounding_tokens = required.grounding,
                 "the turn's IRREDUCIBLE payload does not fit the served window — grounding                  gets nothing, and this is the amount by which the window is short"
             );
         }
