@@ -2,7 +2,7 @@
 
 use super::{search_hub, HfSearchParams, HfSearchResult, HubKind};
 
-crate::action_command! {
+continuum_kernel::action_command! {
     /// Search HuggingFace Hub for MODELS by keyword — base models, fine-tunes,
     /// GGUF builds. Returns the top repos with downloads, likes, task and tags,
     /// each with its Hub URL and the `<owner>/<name>` id you can hand to

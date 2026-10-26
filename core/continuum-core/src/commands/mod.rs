@@ -41,7 +41,7 @@ pub mod gpu;
 pub mod gym;
 pub mod health;
 pub mod help;
-pub mod hf;
+pub use continuum_academy::hf;
 pub mod inference;
 pub mod interface;
 pub mod keys;
