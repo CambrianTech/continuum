@@ -237,7 +237,7 @@ pub(crate) const UNMOVED_CEILING: std::time::Duration = crate::inference::turn_b
 /// stuck engine, and [`UNMOVED_CEILING`] still bounds it; a window too short refuses a working
 /// engine and the evicted mind loses her page. Measured on enrico 2026-10-26 13:15-14:15Z
 /// (0eeceda84): the per-request rate read 9.7-16.2 tok/s, the windows used implied 64-174 tok/s
-/// (server-total), and 3 saves were still refused 23-64 s into a ~250-420 s batch (card
+/// (server-total), and 3 saves were still refused 23-64 s into a ~125-210 s batch, the window being two of them, 250-420 s (card
 /// e1a5a21a; this reverses the server-total preference from #4506). No rate measured: the floor.
 pub(crate) fn unmoved_window(floor: std::time::Duration, model: Option<&str>) -> std::time::Duration {
     unmoved_window_and_rate(floor, model).0

@@ -213,7 +213,7 @@ fn the_work_window_is_two_ubatches_at_the_measured_prefill_rate() {
 
 // what this catches (card e1a5a21a, enrico 2026-10-26 13:15-14:15Z on 0eeceda84): the window
 // sized from the server-total prefill rate (implied 64-174 tok/s) while fresh prefill ran at
-// 9.7-16.2 tok/s, so 3 saves were refused 23-64 s into a ~250-420 s batch. The window takes the
+// 9.7-16.2 tok/s, so 3 saves were refused 23-64 s into a ~125-210 s batch (two batches: 250-420 s). The window takes the
 // slower measurement, names its source, and ignores an unusable one.
 #[test]
 fn the_window_is_sized_from_the_slower_measured_rate() {
