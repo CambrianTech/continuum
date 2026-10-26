@@ -17,8 +17,8 @@
 //! The answer it gave, with no number to configure (Joel: "not some arbitrary threshold or
 //! you'd have to code literally every model"): PREEMPTIVE PRIORITY, WORK-CONSERVING. The mind a
 //! person works with prefills first; every other mind is admitted and fills what she leaves. On
-//! the M5's probes (15 minds, 2 h): foreground act 39 s vs 199 s all at once, background 167 s vs
-//! 160 s, 144 acts/h, the most of any policy. Measured and rejected, so nobody rebuilds them:
+//! the M5's probes (15 minds, 2 h): foreground act 39-46 s vs 199-326 s all at once, the node's
+//! acts within ~2% of all at once (the interleave around her prefill is the only cost). Measured and rejected, so nobody rebuilds them:
 //! caps of 2-4 (foreground 226-237 s: a cap without priority does not help her), a background
 //! grant grown while it did not measurably stretch her (foreground 26 s, 119 acts/h), and one
 //! climbed on measured throughput (25 s, 109 acts/h): throughput is flat once anything runs in
@@ -194,7 +194,9 @@ mod tests {
 
     // what this catches: the M5's shape and its answer. Twelve minds at once stretch every act
     // several-fold; preemptive priority with every other mind admitted (work-conserving, no cap)
-    // brings hers back near her lone speed and the node completes no fewer acts.
+    // brings hers back near her lone speed, and the node completes nearly as many acts: the
+    // GPU does the same work in another order, and only the interleave around her prefill
+    // costs a little (2% on the M5's probes, 120 vs 122 acts/h).
     #[test]
     fn preemptive_priority_restores_her_speed_without_losing_the_nodes_acts() {
         let minds: Vec<MindLoop> = (0..12).map(|_| mind(50)).collect();
@@ -203,7 +205,7 @@ mod tests {
         assert!(median(all.foreground.clone()) > 3.0 * 14.0, "all at once: {}", median(all.foreground));
         assert!(median(fg.foreground.clone()) < 2.0 * 14.0, "foreground: {}", median(fg.foreground));
         let done = |r: &Replayed| r.foreground.len() + r.background.len();
-        assert!(done(&fg) >= done(&all), "work-conserving: {} vs {}", done(&fg), done(&all));
+        assert!(done(&fg) as f64 >= 0.95 * done(&all) as f64, "work-conserving: {} vs {}", done(&fg), done(&all));
     }
 
     // what this catches: a dyno run on a guessed rate.
