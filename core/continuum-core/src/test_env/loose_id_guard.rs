@@ -115,6 +115,8 @@ const LOOSE_IDS: &[LooseId] = &[
     LooseId { file: "routing/airc_realtime.rs", field: "user_id", why: "pending: ours, but nothing on this path RESOLVES yet. Typing it as an identity today would assert something the code does not do — #164/#396" },
     LooseId { file: "cognition/eval/sweep_orphan_eval_roots.rs", field: "room_id", why: "pending: ours, but nothing on this path RESOLVES yet. Typing it as an identity today would assert something the code does not do — #164/#396" },
     LooseId { file: "modules/dataset/dataset_manifest.rs", field: "room_id", why: "pending: ours, but nothing on this path RESOLVES yet. Typing it as an identity today would assert something the code does not do — #164/#396" },
+    LooseId { file: "escalation.rs", field: "persona_id", why: "pending: ours, but nothing on this path RESOLVES yet. Typing it as an identity today would assert something the code does not do — #164/#396" },
+    LooseId { file: "types.rs", field: "persona_id", why: "pending: ours, but nothing on this path RESOLVES yet. Typing it as an identity today would assert something the code does not do — #164/#396" },
     LooseId { file: "persona/service_loop/burst_fingerprint.rs", field: "room_id", why: "pending: ours, but nothing on this path RESOLVES yet. Typing it as an identity today would assert something the code does not do — #164/#396" },
     LooseId { file: "persona/service_loop/burst_fingerprint.rs", field: "sender_id", why: "pending: ours, but nothing on this path RESOLVES yet. Typing it as an identity today would assert something the code does not do — #164/#396" },
 ];
