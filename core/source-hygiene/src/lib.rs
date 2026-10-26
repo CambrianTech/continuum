@@ -28,6 +28,7 @@ pub mod boundary_serialization;
 pub mod cognition_names_persona;
 pub mod context_codec;
 pub mod continuum_home;
+pub mod crate_wiring;
 pub mod derived_bounds;
 pub mod dev_only_deps;
 pub mod grab_bag;
@@ -169,13 +170,13 @@ fn audited_crate_root() -> PathBuf {
 
 /// The crate under audit. One name, one place — a second spelling of this is how a
 /// rule ends up scanning a directory that does not exist and reporting zero.
-const AUDITED_CRATE: &str = "continuum-core";
+pub(crate) const AUDITED_CRATE: &str = "continuum-core";
 
 /// Crates split out of `continuum-core` (card a31492cb). A split must never move code out
 /// of the gates' sight, so their files are audited too, with the crate name as a path
 /// prefix (`continuum-base/time/mod.rs`): totals stay continuous across a cut and every
 /// per-path rule stays unambiguous.
-const SPLIT_CRATES: &[&str] = &["continuum-base"];
+pub(crate) const SPLIT_CRATES: &[&str] = &["continuum-base"];
 
 /// Crates cut out of `continuum-core` that keep core's module names: `continuum-kernel`'s
 /// `runtime/`, `routing/`, `orm/`… are re-exported by core as `crate::runtime` and so on, so
