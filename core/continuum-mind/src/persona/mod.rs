@@ -100,6 +100,8 @@ pub mod act_question;
 pub mod initiative_turn;
 pub mod service_loop;
 pub mod wake_backlog;
+/// The durable half of `wake_backlog::PendingInput`: one row per admitted, unfinished turn (card 920619c5).
+pub mod obligation;
 pub mod work_board;
 pub mod work_burst;
 pub mod instance_env_fact;
@@ -191,6 +193,7 @@ pub const SUBSTRATE_ORM_COLLECTIONS: &[&str] = &[
     <training_producer::reviewed::CreditReviewAcceptance as crate::orm::OrmEntity>::COLLECTION,
     <training_producer::reviewed::boundaries::ProcessedReviewBoundary as crate::orm::OrmEntity>::COLLECTION,
     <training_producer::reviewed::CreditTransferAcceptance as crate::orm::OrmEntity>::COLLECTION,
+    <obligation::PersonaObligation as crate::orm::OrmEntity>::COLLECTION,
 ];
 
 pub fn register_substrate_orm_entities(
@@ -219,6 +222,7 @@ pub fn register_substrate_orm_entities(
     registry.register::<training_producer::reviewed::CreditReviewAcceptance>()?;
     registry.register::<training_producer::reviewed::boundaries::ProcessedReviewBoundary>()?;
     registry.register::<training_producer::reviewed::CreditTransferAcceptance>()?;
+    registry.register::<obligation::PersonaObligation>()?;
     Ok(())
 }
 

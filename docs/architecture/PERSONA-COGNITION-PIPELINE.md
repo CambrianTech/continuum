@@ -272,6 +272,7 @@ The persona that talks to her host in three months and recalls things from today
 | RAG sources | implement `cognition::rag_budget::RagSource` | `engram_source`, `airc_source`, future `code_source`, `tool_source`, `identity_source`. Bound on the brain at boot. |
 | Budgeter | `cognition/rag_budget.rs::FlexboxRagBudgetAdapter` | The only budgeter. Used by `compose_for_turn`. |
 | Her genome on a turn | `genome/gene_trial.rs` (today: per-card arm, being retired) → per-turn selection by signature distance (`GENE-REUSE-FORK-MINT.md` §3d) | Genes follow her mind, never her workload: every turn pages the genes whose region her perception is inside (automatic floor, several at once), each turn's probe names why, and fitness is the world's surprise on the turns a gene ran plus an offline gene-off replay of the same turns. Never a card, room or randomized arm deciding what she thinks with. Never per call: the genome never changes beneath a request. |
+| Admitted-turn obligations (durable custody) | `persona/obligation.rs` (`PersonaObligation`, `Obligations`) | The durable half of `wake_backlog::PendingInput`: one row per admitted turn, recorded before her context is composed and closed when the turn ends. Not a second recovery manager; re-admission goes back through `PendingInput`'s retry path (card 920619c5). |
 | Privacy of thought (her mind room) | `persona/mind_room.rs` (`mind_room_id`, `is_private_room`, `note_withheld`) | A turn is private because of the room it runs in: her mind room, a local id derived from her identity, never an airc channel. Every capture sink asks the ONE predicate at its own seam and writes nothing for a private turn (`docs/architecture/PRIVACY-OF-THOUGHT.md` §4). A new sink asks it too. |
 | Prompt order (stable prefix first) | `cognition/deliberation_prompt.rs::stable_prefix_order` (+ `PromptScope`, `PromptChurn`) | The ONE rule every grounding renderer lays blocks down by: churn class, then name — never salience, never arrival. The prompt cache reuses only a common prefix; a block that moves forfeits everything behind it. Card c119ace7. |
 
@@ -468,6 +469,20 @@ New arrivals remain in the existing conversation inbox and can be perceived duri
 the retry. A completed decision or prior dispatched work does not replay the input;
 ambient input keeps its existing transcript/re-perception policy. This custody is
 local to the running loop, not a claim of durable restart recovery.
+
+### Admitted-turn obligations (920619c5)
+
+The durable half of that custody is `persona/obligation.rs`: one `persona_obligation`
+row per admitted turn, written after `admit_trigger` and before `compose_turn` (which
+marks the trigger read), and deleted when the turn ends, whether it spoke or skipped.
+A row still open at the loop's next start names a turn a stop or crash cut; the start
+reports it once (`persona.obligation.interrupted`) and stamps it. This slice changes
+no turn. Re-admitting an interrupted turn waits on marks committed before each effect
+(the token forwarder's first public chunk, the tool executor's dispatch), so a turn
+that already spoke or acted is never run blindly twice; it then reaches her through
+an obligation `Source` in the context codec, never as hand-pushed prompt text. Writes
+use the substrate connection: her own identity is Trusted, and Trusted may not update
+or delete.
 
 ### Generation admission ownership (6780e79b)
 

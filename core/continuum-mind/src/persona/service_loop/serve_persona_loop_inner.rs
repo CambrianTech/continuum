@@ -25,6 +25,13 @@ pub(super) async fn serve_persona_loop_inner(
     // Admitted triggers remain owned while capacity is unavailable. New inbox
     // input and Stop stay reachable without replacing an older trigger's custody.
     let mut deferred_input = crate::persona::wake_backlog::PendingInput::for_persona(ctx.identity.peer_id.as_uuid());
+    // Its durable half (card 920619c5): each admitted turn is a row until it ends, so the
+    // turns the last stop cut are named here, at the start, instead of vanishing.
+    let obligations = crate::persona::obligation::Obligations::for_persona(
+        ctx.identity.peer_id.as_uuid(),
+        &ctx.identity.agent_name,
+    );
+    obligations.report_interrupted((opts.now_ms)()).await;
 
     // The persona's adapter (`ctx.adapter`) is reached by the
     // cognition layer through the global provider registry — slice
@@ -308,6 +315,9 @@ pub(super) async fn serve_persona_loop_inner(
                 .flatten(),
         )
         .await;
+        // Recorded BEFORE compose_turn, which marks the trigger read: from here until the turn
+        // ends, a stop that cuts it leaves this row behind to say so.
+        let obligation = obligations.admit(turn_room, &msg, wake_engram, now_ms).await;
         // 2. Compose the turn's RAG context (budget + multi-source composition); inference
         //    runs WITHOUT holding the cognition mutex.
         let composed = compose_turn(
@@ -374,7 +384,10 @@ pub(super) async fn serve_persona_loop_inner(
         .await
         {
             CycleVerdict::Spoke(spoken) => spoken,
-            CycleVerdict::Skip => continue,
+            CycleVerdict::Skip => {
+                obligations.close(obligation).await;
+                continue;
+            }
         };
         finish_spoken_turn(
             ctx,
@@ -387,6 +400,7 @@ pub(super) async fn serve_persona_loop_inner(
             &mut deferred_input,
         )
         .await;
+        obligations.close(obligation).await;
     }
 
     deferred_input.stop();
