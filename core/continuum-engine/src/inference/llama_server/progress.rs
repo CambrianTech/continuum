@@ -189,15 +189,19 @@ pub(crate) async fn engine_probe_within(
 /// PROCESSING engine may show no `/slots` counter movement before it is called stuck
 /// (`unmoved`). A plain `Duration` is both, the strictest reading: processing and unmoved
 /// at the first checkpoint is stuck.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) struct WaitBounds {
     pub checkpoint: std::time::Duration,
     pub unmoved: std::time::Duration,
+    /// The prefill rate `unmoved` was sized from, and its source (`per_request`,
+    /// `server_total`, `none`), so a refusal names the number behind its window.
+    pub unmoved_rate: Option<f64>,
+    pub unmoved_rate_source: &'static str,
 }
 
 impl From<std::time::Duration> for WaitBounds {
     fn from(bound: std::time::Duration) -> Self {
-        Self { checkpoint: bound, unmoved: bound }
+        Self { checkpoint: bound, unmoved: bound, unmoved_rate: None, unmoved_rate_source: "none" }
     }
 }
 
@@ -205,7 +209,8 @@ impl WaitBounds {
     /// Checks every `checkpoint`, and lets a processing engine stay unmoved for the
     /// [`unmoved_window`] of `model` (never less than one checkpoint).
     pub(crate) fn for_model(checkpoint: std::time::Duration, model: Option<&str>) -> Self {
-        Self { checkpoint, unmoved: unmoved_window(checkpoint, model) }
+        let (unmoved, unmoved_rate, unmoved_rate_source) = unmoved_window_and_rate(checkpoint, model);
+        Self { checkpoint, unmoved, unmoved_rate, unmoved_rate_source }
     }
 }
 
@@ -226,17 +231,43 @@ pub(crate) const UNMOVED_CEILING: std::time::Duration = crate::inference::turn_b
 /// 2,048-token batch at 10.4-15.4 tok/s, each mind cold on her next turn, because the page
 /// switch judged "unmoved" at its 16.8 s checkpoint; card 0b52b957).
 ///
-/// The rate is the server-total one (`serving_rates`, measured over busy windows), else the
-/// per-request measurement (`prefill_rate`, fresh or stale); the per-request rate reads low
-/// under contention, which only widens the window, and the ceiling still bounds it. No rate
-/// measured: the floor, as before this window existed.
+/// The rate is the SLOWER of the two measurements ([`window_rate`]): the server-total one
+/// (`serving_rates`, over busy windows) and the per-request one (`prefill_rate`, fresh or
+/// stale). The two errors are not symmetric: a window too long only delays calling a truly
+/// stuck engine, and [`UNMOVED_CEILING`] still bounds it; a window too short refuses a working
+/// engine and the evicted mind loses her page. Measured on enrico 2026-10-26 13:15-14:15Z
+/// (0eeceda84): the per-request rate read 9.7-16.2 tok/s, the windows used implied 64-174 tok/s
+/// (server-total), and 3 saves were still refused 23-64 s into a ~125-210 s batch, the window being two of them, 250-420 s (card
+/// e1a5a21a; this reverses the server-total preference from #4506). No rate measured: the floor.
 pub(crate) fn unmoved_window(floor: std::time::Duration, model: Option<&str>) -> std::time::Duration {
-    let rate = model.and_then(|m| {
-        crate::inference::serving_rates::rates_for(m)
-            .prefill_tps
-            .or_else(|| crate::inference::prefill_rate::measured_rate_for(m).tps)
+    unmoved_window_and_rate(floor, model).0
+}
+
+/// [`unmoved_window`] with the rate it used and where that rate came from, for the probes.
+pub(crate) fn unmoved_window_and_rate(
+    floor: std::time::Duration,
+    model: Option<&str>,
+) -> (std::time::Duration, Option<f64>, &'static str) {
+    let (rate, source) = model.map_or((None, "none"), |m| {
+        window_rate(
+            crate::inference::serving_rates::rates_for(m).prefill_tps,
+            crate::inference::prefill_rate::measured_rate_for(m).tps,
+        )
     });
-    window_at_rate(floor, rate)
+    (window_at_rate(floor, rate), rate, source)
+}
+
+/// PURE: the rate a no-movement window is sized from: the slower of the server-total and the
+/// per-request measurement, each only when finite and positive, with which one it was.
+pub(crate) fn window_rate(server_total: Option<f64>, per_request: Option<f64>) -> (Option<f64>, &'static str) {
+    let usable = |r: Option<f64>| r.filter(|r| r.is_finite() && *r > 0.0);
+    match (usable(server_total), usable(per_request)) {
+        (Some(s), Some(p)) if p <= s => (Some(p), "per_request"),
+        (Some(s), Some(_)) => (Some(s), "server_total"),
+        (Some(s), None) => (Some(s), "server_total"),
+        (None, Some(p)) => (Some(p), "per_request"),
+        (None, None) => (None, "none"),
+    }
 }
 
 /// PURE: [`unmoved_window`] at a known rate: `max(floor, min(two batches, UNMOVED_CEILING))`.
@@ -288,7 +319,7 @@ where
     P: FnMut() -> PF,
     PF: std::future::Future<Output = EngineProbe>,
 {
-    let WaitBounds { checkpoint: bound, unmoved } = bounds.into();
+    let WaitBounds { checkpoint: bound, unmoved, .. } = bounds.into();
     tokio::pin!(work);
     // A probe is observation, never a suspension of the request it observes.
     // In particular a terminal HTTP receipt wins over a simultaneous stale

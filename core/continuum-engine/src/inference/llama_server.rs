@@ -112,7 +112,7 @@ pub(crate) use progress::{
     WaitBounds, UNMOVED_CEILING,
 };
 #[cfg(test)]
-pub(crate) use progress::{engine_probe_within, slots_progress, window_at_rate, EngineProgress};
+pub(crate) use progress::{engine_probe_within, slots_progress, window_at_rate, window_rate, EngineProgress};
 
 mod slot_work;
 pub use progress::engine_condemned;
