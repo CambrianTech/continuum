@@ -84,12 +84,13 @@ fn mixed_thread_attributes_self_to_assistant_and_peers_to_user() {
     // Perception facts are GROUNDING inserted BEFORE the final ask (the last user
     // turn), so the ask stays LAST where the model answers it — not the bracketed
     // meta, which it would otherwise parrot (2026-07-20 humaneval parrot fix). Here
-    // the layout is [Joel, Asha(assistant), [context]-fact, Joel-ask]: the grounding
-    // sits at [2], the ask is last.
+    // the layout is [Joel, Asha(assistant), [Conversational Presence] (the standing
+    // contract, in her view), [context]-fact, the live line, Joel-ask]: the grounding
+    // sits at [3], after her view and before the ask, and the ask is last.
     assert!(
-        view.messages[2].content_text().starts_with("[context]"),
-        "grounding fact sits just before the ask: {:?}",
-        view.messages[2]
+        view.messages[3].content_text().starts_with("[context]"),
+        "grounding fact sits after her view and before the ask: {:?}",
+        view.messages[3]
     );
     assert!(
         view.messages
