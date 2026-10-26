@@ -53,6 +53,12 @@ the M5's 16:
   throughput-climbed): 25-26 s for her but 109-119 acts/h. Deleted.
 - Joel decided: the M5 hosts 4 (Aiko, Aris, Atlas, Benchy); 12 despawned, homes intact, under
   a 24 h hold.
+- The number behind it was configured: `CONTINUUM_PERSONA_FLOOR=16` in the M5's `config.env`
+  both hosted 16 minds and sized the engine for 16 (`--parallel 8`, `-c 403456`,
+  `--cache-ram 14098`, 32 checkpoints a slot) on a 64 GB machine: 15.7 of 16 GB swap used, 64 MB
+  free, prefill 94 tok/s and decode 14 tok/s with only two generations in flight. Set to 4 and
+  re-planned (00:39Z 10-26): `--parallel 5`, `-c 252160`, `--cache-ram 8811`, free memory 21% ->
+  49%. A floor in config is exactly what measured seats replace.
 
 ## The three decisions, each made by accident today
 
