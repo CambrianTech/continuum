@@ -121,6 +121,13 @@ macro_rules! log_error {
 /// - `continuum_core::orm::*` → `modules/orm`
 /// - `continuum_core::ipc::*` → `system/ipc`
 pub fn module_path_to_category(module_path: &str) -> &'static str {
+    // Domains cut out of continuum-core keep their old categories.
+    if module_path.starts_with("continuum_models::") {
+        return "modules/models";
+    }
+    if module_path.starts_with("continuum_embedding::") {
+        return "modules/embedding";
+    }
     // Strip the crate prefix
     let path = module_path
         .strip_prefix("continuum_core::")

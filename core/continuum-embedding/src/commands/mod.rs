@@ -1,7 +1,7 @@
 //! `embedding/*` — pure vector-math commands over caller-provided embeddings.
 //!
 //! Stateless. The SIMD math kernels (the ONE vectorized cosine path, shared by
-//! every embedding kind) live in [`crate::modules::embedding`]; these commands are
+//! every embedding kind) live in [`crate::module`]; these commands are
 //! thin typed wrappers that put that math on the ONE registry → the persona tool
 //! surface, `uu`, the SDK, and the grid ACL. Each self-registers via
 //! `register_stateless_command!` — no module `commands()` wiring, no `match` arm.

@@ -18,7 +18,7 @@
 //!     substrate plumbing: a compute consumer (e.g. a training run) announcing its
 //!     footprint to the authority, invoked in-process, not a remote/persona tool.
 //!
-//! The manager is owned by [`GpuModule`](crate::modules::gpu::GpuModule), which
+//! The manager is owned by [`GpuModule`](crate::gpu::module::GpuModule), which
 //! contributes these command objects through its `commands()`.
 
 use std::sync::Arc;
@@ -33,7 +33,7 @@ pub mod eviction_registry;
 pub mod pressure;
 pub mod stats;
 
-/// The dep-holding GPU command objects [`GpuModule`](crate::modules::gpu::GpuModule)
+/// The dep-holding GPU command objects [`GpuModule`](crate::gpu::module::GpuModule)
 /// contributes to the kernel's typed object map, one per verb, sharing the one
 /// `Arc<GpuMemoryManager>`.
 pub fn command_objects(manager: Arc<GpuMemoryManager>) -> Vec<Arc<dyn DynCommand>> {

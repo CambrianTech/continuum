@@ -65,6 +65,8 @@ continuum-dreaming = { path = "../continuum-dreaming" }
 continuum-live = { path = "../continuum-live" }
 continuum-hands = { path = "../continuum-hands" }
 continuum-engine = { path = "../continuum-engine" }
+continuum-models = { path = "../continuum-models" }
+continuum-embedding = { path = "../continuum-embedding" }
 continuum-context = { path = "../continuum-context" }
 # JSON Schema generation from serde types — the runtime param schema every SDK
 # (CLI/web/mobile/RAG-tools) adapts from. Derived automatically by the command

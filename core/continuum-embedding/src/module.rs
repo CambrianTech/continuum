@@ -114,10 +114,10 @@ impl ServiceModule for EmbeddingModule {
 
     fn commands(&self) -> Vec<Arc<dyn crate::sdk_codegen::DynCommand>> {
         vec![
-            Arc::new(crate::commands::embedding::similar::EmbeddingSimilar {
+            Arc::new(crate::commands::similar::EmbeddingSimilar {
                 embedder: self.embedder.clone(),
             }),
-            Arc::new(crate::commands::embedding::groups::EmbeddingGroups {
+            Arc::new(crate::commands::groups::EmbeddingGroups {
                 embedder: self.embedder.clone(),
             }),
         ]

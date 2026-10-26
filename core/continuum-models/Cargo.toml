@@ -1,0 +1,24 @@
+[package]
+name = "continuum-models"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+continuum-kernel = { path = "../continuum-kernel" }
+continuum-base = { path = "../continuum-base" }
+continuum-engine = { path = "../continuum-engine" }
+tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+uuid.workspace = true
+schemars = { version = "0.8", features = ["uuid1"] }
+async-trait.workspace = true
+inventory = "0.3"
+tracing.workspace = true
+ts-rs.workspace = true
+hf-hub.workspace = true  # HuggingFace model downloads (models/pull)
+
+[dev-dependencies]
+continuum-kernel = { path = "../continuum-kernel", features = ["test-fixtures"] }
+continuum-engine = { path = "../continuum-engine", features = ["test-fixtures"] }

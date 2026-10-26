@@ -176,7 +176,7 @@ crate::register_command!(EmbeddingGroups);
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::memory::DeterministicEmbeddingProvider;
+    use continuum_memory::memory::DeterministicEmbeddingProvider;
 
     // what this catches (Cormac, #4140; Benchy's addendum): on a node whose embedder
     // resolved to the lexical fallback (the Intel tier, ~11 h straight), the measured
