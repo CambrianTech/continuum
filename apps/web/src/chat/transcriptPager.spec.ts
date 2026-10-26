@@ -106,4 +106,39 @@ describe('TranscriptPager', () => {
     expect(scroller.scrollTop).toBe(100);
     expect(vm.transcript.map((r) => r.id)).toEqual(live);
   });
+
+  // what this catches: "Jump to present" that does not move. The click's render
+  // changes neither state nor typing, so nothing else asks to pin: the jump itself
+  // must scroll to the latest row on the next render, once, and a later render with
+  // nothing new must leave the reader where they scrolled.
+  it('pins to the latest row once after Jump to present', () => {
+    globalThis.requestAnimationFrame = (cb: FrameRequestCallback): number => {
+      cb(0);
+      return 0;
+    };
+    const scroller = new Scroller();
+    const host = new Host(scroller);
+    const pager = new TranscriptPager(
+      host as unknown as ReactiveControllerHost & { renderRoot: ParentNode },
+      () => undefined,
+      (message) => {
+        throw new Error(message);
+      },
+    );
+    const vm = room('A', ['a1', 'a2', 'a3']);
+    pager.enterRoom('A');
+    pager.compose(vm, true);
+    pager.afterRender({ transcript: true, pinToLatest: false });
+    scroller.scrollTop = 0;
+
+    pager.jumpToPresent();
+    pager.compose(vm, true);
+    pager.afterRender({ transcript: true, pinToLatest: false });
+    expect(scroller.scrollTop).toBe(scroller.scrollHeight);
+
+    scroller.scrollTop = 500;
+    pager.compose(vm, true);
+    pager.afterRender({ transcript: true, pinToLatest: false });
+    expect(scroller.scrollTop).toBe(500);
+  });
 });

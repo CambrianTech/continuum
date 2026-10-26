@@ -62,6 +62,10 @@ export class TranscriptPager implements ReactiveController {
   /** Rows were added or dropped above the viewport: restore the reader's row after
    *  the render by the scroll height that changed. */
   private keep: { readonly top: number; readonly height: number } | undefined;
+  /** "Jump to present" was clicked: pin to the latest row on the next render that
+   *  draws the transcript, once. That render changes neither state nor typing, so
+   *  the host's `pinToLatest` would not ask for it. */
+  private jumpPending = false;
 
   constructor(
     private readonly host: PagerHost,
@@ -105,6 +109,7 @@ export class TranscriptPager implements ReactiveController {
     this.current()?.jumpToPresent();
     this.following = true;
     this.keep = undefined;
+    this.jumpPending = true;
     this.host.requestUpdate();
   }
 
@@ -174,7 +179,10 @@ export class TranscriptPager implements ReactiveController {
     } else if (!this.following && drift !== 0) {
       this.scrollBy(el, drift);
     }
-    if (facts.pinToLatest && this.following) this.scrollBy(el, el.scrollHeight - el.scrollTop);
+    if ((facts.pinToLatest && this.following) || this.jumpPending) {
+      this.jumpPending = false;
+      this.scrollBy(el, el.scrollHeight - el.scrollTop);
+    }
     this.viewport = { scrollTop: el.scrollTop, clientHeight: el.clientHeight };
 
     this.trim(el);
