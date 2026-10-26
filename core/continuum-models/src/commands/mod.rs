@@ -51,7 +51,7 @@ use pull::ModelsPull;
 use remove::ModelsRemove;
 use try_::ModelsTry;
 
-/// The dep-holding `models/*` command objects the [`ModelsModule`](crate::modules::models::ModelsModule)
+/// The dep-holding `models/*` command objects the [`ModelsModule`](crate::module::ModelsModule)
 /// contributes to the kernel's typed object map. The read commands share the one
 /// `Arc<ModelCatalog>` so they read a single live universe; `models/try` also
 /// captures the shared `AdapterRegistry` (the SAME global pool `ai/generate`

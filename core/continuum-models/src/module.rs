@@ -3,7 +3,7 @@
 //! Holds the single `Arc<ModelCatalog>` (the runtime-mutable watch-snapshot layer
 //! seeded from the immutable registry) and contributes the `models/*` command
 //! family to the kernel's typed object map via [`commands()`](ModelsModule::commands).
-//! The commands themselves live under [`crate::commands::models`].
+//! The commands themselves live under [`crate::commands`].
 //!
 //! This module no longer routes through the stringly `handle_command` `match` —
 //! every `models/*` verb is a typed [`ActionCommand`](crate::sdk_codegen::ActionCommand)
@@ -76,7 +76,7 @@ impl ServiceModule for ModelsModule {
     }
 
     fn commands(&self) -> Vec<Arc<dyn crate::sdk_codegen::DynCommand>> {
-        crate::commands::models::command_objects(
+        crate::commands::command_objects(
             self.catalog.clone(),
             self.registry.clone(),
             self.serving.clone(),

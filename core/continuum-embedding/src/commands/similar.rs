@@ -237,7 +237,7 @@ crate::register_command!(EmbeddingSimilar);
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::memory::DeterministicEmbeddingProvider;
+    use continuum_memory::memory::DeterministicEmbeddingProvider;
 
     fn cands() -> Vec<SimilarCandidate> {
         [

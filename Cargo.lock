@@ -2983,6 +2983,7 @@ dependencies = [
  "continuum-client",
  "continuum-context",
  "continuum-dreaming",
+ "continuum-embedding",
  "continuum-engine",
  "continuum-experience",
  "continuum-genome",
@@ -2991,6 +2992,7 @@ dependencies = [
  "continuum-kernel",
  "continuum-live",
  "continuum-mind",
+ "continuum-models",
  "continuum-orm-derive",
  "continuum-perception",
  "continuum-positron",
@@ -3092,6 +3094,22 @@ dependencies = [
  "tracing",
  "ts-rs 12.0.1",
  "uuid",
+]
+
+[[package]]
+name = "continuum-embedding"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "continuum-engine",
+ "continuum-kernel",
+ "continuum-memory",
+ "inventory",
+ "schemars",
+ "serde",
+ "serde_json",
+ "tokio",
+ "ts-rs 12.0.1",
 ]
 
 [[package]]
@@ -3414,6 +3432,25 @@ dependencies = [
  "tokio",
  "tokio-stream",
  "toml 0.8.23",
+ "tracing",
+ "ts-rs 12.0.1",
+ "uuid",
+]
+
+[[package]]
+name = "continuum-models"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "continuum-base",
+ "continuum-engine",
+ "continuum-kernel",
+ "hf-hub 0.5.0",
+ "inventory",
+ "schemars",
+ "serde",
+ "serde_json",
+ "tokio",
  "tracing",
  "ts-rs 12.0.1",
  "uuid",

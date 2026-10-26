@@ -15,8 +15,12 @@ pub mod device_probe;
 /// Per-platform adapters. ALL `#[cfg(target_os = ...)]` for GPU backends lives in
 /// `backends/mod.rs` and nowhere else — see that file for why.
 pub mod backends;
+/// The `gpu/*` typed commands (one verb per file); they move with their module.
+pub mod commands;
 pub mod eviction_registry;
 pub mod memory_manager;
+/// `GpuModule`: the memory authority's service module; contributes `commands`.
+pub mod module;
 pub mod monitor;
 pub mod tracker;
 

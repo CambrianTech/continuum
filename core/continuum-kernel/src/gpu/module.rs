@@ -2,7 +2,7 @@
 //!
 //! The `gpu/*` command surface is MIGRATED to the typed self-routing registry —
 //! each verb is now an [`ActionCommand`](crate::sdk_codegen::ActionCommand) under
-//! [`crate::commands::gpu`], contributed through [`commands()`](GpuModule::commands).
+//! [`crate::gpu::commands`], contributed through [`commands()`](GpuModule::commands).
 //! They win at `route_object` (the O(1) typed object map) before any legacy prefix
 //! path, and their descriptors flow into `command_registry()` → the persona tool
 //! surface, the grid ACL, and codegen. This module now only owns the shared
@@ -48,8 +48,8 @@ impl ServiceModule for GpuModule {
 
     fn commands(&self) -> Vec<Arc<dyn crate::sdk_codegen::DynCommand>> {
         // The seven `gpu/*` verbs as typed self-routing objects sharing the one
-        // `Arc<GpuMemoryManager>`. See [`crate::commands::gpu`].
-        crate::commands::gpu::command_objects(self.manager.clone())
+        // `Arc<GpuMemoryManager>`. See [`crate::gpu::commands`].
+        crate::gpu::commands::command_objects(self.manager.clone())
     }
 
     async fn handle_command(&self, command: &str, _params: Value) -> Result<CommandResult, String> {
