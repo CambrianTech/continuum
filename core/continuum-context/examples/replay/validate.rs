@@ -4,8 +4,8 @@
 //! policy that would have kept it could not be judged. The validator restores each result's whole
 //! text from the request where it was the pinned newest result, gives it a summary level with
 //! `continuum_context::levels`, and counts her real re-reads: a `read_file` of a path she had
-//! read before. A re-read is PREVENTABLE under a policy when that policy's previous prompt
-//! still held the earlier read, whole or as its outline. Speed is the fresh prefill the
+//! read before. A re-read is HELD under a policy when that policy's previous prompt still had the
+//! earlier read, whole or as its outline: a retention proxy, not proof the re-read was avoidable. Speed is the fresh prefill the
 //! policy's prompts cost, priced at a measured prefill rate.
 //!
 //! Joel, 2026-10-25: "Can we set up some kind of validation scenario to demonstrate our
@@ -47,7 +47,9 @@ pub fn act_of(request: &serde_json::Value) -> Act {
             if part["type"] != "tool_result" {
                 continue;
             }
-            let Some(call) = calls.iter().find(|c| c["id"] == part["tool_use_id"]) else { continue };
+            // Pair only on a real, non-empty id: two missing ids compare equal as null (Codex).
+            let Some(id) = part["tool_use_id"].as_str().filter(|id| !id.is_empty()) else { continue };
+            let Some(call) = calls.iter().find(|c| c["id"].as_str() == Some(id)) else { continue };
             let text = match &part["content"] {
                 serde_json::Value::String(text) => text.clone(),
                 other => other.to_string(),
@@ -79,25 +81,38 @@ pub struct Restored {
     seen: HashSet<String>,
     pending: Option<(String, Vec<String>)>,
     read_seq: BTreeMap<String, String>,
+    /// Acts whose result could not be tied to exactly one action: more than one new action
+    /// key, or a capture missing between two (Codex on #5432). Counted, never restored.
+    pub ambiguous: usize,
 }
 
 /// One act's re-reads under a policy.
 #[derive(Default, Clone, Copy)]
 pub struct Rereads {
     pub total: usize,
-    pub preventable: usize,
+    /// Re-reads where the earlier read was still in her prompt, whole or as its outline: a
+    /// RETENTION proxy. Whether the re-read was avoidable also needs the file's revision and the
+    /// range she needed, which a capture does not prove (Codex on #5432).
+    pub held: usize,
 }
 
 impl Restored {
-    /// Feed one request's action keys: an action first seen now is the act the previous
-    /// request pinned, so it owns that whole result and the paths that act read.
+    /// Feed one request's action keys. Exactly one action first seen now is the act the
+    /// previous request answered, so it owns that result and the paths that act read. Any other
+    /// count (two new actions, or none because a capture is missing) is AMBIGUOUS: counted and
+    /// not restored, so no body is ever filed under an unrelated action (Codex on #5432).
     pub fn learn(&mut self, action_keys: &[String], act: &Act) {
         let new: Vec<&String> = action_keys.iter().filter(|key| !self.seen.contains(*key) && key.parse::<u64>().is_ok()).collect();
-        if let (Some(newest), Some((result, reads))) = (new.iter().max_by_key(|key| key.parse::<u64>().unwrap_or(0)), self.pending.take()) { // unwrap_or: keys were filtered to numbers
-            for path in reads {
-                self.read_seq.insert(path, (*newest).clone());
+        if let Some((result, reads)) = self.pending.take() {
+            match new.as_slice() {
+                [only] => {
+                    for path in reads {
+                        self.read_seq.insert(path, (*only).clone());
+                    }
+                    self.by_seq.insert((*only).clone(), result);
+                }
+                _ => self.ambiguous += 1,
             }
-            self.by_seq.insert((*newest).clone(), result);
         }
         self.seen.extend(action_keys.iter().cloned());
         if let Some(result) = &act.result {
@@ -123,8 +138,8 @@ impl Restored {
         }
     }
 
-    /// The re-reads among `act`'s reads, judged against the prompt the act was decided on:
-    /// preventable when that prompt still held the earlier read whole or as its outline.
+    /// The re-reads among `act`'s reads, judged against the prompt the act was decided on: held
+    /// when that prompt still had the earlier read whole or as its outline.
     pub fn rereads(&self, act: &Act, prompt: &str) -> Rereads {
         let mut counted = Rereads::default();
         for path in &act.reads {
@@ -136,9 +151,54 @@ impl Restored {
                 .or_else(|| summarize(whole, Shape::Output))
                 .is_some_and(|summary| prompt.contains(summary.as_str()));
             if held_whole || held_outline {
-                counted.preventable += 1;
+                counted.held += 1;
             }
         }
         counted
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn request(messages: serde_json::Value) -> serde_json::Value {
+        serde_json::json!({ "messages": messages })
+    }
+
+    // what this catches: reads from earlier turns, results paired by position, and missing ids
+    // pairing as null == null. Only the last assistant turn's calls count, each with its own result.
+    #[test]
+    fn the_act_is_the_last_turn_paired_by_id() {
+        let r = request(serde_json::json!([
+            {"role":"assistant","content":[{"type":"tool_use","id":"old","name":"read_file","input":{"file_path":"old.rs"}}]},
+            {"role":"user","content":[{"type":"tool_result","tool_use_id":"old","content":"old body"}]},
+            {"role":"assistant","content":[
+                {"type":"tool_use","id":"a","name":"read_file","input":{"file_path":"a.rs"}},
+                {"type":"tool_use","id":"b","name":"thread_list","input":{"path":"x"}},
+                {"type":"tool_use","name":"read_file","input":{"file_path":"no-id.rs"}}]},
+            {"role":"user","content":[
+                {"type":"tool_result","tool_use_id":"a","content":"a body"},
+                {"type":"tool_result","content":"orphan"}]}
+        ]));
+        let act = act_of(&r);
+        assert_eq!(act.reads, ["a.rs"]);
+        assert_eq!(act.result.as_deref(), Some("a body"));
+    }
+
+    // what this catches: a body filed under the wrong action. Two new actions in one request, or
+    // none because a capture is missing, are ambiguous: counted, never restored.
+    #[test]
+    fn ambiguous_batches_and_gaps_are_counted_not_restored() {
+        let mut restored = Restored::default();
+        let act = |path: &str| Act { result: Some(format!("{path} body")), reads: vec![path.to_owned()] };
+        restored.learn(&["1".into()], &act("a.rs"));
+        restored.learn(&["1".into(), "2".into()], &act("b.rs"));
+        assert_eq!(restored.by_seq.get("2").map(String::as_str), Some("a.rs body"));
+        restored.learn(&["1".into(), "2".into(), "3".into(), "4".into()], &act("c.rs"));
+        assert_eq!(restored.ambiguous, 1, "two new actions are ambiguous");
+        restored.learn(&["1".into(), "2".into(), "3".into(), "4".into()], &Act::default());
+        assert_eq!(restored.ambiguous, 2, "a capture gap (no new action) is ambiguous");
+        assert!(!restored.by_seq.contains_key("3") && !restored.by_seq.contains_key("4"));
     }
 }

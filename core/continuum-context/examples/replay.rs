@@ -321,12 +321,12 @@ struct Outcome {
     turnovers: usize,
     prefill_chars: Vec<f64>,
     rereads: usize,
-    preventable: usize,
+    retained: usize,
 }
 
 fn replay(label: &str, cuts: &[Cut], window: usize, (rule, placed): (Rule, Order), keyed_turn: bool, admit: bool, trace: bool, share: usize) -> Result<Outcome, Box<dyn std::error::Error>> {
     let mut restored = validate::Restored::default();
-    let (mut rereads, mut preventable) = (0usize, 0usize);
+    let (mut rereads, mut retained) = (0usize, 0usize);
     let mut view: Option<View<String>> = None;
     let mut previous_sent: Option<&str> = None;
     let mut previous_head: Option<&str> = None;
@@ -344,7 +344,7 @@ fn replay(label: &str, cuts: &[Cut], window: usize, (rule, placed): (Rule, Order
         restored.learn(&action_keys, &cut.act);
         let counted = restored.rereads(&cut.act, &previous_view);
         rereads += counted.total;
-        preventable += counted.preventable;
+        retained += counted.held;
         let mut sources: Vec<Captured> = cut
             .sources
             .iter()
@@ -432,8 +432,8 @@ fn replay(label: &str, cuts: &[Cut], window: usize, (rule, placed): (Rule, Order
     let acts = cuts.len().max(1);
     let line: Vec<String> = appended.iter().map(|(name, chars)| format!("{name} {}", chars / acts)).collect();
     println!("  appended per act by source: {}", line.join(", "));
-    println!("  her re-reads of a file read before: {rereads}, of which the prompt still held the earlier read whole or as its outline: {preventable}");
-    Ok(Outcome { turnovers, prefill_chars: view_prefill, rereads, preventable })
+    println!("  her re-reads of a file read before: {rereads}, of which the prompt still held the earlier read whole or as its outline (a retention proxy): {retained}; acts whose result was ambiguous (not restored): {}", restored.ambiguous);
+    Ok(Outcome { turnovers, prefill_chars: view_prefill, rereads, retained })
 }
 
 /// Characters a request sends: the system prompt, every message, and `tools`.
@@ -468,7 +468,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             "--keyed-turn" => keyed_turn = true,
             "--trace" => trace = true,
             "--reply" => reply_override = Some(args.next().ok_or("--reply needs a token count")?.parse()?),
-            "--validate" => validate_tps = Some(args.next().ok_or("--validate needs the prefill rate in tokens/s")?.parse()?),
+            "--validate" => {
+                let tps: f64 = args.next().ok_or("--validate needs the prefill rate in tokens/s")?.parse()?;
+                if !(tps.is_finite() && tps > 0.0) {
+                    return Err("--validate needs a finite, positive measured prefill rate".into());
+                }
+                validate_tps = Some(tps);
+            }
             "--share" => {
                 share = args.next().ok_or("--share needs a divisor")?.parse()?;
                 if share == 0 {
@@ -550,13 +556,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         for share in [2usize, 3, 4, 6] {
             let o = replay(&label, &cuts, window, (Rule::Reserved, Order::SettledFirst), keyed_turn, true, trace, share)?;
             println!(
-                "VALIDATE {label} share 1/{share}: {} acts, {} turnovers, prefill {:.1} s/act mean ({:.0} chars), re-reads {} preventable {}",
+                "VALIDATE {label} share 1/{share}: {} acts, {} turnovers, prefill {:.1} s/act mean ({:.0} chars), re-reads {} held {}",
                 cuts.len(),
                 o.turnovers,
                 mean(&o.prefill_chars) * seconds_per_char,
                 mean(&o.prefill_chars),
                 o.rereads,
-                o.preventable
+                o.retained
             );
         }
         return Ok(());

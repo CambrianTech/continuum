@@ -9,3 +9,8 @@ serde = { workspace = true }
 
 [dev-dependencies]
 serde_json = { workspace = true }
+
+# The replay validator's tests run with the crate's (`cargo test -p continuum-context`).
+[[example]]
+name = "replay"
+test = true
