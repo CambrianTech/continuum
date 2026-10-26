@@ -89,6 +89,7 @@ pub use continuum_mind::vdd::module as vdd;
 pub mod vision;
 pub mod verdict_board;
 pub mod work;
+pub mod work_seams;
 
 /// Realistic 50-persona load/profiling harness (real CodeModule, real payloads, through a
 /// mind's tool executor). Gated `stress-tests` per the test doctrine; profiling runs only.

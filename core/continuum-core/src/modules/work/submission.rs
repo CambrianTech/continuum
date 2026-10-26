@@ -9,6 +9,8 @@ use continuum_client::Connection;
 
 use crate::persona::work_board::submissions::*;
 
+mod benchmark_adapter;
+pub use benchmark_adapter::BenchmarkSubmissionAdapter;
 mod latest_submission;
 pub use latest_submission::*;
 mod next_after_submission;

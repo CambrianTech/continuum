@@ -36,6 +36,7 @@ use crate::runtime::{CommandResult, ModuleConfig, ModuleContext, ModulePriority,
 use crate::sdk_codegen::{AccessLevel, ActionCommand, CommandError, Ctx, DynCommand};
 
 pub mod submission;
+pub use submission::BenchmarkSubmissionAdapter;
 
 use crate::persona::work_board::advance::*;
 use crate::persona::work_board::events::*;

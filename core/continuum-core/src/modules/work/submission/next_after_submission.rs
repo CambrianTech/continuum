@@ -114,7 +114,7 @@ impl ActionCommand for WorkSubmit {
                 None => stage_for_owner_on_demand(&runtime, card).await?,
             };
             let listed = p.submodules.as_deref().unwrap_or_default(); // unwrap_or_default: none listed is an empty list
-            let d = derive_submission(&checkout, card_uuid, p.instance.clone(), p.base_sha.clone(), Some(&card.repo), listed).await?;
+            let d = derive_submission(self.benchmark.as_ref(), &checkout, card_uuid, p.instance.clone(), p.base_sha.clone(), Some(&card.repo), listed).await?;
             (d.instance, d.base_sha, d.artifact)
         };
         continuum_base::probe!(
@@ -285,13 +285,13 @@ impl ActionCommand for WorkSubmit {
         };
         // A hand-in on a bench card is graded now, here, where the artifact lives; a
         // card that is not a SWE bench card returns at once.
-        tokio::spawn(crate::modules::benchmark_grade::grade_submission(
-            Arc::clone(airc),
-            room.channel.as_uuid(),
-            grade_title,
-            published.instance.clone(),
-            grade_patch,
-        ));
+        let benchmark = Arc::clone(&self.benchmark);
+        let grade_airc = Arc::clone(airc);
+        let grade_room = room.channel.as_uuid();
+        let grade_instance = published.instance.clone();
+        tokio::spawn(async move {
+            benchmark.grade_hand_in(grade_airc, grade_room, grade_title, grade_instance, grade_patch).await;
+        });
         // Guidance reflects this command's board snapshot. A concurrently
         // arriving verdict appears on the next work/get or work/submission read.
         let outcomes: Vec<_> = board.submission_reviews_for(published.submission_id).filter(|review| review.card_id == card_id).map(|review| review.outcome).collect();

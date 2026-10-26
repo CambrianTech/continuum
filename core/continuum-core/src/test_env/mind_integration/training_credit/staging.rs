@@ -190,6 +190,7 @@ pub(super) async fn work_submission_commands_bind_before_publication_and_preserv
     let submit = WorkSubmit {
         registry: registry.clone(),
         executor_slot: slot.clone(),
+        benchmark: std::sync::Arc::new(crate::modules::work_seams::CoreBenchmarkSubmission),
     };
     let published = submit.run(&ctx, params.clone()).await.unwrap();
     assert_eq!(published.publisher, persona);

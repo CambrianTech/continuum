@@ -67,6 +67,28 @@
     // named refusal, never a diff against HEAD.
     use super::{artifact_of_patch, base_sha_of, holder_guard, instance_of_checkout, is_placeholder_hash, resolve_shown, room_label, short8};
 
+    /// The seam's fixture: no datasets, no grader, and the candidate diff in the grader's form
+    /// computed by plain `git diff`, so the derivation is exercised against a real repository.
+    struct GitDiffBenchmark;
+
+    #[async_trait::async_trait]
+    impl super::BenchmarkSubmissionAdapter for GitDiffBenchmark {
+        async fn base_commit(&self, _instance: &str) -> Option<String> {
+            None
+        }
+
+        fn candidate_diff(&self, workspace: &str, base: Option<&str>) -> Result<String, super::CommandError> {
+            let out = std::process::Command::new("git")
+                .args(["diff", "--binary", "--full-index", "--no-ext-diff", "--no-textconv", "--no-color", "--src-prefix=a/", "--dst-prefix=b/", base.unwrap_or("HEAD"), "--", "."])
+                .current_dir(workspace)
+                .output()
+                .map_err(|e| super::CommandError::Internal(e.to_string()))?;
+            String::from_utf8(out.stdout).map_err(|e| super::CommandError::Internal(e.to_string()))
+        }
+
+        async fn grade_hand_in(&self, _airc: std::sync::Arc<airc_lib::Airc>, _room: uuid::Uuid, _title: String, _instance: String, _patch: airc_blobs::MediaRef) {}
+    }
+
     // what this catches (card aff659aa; the 5090 2026-10-11, Kimi on 27f133e4): ~5 h of work turns
     // asking which state transition triggers grading, and then (#4954) a first wording that said
     // "no state you set triggers it" while a bench card's own text says marking it done does. The
@@ -426,7 +448,7 @@
         assert!(run(&["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", "root"]).status.success());
         // A remote default branch is not proof of a legacy worktree's creation base.
         assert!(run(&["update-ref", "refs/remotes/origin/HEAD", "HEAD"]).status.success());
-        let err = base_sha_of(dir.path(), "card", false).await.expect_err("no recorded creation base");
+        let err = base_sha_of(&GitDiffBenchmark, dir.path(), "card", false).await.expect_err("no recorded creation base");
         assert!(err.to_string().contains("pass base_sha"), "{err}");
         // Regression for Kimi's result5734: submitting an owned staged checkout
         // requires no temporary acting root (including after focus loss/restart).
@@ -435,7 +457,7 @@
         let add = run(&["add", "solution.py"]);
         assert!(add.status.success());
         let card = uuid::Uuid::new_v4();
-        let derived = super::derive_submission(dir.path(), card, None, Some(base.clone()), None, &[]).await.expect("derive without ambient hands");
+        let derived = super::derive_submission(&GitDiffBenchmark, dir.path(), card, None, Some(base.clone()), None, &[]).await.expect("derive without ambient hands");
         assert_eq!(derived.instance, card.to_string());
         assert_eq!(derived.base_sha, base);
         let expected = String::from_utf8(run(&["diff", "--binary", "--full-index", "--no-ext-diff", "--no-textconv", "--no-color", "--src-prefix=a/", "--dst-prefix=b/", "HEAD", "--", "solution.py"]).stdout).expect("diff");
@@ -447,11 +469,11 @@
         // must neither swallow committed work nor change the stored creation base.
         assert!(run(&["update-ref", airc_lib::work_worktree::CREATION_BASE_REF, &base, ""]).status.success());
         assert!(run(&["update-ref", "refs/remotes/origin/HEAD", "HEAD"]).status.success());
-        let recorded = super::derive_submission(dir.path(), card, None, None, None, &[]).await.expect("recorded base includes committed work");
+        let recorded = super::derive_submission(&GitDiffBenchmark, dir.path(), card, None, None, None, &[]).await.expect("recorded base includes committed work");
         assert_eq!(recorded.base_sha, base);
         assert_eq!(recorded.artifact.hash, derived.artifact.hash);
         assert_eq!(recorded.artifact.size_bytes, derived.artifact.size_bytes);
-        let empty = super::derive_submission(dir.path(), card, None, Some(clean_base), None, &[]).await.err().expect("clean checkout refused");
+        let empty = super::derive_submission(&GitDiffBenchmark, dir.path(), card, None, Some(clean_base), None, &[]).await.err().expect("clean checkout refused");
         assert!(empty.to_string().contains("nothing to submit"));
         // Regression for 6dd8befa: a valid empty submission is not malformed
         // arguments. The real refusal reaches her without advice to retry its schema.

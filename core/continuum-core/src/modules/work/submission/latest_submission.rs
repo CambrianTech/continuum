@@ -83,6 +83,7 @@ impl From<&airc_work::SubmissionArtifact> for WorkArtifactReference {
 pub struct WorkSubmit {
     pub registry: PersonaAircRuntimeRegistry,
     pub executor_slot: Arc<LateBound<CommandExecutor>>,
+    pub benchmark: Arc<dyn BenchmarkSubmissionAdapter>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
@@ -465,9 +466,9 @@ pub(super) fn instance_of_checkout(checkout: &std::path::Path, card_id: Uuid) ->
 /// Use the benchmark dataset base or the immutable repo-worktree creation anchor.
 /// Legacy worktrees require an explicit base; remote refs and HEAD do not prove
 /// where this work began and can include unrelated integration history.
-pub(super) async fn base_sha_of(checkout: &std::path::Path, instance: &str, is_swe: bool) -> Result<String, CommandError> {
+pub(super) async fn base_sha_of(benchmark: &dyn BenchmarkSubmissionAdapter, checkout: &std::path::Path, instance: &str, is_swe: bool) -> Result<String, CommandError> {
     if is_swe {
-        return crate::commands::benchmark::swe_base_commit_for(instance)
+        return benchmark.base_commit(instance)
             .await
             .ok_or_else(|| {
                 CommandError::Invalid(format!(
@@ -618,6 +619,7 @@ pub(super) async fn submission_repository_url(checkout: &std::path::Path, repo: 
 /// Parts she supplied herself are kept; the artifact is always recomputed here, so a
 /// placeholder can never reach the board.
 pub(super) async fn derive_submission(
+    benchmark: &dyn BenchmarkSubmissionAdapter,
     checkout: &std::path::Path,
     card_id: Uuid,
     given_instance: Option<String>,
@@ -632,7 +634,7 @@ pub(super) async fn derive_submission(
     let base_sha = match given_base {
         Some(b) => b,
         None => {
-            let created = base_sha_of(checkout, &instance, is_swe).await?;
+            let created = base_sha_of(benchmark, checkout, &instance, is_swe).await?;
             if is_swe {
                 created
             } else {
@@ -653,7 +655,7 @@ pub(super) async fn derive_submission(
         return Err(CommandError::Invalid(refusal));
     }
     let ws = checkout.to_string_lossy().into_owned();
-    let patch = crate::commands::benchmark::workspace_candidate_diff_from(&ws, Some(&base_sha))?;
+    let patch = benchmark.candidate_diff(&ws, Some(&base_sha))?;
     if patch.trim().is_empty() {
         return Err(CommandError::Invalid(format!(
             "nothing to submit: {} has no changes since {} (substrate paths excluded) — \
