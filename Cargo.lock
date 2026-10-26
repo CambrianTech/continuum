@@ -2987,6 +2987,7 @@ dependencies = [
  "continuum-engine",
  "continuum-experience",
  "continuum-genome",
+ "continuum-git",
  "continuum-hands",
  "continuum-host",
  "continuum-kernel",
@@ -3214,6 +3215,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "continuum-git"
+version = "0.1.0"
+dependencies = [
+ "sysinfo",
+ "tempfile",
+]
+
+[[package]]
 name = "continuum-hands"
 version = "0.1.0"
 dependencies = [
@@ -3223,6 +3232,7 @@ dependencies = [
  "async-trait",
  "continuum-base",
  "continuum-engine",
+ "continuum-git",
  "continuum-kernel",
  "dashmap",
  "futures",
