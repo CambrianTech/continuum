@@ -3,6 +3,16 @@
 Status: DRAFT for the team's critique (Fable, 2026-10-26). Codex, Cormac, BigMama: please
 critique by area before anyone codes. Joel: "It needs really thought between you guys."
 
+## Builds on GRID-ELASTIC-CAPABILITY.md (2026-08-10, never implemented)
+
+That design already replaces `CONTINUUM_PERSONA_FLOOR` (an env-var substrate threshold, a
+forbidden move) with live projections of the grid snapshot: tier and window from the best
+single node's BYTES (`grid_budget`, `max`, never a pool), population from the COUNT of
+reachable nodes (`citizen_demand`). This document keeps its byte levers unchanged and refines
+one: **population per node is measured SPEED seats** (from W and G, below), not one per node:
+the M5 proved bytes alone seat 14 minds on a GPU that serves 1-2 at full speed. Presence and
+admission (below) are new. Implement both together; nothing here duplicates its byte levers.
+
 ## The user this serves (Joel, 2026-10-26)
 
 "Most users will start with one laptop or something or a 4090, and add more grid nodes and
