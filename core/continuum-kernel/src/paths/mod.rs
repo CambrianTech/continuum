@@ -56,10 +56,9 @@ pub fn has_path_prefix(path: &std::path::Path, base: &std::path::Path) -> bool {
     }))
 }
 
-/// The continuum home dir (`$CONTINUUM_HOME` else `~/.continuum`) — the same
-/// resolution the dispatch workspace + progress ledger use. `pub(crate)` so the
-/// curriculum drain (`genome/teach --from-experience`) resolves the SAME citizen
-/// layout as the grader that wrote the stream — one layout, never two.
+/// The continuum home dir (`$CONTINUUM_HOME`, else a test build's home, else `~/.continuum`).
+/// The rule is `continuum_base::home`, the one owner `config_env` and `secrets` also use; this
+/// adds only the test-build homes, so a test never reaches the operator's state.
 pub fn continuum_home() -> Result<std::path::PathBuf, String> {
     // A test's per-thread native home wins over process-global env (card 3c8b03ae): the
     // captures and the recorder resolve here now, and their tests isolate per thread.
@@ -67,37 +66,7 @@ pub fn continuum_home() -> Result<std::path::PathBuf, String> {
     if let Some(native) = NativeHomeOverride::current() {
         return Ok(native.join(".continuum"));
     }
-    let home = set(std::env::var_os("CONTINUUM_HOME"))
-        .map(std::path::PathBuf::from)
-        .or_else(test_home)
-        .or_else(|| dirs::home_dir().map(|h| h.join(".continuum")))
-        .ok_or_else(|| "no home dir".to_string())?;
-    retired_root(set(std::env::var_os("CONTINUUM_ROOT")).as_deref(), &home)?;
-    Ok(home)
-}
-
-/// An environment value that is set and not empty: an empty one is unset, as the shell's
-/// `${VAR:-default}` and `[ -n "$VAR" ]` read it, so the core and the lifecycle scripts never
-/// resolve two different homes from one environment (Codex on #5420).
-fn set(value: Option<std::ffi::OsString>) -> Option<std::ffi::OsString> {
-    value.filter(|v| !v.is_empty())
-}
-
-/// `$CONTINUUM_ROOT` was a second name for the continuum home and is no longer read (line 7). Set
-/// to anything but the home this process resolved, it would silently open another state tree, so
-/// it is refused, naming the one setting that keeps the operator on the tree they meant. Nothing
-/// is moved.
-fn retired_root(root: Option<&std::ffi::OsStr>, home: &std::path::Path) -> Result<(), String> {
-    match root {
-        Some(root) if std::path::Path::new(root) != home => Err(format!(
-            "$CONTINUUM_ROOT={} is no longer read: the continuum home is $CONTINUUM_HOME, else ~/.continuum ({} here). \
-             Set CONTINUUM_HOME={} to keep that tree, or unset CONTINUUM_ROOT; nothing was moved",
-            root.to_string_lossy(),
-            home.display(),
-            root.to_string_lossy()
-        )),
-        _ => Ok(()),
-    }
+    continuum_base::home::continuum_home_with(test_home)
 }
 
 /// The substrate root, infallibly: the ONE continuum home, [`continuum_home`] (`$CONTINUUM_HOME`,
@@ -276,27 +245,6 @@ mod tests {
         let native = tempfile::tempdir().expect("native home"); // JUSTIFIED: test fixture
         let _override = NativeHomeOverride::install(native.path());
         assert_eq!(continuum_root(), native.path().join(".continuum"));
-    }
-
-    // what this catches (Codex on #5420): an operator's retired $CONTINUUM_ROOT silently ignored,
-    // so the core opens a different state tree. A root that is not the resolved home is refused,
-    // naming CONTINUUM_HOME=<that root>; one equal to the home, or none, passes.
-    #[test]
-    fn a_retired_root_that_names_another_tree_is_refused() {
-        let home = std::path::Path::new("/home/op/.continuum");
-        let refusal = retired_root(Some(std::ffi::OsStr::new("/srv/continuum")), home).expect_err("another tree"); // JUSTIFIED: test asserts the refusal
-        assert!(refusal.contains("CONTINUUM_HOME=/srv/continuum"), "{refusal}");
-        assert_eq!(retired_root(Some(home.as_os_str()), home), Ok(()));
-        assert_eq!(retired_root(None, home), Ok(()));
-    }
-
-    // what this catches (Codex on #5420): an empty CONTINUUM_HOME read as the path "" and an
-    // empty CONTINUUM_ROOT read as set, while the scripts read both as unset. Empty is unset.
-    #[test]
-    fn an_empty_value_is_unset_as_the_shell_reads_it() {
-        assert_eq!(set(Some(std::ffi::OsString::new())), None);
-        assert_eq!(set(None), None);
-        assert_eq!(set(Some("/srv/c".into())), Some("/srv/c".into()));
     }
 
     // what this catches (2026-09-20): a test binary resolving the OPERATOR's home — a
