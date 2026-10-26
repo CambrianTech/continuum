@@ -57,6 +57,11 @@ Phases, in order; each owner works its area in parallel:
   directory). Owners: Fable (cognition, persona, code, ai, positron), Codex (serving, inference, grid,
   routing), Cormac (genome, training), BigMama (live, media). Done when `file_size` reads 0.
 - **2 Crates by the placement map**, floor up: continuum-base (#5194), Store, Perception/RAG, Hands,
+  **Commands by module** (Joel, 10-26): a domain's service and its commands are one crate. `commands/<x>` moves
+  WITH `modules/<x>` into that domain's crate, never into a shared commands crate (core held 90k lines of services
+  and 51k of commands on 10-26). The command substrate (`sdk_codegen`, `register_*`) is already in continuum-kernel.
+  Leaves first as pure moves (models, gpu, embedding, vdd, search, web; code into continuum-hands); a coordinator
+  (serving_daemon ~60 imports, work ~40, grid ~30) gets its seam designed before it moves.
   Serving, Mind, Grid/airc, Clients. Pure moves plus import paths, one owner per cut;
   `layer_discipline` forbids upward imports; each crate checks in seconds.
 - **3 Locks.** Clippy in CI on split crates, `deny(unwrap_used, expect_used, panic)` on every clean one;
