@@ -390,6 +390,11 @@ pub(super) async fn settle_to_outcome<'c>(
         // Elapse → loud infra outcome; the drive ends; the hold RELEASES; resume
         // retries; nothing stays silently becalmed again.
         let acting_persona = cycle.acting().map(|body| body.persona_id);
+        // A generation the deadline dropped in flight leaves no receipt, but it reached the
+        // model: counted below so the step is never classified as a lane wait (card 843d5570;
+        // enrico 2026-10-26, Eitan's generation ran on slot 1 for 75 min, was extended twice,
+        // and the act read `lane_starved` because the drop left zero receipts).
+        let mut dropped_in_flight = false;
         let (step, step_metrics, step_receipts) = match until_act_stalls(
             tick_deadline,
             act_bound,
@@ -402,11 +407,13 @@ pub(super) async fn settle_to_outcome<'c>(
         .await
         {
             Ok(r) => r,
-            Err(_) => {
+            Err(abandoned) => {
+                dropped_in_flight = abandoned.dispatched;
                 continuum_base::probe!(
                     class = "settle.tick.deadline",
                     room = %room_id,
                     acts_so_far = acts as u64,
+                    dropped_in_flight = dropped_in_flight,
                     deadline_s = act_bound.as_secs(),
                     // Which sized it: `turn_bound` = her measured turn raised the floor,
                     // `floor` = she has no measured turn yet and the constant governed.
@@ -425,9 +432,9 @@ pub(super) async fn settle_to_outcome<'c>(
                         ),
                     },
                     None,
-                    // The tick was killed by the watchdog before the Workspace
-                    // returned, so there is nothing to carry. Empty because none
-                    // existed — not because any were dropped.
+                    // The tick was killed by the watchdog before the Workspace returned, so
+                    // there is no receipt to carry; a generation dropped in flight is
+                    // counted by `dropped_in_flight`, not here.
                     Vec::new(),
                 )
             }
@@ -439,7 +446,7 @@ pub(super) async fn settle_to_outcome<'c>(
         // How many generations THIS step dispatched — counted before the receipts are
         // folded into the turn's, because it is the other half of "did this iteration
         // reach the model at all" (`classify_act`).
-        let act_generations = step_receipts.len();
+        let act_generations = step_receipts.len() + usize::from(dropped_in_flight);
         if let Some(m) = step_metrics {
             metrics.accumulate(m);
         }

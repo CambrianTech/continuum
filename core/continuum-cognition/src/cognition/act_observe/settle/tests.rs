@@ -198,6 +198,25 @@
         assert_eq!(quick, Ok(42));
     }
 
+    // what this catches (card 843d5570): a generation the deadline drops in flight read as a
+    // lane wait. enrico, 2026-10-26 (core 839f70216): Eitan's generation ran on slot 1, was
+    // extended at 20:43:18 and 21:08:18, and ended at the ceiling at 21:33:18; the drop left
+    // no receipt, so the act was labelled `lane_starved`. The deadline's answer must say the
+    // step had dispatched, and a step that never dispatched must say it had not.
+    #[tokio::test(start_paused = true)]
+    async fn a_deadline_says_whether_it_dropped_a_dispatched_generation() {
+        let bound = std::time::Duration::from_secs(1500);
+        let start = tokio::time::Instant::now();
+        let dispatched = super::until_act_stalls(start + bound, bound, None, async {
+            let _witness = crate::cognition::generation_drop::InFlight::arm("Eitan", None, None);
+            std::future::pending::<()>().await
+        })
+        .await;
+        assert_eq!(dispatched, Err(super::Abandoned { dispatched: true }));
+        let waited = super::until_act_stalls(start + bound * 2, bound, None, std::future::pending::<()>()).await;
+        assert_eq!(waited, Err(super::Abandoned { dispatched: false }), "a step that never armed is a wait");
+    }
+
     // what this catches: a turn iteration that never reached the model being counted as
     // an act. M5, 2026-09-20 ~21:55Z, build 0047d521b, 4 residents on 2 lanes at 67,072:
     // two `persona.act.pace` rows read `model_ms=0` with `residue_ms` equal to the WHOLE
