@@ -26,6 +26,10 @@
 //! captured: the stable surface of goal 10, where the schemas are the same bytes on every act.
 //! Each run prints the tool share of the prompt (schema chars over request chars).
 //!
+//! `--append-tail <prefill tok/s>` replays the core's rule with her act's loop appended in the
+//! bytes it was sent instead of re-rendered (`replay/append.rs`), and prints each request's
+//! fresh tokens now and append-tail, priced at the measured prefill rate.
+//!
 //! `--chars-per-token <r>` prices the window at the core's own estimate instead of the
 //! engine's bill; `--keyed-turn` keys the standing turn text into the epoch; `--trace`
 //! prints each act's view against what it may hold.
@@ -36,6 +40,8 @@ use continuum_context::source::{Item, Source};
 
 #[path = "replay/validate.rs"]
 mod validate;
+#[path = "replay/append.rs"]
+mod append;
 use continuum_context::view::View;
 
 struct Captured {
@@ -458,6 +464,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // `--validate <prefill tok/s>`: compare the growing shares on one line each, priced at a
     // measured prefill rate (the node's `state/serving-rates.json`, or a live read).
     let mut validate_tps: Option<f64> = None;
+    let mut append_tps: Option<f64> = None;
     let mut reply_override: Option<u64> = None;
     let mut fixed_tools: Option<String> = None;
     let mut args = std::env::args().skip(1);
@@ -474,6 +481,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     return Err("--validate needs a finite, positive measured prefill rate".into());
                 }
                 validate_tps = Some(tps);
+            }
+            "--append-tail" => {
+                let tps: f64 = args.next().ok_or("--append-tail needs the prefill rate in tokens/s")?.parse()?;
+                if !(tps.is_finite() && tps > 0.0) {
+                    return Err("--append-tail needs a finite, positive measured prefill rate".into());
+                }
+                append_tps = Some(tps);
             }
             "--share" => {
                 share = args.next().ok_or("--share needs a divisor")?.parse()?;
@@ -557,6 +571,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             cut
         })
         .collect();
+    if let Some(tps) = append_tps {
+        // The core's rule as it renders today, then the same rule with the act loop appended.
+        replay(&label, &cuts, window, (Rule::Reserved, Order::SettledFirst), keyed_turn, true, trace, share)?;
+        return append::replay(&label, &cuts, window, share, chars_per_token, tps);
+    }
     if let Some(tps) = validate_tps {
         // The validator: the core's rule (reserved, settled first, admission) at each growing share,
         // one comparable line each. Prefill seconds at the measured rate `tps`.
