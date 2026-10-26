@@ -22,8 +22,14 @@ because the monolith is why every change is slow, risky and stacked on the last 
 
 Rules, in force now:
 1. No one edits a Rust file over 1,000 lines; the only change that touches one breaks it apart (CI gate).
-2. No builds on a serving node: build with serving down, in CI, or on a non-serving machine (a build
-   beside the lanes downgraded the M5's residents to a 7B on 10-20).
+2. Agents: don't let your build slow the residents. Build with common sense, beside serving with
+   bounded jobs (`-j 2`, one shared target dir), with serving down, or in CI, whichever proves the fix
+   fastest (a build beside the lanes downgraded the M5's residents to a 7B on 10-20). Joel, 10-26: "Its
+   rules because you lack common sense ... You can build either way too. Ideally you were supposed to
+   break this up into much smaller crates so it wouldn't be so bad." This rule never limits a
+   persona: she codes continuum on the node that hosts her, so she builds while it serves ("Let them
+   build"). Never gate, redirect or cancel a citizen's build; if hers slows serving, that is the
+   scheduler's to share, never a rule to enforce on her.
 3. Every live change gets a 15-minute read on live residents; worse than canary means the node goes
    back to canary at once. No "clean hours", no stacked fixes.
 4. No new unwrap, fallback or head clip: the ratchets fail the build; clean crates get compiler denies.
@@ -37,8 +43,9 @@ the supported lifecycle and verify the running revision and behavior. Ordinary a
 development maintenance does not require another human approval.
 
 Use common sense: broken personas are a reason to repair the system, not a reason to preserve
-broken uptime while the team waits. The rule is no competing build beside active serving,
-not CI-only development or a permanent ban on building on that machine. Choose a coordinated
+broken uptime while the team waits. The rule is that an agent's build must not slow the
+residents (bounded jobs, or serving down, or CI), not CI-only development or a ban on building on
+that machine, and never a limit on a persona's own builds. Choose a coordinated
 serving-down local build, an available non-serving executor, or CI according to what gets the
 fix proven promptly. Do not impose production continuity requirements on development by default.
 Protect unrelated users and owner work; retain durable state and a recovery path. Review and
