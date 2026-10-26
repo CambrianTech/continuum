@@ -31,6 +31,10 @@ pub enum LlamaServerError {
     /// engine binary back.
     #[error("retiring the incumbent engine was refused, nothing was signalled: {0}")]
     RetirementRefused(String),
+    /// Retirement has been signalled but exact-process exit is not yet proven.
+    /// Keep admission suspended and resume observation; never blame the candidate binary.
+    #[error("incumbent retirement remains unverified; endpoint suspended: {0}")]
+    RetirementPending(String),
 }
 
 

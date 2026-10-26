@@ -80,16 +80,7 @@ impl LlamaServerProcess {
         }
         if self.is_live_lane && !had_own_child && !restoring {
             if let Err(error) = self.retire_adopted(&mut transition, current).await {
-                // Refused before the incumbent was signalled: it runs exactly as before, so
-                // its admission is handed back as this transition found it (card 931cfd22).
-                if let LlamaServerError::RetirementRefused(why) = &error {
-                    let reopened = transition.hand_back_unchanged();
-                    continuum_base::probe!(target: "continuum_core::inference::llama_server", class = "serving.replace.refused_handed_back",
-                        reopened,
-                        why = why.as_str(),
-                        "a replacement was refused before its incumbent was signalled; the endpoint is handed back as the transition found it"
-                    );
-                }
+                handle_retirement_failure(&transition, &error);
                 return Err(error);
             }
         }
@@ -628,5 +619,20 @@ impl LlamaServerProcess {
             slots,
         );
         Ok(())
+    }
+}
+
+/// Only a refusal before signalling may return admission to the incumbent.
+pub(super) fn handle_retirement_failure(
+    transition: &crate::inference::slots::EndpointTransition,
+    error: &LlamaServerError,
+) {
+    if let LlamaServerError::RetirementRefused(why) = error {
+        let reopened = transition.hand_back_unchanged();
+        continuum_base::probe!(target: "continuum_core::inference::llama_server", class = "serving.replace.refused_handed_back",
+            reopened,
+            why = why.as_str(),
+            "a replacement was refused before its incumbent was signalled; the endpoint is handed back as the transition found it"
+        );
     }
 }
