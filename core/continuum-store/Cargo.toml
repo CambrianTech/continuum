@@ -28,6 +28,7 @@ tracing.workspace = true
 ts-rs.workspace = true
 schemars = { version = "0.8", features = ["uuid1"] }
 dashmap = "6.1"
+dirs = "5.0"
 futures = "0.3"
 inventory = "0.3"  # the action_command! / register_command! expansions submit descriptors
 

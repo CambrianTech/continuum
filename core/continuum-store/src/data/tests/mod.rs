@@ -2,6 +2,7 @@
 
     use super::*;
     pub(crate) use crate::module::{no_substrate_entities, DataModule};
+    pub(crate) use crate::runtime::ServiceModule;
 use crate::orm::types::CollectionSchema;
     mod vector;
 

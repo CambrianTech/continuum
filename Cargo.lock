@@ -3544,6 +3544,7 @@ dependencies = [
  "continuum-genome",
  "continuum-kernel",
  "dashmap",
+ "dirs 5.0.1",
  "futures",
  "inventory",
  "rayon",
