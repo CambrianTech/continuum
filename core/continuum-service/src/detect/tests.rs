@@ -230,3 +230,38 @@ fn a_recalibrated_prediction_starts_new_ratios_instead_of_judging_against_the_ol
     }
     assert_eq!(observe(&mut state, &policy, &recalibrated), Verdict::Insufficient(Insufficient::NoReference));
 }
+
+// what this catches (Codex on #5477): windows with no duration. A zero-length window at the
+// last end would pass every time, training the baseline and growing a streak; a reversed one
+// would rewind the stream. Both are refused before anything changes.
+#[test]
+fn a_zero_length_or_reversed_window_is_refused_before_any_state_changes() {
+    let (mut state, policy) = (ServiceState::default(), policy());
+    let two = config(2, 58_880);
+    observe(&mut state, &policy, &window(0, &two, 1, 86_000, 80_000));
+    let before = state.clone();
+    let mut empty = window(10, &two, 1, 86_000, 80_000);
+    empty.window.end_ms = empty.window.start_ms;
+    let mut reversed = window(10, &two, 1, 86_000, 80_000);
+    reversed.window.end_ms = reversed.window.start_ms - MIN;
+    assert!(matches!(observe(&mut state, &policy, &empty), Verdict::Insufficient(Insufficient::EmptyWindow { .. })));
+    assert!(matches!(observe(&mut state, &policy, &reversed), Verdict::Insufficient(Insufficient::EmptyWindow { .. })));
+    assert_eq!(state, before, "nothing learned, no streak, no rewind");
+}
+
+// what this catches (Codex on #5477): two different comparisons merged into one sustained run.
+// A slow window under one configuration, then an adjacent slow one under another, are two runs
+// of one, never a regression.
+#[test]
+fn slow_windows_under_different_configurations_are_separate_runs() {
+    let (mut state, policy) = (ServiceState::default(), policy());
+    let (two, three) = (config(2, 58_880), config(3, 39_253));
+    for (i, c) in [&two, &two, &two, &three, &three, &three].into_iter().enumerate() {
+        observe(&mut state, &policy, &window(i as u64 * 10, c, 1, 86_000, 80_000));
+    }
+    assert!(matches!(observe(&mut state, &policy, &window(60, &two, 1, 170_000, 80_000)), Verdict::Suspect { streak: 1, .. }));
+    assert!(
+        matches!(observe(&mut state, &policy, &window(70, &three, 1, 170_000, 80_000)), Verdict::Suspect { streak: 1, .. }),
+        "a different configuration starts its own run"
+    );
+}

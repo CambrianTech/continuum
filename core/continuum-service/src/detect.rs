@@ -34,12 +34,24 @@ pub struct ServiceState {
     pub streams: BTreeMap<String, StreamPosition>,
 }
 
-/// Where one node's stream of windows stands, and the slow run it is in.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+/// Where one node's stream of windows stands, and the slow run it is in. A run is bound to one
+/// comparison: the same engine incarnation, baseline key (model, builds, configuration,
+/// workload) and reference (own history, or prediction ratios under one calibration).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StreamPosition {
     pub last_end_ms: u64,
     pub incarnation: EngineIncarnation,
     pub streak: u32,
+    /// What the run's windows were compared against; `None` until a window is judged.
+    pub comparison: Option<Comparison>,
+}
+
+/// The identity of what a slow window was judged against.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Comparison {
+    pub key: BaselineKey,
+    /// `None` when judged by the configuration's own history; the calibration when judged by ratios.
+    pub calibration: Option<String>,
 }
 
 /// What prediction ratios are compared across: one node, model, builds and predictor calibration.
@@ -81,6 +93,8 @@ impl RatioBaseline {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Insufficient {
     UnknownSchema(u16),
+    /// The window has no duration (it ends at or before it starts).
+    EmptyWindow { start_ms: u64, end_ms: u64 },
     /// The window starts before the node's last window ended: a duplicate, an overlap or out of order.
     NotAfterLast { start_ms: u64, last_end_ms: u64 },
     /// Neither this configuration's history nor the node's prediction ratios are enough yet.
@@ -144,6 +158,9 @@ pub fn observe(state: &mut ServiceState, policy: &ServicePolicy, sample: &Servic
     if sample.schema != SCHEMA {
         return Verdict::Insufficient(Insufficient::UnknownSchema(sample.schema));
     }
+    if sample.window.end_ms <= sample.window.start_ms {
+        return Verdict::Insufficient(Insufficient::EmptyWindow { start_ms: sample.window.start_ms, end_ms: sample.window.end_ms });
+    }
     let streak = match advance(state, sample) {
         Ok(streak) => streak,
         Err(refused) => return Verdict::Insufficient(refused),
@@ -157,18 +174,19 @@ pub fn observe(state: &mut ServiceState, policy: &ServicePolicy, sample: &Servic
     let ratio = sample.prediction_ratio();
     let own = state.baselines.entry(key.clone()).or_default();
     let ratios = ratio_key.as_ref().map(|k| state.ratios.entry(k.clone()).or_default().clone()).unwrap_or_default();
+    let calibration = sample.prediction.as_ref().map(|p| p.calibration.clone());
     let judged = if own.references.len() >= policy.min_evidence {
         own.envelope().map(|(fastest, slowest)| {
-            (sample.latency_p50_ms > slowest, Reference::OwnHistory { fastest_ms: fastest, slowest_ms: slowest })
+            (sample.latency_p50_ms > slowest, Reference::OwnHistory { fastest_ms: fastest, slowest_ms: slowest }, None)
         })
     } else if ratios.ratios.len() >= policy.min_evidence {
         ratio.zip(ratios.slowest()).map(|(r, slowest)| {
-            (r > slowest, Reference::PredictionRatio { observed_milli: milli(r), slowest_healthy_milli: milli(slowest) })
+            (r > slowest, Reference::PredictionRatio { observed_milli: milli(r), slowest_healthy_milli: milli(slowest) }, calibration)
         })
     } else {
         None
     };
-    let Some((slow, against)) = judged else {
+    let Some((slow, against, judged_calibration)) = judged else {
         // Nothing to judge against yet, so nothing is judged: these first windows become the
         // reference. Known limit: a node degraded from its very first window on new builds
         // learns that as its normal. The prediction ratios keep a new CONFIGURATION on known
@@ -182,8 +200,15 @@ pub fn observe(state: &mut ServiceState, policy: &ServicePolicy, sample: &Servic
         set_streak(state, sample, 0);
         return Verdict::Healthy;
     }
-    let streak = streak + 1;
+    // A run continues only against the same comparison: a change of configuration, builds,
+    // model, workload stratum or reference starts a new one.
+    let comparison = Comparison { key: key.clone(), calibration: judged_calibration };
+    let continued = state.streams.get(&sample.node).and_then(|p| p.comparison.as_ref()) == Some(&comparison);
+    let streak = if continued { streak + 1 } else { 1 };
     set_streak(state, sample, streak);
+    if let Some(position) = state.streams.get_mut(&sample.node) {
+        position.comparison = Some(comparison);
+    }
     if streak < policy.sustained {
         return Verdict::Suspect { streak, sustained: policy.sustained };
     }
@@ -195,18 +220,19 @@ pub fn observe(state: &mut ServiceState, policy: &ServicePolicy, sample: &Servic
 /// Move the node's stream to `sample`, returning the slow streak it continues (0 after a gap or
 /// a restart), or refuse a window that does not come after the last one.
 fn advance(state: &mut ServiceState, sample: &ServiceSample) -> Result<u32, Insufficient> {
-    let previous = state.streams.get(&sample.node).copied();
-    if let Some(last) = previous {
+    let previous = state.streams.get(&sample.node).cloned();
+    if let Some(last) = previous.as_ref() {
         if sample.window.start_ms < last.last_end_ms {
             return Err(Insufficient::NotAfterLast { start_ms: sample.window.start_ms, last_end_ms: last.last_end_ms });
         }
     }
-    let streak = previous
-        .filter(|last| last.last_end_ms == sample.window.start_ms && last.incarnation == sample.incarnation)
-        .map_or(0, |last| last.streak);
+    let continuing = previous
+        .filter(|last| last.last_end_ms == sample.window.start_ms && last.incarnation == sample.incarnation);
+    let streak = continuing.as_ref().map_or(0, |last| last.streak);
+    let comparison = continuing.and_then(|last| last.comparison);
     state.streams.insert(
         sample.node.clone(),
-        StreamPosition { last_end_ms: sample.window.end_ms, incarnation: sample.incarnation, streak },
+        StreamPosition { last_end_ms: sample.window.end_ms, incarnation: sample.incarnation, streak, comparison },
     );
     Ok(streak)
 }
