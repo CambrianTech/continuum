@@ -173,7 +173,10 @@ pub fn observe(state: &mut ServiceState, policy: &ServicePolicy, sample: &Servic
     let ratio_key = RatioKey::of(sample);
     let ratio = sample.prediction_ratio();
     let own = state.baselines.entry(key.clone()).or_default();
-    let ratios = ratio_key.as_ref().map(|k| state.ratios.entry(k.clone()).or_default().clone()).unwrap_or_default();
+    let ratios = match ratio_key.as_ref() {
+        Some(k) => state.ratios.entry(k.clone()).or_default().clone(),
+        None => RatioBaseline::default(),
+    };
     let calibration = sample.prediction.as_ref().map(|p| p.calibration.clone());
     let judged = if own.references.len() >= policy.min_evidence {
         own.envelope().map(|(fastest, slowest)| {
@@ -212,7 +215,7 @@ pub fn observe(state: &mut ServiceState, policy: &ServicePolicy, sample: &Servic
     if streak < policy.sustained {
         return Verdict::Suspect { streak, sustained: policy.sustained };
     }
-    let own = state.baselines.get(&key).cloned().unwrap_or_default();
+    let own = state.baselines.entry(key.clone()).or_default().clone();
     let causes = causes(&own, &ratios, sample);
     Verdict::Regressed(Regression { key, observed_p50_ms: sample.latency_p50_ms, against, streak, causes })
 }
