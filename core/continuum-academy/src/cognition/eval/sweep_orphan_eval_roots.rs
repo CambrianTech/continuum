@@ -484,7 +484,7 @@ impl EvalTask {
     /// runs code has a program as its deliverable.
     ///
     /// `pub(crate)` because THIS is the one derivation of a code task's artifact name:
-    /// `benchmark/dispatch` must run the same rule before composing a work card, or the card
+    /// the card writer (`benchmark/import`) must run the same rule before composing a work card, or the card
     /// tells the citizen nothing about WHERE to write while the grade reads the derived path
     /// (glass-boxed 2026-08-15: a frontier-rs claimer inventing `swe/benchmarks/.../lib.rs`).
     pub fn require_hands_for_code(&mut self) {
