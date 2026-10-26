@@ -59,6 +59,15 @@ pub struct Replayed {
     pub per_mind: Vec<Vec<f64>>,
 }
 
+impl Replayed {
+    /// The minds that completed no act within the horizon, by index. A median over completed
+    /// acts cannot see them, so a report shows them beside it (Codex on #5435). Zero completions
+    /// over a finite horizon is not proof of starvation, but it is never hidden.
+    pub fn without_completions(&self) -> Vec<usize> {
+        self.per_mind.iter().enumerate().filter(|(_, acts)| acts.is_empty()).map(|(mind, _)| mind).collect()
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum Phase {
     Gap(f64),
@@ -226,6 +235,17 @@ mod tests {
         assert!(median(all.foreground.clone()) > 3.0 * 14.0, "all at once: {}", median(all.foreground));
         assert!(median(fg.foreground.clone()) < 2.0 * 14.0, "foreground: {}", median(fg.foreground));
         assert!(fg.per_mind.iter().all(|acts| !acts.is_empty()), "every mind still acts: {:?}", fg.per_mind.iter().map(Vec::len).collect::<Vec<_>>());
+    }
+
+    // what this catches: a mind that completes nothing vanishing from the fairness report. One
+    // background mind finishes its acts; another's single act is too large for the horizon, and
+    // it must be named, not dropped from a median over completed acts.
+    #[test]
+    fn a_mind_with_no_completions_is_reported_not_dropped() {
+        let stuck = MindLoop { acts: vec![Workload { prefill_tokens: 1.0e9, decode_tokens: 1.0 }], gap_secs: 0.0 };
+        let r = replay(&[mind(5), mind(5), stuck], &rates(), Policy::AllAtOnce, 600.0).expect("measured rates");
+        assert!(!r.per_mind[1].is_empty(), "the finishing mind completes");
+        assert_eq!(r.without_completions(), [2], "the stuck mind is named");
     }
 
     // what this catches: a broken input running the replay (a NaN workload, a negative gap, a

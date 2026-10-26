@@ -96,12 +96,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         ("cap 2", Policy::Cap { active: 2 }),
         ("foreground + all", Policy::Foreground { mind: 0, background: usize::MAX }),
     ];
-    println!("{:16} {:>12} {:>12} {:>16} {:>10}", "policy", "fg med s", "bg med s", "worst mind med s", "acts/hour");
+    println!("{:16} {:>12} {:>12} {:>16} {:>10}  {}", "policy", "fg med s", "bg med s", "worst mind med s", "acts/hour", "minds with no act completed");
     for (name, policy) in policies {
         let r = replay(&loops, &rates, policy, horizon).ok_or("the replay refused its inputs (an unmeasured rate or a broken workload)")?;
         let worst = r.per_mind.iter().skip(1).filter(|v| !v.is_empty()).map(|v| median(v.clone())).fold(f64::NAN, f64::max);
         let total = (r.foreground.len() + r.background.len()) as f64 / hours;
-        println!("{:16} {:>12.0} {:>12.0} {:>16.0} {:>10.0}", name, median(r.foreground.clone()), median(r.background.clone()), worst, total);
+        // A mind that completed nothing is not in the median above: name it, with the horizon.
+        let idle = r.without_completions();
+        let idle = if idle.is_empty() { "none".to_owned() } else { format!("{} of {} in {hours} h: {idle:?}", idle.len(), loops.len()) };
+        println!("{:16} {:>12.0} {:>12.0} {:>16.0} {:>10.0}  {}", name, median(r.foreground.clone()), median(r.background.clone()), worst, total, idle);
     }
     Ok(())
 }
