@@ -381,7 +381,7 @@ fn select_teach_tasks(p: GenomeTeachParams) -> Result<Vec<EvalTask>, CommandErro
 /// selector `genome/teach` and `coursework/import` share. `strict` parses a teach set with the
 /// gym's fail-loud parser (a training run must not silently drop a malformed row). A missing
 /// explicit path is a loud error (don't silently teach an empty set).
-pub(crate) fn lesson_tasks(
+pub fn lesson_tasks(
     inline: Option<Vec<EvalTask>>,
     from_experience: Option<&str>,
     teach_set: Option<&str>,

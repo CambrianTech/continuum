@@ -82,7 +82,7 @@ impl GenomeModule {
     }
 
     /// Inject the existing lifecycle owner for explicit teacher windows.
-    pub(crate) fn with_teacher_serving(
+    pub fn with_teacher_serving(
         self,
         serving: Arc<dyn crate::cognition::eval::TeacherServing>,
     ) -> Self {
@@ -104,12 +104,12 @@ impl GenomeModule {
 
     /// Whether a trainer on this host takes LoRA jobs for `base`: what the capacity beacon
     /// advertises as trainable here (card 6f05b89d).
-    pub(crate) fn trains_base_here(&self, base: &str) -> bool {
+    pub fn trains_base_here(&self, base: &str) -> bool {
         self.coordinator.trains_base_here(base)
     }
 
     /// The executor slot boot fills for this module: the grid-peer trainer leases over it.
-    pub(crate) fn lease_executor(&self) -> Arc<crate::runtime::LateBound<crate::runtime::CommandExecutor>> {
+    pub fn lease_executor(&self) -> Arc<crate::runtime::LateBound<crate::runtime::CommandExecutor>> {
         Arc::clone(&self.executor)
     }
 

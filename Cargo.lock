@@ -2982,6 +2982,7 @@ dependencies = [
  "continuum-cli-lifecycle",
  "continuum-client",
  "continuum-context",
+ "continuum-dreaming",
  "continuum-engine",
  "continuum-experience",
  "continuum-genome",
@@ -3058,6 +3059,37 @@ dependencies = [
  "wide",
  "windows-sys 0.60.2",
  "zip 0.6.6",
+]
+
+[[package]]
+name = "continuum-dreaming"
+version = "0.1.0"
+dependencies = [
+ "airc-core",
+ "async-trait",
+ "base64 0.22.1",
+ "candle-core",
+ "chrono",
+ "continuum-academy",
+ "continuum-base",
+ "continuum-client",
+ "continuum-engine",
+ "continuum-genome",
+ "continuum-host",
+ "continuum-kernel",
+ "continuum-mind",
+ "csv",
+ "dashmap",
+ "inventory",
+ "schemars",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "tokio",
+ "tracing",
+ "ts-rs 12.0.1",
+ "uuid",
 ]
 
 [[package]]
