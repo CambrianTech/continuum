@@ -128,6 +128,15 @@ pub fn main_lane_placement() -> LanePlacement {
     placement_from_config(continuum_base::config_env::read("CONTINUUM_SERVING_PLACEMENT").as_deref())
 }
 
+/// The pool the main lane's bytes live in: the ONE decision every serving site keyed by a
+/// resource kind reads through (the plan's ceiling, the replace-myself credit, the
+/// credited-once check, the consumer's own attribution). #4169 made the physical bound follow
+/// the placement, and this makes the PLAN follow it. It lives beside the placement it maps, so
+/// the training trigger reads it without reaching into the core's serving daemon (card 2a69e6ba).
+pub fn serving_pool_kind() -> crate::resources::ResourceKind {
+    main_lane_placement().pool_kind()
+}
+
 
 pub fn placement_from_config(value: Option<&str>) -> LanePlacement {
     match value.map(|v| v.trim().to_ascii_lowercase()) {

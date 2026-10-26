@@ -666,8 +666,7 @@ mod budget;
 pub use budget::{governed_host_budget, live_host_budget, perf_cores, physical_usable_bytes};
 #[cfg(test)]
 use budget::{lane_admission_decision, pin_fit_decision};
-mod holds;
-pub use holds::serving_pool_kind;
+pub use crate::inference::llama_server::serving_pool_kind;
 use crate::inference::serving_holds::{serving_held_steady, serving_ludicrous_active};
 #[cfg(test)]
 use crate::inference::serving_holds::{ServingLudicrousHold, ServingSteadyHold};
