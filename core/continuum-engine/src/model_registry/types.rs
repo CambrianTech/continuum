@@ -259,10 +259,12 @@ pub struct ProviderCapabilities {
     /// `false`.
     #[serde(default)]
     pub llamacpp_sampling_extensions: bool,
-    /// The server accepts `tail_tools` (CambrianTech/llama.cpp#71): verbs callable through its
-    /// tool-call parser and grammar without rendering them in the head. A mind's learned tool
-    /// head (goal 10) is offered only where this holds, since a verb outside the head must stay
-    /// callable. Default: `false`.
+    /// The endpoint is our fork's server, whose pinned build accepts `tail_tools`
+    /// (CambrianTech/llama.cpp#75): verbs callable through its tool-call parser and grammar
+    /// without rendering them in the head. A declaration of the family only: the adapter offers a
+    /// mind's learned tool head (goal 10) while the RUNNING lane reports that build, since a verb
+    /// outside the head must stay callable. Cloud and stock servers leave it `false`.
+    /// Default: `false`.
     #[serde(default)]
     pub tail_tools: bool,
 }

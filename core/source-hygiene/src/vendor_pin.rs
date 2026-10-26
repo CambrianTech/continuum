@@ -50,4 +50,23 @@ mod tests {
              in your worktree first — a stale worktree submodule staged with `git add -A` is how it regressed)."
         );
     }
+
+    // what this catches: the pin moving to an engine that no longer parses `tail_tools` while
+    // the core still offers a mind's learned tool head to every lane that reports the pinned
+    // build (`llama_server::engine_features`): her tail verbs would arrive as text, not calls.
+    #[test]
+    fn the_pinned_engine_source_parses_tail_tools() {
+        let parser = repo_root().join("core/vendor/llama.cpp/tools/server/server-common.cpp");
+        let Ok(source) = std::fs::read_to_string(&parser) else {
+            eprintln!("{} not checked out — nothing to check", parser.display());
+            return;
+        };
+        assert!(
+            source.contains(r#"json_value(body, "tail_tools""#),
+            "the pinned llama.cpp ({}) does not parse `tail_tools`, but the core offers tail verbs to a \
+             lane running exactly this build: move the pin to a fork commit that carries \
+             CambrianTech/llama.cpp#75, or change `engine_features` in the same PR",
+            parser.display()
+        );
+    }
 }

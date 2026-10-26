@@ -137,12 +137,19 @@ pub(super) fn installed_engine_stamp() -> Option<String> {
 /// SHAs and they disagree; anything unreadable is not evidence (BigMama on 7c5f139d).
 pub(crate) fn lane_runs_installed_engine(build_info: &str, installed: &str) -> bool {
     use continuum_cli_lifecycle::deploy_provenance::sha_matches;
-    let lane = build_info.rsplit('-').next().unwrap_or(build_info).trim(); // unwrap_or: rsplit always yields one piece
+    let lane = build_commit(build_info);
     let credible = |sha: &str| sha_matches(sha, sha); // a SHA matches itself iff it is credible
     if !credible(lane) || !credible(installed) {
         return true;
     }
     sha_matches(lane, installed)
+}
+
+
+/// PURE: the commit a `/props` `build_info` (`b10765-965d38a90`) names: its last `-` piece,
+/// trimmed. The one parse for every reader of a lane's build.
+pub(super) fn build_commit(build_info: &str) -> &str {
+    build_info.rsplit('-').next().unwrap_or(build_info).trim() // unwrap_or: rsplit always yields one piece
 }
 
 

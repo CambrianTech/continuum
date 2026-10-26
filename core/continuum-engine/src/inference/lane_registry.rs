@@ -176,6 +176,18 @@ pub fn live_lane() -> Option<LaneRecord> {
     (rec.role == LaneRole::Live && rec.pid == pid).then_some(rec)
 }
 
+/// The incarnation (pid + OS start time + port) of the LIVE lane the canonical pidfile names,
+/// from its registry record alone: two small file reads, no process-table probe, so the gateway
+/// reconcile can ask it every tick. Every live launch rewrites both files, so a replacement
+/// engine always reads as a different incarnation. `None` without a pidfile or a matching live
+/// record, or for a record without a start time, which names no one process.
+pub fn live_incarnation() -> Option<super::engine_residency::EngineIncarnation> {
+    let pid = lane_pidfile::read()?;
+    let body = std::fs::read_to_string(lanes_dir()?.join(format!("{pid}.lane"))).ok()?;
+    let rec = serde_json::from_str::<LaneRecord>(&body).ok()?;
+    (rec.role == LaneRole::Live && rec.pid == pid && rec.started_s != 0).then(|| rec.incarnation())
+}
+
 /// WHY a sweep is running — the one axis on which boot and shutdown differ.
 ///
 /// They differ in exactly one judgement: what a still-alive LIVE-role record

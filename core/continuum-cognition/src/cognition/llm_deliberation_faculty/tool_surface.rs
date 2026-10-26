@@ -77,7 +77,7 @@ impl LlmDeliberationFaculty {
             u32::try_from(budget).unwrap_or(u32::MAX), // unwrap_or: a share past u32 bounds nothing a schema set can reach
             &cost,
         );
-        if !binding.adapter.accepts_tail_tools() {
+        if !binding.adapter.accepts_tail_tools(binding.requested_model()) {
             return selected;
         }
         let reserve = next.as_ref().map_or(0, |next| next.tokens() as usize); // map_or: no next head reserves nothing beyond this one
@@ -101,6 +101,13 @@ impl LlmDeliberationFaculty {
     /// consecutive acts in one activity send byte-identical schemas, so the prefix after the
     /// system prompt survives (goal 10; [`crate::cognition::tool_surface`] has the why).
     pub fn select_tool_surface(&self, ws: &Workspace) -> SelectedSurface<'_> {
+        self.with_learned_head(self.select_activity_surface(ws), ws)
+    }
+
+    /// The activity's own surface, without her learned head: what she is offered when her
+    /// destination refused the tail (`InferenceError::TailToolsUnreachable`), so every verb she
+    /// sees is one she can call.
+    pub(super) fn select_activity_surface(&self, ws: &Workspace) -> SelectedSurface<'_> {
         let selected = self.surface.select(&ws.room_affordances, self.binding.load().context_window);
         if !ws.room_affordances.is_empty()
             && !matches!(selected.reason, SurfaceReason::RoomAffordances | SurfaceReason::NoTools)
@@ -114,7 +121,7 @@ impl LlmDeliberationFaculty {
                  the rule binds nothing here; offering her hands instead"
             );
         }
-        self.with_learned_head(selected, ws)
+        selected
     }
 
     /// Her view started a new epoch, the one moment her head may change: her tool head learns
@@ -131,7 +138,7 @@ impl LlmDeliberationFaculty {
         continuum_base::probe!(
             class = "delib.tool_head.epoch",
             persona = %self.persona_name,
-            sent = self.binding.load().adapter.accepts_tail_tools(),
+            sent = { let binding = self.binding.load(); binding.adapter.accepts_tail_tools(binding.requested_model()) },
             learned = cost.learned,
             calls = cost.calls,
             misses = cost.misses,

@@ -415,9 +415,10 @@ pub trait AIProviderAdapter: Send + Sync {
         AdapterCapabilities::text_only()
     }
 
-    /// Whether this adapter's server accepts `tail_tools` (callable verbs outside the rendered
-    /// head). Default `false`: only a server that declares it gets a learned tool head.
-    fn accepts_tail_tools(&self) -> bool {
+    /// Whether a request for `model` reaches a server that accepts `tail_tools` (callable verbs
+    /// outside the rendered head), decided for the destination that request is routed to.
+    /// Default `false`: only a server that declares it gets a learned tool head.
+    fn accepts_tail_tools(&self, _model: &str) -> bool {
         false
     }
 

@@ -382,7 +382,11 @@ async fn serve_or_adopt<C: LlamaServerControl + ?Sized>(
             // neither the trade guard nor the memory gate applies: the relaunch is at the
             // same size, onto the binary already on disk.
             let installed_engine = installed_engine_commit();
-            let served_engine = match ctrl.served_engine_build().await {
+            let served_engine_probe = ctrl.served_engine_build().await;
+            // The same reading decides what this engine process can take (`tail_tools`); an
+            // error keeps the evidence only while the same incarnation serves (Codex on #5491).
+            observe_served_engine(ctrl.served_incarnation(), served_engine_probe.as_ref().map(Option::as_deref).map_err(|_| ()));
+            let served_engine = match served_engine_probe {
                 Ok(build) => build,
                 Err(_) => None, // a probe error is "engine OK", as for the window and lanes
             };

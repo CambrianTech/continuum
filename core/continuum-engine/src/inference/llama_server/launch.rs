@@ -14,6 +14,11 @@ impl LlamaServerProcess {
                 "prepared launch belongs to another endpoint".into(),
             ));
         }
+        if self.is_live_lane {
+            // A new engine process is coming: what the last one could take is not evidence
+            // for it (`tail_tools`); the reconcile reads the new one's own `/props`.
+            forget_served_engine();
+        }
         let restore_generation = restore_session.map(|session| session.expected.lock().clone());
         let restoring = restore_generation.is_some();
         if restoring {
