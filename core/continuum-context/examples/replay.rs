@@ -33,6 +33,9 @@
 use std::collections::BTreeMap;
 
 use continuum_context::source::{Item, Source};
+
+#[path = "replay/validate.rs"]
+mod validate;
 use continuum_context::view::View;
 
 struct Captured {
@@ -201,6 +204,8 @@ struct Cut {
     sources: BTreeMap<String, Vec<Item<String>>>,
     tail: Vec<String>,
     sent: String,
+    /// The pinned result and the reads of the act this request answers (the validator).
+    act: validate::Act,
 }
 
 /// A tail piece that repeats from act to act (the work-turn ask, the own-time framing, the
@@ -288,7 +293,7 @@ fn cut(request: &serde_json::Value, tools: &str, keyed_turn: bool) -> Cut {
         let missing = ledger.into_iter().filter(|line| !held.contains(&line.key)).collect::<Vec<_>>();
         sources.entry("actions".into()).or_default().extend(missing);
     }
-    Cut { head, sources, tail, sent }
+    Cut { head, sources, tail, sent, act: validate::act_of(request) }
 }
 
 fn shared(a: &str, b: &str) -> usize {
@@ -310,7 +315,18 @@ fn percent(values: &[f64]) -> String {
 
 /// Replay `cuts` (one resident's requests in one room, oldest first) through the view fitted
 /// to `window` characters for head, view and tail, turning over under `rule`.
-fn replay(label: &str, cuts: &[Cut], window: usize, (rule, placed): (Rule, Order), keyed_turn: bool, admit: bool, trace: bool, share: usize) -> Result<(), Box<dyn std::error::Error>> {
+/// What a run measured, for the validator's one-line comparison of policies.
+#[derive(Default)]
+struct Outcome {
+    turnovers: usize,
+    prefill_chars: Vec<f64>,
+    rereads: usize,
+    retained: usize,
+}
+
+fn replay(label: &str, cuts: &[Cut], window: usize, (rule, placed): (Rule, Order), keyed_turn: bool, admit: bool, trace: bool, share: usize) -> Result<Outcome, Box<dyn std::error::Error>> {
+    let mut restored = validate::Restored::default();
+    let (mut rereads, mut retained) = (0usize, 0usize);
     let mut view: Option<View<String>> = None;
     let mut previous_sent: Option<&str> = None;
     let mut previous_head: Option<&str> = None;
@@ -324,8 +340,22 @@ fn replay(label: &str, cuts: &[Cut], window: usize, (rule, placed): (Rule, Order
     let mut appended: BTreeMap<String, usize> = BTreeMap::new();
     let mut tails = Vec::new();
     for cut in cuts {
-        let mut sources: Vec<Captured> =
-            cut.sources.iter().map(|(name, items)| Captured { name: name.clone(), items: items.clone() }).collect();
+        let action_keys: Vec<String> = cut.sources.get("actions").into_iter().flatten().map(|item| item.key.clone()).collect();
+        restored.learn(&action_keys, &cut.act);
+        let counted = restored.rereads(&cut.act, &previous_view);
+        rereads += counted.total;
+        retained += counted.held;
+        let mut sources: Vec<Captured> = cut
+            .sources
+            .iter()
+            .map(|(name, items)| {
+                let mut items = items.clone();
+                if name == "actions" {
+                    restored.enrich(&mut items);
+                }
+                Captured { name: name.clone(), items }
+            })
+            .collect();
         sources.sort_by_key(|source| order(placed, &source.name));
         let refs: Vec<&dyn Source<String>> = sources.iter().map(|s| s as &dyn Source<String>).collect();
         let tail = cut.tail.join("\n");
@@ -402,7 +432,8 @@ fn replay(label: &str, cuts: &[Cut], window: usize, (rule, placed): (Rule, Order
     let acts = cuts.len().max(1);
     let line: Vec<String> = appended.iter().map(|(name, chars)| format!("{name} {}", chars / acts)).collect();
     println!("  appended per act by source: {}", line.join(", "));
-    Ok(())
+    println!("  her re-reads of a file read before: {rereads}, of which the prompt still held the earlier read whole or as its outline (a retention proxy): {retained}; acts whose result was ambiguous (not restored): {}", restored.ambiguous);
+    Ok(Outcome { turnovers, prefill_chars: view_prefill, rereads, retained })
 }
 
 /// Characters a request sends: the system prompt, every message, and `tools`.
@@ -424,6 +455,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // The growing sources' share of what a start leaves: `start_grants` gives them half.
     let mut share = 2usize;
     let mut priced: Option<f64> = None;
+    // `--validate <prefill tok/s>`: compare the growing shares on one line each, priced at a
+    // measured prefill rate (the node's `state/serving-rates.json`, or a live read).
+    let mut validate_tps: Option<f64> = None;
+    let mut reply_override: Option<u64> = None;
     let mut fixed_tools: Option<String> = None;
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
@@ -432,6 +467,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             "--purpose" => purpose = args.next().ok_or("--purpose needs a suffix")?,
             "--keyed-turn" => keyed_turn = true,
             "--trace" => trace = true,
+            "--reply" => reply_override = Some(args.next().ok_or("--reply needs a token count")?.parse()?),
+            "--validate" => {
+                let tps: f64 = args.next().ok_or("--validate needs the prefill rate in tokens/s")?.parse()?;
+                if !(tps.is_finite() && tps > 0.0) {
+                    return Err("--validate needs a finite, positive measured prefill rate".into());
+                }
+                validate_tps = Some(tps);
+            }
             "--share" => {
                 share = args.next().ok_or("--share needs a divisor")?.parse()?;
                 if share == 0 {
@@ -479,7 +522,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     });
     rows.sort_by_key(|row| row["captured_at_ms"].as_u64());
     let context_window = rows.iter().filter_map(|row| row["context_window"].as_u64()).max().unwrap_or(0); // unwrap_or: no rows in the room, nothing replays
-    let reply = rows.iter().filter_map(|row| row["request"]["maxTokens"].as_u64()).max().unwrap_or(0); // unwrap_or: no rows in the room, nothing replays
+    let captured_reply = rows.iter().filter_map(|row| row["request"]["maxTokens"].as_u64()).max().unwrap_or(0); // unwrap_or: no rows in the room, nothing replays
+    // `--reply <tokens>` replays with another reply reserve: what a reserve sized from her
+    // measured output would give her view (the captured one held 12,288 on the M5, 2026-10-25,
+    // while acts produced ~250-700).
+    let reply = reply_override.unwrap_or(captured_reply);
     // The schemas each act sends: the captured ones, or the one stable surface under `--tools`.
     let sent_tools: Vec<String> =
         rows.iter().map(|row| match &fixed_tools {
@@ -501,7 +548,33 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         100.0 * mean(&tool_share),
         100.0 * median(tool_share.clone()),
     );
-    let cuts: Vec<Cut> = rows.iter().zip(&sent_tools).map(|(row, tools)| cut(&row["request"], tools, keyed_turn)).collect();
+    let cuts: Vec<Cut> = rows
+        .iter()
+        .zip(&sent_tools)
+        .map(|(row, tools)| {
+            let mut cut = cut(&row["request"], tools, keyed_turn);
+            cut.act = std::mem::take(&mut cut.act).at(row);
+            cut
+        })
+        .collect();
+    if let Some(tps) = validate_tps {
+        // The validator: the core's rule (reserved, settled first, admission) at each growing share,
+        // one comparable line each. Prefill seconds at the measured rate `tps`.
+        let seconds_per_char = 1.0 / (chars_per_token * tps);
+        for share in [2usize, 3, 4, 6] {
+            let o = replay(&label, &cuts, window, (Rule::Reserved, Order::SettledFirst), keyed_turn, true, trace, share)?;
+            println!(
+                "VALIDATE {label} share 1/{share}: {} acts, {} turnovers, prefill {:.1} s/act mean ({:.0} chars), re-reads {} held {}",
+                cuts.len(),
+                o.turnovers,
+                mean(&o.prefill_chars) * seconds_per_char,
+                mean(&o.prefill_chars),
+                o.rereads,
+                o.retained
+            );
+        }
+        return Ok(());
+    }
     for rule in [Rule::Whole, Rule::Reserved] {
         for placed in [Order::ConversationFirst, Order::SettledFirst] {
             for admit in [false, true] {
