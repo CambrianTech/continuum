@@ -1,28 +1,6 @@
 use super::*;
 
-/// Resolve the caller's runtime, retaining the owner of live membership changes.
-/// A caller-less command uses the operator self-peer; an authenticated caller
-/// must resolve its own runtime and can never fall through to another identity.
-pub(crate) fn persona_runtime(
-    registry: &PersonaAircRuntimeRegistry,
-    ctx: &Ctx,
-    // What the CALLER actually invoked, for the refusal text (#358).
-    family: &str,
-) -> Result<Arc<PersonaAircRuntime>, CommandError> {
-    // ONE resolver (`operator_peer::acting_runtime`): a persona acts as herself, an
-    // agent session as the agent self-peer, a caller-less session as the operator.
-    crate::persona::operator_peer::acting_runtime(registry, ctx, family).map(|(rt, _)| rt)
-}
-
-/// Read/write the caller's own airc handle. Membership mutations use
-/// [`persona_runtime`] instead so they also notify its live subscriptions.
-pub(crate) fn persona_airc(
-    registry: &PersonaAircRuntimeRegistry,
-    ctx: &Ctx,
-    family: &str,
-) -> Result<Arc<Airc>, CommandError> {
-    Ok(persona_runtime(registry, ctx, family)?.airc().clone())
-}
+pub(crate) use continuum_mind::persona::operator_peer::{persona_airc, persona_runtime};
 
 pub(super) fn priority_str(p: Priority) -> &'static str {
     match p {

@@ -26,7 +26,7 @@ pub mod genome_push;
 pub use continuum_dreaming::commands::genome_share;
 pub mod capacity;
 pub mod catalog;
-pub mod chat;
+pub use continuum_mind::chat::commands as chat;
 pub use continuum_hands::commands::code;
 pub mod cognition;
 pub mod command;

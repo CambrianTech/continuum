@@ -2,7 +2,7 @@
 //!
 //! `chat/poll` (read the latest conversation) + `chat/send` (store + broadcast a
 //! message) are dep-holding [`ActionCommand`](crate::sdk_codegen::ActionCommand)s:
-//! each captures the owning [`ChatModule`](crate::modules::chat::ChatModule)'s shared
+//! each captures the owning [`ChatModule`](crate::chat::ChatModule)'s shared
 //! late-bound [`CommandExecutor`](crate::runtime::CommandExecutor) slot and delegates
 //! to the module's canonical method (`poll`/`send`) via `ChatModule::from_slot` — one
 //! implementation, shared by the commands and the module's direct-method tests.
@@ -25,7 +25,7 @@ use poll::ChatPoll;
 use send::ChatSend;
 
 /// The `chat/*` command objects over the module's shared late-bound executor slot.
-/// Called from [`ChatModule::commands`](crate::modules::chat::ChatModule::commands).
+/// Called from [`ChatModule::commands`](crate::chat::ChatModule::commands).
 pub fn command_objects(executor_slot: Arc<LateBound<CommandExecutor>>) -> Vec<Arc<dyn DynCommand>> {
     vec![
         Arc::new(ChatPoll {

@@ -2,10 +2,10 @@
 //! [`ActionCommand`](crate::sdk_codegen::ActionCommand).
 //!
 //! Dep-holding: the command captures the owning
-//! [`ChatModule`](crate::modules::chat::ChatModule)'s shared late-bound
+//! [`ChatModule`](crate::chat::ChatModule)'s shared late-bound
 //! [`CommandExecutor`](crate::runtime::CommandExecutor) slot. The body reconstructs
 //! a transient `ChatModule` over that same slot (`from_slot`) and delegates to the
-//! canonical [`ChatModule::send`](crate::modules::chat::ChatModule::send) — the
+//! canonical [`ChatModule::send`](crate::chat::ChatModule::send) — the
 //! dual-write (data + airc) composition lives in one place. Assembled by
 //! [`command_objects`](super::command_objects).
 
@@ -16,8 +16,8 @@ use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 use uuid::Uuid;
 
-use crate::modules::chat::types::{ChatSendParams, ChatSendResult};
-use crate::modules::chat::ChatModule;
+use crate::chat::types::{ChatSendParams, ChatSendResult};
+use crate::chat::ChatModule;
 use crate::runtime::{CommandExecutor, LateBound};
 use crate::sdk_codegen::CommandError;
 
@@ -103,9 +103,9 @@ crate::action_command! {
             media: Vec::new(),
         };
         let wire = if runtime.is_some() {
-            crate::modules::chat::WireLeg::CallerSpeaks
+            crate::chat::WireLeg::CallerSpeaks
         } else {
-            crate::modules::chat::WireLeg::Envelope
+            crate::chat::WireLeg::Envelope
         };
         let mut result = chat
             .send_with_wire(params.clone(), wire)

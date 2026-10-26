@@ -19,14 +19,11 @@
 //! - Architecture from `docs/architecture/MODULE-ARCHITECTURE.md` (PR #1482)
 //! - Scaffold shape from `GeneratorModule` (PR #1487)
 //!
-//! # Scope of this PR
+//! # What it serves
 //!
-//! Only `chat/poll` ships in Rust today. The other three commands
-//! (`chat/send`, `chat/analyze`, `chat/export`) are wired into the
-//! dispatch table as fail-loud stubs that name follow-up PRs. The
-//! TS implementations stay live on canary so consumers see no
-//! regression; the kernel will start owning each command as its
-//! follow-up PR lands.
+//! `chat/poll`, `chat/history` and `chat/send` run here in Rust: reads page by a
+//! `(timestamp, id)` keyset (`keyset_page`), never by offset. `chat/analyze` and
+//! `chat/export` are still unmigrated and refuse loudly, naming that (`chat_module.rs`).
 //!
 //! The reason for the staged migration: `chat/poll` is the cleanest
 //! outlier (pure read, no airc, no media side-effects) which lets us
@@ -55,6 +52,11 @@ use crate::sdk_codegen::DynCommand;
 
 pub mod types;
 
+/// Bus event carrying a posted message. The wire name is the chat module's (its persist
+/// listener consumes it); the EMITTER (`airc::inbound_attach`) and the positron projection
+/// import it, so one string names the event (compression principle).
+pub const CHAT_POSTED: &str = "chat:posted";
+
 use types::{ChatPollParams, ChatPollResult, ChatSendParams, ChatSendResult, CHAT_MESSAGES_COLLECTION, DEFAULT_POLL_LIMIT};
 
 mod chat_data_handle;
@@ -62,6 +64,7 @@ pub use chat_data_handle::*;
 mod chat_module;
 use chat_module::*;
 mod keyset_page;
+pub mod commands;
 use keyset_page::{chronological, PageDirection};
 
 #[cfg(test)]

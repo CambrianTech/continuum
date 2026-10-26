@@ -536,7 +536,7 @@ pub fn spawn_persist_listener(
                 Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
                 Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
             };
-            if event.name != crate::ipc::positron_source::CHAT_POSTED {
+            if event.name != crate::chat::CHAT_POSTED {
                 continue;
             }
             if let Err(error) = module.persist_posted((*event.payload).clone()).await { // persist consumes an owned Value; one copy at the boundary
