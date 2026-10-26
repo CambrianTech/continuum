@@ -88,6 +88,13 @@ Instead every mind has a presence:
   boundary), never a cold start.
 - **Offline.** Her owner switched her off; only the owner brings her back.
 
+**Minds wake minds too** (Joel: "You can just at them no? So a persona can also do this"). An
+@mention wakes an away mind whoever sends it, so Aiko can call Atlas in to review her change.
+Two rules keep it from churning a full grid: a person's wake outranks a mind's (a mind's
+mention takes a free seat, or one from a mind less engaged than both of them, never the seat of
+a mind a person is with), and the existing spiral-break holds (being named is not being asked;
+a mention that asks nothing need not wake anyone).
+
 **When capacity drops** (a node leaves), seats drop and the least engaged active minds go
 away; when it returns, the away come back, most wanted first. Engagement is measured, never a
 list: a person talking with her now, live work in hand, how recently she was addressed, and the
