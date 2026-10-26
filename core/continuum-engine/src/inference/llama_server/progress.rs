@@ -185,6 +185,74 @@ pub(crate) async fn engine_probe_within(
 }
 
 
+/// The two bounds of a wait on the engine: how often it checks (`checkpoint`), and how long a
+/// PROCESSING engine may show no `/slots` counter movement before it is called stuck
+/// (`unmoved`). A plain `Duration` is both, the strictest reading: processing and unmoved
+/// at the first checkpoint is stuck.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct WaitBounds {
+    pub checkpoint: std::time::Duration,
+    pub unmoved: std::time::Duration,
+}
+
+impl From<std::time::Duration> for WaitBounds {
+    fn from(bound: std::time::Duration) -> Self {
+        Self { checkpoint: bound, unmoved: bound }
+    }
+}
+
+impl WaitBounds {
+    /// Checks every `checkpoint`, and lets a processing engine stay unmoved for the
+    /// [`unmoved_window`] of `model` (never less than one checkpoint).
+    pub(crate) fn for_model(checkpoint: std::time::Duration, model: Option<&str>) -> Self {
+        Self { checkpoint, unmoved: unmoved_window(checkpoint, model) }
+    }
+}
+
+/// The longest any wait lets a processing engine stay unmoved: the act's own ceiling, so a
+/// caller without an act bound above it (a probe, an eval, a page switch) still ends.
+pub(crate) const UNMOVED_CEILING: std::time::Duration = crate::inference::turn_bound::ACT_CEILING;
+
+/// THE window in which a processing engine may show no `/slots` counter movement and still
+/// be working: `floor`, or TWO batches at `model`'s measured prefill rate, whichever is
+/// longer. [`UNMOVED_CEILING`] caps the RATE-derived part only; a caller's floor above it
+/// stands (the window never shortens a bound the caller already chose), so the result is
+/// `max(floor, min(two batches, ceiling))`. The counters advance a whole batch at a time
+/// (`lane_args::UBATCH_TOKENS`), so a lane prefilling one 2,048-token chunk every ~176 s (the
+/// IntelMac at 11.6 tok/s; measured chunk gaps 124 / 168 / 214 / 171 s, Cormac on #4506)
+/// shows no move for most of any shorter window. One owner for every wait that reads
+/// `/slots`: the stream's starvation check, a generation's header wait and a page switch
+/// (enrico 2026-10-26 07:59-08:59Z: 3 of 3 page saves refused 15-17 s into another slot's
+/// 2,048-token batch at 10.4-15.4 tok/s, each mind cold on her next turn, because the page
+/// switch judged "unmoved" at its 16.8 s checkpoint; card 0b52b957).
+///
+/// The rate is the server-total one (`serving_rates`, measured over busy windows), else the
+/// per-request measurement (`prefill_rate`, fresh or stale); the per-request rate reads low
+/// under contention, which only widens the window, and the ceiling still bounds it. No rate
+/// measured: the floor, as before this window existed.
+pub(crate) fn unmoved_window(floor: std::time::Duration, model: Option<&str>) -> std::time::Duration {
+    let rate = model.and_then(|m| {
+        crate::inference::serving_rates::rates_for(m)
+            .prefill_tps
+            .or_else(|| crate::inference::prefill_rate::measured_rate_for(m).tps)
+    });
+    window_at_rate(floor, rate)
+}
+
+/// PURE: [`unmoved_window`] at a known rate: `max(floor, min(two batches, UNMOVED_CEILING))`.
+pub(crate) fn window_at_rate(floor: std::time::Duration, prefill_tps: Option<f64>) -> std::time::Duration {
+    prefill_tps
+        .filter(|r| r.is_finite() && *r > 0.0)
+        // try_: a vanishing rate would overflow Duration and panic (Codex on #4506); anything
+        // past the ceiling is the ceiling
+        .map(|r| {
+            std::time::Duration::try_from_secs_f64(2.0 * f64::from(crate::inference::lane_args::UBATCH_TOKENS) / r)
+                .map_or(UNMOVED_CEILING, |d| d.min(UNMOVED_CEILING))
+        })
+        .map_or(floor, |chunk| floor.max(chunk))
+}
+
+
 /// Await `work`, treating each `bound` as a checkpoint rather than a verdict. At each
 /// checkpoint `progress()` reads the engine:
 /// - its work fingerprint moved: the queue is advancing, keep waiting;
@@ -192,7 +260,10 @@ pub(crate) async fn engine_probe_within(
 ///   keep waiting — up to `quiet_checkpoints` in a row (a page switch passes 8: a
 ///   save/restore is that queue head and moves no counter; a generation's header wait
 ///   passes 1: a quiet engine is not working on a request it has not picked up);
-/// - nothing moved while a slot claims to be processing: stuck, `None`;
+/// - nothing moved while a slot claims to be processing: working, IF the last move is
+///   younger than the bounds' `unmoved` patience (an engine's `/slots` counters advance a
+///   whole batch at a time, so a slow prefill is unmoved for one batch: see
+///   [`unmoved_window`]); past it, stuck, `None`;
 /// - the engine did not answer inside the probe's own timeout ([`EngineProbe::Busy`]):
 ///   it is working, most likely on this very switch — keep waiting, bounded like a quiet
 ///   engine (card 8c06f778: a 71,680-token restore's checkpoint probe timed out and was
@@ -207,7 +278,7 @@ pub(crate) async fn engine_probe_within(
 /// healthy through a genuinely stuck switch.
 pub(crate) async fn wait_while_engine_progresses<T, W, P, PF>(
     work: W,
-    bound: std::time::Duration,
+    bounds: impl Into<WaitBounds>,
     quiet_checkpoints: u32,
     mut progress: P,
     mut on_busy: impl FnMut(u64),
@@ -217,6 +288,7 @@ where
     P: FnMut() -> PF,
     PF: std::future::Future<Output = EngineProbe>,
 {
+    let WaitBounds { checkpoint: bound, unmoved } = bounds.into();
     tokio::pin!(work);
     // A probe is observation, never a suspension of the request it observes.
     // In particular a terminal HTTP receipt wins over a simultaneous stale
@@ -233,6 +305,8 @@ where
     };
     let mut busy_checkpoints: u64 = 0;
     let mut quiet_in_a_row: u32 = 0;
+    // When the work fingerprint last moved (the wait's start until it is seen to move).
+    let mut moved_at = tokio::time::Instant::now();
     loop {
         tokio::select! {
             biased;
@@ -264,9 +338,15 @@ where
                         let moved = last.map_or(true, |before| before != now.fingerprint);
                         if moved {
                             quiet_in_a_row = 0;
-                        } else if !now.any_processing && quiet_in_a_row < quiet_checkpoints {
-                            quiet_in_a_row += 1;
-                        } else {
+                            moved_at = tokio::time::Instant::now();
+                        } else if !now.any_processing {
+                            if quiet_in_a_row < quiet_checkpoints {
+                                quiet_in_a_row += 1;
+                            } else {
+                                return None;
+                            }
+                        } else if moved_at.elapsed() >= unmoved {
+                            // processing, and unmoved for longer than one batch can take
                             return None;
                         }
                         last = Some(now.fingerprint);

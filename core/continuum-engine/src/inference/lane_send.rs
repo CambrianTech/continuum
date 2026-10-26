@@ -183,7 +183,8 @@ pub(crate) async fn send_with_lane_retry(
         let sent = match engine_root(cfg) {
             Some(root) => crate::inference::llama_server::wait_while_engine_progresses(
                 attempt_builder.send(),
-                header_bound,
+                // processing and unmoved is judged over the measured batch window, as every engine wait is
+                crate::inference::llama_server::WaitBounds::for_model(header_bound, Some(fill.model)),
                 HEADER_WAIT_QUIET_CHECKPOINTS,
                 || crate::inference::llama_server::engine_probe(&root, probe_client()),
                 |checkpoints| {
