@@ -208,7 +208,10 @@ mod tests {
 [workspace.metadata.ci]\n# comment [\"not-a-name\"]\nby_nature = [\"llama\"]\npending = []\nown_lib_test_step = [\"continuum-core\"]\nsplit_prefixed = [\"continuum-base\"]\nunaudited = [\"continuum-host\"]\nwarnings_uncounted = [\"continuum-base\", \"continuum-host\"]\n";
 
     fn fixture() -> std::path::PathBuf {
-        let dir = std::env::temp_dir().join(format!("crate-policy-{}", std::process::id()));
+        // One directory per call: tests run in parallel and each removes its own when done.
+        static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!("crate-policy-{}-{n}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap_or_else(|e| panic!("{e}"));
         std::fs::write(dir.join("Cargo.toml"), ROOT).unwrap_or_else(|e| panic!("{e}"));
