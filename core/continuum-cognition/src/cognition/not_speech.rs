@@ -606,15 +606,15 @@ mod tests {
         let observed = r#"[code/read] {"file_path":"src/main.rs"}"#;
         assert_eq!(is_not_speech(observed), Some("tool_envelope"));
     }
-
     // what this catches: the OBJECTLESS bracket — by 2026-09-15 the dialect actually
-    // reaching rooms, and the one the two object-bearing forms above miss entirely.
-    // Over 24h on IntelMac the gate caught 16 of 48 bracket-openers; these are four of
-    // the 32 it missed, fixtured verbatim from `bus_events`. Whichever spelling the tier
-    // produces next, a gate measured against ONE of them reads as working while the
-    // failure keeps shipping.
+        // reaching rooms. After #5416 (confine slash to parenthesized calls), bare namespaced
+        // verbs in brackets like `[code/run]` are no longer tool envelopes; only forms with
+        // a parenthesized object (`ns/verb({…})`) count. Non-namespaced bare brackets like
+        // `[answer]`, `[pass]`, and the `[repetition]` perception brick remain speech (tested
+        // in `a_bracketed_word_that_is_not_a_command_is_still_speech`).
     #[test]
     fn a_bare_namespaced_verb_with_no_object_is_also_not_speech() {
+        // After #5416: bare namespaced verbs are speech, not tool envelopes.
         for observed in [
             "[code/run]",
             "[work/list]",
@@ -624,8 +624,8 @@ mod tests {
         ] {
             assert_eq!(
                 is_not_speech(observed),
-                Some("tool_envelope"),
-                "{observed:?} is a tool envelope posted where prose belongs"
+                None,
+                "{observed:?} is now speech (slash confined to parenthesized calls)"
             );
         }
     }
