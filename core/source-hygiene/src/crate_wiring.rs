@@ -15,7 +15,7 @@
 use std::collections::BTreeSet;
 use std::path::Path;
 
-use crate::crate_policy::{has_lib, modules, parse_policy, read_members, split, tested, warned, Member, Policy};
+use crate::crate_policy::{checkout_policy, has_lib, modules, read_members, split, tested, warned, Member, Policy};
 
 /// The crates named by `matrix.crate == 'x'` in the test workflow: its own per-crate steps.
 pub fn own_step_crates(workflow: &str) -> BTreeSet<String> {
@@ -90,9 +90,8 @@ fn selector_sets(repo: &Path) -> Result<String, String> {
 /// Every wiring gap, as one message per problem.
 pub fn gaps(repo: &Path) -> Result<Vec<String>, String> {
     let read = |rel: &str| std::fs::read_to_string(repo.join(rel)).map_err(|e| format!("{rel}: {e}"));
-    let root = read("Cargo.toml")?;
-    let policy = parse_policy(&root)?;
-    let members = read_members(repo)?;
+    let policy = checkout_policy().map_err(|e| e.to_string())?;
+    let members = read_members(repo).map_err(|e| e.to_string())?;
     let workflow = read(".github/workflows/continuum-rust-tests.yml")?;
     let script = read("scripts/ratchets/check-rust-warnings.sh")?;
     let selector = read("tools/scripts/ci-change-scope.cjs")?;

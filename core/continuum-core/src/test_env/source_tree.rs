@@ -128,7 +128,8 @@ pub(crate) fn crate_sources() -> Vec<SourceFile> {
     let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
     let mut out = Vec::new();
     walk(&manifest.join("src"), &manifest.join("src"), &mut out);
-    for cut in &module_crates() {
+    let cut_crates = module_crates().unwrap_or_else(|e| panic!("cut crates cannot be derived: {e}")); // test harness: a loud stop beats an empty scan
+    for cut in &cut_crates {
         let root = manifest.join("..").join(cut).join("src");
         let before = out.len();
         walk(&root, &root, &mut out);

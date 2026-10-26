@@ -8,7 +8,26 @@
 //! [`crate::crate_wiring`] guards that no hand-kept list creeps back.
 
 use std::collections::BTreeSet;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+
+/// A manifest that could not be read as policy or members: names the file and says why.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PolicyError {
+    pub manifest: PathBuf,
+    pub reason: String,
+}
+
+impl std::fmt::Display for PolicyError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}: {}", self.manifest.display(), self.reason)
+    }
+}
+
+impl std::error::Error for PolicyError {}
+
+fn error(manifest: &Path, reason: impl Into<String>) -> PolicyError {
+    PolicyError { manifest: manifest.to_path_buf(), reason: reason.into() }
+}
 
 /// The exceptions under `[workspace.metadata.ci]`, by package name.
 #[derive(Debug, Default, Clone)]
@@ -72,12 +91,12 @@ fn section(manifest: &str, name: &str) -> String {
 
 /// The policy from the root manifest text; an absent key is an error, so a rename cannot
 /// turn every exception off silently.
-pub fn parse_policy(root_manifest: &str) -> Result<Policy, String> {
+pub fn parse_policy(manifest: &Path, root_manifest: &str) -> Result<Policy, PolicyError> {
     let body = section(root_manifest, "workspace.metadata.ci");
     let get = |key: &str| {
         array(&body, key)
             .map(|names| names.into_iter().collect::<BTreeSet<_>>())
-            .ok_or_else(|| format!("no `{key}` under [workspace.metadata.ci] in the root Cargo.toml"))
+            .ok_or_else(|| error(manifest, format!("no `{key}` under [workspace.metadata.ci]")))
     };
     let (by_nature, pending) = (get("by_nature")?, get("pending")?);
     Ok(Policy {
@@ -109,20 +128,30 @@ fn package_name(manifest: &str) -> Option<String> {
 }
 
 /// Every workspace member under `core/`, read from the root manifest and each crate's own.
-pub fn read_members(repo: &Path) -> Result<Vec<Member>, String> {
-    let read = |path: &Path| std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()));
-    let root = strip_comments(&read(&repo.join("Cargo.toml"))?);
-    let members = array(&root, "members").ok_or("no `members` in the root Cargo.toml")?;
+pub fn read_members(repo: &Path) -> Result<Vec<Member>, PolicyError> {
+    let read = |path: &Path| std::fs::read_to_string(path).map_err(|e| error(path, e.to_string()));
+    let root_path = repo.join("Cargo.toml");
+    let root = strip_comments(&read(&root_path)?);
+    let members = array(&root, "members").ok_or_else(|| error(&root_path, "no `members`"))?;
     let mut out = Vec::new();
     for dir in members.iter().filter_map(|m| m.strip_prefix("core/")) {
-        let manifest = read(&repo.join("core").join(dir).join("Cargo.toml"))?;
-        let name = package_name(&manifest).ok_or_else(|| format!("core/{dir}/Cargo.toml has no package name"))?;
+        let path = repo.join("core").join(dir).join("Cargo.toml");
+        let name = package_name(&read(&path)?).ok_or_else(|| error(&path, "no package name"))?;
         out.push(Member { name, dir: dir.to_string() });
     }
     if out.is_empty() {
-        return Err("no core/ members read: the parse no longer matches the manifest".into());
+        return Err(error(&root_path, "no core/ members read: the parse no longer matches the manifest"));
     }
     Ok(out)
+}
+
+/// The rules: read from THIS checkout's root manifest, never the audited tree's. A ratchet is
+/// judged by measuring the base tree with the head's rules (`ratchet.rs`), and the base tree
+/// may predate `[workspace.metadata.ci]`.
+pub fn checkout_policy() -> Result<Policy, PolicyError> {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../Cargo.toml");
+    let text = std::fs::read_to_string(&root).map_err(|e| error(&root, e.to_string()))?;
+    parse_policy(&root, &text)
 }
 
 fn kept<'a>(members: &'a [Member], skip: &[&BTreeSet<String>]) -> Vec<&'a Member> {
@@ -157,19 +186,16 @@ pub fn warned<'a>(members: &'a [Member], policy: &Policy) -> Vec<&'a Member> {
     kept(members, &[&policy.untested, &policy.warnings_uncounted])
 }
 
-/// The workspace and its policy, read once for the whole test run.
-pub(crate) fn workspace() -> &'static (Vec<Member>, Policy) {
-    static CACHE: std::sync::OnceLock<(Vec<Member>, Policy)> = std::sync::OnceLock::new();
-    CACHE.get_or_init(|| {
-        let Some(repo) = crate::repo_root() else {
-            panic!("no repository root above the audited crate: the crate policy cannot be read");
-        };
-        let read = || -> Result<_, String> {
-            let policy = parse_policy(&std::fs::read_to_string(repo.join("Cargo.toml")).map_err(|e| e.to_string())?)?;
-            Ok((read_members(&repo)?, policy))
-        };
-        read().unwrap_or_else(|e| panic!("crate policy: {e}"))
-    })
+/// The audited tree's members under this checkout's policy, read once for the whole run.
+pub(crate) fn workspace() -> Result<&'static (Vec<Member>, Policy), PolicyError> {
+    static CACHE: std::sync::OnceLock<Result<(Vec<Member>, Policy), PolicyError>> = std::sync::OnceLock::new();
+    CACHE
+        .get_or_init(|| {
+            let repo = crate::repo_root().ok_or_else(|| error(Path::new("Cargo.toml"), "no repository root above the audited crate"))?;
+            Ok((read_members(&repo)?, checkout_policy()?))
+        })
+        .as_ref()
+        .map_err(Clone::clone)
 }
 
 #[cfg(test)]
@@ -202,7 +228,7 @@ mod tests {
     fn a_new_member_is_tested_audited_and_counted_with_no_list_edited() {
         let repo = fixture();
         let members = read_members(&repo).unwrap_or_else(|e| panic!("{e}"));
-        let policy = parse_policy(ROOT).unwrap_or_else(|e| panic!("{e}"));
+        let policy = parse_policy(Path::new("Cargo.toml"), ROOT).unwrap_or_else(|e| panic!("{e}"));
         assert_eq!(names(tested(&members, &policy)), ["continuum-core", "continuum-base", "continuum-host", "continuum-new"]);
         assert_eq!(names(audited(&members, &policy)), ["continuum-core", "continuum-base", "continuum-new"]);
         assert_eq!(names(split(&members, &policy)), ["continuum-base"]);
@@ -211,11 +237,27 @@ mod tests {
         let _ = std::fs::remove_dir_all(&repo);
     }
 
+    // what this catches: the base run of the ratchets (an audited tree from before
+    // `[workspace.metadata.ci]` existed) failing every scan. The rules come from this checkout;
+    // the audited tree supplies only members, and its missing section is not an error.
+    #[test]
+    fn an_audited_tree_without_the_policy_section_is_judged_by_the_checkouts_rules() {
+        let repo = fixture();
+        let old_root = ROOT.split("[workspace.metadata.ci]").next().unwrap_or_default();
+        std::fs::write(repo.join("Cargo.toml"), old_root).unwrap_or_else(|e| panic!("{e}"));
+        assert!(parse_policy(&repo.join("Cargo.toml"), old_root).is_err(), "the tree itself has no policy");
+        let members = read_members(&repo).unwrap_or_else(|e| panic!("{e}"));
+        let policy = checkout_policy().unwrap_or_else(|e| panic!("{e}"));
+        assert!(!names(modules(&members, &policy)).is_empty() || !names(tested(&members, &policy)).is_empty());
+        let _ = std::fs::remove_dir_all(&repo);
+    }
+
     // what this catches: a renamed policy key reading as "no exceptions" and silently testing,
     // auditing and counting everything.
     #[test]
     fn a_missing_policy_key_is_an_error() {
-        assert!(parse_policy("[workspace]\nmembers = []\n").is_err());
-        assert!(parse_policy(&ROOT.replace("unaudited", "unaudit")).is_err());
+        let err = parse_policy(Path::new("x/Cargo.toml"), "[workspace]\nmembers = []\n").err().map(|e| e.to_string()).unwrap_or_default();
+        assert!(err.contains("x/Cargo.toml") && err.contains("by_nature"), "{err}");
+        assert!(parse_policy(Path::new("Cargo.toml"), &ROOT.replace("unaudited", "unaudit")).is_err());
     }
 }
