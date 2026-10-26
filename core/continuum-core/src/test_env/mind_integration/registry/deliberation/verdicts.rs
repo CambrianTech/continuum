@@ -392,6 +392,7 @@ async fn standing_activity_grounding_survives_history_on_the_wire() {
                 + reply_claim(
                     faculty.turn_kind(&ws),
                     faculty.working_set.as_ref().and_then(|reg| reg.need_of(persona)),
+                    faculty.working_set.as_ref().and_then(|reg| reg.reply_reserve_of(persona)),
                     0,
                     LlmDeliberationFaculty::holds_live_work(&ws),
                     ws.directed_at_self(),

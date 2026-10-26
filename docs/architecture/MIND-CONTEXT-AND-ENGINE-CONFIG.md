@@ -307,6 +307,54 @@ collapse the newest, admission instead of turnovers, a restart order measured pe
 slot/seed), Cormac (checkpoints at the head boundary and on turnover). The replay validator
 (`continuum-context` `examples/replay.rs`) and the live 15-minute read are the receipts for each slice.
 
+### The reply reserve (2026-10-26)
+
+The reply is one claim in the window's allocation (`reply_claim.rs`). Two numbers used to be
+one: the room the plan **reserves** for the reply, which sizes her view, and the request's
+`max_tokens`, which bounds what she may write. An act forced both to the runaway bound,
+`ACT_OUTPUT_CAP` = 12,288, after a reply was cut at its grant (Aris, 2026-10-22). On the M5
+that reserved 12,288 of a 58,880 window for replies that measured p50 268, p90 766, p99
+1,202, max 1,526 (1,063 completions over 24 h, reasoning tokens included:
+`usage.outputTokens` equals the engine's decoded tokens on every row).
+
+Now they are separate:
+
+- **Reserve** (sizes the view): the max of her last 64 measured outputs × 5/4
+  (`working_set/reply_tail.rs`, persisted with her emission record), or the reply-sized cold
+  prior before three turns. What no claim takes is her view's room to grow into, not the
+  reply's.
+- **Request bound** (`DeliberationPromptView::reply_allowance`): the window's physical room
+  after the prompt, minus one token (local admission needs prompt + reply < window), never
+  below the reserve. The runaway bound stays only as a loop guard on the request.
+- **A reply longer than the reserve** keeps writing into whatever room the window still has.
+  Mid-epoch that is the room her view has not grown into yet. The reply then joins the ring, so
+  the next reserve holds it. At an epoch's tail, where the view fills the window, the physical
+  room equals the reserve. A cut there is the existing loud path: the emission records the cut
+  answer at double, and the retry claims twice the pending peak.
+- **An estimated prompt the engine counts larger** overflows only the room past the
+  reserve. The faculty re-quotes the reply's room from the measured count and sends the same
+  view whole (`delib.reply.room_requoted`). A refit after a real overflow makes room for the
+  reserve only, never for the physical allowance.
+
+**Error bound, checked:** replayed over the M5's landed outputs (each reserve read only from
+that mind's earlier turns), 2.1% of replies exceed the reserve (the reply-tail test in
+`reply_tail.rs` asserts this against `continuum-cognition/fixtures/reply-output-tokens-m5-2026-10-26.json`).
+For comparison, max × 1.0 exceeded on 4.5% and max × 2 on 0.7%.
+
+**What a bigger view does to prefill, measured, not assumed:** the S1 append-tail replay
+(`continuum-context --example replay --purpose "" --append-tail 173`) on the residents'
+captures (window 76,032), with each mind's measured max × 5/4 in place of 12,288:
+
+| Mind | View, chars | Turnovers | Prefill, tokens | s/request |
+|---|---|---|---|---|
+| Benchy (223 req) | 205,590 -> 239,069 | 47 -> 42 | 2,002,175 -> 2,211,385 | 52 -> 57 |
+| Aiko (51 req) | 200,180 -> 233,170 | 15 -> 10 | 632,749 -> 570,014 | 72 -> 65 |
+| Atlas (99 req) | 205,131 -> 238,898 | 18 -> 15 | 754,369 -> 767,428 | 44 -> 45 |
+
+The view holds about 16% more, and turnovers fall by 16% in total. Total prefill rises 4.7%
+(3.39M to 3.55M tokens): fewer turnovers, each larger. So the reserve buys retained context.
+Speed comes from cheaper turnovers (collapse at a start), not from the bigger window alone.
+
 ## Fault 2: engine configuration is decided in five places
 
 `lane_args`, `llama_server`, `backend_receipt`, `serving_plan` and `kv_cache_plan` each

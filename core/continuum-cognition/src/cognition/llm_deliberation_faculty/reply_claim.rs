@@ -19,9 +19,12 @@ const PASS_RUNAWAY_MULTIPLE: u32 = 2;
 ///   ([`LlmDeliberationFaculty::COMPLETION_FLOOR_TOKENS`]); an ACT floors at her measured
 ///   answer channel (the tool call itself). The caller caps it so required input always
 ///   fits — the reply never takes from required content.
-/// - max: what she is expected to write — her measured need, or the reply-sized cold
-///   prior when unmeasured; at least twice a pending cut's peak (the cut write gets its
-///   room back on the retry). Never past the runaway bound.
+/// - max: her REPLY RESERVE — the max of her last measured outputs × 5/4
+///   ([`crate::cognition::working_set::ReplyTail`]), or the reply-sized cold prior when
+///   unmeasured; at least twice a pending cut's peak (the cut write gets its room back on
+///   the retry). Never past the runaway bound. The reserve sizes the room her view leaves;
+///   it never bounds the reply: the request carries the window's physical room after the
+///   prompt (`DeliberationPromptView::reply_allowance`).
 /// - priority: an ambient pass 4, a directed pass 6, an act 8, an act on live held work
 ///   or after a pending cut 10 — the weight the reply grows by against history (5) and
 ///   grounding (6).
@@ -34,10 +37,12 @@ const PASS_RUNAWAY_MULTIPLE: u32 = 2;
 /// priority, so priority is what decides.
 ///
 /// The runaway bound: [`LlmDeliberationFaculty::ACT_OUTPUT_CAP`] for an act; for a pass,
-/// twice her measured turn, never below the act's cap.
+/// twice her measured turn, never below the act's cap. A loop guard on the request only:
+/// no claim reserves it.
 pub fn reply_claim(
     kind: TurnKind,
     need: Option<super::super::working_set::OutputNeed>,
+    reserve: Option<u32>,
     pending_peak: u32,
     live_work: bool,
     directed: bool,
@@ -52,8 +57,8 @@ pub fn reply_claim(
         _ => LlmDeliberationFaculty::COMPLETION_FLOOR_TOKENS,
     }
     .min(runaway);
-    let wanted = need
-        .map_or(LlmDeliberationFaculty::COMPLETION_COLD_PRIOR_TOKENS, |n| n.total()) // map_or: unmeasured = a REPLY-sized prior, never a window fraction
+    let wanted = reserve
+        .unwrap_or(LlmDeliberationFaculty::COMPLETION_COLD_PRIOR_TOKENS) // unwrap_or: unmeasured = a REPLY-sized prior, never a window fraction
         .max(pending_peak.saturating_mul(2))
         .max(floor)
         .min(runaway);

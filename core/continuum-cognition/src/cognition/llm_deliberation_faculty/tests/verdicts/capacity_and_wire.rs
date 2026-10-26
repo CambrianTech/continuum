@@ -204,11 +204,14 @@ async fn prompt_preserves_stimulus_and_large_action_on_the_wire() {
             .as_ref()
             .unwrap()
             .contains("Held activity context"));
+        // The wire carries the window's physical room after the prompt (`reply_allowance`),
+        // never below the reserve the plan left: a reply past her measured tail is not cut.
         assert_eq!(
             request.max_tokens,
-            Some(view.completion_reserve),
-            "the wire carries the plan's grant verbatim"
+            Some(view.reply_allowance(window, PromptCalibration::default())),
+            "the wire carries the reply's physical room"
         );
+        assert!(request.max_tokens.unwrap() >= view.completion_reserve);
         let schema_tokens =
             crate::cognition::tool_surface::tool_surface_tokens_of(request.tools.as_ref().unwrap());
         assert_eq!(
@@ -547,4 +550,38 @@ fn an_over_budget_prompt_is_a_budget_fault_never_a_clipped_prompt() {
     let fault = faculty.budget_violation(&ledger(charged - 1)).expect("one token over is a budget fault");
     assert!(fault.contains("prompt budget violated"), "{fault}");
     assert!(view.messages.first().is_some_and(|m| m.content_text().contains("turn_0 ")), "nothing was cut to comply");
+}
+
+// what this catches: her view cut to pay for a reply she has not written. The request
+// carries the window's physical room after an ESTIMATED prompt; when the engine counts
+// the prompt a little larger, only the room past the reserve overflowed. The faculty
+// re-sizes the reply from the measured count and sends the same view, whole, once,
+// instead of refitting (dropping history) for the overshoot.
+#[tokio::test]
+async fn an_overshooting_reply_room_is_requoted_never_paid_for_with_her_view() {
+    let window = 32_768u32;
+    let adapter = Arc::new(ScriptedAdapter::new(vec![make_response(FinishReason::Stop, "PASS", None)]));
+    let mut attempt = 0;
+    *adapter.on_request.lock().unwrap() = Some(Box::new(move |request| {
+        if attempt > 0 {
+            return None;
+        }
+        attempt += 1;
+        // The engine counted 200 more prompt tokens than the request left room for.
+        Some(crate::ai::inference_error::InferenceError::ContextExceeded {
+            requested: window - request.max_tokens.expect("bounded") + 200,
+            available: window,
+        })
+    }));
+    let faculty = LlmDeliberationFaculty::new(Uuid::new_v4(), "Ivar", "You are Ivar.", adapter.clone())
+        .with_context_window(window);
+    let ws = history_with_stimulus("LATEST: did the deploy fix land?");
+    let outcome = faculty.contribute(&ws).await.expect("a verdict or named fault");
+    assert!(outcome.fault.is_none(), "{:?}", outcome.fault);
+    let seen = adapter.seen.lock().unwrap();
+    assert_eq!(seen.len(), 2, "one re-quote, then the turn");
+    let texts = |r: &TextGenerationRequest| r.messages.iter().map(|m| m.content_text().to_string()).collect::<Vec<_>>();
+    assert_eq!(texts(&seen[0]), texts(&seen[1]), "her view is sent whole again, nothing dropped");
+    let first = seen[0].max_tokens.expect("bounded");
+    assert_eq!(seen[1].max_tokens, Some(first - 201), "the measured physical room, one token free");
 }

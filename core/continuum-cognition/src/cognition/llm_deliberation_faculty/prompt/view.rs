@@ -101,6 +101,7 @@ impl LlmDeliberationFaculty {
         let (reply, reply_runaway) = reply_claim(
             self.turn_kind(ws),
             self.working_set.as_ref().and_then(|reg| reg.need_of(self.persona_id)),
+            self.working_set.as_ref().and_then(|reg| reg.reply_reserve_of(self.persona_id)),
             pending_peak,
             Self::holds_live_work(ws),
             ws.directed_at_self(),
@@ -314,13 +315,12 @@ impl LlmDeliberationFaculty {
         // The reply never takes from required content: its floor is what the window leaves
         // after framing, tools and the required input. Its UNCLIPPED floor is her need.
         let reply_need = reply.floor_tokens;
-        // An act's reply wants its whole runaway bound, at its priority above her context's:
-        // what no claim took used to top it up to that bound, and her view, a claim on the
-        // whole window, leaves nothing untaken. Aris's act was cut at the output limit with
-        // 5,316 granted and 0 unallocated (the M5, 2026-10-22 00:14Z), a whole turn lost.
-        if matches!(self.turn_kind(ws), TurnKind::Act) {
-            reply.max_tokens = reply.max_tokens.max(reply_runaway);
-        }
+        // The reply claims her measured RESERVE (`reply_claim`), never the runaway bound:
+        // reserving 12,288 for replies measured at p99 1,202 left her view ~22k of a 58,880
+        // window (the M5, 2026-10-26). A reply past the reserve is not cut by it (Aris's act
+        // cut at 5,316 granted, 2026-10-22, was the reserve bounding the request): the
+        // request carries the window's physical room after the prompt
+        // (`DeliberationPromptView::reply_allowance`).
         reply.floor_tokens = reply_need.min(context_window.saturating_sub(fixed_cost.saturating_add(required_cost)));
         reply.min_tokens = reply.floor_tokens;
         let fixed_claim = |id: &str, tokens: u32| crate::cognition::rag_budget::RagSourceBudget {
@@ -372,12 +372,10 @@ impl LlmDeliberationFaculty {
         }));
         let plan = crate::cognition::rag_budget::flex_allocate(context_window, &claims);
         let budget_floor = crate::cognition::rag_budget::turn_need(&claims).saturating_sub(claims.iter().find(|c| c.source_id == FLEX_REPLY).map_or(0, |c| c.floor_tokens)).saturating_add(reply_need);
-        // Whatever no claim took is hers to write with, up to the runaway bound.
+        // The room the view leaves for the reply is the reply's grant. What no claim took
+        // is her view's to grow into; the reply may still write into it (`reply_allowance`).
         let reply_grant = plan.granted(FLEX_REPLY);
-        let completion_reserve = reply_grant
-            .saturating_add(plan.unallocated)
-            .min(reply_runaway)
-            .max(1) as usize;
+        let completion_reserve = reply_grant.max(1) as usize;
         continuum_base::probe!(
             class = "delib.window.flex",
             persona = %self.persona_name,
@@ -392,11 +390,12 @@ impl LlmDeliberationFaculty {
             reply_granted = reply_grant,
             unallocated = plan.unallocated,
             reply_runaway,
-            allowance = completion_reserve,
+            reserve = completion_reserve,
             escalation = plan.escalation_needed,
             "the served window's one allocation — framing, required input, grounding, \
-             history and the reply by priority; the allowance is the reply's grant plus \
-             what no claim took, under its runaway bound"
+             history and the reply by priority; the reserve is the reply's grant (her \
+             measured tail), what no claim took is her view's, and the runaway bound only \
+             guards the request"
         );
         // Grounding is optional: when its floor did not fit, it holds no room the
         // required input then has to do without.
@@ -413,10 +412,9 @@ impl LlmDeliberationFaculty {
             .filter(|a| claims.iter().skip(5).any(|c| c.source_id == a.source_id))
             .map(|a| a.allocated_tokens)
             .sum();
-        // What no claim took goes to the reply up to its runaway bound; only the rest is room
-        // her view may grow into by appends (`fit_view`), and the fit's budget holds that same
-        // room, or it would drop what the epoch was allowed to keep.
-        let view_room = plan.unallocated.saturating_sub(reply_runaway.saturating_sub(reply_grant));
+        // What no claim took is room her view may grow into by appends (`fit_view`), and the
+        // fit's budget holds that same room, or it would drop what the epoch was allowed to keep.
+        let view_room = plan.unallocated;
         let msg_budget = window_msg_budget.min(required_tokens.saturating_add(calibration.prompt_budget(
             plan.granted(FLEX_HISTORY).saturating_add(view_granted).saturating_add(view_room) as usize,
         )));
@@ -690,6 +688,7 @@ impl LlmDeliberationFaculty {
             input_identity,
             estimated_prompt_tokens,
             completion_reserve: completion_reserve as u32,
+            reply_bound: reply_runaway,
             capacity_error,
             budget_fault,
             protocol_error,

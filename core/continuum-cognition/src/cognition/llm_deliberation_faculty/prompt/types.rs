@@ -363,10 +363,12 @@ pub struct DeliberationPromptView {
     pub input_identity: [u8; 32],
     /// Cached pre-calibration cost, including selected schemas and framing.
     pub estimated_prompt_tokens: usize,
-    /// The reply's allowance this plan granted (its flex grant plus what no other claim
-    /// took, under its runaway bound) — charged against the window here, and carried
-    /// verbatim as the wire request's `max_tokens`.
+    /// The room this plan leaves for the reply: its flex grant, sized by her measured
+    /// reply tail (`ReplyTail::reserve`). Charged against the window here; the floor of
+    /// the request's `max_tokens`, never its ceiling ([`Self::reply_allowance`]).
     pub completion_reserve: u32,
+    /// The turn's runaway bound: a loop guard on the request, reserved by no claim.
+    pub reply_bound: u32,
     pub capacity_error: Option<PromptCapacityError>,
     /// The assembled prompt broke the one budget (`prompt/budget.rs`): the act fails and
     /// this prompt is never sent.
@@ -399,5 +401,20 @@ impl DeliberationPromptView {
             .map(|m| format!("[{}] {}", m.role, m.content_text()))
             .collect::<Vec<_>>()
             .join("\n")
+    }
+
+    /// The request's `max_tokens`: the window's PHYSICAL room after this prompt, under the
+    /// runaway bound, never below the reserve. The reserve sizes her view; it never cuts
+    /// her reply: a reply longer than her measured tail writes into whatever the window
+    /// still has (mid-epoch, the room her view has not grown into yet), and joins the
+    /// tail. One token stays free: local admission requires prompt + reply < window.
+    pub fn reply_allowance(&self, window: u32, calibration: PromptCalibration) -> u32 {
+        let prompt = calibration.charge(self.estimated_prompt_tokens).min(u32::MAX as usize) as u32;
+        window
+            .saturating_sub(prompt)
+            .saturating_sub(1)
+            .min(self.reply_bound)
+            .max(self.completion_reserve)
+            .max(1)
     }
 }

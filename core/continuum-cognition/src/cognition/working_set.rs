@@ -58,6 +58,9 @@ use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+mod reply_tail;
+pub use reply_tail::ReplyTail;
+
 /// The process's registry handle — the ONE place a spawning mind and the serving
 /// daemon on the same core meet.
 ///
@@ -288,6 +291,10 @@ pub struct PersonaEmission {
     /// Turns recorded into the rings (saturating). `< MIN_NEED_TURNS` = no need yet.
     #[serde(default)]
     pub need_turns: u32,
+    /// Her last whole outputs, the ring her REPLY RESERVE is read from ([`ReplyTail`]).
+    /// A file from before this field loads an empty ring: no reserve measured yet.
+    #[serde(default)]
+    pub reply_tail: ReplyTail,
 }
 
 /// How a generation ENDED, as the emission record has to know it. The registry sizes
@@ -660,6 +667,7 @@ impl WorkingSetRegistry {
             e.reasoning_samples[slot] = reasoning;
             e.answer_samples[slot] = answer;
             e.need_turns = e.need_turns.saturating_add(1);
+            e.reply_tail.push(observed);
         };
         *self
             .emitted
@@ -700,6 +708,7 @@ impl WorkingSetRegistry {
                     reasoning_samples: [0; NEED_SAMPLES],
                     answer_samples: [0; NEED_SAMPLES],
                     need_turns: 0,
+                    reply_tail: ReplyTail::default(),
                 };
                 push_need(&mut e);
                 e
@@ -725,6 +734,12 @@ impl WorkingSetRegistry {
             answer: p90_with_headroom(&e.answer_samples[..filled]),
             turns: e.need_turns.min(NEED_SAMPLES as u32),
         })
+    }
+
+    /// The room her view leaves for the reply: the max of her last measured outputs
+    /// × 5/4 ([`ReplyTail::reserve`]). `None` until three turns are measured.
+    pub fn reply_reserve_of(&self, persona: Uuid) -> Option<u32> {
+        self.emission_of(persona)?.reply_tail.reserve()
     }
 
     /// Atomic tmp+rename so a crash mid-write never leaves a torn file that would

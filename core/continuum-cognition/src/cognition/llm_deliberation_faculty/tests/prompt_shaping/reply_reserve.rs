@@ -37,9 +37,10 @@ fn prompt_plus_completion_cap_never_exceeds_the_served_window() {
     // Same atomic snapshot the production `contribute` path uses — the model
     // binding carries the served window the request is bounded to.
     let binding = faculty.binding.load_full();
+    let allowance = view.reply_allowance(window, PromptCalibration::default());
     let request = faculty.build_request_within(
         &binding,
-        view.completion_reserve,
+        allowance,
         view.messages.clone(),
         None,
         view.system.clone(),
@@ -51,10 +52,8 @@ fn prompt_plus_completion_cap_never_exceeds_the_served_window() {
     let cap = request
         .max_tokens
         .expect("deliberation must bound generation to the reserved room");
-    assert_eq!(
-        cap, view.completion_reserve,
-        "the generation cap IS the reserved room — one source of truth"
-    );
+    assert_eq!(cap, allowance, "the generation cap IS the reply's physical room — one source of truth");
+    assert!(cap >= view.completion_reserve, "never below the room the plan reserved");
     // The closed invariant: prompt-at-ceiling + the generation cap fits n_ctx.
     let prompt_tokens = estimate_guard_tokens(&view.system) + estimate_guard_tokens(&view.user_text());
     assert!(
@@ -161,7 +160,7 @@ fn measured_emissions_size_the_reserve_and_capped_turns_grow_it_back() {
     .with_context_window(window)
     .with_working_set(reg.clone());
     let wanted = |who: Uuid, pending: u32| {
-        reply_claim(TurnKind::Pass, reg.need_of(who), pending, false, false).0.max_tokens
+        reply_claim(TurnKind::Pass, reg.need_of(who), reg.reply_reserve_of(who), pending, false, false).0.max_tokens
     };
 
     let cold = wanted(persona, 0);
@@ -264,6 +263,46 @@ fn measured_reserve_recovers_past_a_censored_large_reply() {
             assert!(view.completion_reserve >= need.total(), "{window}: recovered past the censored 16,384");
         }
     }
+}
+
+// what this catches: an act reserving its runaway bound. On the M5 (2026-10-26) every
+// act reserved 12,288 of a 58,880 window for replies measured at p99 1,202 and max
+// 1,526, leaving her view ~22k, so it turned over every 2-4 acts. The reserve is her
+// measured tail (max × 5/4); the request still carries the window's physical room, so a
+// reply past the tail is never cut by it.
+#[test]
+fn an_act_reserves_her_measured_tail_and_may_write_past_it() {
+    use crate::cognition::working_set::{EmissionStop, WorkingSetRegistry};
+    let window = 58_880u32;
+    let persona = Uuid::new_v4();
+    let reg = WorkingSetRegistry::new();
+    for (tick, output) in [252u32, 792, 1_202, 300].into_iter().enumerate() {
+        reg.record_emission_in_memory(persona, output, output / 2, EmissionStop::Landed, tick as u64);
+    }
+    assert_eq!(reg.reply_reserve_of(persona), Some(1_503), "max 1,202 × 5/4");
+    let faculty = LlmDeliberationFaculty::new(
+        persona,
+        "Aiko",
+        "You are Aiko.",
+        Arc::new(HeuristicInferenceAdapter::new()),
+    )
+    .with_context_window(window)
+    .with_tools(vec![read_tool()])
+    .with_working_set(reg);
+    let ws = writing_workspace(crate::identity::ActivityRoom::mint(), 40, true);
+    assert_eq!(faculty.turn_kind(&ws), TurnKind::Act);
+    let view = faculty.prompt_view_within(&ws, window);
+    assert!(view.capacity_error.is_none(), "{:?}", view.capacity_error);
+    assert!(view.budget_fault.is_none(), "{:?}", view.budget_fault);
+    assert!(
+        (LlmDeliberationFaculty::COMPLETION_FLOOR_TOKENS..=1_503).contains(&view.completion_reserve),
+        "the act reserves her tail, never the runaway bound: {}",
+        view.completion_reserve
+    );
+    let allowance = view.reply_allowance(window, PromptCalibration::default());
+    assert!(allowance > view.completion_reserve, "a reply past her tail writes into the window's room");
+    assert!(allowance <= LlmDeliberationFaculty::ACT_OUTPUT_CAP, "the runaway bound still guards");
+    assert!(view.estimated_prompt_tokens + (allowance as usize) < window as usize, "inside the window");
 }
 
 // what this catches: KV-prefix cache locality — session-stable standing framing

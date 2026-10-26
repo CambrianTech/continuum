@@ -126,6 +126,9 @@ impl LlmDeliberationFaculty {
         let mut gen_await_ms = 0u64;
         // The allowance the request actually carried (set where it is built, read at the seam).
         let mut sent_allowance: Option<u32> = None;
+        // The measured prompt the reply's room was last re-quoted at (below): a re-quote
+        // needs a strictly larger count, so it is bounded by the window.
+        let mut reply_room_requoted: Option<u32> = None;
         // Correct only frozen admitted input, consuming a finite optional unit on
         // every retry. Exact measured progress is required too. No accepted cognition
         // is replayed, and no working-memory or RAG source is re-read or refilled.
@@ -235,7 +238,7 @@ impl LlmDeliberationFaculty {
 
                 let request = self.build_request_within(
                     &binding,
-                    view.completion_reserve,
+                    view.reply_allowance(fit_window, calibration),
                     view.messages.clone(),
                     tools,
                     view.system.clone(),
@@ -261,7 +264,7 @@ impl LlmDeliberationFaculty {
             // The allowance belongs to THIS view, refreshed on every refit: the template
             // is built once, and a template's `max_tokens` from an earlier plan would
             // bound the reply to a window the prompt no longer leaves.
-            request.max_tokens = Some(view.completion_reserve.max(1));
+            request.max_tokens = Some(view.reply_allowance(fit_window, calibration));
             let estimated_prompt_tokens = view.estimated_prompt_tokens;
             if rejected_prompt_tokens.is_some_and(|previous| estimated_prompt_tokens >= previous) {
                 return Some(Contribution::deliberation_fault(
@@ -314,6 +317,25 @@ impl LlmDeliberationFaculty {
                         corrective_replay_used = rejected_prompt_tokens.is_some(),
                         "provider capacity refusal: retained measured token density for prompt fitting"
                     );
+                    // Only the reply's room past its reserve overflowed: the measured prompt and
+                    // the reserve fit. Her view is not cut to make room for a reply she has not
+                    // written; the calibration just learned the prompt's exact count, so the
+                    // next allowance is the window's true physical room (`reply_allowance`).
+                    if reply_room_requoted.is_none_or(|previous| requested > previous)
+                        && requested.saturating_add(view.completion_reserve) < available
+                    {
+                        reply_room_requoted = Some(requested);
+                        continuum_base::probe!(
+                            class = "delib.reply.room_requoted",
+                            persona = %self.persona_name,
+                            requested_tokens = requested,
+                            available_tokens = available,
+                            completion_reserve = view.completion_reserve,
+                            "the reply's physical room overshot an estimated prompt; re-sized from \
+                             the measured count, her view kept whole"
+                        );
+                        continue;
+                    }
                     if rejected_measured_tokens.is_some_and(|previous| requested >= previous) {
                         return Some(Contribution::deliberation_fault(
                             "exact prompt correction made no measured progress; refusing further admission replay",
@@ -321,8 +343,11 @@ impl LlmDeliberationFaculty {
                     }
                     rejected_prompt_tokens = Some(estimated_prompt_tokens);
                     rejected_measured_tokens = Some(requested);
+                    let view_reserve = view.completion_reserve;
+                    // The refit makes room for the RESERVE, never the physical allowance: her
+                    // view is not cut for a reply longer than her measured tail.
                     view = match self.refit_rejected_prompt(
-                        view, requested, available, sent_allowance.unwrap_or(0),
+                        view, requested, available, view_reserve,
                     ) {
                         Ok(view) => view,
                         Err(error) => {

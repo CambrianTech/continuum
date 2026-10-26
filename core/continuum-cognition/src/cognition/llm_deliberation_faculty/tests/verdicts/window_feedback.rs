@@ -66,7 +66,7 @@ async fn live_window_reductions_bound_actual_requests_and_persist() {
             request.tools.as_ref().expect("native tools retained"),
         );
         assert_eq!(schemas, faculty.select_tool_surface(&ws).tokens);
-        assert_eq!(request.max_tokens, Some(expected_view.completion_reserve));
+        assert_eq!(request.max_tokens, Some(expected_view.reply_allowance(expected, PromptCalibration::default())));
         let cost = LlmDeliberationFaculty::framing_cost(
             request.system_prompt.as_deref().expect("system framing"),
         ) + LlmDeliberationFaculty::messages_cost(&request.messages)
@@ -149,7 +149,7 @@ async fn live_window_observation_cannot_overwrite_a_newer_binding() {
             assert_eq!(seen[0].model.as_deref(), Some("original-model"));
             assert_eq!(
                 seen[0].max_tokens,
-                Some(faculty.prompt_view_within(&ws, 16_384).completion_reserve)
+                Some(faculty.prompt_view_within(&ws, 16_384).reply_allowance(16_384, PromptCalibration::default()))
             );
         }
         let verdict = faculty.contribute(&ws).await.expect("next verdict");
@@ -165,7 +165,7 @@ async fn live_window_observation_cannot_overwrite_a_newer_binding() {
             Some(
                 faculty
                     .prompt_view_within(&ws, next_window)
-                    .completion_reserve
+                    .reply_allowance(next_window, PromptCalibration::default())
             )
         );
     }
@@ -206,7 +206,7 @@ async fn provider_context_feedback_refits_and_captures_each_attempt() {
         if residual {
             let changed_wm = wm.clone();
             let mut attempt = 0;
-            *adapter.on_request.lock().unwrap() = Some(Box::new(move |request| {
+            *adapter.on_request.lock().unwrap() = Some(Box::new(move |_request| {
                 let excess = match attempt {
                     0 => 337,
                     1 => 43,
@@ -216,8 +216,10 @@ async fn provider_context_feedback_refits_and_captures_each_attempt() {
                     changed_wm.record_receipt("arrived_after_frozen_quote");
                 }
                 attempt += 1;
+                // The PROMPT overflows the window by `excess` past the reply's floor, so
+                // this is a refit, never a re-quote of the reply's physical room.
                 Some(InferenceError::ContextExceeded {
-                    requested: window - request.max_tokens.expect("actual reserved output") + excess,
+                    requested: window - LlmDeliberationFaculty::COMPLETION_FLOOR_TOKENS + excess,
                     available: window,
                 })
             }));
@@ -305,7 +307,8 @@ async fn provider_context_feedback_refits_and_captures_each_attempt() {
                 let ask = pair[1].messages.iter().position(|m| m.content_text().contains(stimulus)).unwrap();
                 assert!(ground[0] < ask);
                 assert_eq!(pair[0].system_prompt, pair[1].system_prompt);
-                assert_eq!(pair[0].max_tokens, pair[1].max_tokens);
+                // The reply's room is re-derived from each refit's measured prompt.
+                assert!(pair[1].max_tokens.expect("bounded") >= LlmDeliberationFaculty::COMPLETION_FLOOR_TOKENS);
                 assert_eq!(serde_json::to_value(&pair[0].tools).unwrap(), serde_json::to_value(&pair[1].tools).unwrap());
                 assert!(LlmDeliberationFaculty::messages_cost(&pair[1].messages)
                     < LlmDeliberationFaculty::messages_cost(&pair[0].messages));
@@ -362,8 +365,10 @@ async fn provider_context_feedback_refits_and_captures_each_attempt() {
                         r.tools.as_deref().expect("selected tools"),
                     )
             };
-            let measured_first = if residual { window - first.max_tokens.unwrap() + 337 } else { 29_722 };
-            let observed = PromptCalibration::observed(cost(first), measured_first, None)
+            // The final request's room was sized by the LAST refusal's measured density.
+            let penultimate = &seen[seen.len() - 2];
+            let measured = if residual { window - LlmDeliberationFaculty::COMPLETION_FLOOR_TOKENS + 43 } else { 29_722 };
+            let observed = PromptCalibration::observed(cost(penultimate), measured, None)
                 .expect("positive actual request observation");
             assert!(
                 observed.charge(cost(second))
