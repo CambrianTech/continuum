@@ -396,7 +396,7 @@ pub(crate) fn lesson_tasks(
         // SAME salience selection every other experience consumer uses.
         let home = crate::paths::continuum_home()?;
         let (solver_full, solver_dir) =
-            crate::commands::benchmark::resolve_solver_dir(&home, solver)?;
+            crate::persona::citizen_dir::resolve_citizen_dir(&home, solver)?;
         let records = crate::cognition::experience::load_experiences(&solver_dir);
         let latest = crate::cognition::experience::latest_per_task(&records);
         let teach = crate::cognition::experience::salient_teach_set(
