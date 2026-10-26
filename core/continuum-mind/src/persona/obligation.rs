@@ -124,18 +124,7 @@ pub async fn open<T: Transport>(conn: &Connection<T>, persona_name: &str, person
         )
         .await?;
     let listed: crate::orm::list_result::DataListResult = serde_json::from_value(value)?; // ORM boundary: the typed list result
-    if listed.items.len() != listed.total as usize {
-        return Err(ClientError::Refused {
-            command: "data/list".into(),
-            outcome: None,
-            reason: format!(
-                "{}: {} of {} open obligations returned; a partial read cannot say which turns were interrupted",
-                PersonaObligation::COLLECTION,
-                listed.items.len(),
-                listed.total
-            ),
-        });
-    }
+    whole_page(listed.items.len(), listed.total as usize)?;
     listed
         .items
         .into_iter()
@@ -144,6 +133,22 @@ pub async fn open<T: Transport>(conn: &Connection<T>, persona_name: &str, person
             Ok(serde_json::from_value(record.data)?) // ORM boundary: the row as written
         })
         .collect()
+}
+
+/// A short page is refused, never read as complete: which turns a stop interrupted cannot be
+/// answered from part of the rows.
+pub fn whole_page(returned: usize, total: usize) -> Result<(), ClientError> {
+    if returned == total {
+        return Ok(());
+    }
+    Err(ClientError::Refused {
+        command: "data/list".into(),
+        outcome: None,
+        reason: format!(
+            "{}: {returned} of {total} open obligations returned; a partial read cannot say which turns were interrupted",
+            PersonaObligation::COLLECTION
+        ),
+    })
 }
 
 pub async fn mark_interrupted<T: Transport>(conn: &Connection<T>, persona_name: &str, id: Uuid, now_ms: u64) -> Result<(), ClientError> {
@@ -164,7 +169,7 @@ pub async fn mark_interrupted<T: Transport>(conn: &Connection<T>, persona_name: 
 
 /// What a start found: the rows a stop or crash interrupted, and how many of them this start
 /// is the first to see (the rest were reported by an earlier start and are still owed).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct InterruptedReport {
     pub open: usize,
     pub newly_interrupted: usize,
@@ -191,7 +196,8 @@ impl Obligations {
     }
 
     /// At loop start: ensure the collection, then report and stamp what the last stop left open.
-    pub async fn report_interrupted(&self, now_ms: u64) -> InterruptedReport {
+    /// `None` when the store could not be read: unknown, never a count of zero (Codex on #5480).
+    pub async fn report_interrupted(&self, now_ms: u64) -> Option<InterruptedReport> {
         let conn = &self.conn;
         let rows = match ensure_storage(conn, &self.persona_name).await {
             Ok(()) => open(conn, &self.persona_name, self.persona_id).await,
@@ -201,7 +207,7 @@ impl Obligations {
             Ok(rows) => rows,
             Err(error) => {
                 self.fault("read", None, &error);
-                return InterruptedReport::default();
+                return None;
             }
         };
         let mut report = InterruptedReport { open: rows.len(), newly_interrupted: 0 };
@@ -220,7 +226,7 @@ impl Obligations {
                 self.fault("mark", Some(row.id), &error);
             }
         }
-        report
+        Some(report)
     }
 
     /// At admission, before her context is composed. `None` when unrecorded (named by a probe).
@@ -301,6 +307,24 @@ mod tests {
         let rows = vec![seen, fresh.clone()];
         let newly: Vec<_> = newly_interrupted(&rows).map(|row| row.id).collect();
         assert_eq!(newly, vec![fresh.id]);
+    }
+
+    // what this catches: a partial read counted as the whole set, so a stop's interrupted turns
+    // would be undercounted silently instead of refused.
+    #[test]
+    fn a_short_page_is_refused_and_a_whole_one_passes() {
+        assert!(whole_page(3, 3).is_ok());
+        assert!(whole_page(0, 0).is_ok());
+        assert!(whole_page(2, 3).is_err(), "two of three rows is not an answer");
+    }
+
+    // what this catches (Codex on #5480): an unreadable store reported as "nothing interrupted".
+    // Unknown is None, never a zero that reads as zero loss.
+    #[tokio::test]
+    async fn an_unreadable_store_reports_unknown_not_zero() {
+        let executor = Arc::new(CommandExecutor::new(Arc::new(crate::runtime::ModuleRegistry::new())));
+        let obligations = Obligations::new(&executor, Uuid::new_v4(), "no-store");
+        assert_eq!(obligations.report_interrupted(1).await, None);
     }
 
     // what this catches: the trigger losing a field on its way through the store, so a later

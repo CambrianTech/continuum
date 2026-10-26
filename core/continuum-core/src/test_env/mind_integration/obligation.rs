@@ -59,3 +59,45 @@ async fn admitted_turns_persist_until_closed_and_each_start_names_only_what_it_i
     assert!(open(&conn, name, persona).await.unwrap().is_empty(), "a closed turn is owed nothing"); // unwrap: the store under test
     assert_eq!(open(&conn, name, other).await.unwrap(), vec![theirs]); // unwrap: the store under test
 }
+
+// what this catches (Codex on #5480): an obligation that lives only as long as the process that
+// wrote it. A turn is admitted through one executor (one core), then each "restart" is a fresh
+// executor over the same SQLite home, as a new core process would be. The first restart names
+// the interrupted turn, the second names nothing new but still owes it, and closing settles it.
+#[tokio::test]
+async fn an_admitted_turn_survives_restarts_and_each_restart_reports_it_once() {
+    let home = tempfile::tempdir().unwrap(); // unwrap: test fixture
+    let _home = HomeGuard::set(home.path()).await;
+    crate::persona::register_substrate_orm_entities(crate::orm::OrmEntityRegistry::global()).unwrap(); // unwrap: test fixture
+    let (name, persona, room) = ("obligation-restart", Uuid::new_v4(), Uuid::new_v4());
+
+    let before_stop = super::training_credit::data_runtime();
+    let loop_one = Obligations::new(&before_stop, persona, name);
+    let report = loop_one.report_interrupted(1).await;
+    assert_eq!(report, Some(InterruptedReport { open: 0, newly_interrupted: 0 }), "a fresh store owes nothing");
+    let turn = loop_one.admit(room, &trigger(room, "cut by the stop"), None, 2).await;
+    assert!(turn.is_some(), "the turn is recorded before her context is composed");
+    drop(loop_one);
+    drop(before_stop);
+
+    let first_restart = super::training_credit::data_runtime();
+    let loop_two = Obligations::new(&first_restart, persona, name);
+    assert_eq!(
+        loop_two.report_interrupted(10).await,
+        Some(InterruptedReport { open: 1, newly_interrupted: 1 }),
+        "the restart names the turn the stop cut"
+    );
+    drop(loop_two);
+    drop(first_restart);
+
+    let second_restart = super::training_credit::data_runtime();
+    let loop_three = Obligations::new(&second_restart, persona, name);
+    assert_eq!(
+        loop_three.report_interrupted(20).await,
+        Some(InterruptedReport { open: 1, newly_interrupted: 0 }),
+        "a second restart still owes it but does not count it again"
+    );
+    loop_three.close(turn).await;
+    let conn = substrate_connection(&second_restart);
+    assert!(open(&conn, name, persona).await.unwrap().is_empty(), "closing settles it"); // unwrap: the store under test
+}
