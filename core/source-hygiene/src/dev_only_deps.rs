@@ -8,6 +8,12 @@
 //! stopped building until #5457 (card d4868960). A cold `cargo check` of each crate's
 //! non-test lib would catch it at minutes per crate; reading the manifests and the
 //! production halves catches the same class in milliseconds.
+//!
+//! BOUNDED, not a compiler (Codex on #5460): target-specific normal dependencies are unioned,
+//! so a crate declared only under `[target.'cfg(unix)'.dependencies]` and named in code built
+//! on Windows passes here; so do manifest or path forms this reader does not parse (renamed
+//! tables, `r#` idents, macro-generated paths). The compiler check for PRs that change a
+//! dependency table is card 58b6026f.
 
 use std::collections::BTreeSet;
 use std::path::Path;
