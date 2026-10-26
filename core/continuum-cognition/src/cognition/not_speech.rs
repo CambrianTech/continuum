@@ -181,7 +181,6 @@ fn opens_with_tool_envelope(t: &str) -> bool {
             let call_len = a.find(['(', '{', ' ', '\n']).unwrap_or(a.len());
             let callee = &a[..call_len];
             if verb_ok(verb)
-                && verb_ok(callee)
                 && callee.contains('/')
                 && matches!(a[call_len..].chars().next(), Some('(') | Some('{'))
             {
@@ -459,6 +458,12 @@ mod tests {
         assert_eq!(is_not_speech("I ran [code/read({\"file_path\":\"x\"})] and it was fine."), None);
         assert_eq!(is_not_speech("[note(this)] is a phrase, not a verb"), None);
         assert_eq!(is_not_speech("[code/read(path)] returned nothing"), None);
+        // Fourth dialect: [stage_word] ns/verb({obj}) — stage word inside bracket,
+        // namespaced call after it with parens around the object.
+        assert_eq!(
+            is_not_speech("[follow-up(details)] code/read({\"file_path\":\"src/main.rs\"})"),
+            Some("tool_envelope")
+        );
     }
 
     // what this catches: the transcript's occurrence header spoken at the lead with no
