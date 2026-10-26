@@ -3453,6 +3453,7 @@ dependencies = [
  "continuum-memory",
  "continuum-perception",
  "continuum-positron",
+ "continuum-store",
  "continuum-text-analysis",
  "dashmap",
  "dirs 5.0.1",

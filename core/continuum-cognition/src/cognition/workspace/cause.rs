@@ -112,6 +112,7 @@ impl Burst {
             cause,
             room_updates: Arc::default(),
             hands: None,
+            effects: None,
         }
     }
 
@@ -121,6 +122,13 @@ impl Burst {
         context: Option<crate::identity::hands_context::HandsContext>,
     ) -> Self {
         self.hands = context;
+        self
+    }
+
+    /// This turn's pre-effect mark (stop-drain S2): set by the loop when the turn has a
+    /// confirmed obligation, so each tool batch and her reply are recorded before they happen.
+    pub fn with_effects(mut self, gate: Option<crate::cognition::act_observe::EffectGate>) -> Self {
+        self.effects = gate;
         self
     }
 
@@ -136,6 +144,7 @@ impl Burst {
             cause: Cause::Synthetic,
             room_updates: Arc::default(),
             hands: None,
+            effects: None,
         }
     }
 }
@@ -157,6 +166,7 @@ impl From<String> for Burst {
             cause: Cause::Synthetic,
             room_updates: Arc::default(),
             hands: None,
+            effects: None,
         }
     }
 }

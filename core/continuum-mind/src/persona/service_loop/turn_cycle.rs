@@ -114,12 +114,7 @@ pub(super) async fn run_turn_cycle(
             let attention = admitted_retry
                 .then(|| deferred_input.attention_for(msg))
                 .flatten()
-                .unwrap_or_else(|| { // A new message has no retained attention; derive it from its actual sender and mentions.
-                    crate::cognition::workspace::TurnAttention::for_message(
-                    ctx.identity.persona_identity().mentions(&msg.text),
-                    crate::cognition::room_directory::is_human_peer(msg.peer_id),
-                    )
-                });
+                .unwrap_or_else(|| new_message_attention(ctx, msg)); // A new message has no retained attention; derive it from its actual sender and mentions.
             if attention.requires_priority() {
                 // Focus = she is TAKING the turn on it; the heard receipt
                 // already fired at the drain (`wake_backlog::publish_heard`).
@@ -452,4 +447,16 @@ pub(super) async fn run_turn_cycle(
             return CycleVerdict::Skip;
         }
     }
+}
+
+/// The attention a NEW message earns from its actual sender and mentions: the one derivation,
+/// shared by the turn and by the loop when it must retain an input it cannot yet run.
+pub(super) fn new_message_attention(
+    ctx: &HostedPersona,
+    msg: &crate::cognition::conversation::IncomingMessage,
+) -> crate::cognition::workspace::TurnAttention {
+    crate::cognition::workspace::TurnAttention::for_message(
+        ctx.identity.persona_identity().mentions(&msg.text),
+        crate::cognition::room_directory::is_human_peer(msg.peer_id),
+    )
 }

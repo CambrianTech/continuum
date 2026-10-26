@@ -314,11 +314,32 @@ pub(super) async fn serve_persona_loop_inner(
         .await;
         // Recorded BEFORE compose_turn, which marks the trigger read: from here until the turn
         // ends, a stop that cuts it leaves this row behind to say so.
-        // A retry continues the obligation its first attempt recorded; only a new input records one.
-        let obligation = match admitted_retry.then(|| deferred_input.obligation_for(&msg)).flatten() {
-            Some(owed) => Some(owed),
-            None => obligations.admit(turn_room, &msg, wake_engram, now_ms).await,
+        // A retry reconciles the id its first attempt minted (confirmed or not); only a new input
+        // mints one. Only a CONFIRMED row lets the turn run (stop-drain S2): an unknown row could be
+        // re-run by a later start after this turn acted. Unconfirmed, the input is retained WITH its
+        // candidate id (Codex on #5492: a create may have committed unseen), and the turn stops
+        // here, before compose_turn marks the trigger read.
+        let candidate = admitted_retry.then(|| deferred_input.obligation_for(&msg)).flatten();
+        let obligation = match obligations.admit(turn_room, &msg, wake_engram, now_ms, candidate).await {
+            crate::persona::obligation::Admission::Confirmed(turn) => turn,
+            crate::persona::obligation::Admission::Unconfirmed(candidate) => {
+                deferred_input.settle(
+                    &msg,
+                    wake_engram,
+                    new_message_attention(ctx, &msg),
+                    &crate::cognition::act_observe::SettleStep::DeferredBeforeDispatch,
+                );
+                if !deferred_input.keep_obligation(&msg, Some(candidate)) {
+                    // Not retained (ambient input keeps its re-perception policy): a row that
+                    // committed unseen must not outlive it, so close it best-effort.
+                    obligations.close(Some(candidate)).await;
+                }
+                continue;
+            }
         };
+        // This turn's pre-effect mark, carried in its burst and to its reply: built from its
+        // confirmed obligation, dropped with the turn.
+        let effects = obligations.gate_for(obligation);
         // 2. Compose the turn's RAG context (budget + multi-source composition); inference
         //    runs WITHOUT holding the cognition mutex.
         let composed = compose_turn(
@@ -329,7 +350,7 @@ pub(super) async fn serve_persona_loop_inner(
             &mut roster_names,
         )
         .await;
-        let workspace_burst = build_turn_burst(ctx, &composed, trigger, now_ms, wake_engram);
+        let workspace_burst = build_turn_burst(ctx, &composed, trigger, now_ms, wake_engram).with_effects(Some(effects.clone()));
         // Mark this world-state as just-deliberated so the next heartbeat tick doesn't
         // re-run the same burst (the message path and the self-tick share the gate;
         // own chat is excluded so this reply can't re-trigger a self-tick, while her
@@ -389,13 +410,13 @@ pub(super) async fn serve_persona_loop_inner(
                 // A refused or deferred input is still owed: PendingInput retains it for a
                 // retry, so its row stays open with it (Codex on #5480). Only a finished
                 // skip closes.
-                if !deferred_input.keep_obligation(&msg, obligation) {
-                    obligations.close(obligation).await;
+                if !deferred_input.keep_obligation(&msg, Some(obligation)) {
+                    obligations.close(Some(obligation)).await;
                 }
                 continue;
             }
         };
-        finish_spoken_turn(
+        let speech = finish_spoken_turn(
             ctx,
             conversation,
             &mut outcome,
@@ -404,9 +425,13 @@ pub(super) async fn serve_persona_loop_inner(
             phase_timings,
             turn_started,
             &mut deferred_input,
+            &effects,
         )
         .await;
-        obligations.close(obligation).await;
+        // A refused reply mark recorded nothing and posted nothing: the row stays open.
+        if matches!(speech, SpeechMark::Done) {
+            obligations.close(Some(obligation)).await;
+        }
     }
 
     deferred_input.stop();

@@ -38,6 +38,9 @@ mod types;
 pub use types::{SettleOutcome, SettleStep};
 
 mod apply;
+/// Marks committed before an effect reaches the world (stop-drain S2, card 68811445).
+pub mod effect_mark;
+pub use effect_mark::{Effect, EffectGate, EffectMark};
 pub(crate) mod disk_change;
 pub use apply::{apply_act, ActChain};
 

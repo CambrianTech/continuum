@@ -727,4 +727,7 @@ pub struct Burst {
     /// another's (card fc9e9fd7). It lives here for the reason `room` and `cause` do: a
     /// parameter beside the burst could drift from the turn it belongs to.
     pub hands: Option<crate::identity::hands_context::HandsContext>,
+    /// This turn's pre-effect mark (stop-drain S2): `Some` when the turn has a confirmed
+    /// obligation the next start could re-admit, so every effect must be recorded first.
+    pub effects: Option<crate::cognition::act_observe::EffectGate>,
 }
