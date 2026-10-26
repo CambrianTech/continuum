@@ -3,8 +3,9 @@
     // ════════════════════════════════════════════════════════════════
     // Concurrency stress tests for the query-cursor surface — gated
     // behind the `stress-tests` cargo feature. Default `cargo test`
-    // skips compilation; periodic CI runs them via
-    //     cargo test -p continuum-core --features stress-tests
+    // skips compilation; run them with
+    //     cargo test -p continuum-store --features stress-tests
+    // (no CI job runs any crate's stress-tests feature yet; Fable carded it on #5472).
     // See continuum-core/Cargo.toml § "stress-tests" for the doctrine.
     // ════════════════════════════════════════════════════════════════
     #[cfg(feature = "stress-tests")]
