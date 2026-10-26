@@ -383,8 +383,12 @@ async fn serve_or_adopt<C: LlamaServerControl + ?Sized>(
             // same size, onto the binary already on disk.
             let installed_engine = installed_engine_commit();
             let served_engine = match ctrl.served_engine_build().await {
-                Ok(build) => build,
-                Err(_) => None, // a probe error is "engine OK", as for the window and lanes
+                Ok(build) => {
+                    // The same reading decides what the lane can take (`tail_tools`).
+                    record_served_engine_build(build.as_deref());
+                    build
+                }
+                Err(_) => None, // a probe error is "engine OK", as for the window and lanes; the last reading stands
             };
             let engine_current = match (&served_engine, &installed_engine) {
                 (Some(lane), Some(installed)) => lane_runs_installed_engine(lane, installed),

@@ -13,8 +13,14 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
         &self.config.provider_id
     }
 
+    /// The provider declares the family (our fork's gateway); the lane it reaches decides, by the
+    /// build that lane itself reports. A dedicated lane or a repointed base is another server
+    /// whose build the gateway reconcile never read, so it answers `false`.
     fn accepts_tail_tools(&self) -> bool {
         self.config.tail_tools
+            && !self.dedicated_lane
+            && self.targets_local_serving_lane()
+            && crate::inference::llama_server::serving_engine_takes_tail_tools()
     }
 
     /// The live set the daemon's reconcile / `/v1/models` refresh verified

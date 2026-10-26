@@ -85,6 +85,9 @@ pub(crate) use genome::gene_stage_name;
 pub use genome::{engine_accepts_train_dir, engine_train_dir, GenomeInPlace};
 use genome::{engine_help_lists_train_dir, ENGINE_TRAIN_DIR};
 mod engine_install;
+mod engine_features;
+pub use engine_features::serving_engine_takes_tail_tools;
+use engine_features::record_served_engine_build;
 #[cfg(windows)]
 pub(crate) use engine_install::engine_override;
 pub(crate) use engine_install::{installed_engine_commit, lane_runs_installed_engine};

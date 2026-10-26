@@ -230,9 +230,10 @@ pub fn providers() -> Vec<Provider> {
                 // 4B doesn't loop its `<think>` block to the token budget
                 // (same failure DMR hit; the in-process path defaults 1.1).
                 llamacpp_sampling_extensions: true,
-                // `tail_tools` arrives with the fork pin that carries CambrianTech/llama.cpp#71;
-                // until then a mind's head stays her activity's static surface.
-                tail_tools: false,
+                // Our fork's gateway, whose pinned build takes `tail_tools`
+                // (CambrianTech/llama.cpp#75). The adapter offers it only while the running
+                // lane reports that build (`llama_server::serving_engine_takes_tail_tools`).
+                tail_tools: true,
                 // Its served model ids match the registry rows (the forged
                 // model now lives under this provider), so NO dynamic-catalog
                 // name resolution — `dynamic_model_catalog` stays false and
