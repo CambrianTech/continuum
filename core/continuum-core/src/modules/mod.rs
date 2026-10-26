@@ -33,7 +33,7 @@ pub mod deploy_tracker;
 pub mod deploy_candidate;
 pub mod floor_fetch;
 pub mod card_carry;
-pub mod card_staging;
+pub use continuum_mind::work::card_staging;
 pub mod channel;
 pub use continuum_mind::chat;
 pub use continuum_hands::modules::{code, code_commands, python_adapter};

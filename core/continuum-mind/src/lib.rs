@@ -20,3 +20,4 @@ pub mod modules;
 pub mod persona;
 pub mod room;
 pub mod vdd;
+pub mod work;
