@@ -8,6 +8,13 @@ const select = (...paths) => {
   const { rust, installer, publication } = selectChecks(paths.map(filename => ({ filename })));
   return { rust, installer, publication };
 };
+
+// The tested crates that do not build on the kernel: the floor (base, host, git) and pure leaves
+// with no workspace dependency at all (continuum-service). A kernel or lifecycle change cannot
+// reach them. Kept explicit, so a crate moving in the graph fails here instead of silently
+// changing what CI runs.
+const BELOW_KERNEL = ['continuum-base', 'continuum-host', 'continuum-git', 'continuum-service'];
+
 test('installer repairs run installer checks without unrelated Rust builds', () => {
   for (const file of ['install.ps1', 'tools/scripts/lib/install-common.ps1', 'tools/scripts/lib/win-modules.ps1', 'tools/scripts/lib/win-engine.ps1', 'tools/scripts/lib/windows-engine-receipt.ps1', 'tools/scripts/lib/windows-service.ps1', 'tools/scripts/lib/windows-media-reconciliation.ps1', 'tools/scripts/lib/windows-elevation.ps1', 'tools/scripts/tests/windows-process.test.ps1', 'tools/scripts/tests/windows-airc-download.test.ps1', 'tools/scripts/tests/windows-xz.test.ps1', 'tools/scripts/sync-windows-bootstrap.ps1'])
     assert.deepEqual(select(file), { rust: false, installer: true, publication: true });
@@ -106,11 +113,10 @@ test('a crate-local change runs that crate and every crate that depends on it', 
   const belowMind = crates('continuum-engine', 'continuum-embedding', 'continuum-store', 'continuum-models', 'continuum-hands', 'continuum-live', 'continuum-perception', 'continuum-genome', 'continuum-memory', 'continuum-cognition', 'continuum-academy', 'continuum-sentinel', 'continuum-mind', 'continuum-dreaming', 'continuum-grid', 'continuum-core');
   assert.deepEqual(scope(['core/continuum-engine/src/lib.rs']), belowMind);
   // The floor crates (base, host, git) sit below the kernel: a kernel change runs everything above them.
-  const FLOOR = ['continuum-base', 'continuum-host', 'continuum-git'];
-  const aboveFloor = TESTED_CRATES.filter(n => !FLOOR.includes(n));
+  const aboveFloor = TESTED_CRATES.filter(n => !BELOW_KERNEL.includes(n));
   assert.deepEqual(scope(['core/continuum-kernel/src/lib.rs']), { crates: aboveFloor, cli: false });
   // A floor change runs the floor crate and every crate built on it.
-  assert.deepEqual(scope(['core/continuum-host/src/durable/mod.rs']), { crates: TESTED_CRATES.filter(n => n !== 'continuum-base'), cli: true });
+  assert.deepEqual(scope(['core/continuum-host/src/durable/mod.rs']), { crates: TESTED_CRATES.filter(n => n !== 'continuum-base' && n !== 'continuum-service'), cli: true });
   // continuum-git is used by hands (a citizen's git) and core (the deploy tree): both run, and every crate above hands.
   assert.deepEqual(scope(['core/continuum-git/src/index_lock.rs']), crates('continuum-git', 'continuum-hands', 'continuum-cognition', 'continuum-academy', 'continuum-mind', 'continuum-dreaming', 'continuum-grid', 'continuum-core'));
   // Untested crates reach the tested ones through the graph: llama -> engine -> ...
@@ -143,7 +149,7 @@ test('docs, markdown and installer-only changes run no crate', () => {
 test('CLI handoff regressions run for the CLI and lifecycle paths, or with everything', () => {
   assert.deepEqual(scope(['core/continuum-core/src/bin/continuum/reboot.rs']), { crates: ['continuum-core'], cli: true });
   assert.deepEqual(scope(['core/continuum-core/src/bin/continuum.rs']), { crates: ['continuum-core'], cli: true });
-  assert.deepEqual(scope(['core/continuum-cli-lifecycle/src/lib.rs']), { crates: TESTED_CRATES.filter(n => !['continuum-base', 'continuum-host', 'continuum-git'].includes(n)), cli: true });
+  assert.deepEqual(scope(['core/continuum-cli-lifecycle/src/lib.rs']), { crates: TESTED_CRATES.filter(n => !BELOW_KERNEL.includes(n)), cli: true });
   assert.equal(scope(['core/continuum-core/src/bin/continuum_other.rs']).cli, false);
   assert.equal(scope(['core/continuum-mind/src/a.rs']).cli, false);
 });
