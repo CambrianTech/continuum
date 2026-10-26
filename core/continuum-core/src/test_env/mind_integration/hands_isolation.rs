@@ -44,10 +44,13 @@ fn core_with_code() -> (Arc<CommandExecutor>, Arc<CodeState>) {
     // The PRODUCTION authorization policy, not an AllowAll fixture: the fixture hid
     // code/release-hands being refused for a local persona (Astra's review of #5005).
     let executor = Arc::new(
-        CommandExecutor::new(registry)
+        CommandExecutor::new(registry.clone())
             .with_policy(Arc::new(GridTrustAuthPolicy::new()))
             .with_message_bus(Arc::new(crate::runtime::MessageBus::new())),
     );
+    // Bound as boot binds it: the code domain reads its callers' trust through this
+    // executor's policy, and unbound it would sandbox every resident (Cormac on #5455).
+    registry.install_executor_on_all(executor.clone());
     (executor, state)
 }
 
@@ -174,6 +177,33 @@ async fn a_command_after_its_hands_were_released_is_refused_at_dispatch() {
         .expect("the kernel's release ends the hands");
     let late = executor.execute_with_caller("code/list", serde_json::json!({"path": "."}), Some(bound)).await;
     assert!(late.as_ref().is_err_and(|e| e.contains("released")), "a command after the release is refused at dispatch: {late:?}");
+}
+
+// what this catches (Cormac on #5455): the code domain reading trust through an
+// executor never bound to it. Unbound, every resident is the sandbox and every test
+// stays green; bound as boot binds it, under the production policy, a local persona's
+// file verbs reach the host (Joel: "don't restrict them").
+#[tokio::test]
+async fn a_resident_under_the_production_policy_reads_the_host_not_the_sandbox() {
+    let workspace = tempfile::TempDir::new().expect("her workspace");
+    let elsewhere = tempfile::TempDir::new().expect("a directory outside it");
+    let outside = elsewhere.path().join("OUTSIDE_her_workspace.md");
+    std::fs::write(&outside, "read from the host\n").unwrap();
+    let persona = Uuid::new_v4();
+    let (executor, _state) = core_with_code();
+    let resident = CallerIdentity::local_persona(crate::identity::PeerId::from_uuid(persona))
+        .in_hands(crate::identity::hands_context::HandsContext::fresh());
+    executor
+        .execute_with_caller("code/create-workspace", serde_json::json!({"workspace_root": workspace.path().to_string_lossy()}), Some(resident.clone()))
+        .await
+        .expect("her hands are bound");
+    let read = executor
+        .execute_with_caller("code/read", serde_json::json!({"file_path": outside.to_string_lossy()}), Some(resident))
+        .await;
+    assert!(
+        read.as_ref().is_ok_and(|r| format!("{r:?}").contains("read from the host")),
+        "a resident reads outside her workspace, never the sandbox: {read:?}"
+    );
 }
 
 // what this catches (card fc9e9fd7; Kimi #11697, #312): one set of hands moved by
