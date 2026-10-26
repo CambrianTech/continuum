@@ -14,6 +14,7 @@ continuum-academy = { path = "../continuum-academy" }
 continuum-kernel = { path = "../continuum-kernel" }
 continuum-engine = { path = "../continuum-engine" }
 continuum-hands = { path = "../continuum-hands" }
+continuum-embedding = { path = "../continuum-embedding" }  # work/similar and work/duplicates rank card text with its vector math
 continuum-live = { path = "../continuum-live" }
 continuum-memory = { path = "../continuum-memory" }
 continuum-perception = { path = "../continuum-perception" }

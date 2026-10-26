@@ -24,11 +24,11 @@ pub(super) fn card_text(c: &WorkCard) -> String {
 pub(super) fn card_candidates(
     cards: &[WorkCard],
     states: &[CardState],
-) -> Vec<crate::commands::embedding::similar::SimilarCandidate> {
+) -> Vec<continuum_embedding::commands::similar::SimilarCandidate> {
     cards
         .iter()
         .filter(|c| states.is_empty() || states.contains(&c.state))
-        .map(|c| crate::commands::embedding::similar::SimilarCandidate {
+        .map(|c| continuum_embedding::commands::similar::SimilarCandidate {
             id: short8(c.card_id.as_uuid()),
             text: card_text(c),
         })
@@ -155,7 +155,7 @@ impl ActionCommand for WorkSimilar {
             .filter(|c| exclude.as_deref() != Some(c.id.as_str()))
             .collect();
         let searched = candidates.len();
-        let ranked = crate::commands::embedding::similar::rank_texts(
+        let ranked = continuum_embedding::commands::similar::rank_texts(
             &self.embedder,
             &query_text,
             &candidates,
@@ -272,7 +272,7 @@ impl ActionCommand for WorkDuplicates {
         let board = board_to_read(&airc, p.room.as_deref()).await?;
         let candidates = card_candidates(&board.cards, &states);
         let searched = candidates.len();
-        let grouped = crate::commands::embedding::groups::group_texts(
+        let grouped = continuum_embedding::commands::groups::group_texts(
             &self.embedder,
             &candidates,
             p.min_z,
