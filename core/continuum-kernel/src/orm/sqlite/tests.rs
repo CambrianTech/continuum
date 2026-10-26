@@ -266,3 +266,70 @@
             result.error
         );
     }
+
+    // what this catches: a collection written row by row (its table created from the
+    // first row, never through ensure_schema) must still get the indexes its entity
+    // declares, or every room page of chat_messages is a full scan plus a temp B-tree
+    // (103,319 rows on the M5, 2026-10-26). Also pins the two not-yet cases: a table
+    // nobody wrote is left alone, and an index over a column the table has not grown
+    // yet waits for the next pass instead of failing the store open.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn declared_indexes_reach_a_table_created_from_its_rows() {
+        use super::super::types::{SchemaField, SchemaIndex};
+        let (adapter, _dir) = setup_adapter().await;
+        let declared = |collection: &str| CollectionSchema {
+            collection: collection.to_string(),
+            fields: vec![SchemaField {
+                name: "senderType".to_string(),
+                field_type: FieldType::String,
+                indexed: true,
+                unique: false,
+                nullable: false,
+                max_length: None,
+                foreign_key: None,
+            }],
+            indexes: vec![SchemaIndex {
+                name: "idx_paged_rows_room_timestamp".to_string(),
+                fields: vec!["roomId".to_string(), "timestamp".to_string()],
+                unique: false,
+            }],
+        };
+
+        let nothing_written = adapter
+            .ensure_declared_indexes(vec![declared("paged_rows")])
+            .await
+            .expect("a pass over an absent table succeeds");
+        assert_eq!(nothing_written, IndexPass::default());
+
+        let row = DataRecord {
+            id: "row-1".to_string(),
+            collection: "paged_rows".to_string(),
+            data: json!({"roomId": "room-a", "timestamp": "2026-10-26T00:00:00Z"}),
+            metadata: RecordMetadata::default(),
+        };
+        assert!(adapter.create(row).await.success);
+
+        let pass = adapter
+            .ensure_declared_indexes(vec![declared("paged_rows")])
+            .await
+            .expect("the declared composite applies over the row-created table");
+        assert_eq!(pass, IndexPass { ensured: 1, awaiting_columns: 1 });
+
+        let writer = adapter.get_writer().expect("initialized adapter has a writer");
+        let conn = writer.lock().expect("writer lock");
+        let plan: Vec<String> = conn
+            .prepare(
+                "EXPLAIN QUERY PLAN SELECT * FROM paged_rows WHERE room_id = 'room-a' \
+                 AND timestamp < 'z' ORDER BY timestamp DESC LIMIT 50",
+            )
+            .and_then(|mut stmt| {
+                stmt.query_map([], |r| r.get::<_, String>(3))?.collect::<Result<Vec<_>, _>>()
+            })
+            .expect("plan reads");
+        assert!(
+            plan.iter().any(|step| step.contains("USING INDEX idx_paged_rows_room_timestamp")),
+            "the room page must search the declared index, got {plan:?}"
+        );
+        assert!(!plan.iter().any(|step| step.contains("TEMP B-TREE")), "no sort pass: {plan:?}");
+    }
+

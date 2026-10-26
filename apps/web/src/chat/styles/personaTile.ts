@@ -471,6 +471,10 @@ export const personaTileStyles = css`
 
     .what {
       overflow-y: auto;
+      /* The widget keeps the reader's row still across prepends and trims above
+         the viewport by adjusting scrollTop itself; browser scroll anchoring would
+         apply the same correction a second time (Chrome, Firefox; not Safari). */
+      overflow-anchor: none;
       padding: var(--spacing-md) var(--spacing-lg);
       /* Grid items default to min-width:auto and won't shrink below their content,
          so a long message makes .what overflow its track and clip at narrow widths.

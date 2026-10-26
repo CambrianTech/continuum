@@ -193,7 +193,7 @@ pub(crate) async fn ask_the_act_question(
                     // same page the catch-up reads. A failed page is a missing
                     // block, never a failed turn.
                     let page =
-                        crate::persona::durable_history::room_rows(turn_room, WORK_GATE_PAGE_ROWS)
+                        crate::persona::durable_history::room_rows(turn_room, None, WORK_GATE_PAGE_ROWS)
                             .await;
                     let last_state = match &page {
                         Ok(rows) => {

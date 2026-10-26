@@ -509,6 +509,34 @@ function main(): void {
       widget.dispatchEvent(new CustomEvent('settings-face-toggle', { detail: { open: true }, bubbles: true }));
     }, 50);
   }
+  // `?fixture=long` — a long room (5,000 stored rows) for paging and the DOM bound:
+  // the live window holds the newest 100, the stub history serves older pages by
+  // the same cursor contract as `chat/history`, and a new live row lands every
+  // 2 s so rows retire out of the live window while the reader scrolls back.
+  if (name === 'long') {
+    const stored = Array.from({ length: 5000 }, (_, i) => ({
+      id: `h${String(i).padStart(5, '0')}`,
+      senderId: i % 3 === 0 ? 'solenne' : 'asha',
+      timestamp: new Date(1_700_000_000_000 + i * 60_000).toISOString(),
+      content: { text: `Stored line ${i}${i % 7 === 0 ? ' — a longer one that wraps onto a second line in a narrow column, as real turns do.' : ''}` },
+    }));
+    const live = (i: number): ChatState['messages'][number] =>
+      message({ id: `h${String(i).padStart(5, '0')}`, content: `Live line ${i}`, timestamp: 1_700_000_000_000 + i * 60_000 });
+    let next = stored.length;
+    const liveRows = Array.from({ length: 100 }, (_, k) => live(next - 100 + k));
+    widget.state = { kind: 'chat', revision: 1, room_id: 'general', room_name: 'general', purpose: 'chat', roster, messages: liveRows, acts: [] };
+    widget.historyHandler = async (_room, before, limit) => {
+      await new Promise((resolve) => setTimeout(resolve, 30));
+      const end = before === undefined ? stored.length : stored.findIndex((r) => r.id === before);
+      return stored.slice(Math.max(0, end - limit), end);
+    };
+    setInterval(() => {
+      const prior = widget.state;
+      if (!prior) return;
+      widget.state = { ...prior, revision: (prior.revision ?? 0) + 1, messages: [...prior.messages.slice(1), live(next)] };
+      next += 1;
+    }, 2000);
+  }
   // A no-op send handler so the input area is live for interaction shots without a socket.
   const noop: SendHandler = async () => {
     /* no-op: the preview has no socket, so a submit goes nowhere */

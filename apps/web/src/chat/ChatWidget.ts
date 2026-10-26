@@ -23,8 +23,7 @@ import {
   PROJECT_PURPOSE,
   focusedLiveTab,
   focusedPersonaTab,
-  historyRowsFromPoll,
-  type MessageRowVM,
+  type ChatViewModel,
   type RosterMemberVM,
 } from '@continuum/chat-view';
 import type {
@@ -36,6 +35,8 @@ import type {
 } from '@continuum/sdk-typescript';
 import { renderChat } from './renderChat';
 import { chatWidgetStyles } from './styles';
+import { TranscriptPager, type HistoryHandler } from './transcriptPager';
+import { respondingNames, withDemoVitals, withDirectory, withExpanded, withTyping } from './viewOverlays';
 import { CallClient, type CallVideoFrame } from '../live/callClient';
 import type { RemoteTrack } from 'livekit-client';
 import {
@@ -88,14 +89,7 @@ export type SettingsHandler = (agree?: boolean) => Promise<SettingsContentBody>;
  *  envelopes stream back — substrate truth only, no optimistic local state. */
 export type SelectRoomHandler = (target: string, kind: 'room' | 'persona') => Promise<void>;
 
-/** The scroll-back fetch the host injects (`chat/poll { beforeMessageId }` —
- *  the Twitter endless-scroll's storage read). Resolves to one page of RAW
- *  stored entities strictly OLDER than the anchor, chronological; an empty
- *  page means history is exhausted. The widget projects and prepends. */
-export type HistoryHandler = (
-  roomId: string,
-  beforeMessageId: string | undefined,
-) => Promise<readonly unknown[]>;
+export type { HistoryHandler } from './transcriptPager';
 
 /** The tab-close action the host injects (`nav/close`). The tab disappears
  *  when the re-projected nav envelope streams back — never an optimistic
@@ -141,7 +135,6 @@ export class ChatWidget extends LitElement {
     _typing: { state: true },
     _expanded: { state: true },
     _captionsOn: { state: true },
-    _history: { state: true },
   };
 
   /** The current chat snapshot; assignment triggers a re-render. `undefined`
@@ -236,41 +229,32 @@ export class ChatWidget extends LitElement {
     });
   };
 
-  /** Scrolled-back rows older than the live window, oldest→newest — the
-   *  endless-scroll buffer. Widget-owned presentation state: pages prepend
-   *  here, and rows that slide OUT of the live 50-row window retire onto its
-   *  tail so no gap ever opens between buffer and window. Cleared on room
-   *  switch. Reassigned (not mutated) so Lit re-renders. */
-  private _history: MessageRowVM[] = [];
-  /** Per-ACTIVITY session state, keyed by room UUID (tab = content = room =
-   *  activity — Joel's law). Typing streams and the history buffer belong to
-   *  the activity they happened in; switching tabs swaps the pointer, never
-   *  clobbers. A stream running in a background room accumulates in ITS
-   *  session and is intact when its tab regains focus. */
-  private _sessions = new Map<
-    string,
-    { typing: Map<string, string>; history: MessageRowVM[]; historyExhausted: boolean }
-  >();
-  /** An empty page came back — the room's history is fully on screen. */
-  private _historyExhausted = false;
-  /** One in-flight page at a time (the scroll handler fires per frame). */
-  private _historyLoading = false;
-  /** The `.what` element the scroll listener is attached to (re-attached if
-   *  Lit ever swaps the element identity). */
-  private _scrollHost?: Element;
-  /** The previous render's projected rows — what the window-retirement diff
-   *  in `willUpdate` compares against ([[MessageRowVM]] shape, typing rows
-   *  excluded at retirement time). */
-  private _lastVmMessages: readonly MessageRowVM[] = [];
-  /** READER INTENT, not position (the position heuristic broke: a tall
-   *  incoming message grows the bottom-distance past any threshold and
-   *  auto-scroll silently dies). True only when the USER deliberately
-   *  scrolled up; cleared the moment they return to the bottom. Programmatic
-   *  scrolls never set it (`_autoScrolling` guards them out). */
-  private _userScrolledUp = false;
-  /** Set around programmatic scrolls so their scroll events don't read as
-   *  user intent. */
-  private _autoScrolling = false;
+  /** Per-ACTIVITY typing streams, keyed by room UUID (tab = content = room =
+   *  activity — Joel's law): switching tabs swaps the pointer, never clobbers. A
+   *  stream running in a background room accumulates in ITS session and is intact
+   *  when its tab regains focus. Scroll-back lives in the pager, per room too. */
+  private _sessions = new Map<string, { typing: Map<string, string> }>();
+  /** History paging, the rendered window and the reader's scroll intent. */
+  private readonly pager = new TranscriptPager(
+    this,
+    () => this.historyHandler,
+    (message) => {
+      this._selectError = message;
+    },
+  );
+  /** Whether the last render drew the transcript (not a persona home, live call,
+   *  settings or another purpose's content): the pager acts only then. */
+  private _transcriptFace = false;
+  /** Each state snapshot projected once, however many readers it has per update. */
+  private readonly _vms = new WeakMap<ChatState, ChatViewModel>();
+  private vmOf(state: ChatState): ChatViewModel {
+    let vm = this._vms.get(state);
+    if (vm === undefined) {
+      vm = chatViewModel(state);
+      this._vms.set(state, vm);
+    }
+    return vm;
+  }
 
   /** The room's LIVE face is open (the call grid instead of the transcript).
    *  Renderer state, toggled by the header's Go-live affordance / the call
@@ -734,11 +718,7 @@ export class ChatWidget extends LitElement {
       // A stream in ANOTHER activity accumulates in THAT activity's session —
       // never in the tab being viewed (the "(Benchy) is responding… in every
       // tab" leak, Joel 2026-08-30). It's all there when its tab regains focus.
-      const sess = this._sessions.get(delta.roomId) ?? {
-        typing: new Map<string, string>(),
-        history: [],
-        historyExhausted: false,
-      };
+      const sess = this._sessions.get(delta.roomId) ?? { typing: new Map<string, string>() };
       if (delta.done) sess.typing.delete(delta.senderId);
       else sess.typing.set(delta.senderId, (sess.typing.get(delta.senderId) ?? '') + delta.token);
       this._sessions.set(delta.roomId, sess);
@@ -830,174 +810,21 @@ export class ChatWidget extends LitElement {
     if (!this.state) {
       return html`<div class="connecting">Connecting to the room…</div>`;
     }
-    let vm = chatViewModel(this.state);
-    // ?demo — inject sample cognition/genome/engine vitals to PREVIEW the rich persona
-    // readout before the cognition-emission slice wires the real signals. Explicit flag,
-    // never the live default (no fabricated data on a real room).
-    if (new URLSearchParams(location.search).has('demo')) {
-      vm = {
-        ...vm,
-        members: vm.members.map((m, i) => {
-          // A small spread of real model shapes so the LOADOUT strip previews the
-          // formatting (B/T sizes, k/M ctx) — demo-only, never a live default.
-          const models = [
-            { model: 'devstral-24b', params: 24_000_000_000, contextWindow: 32_768 },
-            { model: 'qwen3-coder-30b', params: 30_500_000_000, contextWindow: 262_144 },
-            { model: 'claude-opus-4-8', params: 671_000_000_000, contextWindow: 1_000_000 },
-          ];
-          return {
-            ...m,
-            vitals: {
-              focus: 30 + ((i * 27) % 60),
-              reason: 80 - ((i * 19) % 55),
-              recall: 45 + ((i * 23) % 45),
-              act: 20 + ((i * 31) % 70),
-              genome: 33 + ((i * 17) % 60),
-              speed: 55 + ((i * 13) % 40),
-              size: 40 + ((i * 21) % 45),
-            },
-            loadout: models[i % models.length],
-          };
-        }),
-      };
-    }
-    // Digest tier ([[perception-resolution-contract]]): stamp the reader's expand
-    // choices onto the rows the projection classified — an expanded row renders
-    // its full body with a collapse affordance; everything else stays digested.
-    // Directory union: this room's live roster as-is; every other known
-    // member appended greyed. A citizens app showing zero citizens is broken
-    // by definition ([Joel, live]) — the panel is never blank again.
-    for (const m of vm.members) this._directory.set(m.id, m);
-    for (const m of this.directorySeed) if (!this._directory.has(m.id)) this._directory.set(m.id, m);
-    {
-      // Residency wins for liveness: the room's presence flag derives from
-      // lane-readiness (away=warming), which greys a citizen precisely while
-      // she's hardest at work. A resident on THIS node is online, full stop.
-      const resident = new Set(this.directorySeed.filter((m) => m.active).map((m) => m.id));
-      // The directory's heartbeat recency beats a room card's stale stamp —
-      // the "9d ago" rows were identity-creation dates, not activity.
-      const seedSeen = new Map(this.directorySeed.map((m) => [m.id, m.lastSeenMs]));
-      // Faces ride the directory too: the presence stream's avatar enrichment
-      // only lands on changed-roster publishes (heartbeats are channel-scoped,
-      // so fossil rosters never re-publish) — the seed's portrait fills any
-      // member the stream left faceless.
-      const seedFace = new Map(
-        this.directorySeed.flatMap((m) => (m.avatarUrl ? [[m.id, m.avatarUrl] as const] : [])),
-      );
-      vm = {
-        ...vm,
-        members: vm.members.map((m) => {
-          const fresher = Math.max(m.lastSeenMs, seedSeen.get(m.id) ?? 0);
-          const active = m.active || resident.has(m.id);
-          const face = m.avatarUrl ?? seedFace.get(m.id);
-          return active !== m.active || fresher !== m.lastSeenMs || face !== m.avatarUrl
-            ? { ...m, active, lastSeenMs: fresher, ...(face !== undefined ? { avatarUrl: face } : {}) }
-            : m;
-        }),
-      };
-      const present = new Set(vm.members.map((m) => m.id));
-      // Liveness is NODE-level, not room-level: a resident citizen (and the
-      // viewer) is online in EVERY room's directory — the seed re-polls that
-      // truth. Only non-seed ghosts (remembered from other rooms' rosters)
-      // grey out when absent here.
-      const offRoom = [...this._directory.values()]
-        .filter((m) => !present.has(m.id))
-        .map((m) => ({ ...m, active: resident.has(m.id) }));
-      // Working minds on top, the greyed past below — sorted by liveness then
-      // recency then name ("the ONLINE users like benchy and atlas are greyed,
-      // at the bottom and doing shit" — Joel, 2026-08-30).
-      // STABLE order: online first, then NAME. lastSeenMs is deliberately NOT
-      // a sort key — it refreshes on every directory poll, and a volatile sort
-      // key made the whole rail (and the call grid downstream) visibly
-      // reshuffle on every render tick (Joel, live 2026-08-31: "all the boxes
-      // randomly reordered"). Recency still renders as the row's stamp; it
-      // just doesn't move rows around.
-      const merged = [...vm.members, ...offRoom].sort(
-        (a, b) => Number(b.active) - Number(a.active) || a.name.localeCompare(b.name),
-      );
-      vm = {
-        ...vm,
-        members: merged,
-        memberCount: merged.length,
-        activeCount: merged.filter((m) => m.active).length,
-      };
-    }
-    if (this._expanded.size > 0) {
-      vm = {
-        ...vm,
-        messages: vm.messages.map((m) =>
-          this._expanded.has(m.id) ? { ...m, expanded: true } : m,
-        ),
-      };
-    }
-    // #170 live typing: overlay a transient bubble per persona mid-turn, growing
-    // token-by-token, so she visibly types instead of freezing. Resolve each
-    // sender's name/kind from the roster (or a prior message) — skip if unknown, to
-    // never fabricate an identity. Drop a bubble whose sender just landed the last
-    // durable row, so the authoritative message supersedes cleanly.
-    if (this._typing.size > 0) {
-      const typingRows: MessageRowVM[] = [];
-      for (const [senderId, text] of this._typing) {
-        // (No last-sender suppression: a persona speaking again right after
-        // their own message is NORMAL — with echo/settle-lag making consecutive
-        // turns common, the old skip hid live streams exactly when Joel was
-        // watching for them. The settle-matching retire above handles dups.)
-        const member = vm.members.find((m) => m.id === senderId);
-        const prior = vm.messages.find((m) => m.senderId === senderId);
-        const senderName = member?.name ?? prior?.senderName;
-        const kind = member?.kind ?? prior?.kind;
-        if (senderName === undefined || kind === undefined) continue;
-        // A stream with NO text yet (the #254 start beacon: turn dispatched,
-        // prefill running) gets NO bubble — it reports through the grey
-        // "X is responding…" line above the compose box instead. Only streams
-        // with actual tokens render as live bubbles.
-        if (text.length === 0) continue;
-        typingRows.push({
-          id: `typing:${senderId}`,
-          senderId,
-          senderName,
-          kind,
-          content: `${text}▋`,
-          time: '',
-          runtime: member?.runtime ?? prior?.runtime ?? '',
-        });
-      }
-      if (typingRows.length > 0) {
-        vm = {
-          ...vm,
-          messages: [...vm.messages, ...typingRows],
-          transcript: [...vm.transcript, ...typingRows.map((r) => ({ row: 'message' as const, ...r }))],
-          isEmpty: false,
-        };
-      }
-      // The tile's SPEAKING ring: overlay the live token rail onto the roster
-      // vitals (`speaking: 100`) for members mid-turn — the same widget-owned
-      // overlay pattern as the typing bubbles above and MessageRowVM.expanded.
-      // Driven only by REAL StreamDeltas; retires when the turn's `done` lands.
-      vm = {
-        ...vm,
-        members: vm.members.map((m) =>
-          this._typing.has(m.id) ? { ...m, vitals: { ...m.vitals, speaking: 100 } } : m,
-        ),
-      };
-    }
-    // Record the live projected rows for willUpdate's window-retirement diff
-    // (BEFORE the history prepend — retired rows come from the live window).
-    this._lastVmMessages = vm.messages;
-    // The endless-scroll buffer: scrolled-back pages render ABOVE the live
-    // window as ordinary transcript rows — one transcript, live or paged.
-    if (this._history.length > 0) {
-      const liveIds = new Set(vm.messages.map((m) => m.id));
-      const older = this._history.filter((r) => !liveIds.has(r.id));
-      if (older.length > 0) {
-        vm = {
-          ...vm,
-          messages: [...older, ...vm.messages],
-          transcript: [...older.map((r) => ({ row: 'message' as const, ...r })), ...vm.transcript],
-          isEmpty: false,
-        };
-      }
-    }
+    let vm = this.vmOf(this.state);
+    if (new URLSearchParams(location.search).has('demo')) vm = withDemoVitals(vm);
+    vm = withDirectory(vm, this._directory, this.directorySeed);
+    vm = withExpanded(vm, this._expanded);
+    vm = withTyping(vm, this._typing);
+    // The transcript face: older pages above the live rows, windowed to the rows
+    // near the viewport (transcriptPager.ts) — one transcript, live or paged.
+    this._transcriptFace =
+      !focusedPersonaTab(this.nav) &&
+      !focusedLiveTab(this.nav) &&
+      !this.liveFace &&
+      !this.settingsFace &&
+      vm.purpose !== PROJECT_PURPOSE &&
+      vm.purpose !== LIVE_PURPOSE;
+    vm = this.pager.compose(vm, this._transcriptFace);
     // Error boundary: a render throw (e.g. the Content registry hitting an
     // unregistered room purpose) must be VISIBLE here, not swallowed into a Lit
     // update abort that leaves a silent stuck "Connecting…". Fail loud where it's
@@ -1008,24 +835,8 @@ export class ChatWidget extends LitElement {
     // (Discord geometry). Hidden on persona/live faces exactly as before.
     const composerHidden =
       focusedPersonaTab(this.nav) || focusedLiveTab(this.nav) || this.liveFace || vm.purpose === LIVE_PURPOSE;
-    // "X is responding…" — the grey status line BETWEEN the last message and
-    // the compose box (Joel's spec, the Discord/Slack typing-line convention).
-    // Driven by the stream map: the #254 start beacon adds a persona here the
-    // moment their turn dispatches, minutes before the first token on a cold
-    // lane — the third dead-looking-room scare of 2026-07-30 was four busy
-    // minds with zero pixels; this line is the cure.
-    const responders: string[] = [];
-    for (const [senderId, text] of this._typing) {
-      // The line covers the PROMISE phase only — inference dispatched, no
-      // visible words yet. Once tokens stream into their bubble, the persona
-      // is visibly responding and their name drops from the line (Joel: "it's
-      // when we are sure they're gonna respond — then you can show it").
-      if (text.length > 0) continue;
-      const name =
-        vm.members.find((m) => m.id === senderId)?.name ??
-        vm.messages.find((m) => m.senderId === senderId)?.senderName;
-      if (name !== undefined) responders.push(name);
-    }
+    // "X is responding…" — the grey status line above the compose box.
+    const responders = respondingNames(vm, this._typing);
     // ONE line, dynamic name list, Joel's exact format: "(xyz, abc) is responding".
     const respondingLine =
       responders.length === 0 || composerHidden
@@ -1117,11 +928,6 @@ export class ChatWidget extends LitElement {
     `;
   }
 
-  /** Derive history-buffer state BEFORE render (the Lit hook for exactly
-   *  this): a room switch clears the buffer; while the buffer is open, live
-   *  rows that slid out of the 50-row window RETIRE onto the buffer's tail —
-   *  otherwise a new message would open a silent gap between scrolled-back
-   *  history and the live window. */
   private _lastMsgCount = -1;
   private _lastActCount = -1;
   /** The mounted universe, spoken to ONLY through UniverseInstance. */
@@ -1140,19 +946,12 @@ export class ChatWidget extends LitElement {
     }
     if (!changed.has('state') || !this.state) return;
     const prev = changed.get('state') as ChatState | undefined;
+    this.pager.enterRoom(this.state.room_id);
     if (prev && prev.room_id !== this.state.room_id) {
-      // Activity switch = session swap. The outgoing room's live streams and
-      // scroll-back buffer are SAVED under its UUID; the incoming room's are
-      // restored (or start fresh). Nothing leaks, nothing is lost.
-      this._sessions.set(prev.room_id, {
-        typing: this._typing,
-        history: this._history,
-        historyExhausted: this._historyExhausted,
-      });
-      const sess = this._sessions.get(this.state.room_id);
-      this._typing = sess?.typing ?? new Map();
-      this._history = sess?.history ?? [];
-      this._historyExhausted = sess?.historyExhausted ?? false;
+      // Activity switch = session swap. The outgoing room's live streams are
+      // SAVED under its UUID; the incoming room's are restored (or start fresh).
+      this._sessions.set(prev.room_id, { typing: this._typing });
+      this._typing = this._sessions.get(this.state.room_id)?.typing ?? new Map();
       return;
     }
     // A settled message retires the sender's typing bubble ONLY when it is
@@ -1163,8 +962,8 @@ export class ChatWidget extends LitElement {
     // 2026-07-30 ~02:45, Joel: 'did you just totally remove it'). The `done`
     // delta remains the normal retire; this is the belt for a dropped flag.
     if (prev && this._typing.size > 0) {
-      const prevIds = new Set(chatViewModel(prev).messages.map((m) => m.id));
-      const arrived = chatViewModel(this.state).messages.filter((m) => !prevIds.has(m.id));
+      const prevIds = new Set(this.vmOf(prev).messages.map((m) => m.id));
+      const arrived = this.vmOf(this.state).messages.filter((m) => !prevIds.has(m.id));
       if (arrived.length > 0) {
         const next = new Map(this._typing);
         for (const msg of arrived) {
@@ -1185,67 +984,10 @@ export class ChatWidget extends LitElement {
         if (next.size !== this._typing.size) this._typing = next;
       }
     }
-    if (this._history.length === 0 || this._lastVmMessages.length === 0) return;
-    const liveIds = new Set(chatViewModel(this.state).messages.map((m) => m.id));
-    const held = new Set(this._history.map((r) => r.id));
-    const retired = this._lastVmMessages.filter(
-      (r) => !liveIds.has(r.id) && !held.has(r.id) && !r.id.startsWith('typing:'),
-    );
-    if (retired.length > 0) this._history = [...this._history, ...retired];
+    // Live rows that slid out of the live window join the scroll-back buffer, so
+    // no gap opens between scrolled-back history and the live rows.
+    this.pager.retire(this.vmOf(this.state).messages);
   }
-
-  /** Scroll-back: nearing the top of the transcript pages one older window
-   *  out of durable storage (`chat/poll { beforeMessageId }`) and prepends,
-   *  preserving the reader's viewport (scrollTop compensated by the height
-   *  the prepend added). One page in flight; an empty page latches exhausted. */
-  private async loadOlderHistory(): Promise<void> {
-    if (this._historyLoading || this._historyExhausted) return;
-    if (!this.historyHandler || !this.state) return;
-    // Scroll-back is a TRANSCRIPT affordance. A persona home or live face
-    // also lives in `.what` (and a persona home OPENS at scrollTop 0, which
-    // trips the near-top trigger) — never page chat history under those.
-    if (focusedPersonaTab(this.nav) || focusedLiveTab(this.nav) || this.liveFace) return;
-    const vm = chatViewModel(this.state);
-    // No anchor = the live window is EMPTY (post-cursor reboot: only events
-    // after the consumer watermark fold — the durable transcript still holds
-    // everything). An anchor-less fetch pages the LATEST stored window, so a
-    // freshly-rebooted room hydrates instead of sitting on "No messages yet".
-    const anchor = this._history[0]?.id ?? vm.messages[0]?.id;
-    this._historyLoading = true;
-    const what = this.renderRoot.querySelector('.what');
-    const prevHeight = what?.scrollHeight ?? 0;
-    const prevTop = what?.scrollTop ?? 0;
-    try {
-      const page = await this.historyHandler(this.state.room_id, anchor);
-      const onScreen = new Set([...this._history.map((r) => r.id), ...vm.messages.map((m) => m.id)]);
-      const rows = historyRowsFromPoll(page, vm.members, onScreen);
-      if (rows.length === 0) {
-        this._historyExhausted = true;
-        return;
-      }
-      this._history = [...rows, ...this._history];
-      await this.updateComplete;
-      // Keep the row the reader was looking at stationary: the prepend grew
-      // the scrollable height above the viewport by exactly the delta.
-      if (what) what.scrollTop = prevTop + (what.scrollHeight - prevHeight);
-    } catch (err) {
-      // Surface in the same strip as send failures — never a silently-dead scroll.
-      this._selectError = `History load failed: ${err instanceof Error ? err.message : String(err)}`;
-    } finally {
-      this._historyLoading = false;
-    }
-  }
-
-  /** The transcript's scroll listener: (1) near the top → page older history;
-   *  (2) reader-intent tracking — a USER scroll away from the bottom parks
-   *  auto-scroll, returning to the bottom re-arms it. Programmatic scrolls
-   *  are guarded out so pin-to-bottom never reads as intent. */
-  private onWhatScroll = (e: Event): void => {
-    const el = e.currentTarget as Element;
-    if (el.scrollTop < 120) void this.loadOlderHistory();
-    if (this._autoScrolling) return;
-    this._userScrolledUp = el.scrollTop + el.clientHeight < el.scrollHeight - 40;
-  };
 
   /** Keep the compose input from scrolling on every state push. The persona
    *  home reads top-down (a profile, not a transcript) — never auto-scrolled,
@@ -1307,39 +1049,13 @@ export class ChatWidget extends LitElement {
       }
     }
     const persona = focusedPersonaTab(this.nav);
-    // Scroll-back trigger: keep the transcript's scroll listener attached to
-    // the CURRENT `.what` (Lit keeps the element stable across renders; the
-    // identity check re-attaches if a face swap ever replaces it).
-    const what = this.renderRoot.querySelector('.what');
-    if (what && what !== this._scrollHost) {
-      this._scrollHost?.removeEventListener('scroll', this.onWhatScroll);
-      what.addEventListener('scroll', this.onWhatScroll, { passive: true });
-      this._scrollHost = what;
-    }
-    // Pin to the live edge on new content (messages AND stream deltas)
-    // unless the READER deliberately scrolled up — intent, not position.
-    if ((changed.has('state') || changed.has('_typing')) && !persona && this.state?.purpose !== PROJECT_PURPOSE && !this._userScrolledUp) {
-      this._autoScrolling = true;
-      this.scrollToLatest();
-      // Release after the scroll's events flush (scroll events are sync-ish
-      // but smooth-behavior can trail; a frame is enough for instant jumps).
-      requestAnimationFrame(() => {
-        this._autoScrolling = false;
-      });
-    }
-    // Hydrate a sparse window from durable storage: after a cursor-armed core
-    // reboot the live projection starts (near-)empty — page the latest stored
-    // window in once so the room reads continuous, never "blown away". The
-    // loading/exhausted latches stop this repeating.
-    if (
-      changed.has('state') &&
-      !persona &&
-      this.state !== undefined &&
-      this._history.length === 0 &&
-      chatViewModel(this.state).messages.length < 10
-    ) {
-      void this.loadOlderHistory();
-    }
+    // The transcript's scroll owner: measure the drawn rows, keep the reader's row
+    // still, pin to the live edge on new content (messages AND stream deltas)
+    // unless the READER scrolled up — intent, not position — and page history.
+    this.pager.afterRender({
+      transcript: this._transcriptFace,
+      pinToLatest: changed.has('state') || changed.has('_typing'),
+    });
     if (changed.has('nav')) {
       const wasPersona = focusedPersonaTab(changed.get('nav') as NavViewState | undefined);
       if (persona && persona.id !== wasPersona?.id) {
@@ -1419,11 +1135,6 @@ export class ChatWidget extends LitElement {
       this._sending = false;
     }
   };
-
-  private scrollToLatest(): void {
-    const what = this.renderRoot.querySelector('.what');
-    if (what) what.scrollTop = what.scrollHeight;
-  }
 }
 
 customElements.define('chat-widget', ChatWidget);

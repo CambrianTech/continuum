@@ -95,7 +95,7 @@ impl ChatModule {
     /// returning unfiltered history would hand the caller the wrong page.
     pub(super) async fn anchor_timestamp(&self, anchor_id: Uuid) -> Result<String, String> {
         let anchor_query = json!({
-            "dbPath": "main",
+            "dbPath": CHAT_DATA_HANDLE,
             "collection": CHAT_MESSAGES_COLLECTION,
             "filter": { "id": { "$eq": anchor_id.to_string() } },
             "limit": 1,
@@ -116,97 +116,37 @@ impl ChatModule {
     /// `chat/poll` — return recent messages, optionally filtered by
     /// room and anchored to a pagination cursor in EITHER direction.
     ///
-    /// Implementation strategy (mirrors the TS `ChatPollServerCommand`
-    /// behavior):
-    ///
-    /// 1. If `after_message_id` is set: look up that message's
-    ///    timestamp via `data/query` (limit 1, filter on id), use it as
-    ///    a `$gt` filter on the main query. If `before_message_id` is
-    ///    set (the scroll-back cursor): same lookup, used as a `$lt`
-    ///    filter — the `limit` messages immediately preceding the anchor.
-    /// 2. Apply optional `room_id` filter.
-    /// 3. Sort `asc` when polling after an anchor (chronological), else
-    ///    `desc` (latest-N / the page just before the anchor).
-    /// 4. Query via `data/query` against the `chat_messages` collection.
-    /// 5. Normalize back to chronological order for display regardless
-    ///    of query direction.
+    /// With no cursor: the newest `limit` rows. With `after_message_id` /
+    /// `before_message_id`: the `limit` rows adjacent to that anchor, keyed by
+    /// `(timestamp, id)` so consecutive pages neither overlap nor skip a row that
+    /// shares the anchor's millisecond (see `keyset_page.rs`).
+    /// Rows come back chronological whichever way the query ran.
     pub async fn poll(&self, params: ChatPollParams) -> Result<ChatPollResult, String> {
-        let executor = self.executor()?;
         let limit = params.limit.unwrap_or(DEFAULT_POLL_LIMIT);
 
         // The two anchors are opposite scroll directions — both at once
         // has no coherent ordering. Fail loud, never guess.
-        if params.after_message_id.is_some() && params.before_message_id.is_some() {
-            return Err(
-                "chat/poll: afterMessageId and beforeMessageId are mutually exclusive — \
-                 page one direction at a time"
-                    .to_string(),
-            );
-        }
-
-        // ── Phase 1: resolve the anchor timestamp if the caller pinned
-        //   a cursor (either direction) — the `$gt`/`$lt` bound below.
-        let after_timestamp = match params.after_message_id {
-            Some(anchor_id) => Some(self.anchor_timestamp(anchor_id).await?),
-            None => None,
+        let cursor = match (params.after_message_id, params.before_message_id) {
+            (Some(_), Some(_)) => {
+                return Err(
+                    "chat/poll: afterMessageId and beforeMessageId are mutually exclusive — \
+                     page one direction at a time"
+                        .to_string(),
+                )
+            }
+            (Some(anchor), None) => Some((anchor, PageDirection::Newer)),
+            (None, Some(anchor)) => Some((anchor, PageDirection::Older)),
+            (None, None) => None,
         };
-        let before_timestamp = match params.before_message_id {
-            Some(anchor_id) => Some(self.anchor_timestamp(anchor_id).await?),
-            None => None,
+        let mut messages = match cursor {
+            Some((anchor, direction)) => self.keyset_page(params.room_id, anchor, direction, limit).await?,
+            None => self.newest_page(params.room_id, limit).await?,
         };
-
-        // ── Phase 2: build the main query. Filter on room +/- anchor
-        //   timestamp; sort direction follows whether we have an anchor.
-        let mut filter = serde_json::Map::new();
-        if let Some(room_id) = params.room_id {
-            filter.insert("roomId".to_string(), json!({ "$eq": room_id.to_string() }));
-        }
-        if let Some(ts) = after_timestamp.clone() {
-            filter.insert("timestamp".to_string(), json!({ "$gt": ts }));
-        }
-        if let Some(ts) = before_timestamp.clone() {
-            filter.insert("timestamp".to_string(), json!({ "$lt": ts }));
-        }
-
-        let sort_direction = if params.after_message_id.is_some() {
-            "asc"
-        } else {
-            "desc"
-        };
-
-        let query = json!({
-            "dbPath": "main",
-            "collection": CHAT_MESSAGES_COLLECTION,
-            "filter": filter,
-            "sort": [{ "field": "timestamp", "direction": sort_direction }],
-            "limit": limit,
-        });
-
-        let query_result = executor
-            .execute_json("data/query", query)
-            .await
-            .map_err(|e| format!("chat/poll: query failed: {e}"))?;
-
-        // ── Phase 3: extract message payloads from `DataRecord`
-        //   envelopes the data module returns, then normalize to
-        //   chronological order regardless of query direction.
-        let messages = extract_records_as_data(&query_result);
-        let mut sorted = messages;
-        sorted.sort_by(|a, b| {
-            let a_ts = a
-                .get("timestamp")
-                .and_then(|v| v.as_str())
-                .unwrap_or_default();
-            let b_ts = b
-                .get("timestamp")
-                .and_then(|v| v.as_str())
-                .unwrap_or_default();
-            a_ts.cmp(b_ts)
-        });
+        chronological(&mut messages);
 
         Ok(ChatPollResult {
-            count: sorted.len(),
-            messages: sorted,
+            count: messages.len(),
+            messages,
             after_message_id: params.after_message_id,
             before_message_id: params.before_message_id,
         })

@@ -381,9 +381,10 @@ export const shellStyles = css`
       margin-top: 1px;
     }
     /* PAINT BUDGET (Joel: "Lit animations are already overdrawing"):
-     * off-screen rows in the three long lists cost zero paint/layout —
-     * the browser skips rendering until they scroll into view. */
-    .messages > li,
+     * off-screen cells cost zero paint/layout — the browser skips rendering
+     * until they scroll into view. Transcript rows are windowed instead
+     * (transcriptWindow.ts): off-screen rows are not in the DOM at all, and
+     * the rows that are must report their real height to be measured. */
     .cells > li {
       content-visibility: auto;
       contain-intrinsic-size: auto 72px;

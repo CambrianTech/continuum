@@ -46,10 +46,17 @@ pub struct ChatHistoryParams {
     /// The room whose transcript to read.
     #[ts(type = "string")]
     pub room_id: uuid::Uuid,
-    /// Max messages to return (newest window). Defaults to 50.
+    /// Max messages to return. Defaults to 50.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional, type = "number")]
     pub limit: Option<u32>,
+    /// The scroll-back cursor: the oldest message the reader already holds. The page
+    /// is the `limit` messages just before it; absent = the newest page. Without it
+    /// every scroll-up re-read the newest page, the reader deduped it to nothing and
+    /// took the room's history for exhausted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional, type = "string")]
+    pub before_message_id: Option<uuid::Uuid>,
 }
 
 /// One durable transcript row — the wire twin of the live `chat:posted`
@@ -98,13 +105,13 @@ crate::action_command! {
     output: ChatHistoryResult,
     run(_this, _ctx, p) => {
         let limit = p.limit.unwrap_or(50).min(500) as usize; // JUSTIFIED unwrap_or: the declared wire default (param doc says 50)
-        let mut rows = crate::persona::durable_history::room_rows(p.room_id, limit)
+        let rows = crate::persona::durable_history::room_rows(p.room_id, p.before_message_id, limit)
             .await
             .map_err(|e| CommandError::Internal(format!(
                 "chat/history: durable page failed for room {}: {e}",
                 p.room_id
             )))?;
-        rows.sort_by_key(|r| r.occurred_at_ms);
+        // chat/poll already returns the page in its (timestamp, id) order.
         let messages: Vec<ChatHistoryMessage> = rows
             .into_iter()
             .map(|r| ChatHistoryMessage {
@@ -130,5 +137,18 @@ mod tests {
     fn history_is_aisafe_under_its_wire_name() {
         assert_eq!(ChatHistory::NAME, "chat/history");
         assert_eq!(ChatHistory::ACCESS, AccessLevel::AiSafe);
+    }
+
+    // what this catches: the scroll-back cursor's wire name. The web sends
+    // `beforeMessageId`; a snake_case or misspelled field deserializes to None, and
+    // every scroll-up silently re-reads the newest page (the bug this field fixed).
+    #[test]
+    fn the_cursor_arrives_under_its_camel_case_wire_name() {
+        let anchor = uuid::Uuid::new_v4();
+        let p: ChatHistoryParams = serde_json::from_value(serde_json::json!({
+            "roomId": uuid::Uuid::new_v4(), "beforeMessageId": anchor, "limit": 50,
+        }))
+        .expect("the web's chat/history params parse");
+        assert_eq!(p.before_message_id, Some(anchor));
     }
 }

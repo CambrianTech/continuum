@@ -487,14 +487,14 @@ async function main(): Promise<void> {
   widget.settingsHandler = settingsHandler;
 
   // Scroll-back: one older page out of the durable transcript per call —
-  // `chat/poll { beforeMessageId }` is the storage cursor (the Twitter
-  // endless-scroll's read half); the widget owns the trigger + the buffer.
+  // `beforeMessageId` is the storage cursor (the oldest row the widget holds;
+  // absent = the newest page); the widget owns the trigger + the buffer.
   // Same raw-wire seam as `nav/select` above: the generated CommandMap
   // predates `beforeMessageId` and its re-emit is blocked by the same
   // unexported-wire-types drift — when that regenerates, this becomes
-  // `continuum.commands.execute('chat/poll', …)`.
+  // `continuum.commands.execute('chat/history', …)`.
   let chatHistoryAbsenceLogged = false;
-  const historyHandler: HistoryHandler = async (roomId, beforeMessageId) => {
+  const historyHandler: HistoryHandler = async (roomId, beforeMessageId, limit) => {
     // THE DURABLE TRANSCRIPT (chat/history, 2026-08-31): the airc daemon's
     // own store — citizen speech AND radiated 💭/⚙ receipts, the full story
     // of an activity. chat/poll (operator collection) remains the fallback
@@ -502,7 +502,7 @@ async function main(): Promise<void> {
     try {
       const rawH = await transport.execute(
         buildCommandUri('chat/history'),
-        JSON.stringify({ roomId, limit: 50 }),
+        JSON.stringify({ roomId, beforeMessageId, limit }),
       );
       const hist = JSON.parse(rawH) as {
         messages?: readonly { id: string; senderId: string; text: string; timestamp: number }[];
@@ -529,7 +529,7 @@ async function main(): Promise<void> {
     }
     const raw = await transport.execute(
       buildCommandUri('chat/poll'),
-      JSON.stringify({ roomId, beforeMessageId, limit: 50 }),
+      JSON.stringify({ roomId, beforeMessageId, limit }),
     );
     // Bare-wire contract (same as nav/select above): a FAILURE is a rejected
     // promise; a success payload is the command output and need not carry a

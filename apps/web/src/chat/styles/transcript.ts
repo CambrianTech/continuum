@@ -9,6 +9,12 @@ export const transcriptStyles = css`
       max-width: 880px;
       margin: 0 auto;
     }
+    /* Stands in for rows outside the rendered window (transcriptWindow.ts). */
+    .messages > .transcript-spacer {
+      list-style: none;
+      padding: 0;
+      margin: 0;
+    }
     .messages .msg {
       display: flex;
       gap: var(--spacing-sm);

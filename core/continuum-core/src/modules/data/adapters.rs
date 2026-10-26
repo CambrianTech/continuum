@@ -69,12 +69,39 @@ impl DataState {
             );
             let mut sqlite = SqliteAdapter::new();
             sqlite.initialize(config).await?;
+            ensure_declared_indexes(&sqlite, handle).await?;
             Arc::new(sqlite)
         };
 
         self.adapters.insert(connection_string, adapter.clone());
         Ok(adapter)
     }
+}
+
+/// Apply every TS-declared entity's indexes over the tables this store already has.
+/// Those collections are written row by row (`data/create` creates the table from the
+/// row), and since the core went headless nothing calls `data/ensure-schema` for them,
+/// so their declared indexes never reached the database: `chat_messages` scanned
+/// 103,319 rows per room page (27-29 ms; with the declared index, under 1 ms, measured
+/// on a copy of the M5's main.db 2026-10-26). Rust-authored entities are ensured by
+/// their own stores. Once per store open; `IF NOT EXISTS` makes a repeat a lookup.
+async fn ensure_declared_indexes(sqlite: &SqliteAdapter, handle: &str) -> Result<(), String> {
+    let schemas = crate::entity_schemas::get_entity_schemas()
+        .values()
+        .map(crate::entity_schemas::to_collection_schema)
+        .collect();
+    let pass = sqlite
+        .ensure_declared_indexes(schemas)
+        .await
+        .map_err(|e| format!("data: declared indexes for handle '{handle}' failed: {e}"))?;
+    continuum_base::probe!(
+        class = "orm.declared_indexes.ensured",
+        handle = handle,
+        ensured = pass.ensured as u64,
+        awaiting_columns = pass.awaiting_columns as u64,
+        "declared entity indexes applied over existing tables at store open"
+    );
+    Ok(())
 }
 
 /// SQLite through the kernel ORM is the only store. A `postgres://` string

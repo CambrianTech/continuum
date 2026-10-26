@@ -61,6 +61,8 @@ mod chat_data_handle;
 pub use chat_data_handle::*;
 mod chat_module;
 use chat_module::*;
+mod keyset_page;
+use keyset_page::{chronological, PageDirection};
 
 #[cfg(test)]
 mod tests;

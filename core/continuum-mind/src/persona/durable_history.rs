@@ -69,18 +69,23 @@ pub struct RoomRow {
     pub media: Vec<crate::cognition::conversation::channel_items::MediaItemRequest>,
 }
 
-/// The newest `limit` rows of a room's conversation from the core's OWN chat
+/// The `limit` rows of a room's conversation that end just before `before` (the
+/// scroll-back cursor: the oldest message the reader already holds; `None` = the
+/// newest page), from the core's OWN chat
 /// store — the durable truth the digest's history top-up and the humans read.
 /// Live 2026-09-04: the daemon's page for the busiest room came back EMPTY
 /// for every citizen (its ring was flooded by board System events, none of
 /// which pass the conversation-kind filter), so the store-backed catch-up
 /// forwarded nothing for the room they were working in.
-pub async fn room_rows(room: Uuid, limit: usize) -> Result<Vec<RoomRow>, String> {
+pub async fn room_rows(room: Uuid, before: Option<Uuid>, limit: usize) -> Result<Vec<RoomRow>, String> {
     let Some(executor) = EXECUTOR.cloned() else {
         return Err("durable_history: executor not yet installed (early boot)".to_string());
     };
     let result = executor
-        .execute_json("chat/poll", json!({ "roomId": room.to_string(), "limit": limit }))
+        .execute_json(
+            "chat/poll",
+            json!({ "roomId": room, "beforeMessageId": before, "limit": limit }),
+        )
         .await
         .map_err(|e| format!("durable_history: chat/poll failed: {e}"))?;
     let messages = result
@@ -121,7 +126,7 @@ pub struct ChatStoreHistory;
 #[async_trait]
 impl DurableRoomHistory for ChatStoreHistory {
     async fn room_tail(&self, room: Uuid, limit: usize) -> Result<Vec<HydratedLine>, String> {
-        Ok(room_rows(room, limit).await?.into_iter().map(|row| HydratedLine {
+        Ok(room_rows(room, None, limit).await?.into_iter().map(|row| HydratedLine {
             message_id: row.id.to_string(), sender_id: row.sender.to_string(),
             occurred_at_ms: row.occurred_at_ms, text: row.text, media: row.media,
         }).collect())
