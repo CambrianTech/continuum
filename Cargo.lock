@@ -3413,6 +3413,7 @@ dependencies = [
  "continuum-client",
  "continuum-cognition",
  "continuum-context",
+ "continuum-embedding",
  "continuum-engine",
  "continuum-experience",
  "continuum-genome",

@@ -35,7 +35,9 @@ use crate::persona::PersonaAircRuntimeRegistry;
 use crate::runtime::{CommandResult, ModuleConfig, ModuleContext, ModulePriority, ServiceModule};
 use crate::sdk_codegen::{AccessLevel, ActionCommand, CommandError, Ctx, DynCommand};
 
+pub mod card_staging;
 pub mod submission;
+pub use submission::BenchmarkSubmissionAdapter;
 
 use crate::persona::work_board::advance::*;
 use crate::persona::work_board::events::*;

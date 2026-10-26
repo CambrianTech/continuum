@@ -78,7 +78,7 @@ impl Resident {
     }
 
     fn submit(&self) -> WorkSubmit {
-        WorkSubmit { registry: self.registry.clone(), executor_slot: self.slot.clone() }
+        WorkSubmit { registry: self.registry.clone(), executor_slot: self.slot.clone(), benchmark: std::sync::Arc::new(crate::modules::work_seams::CoreBenchmarkSubmission) }
     }
 
     fn data(&self) -> Connection<InProcessTransport> {

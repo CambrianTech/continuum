@@ -51,7 +51,7 @@ pub(super) fn register_persona_registry_modules(
     // the SAME registry (cheap Clone over an inner Arc) so a work command can
     // resolve the calling persona's live airc runtime. Registered before the
     // executor is built so its typed commands land on the one registry.
-    runtime.register(Arc::new(crate::modules::work::WorkModule::new(
+    runtime.register(Arc::new(crate::modules::work_seams::work_module(
         registry.clone(),
         memory_manager.embedding_provider(),
     )));

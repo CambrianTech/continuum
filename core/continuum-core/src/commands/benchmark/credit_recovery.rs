@@ -59,7 +59,7 @@ impl ActionCommand for BenchmarkCreditRecover {
         }
         let registry = crate::persona::PersonaAircRuntimeRegistry::try_global()
             .ok_or_else(|| invalid("persona registry unavailable"))?;
-        let airc = crate::modules::work::persona_airc(&registry, ctx, Self::NAME)?;
+        let airc = crate::persona::operator_peer::persona_airc(&registry, ctx, Self::NAME)?;
         let (owner, id) = match &params {
             CreditRecoveryParams::Attest { evidence } => (evidence.owner, evidence.card),
             CreditRecoveryParams::Recover {

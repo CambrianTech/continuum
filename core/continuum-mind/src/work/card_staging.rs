@@ -195,7 +195,7 @@ impl TryFrom<&str> for CloneableRepo {
 
     fn try_from(repo: &str) -> Result<Self, Self::Error> {
         let refused = |reason: String| CloneError::NotOwnerSlashName { repo: repo.to_string(), reason };
-        let id = crate::forge::publish_request::RepoId::parse(repo).map_err(|e| refused(e.to_string()))?;
+        let id = continuum_base::repo_id::RepoId::parse(repo).map_err(|e| refused(e.to_string()))?;
         let (owner, name) = id.as_str().split_once('/').ok_or_else(|| refused("no '/'".into()))?;
         if owner.starts_with('-') || name.starts_with('-') {
             return Err(refused("a segment starts with '-' and would read as a gh flag".into()));
@@ -230,7 +230,7 @@ pub(crate) enum CloneError {
     #[error("{path}: {error}")]
     Io { path: PathBuf, error: String },
     #[error(transparent)]
-    Gh(#[from] crate::commands::code::github::GhRunError),
+    Gh(#[from] continuum_hands::commands::code::github::GhRunError),
 }
 
 impl CloneError {
@@ -240,7 +240,7 @@ impl CloneError {
     /// before or with `gh`, and its partial is removed at once. Exhaustive on purpose: a new
     /// variant must decide.
     fn leaves_a_partial_that_may_still_be_written(&self) -> bool {
-        use crate::commands::code::github::GhRunError;
+        use continuum_hands::commands::code::github::GhRunError;
         match self {
             // an output held past the bound is a process gh started still running: maybe `git`
             CloneError::Gh(GhRunError::TimedOut { .. } | GhRunError::Incomplete { .. }) => true,
@@ -278,7 +278,7 @@ async fn ensure_managed_clone(home: &Path, repo: &str) -> Result<PathBuf, CloneE
         let parent = partial.parent().map(Path::to_path_buf).unwrap_or_else(|| home.to_path_buf()); // unwrap_or_else: partial_path always has the owner dir as parent
         std::fs::create_dir_all(&parent).map_err(|e| CloneError::Io { path: parent.clone(), error: e.to_string() })?;
         let args = vec!["repo".to_string(), "clone".to_string(), key.clone(), partial.to_string_lossy().into_owned()];
-        let cloned = crate::commands::code::github::run_gh_within(&parent, &args, CLONE_BOUND)
+        let cloned = continuum_hands::commands::code::github::run_gh_within(&parent, &args, CLONE_BOUND)
             .await
             .map_err(CloneError::from)
             .and_then(|_| std::fs::rename(&partial, &target).map_err(|e| CloneError::Io { path: target.clone(), error: e.to_string() }));
@@ -540,7 +540,7 @@ mod tests {
     // it; a clone gh refused is removed at once (the positive control).
     #[test]
     fn only_a_timed_out_clone_keeps_its_partial() {
-        use crate::commands::code::github::GhRunError;
+        use continuum_hands::commands::code::github::GhRunError;
         let timed_out = CloneError::Gh(GhRunError::TimedOut { args: "repo clone o/r".into(), secs: 900, unconfirmed: Vec::new() });
         assert!(timed_out.leaves_a_partial_that_may_still_be_written(), "even with nothing named unconfirmed: a descendant that left the tree is never found");
         let refused = CloneError::Gh(GhRunError::Failed { args: "repo clone o/r".into(), code: Some(1), stderr: "not found".into() });

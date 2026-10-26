@@ -110,7 +110,7 @@ mod module_registry {
             );
         }
 
-        registry.register(std::sync::Arc::new(crate::modules::work::WorkModule::new(
+        registry.register(std::sync::Arc::new(crate::modules::work_seams::work_module(
             crate::persona::PersonaAircRuntimeRegistry::new(),
             std::sync::Arc::new(crate::memory::DeterministicEmbeddingProvider),
         )));

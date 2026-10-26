@@ -83,6 +83,7 @@ impl From<&airc_work::SubmissionArtifact> for WorkArtifactReference {
 pub struct WorkSubmit {
     pub registry: PersonaAircRuntimeRegistry,
     pub executor_slot: Arc<LateBound<CommandExecutor>>,
+    pub benchmark: Arc<dyn BenchmarkSubmissionAdapter>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
@@ -366,11 +367,11 @@ pub(super) async fn stage_for_owner_on_demand(
     runtime: &std::sync::Arc<crate::persona::PersonaAircRuntime>,
     card: &airc_lib::WorkCard,
 ) -> Result<std::path::PathBuf, CommandError> {
-    use crate::modules::card_staging::Staging;
+    use crate::work::card_staging::Staging;
     let home = crate::paths::continuum_home()
         .map_err(|e| CommandError::Internal(format!("continuum home: {e}")))?;
     let card_uuid = card.card_id.as_uuid();
-    match crate::modules::card_staging::stage_for_card(&home, runtime.persona_id(), card).await {
+    match crate::work::card_staging::stage_for_card(&home, runtime.persona_id(), card).await {
         Staging::Ready { path } => {
             continuum_base::probe!(
                 class = "work.submit.staged_on_demand",
@@ -465,10 +466,11 @@ pub(super) fn instance_of_checkout(checkout: &std::path::Path, card_id: Uuid) ->
 /// Use the benchmark dataset base or the immutable repo-worktree creation anchor.
 /// Legacy worktrees require an explicit base; remote refs and HEAD do not prove
 /// where this work began and can include unrelated integration history.
-pub(super) async fn base_sha_of(checkout: &std::path::Path, instance: &str, is_swe: bool) -> Result<String, CommandError> {
+pub(super) async fn base_sha_of(benchmark: &dyn BenchmarkSubmissionAdapter, checkout: &std::path::Path, instance: &str, is_swe: bool) -> Result<String, CommandError> {
     if is_swe {
-        return crate::commands::benchmark::swe_base_commit_for(instance)
-            .await
+        return benchmark.base_commit(instance)
+            .await?
+            .map(|base| base.to_string())
             .ok_or_else(|| {
                 CommandError::Invalid(format!(
                     "no dataset row names instance {instance}, so its base commit is unknown — pass base_sha"
@@ -606,7 +608,7 @@ pub(super) async fn submission_repository_url(checkout: &std::path::Path, repo: 
     // Conservative metadata-only network bound approved for this owner: not a latency
     // estimate or a new background retry policy. Failure leaves the submission unmade.
     let args = vec!["repo".into(), "view".into(), repo.to_string(), "--json".into(), "url".into(), "--jq".into(), ".url".into()];
-    let url = crate::commands::code::github::run_gh_within(checkout, &args, std::time::Duration::from_secs(30))
+    let url = continuum_hands::commands::code::github::run_gh_within(checkout, &args, std::time::Duration::from_secs(30))
         .await.map_err(CommandError::from)?;
     if !crate::code::repo_registry::network_repo_identity(&url).is_some_and(|(_, _, name)| name == repo.as_str()) {
         return Err(CommandError::Invalid("GitHub repository authority returned an invalid or mismatched URL".into()));
@@ -618,6 +620,7 @@ pub(super) async fn submission_repository_url(checkout: &std::path::Path, repo: 
 /// Parts she supplied herself are kept; the artifact is always recomputed here, so a
 /// placeholder can never reach the board.
 pub(super) async fn derive_submission(
+    benchmark: &dyn BenchmarkSubmissionAdapter,
     checkout: &std::path::Path,
     card_id: Uuid,
     given_instance: Option<String>,
@@ -632,7 +635,7 @@ pub(super) async fn derive_submission(
     let base_sha = match given_base {
         Some(b) => b,
         None => {
-            let created = base_sha_of(checkout, &instance, is_swe).await?;
+            let created = base_sha_of(benchmark, checkout, &instance, is_swe).await?;
             if is_swe {
                 created
             } else {
@@ -652,8 +655,9 @@ pub(super) async fn derive_submission(
     if let Some(refusal) = super::submodule_drift::refuse_unlisted(&moves, listed_submodules, &base_sha) {
         return Err(CommandError::Invalid(refusal));
     }
-    let ws = checkout.to_string_lossy().into_owned();
-    let patch = crate::commands::benchmark::workspace_candidate_diff_from(&ws, Some(&base_sha))?;
+    let base = airc_work::GitObjectId::new(&base_sha)
+        .map_err(|e| CommandError::Invalid(format!("candidate base must name a single git commit: {e}")))?;
+    let patch = benchmark.candidate_diff(checkout, Some(&base))?;
     if patch.trim().is_empty() {
         return Err(CommandError::Invalid(format!(
             "nothing to submit: {} has no changes since {} (substrate paths excluded) — \

@@ -24,11 +24,11 @@ pub(super) fn card_text(c: &WorkCard) -> String {
 pub(super) fn card_candidates(
     cards: &[WorkCard],
     states: &[CardState],
-) -> Vec<crate::commands::embedding::similar::SimilarCandidate> {
+) -> Vec<continuum_embedding::commands::similar::SimilarCandidate> {
     cards
         .iter()
         .filter(|c| states.is_empty() || states.contains(&c.state))
-        .map(|c| crate::commands::embedding::similar::SimilarCandidate {
+        .map(|c| continuum_embedding::commands::similar::SimilarCandidate {
             id: short8(c.card_id.as_uuid()),
             text: card_text(c),
         })
@@ -155,7 +155,7 @@ impl ActionCommand for WorkSimilar {
             .filter(|c| exclude.as_deref() != Some(c.id.as_str()))
             .collect();
         let searched = candidates.len();
-        let ranked = crate::commands::embedding::similar::rank_texts(
+        let ranked = continuum_embedding::commands::similar::rank_texts(
             &self.embedder,
             &query_text,
             &candidates,
@@ -272,7 +272,7 @@ impl ActionCommand for WorkDuplicates {
         let board = board_to_read(&airc, p.room.as_deref()).await?;
         let candidates = card_candidates(&board.cards, &states);
         let searched = candidates.len();
-        let grouped = crate::commands::embedding::groups::group_texts(
+        let grouped = continuum_embedding::commands::groups::group_texts(
             &self.embedder,
             &candidates,
             p.min_z,
@@ -505,16 +505,26 @@ pub struct WorkModule {
     pub(super) executor_slot: std::sync::Arc<
         crate::runtime::LateBound<crate::runtime::command_executor::CommandExecutor>,
     >,
+    /// The benchmark adapter's view of a submission (dataset base, candidate diff, grading a
+    /// hand-in), injected by core so the work verbs name no benchmark concept.
+    pub(super) benchmark: Arc<dyn submission::BenchmarkSubmissionAdapter>,
+    /// Commands core owns that register beside the work verbs (their board is the one the
+    /// cards land on); built in core with the same registry and handed in.
+    pub(super) extra_commands: Vec<Arc<dyn DynCommand>>,
 }
 
 impl WorkModule {
     pub fn new(
         registry: PersonaAircRuntimeRegistry,
         embedder: Arc<dyn crate::ai::embedding::EmbeddingProvider>,
+        benchmark: Arc<dyn submission::BenchmarkSubmissionAdapter>,
+        extra_commands: Vec<Arc<dyn DynCommand>>,
     ) -> Self {
         Self {
             registry,
             embedder,
+            benchmark,
+            extra_commands,
             executor_slot: std::sync::Arc::new(crate::runtime::LateBound::new("work::executor")),
         }
     }
@@ -550,7 +560,7 @@ impl ServiceModule for WorkModule {
     }
 
     fn commands(&self) -> Vec<Arc<dyn DynCommand>> {
-        vec![
+        let own: Vec<Arc<dyn DynCommand>> = vec![
             Arc::new(WorkList {
                 registry: self.registry.clone(),
             }),
@@ -574,6 +584,7 @@ impl ServiceModule for WorkModule {
             Arc::new(submission::WorkSubmit {
                 registry: self.registry.clone(),
                 executor_slot: self.executor_slot.clone(),
+                benchmark: self.benchmark.clone(),
             }),
             Arc::new(submission::WorkReview {
                 registry: self.registry.clone(),
@@ -595,21 +606,8 @@ impl ServiceModule for WorkModule {
             Arc::new(WorkNote {
                 registry: self.registry.clone(),
             }),
-            // benchmark/import: task + oracle only, projected into card rows (no side
-            // effects). Registered here beside the work/* verbs whose board the cards land on.
-            Arc::new(crate::commands::benchmark_import::BenchmarkImport),
-            // coursework/import: the coursework/round recipe's card source (ONE-RESIDENT §10.4),
-            // the same family as benchmark/import and routed from the same module.
-            Arc::new(crate::commands::benchmark_import::CourseworkImport),
-            // persona/roster reads the live persona registry — constructed here for the
-            // same dep-ownership reason (#396 live-roster verb).
-            Arc::new(crate::commands::persona_roster::PersonaRoster {
-                registry: self.registry.clone(),
-            }),
-            Arc::new(crate::commands::presence_directory::PresenceDirectory {
-                registry: self.registry.clone(),
-            }),
-        ]
+        ];
+        own.into_iter().chain(self.extra_commands.iter().cloned()).collect()
     }
 
     fn install_executor(
