@@ -64,9 +64,11 @@ pub(super) fn do_ensure_schema(conn: &Connection, schema: CollectionSchema) -> S
         return StorageResult::err(format!("Create table failed: {}", e));
     }
 
-    // The declared indexes, from their one owner (`ensure_indexes`).
-    if let Err(e) = super::ensure_indexes::do_ensure_indexes(conn, &schema) {
-        return StorageResult::err(e);
+    // The declared indexes, from their one owner (`ensure_indexes`). An explicit
+    // ensure-schema still reports an index the database refused, as it always did.
+    let pass = super::ensure_indexes::do_ensure_indexes(conn, &schema);
+    if let Some(f) = pass.failed.first() {
+        return StorageResult::err(format!("Create index {} on {} failed: {}", f.index, f.collection, f.error));
     }
 
     StorageResult::ok(true)

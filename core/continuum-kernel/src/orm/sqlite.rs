@@ -33,7 +33,7 @@ pub use open_connection::*;
 mod do_ensure_schema;
 use do_ensure_schema::*;
 mod ensure_indexes;
-pub use ensure_indexes::IndexPass;
+pub use ensure_indexes::{IndexFailure, IndexPass};
 mod sqlite_adapter;
 mod conditional;
 mod file;

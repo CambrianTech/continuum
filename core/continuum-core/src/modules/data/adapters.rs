@@ -69,7 +69,7 @@ impl DataState {
             );
             let mut sqlite = SqliteAdapter::new();
             sqlite.initialize(config).await?;
-            ensure_declared_indexes(&sqlite, handle).await?;
+            ensure_declared_indexes(&sqlite, handle).await;
             Arc::new(sqlite)
         };
 
@@ -85,23 +85,44 @@ impl DataState {
 /// 103,319 rows per room page (27-29 ms; with the declared index, under 1 ms, measured
 /// on a copy of the M5's main.db 2026-10-26). Rust-authored entities are ensured by
 /// their own stores. Once per store open; `IF NOT EXISTS` makes a repeat a lookup.
-async fn ensure_declared_indexes(sqlite: &SqliteAdapter, handle: &str) -> Result<(), String> {
+///
+/// An index is performance, never correctness: one the database refuses is a loud
+/// probe naming the entity, the index and the error, counted in the store's report,
+/// and the store opens without it (Cormac's review of #5466).
+async fn ensure_declared_indexes(sqlite: &SqliteAdapter, handle: &str) {
     let schemas = crate::entity_schemas::get_entity_schemas()
         .values()
         .map(crate::entity_schemas::to_collection_schema)
         .collect();
-    let pass = sqlite
-        .ensure_declared_indexes(schemas)
-        .await
-        .map_err(|e| format!("data: declared indexes for handle '{handle}' failed: {e}"))?;
+    let pass = sqlite.ensure_declared_indexes(schemas).await;
+    for failure in &pass.failed {
+        continuum_base::probe!(
+            class = "orm.declared_index.failed",
+            handle = handle,
+            entity = failure.collection.as_str(),
+            index = failure.index.as_str(),
+            error = failure.error.as_str(),
+            "a declared index could not be built; the store serves without it"
+        );
+        crate::log_warn!(
+            "data",
+            "declared_index",
+            "index {} on {} (handle '{}') failed, store open without it: {}",
+            failure.index,
+            failure.collection,
+            handle,
+            failure.error
+        );
+    }
     continuum_base::probe!(
-        class = "orm.declared_indexes.ensured",
+        class = "orm.declared_indexes.report",
         handle = handle,
-        ensured = pass.ensured as u64,
+        declared = pass.declared as u64,
+        applied = pass.ensured as u64,
         awaiting_columns = pass.awaiting_columns as u64,
-        "declared entity indexes applied over existing tables at store open"
+        failed = pass.failed.len() as u64,
+        "declared entity indexes at store open"
     );
-    Ok(())
 }
 
 /// SQLite through the kernel ORM is the only store. A `postgres://` string
