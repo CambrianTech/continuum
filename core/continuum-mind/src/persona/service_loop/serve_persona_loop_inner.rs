@@ -4,6 +4,7 @@ pub(super) async fn serve_persona_loop_inner(
     ctx: &HostedPersona,
     conversation: &mut dyn CitizenConversation,
     opts: ServeOptions,
+    obligations: crate::persona::obligation::Obligations,
 ) -> Result<ServeOutcome, String> {
     // PRECONDITION: caller MUST have called `conversation.prime()`
     // before entering this loop. The supervisor's `spawn_persona_service`
@@ -27,10 +28,6 @@ pub(super) async fn serve_persona_loop_inner(
     let mut deferred_input = crate::persona::wake_backlog::PendingInput::for_persona(ctx.identity.peer_id.as_uuid());
     // Its durable half (card 920619c5): each admitted turn is a row until it ends, so the
     // turns the last stop cut are named here, at the start, instead of vanishing.
-    let obligations = crate::persona::obligation::Obligations::for_persona(
-        ctx.identity.peer_id.as_uuid(),
-        &ctx.identity.agent_name,
-    );
     obligations.report_interrupted((opts.now_ms)()).await;
 
     // The persona's adapter (`ctx.adapter`) is reached by the
@@ -317,7 +314,11 @@ pub(super) async fn serve_persona_loop_inner(
         .await;
         // Recorded BEFORE compose_turn, which marks the trigger read: from here until the turn
         // ends, a stop that cuts it leaves this row behind to say so.
-        let obligation = obligations.admit(turn_room, &msg, wake_engram, now_ms).await;
+        // A retry continues the obligation its first attempt recorded; only a new input records one.
+        let obligation = match admitted_retry.then(|| deferred_input.obligation_for(&msg)).flatten() {
+            Some(owed) => Some(owed),
+            None => obligations.admit(turn_room, &msg, wake_engram, now_ms).await,
+        };
         // 2. Compose the turn's RAG context (budget + multi-source composition); inference
         //    runs WITHOUT holding the cognition mutex.
         let composed = compose_turn(
@@ -385,7 +386,12 @@ pub(super) async fn serve_persona_loop_inner(
         {
             CycleVerdict::Spoke(spoken) => spoken,
             CycleVerdict::Skip => {
-                obligations.close(obligation).await;
+                // A refused or deferred input is still owed: PendingInput retains it for a
+                // retry, so its row stays open with it (Codex on #5480). Only a finished
+                // skip closes.
+                if !deferred_input.keep_obligation(&msg, obligation) {
+                    obligations.close(obligation).await;
+                }
                 continue;
             }
         };

@@ -26,7 +26,7 @@ use uuid::Uuid;
 use crate::cognition::conversation::IncomingMessage;
 use crate::orm::OrmEntity;
 use crate::persona::training_producer::{storage_ok, substrate_connection};
-use crate::runtime::{CommandExecutor, LateBound};
+use crate::runtime::CommandExecutor;
 use continuum_client::{ClientError, Connection, Transport};
 
 /// One admitted turn she has not finished. The id is the turn's own id, minted at admission.
@@ -176,38 +176,23 @@ pub fn newly_interrupted(rows: &[PersonaObligation]) -> impl Iterator<Item = &Pe
     rows.iter().filter(|row| row.interrupted_at_ms.is_none())
 }
 
-/// The service loop's late-bound executor, installed at boot beside the training producer's.
-/// Before installation the loop runs exactly as without obligations, and says so once.
-static EXECUTOR: LateBound<CommandExecutor> = LateBound::new("persona::obligation::executor");
-
-pub fn install_executor(executor: Arc<CommandExecutor>) {
-    EXECUTOR.install(executor);
-}
-
-/// The loop's handle on its obligations: the persona, and the substrate connection when the
-/// executor is installed. Every failure is a probe, never a failed turn (slice 1 measures).
+/// The loop's handle on its obligations: the persona and the substrate connection to her
+/// store. Built by whoever spawns the loop, from the executor boot wired, so a loop without
+/// one cannot exist. Every store failure is a probe, never a failed turn (slice 1 measures).
 pub struct Obligations {
     persona_id: Uuid,
     persona_name: String,
-    conn: Option<Connection<crate::runtime::InProcessTransport>>,
+    conn: Connection<crate::runtime::InProcessTransport>,
 }
 
 impl Obligations {
-    pub fn for_persona(persona_id: Uuid, persona_name: &str) -> Self {
-        let conn = EXECUTOR.cloned().map(|executor| substrate_connection(&executor));
-        if conn.is_none() {
-            continuum_base::probe!(
-                class = "persona.obligation.unwired",
-                persona = %persona_name,
-                "no executor installed: this loop's turns are not recorded, so a stop cannot name what it interrupts"
-            );
-        }
-        Self { persona_id, persona_name: persona_name.to_string(), conn }
+    pub fn new(executor: &Arc<CommandExecutor>, persona_id: Uuid, persona_name: &str) -> Self {
+        Self { persona_id, persona_name: persona_name.to_string(), conn: substrate_connection(executor) }
     }
 
     /// At loop start: ensure the collection, then report and stamp what the last stop left open.
     pub async fn report_interrupted(&self, now_ms: u64) -> InterruptedReport {
-        let Some(conn) = &self.conn else { return InterruptedReport::default() };
+        let conn = &self.conn;
         let rows = match ensure_storage(conn, &self.persona_name).await {
             Ok(()) => open(conn, &self.persona_name, self.persona_id).await,
             Err(error) => Err(error),
@@ -240,9 +225,12 @@ impl Obligations {
 
     /// At admission, before her context is composed. `None` when unrecorded (named by a probe).
     pub async fn admit(&self, room_id: Uuid, trigger: &IncomingMessage, wake_engram: Option<Uuid>, now_ms: u64) -> Option<Uuid> {
-        let conn = self.conn.as_ref()?;
+        let conn = &self.conn;
         let row = PersonaObligation::admitted(self.persona_id, room_id, trigger, wake_engram, now_ms);
-        match record(conn, &self.persona_name, &row).await {
+        let started = std::time::Instant::now();
+        let recorded = record(conn, &self.persona_name, &row).await;
+        self.timed("admit", started);
+        match recorded {
             Ok(()) => Some(row.id),
             Err(error) => {
                 self.fault("record", Some(row.id), &error);
@@ -253,10 +241,26 @@ impl Obligations {
 
     /// When the turn ends, however it ended.
     pub async fn close(&self, turn: Option<Uuid>) {
-        let (Some(conn), Some(turn)) = (&self.conn, turn) else { return };
-        if let Err(error) = close(conn, &self.persona_name, turn).await {
+        let Some(turn) = turn else { return };
+        let conn = &self.conn;
+        let started = std::time::Instant::now();
+        let closed = close(conn, &self.persona_name, turn).await;
+        self.timed("close", started);
+        if let Err(error) = closed {
             self.fault("close", Some(turn), &error);
         }
+    }
+
+    /// Both writes sit on every turn's path, so their cost is measured, never assumed (Fable on
+    /// #5480): one probe per write, read as p50/p90 per node.
+    fn timed(&self, step: &'static str, started: std::time::Instant) {
+        continuum_base::probe!(
+            class = "persona.obligation.write_ms",
+            persona = %self.persona_name,
+            step = step,
+            ms = started.elapsed().as_millis() as u64,
+            "an obligation write on the turn's path"
+        );
     }
 
     fn fault(&self, step: &'static str, turn: Option<Uuid>, error: &ClientError) {

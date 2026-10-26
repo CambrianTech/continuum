@@ -474,7 +474,8 @@ local to the running loop, not a claim of durable restart recovery.
 
 The durable half of that custody is `persona/obligation.rs`: one `persona_obligation`
 row per admitted turn, written after `admit_trigger` and before `compose_turn` (which
-marks the trigger read), and deleted when the turn ends, whether it spoke or skipped.
+marks the trigger read), and deleted when the turn ends. An input `PendingInput` still
+retains (a capacity refusal, a deferral) keeps its row, and its retry continues it.
 A row still open at the loop's next start names a turn a stop or crash cut; the start
 reports it once (`persona.obligation.interrupted`) and stamps it. This slice changes
 no turn. Re-admitting an interrupted turn waits on marks committed before each effect
@@ -482,7 +483,8 @@ no turn. Re-admitting an interrupted turn waits on marks committed before each e
 that already spoke or acted is never run blindly twice; it then reaches her through
 an obligation `Source` in the context codec, never as hand-pushed prompt text. Writes
 use the substrate connection: her own identity is Trusted, and Trusted may not update
-or delete.
+or delete. The supervisor builds the store from the executor boot wired and hands it to
+the loop as a required argument, so a loop that records nothing cannot be constructed.
 
 ### Generation admission ownership (6780e79b)
 

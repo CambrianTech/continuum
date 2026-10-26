@@ -115,9 +115,6 @@ pub(super) fn build_and_install_executor(
     // #249: the durable-transcript reader behind persona wake hydration shares
     // the same substrate executor (one dispatch chain, no parallel query stack).
     crate::persona::durable_history::install_executor(Arc::clone(&executor));
-    // Card 920619c5: the service loop records each admitted turn so a stop can name what it
-    // interrupts; same substrate executor, one dispatch chain.
-    crate::persona::obligation::install_executor(Arc::clone(&executor));
     (executor, provider_registry)
 }
 
