@@ -44,7 +44,7 @@ impl ActionCommand for BenchmarkList {
     const DESCRIPTION: &'static str =
         "List the known benchmarks (name, grader, task count, whether it can be run \
          now). Preview a benchmark's cards with `benchmark/import --suite <name>`; run one as a round with \
-         `activity/spawn --name <room> --recipe benchmark/round --params '{"suite":"<name>","repo":"<owner/name>"}'`.";
+         `activity/spawn --name <room> --recipe benchmark/round --params '{\"suite\":\"<name>\",\"repo\":\"<owner/name>\"}'`.";
     type Params = BenchmarkListParams;
     type Output = BenchmarkListResult;
 
