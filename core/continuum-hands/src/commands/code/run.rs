@@ -424,7 +424,7 @@ mod tests {
     // working: she can see what her code printed instead of guessing.
     #[tokio::test]
     async fn compiles_and_runs_rust_capturing_stdout() {
-        crate::acting_provider::install();
+        crate::test_acting::install();
         let out = CodeRun
             .run(
                 &Ctx::default(),
@@ -450,7 +450,7 @@ mod tests {
     // ordinary name is still there.
     #[tokio::test]
     async fn a_snippet_cannot_see_credential_shaped_variables_of_the_core() {
-        crate::acting_provider::install();
+        crate::test_acting::install();
         std::env::set_var("CU_TEST_HF_TOKEN", "never-on-the-wire");
         std::env::set_var("CU_TEST_PLAIN_DIR", "visible");
         let out = CodeRun
@@ -474,7 +474,7 @@ mod tests {
     // back to coding blind.
     #[tokio::test]
     async fn surfaces_panic_on_runtime_error() {
-        crate::acting_provider::install();
+        crate::test_acting::install();
         let out = CodeRun
             .run(
                 &Ctx::default(),
@@ -502,7 +502,7 @@ mod tests {
     // Err would make `code/run` unusable as a learning hand.
     #[tokio::test]
     async fn surfaces_compile_error_as_result() {
-        crate::acting_provider::install();
+        crate::test_acting::install();
         let out = CodeRun
             .run(
                 &Ctx::default(),
@@ -572,7 +572,7 @@ mod tests {
     #[cfg(unix)]
     #[tokio::test]
     async fn safety_timeout_actually_kills_the_child() {
-        crate::acting_provider::install();
+        crate::test_acting::install();
         let pidfile = std::env::temp_dir().join(format!("cu-coderun-pid-{}", uuid::Uuid::new_v4()));
         // A complete Rust program that records its PID then spins forever. timeout_secs=2
         // gives rustc room to compile (the loop is what overruns and must be killed).
@@ -656,7 +656,7 @@ mod tests {
     // where python3 may be an unusable App Execution Alias while python works.
     #[tokio::test]
     async fn python_runs_and_returns_ground_truth() {
-        crate::acting_provider::install();
+        crate::test_acting::install();
         let r = CodeRun
             .run(
                 &Ctx::default(),

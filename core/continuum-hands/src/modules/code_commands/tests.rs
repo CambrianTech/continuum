@@ -7,7 +7,7 @@
     // still stand where they were bound.
     #[tokio::test]
     async fn create_workspace_binds_hands_once_and_refuses_to_move_them() {
-        crate::acting_provider::install();
+        crate::test_acting::install();
         let (bound, other) = (tempfile::tempdir().expect("test: a"), tempfile::tempdir().expect("test: b"));
         let state = Arc::new(CodeState::new(
             Arc::new(dashmap::DashMap::new()),
@@ -41,7 +41,7 @@
     // The operator is never confined. The decision is the caller's identity, never a params field.
     #[test]
     fn a_resident_reaches_the_host_but_its_credentials_and_an_outside_peer_is_confined() {
-        crate::acting_provider::install();
+        crate::test_acting::install();
         let _home = crate::paths::test_home::HomeGuard::preserve_blocking(); // reads the process home a guarded fixture may be swapping (card cb3221a5)
         let ws = tempfile::tempdir().expect("test: ws");
         assert!(confinement_of(&Ctx::default(), ws.path()).expect("test: acting installed").is_none(), "the operator");
@@ -66,7 +66,7 @@
     // apparent reason so be it"), while a caller from outside this node still is refused.
     #[test]
     fn a_resident_writes_where_she_names_and_an_outside_peer_is_held_to_the_workspace() {
-        crate::acting_provider::install();
+        crate::test_acting::install();
         use crate::code::path_security::PathSecurity;
         let ws = tempfile::tempdir().expect("test: ws");
         let elsewhere = tempfile::tempdir().expect("test: elsewhere");

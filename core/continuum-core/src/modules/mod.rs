@@ -36,8 +36,7 @@ pub mod card_carry;
 pub mod card_staging;
 pub mod channel;
 pub mod chat;
-pub mod code;
-pub mod code_commands;
+pub use continuum_hands::modules::{code, code_commands, python_adapter};
 pub mod cognition;
 pub mod data;
 pub mod dataset;
@@ -74,7 +73,6 @@ pub mod persona_rag_inspect_filesystem;
 pub mod ports;
 pub mod pressure_broker_module;
 pub mod prompt_reuse;
-pub mod python_adapter;
 pub mod rag;
 pub mod recipe;
 pub mod resources_module;
@@ -91,3 +89,8 @@ pub mod vdd;
 pub mod vision;
 pub mod verdict_board;
 pub mod work;
+
+/// Realistic 50-persona load/profiling harness (real CodeModule, real payloads, through a
+/// mind's tool executor). Gated `stress-tests` per the test doctrine; profiling runs only.
+#[cfg(all(test, feature = "stress-tests"))]
+mod code_load_harness;

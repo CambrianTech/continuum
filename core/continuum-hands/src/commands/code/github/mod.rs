@@ -60,7 +60,7 @@ pub(crate) use super::git::workspace_root_for;
 /// `gh` itself reported. A timeout names the processes it couldn't confirm gone: a caller
 /// must treat anything those were writing as possibly still being written.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
-pub(crate) enum GhRunError {
+pub enum GhRunError {
     #[error("could not run `gh` — is the GitHub CLI installed and authenticated? ({0})")]
     Spawn(String),
     #[error("`gh {args}` failed (exit {code:?}): {stderr}")]
@@ -100,14 +100,14 @@ async fn run_gh_owned(root: &Path, args: &[String], bound: Option<std::time::Dur
 }
 
 /// [`run_gh`] with a bound; see [`run_gh_owned`].
-pub(crate) async fn run_gh_within(root: &Path, args: &[String], bound: std::time::Duration) -> Result<String, GhRunError> {
+pub async fn run_gh_within(root: &Path, args: &[String], bound: std::time::Duration) -> Result<String, GhRunError> {
     run_gh_owned(root, args, Some(bound)).await
 }
 
 /// Run one `gh` invocation in `root` as an owned process. Returns trimmed stdout on success; a
 /// non-zero exit or a missing/unauthenticated `gh` FAILS LOUD with the fix. `gh` reads the
 /// repo + auth from the workspace + the host's gh config — never a param.
-pub(crate) async fn run_gh(root: PathBuf, args: Vec<String>) -> Result<String, CommandError> {
+pub async fn run_gh(root: PathBuf, args: Vec<String>) -> Result<String, CommandError> {
     run_gh_owned(&root, &args, None).await.map_err(|e| match e {
         GhRunError::Spawn(e) => CommandError::Internal(format!(
             "code/github: could not run `gh` — is the GitHub CLI installed and \

@@ -39,7 +39,7 @@ pub(super) fn read_scope_of(ctx: &Ctx, workspace: &std::path::Path) -> Result<cr
 /// itself (`vision/look`, and any later one): the caller's engine, the caller's read
 /// scope, the engine's own security. Returns the absolute canonical path, or the same
 /// refusal `code/read` gives — named, correctable, never a bare I/O error.
-pub(crate) async fn resolve_readable_path(
+pub async fn resolve_readable_path(
     state: &CodeState,
     ctx: &Ctx,
     path: &str,

@@ -4,3 +4,8 @@
 pub use continuum_engine::*;
 
 pub mod code;
+pub mod commands;
+pub mod modules;
+
+#[cfg(test)]
+mod test_acting;

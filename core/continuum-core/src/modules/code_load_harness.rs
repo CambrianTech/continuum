@@ -17,13 +17,13 @@
 //!
 //! Gated `stress-tests` per the test doctrine. Run:
 //! `cargo test -p continuum-core --features stress-tests,metal,accelerate --lib \
-//!   modules::code::load_harness -- --nocapture --test-threads=1`
+//!   modules::code_load_harness -- --nocapture --test-threads=1`
 
 use crate::cognition::tool_executor::types::{PersonaMediaConfigLite, ToolExecutionContext};
 use crate::cognition::tool_executor::{CommandToolExecutor, ToolExecutor};
 use crate::ai::types::ToolCall as NativeToolCall;
 use crate::logging::timing::PerformanceStats;
-use super::{CodeModule, CodeState};
+use continuum_hands::modules::code::{CodeModule, CodeState};
 use crate::routing::CallerIdentity;
 use crate::runtime::{CommandExecutor, InProcessTransport, ModuleRegistry};
 use continuum_client::Connection;

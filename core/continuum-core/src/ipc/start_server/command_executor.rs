@@ -105,8 +105,6 @@ pub(super) fn build_and_install_executor(
         .install_executor_on_all(Arc::clone(&executor));
     // The live session-registrar's executor (citizen population on human join).
     live_registrar_executor.install(Arc::clone(&executor));
-    // The acting seam (identity::acting): who is acting and where, for the domain crates below core.
-    crate::acting_provider::install();
 
     // L2 continuous-learning producer: hand the same wired executor to the
     // turn-completion training producer so a live persona reply can be scored,

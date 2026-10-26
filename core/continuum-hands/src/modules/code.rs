@@ -213,11 +213,6 @@ impl ServiceModule for CodeModule {
     }
 }
 
-/// Realistic 50-persona load/profiling harness (real CodeModule, real payloads, through a
-/// mind's tool executor). Gated `stress-tests` per the test doctrine; profiling runs only.
-#[cfg(all(test, feature = "stress-tests"))]
-mod load_harness;
-
 #[cfg(test)]
 mod tests {
     use super::*;
