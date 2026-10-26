@@ -5,7 +5,7 @@
 //!
 //! Used by persona's `cognition::PersonaCognitionEngine::is_mentioned`
 //! (cached mention marker check) and
-//! [`crate::cognition::text_analysis::mention_detection::is_persona_mentioned`]
+//! [`crate::mention_detection::is_persona_mentioned`]
 //! (@mention + direct-address parsing, called once per message per
 //! persona per tick from the unified evaluator pre-response gate).
 //!
