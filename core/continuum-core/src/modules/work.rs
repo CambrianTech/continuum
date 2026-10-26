@@ -8,7 +8,7 @@
 //!
 //! A persona can already READ/run the board via the `airc` CLI through its
 //! `code/shell` — but that acts as the MACHINE-SCOPE identity, not the persona's
-//! own key. These tools resolve the caller's [`PersonaAircRuntime`] and call its
+//! own key. These tools resolve the caller's `PersonaAircRuntime` and call its
 //! `Airc` handle, so a claim is recorded as ASHA, not the operator. Identity-
 //! correct kanban participation: the persona is a first-class work peer on the
 //! same board as everyone else ([[personas-are-peers-in-your-mesh]]).
@@ -31,7 +31,7 @@ use uuid::Uuid;
 
 use airc_lib::{Airc, CardState, ClaimId, ClaimWorkCard, CreateWorkCard, HeartbeatWorkClaim, Priority, ReleaseWorkClaim, RepoId, WorkCard, WorkCardId};
 
-use crate::persona::{PersonaAircRuntime, PersonaAircRuntimeRegistry};
+use crate::persona::PersonaAircRuntimeRegistry;
 use crate::runtime::{CommandResult, ModuleConfig, ModuleContext, ModulePriority, ServiceModule};
 use crate::sdk_codegen::{AccessLevel, ActionCommand, CommandError, Ctx, DynCommand};
 

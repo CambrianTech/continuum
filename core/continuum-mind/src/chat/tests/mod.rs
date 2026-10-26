@@ -206,7 +206,7 @@
         spawn_persist_listener(&tokio::runtime::Handle::current(), bus.clone(), chat);
 
         bus.publish_async_only(
-            crate::ipc::positron_source::CHAT_POSTED,
+            crate::chat::CHAT_POSTED,
             json!({
                 "messageId": Uuid::new_v4(),
                 "roomId": Uuid::new_v4(),
@@ -425,7 +425,7 @@
     // ── chat/poll + chat/send: the typed object registry path ─────────
     //
     // These commands now route via `route_object` as typed
-    // `ActionCommand`s (`crate::commands::chat`), NOT the legacy
+    // `ActionCommand`s (`crate::chat::commands`), NOT the legacy
     // `handle_command` envelope. The tests below prove the module
     // contributes exactly those two objects, that invoking one reaches
     // the shared executor slot and runs the canonical `ChatModule::poll`

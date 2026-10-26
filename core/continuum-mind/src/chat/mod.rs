@@ -55,6 +55,11 @@ use crate::sdk_codegen::DynCommand;
 
 pub mod types;
 
+/// Bus event carrying a posted message. The wire name is the chat module's (its persist
+/// listener consumes it); the EMITTER (`airc::inbound_attach`) and the positron projection
+/// import it, so one string names the event (compression principle).
+pub const CHAT_POSTED: &str = "chat:posted";
+
 use types::{ChatPollParams, ChatPollResult, ChatSendParams, ChatSendResult, CHAT_MESSAGES_COLLECTION, DEFAULT_POLL_LIMIT};
 
 mod chat_data_handle;
@@ -62,6 +67,7 @@ pub use chat_data_handle::*;
 mod chat_module;
 use chat_module::*;
 mod keyset_page;
+pub mod commands;
 use keyset_page::{chronological, PageDirection};
 
 #[cfg(test)]

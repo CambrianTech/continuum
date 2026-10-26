@@ -2,17 +2,17 @@
 //! [`ActionCommand`](crate::sdk_codegen::ActionCommand).
 //!
 //! Dep-holding: the command captures the owning
-//! [`ChatModule`](crate::modules::chat::ChatModule)'s shared late-bound
+//! [`ChatModule`](crate::chat::ChatModule)'s shared late-bound
 //! [`CommandExecutor`](crate::runtime::CommandExecutor) slot. The body reconstructs
 //! a transient `ChatModule` over that same slot (`from_slot`) and delegates to the
-//! canonical [`ChatModule::poll`](crate::modules::chat::ChatModule::poll) — one
+//! canonical [`ChatModule::poll`](crate::chat::ChatModule::poll) — one
 //! implementation, shared by the command and the module's direct-method tests.
 //! Assembled by [`command_objects`](super::command_objects).
 
 use std::sync::Arc;
 
-use crate::modules::chat::types::{ChatPollParams, ChatPollResult};
-use crate::modules::chat::ChatModule;
+use crate::chat::types::{ChatPollParams, ChatPollResult};
+use crate::chat::ChatModule;
 use crate::runtime::{CommandExecutor, LateBound};
 use crate::sdk_codegen::CommandError;
 

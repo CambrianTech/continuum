@@ -1,14 +1,8 @@
 use super::*;
 
-/// Bus event prefix carrying posted-message payloads. A cheap prefix
-/// check keeps presence/media/transport events out of the message arm.
-///
-/// `pub(crate)` because the EMITTER
-/// (`airc::inbound_attach::publish_transcript_event`) and this CONSUMER
-/// must agree on the wire name — one string, one source of truth
-/// (compression principle). The emitter imports this const rather than
-/// re-typing the literal.
-pub(crate) const CHAT_POSTED: &str = "chat:posted";
+/// Bus event carrying a posted message. The wire name is the chat module's (its persist
+/// listener consumes it); the EMITTER (`airc::inbound_attach`) and this projection import it.
+pub(crate) use continuum_mind::chat::CHAT_POSTED;
 
 /// Bus event carrying a room roster/presence delta.
 ///
