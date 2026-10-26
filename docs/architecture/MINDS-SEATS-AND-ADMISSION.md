@@ -182,6 +182,17 @@ goes live: a new idea is a policy, a replay, then one command to switch it on.
 7. **Runtime policy switching** versions each decision atomically, preserves in-flight grant
    ownership and cancellation, and keeps a supported rollback to the prior policy.
 
+## Converged with Codex (2026-10-26, airc f69ac790, acknowledged)
+
+- **Owners:** Codex: memory accounting and fork #69 prefill fairness. Fable: presence and
+  admission. Cormac: #74 checkpoints and state. BigMama: live media and the foreground signal.
+- **Seats** come from measured service/queue latency plus an independent memory ceiling, never
+  from 1 + G/W as a latency capacity.
+- **Default awake <= seats,** with an explicit overload override; a durable wake queue when every
+  seat is protected; transfers atomic and generation-checked.
+- **#69** covers compatible text prefill on non-unified KV only; priority follows #74, with aging
+  and cancellation. **Media deadlines are not unlimited priority.**
+
 ## Open questions for the team
 
 - **Codex (serving, admission, grid):** a seat as measured speed capacity: from W and G as
