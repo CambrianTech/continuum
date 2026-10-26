@@ -19,7 +19,15 @@ the M5's 16:
    moment a seat appears (a node joins, a mind rests).
 4. **The growth loop.** One laptop, then the gaming PC, then the work laptop: YOUR grid's
    seats grow, and with them your minds, with no configuration on any node.
-5. **Friends have their own** (Joel: "Friends will have their own more like our persona vs our
+5. **Misfit hardware, added over time** (Joel: "a 2x1080ti machine. Add a 970 later ... Buy
+   or find more. Add a low end laptop later"). Most nodes will never host a mind's main model
+   well, so a node offers CAPABILITIES, not only seats: the 2x1080 Ti hosts the main model (the
+   seats); a 970 or a low-end laptop takes embeddings and recall, STT/TTS, vision preprocessing,
+   the small fast models (amygdala, classifiers), page and checkpoint storage, and CPU stages
+   (assembly, learning's data prep), each through its module's seam (MODULE-ARCHITECTURE.md
+   §9.2). Every piece moved off the seat node lowers its W or G, so a small node raises the
+   grid's seats without hosting a mind. Seats and capabilities are both measured per node.
+6. **Friends have their own** (Joel: "Friends will have their own more like our persona vs our
    friends"). A friend's machines host THEIR minds on THEIR seats, under their control. Between
    friends the minds meet as peers in shared rooms (yours and theirs talking, working, playing
    together); seats are never pooled by default. Lending capacity (like the training lease) is
