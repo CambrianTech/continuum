@@ -56,30 +56,53 @@ pub fn lock_path(root: &Path) -> Option<PathBuf> {
     Some(if gitdir.is_absolute() { gitdir.join("index.lock") } else { root.join(gitdir).join("index.lock") })
 }
 
-/// Whether any running `git` might be working on `root`, judged conservatively: a git whose cwd
-/// is inside the tree, whose command line names the tree (`--git-dir` / `--work-tree` given from
-/// elsewhere), or whose cwd cannot be read at all. Only a git positively seen working elsewhere
-/// is ruled out: an unreadable cwd is not evidence of absence (Codex on #4477).
-pub fn git_running_in(root: &Path) -> bool {
+/// What one running process says about where it works: its command line, its cwd (`None` when
+/// unreadable) and its environment.
+pub struct GitProcess<'a> {
+    pub cmd: &'a [String],
+    pub cwd: Option<&'a Path>,
+    pub env: &'a [String],
+}
+
+/// PURE: whether this git might be working on the tree whose work root is `root` and whose
+/// administrative gitdir (where the lock lives) is `gitdir`. A git is judged by every way it can
+/// name the tree: its cwd inside either directory, `--git-dir` / `--work-tree` / `-C` arguments,
+/// or `GIT_DIR` / `GIT_WORK_TREE` in its environment, each by the path as given or canonical. A
+/// git launched from elsewhere with `--git-dir=<a worktree's gitdir>` names no work root, so the
+/// gitdir must be matched too (Codex on #5464). An unreadable cwd is never evidence of absence.
+pub fn may_work_on(git: &GitProcess<'_>, root: &Path, gitdir: &Path) -> bool {
+    let canonical = |p: &Path| p.canonicalize().unwrap_or_else(|_| p.to_path_buf()); // unwrap_or_else: an uncanonicalizable path still compares as given
+    let dirs = [root.to_path_buf(), canonical(root), gitdir.to_path_buf(), canonical(gitdir)];
+    let spellings: Vec<String> = dirs.iter().map(|d| d.to_string_lossy().into_owned()).collect();
+    let names_tree = |text: &str| spellings.iter().any(|s| !s.is_empty() && text.contains(s.as_str()));
+    let Some(cwd) = git.cwd else {
+        return true; // unreadable: it may be working here
+    };
+    dirs.iter().any(|d| cwd.starts_with(d))
+        || git.cmd.iter().any(|arg| names_tree(arg))
+        || git.env.iter().filter(|var| var.starts_with("GIT_DIR=") || var.starts_with("GIT_WORK_TREE=")).any(|var| names_tree(var))
+}
+
+/// Whether any running `git` might be working on the tree (see [`may_work_on`]).
+pub fn git_running_in(root: &Path, gitdir: &Path) -> bool {
     use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
     let mut sys = System::new();
     sys.refresh_processes_specifics(
         ProcessesToUpdate::All,
         true,
-        ProcessRefreshKind::nothing().with_cwd(UpdateKind::Always).with_cmd(UpdateKind::Always),
+        ProcessRefreshKind::nothing()
+            .with_cwd(UpdateKind::Always)
+            .with_cmd(UpdateKind::Always)
+            .with_environ(UpdateKind::Always),
     );
-    let canonical = root.canonicalize().unwrap_or_else(|_| root.to_path_buf()); // unwrap_or_else: an uncanonicalizable root still compares as given
-    let spellings = [root.to_string_lossy().into_owned(), canonical.to_string_lossy().into_owned()];
     sys.processes().values().any(|p| {
         let name = p.name().to_string_lossy();
         if name != "git" && name != "git.exe" {
             return false;
         }
-        let names_tree = p.cmd().iter().any(|a| spellings.iter().any(|r| a.to_string_lossy().contains(r.as_str())));
-        match p.cwd() {
-            Some(cwd) => names_tree || cwd.starts_with(&canonical) || cwd.starts_with(root),
-            None => true, // unreadable: it may be working here
-        }
+        let cmd: Vec<String> = p.cmd().iter().map(|a| a.to_string_lossy().into_owned()).collect();
+        let env: Vec<String> = p.environ().iter().map(|v| v.to_string_lossy().into_owned()).collect();
+        may_work_on(&GitProcess { cmd: &cmd, cwd: p.cwd(), env: &env }, root, gitdir)
     })
 }
 
@@ -108,14 +131,25 @@ pub fn settle(root: &Path, stale_after: Duration) -> Settled {
     else {
         return Settled::Absent;
     };
-    match verdict(Some(age), stale_after, age >= stale_after && git_running_in(root)) {
+    // The file judged, by identity: a lock removed and re-created by a live git between the
+    // scan and the unlink is another file, and it is left alone (Codex on #5464).
+    let judged = identity_of(&lock);
+    let gitdir = lock.parent().unwrap_or(root); // unwrap_or: a lock path always has a parent directory
+    match verdict(Some(age), stale_after, age >= stale_after && git_running_in(root, gitdir)) {
         IndexLock::Absent => Settled::Absent,
         IndexLock::Held => Settled::Held { lock, age },
+        IndexLock::Stale if judged.is_none() || identity_of(&lock) != judged => Settled::Held { lock, age },
         IndexLock::Stale => match std::fs::remove_file(&lock) {
             Ok(()) => Settled::Cleared { lock, age },
             Err(error) => Settled::Failed { lock, age, error: error.to_string() },
         },
     }
+}
+
+/// The lock file's identity on its volume, `None` when it cannot be opened (gone, or unreadable:
+/// either way it is not removed on this pass).
+fn identity_of(lock: &Path) -> Option<continuum_host::file_identity::FileIdentity> {
+    std::fs::File::open(lock).ok().and_then(|file| continuum_host::file_identity::of(&file).ok())
 }
 
 #[cfg(test)]
@@ -157,7 +191,34 @@ mod tests {
         assert!(matches!(settle(worktree.path(), STALE_INDEX_LOCK), Settled::Held { .. }), "young under the default bound: left");
         assert!(gitdir.path().join("index.lock").exists());
 
+        // the same lock re-created between judgment and unlink is another file: left in place
+        let first = identity_of(&gitdir.path().join("index.lock"));
+        std::fs::remove_file(gitdir.path().join("index.lock")).expect("remove");
+        std::fs::write(gitdir.path().join("index.lock"), b"").expect("re-create");
+        assert_ne!(first, identity_of(&gitdir.path().join("index.lock")), "a re-created lock reads as another file");
+
         let plain = tempfile::tempdir().expect("plain");
         assert_eq!(lock_path(plain.path()), None, "not a git tree");
+    }
+
+    // what this catches (Codex on #5464): a live git working on a worktree from elsewhere, named
+    // only by its administrative gitdir (--git-dir or GIT_DIR), read as absent so its lock went.
+    #[test]
+    fn a_git_naming_the_tree_any_way_may_hold_its_lock() {
+        let root = Path::new("/w/tree");
+        let gitdir = Path::new("/repo/.git/worktrees/tree");
+        let elsewhere = Path::new("/somewhere/else");
+        let git = |cmd: &[&str], cwd: Option<&Path>, env: &[&str]| {
+            let cmd: Vec<String> = cmd.iter().map(|s| s.to_string()).collect();
+            let env: Vec<String> = env.iter().map(|s| s.to_string()).collect();
+            may_work_on(&GitProcess { cmd: &cmd, cwd, env: &env }, root, gitdir)
+        };
+        assert!(git(&["git", "--git-dir=/repo/.git/worktrees/tree", "status"], Some(elsewhere), &[]), "--git-dir names the gitdir");
+        assert!(git(&["git", "status"], Some(elsewhere), &["GIT_DIR=/repo/.git/worktrees/tree"]), "GIT_DIR names the gitdir");
+        assert!(git(&["git", "-C", "/w/tree", "add", "."], Some(elsewhere), &[]), "-C names the root");
+        assert!(git(&["git", "commit"], Some(Path::new("/w/tree/src")), &[]), "cwd inside the root");
+        assert!(git(&["git", "gc"], Some(Path::new("/repo/.git/worktrees/tree")), &[]), "cwd inside the gitdir");
+        assert!(git(&["git", "status"], None, &[]), "unreadable cwd: may be working here");
+        assert!(!git(&["git", "status"], Some(elsewhere), &["GIT_DIR=/other/.git"]), "a git on another tree");
     }
 }

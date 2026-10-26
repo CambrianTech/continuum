@@ -110,7 +110,7 @@ test('a crate-local change runs that crate and every crate that depends on it', 
   const aboveFloor = TESTED_CRATES.filter(n => !FLOOR.includes(n));
   assert.deepEqual(scope(['core/continuum-kernel/src/lib.rs']), { crates: aboveFloor, cli: false });
   // A floor change runs the floor crate and every crate built on it.
-  assert.deepEqual(scope(['core/continuum-host/src/durable/mod.rs']), { crates: TESTED_CRATES.filter(n => n !== 'continuum-base' && n !== 'continuum-git'), cli: true });
+  assert.deepEqual(scope(['core/continuum-host/src/durable/mod.rs']), { crates: TESTED_CRATES.filter(n => n !== 'continuum-base'), cli: true });
   // continuum-git is used by hands (a citizen's git) and core (the deploy tree): both run, and every crate above hands.
   assert.deepEqual(scope(['core/continuum-git/src/index_lock.rs']), crates('continuum-git', 'continuum-hands', 'continuum-cognition', 'continuum-academy', 'continuum-mind', 'continuum-dreaming', 'continuum-core'));
   // Untested crates reach the tested ones through the graph: llama -> engine -> ...
