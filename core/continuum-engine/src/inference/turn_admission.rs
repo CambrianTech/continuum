@@ -747,6 +747,22 @@ impl std::fmt::Display for QuoteMiss {
     }
 }
 
+/// Ask the engine what a save of `slot` into `filename` would write. The quote names the same
+/// checkpoint subset as the write, or the admitted bytes lie. A non-success status returns before
+/// its body is read, so an engine that refuses and then stalls its error body is a `Status` miss
+/// at once, never a wait that a stall watchdog could report as `EngineStopped` (Codex on #5441).
+pub(crate) async fn request_quote(client: &reqwest::Client, root: &str, slot: u32, filename: &str) -> Result<u64, QuoteMiss> {
+    let response = client.post(format!("{}/slots/{slot}?action=save-size", root.trim_end_matches('/')))
+        .json(&json!({ "filename": filename, "keep_newest_checkpoints": PAGE_CHECKPOINTS_NEWEST })).send().await
+        .map_err(|error| QuoteMiss::Unsent(error.to_string()))?;
+    let status = response.status().as_u16();
+    if !response.status().is_success() {
+        return Err(QuoteMiss::Status(status));
+    }
+    let body = response.json::<serde_json::Value>().await.ok();
+    read_quote(status, body.as_ref(), slot, filename)
+}
+
 /// PURE: the size an engine's `save-size` reply quotes for exactly this slot and file.
 pub(crate) fn read_quote(status: u16, body: Option<&serde_json::Value>, slot: u32, filename: &str) -> Result<u64, QuoteMiss> {
     if !(200..300).contains(&status) {
@@ -795,17 +811,8 @@ async fn kv_page_action_with_capacity(
     }
     if action == "save" && governed {
         // A separate action is required: older engines must not mistake a quote for a write.
-        let quote = async {
-            // The quote names the same checkpoint subset as the write, or the admitted bytes lie.
-            let response = client.post(format!("{}/slots/{slot}?action=save-size", root.trim_end_matches('/')))
-                .json(&json!({ "filename": filename, "keep_newest_checkpoints": PAGE_CHECKPOINTS_NEWEST })).send().await
-                .map_err(|error| QuoteMiss::Unsent(error.to_string()))?;
-            let status = response.status().as_u16();
-            let body = response.json::<serde_json::Value>().await.ok();
-            read_quote(status, body.as_ref(), slot, &filename)
-        };
         let projected = wait_while_engine_progresses(
-            quote, bound,
+            request_quote(client, root, slot, &filename), bound,
             || crate::inference::llama_server::engine_probe(root.trim_end_matches('/'), client),
             |_| {},
         ).await.unwrap_or(Err(QuoteMiss::EngineStopped)); // unwrap_or: the wait gives up only when the engine stopped progressing or answering

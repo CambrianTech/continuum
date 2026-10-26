@@ -232,6 +232,32 @@
         assert!(QuoteMiss::EngineStopped.to_string().contains("stopped progressing"));
     }
 
+    // what this catches (Codex on #5441): an engine that answers 501 and then stalls its error
+    // body. The status must return before the body is read, as a Status miss, not hang the quote
+    // until a watchdog calls the engine stopped.
+    #[tokio::test]
+    async fn a_refused_quote_returns_its_status_without_waiting_for_a_stalled_body() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("test: bind");
+        let root = format!("http://{}", listener.local_addr().expect("test: addr"));
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.expect("test: accept");
+            let mut request = [0u8; 4096];
+            let _ = socket.read(&mut request).await;
+            // Headers promise a body that never arrives.
+            socket.write_all(b"HTTP/1.1 501 Not Implemented\r\ncontent-type: application/json\r\ncontent-length: 64\r\n\r\n{").await.expect("test: write");
+            tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+        });
+        let quoted = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            request_quote(&reqwest::Client::new(), &root, 0, "mind-a.bin"),
+        )
+        .await
+        .expect("the status returns without reading the stalled body"); // expect: test-only bound
+        assert_eq!(quoted, Err(QuoteMiss::Status(501)));
+        server.abort();
+    }
+
     // what this catches: the restore-into-busy-slot bug at its source — while a turn
     // holds its admission (permit + pin), a second activity contending for the SAME
     // single slot must NOT be able to evict the pinned slot out from under it. Only
