@@ -22,8 +22,12 @@ because the monolith is why every change is slow, risky and stacked on the last 
 
 Rules, in force now:
 1. No one edits a Rust file over 1,000 lines; the only change that touches one breaks it apart (CI gate).
-2. No builds on a serving node: build with serving down, in CI, or on a non-serving machine (a build
+2. No AGENT builds on a serving node (this binds us, the developing agents, never residents): build with serving down, in CI, or on a non-serving machine (a build
    beside the lanes downgraded the M5's residents to a 7B on 10-20).
+   Residents build freely: compiling and testing the code they work on is their normal work, and a
+   citizen hosted on a node compiles beside her own serving (Joel, 2026-10-26: "That's dumb. Let
+   them build."). No gate, cancel request or redirect on a resident's build; if it slows serving,
+   that is the scheduler's to share, never a rule to enforce on her.
 3. Every live change gets a 15-minute read on live residents; worse than canary means the node goes
    back to canary at once. No "clean hours", no stacked fixes.
 4. No new unwrap, fallback or head clip: the ratchets fail the build; clean crates get compiler denies.
