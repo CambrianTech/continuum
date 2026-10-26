@@ -274,7 +274,7 @@ pub(crate) async fn guard_resident_model(
         // the #106 sidecar lane beside a text-only mind. A request for the
         // sidecar's model is exactly as guaranteed as one for the active
         // model (the daemon verified its `/props` before publishing), and
-        // `endpoints_for_model` routes it to `vision_base_url`.
+        // `endpoints_for_model` (via `route_now`) routes it to `vision_base_url`.
         let mut snap = snap;
         if !snapshot_guarantees(&snap, model) && !settled_on_another_model(&snap) {
             // A TRANSITION, not a fault — wait it out instead of failing the turn.

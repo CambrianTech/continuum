@@ -154,14 +154,10 @@ impl OpenAICompatibleAdapter {
     /// [`PROVIDER_ID`](crate::inference::llama_server::PROVIDER_ID) const — no
     /// name sniffing), and the address exists only when `/props` confirmed
     /// sight, so pixels can never be aimed at a text lane.
-    pub(super) fn endpoints_for_model(&self, model: &str, base: &OpenAiBase) -> OpenAiBase {
-        self.endpoints_for_model_in(model, base, &crate::inference::llama_server::current_serving())
-    }
-
-    /// PURE over `snap`: [`Self::endpoints_for_model`] against one snapshot, so a decision
-    /// about the destination (which engine a request reaches) reads the same route the
-    /// request takes.
-    pub(super) fn endpoints_for_model_in(
+    ///
+    /// PURE over `snap`: the caller loads the snapshot once ([`Self::route_now`]) so the URL
+    /// and every decision about the destination (its `tail_tools`) read the same route.
+    pub(super) fn endpoints_for_model(
         &self,
         model: &str,
         base: &OpenAiBase,
@@ -194,7 +190,7 @@ impl OpenAICompatibleAdapter {
     }
 
     /// PURE: [`Self::route_now`] over one `snap`. The tail gate holds only where the route
-    /// ([`Self::endpoints_for_model_in`]) reaches the serving lane whose own reported build takes
+    /// ([`Self::endpoints_for_model`]) reaches the serving lane whose own reported build takes
     /// `tail_tools` (`engine_takes`). That evidence is about the main lane only, so a request
     /// routed to the vision sidecar, a dedicated lane, or any other base gets `false`, as does a
     /// provider outside the fork-gateway family.
@@ -205,7 +201,7 @@ impl OpenAICompatibleAdapter {
         snap: &crate::inference::llama_server::ServingSnapshot,
         engine_takes: bool,
     ) -> RequestRoute {
-        let route = self.endpoints_for_model_in(model, base, snap);
+        let route = self.endpoints_for_model(model, base, snap);
         let tail_tools = self.config.tail_tools
             && !self.dedicated_lane
             && engine_takes
