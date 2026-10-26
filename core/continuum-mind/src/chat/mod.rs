@@ -19,14 +19,11 @@
 //! - Architecture from `docs/architecture/MODULE-ARCHITECTURE.md` (PR #1482)
 //! - Scaffold shape from `GeneratorModule` (PR #1487)
 //!
-//! # Scope of this PR
+//! # What it serves
 //!
-//! Only `chat/poll` ships in Rust today. The other three commands
-//! (`chat/send`, `chat/analyze`, `chat/export`) are wired into the
-//! dispatch table as fail-loud stubs that name follow-up PRs. The
-//! TS implementations stay live on canary so consumers see no
-//! regression; the kernel will start owning each command as its
-//! follow-up PR lands.
+//! `chat/poll`, `chat/history` and `chat/send` run here in Rust: reads page by a
+//! `(timestamp, id)` keyset (`keyset_page`), never by offset. `chat/analyze` and
+//! `chat/export` are still unmigrated and refuse loudly, naming that (`chat_module.rs`).
 //!
 //! The reason for the staged migration: `chat/poll` is the cleanest
 //! outlier (pure read, no airc, no media side-effects) which lets us
