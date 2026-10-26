@@ -1,0 +1,44 @@
+name: Sahar exact artifact reboot tests
+on:
+  pull_request:
+    paths:
+      - .github/workflows/sahar-exact-reboot-tests.yml
+permissions:
+  contents: read
+jobs:
+  exact-artifact:
+    if: github.head_ref == 'review/sahar-d4e8c1a7-exact'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      # Validate the submitted source, not this workflow commit or a merge ref.
+      - uses: actions/checkout@v4
+        with:
+          ref: 463b6a29763402baf31857d1b47a16d7c7aa0475
+          submodules: recursive
+      - name: Verify source and toolchain
+        run: |
+          test "$(git rev-parse HEAD)" = 463b6a29763402baf31857d1b47a16d7c7aa0475
+          rustup show
+          rustc --version
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update -o Acquire::Retries=3
+          sudo apt-get install -y --no-install-recommends cmake pkg-config libssl-dev libpq-dev protobuf-compiler libclang-dev clang build-essential libglib2.0-dev libasound2-dev libva-dev
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: sahar-exact-reboot-tests
+          save-if: false
+      - name: Run actual binary reboot tests
+        shell: bash
+        run: |
+          set -o pipefail
+          cargo test -p continuum-core --bin continuum --profile dev-fast -- reboot_tests 2>&1 | tee reboot-tests.log
+          # A stale filter must not pass with zero tests. All ten are in this artifact.
+          grep -Eq 'test result: ok\. 10 passed; 0 failed;' reboot-tests.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: sahar-463b6a297-reboot-tests
+          path: reboot-tests.log
+          if-no-files-found: warn
