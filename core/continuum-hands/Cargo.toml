@@ -13,6 +13,7 @@ serde.workspace = true
 serde_json.workspace = true
 uuid.workspace = true
 continuum-base = { path = "../continuum-base" }
+continuum-git = { path = "../continuum-git" } # a dead git's index.lock in a citizen's workspace (card d7765b90)
 schemars = { version = "0.8", features = ["uuid1"] }
 reqwest = { version = "0.12", features = ["json", "multipart", "stream"] }
 dashmap = "6.1"  # Lock-free concurrent HashMap
