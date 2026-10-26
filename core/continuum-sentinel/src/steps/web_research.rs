@@ -24,7 +24,7 @@ pub async fn execute(
     let query = interpolation::interpolate(query, ctx);
     let extract = extract.map(|e| interpolation::interpolate(e, ctx));
 
-    let log = crate::runtime::logger("sentinel");
+    let log = continuum_kernel::runtime::logger("sentinel");
     log.info(&format!(
         "[{handle_id}] WebResearch step {index}: query=\"{query}\""
     ));

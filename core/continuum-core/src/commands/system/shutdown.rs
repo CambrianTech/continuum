@@ -114,7 +114,7 @@ crate::action_command! {
     output: SystemQuery,
     run(_this, _ctx, p) => {
         validate_commit(&p, shutdown_target(), crate::runtime::shutdown_receipt().as_ref())?;
-        crate::modules::sentinel::shutdown_all_sentinels();
+        continuum_sentinel::shutdown_all_sentinels();
         // Match the signal path: save/join is already complete, and native static
         // destructors are deliberately skipped. No await between validation and exit.
         unsafe { libc::_exit(0) }

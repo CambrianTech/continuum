@@ -15,7 +15,9 @@ pub(super) fn register_closing_modules(
     // Process isolation via child processes - safe for Xcode, cargo, etc.
     let sentinel_module = Arc::new(SentinelModule::new());
     runtime.register(sentinel_module.clone());
-    crate::modules::sentinel::register_for_shutdown(sentinel_module);
+    continuum_sentinel::register_for_shutdown(sentinel_module);
+    // The local-inference HTTP endpoint commands (sentinel/local-inference-*) live beside http/.
+    runtime.register(Arc::new(crate::http::LocalInferenceModule));
 
     // PlasticityModule: Adaptive neural plasticity optimization engine
     // Provides plasticity/analyze, plasticity/compact, plasticity/topology

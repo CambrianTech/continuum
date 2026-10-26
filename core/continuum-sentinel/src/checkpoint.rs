@@ -18,7 +18,7 @@ fn checkpoints_dir() -> PathBuf {
     if let Some(override_dir) = std::env::var_os("CONTINUUM_CHECKPOINT_DIR") {
         return PathBuf::from(override_dir);
     }
-    let home = crate::paths::continuum_home().expect("Failed to resolve home directory");
+    let home = continuum_kernel::paths::continuum_home().expect("Failed to resolve home directory");
     home.join("sentinel").join("checkpoints")
 }
 
@@ -86,7 +86,7 @@ pub fn list_checkpoints() -> Result<Vec<PipelineCheckpoint>, String> {
                 Ok(data) => match serde_json::from_str::<PipelineCheckpoint>(&data) {
                     Ok(cp) => checkpoints.push(cp),
                     Err(e) => {
-                        let log = crate::runtime::logger("sentinel");
+                        let log = continuum_kernel::runtime::logger("sentinel");
                         log.warn(&format!(
                             "Skipping corrupt checkpoint {}: {e}",
                             path.display()
@@ -94,7 +94,7 @@ pub fn list_checkpoints() -> Result<Vec<PipelineCheckpoint>, String> {
                     }
                 },
                 Err(e) => {
-                    let log = crate::runtime::logger("sentinel");
+                    let log = continuum_kernel::runtime::logger("sentinel");
                     log.warn(&format!(
                         "Failed to read checkpoint {}: {e}",
                         path.display()
@@ -144,7 +144,7 @@ pub fn recover_interrupted() -> Result<Vec<String>, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::modules::sentinel::types::*;
+    use crate::types::*;
     use std::collections::HashMap;
     use std::sync::OnceLock;
 

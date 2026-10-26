@@ -7,7 +7,7 @@ use serde_json::json;
 use std::path::PathBuf;
 use std::time::Instant;
 
-use crate::modules::sentinel::types::{ExecutionContext, Pipeline, PipelineContext, StepResult};
+use crate::types::{ExecutionContext, Pipeline, PipelineContext, StepResult};
 
 /// Execute a nested pipeline inline, returning its result as a step result
 pub async fn execute(
@@ -16,7 +16,7 @@ pub async fn execute(
     ctx: &mut ExecutionContext,
     pipeline_ctx: &PipelineContext<'_>,
 ) -> Result<StepResult, String> {
-    use crate::runtime;
+    use continuum_kernel::runtime;
     let log = runtime::logger("sentinel");
     let start = Instant::now();
 
@@ -109,8 +109,8 @@ pub async fn execute(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::modules::sentinel::types::{ExecutionContext, PipelineStep};
-    use crate::runtime::{message_bus::MessageBus, ModuleRegistry};
+    use crate::types::{ExecutionContext, PipelineStep};
+    use continuum_kernel::runtime::{message_bus::MessageBus, ModuleRegistry};
     use std::collections::HashMap;
     use std::sync::Arc;
 

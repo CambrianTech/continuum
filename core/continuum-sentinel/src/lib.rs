@@ -32,11 +32,11 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::mpsc;
 
-use crate::runtime::{
+use continuum_kernel::runtime::{
     message_bus::MessageBus, CommandResult, LateBound, ModuleConfig, ModuleContext, ModulePriority,
     ModuleRegistry, ServiceModule,
 };
-use crate::runtime::params::Params;
+use continuum_kernel::runtime::params::Params;
 
 mod global_sentinel;
 pub use global_sentinel::*;

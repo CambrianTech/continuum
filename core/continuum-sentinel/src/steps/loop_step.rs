@@ -10,8 +10,8 @@ use serde_json::{json, Value};
 use std::time::Instant;
 use tokio::io::AsyncWriteExt;
 
-use crate::modules::sentinel::interpolation;
-use crate::modules::sentinel::types::{
+use crate::interpolation;
+use crate::types::{
     ExecutionContext, PipelineContext, PipelineStep, StepResult, DEFAULT_MAX_ITERATIONS,
 };
 
@@ -27,7 +27,7 @@ pub async fn execute(
     ctx: &mut ExecutionContext,
     pipeline_ctx: &PipelineContext<'_>,
 ) -> Result<StepResult, String> {
-    use crate::runtime;
+    use continuum_kernel::runtime;
     let log = runtime::logger("sentinel");
     let start = Instant::now();
 
@@ -217,8 +217,8 @@ impl LoopMode {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::modules::sentinel::types::{ExecutionContext, PipelineStep};
-    use crate::runtime::{message_bus::MessageBus, ModuleRegistry};
+    use crate::types::{ExecutionContext, PipelineStep};
+    use continuum_kernel::runtime::{message_bus::MessageBus, ModuleRegistry};
     use std::collections::HashMap;
     use std::path::PathBuf;
     use std::sync::Arc;

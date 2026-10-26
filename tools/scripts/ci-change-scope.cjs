@@ -6,12 +6,12 @@ const { isDeepStrictEqual } = require('node:util');
 // Which of them run is derived from the workspace graph at selection time, never listed here.
 const TESTED_CRATES = ['continuum-core', 'continuum-mind', 'continuum-dreaming', 'continuum-engine', 'continuum-perception', 'continuum-genome',
   'continuum-kernel', 'continuum-live', 'continuum-hands', 'continuum-memory', 'continuum-experience',
-  'continuum-cognition', 'continuum-academy', 'continuum-base', 'continuum-host'];
+  'continuum-cognition', 'continuum-academy', 'continuum-sentinel', 'continuum-base', 'continuum-host'];
 // The cargo features each crate's job builds its tests with: the crate job and the cache-warming
 // job both read this, so the cache holds exactly the units the crate jobs ask for. Core is the
 // one that compiles and tests the call (livekit-webrtc) and 3D-avatar (avatar-3d) paths a node's
 // profile turns on; memory and base have no fixtures feature; the rest test with their fixtures.
-const NO_FIXTURES = new Set(['continuum-memory', 'continuum-base']);
+const NO_FIXTURES = new Set(['continuum-memory', 'continuum-base', 'continuum-sentinel']);
 const TEST_FEATURES = Object.fromEntries(TESTED_CRATES.map(c => [c,
   c === 'continuum-core' ? 'livekit-webrtc,avatar-3d' : NO_FIXTURES.has(c) ? '' : 'test-fixtures']));
 

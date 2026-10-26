@@ -43,7 +43,7 @@ pub async fn execute(
     // Interpolate prompt
     let prompt = interpolation::interpolate(prompt, ctx);
 
-    let log = crate::runtime::logger("sentinel");
+    let log = continuum_kernel::runtime::logger("sentinel");
     log.info(&format!(
         "[{handle_id}] Approve step {index}: waiting for approval — {prompt}"
     ));
@@ -187,8 +187,8 @@ pub async fn execute(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::modules::sentinel::types::ExecutionContext;
-    use crate::runtime::{message_bus::MessageBus, ModuleRegistry};
+    use crate::types::ExecutionContext;
+    use continuum_kernel::runtime::{message_bus::MessageBus, ModuleRegistry};
     use std::sync::Arc;
 
     #[tokio::test]

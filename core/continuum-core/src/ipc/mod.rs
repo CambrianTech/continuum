@@ -25,7 +25,7 @@ use crate::modules::memory::{MemoryModule, MemoryState};
 use crate::modules::models::ModelsModule;
 use crate::modules::persona_allocator::PersonaAllocatorModule;
 use crate::modules::rag::{RagModule, RagState};
-use crate::modules::sentinel::SentinelModule;
+use continuum_sentinel::SentinelModule;
 use crate::modules::system_resources::SystemResourceModule;
 use crate::modules::vision::VisionModule;
 /// IPC server for continuum-core

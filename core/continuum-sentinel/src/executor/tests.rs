@@ -1,7 +1,7 @@
 #![cfg(test)]
     use super::*;
-    use crate::modules::sentinel::types::{Pipeline, PipelineStep};
-    use crate::runtime::{message_bus::MessageBus, ModuleRegistry};
+    use crate::types::{Pipeline, PipelineStep};
+    use continuum_kernel::runtime::{message_bus::MessageBus, ModuleRegistry};
     use serde_json::json;
     use std::sync::Arc;
 

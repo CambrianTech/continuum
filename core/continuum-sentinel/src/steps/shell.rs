@@ -5,8 +5,8 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 use tokio::process::Command;
 
-use crate::modules::sentinel::interpolation;
-use crate::modules::sentinel::types::{step_err, ExecutionContext, PipelineContext, StepResult};
+use crate::interpolation;
+use crate::types::{step_err, ExecutionContext, PipelineContext, StepResult};
 
 /// Execute a shell step
 ///
@@ -25,7 +25,7 @@ pub async fn execute(
     pipeline_ctx: &PipelineContext<'_>,
     env: Option<&std::collections::HashMap<String, String>>,
 ) -> Result<StepResult, String> {
-    use crate::runtime;
+    use continuum_kernel::runtime;
     let log = runtime::logger("sentinel");
     let start = Instant::now();
 
@@ -70,11 +70,11 @@ pub async fn execute(
 
     // owned (lane_process::run_owned): at the bound, or when the pipeline is dropped, the step's
     // command and everything it started are ended; kill_on_drop ended only the direct child
-    let output = crate::inference::lane_process::run_owned(command, Some(Duration::from_secs(timeout_secs)), "sentinel-shell", std::sync::Arc::default()).await;
+    let output = continuum_engine::inference::lane_process::run_owned(command, Some(Duration::from_secs(timeout_secs)), "sentinel-shell", std::sync::Arc::default()).await;
 
     let duration_ms = start.elapsed().as_millis() as u64;
 
-    use crate::inference::lane_process::Ended;
+    use continuum_engine::inference::lane_process::Ended;
     let output = match output {
         Ok(output) => output,
         Err(e) => return Err(step_err(pipeline_ctx.handle_id, &format!("Shell step failed to execute '{actual_cmd}'"), e)),
@@ -124,8 +124,8 @@ pub async fn execute(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::modules::sentinel::types::ExecutionContext;
-    use crate::runtime::{message_bus::MessageBus, ModuleRegistry};
+    use crate::types::ExecutionContext;
+    use continuum_kernel::runtime::{message_bus::MessageBus, ModuleRegistry};
     use std::collections::HashMap;
     use std::sync::Arc;
 

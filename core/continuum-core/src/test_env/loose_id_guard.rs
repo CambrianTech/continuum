@@ -87,7 +87,6 @@ const LOOSE_IDS: &[LooseId] = &[
     LooseId { file: "memory/types.rs", field: "room_id", why: "pending: ours, but nothing on this path RESOLVES yet. Typing it as an identity today would assert something the code does not do — #164/#396" },
     LooseId { file: "modules/rag.rs", field: "room_id", why: "pending: ours, but nothing on this path RESOLVES yet. Typing it as an identity today would assert something the code does not do — #164/#396" },
     LooseId { file: "modules/room.rs", field: "room_id", why: "pending: ours, but nothing on this path RESOLVES yet. Typing it as an identity today would assert something the code does not do — #164/#396" },
-    LooseId { file: "modules/sentinel/escalation.rs", field: "persona_id", why: "pending: ours, but nothing on this path RESOLVES yet. Typing it as an identity today would assert something the code does not do — #164/#396" },
     LooseId { file: "modules/work/work_card_state_changed.rs", field: "card_id", why: "pending: airc work-card id. Needs a CardRef/CardId split with airc's own resolver — #164" },
     LooseId { file: "modules/work/work_create.rs", field: "card_id", why: "pending: airc work-card id. Needs a CardRef/CardId split with airc's own resolver — #164" },
     LooseId { file: "modules/work/work_create_command.rs", field: "card_id", why: "pending: airc work-card id. Needs a CardRef/CardId split with airc's own resolver — #164" },
@@ -116,7 +115,8 @@ const LOOSE_IDS: &[LooseId] = &[
     LooseId { file: "routing/airc_realtime.rs", field: "user_id", why: "pending: ours, but nothing on this path RESOLVES yet. Typing it as an identity today would assert something the code does not do — #164/#396" },
     LooseId { file: "cognition/eval/sweep_orphan_eval_roots.rs", field: "room_id", why: "pending: ours, but nothing on this path RESOLVES yet. Typing it as an identity today would assert something the code does not do — #164/#396" },
     LooseId { file: "modules/dataset/dataset_manifest.rs", field: "room_id", why: "pending: ours, but nothing on this path RESOLVES yet. Typing it as an identity today would assert something the code does not do — #164/#396" },
-    LooseId { file: "modules/sentinel/types.rs", field: "persona_id", why: "pending: ours, but nothing on this path RESOLVES yet. Typing it as an identity today would assert something the code does not do — #164/#396" },
+    LooseId { file: "escalation.rs", field: "persona_id", why: "pending: ours, but nothing on this path RESOLVES yet. Typing it as an identity today would assert something the code does not do — #164/#396" },
+    LooseId { file: "types.rs", field: "persona_id", why: "pending: ours, but nothing on this path RESOLVES yet. Typing it as an identity today would assert something the code does not do — #164/#396" },
     LooseId { file: "persona/service_loop/burst_fingerprint.rs", field: "room_id", why: "pending: ours, but nothing on this path RESOLVES yet. Typing it as an identity today would assert something the code does not do — #164/#396" },
     LooseId { file: "persona/service_loop/burst_fingerprint.rs", field: "sender_id", why: "pending: ours, but nothing on this path RESOLVES yet. Typing it as an identity today would assert something the code does not do — #164/#396" },
 ];

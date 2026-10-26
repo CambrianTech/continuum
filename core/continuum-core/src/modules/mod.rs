@@ -79,7 +79,6 @@ pub mod recipe;
 pub mod resources_module;
 pub mod room;
 pub mod runtime_control;
-pub mod sentinel;
 pub use continuum_engine::{plasticity, serving_pin_store, serving_tier_down};
 pub mod serving_consumer;
 pub mod serving_daemon;
