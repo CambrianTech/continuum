@@ -293,6 +293,8 @@ pub struct GenomeRecallReplayResult {
 
 pub struct GenomeRecallReplay {
     pub(crate) decisions: Arc<LateBound<OrmStore<RecallDecision>>>,
+    /// Whose trust policy says whether the caller is the owner (card 285c4ed2).
+    pub(crate) executor: Arc<LateBound<crate::runtime::CommandExecutor>>,
 }
 
 #[async_trait]
@@ -318,8 +320,11 @@ impl ActionCommand for GenomeRecallReplay {
             .map_err(|e| CommandError::Invalid(e.to_string()))?;
         // Capture includes the caller's need/context. Verified peers can inspect
         // their own decisions; local substrate/operator retains mechanic access.
-        if crate::modules::grid::trust_policy::caller_trust(ctx.caller.as_ref())
-            != crate::routing::trust_level::TrustLevel::Owner
+        // The executor's policy says whether she is the owner; no executor, or a policy that
+        // cannot resolve it, is not the owner, so she replays only her own decision.
+        let owner = self.executor.cloned().and_then(|executor| executor.caller_trust(ctx.caller.as_ref()))
+            == Some(crate::routing::trust_level::TrustLevel::Owner);
+        if !owner
             && ctx
                 .caller
                 .as_ref()
@@ -424,7 +429,9 @@ mod tests {
             .unwrap();
         let decisions = Arc::new(LateBound::new("replay test"));
         decisions.install(store);
-        let command = GenomeRecallReplay { decisions };
+        let executor = Arc::new(LateBound::new("replay test executor"));
+        executor.install(Arc::new(crate::runtime::CommandExecutor::new(Arc::new(crate::runtime::registry::ModuleRegistry::new()))));
+        let command = GenomeRecallReplay { decisions, executor };
         let params = GenomeRecallReplayParams {
             trace_id: pool.trace_ref.0.as_uuid().to_string(),
             policy: None,
