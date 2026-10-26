@@ -29,7 +29,7 @@
 //!   the harness has already written; the live-emit path lands
 //!   when those PRs are bound.
 
-use crate::commands::vdd::command_objects;
+use super::commands::command_objects;
 use crate::runtime::{CommandResult, ModuleConfig, ModuleContext, ModulePriority, ServiceModule};
 use crate::sdk_codegen::DynCommand;
 use async_trait::async_trait;

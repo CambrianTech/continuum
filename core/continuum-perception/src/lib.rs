@@ -7,3 +7,4 @@ pub use continuum_live::*;
 
 pub mod perception;
 pub mod rag;
+pub mod search;
