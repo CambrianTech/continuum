@@ -502,6 +502,12 @@ impl EndpointSlots {
         tasks.spawn(operation);
     }
 
+    /// The model this endpoint's engine was launched with, ready or not: a page switch in a
+    /// relaunch's drain still waits on that engine's batches.
+    pub(crate) fn launched_model(&self) -> Option<String> {
+        self.state.lock().contract.as_ref().map(|contract| contract.model_id.clone())
+    }
+
     pub fn served_geometry(&self) -> Option<crate::inference::served_window_store::ServedGeometry> {
         let state = self.state.lock();
         let generation = state.generation.as_ref()?;

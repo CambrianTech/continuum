@@ -649,7 +649,7 @@ const QUIET_ENGINE_CHECKPOINTS: u32 = 8;
 /// quiet engine here is working the switch itself.
 async fn wait_while_engine_progresses<T, W, P, PF>(
     work: W,
-    bound: std::time::Duration,
+    bounds: impl Into<crate::inference::llama_server::WaitBounds>,
     progress: P,
     on_busy: impl FnMut(u64),
 ) -> Option<T>
@@ -658,7 +658,7 @@ where
     P: FnMut() -> PF,
     PF: std::future::Future<Output = EngineProbe>,
 {
-    crate::inference::llama_server::wait_while_engine_progresses(work, bound, QUIET_ENGINE_CHECKPOINTS, progress, on_busy).await
+    crate::inference::llama_server::wait_while_engine_progresses(work, bounds, QUIET_ENGINE_CHECKPOINTS, progress, on_busy).await
 }
 
 /// Execute one page action through the shared turn/warm-ahead boundary. The
@@ -700,7 +700,7 @@ pub(crate) async fn kv_page_action(
 // or the concurrently updated switch-cost distribution.
 async fn bounded_page_receipt<P, PF>(
     request: reqwest::RequestBuilder,
-    bound: std::time::Duration,
+    bounds: impl Into<crate::inference::llama_server::WaitBounds>,
     progress: P,
     on_busy: impl FnMut(u64),
 ) -> Option<Result<(u16, Option<serde_json::Value>), reqwest::Error>>
@@ -714,7 +714,7 @@ where
         let body = response.json::<serde_json::Value>().await.ok();
         Ok((status, body))
     };
-    wait_while_engine_progresses(receipt, bound, progress, on_busy).await
+    wait_while_engine_progresses(receipt, bounds, progress, on_busy).await
 }
 
 /// Why a page save's size quote gave no size: each a different fault, so the refusal names which
@@ -791,6 +791,11 @@ async fn kv_page_action_with_capacity(
     let operation = (action == "restore").then(uuid::Uuid::new_v4);
     let (p50_ms, p90_ms, measured) = KV_PAGE_SWITCH_MS.p50_p90();
     let bound = kv_page_wedge_bound(p90_ms);
+    // Another slot may be mid-batch: its counters move once per batch, so an engine that is
+    // processing and unmoved is judged over the measured batch window, never one checkpoint
+    // (card 0b52b957: 3 of 3 saves refused 15-17 s into a ~190 s batch on enrico).
+    let model = crate::inference::slots::directory().endpoint(root).launched_model();
+    let bounds = crate::inference::llama_server::WaitBounds::for_model(bound, model.as_deref());
     let started = std::time::Instant::now();
     // BUSY IS NOT DEAD. The bound is a checkpoint, never a verdict: llama-server runs
     // slot save/restore on its task queue BETWEEN decode batches, so under a full set
@@ -812,7 +817,7 @@ async fn kv_page_action_with_capacity(
     if action == "save" && governed {
         // A separate action is required: older engines must not mistake a quote for a write.
         let projected = wait_while_engine_progresses(
-            request_quote(client, root, slot, &filename), bound,
+            request_quote(client, root, slot, &filename), bounds,
             || crate::inference::llama_server::engine_probe(root.trim_end_matches('/'), client),
             |_| {},
         ).await.unwrap_or(Err(QuoteMiss::EngineStopped)); // unwrap_or: the wait gives up only when the engine stopped progressing or answering
@@ -822,7 +827,8 @@ async fn kv_page_action_with_capacity(
             Ok(bytes) => payload["admitted_bytes"] = json!(bytes),
             Err(reason) => {
                 continuum_base::probe!(class = "inference.kv_page.admission_refused", slot = slot as u64,
-                    reason = %reason, "page save refused before any checkpoint file write");
+                    reason = %reason, unmoved_ms = bounds.unmoved.as_millis() as u64,
+                    "page save refused before any checkpoint file write");
                 return PageOutcome::Rejected;
             }
         }
@@ -830,7 +836,7 @@ async fn kv_page_action_with_capacity(
     // The same progress bound covers the complete receipt, not just headers.
     let resp = bounded_page_receipt(
         client.post(&url).json(&payload),
-        bound,
+        bounds,
         || async {
             match operation {
                 Some(operation) => crate::inference::llama_server::restore_probe(root.trim_end_matches('/'), client, operation, slot).await,
@@ -844,6 +850,7 @@ async fn kv_page_action_with_capacity(
                 slot = slot as u64,
                 waited_ms = started.elapsed().as_millis() as u64,
                 bound_ms = bound.as_millis() as u64,
+                unmoved_ms = bounds.unmoved.as_millis() as u64,
                 busy_checkpoints,
                 "a page switch outlived its bound while the engine's queue kept moving \
                  — waiting on it, not replacing the engine",
