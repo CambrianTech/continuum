@@ -53,6 +53,16 @@ struct OwnedNow {
     pid: Option<u32>,
 }
 
+/// Why a kept launch may not be finished now.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Refusal {
+    /// The kept engine is not the owned one any more: the kept launch can never be finished.
+    EngineGone(&'static str),
+    /// The engine is the kept one but this request is another launch: it is not published for
+    /// this request, and stays kept for the launch it was started for (Codex on #5545).
+    OtherLaunch,
+}
+
 /// PURE: why a kept launch may NOT be finished, or `None` when it may. It may only when the
 /// owned engine is still the kept one (same generation, not exited, same pid) and the request
 /// is the same launch.
@@ -62,43 +72,99 @@ fn recovery_refusal(
     kept_pid: Option<u32>,
     owned: Option<&OwnedNow>,
     requested: &LaunchContract,
-) -> Option<&'static str> {
-    let Some(owned) = owned else { return Some("no owned engine remains") };
+) -> Option<Refusal> {
+    let Some(owned) = owned else { return Some(Refusal::EngineGone("no owned engine remains")) };
     if !owned.generation.same_engine(kept_generation) {
-        return Some("the owned engine is another generation");
+        return Some(Refusal::EngineGone("the owned engine is another generation"));
     }
     if owned.exited {
-        return Some("the kept engine has exited");
+        return Some(Refusal::EngineGone("the kept engine has exited"));
     }
     if kept_pid.is_none() || owned.pid != kept_pid {
-        return Some("the owned engine's pid is not the kept engine's");
+        return Some(Refusal::EngineGone("the owned engine's pid is not the kept engine's"));
     }
     if requested != kept {
-        return Some("the request is a different launch than the one the engine was started for");
+        return Some(Refusal::OtherLaunch);
     }
     None
 }
 
+/// A kept launch held across a readiness wait. Only a finished wait consumes it: a wait that
+/// fails slow keeps it ([`Kept::settle`]), and a wait that is cancelled puts it back on drop, so
+/// recovery is never lost to a cancelled launch (Codex on #5545).
+struct Kept<'a> {
+    process: &'a LlamaServerProcess,
+    tail: Option<ReadyTail>,
+}
+
+impl<'a> Kept<'a> {
+    fn new(process: &'a LlamaServerProcess, tail: ReadyTail) -> Self {
+        Self { process, tail: Some(tail) }
+    }
+
+    /// The tail, for publishing a ready engine.
+    fn consume(mut self) -> Option<ReadyTail> {
+        self.tail.take()
+    }
+
+    /// After a failed wait: kept when the engine is alive and was only slow, else discarded.
+    fn settle(mut self, error: &LlamaServerError) {
+        if let Some(tail) = self.tail.take() {
+            if matches!(error, LlamaServerError::NotReady(..)) {
+                self.process.keep_loading_if_alive(tail, "the readiness wait ended while the engine still loads");
+            }
+        }
+    }
+}
+
+impl Drop for Kept<'_> {
+    fn drop(&mut self) {
+        if let Some(tail) = self.tail.take() {
+            self.process.keep_loading_if_alive(tail, "the launch was cancelled while its engine loads");
+        }
+    }
+}
+
 impl LlamaServerProcess {
-    /// After a readiness wait failed: keep the launch when its engine is alive and was only
-    /// slow (`NotReady`), so a later launch can finish it. A restore, an exited engine, or any
-    /// other failure keeps nothing.
-    pub(super) fn keep_loading_if_alive(&self, error: &LlamaServerError, tail: ReadyTail) {
-        if tail.restoring || !matches!(error, LlamaServerError::NotReady(..)) || self.child_exit_status().is_some() {
+    /// Wait for the engine, then publish it, holding the launch so neither a slow wait nor a
+    /// cancelled one loses what was decided.
+    pub(super) async fn wait_and_publish(
+        &self,
+        transition: &crate::inference::slots::EndpointTransition,
+        tail: ReadyTail,
+    ) -> Result<(), LlamaServerError> {
+        let kept = Kept::new(self, tail);
+        match self.wait_ready().await {
+            Ok(()) => match kept.consume() {
+                Some(tail) => self.publish_ready(transition, tail).await,
+                None => Err(LlamaServerError::Spawn("the launch to publish was already consumed".into())),
+            },
+            Err(error) => {
+                kept.settle(&error);
+                Err(error)
+            }
+        }
+    }
+
+    /// Keep a launch whose engine is alive, so a later launch can finish it. A restore or an
+    /// exited engine keeps nothing.
+    fn keep_loading_if_alive(&self, tail: ReadyTail, why: &'static str) {
+        if tail.restoring || self.child_exit_status().is_some() {
             return;
         }
         continuum_base::probe!(target: "continuum_core::inference::llama_server", class = "serving.late_ready.kept",
             pid = ?tail.child_pid,
             model = tail.prepared.target.model_id(),
-            "the readiness wait ended while the engine still loads: kept, so the next launch finishes it instead of replacing it"
+            why = why,
+            "kept, so the next launch finishes this engine instead of replacing it"
         );
         *self.loading.lock() = Some(LoadingLaunch { tail });
     }
 
-    /// The kept launch the request may finish, or `None` (any kept launch that may not is
-    /// dropped, said so).
+    /// The kept launch the request may finish, or `None`. A kept launch whose engine is gone is
+    /// dropped; one kept for a different launch stays kept, so the launch it was started for can
+    /// still finish it.
     pub(super) fn recoverable_loading(&self, requested: &PreparedLocalLaunch) -> Option<ReadyTail> {
-        let kept = self.loading.lock().take()?;
         let owned = {
             let child = self.child.lock().unwrap(); // JUSTIFIED: poison means a prior panic mutating the owned child.
             child.as_ref().map(|owned| OwnedNow {
@@ -107,6 +173,10 @@ impl LlamaServerProcess {
                 pid: owned.child.id(),
             })
         };
+        // The owned engine is read first, its lock released, before the kept launch's: the two
+        // locks are never held together.
+        let mut slot = self.loading.lock();
+        let kept = slot.as_ref()?;
         let refusal = recovery_refusal(
             &LaunchContract::of(&kept.tail.prepared),
             &kept.tail.generation,
@@ -114,21 +184,33 @@ impl LlamaServerProcess {
             owned.as_ref(),
             &LaunchContract::of(requested),
         );
+        let pid = kept.tail.child_pid;
         match refusal {
             None => {
                 continuum_base::probe!(target: "continuum_core::inference::llama_server", class = "serving.late_ready.resumed",
-                    pid = ?kept.tail.child_pid,
+                    pid = ?pid,
                     model = kept.tail.prepared.target.model_id(),
                     "the same engine, the same launch: finishing it instead of replacing it"
                 );
-                Some(kept.tail)
+                slot.take().map(|kept| kept.tail)
             }
-            Some(why) => {
+            Some(Refusal::OtherLaunch) => {
                 continuum_base::probe!(target: "continuum_core::inference::llama_server", class = "serving.late_ready.refused",
-                    pid = ?kept.tail.child_pid,
-                    why = why,
-                    "a kept launch may not be finished: it is dropped and never published"
+                    pid = ?pid,
+                    why = "the request is a different launch than the one the engine was started for",
+                    kept = true,
+                    "not published for this request; kept for the launch it was started for"
                 );
+                None
+            }
+            Some(Refusal::EngineGone(why)) => {
+                continuum_base::probe!(target: "continuum_core::inference::llama_server", class = "serving.late_ready.refused",
+                    pid = ?pid,
+                    why = why,
+                    kept = false,
+                    "the kept engine is gone: the kept launch is dropped and never published"
+                );
+                slot.take();
                 None
             }
         }
@@ -174,21 +256,34 @@ mod tests {
             pid,
         };
         let same = now(&kept_generation, false, Some(3548));
+        let gone = |r: Option<Refusal>| matches!(r, Some(Refusal::EngineGone(_)));
         assert_eq!(recovery_refusal(&kept, &kept_generation, Some(3548), Some(&same), &kept), None, "the same live engine, the same launch");
-        assert!(recovery_refusal(&kept, &kept_generation, Some(3548), None, &kept).is_some(), "no engine");
-        assert!(recovery_refusal(&kept, &kept_generation, Some(3548), Some(&now(&other_generation, false, Some(3548))), &kept).is_some(), "another generation");
-        assert!(recovery_refusal(&kept, &kept_generation, Some(3548), Some(&now(&kept_generation, true, Some(3548))), &kept).is_some(), "exited");
-        assert!(recovery_refusal(&kept, &kept_generation, Some(3548), Some(&now(&kept_generation, false, Some(4000))), &kept).is_some(), "another pid");
-        assert!(recovery_refusal(&kept, &kept_generation, None, Some(&same), &kept).is_some(), "an unknown kept pid proves nothing");
-        assert!(recovery_refusal(&kept, &kept_generation, Some(3548), Some(&same), &contract("qwen", "32768")).is_some(), "another window");
-        assert!(recovery_refusal(&kept, &kept_generation, Some(3548), Some(&same), &contract("llama", "16384")).is_some(), "another model");
+        assert!(gone(recovery_refusal(&kept, &kept_generation, Some(3548), None, &kept)), "no engine");
+        assert!(gone(recovery_refusal(&kept, &kept_generation, Some(3548), Some(&now(&other_generation, false, Some(3548))), &kept)), "another generation");
+        assert!(gone(recovery_refusal(&kept, &kept_generation, Some(3548), Some(&now(&kept_generation, true, Some(3548))), &kept)), "exited");
+        assert!(gone(recovery_refusal(&kept, &kept_generation, Some(3548), Some(&now(&kept_generation, false, Some(4000))), &kept)), "another pid");
+        assert!(gone(recovery_refusal(&kept, &kept_generation, None, Some(&same), &kept)), "an unknown kept pid proves nothing");
+        // Another launch for the SAME live engine is refused but never destroys the kept launch.
+        assert_eq!(recovery_refusal(&kept, &kept_generation, Some(3548), Some(&same), &contract("qwen", "32768")), Some(Refusal::OtherLaunch), "another window");
+        assert_eq!(recovery_refusal(&kept, &kept_generation, Some(3548), Some(&same), &contract("llama", "16384")), Some(Refusal::OtherLaunch), "another model");
     }
 
-    /// An engine that answers readiness: `/health` 200, an empty `/slots`, a decode that counts,
-    /// and `/props` with its served window and slots.
-    async fn ready_engine() -> String {
+    /// A fake engine whose `/health` answers 503 "loading" until `ready` is set, then 200; with
+    /// an empty `/slots`, a decode that counts, `/props` with its window and slots, and its model.
+    async fn fake_engine(ready: Arc<std::sync::atomic::AtomicBool>) -> String {
         let app = axum::Router::new()
-            .route("/health", axum::routing::get(|| async { axum::Json(serde_json::json!({ "status": "ok" })) }))
+            .route("/health", axum::routing::get(move || {
+                let ready = Arc::clone(&ready);
+                async move {
+                    if ready.load(std::sync::atomic::Ordering::SeqCst) {
+                        (axum::http::StatusCode::OK, axum::Json(serde_json::json!({ "status": "ok" })))
+                    } else {
+                        (axum::http::StatusCode::SERVICE_UNAVAILABLE, axum::Json(serde_json::json!({
+                            "load_progress": { "stages": ["text_model"], "current": "text_model", "value": 0.0 }
+                        })))
+                    }
+                }
+            }))
             .route("/slots", axum::routing::get(|| async { axum::Json(serde_json::json!([])) }))
             .route("/props", axum::routing::get(|| async {
                 axum::Json(serde_json::json!({ "default_generation_settings": { "n_ctx": 32768 }, "total_slots": 1 }))
@@ -208,6 +303,10 @@ mod tests {
             let _ = axum::serve(listener, app).await;
         });
         format!("http://{addr}")
+    }
+
+    fn ready(now: bool) -> Arc<std::sync::atomic::AtomicBool> {
+        Arc::new(std::sync::atomic::AtomicBool::new(now))
     }
 
     fn prepared(root: &str, dir: &std::path::Path, ctx: &str) -> Arc<PreparedLocalLaunch> {
@@ -231,11 +330,45 @@ mod tests {
         })
     }
 
+    /// Set in a stand-in engine: this test binary, re-run for one test, blocks on its stdin
+    /// until the fixture lets it go. The same process works on every platform (the retirement
+    /// fixture's pattern), so the recovery is exercised where it repairs (Codex on #5545).
+    const STAND_IN: &str = "CONTINUUM_LATE_READY_STAND_IN";
+
+    /// When this process IS a stand-in engine: block until released, then report true.
+    fn serve_as_stand_in() -> bool {
+        if std::env::var_os(STAND_IN).is_none() {
+            return false;
+        }
+        let mut byte = [0];
+        let _ = std::io::Read::read(&mut std::io::stdin(), &mut byte);
+        true
+    }
+
+    /// A live stand-in engine process, kept alive by its open stdin.
+    fn stand_in_engine(test: &str) -> (tokio::process::Child, tokio::process::ChildStdin) {
+        let mut command = tokio::process::Command::new(std::env::current_exe().expect("the test binary"));
+        command
+            .args(["--exact", &format!("inference::llama_server::late_ready::tests::{test}")])
+            .env(STAND_IN, "1")
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .kill_on_drop(true);
+        let mut child = command.spawn().expect("a stand-in engine");
+        let held = child.stdin.take().expect("its stdin, held open");
+        (child, held)
+    }
+
     /// The state a readiness timeout leaves: a live engine installed under a started, never
     /// published generation, and its launch kept by the same path a real `NotReady` takes.
-    async fn timed_out_launch(root: &str, kept: Arc<PreparedLocalLaunch>) -> (LlamaServerProcess, crate::inference::slots::EngineGeneration, Option<u32>) {
+    async fn timed_out_launch(
+        root: &str,
+        kept: Arc<PreparedLocalLaunch>,
+        test: &str,
+    ) -> (LlamaServerProcess, crate::inference::slots::EngineGeneration, Option<u32>, tokio::process::ChildStdin) {
         let process = LlamaServerProcess::with_root(root.to_string());
-        let child = tokio::process::Command::new("sleep").arg("120").kill_on_drop(true).spawn().expect("a live engine stand-in");
+        let (child, held) = stand_in_engine(test);
         let pid = child.id();
         let endpoint = crate::inference::slots::directory().endpoint(root);
         let transition = endpoint.transition().await;
@@ -250,8 +383,8 @@ mod tests {
             debug_flag: Default::default(),
             restoring: false,
         };
-        process.keep_loading_if_alive(&LlamaServerError::NotReady(Duration::from_secs(90), "load progress quiet".into()), tail);
-        (process, generation, pid)
+        Kept::new(&process, tail).settle(&LlamaServerError::NotReady(Duration::from_secs(90), "load progress quiet".into()));
+        (process, generation, pid, held)
     }
 
     /// End a fixture's stand-in engine and await its exit before the process drops. Dropping a
@@ -269,35 +402,73 @@ mod tests {
         process.child.lock().unwrap().as_ref().and_then(|owned| owned.child.id()) // JUSTIFIED: test fixture; poison is a prior test panic
     }
 
-    // what this catches (card ea6c9aff; Windows engine 3548, 2026-10-27): a launch that timed out
-    // while its engine loaded, whose late-ready engine was never published, so every later launch
-    // asked the replacement checkpoint for a ledger that engine never had and serving stayed down.
-    // Through the real launch entry: the same request finishes the SAME engine (no relaunch, the
-    // ledger published for its generation); a changed request does not publish it.
-    #[cfg(unix)]
+    async fn ledger_published(root: &str, generation: &crate::inference::slots::EngineGeneration) -> bool {
+        crate::inference::slots::directory().endpoint(root).transition().await.capture_suspension(generation).is_ok()
+    }
+
+    // what this catches (card ea6c9aff; Windows engine 3548, 2026-10-27; Codex on #5545): a
+    // launch that timed out while its engine loaded, whose late-ready engine was never published,
+    // so every later launch asked the replacement checkpoint for a ledger that engine never had;
+    // and a changed request that destroyed the kept launch, so even the ORIGINAL request could
+    // never finish that engine. Through the real launch entry: a changed request is refused and
+    // leaves the launch kept; the original request then finishes the SAME engine (same pid, the
+    // generation's ledger published).
     #[tokio::test]
-    async fn a_timed_out_launch_finishes_its_late_engine_and_a_changed_request_does_not() {
+    async fn a_changed_request_leaves_the_late_engine_for_the_launch_that_started_it() {
+        const TEST: &str = "a_changed_request_leaves_the_late_engine_for_the_launch_that_started_it";
+        if serve_as_stand_in() {
+            return;
+        }
         let dir = tempfile::tempdir().expect("tempdir");
+        let root = fake_engine(ready(true)).await;
+        let (process, generation, pid, _held) = timed_out_launch(&root, prepared(&root, dir.path(), "16384"), TEST).await;
+        assert!(!ledger_published(&root, &generation).await, "before: the generation has no ledger (the Windows refusal)");
 
-        let root = ready_engine().await;
-        let kept = prepared(&root, dir.path(), "16384");
-        let (process, generation, pid) = timed_out_launch(&root, Arc::clone(&kept)).await;
-        let endpoint = crate::inference::slots::directory().endpoint(&root);
-        assert!(endpoint.transition().await.capture_suspension(&generation).is_err(), "before: the generation has no ledger (the Windows refusal)");
-        process.launch_prepared(prepared(&root, dir.path(), "16384"), &|| true, None, None).await.expect("the same launch finishes the late engine");
-        assert!(endpoint.transition().await.capture_suspension(&generation).is_ok(), "after: the SAME generation's ledger is published");
-        assert_eq!(owned_pid(&process), pid, "the engine was finished, not replaced");
+        let changed = process.launch_prepared(prepared(&root, dir.path(), "32768"), &|| true, None, None).await;
+        assert!(changed.is_err(), "a different launch is not a finish");
+        assert!(!ledger_published(&root, &generation).await, "not published for a changed request");
+        assert!(process.loading.lock().is_some(), "and the launch stays kept for the one it was started for");
+        assert_eq!(owned_pid(&process), pid, "the engine is not killed either");
 
-        let changed_root = ready_engine().await;
-        let (changed_process, changed_generation, changed_pid) =
-            timed_out_launch(&changed_root, prepared(&changed_root, dir.path(), "16384")).await;
-        let changed_endpoint = crate::inference::slots::directory().endpoint(&changed_root);
-        let refused = changed_process.launch_prepared(prepared(&changed_root, dir.path(), "32768"), &|| true, None, None).await;
-        assert!(refused.is_err(), "a different launch is not a finish");
-        assert!(changed_endpoint.transition().await.capture_suspension(&changed_generation).is_err(), "the late engine is never published for a changed request");
-        assert_eq!(owned_pid(&changed_process), changed_pid, "and it is not silently killed either");
+        process.launch_prepared(prepared(&root, dir.path(), "16384"), &|| true, None, None).await.expect("the original launch finishes the late engine");
+        assert!(ledger_published(&root, &generation).await, "after: the SAME generation's ledger is published");
+        assert_eq!(owned_pid(&process), pid, "finished, not replaced");
         release(process).await;
-        release(changed_process).await;
+    }
+
+    // what this catches (Codex on #5545): a recovery that loses the kept launch when the launch
+    // waiting for the engine is cancelled (a reconcile dropped mid-wait), so the engine can never
+    // be finished. The cancelled wait puts the launch back; once the engine is ready the next
+    // launch finishes the same engine.
+    #[tokio::test]
+    async fn a_cancelled_wait_keeps_the_launch_for_the_next_one() {
+        const TEST: &str = "a_cancelled_wait_keeps_the_launch_for_the_next_one";
+        if serve_as_stand_in() {
+            return;
+        }
+        let dir = tempfile::tempdir().expect("tempdir");
+        let engine_ready = ready(false);
+        let root = fake_engine(Arc::clone(&engine_ready)).await;
+        let (process, generation, pid, _held) = timed_out_launch(&root, prepared(&root, dir.path(), "16384"), TEST).await;
+        let process = Arc::new(process);
+
+        let waiting = tokio::spawn({
+            let (process, launch) = (Arc::clone(&process), prepared(&root, dir.path(), "16384"));
+            async move { process.launch_prepared(launch, &|| true, None, None).await }
+        });
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        assert!(process.loading.lock().is_none(), "the recovering launch holds the kept launch while it waits");
+        waiting.abort();
+        assert!(waiting.await.is_err_and(|e| e.is_cancelled()));
+        assert!(process.loading.lock().is_some(), "the cancelled wait put the launch back");
+
+        engine_ready.store(true, std::sync::atomic::Ordering::SeqCst);
+        process.launch_prepared(prepared(&root, dir.path(), "16384"), &|| true, None, None).await.expect("the next launch finishes the same engine");
+        assert!(ledger_published(&root, &generation).await, "the same generation's ledger is published");
+        assert_eq!(owned_pid(&process), pid);
+        if let Ok(process) = Arc::try_unwrap(process) {
+            release(process).await;
+        }
     }
 
     // what this catches (Codex on card ea6c9aff, the deployment boundary): a recovery that
@@ -306,7 +477,7 @@ mod tests {
     // reconcile, serving the target model, without relaunching it.
     #[tokio::test]
     async fn a_restarted_core_adopts_a_healthy_engine_it_never_spawned() {
-        let root = ready_engine().await;
+        let root = fake_engine(ready(true)).await;
         let fresh = LlamaServerProcess::with_root(root.clone());
         let mut target = super::super::test_fixtures::target("late-model");
         target.placement = LanePlacement::Cpu;

@@ -58,13 +58,7 @@ impl LlamaServerProcess {
         // for a ledger that engine never had. Intent is this transition's own admission.
         if !restoring {
             if let Some(tail) = self.recoverable_loading(&prepared) {
-                return match self.wait_ready().await {
-                    Ok(()) => self.publish_ready(&transition, tail).await,
-                    Err(error) => {
-                        self.keep_loading_if_alive(&error, tail);
-                        Err(error)
-                    }
-                };
+                return self.wait_and_publish(&transition, tail).await;
             }
         }
 
@@ -382,13 +376,7 @@ impl LlamaServerProcess {
             debug_flag,
             restoring,
         };
-        match self.wait_ready().await {
-            Ok(()) => self.publish_ready(&transition, tail).await,
-            Err(error) => {
-                self.keep_loading_if_alive(&error, tail);
-                Err(error)
-            }
-        }
+        self.wait_and_publish(&transition, tail).await
     }
 }
 
