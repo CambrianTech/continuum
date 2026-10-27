@@ -161,7 +161,8 @@ impl ServingDaemonModule {
         // credit-back-exactly-once ledger above). Nobody could say which arm had run, because
         // nothing said so. This says it.
         // Publishing a target does not allocate its weights. Only the canonical,
-        // process-identity-verified live lane can justify the planner's credit.
+        // pidfile/image-checked live lane can justify the planner's credit.
+        // This observation does not verify the process start time.
         // A different resident cannot credit the preferred target's weight size.
         let planner_credited = !ledger_credited
             && resident
