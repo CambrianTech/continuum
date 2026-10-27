@@ -28,6 +28,11 @@ pub struct Summary {
     pub median_input_tokens: Option<f64>,
     /// Cached prompt tokens over prompt tokens (answered acts).
     pub reuse: Option<f64>,
+    /// The context law's health number (MIND-CONTEXT-AND-ENGINE-CONFIG.md, "a context is a
+    /// FIFO"): tokens the engine prefilled per act over the tokens her prompt grew since her
+    /// previous answered act; healthy is about 1. An act whose prompt shrank (a turnover) has
+    /// no append to measure against and is left out.
+    pub reprefill_per_appended: Option<f64>,
     /// Acts joined to an engine resume.
     pub joined: usize,
     /// Matched tokens the engine prefilled again (lcp past the resume point) over all prefilled
@@ -51,6 +56,17 @@ fn flagged(act: &Act, prefix: &str) -> bool {
 
 fn ratio(part: f64, whole: f64) -> Option<f64> {
     (whole > 0.0).then_some(part / whole)
+}
+
+/// Prefilled over appended, summed over consecutive answered acts whose prompt grew.
+fn reprefill_per_appended(answered: &[&Act]) -> Option<f64> {
+    let (prefilled, appended) = answered.windows(2).fold((0u64, 0u64), |(prefilled, appended), pair| {
+        match (pair[0].input_tokens, pair[1].input_tokens, pair[1].prefill_tokens) {
+            (Some(before), Some(now), Some(fresh)) if now > before => (prefilled + fresh, appended + (now - before)),
+            _ => (prefilled, appended),
+        }
+    });
+    ratio(prefilled as f64, appended as f64)
 }
 
 pub fn summarize(resident: &str, acts: &[&Act]) -> Summary {
@@ -84,6 +100,7 @@ pub fn summarize(resident: &str, acts: &[&Act]) -> Summary {
         median_decode_tps: median(answered.iter().filter_map(|a| a.decode_tps).collect()),
         median_input_tokens: median(acts.iter().map(|a| a.estimated_tokens as f64).collect()),
         reuse: ratio(sum(&|a| a.cached_tokens.map(|t| t as f64)), sum(&|a| a.input_tokens.map(|t| t as f64))),
+        reprefill_per_appended: reprefill_per_appended(&answered),
         joined: joined.len(),
         cache_loss_share: ratio(lost as f64, prefilled as f64),
         cache_loss_acts: acts.iter().filter(|a| flagged(a, "cache-loss")).count(),
@@ -164,12 +181,12 @@ fn layers(act: &Act) -> String {
     )
 }
 
-const SUMMARY_HEADER: &str = "| resident | acts | done/failed/cancelled | median s/act | median s between | prefill share | decode share | prefill t/s | decode t/s | median in tok | reuse | cache-loss share (acts) | page-ins | full | view breaks | head changes | refusals | repeats | writes | reads | shell | board | talk | tool calls/h |";
+const SUMMARY_HEADER: &str = "| resident | acts | done/failed/cancelled | median s/act | median s between | prefill share | decode share | prefill t/s | decode t/s | median in tok | reuse | re-prefill per appended | cache-loss share (acts) | page-ins | full | view breaks | head changes | refusals | repeats | writes | reads | shell | board | talk | tool calls/h |";
 
 fn summary_row(s: &Summary) -> String {
     let kind = |k: Kind| s.kinds.get(&format!("{k:?}").to_lowercase()).copied().unwrap_or(0); // unwrap_or: a kind she never did
     format!(
-        "| {} | {} | {}/{}/{} | {} | {} | {} | {} | {} | {} | {} | {} | {} ({}) | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} |",
+        "| {} | {} | {}/{}/{} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} ({}) | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} |",
         s.resident,
         s.acts,
         s.completed,
@@ -183,6 +200,7 @@ fn summary_row(s: &Summary) -> String {
         opt(s.median_decode_tps, |v| format!("{v:.1}")),
         opt(s.median_input_tokens, k),
         pct(s.reuse),
+        opt(s.reprefill_per_appended, |v| format!("{v:.1}:1")),
         pct(s.cache_loss_share),
         s.cache_loss_acts,
         s.page_ins,
@@ -312,5 +330,8 @@ mod tests {
         assert_eq!(s.cache_loss_share, Some(800.0 / 1_500.0));
         assert_eq!(s.repeats, 1);
         assert_eq!(s.reuse, Some(1_100.0 / 2_600.0));
+        // The second act grew her prompt by 100 and prefilled 100 (1:1); the third shrank
+        // it (a turnover), so it has no append to measure against.
+        assert_eq!(s.reprefill_per_appended, Some(1.0));
     }
 }
