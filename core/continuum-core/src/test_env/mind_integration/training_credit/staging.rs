@@ -577,6 +577,31 @@ pub(super) async fn an_unread_claim_stages_nothing_until_a_read_says_whose_it_wa
         "the new claim from the claiming act on, once a read said so"
     );
 
+    // Unread after one claim, then the next act is itself a claim whose read answers: the
+    // newest claim begins at its own act, and the unread claim's generation is no one's.
+    let mut newest = reclaimed.clone();
+    newest.claim_id = Some(airc_work::ClaimId::new());
+    let mut skipped = reclaimed.clone();
+    skipped.claim_id = Some(airc_work::ClaimId::new());
+    holds.set(vec![reclaimed.clone()]);
+    let on = CapturedCredit::from_selected_card(&reclaimed);
+    let mut turn = ClaimFollowingCapture::new(Some(&on), Some(Arc::clone(&holds)), opener_for(executor.clone(), persona, name));
+    let mut acts = vec![act("code/read")];
+    turn.record(&acts, &receipts(&["third-before"]), None, false).await;
+    holds.set(vec![skipped.clone()]);
+    holds.unreadable(true);
+    acts.push(act("work/claim"));
+    turn.record(&acts, &receipts(&["third-before", "unread-claim"]), None, false).await;
+    holds.set(vec![newest.clone()]);
+    holds.unreadable(false);
+    acts.push(act("work/claim"));
+    turn.record(&acts, &receipts(&["third-before", "unread-claim", "answered-claim"]), None, false).await;
+    assert!(turn.record(&acts, &receipts(&["third-before", "unread-claim", "answered-claim"]), None, true).await);
+    let rows = stored_credit_rows(&conn_as(executor.clone(), persona), name).await;
+    assert!(rows_under(&rows, reclaimed.claim_id).contains(&vec!["third-before".to_string()]));
+    assert_eq!(rows_under(&rows, newest.claim_id), [vec!["answered-claim".to_string()]], "the answered claim begins at its own act");
+    assert!(rows.iter().all(|r| r.receipts.iter().all(|g| g.submitted_request_id != "unread-claim")), "the unread claim's generation is no one's");
+
     // Still unread when the turn ends: what came before is staged, the rest credited to no one.
     let mut again = reclaimed.clone();
     again.claim_id = Some(airc_work::ClaimId::new());

@@ -132,7 +132,9 @@ impl<R: AircWorkReader + ?Sized> ClaimFollowingCapture<R> {
                 return;
             }
         };
-        let pending = self.unsettled.take();
+        // An answering read on a board act: that act is the latest that could have taken
+        // the claim the read shows, not the unread one before it (Codex on #5523).
+        let pending = self.unsettled.take().map(|open| if board_act { Unsettled { last_board: this, ..open } } else { open });
         let unchanged = match (&self.current, &now) {
             (Some(segment), Some(now)) => same_claim(&segment.credit, now),
             (None, None) => true,
