@@ -153,6 +153,16 @@ impl ServingDaemonModule {
     /// materialized view; THIS is the canonical fan-out that reaches every
     /// subscriber, including a grid allocator on a remote node.
     pub(super) fn emit_serving(bus: Option<&Arc<MessageBus>>, snapshot: &ServingSnapshot) {
+        // Every publish passes here: a ready one answers every condemnation so far, so
+        // `engine_condemned` reads the condemnation, never the readiness bit (card 9c67e5fe).
+        // INVARIANT this relies on: every READY publish runs inside a `ServingOperation`, holding
+        // the one reconcile gate (`reconcile_to_plan`, the academy batch), and `condemn()` runs
+        // inside an operation's `admit`. So no stale ready of a condemned engine can land between
+        // a condemnation and that operation's own outcome. A ready publish added OUTSIDE the gate
+        // must instead answer only a ready from a new engine incarnation (Fable on #5508).
+        if snapshot.ready {
+            crate::inference::llama_server::note_serving_ready();
+        }
         if let Some(bus) = bus {
             if let Ok(payload) = serde_json::to_value(snapshot) {
                 bus.publish_async_only(SERVING_SNAPSHOT_EVENT, payload);
