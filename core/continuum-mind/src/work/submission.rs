@@ -16,6 +16,8 @@ pub use latest_submission::*;
 mod next_after_submission;
 mod submodule_drift;
 pub use next_after_submission::*;
+mod staged_evidence_page;
+pub use staged_evidence_page::*;
 mod work_submission;
 
 /// Her credit store, reached as her: the `@persona:` handle resolves through this identity.

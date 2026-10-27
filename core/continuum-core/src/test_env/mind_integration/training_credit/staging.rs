@@ -338,6 +338,8 @@ pub(super) async fn work_submission_commands_bind_before_publication_and_preserv
                 params.submission_id.expect("the fixture names its submission"), // expect: set in the json above
             ),
             "include_staged_evidence": true,
+            "evidence_rows": "all",
+            "evidence_limit": 2,
         }))
         .expect("the readback's handles decode"), // expect: the fixture's own json, asserted decodable
     )
@@ -348,7 +350,11 @@ pub(super) async fn work_submission_commands_bind_before_publication_and_preserv
     assert_eq!(inspected.reviews[0].reviewer, persona);
     // Regression: Kimi's accepted review exposed only "unbound", with no
     // way to inspect the source-owned revision without reading private text.
-    let evidence = inspected.staged_evidence.as_ref().unwrap();
+    let page = inspected.staged_evidence.as_ref().unwrap();
+    assert_eq!(page.summary.total_rows, 2);
+    assert_eq!(page.summary.matching_claim, 1);
+    assert_eq!(page.omitted_rows, 0);
+    let evidence = &page.rows;
     assert_eq!(evidence.len(), 2);
     let original = evidence
         .iter()
@@ -367,7 +373,7 @@ pub(super) async fn work_submission_commands_bind_before_publication_and_preserv
         "newest is not automatically the selected experience"
     );
     assert!(inspected.staged_evidence_error.is_none());
-    let public_evidence = serde_json::to_string(evidence).unwrap();
+    let public_evidence = serde_json::to_string(page).unwrap();
     assert!(!public_evidence.contains(&selected.prompt));
     assert!(!public_evidence.contains(&selected.completion));
     assert!(!public_evidence.contains("private later"));
