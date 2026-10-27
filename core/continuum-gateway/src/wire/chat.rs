@@ -1,6 +1,6 @@
 //! OpenAI Chat Completions (`POST /v1/chat/completions`): Hermes, opencode, and most agents.
 
-use super::{event, input_schema, sampling, stopped_for_tools, text_of, tool_calls, BadRequest, Call, ErrorKind, Frame, Wire};
+use super::{event, input_schema, place_system, sampling, stopped_for_tools, text_of, tool_calls, BadRequest, Call, ErrorKind, Frame, Wire};
 use continuum_engine::ai::adapter::GenerationChunk;
 use continuum_engine::ai::types::ImageInput;
 use continuum_engine::ai::{ChatMessage, ContentPart, MessageContent, NativeToolSpec, TextGenerationRequest, TextGenerationResponse, ToolChoice};
@@ -19,7 +19,7 @@ impl Wire for Chat {
     fn decode(body: Value) -> Result<Call, BadRequest> {
         let model = body.get("model").and_then(Value::as_str).ok_or_else(|| BadRequest("`model` is required".into()))?;
         let messages = body.get("messages").and_then(Value::as_array).ok_or_else(|| BadRequest("`messages` is required".into()))?;
-        let (system_prompt, messages) = conversation(messages)?;
+        let (system_prompt, messages) = place_system(None, conversation(messages)?);
         let mut request = TextGenerationRequest {
             model: Some(model.to_owned()),
             max_tokens: body
@@ -135,18 +135,13 @@ fn function_call((id, name, input): &(String, String, Value)) -> Value {
     json!({"id": id, "type": "function", "function": {"name": name, "arguments": input.to_string()}})
 }
 
-/// The leading system messages become the system prompt. A system message later in the
-/// conversation is kept, in order, as a user turn marked as system text: the engine's chat
-/// templates accept a system message only at the start.
-fn conversation(messages: &[Value]) -> Result<(Option<String>, Vec<ChatMessage>), BadRequest> {
-    let mut system = Vec::new();
+/// The messages as the engine reads them; `place_system` then decides where system text goes.
+fn conversation(messages: &[Value]) -> Result<Vec<ChatMessage>, BadRequest> {
     let mut out = Vec::new();
     for m in messages {
         let role = m.get("role").and_then(Value::as_str).ok_or_else(|| BadRequest("a message has no `role`".into()))?;
         let content = m.get("content").unwrap_or(&Value::Null);
         match role {
-            "system" | "developer" if out.is_empty() => system.push(text_of(content)),
-            "system" | "developer" => out.push(ChatMessage { role: "user".into(), content: MessageContent::Text(format!("[system] {}", text_of(content))), name: None }),
             "assistant" => {
                 let mut parts = Vec::new();
                 let text = text_of(content);
@@ -176,8 +171,7 @@ fn conversation(messages: &[Value]) -> Result<(Option<String>, Vec<ChatMessage>)
             _ => out.push(ChatMessage { role: role.to_owned(), content: user_content(content), name: None }),
         }
     }
-    let system = system.join("\n\n");
-    Ok(((!system.is_empty()).then_some(system), out))
+    Ok(out)
 }
 
 fn user_content(content: &Value) -> MessageContent {
