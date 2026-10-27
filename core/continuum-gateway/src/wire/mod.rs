@@ -9,7 +9,7 @@ pub(crate) mod chat;
 pub(crate) mod responses;
 
 use continuum_engine::ai::adapter::GenerationChunk;
-use continuum_engine::ai::{ContentPart, FinishReason, TextGenerationRequest, TextGenerationResponse};
+use continuum_engine::ai::{ChatMessage, ContentPart, FinishReason, MessageContent, TextGenerationRequest, TextGenerationResponse};
 use serde_json::Value;
 
 /// One decoded call: the engine's request, and whether the agent wants it streamed.
@@ -122,6 +122,48 @@ pub(crate) fn input_schema(schema: &Value) -> continuum_engine::ai::ToolInputSch
             .and_then(Value::as_array)
             .map(|r| r.iter().filter_map(Value::as_str).map(str::to_owned).collect()),
         definitions: schema.get("$defs").or_else(|| schema.get("definitions")).cloned(),
+    }
+}
+
+/// Where system text may go. The engine's chat templates accept one system message, first
+/// (Qwen's raises "System message must be at the beginning"), and agents send more: Claude
+/// Code a `system` message after the user's turn (its hook and environment context), Codex
+/// `developer` items, Hermes mid-run notices. System and developer messages before any
+/// turn join the system prompt; a later one stays in order as a user turn marked as system
+/// text. One rule for every format.
+pub(crate) fn place_system(system_prompt: Option<String>, messages: Vec<ChatMessage>) -> (Option<String>, Vec<ChatMessage>) {
+    let mut system = system_prompt.filter(|s| !s.is_empty());
+    let mut out = Vec::with_capacity(messages.len());
+    for message in messages {
+        if message.role != "system" && message.role != "developer" {
+            out.push(message);
+            continue;
+        }
+        let text = plain_text(&message.content);
+        if out.is_empty() {
+            system = Some(match system {
+                Some(head) => format!("{head}\n\n{text}"),
+                None => text,
+            });
+        } else {
+            out.push(ChatMessage { role: "user".into(), content: MessageContent::Text(format!("[system] {text}")), name: None });
+        }
+    }
+    (system, out)
+}
+
+/// The text of a message's content, its text parts joined.
+fn plain_text(content: &MessageContent) -> String {
+    match content {
+        MessageContent::Text(text) => text.clone(),
+        MessageContent::Parts(parts) => parts
+            .iter()
+            .filter_map(|p| match p {
+                ContentPart::Text { text } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join("\n"),
     }
 }
 

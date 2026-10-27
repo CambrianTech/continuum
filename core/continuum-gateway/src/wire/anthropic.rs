@@ -1,6 +1,6 @@
 //! Anthropic Messages (`POST /v1/messages`): Claude Code, via `ANTHROPIC_BASE_URL`.
 
-use super::{event, input_schema, sampling, stopped_for_tools, text_of, tool_calls, BadRequest, Call, ErrorKind, Frame, Wire};
+use super::{event, input_schema, place_system, sampling, stopped_for_tools, text_of, tool_calls, BadRequest, Call, ErrorKind, Frame, Wire};
 use continuum_engine::ai::adapter::GenerationChunk;
 use continuum_engine::ai::types::ImageInput;
 use continuum_engine::ai::{ChatMessage, ContentPart, MessageContent, NativeToolSpec, TextGenerationRequest, TextGenerationResponse, ToolChoice};
@@ -39,6 +39,7 @@ impl Wire for Anthropic {
             ..Default::default()
         };
         sampling(&body, &mut request);
+        (request.system_prompt, request.messages) = place_system(request.system_prompt.take(), std::mem::take(&mut request.messages));
         Ok(Call { request, stream: body.get("stream").and_then(Value::as_bool).unwrap_or(false) }) // unwrap_or: the API's default is not streamed
     }
 

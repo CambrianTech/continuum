@@ -42,6 +42,7 @@ fn anthropic_carries_tools_both_ways_and_streams_blocks_in_order() {
         "tools": [{"name": "read_file", "description": "Read", "input_schema": {"type": "object", "properties": {"path": {"type": "string"}}, "required": ["path"]}}],
         "messages": [
             {"role": "user", "content": "open a.rs"},
+            {"role": "system", "content": [{"type": "text", "text": "SessionStart hook context"}]},
             {"role": "assistant", "content": [{"type": "tool_use", "id": "call_0", "name": "read_file", "input": {"path": "b.rs"}}]},
             {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "call_0", "content": [{"type": "text", "text": "fn b() {}"}]}]},
         ],
@@ -50,8 +51,9 @@ fn anthropic_carries_tools_both_ways_and_streams_blocks_in_order() {
     assert!(call.stream);
     assert_eq!(call.request.system_prompt.as_deref(), Some("You are a coder."));
     assert_eq!(call.request.tools.as_ref().map(|t| t[0].input_schema.required.clone()), Some(Some(vec!["path".to_string()])));
-    assert!(matches!(&parts(&call.request.messages[1])[0], ContentPart::ToolUse { id, .. } if id == "call_0"));
-    assert!(matches!(&parts(&call.request.messages[2])[0], ContentPart::ToolResult { content, .. } if content == "fn b() {}"));
+    assert_eq!(call.request.messages[1].role, "user", "Claude Code's mid-list system message is not sent as system");
+    assert!(matches!(&parts(&call.request.messages[2])[0], ContentPart::ToolUse { id, .. } if id == "call_0"));
+    assert!(matches!(&parts(&call.request.messages[3])[0], ContentPart::ToolResult { content, .. } if content == "fn b() {}"));
 
     let whole = Anthropic::answer(&tool_answer(), "msg_1");
     assert_eq!(whole["stop_reason"], "tool_use");
@@ -124,6 +126,7 @@ fn responses_groups_items_refuses_missing_state_and_numbers_its_events() {
     let call = Responses::decode(json!({
         "model": "qwen", "instructions": "You are Grok.", "stream": true,
         "input": [
+            {"type": "message", "role": "developer", "content": [{"type": "input_text", "text": "Sandbox: workspace-write."}]},
             {"role": "user", "content": [{"type": "input_text", "text": "fix it"}]},
             {"type": "function_call", "call_id": "c1", "name": "read", "arguments": "{\"p\":\"a\"}"},
             {"type": "function_call", "call_id": "c2", "name": "read", "arguments": "{\"p\":\"b\"}"},
@@ -134,7 +137,7 @@ fn responses_groups_items_refuses_missing_state_and_numbers_its_events() {
         "tools": [{"type": "function", "name": "read", "parameters": {"type": "object", "properties": {"p": {"type": "string"}}}}, {"type": "web_search"}],
     }))
     .expect("test: decodes");
-    assert_eq!(call.request.system_prompt.as_deref(), Some("You are Grok."));
+    assert_eq!(call.request.system_prompt.as_deref(), Some("You are Grok.\n\nSandbox: workspace-write."), "a leading developer item joins the instructions");
     assert_eq!(call.request.messages.len(), 4, "user, one assistant turn with both calls, two tool replies");
     assert_eq!(parts(&call.request.messages[1]).len(), 2);
     assert_eq!(call.request.tools.as_ref().map(Vec::len), Some(1), "provider built-ins are not ours");
