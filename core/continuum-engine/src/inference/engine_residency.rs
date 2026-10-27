@@ -36,7 +36,7 @@ use uuid::Uuid;
 /// One engine process: its pid, its OS start time, and the port it serves. A binding is only
 /// ever recorded with a NONZERO start time; `started_s == 0` (a lane record from before the
 /// field) cannot be verified either way and reads as [`Liveness::Unknown`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct EngineIncarnation {
     pub pid: u32,
     /// OS process start time, seconds since the Unix epoch (sysinfo's `start_time`).

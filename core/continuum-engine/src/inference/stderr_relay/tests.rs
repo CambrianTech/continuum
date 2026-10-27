@@ -5,12 +5,13 @@ use tokio::io::{AsyncWriteExt, DuplexStream};
 
 struct Running {
     stderr: Option<DuplexStream>,
-    control: DuplexStream,
     socket: PathBuf,
     log: PathBuf,
     relay: tokio::task::JoinHandle<io::Result<RelayEnd>>,
     _dir: tempfile::TempDir,
 }
+
+const ENGINE: EngineIncarnation = EngineIncarnation { pid: 4242, started_s: 1_793_000_000, port: 8090 };
 
 fn quick() -> Config {
     Config { heartbeat: Duration::from_millis(50), ..Config::default() }
@@ -21,24 +22,11 @@ async fn start(config: Config, log_in_missing_dir: bool) -> Running {
     let socket = dir.path().join("engine.sock");
     let log = if log_in_missing_dir { dir.path().join("missing").join("engine.log") } else { dir.path().join("engine.log") };
     let (stderr, stderr_read) = tokio::io::duplex(64 * 1024);
-    let (control, control_read) = tokio::io::duplex(4096);
     let relay = tokio::spawn({
         let (log, socket) = (log.clone(), socket.clone());
-        async move { run(stderr_read, control_read, &log, &socket, config).await }
+        async move { run(stderr_read, ENGINE, &log, &socket, config).await }
     });
-    // Ready when a client reaches it through the host seam (a Windows pipe has no file). The
-    // probe hangs up at once, and its subscriber ends on that.
-    let mut ready = false;
-    for _ in 0..200 {
-        if continuum_host::local_stream::connect(&socket).await.is_ok() {
-            ready = true;
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(10)).await;
-    }
-    assert!(ready, "the relay serves its endpoint");
-    tokio::time::sleep(Duration::from_millis(100)).await;
-    Running { stderr: Some(stderr), control, socket, log, relay, _dir: dir }
+    Running { stderr: Some(stderr), socket, log, relay, _dir: dir }
 }
 
 impl Running {
@@ -46,6 +34,18 @@ impl Running {
         let stderr = self.stderr.as_mut().expect("stderr still open");
         stderr.write_all(format!("{line}\n").as_bytes()).await.expect("write stderr");
     }
+}
+
+/// A connection, once the relay serves its endpoint (a Windows pipe has no file to wait on).
+/// Never a probe before it: the first connection is the one the held lines go to.
+async fn connect(socket: &Path) -> Subscription {
+    for _ in 0..500 {
+        if let Ok(sub) = Subscription::connect(socket).await {
+            return sub;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    panic!("the relay serves its endpoint");
 }
 
 async fn next(sub: &mut Subscription) -> Frame {
@@ -60,7 +60,7 @@ async fn next(sub: &mut Subscription) -> Frame {
 /// every line written from here on reaches this subscriber (a line written before it may be
 /// drained with nobody subscribed yet, and is counted as missed).
 async fn subscribe(socket: &Path) -> Subscription {
-    let mut sub = Subscription::connect(socket).await.expect("connect");
+    let mut sub = connect(socket).await;
     match next(&mut sub).await {
         Frame::Heartbeat(_) => sub,
         other => panic!("a heartbeat comes first, got {other:?}"),
@@ -102,11 +102,11 @@ async fn heartbeat_where(sub: &mut Subscription, wanted: impl Fn(&Heartbeat) -> 
 #[tokio::test]
 async fn lines_reach_a_subscriber_after_a_heartbeat_and_the_relay_ends_with_its_writers() {
     let mut relay = start(quick(), false).await;
-    let mut sub = Subscription::connect(&relay.socket).await.expect("connect");
+    let mut sub = connect(&relay.socket).await;
     match next(&mut sub).await {
         Frame::Heartbeat(beat) => {
             assert_eq!(beat.seq_last, 0);
-            assert_eq!(beat.incarnation, None, "unbound until the spawning core binds it");
+            assert_eq!(beat.incarnation, ENGINE, "the incarnation the spawning core started it for");
         }
         other => panic!("a heartbeat comes first, got {other:?}"),
     }
@@ -133,28 +133,20 @@ async fn lines_reach_a_subscriber_after_a_heartbeat_and_the_relay_ends_with_its_
     assert_eq!(std::fs::read_to_string(&relay.log).expect("archive"), "load banner\nslot 0 ready\n");
 }
 
-// what this catches (Codex on 1d7d6d4c): the incarnation taken from any socket client, or
-// rebound later. Only the control handle binds it, once; a second bind is refused and counted.
+// what this catches (Codex on 1d7d6d4c): the engine's load banner lost because it was printed
+// before the spawning core connected, or an old line replayed to a later subscriber as if new.
+// Lines before the first subscriber are held for it; lines with nobody connected after that are
+// counted, and a later subscriber starts at the next line.
 #[tokio::test]
-async fn the_incarnation_is_bound_once_from_the_control_handle() {
+async fn the_first_subscriber_gets_the_banner_and_later_ones_never_a_replay() {
     let mut relay = start(quick(), false).await;
-    let mut sub = Subscription::connect(&relay.socket).await.expect("connect");
-    let first = Incarnation { pid: 4242, started_s: 1_793_000_000 };
-    let second = Incarnation { pid: 9999, started_s: 1_793_000_001 };
-    for bind in [first, second] {
-        let line = format!("{}\n", serde_json::to_string(&bind).expect("serialize"));
-        relay.control.write_all(line.as_bytes()).await.expect("write control");
-    }
-    let beat = heartbeat_where(&mut sub, |b| b.binds_refused == 1).await;
-    assert_eq!(beat.incarnation, Some(first), "the first bind holds");
-}
-
-// what this catches (Codex on 1d7d6d4c): lines drained with nobody connected hidden, or replayed
-// to the next subscriber as if new. They are counted, and a subscriber starts at the next line.
-#[tokio::test]
-async fn lines_with_nobody_connected_are_counted_and_never_replayed() {
-    let mut relay = start(quick(), false).await;
-    for line in ["old fault a", "old fault b", "old fault c"] {
+    relay.write("banner: offloaded 41/41 layers").await;
+    let mut first = subscribe(&relay.socket).await;
+    assert_eq!(next_line(&mut first).await, (1, "banner: offloaded 41/41 layers".into(), false));
+    drop(first);
+    // The relay notices the hang-up on its next read; a heartbeat period covers it.
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    for line in ["old fault a", "old fault b"] {
         relay.write(line).await;
     }
     for _ in 0..200 {
@@ -163,15 +155,15 @@ async fn lines_with_nobody_connected_are_counted_and_never_replayed() {
         }
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
-    let mut sub = Subscription::connect(&relay.socket).await.expect("connect");
-    match next(&mut sub).await {
+    let mut later = connect(&relay.socket).await;
+    match next(&mut later).await {
         Frame::Heartbeat(beat) => {
-            assert_eq!((beat.seq_last, beat.missed_disconnected), (3, 3), "{beat:?}");
+            assert_eq!((beat.seq_last, beat.missed_disconnected), (3, 2), "{beat:?}");
         }
         other => panic!("a heartbeat comes first, got {other:?}"),
     }
     relay.write("new").await;
-    assert_eq!(next_line(&mut sub).await, (4, "new".into(), false), "no replay of the three before");
+    assert_eq!(next_line(&mut later).await, (4, "new".into(), false), "no replay of the two before");
 }
 
 // what this catches: a slow subscriber stalling the drain, or losing frames without saying so.
@@ -179,7 +171,7 @@ async fn lines_with_nobody_connected_are_counted_and_never_replayed() {
 #[tokio::test]
 async fn a_slow_subscriber_loses_the_oldest_frames_counted() {
     let mut relay = start(Config { queue: 4, ..quick() }, false).await;
-    let mut sub = Subscription::connect(&relay.socket).await.expect("connect");
+    let mut sub = connect(&relay.socket).await;
     let padding = "p".repeat(100);
     for n in 0..20_000 {
         relay.write(&format!("{n} {padding}")).await;
@@ -195,7 +187,7 @@ async fn a_slow_subscriber_loses_the_oldest_frames_counted() {
 #[tokio::test]
 async fn connections_past_the_bound_are_refused_and_counted() {
     let relay = start(Config { subscribers: 1, ..quick() }, false).await;
-    let mut held = Subscription::connect(&relay.socket).await.expect("connect");
+    let mut held = connect(&relay.socket).await;
     assert!(matches!(next(&mut held).await, Frame::Heartbeat(_)));
     let mut refused = Subscription::connect(&relay.socket).await.expect("the endpoint answers");
     let over = tokio::time::timeout(Duration::from_secs(5), refused.next()).await.expect("the refusal is prompt");
@@ -230,12 +222,12 @@ async fn an_unwritable_archive_still_delivers_every_line() {
     assert!(!relay.log.exists());
 }
 
-// what this catches (Codex on 1d7d6d4c): a predecessor's clock, an unbound relay's or an expired
+// what this catches (Codex on 1d7d6d4c): a predecessor's clock or an expired
 // heartbeat's read as this engine's silence. Only a current heartbeat naming this incarnation
 // answers.
 #[test]
 fn silence_is_only_this_incarnations_and_only_while_current() {
-    let engine = Incarnation { pid: 7, started_s: 100 };
+    let engine = EngineIncarnation { pid: 7, started_s: 100, port: 8090 };
     let beat = |incarnation, expires_at_ms| Heartbeat {
         seq_last: 1,
         dropped_slow: 0,
@@ -243,12 +235,10 @@ fn silence_is_only_this_incarnations_and_only_while_current() {
         last_line_ms: 1_000,
         relay_started_ms: 500,
         incarnation,
-        binds_refused: 0,
         subscribers_refused: 0,
         expires_at_ms,
     };
-    assert_eq!(silent_ms(&beat(Some(engine), 5_000), engine, 4_000), Some(3_000));
-    assert_eq!(silent_ms(&beat(None, 5_000), engine, 4_000), None, "unbound");
-    assert_eq!(silent_ms(&beat(Some(Incarnation { pid: 7, started_s: 99 }), 5_000), engine, 4_000), None, "a predecessor");
-    assert_eq!(silent_ms(&beat(Some(engine), 3_000), engine, 4_000), None, "expired");
+    assert_eq!(silent_ms(&beat(engine, 5_000), engine, 4_000), Some(3_000));
+    assert_eq!(silent_ms(&beat(EngineIncarnation { pid: 7, started_s: 99, port: 8090 }, 5_000), engine, 4_000), None, "a predecessor");
+    assert_eq!(silent_ms(&beat(engine, 3_000), engine, 4_000), None, "expired");
 }
