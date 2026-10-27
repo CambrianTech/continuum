@@ -46,22 +46,63 @@ impl LlamaServerProcess {
     }
 }
 
-/// Give the engine `pid` serving `port` a reader for `stderr`, with `watch` on every line. An
-/// error means nothing reads it, and the caller must not leave that engine serving.
-pub(super) fn attach(stderr: tokio::process::ChildStderr, pid: u32, port: u16, watch: Box<dyn LineWatch>) -> Result<(), String> {
+// derived-or-floor: a CEILING on one local process (this core's own binary) starting and binding a socket; past it the relay has failed and the launch fails loudly. It bounds no serving, token or memory budget
+const RELAY_READY_WITHIN: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// Give the engine `pid` serving `port` a reader for `stderr`, with `watch` on every line. A
+/// relay counts only once it serves this engine ([`follow::ready`]); an error means nothing
+/// reads the engine, the relay is killed and reaped, and the caller must not leave that engine
+/// serving.
+pub(super) async fn attach(stderr: tokio::process::ChildStderr, pid: u32, port: u16, watch: Box<dyn LineWatch>) -> Result<(), String> {
     let engine = EngineIncarnation::of(pid, port)
         .ok_or_else(|| format!("engine {pid}'s start time is unreadable, so no relay can name it"))?;
+    let socket = process::endpoint(port).ok_or("no home directory for the engine's relay")?;
     match process::spawn(stderr, engine).map_err(|e| format!("the engine's log relay did not start: {e}"))? {
         Handoff::Reader(relay) => {
-            reap(relay, engine);
-            follow::follow(engine, watch);
+            let mut pending = Pending { relay: Some(relay), watch: Some(watch), engine };
+            let readiness = match pending.relay.as_mut() {
+                Some(relay) => follow::ready(engine, &socket, relay, RELAY_READY_WITHIN).await,
+                None => Err("the relay was already given up".to_string()),
+            };
+            let (Some(mut relay), Some(watch)) = (pending.relay.take(), pending.watch.take()) else {
+                return Err("the relay was already given up".to_string());
+            };
+            match readiness {
+                Ok(ready) => {
+                    reap(relay, engine);
+                    follow::follow_ready(engine, socket, ready, watch);
+                    Ok(())
+                }
+                Err(reason) => {
+                    let _ = relay.kill(); // an exited relay refuses the signal; it is reaped either way
+                    reap(relay, engine);
+                    Err(reason)
+                }
+            }
         }
         Handoff::Kept(stderr) => {
             let path = child_log::llama_server_log(port).ok_or("no home directory for the engine's log")?;
             child_log::drain_capped(stderr, path, Some(pid), watch);
+            Ok(())
         }
     }
-    Ok(())
+}
+
+/// A relay spawned and not yet proven ready. If the launch is cancelled while it waits, the
+/// relay is still reaped and followed: the engine it reads is owned and may serve on.
+struct Pending {
+    relay: Option<std::process::Child>,
+    watch: Option<Box<dyn LineWatch>>,
+    engine: EngineIncarnation,
+}
+
+impl Drop for Pending {
+    fn drop(&mut self) {
+        if let (Some(relay), Some(watch)) = (self.relay.take(), self.watch.take()) {
+            reap(relay, self.engine);
+            follow::follow(self.engine, watch);
+        }
+    }
 }
 
 /// Wait for the relay this core spawned, so it never lingers as a zombie, and say how it ended:

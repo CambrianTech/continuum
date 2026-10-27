@@ -14,7 +14,7 @@ use std::time::Duration;
 
 use super::super::child_log::{self, LineWatch};
 use super::super::engine_residency::{EngineIncarnation, Liveness};
-use super::{process, Frame, Subscription};
+use super::{process, Frame, Heartbeat, Subscription};
 
 /// The incarnations a task of this process follows, so a second request for one is a no-op.
 static FOLLOWING: LazyLock<parking_lot::Mutex<HashSet<EngineIncarnation>>> = LazyLock::new(Default::default);
@@ -39,6 +39,55 @@ fn follow_at(engine: EngineIncarnation, socket: PathBuf, watch: Box<dyn LineWatc
         let _following = following;
         follow_until_gone(engine, &socket, watch).await;
     }))
+}
+
+/// A relay this core just spawned, proven ready: a connection whose opening heartbeat names
+/// `engine`. The spawning core is the relay's first subscriber, so this connection is the one
+/// the engine's held startup lines go to; [`follow_ready`] keeps reading it.
+pub struct Ready {
+    subscription: Subscription,
+    opening: Heartbeat,
+}
+
+/// Wait, until `within` passes, for the relay `relay` to serve `engine` at `socket`. Refused
+/// when the relay exits first (a failed bind, a path it cannot own), when its endpoint answers
+/// for another engine, or when the time passes: the caller must not serve that engine.
+pub async fn ready(engine: EngineIncarnation, socket: &Path, relay: &mut std::process::Child, within: Duration) -> Result<Ready, String> {
+    let deadline = tokio::time::Instant::now() + within;
+    // derived-or-floor: a POLL cadence while one local process starts and binds; it bounds how late readiness is noticed, never a budget
+    let mut poll = tokio::time::interval(Duration::from_millis(20));
+    loop {
+        poll.tick().await;
+        if let Some(status) = relay.try_wait().map_err(|e| format!("the engine's log relay could not be polled: {e}"))? {
+            return Err(format!("the engine's log relay exited before serving: {status}"));
+        }
+        if let Ok(mut subscription) = Subscription::connect(socket).await {
+            let opening = tokio::time::timeout_at(deadline, subscription.next()).await;
+            return match opening {
+                Ok(Ok(Some(Frame::Heartbeat(opening)))) if opening.incarnation == engine => Ok(Ready { subscription, opening }),
+                Ok(Ok(Some(Frame::Heartbeat(other)))) => Err(format!("the endpoint answers for another engine ({:?}), not {engine:?}", other.incarnation)),
+                Ok(Ok(Some(Frame::Line { .. }))) => Err("the relay sent a line before its opening heartbeat".to_string()),
+                Ok(Ok(None)) | Ok(Err(_)) => Err("the relay hung up before its opening heartbeat".to_string()),
+                Err(_) => Err(format!("the relay sent no opening heartbeat within {within:?}")),
+            };
+        }
+        if tokio::time::Instant::now() >= deadline {
+            return Err(format!("the engine's log relay did not serve within {within:?}"));
+        }
+    }
+}
+
+/// Follow `engine` from a [`Ready`] connection, then as [`follow`] does. False when this process
+/// already follows it.
+pub fn follow_ready(engine: EngineIncarnation, socket: PathBuf, ready: Ready, watch: Box<dyn LineWatch>) -> bool {
+    let Some(following) = Following::claim(engine) else { return false };
+    tokio::spawn(async move {
+        let _following = following;
+        let mut watch = watch;
+        read(engine, ready.subscription, Some(ready.opening), watch.as_mut()).await;
+        follow_until_gone(engine, &socket, watch).await;
+    });
+    true
 }
 
 /// This process's claim to follow one incarnation, given up however its task ends (an abort
@@ -70,15 +119,23 @@ async fn follow_until_gone(engine: EngineIncarnation, socket: &Path, mut watch: 
             return;
         }
         if let Ok(subscription) = Subscription::connect(socket).await {
-            read(engine, subscription, watch.as_mut()).await;
+            read(engine, subscription, None, watch.as_mut()).await;
         }
     }
 }
 
 /// Read one connection until it ends, its heartbeat expires, or it names another engine.
-async fn read(engine: EngineIncarnation, mut subscription: Subscription, watch: &mut dyn LineWatch) {
+/// `opening` is a heartbeat already read from it.
+async fn read(engine: EngineIncarnation, mut subscription: Subscription, opening: Option<Heartbeat>, watch: &mut dyn LineWatch) {
     let mut clock: Option<Clock> = None;
     let mut deadline_ms = None;
+    let mut keep = |beat: &Heartbeat, deadline_ms: &mut Option<u64>| {
+        *deadline_ms = Some(beat.expires_at_ms);
+        clock.get_or_insert_with(|| Clock::start(engine.pid)).0.store(beat.last_line_ms, Ordering::Relaxed);
+    };
+    if let Some(beat) = opening.filter(|beat| beat.incarnation == engine) {
+        keep(&beat, &mut deadline_ms);
+    }
     loop {
         let now = continuum_base::time::EpochMs::now().millis();
         // Before the first heartbeat, wait no longer than one relay heartbeat bound would.
@@ -89,10 +146,7 @@ async fn read(engine: EngineIncarnation, mut subscription: Subscription, watch: 
         };
         match frame {
             Frame::Line { text, .. } => watch.observe(&text),
-            Frame::Heartbeat(beat) if beat.incarnation == engine => {
-                deadline_ms = Some(beat.expires_at_ms);
-                clock.get_or_insert_with(|| Clock::start(engine.pid)).0.store(beat.last_line_ms, Ordering::Relaxed);
-            }
+            Frame::Heartbeat(beat) if beat.incarnation == engine => keep(&beat, &mut deadline_ms),
             Frame::Heartbeat(_) => break, // another engine's relay on this port: never this one's signals
         }
     }
@@ -176,5 +230,60 @@ mod tests {
         relay.await.expect("the relay task").expect("the relay ends cleanly");
         until("the clock goes with the relay", || child_log::silent_ms(engine.pid).is_none()).await;
         second.abort();
+    }
+
+    /// A stand-in relay process for the readiness checks: alive until killed.
+    fn live_child() -> std::process::Child {
+        std::process::Command::new("sleep").arg("30").spawn().expect("spawn a stand-in relay")
+    }
+
+    // what this catches (Codex on #5536): a relay that spawned but never served (a failed bind,
+    // a path it cannot own) taken as ready, so the engine serves with nobody reading it.
+    #[tokio::test]
+    async fn a_relay_that_exits_before_serving_is_refused() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let engine = EngineIncarnation { pid: 4242, started_s: 1_793_000_000, port: 65_002 };
+        let mut relay = std::process::Command::new("sh").args(["-c", "exit 3"]).spawn().expect("spawn");
+        let refused = ready(engine, &dir.path().join("engine.sock"), &mut relay, Duration::from_secs(10)).await;
+        assert!(refused.as_ref().is_err_and(|e| e.contains("exited before serving")), "{:?}", refused.err());
+    }
+
+    // what this catches (Codex on #5536): readiness taken from an endpoint that serves another
+    // engine (a predecessor's relay still on the path), so this engine's lines go nowhere.
+    #[tokio::test]
+    async fn an_endpoint_answering_for_another_engine_is_refused_and_a_matching_one_is_followed() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (socket, log) = (dir.path().join("engine.sock"), dir.path().join("engine.log"));
+        let engine = EngineIncarnation::of(std::process::id(), 65_003).expect("this process's start time");
+        let predecessor = EngineIncarnation { started_s: engine.started_s - 1, ..engine };
+        let (mut stderr, drained) = tokio::io::duplex(64 * 1024);
+        let config = super::super::Config { heartbeat: Duration::from_millis(50), ..super::super::Config::default() };
+        let relay = tokio::spawn({
+            let (log, socket) = (log.clone(), socket.clone());
+            async move { super::super::run(drained, engine, &log, &socket, config).await }
+        });
+        stderr.write_all(b"banner\n").await.expect("write");
+        let mut child = live_child();
+        let refused = ready(predecessor, &socket, &mut child, Duration::from_secs(10)).await;
+        assert!(refused.as_ref().is_err_and(|e| e.contains("another engine")), "{:?}", refused.err());
+
+        // That refused probe was the first subscriber, so the banner went to it; a fresh relay
+        // shows the matching path from the start.
+        drop(stderr);
+        relay.await.expect("the relay task").expect("the relay ends cleanly");
+        let (mut stderr, drained) = tokio::io::duplex(64 * 1024);
+        let relay = tokio::spawn({
+            let (log, socket) = (log.clone(), socket.clone());
+            async move { super::super::run(drained, engine, &log, &socket, config).await }
+        });
+        stderr.write_all(b"banner\n").await.expect("write");
+        let proven = ready(engine, &socket, &mut child, Duration::from_secs(10)).await.expect("ready for this engine");
+        let seen = Arc::new(parking_lot::Mutex::new(Vec::new()));
+        assert!(follow_ready(engine, socket.clone(), proven, Box::new(Record(Arc::clone(&seen)))));
+        until("the spawning core's follower gets the held banner", || seen.lock().contains(&"banner".to_string())).await;
+        let _ = child.kill();
+        let _ = child.wait();
+        drop(stderr);
+        relay.await.expect("the relay task").expect("the relay ends cleanly");
     }
 }

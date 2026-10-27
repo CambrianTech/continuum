@@ -278,7 +278,7 @@ impl LlamaServerProcess {
         // ([`super::stderr_sink`]).
         let (watch, debug_flag) = self.stderr_watch();
         let attached = match (child_stderr, child_pid) {
-            (Some(stderr), Some(pid)) => super::stderr_sink::attach(stderr, pid, port, watch),
+            (Some(stderr), Some(pid)) => super::stderr_sink::attach(stderr, pid, port, watch).await,
             _ => Err("the engine's stderr or pid could not be taken".to_string()),
         };
         if let Err(reason) = attached {
