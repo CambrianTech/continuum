@@ -88,8 +88,8 @@ async fn substrate_notices_survive_attention_and_history_pressure_once() {
 // so before they were bounded a busy room drove the required side past the whole window and
 // every turn was refused (2026-09-09: conversation_tokens=53522 against a 23,040 window, 192
 // of 229 cognition cycles refused, both citizens mute for hours while serving reported
-// ready). They are now items of her view, weighed like her conversation: the newest reaches
-// her whole and the window never refuses her for the room's volume.
+// ready). They are now optional items of her view: the window never refuses her for the
+// room's volume, and the newest always reaches her, whole or as its handle.
 #[tokio::test]
 async fn a_busy_room_cannot_make_a_citizen_mute() {
     let adapter: Arc<dyn AIProviderAdapter> = Arc::new(HeuristicInferenceAdapter::new());
@@ -110,6 +110,7 @@ async fn a_busy_room_cannot_make_a_citizen_mute() {
             })
         })
         .collect();
+    let newest = updates.last().expect("forty updates").event_id;
     ws.room_updates = Arc::new(updates);
     ws.now_ms = Some(1);
 
@@ -124,8 +125,10 @@ async fn a_busy_room_cannot_make_a_citizen_mute() {
         view.capacity_error
     );
 
+    // Whole or as its handle (who, where, chat/history rereads it), the newest is never
+    // dropped: both renderings carry its event.
     assert!(
-        view.messages.iter().any(|message| message.content_text().contains("update 39")),
+        view.messages.iter().any(|message| message.content_text().contains(&newest.to_string())),
         "the newest update reaches her"
     );
 }
