@@ -266,6 +266,12 @@ no faculty re-implements them:
 6. Every decision (start, lease size, order, prefetch) is an explicit action with an exact cost
    (prefill tokens, seconds). Replaying captures is the simulator in which a learned policy must
    beat the hand rule before it runs live (plan line 14).
+7. An item's key names its whole subject, so the same subject is one item: a room's wall, roster,
+   board and recall are keyed by the room they describe, and returning to a room appends nothing
+   (`Contribution::room`; the M5, 2026-10-26: each switch between two rooms re-appended an
+   unchanged 18,755-char wall, its roster and recall).
+8. A start gives an item a newer one superseded (she read the same lines again, or changed the
+   file since: `Source::superseded`) at most its summary, without lowering older items.
 
 **Gates (source-hygiene ratchets; counts on canary a59c2bf15 + #5422, 2026-10-25):**
 
@@ -297,9 +303,11 @@ surface, observed back through her eyes and ears.
 **How to add a layer (the whole recipe; everything else is free):**
 1. Implement `continuum_context::source::Source` for it. `name` and `priority` are required;
    set `required` only for input she must read.
-2. `items()` returns one `Item` per subject, under a key that names that whole subject. Build its
+2. `items()` returns one `Item` per subject, under a key that names that whole subject (a block
+   about a room is keyed by the room). Build its
    `summary` with `continuum_context::levels::summarize(full, Shape::…)` (`Code` with the producer's
-   line parser, `Output`, `List`). Its `pointer` names the handle that expands it.
+   line parser, `Output`, `List`). Its `pointer` names the handle that expands it. If a newer item
+   can make an older one redundant, name the older keys in `superseded()`.
 3. Add the source to the view's source list. Never push a prompt message, never collapse, never
    pick an order: the view appends, levels, admits, orders by measured motion and turns over.
 4. Prove it with a fixture in the source's test mod, then with the replay validator.

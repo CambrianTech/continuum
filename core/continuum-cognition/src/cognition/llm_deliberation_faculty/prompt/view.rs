@@ -173,6 +173,8 @@ impl LlmDeliberationFaculty {
         all_messages.streams.blocks.extend(contracts.into_iter().map(|contract| {
             crate::cognition::context_streams::blocks::Grounding {
                 faculty: contract.name.to_owned(),
+                // A contract in force is hers in every room.
+                room: None,
                 text: contract.body.to_owned(),
                 minimum: contract.body.to_owned(),
             }

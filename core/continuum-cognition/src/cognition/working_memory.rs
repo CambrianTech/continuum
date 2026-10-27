@@ -541,6 +541,7 @@ impl VolatileSnapshot {
             handle: None,
             written_pointer: None,
             summary: None,
+            touches: Vec::new(),
         };
         let mut records: BTreeMap<u64, action_log::ActionRecord> = BTreeMap::new();
         let mut unkeyed = 0usize;

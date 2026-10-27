@@ -714,6 +714,7 @@ impl Faculty for RecallFaculty {
                             top_salience,
                             reasoning,
                         )
+                        .about_room(ws.room_id)
                         .trailing(),
                     );
                 }
@@ -751,6 +752,8 @@ impl Faculty for RecallFaculty {
 
         Some(
             Contribution::context(FacultyId::Recall, content, top_salience, reasoning)
+                // Recalled for this room (its sticky cache is per room): one item per room.
+                .about_room(ws.room_id)
                 // TRAILING, not stable: recall is re-scored EVERY turn (salience ×
                 // recency, new engrams admitted between turns), so its block churns
                 // mid-list — measured 2026-09-01 as the system prompt mutating at

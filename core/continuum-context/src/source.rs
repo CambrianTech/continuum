@@ -45,6 +45,15 @@ pub trait Source<T: Block> {
     /// next turnover.
     fn items(&self) -> Vec<Item<T>>;
 
+    /// Keys of items a newer item supersedes: what they say she has since read again or
+    /// changed (a file read whose lines a later read showed again, a file she edited since).
+    /// A start gives such an item at most its summary, whatever its age and whatever the grant
+    /// leaves (`view::levels`); its full stays one expand away. Within an epoch nothing changes:
+    /// the newer item arrives as an append, and the start after it re-levels the older one.
+    fn superseded(&self) -> Vec<String> {
+        Vec::new()
+    }
+
     /// Items that must leave the view now (a closed view, a revoked result), each as the
     /// short notice that supersedes it (its `full`). Their tokens leave at the next
     /// turnover; a privacy revocation that cannot wait is the caller's reason to turn over

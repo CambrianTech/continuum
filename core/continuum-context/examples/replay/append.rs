@@ -151,7 +151,7 @@ pub fn replay(label: &str, cuts: &[Cut], window: usize, share: usize, (chars_per
                 if name == "actions" {
                     restored.enrich(&mut items);
                 }
-                Captured { name: name.clone(), items }
+                Captured { name: name.clone(), items, superseded: Vec::new() }
             })
             .collect();
         sources.sort_by_key(|source| order(Order::SettledFirst, &source.name));
@@ -183,7 +183,7 @@ pub fn replay(label: &str, cuts: &[Cut], window: usize, share: usize, (chars_per
         if !turnover {
             // Mid-epoch: her loop arrives as the bytes she was sent, first, then what changed in
             // every other source. The action log is not re-rendered.
-            let act_loop = Captured { name: LOOP.to_owned(), items: looped.clone() };
+            let act_loop = Captured { name: LOOP.to_owned(), items: looped.clone(), superseded: Vec::new() };
             let mut refs: Vec<&dyn Source<String>> = vec![&act_loop];
             refs.extend(sources.iter().filter(|s| s.name != "actions").map(|s| s as &dyn Source<String>));
             open.advance(&refs);

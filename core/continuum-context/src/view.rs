@@ -110,7 +110,13 @@ enum Level {
 /// filling them past it doubled the size of every start (median 14,238 -> 27,696 chars) and
 /// the median act went 83-111 s -> 140 s under the same eleven residents (canary 28bf81fa7 vs
 /// 3cd34f87c, the M5, 2026-10-25 17:00-18:06Z).
-fn levels<T: Block>(items: &[Item<T>], grant: usize) -> Vec<Level> {
+///
+/// An item a newer one `superseded` (she read the same lines again, or changed the file since)
+/// takes at most its summary, and its pointer when that does not fit. Its level says what a
+/// newer item made redundant, not what its age allows, so it never lowers the ceiling of the
+/// items older than it (Aiko, the M5, 2026-10-26: whole reads of a file she had read again or
+/// edited since stayed whole until the next turnover, 15.7k tokens of results 10+ acts old).
+fn levels<T: Block>(items: &[Item<T>], grant: usize, superseded: &HashSet<String>) -> Vec<Level> {
     let floor: usize = items.iter().map(pointer_chars).sum();
     let mut spare = grant.saturating_sub(floor);
     let mut levels = vec![Level::Pointer; items.len()];
@@ -118,6 +124,13 @@ fn levels<T: Block>(items: &[Item<T>], grant: usize) -> Vec<Level> {
     for (item, level) in items.iter().zip(levels.iter_mut()).rev() {
         let full = item.full.chars().saturating_sub(pointer_chars(item));
         let summary = item.summary.as_ref().map(|s| s.chars().saturating_sub(pointer_chars(item)));
+        if superseded.contains(&item.key) {
+            if let Some(summary) = summary.filter(|summary| ceiling != Level::Pointer && *summary <= spare) {
+                spare -= summary;
+                *level = Level::Summary;
+            }
+            continue;
+        }
         if ceiling == Level::Full && full <= spare {
             spare -= full;
             *level = Level::Full;
@@ -219,7 +232,8 @@ impl<T: Block> View<T> {
             act: None,
         };
         for ((source, items), grant) in sources.iter().zip(offered).zip(grants) {
-            let levels = levels(&items, grant);
+            let superseded: HashSet<String> = source.superseded().into_iter().collect();
+            let levels = levels(&items, grant, &superseded);
             let mut rendered = Vec::with_capacity(items.len());
             for (item, level) in items.into_iter().zip(levels) {
                 let id = key(source.name(), &item.key);

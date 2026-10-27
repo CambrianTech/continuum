@@ -135,3 +135,28 @@ fn a_thought_renders_the_same_whatever_the_served_window() {
     memory.set_served_window(131_072);
     assert_eq!(render(&memory), narrow, "the window changed and the thought's rendering did not");
 }
+
+// what this catches: a room's block re-appended on every room switch. Keyed by the faculty
+// alone, two rooms' walls superseded each other, so each switch back appended an unchanged
+// 18,755-char wall again (Aiko, the M5, 2026-10-26 23:07-00:25Z: the wall, roster and recall
+// of two rooms, 20-26k chars of identical copies per request). Keyed by the room, returning to
+// a room whose block has not changed appends nothing, and each copy names its room.
+#[test]
+fn a_room_block_is_one_item_per_room() {
+    use continuum_context::view::{Claim, View};
+
+    use super::blocks::Grounding;
+
+    let (a, b) = (uuid::Uuid::from_u128(0xa), uuid::Uuid::from_u128(0xb));
+    let wall = |room, text: &str| Grounding { faculty: "room-wall".into(), room: Some(room), text: text.into(), minimum: text.into() };
+    let in_a = wall(a, "RECIPE of room a");
+    let in_b = wall(b, "LEDGER of room b");
+    let whole = |claims: &[Claim]| claims.iter().map(|claim| claim.full_chars).collect();
+    let (mut view, _) = View::start(Vec::new(), &[&in_a as &dyn Source<_>], whole).expect("test: one grant per source");
+    assert_eq!(view.advance(&[&in_b as &dyn Source<_>]).items, 1, "another room's wall is its own item");
+    let back = view.advance(&[&in_a as &dyn Source<_>]);
+    assert_eq!(back.items, 0, "returning to room a appends nothing: {back:?}");
+    let texts: Vec<String> = view.render().map(|m: &super::ContextMessage| m.text.clone()).collect();
+    assert_eq!(texts.len(), 2);
+    assert!(texts[0].starts_with(&format!("[room-wall] (room {a})")) && texts[1].starts_with(&format!("[room-wall] (room {b})")), "{texts:?}");
+}

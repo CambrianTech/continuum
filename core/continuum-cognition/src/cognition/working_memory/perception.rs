@@ -219,6 +219,11 @@ impl WorkingMemory {
     /// else what its pointer says; the pointer names the handle that reopens it, or is the
     /// ledger line when nothing was saved. The act still in flight is not among them (it
     /// rides whole as the newest message of the turn); the flag says whether there is one.
+    /// Her acts whose result a newer act made redundant ([`action_log::ActionLog::superseded`]).
+    pub(crate) fn superseded_actions(&self) -> Vec<u64> {
+        self.actions.lock().superseded()
+    }
+
     pub(crate) fn action_renderings(&self) -> (Vec<(u64, String, Option<String>, String)>, bool) {
         let active = self.in_flight_action_seq();
         let actions = self.actions.lock();

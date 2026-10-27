@@ -9,7 +9,7 @@
 //! changes between acts restarts the view: nothing after it is reusable); room turns (`[occurred <when>] <who>:`) are her conversation, keyed by when and
 //! who; results, pointers, the steps ledger and the action lines of working memory are ONE
 //! action log keyed by `#n`; each `[faculty]` block and each list-shaped block (open views,
-//! notices, recall, thoughts) is a source of `- ` items; whatever is left (facts, clock, the
+//! notices, thoughts) is a source of `- ` items, recall one block as the core renders it; whatever is left (facts, clock, the
 //! ask, the live act) is this act's fresh tail. Everything is measured in characters: as
 //! sent, and as the view would have sent it.
 //!
@@ -39,6 +39,10 @@
 //! charging each later page her acts show she needed as an extra request (`replay/paged.rs`).
 //! Each run prints one `TABLE` line.
 //!
+//! `--engine <prefill tok/s>` prices each request at the share of its carried prefix the engine
+//! kept, read from its own receipt, and compares the core's rule today with room-keyed blocks and
+//! superseded reads at their summary (`replay/engine.rs`). Each run prints one `TABLE` line per policy.
+//!
 //! `--chars-per-token <r>` prices the window at the core's own estimate instead of the
 //! engine's bill; `--keyed-turn` keys the standing turn text into the epoch; `--trace`
 //! prints each act's view against what it may hold.
@@ -57,11 +61,15 @@ mod outline;
 mod paged;
 #[path = "replay/sediment.rs"]
 mod sediment;
+#[path = "replay/engine.rs"]
+mod engine;
 use continuum_context::view::View;
 
 struct Captured {
     name: String,
     items: Vec<Item<String>>,
+    /// Keys a later item supersedes (`--engine`'s superseded rule); empty otherwise.
+    superseded: Vec<String>,
 }
 
 /// What the allocator weighs each source by, as the core's `context_streams::priority` does:
@@ -113,6 +121,9 @@ impl Source<String> for Captured {
     }
     fn items(&self) -> Vec<Item<String>> {
         self.items.clone()
+    }
+    fn superseded(&self) -> Vec<String> {
+        self.superseded.clone()
     }
 }
 
@@ -236,6 +247,9 @@ struct Cut {
     said: Vec<String>,
     /// Its read calls (`--paged-reads`).
     reads: paged::Reads,
+    /// The share of what it shared with the request before it that the engine kept, from its
+    /// receipt (`replay/engine.rs`); `None` without one.
+    kept: Option<f64>,
 }
 
 /// A tail piece that repeats from act to act (the work-turn ask, the own-time framing, the
@@ -257,12 +271,35 @@ fn turn_key(text: &str) -> Option<String> {
     Some(format!("{when} {who}"))
 }
 
-fn cut(request: &serde_json::Value, tools: &str, keyed_turn: bool) -> Cut {
+/// A block's name and the room its header names: `[name]` or `[name] (room <id>)`, the line
+/// alone, then its body.
+fn block(text: &str) -> Option<(&str, Option<&str>)> {
+    let (first, _) = text.split_once('\n')?;
+    let (name, rest) = first.strip_prefix('[')?.split_once(']')?;
+    if name.contains(' ') {
+        return None;
+    }
+    match rest {
+        "" => Some((name, None)),
+        _ => Some((name, Some(rest.strip_prefix(" (room ")?.strip_suffix(')')?))),
+    }
+}
+
+/// `room`: key each block by the room it was rendered in (the core's `Grounding` key since
+/// blocks name their room); `None` keys it by its name alone, as before.
+fn cut(request: &serde_json::Value, tools: &str, keyed_turn: bool, room: Option<&str>) -> Cut {
     let head = format!("{}\n{tools}", request["systemPrompt"].as_str().unwrap_or_default());
     let mut sources: BTreeMap<String, Vec<Item<String>>> = BTreeMap::new();
     let mut tail = Vec::new();
     let mut sent = head.clone();
-    let mut push = |source: &str, items: Vec<Item<String>>| sources.entry(source.to_owned()).or_default().extend(items);
+    // `latest`: the source offers only the newest of these items under each key.
+    let mut push = |source: &str, items: Vec<Item<String>>, latest: bool| {
+        let held = sources.entry(source.to_owned()).or_default();
+        if latest {
+            held.retain(|old| items.iter().all(|new| new.key != old.key));
+        }
+        held.extend(items);
+    };
     for message in request["messages"].as_array().into_iter().flatten() {
         let text = match &message["content"] {
             serde_json::Value::String(text) => text.clone(),
@@ -271,22 +308,22 @@ fn cut(request: &serde_json::Value, tools: &str, keyed_turn: bool) -> Cut {
         sent.push('\n');
         sent.push_str(&text);
         if let Some(key) = turn_key(&text) {
-            push("conversation", vec![item(key, text)]);
+            push("conversation", vec![item(key, text)], false);
         } else if let Some(seq) = seq_after(&text, "[result #") {
-            push("actions", vec![item(seq.to_string(), text)]);
+            push("actions", vec![item(seq.to_string(), text)], false);
         } else if text.starts_with("Recent results of your own actions") || text.starts_with("[actions] ") {
-            push("actions", vec![item("banner".into(), text)]);
+            push("actions", vec![item("banner".into(), text)], false);
         } else if text.starts_with("Older results, collapsed to pointers") {
             for line in text.lines().skip(1) {
                 if let Some(seq) = seq_after(line, "[result #") {
-                    push("actions", vec![item(seq.to_string(), line.to_owned())]);
+                    push("actions", vec![item(seq.to_string(), line.to_owned())], false);
                 }
             }
         } else if text.starts_with("[steps taken this session]") {
             // The ledger is the action log's pointer rendering: one item per act.
             for line in text.lines().skip(1) {
                 if let Some(seq) = seq_after(line, "[action #") {
-                    push("ledger", vec![item(seq.to_string(), line.to_owned())]);
+                    push("ledger", vec![item(seq.to_string(), line.to_owned())], false);
                 }
             }
         } else if text.starts_with("[working-memory]") {
@@ -295,24 +332,23 @@ fn cut(request: &serde_json::Value, tools: &str, keyed_turn: bool) -> Cut {
                 .into_iter()
                 .filter(|item| !item.full.starts_with("- [action #"))
                 .collect();
-            push("working-memory", thoughts);
+            push("working-memory", thoughts, false);
         } else if text.starts_with("My own recent thoughts") {
-            push("working-memory", vec![item("working-memory/header".into(), text)]);
+            push("working-memory", vec![item("working-memory/header".into(), text)], false);
         } else if text.starts_with("- ") {
             // One of her thoughts, a message of its own since the view keyed them.
-            push("working-memory", vec![item(text.clone(), text)]);
+            push("working-memory", vec![item(text.clone(), text)], false);
         } else if text.starts_with("[open views]") {
-            push("open-views", bullets("open-views", &text));
+            push("open-views", bullets("open-views", &text), false);
         } else if text.starts_with("Notices my substrate posted") {
-            push("notices", bullets("notices", &text));
-        } else if text.starts_with("[recall]") {
-            push("recall", bullets("recall", &text));
-        } else if let Some(name) = text.strip_prefix('[').and_then(|rest| rest.split_once("]\n")).map(|(name, _)| name)
-            .filter(|name| !name.contains(' '))
-        {
-            push(name, vec![item("block".into(), text.clone())]);
+            push("notices", bullets("notices", &text), false);
+        } else if let Some((name, named)) = block(&text) {
+            let key = named.or(room).map_or_else(|| "block".to_owned(), |room| format!("room/{room}")); // map_or_else: a block of no room is one item
+            // A capture holds every version its view appended; the source offers only its
+            // current one, the last. Offering all of them alternated two versions every act.
+            push(name, vec![item(key, text.clone())], true);
         } else if let Some(key) = standing(&text).filter(|_| keyed_turn) {
-            push("turn", vec![item(key, text)]);
+            push("turn", vec![item(key, text)], false);
         } else {
             tail.push(text);
         }
@@ -323,7 +359,7 @@ fn cut(request: &serde_json::Value, tools: &str, keyed_turn: bool) -> Cut {
         let missing = ledger.into_iter().filter(|line| !held.contains(&line.key)).collect::<Vec<_>>();
         sources.entry("actions".into()).or_default().extend(missing);
     }
-    Cut { head, sources, tail, sent, act: validate::act_of(request), said: outline::said(request), reads: paged::reads(request) }
+    Cut { head, sources, tail, sent, act: validate::act_of(request), said: outline::said(request), reads: paged::reads(request), kept: None }
 }
 
 fn shared(a: &str, b: &str) -> usize {
@@ -354,9 +390,24 @@ struct Outcome {
     retained: usize,
     /// The view's prefill on each act that turned over.
     turnover_prefill: Vec<f64>,
+    /// Each request's prefill at the share of its carried prefix the engine kept (`--engine`).
+    engine_prefill: Vec<f64>,
+    /// Each request's whole prompt, view and tail: what an act the engine lost costs.
+    prompt_chars: Vec<f64>,
+    /// Items rendered at their summary and at their pointer by every start.
+    summarized: usize,
+    collapsed: usize,
 }
 
-fn replay(label: &str, cuts: &[Cut], window: usize, (rule, placed): (Rule, Order), keyed_turn: bool, admit: bool, trace: bool, share: usize) -> Result<Outcome, Box<dyn std::error::Error>> {
+/// The start decisions a run replays beyond the core's window rule (`replay/engine.rs`).
+#[derive(Clone, Copy, Default)]
+struct Policy {
+    superseded: bool,
+}
+
+#[allow(clippy::too_many_arguments)] // the replay's knobs, each a flag of the CLI
+fn replay(label: &str, cuts: &[Cut], window: usize, (rule, placed): (Rule, Order), keyed_turn: bool, admit: bool, trace: bool, share: usize, policy: Policy) -> Result<Outcome, Box<dyn std::error::Error>> {
+    let (mut engine_prefill, mut prompt_chars) = (Vec::new(), Vec::new());
     let mut restored = validate::Restored::default();
     let (mut rereads, mut retained) = (0usize, 0usize);
     let mut view: Option<View<String>> = None;
@@ -386,7 +437,8 @@ fn replay(label: &str, cuts: &[Cut], window: usize, (rule, placed): (Rule, Order
                 if name == "actions" {
                     restored.enrich(&mut items);
                 }
-                Captured { name: name.clone(), items }
+                let superseded = if policy.superseded && name == "actions" { engine::superseded(&items) } else { Vec::new() };
+                Captured { name: name.clone(), items, superseded }
             })
             .collect();
         sources.sort_by_key(|source| order(placed, &source.name));
@@ -448,7 +500,13 @@ fn replay(label: &str, cuts: &[Cut], window: usize, (rule, placed): (Rule, Order
                 turnover_prefill.push((length - kept) as f64);
             }
             view_share.push(kept as f64 / length.max(1) as f64);
+            // The engine lost the share of the carried prefix this request's receipt says it lost.
+            let engine_kept = cut.kept.unwrap_or(1.0); // unwrap_or: no receipt, the engine kept it all, as the other modes price it
+            engine_prefill.push((length - kept) as f64 + (1.0 - engine_kept) * kept as f64);
+        } else {
+            engine_prefill.push(rendered.chars().count() as f64);
         }
+        prompt_chars.push(rendered.chars().count() as f64);
         previous_sent = Some(&cut.sent);
         previous_view = rendered;
     }
@@ -470,7 +528,17 @@ fn replay(label: &str, cuts: &[Cut], window: usize, (rule, placed): (Rule, Order
     let line: Vec<String> = appended.iter().map(|(name, chars)| format!("{name} {}", chars / acts)).collect();
     println!("  appended per act by source: {}", line.join(", "));
     println!("  her re-reads of a file read before: {rereads}, of which the prompt still held the earlier read whole or as its outline (a retention proxy): {retained}; acts whose result was ambiguous (not restored): {}", restored.ambiguous);
-    Ok(Outcome { turnovers, prefill_chars: view_prefill, rereads, retained, turnover_prefill })
+    Ok(Outcome {
+        turnovers,
+        prefill_chars: view_prefill,
+        rereads,
+        retained,
+        turnover_prefill,
+        engine_prefill,
+        prompt_chars,
+        summarized: summarized_at_starts,
+        collapsed: collapsed_at_starts,
+    })
 }
 
 /// Characters a request sends: the system prompt, every message, and `tools`.
@@ -496,6 +564,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // measured prefill rate (the node's `state/serving-rates.json`, or a live read).
     let mut validate_tps: Option<f64> = None;
     let mut append_tps: Option<f64> = None;
+    // `--engine <prefill tok/s>`: price each policy at the engine's measured keep (`replay/engine.rs`).
+    let mut engine_tps: Option<f64> = None;
+    // `--since <epoch ms>`: replay only the requests captured from then on.
+    let mut since_ms = 0u64;
     let mut reply_override: Option<u64> = None;
     let mut fixed_tools: Option<String> = None;
     let (mut outline_results, mut generational, mut paged_reads) = (false, false, false);
@@ -517,6 +589,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
                 validate_tps = Some(tps);
             }
+            "--since" => since_ms = args.next().ok_or("--since needs an epoch millisecond")?.parse()?,
+            "--engine" => {
+                let tps: f64 = args.next().ok_or("--engine needs the prefill rate in tokens/s")?.parse()?;
+                if !(tps.is_finite() && tps > 0.0) {
+                    return Err("--engine needs a finite, positive measured prefill rate".into());
+                }
+                engine_tps = Some(tps);
+            }
             "--append-tail" => {
                 let tps: f64 = args.next().ok_or("--append-tail needs the prefill rate in tokens/s")?.parse()?;
                 if !(tps.is_finite() && tps > 0.0) {
@@ -537,6 +617,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     let mut rows = Vec::new();
     let mut billed: BTreeMap<String, u64> = BTreeMap::new();
+    let mut receipts = engine::Receipts::new();
     for path in &paths {
         for line in std::fs::read_to_string(path)?.lines() {
             let Ok(event) = serde_json::from_str::<serde_json::Value>(line) else { continue };
@@ -545,6 +626,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 Some("completed") => {
                     if let (Some(id), Some(tokens)) = (event["request_id"].as_str(), event["response"]["usage"]["inputTokens"].as_u64()) {
                         billed.insert(id.to_owned(), tokens);
+                        if let Some(cached) = event["response"]["timing"]["cachedTokens"].as_u64() {
+                            receipts.insert(id.to_owned(), (tokens, cached));
+                        }
                     }
                 }
                 _ => {}
@@ -568,6 +652,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     rows.retain(|row| {
         row["room_id"].as_str().is_some_and(|id| id.starts_with(&room))
             && row["request"]["purpose"].as_str().is_some_and(|p| p.ends_with(&purpose))
+            && row["captured_at_ms"].as_u64().is_some_and(|at| at >= since_ms)
     });
     rows.sort_by_key(|row| row["captured_at_ms"].as_u64());
     let context_window = rows.iter().filter_map(|row| row["context_window"].as_u64()).max().unwrap_or(0); // unwrap_or: no rows in the room, nothing replays
@@ -601,14 +686,30 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .iter()
         .zip(&sent_tools)
         .map(|(row, tools)| {
-            let mut cut = cut(&row["request"], tools, keyed_turn);
+            let mut cut = cut(&row["request"], tools, keyed_turn, None);
             cut.act = std::mem::take(&mut cut.act).at(row);
             cut
         })
         .collect();
+    if let Some(tps) = engine_tps {
+        let resident = paths.iter().map(|path| path.rsplit('/').next().unwrap_or(path).chars().take(8).collect::<String>()).collect::<Vec<_>>().join("+"); // unwrap_or: rsplit always yields one piece
+        let mut by_name = cuts;
+        let mut by_room: Vec<Cut> = rows
+            .iter()
+            .zip(&sent_tools)
+            .map(|(row, tools)| {
+                let mut cut = cut(&row["request"], tools, keyed_turn, row["room_id"].as_str());
+                cut.act = std::mem::take(&mut cut.act).at(row);
+                cut
+            })
+            .collect();
+        engine::stamp(&mut by_name, &rows, &receipts, chars_per_token);
+        engine::stamp(&mut by_room, &rows, &receipts, chars_per_token);
+        return engine::compare(&label, &resident, (&by_name, &by_room), &rows, &receipts, window, share, (chars_per_token, tps));
+    }
     if let Some(tps) = append_tps {
         // The core's rule as it renders today, then the same rule with the act loop appended.
-        let today = replay(&label, &cuts, window, (Rule::Reserved, Order::SettledFirst), keyed_turn, true, trace, share)?;
+        let today = replay(&label, &cuts, window, (Rule::Reserved, Order::SettledFirst), keyed_turn, true, trace, share, Policy::default())?;
         let resident = paths.iter().map(|path| path.rsplit('/').next().unwrap_or(path).chars().take(8).collect::<String>()).collect::<Vec<_>>().join("+"); // unwrap_or: rsplit always yields one piece
         let rate = (chars_per_token, tps);
         let whole = append::Options { outline: outline::Mode::Whole, generational: false, paged: false };
@@ -647,7 +748,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         // one comparable line each. Prefill seconds at the measured rate `tps`.
         let seconds_per_char = 1.0 / (chars_per_token * tps);
         for share in [2usize, 3, 4, 6] {
-            let o = replay(&label, &cuts, window, (Rule::Reserved, Order::SettledFirst), keyed_turn, true, trace, share)?;
+            let o = replay(&label, &cuts, window, (Rule::Reserved, Order::SettledFirst), keyed_turn, true, trace, share, Policy::default())?;
             println!(
                 "VALIDATE {label} share 1/{share}: {} acts, {} turnovers, prefill {:.1} s/act mean ({:.0} chars), re-reads {} held {}",
                 cuts.len(),
@@ -663,7 +764,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     for rule in [Rule::Whole, Rule::Reserved] {
         for placed in [Order::ConversationFirst, Order::SettledFirst] {
             for admit in [false, true] {
-                replay(&label, &cuts, window, (rule, placed), keyed_turn, admit, trace, share)?;
+                replay(&label, &cuts, window, (rule, placed), keyed_turn, admit, trace, share, Policy::default())?;
             }
         }
     }

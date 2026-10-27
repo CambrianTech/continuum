@@ -238,7 +238,7 @@ impl LlmDeliberationFaculty {
                 };
                 let text = render(GroundingPiece::whole(c));
                 let minimum = if c.standing_grounding { render(GroundingPiece::minimum(c)) } else { text.clone() };
-                crate::cognition::context_streams::blocks::Grounding { faculty: c.faculty.as_str().to_owned(), text, minimum }
+                crate::cognition::context_streams::blocks::Grounding { faculty: c.faculty.as_str().to_owned(), room: c.room, text, minimum }
             })
             .collect();
         let result_pointers = Vec::new();

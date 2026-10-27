@@ -41,6 +41,22 @@ pub(crate) struct ActionRecord {
     /// Kept after the result collapses, so what she read stays addressable.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub summary: Option<String>,
+    /// What each of its calls did to a file, from the typed acts at the receipt: what lets a
+    /// later read or edit of the same file supersede this result ([`ActionLog::superseded`]).
+    /// Empty for a record restored from a checkpoint written before it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub touches: Vec<Touch>,
+}
+
+/// What one call of an act did to a file.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub(crate) enum Touch {
+    /// Read it; `lines` is the 1-based range shown, when its producer said.
+    Read { path: String, lines: Option<(u32, u32)> },
+    /// Wrote or edited it.
+    Changed { path: String },
+    /// Anything that is not a file read or change (a search, a shell, a board call).
+    Other,
 }
 
 impl ActionRecord {
@@ -52,6 +68,30 @@ impl ActionRecord {
 
     fn result_chars(&self) -> usize {
         self.result.as_ref().map_or(0, |result| result.chars().count() + 1)
+    }
+}
+
+impl Touch {
+    /// What each typed act of a receipt did to a file: a read by the lines it showed
+    /// (`open_views::file_read`, the one reading of a read's result), a write or edit by the
+    /// path its call named, anything else `Other`. An apply names no single file, so it is
+    /// `Other`: it never supersedes a read, the conservative side.
+    pub fn of(acts: &[crate::cognition::act_observe::Observation]) -> Vec<Touch> {
+        use crate::cognition::act_observe::ToolVerb;
+        acts.iter()
+            .map(|act| {
+                if let Some(read) = crate::cognition::open_views::file_read(act) {
+                    return Touch::Read { path: read.path, lines: read.shown };
+                }
+                let named = act.call.input.get("file_path").or_else(|| act.call.input.get("path")).and_then(|path| path.as_str());
+                match (&act.output.verb, named) {
+                    (ToolVerb::Write | ToolVerb::Edit, Some(path)) if act.completed_successfully() => {
+                        Touch::Changed { path: path.to_owned() }
+                    }
+                    _ => Touch::Other,
+                }
+            })
+            .collect()
     }
 }
 
@@ -131,6 +171,42 @@ impl ActionLog {
         self.retained().chain(self.indexed_pointers()).map(ActionRecord::receipt_key).collect()
     }
 
+    /// Results a newer act made redundant: every call of it read a file (in its workspace)
+    /// that a later act changed, or read again showing at least the same lines. Their whole
+    /// result is still one expand away by their handle; a start gives them their summary
+    /// (`Source::superseded`). A record with any call that is not a file read never is: its
+    /// other output is not repeated anywhere.
+    pub fn superseded(&self) -> Vec<u64> {
+        let records: Vec<&ActionRecord> = self.records.iter().collect();
+        let covered = |earlier: &ActionRecord, path: &str, lines: Option<(u32, u32)>| {
+            records.iter().filter(|later| later.seq > earlier.seq && later.scope == earlier.scope).any(|later| {
+                later.touches.iter().any(|touch| match touch {
+                    Touch::Changed { path: changed } => changed == path,
+                    Touch::Read { path: read, lines: shown } => {
+                        read == path
+                            && match (lines, shown) {
+                                (Some((a, b)), Some((c, d))) => *c <= a && b <= *d,
+                                // A range unknown on either side proves no coverage.
+                                _ => false,
+                            }
+                    }
+                    Touch::Other => false,
+                })
+            })
+        };
+        records
+            .iter()
+            .filter(|record| record.result.is_some() && !record.touches.is_empty())
+            .filter(|record| {
+                record.touches.iter().all(|touch| match touch {
+                    Touch::Read { path, lines } => covered(**record, path.as_str(), *lines),
+                    Touch::Changed { .. } | Touch::Other => false,
+                })
+            })
+            .map(|record| record.seq)
+            .collect()
+    }
+
     /// Collapse the oldest saved results to their handles once the retained results exceed
     /// `cap`, down to half of it, so the head of what she reads stays byte-stable between two
     /// bursts. The newest result always stays, and an unsaved one stays whole.
@@ -165,5 +241,54 @@ impl ActionLog {
             .map(|record| record.seq)
             .collect();
         self.records.retain(|record| record.result.is_some() || keep.contains(&record.seq));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn record(seq: u64, scope: &str, touches: Vec<Touch>) -> ActionRecord {
+        ActionRecord {
+            seq,
+            room: None,
+            scope: Some(scope.to_owned()),
+            operation: "code/read".into(),
+            head: None,
+            result: Some(format!("result {seq}")),
+            handle: Some(format!("h{seq}")),
+            written_pointer: None,
+            summary: None,
+            touches,
+        }
+    }
+
+    fn read(path: &str, lines: Option<(u32, u32)>) -> Touch {
+        Touch::Read { path: path.into(), lines }
+    }
+
+    // what this catches: a whole read kept whole after she read the same lines again or edited
+    // the file (Aiko, the M5, 2026-10-26: command_inbound_pump.rs, 33k chars, still whole 2.5
+    // hours later), and the opposite error, a result summarized when nothing newer repeats it:
+    // a partial re-read, an unknown range, another checkout's file, or a batch with other output.
+    #[test]
+    fn a_read_is_superseded_only_by_a_newer_read_of_the_same_lines_or_a_change() {
+        let changed = |path: &str| Touch::Changed { path: path.into() };
+        let records = vec![
+            record(1, "w", vec![read("a.rs", Some((1, 100)))]),
+            record(2, "w", vec![read("a.rs", Some((1, 200)))]),
+            record(3, "w", vec![read("b.rs", Some((1, 50)))]),
+            record(4, "w", vec![changed("b.rs")]),
+            record(5, "w", vec![read("c.rs", Some((1, 50))), Touch::Other]),
+            record(6, "w", vec![changed("c.rs")]),
+            record(7, "w", vec![read("d.rs", None)]),
+            record(8, "w", vec![read("d.rs", Some((1, 10)))]),
+            record(9, "w", vec![read("e.rs", Some((1, 300)))]),
+            record(10, "w", vec![read("e.rs", Some((100, 200)))]),
+            record(11, "other", vec![read("f.rs", Some((1, 9)))]),
+            record(12, "w", vec![read("f.rs", Some((1, 9)))]),
+        ];
+        let log = ActionLog::from_records(records, usize::MAX);
+        assert_eq!(log.superseded(), [1, 3]);
     }
 }

@@ -73,6 +73,12 @@ impl Source<ContextMessage> for Actions<'_> {
         items
     }
 
+    /// A read she has since read again or changed: a start gives it its outline, its whole
+    /// result one expand away by its handle.
+    fn superseded(&self) -> Vec<String> {
+        self.memory.superseded_actions().into_iter().map(|seq| seq.to_string()).collect()
+    }
+
     /// Once she has acted, the void said earlier in this epoch is superseded, never edited:
     /// her view reads as the timeline it is (the statement was true when it was made).
     fn retired(&self) -> Vec<Item<ContextMessage>> {

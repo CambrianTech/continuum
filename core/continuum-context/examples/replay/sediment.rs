@@ -173,7 +173,7 @@ mod tests {
             .enumerate()
             .map(|(n, size)| Item { key: n.to_string(), full: "x".repeat(*size), summary: None, pointer: Some(format!("[result #{n}]")) })
             .collect();
-        Captured { name: name.to_owned(), items }
+        Captured { name: name.to_owned(), items, superseded: Vec::new() }
     }
 
     // what this catches: a turnover that settles a NEWER item before an older one (an item more

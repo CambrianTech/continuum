@@ -60,6 +60,41 @@ pub struct OpenView {
     pub note: Option<String>,
 }
 
+/// What a successful `code/read` showed: the file, the 1-based lines shown when they are
+/// known, and the file's length when its producer said.
+pub(crate) struct FileRead {
+    pub path: String,
+    pub shown: Option<(u32, u32)>,
+    pub total_lines: Option<u32>,
+}
+
+/// The file read an act made, from the read's own header when she was shown all of it, and from
+/// the gutter numbers of the head she was shown when it was stored. `None` for a failed read or
+/// an act that is not one. One reading of a read's result for her open views and her action log.
+pub(crate) fn file_read(act: &Observation) -> Option<FileRead> {
+    if act.output.verb != ToolVerb::Read || !act.completed_successfully() {
+        return None;
+    }
+    let result = &act.output.result;
+    let header = crate::cognition::tool_executor::spill::result_scalars(&result.content);
+    let field_u32 = |key: &str| -> Option<u32> { header.as_ref()?.get(key)?.as_u64().and_then(|n| u32::try_from(n).ok()) };
+    let path = header
+        .as_ref()
+        .and_then(|h| h.get("file_path")?.as_str().map(str::to_owned))
+        .or_else(|| act.call.input.get("file_path")?.as_str().map(str::to_owned))?;
+    let shown = match &result.custody {
+        ResultCustody::Pointer { .. } => {
+            let mut numbers = result.content.lines().filter_map(crate::code::file_engine::gutter_line_number);
+            numbers.next().map(|first| (first, numbers.last().unwrap_or(first))) // unwrap_or: a one-line head ends where it starts
+        }
+        _ => match (field_u32("start_line"), field_u32("end_line"), field_u32("lines_returned")) {
+            (Some(start), Some(end), Some(returned)) if returned > 0 && end >= start => Some((start, end)),
+            _ => None,
+        },
+    };
+    Some(FileRead { path, shown, total_lines: field_u32("total_lines") })
+}
+
 /// How many views a mind keeps open. A count of views is the size of this state, not a
 /// context bound: each renders as one line (~150 chars), so eight cost ~300 tokens, under
 /// 1% of the 34,560-token lane this was measured on and ~6% of a 5,000-token one. A card's
@@ -120,35 +155,13 @@ impl OpenViews {
     /// A `code/read`: the range she was shown, from the read's own header when she was shown
     /// all of it, and from the gutter numbers of the head she was shown when it was stored.
     fn note_file_read(&mut self, act: &Observation, seq: u64, scope: Option<&str>) -> bool {
-        if !act.completed_successfully() {
+        let Some(FileRead { path, shown, total_lines }) = file_read(act) else {
             return false;
-        }
+        };
         let result = &act.output.result;
-        let header = crate::cognition::tool_executor::spill::result_scalars(&result.content);
-        let field_u32 = |key: &str| -> Option<u32> {
-            header.as_ref()?.get(key)?.as_u64().and_then(|n| u32::try_from(n).ok())
-        };
-        let Some(path) = header
-            .as_ref()
-            .and_then(|h| h.get("file_path")?.as_str().map(str::to_owned))
-            .or_else(|| act.call.input.get("file_path")?.as_str().map(str::to_owned))
-        else {
-            return false;
-        };
-        let shown = match &result.custody {
-            ResultCustody::Pointer { .. } => {
-                let mut numbers =
-                    result.content.lines().filter_map(crate::code::file_engine::gutter_line_number);
-                numbers.next().map(|first| (first, numbers.last().unwrap_or(first))) // unwrap_or: a one-line head ends where it starts
-            }
-            _ => match (field_u32("start_line"), field_u32("end_line"), field_u32("lines_returned")) {
-                (Some(start), Some(end), Some(returned)) if returned > 0 && end >= start => Some((start, end)),
-                _ => None,
-            },
-        };
         let view = self.view_mut(ViewSubject::File { path }, "code/read", seq, scope);
         view.touched_seq = seq;
-        if let Some(total) = field_u32("total_lines") {
+        if let Some(total) = total_lines {
             view.total_lines = Some(total);
         }
         if let Some(range) = shown {

@@ -374,9 +374,23 @@ pub struct Contribution {
     /// because the source did not report one ("whole or handle": a cut the reader
     /// cannot see is a silent clip, PERSONA-COGNITION-PIPELINE.md §3).
     pub source_truncated: bool,
+    /// The room this block describes, when it describes one (the wall, roster, board or
+    /// recall of the room the turn was in). Her view keys the block by it, so a room's block
+    /// is ONE item: returning to a room whose block has not changed appends nothing, where
+    /// keyed by the faculty alone each room switch re-appended the other room's whole block
+    /// (Aiko, the M5, 2026-10-26 23:07-00:25Z: an 18,755-char wall, its roster and recall
+    /// re-added on every switch between two rooms). `None` for a block that is hers in
+    /// every room. Set via [`about_room`](Self::about_room).
+    pub room: Option<uuid::Uuid>,
 }
 
 impl Contribution {
+    /// Name the room this block describes ([`Contribution::room`]).
+    pub fn about_room(mut self, room: uuid::Uuid) -> Self {
+        self.room = Some(room);
+        self
+    }
+
     /// A context contribution (no decision) — recall, world-model, affect, etc.
     pub fn context(
         faculty: FacultyId,
@@ -395,6 +409,7 @@ impl Contribution {
             parts: vec![content.clone()],
             expand_command: None,
             source_truncated: false,
+            room: None,
             content,
             salience: salience.clamp(0.0, 1.0),
             reasoning: reasoning.into(),
@@ -462,6 +477,7 @@ impl Contribution {
             parts: vec![content.clone()],
             expand_command: None,
             source_truncated: false,
+            room: None,
             content,
             salience: salience.clamp(0.0, 1.0),
             reasoning: reasoning.into(),
@@ -511,6 +527,7 @@ impl Contribution {
             parts: vec![error.clone()],
             expand_command: None,
             source_truncated: false,
+            room: None,
             content: error.clone(),
             salience: 1.0,
             reasoning: "deliberation inference failed".to_string(),

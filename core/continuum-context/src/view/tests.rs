@@ -325,3 +325,43 @@ fn a_short_item_without_a_summary_stays_whole_under_a_summary_ceiling() -> Resul
     assert_eq!((start.collapsed, start.summarized), (0, 2));
     Ok(())
 }
+
+/// [`Leveled`] items, some of which a newer item supersedes.
+struct Superseding(Leveled, Vec<&'static str>);
+
+impl Source<String> for Superseding {
+    fn name(&self) -> &str {
+        self.0.name()
+    }
+    fn priority(&self) -> u8 {
+        self.0.priority()
+    }
+    fn items(&self) -> Vec<Item<String>> {
+        self.0.items()
+    }
+    fn superseded(&self) -> Vec<String> {
+        self.1.iter().map(|key| (*key).to_owned()).collect()
+    }
+}
+
+// what this catches: a whole read of a file she read again or edited since staying whole at
+// every start the window could afford (Aiko, the M5, 2026-10-26: 15.7k tokens of whole results
+// 10+ acts old per request, a 33k-char file still whole 2.5 hours after she read it). It takes
+// its outline however generous the grant; an older item is not dragged down with it.
+#[test]
+fn a_superseded_item_takes_its_summary_and_leaves_the_older_ones_whole() -> Result<(), GrantMismatch> {
+    let reads = Superseding(
+        Leveled(vec![
+            ("oldest", "an older result".to_owned(), None),
+            ("read-1", "x".repeat(2_000), Some("outline, read 1".to_owned())),
+            ("note", "a note".to_owned(), None),
+            ("read-2", "y".repeat(2_000), Some("outline, read 2".to_owned())),
+        ]),
+        vec!["read-1"],
+    );
+    let (view, start) = View::start(Vec::new(), &[&reads as &dyn Source<String>], |c| c.iter().map(|c| c.full_chars).collect())?;
+    let rendered: Vec<String> = view.render().cloned().collect();
+    assert_eq!(rendered, ["an older result".to_owned(), "outline, read 1".to_owned(), "a note".to_owned(), "y".repeat(2_000)]);
+    assert_eq!((start.collapsed, start.summarized), (0, 1));
+    Ok(())
+}

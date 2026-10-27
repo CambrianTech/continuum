@@ -413,7 +413,9 @@ impl Faculty for RagSourceFaculty {
             .with_expand_command(self.source.expand_command())
             // A continuation means the SOURCE stopped short of its own list; the
             // packer's notice must say so (card e049aa82: nothing resumes cursors).
-            .with_source_truncated(delivery.truncated);
+            .with_source_truncated(delivery.truncated)
+            // Delivered for `room`: her view keys the block by it (one item per room).
+            .about_room(room);
         let c = if self.standing_grounding {
             c.standing_grounding()
         } else {

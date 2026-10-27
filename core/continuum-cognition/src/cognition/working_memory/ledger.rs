@@ -335,6 +335,7 @@ impl WorkingMemory {
                     result: Some(tail),
                     handle,
                     written_pointer: None,
+                    touches: action_log::Touch::of(&acts),
                 },
                 budget.receipt_archive_chars(),
             );
