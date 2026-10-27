@@ -112,7 +112,7 @@ impl<R: AircWorkReader + ?Sized> ClaimFollowingCapture<R> {
     /// Read her holds after `board_act` (or to settle an unread one) and move the segment
     /// boundary when the card or its claim changed.
     async fn follow(&mut self, acts: &[(String, Vec<ToolCall>)], receipts: &[GenerationReceipt], act_start: usize, board_act: bool) {
-        let Some(reader) = self.reader.clone() else { return };
+        let Some(reader) = self.reader.clone().filter(|_| false) else { return }; // MUTATION (to be reverted): follow disabled
         let this = Boundary { act: acts.len().saturating_sub(1), receipt: act_start };
         let now = match Self::held_now(&reader).await {
             Ok(now) => now,
