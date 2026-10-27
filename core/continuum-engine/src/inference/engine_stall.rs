@@ -10,6 +10,8 @@
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use crate::inference::engine_residency::{EngineIncarnation, Liveness};
+use crate::inference::lane_registry::LaneRecord;
 use crate::system_resources::bounded_command::{self, Probed};
 
 /// How long the sampler watches: two seconds of stacks show a thread stuck in one frame apart
@@ -34,24 +36,66 @@ pub struct StallEvidence {
     pub sample: Result<PathBuf, String>,
 }
 
+/// PURE: the one engine incarnation that serves `root`, or why there is none. Only a lane this
+/// node launched answers for an endpoint: its record names the root, and the process is that
+/// incarnation (pid and OS start time) and is an engine now. A remote or secondary endpoint,
+/// a replaced engine, a reused pid or two live claimants is refused, never sampled in its
+/// place (Codex on #5528).
+pub fn engine_of(
+    root: &str,
+    records: &[LaneRecord],
+    liveness: impl Fn(&EngineIncarnation) -> Liveness,
+    is_engine: impl Fn(u32) -> bool,
+) -> Result<EngineIncarnation, String> {
+    let root = root.trim_end_matches('/').trim_end_matches("/v1");
+    let mut serving = records.iter().filter(|record| record.root_url() == root).peekable();
+    if serving.peek().is_none() {
+        return Err(format!("no lane this node launched serves {root}"));
+    }
+    let live: Vec<EngineIncarnation> = serving
+        .map(LaneRecord::incarnation)
+        .filter(|incarnation| incarnation.started_s != 0 && liveness(incarnation) == Liveness::Alive)
+        .collect();
+    match live.as_slice() {
+        [one] if is_engine(one.pid) => Ok(*one),
+        [one] => Err(format!("pid {} is not an engine", one.pid)),
+        [] => Err(format!("the engine recorded for {root} is no longer running as recorded")),
+        _ => Err(format!("{} live records claim {root}", live.len())),
+    }
+}
+
 /// Capture what the engine at `root` was doing. Never fails: a sample that cannot be taken is
 /// named in [`StallEvidence::sample`].
 pub async fn capture(root: &str) -> StallEvidence {
-    let log = crate::inference::llama_server::port_of_base_url(root)
-        .and_then(crate::inference::child_log::llama_server_log);
-    let silent_ms = log.as_deref().and_then(crate::inference::child_log::silent_ms);
-    let sample = match (crate::inference::lane_pidfile::read(), log) {
-        // The recorded pid may be dead or reused: sample only a process that is the engine.
-        (Some(pid), Some(log)) if crate::inference::lane_process::is_llama_server(pid) => {
-            tokio::task::spawn_blocking(move || sample(pid, &log))
+    let engine = engine_of(
+        root,
+        &crate::inference::lane_registry::records(),
+        EngineIncarnation::liveness,
+        crate::inference::lane_process::is_llama_server,
+    );
+    let silent_ms = engine.as_ref().ok().and_then(|engine| crate::inference::child_log::silent_ms(engine.pid));
+    let log = crate::inference::child_log::llama_server_log;
+    let sample = match engine {
+        Ok(engine) => match log(engine.port) {
+            Some(log) => tokio::task::spawn_blocking(move || sample_incarnation(engine, &log))
                 .await
-                .unwrap_or_else(|join| Err(format!("the sampler task ended: {join}"))) // unwrap_or_else: a panicked or cancelled sampler is named, never a crash
-        }
-        (Some(pid), Some(_)) => Err(format!("pid {pid} is no longer the engine")),
-        (None, _) => Err("no live lane pid is recorded".into()),
-        (_, None) => Err("no engine log path for this endpoint".into()),
+                .unwrap_or_else(|join| Err(format!("the sampler task ended: {join}"))), // unwrap_or_else: a panicked or cancelled sampler is named, never a crash
+            None => Err("no engine log path for this endpoint".into()),
+        },
+        Err(why) => Err(why),
     };
     StallEvidence { silent_ms, sample }
+}
+
+/// Sample `engine`, and keep the sample only if the same incarnation was running when it ended:
+/// an engine replaced while it was sampled would otherwise lend its stack to the one that hung.
+fn sample_incarnation(engine: EngineIncarnation, log: &Path) -> Result<PathBuf, String> {
+    let out = sample(engine.pid, log)?;
+    if engine.liveness() != Liveness::Alive {
+        let _ = std::fs::remove_file(&out); // a discarded sample: its absence is the outcome wanted
+        return Err(format!("pid {} was replaced while it was sampled", engine.pid));
+    }
+    Ok(out)
 }
 
 fn sample(pid: u32, log: &Path) -> Result<PathBuf, String> {
@@ -110,11 +154,35 @@ mod tests {
         assert_eq!(left, ["engine-stall-1-2.txt", "engine-stall-1-3.txt", "engine-stall-1-4.txt", "engine-stall-1-5.txt", "llama-server-58057.log"]);
     }
 
-    // what this catches: sampling a pid that is not the engine (dead or reused) instead of
-    // naming why there is no sample.
-    #[tokio::test]
-    async fn an_endpoint_with_no_engine_is_named_not_sampled() {
-        let evidence = capture("not a url").await;
-        assert!(evidence.sample.is_err(), "{evidence:?}");
+    fn record(pid: u32, port: u16, started_s: u64) -> LaneRecord {
+        serde_json::from_value(serde_json::json!({
+            "pid": pid, "port": port, "role": "live", "started_s": started_s
+        }))
+        .expect("a lane record fixture")
+    }
+
+    // what this catches (Codex on #5528): sampling some other engine in the failed endpoint's
+    // name. Only this node's lane for that exact root, alive as the same incarnation and still
+    // an engine, is sampled; every other case is named and refused.
+    #[test]
+    fn only_the_engine_that_serves_the_endpoint_is_sampled() {
+        let alive = |_: &EngineIncarnation| Liveness::Alive;
+        let engine = |_: u32| true;
+        let local = [record(41, 58057, 100)];
+        assert_eq!(engine_of("http://127.0.0.1:58057/", &local, alive, engine).map(|e| e.pid), Ok(41));
+        assert_eq!(engine_of("http://127.0.0.1:58057/v1", &local, alive, engine).map(|e| e.pid), Ok(41));
+        // A remote or secondary endpoint: no lane this node launched serves it.
+        assert!(engine_of("http://10.0.0.7:58057", &local, alive, engine).is_err());
+        assert!(engine_of("http://127.0.0.1:58058", &local, alive, engine).is_err());
+        // Replaced: the record's incarnation is no longer the process.
+        assert!(engine_of("http://127.0.0.1:58057", &local, |_: &EngineIncarnation| Liveness::Dead, engine).is_err());
+        // A reused pid that is not an engine; a legacy record with no start time.
+        assert!(engine_of("http://127.0.0.1:58057", &local, alive, |_: u32| false).is_err());
+        assert!(engine_of("http://127.0.0.1:58057", &[record(41, 58057, 0)], alive, engine).is_err());
+        // A stale record beside the live one: the live incarnation answers, never the stale one.
+        let both = [record(40, 58057, 90), record(41, 58057, 100)];
+        let only_41 = |i: &EngineIncarnation| if i.pid == 41 { Liveness::Alive } else { Liveness::Dead };
+        assert_eq!(engine_of("http://127.0.0.1:58057", &both, only_41, engine).map(|e| e.pid), Ok(41));
+        assert!(engine_of("http://127.0.0.1:58057", &both, alive, engine).is_err(), "two live claimants");
     }
 }

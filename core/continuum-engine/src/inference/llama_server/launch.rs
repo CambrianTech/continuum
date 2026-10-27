@@ -304,7 +304,7 @@ impl LlamaServerProcess {
                 watch,
             ));
         match (child_stderr, log_path) {
-            (Some(stderr), Some(path)) => crate::inference::child_log::drain_capped(stderr, path, watch),
+            (Some(stderr), Some(path)) => crate::inference::child_log::drain_capped(stderr, path, child_pid, watch),
             (Some(_), None) => tracing::warn!(target: "continuum_core::inference::llama_server", probe_class = "serving.llama.stderr_unlogged",
                 port = port,
                 "no home dir for the llama-server log — serving unlogged (#175)"
