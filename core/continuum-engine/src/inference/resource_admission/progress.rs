@@ -10,6 +10,7 @@ pub(super) struct ProgressLedger {
     entries: BTreeMap<u64, Entry>,
     ambient_age: BTreeMap<uuid::Uuid, (u64, u64)>,
     seated: BTreeSet<uuid::Uuid>,
+    ambient_ticket: BTreeMap<uuid::Uuid, u64>,
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Phase {
@@ -22,6 +23,7 @@ struct Entry {
     persona: Option<uuid::Uuid>,
     phase: Phase,
     budget: bool,
+    ticket: Option<u64>,
 }
 
 /// An observer never owns or recreates the semaphore acquisition.
@@ -44,12 +46,16 @@ impl ProgressGuard {
         if let Some(entry) = self.gate.progress.lock().entries.get_mut(&self.id) {
             entry.phase = Phase::Physical;
             entry.budget = budget;
+            entry.ticket = None;
         }
     }
     pub(super) fn granted(&self) {
         let mut ledger = self.gate.progress.lock();
         let persona = ledger.entries.get(&self.id).and_then(|entry| entry.persona);
-        if let Some(persona) = persona { ledger.ambient_age.remove(&persona); }
+        if let Some(persona) = persona {
+            ledger.ambient_age.remove(&persona);
+            ledger.ambient_ticket.remove(&persona);
+        }
         let budget = if let Some(entry) = ledger.entries.get_mut(&self.id) {
             entry.phase = Phase::Granted;
             entry.budget
@@ -65,6 +71,7 @@ impl ProgressGuard {
 impl Drop for ProgressGuard {
     fn drop(&mut self) {
         self.gate.progress.lock().entries.remove(&self.id);
+        self.gate.released.notify_waiters();
     }
 }
 impl LaneAdmission {
@@ -79,6 +86,7 @@ impl LaneAdmission {
         let mut ledger = self.progress.lock();
         ledger.seated.remove(&persona);
         ledger.ambient_age.remove(&persona);
+        ledger.ambient_ticket.remove(&persona);
     }
 
     pub(super) fn observe(
@@ -99,6 +107,7 @@ impl LaneAdmission {
                     Phase::Budget
                 },
                 budget: false,
+                ticket: None,
             },
         );
         (
@@ -146,6 +155,7 @@ impl ProgressLedger {
             entries: BTreeMap::new(),
             ambient_age: BTreeMap::new(),
             seated: BTreeSet::new(),
+            ambient_ticket: BTreeMap::new(),
         }
     }
 }
@@ -156,6 +166,40 @@ impl std::fmt::Debug for ProgressGuard {
 }
 
 impl LaneWait {
+    /// Tickets order active requests only. A cancelled resident retains its rank,
+    /// but neither a semaphore future nor a permit survives its cancellation.
+    pub(super) fn try_budget(&self, aged: bool) -> Option<tokio::sync::OwnedSemaphorePermit> {
+        let mut ledger = self.gate.progress.lock();
+        let entry = *ledger.entries.get(&self.id)?;
+        let ticket = match entry.ticket {
+            Some(ticket) => ticket,
+            None => {
+                let resident = entry.persona.filter(|p| aged && ledger.seated.contains(p));
+                let retained = resident.and_then(|p| ledger.ambient_ticket.get(&p).copied());
+                let ticket = match retained {
+                    Some(ticket) => ticket,
+                    None => {
+                        ledger.next = ledger.next.wrapping_add(1);
+                        ledger.next
+                    }
+                };
+                if let Some(persona) = resident { ledger.ambient_ticket.insert(persona, ticket); }
+                ledger.entries.get_mut(&self.id)?.ticket = Some(ticket);
+                ticket
+            }
+        };
+        let head = ledger.entries.iter().filter_map(|(id, e)| e.ticket.map(|t| (t, *id))).min();
+        if head != Some((ticket, self.id)) { return None; }
+        let permit = self.gate.try_acquire_resized(
+            self.gate.nondirected_lanes(),
+            &self.gate.nondirected_installed,
+            super::lanes::LaneBudget::NonDirected,
+        )?;
+        ledger.entries.get_mut(&self.id)?.ticket = None;
+        self.gate.released.notify_waiters();
+        Some(permit)
+    }
+
     /// One initial cohort may pass before ambient joins the ordinary non-directed FIFO.
     /// A cancelled attempt retains its origin for this resident; an actual grant clears it.
     pub(super) fn ambient_origin(&self, cohort: u64) -> (u64, u64) {

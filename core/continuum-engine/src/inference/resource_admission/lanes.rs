@@ -133,9 +133,9 @@ pub(super) enum LaneBudget {
 ///
 /// - `Directed` — a human or a mention named her: the full pool, one lane always reserved.
 /// - `Work` — she holds a card in progress (`holds_live_work`): the non-directed budget,
-///   ahead of every ambient caller.
+///   ahead of ambient callers until their initial cohort has passed.
 /// - `Ambient` — an undirected turn with no card in hand (musing, wandering, a dream):
-///   the non-directed budget only while no `Work` caller is queued.
+///   the non-directed budget opportunistically, then by retained age ticket.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LanePriority {
     Directed,
@@ -433,8 +433,7 @@ impl LaneAdmission {
         let (nondirected, lent_lane) = match priority {
             LanePriority::Directed => (None, None),
             LanePriority::Work => {
-                let sem = self.nondirected_lanes().clone();
-                match self.try_acquire_resized(&sem, &self.nondirected_installed, LaneBudget::NonDirected) {
+                match aging.try_budget(false) {
                     Some(p) => (Some(p), None),
                     None => {
                         let reserve_exists = self.nondirected_budget() < self.lane_count();
@@ -464,7 +463,7 @@ impl LaneAdmission {
                                 );
                                 (None, Some(lane))
                             }
-                            None => (Some(self.acquire_nondirected_as_work().await), None),
+                            None => (Some(self.acquire_ticketed_budget(&aging, false).await), None),
                         }
                     }
                 }
@@ -508,35 +507,26 @@ impl LaneAdmission {
         (observer, acquire)
     }
 
-    /// A held-work caller queues in the non-directed semaphore in arrival order, and
-    /// is COUNTED while it waits so ambient callers stand aside.
-    pub(super) async fn acquire_nondirected_as_work(&self) -> tokio::sync::OwnedSemaphorePermit {
-        let sem = self.nondirected_lanes().clone();
-        if let Some(p) =
-            self.try_acquire_resized(&sem, &self.nondirected_installed, LaneBudget::NonDirected)
-        {
-            return p;
-        }
-        tracing::info!(
-            probe_class = "serving.lane.nondirected_waiting",
-            "held-work model call waiting — a lane is reserved for directed turns (#139)"
-        );
-        // COUNTED BY A GUARD, NOT BY HAND (2026-09-15, 20:35Z: sixteen minds idle for 50
-        // minutes with all seven lanes free). A parked work wait is CANCELLED whenever
-        // the turn's future is dropped — `delib.gate.yielded_to_directed` selects away
-        // from it, the settle deadline ends the drive, a despawn aborts the loop — and a
-        // by-hand `fetch_sub` after the await never ran, so `work_waiting` read 1 for
-        // the rest of the process and every ambient caller parked forever on a pool
-        // that was empty. Cancellation is a normal exit here; the guard makes it one.
+    /// Active work and aged residents compete by ticket; only the winner tries
+    /// the semaphore, so cancellation cannot leave an unobserved permit owner.
+    async fn acquire_ticketed_budget(&self, observer: &super::LaneWait, aged: bool) -> tokio::sync::OwnedSemaphorePermit {
         let _counted = WorkWaiting::enter(&self.work_waiting);
-        self.acquire_resized(&sem, &self.nondirected_installed, LaneBudget::NonDirected)
-            .await
+        loop {
+            let notified = self.released.notified();
+            tokio::pin!(notified);
+            notified.as_mut().enable();
+            if let Some(permit) = observer.try_budget(aged) { return permit; }
+            tokio::select! {
+                _ = notified => {},
+                _ = tokio::time::sleep(std::time::Duration::from_secs(1)) => {},
+            }
+        }
     }
 
     /// An ambient caller never enters the semaphore's queue: it takes a permit only when
     /// one is free AND no held-work caller is waiting, otherwise it parks on the release
     /// signal (a 1 s tick guards against a missed wake). This opportunistic path alone
-    /// can starve; acquire_aged_ambient promotes into FIFO after the initial cohort.
+    /// can starve; acquire_aged_ambient promotes into ticket order after the initial cohort.
     pub(super) async fn acquire_nondirected_as_ambient(&self) -> tokio::sync::OwnedSemaphorePermit {
         let sem = self.nondirected_lanes().clone();
         let mut yielded = false;
@@ -563,7 +553,7 @@ impl LaneAdmission {
         }
     }
 
-    /// Let the initial cohort go first, then join its FIFO rather than waiting for
+    /// Let the initial cohort go first, then retain a ticket rather than waiting for
     /// an indefinitely replenished work queue to empty. Directed capacity is unchanged.
     async fn acquire_aged_ambient(&self, observer: &super::LaneWait) -> tokio::sync::OwnedSemaphorePermit {
         let cohort = self.work_waiting().saturating_add(self.nondirected_budget()).max(1) as u64;
@@ -572,7 +562,7 @@ impl LaneAdmission {
         tokio::pin!(opportunistic);
         loop {
             if observer.ambient_aged(origin) {
-                return self.acquire_nondirected_as_work().await;
+                return self.acquire_ticketed_budget(observer, true).await;
             }
             tokio::select! {
                 permit = &mut opportunistic => return permit,
