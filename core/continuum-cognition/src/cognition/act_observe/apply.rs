@@ -194,10 +194,20 @@ pub async fn apply_act(
     // Stop-drain S2: the batch is recorded BEFORE anything is dispatched, foreground or
     // background, so a turn the stop cuts after this point is known to have acted and is never
     // re-run blindly. An unconfirmed mark refuses the whole batch: nothing runs unrecorded.
-    let effect = super::Effect::ToolBatch {
-        calls: calls.iter().map(|call| (call.id.clone(), call.name.clone())).collect(),
+    // A reported sentinel (`tools/<cut at the output limit>`, …) never runs, so it is no effect:
+    // a cut turn recorded as acting would read as uncertain and never be handed back (enrico,
+    // 2026-10-27 02:54Z: Eitan's only "call" was the cut-at-limit sentinel). A batch of only
+    // sentinels takes no mark.
+    let effect_calls: Vec<(String, String)> = calls
+        .iter()
+        .filter(|call| !crate::cognition::tool_executor::command_executor::is_reported_sentinel(&call.name))
+        .map(|call| (call.id.clone(), call.name.clone()))
+        .collect();
+    let marked = match effect_calls.is_empty() {
+        true => Ok(()),
+        false => chain.mark_before(&super::Effect::ToolBatch { calls: effect_calls }).await,
     };
-    if let Err(refusal) = chain.mark_before(&effect).await {
+    if let Err(refusal) = marked {
         continuum_base::probe!(
             class = "persona.act.effect_unmarked",
             persona = %body.persona_name,
