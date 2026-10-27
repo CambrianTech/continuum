@@ -602,6 +602,34 @@ pub(super) async fn an_unread_claim_stages_nothing_until_a_read_says_whose_it_wa
     assert_eq!(rows_under(&rows, newest.claim_id), [vec!["answered-claim".to_string()]], "the answered claim begins at its own act");
     assert!(rows.iter().all(|r| r.receipts.iter().all(|g| g.submitted_request_id != "unread-claim")), "the unread claim's generation is no one's");
 
+    // Claim B unread, then release B and the read answers A again: unchanged across two board
+    // acts proves nothing, so A stops at the unread claim and resumes after the answering act.
+    let mut b = reclaimed.clone();
+    b.claim_id = Some(airc_work::ClaimId::new());
+    holds.set(vec![reclaimed.clone()]);
+    let a = CapturedCredit::from_selected_card(&reclaimed);
+    let mut turn = ClaimFollowingCapture::new(Some(&a), Some(Arc::clone(&holds)), opener_for(executor.clone(), persona, name));
+    let mut acts = vec![act("code/read")];
+    turn.record(&acts, &receipts(&["a-before"]), None, false).await;
+    holds.set(vec![b.clone()]);
+    holds.unreadable(true);
+    acts.push(act("work/claim"));
+    turn.record(&acts, &receipts(&["a-before", "b-claim"]), None, false).await;
+    holds.set(vec![reclaimed.clone()]);
+    holds.unreadable(false);
+    acts.push(act("work/release"));
+    turn.record(&acts, &receipts(&["a-before", "b-claim", "b-release"]), None, false).await;
+    acts.push(act("code/read"));
+    turn.record(&acts, &receipts(&["a-before", "b-claim", "b-release", "a-after"]), None, false).await;
+    assert!(turn.record(&acts, &receipts(&["a-before", "b-claim", "b-release", "a-after"]), None, true).await);
+    let rows = stored_credit_rows(&conn_as(executor.clone(), persona), name).await;
+    let under_a = rows_under(&rows, reclaimed.claim_id);
+    assert!(under_a.contains(&vec!["a-before".to_string()]) && under_a.contains(&vec!["a-after".to_string()]));
+    assert!(
+        rows.iter().all(|r| r.receipts.iter().all(|g| g.submitted_request_id != "b-claim" && g.submitted_request_id != "b-release")),
+        "the uncertain stretch is credited to no claim, not restored to A"
+    );
+
     // Still unread when the turn ends: what came before is staged, the rest credited to no one.
     let mut again = reclaimed.clone();
     again.claim_id = Some(airc_work::ClaimId::new());

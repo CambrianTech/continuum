@@ -140,18 +140,23 @@ impl<R: AircWorkReader + ?Sized> ClaimFollowingCapture<R> {
             (None, None) => true,
             _ => false,
         };
-        // Unchanged: no claim was taken, so every act since stays on the segment it was on.
-        if unchanged {
+        // Unchanged with at most one board act in question: that act took no claim, so every
+        // act since stays on the segment it was on. Unchanged across SEVERAL board acts proves
+        // nothing (claim B, release B, back to A: Codex on #5523), so that stretch is no one's.
+        let several = pending.is_some_and(|unread| unread.first.act != unread.last_board.act);
+        if unchanged && !several {
             return;
         }
         // The old claim ends where its hold was last known; the new one begins at the latest
         // act that could have taken it. Between them (more than one unread board act) is
         // credited to neither. Known exactly, the claiming act belongs to the new claim and an
         // act that only let the card go stays with the card it let go.
+        let after_this = Boundary { act: acts.len(), receipt: receipts.len() };
         let (end, start) = match pending {
+            Some(unread) if unchanged => (unread.first, after_this),
             Some(unread) => (unread.first, unread.last_board),
             None if now.is_some() => (this, this),
-            None => (Boundary { act: acts.len(), receipt: receipts.len() }, this),
+            None => (after_this, this),
         };
         self.close_before(acts, receipts, end).await;
         if start.act > end.act {
