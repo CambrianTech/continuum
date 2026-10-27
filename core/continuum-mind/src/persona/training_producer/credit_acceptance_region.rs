@@ -25,9 +25,15 @@ use crate::runtime::{
     RegionId, TickOutcome,
 };
 
-/// Decided credits read per tick. A decision is one small row and an acceptance lookup; the
-/// page bounds one tick's store reads, and the cursor reaches every decision in turn.
+/// Decision ids read per tick. The page bounds one tick's store reads; the cursor reaches every
+/// decision in turn.
 const PAGE: usize = 8;
+
+/// One tick's working budget: half the governor's own bound on a region tick, so a slow settle
+/// is cut here, with its progress kept, before the governor cancels the whole tick.
+fn tick_budget() -> std::time::Duration {
+    crate::persona::substrate_governor::REGION_TICK_TIMEOUT / 2
+}
 
 /// Who a persona is to this region: her name (the store's handle) and her store connection, as
 /// her own caller identity. `None` when she is not resident here.
@@ -35,8 +41,17 @@ pub type Resolve<T> = Arc<dyn Fn(Uuid) -> Option<(String, Connection<T>)> + Send
 
 pub struct CreditAcceptanceRegion<T: Transport + Send + Sync + 'static> {
     resolve: Resolve<T>,
-    /// Where each persona's scan resumes: the last decision id read.
-    cursors: parking_lot::Mutex<HashMap<Uuid, Uuid>>,
+    /// Where each persona's scan resumes: the last decision id attempted.
+    cursors: parking_lot::Mutex<HashMap<Uuid, String>>,
+}
+
+/// What one decision came to.
+enum Attempt {
+    /// Nothing owed: already accepted.
+    Settled,
+    Accepted,
+    /// Still owed: refused again, unreadable, or cut by the budget. Tried again on the next pass.
+    Waiting,
 }
 
 impl<T: Transport + Send + Sync + 'static> CreditAcceptanceRegion<T> {
@@ -44,61 +59,80 @@ impl<T: Transport + Send + Sync + 'static> CreditAcceptanceRegion<T> {
         Self { resolve, cursors: parking_lot::Mutex::new(HashMap::new()) }
     }
 
-    /// One bounded step for `persona`: settle the owed credits in this page and say whether any
-    /// still waits.
+    async fn attempt(conn: &Connection<T>, name: &str, persona: Uuid, id: &str) -> Attempt {
+        let owed = match reviewed::owed_acceptance(conn, name, id).await {
+            Ok(Some(submission)) => submission,
+            Ok(None) => return Attempt::Settled,
+            Err(error) => {
+                continuum_base::probe!(class = "training.credit.retry_failed", persona = %name, decision = %id, error = %error,
+                    "a decided credit could not be read: passed over now, tried again on the next pass");
+                return Attempt::Waiting;
+            }
+        };
+        match reviewed::retry_decided(conn, name, persona, owed).await {
+            Ok(credit) if credit.state == reviewed::ReviewedCreditState::Accepted => {
+                continuum_base::probe!(class = "training.credit.accepted_on_retry", persona = %name, submission = %owed,
+                    "a decided credit the trigger had not accepted is accepted, with no new review, registration or turn");
+                Attempt::Accepted
+            }
+            Ok(credit) => {
+                if credit.state != reviewed::ReviewedCreditState::AwaitingAcceptance {
+                    continuum_base::probe!(class = "training.credit.retry_failed", persona = %name, decision = %id, state = ?credit.state,
+                        "a decision with no acceptance did not settle to a pending credit: passed over now, tried again on the next pass");
+                }
+                Attempt::Waiting
+            }
+            Err(error) => {
+                continuum_base::probe!(class = "training.credit.retry_failed", persona = %name, decision = %id, error = %error,
+                    "a decided credit could not be settled again: tried again on the next pass");
+                Attempt::Waiting
+            }
+        }
+    }
+
+    /// One bounded step for `persona`. Progress is kept after every decision attempted, before
+    /// its settle is awaited, so a slow or broken decision costs its own turn and never the
+    /// ones after it; it is tried again, under the same submission id, when the scan comes
+    /// round (Codex on #5531).
     pub async fn step(&self, persona: Uuid) -> CadenceHint {
         let Some((name, conn)) = (self.resolve)(persona) else { return CadenceHint::Sleep };
-        let after = self.cursors.lock().get(&persona).copied();
-        let (owed, last) = match reviewed::decided_unaccepted(&conn, &name, after, PAGE).await {
+        let after = self.cursors.lock().get(&persona).cloned();
+        let (ids, full) = match reviewed::decided_page(&conn, &name, after.as_deref(), PAGE).await {
             Ok(page) => page,
             Err(error) => {
-                continuum_base::probe!(
-                    class = "training.credit.acceptance_unreadable",
-                    persona = %name,
-                    error = %error,
-                    "her decided credits could not be read: retried on the next tick"
-                );
+                continuum_base::probe!(class = "training.credit.acceptance_unreadable", persona = %name, error = %error,
+                    "her decided credits could not be listed: retried on the next tick");
                 return CadenceHint::Slower;
             }
         };
-        {
-            let mut cursors = self.cursors.lock();
-            match last {
-                Some(last) => cursors.insert(persona, last),
-                None => cursors.remove(&persona), // past her last decision: the next scan starts again
-            };
-        }
-        let mut waiting = false;
-        for id in owed {
-            match reviewed::retry_decided(&conn, &name, persona, id).await {
-                Ok(credit) if credit.state == reviewed::ReviewedCreditState::Accepted => {
-                    continuum_base::probe!(
-                        class = "training.credit.accepted_on_retry",
-                        persona = %name,
-                        submission = %id,
-                        "a decided credit the trigger had not accepted is accepted, with no new review, registration or turn"
-                    );
-                }
-                Ok(credit) => {
-                    waiting |= credit.state == reviewed::ReviewedCreditState::AwaitingAcceptance;
-                }
-                Err(error) => {
+        let deadline = tokio::time::Instant::now() + tick_budget();
+        let (mut waiting, mut finished) = (false, true);
+        for id in &ids {
+            let now = tokio::time::Instant::now();
+            if now >= deadline {
+                finished = false;
+                break;
+            }
+            self.cursors.lock().insert(persona, id.clone());
+            match tokio::time::timeout(deadline - now, Self::attempt(&conn, &name, persona, id)).await {
+                Ok(Attempt::Settled | Attempt::Accepted) => {}
+                Ok(Attempt::Waiting) => waiting = true,
+                Err(_) => {
                     waiting = true;
-                    continuum_base::probe!(
-                        class = "training.credit.retry_failed",
-                        persona = %name,
-                        submission = %id,
-                        error = %error,
-                        "a decided credit could not be settled again: retried on the next tick"
-                    );
+                    continuum_base::probe!(class = "training.credit.retry_slow", persona = %name, decision = %id,
+                        budget_ms = tick_budget().as_millis() as u64,
+                        "settling a decided credit outlasted this tick's budget: passed over now, tried again on the next pass");
                 }
             }
         }
-        match (waiting, last) {
+        if finished && !full {
+            self.cursors.lock().remove(&persona); // past her last decision: the next scan starts again
+        }
+        let more = !finished || full;
+        match (waiting, more) {
             (true, _) => CadenceHint::Slower,
-            // More of her decisions remain past this page: keep the current pace through them.
-            (false, Some(_)) => CadenceHint::Hold,
-            (false, None) => CadenceHint::Sleep,
+            (false, true) => CadenceHint::Hold,
+            (false, false) => CadenceHint::Sleep,
         }
     }
 }

@@ -71,3 +71,60 @@ pub(super) async fn the_region_settles_a_refused_decided_credit_with_no_turn_rev
     let never_again = region_answering(&fx, None);
     assert_eq!(never_again.tick(&scoped).await.cadence_hint, Some(CadenceHint::Sleep), "nothing owed: the region sleeps");
 }
+
+// what this catches (Codex on #5531): a scan that moved past a whole page before settling any of
+// it, so a decision whose settle always outlasted the governor's tick starved every decision
+// after it, and a malformed row that stopped the scan where it stood. Progress is kept per
+// decision: the malformed row is named and passed, a settle that hangs is cut by the tick's own
+// budget, and the scan comes round to that same submission and settles it on a later pass.
+#[tokio::test]
+pub(super) async fn a_bad_or_hanging_decision_never_starves_the_rest() {
+    let (fx, _capture) = exact_review().await;
+    let board = fx.project(vec![(airc_work::WorkEvent::WorkSubmissionReviewed(fx.pass.clone()), fx.reviewer)]);
+    let refusing = continuum_client::mock::MockTransport::new();
+    script_settlement_reply(&refusing, &fx.selected, Some(json!({"success": false, "errorKind": "RecoveryRequired"})));
+    let conn = settlement_connection(fx.executor.clone(), fx.persona, refusing, None);
+    reviewed::consume_review_with_boundary(&conn, fx.name, fx.persona, fx.room, &board, fx.pass.review_id, &reviewed::SelfReview::NotAdmitted, None)
+        .await
+        .expect("the review is consumed");
+
+    // A decision row ahead of hers in id order whose data is not a decision.
+    let malformed = crate::orm::types::BatchOperation {
+        operation_type: crate::orm::types::BatchOperationType::Create,
+        collection: reviewed::CreditReviewDecision::COLLECTION.into(),
+        id: Some("00000000-0000-0000-0000-000000000001".into()),
+        data: Some(json!({"id": "00000000-0000-0000-0000-000000000001", "bindingId": fx.selection.submission_id, "review": "not a review"})),
+    };
+    let insert = json!({"operations": [malformed], "dbPath": format!("@persona:{}", fx.name)});
+    let inserted = fx.data.commands().execute_value("data/batch", insert).await.expect("insert the malformed row");
+    assert_ne!(inserted["success"], json!(false), "the malformed row is stored: {inserted}");
+
+    // Her settle hangs on the region's first pass (a submit that never returns), then the
+    // trigger accepts.
+    let passes = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let (executor, persona, name, selected) = (fx.executor.clone(), fx.persona, fx.name, fx.selected.clone());
+    let counted = Arc::clone(&passes);
+    let region = CreditAcceptanceRegion::new(Arc::new(move |_| {
+        let trigger = continuum_client::mock::MockTransport::new();
+        script_settlement_reply(&trigger, &selected, Some(json!({"success": true, "outcome": "BatchAppended", "currentCount": 1,
+            "threshold": 16, "acceptance": {"submissionId": selected.id, "replayed": false}})));
+        let hang = (counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0)
+            .then(|| (Arc::new(tokio::sync::Notify::new()), Arc::new(tokio::sync::Notify::new())));
+        Some((name.to_string(), settlement_connection(executor.clone(), persona, trigger, hang)))
+    }));
+    let scoped = RegionContext { tick_number: 1, persona_scope: Some(fx.persona) };
+    let started = std::time::Instant::now();
+    assert_eq!(region.tick(&scoped).await.cadence_hint, Some(CadenceHint::Slower), "the malformed row and the cut settle both still wait");
+    assert!(started.elapsed() < std::time::Duration::from_secs(5), "the tick's own budget cut the hanging settle before the governor would");
+    let status = reviewed::credit_status(&fx.data, fx.name, fx.selection.submission_id).await.expect("status");
+    assert_eq!(status.state, State::AwaitingAcceptance);
+
+    for _ in 0..4 {
+        region.tick(&scoped).await;
+        let status = reviewed::credit_status(&fx.data, fx.name, fx.selection.submission_id).await.expect("status");
+        if status.state == State::Accepted {
+            return;
+        }
+    }
+    panic!("the scan never came round to her decision past the malformed row and the hang");
+}

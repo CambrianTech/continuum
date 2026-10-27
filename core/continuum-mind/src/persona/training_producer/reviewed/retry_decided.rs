@@ -35,16 +35,15 @@ pub async fn retry_decided<T: Transport>(
     settle_passed(conn, persona_name, persona_id, id, &binding, &decision.review, review_id, result).await
 }
 
-/// One bounded page of her decided credits, in id order after `after`: the ids still owed an
-/// acceptance, and the last id read (`None` once the page ran past her last decision, so the
-/// next scan starts again from the first). Bounded and fair: every decision is reached in turn,
-/// however many she has.
-pub async fn decided_unaccepted<T: Transport>(
+/// One bounded page of her decision ids, in id order after `after`, read from each row's key
+/// whatever its data holds, so a malformed row is still a step past it (Codex on #5531). The
+/// flag says the page was full: more may follow.
+pub async fn decided_page<T: Transport>(
     conn: &Connection<T>,
     persona_name: &str,
-    after: Option<Uuid>,
+    after: Option<&str>,
     page: usize,
-) -> Result<(Vec<Uuid>, Option<Uuid>), ClientError> {
+) -> Result<(Vec<String>, bool), ClientError> {
     let value = conn
         .commands()
         .execute_value(
@@ -52,24 +51,24 @@ pub async fn decided_unaccepted<T: Transport>(
             json!({
                 "collection": CreditReviewDecision::COLLECTION,
                 "dbPath": format!("@persona:{persona_name}"),
-                "filter": after.map(|id| json!({"id": {"$gt": id.to_string()}})),
+                "filter": after.map(|id| json!({"id": {"$gt": id}})),
                 "sort": [{"field": "id", "direction": "asc"}], "limit": page
             }),
         )
         .await?;
     let listed: crate::orm::list_result::DataListResult = serde_json::from_value(value)?; // Decode the data/list command envelope once at the storage boundary.
-    let mut decided = Vec::with_capacity(listed.items.len());
-    for item in listed.items {
-        let record: crate::orm::types::DataRecord = serde_json::from_value(item)?; // Decode the ORM envelope before its typed entity payload.
-        let decision: CreditReviewDecision = serde_json::from_value(record.data)?; // The entity payload crosses the Value-native storage boundary here.
-        decided.push(decision.id);
-    }
-    let last = (decided.len() == page).then(|| decided.last().copied()).flatten();
-    let mut owed = Vec::new();
-    for id in decided {
-        if read_one::<_, CreditReviewAcceptance>(conn, persona_name, &id.to_string()).await?.is_none() {
-            owed.push(id);
-        }
-    }
-    Ok((owed, last))
+    let full = listed.items.len() == page;
+    let ids = listed.items.iter().filter_map(|item| item["id"].as_str().map(str::to_string)).collect();
+    Ok((ids, full))
+}
+
+/// Whether decision `id` is still owed an acceptance: `Ok(Some)` names the submission to settle.
+pub async fn owed_acceptance<T: Transport>(
+    conn: &Connection<T>,
+    persona_name: &str,
+    id: &str,
+) -> Result<Option<Uuid>, ClientError> {
+    let submission = Uuid::parse_str(id).map_err(|e| ClientError::Transport(format!("decision key {id} is not a submission id: {e}")))?;
+    let accepted = read_one::<_, CreditReviewAcceptance>(conn, persona_name, id).await?;
+    Ok(accepted.is_none().then_some(submission))
 }

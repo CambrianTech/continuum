@@ -193,7 +193,7 @@ pub(super) async fn settle_passed<T: Transport>(
         .as_ref()
         .is_none_or(|accepted| accepted.submission_id != row.id)
     {
-        // Kept, so her status names why the credit waits and her next staging asks again
+        // Kept, so her status names why the credit waits; the credit-acceptance region settles it again
         // (card 99b2773a); a refusal that cannot be kept is said, and the decision stands.
         continuum_base::probe!(
             class = "training.credit.submit_refused",
@@ -202,7 +202,7 @@ pub(super) async fn settle_passed<T: Transport>(
             revision = %row.id,
             error_kind = ?receipt.error_kind,
             error = ?receipt.error,
-            "the training trigger answered a reviewed credit without accepting it: kept, retried at her next staging"
+            "the training trigger answered a reviewed credit without accepting it: kept, and settled again by the credit-acceptance region"
         );
         if let Err(error) = record_refusal(conn, persona_name, id, &receipt).await {
             continuum_base::probe!(
@@ -210,7 +210,7 @@ pub(super) async fn settle_passed<T: Transport>(
                 persona = %persona_name,
                 submission = %id,
                 error = %error,
-                "a refused reviewed credit could not be kept: it waits for a review event or her registration"
+                "a refused reviewed credit could not be kept: the credit-acceptance region still finds it by its decision"
             );
         }
         result.destination = Some(receipt);
