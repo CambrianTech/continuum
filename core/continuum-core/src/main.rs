@@ -607,6 +607,10 @@ async fn async_main(home: std::path::PathBuf) -> Result<(), Box<dyn std::error::
         "everything main did before starting the IPC thread"
     );
     let ipc_handle = std::thread::spawn(move || {
+        // Pre-bind boot steps are marked one by one (card d97d3681): Windows hung here for 300 s
+        // with nothing after `main_to_ipc_thread` and no stack sampler on that host, so each step
+        // says it finished and a stall names the step that did not.
+        continuum_base::probe!(class = "boot.step", step = "ipc_thread_started", "the IPC thread runs; start_server begins");
         if let Err(e) = start_server(
             &socket_path,
             ipc_livekit_manager,

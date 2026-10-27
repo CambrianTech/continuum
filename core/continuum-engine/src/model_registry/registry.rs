@@ -63,6 +63,11 @@ impl Registry {
                     provider_id: m.provider,
                 });
             }
+            // Each model's resolution and hydration is marked (card d97d3681): a boot that stalls
+            // inside the scan shows a `begin` with no `end`, naming the model whose artifact read
+            // never returned.
+            let scanned = std::time::Instant::now();
+            continuum_base::probe!(class = "boot.registry.model", phase = "begin", model = %m.id, "resolving and hydrating this model's artifact");
             resolve_model_artifacts(&mut m);
             // ONE BAD ARTIFACT MUST NOT TAKE DOWN THE SUBSTRATE (#63).
             //
@@ -85,7 +90,13 @@ impl Registry {
             // planner a plausible wrong number, which is worse than absent. It is recorded
             // in `unhydratable` WITH the parser's own words, so the fact surfaces from a
             // living system instead of being inferred from a dead process.
-            if let Err(detail) = super::hydrate::hydrate_model_from_gguf(&mut m) {
+            let hydrated = super::hydrate::hydrate_model_from_gguf(&mut m);
+            continuum_base::probe!(class = "boot.registry.model", phase = "end", model = %m.id,
+                path = ?m.gguf_local_path,
+                hydrated = hydrated.is_ok(),
+                ms = scanned.elapsed().as_millis() as u64,
+                "this model's artifact was resolved and read");
+            if let Err(detail) = hydrated {
                 unhydratable.insert(m.id.clone(), detail);
                 continue;
             }
