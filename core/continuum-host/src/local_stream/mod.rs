@@ -70,6 +70,53 @@ mod tests {
         owned.remove();
     }
 
+    // what this catches (Codex on #5533): two binders that both judged one stale endpoint dead
+    // and removed each other's. Under custody exactly one binds; the rest find a live owner, and
+    // the winner still serves.
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn concurrent_binders_of_a_stale_endpoint_leave_exactly_one_owner() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("endpoint.sock");
+        let (gone, _gone_owned) = Listener::bind(&path).await.expect("bind");
+        drop(gone); // stale: the file stays, nobody serves it
+        let binders: Vec<_> = (0..8)
+            .map(|_| {
+                let path = path.clone();
+                tokio::spawn(async move { Listener::bind(&path).await })
+            })
+            .collect();
+        let mut winners = Vec::new();
+        for binder in binders {
+            match binder.await.expect("binder task") {
+                Ok(bound) => winners.push(bound),
+                Err(e) => assert_eq!(e.kind(), io::ErrorKind::AddrInUse, "{e}"),
+            }
+        }
+        assert_eq!(winners.len(), 1, "exactly one binder owns the endpoint");
+        assert!(connect(&path).await.is_ok(), "the winner still serves");
+    }
+
+    // what this catches (Codex on #5533): reclaiming an endpoint on an answer that does not
+    // prove its server gone. A socket that refuses with permission denied is left in place.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn an_endpoint_that_does_not_refuse_is_never_reclaimed() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("endpoint.sock");
+        let (gone, _gone_owned) = Listener::bind(&path).await.expect("bind");
+        drop(gone);
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o000)).expect("chmod");
+        let probe = std::os::unix::net::UnixStream::connect(&path).err().map(|e| e.kind());
+        if probe != Some(io::ErrorKind::PermissionDenied) {
+            return; // a superuser connects anyway: this host cannot produce the answer under test
+        }
+        let refused = Listener::bind(&path).await.err().map(|e| e.kind());
+        assert_eq!(refused, Some(io::ErrorKind::PermissionDenied), "an unproven owner is not reclaimed");
+        assert!(std::fs::symlink_metadata(&path).is_ok(), "the endpoint is left as it was");
+    }
+
     // what this catches (Codex on #5533): a bind that removed a live incumbent's endpoint, and a
     // predecessor's cleanup that removed its replacement's. A live owner is refused; what a gone
     // server left is reclaimed; the old owner's cleanup leaves the successor's endpoint alone.
