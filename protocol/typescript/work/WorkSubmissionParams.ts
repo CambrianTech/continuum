@@ -14,6 +14,15 @@ card_id: string,
  */
 submission_id: string, 
 /**
- * Inspect only: no binding/training. Claim match is not causality.
+ * Inspect only: no binding/training. Claim match is not causality. Answers a summary
+ * of every staged row plus, in full, the rows that do NOT match this submission's claim.
  */
-include_staged_evidence: boolean, };
+include_staged_evidence: boolean, 
+/**
+ * With include_staged_evidence: the first staged row (0-based, staged order) of a page.
+ */
+evidence_offset?: number, 
+/**
+ * With include_staged_evidence: how many staged rows the page returns in full.
+ */
+evidence_limit?: number, };

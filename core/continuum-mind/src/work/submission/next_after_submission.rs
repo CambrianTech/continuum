@@ -645,9 +645,18 @@ pub struct WorkSubmissionParams {
     /// The submission to read — handle or full UUID.
     #[ts(type = "string")]
     pub submission_id: String,
-    /// Inspect only: no binding/training. Claim match is not causality.
+    /// Inspect only: no binding/training. Claim match is not causality. Answers a summary
+    /// of every staged row plus, in full, the rows that do NOT match this submission's claim.
     #[serde(default)]
     pub include_staged_evidence: bool,
+    /// With include_staged_evidence: the first staged row (0-based, staged order) of a page.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional, type = "number")]
+    pub evidence_offset: Option<usize>,
+    /// With include_staged_evidence: how many staged rows the page returns in full.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional, type = "number")]
+    pub evidence_limit: Option<usize>,
 }
 
 #[derive(Debug, Clone, Serialize, TS)]
@@ -664,7 +673,7 @@ pub struct WorkSubmissionResult {
     pub reviews: Vec<WorkReviewResult>,
     pub credit: Option<reviewed::ReviewedCredit>,
     pub credit_error: Option<String>,
-    pub staged_evidence: Option<Vec<reviewed::StagedCreditEvidence>>,
+    pub staged_evidence: Option<StagedEvidencePage>,
     pub staged_evidence_error: Option<String>,
     // The submitted patch itself, read from the retained blob and verified against the
     // artifact's hash and size: what the reviewer reviews (card e1babb61). Absent with

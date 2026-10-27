@@ -11,6 +11,8 @@ impl ActionCommand for WorkSubmission {
 
     async fn run(&self, ctx: &Ctx, p: WorkSubmissionParams) -> Result<Self::Output, CommandError> {
         let runtime = persona_runtime(&self.registry, ctx, "work/submission")?;
+        let evidence_request =
+            EvidenceRequest::from_params(p.evidence_offset, p.evidence_limit).map_err(CommandError::Invalid)?;
         let room = room_of_card(runtime.airc(), p.room.as_deref(), &p.card_id, "work/submission").await?;
         let board = runtime
             .airc()
@@ -81,7 +83,10 @@ impl ActionCommand for WorkSubmission {
             let conn = credit_connection(self.executor_slot.cloned(), owner.persona_id())?;
             if p.include_staged_evidence {
                 match reviewed::staged_evidence(&conn, owner.agent_name(), submitted).await {
-                    Ok(rows) => staged_evidence = Some(rows),
+                    Ok(rows) => match StagedEvidencePage::answer(rows, evidence_request) {
+                        Ok(page) => staged_evidence = Some(page),
+                        Err(error) => staged_evidence_error = Some(error.to_string()),
+                    },
                     Err(error) => staged_evidence_error = Some(error.to_string()),
                 }
             }
