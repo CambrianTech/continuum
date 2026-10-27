@@ -149,7 +149,7 @@ pub struct GridFacts {
     /// the serving daemon sizes its lanes from), `None` while nothing is measured.
     pub undeclared_window: Option<u32>,
     /// The operator's roster hold resolved to ids, and whether it is exclusive.
-    pub hold: Option<(Vec<Uuid>, bool)>,
+    pub hold: Option<Hold>,
 }
 
 /// Fold the facts into the book and build the allocator's inputs. PURE over its
@@ -256,7 +256,7 @@ pub fn build_inputs(f: &GridFacts, book: &mut OfferBook) -> GridInputs {
     let holds = f
         .hold
         .as_ref()
-        .map(|(only, exclusive)| vec![Hold { node: f.this_node, only: only.clone(), exclusive: *exclusive }])
+        .map(|hold| vec![hold.clone()])
         .unwrap_or_default(); // unwrap_or_default: no hold = no hold row
     GridInputs {
         roles,
@@ -418,7 +418,12 @@ impl Inner {
                 .as_ref()
                 .map(|r| h.only.iter().filter_map(|n| r.get_by_agent_name(n).map(|rt| rt.persona_id())).collect())
                 .unwrap_or_default(); // unwrap_or_default: no registry = no name resolves
-            (ids, h.exclusive)
+            Hold {
+                node: crate::capacity::gossip::this_process_origin(),
+                unresolved: h.only.len().saturating_sub(ids.len()),
+                only: ids,
+                exclusive: h.exclusive,
+            }
         });
         GridFacts {
             now_ms: now,
@@ -644,7 +649,7 @@ impl ServiceModule for GridAllocatorModule {
                         "dormant_by_age": p.dormant_by_age.iter().map(|d| serde_json::json!({ "mind": d.mind, "last_turn_age_ms": d.last_turn_age_ms })).collect::<Vec<_>>(),
                         "open": p.allocation.open.iter().map(|o| serde_json::json!({ "node": o.node, "role": o.role, "count": o.count })).collect::<Vec<_>>(),
                         "clip_interval_ms": p.clip_interval_ms,
-                        "roster_here": p.roster_here().map(|r| serde_json::json!({ "seated": r.seated, "open": r.open })),
+                        "roster_here": p.roster_here().map(|r| serde_json::json!({ "seated": r.seated, "open": r.open, "resuming": r.resuming })),
                     }),
                 };
                 Ok(CommandResult::Json(json))
@@ -867,10 +872,10 @@ mod tests {
         let minds: Vec<Uuid> = (0..2).map(|_| Uuid::new_v4()).collect();
         let mut f = facts(me, Some(plan("27b", 9, 70_000, 2)), vec![], minds.clone());
         let a = allocate(&build_inputs(&f, &mut OfferBook::default()));
-        assert_eq!(a.roster_on(me, ONE_OWNER), Some(GridRoster { seated: 2, open: 2 }));
-        f.hold = Some((vec![minds[1]], true));
+        assert_eq!(a.roster_on(me, ONE_OWNER), Some(GridRoster { seated: 2, open: 2, resuming: 0 }));
+        f.hold = Some(Hold { node: me, only: vec![minds[1]], unresolved: 0, exclusive: true });
         let a = allocate(&build_inputs(&f, &mut OfferBook::default()));
-        assert_eq!(a.roster_on(me, ONE_OWNER), Some(GridRoster { seated: 1, open: 0 }), "a held box seats its name and mints nothing");
+        assert_eq!(a.roster_on(me, ONE_OWNER), Some(GridRoster { seated: 1, open: 0, resuming: 0 }), "a held box seats its name and mints nothing");
         assert_eq!(a.seat_of(minds[1]), Some(me));
         assert_eq!(a.dormant, vec![minds[0]]);
     }

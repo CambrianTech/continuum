@@ -123,11 +123,13 @@
         spawner.serving_base_model = Some("some/model".to_string());
         spawner.serving_lanes = 2;
         assert_eq!(spawner.seats(), 12.min(2 * per), "nothing published: the warm-slot prior");
-        spawner.set_grid_roster(Some(GridRoster { seated: 4, open: 4 }));
+        spawner.set_grid_roster(Some(GridRoster { seated: 4, open: 4, resuming: 0 }));
         assert_eq!(spawner.seats(), 8, "the allocation counts eight seats here");
-        spawner.set_grid_roster(Some(GridRoster { seated: 1, open: 0 }));
+        spawner.set_grid_roster(Some(GridRoster { seated: 1, open: 0, resuming: 0 }));
         assert_eq!(spawner.seats(), 1, "a held or full grid seats one");
-        spawner.set_grid_roster(Some(GridRoster { seated: 10, open: 10 }));
+        spawner.set_grid_roster(Some(GridRoster { seated: 2, open: 0, resuming: 2 }));
+        assert_eq!(spawner.seats(), 4, "held minds can resume before they have live runtime ids");
+        spawner.set_grid_roster(Some(GridRoster { seated: 10, open: 10, resuming: 0 }));
         assert_eq!(spawner.seats(), 12, "never past what the provider can yield");
         spawner.set_grid_roster(None);
         assert_eq!(spawner.seats(), 12.min(2 * per), "unpublished again: the prior");
