@@ -193,10 +193,9 @@ pub(super) async fn deploy_consume_pass() -> Result<PassEnd, String> {
     let tip = read_deploy_request_tip(&request_path);
     let running = running_build_sha().await;
     let repo = tracked_repo_dir()?;
-    // Submodule pointers are not an operator's work here: aligning them to the tip's gitlinks
-    // is this consumer's own job (below), and counting a stale one as dirt wedged the node
-    // after the first pin bump (2026-09-27: every later tip refused as "uncommitted work").
-    let dirty = !git_in(&repo, &["status", "--porcelain", "--untracked-files=no", "--ignore-submodules=all"])?.is_empty();
+    // An operator's work, judged by the one predicate the tracker reads too: a moved submodule
+    // pointer is this consumer's to align (below), a change inside one is not (card a1e1af51).
+    let dirty = continuum_git::submodules::has_operator_work(&git_in(&repo, &continuum_git::submodules::STATUS_ARGS)?);
     // The deploy claim is the tracker's own input (`deploy_claim::in_flight`). A LIVE owner
     // excludes this consumer whether or not its claim expired: its checkout is its own, and
     // checking out a new tip under it dooms its build (card 634f644d). Only a dead owner's
@@ -304,12 +303,10 @@ pub(super) async fn deploy_consume_pass() -> Result<PassEnd, String> {
                 let _claim = DeployClaimGuard::take(&tip);
                 git_in(&repo, &["fetch", "--quiet", "origin"])?;
                 git_in(&repo, &["checkout", "--quiet", "--detach", &tip])?;
-                // A checkout moves gitlinks, not submodule trees. Without this the llama.cpp
-                // pin moved in the index while the engine source stayed at the old commit
-                // (2026-09-27, #4437: the core deployed, core/vendor/llama.cpp stayed at
-                // 965d38a90). Initialized submodules only, so a deploy never starts a fresh
-                // clone; a submodule with local changes fails this loudly instead of losing them.
-                git_in(&repo, &["submodule", "update", "--quiet", "--recursive"])?;
+                // A checkout moves gitlinks, not submodule trees: every present submodule
+                // checkout follows the tip's pin, registered or not, and none is cloned
+                // (2026-09-27 #4437; card a1e1af51, enrico's unregistered engine checkout).
+                continuum_git::submodules::align(&repo, &|args| git_in(&repo, args))?;
                 // The dark build locates tools/scripts/start-server.sh by walking UP FROM
                 // THE CWD, and a scheduled task starts in System32 — the same wall the
                 // Macs' launchd tracker hit ("under launchd the cwd is /; continuum reboot
@@ -345,7 +342,7 @@ pub(super) async fn deploy_consume_pass() -> Result<PassEnd, String> {
                             // the reboot's build-sha check and deploy-verify compare like with
                             // like. The next pass moves on toward the tip.
                             git_in(&repo, &["checkout", "--quiet", "--detach", &key])?;
-                            git_in(&repo, &["submodule", "update", "--quiet", "--recursive"])?;
+                            continuum_git::submodules::align(&repo, &|args| git_in(&repo, args))?;
                             deploy_note(&format!(
                                 "deploy-consume: {key} is the newest core CI has published (the request is {tip}); deploying it now"
                             ));

@@ -46,7 +46,7 @@ name = "forge-custodian"
 path = "src/bin/forge_custodian.rs"
 
 [dependencies]
-continuum-git = { path = "../continuum-git" } # the deploy tree's stale index.lock (bin/continuum deploy_ledger)
+continuum-git = { path = "../continuum-git" } # the deploy tree's stale index.lock and its submodules (bin/continuum deploy_ledger, deploy_consume; deploy_tracker)
 tool-working-set = { path = "../tool-working-set" }  # one relevance seam: commands/help ranks a query the way the learned tool head reads relevance
 continuum-tool-protocol = { path = "../continuum-tool-protocol" }
 tokio.workspace = true
