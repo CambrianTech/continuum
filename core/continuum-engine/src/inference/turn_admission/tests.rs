@@ -130,7 +130,8 @@
     // every turn while Kimi reused 44,950 on the other slot.
     // what this catches: on a pool with no scratch slot, transient traffic borrows a
     // citizen slot THROUGH the pool — the cheapest resident is saved and detached first
-    // and the admission carries that slot pinned — the single-slot rule generalised.
+    // and the admission carries that slot pinned — the single-slot rule generalised. And a
+    // quote that names another checkpoint subset than its write (card 3512f496).
     #[tokio::test]
     async fn on_a_server_with_no_scratch_slot_transient_traffic_borrows_the_cheapest_citizen_slot_and_saves_its_resident() {
         use axum::{
@@ -140,14 +141,18 @@
             Json, Router,
         };
         let saves = Arc::new(std::sync::Mutex::new(Vec::<u32>::new()));
+        let subsets = Arc::new(std::sync::Mutex::new(Vec::<serde_json::Value>::new()));
         let app = Router::new().route(
             "/slots/{slot}",
             post({
-                let saves = saves.clone();
+                let (saves, subsets) = (saves.clone(), subsets.clone());
                 move |Path(slot): Path<u32>, Query(query): Query<std::collections::HashMap<String, String>>, Json(body): Json<serde_json::Value>| {
-                    let saves = saves.clone();
+                    let (saves, subsets) = (saves.clone(), subsets.clone());
                     async move {
                         let action = query.get("action").cloned().unwrap_or_default(); // unwrap_or_default: a fixture request with no action is a restore
+                        if action.starts_with("save") {
+                            subsets.lock().expect("test: fixture mutex").push(json!([body["keep_view_checkpoints"], body["keep_newest_checkpoints"]]));
+                        }
                         if action == "save-size" {
                             return (StatusCode::OK, Json(json!({"id_slot": slot, "filename": body["filename"], "projected_bytes": 100})));
                         }
@@ -186,6 +191,9 @@
         }).await, PageOutcome::Completed);
         assert_eq!(saves.lock().unwrap().as_slice(), &[0]);
         saves.lock().unwrap().clear();
+        let subsets = std::mem::take(&mut *subsets.lock().unwrap());
+        assert_eq!(subsets.len(), 3, "two quotes and one write");
+        assert!(subsets.iter().all(|subset| *subset == json!([true, 0])), "{subsets:?}");
         // Two residents warm their slots: a large working set and a small one. Each
         // turn COMPLETES (a dropped, uncommitted turn forgets its attribution — the
         // cancellation rule — and would leave both slots reading as free).

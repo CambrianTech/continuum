@@ -345,14 +345,17 @@ pub fn close_trailing_assistant(messages: &mut Vec<Value>) {
 /// parts at a text-only endpoint is at best an API error and at worst a
 /// silent drop the persona would mistake for having seen
 /// ([[fallbacks-are-illegal-fail-loud]], CLAUDE.md "Sensory Architecture").
+/// With `view`, also where input message `view` starts on the wire ([`wire_messages_marking`]).
 pub(crate) fn format_messages(
     cfg: &OpenAICompatibleConfig,
     messages: &[ChatMessage],
     system_prompt: Option<&str>,
     vision_native: bool,
     audio_native: bool,
-) -> Vec<Value> {
-    let mut result = wire_messages(messages, system_prompt, vision_native, audio_native, &cfg.provider_id);
+    view: Option<usize>,
+) -> (Vec<Value>, Option<usize>) {
+    let (mut result, view_end) =
+        wire_messages_marking(messages, system_prompt, vision_native, audio_native, &cfg.provider_id, view);
     // Thinking toggle: when this gateway suppresses reasoning, append Qwen3's
     // `/no_think` soft-switch to the last user turn so the model skips its
     // chain-of-thought and answers directly. Model-specific token, owned here at
@@ -360,7 +363,7 @@ pub(crate) fn format_messages(
     if cfg.thinking == ThinkingMode::Suppress {
         apply_no_think_switch(&mut result);
     }
-    result
+    (result, view_end)
 }
 
 /// The wire messages for a request: the system prompt, then each message with its
@@ -375,6 +378,23 @@ pub fn wire_messages(
     audio_native: bool,
     provider: &str,
 ) -> Vec<Value> {
+    wire_messages_marking(messages, system_prompt, vision_native, audio_native, provider, None).0
+}
+
+/// [`wire_messages`], and how many leading wire messages come from `messages[..mark]`: the
+/// wire position where input message `mark` starts, or the end when `mark` is every message.
+/// Tool replies regroup on the wire, so the input index is not the wire index. The position
+/// is taken before replies still waiting for their group are flushed, so the wire prefix it
+/// names depends on `messages[..mark]` alone and the next act, whose view extends this one,
+/// sends it again byte for byte. `None` when `mark` is past the end.
+pub(crate) fn wire_messages_marking(
+    messages: &[ChatMessage],
+    system_prompt: Option<&str>,
+    vision_native: bool,
+    audio_native: bool,
+    provider: &str,
+    mark: Option<usize>,
+) -> (Vec<Value>, Option<usize>) {
     // Pre-size: one wire message per input message + the optional system
     // prompt. The common text path lands exactly; tool-result turns push a
     // few extra and realloc once. Runs on every inference call — no
@@ -390,7 +410,11 @@ pub fn wire_messages(
         }));
     }
 
-    for msg in messages {
+    let mut marked = None;
+    for (index, msg) in messages.iter().enumerate() {
+        if mark == Some(index) {
+            marked = Some(result.len());
+        }
         // Keep consecutive tool replies together, including replies carried by
         // separate input messages. User media must not interrupt their pairing.
         let is_tool_reply = matches!(&msg.content, MessageContent::Parts(parts)
@@ -521,8 +545,11 @@ pub fn wire_messages(
         }
     }
 
+    if mark == Some(messages.len()) {
+        marked = Some(result.len());
+    }
     result.append(&mut observations);
-    result
+    (result, marked)
 }
 
 /// OpenAI-compatible audio uses encoded WAV/MP3, not an image data URL.
@@ -563,12 +590,13 @@ pub(crate) fn build_base_body(
     audio_native: bool,
 ) -> Value {
     // Build request body
-    let mut messages = format_messages(
-                cfg,
+    let (mut messages, view_end) = format_messages(
+        cfg,
         &request.messages,
         request.system_prompt.as_deref(),
         vision_native,
         audio_native,
+        request.view_messages.map(|len| len as usize),
     );
 
     // JsonInPrompt tool offering: for gateways/models that ignore the OpenAI
@@ -593,6 +621,12 @@ pub(crate) fn build_base_body(
         "stream": true,
         "stream_options": { "include_usage": true }
     });
+    // Where her view ends, in wire messages: our fork checkpoints her recurrent state there
+    // and keeps that checkpoint in her saved page (card 3512f496). A llama.cpp-family field:
+    // a stock server ignores it, a cloud provider would reject it.
+    if let (true, Some(view_end)) = (cfg.llamacpp_sampling_extensions, view_end) {
+        body["view_messages"] = json!(view_end);
+    }
 
     // max_tokens — the MODEL owns its generation length, enforced server-side
     // by llama.cpp / the cloud provider. We forward a ceiling ONLY
@@ -708,6 +742,57 @@ mod tests {
         assert_eq!(apply_reasoning_budget(None, &mut none), None);
     }
 
+    fn gateway(llamacpp: bool) -> OpenAICompatibleConfig {
+        OpenAICompatibleConfig {
+            provider_id: "test-gateway".into(),
+            name: "Test Gateway".into(),
+            base_url: "http://127.0.0.1:0".into(),
+            api_key_env: None,
+            default_model: "test-model".into(),
+            capabilities: [Capability::ToolUse].into_iter().collect(),
+            models: Vec::new(),
+            model_prefixes: Vec::new(),
+            requires_auth: false,
+            tool_protocol: crate::model_registry::ToolProtocol::NativeFunctionCalling,
+            thinking: ThinkingMode::Default,
+            single_resident_model: false,
+            dynamic_model_catalog: false,
+            llamacpp_sampling_extensions: llamacpp,
+            tail_tools: llamacpp,
+        }
+    }
+
+    // what this catches: a view end that names a wire position the next act does not resend
+    // (a tool reply's held observation flushed into it, so the engine's checkpoint lands past
+    // where her next prompt diverges), an input index sent as if it were a wire index, or the
+    // fork's field reaching a cloud provider (card 3512f496).
+    #[test]
+    fn the_view_end_is_a_wire_prefix_the_next_act_resends_and_only_llamacpp_hears_it() {
+        let text = |role: &str, body: &str| ChatMessage::text(role, body);
+        let reply = |id: &str| -> ChatMessage { serde_json::from_value(json!({ "role": "user", "content": [
+            {"type":"tool_result", "tool_use_id": id, "content":"done"},
+            {"type":"image", "image":{"base64":"pixels", "mimeType":"image/png"}}
+        ]})).unwrap() };
+        // This act: her view is [her note, a tool reply with pixels]; the ask is the tail.
+        let this_act = [text("user", "note"), reply("call-1"), text("user", "ask")];
+        let (wire, end) = wire_messages_marking(&this_act, Some("system"), true, true, "test", Some(2));
+        // system, note, the reply; its observation is still held when the tail starts.
+        assert_eq!(end, Some(3));
+        assert_eq!(wire.len(), 5);
+        // The next act's view appends another reply to the same group, then a new tail.
+        let next_act = [text("user", "note"), reply("call-1"), reply("call-2"), text("user", "ask again")];
+        let (next, _) = wire_messages_marking(&next_act, Some("system"), true, true, "test", Some(3));
+        assert_eq!(wire[..3], next[..3], "the prefix the view end names is resent byte for byte");
+        assert_ne!(wire[3], next[3], "the held observation is not part of it");
+        assert_eq!(wire_messages_marking(&this_act, None, true, true, "test", Some(3)).1, Some(4), "every message is view");
+        assert_eq!(wire_messages_marking(&this_act, None, true, true, "test", Some(4)).1, None);
+
+        let request = TextGenerationRequest { messages: this_act.to_vec(), view_messages: Some(2), ..Default::default() };
+        let served = build_base_body(&gateway(true), &request, "m", true, true);
+        assert_eq!(served["view_messages"], json!(2), "no system prompt: note and the reply");
+        assert!(build_base_body(&gateway(false), &request, "m", true, true).get("view_messages").is_none());
+    }
+
     // what this catches: a tail-loaded verb not reaching a llama.cpp-family server (she could
     // read its schema and never call it), the non-standard field going to a cloud provider
     // that rejects unknown fields, or a tail silently dropped (Codex on #5491).
@@ -728,23 +813,7 @@ mod tests {
             tail_tools: Some(vec![spec("code_git_apply")]),
             ..Default::default()
         };
-        let cfg = |llamacpp: bool| OpenAICompatibleConfig {
-            provider_id: "test-gateway".into(),
-            name: "Test Gateway".into(),
-            base_url: "http://127.0.0.1:0".into(),
-            api_key_env: None,
-            default_model: "test-model".into(),
-            capabilities: [Capability::ToolUse].into_iter().collect(),
-            models: Vec::new(),
-            model_prefixes: Vec::new(),
-            requires_auth: false,
-            tool_protocol: crate::model_registry::ToolProtocol::NativeFunctionCalling,
-            thinking: ThinkingMode::Default,
-            single_resident_model: false,
-            dynamic_model_catalog: false,
-            llamacpp_sampling_extensions: llamacpp,
-            tail_tools: llamacpp,
-        };
+        let cfg = gateway;
         let mut served = json!({ "model": "m" });
         assert!(finish_body(&cfg(true), &request, "m", true, &mut served).is_ok());
         assert_eq!(served["tools"].as_array().map(Vec::len), Some(1), "the head holds only its own verbs");

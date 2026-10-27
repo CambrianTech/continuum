@@ -388,6 +388,7 @@ impl LlmDeliberationFaculty {
             stop_sequences,
             tools,
             tail_tools: None,
+            view_messages: None,
             tool_choice: None,
             response_format: None,
             // Page in the persona's current genome (wait-free read). Empty → None,

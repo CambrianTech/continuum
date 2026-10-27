@@ -31,7 +31,15 @@ repeatLastN?: number, stopSequences?: Array<string>, tools?: Array<NativeToolSpe
  * (goal 10, card ecd5dff3). Their schemas ride the conversation, after the cache point.
  * Sent only to a llama.cpp-family server; one that predates the field ignores it.
  */
-tailTools?: Array<NativeToolSpec>, toolChoice?: ToolChoice, 
+tailTools?: Array<NativeToolSpec>, 
+/**
+ * How many leading `messages` are her view: the epoch's append-only part, which her next
+ * act sends again unchanged, before this act's fresh tail. A llama.cpp-family engine
+ * checkpoints her recurrent state exactly there, and a saved page keeps that checkpoint,
+ * so a page-in resumes at the end of her view rather than at the shared head (card
+ * 3512f496). `None` when the prompt has no view.
+ */
+viewMessages?: number, toolChoice?: ToolChoice, 
 /**
  * Force the model to output a specific format (e.g. JSON object).
  * OpenAI-compatible: serializes as `{"type": "json_object"}` etc. The

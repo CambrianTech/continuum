@@ -274,6 +274,7 @@ async fn run_analysis(
         stop_sequences: None,
         tools: None,
         tail_tools: None,
+        view_messages: None,
         tool_choice: None,
         // FORCE JSON OUTPUT. llama.cpp / DMR constrain the sampler so the
         // model can only emit valid JSON. Eliminates qwen3.5's thinking-mode
