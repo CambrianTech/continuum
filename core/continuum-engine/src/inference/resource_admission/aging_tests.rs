@@ -179,6 +179,7 @@ mod replay {
     const ARIS_BOUND: Duration = Duration::from_secs(260);
     const HOURS: usize = 6;
     const HORIZON: Duration = Duration::from_secs(HOURS as u64 * 3600);
+    // derived-or-floor: the three Work residents in the recorded M5 incident, a replay fixture rather than a runtime admission limit.
     const WORK_MINDS: usize = 3;
     /// #5499's cohort = Work waiting at her attempt + the one-lane non-directed budget. At most
     /// every Work mind is waiting (right after her own release); after aging she queues behind
