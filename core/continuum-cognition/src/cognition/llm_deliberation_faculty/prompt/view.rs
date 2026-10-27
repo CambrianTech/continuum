@@ -193,7 +193,7 @@ impl LlmDeliberationFaculty {
             .saturating_sub(selected.tokens);
         // Her newest result alone over what the window leaves it is shown at a smaller level
         // with its handle, never dropped (goal 7); one that fits is untouched.
-        self.fit_newest_result(&mut all_messages, after_reserves);
+        let newest_result_reduced = self.fit_newest_result(&mut all_messages, after_reserves);
         // Her view already carries every block that rides the conversation.
         let unfitted_message_tokens = all_messages.tokens();
         // KEEP THE OVERFLOW. This used to be one chained `saturating_sub` ending in
@@ -706,6 +706,7 @@ impl LlmDeliberationFaculty {
             protocol_error,
             messages,
             segments,
+            newest_result_reduced,
         }
     }
 

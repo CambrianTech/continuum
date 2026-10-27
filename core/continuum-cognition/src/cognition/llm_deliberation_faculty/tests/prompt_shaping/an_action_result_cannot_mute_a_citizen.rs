@@ -209,6 +209,11 @@ mod the_newest_result_over_her_window {
 
     /// Her act and its saved result, recorded as the act seam does, and the faculty that renders it.
     fn faculty_after(content: &str) -> LlmDeliberationFaculty {
+        faculty_on(content, Arc::new(HeuristicInferenceAdapter::new()))
+    }
+
+    /// The same, generating through `adapter`.
+    fn faculty_on(content: &str, adapter: Arc<dyn crate::ai::adapter::AIProviderAdapter>) -> LlmDeliberationFaculty {
         let wm = Arc::new(WorkingMemory::new(8));
         wm.set_served_window(ARIS_WINDOW);
         let room = Uuid::new_v4();
@@ -228,7 +233,7 @@ mod the_newest_result_over_her_window {
         };
         let rendered = observation.render_recency("", &wm.budget());
         wm.record_receipt_typed(&[observation], &rendered, Some(room), ResultCustody::Whole { handle: HANDLE.into() });
-        LlmDeliberationFaculty::new(Uuid::new_v4(), "Aris", "You are Aris.", Arc::new(HeuristicInferenceAdapter::new()))
+        LlmDeliberationFaculty::new(Uuid::new_v4(), "Aris", "You are Aris.", adapter)
             .with_context_window(ARIS_WINDOW)
             .with_working_memory(wm)
     }
@@ -281,5 +286,83 @@ mod the_newest_result_over_her_window {
         let view = faculty.prompt_view_with_visual_feedback(&ws, ARIS_WINDOW, aris_calibration(), None);
         assert!(view.capacity_error.is_none());
         assert_eq!(tool_results(&view), vec![("call-aris".to_owned(), small)]);
+    }
+
+    /// Her refusal on the M5 (2026-10-27 04:29Z), exactly as the engine counted it.
+    fn aris_refusal(requested: u32) -> crate::ai::inference_error::InferenceError {
+        crate::ai::inference_error::InferenceError::ContextExceeded { requested, available: ARIS_WINDOW }
+    }
+
+    /// An adapter that refuses each of `refusals`, then answers PASS.
+    fn refusing(refusals: &[u32]) -> Arc<ScriptedAdapter> {
+        let adapter = Arc::new(ScriptedAdapter::new(vec![make_response(FinishReason::Stop, "PASS", None)]));
+        adapter.rejections.lock().expect("test: rejection queue").extend(refusals.iter().map(|&r| aris_refusal(r))); // JUSTIFIED: test fixture
+        adapter
+    }
+
+    /// Her one result as a request carried it.
+    fn sent_result(request: &TextGenerationRequest) -> String {
+        request.messages.iter()
+            .filter_map(|m| match &m.content { MessageContent::Parts(parts) => Some(parts), MessageContent::Text(_) => None })
+            .flatten()
+            .find_map(|part| match part { ContentPart::ToolResult { content, .. } => Some(content.clone()), _ => None })
+            .expect("test: the request carries her result") // JUSTIFIED: test fixture
+    }
+
+    /// A request's cost in the fitter's own unit: framing, messages, tool schemas.
+    fn estimate(request: &TextGenerationRequest) -> usize {
+        LlmDeliberationFaculty::framing_cost(request.system_prompt.as_deref().unwrap_or_default()) // JUSTIFIED: a request with no system prompt costs none
+            + LlmDeliberationFaculty::messages_cost(&request.messages)
+            + request.tools.as_deref().map_or(0, crate::cognition::tool_surface::tool_surface_tokens_of) // map_or: no tools, no schemas
+    }
+
+    // what this catches: Aris's permanent stall after a restart (the M5, 2026-10-27 03:54-04:29Z).
+    // With no measured density the bytes/3 estimate let her 340k-char result go whole; the
+    // engine refused 214,671 > 187,136 and she parked, never using the density it measured.
+    // The refusal must refit her view at that density, resend ONCE with the result at its
+    // summary and handle, under her window, and the turn proceeds.
+    #[tokio::test]
+    async fn a_refusal_refits_her_newest_result_and_resends_once() {
+        let whole = evidence_answer(578);
+        let adapter = refusing(&[214_671]);
+        let faculty = faculty_on(&whole, adapter.clone());
+        let outcome = faculty.contribute(&Workspace::new("what does the evidence say?")).await.expect("test: a verdict"); // JUSTIFIED: test fixture
+        assert!(outcome.fault.is_none() && outcome.capacity_refusal.is_none(), "{:?} {:?}", outcome.fault, outcome.capacity_refusal.is_some());
+        let seen = adapter.seen.lock().expect("test: request log"); // JUSTIFIED: test fixture
+        assert_eq!(seen.len(), 2, "the refused request and exactly one resend");
+        assert_eq!(sent_result(&seen[0]), whole, "precondition: with no measured density the result went whole");
+        let resent = sent_result(&seen[1]);
+        assert!(resent.contains("too large to show whole") && resent.contains(&format!("tool/output {HANDLE}")), "{}", &resent[..resent.len().min(600)]);
+        assert!(resent.contains("lines between"), "her result's summary level, not only a pointer");
+        // Priced at the density the refusal measured, the resend and its reply fit her slot.
+        let priced = (estimate(&seen[1]) as u128 * 214_671).div_ceil(estimate(&seen[0]) as u128) as usize;
+        let reply = seen[1].max_tokens.expect("test: the resend carries its allowance") as usize; // JUSTIFIED: test fixture
+        assert!(priced + reply <= ARIS_WINDOW as usize, "{priced} + {reply} over her {ARIS_WINDOW}");
+    }
+
+    // what this catches: a loop. A resend at her measured density that is refused too must park
+    // on the refusal (as before #5505) and never be resent a second time.
+    #[tokio::test]
+    async fn a_refit_that_is_refused_too_parks_without_a_second_resend() {
+        let adapter = refusing(&[214_671, 190_000]);
+        let faculty = faculty_on(&evidence_answer(578), adapter.clone());
+        let outcome = faculty.contribute(&Workspace::new("what does the evidence say?")).await.expect("test: a verdict"); // JUSTIFIED: test fixture
+        assert!(outcome.fault.is_none(), "{:?}", outcome.fault);
+        assert!(outcome.capacity_refusal.is_some(), "she parks on the refusal");
+        assert_eq!(adapter.call_count(), 2, "one resend, never a second");
+    }
+
+    // what this catches: the refit firing on a request that fits, which would resend or reshape
+    // a turn the engine accepted.
+    #[tokio::test]
+    async fn a_request_that_fits_never_takes_the_refit() {
+        let small = evidence_answer(3);
+        let adapter = refusing(&[]);
+        let faculty = faculty_on(&small, adapter.clone());
+        let outcome = faculty.contribute(&Workspace::new("what does the evidence say?")).await.expect("test: a verdict"); // JUSTIFIED: test fixture
+        assert!(outcome.fault.is_none() && outcome.capacity_refusal.is_none());
+        let seen = adapter.seen.lock().expect("test: request log"); // JUSTIFIED: test fixture
+        assert_eq!(seen.len(), 1);
+        assert_eq!(sent_result(&seen[0]), small);
     }
 }

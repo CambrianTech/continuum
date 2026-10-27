@@ -71,14 +71,15 @@ impl LlmDeliberationFaculty {
     /// Fit her newest result to what the window leaves it, `after_reserves` being the window
     /// after framing, tools and the reply's floor (the same number the over-window probe reads).
     /// A result that fits, or one with no saved whole to reopen, is left exactly as it is.
-    pub(in super::super) fn fit_newest_result(&self, prompt: &mut PromptMessages, after_reserves: usize) {
+    /// Answers whether it was shown smaller than whole (`DeliberationPromptView::newest_result_reduced`).
+    pub(in super::super) fn fit_newest_result(&self, prompt: &mut PromptMessages, after_reserves: usize) -> bool {
         let parts = prompt.required_parts();
         let room = after_reserves.saturating_sub(parts.total() - parts.latest_result);
         if parts.latest_result <= room {
-            return;
+            return false;
         }
-        let Some(memory) = self.working_memory.as_ref() else { return };
-        let Some((seq, _)) = memory.active_action_full() else { return };
+        let Some(memory) = self.working_memory.as_ref() else { return false };
+        let Some((seq, _)) = memory.active_action_full() else { return false };
         let Some(handle) = memory.saved_handle(seq) else {
             continuum_base::probe!(
                 class = "delib.newest_result.unsaved_over_window",
@@ -88,7 +89,7 @@ impl LlmDeliberationFaculty {
                 room,
                 "her newest result is over her window and was never saved: it stays whole, the turn faults"
             );
-            return;
+            return false;
         };
         let label = format!("result #{seq}");
         let observations = memory.active_action_observations(seq);
@@ -131,5 +132,6 @@ impl LlmDeliberationFaculty {
             room,
             "her newest result alone was over her window: shown at a smaller level with its handle"
         );
+        shown_as != Level::Whole
     }
 }

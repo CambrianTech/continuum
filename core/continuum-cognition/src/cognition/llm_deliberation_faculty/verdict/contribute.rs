@@ -124,6 +124,9 @@ impl LlmDeliberationFaculty {
         // Her destination refused the tail her learned head promised: rebuilt once on the
         // activity's own surface, so she is never offered a verb she cannot call.
         let mut tail_refused = false;
+        // Her newest result was refit once at a refusal's measured density
+        // (`verdict/newest_refit.rs`): a second refusal parks, never resends.
+        let mut newest_refit_sent = false;
         let mut view =
             self.prompt_view_with_visual_feedback(ws, fit_window, calibration, visual.as_ref());
         let mut gen_await_ms = 0u64;
@@ -320,6 +323,23 @@ impl LlmDeliberationFaculty {
                         corrective_replay_used = rejected_prompt_tokens.is_some(),
                         "provider capacity refusal: retained measured token density for prompt fitting"
                     );
+                    if newest_refit_sent {
+                        let error = self.newest_refit_refused(requested, available, view.completion_reserve);
+                        return Some(
+                            Contribution::prompt_capacity_refused(error).with_capacity_readiness(Arc::new(
+                                capacity_readiness.as_ref().clone().with_fit_window(fit_window),
+                            )),
+                        );
+                    }
+                    if let Some(refit) = self.refit_newest_after_refusal(
+                        ws, fit_window, calibration, visual.as_ref(), &view, requested, available,
+                    ) {
+                        newest_refit_sent = true;
+                        rejected_prompt_tokens = Some(estimated_prompt_tokens);
+                        rejected_measured_tokens = Some(requested);
+                        view = refit;
+                        continue;
+                    }
                     if rejected_measured_tokens.is_some_and(|previous| requested >= previous) {
                         return Some(Contribution::deliberation_fault(
                             "exact prompt correction made no measured progress; refusing further admission replay",
