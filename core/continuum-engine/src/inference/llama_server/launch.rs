@@ -178,11 +178,7 @@ impl LlamaServerProcess {
         // at 1.2 GB/min for four hours and the log reached 172 GB, taking the machine to
         // zero bytes free. `code::child_log` owns the file instead and rotates at a few MB.
         // [[never-blind-feedback-driven-iteration]]
-        let log_path = dirs::home_dir().map(|h| {
-            h.join(".continuum")
-                .join("logs")
-                .join(format!("llama-server-{}.log", port))
-        });
+        let log_path = crate::inference::child_log::llama_server_log(port);
         if let Some(dir) = log_path.as_ref().and_then(|p| p.parent()) {
             let _ = std::fs::create_dir_all(dir);
         }

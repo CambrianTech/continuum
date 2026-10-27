@@ -34,8 +34,11 @@
 //! would wedge serving to protect a log. If the file cannot be written we keep draining and
 //! discard, and say so once — losing log lines is survivable, stalling inference is not.
 
+use std::collections::HashMap;
 use std::io;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, LazyLock};
 
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
@@ -96,6 +99,24 @@ pub fn drain_capped(stderr: tokio::process::ChildStderr, path: PathBuf, watch: B
     });
 }
 
+/// The engine's own stderr log for the lane on `port`: the one path its spawn drains into, its
+/// failure tail is read from, and its stall evidence is written beside.
+pub fn llama_server_log(port: u16) -> Option<PathBuf> {
+    dirs::home_dir().map(|h| h.join(".continuum").join("logs").join(format!("llama-server-{port}.log")))
+}
+
+/// When each sink last received a line from its child (Unix ms), by log path. A child that
+/// stopped answering is told apart from one that stopped talking by this: the stall evidence
+/// reads it before the engine is condemned (card 3913621a).
+static LAST_LINE_MS: LazyLock<parking_lot::Mutex<HashMap<PathBuf, Arc<AtomicU64>>>> = LazyLock::new(Default::default);
+
+/// How long the child draining into `path` has written nothing, in ms. `None` when no sink
+/// for `path` has received a line in this process.
+pub fn silent_ms(path: &Path) -> Option<u64> {
+    let last = LAST_LINE_MS.lock().get(path)?.load(Ordering::Relaxed);
+    (last > 0).then(|| continuum_base::time::EpochMs::now().millis().saturating_sub(last))
+}
+
 /// Drain `reader` into `path`, rotating whenever the live file would exceed [`MAX_BYTES`].
 ///
 /// Line-oriented so a rotation never splits a message in half — a half-line at the seam is
@@ -112,8 +133,10 @@ async fn pump(
         .open(path)
         .await?;
     let mut written = file.metadata().await.map(|m| m.len()).unwrap_or(0);
+    let last_line = Arc::clone(LAST_LINE_MS.lock().entry(path.to_path_buf()).or_default());
 
     while let Some(line) = lines.next_line().await? {
+        last_line.store(continuum_base::time::EpochMs::now().millis(), Ordering::Relaxed);
         // Observe BEFORE writing: a fault the observer exists to catch must still be
         // caught when the disk is full — which is exactly the state the 2026-08-05 wedge
         // drove the machine into. Detection must not depend on the sink succeeding.
