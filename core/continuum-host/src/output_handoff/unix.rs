@@ -1,8 +1,9 @@
 use std::ffi::OsStr;
 use std::io;
-use std::os::unix::process::CommandExt;
 use std::path::Path;
-use std::process::{Command, Stdio};
+use std::process::Stdio;
+
+use tokio::process::Command;
 
 use super::Handoff;
 
@@ -30,7 +31,7 @@ mod tests {
     async fn the_reader_joins_the_writers_group_reads_every_line_and_ends_with_it() {
         let dir = tempfile::tempdir().expect("tempdir");
         let out = dir.path().join("out");
-        let mut writer = tokio::process::Command::new("sh");
+        let mut writer = Command::new("sh");
         writer.args(["-c", "echo one >&2; sleep 1; echo two >&2"]).stderr(Stdio::piped()).process_group(0);
         let mut writer = writer.spawn().expect("spawn the writer");
         let group = writer.id().expect("a running writer has a pid");
@@ -38,7 +39,7 @@ mod tests {
         let Handoff::Reader(mut reader) = spawn_reader(Path::new("sh"), ["-c", script.as_str()], writer.stderr.take().expect("piped"), group).expect("spawn the reader") else {
             panic!("unix hands the pipe to the reader");
         };
-        let pgid = Command::new("ps").args(["-o", "pgid=", "-p", &reader.id().to_string()]).output().expect("ps");
+        let pgid = std::process::Command::new("ps").args(["-o", "pgid=", "-p", &reader.id().expect("a running reader has a pid").to_string()]).output().expect("ps");
         assert_eq!(String::from_utf8_lossy(&pgid.stdout).trim(), group.to_string(), "the reader is in the writer's group");
         writer.wait().await.expect("the writer exits");
         let deadline = Instant::now() + Duration::from_secs(10);

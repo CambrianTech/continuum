@@ -27,13 +27,18 @@ pub(super) struct Owned {
 }
 
 /// The sidecar whose exclusive lock decides who serves `path`. It is never removed: removing a
-/// lock file another process may be waiting on would let two holders exist.
+/// lock file another process may be holding would let two holders exist. Taken without waiting:
+/// a binder that finds it held is refused at once (`AddrInUse`), so a bind never blocks on
+/// another (Codex on #5536).
 fn custody(path: &Path) -> io::Result<std::fs::File> {
     let mut name = path.as_os_str().to_owned();
     name.push(".lock");
     let lock = std::fs::OpenOptions::new().create(true).truncate(false).write(true).open(PathBuf::from(name))?;
-    lock.lock()?;
-    Ok(lock)
+    match lock.try_lock() {
+        Ok(()) => Ok(lock),
+        Err(std::fs::TryLockError::WouldBlock) => Err(io::Error::new(io::ErrorKind::AddrInUse, format!("another binder holds custody of {}", path.display()))),
+        Err(std::fs::TryLockError::Error(error)) => Err(error),
+    }
 }
 
 impl Owned {

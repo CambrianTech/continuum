@@ -52,7 +52,7 @@ pub struct Ready {
 /// Wait, until `within` passes, for the relay `relay` to serve `engine` at `socket`. Refused
 /// when the relay exits first (a failed bind, a path it cannot own), when its endpoint answers
 /// for another engine, or when the time passes: the caller must not serve that engine.
-pub async fn ready(engine: EngineIncarnation, socket: &Path, relay: &mut std::process::Child, within: Duration) -> Result<Ready, String> {
+pub async fn ready(engine: EngineIncarnation, socket: &Path, relay: &mut tokio::process::Child, within: Duration) -> Result<Ready, String> {
     let deadline = tokio::time::Instant::now() + within;
     // derived-or-floor: a POLL cadence while one local process starts and binds; it bounds how late readiness is noticed, never a budget
     let mut poll = tokio::time::interval(Duration::from_millis(20));
@@ -61,7 +61,10 @@ pub async fn ready(engine: EngineIncarnation, socket: &Path, relay: &mut std::pr
         if let Some(status) = relay.try_wait().map_err(|e| format!("the engine's log relay could not be polled: {e}"))? {
             return Err(format!("the engine's log relay exited before serving: {status}"));
         }
-        if let Ok(mut subscription) = Subscription::connect(socket).await {
+        // The connect and the opening heartbeat share the one deadline: an endpoint that never
+        // accepts or never speaks is refused when it passes (Codex on #5536).
+        let connected = tokio::time::timeout_at(deadline, Subscription::connect(socket)).await;
+        if let Ok(Ok(mut subscription)) = connected {
             let opening = tokio::time::timeout_at(deadline, subscription.next()).await;
             return match opening {
                 Ok(Ok(Some(Frame::Heartbeat(opening)))) if opening.incarnation == engine => Ok(Ready { subscription, opening }),
@@ -191,15 +194,32 @@ mod tests {
         panic!("{what} within 10 s");
     }
 
+    /// A stand-in engine: a live process of its own, so each test's incarnation and silence
+    /// clock are its own (keyed by pid, a shared pid would let one test's follower answer
+    /// another's check).
+    #[cfg(unix)]
+    async fn stand_in_engine(port: u16) -> (tokio::process::Child, EngineIncarnation) {
+        let child = live_child();
+        let pid = child.id().expect("a running child has a pid");
+        for _ in 0..100 {
+            if let Some(engine) = EngineIncarnation::of(pid, port) {
+                return (child, engine);
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        panic!("the stand-in engine's start time is readable");
+    }
+
     // what this catches (Codex on 1d7d6d4c): a core restart that leaves an engine unwatched, a
     // second follower of one incarnation, a restarted core shown lines from before it, or a
     // silence clock that outlives the follower that kept it.
+    // The relay runs only where the host hands it the engine's stderr (unix); this spawns a process.
+    #[cfg(unix)]
     #[tokio::test]
     async fn a_restarted_follower_picks_up_the_relay_and_its_silence_lives_only_with_it() {
         let dir = tempfile::tempdir().expect("tempdir");
         let (socket, log) = (dir.path().join("engine.sock"), dir.path().join("engine.log"));
-        // This test process stands in for the engine, so the follower sees it alive.
-        let engine = EngineIncarnation::of(std::process::id(), 65_001).expect("this process's start time");
+        let (mut stand_in, engine) = stand_in_engine(65_001).await;
         let (mut stderr, drained) = tokio::io::duplex(64 * 1024);
         let config = super::super::Config { heartbeat: Duration::from_millis(50), ..super::super::Config::default() };
         let relay = tokio::spawn({
@@ -230,31 +250,38 @@ mod tests {
         relay.await.expect("the relay task").expect("the relay ends cleanly");
         until("the clock goes with the relay", || child_log::silent_ms(engine.pid).is_none()).await;
         second.abort();
+        let _ = stand_in.kill().await;
     }
 
+    // The relay runs only where the host hands it the engine's stderr (unix); these spawn processes.
+    #[cfg(unix)]
     /// A stand-in relay process for the readiness checks: alive until killed.
-    fn live_child() -> std::process::Child {
-        std::process::Command::new("sleep").arg("30").spawn().expect("spawn a stand-in relay")
+    fn live_child() -> tokio::process::Child {
+        tokio::process::Command::new("sleep").arg("30").spawn().expect("spawn a stand-in relay")
     }
 
     // what this catches (Codex on #5536): a relay that spawned but never served (a failed bind,
     // a path it cannot own) taken as ready, so the engine serves with nobody reading it.
+    // The relay runs only where the host hands it the engine's stderr (unix); these spawn processes.
+    #[cfg(unix)]
     #[tokio::test]
     async fn a_relay_that_exits_before_serving_is_refused() {
         let dir = tempfile::tempdir().expect("tempdir");
         let engine = EngineIncarnation { pid: 4242, started_s: 1_793_000_000, port: 65_002 };
-        let mut relay = std::process::Command::new("sh").args(["-c", "exit 3"]).spawn().expect("spawn");
+        let mut relay = tokio::process::Command::new("sh").args(["-c", "exit 3"]).spawn().expect("spawn");
         let refused = ready(engine, &dir.path().join("engine.sock"), &mut relay, Duration::from_secs(10)).await;
         assert!(refused.as_ref().is_err_and(|e| e.contains("exited before serving")), "{:?}", refused.err());
     }
 
     // what this catches (Codex on #5536): readiness taken from an endpoint that serves another
     // engine (a predecessor's relay still on the path), so this engine's lines go nowhere.
+    // The relay runs only where the host hands it the engine's stderr (unix); these spawn processes.
+    #[cfg(unix)]
     #[tokio::test]
     async fn an_endpoint_answering_for_another_engine_is_refused_and_a_matching_one_is_followed() {
         let dir = tempfile::tempdir().expect("tempdir");
         let (socket, log) = (dir.path().join("engine.sock"), dir.path().join("engine.log"));
-        let engine = EngineIncarnation::of(std::process::id(), 65_003).expect("this process's start time");
+        let (mut stand_in, engine) = stand_in_engine(65_003).await;
         let predecessor = EngineIncarnation { started_s: engine.started_s - 1, ..engine };
         let (mut stderr, drained) = tokio::io::duplex(64 * 1024);
         let config = super::super::Config { heartbeat: Duration::from_millis(50), ..super::super::Config::default() };
@@ -281,9 +308,27 @@ mod tests {
         let seen = Arc::new(parking_lot::Mutex::new(Vec::new()));
         assert!(follow_ready(engine, socket.clone(), proven, Box::new(Record(Arc::clone(&seen)))));
         until("the spawning core's follower gets the held banner", || seen.lock().contains(&"banner".to_string())).await;
-        let _ = child.kill();
-        let _ = child.wait();
+        let _ = child.kill().await;
         drop(stderr);
         relay.await.expect("the relay task").expect("the relay ends cleanly");
+        let _ = stand_in.kill().await;
+    }
+
+    // what this catches (Codex on #5536): the readiness bound not enforced, because an endpoint
+    // that takes the connection (into its backlog) and never speaks held the launch past it.
+    // The relay runs only where the host hands it the engine's stderr (unix); these spawn processes.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn an_endpoint_that_never_speaks_is_refused_within_the_bound() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let socket = dir.path().join("engine.sock");
+        let _silent = std::os::unix::net::UnixListener::bind(&socket).expect("a listener that never accepts");
+        let engine = EngineIncarnation { pid: 4242, started_s: 1_793_000_000, port: 65_004 };
+        let mut child = live_child();
+        let started = std::time::Instant::now();
+        let refused = ready(engine, &socket, &mut child, Duration::from_millis(300)).await;
+        assert!(refused.is_err(), "a silent endpoint is never ready");
+        assert!(started.elapsed() < Duration::from_secs(5), "refused at the bound, not after it: {:?}", started.elapsed());
+        let _ = child.kill().await;
     }
 }

@@ -20,8 +20,9 @@ pub const SUPPORTED: bool = os::SUPPORTED;
 /// What became of a child's stderr.
 #[derive(Debug)]
 pub enum Handoff {
-    /// A reader process holds it.
-    Reader(std::process::Child),
+    /// A reader process holds it. An async child: awaiting its exit never parks a thread, so a
+    /// reader meant to outlive this process never holds its runtime's shutdown.
+    Reader(tokio::process::Child),
     /// This host has no handoff: the stderr comes back to the caller, unread.
     Kept(tokio::process::ChildStderr),
 }

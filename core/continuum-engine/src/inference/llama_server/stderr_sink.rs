@@ -74,7 +74,7 @@ pub(super) async fn attach(stderr: tokio::process::ChildStderr, pid: u32, port: 
                     Ok(())
                 }
                 Err(reason) => {
-                    let _ = relay.kill(); // an exited relay refuses the signal; it is reaped either way
+                    let _ = relay.start_kill(); // an exited relay refuses the signal; it is reaped either way
                     reap(relay, engine);
                     Err(reason)
                 }
@@ -91,7 +91,7 @@ pub(super) async fn attach(stderr: tokio::process::ChildStderr, pid: u32, port: 
 /// A relay spawned and not yet proven ready. If the launch is cancelled while it waits, the
 /// relay is still reaped and followed: the engine it reads is owned and may serve on.
 struct Pending {
-    relay: Option<std::process::Child>,
+    relay: Option<tokio::process::Child>,
     watch: Option<Box<dyn LineWatch>>,
     engine: EngineIncarnation,
 }
@@ -106,10 +106,13 @@ impl Drop for Pending {
 }
 
 /// Wait for the relay this core spawned, so it never lingers as a zombie, and say how it ended:
-/// it ends on its own only when every writer of the engine's stderr has.
-fn reap(mut relay: std::process::Child, engine: EngineIncarnation) {
-    tokio::task::spawn_blocking(move || {
-        let status = relay.wait();
+/// it ends on its own only when every writer of the engine's stderr has. An async wait, never a
+/// parked thread: the relay outlives this core by design, and a blocking wait would hold the
+/// runtime's shutdown for the engine's whole life (Codex on #5536). A core that exits first drops
+/// this task; the relay is then the init process's to reap.
+fn reap(mut relay: tokio::process::Child, engine: EngineIncarnation) {
+    tokio::spawn(async move {
+        let status = relay.wait().await;
         let ended = match &status {
             Ok(status) if status.success() => return,
             Ok(status) => status.to_string(),
@@ -122,4 +125,36 @@ fn reap(mut relay: std::process::Child, engine: EngineIncarnation) {
             "the engine's log relay ended in failure: its lines are no longer followed"
         );
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // what this catches (Codex on #5536): a relay's reap that parks a thread on its exit. The relay
+    // outlives the core by design, and a runtime drop waits for running blocking tasks, so the core
+    // could not shut down while any engine lived. The runtime must drop at once with a relay alive.
+    // Spawns a stand-in relay process: unix, where the relay runs.
+    #[cfg(unix)]
+    #[test]
+    fn a_reaped_relay_never_holds_the_runtimes_shutdown() {
+        let runtime = tokio::runtime::Runtime::new().expect("runtime");
+        let engine = EngineIncarnation { pid: 4242, started_s: 1_793_000_000, port: 65_005 };
+        let pid = runtime.block_on(async {
+            let relay = tokio::process::Command::new("sleep").arg("30").spawn().expect("spawn a stand-in relay");
+            let pid = relay.id().expect("a running child has a pid");
+            reap(relay, engine);
+            pid
+        });
+        // Dropped on a side thread, so a shutdown that waits on the relay fails this test at the
+        // bound instead of hanging it.
+        let (dropped, shut) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            drop(runtime);
+            let _ = dropped.send(());
+        });
+        let shut_promptly = shut.recv_timeout(std::time::Duration::from_secs(5)).is_ok();
+        let _ = std::process::Command::new("kill").arg(pid.to_string()).status();
+        assert!(shut_promptly, "the runtime's shutdown waited on a live relay");
+    }
 }
