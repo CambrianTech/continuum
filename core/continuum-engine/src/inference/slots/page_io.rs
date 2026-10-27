@@ -16,6 +16,11 @@
 //! pages a resident out once the node is stopping, and waits for page IO already started
 //! to reach its terminal receipt. Each page action is bounded by its own watchdog; the
 //! stop's cap is only the backstop.
+//!
+//! Then every resident a slot still holds is saved, through the checkpoint a relaunch
+//! already uses (confirmed saves, quarantine on an abandoned one). Without it a resident
+//! returns from her last page-out and re-prefills everything since: Benchy, the M5
+//! 20:46Z, 48,584 tokens (173 s) after a stop with her in slot 0.
 
 use std::time::Duration;
 
@@ -50,7 +55,42 @@ impl crate::runtime::extensions::SettleBeforeStop for PageIoSettle {
                 cap_ms = cap.as_millis() as u64,
                 "the stop closed page admission and let started page IO reach its ledger — `cut` is what it still abandoned"
             );
+            checkpoint_every_endpoint(cap.saturating_sub(started.elapsed())).await;
         })
+    }
+}
+
+/// Save every resident of every endpoint whose engine this core owns, within `cap`. An
+/// adopted or exited engine refuses the checkpoint, and it is named, never retried. The
+/// endpoint stays suspended afterwards: the node is stopping.
+async fn checkpoint_every_endpoint(cap: Duration) {
+    let client = reqwest::Client::new();
+    let endpoints: Vec<(String, std::sync::Arc<super::EndpointSlots>)> =
+        super::directory().endpoints.iter().map(|e| (e.key().clone(), e.value().clone())).collect();
+    let deadline = std::time::Instant::now() + cap;
+    for (root, endpoint) in endpoints {
+        let Some(generation) = endpoint.state.lock().generation.clone() else {
+            continue; // never launched here: nothing resident
+        };
+        let started = std::time::Instant::now();
+        let left = deadline.saturating_duration_since(started);
+        let outcome = tokio::time::timeout(left, async {
+            let mut transition = endpoint
+                .transition_for_generation(&generation)
+                .await
+                .map_err(|()| "the engine changed before the stop's checkpoint".to_owned())?;
+            transition.checkpoint_residents(&client, &root).await.map(|_| ())
+        })
+        .await
+        .unwrap_or_else(|_| Err(format!("the stop's cap ({} ms) ran out", left.as_millis())));
+        continuum_base::probe!(
+            class = "inference.kv_page.stop_checkpoint",
+            endpoint = %root,
+            ok = outcome.is_ok(),
+            error = outcome.as_ref().err().map_or("", String::as_str),
+            ms = started.elapsed().as_millis() as u64,
+            "every resident a slot holds saved before the stop, so each returns where she left off"
+        );
     }
 }
 
