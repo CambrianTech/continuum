@@ -526,6 +526,14 @@ impl AIProviderAdapter for PlacementSwitch {
     fn live_served_window(&self) -> Option<u32> {
         self.current().live_served_window()
     }
+    /// Asked of the adapter her request actually goes to, like every other capability here: a
+    /// home lane on our fork's gateway may take her learned tool head, a remote seat may not.
+    /// Left to the trait default, every resident read `false` behind this switch, so the head
+    /// stayed a shadow on the M5 after #5491 deployed (`delib.tool_head.epoch sent=false`,
+    /// Aiko 2026-10-27 00:2xZ, engine 1c6681593 serving).
+    fn accepts_tail_tools(&self, model: &str) -> bool {
+        self.current().accepts_tail_tools(model)
+    }
     /// Her home model: the request carries the lane's model on the wire when remote.
     fn default_model(&self) -> &str {
         &self.home_model
