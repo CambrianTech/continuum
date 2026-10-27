@@ -34,8 +34,11 @@
 //! would wedge serving to protect a log. If the file cannot be written we keep draining and
 //! discard, and say so once — losing log lines is survivable, stalling inference is not.
 
+use std::collections::HashMap;
 use std::io;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, LazyLock};
 
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
@@ -83,9 +86,12 @@ impl LineWatch for () {
 /// say so once — losing log lines is survivable, stalling serving is not.
 ///
 /// `watch` sees each line as it passes. Pass `Box::new(())` when there is nothing to ask.
-pub fn drain_capped(stderr: tokio::process::ChildStderr, path: PathBuf, watch: Box<dyn LineWatch>) {
+pub fn drain_capped(stderr: tokio::process::ChildStderr, path: PathBuf, pid: Option<u32>, watch: Box<dyn LineWatch>) {
+    let clock = start_clock(pid);
     tokio::spawn(async move {
-        if let Err(error) = pump(stderr, &path, watch).await {
+        let result = pump(stderr, &path, watch, Arc::clone(&clock)).await;
+        retire_clock(pid, &clock);
+        if let Err(error) = result {
             tracing::warn!(
                 probe_class = "serving.llama.log_sink_ended",
                 path = %path.display(),
@@ -96,6 +102,46 @@ pub fn drain_capped(stderr: tokio::process::ChildStderr, path: PathBuf, watch: B
     });
 }
 
+/// The engine's own stderr log for the lane on `port`: the one path its spawn drains into, its
+/// failure tail is read from, and its stall evidence is written beside.
+pub fn llama_server_log(port: u16) -> Option<PathBuf> {
+    dirs::home_dir().map(|h| h.join(".continuum").join("logs").join(format!("llama-server-{port}.log")))
+}
+
+/// When each child last wrote a line its sink drained (Unix ms), by the child's pid. A fresh
+/// clock starts with each sink, so a new engine never inherits a predecessor's timing, and an
+/// engine this process does not drain (adopted across a core restart) reads as unknown rather
+/// than as some other child's silence (Codex on #5528). The stall evidence reads it before the
+/// engine is condemned (card 3913621a).
+static LAST_LINE_MS: LazyLock<parking_lot::Mutex<HashMap<u32, Arc<AtomicU64>>>> = LazyLock::new(Default::default);
+
+/// How long child `pid` has written nothing its sink drained, in ms: since its last line, or
+/// since its sink started when it has written none. `None` when this process drains no sink for
+/// `pid`.
+pub fn silent_ms(pid: u32) -> Option<u64> {
+    let last = LAST_LINE_MS.lock().get(&pid)?.load(Ordering::Relaxed);
+    Some(continuum_base::time::EpochMs::now().millis().saturating_sub(last))
+}
+
+/// A fresh clock for child `pid`'s sink, replacing any earlier child's that held the number.
+fn start_clock(pid: Option<u32>) -> Arc<AtomicU64> {
+    let clock = Arc::new(AtomicU64::new(continuum_base::time::EpochMs::now().millis()));
+    if let Some(pid) = pid {
+        LAST_LINE_MS.lock().insert(pid, Arc::clone(&clock));
+    }
+    clock
+}
+
+/// Forget child `pid`'s clock when its sink ends, but only if the map still holds THIS sink's
+/// clock: a replacement child that reused the pid keeps its own (Codex on #5528).
+fn retire_clock(pid: Option<u32>, clock: &Arc<AtomicU64>) {
+    let Some(pid) = pid else { return };
+    let mut clocks = LAST_LINE_MS.lock();
+    if clocks.get(&pid).is_some_and(|held| Arc::ptr_eq(held, clock)) {
+        clocks.remove(&pid);
+    }
+}
+
 /// Drain `reader` into `path`, rotating whenever the live file would exceed [`MAX_BYTES`].
 ///
 /// Line-oriented so a rotation never splits a message in half — a half-line at the seam is
@@ -104,6 +150,7 @@ async fn pump(
     reader: tokio::process::ChildStderr,
     path: &Path,
     mut watch: Box<dyn LineWatch>,
+    last_line: Arc<AtomicU64>,
 ) -> io::Result<()> {
     let mut lines = BufReader::new(reader).lines();
     let mut file = tokio::fs::OpenOptions::new()
@@ -114,6 +161,7 @@ async fn pump(
     let mut written = file.metadata().await.map(|m| m.len()).unwrap_or(0);
 
     while let Some(line) = lines.next_line().await? {
+        last_line.store(continuum_base::time::EpochMs::now().millis(), Ordering::Relaxed);
         // Observe BEFORE writing: a fault the observer exists to catch must still be
         // caught when the disk is full — which is exactly the state the 2026-08-05 wedge
         // drove the machine into. Detection must not depend on the sink succeeding.
@@ -155,6 +203,24 @@ async fn rotate(path: &Path) -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // what this catches (Codex on #5528): a new engine inheriting its predecessor's stderr
+    // timing. A pid's next sink starts a fresh clock, so an old child's long silence never
+    // reads as the new child's.
+    #[test]
+    fn a_new_sink_starts_its_own_silence_clock() {
+        let pid = u32::MAX - 7;
+        assert_eq!(silent_ms(pid), None, "no sink for this pid, no clock");
+        start_clock(Some(pid)).store(1, Ordering::Relaxed); // the old child: silent since 1970
+        assert!(silent_ms(pid).is_some_and(|ms| ms > 1_000_000));
+        let old = LAST_LINE_MS.lock().get(&pid).cloned().expect("the old clock");
+        let fresh = start_clock(Some(pid));
+        assert!(silent_ms(pid).is_some_and(|ms| ms < 60_000), "the new child's clock starts now");
+        retire_clock(Some(pid), &old);
+        assert!(silent_ms(pid).is_some(), "the old sink ending never removes its replacement's clock");
+        retire_clock(Some(pid), &fresh);
+        assert_eq!(silent_ms(pid), None, "a sink that ends retires its own clock");
+    }
 
     // what this catches: THE outage. A writer that never stops must not be able to grow the
     // file past the cap. Regression for 2026-08-05, where an unbounded append reached 172 GB

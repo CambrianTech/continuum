@@ -329,19 +329,10 @@ impl LlamaServerProcess {
     /// a co-resident second Metal context that never acquired the device), distinct
     /// from a crash (which prints a banner + fault first).
     pub(super) fn stderr_log_tail(&self) -> String {
-        let Some(port) = self
-            .root
-            .rsplit(':')
-            .next()
-            .and_then(|p| p.parse::<u16>().ok())
-        else {
+        let Some(port) = super::port_of_base_url(&self.root) else {
             return "<lane port unparseable>".to_string();
         };
-        let Some(path) = dirs::home_dir().map(|h| {
-            h.join(".continuum")
-                .join("logs")
-                .join(format!("llama-server-{port}.log"))
-        }) else {
+        let Some(path) = crate::inference::child_log::llama_server_log(port) else {
             return "<no home dir>".to_string();
         };
         match std::fs::read_to_string(&path) {

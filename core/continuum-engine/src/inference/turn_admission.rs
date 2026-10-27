@@ -899,6 +899,20 @@ async fn kv_page_action_with_capacity(
         }
         _ => PageOutcome::Uncertain,
     };
+    // An uncertain receipt quarantines this engine: what it was doing is taken now, while it
+    // is still the engine that did not answer (card 3913621a).
+    if outcome == PageOutcome::Uncertain {
+        let evidence = crate::inference::engine_stall::capture(root).await;
+        continuum_base::probe!(
+            class = "inference.kv_page.stall_evidence",
+            action = %action,
+            slot = slot as u64,
+            status = status as u64,
+            silent_ms = %evidence.silent_ms.map_or_else(|| "unknown".to_string(), |ms| ms.to_string()),
+            sample = %evidence.sample.as_ref().map_or_else(|why| format!("none: {why}"), |path| path.display().to_string()),
+            "the engine did not complete a page switch: its stack and how long its log was silent, taken before it is replaced"
+        );
+    }
     let ok = outcome == PageOutcome::Completed;
     let ms = started.elapsed().as_millis() as u64;
     if ok {
