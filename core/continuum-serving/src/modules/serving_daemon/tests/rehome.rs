@@ -540,6 +540,7 @@ async fn reconcile_re_homes_a_starved_window_but_holds_within_hysteresis() {
         vision_base_url: None,
         vision_model: None,
         loading_model: None,
+        held_for: None,
     });
     // A quarter of the plan is a 300% shortfall — far past the margin — but the
     // gain must still PERSIST before it buys a relaunch (BigMama's sustained-delta
@@ -573,6 +574,7 @@ async fn reconcile_re_homes_a_starved_window_but_holds_within_hysteresis() {
         vision_base_url: None,
         vision_model: None,
         loading_model: None,
+        held_for: None,
     });
     assert!(
         daemon.reconcile_to_plan().is_none(),

@@ -462,6 +462,9 @@ pub struct CitizenHealth {
     /// The oldest dormant mind's last-turn age at the tick, from the grid allocator's
     /// published order; `None` = nobody dormant (or nothing published yet).
     pub oldest_dormant_turn_age_ms: Option<u64>,
+    /// The hold live work had on the engine at the tick, as serving published it (card
+    /// a18452d6): a node held for a mind's training reads HELD with the work, not EMPTY.
+    pub held_for: Option<crate::inference::llama_server::serving_hold::ServingHold>,
 }
 
 /// The hour's PREFIX REUSE as a whole percentage — `cached / (cached + prefilled)`,
@@ -518,6 +521,10 @@ pub enum Verdict {
     /// It never reads "healthy" (Intel Mac 2026-09-15 10:2xZ: "resident 0 · lanes 0
     /// · lane grants 41 — healthy" after five despawns).
     Empty { lanes: u64, lanes_granted: u64 },
+    /// The engine was held for live work (a mind's training, say) and nothing acted: a
+    /// deliberate hold, not a dead or empty node (card a18452d6; enrico 2026-10-27 read EMPTY
+    /// twice while Delia's gene trained on its only engine).
+    Held { resident: u64, hold: crate::inference::llama_server::serving_hold::ServingHold },
 }
 
 impl Verdict {
@@ -531,6 +538,7 @@ impl Verdict {
             Verdict::Idle { .. } => "idle",
             Verdict::Slow { .. } => "slow",
             Verdict::Empty { .. } => "empty",
+            Verdict::Held { .. } => "held",
         }
     }
 }
@@ -560,6 +568,10 @@ pub const RESIDENTS_PER_WRITE_HOUR: u64 = 4;
 
 /// The rule. Pure so the five shapes are hand-computed tests.
 pub fn verdict(h: &CitizenHealth) -> Verdict {
+    // A held engine explains an hour in which nothing acted; it outranks EMPTY and IDLE.
+    if let Some(hold) = h.held_for.as_ref().filter(|_| h.resident == 0 || h.acts == 0) {
+        return Verdict::Held { resident: h.resident, hold: hold.clone() };
+    }
     if h.resident == 0 {
         return Verdict::Empty { lanes: h.lanes, lanes_granted: h.lanes_granted };
     }
@@ -592,6 +604,20 @@ pub fn verdict(h: &CitizenHealth) -> Verdict {
     Verdict::Healthy
 }
 
+/// What holds the engine, in the line's words: each job with its consumer and engine, or why
+/// ownership is unknown.
+fn held_by(by: &crate::inference::llama_server::serving_hold::HoldCause) -> String {
+    use crate::inference::llama_server::serving_hold::HoldCause;
+    match by {
+        HoldCause::Resident { work } => work
+            .iter()
+            .map(|w| format!("job {} ({}) on engine pid {}", w.job, w.consumer, w.engine_pid))
+            .collect::<Vec<_>>()
+            .join(", "),
+        HoldCause::Unknown { reason } => format!("ownership unknown ({reason})"),
+    }
+}
+
 /// The org-room line: numbers first, the verdict last, one line.
 pub fn line(h: &CitizenHealth, v: &Verdict) -> String {
     let tail = match v {
@@ -614,6 +640,11 @@ pub fn line(h: &CitizenHealth, v: &Verdict) -> String {
         Verdict::Idle { resident } => format!("IDLE: {resident} resident, no acts observed in this window"),
         Verdict::Empty { lanes, lanes_granted } => format!(
             "EMPTY: no residents — {lanes} lanes offered, {lanes_granted} grants this hour"
+        ),
+        Verdict::Held { resident, hold } => format!(
+            "HELD: the engine hosts live work since {} — {}; {resident} resident, no lanes until it is released",
+            continuum_base::time::EpochMs::from_millis(hold.since_ms).rfc3339(),
+            held_by(&hold.by)
         ),
         Verdict::Slow { writes, resident } => format!(
             "SLOW: {writes} writes for {resident} residents — below one write per {RESIDENTS_PER_WRITE_HOUR} minds an hour"
