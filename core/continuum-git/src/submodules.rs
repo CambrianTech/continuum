@@ -23,15 +23,13 @@ pub const STATUS_ARGS: [&str; 3] = ["status", "--porcelain=v2", "--untracked-fil
 pub fn has_operator_work(status_v2: &str) -> bool {
     status_v2.lines().any(|line| {
         let mut fields = line.split(' ');
-        match fields.next() {
-            // ordinary (1) and renamed or copied (2) entries: <XY> <sub> ...
-            Some("1") | Some("2") => match fields.nth(1) {
-                // "S<c><m><u>": c = commit changed, m = tracked changes, u = untracked files
-                Some(sub) if sub.starts_with('S') => sub.contains('M') || sub.contains('U'),
-                _ => true,
-            },
-            // an unmerged entry is always someone's work
-            Some("u") => true,
+        match (fields.next(), fields.next(), fields.next()) {
+            // The deploy's own drift, and nothing else: an ordinary entry whose only change is
+            // an UNSTAGED submodule commit ("<XY>=.M", "<sub>=SC.."). Fails closed: a staged
+            // gitlink, a rename or copy (2), an unmerged entry (u), a change inside the
+            // submodule or any file is someone's work (Codex on #5525).
+            (Some("1"), Some(".M"), Some("SC..")) => false,
+            (Some("1" | "2" | "u"), _, _) => true,
             _ => false,
         }
     })
@@ -77,6 +75,10 @@ mod tests {
         assert!(has_operator_work(inside));
         assert!(has_operator_work(file));
         assert!(has_operator_work("u UU N... 100644 100644 100644 100644 a b c core/x.rs\n"));
+        let staged = "1 M. SC.. 160000 160000 160000 7d8b 741b core/vendor/llama.cpp\n";
+        assert!(has_operator_work(staged), "a staged gitlink is an operator's work");
+        let renamed = "2 R. S... 160000 160000 160000 7d8b 7d8b R100 core/vendor/llama.cpp\tvendor/llama.cpp\n";
+        assert!(has_operator_work(renamed), "a renamed submodule is an operator's work");
         assert!(!has_operator_work(""));
     }
 
@@ -155,6 +157,13 @@ mod tests {
             assert_eq!(&engine_head(), pin, "the engine checkout follows the core's pin");
             assert_eq!(run(&deploy, &STATUS_ARGS), "", "aligned: the tree reads clean");
         }
+
+        // A gitlink STAGED by hand is an operator's work, though nothing inside changed.
+        run(&deploy.join("vendor/engine"), &["checkout", "-q", &new_pin]);
+        run(&deploy, &["add", "vendor/engine"]);
+        assert!(has_operator_work(&run(&deploy, &STATUS_ARGS)), "a staged pointer is not the deploy's to move");
+        run(&deploy, &["reset", "-q", "--", "vendor/engine"]);
+        align(&deploy, &runner(&deploy)).expect("align");
 
         // A change inside the engine checkout is an operator's work.
         std::fs::write(deploy.join("vendor/engine/a"), "hand edit").expect("write");
