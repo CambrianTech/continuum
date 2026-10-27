@@ -274,45 +274,18 @@ impl LlamaServerProcess {
             rejection_count = "unobserved",
             "spawned engine with requested cache limit; applied limit and serialized-state telemetry are not exposed by current engine API"
         );
-        // Hand stderr to the capped sink. If either the handle or the path is missing the
-        // child still serves — unlogged, and the pipe drains to close so it cannot block.
-        // The sink reads every line to keep the file capped, so it is also the cheapest
-        // place to notice the engine reporting an IMPOSSIBLE state. A slot printing
-        // `progress = 1.10` is wedged; the decode heartbeat can't see it (the OTHER slots
-        // still decode, so the lane reads healthy) — which is how one slot burned four
-        // hours on 2026-08-05. The watcher only RAISES; the serving daemon reaps.
-        // The same pump also records the engine's OFFLOAD BANNER — the readback half of
-        // the placement contract (#441): the governor planned a placement, the banner is
-        // what the engine actually allocated, and serve() compares them after readiness.
-        let offload_watch = Box::new(crate::inference::placement_watch::OffloadWatch::new(
-            self.offload.clone(),
-        ));
-        let debug_flag = crate::inference::debug_build_watch::DebugBuildFlag::default();
-        let watch: Box<dyn crate::inference::child_log::LineWatch> = match self.wedge.clone() {
-            Some(flag) => Box::new(crate::inference::placement_watch::ChainWatch(
-                Box::new(crate::inference::wedge::WedgeWatch::new(flag)),
-                offload_watch,
-            )),
-            None => offload_watch,
+        // Hand stderr to its reader, with the engine's watchers on every line
+        // ([`super::stderr_sink`]).
+        let (watch, debug_flag) = self.stderr_watch();
+        let attached = match (child_stderr, child_pid) {
+            (Some(stderr), Some(pid)) => super::stderr_sink::attach(stderr, pid, port, watch),
+            _ => Err("the engine's stderr or pid could not be taken".to_string()),
         };
-
-        let watch: Box<dyn crate::inference::child_log::LineWatch> =
-            Box::new(crate::inference::placement_watch::ChainWatch(
-                Box::new(crate::inference::debug_build_watch::DebugBuildWatch::new(
-                    debug_flag.clone(),
-                )),
-                watch,
-            ));
-        match (child_stderr, log_path) {
-            (Some(stderr), Some(path)) => crate::inference::child_log::drain_capped(stderr, path, child_pid, watch),
-            (Some(_), None) => tracing::warn!(target: "continuum_core::inference::llama_server", probe_class = "serving.llama.stderr_unlogged",
-                port = port,
-                "no home dir for the llama-server log — serving unlogged (#175)"
-            ),
-            (None, _) => tracing::warn!(target: "continuum_core::inference::llama_server", probe_class = "serving.llama.stderr_unlogged",
-                port = port,
-                "could not take llama-server stderr — serving unlogged (#175)"
-            ),
+        if let Err(reason) = attached {
+            // An engine nobody reads: its faults would go unseen, and a full pipe would block
+            // its writes. It does not serve (card 1d7d6d4c).
+            self.kill_child();
+            return Err(LlamaServerError::Spawn(format!("{}: {reason}", prepared.engine_program)));
         }
 
         // Record the child pid so a SIGKILLed core's successor can reclaim THIS

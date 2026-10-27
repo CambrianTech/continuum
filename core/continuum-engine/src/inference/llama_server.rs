@@ -147,6 +147,7 @@ pub use ephemeral::{
 
 mod control_impl;
 mod launch;
+mod stderr_sink;
 mod adopted_retirement;
 mod placement_stamp;
 mod prepare;
