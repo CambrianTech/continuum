@@ -2590,6 +2590,16 @@ function Mod-LlamaServer {
         $savedRedist = $env:VCToolsRedistDir
         try {
             $env:VCToolsRedistDir = $redist
+            $selectedCuda = Join-Path $scratch 'selected-cuda/bin'
+            New-Item -ItemType Directory -Force $selectedCuda | Out-Null
+            $cudaRoots = @(Get-CoreRuntimeDirectories -Cuda -CMakeCache ("CUDAToolkit_BIN_DIR:PATH="+$selectedCuda+"`n"))
+            if ($cudaRoots.Count -ne 2 -or $cudaRoots -notcontains $selectedCuda) {
+                throw 'Engine runtime must come from its configured CUDA toolkit.'
+            }
+            $withoutTls = @(Get-CoreRuntimeDirectories -CMakeCache "OPENSSL_INCLUDE_DIR:PATH=OPENSSL_INCLUDE_DIR-NOTFOUND`n")
+            if ($withoutTls.Count -ne 1 -or $withoutTls[0] -ne (Join-Path $redist 'x64/Microsoft.VC999.CRT')) {
+                throw 'Absent optional OpenSSL must retain the selected VC runtime directory only.'
+            }
             $roots = @(Get-CoreRuntimeDirectories -CMakeCache ("OPENSSL_INCLUDE_DIR:PATH="+$include+"`n"))
             if ($roots -notcontains $tlsBin) { throw 'Configured TLS runtime directory was omitted.' }
             $tlsStage = Join-Path $scratch 'tls-stage'
