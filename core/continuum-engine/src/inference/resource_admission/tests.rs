@@ -786,3 +786,6 @@ async fn queue_progress_follows_budget_holders_waiting_for_physical_slots() {
     drop(first);
     drop(second);
 }
+
+// The ambient-aging contract (#5499) and its measured-shape replay.
+mod aging;
