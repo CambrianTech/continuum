@@ -142,47 +142,106 @@ fn retire_clock(pid: Option<u32>, clock: &Arc<AtomicU64>) {
     }
 }
 
+/// Lines discarded between attempts to reopen a sink file that could not be written: a full
+/// disk is not asked again on every line, and a recovered one is written again soon after.
+// derived-or-floor: a FLOOR on retry spacing for a log sink; it bounds syscalls on a failed disk, never serving.
+const REOPEN_AFTER_LINES: u64 = 1024;
+
+async fn open_append(path: &Path) -> io::Result<tokio::fs::File> {
+    tokio::fs::OpenOptions::new().create(true).append(true).open(path).await
+}
+
 /// Drain `reader` into `path`, rotating whenever the live file would exceed [`MAX_BYTES`].
-///
 /// Line-oriented so a rotation never splits a message in half — a half-line at the seam is
 /// exactly the kind of "evidence that reads as corruption" that costs an hour later.
+/// Returns only when the child's stderr ends (or cannot be read): a sink that cannot be written
+/// keeps draining and discards, said once, because a full pipe would block the child (card
+/// a6481313). Lines are read as bytes and decoded lossily, so output that is not UTF-8 is
+/// logged with replacement characters instead of ending the drain.
 async fn pump(
     reader: tokio::process::ChildStderr,
     path: &Path,
     mut watch: Box<dyn LineWatch>,
     last_line: Arc<AtomicU64>,
 ) -> io::Result<()> {
-    let mut lines = BufReader::new(reader).lines();
-    let mut file = tokio::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(path)
-        .await?;
-    let mut written = file.metadata().await.map(|m| m.len()).unwrap_or(0);
-
-    while let Some(line) = lines.next_line().await? {
+    let mut reader = BufReader::new(reader);
+    let mut file = open_append(path).await.ok();
+    let mut written = match &file {
+        Some(file) => file.metadata().await.map(|m| m.len()).unwrap_or(0), // unwrap_or: an unreadable length starts the count at zero; rotation still bounds the file
+        None => 0,
+    };
+    let (mut degraded, mut discarded) = (file.is_none(), 0u64);
+    if degraded {
+        sink_degraded(path, "the log file could not be opened");
+    }
+    let mut raw = Vec::new();
+    loop {
+        raw.clear();
+        if reader.read_until(b'\n', &mut raw).await? == 0 {
+            break;
+        }
         last_line.store(continuum_base::time::EpochMs::now().millis(), Ordering::Relaxed);
+        let line = String::from_utf8_lossy(raw.strip_suffix(b"\n").unwrap_or(&raw)); // unwrap_or: the child's last line may end without a newline
         // Observe BEFORE writing: a fault the observer exists to catch must still be
         // caught when the disk is full — which is exactly the state the 2026-08-05 wedge
         // drove the machine into. Detection must not depend on the sink succeeding.
         watch.observe(&line);
-        let bytes = line.len() as u64 + 1;
-        if written + bytes > MAX_BYTES {
-            file.flush().await?;
-            drop(file);
-            rotate(path).await?;
-            file = tokio::fs::OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(path)
-                .await?;
+        if file.is_none() {
+            discarded += 1;
+            if discarded % REOPEN_AFTER_LINES != 0 {
+                continue;
+            }
+            file = open_append(path).await.ok();
+            if file.is_none() {
+                continue;
+            }
             written = 0;
         }
-        file.write_all(line.as_bytes()).await?;
-        file.write_all(b"\n").await?;
-        written += bytes;
+        match write_line(&mut file, path, &line, &mut written).await {
+            Ok(()) => {
+                if degraded {
+                    degraded = false;
+                    tracing::warn!(probe_class = "serving.llama.log_sink_recovered", path = %path.display(), discarded,
+                        "the log sink is written again after discarding lines");
+                    discarded = 0;
+                }
+            }
+            Err(error) => {
+                file = None;
+                if !degraded {
+                    degraded = true;
+                    sink_degraded(path, &error.to_string());
+                }
+            }
+        }
     }
-    file.flush().await
+    if let Some(mut file) = file {
+        let _ = file.flush().await; // the child has ended; a flush that fails loses only its tail
+    }
+    Ok(())
+}
+
+/// Write one line, rotating first when it would pass [`MAX_BYTES`].
+async fn write_line(file: &mut Option<tokio::fs::File>, path: &Path, line: &str, written: &mut u64) -> io::Result<()> {
+    let bytes = line.len() as u64 + 1;
+    if *written + bytes > MAX_BYTES {
+        if let Some(mut old) = file.take() {
+            old.flush().await?;
+        }
+        rotate(path).await?;
+        *file = Some(open_append(path).await?);
+        *written = 0;
+    }
+    let Some(live) = file.as_mut() else { return Err(io::Error::other("no open log file")) };
+    live.write_all(line.as_bytes()).await?;
+    live.write_all(b"\n").await?;
+    *written += bytes;
+    Ok(())
+}
+
+fn sink_degraded(path: &Path, why: &str) {
+    tracing::warn!(probe_class = "serving.llama.log_sink_degraded", path = %path.display(), why,
+        "the log sink cannot be written: the child is still drained and its lines discarded until the file opens again");
 }
 
 /// Shift generations: `x.log` → `x.log.1`, dropping whatever `x.log.1` held.
@@ -203,6 +262,57 @@ async fn rotate(path: &Path) -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A shell child writing `lines` stderr lines, each carrying bytes that are not UTF-8.
+    #[cfg(unix)]
+    fn noisy_child(lines: u32) -> (tokio::process::Child, tokio::process::ChildStderr) {
+        let script = format!("i=0; while [ $i -lt {lines} ]; do printf 'line %d \\377\\376 padding padding padding\\n' $i >&2; i=$((i+1)); done");
+        let mut child = tokio::process::Command::new("sh")
+            .args(["-c", &script])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .expect("sh runs in the test");
+        let stderr = child.stderr.take().expect("piped stderr");
+        (child, stderr)
+    }
+
+    // what this catches (card a6481313): a sink that stopped reading when its file could not be
+    // written, contradicting its own contract. A child writing far past the pipe's buffer into
+    // an unwritable sink must still run to completion: nothing blocks it.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn an_unwritable_sink_keeps_draining_the_child() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("no-such-dir").join("engine.log");
+        let (mut child, stderr) = noisy_child(4000);
+        let drained = tokio::spawn({
+            let path = path.clone();
+            async move { pump(stderr, &path, Box::new(()), Arc::new(AtomicU64::new(0))).await }
+        });
+        let status = tokio::time::timeout(std::time::Duration::from_secs(60), child.wait())
+            .await
+            .expect("the child is never blocked on a full pipe")
+            .expect("the child is reaped");
+        assert!(status.success());
+        assert!(drained.await.expect("the drain task").is_ok(), "the drain ends when the child does");
+        assert!(!path.exists());
+    }
+
+    // what this catches (card a6481313): a line that is not UTF-8 ending the drain. It is logged
+    // with replacement characters, and the lines after it are logged too.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn output_that_is_not_utf8_is_logged_lossily_and_draining_continues() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("engine.log");
+        let (mut child, stderr) = noisy_child(3);
+        pump(stderr, &path, Box::new(()), Arc::new(AtomicU64::new(0))).await.expect("the drain ends cleanly");
+        child.wait().await.expect("the child is reaped");
+        let logged = std::fs::read_to_string(&path).expect("the log");
+        assert_eq!(logged.lines().count(), 3, "{logged}");
+        assert!(logged.contains('\u{fffd}') && logged.contains("line 2"), "{logged}");
+    }
 
     // what this catches (Codex on #5528): a new engine inheriting its predecessor's stderr
     // timing. A pid's next sink starts a fresh clock, so an old child's long silence never
