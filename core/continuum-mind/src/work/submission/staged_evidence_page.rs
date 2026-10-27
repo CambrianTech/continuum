@@ -1,16 +1,25 @@
 //! `work/submission`'s staged evidence answers the question a reader acts on, sized by
-//! what it shows. Its default answer is a summary of every row (how many match the
-//! submission's claim, how many do not, how many predate it) plus, in full, only the rows
-//! that do NOT match: those are the ones that need a decision. Every other row is reachable
-//! as a page in staged order with `evidence_offset` / `evidence_limit`, and the answer's
-//! `note` says exactly how many rows it left out, their size, and the parameters that read them.
+//! what it shows. Every answer carries a summary of every row (how many match the
+//! submission's claim, how many do not, how many predate it) and ONE PAGE of rows in full,
+//! in staged order: by default the rows that do NOT match (those need a decision), or every
+//! row with `evidence_rows: "all"`. `evidence_offset` / `evidence_limit` choose the page; the
+//! answer's `note` says exactly how many rows it left out, their measured size, and the
+//! parameters that read the next page.
+//!
+//! With no `evidence_limit` the answer is the SUMMARY alone, with zero rows, and its note names
+//! exactly how to ask for rows (`evidence_rows="not_matching_claim" evidence_offset=0
+//! evidence_limit=<n>`). Rows come only on an explicit `evidence_limit`, and the answer then
+//! holds exactly what she asked for: bounded by construction, no constant and no clip. A share
+//! of the whole evidence is not a bound (it grows with the evidence: Cormac's all-mismatched
+//! card on #5504). Once her measured page budget reaches this verb (card 441af5ec), the default
+//! can carry a first page sized by it.
 //!
 //! This is the TOOL answering a smaller question, never a clip (plan goal 7): Aris's one
 //! `include_staged_evidence` answer was 340,832 chars, 254,799 of them 578 rows of which 576
 //! matched the claim (M5, 2026-10-26), more than her whole slot, so every later act overflowed.
-//! A mind's view never cuts her newest result; the tool returns a different, smaller answer.
 
-use serde::Serialize;
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
 use crate::persona::training_producer::reviewed::StagedCreditEvidence;
@@ -27,19 +36,62 @@ pub struct StagedEvidenceSummary {
     pub generations: usize,
 }
 
-/// Which rows an answer shows in full.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, TS)]
-#[serde(tag = "kind", rename_all = "snake_case")]
-#[ts(export, export_to = "../../../protocol/typescript/work/StagedEvidenceSelection.ts")]
-pub enum StagedEvidenceSelection {
-    /// The default: every row that does not match the submission's claim.
+/// Which staged rows a page is taken from.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, TS, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+#[ts(export, export_to = "../../../protocol/typescript/work/StagedEvidenceRows.ts")]
+pub enum StagedEvidenceRows {
+    /// The rows that do not match this submission's claim: the ones that need a decision.
+    #[default]
     NotMatchingClaim,
-    /// Rows `offset..offset + limit` in staged order, as asked.
-    Page { offset: usize, limit: usize },
+    /// Every staged row.
+    All,
 }
 
-/// The staged-evidence answer: a summary of all rows, the selected rows in full, and what
-/// was left out with how to read it.
+impl StagedEvidenceRows {
+    fn admits(self, row: &StagedCreditEvidence) -> bool {
+        match self {
+            Self::NotMatchingClaim => !row.matches_submission_claim,
+            Self::All => true,
+        }
+    }
+
+    fn named(self) -> &'static str {
+        match self {
+            Self::NotMatchingClaim => "rows that do not match this submission's claim",
+            Self::All => "staged rows",
+        }
+    }
+
+    fn param(self) -> &'static str {
+        match self {
+            Self::NotMatchingClaim => "evidence_rows=\"not_matching_claim\"",
+            Self::All => "evidence_rows=\"all\"",
+        }
+    }
+}
+
+/// The page an answer shows: its rows, where it starts among them, and the limit asked for
+/// (`None`: the summary alone, no rows).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, TS)]
+#[ts(export, export_to = "../../../protocol/typescript/work/StagedEvidenceSelection.ts")]
+pub struct StagedEvidenceSelection {
+    pub rows: StagedEvidenceRows,
+    pub offset: usize,
+    pub limit: Option<usize>,
+}
+
+/// The page a reader asked for, from `evidence_rows` / `evidence_offset` / `evidence_limit`.
+pub type EvidenceRequest = StagedEvidenceSelection;
+
+impl StagedEvidenceSelection {
+    pub fn from_params(rows: Option<StagedEvidenceRows>, offset: Option<usize>, limit: Option<usize>) -> Self {
+        Self { rows: rows.unwrap_or_default(), offset: offset.unwrap_or_default(), limit } // unwrap_or_default: absent = the mismatches, from their first row
+    }
+}
+
+/// The staged-evidence answer: a summary of all rows, one page of rows in full, and what was
+/// left out with how to read it.
 #[derive(Debug, Clone, Serialize, TS)]
 #[ts(export, export_to = "../../../protocol/typescript/work/StagedEvidencePage.ts")]
 pub struct StagedEvidencePage {
@@ -52,32 +104,9 @@ pub struct StagedEvidencePage {
     pub note: String,
 }
 
-/// The page a reader asked for, from `evidence_offset` / `evidence_limit`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum EvidenceRequest {
-    NotMatchingClaim,
-    Page { offset: usize, limit: usize },
-}
-
-impl EvidenceRequest {
-    /// Neither parameter: the default answer. A limit pages from the offset (0 when absent).
-    /// An offset with no limit names no size, so it is refused with how to ask.
-    pub fn from_params(offset: Option<usize>, limit: Option<usize>) -> Result<Self, String> {
-        match (offset, limit) {
-            (None, None) => Ok(Self::NotMatchingClaim),
-            (None, Some(limit)) => Ok(Self::Page { offset: 0, limit }),
-            (Some(offset), Some(limit)) => Ok(Self::Page { offset, limit }),
-            (Some(_), None) => Err("evidence_offset pages the staged rows in staged order and needs evidence_limit, \
-                 the number of rows to return; the default answer's summary and note state how many \
-                 rows exist and their size"
-                .into()),
-        }
-    }
-}
-
-/// Serialized size of `rows` as the answer would carry them, one row at a time.
-fn chars_of(rows: &[StagedCreditEvidence]) -> Result<usize, serde_json::Error> {
-    rows.iter().try_fold(0, |sum, row| Ok(sum + serde_json::to_string(row)?.chars().count())) // measures the JSON the tool answer carries to the mind
+/// Serialized size of one row as the answer carries it.
+fn chars_of(row: &StagedCreditEvidence) -> Result<usize, serde_json::Error> {
+    Ok(serde_json::to_string(row)?.chars().count()) // measures the JSON the tool answer carries to the mind
 }
 
 impl StagedEvidencePage {
@@ -93,28 +122,35 @@ impl StagedEvidencePage {
             after_submission: rows.len() - predating_submission,
             generations: rows.iter().map(|row| row.generation_count).sum(),
         };
-        let total = rows.len();
-        let (selection, shown, omitted): (_, Vec<_>, Vec<_>) = match request {
-            EvidenceRequest::NotMatchingClaim => {
-                let (shown, omitted) = rows.into_iter().partition(|row| !row.matches_submission_claim);
-                (StagedEvidenceSelection::NotMatchingClaim, shown, omitted)
+        let selected = rows.iter().filter(|row| request.rows.admits(row)).count();
+        let (mut shown, mut seen, mut omitted_chars) = (Vec::new(), 0usize, 0usize);
+        for row in rows {
+            let admitted = request.rows.admits(&row);
+            let on_page = admitted
+                && seen >= request.offset
+                && request.limit.is_some_and(|limit| seen - request.offset < limit);
+            if admitted {
+                seen += 1;
             }
-            EvidenceRequest::Page { offset, limit } => {
-                let end = offset.saturating_add(limit).min(total);
-                let start = offset.min(total);
-                let mut omitted = rows;
-                let tail = omitted.split_off(end);
-                let shown = omitted.split_off(start);
-                omitted.extend(tail);
-                (StagedEvidenceSelection::Page { offset, limit }, shown, omitted)
+            if on_page {
+                shown.push(row);
+            } else {
+                omitted_chars += chars_of(&row)?;
             }
-        };
-        let omitted_chars = chars_of(&omitted)?;
-        let note = Self::note(&summary, selection, shown.len(), omitted.len(), omitted_chars);
-        Ok(Self { summary, selection, rows: shown, omitted_rows: omitted.len(), omitted_chars, note })
+        }
+        let omitted_rows = summary.total_rows - shown.len();
+        let note = Self::note(&summary, request, selected, shown.len(), omitted_rows, omitted_chars);
+        Ok(Self { summary, selection: request, rows: shown, omitted_rows, omitted_chars, note })
     }
 
-    fn note(summary: &StagedEvidenceSummary, selection: StagedEvidenceSelection, shown: usize, omitted: usize, omitted_chars: usize) -> String {
+    fn note(
+        summary: &StagedEvidenceSummary,
+        request: EvidenceRequest,
+        selected: usize,
+        shown: usize,
+        omitted: usize,
+        omitted_chars: usize,
+    ) -> String {
         let total = summary.total_rows;
         if total == 0 {
             return "no rows are staged for this card, so nothing is shown and nothing is omitted".into();
@@ -123,24 +159,36 @@ impl StagedEvidencePage {
             "{total} staged rows: {} match this submission's claim, {} do not; {} predate the submission",
             summary.matching_claim, summary.not_matching_claim, summary.predating_submission
         );
-        let shown_part = match selection {
-            StagedEvidenceSelection::NotMatchingClaim => format!("shown in full: the {shown} that do not match"),
-            StagedEvidenceSelection::Page { offset, .. } if shown == 0 => {
-                format!("shown: none, offset {offset} is past the last row")
-            }
-            StagedEvidenceSelection::Page { offset, .. } => {
-                format!("shown in full: rows {}-{} in staged order", offset + 1, offset + shown)
-            }
+        let named = request.rows.named();
+        let param = request.rows.param();
+        let Some(limit) = request.limit else {
+            return format!(
+                "{counts}. No rows shown: this answer is the summary ({omitted_chars} chars of rows \
+                 omitted). For rows, ask with evidence_limit: {param} evidence_offset={} \
+                 evidence_limit=<n> pages the {selected} {named}; evidence_rows=\"all\" pages every row.",
+                request.offset
+            );
         };
-        let omitted_part = match selection {
+        let shown_part = if shown == 0 {
+            format!("shown: none of the {selected} {named} (offset {} is past the last)", request.offset)
+        } else {
+            format!(
+                "shown in full: {named} {}-{} of {selected} in staged order (evidence_limit={limit})",
+                request.offset + 1,
+                request.offset + shown
+            )
+        };
+        let next = request.offset.saturating_add(shown);
+        let omitted_part = match () {
             _ if omitted == 0 => "nothing omitted".to_owned(),
-            StagedEvidenceSelection::Page { offset, .. } if offset.saturating_add(shown) < total => format!(
-                "omitted {omitted} rows ({omitted_chars} chars); next page: evidence_offset={} with evidence_limit",
-                offset + shown
+            _ if next < selected => format!(
+                "omitted {omitted} rows ({omitted_chars} chars); next page: {param} evidence_offset={next} \
+                 evidence_limit={limit}{}",
+                if request.rows == StagedEvidenceRows::All { "" } else { "; every row: evidence_rows=\"all\"" }
             ),
             _ => format!(
-                "omitted {omitted} rows ({omitted_chars} chars); read them in staged order with \
-                 evidence_offset and evidence_limit"
+                "omitted {omitted} rows ({omitted_chars} chars); read them with evidence_rows=\"all\" and \
+                 evidence_offset / evidence_limit"
             ),
         };
         format!("{counts}. {shown_part}; {omitted_part}.")
@@ -170,22 +218,52 @@ mod tests {
         (0..578u64).map(|at| row(at, at != 100 && at != 400)).collect()
     }
 
-    // what this catches: the default answer returning every row (Aris's 254,799-char
-    // evidence, more than her slot), or losing the rows she must act on.
+    fn size(value: &impl Serialize) -> Result<usize, serde_json::Error> {
+        Ok(serde_json::to_string(value)?.chars().count())
+    }
+
+    fn at_ms(page: &StagedEvidencePage) -> Vec<u64> {
+        page.rows.iter().map(|r| r.staged_at_ms).collect()
+    }
+
+    // what this catches: the default answer returning rows at all (Aris's 254,799-char
+    // evidence, more than her slot): with no evidence_limit it is the summary and the note.
     #[test]
-    fn the_default_answer_is_the_summary_and_the_mismatches_in_full() -> Result<(), serde_json::Error> {
+    fn the_default_answer_is_the_summary_and_names_how_to_ask_for_rows() -> Result<(), serde_json::Error> {
         let rows = aris_rows();
-        let whole = chars_of(&rows)?;
-        let page = StagedEvidencePage::answer(rows, EvidenceRequest::NotMatchingClaim)?;
-        assert_eq!(page.summary.total_rows, 578);
-        assert_eq!(page.summary.matching_claim, 576);
-        assert_eq!(page.summary.not_matching_claim, 2);
-        assert_eq!(page.rows.iter().map(|r| r.staged_at_ms).collect::<Vec<_>>(), vec![100, 400]);
+        let whole = size(&rows)?;
+        let page = StagedEvidencePage::answer(rows, EvidenceRequest::from_params(None, None, None))?;
+        assert_eq!((page.summary.total_rows, page.summary.matching_claim, page.summary.not_matching_claim), (578, 576, 2));
+        assert!(page.rows.is_empty() && page.omitted_rows == 578);
+        assert_eq!(page.omitted_chars, whole - 579, "the omitted size is measured, not guessed");
+        assert!(size(&page)? < 2_048, "a summary, not the evidence: {} chars", size(&page)?);
+        let ask = "evidence_rows=\"not_matching_claim\" evidence_offset=0 evidence_limit=<n>";
+        assert!(page.note.contains("576 match") && page.note.contains("2 do not") && page.note.contains(ask), "{}", page.note);
+        Ok(())
+    }
+
+    // what this catches: Cormac's case on #5504. A reclaimed card whose rows all belong to an
+    // earlier claim answered every mismatch in full; the default stays the summary whatever
+    // the evidence's size.
+    #[test]
+    fn all_rows_mismatched_default_to_the_summary_alone() -> Result<(), serde_json::Error> {
+        let rows: Vec<_> = (0..578u64).map(|at| row(at, false)).collect();
+        let page = StagedEvidencePage::answer(rows, EvidenceRequest::from_params(None, None, None))?;
+        assert!(page.rows.is_empty() && page.summary.not_matching_claim == 578);
+        assert!(size(&page)? < 2_048, "{} chars", size(&page)?);
+        assert!(page.note.contains("pages the 578 rows that do not match"), "{}", page.note);
+        Ok(())
+    }
+
+    // what this catches: an explicit limit answering other than exactly what was asked.
+    #[test]
+    fn an_explicit_limit_returns_exactly_those_mismatches() -> Result<(), serde_json::Error> {
+        let page = StagedEvidencePage::answer(aris_rows(), EvidenceRequest::from_params(None, Some(0), Some(10)))?;
+        assert_eq!(at_ms(&page), vec![100, 400]);
         assert_eq!(page.omitted_rows, 576);
-        assert_eq!(page.omitted_chars + chars_of(&page.rows)?, whole, "the omitted size is measured, not guessed");
-        let answer = serde_json::to_string(&page)?.chars().count();
-        assert!(answer * 50 < whole, "answer {answer} chars vs {whole} for every row");
-        assert!(page.note.contains("omitted 576 rows") && page.note.contains("evidence_offset"), "{}", page.note);
+        assert!(page.note.contains("nothing omitted") || page.note.contains("evidence_rows=\"all\""), "{}", page.note);
+        let second = StagedEvidencePage::answer(aris_rows(), EvidenceRequest::from_params(None, Some(1), Some(1)))?;
+        assert_eq!(at_ms(&second), vec![400], "an offset pages within the mismatches");
         Ok(())
     }
 
@@ -193,24 +271,22 @@ mod tests {
     // name the next page.
     #[test]
     fn an_explicit_page_returns_exactly_those_rows_and_names_the_next() -> Result<(), serde_json::Error> {
-        let request = EvidenceRequest::from_params(Some(10), Some(5));
-        assert_eq!(request, Ok(EvidenceRequest::Page { offset: 10, limit: 5 }));
-        let page = StagedEvidencePage::answer(aris_rows(), EvidenceRequest::Page { offset: 10, limit: 5 })?;
-        assert_eq!(page.rows.iter().map(|r| r.staged_at_ms).collect::<Vec<_>>(), vec![10, 11, 12, 13, 14]);
+        let all = Some(StagedEvidenceRows::All);
+        let page = StagedEvidencePage::answer(aris_rows(), EvidenceRequest::from_params(all, Some(10), Some(5)))?;
+        assert_eq!(at_ms(&page), vec![10, 11, 12, 13, 14]);
         assert_eq!(page.omitted_rows, 573);
-        assert!(page.note.contains("rows 11-15") && page.note.contains("evidence_offset=15"), "{}", page.note);
-        let last = StagedEvidencePage::answer(aris_rows(), EvidenceRequest::Page { offset: 575, limit: 50 })?;
+        assert!(page.note.contains("11-15") && page.note.contains("evidence_offset=15"), "{}", page.note);
+        let last = StagedEvidencePage::answer(aris_rows(), EvidenceRequest::from_params(all, Some(575), Some(50)))?;
         assert_eq!(last.rows.len(), 3);
-        let past = StagedEvidencePage::answer(aris_rows(), EvidenceRequest::Page { offset: 900, limit: 5 })?;
-        assert!(past.rows.is_empty() && past.note.contains("past the last row"), "{}", past.note);
-        assert!(EvidenceRequest::from_params(Some(3), None).is_err(), "an offset with no size is refused");
+        let past = StagedEvidencePage::answer(aris_rows(), EvidenceRequest::from_params(all, Some(900), Some(5)))?;
+        assert!(past.rows.is_empty() && past.note.contains("past the last"), "{}", past.note);
         Ok(())
     }
 
     // what this catches: an empty store read as a failure or as rows hidden from her.
     #[test]
     fn zero_rows_read_honestly() -> Result<(), serde_json::Error> {
-        let page = StagedEvidencePage::answer(Vec::new(), EvidenceRequest::NotMatchingClaim)?;
+        let page = StagedEvidencePage::answer(Vec::new(), EvidenceRequest::from_params(None, None, None))?;
         assert_eq!(page.summary.total_rows, 0);
         assert!(page.rows.is_empty() && page.omitted_rows == 0);
         assert!(page.note.contains("no rows are staged"), "{}", page.note);

@@ -11,8 +11,7 @@ impl ActionCommand for WorkSubmission {
 
     async fn run(&self, ctx: &Ctx, p: WorkSubmissionParams) -> Result<Self::Output, CommandError> {
         let runtime = persona_runtime(&self.registry, ctx, "work/submission")?;
-        let evidence_request =
-            EvidenceRequest::from_params(p.evidence_offset, p.evidence_limit).map_err(CommandError::Invalid)?;
+        let evidence_request = EvidenceRequest::from_params(p.evidence_rows, p.evidence_offset, p.evidence_limit);
         let room = room_of_card(runtime.airc(), p.room.as_deref(), &p.card_id, "work/submission").await?;
         let board = runtime
             .airc()

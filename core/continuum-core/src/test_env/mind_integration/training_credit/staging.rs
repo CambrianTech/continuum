@@ -338,6 +338,7 @@ pub(super) async fn work_submission_commands_bind_before_publication_and_preserv
                 params.submission_id.expect("the fixture names its submission"), // expect: set in the json above
             ),
             "include_staged_evidence": true,
+            "evidence_rows": "all",
             "evidence_limit": 2,
         }))
         .expect("the readback's handles decode"), // expect: the fixture's own json, asserted decodable

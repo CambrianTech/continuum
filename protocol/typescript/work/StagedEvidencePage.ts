@@ -4,8 +4,8 @@ import type { StagedEvidenceSelection } from "./StagedEvidenceSelection";
 import type { StagedEvidenceSummary } from "./StagedEvidenceSummary";
 
 /**
- * The staged-evidence answer: a summary of all rows, the selected rows in full, and what
- * was left out with how to read it.
+ * The staged-evidence answer: a summary of all rows, one page of rows in full, and what was
+ * left out with how to read it.
  */
 export type StagedEvidencePage = { summary: StagedEvidenceSummary, selection: StagedEvidenceSelection, rows: Array<StagedCreditEvidence>, omitted_rows: number, 
 /**
