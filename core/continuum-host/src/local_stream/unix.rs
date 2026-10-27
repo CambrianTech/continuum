@@ -27,14 +27,30 @@ pub(super) struct Owned {
 }
 
 /// The sidecar whose exclusive lock decides who serves `path`. It is never removed: removing a
-/// lock file another process may be waiting on would let two holders exist.
+/// lock file another process may be holding would let two holders exist. Binders are serialized
+/// on it, so of several that judge one stale endpoint dead exactly one reclaims it; but the wait
+/// is bounded (Codex on #5536): past [`CUSTODY_WAIT`] the binder is refused `AddrInUse`.
 fn custody(path: &Path) -> io::Result<std::fs::File> {
     let mut name = path.as_os_str().to_owned();
     name.push(".lock");
     let lock = std::fs::OpenOptions::new().create(true).truncate(false).write(true).open(PathBuf::from(name))?;
-    lock.lock()?;
-    Ok(lock)
+    let deadline = std::time::Instant::now() + CUSTODY_WAIT;
+    loop {
+        match lock.try_lock() {
+            Ok(()) => return Ok(lock),
+            Err(std::fs::TryLockError::Error(error)) => return Err(error),
+            Err(std::fs::TryLockError::WouldBlock) if std::time::Instant::now() >= deadline => {
+                return Err(io::Error::new(io::ErrorKind::AddrInUse, format!("another binder held custody of {} past {CUSTODY_WAIT:?}", path.display())));
+            }
+            Err(std::fs::TryLockError::WouldBlock) => std::thread::sleep(CUSTODY_POLL),
+        }
+    }
 }
+
+// derived-or-floor: a CEILING on waiting for another binder; custody is held only across one bind's probe, unlink and bind syscalls (microseconds to milliseconds), so a holder past this has failed and the binder is refused. It bounds no serving or token budget
+const CUSTODY_WAIT: std::time::Duration = std::time::Duration::from_secs(2);
+// derived-or-floor: the POLL cadence of that wait; it bounds how late a released custody is noticed, never a budget
+const CUSTODY_POLL: std::time::Duration = std::time::Duration::from_millis(2);
 
 impl Owned {
     pub(super) fn remove(self) {

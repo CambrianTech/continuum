@@ -115,16 +115,17 @@ pub fn llama_server_log(port: u16) -> Option<PathBuf> {
 /// engine is condemned (card 3913621a).
 static LAST_LINE_MS: LazyLock<parking_lot::Mutex<HashMap<u32, Arc<AtomicU64>>>> = LazyLock::new(Default::default);
 
-/// How long child `pid` has written nothing its sink drained, in ms: since its last line, or
-/// since its sink started when it has written none. `None` when this process drains no sink for
-/// `pid`.
+/// How long child `pid` has written nothing, in ms: since its last line, or since its sink
+/// started when it has written none. Kept by this process's own sink of the child, or by its
+/// follower of the child's relay while a current heartbeat names it ([`super::stderr_relay::follow`]).
+/// `None` when neither holds a clock for `pid`.
 pub fn silent_ms(pid: u32) -> Option<u64> {
     let last = LAST_LINE_MS.lock().get(&pid)?.load(Ordering::Relaxed);
     Some(continuum_base::time::EpochMs::now().millis().saturating_sub(last))
 }
 
 /// A fresh clock for child `pid`'s sink, replacing any earlier child's that held the number.
-fn start_clock(pid: Option<u32>) -> Arc<AtomicU64> {
+pub(super) fn start_clock(pid: Option<u32>) -> Arc<AtomicU64> {
     let clock = Arc::new(AtomicU64::new(continuum_base::time::EpochMs::now().millis()));
     if let Some(pid) = pid {
         LAST_LINE_MS.lock().insert(pid, Arc::clone(&clock));
@@ -134,7 +135,7 @@ fn start_clock(pid: Option<u32>) -> Arc<AtomicU64> {
 
 /// Forget child `pid`'s clock when its sink ends, but only if the map still holds THIS sink's
 /// clock: a replacement child that reused the pid keeps its own (Codex on #5528).
-fn retire_clock(pid: Option<u32>, clock: &Arc<AtomicU64>) {
+pub(super) fn retire_clock(pid: Option<u32>, clock: &Arc<AtomicU64>) {
     let Some(pid) = pid else { return };
     let mut clocks = LAST_LINE_MS.lock();
     if clocks.get(&pid).is_some_and(|held| Arc::ptr_eq(held, clock)) {
