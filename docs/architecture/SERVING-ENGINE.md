@@ -46,6 +46,66 @@
 
 **Page format.** Disk pages stay `llama_state_seq_save_file` output plus the `.ckpt` (0x434B5054) and `.lora` sidecars (2716-2826). `a-<persona>.bin` and `LEDGER_FORMAT 2` (saved_ledger.rs:36-62) then carry over unchanged. One gap: the `.bin` holds only `ctx_tgt` (2809), so the MTP draft KV comes back cold.
 
+## 1a. `MindMemory`: the `seq_table` and `pager` owner over today's llama-server (2026-10-27)
+
+**Why now.** On 2026-10-27 a mind's KV memory broke four ways in one afternoon on the M5:
+- the tool head changed at launch;
+- a save was cut by the core's exit;
+- a resident was left unsaved in her slot at the stop;
+- the boot plan was computed before the ledger was credited.
+
+Each was patched in one lifecycle path (#5538, #5540). The inventory that followed, at canary 107af9167, found 41 paths and 9 decisions made in 2 to 6 places each:
+- who may evict a resident;
+- when a page is restorable;
+- the save-the-evictee procedure, written three times;
+- save-all before the engine dies, four times, and missing in idle retirement;
+- recording residents lost unsaved;
+- quarantine;
+- slot ownership;
+- scratch policy;
+- page-dir ownership.
+
+Joel: "you can't get anything to work unless there is one daemon and centralized location." So `seq_table` and `pager` (§1) are built FIRST, as one owner speaking HTTP to today's llama-server (step 1 of §2). When S1–S5 land, its mechanism changes and its callers do not.
+
+**One owner per engine endpoint: `MindMemory`.** It holds the slot attribution, the saved set, the ledger file, page IO and the quarantine. Nothing else calls `/slots/*` or writes the ledger. It runs as a `ServiceModule` in the canonical shape (CONCURRENCY-STYLE-GUIDE). Its stop is its own `SettleBeforeStop`.
+
+| Request | Replaces | Contract |
+|---|---|---|
+| `seat(PageKey, Purpose) -> Seat` | `lease` + `pin_slot` + `plan_paging` + the turn's paging closure (turn_admission.rs:344-472); `borrow_slot_for_transient` (:517); `warm_ahead`'s paging; `cache_probe`'s raw `/slots` IO | RAII. She holds a pinned slot with her KV in it (resident, or restored from her page), or the seat says why she starts cold. `Purpose` is Turn, WarmAhead or Transient: a Transient seat may borrow the cheapest resident's slot, which is saved first. |
+| `pause(Why) -> PauseReceipt` | `checkpoint_before_replacement`, `checkpoint_owned_restore`, `checkpoint_adopted_before_replacement`, `checkpoint_every_endpoint` (stop), and the missing save in `idle_if_current` | Closes seating and drains the seats, then saves every resident with a confirmed save. A resident whose save fails is recorded as lost, by name. Every engine retirement goes through it: relaunch, academy, idle, adopted retirement, stop. |
+| `resume(PauseReceipt, Generation)` / `adopt(Generation)` | `ready()`'s pool swap and ledger carry or load; `adopt_engine_ledger`; `resume_suspension` | Boot, relaunch and adopt load the one ledger by the one rule (fingerprint plus incarnation), and seat nothing. |
+| `forget(PageKey, Why)` | `note_page_lost` on a refused restore; nothing today on an in-place gene change | A page whose KV no longer means what it did (a gene change, a refused restore) stops being restorable. |
+
+**Inside it, each decision exactly once:**
+- `evict(slot)`: the single save-the-evictee procedure (invalidate, save, confirm).
+- `restorable(key)`: the single rule for when a page is offered.
+- the ledger written only on its own transitions;
+- quarantine owned and cleared by it;
+- the scratch policy decided once, in `seat`.
+
+**Deleted when callers move:**
+- the paging block of `turn_admission.rs` and `borrow_slot_for_transient`;
+- `slots/page_io.rs` (#5540's gate, which becomes `MindMemory`'s own stop);
+- the four `checkpoint_*` variants;
+- public `take_resident` / `forget_resident` / `plan_paging` / `note_saved` / `note_page_lost`;
+- `trim_page_store_after_save`, which has no caller; the page store's trim moves into the owner or is deleted.
+
+**Validator (S0 for this owner).** `turn_admission/tests/lifecycle.rs` already runs a fake engine whose slots hold `mind:tokens`, through turns, a stop and a boot. It moves to `MindMemory`'s own tests and gains:
+- a relaunch;
+- an adoption;
+- idle retirement;
+- an in-place gene change;
+- transient borrowing.
+
+Each scenario asserts where every mind resumes, in seconds, before any live read.
+
+**Order and owners.**
+1. `MindMemory` with `seat` and its own stop, with turn, warm-ahead and transient moved onto it (Fable).
+2. `pause` and `resume`, with relaunch, academy, idle and adopted retirement moved onto them (Codex: the relaunch call sites are S4's).
+3. `forget` on gene change (Fable).
+
+Each step deletes what it replaces in the same PR, and the lifecycle validator gains that step's scenario first.
+
 ## 2. Reuse versus write
 
 | Option | Speed | Effort | Risk |
