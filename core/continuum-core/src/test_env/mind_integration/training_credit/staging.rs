@@ -390,14 +390,50 @@ pub(super) async fn work_submission_commands_bind_before_publication_and_preserv
     );
 }
 
-/// Her holds as the board reports them, set by the test between acts.
-struct Holds(std::sync::Mutex<Vec<airc_work::WorkCard>>);
+/// Her holds as the board reports them, set by the test between acts; `unreadable` makes
+/// the board refuse the read, as a daemon outage would.
+struct Holds(std::sync::Mutex<Vec<airc_work::WorkCard>>, std::sync::atomic::AtomicBool);
+
+impl Holds {
+    fn new() -> Arc<Self> {
+        Arc::new(Self(std::sync::Mutex::new(Vec::new()), std::sync::atomic::AtomicBool::new(false)))
+    }
+    fn set(&self, held: Vec<airc_work::WorkCard>) {
+        *self.0.lock().expect("holds lock") = held;
+    }
+    fn unreadable(&self, refuse: bool) {
+        self.1.store(refuse, std::sync::atomic::Ordering::SeqCst);
+    }
+}
 
 #[async_trait::async_trait]
 impl crate::persona::active_work_source::AircWorkReader for Holds {
     async fn active_claims(&self) -> Result<Vec<airc_work::WorkCard>, airc_lib::AircError> {
+        if self.1.load(std::sync::atomic::Ordering::SeqCst) {
+            return Err(airc_lib::AircError::Transport("the board is unreachable in this fixture".into()));
+        }
         Ok(self.0.lock().expect("holds lock").clone())
     }
+}
+
+fn opener_for(executor: Arc<CommandExecutor>, persona: Uuid, name: &'static str) -> OpenCapture {
+    Box::new(move |credit: &CapturedCredit| {
+        Some(TurnCreditCapture::with_executor(executor.clone(), persona, name.into(), "her own time".into(), credit.clone()))
+    })
+}
+
+fn receipts(ids: &[&str]) -> Vec<crate::ai::provenance::GenerationReceipt> {
+    ids.iter().map(|id| receipt(id)).collect()
+}
+
+/// Each staged row's generations, under the given claim, as a sorted set.
+fn rows_under(rows: &[StagedCredit], claim: Option<airc_work::ClaimId>) -> Vec<Vec<String>> {
+    rows.iter()
+        .filter(|r| r.claim_id == claim.map(|c| c.as_uuid()))
+        .map(|r| r.receipts.iter().map(|g| g.submitted_request_id.clone()).collect())
+        .collect::<std::collections::BTreeSet<Vec<String>>>()
+        .into_iter()
+        .collect()
 }
 
 fn act(name: &str) -> (String, Vec<crate::ai::types::ToolCall>) {
@@ -427,20 +463,15 @@ pub(super) async fn a_claim_taken_during_a_turn_credits_from_that_act_on() {
     let card = claimed_card_fixture(Some(owner), Some(airc_work::ClaimId::new()));
     let mut reclaimed = card.clone();
     reclaimed.claim_id = Some(airc_work::ClaimId::new());
-    let holds = Arc::new(Holds(std::sync::Mutex::new(Vec::new())));
-    let opener = |executor: Arc<CommandExecutor>| -> OpenCapture {
-        Box::new(move |credit: &CapturedCredit| {
-            Some(TurnCreditCapture::with_executor(executor.clone(), persona, name.into(), "her own time".into(), credit.clone()))
-        })
-    };
-    let receipts = |ids: &[&str]| ids.iter().map(|id| receipt(id)).collect::<Vec<_>>();
+    let holds = Holds::new();
+    let opener = |executor: Arc<CommandExecutor>| opener_for(executor, persona, name);
     use crate::cognition::act_observe::TurnCredit;
 
     // Turn 1 begins holding nothing: a read, then the claim, then the submit.
     let mut turn = ClaimFollowingCapture::new(None, Some(Arc::clone(&holds)), opener(executor.clone()));
     let mut acts = vec![act("code/read")];
     assert!(!turn.record(&acts, &receipts(&["before-claim"]), None, false).await, "nothing held: nothing staged");
-    *holds.0.lock().expect("holds lock") = vec![card.clone()];
+    holds.set(vec![card.clone()]);
     acts.push(act("work/claim"));
     turn.record(&acts, &receipts(&["before-claim", "claimed"]), None, false).await;
     acts.push(act("work/submit"));
@@ -463,21 +494,14 @@ pub(super) async fn a_claim_taken_during_a_turn_credits_from_that_act_on() {
     let mut turn = ClaimFollowingCapture::new(Some(&first), Some(Arc::clone(&holds)), opener(executor.clone()));
     let mut acts = vec![act("code/read")];
     turn.record(&acts, &receipts(&["old-claim"]), None, false).await;
-    *holds.0.lock().expect("holds lock") = vec![reclaimed.clone()];
+    holds.set(vec![reclaimed.clone()]);
     acts.push(act("work/claim"));
     turn.record(&acts, &receipts(&["old-claim", "reclaimed"]), None, false).await;
     acts.push(act("work/submit"));
     assert!(turn.record(&acts, &receipts(&["old-claim", "reclaimed", "reissuing"]), None, true).await);
 
     let rows = stored_credit_rows(&conn_as(executor.clone(), persona), name).await;
-    let under = |claim: Option<airc_work::ClaimId>| -> Vec<Vec<String>> {
-        rows.iter()
-            .filter(|r| r.claim_id == claim.map(|c| c.as_uuid()))
-            .map(|r| r.receipts.iter().map(|g| g.submitted_request_id.clone()).collect())
-            .collect::<std::collections::BTreeSet<Vec<String>>>()
-            .into_iter()
-            .collect()
-    };
+    let under = |claim| rows_under(&rows, claim);
     assert_eq!(under(card.claim_id), [vec!["claimed".to_string(), "issuing".into()], vec!["old-claim".into()]], "turn 1's row and turn 2's pre-reclaim act, each under the first claim");
     assert_eq!(under(reclaimed.claim_id), [vec!["reclaimed".to_string(), "reissuing".into()]]);
 
@@ -507,4 +531,70 @@ pub(super) async fn a_claim_taken_during_a_turn_credits_from_that_act_on() {
     };
     let reclaimed_row = rows.iter().find(|r| r.claim_id == reclaimed.claim_id.map(|c| c.as_uuid())).expect("reclaimed row");
     assert_eq!(bound.selection.staged_revision_id, reclaimed_row.id);
+}
+
+// what this catches (Codex on #5523): her holds unreadable right after the act that claimed.
+// Staging on under the claim she had would credit the new claim's work to the old one for
+// good. Unread, nothing is staged; the read that answers puts the boundary at the claiming
+// act; still unread at the end, only what came before it is staged and the rest is no one's.
+#[tokio::test]
+pub(super) async fn an_unread_claim_stages_nothing_until_a_read_says_whose_it_was() {
+    use crate::cognition::act_observe::TurnCredit;
+    let home = tempfile::tempdir().expect("tempdir");
+    let _guard = HomeGuard::set(home.path()).await;
+    crate::persona::register_substrate_orm_entities(crate::orm::OrmEntityRegistry::global())
+        .expect("register staging entities");
+    let executor = data_runtime();
+    let persona = Uuid::new_v4();
+    let owner = airc_core::PeerId::from_uuid(persona);
+    let name = "unread-claim";
+    let card = claimed_card_fixture(Some(owner), Some(airc_work::ClaimId::new()));
+    let mut reclaimed = card.clone();
+    reclaimed.claim_id = Some(airc_work::ClaimId::new());
+    let first = CapturedCredit::from_selected_card(&card);
+    let holds = Holds::new();
+    holds.set(vec![card.clone()]);
+
+    // The claim's read fails, the next act's read fails too, the third answers.
+    let mut turn = ClaimFollowingCapture::new(Some(&first), Some(Arc::clone(&holds)), opener_for(executor.clone(), persona, name));
+    let mut acts = vec![act("code/read")];
+    turn.record(&acts, &receipts(&["before"]), None, false).await;
+    holds.set(vec![reclaimed.clone()]);
+    holds.unreadable(true);
+    acts.push(act("work/claim"));
+    assert!(!turn.record(&acts, &receipts(&["before", "claiming"]), None, false).await);
+    acts.push(act("code/read"));
+    assert!(!turn.record(&acts, &receipts(&["before", "claiming", "unread"]), None, false).await, "nothing staged while unread");
+    holds.unreadable(false);
+    acts.push(act("code/edit"));
+    turn.record(&acts, &receipts(&["before", "claiming", "unread", "answered"]), None, false).await;
+    assert!(turn.record(&acts, &receipts(&["before", "claiming", "unread", "answered"]), None, true).await);
+    let rows = stored_credit_rows(&conn_as(executor.clone(), persona), name).await;
+    assert_eq!(rows_under(&rows, card.claim_id), [vec!["before".to_string()]], "the old claim keeps only what came before the claiming act");
+    assert_eq!(
+        rows_under(&rows, reclaimed.claim_id),
+        [vec!["claiming".to_string(), "unread".into(), "answered".into()]],
+        "the new claim from the claiming act on, once a read said so"
+    );
+
+    // Still unread when the turn ends: what came before is staged, the rest credited to no one.
+    let mut again = reclaimed.clone();
+    again.claim_id = Some(airc_work::ClaimId::new());
+    holds.set(vec![reclaimed.clone()]);
+    let start = CapturedCredit::from_selected_card(&reclaimed);
+    let mut turn = ClaimFollowingCapture::new(Some(&start), Some(Arc::clone(&holds)), opener_for(executor.clone(), persona, name));
+    let mut acts = vec![act("code/read")];
+    turn.record(&acts, &receipts(&["second-before"]), None, false).await;
+    holds.set(vec![again.clone()]);
+    holds.unreadable(true);
+    acts.push(act("work/claim"));
+    turn.record(&acts, &receipts(&["second-before", "never-read"]), None, false).await;
+    assert!(turn.record(&acts, &receipts(&["second-before", "never-read"]), None, true).await);
+    let rows = stored_credit_rows(&conn_as(executor, persona), name).await;
+    assert!(rows_under(&rows, reclaimed.claim_id).contains(&vec!["second-before".to_string()]));
+    assert!(rows_under(&rows, again.claim_id).is_empty(), "an unread claim is never guessed");
+    assert!(
+        rows.iter().all(|r| r.receipts.iter().all(|g| g.submitted_request_id != "never-read")),
+        "the generation after the unread claim is credited to no claim"
+    );
 }

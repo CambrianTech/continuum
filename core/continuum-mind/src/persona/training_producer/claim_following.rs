@@ -34,6 +34,22 @@ struct Segment {
     from_receipt: usize,
 }
 
+/// A point in the turn: an act and where its own generations begin.
+#[derive(Debug, Clone, Copy)]
+struct Boundary {
+    act: usize,
+    receipt: usize,
+}
+
+/// Her holds went unread after a board act: from `first` on, which claim the turn's
+/// generations were taken under is unknown until a read answers. `last_board` is the latest
+/// unread board act, the latest point a new claim could have been taken (Codex on #5523).
+#[derive(Debug, Clone, Copy)]
+struct Unsettled {
+    first: Boundary,
+    last_board: Boundary,
+}
+
 /// The turn's credit, following the card she holds.
 pub struct ClaimFollowingCapture<R: AircWorkReader + ?Sized> {
     reader: Option<Arc<R>>,
@@ -45,6 +61,8 @@ pub struct ClaimFollowingCapture<R: AircWorkReader + ?Sized> {
     /// Receipts already seen at the previous act, so an act's own generations are the ones
     /// after it.
     seen_receipts: usize,
+    /// Set while a board act's hold is unread: nothing is staged past it until a read answers.
+    unsettled: Option<Unsettled>,
 }
 
 /// Whether a credit is the same claim on the same card: a new claim on the same card is a
@@ -68,7 +86,7 @@ impl<R: AircWorkReader + ?Sized> ClaimFollowingCapture<R> {
         });
         // The card she began on is the turn's card even when no capture could open for it.
         let last = held.cloned();
-        Self { reader, open, current, last, seen_receipts: 0 }
+        Self { reader, open, current, last, seen_receipts: 0, unsettled: None }
     }
 
     /// The last card the turn's credit stood on: the card it began with, or the one she
@@ -77,53 +95,80 @@ impl<R: AircWorkReader + ?Sized> ClaimFollowingCapture<R> {
         self.last
     }
 
-    /// Her held card as the board reads it now. `Err` when it cannot be read: the segment
-    /// stands, because an unread board is not evidence that the hold changed.
+    /// Her held card as the board reads it now. `Err` when it cannot be read.
     async fn held_now(reader: &R) -> Result<Option<CapturedCredit>, String> {
         let held = reader.active_claims().await.map_err(|error| error.to_string())?;
         Ok(crate::persona::work_focus::focus_workspace_card(held.iter()).map(CapturedCredit::from_selected_card))
     }
 
-    async fn follow(&mut self, acts: &[(String, Vec<ToolCall>)], receipts: &[GenerationReceipt], act_start: usize) {
+    /// Close the current segment with what it holds before `end`, as its final snapshot.
+    async fn close_before(&mut self, acts: &[(String, Vec<ToolCall>)], receipts: &[GenerationReceipt], end: Boundary) -> bool {
+        let Some(mut done) = self.current.take() else { return false };
+        let acts_of = acts.get(done.from_act..end.act).unwrap_or_default(); // unwrap_or_default: a segment begins inside its turn; an empty slice stages nothing
+        let receipts_of = receipts.get(done.from_receipt..end.receipt).unwrap_or_default(); // unwrap_or_default: as above
+        done.capture.record(acts_of, receipts_of, None, true).await
+    }
+
+    /// Read her holds after `board_act` (or to settle an unread one) and move the segment
+    /// boundary when the card or its claim changed.
+    async fn follow(&mut self, acts: &[(String, Vec<ToolCall>)], receipts: &[GenerationReceipt], act_start: usize, board_act: bool) {
         let Some(reader) = self.reader.clone() else { return };
+        let this = Boundary { act: acts.len().saturating_sub(1), receipt: act_start };
         let now = match Self::held_now(&reader).await {
             Ok(now) => now,
             Err(error) => {
+                if board_act {
+                    self.unsettled = Some(match self.unsettled {
+                        None => Unsettled { first: this, last_board: this },
+                        Some(open) => Unsettled { last_board: this, ..open },
+                    });
+                }
                 continuum_base::probe!(
                     class = "training.credit.claim_unreadable",
                     acts = acts.len() as u64,
                     error = %error,
-                    "her holds could not be read after a board act: the turn's credit stays on the claim it had"
+                    "her holds could not be read after a board act: nothing is staged from that act until a read says which claim it was taken under"
                 );
                 return;
             }
         };
+        let pending = self.unsettled.take();
         let unchanged = match (&self.current, &now) {
             (Some(segment), Some(now)) => same_claim(&segment.credit, now),
             (None, None) => true,
             _ => false,
         };
+        // Unchanged: no claim was taken, so every act since stays on the segment it was on.
         if unchanged {
             return;
         }
-        let this_act = acts.len().saturating_sub(1);
-        // The claiming act belongs to the new claim (it took it); an act that only let the
-        // card go belongs to the card it let go, so a released segment keeps it.
-        let (end_act, end_receipt) = if now.is_some() { (this_act, act_start) } else { (acts.len(), receipts.len()) };
-        if let Some(mut done) = self.current.take() {
-            let acts_of = acts.get(done.from_act..end_act).unwrap_or_default(); // unwrap_or_default: a segment begins inside its turn; an empty slice stages nothing
-            let receipts_of = receipts.get(done.from_receipt..end_receipt).unwrap_or_default(); // unwrap_or_default: as above
-            done.capture.record(acts_of, receipts_of, None, true).await;
+        // The old claim ends where its hold was last known; the new one begins at the latest
+        // act that could have taken it. Between them (more than one unread board act) is
+        // credited to neither. Known exactly, the claiming act belongs to the new claim and an
+        // act that only let the card go stays with the card it let go.
+        let (end, start) = match pending {
+            Some(unread) => (unread.first, unread.last_board),
+            None if now.is_some() => (this, this),
+            None => (Boundary { act: acts.len(), receipt: receipts.len() }, this),
+        };
+        self.close_before(acts, receipts, end).await;
+        if start.act > end.act {
+            continuum_base::probe!(
+                class = "training.credit.claim_uncertain_dropped",
+                from_act = end.act as u64,
+                to_act = start.act as u64,
+                "acts between two unread board acts are credited to no claim: which one they were taken under is unknown"
+            );
         }
         continuum_base::probe!(
             class = "training.credit.claim_followed",
             card = ?now.as_ref().map(|c| c.card_id),
             claim = ?now.as_ref().and_then(|c| c.claim.map(|r| r.claim_id)),
-            from_act = this_act as u64,
+            from_act = start.act as u64,
             "the card she holds changed during the turn: its credit continues on the new claim from this act"
         );
         self.current = now.and_then(|credit| {
-            (self.open)(&credit).map(|capture| Segment { credit, capture, from_act: this_act, from_receipt: act_start })
+            (self.open)(&credit).map(|capture| Segment { credit, capture, from_act: start.act, from_receipt: start.receipt })
         });
         if let Some(segment) = &self.current {
             self.last = Some(segment.credit.clone());
@@ -142,8 +187,25 @@ impl<R: AircWorkReader + ?Sized + 'static> crate::cognition::act_observe::TurnCr
     ) -> bool {
         let act_start = self.seen_receipts.min(receipts.len());
         self.seen_receipts = receipts.len();
-        if !final_snapshot && acts.last().is_some_and(|(_, calls)| touches_the_board(calls)) {
-            self.follow(acts, receipts, act_start).await;
+        // The final call repeats the last act, so only a new board act reads; an unread hold
+        // is read again at every call until it answers.
+        let board_act = !final_snapshot && acts.last().is_some_and(|(_, calls)| touches_the_board(calls));
+        if board_act || self.unsettled.is_some() {
+            self.follow(acts, receipts, act_start, board_act).await;
+        }
+        if let Some(unread) = self.unsettled {
+            if !final_snapshot {
+                return false;
+            }
+            // The turn ended with the hold still unread: what came before it is the claim's;
+            // what came after is credited to no claim rather than guessed.
+            continuum_base::probe!(
+                class = "training.credit.claim_uncertain_dropped",
+                from_act = unread.first.act as u64,
+                to_act = acts.len() as u64,
+                "the turn ended before her holds could be read again: its acts from the unread board act on are credited to no claim"
+            );
+            return self.close_before(acts, receipts, unread.first).await;
         }
         let Some(segment) = self.current.as_mut() else { return false };
         let acts_of = acts.get(segment.from_act..).unwrap_or_default(); // unwrap_or_default: a segment begins inside its turn; empty stages nothing
