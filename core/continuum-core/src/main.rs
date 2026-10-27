@@ -312,16 +312,27 @@ async fn async_main(home: std::path::PathBuf) -> Result<(), Box<dyn std::error::
                 .map(|s| s.to_string())
                 .or_else(|| info.payload().downcast_ref::<String>().cloned())
                 .unwrap_or_else(|| "<non-string panic payload>".to_string()); // panic hook display path; payload downcast miss keeps the hook alive
-            let bt = std::backtrace::Backtrace::force_capture();
+            // WHERE and WHAT first, the backtrace last (card 90642123). Windows 6133 hung its IPC
+            // thread before the bind three times (2026-10-27) and left no panic line anywhere:
+            // this hook used to capture and FORMAT a backtrace before writing a byte, and dbghelp
+            // symbolizing a large binary can sit for minutes, while the boot deadline ends in
+            // `_exit(1)`, which never flushes the async tracing appender. So the default hook's
+            // raw stderr line goes first (it prints the thread, location and payload, and a
+            // backtrace only when RUST_BACKTRACE asks), then the probe line, then the backtrace.
+            default_hook(info);
             tracing::error!(
                 probe_class = "panic.caught",
                 location = %loc,
                 payload = %msg,
-                backtrace = %bt,
                 "PANIC at {loc}: {msg}"
             );
-            // Keep the default behaviour too (stderr line), so nothing regresses.
-            default_hook(info);
+            let bt = std::backtrace::Backtrace::force_capture();
+            tracing::error!(
+                probe_class = "panic.backtrace",
+                location = %loc,
+                backtrace = %bt,
+                "backtrace of the panic at {loc}"
+            );
         }));
     }
 
