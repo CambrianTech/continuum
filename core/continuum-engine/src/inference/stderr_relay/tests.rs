@@ -26,13 +26,18 @@ async fn start(config: Config, log_in_missing_dir: bool) -> Running {
         let (log, socket) = (log.clone(), socket.clone());
         async move { run(stderr_read, control_read, &log, &socket, config).await }
     });
+    // Ready when a client reaches it through the host seam (a Windows pipe has no file). The
+    // probe hangs up at once, and its subscriber ends on that.
+    let mut ready = false;
     for _ in 0..200 {
-        if socket.exists() {
+        if continuum_host::local_stream::connect(&socket).await.is_ok() {
+            ready = true;
             break;
         }
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
-    assert!(socket.exists(), "the relay serves its socket");
+    assert!(ready, "the relay serves its endpoint");
+    tokio::time::sleep(Duration::from_millis(100)).await;
     Running { stderr: Some(stderr), control, socket, log, relay, _dir: dir }
 }
 
@@ -89,7 +94,19 @@ async fn lines_reach_a_subscriber_after_a_heartbeat_and_the_relay_ends_with_its_
     drop(relay.stderr.take());
     let end = relay.relay.await.expect("the relay task").expect("the relay ends cleanly");
     assert_eq!(end.lines, 2);
-    assert!(!relay.socket.exists(), "the socket goes with the relay");
+    // A subscriber still connected sees the end, never heartbeats from a relay that has gone.
+    let after = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            match sub.next().await {
+                Ok(Some(Frame::Heartbeat(_))) => continue,
+                other => return other,
+            }
+        }
+    })
+    .await
+    .expect("the connection ends with the relay");
+    assert!(matches!(after, Ok(None) | Err(_)), "{after:?}");
+    assert!(continuum_host::local_stream::connect(&relay.socket).await.is_err(), "the endpoint goes with the relay");
     assert_eq!(std::fs::read_to_string(&relay.log).expect("archive"), "load banner\nslot 0 ready\n");
 }
 
@@ -150,6 +167,20 @@ async fn a_slow_subscriber_loses_the_oldest_frames_counted() {
     assert_eq!(archived, 20_000, "the archive keeps every line the subscriber lost");
 }
 
+// what this catches (Codex on #5533): connections served without bound. Past the declared bound a
+// connection is refused and counted.
+#[tokio::test]
+async fn connections_past_the_bound_are_refused_and_counted() {
+    let relay = start(Config { subscribers: 1, ..quick() }, false).await;
+    let mut held = Subscription::connect(&relay.socket).await.expect("connect");
+    assert!(matches!(next(&mut held).await, Frame::Heartbeat(_)));
+    let mut refused = Subscription::connect(&relay.socket).await.expect("the endpoint answers");
+    let over = tokio::time::timeout(Duration::from_secs(5), refused.next()).await.expect("the refusal is prompt");
+    assert!(matches!(over, Ok(None) | Err(_)), "a connection past the bound is closed: {over:?}");
+    let beat = heartbeat_where(&mut held, |b| b.subscribers_refused == 1).await;
+    assert_eq!(beat.subscribers_refused, 1);
+}
+
 // what this catches: a frame that grows without bound with one line. The frame carries the
 // line cut at its bound, flagged; the archive keeps it whole.
 #[tokio::test]
@@ -190,6 +221,7 @@ fn silence_is_only_this_incarnations_and_only_while_current() {
         relay_started_ms: 500,
         incarnation,
         binds_refused: 0,
+        subscribers_refused: 0,
         expires_at_ms,
     };
     assert_eq!(silent_ms(&beat(Some(engine), 5_000), engine, 4_000), Some(3_000));

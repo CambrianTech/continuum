@@ -1,4 +1,5 @@
-//! Windows: a named pipe whose name is derived from the path.
+//! Windows: a named pipe whose name is derived from the path. A live owner keeps the name
+//! (`first_pipe_instance` refuses a second server), and the pipe ends with its last handle.
 
 use std::io;
 use std::path::Path;
@@ -11,6 +12,13 @@ pub(super) type ClientStream = NamedPipeClient;
 pub(super) struct Listener {
     name: String,
     next: NamedPipeServer,
+}
+
+/// Nothing on disk to own: the pipe ends with its last handle.
+pub(super) struct Owned;
+
+impl Owned {
+    pub(super) fn remove(self) {}
 }
 
 /// The pipe name for `path`: its characters that are not alphanumeric become `_`.
@@ -27,16 +35,12 @@ impl Listener {
     }
 }
 
-pub(super) fn bind(path: &Path) -> io::Result<Listener> {
+pub(super) async fn bind(path: &Path) -> io::Result<(Listener, Owned)> {
     let name = pipe_name(path);
     let next = ServerOptions::new().first_pipe_instance(true).create(&name)?;
-    Ok(Listener { name, next })
+    Ok((Listener { name, next }, Owned))
 }
 
 pub(super) async fn connect(path: &Path) -> io::Result<ClientStream> {
     ClientOptions::new().open(pipe_name(path))
-}
-
-pub(super) fn remove(_path: &Path) {
-    // A named pipe leaves nothing on disk: it ends with its last handle.
 }

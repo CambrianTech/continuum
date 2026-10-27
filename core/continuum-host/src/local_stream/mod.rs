@@ -13,6 +13,16 @@ mod os;
 /// The serving side of one endpoint.
 pub struct Listener(os::Listener);
 
+/// What a listener left on disk, removable only while it is still the listener's own: a
+/// successor that took over the path is never removed by its predecessor's cleanup.
+pub struct Owned(os::Owned);
+
+impl Owned {
+    pub fn remove(self) {
+        self.0.remove()
+    }
+}
+
 /// A connection accepted by a [`Listener`].
 pub type ServerStream = os::ServerStream;
 
@@ -20,9 +30,10 @@ pub type ServerStream = os::ServerStream;
 pub type ClientStream = os::ClientStream;
 
 impl Listener {
-    /// Serve the endpoint named by `path`, replacing one a predecessor left behind.
-    pub fn bind(path: &Path) -> io::Result<Self> {
-        os::bind(path).map(Self)
+    /// Serve the endpoint named by `path`. A live owner is refused (`AddrInUse`); what a server
+    /// that is gone left behind is reclaimed.
+    pub async fn bind(path: &Path) -> io::Result<(Self, Owned)> {
+        os::bind(path).await.map(|(listener, owned)| (Self(listener), Owned(owned)))
     }
 
     /// The next connection.
@@ -36,25 +47,17 @@ pub async fn connect(path: &Path) -> io::Result<ClientStream> {
     os::connect(path).await
 }
 
-/// Remove what the endpoint left on disk, if anything.
-pub fn remove(path: &Path) {
-    os::remove(path)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-    // what this catches: an endpoint a client cannot reach, or one a second server cannot take
-    // over from a predecessor that left it behind.
+    // what this catches: an endpoint a client cannot reach.
     #[tokio::test]
-    async fn a_client_reaches_the_server_and_a_successor_takes_over_the_path() {
+    async fn a_client_reaches_the_server() {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("endpoint.sock");
-        let first = Listener::bind(&path).expect("bind");
-        drop(first);
-        let mut listener = Listener::bind(&path).expect("a successor binds the same path");
+        let (mut listener, owned) = Listener::bind(&path).await.expect("bind");
         let served = tokio::spawn(async move {
             let mut stream = listener.accept().await.expect("accept");
             stream.write_all(b"hello\n").await.expect("write");
@@ -64,6 +67,25 @@ mod tests {
         client.read_to_string(&mut got).await.expect("read");
         served.await.expect("served");
         assert_eq!(got, "hello\n");
-        remove(&path);
+        owned.remove();
+    }
+
+    // what this catches (Codex on #5533): a bind that removed a live incumbent's endpoint, and a
+    // predecessor's cleanup that removed its replacement's. A live owner is refused; what a gone
+    // server left is reclaimed; the old owner's cleanup leaves the successor's endpoint alone.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_live_owner_is_refused_and_an_old_cleanup_spares_its_successor() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("endpoint.sock");
+        let (first, first_owned) = Listener::bind(&path).await.expect("bind");
+        let refused = Listener::bind(&path).await.err().map(|e| e.kind());
+        assert_eq!(refused, Some(io::ErrorKind::AddrInUse), "a live owner keeps its endpoint");
+        drop(first); // the server is gone; its file stays behind
+        let (successor, _successor_owned) = Listener::bind(&path).await.expect("a stale endpoint is reclaimed");
+        first_owned.remove();
+        assert!(path.exists(), "the predecessor's cleanup spares its successor");
+        assert!(connect(&path).await.is_ok(), "the successor still serves");
+        drop(successor);
     }
 }

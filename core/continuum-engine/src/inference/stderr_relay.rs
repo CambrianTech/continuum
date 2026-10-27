@@ -36,6 +36,8 @@ pub struct Config {
     pub line_bytes: usize,
     /// How often a heartbeat is sent; a heartbeat is current for three of these.
     pub heartbeat: Duration,
+    /// Connections served at once; one more is refused and counted.
+    pub subscribers: usize,
 }
 
 impl Default for Config {
@@ -44,7 +46,9 @@ impl Default for Config {
         let queue = 1024;
         // derived-or-floor: a FLOOR on one frame's text; the archive keeps the whole line, so nothing is lost but the frame's copy.
         let line_bytes = 4096;
-        Self { queue, line_bytes, heartbeat: Duration::from_secs(1) }
+        // derived-or-floor: a FLOOR on simultaneous readers of one engine's log: the core, plus room for an operator's look.
+        let subscribers = 4;
+        Self { queue, line_bytes, heartbeat: Duration::from_secs(1), subscribers }
     }
 }
 
@@ -68,6 +72,7 @@ pub struct Heartbeat {
     /// The engine these lines are from; `None` until the spawning core has bound it.
     pub incarnation: Option<Incarnation>,
     pub binds_refused: u64,
+    pub subscribers_refused: u64,
     /// After this a consumer reads the relay's signals as unavailable.
     pub expires_at_ms: u64,
 }
@@ -87,6 +92,7 @@ struct State {
     dropped_slow: AtomicU64,
     missed_disconnected: AtomicU64,
     binds_refused: AtomicU64,
+    subscribers_refused: AtomicU64,
     relay_started_ms: u64,
     incarnation: parking_lot::Mutex<Option<Incarnation>>,
     lines: broadcast::Sender<Frame>,
@@ -103,6 +109,7 @@ impl State {
             dropped_slow: AtomicU64::new(0),
             missed_disconnected: AtomicU64::new(0),
             binds_refused: AtomicU64::new(0),
+            subscribers_refused: AtomicU64::new(0),
             relay_started_ms: started,
             incarnation: parking_lot::Mutex::new(None),
             lines,
@@ -119,6 +126,7 @@ impl State {
             relay_started_ms: self.relay_started_ms,
             incarnation: *self.incarnation.lock(),
             binds_refused: self.binds_refused.load(Ordering::Relaxed),
+            subscribers_refused: self.subscribers_refused.load(Ordering::Relaxed),
             expires_at_ms: continuum_base::time::EpochMs::now().millis().saturating_add(expires),
         }
     }
@@ -164,14 +172,18 @@ where
     R: AsyncRead + Unpin,
     C: AsyncRead + Unpin + Send + 'static,
 {
-    let listener = Listener::bind(socket)?;
+    let (listener, owned) = Listener::bind(socket).await?;
     let state = Arc::new(State::new(config));
-    let accept = tokio::spawn(serve(listener, Arc::clone(&state)));
+    let (shutdown, ended) = tokio::sync::watch::channel(false);
+    let serving = tokio::spawn(serve(listener, Arc::clone(&state), ended));
     let bind = tokio::spawn(read_bind(control, Arc::clone(&state)));
     let drained = super::child_log::pump(stderr, log, Box::new(Publish(Arc::clone(&state))), Arc::new(AtomicU64::new(0))).await;
-    accept.abort();
+    // Every writer has closed: every subscriber is ended (its connection closes, so its reader
+    // sees the end) before the endpoint goes.
+    let _ = shutdown.send(true);
+    let _ = serving.await; // a serving task that panicked has nothing left to end
     bind.abort();
-    local_stream::remove(socket);
+    owned.remove();
     drained.map(|()| RelayEnd { lines: state.seq.load(Ordering::Relaxed) })
 }
 
@@ -194,13 +206,30 @@ async fn read_bind<C: AsyncRead + Unpin>(control: C, state: Arc<State>) {
     }
 }
 
-async fn serve(mut listener: Listener, state: Arc<State>) {
-    while let Ok(stream) = listener.accept().await {
-        tokio::spawn(subscriber(stream, Arc::clone(&state)));
+/// Accept connections up to the bound, each one an owned task, until shutdown; then end every
+/// one, blocked writes included, and wait for them.
+async fn serve(mut listener: Listener, state: Arc<State>, mut shutdown: tokio::sync::watch::Receiver<bool>) {
+    let mut subscribers = tokio::task::JoinSet::new();
+    loop {
+        tokio::select! {
+            accepted = listener.accept() => {
+                let Ok(stream) = accepted else { continue };
+                while subscribers.try_join_next().is_some() {}
+                if subscribers.len() >= state.config.subscribers.max(1) {
+                    state.subscribers_refused.fetch_add(1, Ordering::Relaxed);
+                    drop(stream);
+                    continue;
+                }
+                subscribers.spawn(subscriber(stream, Arc::clone(&state)));
+            }
+            _ = shutdown.changed() => break,
+        }
     }
+    subscribers.abort_all();
+    while subscribers.join_next().await.is_some() {}
 }
 
-async fn write_frame(stream: &mut ServerStream, frame: &Frame) -> io::Result<()> {
+async fn write_frame<W: tokio::io::AsyncWrite + Unpin>(stream: &mut W, frame: &Frame) -> io::Result<()> {
     let mut bytes = serde_json::to_vec(frame).map_err(io::Error::other)?; // wire protocol: one JSON frame per line on the relay's local socket
     bytes.push(b'\n');
     stream.write_all(&bytes).await
@@ -208,13 +237,15 @@ async fn write_frame(stream: &mut ServerStream, frame: &Frame) -> io::Result<()>
 
 /// One subscriber: a heartbeat first, then the lines drained from now on, and a heartbeat each
 /// period. A subscriber that falls behind loses the oldest frames, counted.
-async fn subscriber(mut stream: ServerStream, state: Arc<State>) {
+async fn subscriber(stream: ServerStream, state: Arc<State>) {
+    let (mut reader, mut writer) = tokio::io::split(stream);
     let mut lines = state.lines.subscribe();
-    if write_frame(&mut stream, &Frame::Heartbeat(state.heartbeat())).await.is_err() {
+    if write_frame(&mut writer, &Frame::Heartbeat(state.heartbeat())).await.is_err() {
         return;
     }
     let mut beat = tokio::time::interval(state.config.heartbeat);
     beat.tick().await; // the first tick is immediate: the opening heartbeat is already sent
+    let mut ignored = [0u8; 64];
     loop {
         let frame = tokio::select! {
             received = lines.recv() => match received {
@@ -226,8 +257,13 @@ async fn subscriber(mut stream: ServerStream, state: Arc<State>) {
                 Err(broadcast::error::RecvError::Closed) => return,
             },
             _ = beat.tick() => Frame::Heartbeat(state.heartbeat()),
+            // The subscriber sends nothing; its end (or an error) ends this task at once.
+            read = tokio::io::AsyncReadExt::read(&mut reader, &mut ignored) => match read {
+                Ok(0) | Err(_) => return,
+                Ok(_) => continue,
+            },
         };
-        if write_frame(&mut stream, &frame).await.is_err() {
+        if write_frame(&mut writer, &frame).await.is_err() {
             return;
         }
     }
