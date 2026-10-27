@@ -22,6 +22,7 @@ mod automatic;
 mod bindings;
 mod directed;
 mod lived;
+mod refused_submit;
 mod reviewed_credit;
 mod settlement;
 mod staging;

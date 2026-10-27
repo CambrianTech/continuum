@@ -123,8 +123,18 @@ pub(super) fn register_persona_registry_modules(
     // → budget None → behavior is identical to the uncapped default the digest
     // region runs under today (the digest runs no inference; the consolidation
     // region is the first InferenceHeavy tenant under this floor).
+    // A reviewed credit the training trigger has not accepted is settled again by this region,
+    // per resident, whether or not she acts (card 99b2773a): its store is hers, as her identity.
+    let credit_registry = registry.clone();
+    let credit_region: Arc<dyn crate::runtime::BrainRegion> = Arc::new(
+        crate::persona::training_producer::CreditAcceptanceRegion::new(Arc::new(move |persona| {
+            let name = credit_registry.get(persona)?.agent_name().to_string();
+            let conn = crate::persona::training_producer::reviewed::credit_connection(persona).ok()?;
+            Some((name, conn))
+        })),
+    );
     runtime.register(Arc::new(
-        crate::persona::substrate_governor::SubstrateGovernor::new(vec![digest_region, dream_region], registry.clone())
+        crate::persona::substrate_governor::SubstrateGovernor::new(vec![digest_region, dream_region, credit_region], registry.clone())
             .with_pressure_gate(pressure_monitor.subscribe()),
     ));
     let instance_manager = Arc::new(

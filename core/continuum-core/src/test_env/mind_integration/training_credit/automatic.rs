@@ -419,3 +419,127 @@ pub(super) async fn a_checkout_derived_submit_publishes_her_patch_and_records_it
     assert_eq!(recorded.selection.issuing_generation, "issuing-gen");
     Ok(())
 }
+
+/// Her store, with a training trigger that never answers a submit for `hang` and accepts any other.
+struct HangOn {
+    data: InProcessTransport,
+    hang: Uuid,
+}
+
+#[async_trait::async_trait]
+impl Transport for HangOn {
+    async fn execute(&self, command: &str, params: serde_json::Value) -> Result<serde_json::Value, ClientError> {
+        if command != "genome/training-trigger/submit" {
+            return self.data.execute(command, params).await;
+        }
+        let submission = params["submissionId"].clone();
+        if submission == json!(self.hang) {
+            std::future::pending::<()>().await;
+        }
+        Ok(json!({"success": true, "acceptance": {"submissionId": submission, "replayed": false}}))
+    }
+    async fn subscribe(&self, class: &str) -> Result<continuum_client::event::EventStream, ClientError> {
+        self.data.subscribe(class).await
+    }
+    async fn emit(&self, class: &str, payload: serde_json::Value) -> Result<(), ClientError> {
+        self.data.emit(class, payload).await
+    }
+    async fn provide(&self, command: &str, handler: Arc<dyn continuum_client::ServeHandler>) -> Result<(), ClientError> {
+        self.data.provide(command, handler).await
+    }
+    async fn revoke(&self, command: &str) -> Result<(), ClientError> {
+        self.data.revoke(command).await
+    }
+    async fn close(&self) -> Result<(), ClientError> {
+        self.data.close().await
+    }
+}
+
+// what this catches (Codex on #5531): an earlier decided credit whose settle hangs on EVERY pass
+// holding back a different, healthy decided credit behind it. Two ordinary submissions on her
+// card, both passed while the trigger refused; the first in id order never settles, the second
+// is accepted by the region with no review event, registration or turn, and the first still waits.
+#[tokio::test]
+pub(super) async fn a_decision_that_always_hangs_never_holds_back_the_next() -> TestResult {
+    use crate::runtime::{BrainRegion, RegionContext};
+    use airc_work::{CardCreated, WorkCardClaimed, WorkEvent, WorkReviewOutcome, WorkSubmissionReview};
+    let r = Resident::new().await?;
+    let first = r.submit().run(&r.act("gen-first"), r.params.clone()).await?;
+    let first_row = r.stage("gen-first").await?;
+    let patch = "diff --git a/y b/y\n--- a/y\n+++ b/y\n@@ -1 +1 @@\n-c\n+d\n";
+    let hash = {
+        use airc_blobs::ContentAddressedStore;
+        crate::media::artifact::store()?.put(patch.as_bytes())?.to_hex()
+    };
+    let mut second_params = r.params.clone();
+    second_params.artifact = Some(serde_json::from_value(json!({"hash": hash, "size_bytes": patch.len(), "mime": "text/x-diff"}))?);
+    let second = r.submit().run(&r.act("gen-second"), second_params).await?;
+    let second_row = r.stage("gen-second").await?;
+
+    let board_now = r.airc.work_board_in(&r.room).await?;
+    let card = board_now.card(r.card).ok_or("her card is on the board")?;
+    let submitted = |id: Uuid| card.submissions.iter().find(|s| s.submission_id.as_uuid() == id).cloned().ok_or("published");
+    let (a, b) = (submitted(first.submission_id)?, submitted(second.submission_id)?);
+    let (owner, reviewer) = (r.airc.peer_id(), airc_core::PeerId::new());
+    let at = a.submitted_at_ms.min(b.submitted_at_ms);
+    let repo = airc_work::RepoId::new("acme/ordinary-project")?;
+    let created = |card_id, reviews, by| WorkEvent::CardCreated(CardCreated {
+        card_id, repo: repo.clone(), title: "ordinary work, submitted the ordinary way".into(), body: None,
+        priority: airc_work::Priority::P1, lane_id: None, created_by: by, created_at_ms: at.saturating_sub(2), reviews, origin: None,
+    });
+    let claimed = |card_id, claim_id, holder| WorkEvent::CardClaimed(WorkCardClaimed {
+        selected_at_ms: None, origin: airc_work::ClaimOrigin::Unknown, card_id, claim_id, owner: holder, ttl_ms: 600_000,
+        claimed_at_ms: at.saturating_sub(1),
+    });
+    let mut events = vec![
+        (created(r.card, None, owner), owner),
+        (claimed(r.card, a.claim_id, owner), owner),
+        (WorkEvent::WorkSubmitted(a.clone()), owner),
+        (WorkEvent::WorkSubmitted(b.clone()), owner),
+    ];
+    let mut passes = Vec::new();
+    for s in [&a, &b] {
+        let (review_card, review_claim) = (r.review_card(s.submission_id.as_uuid()), airc_work::ClaimId::new());
+        let pass = WorkSubmissionReview {
+            review_id: airc_work::WorkReviewId::new(), card_id: r.card, submission_id: s.submission_id, artifact: s.artifact.clone(),
+            review_card_id: review_card, review_claim_id: review_claim, reviewer, outcome: WorkReviewOutcome::Passed,
+            evidence: s.artifact.clone(), evidence_text: None, reviewed_at_ms: at + 10,
+        };
+        events.push((created(review_card, Some(r.card), reviewer), reviewer));
+        events.push((claimed(review_card, review_claim, reviewer), reviewer));
+        events.push((WorkEvent::WorkSubmissionReviewed(pass.clone()), reviewer));
+        passes.push(pass);
+    }
+    let board = project_events(r.room.channel.as_uuid(), events);
+    for (pass, row) in passes.iter().zip([&first_row, &second_row]) {
+        let refusing = continuum_client::mock::MockTransport::new();
+        script_settlement_reply(&refusing, row, Some(json!({"success": false, "errorKind": "RecoveryRequired"})));
+        let decided = reviewed::consume_review_with_boundary(
+            &settlement_connection(r.executor.clone(), r.persona, refusing, None),
+            r.name, r.persona, r.room.channel.as_uuid(), &board, pass.review_id, &reviewed::SelfReview::NotAdmitted, None,
+        )
+        .await?;
+        assert_eq!(decided.state, State::AwaitingAcceptance, "{decided:?}");
+    }
+
+    // The decision first in id order hangs on every pass; the other must still be settled.
+    let (stuck, healthy) = if first.submission_id < second.submission_id { (first.submission_id, second.submission_id) } else { (second.submission_id, first.submission_id) };
+    let stuck_row = if stuck == first.submission_id { first_row.id } else { second_row.id };
+    let (executor, persona, name) = (r.executor.clone(), r.persona, r.name);
+    let region = CreditAcceptanceRegion::new(Arc::new(move |_| {
+        let data = InProcessTransport::new(executor.clone(), Some(CallerIdentity::local_persona(crate::identity::PeerId::from_uuid(persona))));
+        Some((name.to_string(), Connection::new(HangOn { data, hang: stuck_row })))
+    }));
+    let scoped = RegionContext { tick_number: 1, persona_scope: Some(r.persona) };
+    let mut settled = false;
+    for _ in 0..4 {
+        region.tick(&scoped).await;
+        if reviewed::credit_status(&r.data(), r.name, healthy).await?.state == State::Accepted {
+            settled = true;
+            break;
+        }
+    }
+    assert!(settled, "the healthy decision behind a permanently hanging one is settled");
+    assert_eq!(reviewed::credit_status(&r.data(), r.name, stuck).await?.state, State::AwaitingAcceptance, "the hanging one still waits");
+    Ok(())
+}
