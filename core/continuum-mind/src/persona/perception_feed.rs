@@ -116,6 +116,12 @@ pub fn awareness_of(persona: Uuid, now_ms: u64) -> Option<super::awareness::Awar
     Some(region.snapshot(now_ms))
 }
 
+/// When anything she perceives last moved (`PerceptionRegion::moved_at_ms`); `None` when
+/// nothing has, or no region is resident here.
+pub fn moved_at_ms(persona: Uuid) -> Option<u64> {
+    with_region(persona, |region| region.moved_at_ms()).flatten()
+}
+
 pub fn unregister(persona: Uuid) {
     registry().lock().unwrap_or_else(|p| p.into_inner()).remove(&persona);
 }
