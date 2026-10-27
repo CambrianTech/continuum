@@ -758,6 +758,7 @@ async fn call_llm(
         stop_sequences: None,
         tools: None,
         tail_tools: None,
+        view_messages: None,
         tool_choice: None,
         request_id: None,
         user_id: None,

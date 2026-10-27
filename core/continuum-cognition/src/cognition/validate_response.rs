@@ -241,6 +241,7 @@ fn build_validate_generation_request(
         stop_sequences: None,
         tools: None,
         tail_tools: None,
+        view_messages: None,
         tool_choice: None,
         response_format: Some(ResponseFormat::Text),
         active_adapters: None,

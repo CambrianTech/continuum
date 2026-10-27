@@ -600,16 +600,22 @@ pub async fn admit_transient(
 static KV_PAGE_SWITCH_MS: crate::inference::resource_admission::WaitRing =
     crate::inference::resource_admission::WaitRing::new();
 
-/// How many of a slot's NEWEST context checkpoints a saved page carries, beside its oldest
-/// (the head of the first user turn, which the engine always keeps). A restore resumes from
-/// the newest checkpoint at or before where the next prompt diverges. Measured on the M5
-/// (engine log 2026-10-20..23, 804 resumes right after a page restore): 61% chose a
-/// checkpoint in the head (<16k), 22% one within 8k of the slot's end, 17% one in between.
-/// Since the epoch view went live (05:09Z 10-23), 5 of 5 chose the head or one at most
-/// 10.3k behind the end, which at the M5's spacing (window / 32, ~4k at 130k) is the third
-/// newest. A 27-checkpoint page measured 11.4 GB of sidecar (~424 MB each) beside a 2.2 GB
-/// state, and its save took 66-100 s. An engine without the subset ignores the field.
-pub(crate) const PAGE_CHECKPOINTS_NEWEST: u32 = 4;
+/// The page body for `filename` that names which context checkpoints a saved page carries;
+/// the quote (`save-size`) and the write send the same one, or the admitted bytes lie. A
+/// restore resumes from the newest checkpoint at or before where her next prompt diverges,
+/// and that is the end of her view: the next act resends it and rebuilds the tail after it.
+/// So the page keeps its head (the shared head of the first user turn), the newest checkpoint
+/// at or before the view end (the engine makes one there, from the request's
+/// `view_messages`), and those the engine made for her last prompt's end (an act that resends
+/// that prompt whole: 54 of 161 page-ins). Positions, not a count: on the M5 (engine log
+/// 2026-10-26, 161 page-ins) the newest four sat inside the closing block, past where her
+/// next prompt diverged, and 107 page-ins resumed from the ~11k head with 33-89k matched.
+///
+/// `keep_newest_checkpoints: 0` is for an engine that predates `keep_view_checkpoints`: it
+/// saves the head alone, never all of them (27 measured 11.4 GB of sidecar and a 66-100 s save).
+pub(crate) fn page_body(filename: &str) -> serde_json::Value {
+    json!({ "filename": filename, "keep_view_checkpoints": true, "keep_newest_checkpoints": 0 })
+}
 
 /// Below this a switch is never called a wedge, whatever the ring says — the floor the
 /// first switch on a box is judged by (the UMA case lands in ~0.1 s; the floor is 100×).
@@ -753,7 +759,7 @@ impl std::fmt::Display for QuoteMiss {
 /// at once, never a wait that a stall watchdog could report as `EngineStopped` (Codex on #5441).
 pub(crate) async fn request_quote(client: &reqwest::Client, root: &str, slot: u32, filename: &str) -> Result<u64, QuoteMiss> {
     let response = client.post(format!("{}/slots/{slot}?action=save-size", root.trim_end_matches('/')))
-        .json(&json!({ "filename": filename, "keep_newest_checkpoints": PAGE_CHECKPOINTS_NEWEST })).send().await
+        .json(&page_body(filename)).send().await
         .map_err(|error| QuoteMiss::Unsent(error.to_string()))?;
     let status = response.status().as_u16();
     if !response.status().is_success() {
@@ -807,10 +813,7 @@ async fn kv_page_action_with_capacity(
     // queue this switch sits in is moving and the switch keeps waiting. A queue that
     // stops moving, or an engine that stops answering, turns the switch uncertain at
     // that checkpoint, and a dead engine ends it sooner when its socket drops.
-    let mut payload = json!({ "filename": filename });
-    if action == "save" {
-        payload["keep_newest_checkpoints"] = json!(PAGE_CHECKPOINTS_NEWEST);
-    }
+    let mut payload = if action == "save" { page_body(&filename) } else { json!({ "filename": filename }) };
     if let Some(operation) = operation {
         payload["operation_id"] = json!(operation);
     }

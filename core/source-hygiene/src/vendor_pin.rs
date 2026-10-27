@@ -69,4 +69,25 @@ mod tests {
             parser.display()
         );
     }
+
+    // what this catches: the pin moving to an engine that ignores `view_messages` and
+    // `keep_view_checkpoints`. It would checkpoint no view end and save only the head
+    // (`turn_admission::page_body` sends `keep_newest_checkpoints: 0` for that engine), so every
+    // page-in would resume from the ~11k head again (card 3512f496).
+    #[test]
+    fn the_pinned_engine_source_checkpoints_the_view_end_and_pages_it() {
+        let server = repo_root().join("core/vendor/llama.cpp/tools/server/server-context.cpp");
+        let Ok(source) = std::fs::read_to_string(&server) else {
+            eprintln!("{} not checked out — nothing to check", server.display());
+            return;
+        };
+        for field in [r#""view_messages""#, r#""keep_view_checkpoints""#] {
+            assert!(
+                source.contains(field),
+                "the pinned llama.cpp ({}) does not read {field}: move the pin to a fork commit that \
+                 checkpoints the view end, or change `turn_admission::page_body` in the same PR",
+                server.display()
+            );
+        }
+    }
 }

@@ -263,6 +263,14 @@ pub struct TextGenerationRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub tail_tools: Option<Vec<NativeToolSpec>>,
+    /// How many leading `messages` are her view: the epoch's append-only part, which her next
+    /// act sends again unchanged, before this act's fresh tail. A llama.cpp-family engine
+    /// checkpoints her recurrent state exactly there, and a saved page keeps that checkpoint,
+    /// so a page-in resumes at the end of her view rather than at the shared head (card
+    /// 3512f496). `None` when the prompt has no view.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub view_messages: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub tool_choice: Option<ToolChoice>,
