@@ -62,6 +62,13 @@ impl crate::runtime::extensions::SettleBeforeStop for PageIoSettle {
 
 /// Save every resident of every endpoint whose engine this core owns, within `cap`.
 async fn checkpoint_every_endpoint(cap: Duration) {
+    if cap.is_zero() {
+        // The turns used the stop's whole budget: a save begun now would be cut by the exit.
+        // Residents resume from their last page, which is still a prefix of what they hold.
+        continuum_base::probe!(class = "inference.kv_page.stop_checkpoint_skipped", reason = "no_budget_left",
+            "the stop's budget was spent settling turns; residents resume from their last saved page");
+        return;
+    }
     let client = reqwest::Client::new();
     let endpoints: Vec<(String, std::sync::Arc<super::EndpointSlots>)> =
         super::directory().endpoints.iter().map(|e| (e.key().clone(), e.value().clone())).collect();
