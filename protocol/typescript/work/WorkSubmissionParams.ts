@@ -15,20 +15,18 @@ card_id: string,
  */
 submission_id: string, 
 /**
- * Inspect only: no binding/training. Claim match is not causality. Answers a summary of
- * every staged row; rows in full only on evidence_limit (default rows: those NOT matching).
+ * Inspect only: no binding/training. Answers a summary; rows only with evidence_limit.
  */
 include_staged_evidence: boolean, 
 /**
- * With include_staged_evidence: which rows to page, `not_matching_claim` (default) or `all`.
+ * Rows to page (default: not matching the claim).
  */
 evidence_rows?: StagedEvidenceRows, 
 /**
- * With include_staged_evidence: the page's first row among those rows (0-based, staged order).
+ * First row of the page.
  */
 evidence_offset?: number, 
 /**
- * With include_staged_evidence: how many rows the page returns in full (absent: the summary
- * alone, no rows; its note says how to ask).
+ * Rows to return.
  */
 evidence_limit?: number, };
