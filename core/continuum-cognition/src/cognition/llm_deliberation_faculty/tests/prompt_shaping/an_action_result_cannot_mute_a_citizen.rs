@@ -170,3 +170,116 @@ fn splitting_never_cuts_a_multibyte_sequence() {
     );
     assert_eq!(rebuilt, multibyte, "multibyte content survives the split");
 }
+
+/// Her NEWEST result over her window (prompt/newest_result.rs): Aris on the M5, 2026-10-26.
+mod the_newest_result_over_her_window {
+    use super::*;
+    use crate::ai::types::{ContentPart, MessageContent, ResultCustody};
+    use crate::cognition::act_observe::{ActStatus, Observation, ToolOutput, ToolVerb};
+    use crate::cognition::working_memory::WorkingMemory;
+
+    /// Her slot on the M5 (2026-10-26).
+    // context-budget-exempt: the MEASURED served window in Aris's incident (serving/status on the M5,
+    // 2026-10-26 22:22Z), a fixture input that reproduces it, not a budget the code sizes anything by.
+    const ARIS_WINDOW: u32 = 187_136;
+    const HANDLE: &str = "aris-evidence";
+
+    /// Her measured density: her refused requests measured 192k-234k tokens, nearly all of it this
+    /// result (340,832 chars, estimated 113,611 at chars/3). The lowest refusal, the most
+    /// conservative reading of her density (the incident's own numbers).
+    fn aris_calibration() -> PromptCalibration {
+        PromptCalibration::observed(113_611, 192_000, None).expect("test: positive observation") // JUSTIFIED: test fixture
+    }
+
+    /// A `work/submission` answer the shape of hers: 578 staged rows of UUIDs, pretty JSON.
+    fn evidence_answer(rows: usize) -> String {
+        let row = |i: usize| {
+            json!({
+                "revision_id": Uuid::new_v4(), "claim_id": Uuid::new_v4(), "owner": Uuid::new_v4(),
+                "staged_at_ms": 1_793_000_000_000u64 + i as u64, "generation_count": 1,
+                "generation_request_ids": [Uuid::new_v4().to_string()],
+                "matches_submission_claim": i % 289 != 7, "predates_submission": true,
+            })
+        };
+        let rows: Vec<_> = (0..rows).map(row).collect();
+        let patch = "+ a line of the submitted patch, as long as an ordinary diff line\n".repeat(1_500);
+        serde_json::to_string_pretty(&json!({ "base_sha": "7fd84d40", "staged_evidence": rows, "patch": patch }))
+            .expect("test: encode") // JUSTIFIED: test fixture
+    }
+
+    /// Her act and its saved result, recorded as the act seam does, and the faculty that renders it.
+    fn faculty_after(content: &str) -> LlmDeliberationFaculty {
+        let wm = Arc::new(WorkingMemory::new(8));
+        wm.set_served_window(ARIS_WINDOW);
+        let room = Uuid::new_v4();
+        let call = ToolCall { id: "call-aris".into(), name: "work/submission".into(), input: json!({ "include_staged_evidence": true }) };
+        wm.record_native_action_statement("Reading the staged evidence for my submission.", room, std::slice::from_ref(&call));
+        let observation = Observation {
+            call,
+            output: ToolOutput {
+                image: None,
+                additional_images: None,
+                result: crate::ai::types::ToolResult { tool_use_id: "call-aris".into(), content: content.into(), is_error: None, custody: Default::default() },
+                verb: ToolVerb::classify("work/submission"),
+                paths: Vec::new(),
+                verdict: Default::default(),
+            },
+            status: ActStatus::Executed,
+        };
+        let rendered = observation.render_recency("", &wm.budget());
+        wm.record_receipt_typed(&[observation], &rendered, Some(room), ResultCustody::Whole { handle: HANDLE.into() });
+        LlmDeliberationFaculty::new(Uuid::new_v4(), "Aris", "You are Aris.", Arc::new(HeuristicInferenceAdapter::new()))
+            .with_context_window(ARIS_WINDOW)
+            .with_working_memory(wm)
+    }
+
+    /// Every tool result's content the view sends, with the ids it answers.
+    fn tool_results(view: &DeliberationPromptView) -> Vec<(String, String)> {
+        view.messages
+            .iter()
+            .filter_map(|m| match &m.content {
+                MessageContent::Parts(parts) => Some(parts),
+                MessageContent::Text(_) => None,
+            })
+            .flatten()
+            .filter_map(|part| match part {
+                ContentPart::ToolResult { tool_use_id, content, .. } => Some((tool_use_id.clone(), content.clone())),
+                _ => None,
+            })
+            .collect()
+    }
+
+    // what this catches: Aris's stall. A newest result larger than her window was required whole,
+    // so every request overflowed and she never acted again. It must render under her window at
+    // its summary level, with the handle that reopens it and a line saying why, never dropped.
+    #[test]
+    fn aris_340k_result_renders_under_her_window_with_its_handle() {
+        let whole = evidence_answer(578);
+        assert!(whole.chars().count() >= 340_000, "the fixture is her shape: {}", whole.chars().count());
+        let faculty = faculty_after(&whole);
+        let ws = Workspace::new("what does the evidence say?");
+        let view = faculty.prompt_view_with_visual_feedback(&ws, ARIS_WINDOW, aris_calibration(), None);
+        assert!(view.capacity_error.is_none() && view.budget_fault.is_none(), "{:?} {:?}", view.capacity_error, view.budget_fault);
+        let sent = aris_calibration().charge(view.estimated_prompt_tokens) + view.completion_reserve as usize;
+        assert!(sent <= ARIS_WINDOW as usize, "{sent} tokens charged against her {ARIS_WINDOW} window");
+        let results = tool_results(&view);
+        assert_eq!(results.len(), 1, "the native call/result pair is intact");
+        let (id, shown) = &results[0];
+        assert_eq!(id, "call-aris");
+        assert!(shown.contains("too large to show whole") && shown.contains(&format!("tool/output {HANDLE}")), "{}", &shown[..shown.len().min(600)]);
+        assert!(shown.contains("lines between"), "it is her result's summary level, not only a pointer");
+        assert!(shown.chars().count() * 4 <= whole.chars().count(), "a smaller level: {} of {}", shown.chars().count(), whole.chars().count());
+    }
+
+    // what this catches: the collapse firing on a result that fits, which would cost her the
+    // outcome of her own act on the very next turn.
+    #[test]
+    fn a_newest_result_that_fits_is_untouched() {
+        let small = evidence_answer(3);
+        let faculty = faculty_after(&small);
+        let ws = Workspace::new("what does the evidence say?");
+        let view = faculty.prompt_view_with_visual_feedback(&ws, ARIS_WINDOW, aris_calibration(), None);
+        assert!(view.capacity_error.is_none());
+        assert_eq!(tool_results(&view), vec![("call-aris".to_owned(), small)]);
+    }
+}

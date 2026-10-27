@@ -185,6 +185,15 @@ impl LlmDeliberationFaculty {
         // leaves them borrowed until the same plan has reserved their exact units.
         let input_identity = all_messages.input_identity;
         let calibration = calibration.for_input(input_identity);
+        let after_reserves = calibration
+            .prompt_budget(
+                (context_window as usize).saturating_sub(Self::COMPLETION_FLOOR_TOKENS as usize),
+            )
+            .saturating_sub(framing_tokens)
+            .saturating_sub(selected.tokens);
+        // Her newest result alone over what the window leaves it is shown at a smaller level
+        // with its handle, never dropped (goal 7); one that fits is untouched.
+        self.fit_newest_result(&mut all_messages, after_reserves);
         // Her view already carries every block that rides the conversation.
         let unfitted_message_tokens = all_messages.tokens();
         // KEEP THE OVERFLOW. This used to be one chained `saturating_sub` ending in
@@ -194,12 +203,6 @@ impl LlmDeliberationFaculty {
         // moment it was computed. Subtract in two steps and probe the remainder.
         let required = all_messages.required_parts();
         let required_payload = required.total();
-        let after_reserves = calibration
-            .prompt_budget(
-                (context_window as usize).saturating_sub(Self::COMPLETION_FLOOR_TOKENS as usize),
-            )
-            .saturating_sub(framing_tokens)
-            .saturating_sub(selected.tokens);
         let grounding_budget = after_reserves.saturating_sub(required_payload);
         let payload_overflow = required_payload.saturating_sub(after_reserves);
         if payload_overflow > 0 {
