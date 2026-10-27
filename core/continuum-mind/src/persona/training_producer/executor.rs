@@ -356,6 +356,13 @@ impl TurnCreditCapture {
         }
     }
 
+    /// Opens a capture for each claim a [`super::ClaimFollowingCapture`] follows, on the live
+    /// executor, for this turn's persona and prompt.
+    pub fn opener(persona_id: Uuid, persona_name: &str, prompt: &str) -> super::OpenCapture {
+        let (persona_name, prompt) = (persona_name.to_owned(), prompt.to_owned());
+        Box::new(move |credit| Self::for_turn(persona_id, &persona_name, &prompt, Some(credit)))
+    }
+
     pub(crate) fn for_turn(
         persona_id: Uuid,
         persona_name: &str,

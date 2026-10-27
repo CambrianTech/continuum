@@ -419,11 +419,12 @@ pub(crate) async fn drive_in_held_card(
     Option<crate::persona::training_producer::CapturedCredit>,
 ) {
     let held = root_at_held_card(cycle, persona_id, &*conversation).await;
-    let mut capture = crate::persona::training_producer::TurnCreditCapture::for_turn(
-        persona_id,
-        persona_name,
-        stimulus,
+    // Her credit follows the card she holds through the turn (card 12ddd78f): a turn that
+    // begins holding nothing and claims a card stages from the claim on.
+    let mut capture = crate::persona::training_producer::ClaimFollowingCapture::new(
         held.credit.as_ref(),
+        conversation.stream_citizen(),
+        crate::persona::training_producer::TurnCreditCapture::opener(persona_id, persona_name, stimulus),
     );
     let outcome = crate::cognition::act_observe::drive_to_settle_with_credit(
         cycle,
@@ -431,13 +432,13 @@ pub(crate) async fn drive_in_held_card(
         max_acts,
         framing,
         conversation,
-        capture.as_mut().map(|c| c as &mut dyn crate::cognition::act_observe::TurnCredit),
+        Some(&mut capture as &mut dyn crate::cognition::act_observe::TurnCredit),
     )
     .await;
     if let Some(hands) = &held.hands {
         end_card_turn(hands, outcome.acts).await;
     }
-    (outcome, held.credit)
+    (outcome, capture.into_credit())
 }
 
 impl HeldCardTurn {
