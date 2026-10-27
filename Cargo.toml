@@ -311,7 +311,8 @@ half = "2.7"
 bytemuck = { version = "1.14", features = ["derive"] }
 
 # HuggingFace Hub for model downloads
-hf-hub = "0.5"
+# rustls, never the system OpenSSL (native-tls): one TLS stack in Rust, no OpenSSL to find, ship or patch.
+hf-hub = { version = "0.5", default-features = false, features = ["tokio", "ureq", "rustls-tls"] }
 
 # Tokenization
 tokenizers = "0.22"
@@ -373,6 +374,12 @@ ort = { version = "2.0.0-rc.11", default-features = false, features = ["download
 ndarray = "0.17"  # ort 2.0.0-rc.11 requires ndarray 0.17 for OwnedTensorArrayData trait compatibility
 
 # WebSocket
+# HTTP: rustls only, never native-tls (the system OpenSSL): one TLS stack in Rust, nothing to
+# find, ship or patch per OS. Every crate inherits this; features add on top.
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "http2", "charset"] }
+# LiveKit over rustls (webpki roots), never native-tls; one place decides its TLS.
+livekit = { version = "0.7", default-features = false, features = ["tokio", "rustls-tls-webpki-roots"] }
+livekit-api = { version = "0.4", features = ["rustls-tls-webpki-roots"] }
 tokio-tungstenite = "0.28"
 futures-util = "0.3"
 

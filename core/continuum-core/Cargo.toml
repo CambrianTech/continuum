@@ -99,7 +99,7 @@ continuum-text-analysis = { path = "../continuum-text-analysis" }
 # use clients ([[persona-is-a-client]]). No cycle: continuum-client does not
 # depend on continuum-core.
 continuum-client = { path = "../../client/continuum-client" }
-reqwest = { version = "0.12", features = ["json", "multipart", "stream"] }
+reqwest = { workspace = true, features = ["json", "multipart", "stream"] }
 thiserror.workspace = true
 dashmap = "6.1"  # Lock-free concurrent HashMap
 # Distributed compile-time registration: each `CommandSpec` self-registers at its
@@ -211,7 +211,7 @@ ts-rs.workspace = true  # TypeScript type generation
 # LiveKit server runs as its own container; this is only for Rust-side agent participation.
 # MIGRATION: bridge_client.rs replaces direct LiveKit usage. These deps will be removed
 # once bridge_client is fully validated. livekit-bridge binary handles WebRTC.
-livekit-api = { version = "0.4", features = ["native-tls"], optional = true }
+livekit-api = { workspace = true, optional = true }
 
 # Bridge protocol — shared types for livekit-bridge IPC (no heavy deps)
 continuum-bridge-protocol = { path = "../livekit-protocol" }

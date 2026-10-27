@@ -19,7 +19,7 @@ continuum-service = { path = "../continuum-service" }  # the resident alarm a no
 continuum-host = { path = "../continuum-host" }
 schemars = { version = "0.8", features = ["uuid1"] }
 continuum-airc-protocol = { path = "../continuum-airc-protocol" }
-reqwest = { version = "0.12", features = ["json", "multipart", "stream"] }
+reqwest = { workspace = true, features = ["json", "multipart", "stream"] }
 thiserror.workspace = true
 dashmap = "6.1"  # Lock-free concurrent HashMap
 inventory = "0.3"
