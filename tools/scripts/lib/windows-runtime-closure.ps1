@@ -10,7 +10,14 @@ function Get-CoreRuntimeDirectories {
         $_.Name -match '^Microsoft\.VC[0-9]+\.(CRT|OpenMP)$'
     } | ForEach-Object { $_.FullName })
     if (-not $directories.Count) { throw 'Selected toolchain has no x64 VC/OpenMP redistributables.' }
-    if ($Cuda) { $directories += Join-Path (Get-CudaToolkitDirectory) 'bin' }
+    if ($Cuda) {
+        # A reused CMake cache can select a different toolkit than the default.
+        # Package that build's runtime, never a different CUDA major from PATH.
+        if ($CMakeCache -match '(?m)^CUDAToolkit_BIN_DIR:PATH=([^\r\n]+)\r?$' -and
+            $Matches[1] -notlike '*-NOTFOUND') {
+            $directories += ConvertTo-CoreImagePath $Matches[1]
+        } else { $directories += Join-Path (Get-CudaToolkitDirectory) 'bin' }
+    }
     # FindOpenSSL selects headers/libraries outside PATH (e.g. the hosted
     # runner's Program Files/OpenSSL). Its adjacent bin directory owns the
     # matching TLS runtime; never substitute a different PATH installation.
