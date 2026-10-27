@@ -738,3 +738,43 @@ async fn capacity_park_resumes_when_local_1_5b_routes_to_larger_remote_seat() {
         .expect("the actual forwarding target changed before the waiter was first polled");
     assert_eq!(binding.load().requested_model(), "local-1.5B");
 }
+
+// A home lane on the fork's gateway: it takes a learned tool head.
+struct TailLane;
+
+#[async_trait::async_trait]
+impl AIProviderAdapter for TailLane {
+    fn provider_id(&self) -> &str {
+        "tail-lane-fixture"
+    }
+    fn name(&self) -> &str {
+        "tail lane"
+    }
+    fn default_model(&self) -> &str {
+        "fixture"
+    }
+    fn accepts_tail_tools(&self, _model: &str) -> bool {
+        true
+    }
+    async fn generate_text(
+        &self,
+        _request: TextGenerationRequest,
+    ) -> Result<TextGenerationResponse, String> {
+        Err("capability fixture must not generate".into())
+    }
+}
+
+// what this catches: the switch every resident is bound through answering the trait default
+// (`false`) for `accepts_tail_tools`, so no resident's learned tool head is ever sent even
+// when her home lane takes it (M5 2026-10-27, after #5491 deployed). The answer must follow
+// the seat: true at a home lane that takes tails, false once she routes to a remote seat.
+#[tokio::test]
+async fn the_switch_asks_the_seat_she_routes_to_whether_it_takes_her_tool_head() {
+    let now = continuum_base::time::EpochMs::now().millis();
+    let home: Arc<dyn AIProviderAdapter> = Arc::new(TailLane);
+    let factory = Arc::new(ScriptedPersonaAdapterFactory::custom(move |_| Ok(home.clone())));
+    let route = Arc::new(switch(factory, remote()));
+    assert!(!route.accepts_tail_tools("fixture"), "routed to the remote seat, no tail");
+    route.apply(&PlacementMove::FallHome { reason: "tail fixture" }, now, SeatFit::default()).await;
+    assert!(route.accepts_tail_tools("fixture"), "her home lane takes the tail");
+}
