@@ -4,7 +4,7 @@
 //! two binders can never both judge an endpoint stale and remove each other's.
 
 use std::io;
-use std::os::unix::fs::{FileTypeExt, PermissionsExt};
+use std::os::unix::fs::{FileTypeExt, MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 
 use tokio::net::{UnixListener, UnixStream};
@@ -20,17 +20,23 @@ impl Listener {
     }
 }
 
-/// The socket file this listener created: its device and inode.
+/// What one bind created at its path: the socket (by device and inode) and the ownership token.
 pub(super) struct Owned {
     path: PathBuf,
+    /// The socket this bind created, by device and inode. Cleanup removes only a socket that is
+    /// still this one, so a regular file, a symlink, or a listener that replaced the path without
+    /// going through custody is never removed.
+    identity: (u64, u64),
     /// This bind's ownership token, written to the custody sidecar under custody. A later bind
-    /// writes its own, so this owner's cleanup can tell its endpoint from a successor's. The
-    /// socket's (dev, ino) could not: an inode number is reused at once (card 005e1676).
+    /// writes its own, so a cleanup can tell its socket from a successor's that got the same
+    /// inode number, which the identity alone cannot: inode numbers are reused at once (card
+    /// 005e1676). Both must match.
     token: String,
 }
 
-/// A token no other bind, in this process or another, ever writes: the pid, the clock, and a
-/// per-process count.
+/// A token distinct across binds in practice: the pid, the wall clock in nanoseconds, and a
+/// per-process count. Not a cryptographic or absolute uniqueness guarantee; a collision would
+/// also need the same socket identity to remove anything.
 fn fresh_token() -> String {
     static BINDS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let nanos = std::time::SystemTime::now()
@@ -85,8 +91,12 @@ const CUSTODY_POLL: std::time::Duration = std::time::Duration::from_millis(2);
 impl Owned {
     pub(super) fn remove(self) {
         let Ok(mut custody) = custody(&self.path) else { return }; // without custody nothing is removed
-        // Still ours only while the sidecar holds this bind's token; a successor wrote its own.
-        if held_token(&mut custody).is_ok_and(|held| held == self.token) {
+        // Still ours only while the path is the socket this bind created AND the sidecar holds this
+        // bind's token: the identity spares any replacement, the token a successor whose socket
+        // reused the inode number.
+        let same_socket = std::fs::symlink_metadata(&self.path)
+            .is_ok_and(|m| m.file_type().is_socket() && (m.dev(), m.ino()) == self.identity);
+        if same_socket && held_token(&mut custody).is_ok_and(|held| held == self.token) {
             let _ = std::fs::remove_file(&self.path); // gone already is the outcome wanted
             let _ = set_token(&mut custody, ""); // an unreadable sidecar leaves a token no later bind matches
         }
@@ -116,9 +126,10 @@ fn bind_in_custody(path: &Path) -> io::Result<(std::os::unix::net::UnixListener,
     let listener = std::os::unix::net::UnixListener::bind(path)?;
     std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
     listener.set_nonblocking(true)?;
+    let meta = std::fs::symlink_metadata(path)?;
     let token = fresh_token();
     set_token(&mut custody, &token)?;
-    Ok((listener, Owned { path: path.to_path_buf(), token }))
+    Ok((listener, Owned { path: path.to_path_buf(), identity: (meta.dev(), meta.ino()), token }))
 }
 
 pub(super) async fn bind(path: &Path) -> io::Result<(Listener, Owned)> {
