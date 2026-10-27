@@ -442,6 +442,10 @@ pub struct PersonaInstanceManagerModule {
     /// from `ModuleContext` and shared (same `Arc`) with [`birth`](Self::birth) so
     /// completed births can emit `persona:born`.
     pub bus: Arc<LateBound<crate::runtime::MessageBus>>,
+    /// The durable wakefulness of every home on this node ([`crate::persona::dormancy`]),
+    /// opened and loaded at initialize (before the hosting reconciler's first draw) and
+    /// shared with `despawn --dormant` and `wake`.
+    pub dormancy: Arc<LateBound<crate::persona::dormancy::DormancyLedger>>,
 }
 
 impl PersonaInstanceManagerModule {
@@ -476,7 +480,30 @@ impl PersonaInstanceManagerModule {
             executor,
             birth,
             bus,
+            dormancy: Arc::new(LateBound::new("persona-instance-manager::dormancy")),
         }
+    }
+
+    /// Open the wakefulness ledger over the node's store, migrate it from the operator's
+    /// hold on its first boot, and hold the dormant set for the reconciler's draw. Runs at
+    /// module initialize, before the reconciler is released.
+    pub async fn load_dormancy(&self, adapter: Arc<dyn crate::orm::StorageAdapter>) -> Result<usize, String> {
+        use crate::persona::dormancy::{DormancyLedger, Home, Migration};
+        let ledger = DormancyLedger::open(adapter).await.map_err(|e| e.to_string())?;
+        let homes: Vec<Home> = crate::persona::resume_or_mint_provider::scan_homes(&self.continuum_root)
+            .await
+            .map_err(|e| e.to_string())?
+            .into_iter()
+            .map(|i| Home { id: crate::identity::PeerId::from_uuid(i.persona_id), agent_name: i.agent_name })
+            .collect();
+        let online: Vec<String> = self.registry.iter().map(|rt| rt.agent_name().to_string()).collect();
+        let hold = crate::persona::roster_hold::active();
+        let dormant = ledger
+            .load(&homes, Migration { hold: hold.as_ref(), online: &online, now_ms: continuum_base::time::EpochMs::now().millis() })
+            .await
+            .map_err(|e| e.to_string())?;
+        self.dormancy.install(Arc::new(ledger));
+        Ok(dormant.len())
     }
 
     /// The single [`PersonaBirth`] core — handed to the `persona/spawn` command so an

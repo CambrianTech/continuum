@@ -37,6 +37,15 @@ impl ServiceModule for PersonaInstanceManagerService {
         // `persona/spawn` command) can announce itself as `persona:born`. Shared with
         // `PersonaBirth` via the same `Arc<LateBound>`.
         self.0.bus.install(ctx.bus.clone());
+        // Durable dormancy loads before the hosting reconciler is released (executor
+        // release follows every module's initialize), so a dormant home is never drawn.
+        let adapter = ctx.storage("persona wakefulness")?.adapter("main").await?;
+        let dormant = self.0.load_dormancy(adapter).await?;
+        continuum_base::probe!(
+            class = "persona.dormancy.loaded",
+            dormant = dormant as u64,
+            "durable wakefulness loaded: dormant homes are not resumed until woken"
+        );
         Ok(())
     }
 
@@ -80,6 +89,7 @@ impl ServiceModule for PersonaInstanceManagerService {
     fn commands(&self) -> Vec<Arc<dyn crate::sdk_codegen::DynCommand>> {
         crate::commands::persona::command_objects(
             self.0.registry.clone(),
+            Arc::clone(&self.0.dormancy),
             self.0.continuum_root.clone(),
             Arc::clone(&self.0.executor),
             self.0.birth(),

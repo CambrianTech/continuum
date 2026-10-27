@@ -80,6 +80,7 @@ pub mod rag_inspect;
 pub mod recorder;
 pub mod response;
 pub mod resume_or_mint_provider;
+pub mod dormancy;
 pub mod resting_seat;
 pub mod roster_hold;
 pub mod role_template;

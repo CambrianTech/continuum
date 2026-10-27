@@ -2,6 +2,6 @@
 
 export type PersonaWakeParams = { 
 /**
- * The resting citizen's agent name (case-insensitive). Omit to READ who rests.
+ * The sleeping citizen's agent name (case-insensitive). Omit to READ who sleeps.
  */
 name?: string, };

@@ -20,6 +20,13 @@
 //! ([[persona-persistence-self-determination]]). Erasing the durable identity would
 //! be a different, destructive verb — not this one.
 //!
+//! ## `--dormant`: "not until she is woken"
+//!
+//! A plain despawn is "not now": the hosting reconciler resumes her home on the next
+//! restart. With `dormant: true` her durable wakefulness (`persona::dormancy`) is recorded
+//! Dormant FIRST, then she is taken offline, so no restart resumes her until
+//! `persona/instances/wake --name` does (Joel's population rule, 2026-10-25).
+//!
 //! ## Fail loud
 //!
 //! Unknown / un-parseable persona_id ⇒ [`CommandError::Invalid`]. A well-formed id
@@ -35,7 +42,11 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
+use std::sync::Arc;
+
+use crate::persona::dormancy::{DormancyLedger, Wakefulness};
 use crate::persona::PersonaAircRuntimeRegistry;
+use crate::runtime::LateBound;
 use crate::sdk_codegen::CommandError;
 
 #[cfg(test)]
@@ -51,6 +62,13 @@ pub struct PersonaDespawnParams {
     /// The persona's id as it appears in `persona/instances/list` (the airc
     /// peer_id Uuid). Fails loud if mal-formed or not currently online.
     pub persona_id: crate::identity::PersonaRef,
+    /// Leave her DORMANT: no restart resumes her home until `persona/instances/wake`.
+    #[serde(default)]
+    pub dormant: bool,
+    /// Why she sleeps (with `dormant`): carried into every skip probe.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub reason: Option<String>,
 }
 
 /// What `persona/instances/despawn` did: who left, and the roster size after.
@@ -74,15 +92,17 @@ crate::action_command! {
     /// aborts her service loop, drains it, drops her airc subscription so she
     /// leaves the room, and frees the slot. The inverse of persona/instances/
     /// bootstrap. Her on-disk self (home, seed, engrams) is untouched — the next
-    /// bootstrap resumes her. Fails loud on an unknown persona id.
+    /// bootstrap resumes her, unless `dormant` records her asleep until woken.
+    /// Fails loud on an unknown persona id.
     pub struct PersonaDespawn {
         registry: PersonaAircRuntimeRegistry,
+        dormancy: Arc<LateBound<DormancyLedger>>,
     }
     name: "persona/instances/despawn",
     access: Privileged,
     params: PersonaDespawnParams,
     output: DespawnReport,
-    run(this, _ctx, p) => {
+    run(this, ctx, p) => {
         // 1. Resolve the id — a clean UUID passes through; the 8-char SHORT form a
         //    caller was shown (rosters DISPLAY short ids) or a one-char-mistyped
         //    UUID expands against who's online. The ONE shared id_resolve primitive
@@ -94,7 +114,35 @@ crate::action_command! {
         )
         .map_err(|e| CommandError::Invalid(format!("{e} — call persona/instances/list")))?;
 
-        // 2. Orderly shutdown: abort + drain the service loop, drop the slot
+        // 2. Dormant first: a despawn that lands without its record is undone by the next
+        //    restart, the exact failure this option exists to end.
+        let dormant_reason = if p.dormant {
+            let ledger = this.dormancy.require().map_err(CommandError::Internal)?;
+            let agent_name = this
+                .registry
+                .get(persona_id)
+                .map(|rt| rt.agent_name().to_string())
+                .ok_or_else(|| {
+                    CommandError::NotFound(format!(
+                        "no persona with id {persona_id} is currently online — call persona/instances/list"
+                    ))
+                })?;
+            let reason = p.reason.clone().unwrap_or_else(|| "operator despawn --dormant".to_string()); // reason is prose for probes
+            let state = Wakefulness::Dormant {
+                since_ms: continuum_base::time::EpochMs::now().millis(),
+                reason: reason.clone(),
+                by: crate::persona::dormancy::caller_label(ctx),
+            };
+            ledger
+                .set(crate::identity::PeerId::from_uuid(persona_id), &agent_name, state, continuum_base::time::EpochMs::now().millis())
+                .await
+                .map_err(|e| CommandError::Internal(e.to_string()))?;
+            Some(reason)
+        } else {
+            None
+        };
+
+        // 3. Orderly shutdown: abort + drain the service loop, drop the slot
         //    (cascades to leaving the room). Returns None if she was not online.
         let runtime = this.registry.shutdown_slot(persona_id).await.ok_or_else(|| {
             CommandError::NotFound(format!(
@@ -105,10 +153,16 @@ crate::action_command! {
         let agent_name = runtime.agent_name().to_string();
         let roster_size = this.registry.len();
         Ok(DespawnReport {
-            detail: format!(
-                "{agent_name} left The Grid; {roster_size} persona(s) still online. Her on-disk \
-                 self is preserved — bootstrap resumes her."
-            ),
+            detail: match dormant_reason {
+                Some(reason) => format!(
+                    "{agent_name} left The Grid and is DORMANT ({reason}); {roster_size} persona(s) \
+                     still online. No restart resumes her until persona/instances/wake --name {agent_name}."
+                ),
+                None => format!(
+                    "{agent_name} left The Grid; {roster_size} persona(s) still online. Her on-disk \
+                     self is preserved — bootstrap resumes her."
+                ),
+            },
             agent_name,
             roster_size,
         })
@@ -135,9 +189,11 @@ mod tests {
     async fn despawn_of_offline_persona_is_not_found() {
         use crate::sdk_codegen::ActionCommand;
         let registry = PersonaAircRuntimeRegistry::new();
-        let cmd = PersonaDespawn { registry };
+        let cmd = PersonaDespawn { registry, dormancy: Arc::new(LateBound::new("test dormancy")) };
         let params = PersonaDespawnParams {
             persona_id: Uuid::new_v4().to_string().into(),
+            dormant: false,
+            reason: None,
         };
         let err = cmd
             .run(&Ctx::default(), params)
@@ -152,9 +208,11 @@ mod tests {
     async fn despawn_of_malformed_id_is_invalid() {
         use crate::sdk_codegen::ActionCommand;
         let registry = PersonaAircRuntimeRegistry::new();
-        let cmd = PersonaDespawn { registry };
+        let cmd = PersonaDespawn { registry, dormancy: Arc::new(LateBound::new("test dormancy")) };
         let params = PersonaDespawnParams {
             persona_id: "not-a-uuid".to_string().into(),
+            dormant: true,
+            reason: None,
         };
         let err = cmd
             .run(&Ctx::default(), params)
