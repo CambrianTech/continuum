@@ -56,22 +56,45 @@ async fn next(sub: &mut Subscription) -> Frame {
         .expect("the relay is still serving")
 }
 
-async fn next_line(sub: &mut Subscription) -> (u64, String, bool) {
-    loop {
-        if let Frame::Line { seq, text, truncated } = next(sub).await {
-            return (seq, text, truncated);
-        }
+/// A subscription that has seen its opening heartbeat: the relay sends it after subscribing, so
+/// every line written from here on reaches this subscriber (a line written before it may be
+/// drained with nobody subscribed yet, and is counted as missed).
+async fn subscribe(socket: &Path) -> Subscription {
+    let mut sub = Subscription::connect(socket).await.expect("connect");
+    match next(&mut sub).await {
+        Frame::Heartbeat(_) => sub,
+        other => panic!("a heartbeat comes first, got {other:?}"),
     }
 }
 
-async fn heartbeat_where(sub: &mut Subscription, wanted: impl Fn(&Heartbeat) -> bool) -> Heartbeat {
-    loop {
-        if let Frame::Heartbeat(beat) = next(sub).await {
-            if wanted(&beat) {
-                return beat;
+/// The next line frame, within a total deadline: heartbeats alone never keep a test waiting.
+async fn next_line(sub: &mut Subscription) -> (u64, String, bool) {
+    tokio::time::timeout(Duration::from_secs(20), async {
+        loop {
+            if let Frame::Line { seq, text, truncated } = next(sub).await {
+                return (seq, text, truncated);
             }
         }
-    }
+    })
+    .await
+    .expect("a line frame arrives within the deadline")
+}
+
+/// The first heartbeat satisfying `wanted`, within a total deadline.
+async fn heartbeat_where(sub: &mut Subscription, wanted: impl Fn(&Heartbeat) -> bool) -> Heartbeat {
+    let mut last = None;
+    let found = tokio::time::timeout(Duration::from_secs(20), async {
+        loop {
+            if let Frame::Heartbeat(beat) = next(sub).await {
+                if wanted(&beat) {
+                    return beat;
+                }
+                last = Some(beat);
+            }
+        }
+    })
+    .await;
+    found.unwrap_or_else(|_| panic!("no heartbeat met the condition within the deadline; last: {last:?}"))
 }
 
 // what this catches: a relay that reads lines without serving them, serves a consumer a line
@@ -186,7 +209,7 @@ async fn connections_past_the_bound_are_refused_and_counted() {
 #[tokio::test]
 async fn a_long_line_is_cut_in_its_frame_and_whole_in_the_archive() {
     let mut relay = start(Config { line_bytes: 4096, ..quick() }, false).await;
-    let mut sub = Subscription::connect(&relay.socket).await.expect("connect");
+    let mut sub = subscribe(&relay.socket).await;
     let long = "x".repeat(10_000);
     relay.write(&long).await;
     let (_, text, truncated) = next_line(&mut sub).await;
@@ -201,7 +224,7 @@ async fn a_long_line_is_cut_in_its_frame_and_whole_in_the_archive() {
 #[tokio::test]
 async fn an_unwritable_archive_still_delivers_every_line() {
     let mut relay = start(quick(), true).await;
-    let mut sub = Subscription::connect(&relay.socket).await.expect("connect");
+    let mut sub = subscribe(&relay.socket).await;
     relay.write("compute error").await;
     assert_eq!(next_line(&mut sub).await, (1, "compute error".into(), false));
     assert!(!relay.log.exists());

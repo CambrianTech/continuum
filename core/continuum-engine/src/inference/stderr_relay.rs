@@ -269,7 +269,9 @@ async fn subscriber(stream: ServerStream, state: Arc<State>) {
     }
 }
 
-/// A consumer's side of a relay socket.
+/// A consumer's side of a relay socket. The relay subscribes a connection before it sends that
+/// connection's opening heartbeat, so the lines a consumer receives are those drained after its
+/// first heartbeat; a line drained before it is counted in `missed_disconnected`.
 pub struct Subscription {
     frames: tokio::io::Lines<BufReader<ClientStream>>,
 }
