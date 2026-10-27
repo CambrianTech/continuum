@@ -59,9 +59,16 @@ pub(super) fn observe_served_engine(now: Option<EngineIncarnation>, props: Resul
     SERVED_ENGINE.lock().observe(now, props);
 }
 
-/// A new live engine is being launched: nothing is known about it until its own `/props` is read.
-pub(super) fn forget_served_engine() {
-    *SERVED_ENGINE.lock() = ServedEngine::default();
+/// A new live engine is being launched from `program`. Its slot's stamp is the evidence until
+/// its own `/props` answers: the core knows which engine it is starting. "Unknown" read as "no
+/// `tail_tools`" sent every resident's first act after a restart the full 38-verb surface, and her
+/// next act the learned head. That was two head changes, two full re-prefills, and a view
+/// turnover per restart (the M5, 2026-10-27 17:53Z: restores matched 32 tokens of ~150k). A
+/// binary outside the owned slots has no stamp and stays unknown.
+pub(super) fn expect_launched_engine(program: &str) {
+    let build = crate::inference::engine_slots::stamp_of_bin(std::path::Path::new(program))
+        .and_then(|stamp| stamp.split(':').next().map(str::to_owned));
+    *SERVED_ENGINE.lock() = ServedEngine { incarnation: None, build };
 }
 
 /// PURE: whether a lane reporting `build_info` (`b10765-1c6681593`) runs the `pinned` commit,
@@ -124,8 +131,22 @@ mod tests {
         seen.observe(Some(b), Ok(Some("b10765-e7e1077b3")));
         assert!(!seen.takes_tail_tools(PINNED_ENGINE), "B answered with an older build");
 
-        let mut launched = ServedEngine::default(); // what `forget_served_engine` stores at every live launch
+        let mut launched = ServedEngine::default(); // what `expect_launched_engine` stores for an unstamped binary
         launched.observe(Some(b), Err(()));
-        assert!(!launched.takes_tail_tools(PINNED_ENGINE), "a launch clears the evidence until the new engine answers");
+        assert!(!launched.takes_tail_tools(PINNED_ENGINE), "an unstamped launch has no evidence until the new engine answers");
+    }
+
+    // what this catches: the first act after a restart deciding her tool head before the new
+    // engine's `/props` answered. On the M5 (2026-10-27 17:53Z) every resident got the full
+    // surface, then the learned head: two head changes, restores matching 32 tokens of ~150k.
+    #[test]
+    fn a_launch_from_a_pinned_slot_takes_tail_tools_before_its_props_answer() {
+        let short: String = PINNED_ENGINE.trim().chars().take(9).collect(); // a slot stamp's commit field
+        let mut launched = ServedEngine { incarnation: None, build: Some(short) };
+        assert!(launched.takes_tail_tools(PINNED_ENGINE), "the launched slot's stamp is the evidence");
+
+        let b = EngineIncarnation { pid: 200, started_s: 1_700_000_500, port: 8080 };
+        launched.observe(Some(b), Ok(Some("b10765-e7e1077b3")));
+        assert!(!launched.takes_tail_tools(PINNED_ENGINE), "the engine's own answer replaces the stamp");
     }
 }
