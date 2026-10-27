@@ -70,7 +70,7 @@ pub(super) async fn attach(stderr: tokio::process::ChildStderr, pid: u32, port: 
             match readiness {
                 Ok(ready) => {
                     reap(relay, engine);
-                    follow::follow_ready(engine, socket, ready, watch);
+                    follow::follow_ready(engine, socket, ready, watch); // the follower runs for the engine's life; a second one is a no-op
                     Ok(())
                 }
                 Err(reason) => {

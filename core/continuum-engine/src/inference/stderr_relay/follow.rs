@@ -80,17 +80,16 @@ pub async fn ready(engine: EngineIncarnation, socket: &Path, relay: &mut tokio::
     }
 }
 
-/// Follow `engine` from a [`Ready`] connection, then as [`follow`] does. False when this process
-/// already follows it.
-pub fn follow_ready(engine: EngineIncarnation, socket: PathBuf, ready: Ready, watch: Box<dyn LineWatch>) -> bool {
-    let Some(following) = Following::claim(engine) else { return false };
-    tokio::spawn(async move {
+/// Follow `engine` from a [`Ready`] connection, then as [`follow`] does: the follower's task, or
+/// `None` when this process already follows it. Ending the task is what a core exiting does to it.
+pub fn follow_ready(engine: EngineIncarnation, socket: PathBuf, ready: Ready, watch: Box<dyn LineWatch>) -> Option<tokio::task::JoinHandle<()>> {
+    let following = Following::claim(engine)?;
+    Some(tokio::spawn(async move {
         let _following = following;
         let mut watch = watch;
         read(engine, ready.subscription, Some(ready.opening), watch.as_mut()).await;
         follow_until_gone(engine, &socket, watch).await;
-    });
-    true
+    }))
 }
 
 /// This process's claim to follow one incarnation, given up however its task ends (an abort
@@ -306,11 +305,12 @@ mod tests {
         stderr.write_all(b"banner\n").await.expect("write");
         let proven = ready(engine, &socket, &mut child, Duration::from_secs(10)).await.expect("ready for this engine");
         let seen = Arc::new(parking_lot::Mutex::new(Vec::new()));
-        assert!(follow_ready(engine, socket.clone(), proven, Box::new(Record(Arc::clone(&seen)))));
+        let follower = follow_ready(engine, socket.clone(), proven, Box::new(Record(Arc::clone(&seen)))).expect("the first follower");
         until("the spawning core's follower gets the held banner", || seen.lock().contains(&"banner".to_string())).await;
         let _ = child.kill().await;
         drop(stderr);
         relay.await.expect("the relay task").expect("the relay ends cleanly");
+        follower.abort();
         let _ = stand_in.kill().await;
     }
 
