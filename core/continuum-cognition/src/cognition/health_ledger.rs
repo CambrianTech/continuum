@@ -609,12 +609,16 @@ pub fn verdict(h: &CitizenHealth) -> Verdict {
 fn held_by(by: &crate::inference::llama_server::serving_hold::HoldCause) -> String {
     use crate::inference::llama_server::serving_hold::HoldCause;
     match by {
-        HoldCause::Resident { work } => work
-            .iter()
-            .map(|w| format!("job {} ({}) on engine pid {}", w.job, w.consumer, w.engine_pid))
-            .collect::<Vec<_>>()
-            .join(", "),
-        HoldCause::Unknown { reason } => format!("ownership unknown ({reason})"),
+        HoldCause::Resident { work } => format!(
+            "the engine hosts live work: {}",
+            work.iter()
+                .map(|w| format!("job {} ({}) on engine pid {}", w.job, w.consumer, w.engine_pid))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+        // No work is confirmed here: the residency record could not be read, so serving holds
+        // rather than risk replacing an engine that may host some (Codex on #5543).
+        HoldCause::Unknown { reason } => format!("the engine's ownership is unknown, so serving holds it ({reason})"),
     }
 }
 
@@ -642,7 +646,7 @@ pub fn line(h: &CitizenHealth, v: &Verdict) -> String {
             "EMPTY: no residents — {lanes} lanes offered, {lanes_granted} grants this hour"
         ),
         Verdict::Held { resident, hold } => format!(
-            "HELD: the engine hosts live work since {} — {}; {resident} resident, no lanes until it is released",
+            "HELD since {}: {}; {resident} resident, no lanes until it is released",
             continuum_base::time::EpochMs::from_millis(hold.since_ms).rfc3339(),
             held_by(&hold.by)
         ),

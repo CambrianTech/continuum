@@ -309,8 +309,8 @@
         // the roster fell through to a verdict ABOUT THE CITIZENS and nothing rested.
         let by_peak = CitizenHealth { lanes_sustained: 8, ..measured.clone() };
         assert_eq!(verdict(&by_peak), Verdict::Reading { acts: 15 });
+    }
 
-    
     // what this catches (card a18452d6): a node whose only engine a mind's training held read
     // EMPTY twice on enrico (2026-10-27) and was chased as dead. A held hour reads HELD and names
     // the work; an hour with acts is judged as usual even while held.
@@ -335,7 +335,15 @@
         assert_eq!(v, Verdict::Held { resident: 0, hold });
         let shown = line(&held, &v);
         assert!(shown.contains("HELD") && shown.contains("genome-train:f633bd36") && shown.contains("pid 33971"), "{shown}");
+        // An unreadable residency record holds serving too, but confirms no work: the line says
+        // ownership is unknown and never claims the engine hosts live work.
+        let unknown = CitizenHealth {
+            held_for: Some(ServingHold { since_ms: 1_793_120_435_262, by: HoldCause::Unknown { reason: "record unreadable".into() } }),
+            ..h(0, 0, 0, 0)
+        };
+        let unknown_line = line(&unknown, &verdict(&unknown));
+        assert!(unknown_line.contains("HELD") && unknown_line.contains("ownership") && unknown_line.contains("record unreadable"), "{unknown_line}");
+        assert!(!unknown_line.contains("hosts live work"), "{unknown_line}");
         let acting = CitizenHealth { held_for: held.held_for.clone(), ..h(4, 2, 10, 2) };
         assert_ne!(verdict(&acting).as_str(), "held", "minds that acted are judged on their acts");
     }
-}
