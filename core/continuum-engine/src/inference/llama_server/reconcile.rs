@@ -442,7 +442,7 @@ async fn serve_or_adopt<C: LlamaServerControl + ?Sized>(
             };
             *ENGINE_STALE.lock() = (!engine_current).then(|| pair.clone());
             if !engine_ok {
-                let resize_admitted = (!window_ok || !lanes_ok) && !refused_trade && !refused_pressure;
+                let resize_admitted = false; // Engine convergence and geometry resize are separate lifecycle decisions.
                 match engine_convergence_target(target, served_window_n, served_lanes_n, resize_admitted) {
                     Ok(selected) => convergence_target = Some(selected),
                     Err(reason) => return EnsureOutcome::Degraded { reason },
