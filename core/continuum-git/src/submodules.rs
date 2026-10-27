@@ -114,6 +114,7 @@ mod tests {
     // reads as dirty; and an absent submodule being cloned by a deploy.
     #[test]
     fn a_present_unregistered_checkout_follows_the_pin_both_ways() {
+        let _git_running = crate::GIT_PROCESSES.lock().unwrap_or_else(|poisoned| poisoned.into_inner()); // unwrap_or_else: a neighbour's failure must not fail this test too
         let root = tempfile::tempdir().expect("tempdir");
         let engine = root.path().join("engine");
         std::fs::create_dir(&engine).expect("engine dir");
