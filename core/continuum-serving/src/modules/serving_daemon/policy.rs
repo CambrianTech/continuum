@@ -192,8 +192,8 @@ pub(super) const REHOME_COOLDOWN_TICKS: u32 = (READY_TIMEOUT.as_secs() / TICK.as
 /// Which model the plan should treat as the incumbent, given what we have already PUBLISHED and
 /// what we INHERITED from a previous generation of this core.
 ///
-/// A published plan always wins: once this core has decided, its own decision is the incumbent
-/// and the inherited lane is either already adopted or already reclaimed. The inherited lane
+/// A published plan always wins as a model preference, not as evidence of residency.
+/// Planning separately verifies a matching live lane before crediting weights. The inherited lane
 /// only speaks for the window where `plan_tx` is still empty — the first plan after boot — which
 /// is precisely the window the #438 downshift lives in.
 ///
