@@ -384,6 +384,10 @@ async fn admit(
                 admission.released = Some(pool.released());
                 admission._slot_permit = Some(pool.acquire_slot(slot).await?);
                 admission._endpoint.check_ready()?;
+                // Before the plan moves the slot's attribution: once a stop has closed page IO,
+                // nothing pages a resident out (card 47151d36, `slots::page_io`).
+                let page_io = crate::inference::slots::admit_page_io()
+                    .ok_or("the node is stopping: page admission is closed")?;
                 let pg = pool.plan_paging(slot, k);
                 admission.page_confirmed = pg.already_resident;
                 if pg.already_resident {
@@ -422,6 +426,8 @@ async fn admit(
                     let client = client.clone();
                     let paging_root = root.to_owned();
                     admission = admission.retain_paging(root, move |mut admission, interested| async move {
+                        // Held until this task's ledger updates: the stop waits for it.
+                        let _page_io = page_io;
                         // 3. The context switch onto a now-free slot: page the evictee out,
                         //    page this activity in. Lands immediately (no defer) because the slot
                         //    is not decoding.
