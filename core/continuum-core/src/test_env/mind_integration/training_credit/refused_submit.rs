@@ -13,7 +13,9 @@ fn region_answering(fx: &ExactReview, reply: Option<serde_json::Value>) -> Credi
         let trigger = continuum_client::mock::MockTransport::new();
         match &reply {
             Some(reply) => script_settlement_reply(&trigger, &selected, Some(reply.clone())),
-            None => trigger.respond_to("genome/training-trigger/submit", |_| panic!("an accepted credit is never submitted again")),
+            None => {
+                trigger.respond_to("genome/training-trigger/submit", |_| panic!("an accepted credit is never submitted again"));
+            }
         }
         Some((name.to_string(), settlement_connection(executor.clone(), persona, trigger, None)))
     }))
