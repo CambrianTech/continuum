@@ -202,6 +202,7 @@ impl LlmDeliberationFaculty {
         // number that says HOW BADLY the turn is over its window was destroyed at the
         // moment it was computed. Subtract in two steps and probe the remainder.
         let required = all_messages.required_parts();
+        let newest_result_tokens = required.latest_result;
         let required_payload = required.total();
         let grounding_budget = after_reserves.saturating_sub(required_payload);
         let payload_overflow = required_payload.saturating_sub(after_reserves);
@@ -707,6 +708,7 @@ impl LlmDeliberationFaculty {
             messages,
             segments,
             newest_result_reduced,
+            newest_result_tokens,
         }
     }
 
