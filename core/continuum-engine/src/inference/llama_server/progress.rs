@@ -75,6 +75,43 @@ pub fn engine_condemned() -> bool {
     SERVING_STATE.get().is_some_and(|rx| !rx.borrow().ready)
 }
 
+/// How many times the serving daemon has DECIDED to tear the engine down while work may hold
+/// it (a quarantine, a wedged-lane relaunch). Not the readiness bit: `ready=false` is also
+/// published for a transient `/props` read while the engine stays up, and an act abandoned
+/// for that loses its whole prefill (Fable on #5500).
+static CONDEMNATIONS: std::sync::LazyLock<watch::Sender<u64>> = std::sync::LazyLock::new(|| watch::channel(0).0);
+
+/// The daemon decided to replace the engine and its relaunch will drain every admitted turn:
+/// every act in flight ends now instead of holding that drain to its next checkpoint.
+pub fn condemn(reason: &str) {
+    CONDEMNATIONS.send_modify(|generation| *generation += 1);
+    continuum_base::probe!(
+        class = "serving.engine.condemned",
+        generation = *CONDEMNATIONS.borrow(),
+        reason = reason,
+        "the engine is being replaced: acts in flight on it end now, so its drain is not held"
+    );
+}
+
+/// Resolves at the next condemnation after the call: enrico, 2026-10-26 (core 839f70216), a
+/// quarantine at 21:10:02Z, then `ensure_serving` wedged 23 min until an act's next checkpoint
+/// at 21:33:18 let its guard go (card 4d2a64a2).
+pub async fn until_condemned() {
+    until_condemned_on(condemnations()).await
+}
+
+/// A receiver of the condemnation generation, marked seen: it changes at the next one.
+pub fn condemnations() -> watch::Receiver<u64> {
+    CONDEMNATIONS.subscribe()
+}
+
+/// [`until_condemned`] on one receiver: the next generation after it was subscribed.
+pub(crate) async fn until_condemned_on(mut rx: watch::Receiver<u64>) {
+    if rx.changed().await.is_err() {
+        std::future::pending::<()>().await;
+    }
+}
+
 
 /// Capability discovery uses the same bounded props read as the managed lane.
 pub(crate) async fn engine_props(root: &str, client: &reqwest::Client) -> Result<serde_json::Value, LlamaServerError> {

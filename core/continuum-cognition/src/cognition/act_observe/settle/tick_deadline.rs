@@ -23,16 +23,33 @@ pub(super) const ACT_EXTENSIONS: u32 = 2;
 ///
 /// `Err` says whether the step's generation was already dispatched: a step ended after
 /// that point dropped a generation in flight and must never be counted as a lane wait.
+///
+/// A condemned engine ends the step AT ONCE, not at its next checkpoint: the relaunch's
+/// drain waits for this step's guard, so every second held here is the whole node dark
+/// (card 4d2a64a2: 23 minutes on enrico, 2026-10-26). Condemned means the daemon decided to
+/// replace the engine (`llama_server::condemn`), never a transient not-ready snapshot.
 pub(super) async fn until_act_stalls<F: std::future::Future>(
     deadline: tokio::time::Instant,
     bound: std::time::Duration,
     persona: Option<uuid::Uuid>,
     step: F,
 ) -> Result<F::Output, Abandoned> {
+    until_act_stalls_or(deadline, bound, persona, step, crate::inference::llama_server::until_condemned()).await
+}
+
+/// [`until_act_stalls`] with the condemnation it listens for given, so a test can raise it.
+pub(super) async fn until_act_stalls_or<F: std::future::Future, C: std::future::Future<Output = ()>>(
+    deadline: tokio::time::Instant,
+    bound: std::time::Duration,
+    persona: Option<uuid::Uuid>,
+    step: F,
+    condemned: C,
+) -> Result<F::Output, Abandoned> {
     use crate::cognition::llm_deliberation_faculty::admission_clock;
     let (queue_tx, mut queue_rx) = tokio::sync::watch::channel(admission_clock::QueueTime::new(deadline, bound));
     let step = admission_clock::scope(queue_tx.clone(), step);
     tokio::pin!(step);
+    tokio::pin!(condemned);
     let mut extensions = 0u32;
     let mut previous = None;
     loop {
@@ -42,6 +59,16 @@ pub(super) async fn until_act_stalls<F: std::future::Future>(
             biased;
             out = &mut step => return Ok(out),
             _ = queue_rx.changed() => continue,
+            () = &mut condemned => {
+                let abandoned = Abandoned::at(&queue_rx);
+                continuum_base::probe!(
+                    class = "settle.tick.condemned",
+                    dispatched = abandoned.dispatched,
+                    extensions = extensions as u64,
+                    "the engine was condemned mid-act: ending the act now, so the relaunch's drain is not held to its next checkpoint"
+                );
+                return Err(abandoned);
+            }
             _ = async {
                 match due {
                     Some(at) => tokio::time::sleep_until(at).await,

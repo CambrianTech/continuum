@@ -748,3 +748,18 @@ async fn reconcile_emits_snapshot_on_the_bus() {
         "one admission and one completion"
     );
 }
+
+// what this catches (card 4d2a64a2; Fable on #5500): the one place the daemon commits to an
+// engine transition (`publish_lifecycle_admission`: relaunch, quarantine replacement,
+// convergence, retirement) must condemn the engine, so acts in flight end before the drain
+// instead of at their next checkpoint. Readiness alone (a transient 0 `/props` window under
+// AlreadyServing) is published elsewhere and never condemns: `until_condemned` reads no snapshot.
+#[test]
+fn an_admitted_lifecycle_transition_condemns_the_engine() {
+    let condemned = crate::inference::llama_server::condemnations();
+    let (serving, _) = tokio::sync::watch::channel(ServingSnapshot::empty());
+    let (verified, _) = tokio::sync::watch::channel(None);
+    ServingDaemonModule::publish_lifecycle_admission(&serving, &verified, None, Some("coder-14b"));
+    assert!(condemned.has_changed().unwrap(), "an admitted transition condemns the engine"); // unwrap: the sender is a process-lifetime static
+    assert!(!serving.borrow().ready, "and publishes it not-ready, as before");
+}

@@ -1,6 +1,26 @@
 //! Progress regression fixtures.
 #![cfg(test)]
 use super::*;
+
+// what this catches (card 4d2a64a2; Fable on #5500): a condemnation an in-flight wait cannot
+// hear until its next checkpoint, and a wait that hears something that is not one. The wait
+// resolves at the next condemnation after it began, not at one before it, and never on a
+// closed channel.
+#[tokio::test(start_paused = true)]
+async fn a_wait_hears_the_next_condemnation_the_moment_it_happens() {
+    let (tx, _) = tokio::sync::watch::channel(0u64);
+    tx.send_replace(1); // a condemnation before the act began: not hers to hear
+    let wait = tokio::spawn(until_condemned_on(tx.subscribe()));
+    tokio::time::sleep(std::time::Duration::from_secs(3600)).await;
+    assert!(!wait.is_finished(), "an earlier condemnation does not end a later act");
+    tx.send_modify(|generation| *generation += 1);
+    tokio::time::timeout(std::time::Duration::from_millis(1), wait).await.unwrap().unwrap(); // unwrap: the wait must resolve at once
+
+    let wait = tokio::spawn(until_condemned_on(tx.subscribe()));
+    drop(tx);
+    tokio::time::sleep(std::time::Duration::from_secs(3600)).await;
+    assert!(!wait.is_finished(), "a closed channel never condemns");
+}
 // what this catches (card 6f3218ed, the act-bound half): the per-request rule that keeps
 // a lost request from riding someone else's progress. The first checkpoint needs only a
 // processing slot; a later one needs the SAME task with its work moved; a new task on the
