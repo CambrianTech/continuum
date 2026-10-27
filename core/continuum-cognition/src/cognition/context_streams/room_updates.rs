@@ -35,10 +35,17 @@ impl Source<ContextMessage> for RoomUpdates {
             .map(|update| Item {
                 key: update.event_id.to_string(),
                 full: ContextMessage::user(update.render_room_update()),
-                // Collapsed at a start, an older one leaves her view as a conversation turn
-                // does: the room keeps it, `chat/history` rereads it, and the newest never goes.
                 summary: None,
-                pointer: None,
+                // Collapsed (an older one at a start, or one larger than her whole window on
+                // arrival), it still says who spoke, where, how much, and how to reread it: a
+                // message she cannot read whole arrives as its handle, never as a refusal.
+                pointer: Some(ContextMessage::user(format!(
+                    "[Room message received during this turn; room {}; peer {}; event {}; {} chars, collapsed: chat/history rereads it]",
+                    update.room_id,
+                    update.peer_id,
+                    update.event_id,
+                    update.render_content().chars().count()
+                ))),
             })
             .collect()
     }

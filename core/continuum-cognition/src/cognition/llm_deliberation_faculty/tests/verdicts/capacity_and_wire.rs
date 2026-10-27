@@ -283,9 +283,11 @@ async fn an_8192_window_keeps_required_content_under_a_large_measured_need() {
     assert!(wire_tokens <= window as usize, "prompt + reply {wire_tokens} > window {window}");
 }
 
-// what this catches: an indivisible oversized stimulus, room update or active
-// result must fault before inference, including self-ticks with no chat turns.
-// It must still publish demand, so refusal cannot freeze a small window.
+// what this catches: an indivisible oversized stimulus must fault before inference,
+// including self-ticks with no chat turns. It must still publish demand, so refusal
+// cannot freeze a small window. A room message larger than the window is not
+// indivisible: it is an item of her view and arrives as its handle (chat/history
+// rereads it), so she thinks instead of refusing (case 2).
 //
 // An oversized STANDING GROUNDING unit is the deliberate exception, and cases 3-4
 // pin it: enrichment sheds, the turn proceeds. This test asserted the opposite
@@ -304,11 +306,11 @@ async fn prompt_capacity_fault_keeps_demand_and_never_calls_the_adapter() {
     let window = 8192u32;
     for oversized_part in 0..5 {
         let persona = Uuid::new_v4();
-        // Parts 0-2 must never reach the adapter, so an EMPTY script proves it.
-        // Parts 3-4 shed their enrichment and go on to think, so they need a real
-        // response — reaching the model is the outcome those cases assert.
+        // Part 0 must never reach the adapter, so an EMPTY script proves it.
+        // Parts 1-4 bound or shed what is too large and go on to think, so they
+        // need a real response — reaching the model is the outcome they assert.
         let adapter = Arc::new(ScriptedAdapter::new(
-            if oversized_part >= 3 || oversized_part == 1 {
+            if oversized_part >= 1 {
                 vec![make_response(FinishReason::Stop, "PASS", None)]
             } else {
                 vec![]
@@ -365,13 +367,13 @@ async fn prompt_capacity_fault_keeps_demand_and_never_calls_the_adapter() {
                 .with_context_window(window)
                 .with_working_memory(wm)
                 .with_working_set(registry.clone());
-        // Parts 3-4 shed their standing grounding (#3954) and part 1 caps its
-        // oversized action result and demotes the rest — all three now THINK
-        // instead of refusing. What still faults is a genuinely irreducible
-        // payload: the stimulus (part 0) and a room update (part 2), neither of
-        // which any bound may drop without answering a question she was never
-        // shown.
-        let bounded_case = oversized_part >= 3 || oversized_part == 1;
+        // Parts 3-4 shed their standing grounding (#3954), part 1 caps its
+        // oversized action result and demotes the rest, and part 2's room message
+        // arrives as its handle in her view — all of them THINK instead of refusing.
+        // What still faults is the genuinely irreducible payload: the stimulus
+        // (part 0), which no bound may drop without answering a question she was
+        // never shown.
+        let bounded_case = oversized_part >= 1;
         let grounding_case = bounded_case;
         let view = faculty.prompt_view(&ws);
         if grounding_case {
@@ -401,6 +403,18 @@ async fn prompt_capacity_fault_keeps_demand_and_never_calls_the_adapter() {
                 1,
                 "she reached the model — that IS the fix (part {oversized_part})"
             );
+            if oversized_part == 2 {
+                let seen = adapter.seen.lock().unwrap();
+                let texts: Vec<String> = seen[0].messages.iter().map(|m| m.content_text()).collect();
+                assert!(
+                    texts.iter().any(|t| t.contains("collapsed: chat/history rereads it")),
+                    "the oversized room message arrives as its handle: {texts:?}"
+                );
+                assert!(
+                    texts.iter().all(|t| !t.contains(&"payload ".repeat(1024))),
+                    "and never whole past her window"
+                );
+            }
         } else {
             assert!(
                 outcome.fault.is_none(),
