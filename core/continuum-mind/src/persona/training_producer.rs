@@ -67,6 +67,8 @@ pub use executor::*;
 mod speech_discipline_trait;
 pub use speech_discipline_trait::*;
 mod redrive;
+mod credit_acceptance_region;
+pub use credit_acceptance_region::{CreditAcceptanceRegion, Resolve};
 mod claim_following;
 pub use claim_following::{ClaimFollowingCapture, OpenCapture};
 mod settle_card_credit_bound;

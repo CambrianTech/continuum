@@ -87,6 +87,26 @@ pub(super) async fn consume_review_credit<T: Transport>(
     if result.state != ReviewedCreditState::AwaitingAcceptance {
         return Ok(result);
     }
+    settle_passed(conn, persona_name, persona_id, id, &binding, review, review_id, result).await
+}
+
+/// The settlement of a credit whose review lets it pass, from its immutable binding: the
+/// bound snapshot's provenance, its lived calls, the reservation, the one decision, then the
+/// training submit and its acceptance (or the refusal kept, card 99b2773a). Shared by a
+/// review's consumption and the retry of a decided credit ([`retry_decided`]), so the two
+/// cannot drift.
+#[allow(clippy::too_many_arguments)] // each is one fact the settlement checks; a struct would only rename them
+pub(super) async fn settle_passed<T: Transport>(
+    conn: &Connection<T>,
+    persona_name: &str,
+    persona_id: Uuid,
+    id: Uuid,
+    binding: &WorkCreditBinding,
+    review: &airc_work::WorkSubmissionReview,
+    review_id: airc_work::WorkReviewId,
+    mut result: ReviewedCredit,
+) -> Result<ReviewedCredit, CreditBindingError> {
+    let selection = &binding.selection;
     let intent = read_one::<_, CreditTransferIntent>(
         conn,
         persona_name,

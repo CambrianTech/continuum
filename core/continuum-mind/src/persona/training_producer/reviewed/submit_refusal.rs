@@ -5,8 +5,8 @@
 //! persisted at 13:19:04Z, then the training trigger answered without an acceptance. The answer
 //! was returned once and kept nowhere, so the credit read `awaiting_acceptance` with no error,
 //! and nothing tried again until another review event or her next registration. Here the refusal
-//! is kept: its status names why it waits, and staging her next turn asks for one more pass of
-//! her reviews while one is held. The submit replays under the same submission id, so a retry
+//! is kept, so her status names why it waits; [`super::super::CreditAcceptanceRegion`] settles
+//! it again. The submit replays under the same submission id, so a retry
 //! the trigger already accepted is `AlreadyAccepted`, never a second batch.
 
 use super::*;
@@ -52,25 +52,4 @@ pub(super) async fn record_refusal<T: Transport>(
 /// keeps one.
 pub(super) fn clear_refusal(id: Uuid) -> BatchOperation {
     delete(id)
-}
-
-/// Whether a reviewed credit of hers waits on a refused submit. Her staging asks for one more
-/// pass of her reviews while one does.
-pub async fn refused_credit_waiting<T: Transport>(
-    conn: &Connection<T>,
-    persona_name: &str,
-) -> Result<bool, ClientError> {
-    let value = conn
-        .commands()
-        .execute_value(
-            "data/list",
-            json!({
-                "collection": CreditSubmitRefusal::COLLECTION,
-                "dbPath": format!("@persona:{persona_name}"),
-                "limit": 1
-            }),
-        )
-        .await?;
-    let result: crate::orm::list_result::DataListResult = serde_json::from_value(value)?; // Decode the data/list command envelope once at the storage boundary.
-    Ok(result.total > 0)
 }

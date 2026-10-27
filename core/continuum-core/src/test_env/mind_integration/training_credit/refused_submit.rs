@@ -1,50 +1,73 @@
 #![cfg(test)]
 //! A reviewed credit whose training submit was refused (card 99b2773a).
 use super::*;
+use crate::persona::training_producer::reviewed::ReviewedCreditState as State;
+use crate::runtime::{BrainRegion, CadenceHint, RegionContext};
 
-// what this catches (card 99b2773a, Kimi's 28087ebb on the 5090, 2026-10-27): a decided credit
-// the trigger refused was answered once and kept nowhere, so it read awaiting_acceptance with no
-// error and waited for a review event or a restart. The refusal is kept and named, her staging
-// sees it waiting, and the next pass the trigger accepts clears it.
+/// A credit-acceptance region over `fx`'s store, whose trigger answers with `reply` (`None`:
+/// the trigger must not be called at all).
+fn region_answering(fx: &ExactReview, reply: Option<serde_json::Value>) -> CreditAcceptanceRegion<SettlementTransport> {
+    let (executor, persona, name, selected) = (fx.executor.clone(), fx.persona, fx.name, fx.selected.clone());
+    CreditAcceptanceRegion::new(Arc::new(move |asked| {
+        assert_eq!(asked, persona, "the region settles only the persona it is ticked for");
+        let trigger = continuum_client::mock::MockTransport::new();
+        match &reply {
+            Some(reply) => script_settlement_reply(&trigger, &selected, Some(reply.clone())),
+            None => trigger.respond_to("genome/training-trigger/submit", |_| panic!("an accepted credit is never submitted again")),
+        }
+        Some((name.to_string(), settlement_connection(executor.clone(), persona, trigger, None)))
+    }))
+}
+
+// what this catches (card 99b2773a, Kimi's 28087ebb on the 5090, 2026-10-27, Codex on #5531):
+// a decided credit the trigger refused waited for a review event, a registration or her next
+// turn, and an idle citizen has none; a credit decided before refusals were kept had no row to
+// find it by. The region settles it from the decision alone, under the same submission id, with
+// no review, registration or turn; and once accepted it is never submitted again.
 #[tokio::test]
-pub(super) async fn a_refused_reviewed_credit_is_kept_named_and_accepted_on_the_next_pass() {
-    use crate::persona::training_producer::reviewed::ReviewedCreditState as State;
+pub(super) async fn the_region_settles_a_refused_decided_credit_with_no_turn_review_or_registration() {
     let (fx, _capture) = exact_review().await;
     let board = fx.project(vec![(airc_work::WorkEvent::WorkSubmissionReviewed(fx.pass.clone()), fx.reviewer)]);
-    let consume = |submit| {
-        let conn = settlement_connection(fx.executor.clone(), fx.persona, submit, None);
-        let board = board.clone();
-        let (name, persona, room, review) = (fx.name, fx.persona, fx.room, fx.pass.review_id);
-        async move {
-            reviewed::consume_review_with_boundary(&conn, name, persona, room, &board, review, &reviewed::SelfReview::NotAdmitted, None)
-                .await
-                .expect("the review is consumed")
-        }
-    };
-
     let refusing = continuum_client::mock::MockTransport::new();
     script_settlement_reply(
         &refusing,
         &fx.selected,
         Some(json!({"success": false, "errorKind": "RecoveryRequired", "error": "the trigger is still recovering its buckets"})),
     );
-    assert_eq!(consume(refusing).await.state, State::AwaitingAcceptance);
+    let conn = settlement_connection(fx.executor.clone(), fx.persona, refusing, None);
+    let decided = reviewed::consume_review_with_boundary(&conn, fx.name, fx.persona, fx.room, &board, fx.pass.review_id, &reviewed::SelfReview::NotAdmitted, None)
+        .await
+        .expect("the review is consumed");
+    assert_eq!(decided.state, State::AwaitingAcceptance);
+    let status = reviewed::credit_status(&fx.data, fx.name, fx.selection.submission_id).await.expect("status");
+    assert_eq!(status.destination.and_then(|d| d.error_kind).as_deref(), Some("RecoveryRequired"), "the waiting credit names why it waits");
+
+    // A decision kept before refusals were: no refusal row, only the decision to find it by.
+    let delete = crate::orm::types::BatchOperation {
+        operation_type: crate::orm::types::BatchOperationType::Delete,
+        collection: reviewed::CreditSubmitRefusal::COLLECTION.into(),
+        id: Some(fx.selection.submission_id.to_string()),
+        data: None,
+    };
+    let forget = json!({"operations": [delete], "dbPath": format!("@persona:{}", fx.name)});
+    fx.data.commands().execute_value("data/batch", forget).await.expect("delete the refusal row");
+
+    let scoped = RegionContext { tick_number: 1, persona_scope: Some(fx.persona) };
+    let still_refusing = region_answering(&fx, Some(json!({"success": false, "errorKind": "BucketHeldFull", "error": "held at its bound"})));
+    assert_eq!(still_refusing.tick(&scoped).await.cadence_hint, Some(CadenceHint::Slower), "a refusal backs the region off");
     let status = reviewed::credit_status(&fx.data, fx.name, fx.selection.submission_id).await.expect("status");
     assert_eq!(status.state, State::AwaitingAcceptance);
-    assert_eq!(
-        status.destination.and_then(|d| d.error_kind).as_deref(),
-        Some("RecoveryRequired"),
-        "the waiting credit names why it waits"
-    );
-    assert!(reviewed::refused_credit_waiting(&fx.data, fx.name).await.expect("read"), "her staging sees it waiting");
+    assert_eq!(status.destination.and_then(|d| d.error_kind).as_deref(), Some("BucketHeldFull"));
 
-    let accepting = continuum_client::mock::MockTransport::new();
-    script_settlement_reply(
-        &accepting,
-        &fx.selected,
+    let accepting = region_answering(
+        &fx,
         Some(json!({"success": true, "outcome": "BatchAppended", "currentCount": 1, "threshold": 16,
             "acceptance": {"submissionId": fx.selected.id, "replayed": false}})),
     );
-    assert_eq!(consume(accepting).await.state, State::Accepted);
-    assert!(!reviewed::refused_credit_waiting(&fx.data, fx.name).await.expect("read"), "acceptance clears the refusal");
+    accepting.tick(&scoped).await;
+    let status = reviewed::credit_status(&fx.data, fx.name, fx.selection.submission_id).await.expect("status");
+    assert_eq!(status.state, State::Accepted, "settled with no review event, registration or turn");
+
+    let never_again = region_answering(&fx, None);
+    assert_eq!(never_again.tick(&scoped).await.cadence_hint, Some(CadenceHint::Sleep), "nothing owed: the region sleeps");
 }
