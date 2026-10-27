@@ -46,30 +46,20 @@ pub fn uninitialized(submodule_status: &str) -> Vec<&str> {
         .collect()
 }
 
-fn git(repo: &Path, args: &[&str]) -> Result<String, String> {
-    let out = std::process::Command::new("git")
-        .current_dir(repo)
-        .args(args)
-        .output()
-        .map_err(|e| format!("git {}: {e}", args.join(" ")))?;
-    if !out.status.success() {
-        return Err(format!("git {} failed: {}", args.join(" "), String::from_utf8_lossy(&out.stderr).trim()));
-    }
-    Ok(String::from_utf8_lossy(&out.stdout).into_owned())
-}
-
-/// Align every submodule whose checkout is present to `repo`'s gitlinks. A present checkout
-/// that was never registered is initialized first (`git submodule init` writes config only),
-/// so this never starts a clone; an absent one stays absent. The caller refuses a tree with
-/// [`has_operator_work`] before moving it, so nothing aligned here holds an operator's change.
-pub fn align(repo: &Path) -> Result<(), String> {
-    let status = git(repo, &["submodule", "status"])?;
+/// Align every submodule whose checkout is present to the superproject's gitlinks, running
+/// git through the caller's own runner (`git(args)` in the deploy tree: the consumer's one
+/// spawn site, so this crate adds none). A present checkout that was never registered is
+/// initialized first (`git submodule init` writes config only), so this never starts a
+/// clone; an absent one stays absent. The caller refuses a tree with [`has_operator_work`]
+/// before moving it, so nothing aligned here holds an operator's change.
+pub fn align(repo: &Path, git: &dyn Fn(&[&str]) -> Result<String, String>) -> Result<(), String> {
+    let status = git(&["submodule", "status"])?;
     for path in uninitialized(&status) {
         if repo.join(path).join(".git").exists() {
-            git(repo, &["submodule", "init", "--", path])?;
+            git(&["submodule", "init", "--", path])?;
         }
     }
-    git(repo, &["submodule", "update", "--quiet", "--recursive"]).map(|_| ())
+    git(&["submodule", "update", "--quiet", "--recursive"]).map(|_| ())
 }
 
 #[cfg(test)]
@@ -88,6 +78,22 @@ mod tests {
         assert!(has_operator_work(file));
         assert!(has_operator_work("u UU N... 100644 100644 100644 100644 a b c core/x.rs\n"));
         assert!(!has_operator_work(""));
+    }
+
+    /// The deploy's runner, as the consumer passes `git_in`: git in `dir`, stdout or the error.
+    fn runner(dir: &Path) -> impl Fn(&[&str]) -> Result<String, String> + '_ {
+        move |args| {
+            let out = std::process::Command::new("git")
+                .current_dir(dir)
+                .args(["-c", "protocol.file.allow=always"])
+                .args(args)
+                .output()
+                .map_err(|e| e.to_string())?;
+            if !out.status.success() {
+                return Err(String::from_utf8_lossy(&out.stderr).into_owned());
+            }
+            Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
+        }
     }
 
     fn run(dir: &Path, args: &[&str]) -> String {
@@ -145,7 +151,7 @@ mod tests {
         for (core, pin) in [(&old_core, &old_pin), (&new_core, &new_pin), (&old_core, &old_pin)] {
             run(&deploy, &["checkout", "-q", "--detach", core]);
             assert!(!has_operator_work(&run(&deploy, &STATUS_ARGS)), "a moved pointer is the deploy's to align, not dirt");
-            align(&deploy).expect("align");
+            align(&deploy, &runner(&deploy)).expect("align");
             assert_eq!(&engine_head(), pin, "the engine checkout follows the core's pin");
             assert_eq!(run(&deploy, &STATUS_ARGS), "", "aligned: the tree reads clean");
         }
@@ -157,7 +163,7 @@ mod tests {
         // An absent submodule is never cloned by a deploy.
         let bare = root.path().join("bare");
         run(root.path(), &["clone", "-q", &origin.to_string_lossy(), "bare"]);
-        align(&bare).expect("align with nothing present");
+        align(&bare, &runner(&bare)).expect("align with nothing present");
         assert!(!bare.join("vendor/engine/.git").exists(), "no clone started");
     }
 }

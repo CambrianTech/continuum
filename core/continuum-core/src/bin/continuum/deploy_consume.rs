@@ -306,7 +306,7 @@ pub(super) async fn deploy_consume_pass() -> Result<PassEnd, String> {
                 // A checkout moves gitlinks, not submodule trees: every present submodule
                 // checkout follows the tip's pin, registered or not, and none is cloned
                 // (2026-09-27 #4437; card a1e1af51, enrico's unregistered engine checkout).
-                continuum_git::submodules::align(&repo)?;
+                continuum_git::submodules::align(&repo, &|args| git_in(&repo, args))?;
                 // The dark build locates tools/scripts/start-server.sh by walking UP FROM
                 // THE CWD, and a scheduled task starts in System32 — the same wall the
                 // Macs' launchd tracker hit ("under launchd the cwd is /; continuum reboot
@@ -342,7 +342,7 @@ pub(super) async fn deploy_consume_pass() -> Result<PassEnd, String> {
                             // the reboot's build-sha check and deploy-verify compare like with
                             // like. The next pass moves on toward the tip.
                             git_in(&repo, &["checkout", "--quiet", "--detach", &key])?;
-                            continuum_git::submodules::align(&repo)?;
+                            continuum_git::submodules::align(&repo, &|args| git_in(&repo, args))?;
                             deploy_note(&format!(
                                 "deploy-consume: {key} is the newest core CI has published (the request is {tip}); deploying it now"
                             ));
