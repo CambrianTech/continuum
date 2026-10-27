@@ -79,6 +79,17 @@ The `Responses` API's server-side state is exactly this: the response id names t
 - The private-room withholding rule moves with it.
 - Scope rules (§17) decide what a driver session may record at all.
 
+**The layering: learning and the genome ride the same seam** (Joel: "learning and genome must work anyway. All about proper layering").
+
+| Layer | Owners | Rule |
+|---|---|---|
+| 1. Serving floor | the engine; `MindMemory` (SERVING-ENGINE §1a); the capture owner | One identity, the mind (`PageKey`), for a resident, a fork or a driver session. |
+| 2. Writers | the residents' deliberation faculty; the gateway (every external agent) | Both write the same capture. Neither knows the readers. |
+| 3. Readers of the capture | glass box and replay (act inspector, playback, `serving-replay`); Dreaming (`dataset/from_captures` → training → genes) | They read records, never which system produced them. |
+| 4. Genome | genes selected by what a mind is on, served at `MindMemory::seat` | A gene change calls `forget`, so KV computed under the old genome is never restored. |
+
+A driver session is perception like a resident's act. It is learned from under the scope rules and served genes the same way. Nothing above layer 1 special-cases a system.
+
 **Why it is the tuning loop.**
 - A captured Claude Code or Codex session replays against our engine on the dyno, with no live agent and no residents, under any engine config. Their loop becomes our validator: prefill per step, reuse, and time to a passing test.
 - A resident's captured act is read by the same inspector beside an agent's step on the same task, so the gap is visible act by act, not argued: context size, layers, act count, reasoning length.
