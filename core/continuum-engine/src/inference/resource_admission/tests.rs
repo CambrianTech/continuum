@@ -1,6 +1,9 @@
 //! Tests for resource admission.
 #![cfg(test)]
 
+#[path = "aging_tests.rs"]
+mod aging;
+
 
 // what this catches (card c84d885a, S1): a seat's queue measured where it forms, and
 // "unmeasured" never reading as "fast". The beacon carries (p50, samples); a spiller

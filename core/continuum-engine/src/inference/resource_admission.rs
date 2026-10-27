@@ -16,8 +16,6 @@ mod gate;
 mod lanes;
 mod metrics;
 mod progress;
-#[cfg(test)]
-mod aging_tests;
 mod serving_lane_permit;
 #[cfg(test)]
 mod tests;
