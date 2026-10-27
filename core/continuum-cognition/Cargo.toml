@@ -17,6 +17,7 @@ build = "../continuum-core/build.rs"
 [dependencies]
 continuum-kernel = { path = "../continuum-kernel" }
 continuum-engine = { path = "../continuum-engine" }
+continuum-service = { path = "../continuum-service" }  # each resident's turns become her service window (card 1c157668)
 continuum-hands = { path = "../continuum-hands" }
 continuum-live = { path = "../continuum-live" }
 continuum-memory = { path = "../continuum-memory" }

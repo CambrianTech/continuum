@@ -14,6 +14,7 @@ repository = "https://github.com/CambrianTech/continuum"
 continuum-base = { path = "../continuum-base" }
 continuum-kernel = { path = "../continuum-kernel" }
 continuum-engine = { path = "../continuum-engine" }
+continuum-service = { path = "../continuum-service" }  # the resident alarms grid/nodes shows (card 1c157668)
 continuum-mind = { path = "../continuum-mind" }
 continuum-cli-lifecycle = { path = "../continuum-cli-lifecycle" }
 tokio.workspace = true

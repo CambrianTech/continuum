@@ -141,6 +141,13 @@ pub struct CapacityOffer {
     /// core advertises nothing (serde default), which reads as "trains nothing", never "all".
     #[serde(default)]
     pub trainable_bases: Vec<String>,
+    /// THE MINDS HERE THAT ARE STUCK (card 1c157668): each resident this node judged stalled
+    /// (work asked, nothing completed) or regressed over its last service window, with the
+    /// refusal that explains it. Kimi was refused before inference for 17 hours on 2026-10-26
+    /// and no node said so; on the beacon, `grid/nodes` on any node names her. An older core
+    /// advertises none (serde default), which reads as "nothing judged", never "all healthy".
+    #[serde(default)]
+    pub resident_alarms: Vec<continuum_service::resident::ResidentAlarm>,
 }
 
 /// What a core knows how to do — the names a beacon may advertise in
@@ -581,6 +588,7 @@ mod tests {
             // never as 'all' (card 8bd75362).
             capabilities: Vec::new(),
             trainable_bases: Vec::new(),
+            resident_alarms: Vec::new(),
         }
     }
     // what this catches (2026-09-19, the M5 spilled two minds to ITSELF): a node hears

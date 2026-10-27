@@ -307,6 +307,7 @@ pub async fn handle_pair(state: &Arc<GridState>, params: Value) -> Result<Comman
         served_model: None,
         lanes: 0,
         residents: 0,
+        resident_alarms: Vec::new(),
         silent_secs: 0,
         stale: false,
         behind: false,

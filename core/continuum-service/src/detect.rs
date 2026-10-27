@@ -265,19 +265,24 @@ fn milli(ratio: f64) -> u64 {
 }
 
 /// A window that cannot describe the engine's speed, with what it is instead.
+///
+/// Demand is read FIRST: a window where work was asked and nothing completed is a stall
+/// whatever else it is. Warm-up and a mixed window qualify a SPEED; they cannot excuse zero
+/// completions (a resident refused before inference has no reuse to warm, and a stall that
+/// spans a restart is still a stall to the mind waiting on it).
 fn unjudgeable(sample: &ServiceSample) -> Option<Verdict> {
+    match (sample.demand.offered, sample.generations) {
+        (0, _) => return Some(Verdict::Insufficient(Insufficient::NoDemand)),
+        (offered, 0) => return Some(Verdict::Stalled { offered, failures: sample.failures }),
+        _ => {}
+    }
     if sample.mixed {
         return Some(Verdict::Insufficient(Insufficient::Mixed));
     }
     match sample.warmup {
-        Warmup::WarmingUp => return Some(Verdict::Insufficient(Insufficient::WarmingUp)),
-        Warmup::Unknown => return Some(Verdict::Insufficient(Insufficient::UnknownWarmup)),
-        Warmup::Warm => {}
-    }
-    match (sample.demand.offered, sample.generations) {
-        (0, _) => Some(Verdict::Insufficient(Insufficient::NoDemand)),
-        (offered, 0) => Some(Verdict::Stalled { offered, failures: sample.failures }),
-        _ => None,
+        Warmup::WarmingUp => Some(Verdict::Insufficient(Insufficient::WarmingUp)),
+        Warmup::Unknown => Some(Verdict::Insufficient(Insufficient::UnknownWarmup)),
+        Warmup::Warm => None,
     }
 }
 

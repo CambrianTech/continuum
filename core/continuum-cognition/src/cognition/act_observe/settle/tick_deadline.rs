@@ -242,6 +242,7 @@ pub(super) async fn drive_with_input<'c>(
     mut credit: Option<&mut (dyn TurnCredit + 'c)>,
 ) -> SettleOutcome {
     let turn_room = burst.room.as_uuid();
+    let started = std::time::Instant::now();
     let settled = settle_to_outcome(
         cycle,
         burst,
@@ -251,6 +252,12 @@ pub(super) async fn drive_with_input<'c>(
         credit.as_deref_mut(),
     )
     .await;
+    // Her service ledger counts EVERY turn, refusals included, before any early return: a
+    // mind refused before inference is the stall this exists to see (card 1c157668).
+    if let Some(body) = cycle.acting() {
+        let wall_ms = u64::try_from(started.elapsed().as_millis()).map_or(u64::MAX, |ms| ms); // past u64::MAX ms saturates; no turn reaches it
+        crate::cognition::resident_service::note_settled(body.persona_id, &settled, wall_ms);
+    }
     // Admission refusal is not a lived/completed turn or training credit.
     if settled.deferred_before_dispatch {
         return settled;

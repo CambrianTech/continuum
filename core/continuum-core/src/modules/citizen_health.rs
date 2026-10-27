@@ -29,6 +29,8 @@ use std::sync::atomic::Ordering;
 use crate::cognition::health_ledger::*;
 mod rest_seats;
 pub use rest_seats::*;
+mod resident_service;
+pub use resident_service::current_resident_alarms;
 
 #[cfg(test)]
 mod tests;

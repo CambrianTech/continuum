@@ -2918,6 +2918,7 @@ dependencies = [
  "continuum-memory",
  "continuum-perception",
  "continuum-positron",
+ "continuum-service",
  "continuum-text-analysis",
  "dashmap",
  "dirs 5.0.1",
@@ -3000,6 +3001,7 @@ dependencies = [
  "continuum-perception",
  "continuum-positron",
  "continuum-sentinel",
+ "continuum-service",
  "continuum-serving",
  "continuum-store",
  "continuum-text-analysis",
@@ -3135,6 +3137,7 @@ dependencies = [
  "continuum-cli-lifecycle",
  "continuum-host",
  "continuum-kernel",
+ "continuum-service",
  "continuum-tool-protocol",
  "dashmap",
  "dirs 5.0.1",
@@ -3237,6 +3240,7 @@ dependencies = [
  "continuum-engine",
  "continuum-kernel",
  "continuum-mind",
+ "continuum-service",
  "dashmap",
  "futures",
  "libc",
@@ -3580,6 +3584,8 @@ version = "0.1.0"
 dependencies = [
  "serde",
  "serde_json",
+ "ts-rs 12.0.1",
+ "uuid",
 ]
 
 [[package]]

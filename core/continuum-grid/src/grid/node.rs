@@ -219,6 +219,11 @@ pub struct GridNode {
     pub lanes: u32,
     #[serde(default)]
     pub residents: u32,
+    /// The residents this node judged stalled or regressed over its last service window, as
+    /// its last beacon reported them (card 1c157668): who, what was asked and done, and the
+    /// refusal that explains it. Empty = none judged stuck, or an older core.
+    #[serde(default)]
+    pub resident_alarms: Vec<continuum_service::resident::ResidentAlarm>,
     /// Seconds since this node was last heard (a beacon, a discovery, a frame).
     #[serde(default)]
     #[ts(type = "number")]

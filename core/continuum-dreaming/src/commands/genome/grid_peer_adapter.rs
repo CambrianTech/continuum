@@ -338,6 +338,7 @@ mod tests {
             decode_tps_milli: 0,
             capabilities: if lease { vec![CapabilityId::TrainingLease, CapabilityId::TrainingLeaseReturn] } else { Vec::new() },
             trainable_bases: bases.iter().map(|b| b.to_string()).collect(),
+            resident_alarms: Vec::new(),
         }
     }
 

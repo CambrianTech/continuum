@@ -215,6 +215,8 @@ pub(crate) fn offer_from_board(
         capabilities: crate::capacity::gossip::this_build_capabilities(),
         // What a peer may lease training to us for (card 6f05b89d).
         trainable_bases: trainable_bases(serving.active_model.as_deref(), local, trains_here),
+        // The residents this node last judged stalled or regressed (card 1c157668).
+        resident_alarms: crate::modules::citizen_health::current_resident_alarms(),
     })
 }
 
