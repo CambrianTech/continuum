@@ -215,15 +215,19 @@ impl DormancyLedger {
 /// What the first boot with durable dormancy migrates from.
 #[derive(Clone, Copy)]
 pub struct Migration<'a> {
-    /// The operator's standing hold, if one stands. Only an exclusive hold keeps anyone down.
+    /// The LAST hold this node recorded, standing or lapsed (`roster_hold::last_recorded`):
+    /// the population decision outlives the hold's window, so a first boot after the lapse
+    /// still migrates it. `None` = no hold was ever recorded: every home is Awake. Only an
+    /// exclusive (operator) hold keeps anyone down.
     pub hold: Option<&'a super::roster_hold::RosterHold>,
     /// Names online when the migration runs (none at boot).
     pub online: &'a [String],
     pub now_ms: u64,
 }
 
-/// The rows the first boot writes: a home the hold allows, or that is online, is Awake;
-/// every other home is Dormant. Without an exclusive hold every home is Awake. Pure.
+/// The rows the first boot writes: a home the last recorded hold allows, or that is online,
+/// is Awake; every other home is Dormant, whether or not the hold has lapsed. Without an
+/// exclusive hold ever recorded, every home is Awake. Pure.
 pub fn migrate_from_hold(homes: &[Home], m: Migration<'_>) -> Vec<PersonaWakefulness> {
     let hold = m.hold.filter(|h| h.exclusive);
     homes

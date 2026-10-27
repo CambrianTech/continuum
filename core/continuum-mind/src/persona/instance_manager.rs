@@ -448,6 +448,15 @@ pub struct PersonaInstanceManagerModule {
     pub dormancy: Arc<LateBound<crate::persona::dormancy::DormancyLedger>>,
 }
 
+/// How durable dormancy came up at this boot.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DormancyBoot {
+    /// The ledger loaded; this many homes are dormant.
+    Loaded { dormant: usize },
+    /// The ledger did not load: resume-from-disk is blocked, explicit spawn still serves.
+    Unavailable { error: String },
+}
+
 impl PersonaInstanceManagerModule {
     /// Construct with explicit dependencies.
     ///
@@ -484,12 +493,32 @@ impl PersonaInstanceManagerModule {
         }
     }
 
-    /// Open the wakefulness ledger over the node's store, migrate it from the operator's
+    /// Open the wakefulness ledger over the node's store, migrate it from the last recorded
     /// hold on its first boot, and hold the dormant set for the reconciler's draw. Runs at
     /// module initialize, before the reconciler is released.
-    pub async fn load_dormancy(&self, adapter: Arc<dyn crate::orm::StorageAdapter>) -> Result<usize, String> {
+    ///
+    /// NEVER fails the module (Cormac on #5509): a ledger that cannot open or load is a
+    /// DEGRADED state, not a dead manager. The ledger stays uninstalled and the held set
+    /// unloaded, so the draw resumes no home from disk (fail closed, probed per draw), while
+    /// `persona/spawn`, `despawn` and `wake` keep serving; the failure is probed loudly here.
+    pub async fn load_dormancy(&self, adapter: Result<Arc<dyn crate::orm::StorageAdapter>, String>) -> DormancyBoot {
+        match self.open_dormancy(adapter).await {
+            Ok(dormant) => DormancyBoot::Loaded { dormant },
+            Err(error) => {
+                continuum_base::probe!(
+                    class = "persona.dormancy.ledger_unavailable",
+                    error = %error,
+                    "the wakefulness ledger did not load: NO home is resumed from disk this boot \
+                     (persona/spawn still births); repair the store and restart"
+                );
+                DormancyBoot::Unavailable { error }
+            }
+        }
+    }
+
+    async fn open_dormancy(&self, adapter: Result<Arc<dyn crate::orm::StorageAdapter>, String>) -> Result<usize, String> {
         use crate::persona::dormancy::{DormancyLedger, Home, Migration};
-        let ledger = DormancyLedger::open(adapter).await.map_err(|e| e.to_string())?;
+        let ledger = DormancyLedger::open(adapter?).await.map_err(|e| e.to_string())?;
         let homes: Vec<Home> = crate::persona::resume_or_mint_provider::scan_homes(&self.continuum_root)
             .await
             .map_err(|e| e.to_string())?
@@ -497,7 +526,7 @@ impl PersonaInstanceManagerModule {
             .map(|i| Home { id: crate::identity::PeerId::from_uuid(i.persona_id), agent_name: i.agent_name })
             .collect();
         let online: Vec<String> = self.registry.iter().map(|rt| rt.agent_name().to_string()).collect();
-        let hold = crate::persona::roster_hold::active();
+        let hold = crate::persona::roster_hold::last_recorded();
         let dormant = ledger
             .load(&homes, Migration { hold: hold.as_ref(), online: &online, now_ms: continuum_base::time::EpochMs::now().millis() })
             .await

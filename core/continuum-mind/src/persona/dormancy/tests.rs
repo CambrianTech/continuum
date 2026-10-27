@@ -59,6 +59,30 @@ async fn the_migration_marks_unheld_homes_dormant_and_outlives_the_hold() {
     assert!(migrate_from_hold(&homes, Migration { hold: None, online: &[], now_ms: 1 }).iter().all(|r| !r.is_dormant()));
 }
 
+// what this catches: the population decision lost to deploy timing (Cormac on #5509): a
+// first boot AFTER the hold lapsed still migrates its exclusions. An expired four-name
+// hold over ten homes writes six Dormant and four Awake.
+#[tokio::test]
+async fn a_boot_after_the_hold_lapsed_still_migrates_it() {
+    let dir = tempfile::tempdir().expect("tempdir"); // test: a failure here is the assertion failing loudly
+    let hold_path = dir.path().join("roster-hold.json");
+    let mut lapsed = hold(&["Aiko", "Aris", "Atlas", "Benchy"]);
+    lapsed.until_ms = 5;
+    std::fs::write(&hold_path, serde_json::to_vec(&lapsed).expect("ser")).expect("write"); // test: a failure here is the assertion failing loudly
+    assert!(crate::persona::roster_hold::active_at(&hold_path, 10).is_none(), "the hold has lapsed");
+    let recorded = crate::persona::roster_hold::last_recorded_at(&hold_path).expect("kept after the lapse"); // test: a failure here is the assertion failing loudly
+    let homes: Vec<Home> = ["Aiko", "Aris", "Atlas", "Benchy", "Idris", "Joaquin", "Cyrus", "Esme", "Freya", "Demetri"]
+        .iter()
+        .map(|n| home(n))
+        .collect();
+    let dormant = ledger_at(&dir.path().join("wakefulness.sqlite"))
+        .await
+        .load(&homes, Migration { hold: Some(&recorded), online: &[], now_ms: 10 })
+        .await
+        .expect("load"); // test: a failure here is the assertion failing loudly
+    assert_eq!(names(&dormant), vec!["Cyrus", "Demetri", "Esme", "Freya", "Idris", "Joaquin"], "six dormant, the four held awake");
+}
+
 // what this catches: a despawn-to-dormant that dissolves on the next restart (the
 // 2026-08-23 shape: despawn was "not now", nothing recorded "not until I say"). Her row
 // is read back by a NEW ledger over the same store; a row for a home no longer on disk

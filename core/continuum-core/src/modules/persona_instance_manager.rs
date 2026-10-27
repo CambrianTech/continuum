@@ -39,13 +39,19 @@ impl ServiceModule for PersonaInstanceManagerService {
         self.0.bus.install(ctx.bus.clone());
         // Durable dormancy loads before the hosting reconciler is released (executor
         // release follows every module's initialize), so a dormant home is never drawn.
-        let adapter = ctx.storage("persona wakefulness")?.adapter("main").await?;
-        let dormant = self.0.load_dormancy(adapter).await?;
-        continuum_base::probe!(
-            class = "persona.dormancy.loaded",
-            dormant = dormant as u64,
-            "durable wakefulness loaded: dormant homes are not resumed until woken"
-        );
+        // A ledger failure DEGRADES (resume blocked, spawn served, probed) and never fails
+        // this module's init: the manager's verbs keep serving.
+        let adapter = match ctx.storage("persona wakefulness") {
+            Ok(storage) => storage.adapter("main").await,
+            Err(e) => Err(e),
+        };
+        if let crate::persona::instance_manager::DormancyBoot::Loaded { dormant } = self.0.load_dormancy(adapter).await {
+            continuum_base::probe!(
+                class = "persona.dormancy.loaded",
+                dormant = dormant as u64,
+                "durable wakefulness loaded: dormant homes are not resumed until woken"
+            );
+        }
         Ok(())
     }
 
@@ -231,6 +237,28 @@ mod tests {
             names.contains(&"persona/instances/despawn"),
             "got {names:?}"
         );
+    }
+
+    // what this catches: a wakefulness store that fails to open taking the whole manager
+    // down (Cormac on #5509). Initialize succeeds, the ledger stays uninstalled (so the draw
+    // resumes no home from disk), and spawn/despawn/wake are still contributed.
+    #[tokio::test]
+    async fn a_failed_ledger_degrades_and_the_manager_still_serves() {
+        let module = PersonaInstanceManagerService(Arc::new(PersonaInstanceManagerModule::new(
+            PersonaAircRuntimeRegistry::new(),
+            PathBuf::from("/nonexistent/socket"),
+            PathBuf::from("/tmp/continuum-test"),
+        )));
+        let boot = module.0.load_dormancy(Err("store down".to_string())).await;
+        assert_eq!(
+            boot,
+            crate::persona::instance_manager::DormancyBoot::Unavailable { error: "store down".to_string() }
+        );
+        assert!(!module.0.dormancy.is_installed(), "no ledger: the draw fails closed");
+        let names: Vec<&str> = module.commands().iter().map(|c| c.name()).collect();
+        for verb in ["persona/spawn", "persona/instances/despawn", "persona/instances/wake"] {
+            assert!(names.contains(&verb), "{verb} still served: {names:?}");
+        }
     }
 
     #[tokio::test]
