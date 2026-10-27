@@ -259,6 +259,26 @@
         assert!(!settled.deferred_before_dispatch, "never a lane wait");
         assert!(settled.generation_receipts.is_empty(), "no completion");
         assert_eq!(start.elapsed(), crate::inference::turn_bound::TICK_DEADLINE, "one bound, no in-place retry");
+
+    // what this catches (card 4d2a64a2): an act on a condemned engine holding the relaunch's
+    // drain until its next checkpoint. enrico, 2026-10-26: the quarantine flipped serving
+    // not-ready at 21:10Z, and `ensure_serving` waited 23 min for an act whose next
+    // checkpoint was 21:33:18. Condemned mid-bound, the act ends at that instant, saying
+    // whether its generation had been dispatched.
+    #[tokio::test(start_paused = true)]
+    async fn a_condemned_engine_ends_the_act_at_once_not_at_its_checkpoint() {
+        let bound = std::time::Duration::from_secs(1500);
+        let start = tokio::time::Instant::now();
+        let condemned = async { tokio::time::sleep(std::time::Duration::from_secs(120)).await };
+        let ended = super::until_act_stalls_or(start + bound, bound, None, async {
+            let _witness = crate::cognition::generation_drop::InFlight::arm("Eitan", None, None);
+            std::future::pending::<()>().await
+        }, condemned)
+        .await;
+        assert_eq!(ended, Err(super::Abandoned { dispatched: true }));
+        assert_eq!(start.elapsed(), std::time::Duration::from_secs(120), "at the condemnation, not the 1500 s checkpoint");
+        let quick = super::until_act_stalls_or(start + bound * 2, bound, None, async { 7 }, std::future::pending::<()>()).await;
+        assert_eq!(quick, Ok(7), "no condemnation: the step's own answer");
     }
 
     // what this catches: a turn iteration that never reached the model being counted as

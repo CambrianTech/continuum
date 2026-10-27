@@ -1,6 +1,30 @@
 //! Progress regression fixtures.
 #![cfg(test)]
 use super::*;
+
+// what this catches (card 4d2a64a2): a condemnation an in-flight wait cannot hear until its
+// next checkpoint. The wait resolves the moment a ready snapshot turns not-ready, waits
+// through a not-ready start (nothing was served to condemn), and never on a closed channel.
+#[tokio::test(start_paused = true)]
+async fn a_wait_hears_the_engine_condemned_the_moment_it_happens() {
+    let mut ready = ServingSnapshot::empty();
+    ready.ready = true;
+    let (tx, rx) = tokio::sync::watch::channel(ServingSnapshot::empty());
+    let wait = tokio::spawn(until_condemned_on(rx));
+    tokio::task::yield_now().await;
+    assert!(!wait.is_finished(), "not ready at the start is not a condemnation");
+    tx.send_replace(ready.clone());
+    tokio::task::yield_now().await;
+    assert!(!wait.is_finished(), "serving: nothing condemned");
+    tx.send_replace(ServingSnapshot::empty());
+    tokio::time::timeout(std::time::Duration::from_millis(1), wait).await.unwrap().unwrap(); // unwrap: the wait must resolve at once
+
+    let (tx, rx) = tokio::sync::watch::channel(ready);
+    let wait = tokio::spawn(until_condemned_on(rx));
+    drop(tx);
+    tokio::time::sleep(std::time::Duration::from_secs(3600)).await;
+    assert!(!wait.is_finished(), "a closed channel never condemns");
+}
 // what this catches (card 6f3218ed, the act-bound half): the per-request rule that keeps
 // a lost request from riding someone else's progress. The first checkpoint needs only a
 // processing slot; a later one needs the SAME task with its work moved; a new task on the

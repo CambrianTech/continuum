@@ -75,6 +75,26 @@ pub fn engine_condemned() -> bool {
     SERVING_STATE.get().is_some_and(|rx| !rx.borrow().ready)
 }
 
+/// Resolves the moment the engine is condemned after having been ready: the daemon flips its
+/// snapshot not-ready BEFORE the relaunch's drain, so a wait that reads [`engine_condemned`]
+/// only at its next checkpoint holds that drain for up to a whole act bound. enrico,
+/// 2026-10-26 (core 839f70216): a quarantine at 21:10:02Z, then `ensure_serving` wedged 23 min
+/// until an act's next checkpoint at 21:33:18 let its guard go (card 4d2a64a2). Never
+/// resolves where no daemon installed its state: nothing was served, so nothing is condemned.
+pub async fn until_condemned() {
+    match SERVING_STATE.get() {
+        Some(rx) => until_condemned_on(rx.clone()).await,
+        None => std::future::pending().await,
+    }
+}
+
+/// [`until_condemned`] on one receiver: ready, then not ready. A closed channel never resolves.
+pub(crate) async fn until_condemned_on(mut rx: watch::Receiver<ServingSnapshot>) {
+    if rx.wait_for(|s| s.ready).await.is_err() || rx.wait_for(|s| !s.ready).await.is_err() {
+        std::future::pending::<()>().await;
+    }
+}
+
 
 /// Capability discovery uses the same bounded props read as the managed lane.
 pub(crate) async fn engine_props(root: &str, client: &reqwest::Client) -> Result<serde_json::Value, LlamaServerError> {

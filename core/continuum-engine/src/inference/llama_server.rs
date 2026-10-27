@@ -118,7 +118,9 @@ pub(crate) use progress::{
 pub(crate) use progress::{engine_probe_within, slots_progress, window_at_rate, window_rate, EngineProgress};
 
 mod slot_work;
-pub use progress::engine_condemned;
+pub use progress::{engine_condemned, until_condemned};
+#[cfg(test)]
+pub(crate) use progress::until_condemned_on;
 pub use slot_work::{in_flight_slot, slot_advanced, slot_work, InFlightSlot, SlotWork};
 pub(crate) use slot_work::InFlightSlotGuard;
 #[cfg(test)]
