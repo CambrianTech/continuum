@@ -3,7 +3,7 @@ use super::anthropic::Anthropic;
 use super::chat::Chat;
 use super::responses::Responses;
 use super::*;
-use continuum_engine::ai::{MessageContent, ToolCall, UsageMetrics};
+use continuum_engine::ai::{MessageContent, ToolCall, ToolChoice, UsageMetrics};
 use serde_json::json;
 
 /// An answer that says a word and calls one tool.
