@@ -49,6 +49,40 @@ async fn a_batch_whose_effect_mark_is_refused_never_reaches_the_executor() {
     );
 }
 
+// what this catches (card 286af878; enrico 2026-10-27 02:54Z): a reported-only sentinel call
+// recorded as an effect. Eitan's cut turn carried only `tools/<cut at the output limit>`, which never
+// runs, yet S2 marked it, so the restart read the turn as uncertain and never handed it back. A
+// sentinel-only batch takes no mark: even a gate that refuses every mark does not stop it.
+#[tokio::test]
+async fn a_sentinel_only_batch_is_no_effect_and_takes_no_mark() {
+    struct Refused;
+    #[async_trait]
+    impl crate::cognition::act_observe::EffectMark for Refused {
+        fn turn(&self) -> Uuid {
+            Uuid::nil()
+        }
+        async fn before(&self, _effect: &crate::cognition::act_observe::Effect) -> Result<(), String> {
+            Err("a sentinel must never be marked".into())
+        }
+    }
+    let exec = Arc::new(RecordingExecutor {
+        seen_context: Arc::new(Mutex::new(None)),
+        result_content: "reported".into(),
+    });
+    let cycle = WorkspaceCycle::new(Vec::new(), Arc::new(SalienceArbiter), 8)
+        .with_acting(body(exec.clone(), admission()));
+    let chain = ActChain::new().with_effects(Some(crate::cognition::act_observe::EffectGate(Arc::new(Refused))));
+    let cut = ToolCall {
+        id: "tool-attempt-cut-at-limit".into(),
+        name: crate::cognition::tool_executor::command_executor::CUT_AT_LIMIT_SENTINEL.into(),
+        input: serde_json::json!({}),
+    };
+    apply_act(&cycle, &[cut], "composing a long reply", Uuid::new_v4(), &chain, None, None).await;
+    assert!(exec.seen_context.lock().unwrap().is_some(), "the sentinel batch was not refused by the mark"); // unwrap: test lock
+    let told = cycle.acting().expect("the test cycle has hands").working_memory.recent_entries(); // expect: built with_acting above
+    assert!(!told.iter().any(|entry| entry.text.contains("[not run]")), "no 'not run' notice for a sentinel");
+}
+
 // what this catches: an act is scoped to the room it is FOR (one mind is in
 // many rooms — the body is room-agnostic, `room_id` flows per-call), the
 // observation correlates each call to its result in first person, and the

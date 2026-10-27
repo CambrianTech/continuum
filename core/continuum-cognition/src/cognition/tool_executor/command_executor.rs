@@ -243,6 +243,13 @@ pub(crate) const CUT_AT_LIMIT_SENTINEL: &str = "tools/<cut at the output limit>"
 /// never executed; her thinking is already in working memory, and she decides.
 pub(crate) const THOUGHT_CUT_SENTINEL: &str = "tools/<thought cut at the output limit>";
 
+/// A reserved `tools/<…>` pseudo-call: the substrate REPORTING a turn's shape (no name given, a
+/// think-only turn, a cut at the output limit), never a command that runs. The one owner of
+/// that test: the refusal probe skips them, and stop-drain S2 never records one as an effect.
+pub(crate) fn is_reported_sentinel(name: &str) -> bool {
+    name.starts_with("tools/<")
+}
+
 pub fn persona_tool_error(attempted: &str, raw: String) -> String {
     // The MISSING-name case, which is not the wrong-name case and must not borrow its
     // sentence. Rendering "`X` is not a tool you can call" here would be actively
@@ -704,7 +711,7 @@ impl ToolExecutor for CommandToolExecutor {
                     // cut at the output limit) are not commands refusing her: they are the
                     // substrate reporting a turn's shape, counted on their own path. Probed
                     // here they read as walls (Kimi's 05:17Z think-only turn did).
-                    if !attempted.starts_with("tools/<") {
+                    if !is_reported_sentinel(attempted) {
                         continuum_base::probe!(
                             class = "persona.act.refused",
                             persona = %ctx.persona_id,
