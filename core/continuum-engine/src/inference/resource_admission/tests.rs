@@ -1,6 +1,9 @@
 //! Tests for resource admission.
 #![cfg(test)]
 
+#[path = "aging_tests.rs"]
+mod aging;
+
 
 // what this catches (card c84d885a, S1): a seat's queue measured where it forms, and
 // "unmeasured" never reading as "fast". The beacon carries (p50, samples); a spiller
@@ -469,14 +472,14 @@ async fn queued_acquirers_retire_shrink_debt_before_granting() {
 // must not leave a phantom work count that permanently excludes ambient work.
 #[tokio::test]
 async fn cancelled_work_waiter_clears_its_priority_reservation() {
-    let gate = LaneAdmission::new();
+    let gate: &'static LaneAdmission = Box::leak(Box::new(LaneAdmission::new()));
     gate.set_served_lane_count(2);
     let held = gate
         .nondirected_lanes()
         .clone()
         .try_acquire_owned()
         .unwrap();
-    let mut waiting = Box::pin(gate.acquire_nondirected_as_work());
+    let mut waiting = Box::pin(gate.acquire_serving_lane(None, LanePriority::Work, None));
     assert!(futures::poll!(waiting.as_mut()).is_pending());
     assert_eq!(gate.work_waiting(), 1);
     gate.set_served_lane_count(1);
