@@ -58,6 +58,8 @@ pub struct Act {
     pub purpose: String,
     pub context_window: Option<u64>,
     pub outcome: Outcome,
+    /// The engine's refusal over the slot's window, when it refused.
+    pub refusal: Option<Refusal>,
     /// Submit to terminal row.
     pub elapsed_ms: Option<u64>,
     /// The engine's count, when it answered.
@@ -163,11 +165,30 @@ fn roster_name(request: &Value) -> Option<String> {
     })
 }
 
-/// The prompt tokens a refusal states: `request (231158 tokens) exceeds the slot's available context`.
-fn refused_tokens(end: &Value) -> Option<u64> {
-    let error = end["error"].as_str()?;
-    let rest = &error[error.find("request (")? + "request (".len()..];
+/// The engine's refusal of a prompt over the slot's window, as it words it:
+/// `request (231158 tokens) exceeds the slot's available context size (187136 tokens)`.
+/// Pinned by the fixtures: a rewording reads as no refusal and fails a test, never as 0 tokens.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
+pub struct Refusal {
+    /// The prompt's tokens, as the engine counted them.
+    pub tokens: u64,
+    /// The slot's available context, in tokens.
+    pub window: u64,
+}
+
+/// The number in `(<n> tokens)` right after `marker` in `text`.
+fn counted_after(text: &str, marker: &str) -> Option<u64> {
+    let rest = text[text.find(marker)? + marker.len()..].strip_prefix('(')?;
     rest[..rest.find(" tokens)")?].parse().ok()
+}
+
+pub fn refusal(end: &Value) -> Option<Refusal> {
+    let error = end["error"].as_str()?;
+    Some(Refusal { tokens: counted_after(error, "request ")?, window: counted_after(error, "exceeds the slot's available context size ")? })
+}
+
+fn refused_tokens(end: &Value) -> Option<u64> {
+    refusal(end).map(|r| r.tokens)
 }
 
 /// The replay's median, unknown (not 0) over no values.
@@ -218,6 +239,7 @@ fn acts_of(rows: &[&Value], captures: &Captures, resident: &str, view: &probes::
             purpose: purpose.clone(),
             context_window: row["context_window"].as_u64(),
             elapsed_ms: end.and_then(|e| e["elapsed_ms"].as_u64()),
+            refusal: end.and_then(refusal),
             estimated_tokens: counted.unwrap_or((layers.total_chars as f64 * tokens_per_char) as u64), // unwrap_or: neither answered nor refused with a count, so estimated
             input_tokens,
             cached_tokens: u("cachedTokens"),
@@ -247,12 +269,13 @@ fn acts_of(rows: &[&Value], captures: &Captures, resident: &str, view: &probes::
 fn flag(act: &mut Act) {
     let mut flags = Vec::new();
     match &act.outcome {
-        Outcome::Failed { error } if error.contains("exceeds") => flags.push("refused:over-window".to_owned()),
+        Outcome::Failed { .. } if act.refusal.is_some() => flags.push("refused:over-window".to_owned()),
         Outcome::Failed { .. } => flags.push("failed".to_owned()),
         Outcome::Cancelled => flags.push("cancelled".to_owned()),
         _ => {}
     }
-    if let Some(window) = act.context_window {
+    // The slot's window as the engine stated it, else the window the core recorded.
+    if let Some(window) = act.refusal.map(|r| r.window).or(act.context_window) {
         let newest = act.layer_tokens(Layer::NewestResult) as u64;
         if act.estimated_tokens > window && act.estimated_tokens.saturating_sub(newest) <= window {
             flags.push("newest>window".to_owned());
@@ -341,6 +364,23 @@ mod tests {
         inspect(&captures, engine::parse(include_str!("fixtures/engine.log")), &probes::parse(include_str!("fixtures/core.log")), &o)
     }
 
+    // what this catches: the engine rewording its over-window refusal: the act would read 0
+    // tokens and lose its `refused:over-window` flag silently instead of failing here. The text
+    // is the engine's own (llama-server, 2026-10-26 on the M5); a near miss is not a refusal.
+    #[test]
+    fn the_engine_refusal_wording_is_pinned() {
+        let refused = |error: &str| refusal(&serde_json::json!({ "event": "failed", "error": error }));
+        assert_eq!(
+            refused("request (231158 tokens) exceeds the slot's available context size (187136 tokens)"),
+            Some(Refusal { tokens: 231_158, window: 187_136 })
+        );
+        assert_eq!(refused("request (231158 tokens) exceeds the slot's context"), None);
+        assert_eq!(refused("request future dropped before a terminal response"), None);
+        let acts = fixture(&[]);
+        let refused_act = acts.iter().find(|act| act.refusal.is_some());
+        assert_eq!(refused_act.map(|act| act.flags.first().map(String::as_str)), Some(Some("refused:over-window")));
+    }
+
     // what this catches: the whole path from capture rows to rows of the table: her name from
     // her roster, the engine joined to the right act, a page-in that lost more than was new, a
     // repeated call, a refusal over the window that only her newest result pushed over, and a
@@ -361,6 +401,7 @@ mod tests {
         assert_eq!(second.flags, ["repeat", "view-break:views"]);
         assert!(matches!(third.outcome, Outcome::Failed { .. }));
         // A refusal's prompt is the count the engine stated, not an estimate.
+        assert_eq!(third.refusal, Some(Refusal { tokens: 240_000, window: 187_136 }));
         assert_eq!(third.estimated_tokens, 240_000);
         assert_eq!(third.flags, ["refused:over-window", "newest>window"]);
         assert!(third.layer_tokens(Layer::NewestResult) > 0.0);

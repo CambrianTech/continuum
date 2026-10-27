@@ -275,6 +275,7 @@ mod tests {
             purpose: String::new(),
             context_window: None,
             outcome: Outcome::Completed,
+            refusal: None,
             elapsed_ms: Some(elapsed_ms),
             input_tokens: Some(total),
             estimated_tokens: total,
