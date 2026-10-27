@@ -420,6 +420,9 @@ pub struct DeliberationPromptView {
     /// with its handle (`fit_newest_result`). A refusal of a view where it was whole may be
     /// the one her measured density shrinks (`verdict/newest_refit.rs`).
     pub newest_result_reduced: bool,
+    /// Her newest result's estimated tokens as this view carries it (`RequiredParts::latest_result`):
+    /// what a refusal's excess is charged to when it refits her (`verdict/newest_refit.rs`).
+    pub newest_result_tokens: usize,
 }
 
 impl DeliberationPromptView {

@@ -365,4 +365,50 @@ mod the_newest_result_over_her_window {
         assert_eq!(seen.len(), 1);
         assert_eq!(sent_result(&seen[0]), small);
     }
+
+    // what this catches: #5520 not firing on the M5 (6417d15be, 05:20:57Z). Her refusal measured
+    // 222,348 for 148,275 estimated: 1.50 averaged over the whole request, and at 1.50 her ~113.6k
+    // result still fit the room the window left it, so it stayed whole and the resend path never
+    // ran. This fixture holds HER ratio and her result's share of the estimate; the refusal's
+    // excess, charged to the result, must bring it in at its summary and resend once.
+    #[tokio::test]
+    async fn her_averaged_density_still_refits_a_denser_result() {
+        // Her refusal (05:20:57Z): the engine's count over our estimate of the same request.
+        const MEASURED: u128 = 222_348;
+        const ESTIMATED: u128 = 148_275;
+        let turns: Vec<_> = (0..60)
+            .map(|i| crate::cognition::workspace::BurstTurn::attributed(i % 2 == 1, if i % 2 == 1 { "Aris" } else { "Joel" }, format!("prose_turn_{i} ").repeat(110), Some(i)))
+            .collect();
+        let ws = Workspace::new(crate::cognition::workspace::Burst::from_turns(crate::identity::ActivityRoom::mint(), turns));
+        let whole = evidence_answer(578);
+        let adapter = refusing(&[]);
+        let faculty = faculty_on(&whole, adapter.clone());
+        // The preconditions read a twin: rendering a view advances its epoch, and the faculty
+        // that acts must send exactly the view the refusal is scaled from.
+        let twin = faculty_after(&whole);
+        let first = twin.prompt_view_with_visual_feedback(&ws, ARIS_WINDOW, PromptCalibration::default(), None);
+        assert!(!first.newest_result_reduced, "precondition: unmeasured, her result goes whole");
+        let share = first.newest_result_tokens as f64 / first.estimated_prompt_tokens as f64;
+        assert!((0.70..=0.85).contains(&share), "precondition: her result is ~77% of the estimate (113.6k of 148.3k), here {share:.2}");
+        let requested = u32::try_from(first.estimated_prompt_tokens as u128 * MEASURED / ESTIMATED).expect("test: a u32 count"); // JUSTIFIED: test fixture
+        assert!(requested > ARIS_WINDOW, "precondition: the engine refuses it ({requested})");
+        // The 6417d15be miss, reproduced: at the averaged ratio her result still fits whole.
+        let averaged = PromptCalibration::observed(first.estimated_prompt_tokens, requested, Some(first.input_identity)).expect("test: positive"); // JUSTIFIED: test fixture
+        assert!(!faculty_after(&whole).prompt_view_with_visual_feedback(&ws, ARIS_WINDOW, averaged, None).newest_result_reduced, "precondition: the averaged ratio alone does not reduce it");
+        adapter.rejections.lock().expect("test: rejection queue").push_back(aris_refusal(requested)); // JUSTIFIED: test fixture
+        let outcome = faculty.contribute(&ws).await.expect("test: a verdict"); // JUSTIFIED: test fixture
+        assert!(outcome.fault.is_none() && outcome.capacity_refusal.is_none(), "{:?} parked={}", outcome.fault, outcome.capacity_refusal.is_some());
+        let seen = adapter.seen.lock().expect("test: request log"); // JUSTIFIED: test fixture
+        assert_eq!(seen.len(), 2, "the refused request and exactly one resend");
+        assert_eq!(estimate(&seen[0]), estimate(&first_request(&first, &seen[0])), "precondition: the refusal is scaled from the view she sent");
+        let resent = sent_result(&seen[1]);
+        assert!(resent.contains("too large to show whole") && resent.contains(&format!("tool/output {HANDLE}")), "{}", &resent[..resent.len().min(600)]);
+    }
+
+    /// `view` as the request `sent` carried it (its messages; the rest is the request's own).
+    fn first_request(view: &DeliberationPromptView, sent: &TextGenerationRequest) -> TextGenerationRequest {
+        let mut request = sent.clone();
+        request.messages = view.messages.clone();
+        request
+    }
 }
