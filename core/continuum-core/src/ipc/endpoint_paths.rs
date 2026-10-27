@@ -25,7 +25,86 @@ pub fn core_start_logfile() -> String {
 
 /// Resolve the socket to use: the env override if set, else the platform default.
 pub fn core_socket_path() -> String {
-    std::env::var("CONTINUUM_CORE_SOCKET").unwrap_or_else(|_| default_core_socket())
+    select_core_socket(
+        std::env::var("CONTINUUM_CORE_SOCKET").ok(),
+        installed_core_socket(),
+    )
+}
+
+/// The endpoint, by precedence: an explicit `CONTINUUM_CORE_SOCKET`; else, on a Windows node
+/// the installer set up, the socket its active release receipt records (the one the
+/// supervisor hands the core it launches); else the platform default.
+///
+/// The default is a guess from THIS process's temp dir, and on Windows that differs between
+/// processes: the installer records the socket from its own session (on the 5090,
+/// `D:\continuum-cold\tmp`), while the S4U deploy task and an operator's shell resolve
+/// `C:\Users\…\AppData\Local\Temp`. The handoff compares the two exactly, so measured on the
+/// 5090 2026-10-10 09:17Z, every unattended deploy refused ("ContinuumCore does not select the
+/// requested artifact/socket"), as did `continuum start`, all while the core answered on the
+/// receipt's socket the whole time.
+fn select_core_socket(explicit: Option<String>, installed: Option<String>) -> String {
+    explicit
+        .or(installed)
+        .unwrap_or_else(default_core_socket)
+}
+
+/// The socket the active release receipt records, on Windows. A node with no receipt (a
+/// developer checkout, any Unix host) has none and takes the default. A receipt that exists
+/// but cannot be read is named on the probe stream rather than silently standing in for one.
+fn installed_core_socket() -> Option<String> {
+    if !cfg!(windows) {
+        return None;
+    }
+    let home = crate::paths::continuum_home().ok()?;
+    match receipt_socket_in(&home) {
+        Ok(socket) => socket,
+        Err(why) => {
+            continuum_base::probe!(
+                class = "ipc.endpoint.receipt_unreadable",
+                home = %home.display(),
+                why = %why,
+                "the active release receipt exists but names no readable socket; the platform default is used, and a service handoff will refuse on the mismatch"
+            );
+            None
+        }
+    }
+}
+
+/// `release.socket` from `<home>/install-active.json`: `Ok(None)` when there is no receipt.
+fn receipt_socket_in(home: &std::path::Path) -> Result<Option<String>, String> {
+    let path = home.join("install-active.json");
+    let text = match std::fs::read_to_string(&path) {
+        Ok(text) => text,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(format!("{}: {e}", path.display())),
+    };
+    let receipt: serde_json::Value =
+        serde_json::from_str(&text).map_err(|e| format!("{}: {e}", path.display()))?;
+    match receipt.pointer("/release/socket").and_then(|s| s.as_str()) {
+        Some(socket) if !socket.is_empty() => Ok(Some(socket.to_string())),
+        _ => Err(format!("{}: no release.socket", path.display())),
+    }
+}
+
+/// Windows' primary listener and local providers must select the same TCP port.
+pub fn core_tcp_port() -> u16 {
+    tcp_port_from(std::env::var("CONTINUUM_CORE_TCP").ok().as_deref())
+}
+
+pub fn tcp_port_from(value: Option<&str>) -> u16 {
+    value
+        .and_then(|s| s.parse::<u16>().ok())
+        .filter(|p| *p > 0)
+        .unwrap_or(9100)
+}
+
+/// A dialable endpoint for providers, rather than the Windows socket-path placeholder.
+pub fn core_provider_endpoint() -> String {
+    if cfg!(windows) {
+        format!("tcp://127.0.0.1:{}", core_tcp_port())
+    } else {
+        core_socket_path()
+    }
 }
 
 fn endpoint_path(name: &str) -> String {
@@ -44,6 +123,22 @@ fn endpoint_path(name: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // Catches a launcher selecting a different port from the Windows listener,
+    // including its existing invalid/zero-port fallback.
+    #[test]
+    fn provider_port_obeys_the_listener_contract() {
+        for value in [None, Some(""), Some("invalid"), Some("0"), Some("65536")] {
+            assert_eq!(tcp_port_from(value), 9100);
+        }
+        assert_eq!(tcp_port_from(Some("19234")), 19234);
+        if cfg!(windows) {
+            assert_eq!(
+                core_provider_endpoint(),
+                format!("tcp://127.0.0.1:{}", core_tcp_port())
+            );
+        }
+    }
 
     // what this catches: the Windows regression this module exists for -- a path that is not
     // absolute resolves against the current drive, so two processes with different working
@@ -72,6 +167,29 @@ mod tests {
             assert_eq!(default_core_socket(), "/tmp/continuum-core.sock");
             assert_eq!(core_start_logfile(), "/tmp/continuum-core-start.log");
         }
+    }
+
+    // what this catches: the 5090's unattended deploys refusing every handoff (2026-10-10 09:17Z):
+    // a CLI on an installed node must dial the socket the active release records, not a guess
+    // from its own temp dir, while an explicit override still wins and a node with no receipt
+    // keeps the default. A receipt that exists but names no socket is an error, never a default.
+    #[test]
+    fn an_installed_node_dials_the_socket_its_active_release_records() {
+        let home = tempfile::tempdir().expect("test: home");
+        assert_eq!(receipt_socket_in(home.path()), Ok(None), "no receipt: no installed socket");
+        std::fs::write(
+            home.path().join("install-active.json"),
+            r#"{"release":{"artifact":"a","socket":"D:\\cold\\tmp\\continuum-core.sock"},"hashes":{}}"#,
+        )
+        .expect("test: receipt");
+        let installed = receipt_socket_in(home.path()).expect("test: readable");
+        assert_eq!(installed.as_deref(), Some("D:\\cold\\tmp\\continuum-core.sock"));
+        assert_eq!(select_core_socket(None, installed.clone()), "D:\\cold\\tmp\\continuum-core.sock");
+        assert_eq!(select_core_socket(Some("/custom/core.sock".into()), installed), "/custom/core.sock");
+        assert_eq!(select_core_socket(None, None), default_core_socket());
+        std::fs::write(home.path().join("install-active.json"), r#"{"release":{"artifact":"a"}}"#)
+            .expect("test: receipt");
+        assert!(receipt_socket_in(home.path()).is_err(), "a receipt with no socket is named, not defaulted");
     }
 
     // what this catches: the env override is the documented way to run two cores side by side;

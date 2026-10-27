@@ -88,8 +88,9 @@ use continuum_core::ai::types::{ChatMessage, MessageContent, TextGenerationReque
 use continuum_core::inference::airc_remote::{
     AircInferenceTransport, AircLiveTransport, RemoteInferenceRequest,
 };
+use continuum_core::ipc::command_ingress::CommandRequestHandler;
 use continuum_core::routing::{
-    CallerIdentity, CallerSource, ClosurePolicy, CommandRequestHandler, ForbiddenReason,
+    CallerIdentity, CallerSource, ClosurePolicy, ForbiddenReason,
     RouteDecision, Verdict,
 };
 use continuum_core::runtime::command_executor::CommandExecutor;

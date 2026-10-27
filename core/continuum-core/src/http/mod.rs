@@ -32,6 +32,9 @@
 
 pub mod desktop;
 
+mod local_inference_module;
+pub use local_inference_module::LocalInferenceModule;
+
 pub mod anthropic_compat;
 
 use anthropic_compat::{
@@ -131,6 +134,17 @@ async fn health_handler() -> impl IntoResponse {
 /// the selected adapter. The adapter/backend validates context length and returns
 /// errors if input exceeds the model's capacity. No artificial truncation here —
 /// the model's own definition is the single source of truth for its limits.
+/// Anthropic-shaped 500 body: one place for the error envelope.
+fn api_error(message: String) -> (StatusCode, Json<Value>) {
+    (
+        StatusCode::INTERNAL_SERVER_ERROR,
+        Json(json!({
+            "type": "error",
+            "error": { "type": "api_error", "message": message }
+        })),
+    )
+}
+
 async fn messages_handler(
     Json(req): Json<MessagesRequest>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
@@ -140,7 +154,7 @@ async fn messages_handler(
     let spec = parse_model_spec(&req.model);
 
     // Resolve the adapter
-    let registry = crate::modules::ai_provider::global_registry();
+    let registry = crate::ai::adapter::global_registry();
     let registry_guard = registry.read().await;
 
     // GPU-always contract: route through select() with the requested
@@ -223,6 +237,8 @@ async fn messages_handler(
         repeat_last_n: None,
         stop_sequences: req.stop_sequences.clone(),
         tools: None, // Tool calls handled by Claude Code, not the local model
+        tail_tools: None,
+        view_messages: None,
         tool_choice: None,
         response_format: None,
         active_adapters,
@@ -235,20 +251,13 @@ async fn messages_handler(
         purpose: Some("local-coding-agent".to_string()),
         // External coding-agent caller (not a persona-owned conversation).
         persona_id: None,
+        turn_bound: None,
     };
 
-    let response = adapter.generate_text(gen_request).await.map_err(|e| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({
-                "type": "error",
-                "error": {
-                    "type": "api_error",
-                    "message": format!("Inference error: {}", e)
-                }
-            })),
-        )
-    })?;
+    let response = adapter
+        .generate_text(gen_request)
+        .await
+        .map_err(|e| api_error(format!("Inference error: {}", e)))?;
 
     let response_time_ms = start.elapsed().as_millis() as u64;
     let request_id = response.request_id.clone();
@@ -290,11 +299,13 @@ async fn messages_handler(
             .header("content-type", "text/event-stream")
             .header("cache-control", "no-cache")
             .body(axum::body::Body::from(body))
-            .unwrap()
+            .map_err(|e| api_error(format!("SSE response build error: {e}")))?
             .into_response())
     } else {
         // Non-streaming JSON response
-        Ok(Json(serde_json::to_value(&anthropic_response).unwrap()).into_response())
+        let value = serde_json::to_value(&anthropic_response)
+            .map_err(|e| api_error(format!("Response serialization error: {e}")))?;
+        Ok(Json(value).into_response())
     }
 }
 
@@ -304,7 +315,7 @@ async fn messages_handler(
 ///   "local/default"     → provider=candle, model=None (base model), adapter=None
 ///   "local/helper"      → provider=candle, model=None (base model), adapter=Some("helper")
 ///   "candle"            → provider=candle, model=None (base model), adapter=None
-///   "unsloth/Llama-3.2" → provider=candle, model=Some("unsloth/Llama-3.2"), adapter=None
+///   "meta-llama/Llama-3.2" → provider=candle, model=Some("meta-llama/Llama-3.2"), adapter=None
 ///
 /// The "local/" prefix is the convention for routing through Candle.
 /// Anything after "local/" that isn't "default" is treated as a persona
@@ -348,7 +359,7 @@ fn parse_model_spec(raw: &str) -> ModelSpec {
             adapter: None,
         }
     } else {
-        // Treat as explicit model name (e.g. "unsloth/Llama-3.2-3B-Instruct")
+        // Treat as explicit model name (e.g. "meta-llama/Llama-3.2-3B-Instruct")
         // Default to quantized for large context
         ModelSpec {
             provider: PROVIDER_CANDLE_QUANTIZED.to_string(),

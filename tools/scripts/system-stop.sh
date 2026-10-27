@@ -11,8 +11,13 @@ source "$SCRIPT_DIR/shared/preflight.sh"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 CONFIG_FILE="$PROJECT_DIR/workers/workers-config.json"
 
-# All data lives at $HOME/.continuum — matches SystemPaths.root in TypeScript.
-CONTINUUM_ROOT="${CONTINUUM_ROOT:-$HOME/.continuum}"
+# The continuum home: $CONTINUUM_HOME, else $HOME/.continuum (the core's paths::continuum_home).
+# $CONTINUUM_ROOT is retired: set to another tree it is refused, never silently ignored.
+if [ -n "${CONTINUUM_ROOT:-}" ] && [ "${CONTINUUM_ROOT}" != "${CONTINUUM_HOME:-$HOME/.continuum}" ]; then
+  echo "CONTINUUM_ROOT is no longer read: set CONTINUUM_HOME=$CONTINUUM_ROOT to keep that tree, or unset CONTINUUM_ROOT (nothing was moved)" >&2
+  exit 1
+fi
+CONTINUUM_HOME="${CONTINUUM_HOME:-$HOME/.continuum}"
 
 echo -e "${YELLOW}🛑 Stopping JTAG system...${NC}"
 
@@ -112,7 +117,7 @@ done
 # 8. Kill orphaned sentinel child processes (training, builds, etc.)
 # Each sentinel writes a PID file — kill the process GROUP (setsid) to get all descendants.
 # This catches training processes that survive server death.
-SENTINEL_LOGS="$CONTINUUM_ROOT/jtag/logs/system/sentinels"
+SENTINEL_LOGS="$CONTINUUM_HOME/jtag/logs/system/sentinels"
 if [ -d "$SENTINEL_LOGS" ]; then
   orphan_count=0
   for pid_file in "$SENTINEL_LOGS"/*/pid; do
@@ -143,19 +148,19 @@ if [ -d "$SENTINEL_LOGS" ]; then
 fi
 
 # 9. Clean up sockets
-if [ -d "$CONTINUUM_ROOT/sockets" ]; then
+if [ -d "$CONTINUUM_HOME/sockets" ]; then
   echo -e "   Cleaning sockets..."
-  rm -f "$CONTINUUM_ROOT/sockets/"*.sock 2>/dev/null || true
+  rm -f "$CONTINUUM_HOME/sockets/"*.sock 2>/dev/null || true
 fi
 
 # 10. Clear ready signal
-if [ -f "$CONTINUUM_ROOT/jtag/system-ready.signal" ]; then
-  rm -f "$CONTINUUM_ROOT/jtag/system-ready.signal"
+if [ -f "$CONTINUUM_HOME/jtag/system-ready.signal" ]; then
+  rm -f "$CONTINUUM_HOME/jtag/system-ready.signal"
 fi
 
 # 11. Remove PID files
-rm -f "$CONTINUUM_ROOT/jtag/logs/system/npm-start.pid" 2>/dev/null || true
-rm -f "$CONTINUUM_ROOT/jtag/system.lock" 2>/dev/null || true
+rm -f "$CONTINUUM_HOME/jtag/logs/system/npm-start.pid" 2>/dev/null || true
+rm -f "$CONTINUUM_HOME/jtag/system.lock" 2>/dev/null || true
 
 # 12. Also stop the containerized continuum stack (Carl mode).
 # Idempotent: docker compose down is safe to run when nothing is up.

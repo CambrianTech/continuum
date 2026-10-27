@@ -46,7 +46,6 @@ use std::path::{Path, PathBuf};
 /// code OUTSIDE the runtime directory. Every item exposed by these
 /// submodules is re-exported at `runtime/mod.rs` root.
 const FORBIDDEN_RUNTIME_SUBMODULES: &[&str] = &[
-    "airc_interceptor",
     "artifact_handle",
     "boot_mode",
     "brain_region",
@@ -56,7 +55,6 @@ const FORBIDDEN_RUNTIME_SUBMODULES: &[&str] = &[
     "command_executor",
     "command_interceptor",
     "control",
-    "grid_interceptor",
     "late_bound",
     "message_bus",
     "module_context",

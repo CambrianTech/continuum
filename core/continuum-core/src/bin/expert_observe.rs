@@ -119,7 +119,12 @@ const DOMAINS: &[(&str, &[&str])] = &[
     ),
 ];
 
-fn drive_prompt(model: &Model, observer: &Arc<LiveExpertObserver>, prompt: &str, n_gen: usize) {
+fn drive_prompt(
+    model: &Model,
+    observer: &Arc<LiveExpertObserver>,
+    prompt: &str,
+    n_gen: usize,
+) -> Result<(), String> {
     let mut ctx = model
         .new_context(ContextParams {
             n_ctx: 4096,
@@ -128,9 +133,11 @@ fn drive_prompt(model: &Model, observer: &Arc<LiveExpertObserver>, prompt: &str,
             expert_observer: Some(observer.clone() as Arc<dyn ExpertObserver>),
             ..Default::default()
         })
-        .expect("context");
+        .map_err(|e| format!("context: {e:?}"))?;
 
-    let tokens = model.tokenize(prompt, true, false).expect("tokenize");
+    let tokens = model
+        .tokenize(prompt, true, false)
+        .map_err(|e| format!("tokenize: {e:?}"))?;
     let mut n_cur: i32 = 0;
     for chunk in tokens.chunks(512) {
         let mut batch = Batch::allocated(512, 1);
@@ -139,7 +146,8 @@ fn drive_prompt(model: &Model, observer: &Arc<LiveExpertObserver>, prompt: &str,
             let pos = n_cur + i as i32;
             batch.push(*tok, pos, &[0], (n_cur as usize + i) == last_global);
         }
-        ctx.decode(&batch).expect("prefill decode");
+        ctx.decode(&batch)
+            .map_err(|e| format!("prefill decode: {e:?}"))?;
         n_cur += chunk.len() as i32;
     }
 
@@ -151,9 +159,11 @@ fn drive_prompt(model: &Model, observer: &Arc<LiveExpertObserver>, prompt: &str,
         }
         let mut batch = Batch::allocated(1, 1);
         batch.push(token, n_cur, &[0], true);
-        ctx.decode(&batch).expect("gen decode");
+        ctx.decode(&batch)
+            .map_err(|e| format!("gen decode: {e:?}"))?;
         n_cur += 1;
     }
+    Ok(())
 }
 
 /// Sorted-desc counts → activation share captured by the top `frac` of FIRED experts.
@@ -166,18 +176,18 @@ fn top_share(counts_desc: &[u64], total: u64, frac: f64) -> f64 {
     100.0 * s as f64 / total as f64
 }
 
-fn main() {
+fn main() -> Result<(), String> {
     let args: Vec<String> = std::env::args().collect();
     let model_path = args
         .get(1)
-        .expect("usage: expert_observe <model.gguf> [n_gen_per_prompt]");
+        .ok_or_else(|| "usage: expert_observe <model.gguf> [n_gen_per_prompt]".to_string())?;
     let n_gen: usize = args.get(2).and_then(|s| s.parse().ok()).unwrap_or(48);
 
     let model = Model::load(
         PathBuf::from(model_path),
         ModelParams { n_gpu_layers: -1, use_mmap: true },
     )
-    .expect("load model");
+    .map_err(|e| format!("load model: {e:?}"))?;
     println!("Loaded {model_path} (vocab={})", model.n_vocab());
 
     // Drive each domain into its OWN observer → per-domain hit maps.
@@ -185,7 +195,7 @@ fn main() {
     for (label, prompts) in DOMAINS {
         let obs = LiveExpertObserver::new();
         for prompt in *prompts {
-            drive_prompt(&model, &obs, prompt, n_gen);
+            drive_prompt(&model, &obs, prompt, n_gen)?;
         }
         let hits = obs.snapshot_hits();
         println!(
@@ -339,4 +349,5 @@ fn main() {
          domains never touch → evict them when the workload isn't that domain. High shared-base\n\
          mass = a resident core you never page. That split IS the #180 paging architecture."
     );
+    Ok(())
 }

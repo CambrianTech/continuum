@@ -1,4 +1,9 @@
-# agent/solve battery — the whole-being agentic benchmark
+# agent/solve battery — the whole-being agentic benchmark (RETIRED)
+
+> Retired 2026-10-19 (card c4f4b8cd step 2): `agent/solve` and `bench.py` were deleted with
+> the detached runner. A benchmark is now an adapter that posts cards into an activity
+> room (docs/architecture/BENCHMARKS-ARE-ADAPTERS-NOT-A-RUNNER.md). This page and the
+> rows already in `benchmarks/RESULTS.jsonl` stay as the record of what was measured.
 
 Drops a persona's WHOLE self (memory ON, genome lane, tools ON — never stripped)
 into seeded git workspaces via `agent/solve`, one task at a time, and grades each

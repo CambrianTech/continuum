@@ -34,7 +34,7 @@ Missing:
 │  │              │     │   Pipeline   │     │        (Candle gRPC)         ││
 │  │ • Mistakes   │     │              │     │                              ││
 │  │ • Corrections│────▶│ • MLX (Mac)  │────▶│ • LoadAdapter RPC            ││
-│  │ • Feedback   │     │ • Unsloth    │     │ • Hot-swap adapters          ││
+│  │ • Feedback   │     │ • Engine LoRA│     │ • Hot-swap adapters          ││
 │  │ • Imports    │     │ • Cloud APIs │     │ • Multi-adapter composition  ││
 │  └──────────────┘     └──────────────┘     └──────────────────────────────┘│
 │         │                    │                         │                    │
@@ -155,7 +155,7 @@ interface TrainingJob {
   baseAdapter?: string;      // Previous version to continue from
 
   // Config
-  provider: 'mlx' | 'unsloth' | 'fireworks';
+  provider: 'mlx' | 'engine' | 'fireworks';
   hyperparameters: {
     rank: number;            // LoRA rank (8 for style, 32 for knowledge)
     alpha: number;           // Typically 2x rank
@@ -414,7 +414,6 @@ In addition to text-only LLMs, the system supports Vision Language Models (VLMs)
 |-------|--------|----------|-----------|----------|
 | **Qwen2.5-VL 3B** | 3B | MLX-VLM (Mac) | Candle (Rust) | UI design, screenshots |
 | **Moondream 2** | 1.6B | MLX-VLM | Candle (Rust) | Fast image Q&A |
-| **LLaVA 1.5/1.6** | 7-13B | Unsloth (CUDA) | Candle (Rust) | Detailed analysis |
 | **SmolVLM** | 2B | HuggingFace | Transformers | Memory-efficient |
 
 ### Training on Apple Silicon (MLX-VLM)
@@ -435,22 +434,6 @@ python -m mlx_vlm.lora \
 python -m mlx_vlm.convert \
   --adapter .continuum/genome/adapters/vision/ui-expert-v1.safetensors \
   --output ./ui-expert.safetensors
-```
-
-### Training on NVIDIA GPU (RTX 5090)
-
-```bash
-# Unsloth for maximum speed
-pip install unsloth
-
-# Fine-tune with QLoRA (fits in 32GB VRAM)
-python scripts/train-vlm-unsloth.py \
-  --model Qwen/Qwen2.5-VL-7B-Instruct \
-  --dataset ./datasets/ui-critique.jsonl \
-  --output .continuum/genome/adapters/vision/ui-expert-v1.safetensors \
-  --lora-rank 64 \
-  --epochs 3 \
-  --vision-lora true  # Include vision encoder in LoRA
 ```
 
 ### Vision Training Datasets
@@ -612,7 +595,6 @@ python scripts/train-vlm-unsloth.py \
 **Training Frameworks:**
 - [MLX-VLM](https://github.com/Blaizzy/mlx-vlm) - VLM inference and fine-tuning on Apple Silicon
 - [mlx-image](https://github.com/riccardomusmeci/mlx-image) - Vision transformer training on Mac
-- [Unsloth](https://github.com/unslothai/unsloth) - Fast LoRA training on NVIDIA GPUs
 - [Qwen-VL Fine-Tuning](https://github.com/2U1/Qwen-VL-Series-Finetune) - Complete Qwen-VL training repo
 
 **Datasets:**

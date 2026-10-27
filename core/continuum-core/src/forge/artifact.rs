@@ -30,8 +30,9 @@ use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 use uuid::Uuid;
 
+use crate::genome::corpus_ref::CorpusRef;
 use super::recipe::{
-    AlloyHardware, AlloySource, BenchmarkDef, CorpusRef, ForgeRecipe, PriorBaseline, QuantTier,
+    AlloyHardware, AlloySource, BenchmarkDef, ForgeRecipe, PriorBaseline, QuantTier,
 };
 
 //=============================================================================

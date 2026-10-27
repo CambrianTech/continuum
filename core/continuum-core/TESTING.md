@@ -12,8 +12,10 @@
 npm run test:rust -- tick_db_handle --lib
 ```
 
-The wrapper sources `scripts/shared/cargo-features.sh` to apply the
-right GPU feature flags for the current platform automatically.
+The wrapper sources `tools/scripts/shared/cargo-features.sh` to apply the
+right GPU feature flags for the current platform automatically. The crate is
+headless by default: add `--features livekit-webrtc,avatar-3d` to test the call
+and 3D-avatar paths.
 
 ## Why a wrapper?
 
@@ -46,8 +48,8 @@ cargo test tick_db_handle --lib --features vulkan,load-dynamic-ort
 ```
 
 `scripts/cargo-test.sh` reuses the same `cargo-features.sh` detector
-that `git-prepush.sh` and `build-with-loud-failure.sh` already
-source, so there's only one place that knows the platform→features
+that `git-prepush.sh` already
+sources, so there's only one place that knows the platform→features
 mapping.
 
 ## CPU-only debug mode (advanced)

@@ -5,4 +5,4 @@ import type { TrainingArtifact } from "./TrainingArtifact";
  * Current state of a training job. Returned by
  * [`super::FineTuningAdapter::poll`].
  */
-export type TrainingStatus = { "state": "queued" } | { "state": "running", progressPct: number, currentEpoch: number, } | { "state": "completed", artifact: TrainingArtifact, } | { "state": "failed", error: string, } | { "state": "cancelled" };
+export type TrainingStatus = { "state": "queued" } | { "state": "waiting_for_capacity", requiredBytes: number, availableBytes: number, } | { "state": "running", progressPct: number, currentEpoch: number, } | { "state": "completed", artifact: TrainingArtifact, } | { "state": "failed", error: string, } | { "state": "cancelled" };

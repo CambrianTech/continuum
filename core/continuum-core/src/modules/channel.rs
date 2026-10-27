@@ -12,9 +12,10 @@
 //! live surface is the background `tick()` below: per-persona task polling +
 //! self-task generation, a lifecycle concern, not a command.
 
-use crate::persona::channel_items::TaskQueueItem;
+use crate::cognition::conversation::channel_items::TaskQueueItem;
 use crate::persona::self_task_generator::SelfTaskGenerator;
-use crate::persona::{ChannelRegistry, PersonaCognition, PersonaState};
+use crate::persona::{ChannelRegistry, PersonaCognition};
+use crate::cognition::conversation::types::PersonaState;
 use crate::runtime::{
     CommandResult, LateBound, ModuleConfig, ModuleContext, ModulePriority, ServiceModule,
 };
@@ -71,7 +72,7 @@ pub struct ChannelState {
     pub self_task_generators: DashMap<Uuid, tokio::sync::Mutex<SelfTaskGenerator>>,
     /// Tick configuration — adjustable at runtime via channel/tick-config command.
     pub tick_config: std::sync::RwLock<ChannelTickConfig>,
-    /// Circuit breaker for DB-backed tick work. One failing Postgres path should
+    /// Circuit breaker for DB-backed tick work. One failing database path should
     /// not fan out into N personas × M queries every tick.
     pub db_tick_backoff: std::sync::Mutex<DbTickBackoff>,
 }
@@ -111,6 +112,10 @@ impl ChannelState {
 pub struct ChannelModule {
     state: Arc<ChannelState>,
     executor: LateBound<crate::runtime::CommandExecutor>,
+    /// The data handle the tick works against — `CONTINUUM_DB_URL` else DataModule's
+    /// `main`. A process-lifetime value, resolved ONCE here: it was read back out of the
+    /// environment on every tick (card 948c30c2, row 16).
+    tick_db_handle: String,
 }
 
 impl ChannelModule {
@@ -118,6 +123,7 @@ impl ChannelModule {
         Self {
             state,
             executor: LateBound::new("channel::executor"),
+            tick_db_handle: Self::tick_db_handle_from_env(std::env::var("CONTINUUM_DB_URL").ok()),
         }
     }
 
@@ -134,10 +140,6 @@ impl ChannelModule {
         override_value
             .filter(|value| !value.trim().is_empty())
             .unwrap_or_else(|| "main".to_string())
-    }
-
-    fn tick_db_handle() -> String {
-        Self::tick_db_handle_from_env(std::env::var("CONTINUUM_DB_URL").ok())
     }
 }
 
@@ -159,6 +161,17 @@ impl ServiceModule for ChannelModule {
             max_concurrency: 0,
             tick_interval: Some(Duration::from_millis(tick_ms)),
         }
+    }
+
+    /// The operator-tunable tick (`ChannelTickConfig`) is the one cadence on this
+    /// node that moves at runtime: the runtime's loop reads it here — one `RwLock`
+    /// read — instead of rebuilding the whole `ModuleConfig` per tick.
+    fn tick_interval_now(&self) -> Option<Duration> {
+        self.state
+            .tick_config
+            .read()
+            .ok()
+            .map(|c| Duration::from_millis(c.tick_interval_ms))
     }
 
     async fn initialize(&self, _ctx: &ModuleContext) -> Result<(), String> {
@@ -201,9 +214,10 @@ impl ServiceModule for ChannelModule {
             .map(|c| c.clone())
             .unwrap_or_default();
 
-        // Use DataModule's main handle by default so fresh installs stay SQLite-first.
-        // CONTINUUM_DB_URL remains an explicit deployment override.
-        let db_path = Self::tick_db_handle();
+        // DataModule's main handle by default so fresh installs stay SQLite-first;
+        // CONTINUUM_DB_URL is the explicit deployment override — resolved once at
+        // construction, held on the module (card 948c30c2).
+        let db_path = self.tick_db_handle.clone();
 
         // Collect persona IDs to avoid holding DashMap ref across await
         let persona_ids: Vec<Uuid> = self
@@ -311,39 +325,6 @@ impl ServiceModule for ChannelModule {
                                 "self-task gen failed for {persona_id}: {e}"
                             ));
                             return Ok(());
-                        }
-                    }
-                }
-            }
-
-            // ── 2b. Enrollment opportunity detection ─────────────────────
-            // Uses genome coverage report to find domains with activity but no adapter.
-            // Creates enroll-academy tasks when gap meets threshold.
-            if config.self_task_enabled {
-                if let Some(generator_entry) = self.state.self_task_generators.get(persona_id) {
-                    let generator = generator_entry.lock().await;
-                    if let Some(persona) = self.state.personas.get(persona_id) {
-                        let enrollment_tasks =
-                            generator.detect_enrollment_opportunities(&persona.genome_engine);
-                        if !enrollment_tasks.is_empty() {
-                            for task_json in &enrollment_tasks {
-                                if let Some(item) =
-                                    Self::json_to_task_queue_item(task_json, persona_id)
-                                {
-                                    if let Some(mut entry) =
-                                        self.state.registries.get_mut(persona_id)
-                                    {
-                                        let (registry, _state) = entry.value_mut();
-                                        let _ = registry.route(std::sync::Arc::new(item));
-                                    }
-                                }
-                            }
-                            total_self_tasks += enrollment_tasks.len() as u32;
-                            log.info(&format!(
-                                "Enrollment opportunities for {}: {} tasks",
-                                persona_id,
-                                enrollment_tasks.len()
-                            ));
                         }
                     }
                 }
@@ -458,10 +439,7 @@ impl ChannelModule {
         task_id: Option<Uuid>,
         persona_id: &Uuid,
     ) -> Option<TaskQueueItem> {
-        let now_ms = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_millis() as u64;
+        let now_ms = continuum_base::time::EpochMs::now().millis();
 
         Some(TaskQueueItem {
             id: Uuid::new_v4(),
@@ -528,7 +506,7 @@ mod tests {
 
     #[test]
     fn tick_db_handle_preserves_explicit_override() {
-        let db_url = "postgres://user@localhost:5432/continuum".to_string();
+        let db_url = "/var/lib/continuum/tick.db".to_string();
 
         assert_eq!(
             ChannelModule::tick_db_handle_from_env(Some(db_url.clone())),

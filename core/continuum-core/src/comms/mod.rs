@@ -95,12 +95,6 @@ pub enum PayloadClass {
 }
 
 impl PayloadClass {
-    pub fn is_bulk(self) -> bool {
-        matches!(
-            self,
-            Self::AudioFrame | Self::VideoFrame | Self::GpuFrameHandle
-        )
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
@@ -202,28 +196,6 @@ impl ResourceBudget {
             retry_budget: CommsRetryBudget {
                 max_attempts: 1,
                 retry_window_ms: deadline_ms,
-            },
-            retention: RetentionPolicy::Ephemeral,
-        }
-    }
-
-    pub fn zero_copy_media(deadline_ms: u64, max_gpu_bytes: u64) -> Self {
-        Self {
-            max_bytes: 512,
-            deadline_ms,
-            max_queue_depth: 3,
-            cpu_copy_budget: CommsCopyBudget::zero_cpu(),
-            memory_budget: CommsMemoryBudget {
-                max_heap_bytes: 512,
-                max_external_bytes: 0,
-            },
-            gpu_budget: CommsGpuBudget {
-                requires_gpu_residency: true,
-                max_gpu_bytes,
-            },
-            retry_budget: CommsRetryBudget {
-                max_attempts: 0,
-                retry_window_ms: 0,
             },
             retention: RetentionPolicy::Ephemeral,
         }
@@ -418,10 +390,6 @@ impl<T> BufferLease<T> {
         }
     }
 
-    pub fn zero_copy_eligible(&self) -> bool {
-        matches!(self, Self::Shared(_) | Self::External(_) | Self::Gpu(_))
-    }
-
     pub fn measured_cost(&self, payload_bytes: u64) -> ResourceCost {
         match self {
             Self::Borrowed(_) | Self::Owned(_) => ResourceCost::control_bytes(payload_bytes),
@@ -494,22 +462,6 @@ impl<T> TransportEnvelope<T> {
     }
 }
 
-pub trait ResourceAccounted {
-    fn declared_budget(&self) -> &ResourceBudget;
-    fn measured_cost(&self) -> ResourceCost;
-
-    fn assert_within_budget(&self) -> Result<(), BudgetViolation> {
-        self.declared_budget().validate(&self.measured_cost())
-    }
-}
-
-pub trait ZeroCopyEligible {
-    fn copy_count(&self) -> u32;
-    fn can_share_zero_copy(&self) -> bool;
-    fn external_ref(&self) -> Option<&ExternalBufferRef>;
-    fn gpu_ref(&self) -> Option<&GpuBufferRef>;
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -535,34 +487,6 @@ mod tests {
             Err(BudgetViolation::CpuCopies {
                 actual: 2,
                 limit: 1
-            })
-        );
-    }
-
-    #[test]
-    fn zero_copy_media_budget_accepts_gpu_handle() {
-        let budget = ResourceBudget::zero_copy_media(33, 8_294_400);
-        let lease: BufferLease<Vec<u8>> = BufferLease::Gpu(GpuBufferRef {
-            device: "metal:0".into(),
-            handle: "texture-42".into(),
-            bytes: 8_294_400,
-        });
-
-        assert_eq!(lease.kind(), BufferLeaseKind::Gpu);
-        assert!(lease.zero_copy_eligible());
-        assert!(budget.validate(&lease.measured_cost(0)).is_ok());
-    }
-
-    #[test]
-    fn zero_copy_media_budget_rejects_cpu_bytes() {
-        let budget = ResourceBudget::zero_copy_media(33, 8_294_400);
-        let lease = BufferLease::Owned(vec![0_u8; 1024]);
-
-        assert_eq!(
-            budget.validate(&lease.measured_cost(1024)),
-            Err(BudgetViolation::Bytes {
-                actual: 1024,
-                limit: 512
             })
         );
     }
@@ -601,10 +525,4 @@ mod tests {
         assert_ne!(MessageId::new(), MessageId::new());
     }
 
-    #[test]
-    fn payload_class_marks_bulk_hot_paths() {
-        assert!(PayloadClass::VideoFrame.is_bulk());
-        assert!(PayloadClass::GpuFrameHandle.is_bulk());
-        assert!(!PayloadClass::Command.is_bulk());
-    }
 }

@@ -4,7 +4,7 @@
  * What to do to a referencing row when its target row changes.
  *
  * SQL-standard semantics. The substrate names these explicitly so
- * every backend (sqlite, postgres, future grid-replicated) emits
+ * every backend (sqlite, future grid-replicated) emits
  * the same intent rather than inheriting whatever default the
  * backend has.
  */

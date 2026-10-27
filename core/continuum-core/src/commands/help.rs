@@ -13,17 +13,16 @@
 //! Gated to the caller's own trust: you only get help for commands you could
 //! actually run (no teaching the format of an Owner-only command to a persona).
 
-use std::collections::HashSet;
 
 use async_trait::async_trait;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
 use ts_rs::TS;
 
-use crate::modules::grid::acl::is_command_authorized;
-use crate::routing::grid_trust_policy::caller_trust;
+use crate::routing::command_acl::is_command_authorized;
+use crate::modules::grid::trust_policy::caller_trust;
 use crate::sdk_codegen::{AccessLevel, ActionCommand, CommandError, Ctx};
+use crate::sdk_codegen::ai_help::{did_you_mean, render_ai_help};
 use crate::sdk_codegen::ext::command_registry_live;
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
@@ -38,86 +37,10 @@ pub struct CommandsHelpParams {
     #[serde(default)]
     #[ts(optional)]
     pub name: Option<String>,
-}
-
-/// Closest authorized command names to a miss — same category prefix (before `/`),
-/// or sharing a path segment. Cheap, dependency-free, and enough to unstick an agent
-/// that guessed a plausible-but-wrong name (e.g. `commands/describe` → `commands/help`).
-pub(crate) fn did_you_mean<'a>(query: &str, authorized: &[&'a str]) -> Vec<&'a str> {
-    let q = query.to_lowercase();
-    let q_prefix = q.split('/').next().unwrap_or(&q);
-    let q_segs: HashSet<&str> = q.split('/').filter(|s| !s.is_empty()).collect();
-    // Tokens across EVERY separator a caller might reach for, not just `/`. A mind
-    // told its tools live behind `list_commands` forms `list_cards` by analogy — an
-    // underscored bare name that shares no category prefix and no whole path segment
-    // with anything, so the two tiers below discarded every candidate and the refusal
-    // named nothing. Measured 2026-09-05: a citizen issued `list_cards` 31 times, the
-    // loop-breaker told her so on 30 of them, and neither channel ever mentioned
-    // `commands/list`. The perception side declines to say what to do next ON PURPOSE
-    // (apply.rs: "It never says what to do instead (that would be steering)") — which
-    // assumes THIS function carries the routing. Naming commands that exist is not
-    // steering; it is the same class of fact as "you have called this 31 times".
-    let q_tokens: HashSet<&str> = q
-        .split(|c| c == '/' || c == '_' || c == '-')
-        .filter(|s| !s.is_empty())
-        .collect();
-    let mut scored: Vec<(u8, &str)> = authorized
-        .iter()
-        .filter_map(|name| {
-            let n = name.to_lowercase();
-            let n_prefix = n.split('/').next().unwrap_or(&n);
-            let shares_seg = n.split('/').any(|s| !s.is_empty() && q_segs.contains(s));
-            let shares_token = n
-                .split(|c| c == '/' || c == '_' || c == '-')
-                .any(|s| !s.is_empty() && q_tokens.contains(s));
-            let score = if n_prefix == q_prefix {
-                2 // same category — strongest signal
-            } else if shares_seg {
-                1
-            } else if shares_token {
-                0 // a shared word — weakest, but never nothing
-            } else {
-                return None;
-            };
-            Some((score, *name))
-        })
-        .collect();
-    // Rank: score, then DEPTH, then name.
-    //
-    // Alphabetical alone was the tie-break when #3769 landed, and on the very failure
-    // that motivated it the right answers lost the race. Measured live 2026-09-05:
-    //
-    //   list_cards -> agent/list, ai/lora/list, ai/models/list, ai/providers/list,
-    //                 benchmark/list, code/list
-    //
-    // Eight commands share the word `list`, all tie at score 0, and `take(6)` cut at
-    // `code/` — dropping exactly `commands/list` and `work/list`, the two the citizen
-    // wanted. Suggestions appeared where there had been silence, which was the fix,
-    // and none of them was the route, which was the claim.
-    //
-    // Depth is the discriminator the data actually carries: a two-segment command is
-    // a top-level verb, a three-segment one is a specialisation inside a family. When
-    // nothing else separates candidates, the shallower command is the likelier answer
-    // — `work/list` over `ai/providers/list`. It is only a tie-break, so the score
-    // tiers above are untouched.
-    //
-    // Edit distance was the first thing I tried and it does not work here: every
-    // candidate ENDS in `list`, so last-segment distance ties them all, and the
-    // query's own last token is `cards`, which is near none of them. A discriminator
-    // has to discriminate on the case that motivated it.
-    scored.sort_by(|a, b| {
-        b.0.cmp(&a.0)
-            .then(depth(a.1).cmp(&depth(b.1)))
-            .then(a.1.cmp(b.1))
-    });
-    scored.into_iter().take(6).map(|(_, n)| n).collect()
-}
-
-/// Path segments in a command name — `work/list` is 2, `ai/providers/list` is 3.
-/// Shallower is more central, and that is the only structural signal left once two
-/// candidates share a word and nothing else.
-fn depth(name: &str) -> usize {
-    name.split('/').filter(|s| !s.is_empty()).count()
+    /// What you want to do, when you do not know the command's name: the best matches, ranked.
+    #[serde(default)]
+    #[ts(optional)]
+    pub query: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, TS)]
@@ -134,407 +57,6 @@ pub struct CommandsHelpResult {
     pub manual: String,
 }
 
-/// Render a command's manual in the AI paradigm: the canonical `{"tool_call": …}`
-/// envelope (with placeholder values typed from the schema) + an argument list.
-/// Pure function of (name, description, params JSON Schema) — same schema every
-/// other interface adapts from.
-pub(crate) fn render_ai_help(name: &str, description: &str, schema: &Value) -> String {
-    let props = schema.get("properties").and_then(Value::as_object);
-    let required: HashSet<&str> = schema
-        .get("required")
-        .and_then(Value::as_array)
-        .map(|a| a.iter().filter_map(Value::as_str).collect())
-        .unwrap_or_default();
-
-    let mut example = serde_json::Map::new();
-    let mut arg_lines: Vec<String> = Vec::new();
-    if let Some(props) = props {
-        for (key, spec) in props {
-            let req = required.contains(key.as_str());
-            let doc = spec
-                .get("description")
-                .and_then(Value::as_str)
-                .unwrap_or("");
-            // Resolve the param's real shape — a scalar `type`, OR an enum (`oneOf`/
-            // `anyOf`, possibly behind a `$ref`/`allOf`) whose variants we EXPAND into
-            // a hint + a concrete example. Without this, a complex param (e.g. an
-            // `EditMode` enum) collapsed to a useless `"any"`, so a model literally
-            // could not tell what to pass — the invisible-contract bug.
-            let (ty, placeholder) = param_shape(spec, schema);
-            // The example is the MINIMAL VALID CALL — required arguments only. Every
-            // optional one stays in the argument list below, documented, and out of the
-            // envelope a caller is told to copy.
-            //
-            // Because a caller copies the example. Measured 2026-09-05, a citizen
-            // emitted `code/edit`'s ENTIRE manual back as a tool call:
-            //
-            //   [code/edit(all=<any>, content=<any>, description=<any>, edit_mode=<any>,
-            //    end_line=<any>, file_path=<string>, line=<any>, new_content=<any>,
-            //    replace=<any>, search=<any>)]
-            //
-            // Ten arguments, nine of them optional, every one a placeholder. She was not
-            // guessing — she pasted exactly what she was shown. An example that carries
-            // every optional argument teaches the caller to send every optional argument,
-            // and for a union-typed param the placeholder cannot even deserialize.
-            //
-            // Required-only cuts that call to `{"file_path": "<string>"}`, which is the
-            // shape the manual is trying to teach in the first place.
-            if req {
-                example.insert(key.clone(), placeholder);
-            }
-            arg_lines.push(format!(
-                "- {key} ({ty}, {}){}",
-                if req { "required" } else { "optional" },
-                if doc.is_empty() {
-                    String::new()
-                } else {
-                    format!(" — {doc}")
-                },
-            ));
-        }
-    }
-
-    let envelope = json!({ "tool_call": { "name": name, "arguments": Value::Object(example) } });
-    let envelope_str = serde_json::to_string_pretty(&envelope)
-        .unwrap_or_else(|_| "{\"tool_call\": {\"name\": \"…\", \"arguments\": {}}}".to_string());
-
-    let args_block = if arg_lines.is_empty() {
-        "(no arguments)".to_string()
-    } else {
-        arg_lines.join("\n")
-    };
-
-    format!(
-        "{name} — {description}\n\n\
-         To call it, emit this SHAPE — every `<replace-with-…>` below is a blank you fill \
-         in, not a value to send:\n{envelope_str}\n\n\
-         Arguments:\n{args_block}"
-    )
-}
-
-/// Resolve a schema node that may be a `$ref` (or a single-element `allOf` wrapping one —
-/// schemars' usual shape for a named type) against the root schema's `definitions`/`$defs`.
-/// Returns the node unchanged if it isn't a ref or the target is missing.
-fn resolve_ref<'a>(spec: &'a Value, root: &'a Value) -> &'a Value {
-    if let Some(items) = spec.get("allOf").and_then(Value::as_array) {
-        if items.len() == 1 {
-            return resolve_ref(&items[0], root);
-        }
-    }
-    if let Some(r) = spec.get("$ref").and_then(Value::as_str) {
-        let name = r.rsplit('/').next().unwrap_or("");
-        for defs in ["definitions", "$defs"] {
-            if let Some(d) = root.get(defs).and_then(|d| d.get(name)) {
-                return d;
-            }
-        }
-    }
-    spec
-}
-
-/// Describe a parameter's shape for help: a human type hint + a concrete placeholder
-/// example. Scalars → `("string", "<replace-with-string>")`. Externally-tagged enums (`oneOf`/`anyOf`,
-/// possibly behind a `$ref`) → `("one of: A{fields} | B{fields}", <first-variant example>)`
-/// so a model SEES the variants instead of a blind `"any"` (the invisible-contract bug that
-/// left `code/edit`'s `edit_mode` uncallable). Graceful `any` fallback on any unknown shape.
-fn param_shape(spec: &Value, root: &Value) -> (String, Value) {
-    let spec = resolve_ref(spec, root);
-    if let Some(ty) = spec.get("type").and_then(Value::as_str) {
-        if let Some(en) = spec.get("enum").and_then(Value::as_array) {
-            let opts: Vec<String> = en
-                .iter()
-                .filter_map(Value::as_str)
-                .map(str::to_string)
-                .collect();
-            if !opts.is_empty() {
-                return (
-                    format!("one of: {}", opts.join(" | ")),
-                    Value::String(opts[0].clone()),
-                );
-            }
-        }
-        // A placeholder must be VALID FOR ITS OWN TYPE. `<boolean>` is a string, so a
-        // caller that copies the example verbatim — which is exactly what the manual
-        // says to do, and exactly what a small model does — gets
-        // `invalid type: string "<boolean>", expected a boolean` and cannot recover by
-        // trying harder: the example it was handed is unsatisfiable. Observed three
-        // times on 2026-09-05 (`code/edit <string>`, `code/edit … "<any>" expected a
-        // boolean`). A typed placeholder still reads as fill-me-in, and a literal copy
-        // now fails on MEANING (wrong path, missing field) instead of on SHAPE — an
-        // error the caller can act on.
-        //
-        // THAT WAS NOT ENOUGH, and the eight days after it say so. `<string>` is what a
-        // TYPE ANNOTATION looks like, so a caller reading "emit exactly this" over a
-        // block containing `"card_id": "<string>"` sent exactly that — measured on
-        // 2026-09-14, one citizen issuing `work/release({"card_id":"<string>",
-        // "claim_id":"<string>"})` TWELVE times in a turn, and a second peer showing the
-        // same signature in the event store since 09-05. She was not guessing; the
-        // example told her to. Two words of prose ("fill in") cannot outvote a concrete,
-        // authoritative, copyable block — the example always wins.
-        //
-        // So the placeholder must read as an IMPERATIVE rather than a type. It still
-        // deserializes (the property won above), and a literal copy still fails on
-        // meaning — but `<replace-with-string>` cannot be mistaken for a value the way
-        // `<string>` can. See card 6c55f7a7.
-        let placeholder = match ty {
-            "boolean" => json!(true),
-            "integer" | "number" => json!(0),
-            "array" => json!([]),
-            "object" => json!({}),
-            // A string placeholder IS a valid string: it parses, then fails on content.
-            _ => json!(format!("<replace-with-{ty}>")),
-        };
-        return (ty.to_string(), placeholder);
-    }
-    for tag in ["oneOf", "anyOf"] {
-        if let Some(variants) = spec.get(tag).and_then(Value::as_array) {
-            let mut names: Vec<String> = Vec::new();
-            let mut example = json!("<any>");
-            for (i, v) in variants.iter().enumerate() {
-                let v = resolve_ref(v, root);
-                let props = match v.get("properties").and_then(Value::as_object) {
-                    Some(p) => p,
-                    None => {
-                        // a bare `const`/`enum` string variant (plain unit enum)
-                        if let Some(c) = v.get("const").and_then(Value::as_str) {
-                            names.push(format!("\"{c}\""));
-                            if i == 0 {
-                                example = json!(c);
-                            }
-                        }
-                        continue;
-                    }
-                };
-                // INTERNALLY-tagged (serde tag = "type"): a discriminator property whose
-                // schema is a single-value const/enum string is the variant NAME; the other
-                // properties are its fields, and the call is a FLAT object carrying the tag.
-                let discr = props.iter().find_map(|(pk, pv)| {
-                    let pv = resolve_ref(pv, root);
-                    pv.get("const")
-                        .and_then(Value::as_str)
-                        .or_else(|| {
-                            pv.get("enum")
-                                .and_then(Value::as_array)
-                                .filter(|a| a.len() == 1)
-                                .and_then(|a| a[0].as_str())
-                        })
-                        .map(|val| (pk.clone(), val.to_string()))
-                });
-                if let Some((tag_field, vname)) = discr {
-                    let fields: Vec<String> =
-                        props.keys().filter(|k| **k != tag_field).cloned().collect();
-                    names.push(if fields.is_empty() {
-                        vname.clone()
-                    } else {
-                        format!("{vname}{{{}}}", fields.join(", "))
-                    });
-                    if i == 0 {
-                        let mut inner = serde_json::Map::new();
-                        inner.insert(tag_field.clone(), json!(vname.clone()));
-                        for (fk, fv) in props.iter().filter(|(k, _)| **k != tag_field) {
-                            let ft = resolve_ref(fv, root)
-                                .get("type")
-                                .and_then(Value::as_str)
-                                .unwrap_or("any");
-                            inner.insert(fk.clone(), json!(format!("<{ft}>")));
-                        }
-                        example = Value::Object(inner);
-                    }
-                } else if props.len() == 1 {
-                    // EXTERNALLY-tagged: the single property key IS the variant name.
-                    let (vname, vschema) = props.iter().next().unwrap();
-                    let vs = resolve_ref(vschema, root);
-                    let fields: Vec<String> = vs
-                        .get("properties")
-                        .and_then(Value::as_object)
-                        .map(|o| o.keys().cloned().collect())
-                        .unwrap_or_default();
-                    names.push(if fields.is_empty() {
-                        vname.clone()
-                    } else {
-                        format!("{vname}{{{}}}", fields.join(", "))
-                    });
-                    if i == 0 {
-                        let mut inner = serde_json::Map::new();
-                        if let Some(o) = vs.get("properties").and_then(Value::as_object) {
-                            for (fk, fv) in o {
-                                let ft = resolve_ref(fv, root)
-                                    .get("type")
-                                    .and_then(Value::as_str)
-                                    .unwrap_or("any");
-                                inner.insert(fk.clone(), json!(format!("<{ft}>")));
-                            }
-                        }
-                        example = json!({ vname.clone(): Value::Object(inner) });
-                    }
-                }
-            }
-            if !names.is_empty() {
-                return (format!("one of: {}", names.join(" | ")), example);
-            }
-        }
-    }
-    ("any".to_string(), json!("<any>"))
-}
-
-#[cfg(test)]
-mod param_shape_tests {
-    use super::*;
-    use serde_json::json;
-
-    // what this catches: an externally-tagged enum param (code/edit's EditMode) is EXPANDED
-    // into its variants + a concrete example instead of collapsing to a useless "any" — the
-    // invisible-contract bug I hit firsthand taking the SWE-bench test through continuum (a model
-    // literally could not tell what edit_mode wanted). Fixture mirrors schemars output
-    // ($ref → definitions with a oneOf of {Variant:{fields}}).
-    #[test]
-    fn help_expands_enum_param_instead_of_any() {
-        // EditMode is #[serde(tag = "type", rename_all = "snake_case")] — INTERNALLY tagged.
-        // schemars renders each variant as an object with a single-enum `type` discriminator
-        // plus the variant's fields; the real call is a FLAT `{"type":"search_replace", ...}`.
-        let schema = json!({
-            "type": "object",
-            "required": ["file_path", "edit_mode"],
-            "properties": {
-                "file_path": {"type": "string", "description": "path"},
-                "edit_mode": {"$ref": "#/definitions/EditMode"}
-            },
-            "definitions": { "EditMode": {"oneOf": [
-                {"type":"object","required":["type","search","replace"],"properties":{"type":{"type":"string","enum":["search_replace"]},"search":{"type":"string"},"replace":{"type":"string"},"all":{"type":"boolean"}}},
-                {"type":"object","required":["type","content"],"properties":{"type":{"type":"string","enum":["append"]},"content":{"type":"string"}}}
-            ]}}
-        });
-        let out = render_ai_help("code/edit", "edit a file", &schema);
-        assert!(
-            out.contains("search_replace{"),
-            "variant NAME (not field) + fields shown: {out}"
-        );
-        assert!(
-            out.contains("search") && out.contains("replace"),
-            "variant fields shown: {out}"
-        );
-        assert!(out.contains("append"), "second variant shown: {out}");
-        assert!(
-            !out.contains("edit_mode (any"),
-            "no longer collapses to any: {out}"
-        );
-        // the example is a FLAT object carrying the discriminator — the shape that actually works
-        assert!(
-            out.contains("\"type\"") && out.contains("\"search_replace\""),
-            "flat tagged example: {out}"
-        );
-    }
-
-    // what this catches: a plain scalar param still renders as before (no regression).
-    #[test]
-    fn scalar_param_unchanged() {
-        let schema = json!({"type":"object","required":["p"],"properties":{"p":{"type":"string"}}});
-        let out = render_ai_help("x", "y", &schema);
-        assert!(out.contains("p (string, required)"), "{out}");
-    }
-
-    // what this catches: regression for card 6c55f7a7 — a string placeholder that reads
-    // as a TYPE ANNOTATION rather than as a blank. `<string>` is exactly what a type
-    // looks like, so citizens sent it as a value: measured 2026-09-14, one issuing
-    // `work/release({"card_id":"<string>","claim_id":"<string>"})` twelve times in a
-    // single turn, and a second peer showing the same signature since 09-05. The manual
-    // must not contain a token a caller can mistake for a value, and must not instruct
-    // literal emission of the block that holds it.
-    #[test]
-    fn the_example_never_offers_a_token_that_reads_as_a_value() {
-        let schema = json!({
-            "type": "object",
-            "required": ["card_id"],
-            "properties": {"card_id": {"type": "string"}}
-        });
-        let out = render_ai_help("work/release", "release a claim", &schema);
-        assert!(
-            !out.contains("\"<string>\""),
-            "a bare `<string>` reads as a type annotation and gets sent as a value: {out}"
-        );
-        assert!(
-            out.contains("<replace-with-string>"),
-            "the blank must read as an imperative: {out}"
-        );
-        assert!(
-            !out.contains("emit exactly this"),
-            "instructing literal emission over a block of blanks is the defect — the \
-             concrete example outvotes the prose every time: {out}"
-        );
-    }
-
-    // what this catches: a placeholder that is invalid for its OWN type, so a caller
-    // copying the example verbatim — which the manual instructs — cannot possibly
-    // succeed. Observed 2026-09-05: `code/edit` refused with
-    // `invalid type: string "<any>", expected a boolean`, the citizen having pasted the
-    // placeholder it was shown. The example must at least DESERIALIZE; being wrong
-    // about the value is recoverable, being wrong about the shape is not.
-    #[test]
-    fn every_placeholder_deserializes_as_its_own_type() {
-        let schema = json!({
-            "type": "object",
-            "properties": {
-                "flag":  {"type": "boolean"},
-                "count": {"type": "integer"},
-                "items": {"type": "array"},
-                "opts":  {"type": "object"},
-                "name":  {"type": "string"},
-            }
-        });
-        for (field, ty) in [
-            ("flag", "boolean"),
-            ("count", "integer"),
-            ("items", "array"),
-            ("opts", "object"),
-            ("name", "string"),
-        ] {
-            let spec = &schema["properties"][field];
-            let (_, placeholder) = param_shape(spec, &schema);
-            let ok = match ty {
-                "boolean" => placeholder.is_boolean(),
-                "integer" => placeholder.is_number(),
-                "array" => placeholder.is_array(),
-                "object" => placeholder.is_object(),
-                _ => placeholder.is_string(),
-            };
-            assert!(ok, "{field} ({ty}) placeholder is not a {ty}: {placeholder}");
-        }
-    }
-
-    // what this catches: the example envelope carrying OPTIONAL arguments, which a
-    // caller then copies wholesale. Measured 2026-09-05: a citizen emitted all ten of
-    // `code/edit`'s arguments back as a tool call — nine optional, every one a
-    // placeholder — because that is what the manual showed her. The example must be
-    // the minimal valid call; the optional arguments stay documented in the list.
-    #[test]
-    fn the_example_carries_required_arguments_only() {
-        let schema = json!({
-            "type": "object",
-            "required": ["file_path"],
-            "properties": {
-                "file_path": {"type": "string"},
-                "replace":   {"type": "boolean"},
-                "line":      {"type": "integer"},
-            }
-        });
-        let out = render_ai_help("code/edit", "edit a file", &schema);
-        let envelope: Value = {
-            let start = out.find('{').expect("an envelope is rendered");
-            let end = out.rfind('}').expect("an envelope is rendered");
-            serde_json::from_str(&out[start..=end]).expect("the rendered envelope is valid JSON")
-        };
-        let args = &envelope["tool_call"]["arguments"];
-        assert!(args.get("file_path").is_some(), "the required arg is in the example: {args}");
-        assert!(
-            args.get("replace").is_none() && args.get("line").is_none(),
-            "optional args must NOT be in the copyable example: {args}"
-        );
-        // …but they are still DOCUMENTED, or the caller cannot discover them.
-        assert!(out.contains("replace (boolean, optional)"), "{out}");
-        assert!(out.contains("line (integer, optional)"), "{out}");
-    }
-}
-
 /// A persona's "how do I call this?" — returns the exact tool-call format for a
 /// command it is authorized to run.
 #[derive(Default)]
@@ -547,8 +69,8 @@ impl ActionCommand for CommandsHelp {
     const NATIVE: bool = true; // discovery pair — the on-demand "how do I call this?" tool
     const ACCESS: AccessLevel = AccessLevel::AiSafe;
     const DESCRIPTION: &'static str =
-        "Show how to CALL a command: the exact tool-call format to emit + its arguments. \
-         Pass the command name (e.g. code/read). Use it when unsure how to invoke a tool.";
+        "Show how to CALL a command: its exact tool-call format + arguments. Pass `name` \
+         (e.g. code/read), or `query` (what you want to do) to find one.";
     type Params = CommandsHelpParams;
     type Output = CommandsHelpResult;
 
@@ -564,6 +86,11 @@ impl ActionCommand for CommandsHelp {
             .into_iter()
             .filter(|d| is_command_authorized(d.name, trust))
             .collect();
+
+        // A query → the commands that best match what she wants to do, ranked, one line each.
+        if let Some(query) = p.query.as_deref().filter(|q| !q.trim().is_empty()).filter(|_| p.name.is_none()) {
+            return Ok(ranked_matches(query, &authorized));
+        }
 
         // No name → the INDEX: every command you can call, one line each. This is the
         // orientation an agent needs FIRST; erroring here (the old "missing field name")
@@ -614,9 +141,64 @@ impl ActionCommand for CommandsHelp {
 
 crate::register_stateless_command!(CommandsHelp);
 
+/// The authorized commands whose name and description best match `query`, through the same
+/// relevance seam the learned tool head reads (`tool_working_set::relevance`).
+fn ranked_matches(query: &str, authorized: &[crate::sdk_codegen::CommandDescriptor]) -> CommandsHelpResult {
+    use tool_working_set::relevance::{Lexical, Relevance};
+    use tool_working_set::vocab::{ToolSchema, Vocabulary};
+    let schemas: Vec<ToolSchema> = authorized
+        .iter()
+        .map(|d| ToolSchema { name: d.name.to_string(), description: d.description.to_string(), tokens: 0 })
+        .collect();
+    let lines = match Vocabulary::new(schemas) {
+        Ok(vocab) => {
+            let relevance = Lexical::new(&vocab).relevance(query);
+            let mut ranked: Vec<(f32, tool_working_set::ToolId)> =
+                vocab.ids().map(|tool| (relevance[tool.index()], tool)).filter(|(score, _)| *score > 0.0).collect();
+            ranked.sort_by(|a, b| b.0.total_cmp(&a.0).then(a.1.cmp(&b.1)));
+            ranked
+                .into_iter()
+                .take(crate::sdk_codegen::ai_help::SUGGESTION_WINDOW)
+                .map(|(_, tool)| format!("- {} — {}", vocab.name(tool), vocab.schema(tool).description))
+                .collect::<Vec<_>>()
+        }
+        Err(refused) => vec![format!("(the registry could not be ranked: {refused})")],
+    };
+    let manual = if lines.is_empty() {
+        format!("No command matches \"{query}\". Call `commands/help` with no arguments for the full index.")
+    } else {
+        format!(
+            "The commands that best match \"{query}\". Call `commands/help` with the `name` you choose for its exact call; \
+             it is then callable on your next act.\n\n{}",
+            lines.join("\n")
+        )
+    };
+    CommandsHelpResult {
+        name: String::new(),
+        description: format!("commands matching \"{query}\""),
+        access_level: "ai-safe".to_string(),
+        manual,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::{json, Value};
+
+    // what this catches: a mind that does not know a verb's name having no way to find it
+    // once her head no longer lists every verb: a query in her words must reach the verb
+    // over the LIVE registry, ranked first, within the shared window.
+    #[test]
+    fn a_query_in_her_words_ranks_the_verb_she_means_over_the_live_registry() {
+        let registry = command_registry_live();
+        let result = ranked_matches("open a pull request on github", &registry);
+        let names: Vec<&str> = result.manual.lines().filter_map(|l| l.strip_prefix("- ")).map(|l| l.split(" — ").next().unwrap_or(l)).collect(); // unwrap_or: a line without a description is all name
+        assert!(names.first().is_some_and(|n| n.contains("pr-create")), "{}", result.manual);
+        assert!(names.len() <= crate::sdk_codegen::ai_help::SUGGESTION_WINDOW);
+        let none = ranked_matches("zzqx", &registry);
+        assert!(none.manual.starts_with("No command matches"), "{}", none.manual);
+    }
 
     // what this catches: an underscored bare guess getting NO suggestion at all, which
     // is what let a citizen re-issue `list_cards` 31 times (2026-09-05). Neither

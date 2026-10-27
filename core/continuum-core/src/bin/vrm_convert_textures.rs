@@ -21,7 +21,15 @@
 //!
 //! This is 100% safe Rust — no C++ FFI, no pixel decoding, just JSON surgery.
 
-fn main() {
+/// Little-endian u32 at `off`; a truncated file is an error, not a panic.
+fn le_u32(data: &[u8], off: usize) -> Result<u32, String> {
+    data.get(off..off + 4)
+        .and_then(|b| <[u8; 4]>::try_from(b).ok())
+        .map(u32::from_le_bytes)
+        .ok_or_else(|| format!("GLB truncated: no u32 at byte {off}"))
+}
+
+fn main() -> Result<(), String> {
     let args: Vec<String> = std::env::args().collect();
     if args.len() < 2 || args.len() > 3 {
         eprintln!("Usage: {} <input.vrm> [output.vrm]", args[0]);
@@ -33,32 +41,25 @@ fn main() {
     let output_path = if args.len() == 3 { &args[2] } else { &args[1] };
 
     eprintln!("Reading {}", input_path);
-    let data = std::fs::read(input_path).expect("Failed to read input file");
+    let data = std::fs::read(input_path)
+        .map_err(|e| format!("Failed to read input file {input_path}: {e}"))?;
 
     // Parse GLB header
     assert!(data.len() >= 20, "File too small for GLB header");
     assert_eq!(&data[0..4], b"glTF", "Not a GLB file");
-    let _version = u32::from_le_bytes(data[4..8].try_into().unwrap());
-    let json_len = u32::from_le_bytes(data[12..16].try_into().unwrap()) as usize;
-    let json_type = u32::from_le_bytes(data[16..20].try_into().unwrap());
+    let _version = le_u32(&data, 4)?;
+    let json_len = le_u32(&data, 12)? as usize;
+    let json_type = le_u32(&data, 16)?;
     assert_eq!(json_type, 0x4E4F534A, "Expected JSON chunk type");
     let json_bytes = &data[20..20 + json_len];
 
     let bin_chunk_start = 20 + json_len;
-    let bin_len = u32::from_le_bytes(
-        data[bin_chunk_start..bin_chunk_start + 4]
-            .try_into()
-            .unwrap(),
-    ) as usize;
-    let bin_type = u32::from_le_bytes(
-        data[bin_chunk_start + 4..bin_chunk_start + 8]
-            .try_into()
-            .unwrap(),
-    );
+    let bin_len = le_u32(&data, bin_chunk_start)? as usize;
+    let bin_type = le_u32(&data, bin_chunk_start + 4)?;
     assert_eq!(bin_type, 0x004E4942, "Expected BIN chunk type");
     let bin_data = &data[bin_chunk_start + 8..bin_chunk_start + 8 + bin_len];
 
-    let mut json: serde_json::Value = serde_json::from_slice(json_bytes).expect("Invalid JSON");
+    let mut json: serde_json::Value = serde_json::from_slice(json_bytes).map_err(|e| format!("Invalid JSON: {e}"))?;
 
     let mut modified = false;
 
@@ -203,13 +204,14 @@ fn main() {
     if !modified {
         eprintln!("No fixes needed.");
         if input_path != output_path {
-            std::fs::copy(input_path, output_path).unwrap();
+            std::fs::copy(input_path, output_path)
+                .map_err(|e| format!("Failed to copy {input_path} -> {output_path}: {e}"))?;
         }
-        return;
+        return Ok(());
     }
 
     // Serialize updated JSON, pad to 4-byte boundary (GLB requirement)
-    let mut new_json = serde_json::to_vec(&json).expect("JSON serialize failed");
+    let mut new_json = serde_json::to_vec(&json).map_err(|e| format!("JSON serialize failed: {e}"))?;
     while new_json.len() % 4 != 0 {
         new_json.push(b' ');
     }
@@ -234,7 +236,8 @@ fn main() {
     out.extend_from_slice(&0x004E4942u32.to_le_bytes()); // "BIN\0"
     out.extend_from_slice(bin_data);
 
-    std::fs::write(output_path, &out).expect("Failed to write output");
+    std::fs::write(output_path, &out)
+        .map_err(|e| format!("Failed to write output {output_path}: {e}"))?;
     eprintln!(
         "Done: {} -> {} ({:.1} MB -> {:.1} MB, json {} -> {} bytes)",
         input_path,
@@ -244,4 +247,5 @@ fn main() {
         json_len,
         new_json.len(),
     );
+    Ok(())
 }

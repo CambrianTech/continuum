@@ -28,8 +28,8 @@ use crate::ai::{
     TextGenerationResponse, ToolCall, UsageMetrics,
 };
 use crate::logging::TimingGuard;
-use crate::modules::ai_provider::select_failure_message;
-use crate::utils::params::Params;
+use crate::ai::adapter::select_failure_message;
+use crate::runtime::params::Params;
 
 /// Result of `ai/generate` — the exact camelCase shape the inference seam has always
 /// returned. `success` is always `true` on the Ok path (errors return `Err`, which the
@@ -126,6 +126,8 @@ fn parse_request(params: &Value) -> Result<TextGenerationRequest, String> {
             .json_opt("stop_sequences")
             .or_else(|| p.json_opt("stopSequences")),
         tools: p.json_opt("tools"),
+        tail_tools: None,
+        view_messages: None,
         tool_choice: p.json_opt("tool_choice"),
         response_format: None,
         active_adapters: p.json_opt("activeAdapters"),
@@ -136,6 +138,14 @@ fn parse_request(params: &Value) -> Result<TextGenerationRequest, String> {
         // Caller-provided persona attribution. TS sends `personaId` (camelCase)
         // per Continuum convention; snake_case alias accepted for symmetry.
         persona_id: p.string_opt_alias("persona_id", "personaId"),
+        // The turn's own wire bound (card ba82d0a0): the requesting mind's measured
+        // expectation with headroom, serde's `{secs, nanos}`. A remote turn arrives
+        // here on the SERVING peer, whose lane must wait out the same prefill the
+        // requester is waiting out — dropped here, the peer's 300 s floor would kill
+        // the very turn the requester sized a 1200 s bound for. Absent = the floor.
+        turn_bound: p
+            .json_opt::<std::time::Duration>("turn_bound")
+            .or_else(|| p.json_opt("turnBound")),
     })
 }
 
@@ -197,7 +207,7 @@ crate::action_command! {
             .as_ref()
             .is_some_and(|c| matches!(c.source, crate::routing::CallerSource::Airc))
         {
-            crate::cognition::resource_admission::note_leased_in_sent(response.usage.input_tokens);
+            crate::inference::resource_admission::note_leased_in_sent(response.usage.input_tokens);
         }
 
         // Preserve the serving node's receipt, model mapping and adapter metadata.

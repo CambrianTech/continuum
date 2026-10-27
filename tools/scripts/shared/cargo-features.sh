@@ -18,6 +18,16 @@ set -o pipefail  # a failing command in a pipeline must not read as success (car
 #                                    (#998 — no CPU fallback per architecture)
 
 CARGO_GPU_FEATURES=""
+# What this machine's HARDWARE runs, which can differ from what it can COMPILE right now:
+# a Windows NVIDIA box without MSVC on PATH cannot build the CUDA flavor, but runs CI's
+# prebuilt CUDA core fine (no compiler at run time). The deploy consumer judges a published
+# core by this (core-features.sh: CONTINUUM_HARDWARE_FEATURES, set by select_core_features); every build reads
+# CARGO_GPU_FEATURES. Equal everywhere except that Windows case.
+CARGO_GPU_HARDWARE_FEATURES=""
+# Windows-native + NVIDIA, named once: the detector below picks it on a node, and CI's
+# published Windows build (core-features.sh, "Windows-NVIDIA x86_64") names it directly
+# because a runner has no GPU to detect. One string, or the node refuses CI's build.
+WINDOWS_NVIDIA_FEATURES="--features cuda,directml"
 
 case "$(uname -s)" in
   Darwin)
@@ -60,6 +70,9 @@ case "$(uname -s)" in
     # top if Nvidia is present so ORT picks CUDA first (faster) +
     # DirectML stays as a co-listed EP for non-CUDA-supported ops.
     CARGO_GPU_FEATURES="--features directml"
+    if command -v nvidia-smi &>/dev/null; then
+      CARGO_GPU_HARDWARE_FEATURES="$WINDOWS_NVIDIA_FEATURES"
+    fi
     # candle-cuda's affine.cu compiles via nvcc, which needs the MSVC host
     # compiler cl.exe on PATH (an active vcvars env). Only add cuda when cl.exe
     # is actually reachable; otherwise nvcc fatals "Cannot find compiler
@@ -67,7 +80,8 @@ case "$(uname -s)" in
     # compilation, so it stays as the universal Windows GPU EP and the build
     # degrades gracefully instead of hard-failing. [[windows-build-env-drift]]
     if command -v nvidia-smi &>/dev/null && command -v cl.exe &>/dev/null; then
-      CARGO_GPU_FEATURES="--features cuda,directml"
+      CARGO_GPU_FEATURES="$WINDOWS_NVIDIA_FEATURES"
     fi
     ;;
 esac
+CARGO_GPU_HARDWARE_FEATURES="${CARGO_GPU_HARDWARE_FEATURES:-$CARGO_GPU_FEATURES}"

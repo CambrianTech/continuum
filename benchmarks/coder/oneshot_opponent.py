@@ -5,8 +5,8 @@ oneshot_opponent.py — score an EXTERNAL model on the Rust coder gym via its Op
 task's hidden test, pass = exit 0.
 
 ZERO DEPENDENCY, BY DESIGN. This harness imports NOTHING from the Continuum product and requires
-no Continuum runtime. The opponent is just a URL you bring (a local llama-server, an unsloth
-gateway, ollama, a cloud API, or an airc node exposing /v1). We never depend on Hermes or unsloth
+no Continuum runtime. The opponent is just a URL you bring (a local llama-server,
+ollama, a cloud API, or an airc node exposing /v1). We never depend on Hermes
 or any opponent — ever; they are optional, external, and reached only through this standalone tool.
 Stdlib + `rustc` on PATH is all it needs.
 

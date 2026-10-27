@@ -48,6 +48,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             "-h" | "--help" | "help" => {
                 println!("Usage: {} <socket-path> [--livekit-url <url>]", args[0]);
                 println!("Example: {} /tmp/livekit-bridge.sock", args[0]);
+                println!("Windows endpoint: {} (default when no argument is given)", continuum_bridge_protocol::WINDOWS_BRIDGE_ADDRESS);
                 println!();
                 println!("Flags:");
                 println!("  -V, --version           Print version and exit");
@@ -58,13 +59,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             _ => {}
         }
     }
-    if args.len() < 2 {
+    if args.len() < 2 && !cfg!(windows) {
         eprintln!("Usage: {} <socket-path> [--livekit-url <url>]", args[0]);
         eprintln!("Try `{} --help` for more.", args[0]);
         std::process::exit(1);
     }
 
-    let socket_path = &args[1];
+    let socket_path = args.get(1).map(String::as_str)
+        .unwrap_or(continuum_bridge_protocol::WINDOWS_BRIDGE_ADDRESS);
     let livekit_url = args
         .iter()
         .position(|a| a == "--livekit-url")

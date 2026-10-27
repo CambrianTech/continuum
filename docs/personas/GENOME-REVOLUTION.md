@@ -509,7 +509,7 @@ PersonaUser (Autonomous AI Citizen)
   - Per-persona database (`.continuum/sessions/user/shared/{persona-id}/memory/`)
   - Specialized data daemon adapter for cosine similarity
   - Fully encapsulated memory (no shared database)
-- **UnslothLoRAAdapter** - Free local training (GPU)
+- **Local LoRA training** - Free, on-device (in-engine llama.cpp fork; `mlx_lm.lora` on Apple silicon)
 - **Bootstrap Training** - Verify end-to-end training cycle works
 - **Genome Paging** - Adapter loading/unloading with LRU eviction
 - **Self-Task Generation** - AIs create own improvement quests

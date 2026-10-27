@@ -26,7 +26,7 @@ use continuum_airc_protocol::{
     AircCommandResponse, COMMAND_REQUEST_BODY_HINT, HEADER_CONTINUUM_BODY_HINT, KIND_PEER,
 };
 use continuum_client::Connection;
-use continuum_core::routing::CommandRequestHandler;
+use continuum_core::ipc::command_ingress::CommandRequestHandler;
 use continuum_core::runtime::command_executor::CommandExecutor;
 use continuum_core::runtime::ModuleRegistry;
 use futures::stream::StreamExt;

@@ -25,7 +25,7 @@
 # Usage in docker-compose (mac/vulkan profile):
 #   dockerfile: ../../docker/continuum-core-vulkan.Dockerfile
 #   args:
-#     GPU_FEATURES: "--no-default-features --features load-dynamic-ort,vulkan"
+#     GPU_FEATURES: "--features load-dynamic-ort,vulkan,avatar-3d"
 
 # ── Stage 1: Chef (cargo-chef installed, system deps in place) ──
 # Same multi-stage shape as the cuda variant — collapsing planner+builder
@@ -85,7 +85,7 @@ RUN cargo chef prepare --recipe-path recipe.json
 # ── Stage 3: Build (cook deps, then real source) ─────────────
 FROM chef AS builder
 
-ARG GPU_FEATURES="--no-default-features --features load-dynamic-ort,vulkan"
+ARG GPU_FEATURES="--features load-dynamic-ort,vulkan,avatar-3d"
 COPY --from=planner /app/recipe.json recipe.json
 RUN cargo chef cook --release ${GPU_FEATURES} --recipe-path recipe.json
 
@@ -97,9 +97,6 @@ COPY . .
 # relative path the `COPY . .` above already provides (the file is checked in). No
 # `--from=shared*` build-context needed; models.json is unreferenced by the Rust core.
 
-# Model registry SSOT used by candle_adapter.rs include_str!:
-# ../../../../shared/models.json resolves to /shared/models.json here.
-COPY --from=shared models.json /shared/models.json
 
 # Fail fast if submodules are uninitialized.
 RUN test -f vendor/llama.cpp/CMakeLists.txt || ( \

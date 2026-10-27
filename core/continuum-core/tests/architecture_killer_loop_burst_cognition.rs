@@ -66,22 +66,15 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use uuid::Uuid;
 
-use continuum_core::persona::channel_items::ChatQueueItem;
+use continuum_core::cognition::conversation::channel_items::ChatQueueItem;
 use continuum_core::persona::channel_registry::{ChannelRegistry, DEFAULT_BURST_WINDOW_MS};
-use continuum_core::persona::channel_types::QueueItemBehavior;
+use continuum_core::cognition::conversation::channel_types::QueueItemBehavior;
 use continuum_core::persona::cognition::PersonaCognitionEngine;
 use continuum_core::persona::message_cache::RecentMessageCache;
-use continuum_core::persona::persona_identity::PersonaIdentity;
-use continuum_core::persona::types::{PersonaState, SenderType};
+use continuum_core::cognition::conversation::persona_identity::PersonaIdentity;
+use continuum_core::cognition::conversation::types::{PersonaState, SenderType};
 use continuum_core::persona::{analyze_burst, BurstEvaluateResult, RateLimiterState, SleepState};
 use continuum_core::rag::RagEngine;
-
-fn now_ms() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis() as u64
-}
 
 fn make_chat(room: Uuid, sender: &str, content: &str) -> Arc<dyn QueueItemBehavior> {
     Arc::new(ChatQueueItem {
@@ -92,8 +85,8 @@ fn make_chat(room: Uuid, sender: &str, content: &str) -> Arc<dyn QueueItemBehavi
         sender_name: sender.into(),
         sender_type: SenderType::Human,
         mentions: false,
-        timestamp: now_ms(),
-        enqueued_at: now_ms(),
+        timestamp: continuum_base::time::EpochMs::now().millis(),
+        enqueued_at: continuum_base::time::EpochMs::now().millis(),
         priority: 0.5,
         consolidated_context: Vec::new(),
         media: Vec::new(),
@@ -154,7 +147,7 @@ impl PersonaHarness {
             &self.sleep_state,
             &self.engine,
             &self.message_cache,
-            now_ms(),
+            continuum_base::time::EpochMs::now().millis(),
         )
     }
 

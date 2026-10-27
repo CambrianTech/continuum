@@ -1,8 +1,7 @@
 //! MLX → PEFT LoRA conversion — the byte-exact transpose kernel of the genome
 //! page-in bridge.
 //!
-//! Apple's `mlx_lm.lora` trainer (the Mac LoRA path, see memory
-//! `unsloth-mlx-train-broken-on-mac`) writes an `adapters.safetensors` in MLX's
+//! Apple's `mlx_lm.lora` trainer (the Mac LoRA path) writes an `adapters.safetensors` in MLX's
 //! own key/shape convention. Every downstream consumer of a LoRA adapter
 //! (`convert_lora_to_gguf.py`, PEFT, the genome page-in) speaks the HuggingFace
 //! PEFT convention. The translation between them is a DETERMINISTIC key-rename +
@@ -45,6 +44,63 @@ pub struct PeftConversion {
     pub rank: usize,
     /// The leaf target modules discovered (e.g. `q_proj`, `v_proj`), sorted.
     pub target_modules: Vec<String>,
+}
+
+/// External PEFT configuration decoded once at the checkpoint boundary.
+#[derive(Debug, serde::Deserialize)]
+pub struct PeftLoraConfig {
+    #[serde(rename = "peft_type")]
+    _kind: PeftKind,
+    pub base_model_name_or_path: String,
+    #[serde(rename = "r")]
+    pub rank: std::num::NonZeroUsize,
+    #[serde(rename = "lora_alpha")]
+    pub alpha: std::num::NonZeroU32,
+}
+
+#[derive(Debug, serde::Deserialize)]
+enum PeftKind {
+    #[serde(rename = "LORA")]
+    Lora,
+}
+
+impl PeftLoraConfig {
+    pub fn parse(bytes: &[u8], expected_base: &str) -> Result<Self, String> {
+        let config: Self = serde_json::from_slice(bytes).map_err(|e| e.to_string())?;
+        if config.base_model_name_or_path != expected_base {
+            return Err("PEFT checkpoint base identity does not match the requested LoRA".into());
+        }
+        Ok(config)
+    }
+}
+
+/// Validate tensors against the already-decoded, source-owned configuration.
+pub fn inspect_peft_adapter(directory: &Path, config: &PeftLoraConfig) -> Result<PeftConversion, String> {
+    let config_path = directory.join("adapter_config.json");
+    let rank = config.rank.get();
+    let adapter_path = directory.join("adapter_model.safetensors");
+    let bytes = std::fs::read(&adapter_path).map_err(|e| e.to_string())?;
+    let tensors = SafeTensors::deserialize(&bytes).map_err(|e| e.to_string())?;
+    let mut targets = BTreeSet::new();
+    let mut pairs = std::collections::BTreeMap::<String, (bool, bool)>::new();
+    for (name, tensor) in tensors.tensors() {
+        let (module, axis, is_a) = if let Some(module) = name.strip_suffix(".lora_A.weight") {
+            (module, 0, true)
+        } else if let Some(module) = name.strip_suffix(".lora_B.weight") {
+            (module, 1, false)
+        } else { return Err(format!("unsupported PEFT tensor {name}")); };
+        if tensor.shape().len() != 2 || tensor.shape()[axis] != rank {
+            return Err(format!("PEFT tensor {name} disagrees with rank {rank}"));
+        }
+        let pair = pairs.entry(module.into()).or_default();
+        if is_a { pair.0 = true; } else { pair.1 = true; }
+        targets.insert(module.rsplit('.').next().ok_or("empty PEFT module")?.to_owned());
+    }
+    if pairs.is_empty() || pairs.values().any(|pair| *pair != (true, true)) {
+        return Err("PEFT checkpoint has empty or incomplete LoRA factor pairs".into());
+    }
+    Ok(PeftConversion { adapter_path, config_path, tensor_count: tensors.len(), rank,
+        target_modules: targets.into_iter().collect() })
 }
 
 /// Convert an MLX `adapters.safetensors` into a HuggingFace PEFT adapter
@@ -126,13 +182,13 @@ pub fn mlx_adapters_to_peft(
         converted.push((peft_key, vec![cols, rows], dtype, transposed));
     }
 
-    if converted.is_empty() {
+    // `derived_rank` is set by the first converted tensor, so None means none were found.
+    let Some(rank) = derived_rank else {
         return Err(format!(
             "no LoRA tensors found in {} — not an MLX adapter?",
             mlx_safetensors.display()
         ));
-    }
-    let rank = derived_rank.expect("non-empty converted set always sets the rank");
+    };
     if rank != expected_rank {
         return Err(format!(
             "rank mismatch: tensors imply r={rank} but the recipe declared r={expected_rank}"
@@ -169,10 +225,9 @@ pub fn mlx_adapters_to_peft(
         "base_model_name_or_path": base_model_name,
     });
     let config_path = out_dir.join("adapter_config.json");
-    std::fs::write(
-        &config_path,
-        serde_json::to_string_pretty(&config).expect("static json never fails to serialize"),
-    )
+    let config_json = serde_json::to_string_pretty(&config)
+        .map_err(|e| format!("serialize adapter_config.json: {e}"))?;
+    std::fs::write(&config_path, config_json)
     .map_err(|e| format!("write {}: {e}", config_path.display()))?;
 
     Ok(PeftConversion {
@@ -193,7 +248,7 @@ pub struct ConvertEnv {
     /// Vendored llama.cpp checkout — must contain `convert_lora_to_gguf.py`
     /// and the `gguf-py` package.
     pub llama_cpp_dir: PathBuf,
-    /// Interpreter that can `import transformers` (the unsloth/mlx env on Mac).
+    /// Interpreter that can `import transformers` (the managed mlx venv).
     pub python: PathBuf,
     /// Dir with the base model's HF `config.json` (only the config is read; the
     /// weights are not needed). This binds the adapter to the architecture it
@@ -417,11 +472,15 @@ mod tests {
         let out = tmp.join("peft");
 
         let conv =
-            mlx_adapters_to_peft(&mlx, &out, "unsloth/Qwen2.5-0.5B-Instruct", 2, 40).unwrap();
+            mlx_adapters_to_peft(&mlx, &out, "Qwen/Qwen2.5-0.5B-Instruct", 2, 40).unwrap();
 
         assert_eq!(conv.rank, 2, "rank derived from shapes");
         assert_eq!(conv.tensor_count, 2);
         assert_eq!(conv.target_modules, vec!["q_proj".to_string()]);
+        let config_bytes = std::fs::read(out.join("adapter_config.json")).unwrap();
+        let config = PeftLoraConfig::parse(&config_bytes, "Qwen/Qwen2.5-0.5B-Instruct").unwrap();
+        assert_eq!(inspect_peft_adapter(&out, &config).unwrap(), conv);
+        assert!(PeftLoraConfig::parse(&config_bytes, "different/base").is_err());
 
         let data = std::fs::read(&conv.adapter_path).unwrap();
         let st = SafeTensors::deserialize(&data).unwrap();
@@ -451,7 +510,7 @@ mod tests {
         assert_eq!(cfg["lora_alpha"], 40);
         assert_eq!(
             cfg["base_model_name_or_path"],
-            "unsloth/Qwen2.5-0.5B-Instruct"
+            "Qwen/Qwen2.5-0.5B-Instruct"
         );
         assert_eq!(cfg["target_modules"], serde_json::json!(["q_proj"]));
 
@@ -488,11 +547,11 @@ mod tests {
         let cfg = tmp.join("adapter_config.json");
         std::fs::write(
             &cfg,
-            r#"{"model":"unsloth/Qwen3.5-4B","lora_parameters":{"rank":8,"scale":20.0}}"#,
+            r#"{"model":"Qwen/Qwen3.5-4B","lora_parameters":{"rank":8,"scale":20.0}}"#,
         )
         .unwrap();
         let (base, rank, alpha) = read_mlx_lora_hparams(&cfg).unwrap();
-        assert_eq!(base, "unsloth/Qwen3.5-4B");
+        assert_eq!(base, "Qwen/Qwen3.5-4B");
         assert_eq!(rank, 8);
         assert_eq!(alpha, 160, "alpha = rank * scale = 8 * 20");
         let _ = std::fs::remove_dir_all(&tmp);
@@ -530,7 +589,7 @@ mod tests {
         safetensors::tensor::serialize_to_file(views, None, &mlx).unwrap();
         let out = tmp.join("peft");
 
-        let conv = mlx_adapters_to_peft(&mlx, &out, "unsloth/Qwen3.5-4B", 2, 160).unwrap();
+        let conv = mlx_adapters_to_peft(&mlx, &out, "Qwen/Qwen3.5-4B", 2, 160).unwrap();
         assert_eq!(conv.target_modules, vec!["in_proj_a".to_string()]);
 
         let data = std::fs::read(&conv.adapter_path).unwrap();
@@ -565,7 +624,7 @@ mod tests {
         let env = ConvertEnv {
             llama_cpp_dir: PathBuf::from(repo).join("../vendor/llama.cpp"),
             // The convert interpreter is a dir WE manage (`~/.continuum/genome/venv`),
-            // NOT the legacy unsloth studio venv — same managed venv the native
+            // the same managed venv the native
             // mlx_lm.lora train resolves to (modules/forge.rs::resolve_mlx_python).
             // Override via CONTINUUM_CONVERT_PYTHON for an alternate transformers-
             // capable interpreter.

@@ -9,6 +9,7 @@ pub mod client;
 pub mod daemon_endpoint;
 pub mod daemon_liveness;
 pub mod daemon_supervisor;
+pub mod fd_relief;
 pub mod daemon_transport;
 pub mod discovery;
 pub mod reresolving_client;
@@ -17,9 +18,8 @@ pub mod discovery_state;
 pub mod event_transport;
 pub mod inbound_attach;
 pub mod process;
-pub mod realtime;
+pub mod reattach;
 pub mod realtime_store;
-pub mod realtime_wire;
 pub mod types;
 
 pub use bridge_protocol::{
@@ -41,12 +41,6 @@ pub use discovery::{
 pub use event_transport::{AircEventTransport, StoreAircEventTransport};
 pub use inbound_attach::spawn_daemon_attach;
 pub use process::{AircCommandRunner, AircInvocation, TokioAircCommandRunner};
-pub use realtime::{
-    AircMediaControlEvent, AircPeerCapability, AircPeerManifest, AircPresenceEvent,
-    AircPresenceState, AircRealtimeDelivery, AircRealtimeEnvelope, AircRealtimePayload,
-    AircRealtimePayloadRef, AircRealtimeSchema, AircReceipt, AircReplayCursor,
-    AircSubscriptionAction, AircSubscriptionEvent,
-};
 pub use realtime_store::{
     AircCapabilityIndexEntry, AircRealtimePublishParams, AircRealtimePublishResult,
     AircRealtimeReplayParams, AircRealtimeReplayResult, AircRealtimeStore,

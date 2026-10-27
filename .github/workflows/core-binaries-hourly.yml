@@ -1,0 +1,50 @@
+# Cron executes this file from the repository default branch and dispatches canary.
+# Activation and rollback: docs/operations/HOURLY-CORE-PUBLICATION.md.
+name: core-binaries-hourly
+on:
+  schedule:
+    - cron: '23 * * * *'
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Inspect admission without dispatching an expensive build'
+        type: boolean
+        default: true
+  pull_request:
+    paths:
+      - '.github/workflows/core-binaries-hourly.yml'
+      - 'tools/scripts/core-binaries-hourly.mjs'
+      - 'tools/scripts/tests/core-binaries-hourly.test.mjs'
+permissions:
+  contents: read
+concurrency:
+  group: core-binaries-hourly-${{ github.event_name == 'pull_request' && github.ref || 'dispatch' }}
+  cancel-in-progress: false
+jobs:
+  fixtures:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: node --test tools/scripts/tests/core-binaries-hourly.test.mjs
+  dispatch:
+    needs: fixtures
+    # Enabling cron requires the separately reviewed phase-2 activation below.
+    if: github.event_name == 'workflow_dispatch' || (github.event_name == 'schedule' && vars.CORE_BINARIES_HOURLY_ENABLED == 'true')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: canary
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: node tools/scripts/core-binaries-hourly.mjs
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run && 'true' || 'false' }}

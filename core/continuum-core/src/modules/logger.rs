@@ -30,7 +30,7 @@ use std::any::Any;
 use std::collections::{HashMap, HashSet};
 use std::fs::{self, File, OpenOptions};
 use std::io::Write;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{mpsc, Arc, Mutex, OnceLock};
 use std::thread;
@@ -138,18 +138,15 @@ pub fn enqueue_log(sender: &mpsc::SyncSender<WriteLogPayload>, payload: WriteLog
 /// Channel capacity - if full, new messages dropped (NEVER blocks)
 const CLOG_CHANNEL_CAPACITY: usize = 4096;
 
-/// Is the in-process file-log sink up? The clog_*/log_* macros consult this
-/// BEFORE paying `format!` + category/component derivation — pre-gate, every
-/// call site built its whole payload only for `queue_log` to drop it when the
-/// LoggerModule wasn't initialized (and on the native server the fallback arm
-/// is the ONLY arm, so early-boot call sites paid full formatting for nothing).
-/// Same drop semantics, zero formatting cost.
+/// Is the in-process file-log sink up? `logging::clog_layer` consults this BEFORE
+/// formatting a clog_*/log_* event's message, so lines fired before the LoggerModule
+/// exists are dropped at zero formatting cost.
 #[inline]
 pub fn log_sink_ready() -> bool {
     GLOBAL_LOG_SENDER.get().is_some()
 }
 
-/// Queue a log entry for async writing (called by clog_* macros).
+/// Queue a log entry for async writing (called by `logging::clog_layer` for the clog_*/log_* macros).
 /// GUARANTEED NON-BLOCKING: Uses try_send(), drops if channel full.
 /// If LoggerModule not yet initialized, message is dropped.
 #[inline]
@@ -313,17 +310,17 @@ type HeaderTracker = Arc<Mutex<HashSet<String>>>;
 /// - `sentinels/{handle}/{stream}` → .continuum/jtag/logs/system/sentinels/{handle}/{stream}.log
 /// - `daemons/{name}` → .continuum/jtag/logs/system/daemons/{name}.log
 /// - Anything else → .continuum/jtag/logs/system/{category}.log (legacy fallback)
-fn resolve_log_path(category: &str, log_dir: &str, continuum_root: &str) -> PathBuf {
+fn resolve_log_path(category: &str, log_dir: &str, continuum_root: &Path) -> PathBuf {
     let parts: Vec<&str> = category.split('/').collect();
 
     match parts.as_slice() {
         // personas/{uniqueId}/{subsystem} → $HOME/.continuum/personas/{uniqueId}/logs/{subsystem}.log
         ["personas", unique_id, subsystem] => {
-            PathBuf::from(continuum_root).join(format!("personas/{unique_id}/logs/{subsystem}.log"))
+            continuum_root.join(format!("personas/{unique_id}/logs/{subsystem}.log"))
         }
         // personas/{uniqueId} → $HOME/.continuum/personas/{uniqueId}/logs/general.log
         ["personas", unique_id] => {
-            PathBuf::from(continuum_root).join(format!("personas/{unique_id}/logs/general.log"))
+            continuum_root.join(format!("personas/{unique_id}/logs/general.log"))
         }
         // sentinels/{handle}/{stream} → {log_dir}/sentinels/{handle}/{stream}.log
         ["sentinels", handle, stream] => {
@@ -398,7 +395,7 @@ fn ensure_file_handle(
 fn write_log_message(
     payload: &WriteLogPayload,
     log_dir: &str,
-    continuum_root: &str,
+    continuum_root: &Path,
     file_cache: &FileCache,
     headers_written: &HeaderTracker,
 ) -> std::io::Result<usize> {
@@ -464,7 +461,7 @@ fn write_header(
          \n",
         component,
         category,
-        Utc::now().timestamp_millis(),
+        continuum_base::time::EpochMs::now().millis(),
         timestamp,
         std::process::id()
     );
@@ -563,7 +560,7 @@ pub type WriteFailures = Arc<AtomicU64>;
 fn write_and_latch(
     payload: &WriteLogPayload,
     log_dir: &str,
-    continuum_root: &str,
+    continuum_root: &Path,
     file_cache: &FileCache,
     headers_written: &HeaderTracker,
     failures: &WriteFailures,
@@ -665,13 +662,10 @@ impl LoggerModule {
     }
 
     pub fn new() -> Self {
-        let continuum_root = std::env::var("CONTINUUM_ROOT").unwrap_or_else(|_| {
-            let home = dirs::home_dir().expect("Failed to resolve home directory");
-            home.join(".continuum").to_string_lossy().to_string()
-        });
+        let continuum_root = crate::paths::continuum_root();
 
         let log_dir = std::env::var("JTAG_LOG_DIR").unwrap_or_else(|_| {
-            PathBuf::from(&continuum_root)
+            continuum_root
                 .join("jtag")
                 .join("logs")
                 .join("system")
@@ -907,183 +901,4 @@ impl ServiceModule for LoggerModule {
 }
 
 #[cfg(test)]
-mod tests {
-    //! The module now owns only config + the shared command state + the dep-holding
-    //! family. The write/ping behavior contracts are pinned in
-    //! `commands/log/{write,write_batch,ping}.rs`; these tests guard the module's
-    //! wiring.
-    use super::*;
-
-    // what this catches: config exposes the canonical `log/` prefix + module name.
-    // If either drifts, the registry routes the command elsewhere.
-    #[test]
-    fn config_reports_name_and_prefix() {
-        let m = LoggerModule::new();
-        let cfg = m.config();
-        assert_eq!(cfg.name, "logger");
-        assert_eq!(cfg.command_prefixes, &["log/"]);
-    }
-
-    // what this catches: the legacy string-match surface is retired — any
-    // handle_command call fails loud naming the command (never silently swallows
-    // or routes a stale name), per Joel's never-swallow rule.
-    #[tokio::test]
-    async fn legacy_handle_command_fails_loud() {
-        let m = LoggerModule::new();
-        let err = m
-            .handle_command("log/ping", Value::Null)
-            .await
-            .expect_err("migrated surface must fail loud");
-        assert!(err.contains("migrated to the typed registry"));
-        assert!(err.contains("log/ping"));
-    }
-
-    // what this catches: the module contributes exactly the three dep-holding
-    // log verbs (each carrying the shared state) to the typed registry.
-    #[test]
-    fn contributes_the_three_log_commands() {
-        let m = LoggerModule::new();
-        let names: Vec<&str> = m.commands().iter().map(|c| c.name()).collect();
-        assert_eq!(names, vec!["log/write", "log/write-batch", "log/ping"]);
-    }
-
-    #[test]
-    fn test_rate_limiter() {
-        let mut rl = RateLimiter::new(3);
-        assert!(matches!(rl.check("test"), RateDecision::Allow));
-        assert!(matches!(rl.check("test"), RateDecision::Allow));
-        assert!(matches!(rl.check("test"), RateDecision::Allow));
-        assert!(matches!(rl.check("test"), RateDecision::Drop));
-    }
-
-    /// The stop must not be called clean when log content did not reach disk.
-    mod write_failures_reach_the_receipt {
-        use super::*;
-
-        // what this catches: a write failure being swallowed while the stop still reports
-        // clean. The writer thread has nowhere to return an error to, so failures went to
-        // stderr — which on a stopping node is nobody — and `shutdown()` returned `Ok(())`
-        // regardless. With only a fully completed stop supporting durability, that made
-        // the CLI's exit code claim the citizens' logs were safe when they were not.
-        //
-        // Drives the REAL `write_log_message` against a real unwritable destination, a
-        // real successful one after it, and the REAL decision `shutdown` delegates to.
-        #[tokio::test]
-        async fn a_failed_write_then_a_successful_one_still_ends_in_a_non_clean_stop() {
-            let tmp = tempfile::tempdir().unwrap();
-            let failures: WriteFailures = Arc::new(AtomicU64::new(0));
-            let cache: FileCache = Default::default();
-            let headers: HeaderTracker = Default::default();
-            let payload = WriteLogPayload {
-                category: "test".into(),
-                level: LogLevel::Warn,
-                component: "regression".into(),
-                message: "this write cannot land".into(),
-                args: None,
-            };
-
-            // A FILE where the log directory must be: the write genuinely cannot land.
-            let blocked = tmp.path().join("blocked");
-            std::fs::write(&blocked, b"in the way").unwrap();
-            // THE SHARED OPERATION — the same `write_and_latch` the writer thread calls.
-            // The earlier version called `write_log_message` and then did the
-            // `fetch_add` ITSELF, which proved a counter can be incremented rather than
-            // that production increments it: deleting the production latch would have
-            // left it green.
-            let landed = write_and_latch(
-                &payload,
-                &blocked.to_string_lossy(),
-                &tmp.path().to_string_lossy(),
-                &cache,
-                &headers,
-                &failures,
-            );
-            assert!(
-                !landed,
-                "a log directory that is a FILE must fail the write, not silently succeed"
-            );
-            assert_eq!(
-                failures.load(Ordering::Relaxed),
-                1,
-                "the shared write+latch must record the failure — no manual increment here"
-            );
-
-            // A LATER write SUCCEEDS. This is the case that used to read as clean: the
-            // last write worked and the buffers flushed, and nothing carried the earlier
-            // loss forward.
-            let ok_dir = tmp.path().join("writable");
-            std::fs::create_dir_all(&ok_dir).unwrap();
-            let good = write_and_latch(
-                &payload,
-                &ok_dir.to_string_lossy(),
-                &tmp.path().to_string_lossy(),
-                &cache,
-                &headers,
-                &failures,
-            );
-            assert!(good, "a writable destination must still work");
-            assert_eq!(
-                failures.load(Ordering::Relaxed),
-                1,
-                "a SUCCESSFUL write must not add a failure — the count is the earlier loss"
-            );
-
-            // THE POINT: the REAL `shutdown()` on a REAL module holding that count is not
-            // clean. Reading `stop_outcome` directly, as the earlier version did, would
-            // have stayed green if `shutdown` stopped delegating to it.
-            let (log_tx, _rx) = mpsc::sync_channel::<WriteLogPayload>(8);
-            let state = Arc::new(LoggerCommandState {
-                log_tx,
-                file_cache: cache.clone(),
-                started_at: Instant::now(),
-                requests_processed: AtomicU64::new(0),
-                pending_writes: Arc::new(AtomicU64::new(0)),
-                write_failures: failures.clone(),
-            });
-            let module = LoggerModule::with_state(state);
-            let err = module
-                .shutdown()
-                .await
-                .expect_err("a module that lost log content must not stop clean");
-            assert!(
-                err.contains('1') && err.contains("did not reach disk"),
-                "the failure must be counted and named, got: {err}"
-            );
-        }
-
-        // what this catches: the opposite error — a module with no failures refusing to
-        // stop cleanly, which would make every ordinary shutdown report data loss and
-        // train the operator to ignore the signal entirely.
-        // what this catches: a module with no failures refusing to stop cleanly, which
-        // would make every ordinary shutdown report data loss and train the operator to
-        // ignore the signal. Also through the REAL `shutdown`, so it fails if the
-        // delegation inverts.
-        #[tokio::test]
-        async fn a_module_that_wrote_everything_stops_clean() {
-            let (log_tx, _rx) = mpsc::sync_channel::<WriteLogPayload>(8);
-            let state = Arc::new(LoggerCommandState {
-                log_tx,
-                file_cache: Default::default(),
-                started_at: Instant::now(),
-                requests_processed: AtomicU64::new(0),
-                pending_writes: Arc::new(AtomicU64::new(0)),
-                write_failures: Arc::new(AtomicU64::new(0)),
-            });
-            assert!(
-                LoggerModule::with_state(state).shutdown().await.is_ok(),
-                "no failures means a clean stop"
-            );
-        }
-
-        // what this catches: the counter being process-global again. Two modules must not
-        // see each other's failures — which is exactly why this was moved off a `static`,
-        // and why a test could not drive a real failure before.
-        #[test]
-        fn one_modules_failures_do_not_condemn_anothers_stop() {
-            let mine: WriteFailures = Arc::new(AtomicU64::new(3));
-            let theirs: WriteFailures = Arc::new(AtomicU64::new(0));
-            assert!(stop_outcome(mine.load(Ordering::Relaxed)).is_err());
-            assert!(stop_outcome(theirs.load(Ordering::Relaxed)).is_ok());
-        }
-    }
-}
+mod tests;

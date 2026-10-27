@@ -127,7 +127,7 @@ Of the 50 `cognition/*` arms, ~30 exist **only** because TypeScript used to driv
 - **KEEP:** vision/description-get,put,status,cache-stats,cache-warm,cache-evict (+ receives cognition/vision-describe as `vision/describe`); avatar/snapshot; events/declare-class,get-class,list-classes,resolve-channel; logger log/write,write-batch,ping; launch-mode get/set; work/claim,create,release,state,heartbeat (already typed, Privileged); persona/instances/bootstrap,list,get; persona/allocate, persona/catalog.
 - **DELETE:** persona/rag-inspect + `_filesystem` (bypass, finding #5); health/get-stats (stub).
 - **MERGE:** health-check→ping (finding #6).
-- **INTERNAL:** tool-parsing/parse,correct,register-tools,decode-name,encode-name (cognitive helpers, not persona tools).
+- **REMOVED:** tool-parsing/parse,correct,register-tools,decode-name,encode-name — a duplicate of `continuum-tool-protocol` (card 59aa6c95); the live parser is `continuum_tool_protocol::parser`.
 - hippocampus.rs: no commands (skeleton) — nothing to migrate; memory/* stays on the migrated `crate::commands::memory` family (Wave done).
 
 ---

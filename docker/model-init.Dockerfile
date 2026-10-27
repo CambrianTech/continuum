@@ -18,7 +18,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 WORKDIR /app
 
 # Build context is ./tools/scripts (the scripts' home after #1840); models.json
-# comes from the `models` additional-context (./legacy/src/shared). Single source
+# comes from the `models` additional-context (./docker/model-init). Single source
 # of truth for ALL models (chat / vision / embedding / STT / TTS / VAD) — per Joel
 # 2026-05-04: "we MUST have this work from ONE source of truth".
 COPY --from=models models.json shared/models.json

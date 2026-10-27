@@ -1,0 +1,674 @@
+//! Card staging — prepare the CLAIMER's workspace for the card she just claimed, per
+//! the recipe the card belongs to. The on-claim recipe step.
+//!
+//! Before this, `benchmark/dispatch` staged every card into a round-robin ASSIGNEE's
+//! workspace and PRE-CLAIMED it for her — a push. That is why a shared deck was never
+//! shared: a card pulled by anyone else pointed at a checkout in someone else's
+//! workspace, so eligibility had to be gated on the assignee, and 7 of 12 residents
+//! dreamed while 5 worked (Joel 2026-09-03: "this dispatch issue is a MONTHS OLD bug").
+//!
+//! Now the CLAIM stages. Whoever pulls a card gets its work prepared in HER workspace,
+//! so any resident can work any Open card, and a rebooted citizen who re-reads the
+//! board and pulls is staged exactly like a first claimer — resume and dispatch are one
+//! motion. Two callers, one seam: `work/claim` (a citizen pulls) and
+//! `benchmark/dispatch` (a detached-solve round stages its directed assignee before
+//! firing her solve).
+//!
+//! Generic by construction (Joel 2026-09-03: "is this benchmark recipe, or can/should it
+//! be more generic? Should this function be a command — always if it uses heavy
+//! resources?"): the entry takes a card TITLE and a claimer and asks the recipe what
+//! staging means. A non-recipe card stages as [`Staging::Ordinary`] (hands stay put).
+//! Today the recipes are the benchmark specs; a pipeline or design recipe adds its
+//! own arm here, never a second staging path. The heavy half (a checkout clone, an
+//! env build) already lives behind verbs (`swe_bench::clone_at`, `ensure_env`); this
+//! module is their on-claim orchestration, invoked from the `work/claim` command.
+//!
+//! Measured 2026-09-03 on the M5: a `--shared` clone from the local mirror lands in
+//! ~1–2s (django, 293 MB mirror), so the checkout is staged synchronously inside the
+//! claim; the env build (uv venv, cached per instance) is spawned behind it and
+//! reported through the same `benchmark.env.*` probes the pre-warm uses.
+
+use std::path::{Path, PathBuf};
+
+use uuid::Uuid;
+
+use crate::code::card_branch::card_branch;
+use crate::persona::card_checkout::{checkout_path_for, gym_workspace};
+
+/// What staging produced for this claimer.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Staging {
+    /// Not a recipe card — nothing to stage,
+    /// her hands stay where they are.
+    Ordinary,
+    /// The card's work is ready in her workspace at `path` (workspace-relative
+    /// coordinates are what the card body already speaks).
+    Ready { path: PathBuf },
+    /// A recipe card whose staging failed at `stage` — the claim stands, the failure
+    /// is reported, and no scored solve fires on an unstaged workspace.
+    Failed { stage: &'static str, error: String },
+}
+
+/// The recipe-resolved staging step for one card title.
+enum Step {
+    /// SWE-bench: clone the instance at its base commit, then build its env.
+    Swe(Box<crate::cognition::swe_bench::SweInstance>),
+    /// Gym: run the task's authored `setup_shell` in the workspace (idempotent by
+    /// adapter convention).
+    Shell(String),
+    /// A recipe card with no workspace preparation.
+    Nothing,
+}
+
+/// Stage `title`'s work into the workspace of `claimer` under `home`.
+/// Stage for a claimed CARD: a benchmark card stages by its title recipe (below);
+/// any other card of a repo this node has a checkout of gets airc's per-card
+/// worktree (`airc_lib::work_worktree`, #1377 — the same one the CLI gives an
+/// agent), so a citizen with no cwd can pull a continuum card and root her hands
+/// there. A repo this node never checked out is cloned into a managed checkout first
+/// ([`ensure_managed_clone`]); a clone that fails is `Failed { stage: "clone" }`.
+pub async fn stage_for_card(home: &Path, claimer: Uuid, card: &airc_lib::WorkCard) -> Staging {
+    if crate::recipe::bench_title::parse_card_title(&card.title).is_some() {
+        return stage_for_claimer(home, claimer, &card.title).await;
+    }
+    let repo = card.repo.to_string();
+    let branch = card_branch(card);
+    // Already staged: the same lookup a held-card turn uses, so claim time and turn
+    // time can never disagree about where her work lives.
+    // A checkout made as a linked worktree (before card d166e4f2) is NOT returned as-is: it
+    // falls through to the clone path below, whose ensure_card_clone migrates it to a card
+    // clone when nothing can be lost (airc #1582). Returning it here made that migration
+    // unreachable for exactly the checkouts it exists for (the M5, 2026-10-19: 0 of 3
+    // eligible held checkouts migrated in an hour; Fable).
+    if let Some(existing) = checkout_path_for(&claimer, card)
+        .filter(|existing| !airc_lib::work_worktree::is_linked_worktree(existing))
+    {
+        // THE WORKSPACE MOVES WITH THE MIND (card 73eefbbb): a checkout that already
+        // exists here may be BEHIND what another node pushed on this branch (the card
+        // changed hands), or DIVERGED from it. The transfer owner fetches and
+        // preserves same-branch unpublished successors/edits when origin adds no
+        // commits; genuine divergence is saved under a ref before transferring.
+        crate::persona::workspace_transfer::arrive_for(existing.clone(), branch, card.card_id.as_uuid()).await;
+        return Staging::Ready { path: existing };
+    }
+    let started = std::time::Instant::now();
+    // A repo this node never checked out is CLONED, not refused. Before this, the claim
+    // staged as Ordinary and her hands stayed on the resident checkout, so a citizen who
+    // pulled a card for another project (career-wrangler, 2026-09-28) had git, the PR
+    // verbs and the build all pointed at continuum while she worked someone else's repo.
+    let clone = match crate::code::repo_registry::path_for(&repo) {
+        Some(clone) => clone,
+        None => match ensure_managed_clone(home, &repo).await {
+            Ok(clone) => clone,
+            Err(error) => {
+                let error = error.to_string();
+                continuum_base::probe!(
+                    class = "work.claim.repo_clone_failed",
+                    claimer = %claimer,
+                    repo = %repo,
+                    error = %error,
+                    ms = started.elapsed().as_millis() as u64,
+                    "repo card claimed, this node had no checkout, and the managed clone failed"
+                );
+                return Staging::Failed { stage: "clone", error };
+            }
+        },
+    };
+    let spec_card = card.card_id;
+    let spec_repo = card.repo.clone();
+    let clone_for_spawn = clone.clone();
+    let branch_for_spawn = branch.clone();
+    // A card's checkout is its OWN repository (card d166e4f2, Joel: "do it right"). The
+    // registry clone is the deploy checkout here, and a worktree of it registered every
+    // resident's card in the deploy repo's .git, which git under confinement could only reach
+    // through a write grant on that .git (#5116, not merged). Instead the node keeps a
+    // precious bare mirror (no inode shared with the deploy repo, objects never pruned) and
+    // each card clones from it with borrowed objects. Her git then needs only her own
+    // checkout plus a READ-only root on <mirror>/objects (confinement.rs).
+    let outcome = tokio::task::spawn_blocking(move || {
+        let mirror = airc_lib::work_worktree::ensure_mirror(&spec_repo, &clone_for_spawn)?;
+        airc_lib::work_worktree::ensure_card_clone(&airc_lib::work_worktree::WorktreeSpec {
+            repo: &spec_repo,
+            card_id: spec_card,
+            clone_path: &mirror,
+            branch: &branch_for_spawn,
+            start_point: None,
+        })
+        .map(|outcome| {
+            // A held linked worktree replaced by a card clone (airc #1582): said once, with
+            // where the old tree went, so a resident's moved checkout is never a mystery.
+            if let airc_lib::work_worktree::WorktreeOutcome::Migrated { path, retired } = &outcome {
+                continuum_base::probe!(class = "card.checkout.migrated", card = %spec_card, path = %path.display(), retired = %retired.display(), "linked card worktree replaced by a card clone; old tree kept aside");
+            }
+            outcome.path().to_path_buf()
+        })
+    })
+    .await
+    .unwrap_or_else(|e| Err(format!("worktree task panicked: {e}"))); // unwrap_or_else: a panicked blocking task is a staging failure, never a crash
+
+    // Submodules are initialised by airc's ensure_card_clone (bounded, borrowing each one's
+    // objects from its own mirror, airc #1591) on every clone it creates or migrates; a
+    // failure there arrives here as stage "worktree". A second pass here was one owner too
+    // many, and its tokio timeout abandoned the git child instead of killing it (card 84d3bcd8).
+    let staged = match outcome {
+        Ok(path) => {
+            // A branch cut here from the clone's HEAD: if another node already
+            // pushed this card's branch, her work is there — fetch it and stand
+            // at its tip before her first turn (card 73eefbbb).
+            crate::persona::workspace_transfer::arrive_for(path.clone(), branch.clone(), card.card_id.as_uuid()).await;
+            Staging::Ready { path }
+        }
+        Err(error) => Staging::Failed { stage: "worktree", error },
+    };
+    continuum_base::probe!(
+        class = "work.claim.staged",
+        claimer = %claimer,
+        bench = "repo",
+        task = %repo,
+        outcome = ?staged,
+        ms = started.elapsed().as_millis() as u64,
+        "on-claim staging — a repo card gets airc's per-card worktree"
+    );
+    staged
+}
+
+/// Restage a HELD card whose checkout is still a linked worktree (staged before card
+/// d166e4f2), as the resident's turn on it starts and before her hands are rooted in it, so
+/// nothing of hers is running in the tree that may move. Residents keep their claims, so the
+/// claim-time staging never comes again for them (the M5, 2026-10-19: 0 of 3 eligible held
+/// checkouts migrated in an hour; Fable). [`stage_for_card`] migrates it when nothing can be
+/// lost and probes the outcome (`work.claim.staged`, `card.checkout.migrated`); if it cannot,
+/// the old tree stays hers and the turn binds to it as before. A card clone is untouched.
+///
+/// A card repo this node may clone: exactly `owner/name`. The card's repo id is written by
+/// whichever peer created the card, and here it becomes a path and a `gh` argument, so
+/// `../x`, `a/b/c` and a leading `-` are refused at construction. The shape check is the
+/// forge's one repo-id validator, not a second copy of it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct CloneableRepo {
+    owner: String,
+    name: String,
+}
+
+impl TryFrom<&str> for CloneableRepo {
+    type Error = CloneError;
+
+    fn try_from(repo: &str) -> Result<Self, Self::Error> {
+        let refused = |reason: String| CloneError::NotOwnerSlashName { repo: repo.to_string(), reason };
+        let id = continuum_base::repo_id::RepoId::parse(repo).map_err(|e| refused(e.to_string()))?;
+        let (owner, name) = id.as_str().split_once('/').ok_or_else(|| refused("no '/'".into()))?;
+        if owner.starts_with('-') || name.starts_with('-') {
+            return Err(refused("a segment starts with '-' and would read as a gh flag".into()));
+        }
+        Ok(Self { owner: owner.to_string(), name: name.to_string() })
+    }
+}
+
+impl std::fmt::Display for CloneableRepo {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}/{}", self.owner, self.name)
+    }
+}
+
+impl CloneableRepo {
+    /// `<home>/repos/<owner>/<name>`, `home` being the continuum home.
+    pub(crate) fn managed_path(&self, home: &Path) -> PathBuf {
+        home.join("repos").join(&self.owner).join(&self.name)
+    }
+
+    /// The sibling a clone lands in before it is renamed into place.
+    fn partial_path(&self, home: &Path) -> PathBuf {
+        home.join("repos").join(&self.owner).join(format!(".{}.partial-{}", self.name, Uuid::new_v4()))
+    }
+}
+
+/// Why a repo card's repo could not be given a managed checkout.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub(crate) enum CloneError {
+    #[error("card repo '{repo}' is not a plain owner/name ({reason}), so it is not cloned")]
+    NotOwnerSlashName { repo: String, reason: String },
+    #[error("{path}: {error}")]
+    Io { path: PathBuf, error: String },
+    #[error(transparent)]
+    Gh(#[from] continuum_hands::commands::code::github::GhRunError),
+}
+
+impl CloneError {
+    /// Whether the clone's `.partial-` directory must be KEPT: a timed-out clone's `git` may
+    /// still be writing it (a timeout never asserts the tree exited), so only the repos
+    /// class's `.partial-` sweep (card 5c5f3b42) removes it. Every other failure ended
+    /// before or with `gh`, and its partial is removed at once. Exhaustive on purpose: a new
+    /// variant must decide.
+    fn leaves_a_partial_that_may_still_be_written(&self) -> bool {
+        use continuum_hands::commands::code::github::GhRunError;
+        match self {
+            // an output held past the bound is a process gh started still running: maybe `git`
+            CloneError::Gh(GhRunError::TimedOut { .. } | GhRunError::Incomplete { .. }) => true,
+            CloneError::Gh(GhRunError::Spawn(_) | GhRunError::Failed { .. }) => false,
+            CloneError::NotOwnerSlashName { .. } | CloneError::Io { .. } => false,
+        }
+    }
+}
+
+/// How long one managed clone may run before its process tree is killed.
+const CLONE_BOUND: std::time::Duration = std::time::Duration::from_secs(900);
+
+/// Clone `repo` into its managed checkout and record it, so this and every later claim
+/// of its cards cuts a per-card worktree from it. Idempotent: a clone another claim made
+/// first, or one whose registry entry was lost, is adopted rather than cloned again.
+///
+/// The clone lands in a sibling `.partial-` directory and is renamed into place only when
+/// it succeeded, so a node that dies mid-clone never leaves a half-cloned checkout that
+/// the next claim would adopt as real. Through `code/github` (the one GitHub client), so a
+/// private repo clones with the same auth the PR verbs use, and a clone past
+/// [`CLONE_BOUND`] has its tree killed and its partial KEPT (the tree may still be writing),
+/// while a clone `gh` itself refused has its partial removed.
+async fn ensure_managed_clone(home: &Path, repo: &str) -> Result<PathBuf, CloneError> {
+    static CLONING: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+    let repo = CloneableRepo::try_from(repo)?;
+    let key = repo.to_string();
+    let target = repo.managed_path(home);
+    // Two citizens claiming cards of the same new repo at once must not clone twice.
+    let _one_clone_at_a_time = CLONING.lock().await;
+    if let Some(existing) = crate::code::repo_registry::path_for(&key) {
+        return Ok(existing);
+    }
+    if !target.join(".git").is_dir() {
+        let partial = repo.partial_path(home);
+        let parent = partial.parent().map(Path::to_path_buf).unwrap_or_else(|| home.to_path_buf()); // unwrap_or_else: partial_path always has the owner dir as parent
+        std::fs::create_dir_all(&parent).map_err(|e| CloneError::Io { path: parent.clone(), error: e.to_string() })?;
+        let args = vec!["repo".to_string(), "clone".to_string(), key.clone(), partial.to_string_lossy().into_owned()];
+        let cloned = continuum_hands::commands::code::github::run_gh_within(&parent, &args, CLONE_BOUND)
+            .await
+            .map_err(CloneError::from)
+            .and_then(|_| std::fs::rename(&partial, &target).map_err(|e| CloneError::Io { path: target.clone(), error: e.to_string() }));
+        if let Err(e) = &cloned {
+            if !e.leaves_a_partial_that_may_still_be_written() {
+                let _ = std::fs::remove_dir_all(&partial);
+            }
+        }
+        cloned?;
+    }
+    crate::code::repo_registry::record(&key, &target);
+    continuum_base::probe!(
+        class = "work.claim.repo_cloned",
+        repo = %key,
+        path = %target.display(),
+        "a repo card's repo had no checkout on this node — cloned into the managed checkout and recorded"
+    );
+    Ok(target)
+}
+
+pub async fn stage_for_claimer(home: &Path, claimer: Uuid, title: &str) -> Staging {
+    let Some((bench, task)) = crate::recipe::bench_title::parse_card_title(title) else {
+        return Staging::Ordinary;
+    };
+    let workspace = gym_workspace(home, claimer);
+    let step = match resolve_step(&bench, &task).await {
+        Ok(step) => step,
+        Err(error) => return failed(claimer, title, "resolve", error),
+    };
+    let started = std::time::Instant::now();
+    let outcome = match step {
+        Step::Nothing => match std::fs::create_dir_all(&workspace) {
+            Ok(()) => Staging::Ready { path: workspace },
+            Err(error) => Staging::Failed { stage: "workspace", error: error.to_string() },
+        },
+        Step::Shell(shell) => stage_shell(&workspace, &shell).await,
+        Step::Swe(instance) => stage_swe(&workspace, &instance).await,
+    };
+    continuum_base::probe!(
+        class = "work.claim.staged",
+        claimer = %claimer,
+        bench = %bench,
+        task = %task,
+        outcome = ?outcome,
+        ms = started.elapsed().as_millis() as u64,
+        "on-claim staging — the claimer's workspace prepared per the card's recipe"
+    );
+    outcome
+}
+
+/// Ask the recipe what staging `task` means. Benchmark specs are the recipes today.
+async fn resolve_step(bench: &str, task: &str) -> Result<Step, String> {
+    let spec = crate::recipe::benchmark_catalog::known_benchmarks()
+        .iter()
+        .find(|s| s.name == bench)
+        .ok_or_else(|| format!("card names unknown benchmark '{bench}'"))?;
+    if let Some(dataset) = spec.swe_dataset() {
+        let rows = crate::cognition::swe_bench::load_dataset(dataset).await?;
+        let instance = rows
+            .into_iter()
+            .find(|i| i.instance_id == task)
+            .ok_or_else(|| format!("instance '{task}' not in dataset '{dataset}'"))?;
+        return Ok(Step::Swe(Box::new(instance)));
+    }
+    let Some(reference) = spec.eval_set else {
+        return Ok(Step::Nothing);
+    };
+    let (origin, text) = crate::cognition::gym::resolve_gym(reference)?;
+    for (n, line) in text.lines().enumerate().filter(|(_, l)| !l.trim().is_empty()) {
+        let t: crate::cognition::eval::EvalTask = serde_json::from_str(line.trim())
+            .map_err(|e| format!("{origin} line {}: malformed EvalTask: {e}", n + 1))?;
+        if t.id == task {
+            return Ok(t.setup_shell.map(Step::Shell).unwrap_or(Step::Nothing));  // unwrap_or: a task without setup_shell stages nothing
+        }
+    }
+    Err(format!("task '{task}' not in gym '{reference}'"))
+}
+
+async fn stage_shell(workspace: &Path, shell: &str) -> Staging {
+    if let Err(e) = std::fs::create_dir_all(workspace) {
+        return Staging::Failed { stage: "workspace", error: e.to_string() };
+    }
+    match tokio::process::Command::new("sh")
+        .arg("-c")
+        .arg(shell)
+        .current_dir(workspace)
+        .output()
+        .await
+    {
+        Ok(out) if out.status.success() => Staging::Ready { path: workspace.to_path_buf() },
+        Ok(out) => Staging::Failed {
+            stage: "setup_shell",
+            error: String::from_utf8_lossy(&out.stderr).trim().to_string(),
+        },
+        Err(e) => Staging::Failed { stage: "setup_shell", error: e.to_string() },
+    }
+}
+
+/// Does an existing checkout restage pristine for a new claim? Only when the instance
+/// is SETTLED — a RESOLVED verdict — and the checkout's work is not newer than it: that
+/// work was graded and the instance belongs to a finished round. No verdict, a FAILED
+/// verdict (the card stays open; she continues from the tree the grade was taken from —
+/// matplotlib-21568, 2026-09-13: Atlas's edit was graded failed, the card reopened, and
+/// every re-claim of her own lapsed hold razed the tree to pristine, three times), or
+/// work newer than the verdict keeps the tree.
+fn restages_pristine(verdict: Option<(u64, bool)>, work_ms: Option<u64>) -> bool {
+    match (verdict, work_ms) {
+        (None, _) => false,
+        (Some((_, false)), _) => false,
+        (Some((_, true)), None) => true,
+        (Some((v, true)), Some(w)) => v >= w,
+    }
+}
+
+async fn stage_swe(workspace: &Path, instance: &crate::cognition::swe_bench::SweInstance) -> Staging {
+    use crate::cognition::swe_bench;
+    let dir = workspace.join("swe").join(&instance.instance_id);
+    if dir.join(".git").exists() {
+        // Already staged (a prior claim, or a re-claim after a reboot). A checkout
+        // whose work is OLDER than the instance's recorded verdict is finished work
+        // from a settled round, not hers in progress: seed-3 re-dispatched
+        // astropy-13236 (resolved 2026-08-26) and staged the claimer onto the August
+        // checkout, whose diff the sweep then rightly refused to re-grade. A settled
+        // instance starts pristine on its next claim; in-progress work (newer than
+        // any verdict, or no verdict at all) is kept.
+        let verdict_ms = std::fs::metadata(swe_bench::verdict_path(&instance.instance_id))
+            .ok()
+            .and_then(|m| m.modified().ok())
+            .and_then(|t| continuum_base::time::EpochMs::of(t).ok())
+            .map(continuum_base::time::EpochMs::millis);
+        let work_ms = crate::persona::staged_workspace::work_mtime_of(&dir);
+        let resolved = swe_bench::read_verdict(&instance.instance_id).map(|v| v.resolved);
+        let verdict = verdict_ms.zip(resolved);
+        if restages_pristine(verdict, work_ms) {
+            continuum_base::probe!(
+                class = "benchmark.staging.reset_after_verdict",
+                instance = %instance.instance_id,
+                verdict_ms = verdict_ms.unwrap_or(0),
+                work_ms = work_ms.unwrap_or(0),
+                "the checkout carried work older than the instance's RESOLVED verdict — settled \
+                 work from a finished round; restaging pristine for this claim"
+            );
+            if let Err(error) = swe_bench::clone_at(instance, &dir).await {
+                return Staging::Failed { stage: "checkout", error };
+            }
+        } else {
+            // Self-heal pre-shield checkouts so substrate artifacts never enter her patch.
+            swe_bench::shield_workspace_excludes(&dir);
+        }
+    } else if let Err(error) = swe_bench::clone_at(instance, &dir).await {
+        return Staging::Failed { stage: "checkout", error };
+    }
+    // The env (pytest + the repo, per-instance uv venv) builds BEHIND the claim: cached
+    // after the first build, minutes the first time — never on the claim's critical
+    // path. A failure is an ENV failure, named on the probe; the card stays claimable.
+    let inst = instance.clone();
+    tokio::spawn(async move {
+        match swe_bench::ensure_env(&inst, &dir).await {
+            Ok(_) => continuum_base::probe!(
+                class = "benchmark.env.prewarmed",
+                instance = %inst.instance_id,
+                "env ready behind the claim"
+            ),
+            Err(e) => {
+                continuum_base::probe!(
+                    class = "benchmark.env.prewarm_failed",
+                    instance = %inst.instance_id,
+                    stage = "env",
+                    error = %e,
+                    "env build FAILED behind the claim — an ENV failure, never a model result"
+                );
+            }
+        }
+    });
+    Staging::Ready { path: workspace.join("swe").join(&instance.instance_id) }
+}
+
+fn failed(claimer: Uuid, title: &str, stage: &'static str, error: String) -> Staging {
+    continuum_base::probe!(
+        class = "work.claim.stage_failed",
+        claimer = %claimer,
+        title = %title,
+        stage = stage,
+        error = %error,
+        "on-claim staging failed — the claim stands, no scored solve fires on an unstaged workspace"
+    );
+    Staging::Failed { stage, error }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::code::card_branch::is_card_branch;
+
+    // what this catches: the dispatch→pull inversion at its seam. A card claimed by a
+    // citizen who was NEVER its assignee must be staged into HER workspace (keyed by her
+    // peer id), not into the round-robin assignee's — the coupling that made free pull
+    // impossible. Uses a gym-shaped shell step so no dataset or mirror is needed.
+    #[tokio::test]
+    async fn a_claimer_who_was_never_the_assignee_is_staged_in_her_own_workspace() {
+        let home = tempfile::tempdir().unwrap();  // test: temp dir creation
+        let claimer = Uuid::new_v4();
+        let workspace = crate::identity::citizen_peer_dir(
+            home.path(),
+            crate::identity::PeerId::from_uuid(claimer),
+        )
+        .join("workspace");
+        let staged = stage_shell(&workspace, "mkdir -p staged/marker && touch staged/marker/ok").await;
+        assert_eq!(staged, Staging::Ready { path: workspace.clone() });
+        assert!(
+            workspace.join("staged/marker/ok").exists(),
+            "the setup ran in the CLAIMER's workspace, not an assignee's"
+        );
+    }
+
+    // what this catches: a non-recipe card is Ordinary — hands stay put, no probe of
+    // failure, no dataset touched. A plain work card must never be mistaken for a bench
+    // card by a loose title parse.
+    #[tokio::test]
+    async fn a_plain_work_card_stages_as_ordinary() {
+        let home = tempfile::tempdir().unwrap();  // test: temp dir creation
+        let staged = stage_for_claimer(home.path(), Uuid::new_v4(), "Fix the login redirect").await;
+        assert_eq!(staged, Staging::Ordinary);
+    }
+
+    // what this catches: a failing setup step is REPORTED as Failed with its stage
+    // named — never swallowed into Ready (which would fire a scored solve on an
+    // unstaged workspace) and never Ordinary (which would hide a recipe defect).
+    #[tokio::test]
+    async fn a_failing_setup_shell_reports_failed_not_ready() {
+        let home = tempfile::tempdir().unwrap();  // test: temp dir creation
+        let staged = stage_shell(&home.path().join("ws"), "echo boom >&2; exit 3").await;
+        assert_eq!(
+            staged,
+            Staging::Failed { stage: "setup_shell", error: "boom".to_string() }
+        );
+    }
+
+    // what this catches: a card's repo id (written by whichever peer created the card)
+    // escaping the managed clone root or reaching `gh` as a flag. `../x` would clone
+    // outside `<home>/repos`, `a/b/c` is not a GitHub repo, and a leading `-` is parsed
+    // by `gh repo clone` as an option. The positive control keeps this from passing
+    // when the conversion simply refuses everything.
+    #[test]
+    fn only_a_plain_owner_slash_name_is_cloneable() {
+        let repo = CloneableRepo::try_from("CambrianTech/career-wrangler").expect("a plain owner/name is cloneable");
+        assert_eq!(repo.to_string(), "CambrianTech/career-wrangler");
+        assert_eq!(repo.managed_path(Path::new("/h/.continuum")), Path::new("/h/.continuum/repos/CambrianTech/career-wrangler"));
+        for hostile in ["../etc", "CambrianTech/..", "a/b/c", "-o/x", "owner/--upload-pack=x", "owner", "own er/x"] {
+            assert!(
+                matches!(CloneableRepo::try_from(hostile), Err(CloneError::NotOwnerSlashName { .. })),
+                "{hostile:?} must not be cloneable"
+            );
+        }
+    }
+
+    // what this catches (Codex on #4535): a timed-out clone's partial deleted while its git
+    // may still be writing, because a reaped gh was read as a dead tree. Only a timeout keeps
+    // it; a clone gh refused is removed at once (the positive control).
+    #[test]
+    fn only_a_timed_out_clone_keeps_its_partial() {
+        use continuum_hands::commands::code::github::GhRunError;
+        let timed_out = CloneError::Gh(GhRunError::TimedOut { args: "repo clone o/r".into(), secs: 900, unconfirmed: Vec::new() });
+        assert!(timed_out.leaves_a_partial_that_may_still_be_written(), "even with nothing named unconfirmed: a descendant that left the tree is never found");
+        let refused = CloneError::Gh(GhRunError::Failed { args: "repo clone o/r".into(), code: Some(1), stderr: "not found".into() });
+        assert!(!refused.leaves_a_partial_that_may_still_be_written());
+    }
+
+    fn generic_card(title: &str) -> airc_lib::WorkCard {
+        airc_lib::WorkCard {
+            card_id: airc_work::WorkCardId::new(),
+            repo: airc_work::RepoId::new("CambrianTech/continuum").expect("valid repo id in fixture"),
+            title: title.to_string(),
+            body: None,
+            priority: airc_work::Priority::P2,
+            lane_id: None,
+            state: airc_work::CardState::Claimed,
+            owner: None,
+            claim_provenance: None,
+            claim_id: None,
+            claim_expires_at_ms: None,
+            last_heartbeat_at_ms: None,
+            pull_request: None,
+            created_by: airc_core::PeerId::new(),
+            created_at_ms: 1_000_000,
+            updated_at_ms: 1_000_000,
+            reviews: None,
+            submissions: Vec::new(),
+            last_submission_rejection: None,
+        }
+    }
+
+    // what this catches: a GENERIC repo card answered with a BENCH checkout because its
+    // display title happened to name a staged instance — and, underneath that, the whole
+    // reason `root_at_held_card` could not find an ordinary card's work at all.
+    //
+    // That function asked `staged_workspace::workspace_for_held_cards` for a match on the
+    // card's TITLE, and every path in that module is rooted at `staging_root(peer)` =
+    // <home>/citizens/peers/<peer>/workspace/swe — the SWE-bench staging area. Card work
+    // lives in airc's per-card worktree, keyed by CARD ID, so an ordinary repo card never
+    // matched, the resolver returned None, and the caller's `?` silently left her hands at
+    // the resident root. Kimi's build.rs edit (eb5a2606, 2026-09-08) landed in the
+    // resident workspace exactly that way — committed, in the wrong tree, looking fine.
+    //
+    // The title is the symptom; asking a benchmark-shaped resolver about an ordinary card
+    // is the defect. A bench card must STILL resolve through its recipe (the positive
+    // control below), or this test would also pass if resolution were simply broken.
+    #[test]
+    fn a_generic_repo_card_is_never_answered_with_a_bench_checkout_that_its_title_names() {
+        let home = tempfile::tempdir().unwrap(); // test: temp dir creation
+        // Under the one crate-wide home lock (#4082); restored by the guard's drop.
+        let _home = crate::paths::test_home::HomeGuard::set_blocking(home.path());
+        std::env::set_var("CONTINUUM_HOME", home.path());
+
+        let peer = Uuid::new_v4();
+        let instance = "astropy__astropy-13236";
+        // Stage a bench instance exactly where staged_workspace looks for one.
+        let swe = home
+            .path()
+            .join("citizens")
+            .join("peers")
+            .join(peer.to_string())
+            .join("workspace")
+            .join("swe")
+            .join(instance);
+        std::fs::create_dir_all(swe.join(".git")).unwrap(); // test: fixture checkout
+
+        // POSITIVE CONTROL: the recipe path is untouched — a bench card still resolves.
+        let bench = generic_card(&format!("[bench swe-bench-lite] {instance}: fix the thing"));
+        assert_eq!(
+            checkout_path_for(&peer, &bench).as_deref(),
+            Some(swe.as_path()),
+            "a bench card must still resolve through its title recipe"
+        );
+
+        // THE INVARIANT: the same title on an ORDINARY card must not borrow that checkout.
+        let generic = generic_card(instance);
+        assert_ne!(
+            checkout_path_for(&peer, &generic).as_deref(),
+            Some(swe.as_path()),
+            "a generic repo card was answered with a bench checkout its title merely named \
+             — it must resolve by CARD ID through airc's per-card worktree"
+        );
+
+        let unknown = generic_card(&format!("[bench unknown-recipe] {instance}: refuse"));
+        assert!(checkout_path_for(&peer, &unknown).is_none(), "an unknown recipe cannot borrow a SWE checkout");
+
+    }
+
+    // what this catches (card 73eefbbb): the branch name is a pure function of the card,
+    // identical on every node — the transfer's whole addressing scheme. A title's
+    // punctuation, case and length must not change it, and the short id leads.
+    #[test]
+    fn a_cards_branch_is_the_same_on_every_node() {
+        let card = generic_card("Fix: the Login  redirect (again) — v2, for real this time");
+        let short = airc_lib::work_worktree::short_id(card.card_id);
+        assert_eq!(card_branch(&card), format!("{short}/fix-the-login-redirect-again-v2"));
+        let same = airc_lib::WorkCard { title: "FIX THE LOGIN REDIRECT AGAIN V2".into(), ..card.clone() };
+        assert_eq!(card_branch(&same), card_branch(&card), "case and punctuation do not re-address the work");
+    }
+
+    // what this catches (card 8fecb762): the shared sync failing to recognise a card branch,
+    // so it autosaves the whole workspace onto it (Kimi's 63855189: 3,026 files, two PRs
+    // closed). Pinned against card_branch's real output, so the two cannot drift apart.
+    #[test]
+    fn a_card_branch_is_recognised_and_a_working_branch_is_not() {
+        assert!(is_card_branch(&card_branch(&generic_card("Fix the login redirect"))));
+        for other in ["main", "canary", "persona/kimi-work", "feature/63855189", "6385518/short-id", "6385518g/not-hex"] {
+            assert!(!is_card_branch(other), "{other} is not a card branch");
+        }
+    }
+
+    // what this catches: a re-dispatched, already-settled instance staged onto the
+    // previous round's graded checkout (astropy-13236, 2026-09-07: resolved Aug 26 by
+    // Atlas, re-dispatched by seed 3, the claimer inherited the August diff).
+    #[test]
+    // ... and (2026-09-13, matplotlib-21568): a FAILED grade is not a settle — the card
+    // reopens and the re-claim (her own lapsed hold, or a teammate's) must find the tree
+    // the grade was taken from, not pristine.
+    fn a_settled_checkout_restages_pristine_but_in_progress_work_is_kept() {
+        let resolved = |ms| Some((ms, true));
+        let failed = |ms| Some((ms, false));
+        assert!(!restages_pristine(None, None), "no verdict: a fresh clean tree is reused");
+        assert!(!restages_pristine(None, Some(10)), "no verdict: her work in progress stays");
+        assert!(restages_pristine(resolved(20), None), "settled and clean: pristine costs nothing");
+        assert!(restages_pristine(resolved(20), Some(10)), "work older than the verdict was graded");
+        assert!(restages_pristine(resolved(20), Some(20)), "work at the verdict instant was graded");
+        assert!(!restages_pristine(resolved(20), Some(30)), "work after a grade is a new attempt");
+        assert!(!restages_pristine(failed(20), Some(10)), "a failed grade keeps the graded tree");
+        assert!(!restages_pristine(failed(20), None), "a failed grade on a clean tree keeps it too");
+    }
+
+}

@@ -33,7 +33,7 @@ Two observations make the fix cheap:
    `LaneClass::Realtime -> Pinned`, `Interactive -> Graceful`, else `Hard`. When
    capability must come *down*, Graceful revocation is the mechanism — already
    wired, with real consumers (`inference/coordinator.rs`,
-   `cognition/resource_admission.rs`, `cognition/generate_response.rs`).
+   `inference/resource_admission.rs`, `cognition/generate_response.rs`).
 
 Only the **inputs** are frozen. Unfreeze them and the rest follows.
 

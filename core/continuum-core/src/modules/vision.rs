@@ -25,6 +25,7 @@
 //! the typed params/results below carry snake_case field names with NO `rename_all`,
 //! so the contract matches the established wire exactly.
 
+use continuum_base::time::EpochMs;
 use crate::log_info;
 use crate::runtime::MessageBus;
 use crate::runtime::{CommandResult, ModuleConfig, ModuleContext, ModulePriority, ServiceModule};
@@ -309,19 +310,12 @@ impl VisionCache {
         *self.bus.write().unwrap_or_else(|e| e.into_inner()) = Some(bus);
     }
 
-    fn now_ms() -> u64 {
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_millis() as u64
-    }
-
     /// Get a description by content key. Bumps last_accessed_at on hit.
     pub fn get(&self, content_key: &str) -> VisionGetResult {
         let mut cache = self.cache.write().unwrap_or_else(|e| e.into_inner());
 
         if let Some(entry) = cache.get_mut(content_key) {
-            entry.last_accessed_at = Self::now_ms();
+            entry.last_accessed_at = EpochMs::now().millis();
             let result = VisionGetResult {
                 found: true,
                 description: Some(entry.description.clone()),
@@ -352,7 +346,7 @@ impl VisionCache {
         let processing_time_ms = p.processing_time_ms.unwrap_or(0);
         let confidence = p.confidence.unwrap_or(0.85);
 
-        let now = Self::now_ms();
+        let now = EpochMs::now().millis();
         let entry = CachedDescription {
             description: p.description.clone(),
             model: model.clone(),
@@ -429,7 +423,7 @@ impl VisionCache {
     /// Called by TS on startup to restore descriptions from ORM.
     pub fn warm(&self, entries: &[VisionWarmEntry]) -> VisionWarmResult {
         let mut cache = self.cache.write().unwrap_or_else(|e| e.into_inner());
-        let now = Self::now_ms();
+        let now = EpochMs::now().millis();
         let mut loaded = 0u64;
 
         for entry in entries {
@@ -478,7 +472,7 @@ impl VisionCache {
 
     /// Manual eviction — remove entries not accessed within idle_ms.
     pub fn evict(&self, idle_ms: u64) -> VisionEvictResult {
-        let cutoff = Self::now_ms().saturating_sub(idle_ms);
+        let cutoff = EpochMs::now().millis().saturating_sub(idle_ms);
 
         let mut cache = self.cache.write().unwrap_or_else(|e| e.into_inner());
         let before = cache.len();
@@ -530,20 +524,18 @@ pub struct VisionModule {
     /// Executor slot for verbs that re-enter the bus (vision/look → the
     /// describe generate). Installed by the runtime's install_executor hook.
     executor: Arc<crate::runtime::LateBound<crate::runtime::CommandExecutor>>,
-}
-
-impl Default for VisionModule {
-    fn default() -> Self {
-        Self {
-            cache: Arc::new(VisionCache::new()),
-            executor: Arc::new(crate::runtime::LateBound::new("vision module executor")),
-        }
-    }
+    /// The code module's state: `vision/look` resolves the file it is handed through
+    /// the caller's workspace engine, the one path authority (card d598c806).
+    code: Arc<crate::modules::code::CodeState>,
 }
 
 impl VisionModule {
-    pub fn new() -> Self {
-        Self::default()
+    pub fn new(code: Arc<crate::modules::code::CodeState>) -> Self {
+        Self {
+            cache: Arc::new(VisionCache::new()),
+            executor: Arc::new(crate::runtime::LateBound::new("vision module executor")),
+            code,
+        }
     }
 }
 
@@ -584,7 +576,7 @@ impl ServiceModule for VisionModule {
     }
 
     fn commands(&self) -> Vec<Arc<dyn crate::sdk_codegen::DynCommand>> {
-        crate::commands::vision::command_objects(self.cache.clone(), self.executor.clone())
+        crate::commands::vision::command_objects(self.cache.clone(), self.executor.clone(), self.code.clone())
     }
 
     fn install_executor(&self, executor: Arc<crate::runtime::CommandExecutor>) {
@@ -725,8 +717,8 @@ mod tests {
                     provider: "test".to_string(),
                     processing_time_ms: 0,
                     confidence: 0.5,
-                    cached_at: VisionCache::now_ms(),
-                    last_accessed_at: VisionCache::now_ms(),
+                    cached_at: EpochMs::now().millis(),
+                    last_accessed_at: EpochMs::now().millis(),
                 },
             );
         }
@@ -743,7 +735,12 @@ mod tests {
     // registry owns vision/* now) rather than silently dispatching.
     #[tokio::test]
     async fn legacy_handle_command_fails_loud() {
-        let module = VisionModule::new();
+        let module = VisionModule::new(Arc::new(crate::modules::code::CodeState::new(
+            Arc::new(dashmap::DashMap::new()),
+            Arc::new(dashmap::DashMap::new()),
+            tokio::runtime::Handle::current(),
+            Arc::new(crate::modules::acting_provider::CoreActing),
+        )));
         let err = module
             .handle_command("vision/cache-stats", json!({}))
             .await

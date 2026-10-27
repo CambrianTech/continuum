@@ -42,7 +42,12 @@ pub struct AgentStartParams {
     export_to = "../../../protocol/typescript/agent/AgentStartResult.ts"
 )]
 pub struct AgentStartResult {
-    /// The handle identifying the spawned agent — pass to `status`/`stop`/`wait`.
+    /// The handle identifying the spawned agent — pass it back as `agentHandle` to
+    /// `status`/`stop`/`wait`.
+    // An OUTCOME never traverses the request envelope, so this field could have kept
+    // the bare name; it is `agentHandle` so what `start` returns is spelled the way the
+    // three verbs that consume it must receive it (card ea28d2f6).
+    #[serde(rename = "agentHandle")]
     pub handle: String,
 }
 

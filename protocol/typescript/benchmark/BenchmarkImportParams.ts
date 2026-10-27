@@ -6,7 +6,7 @@ export type BenchmarkImportParams = {
  */
 suite: string, 
 /**
- * Explicit instance ids (substring match, as dispatch). Empty = the seeded sample
+ * Explicit instance ids (substring match). Empty = the seeded sample
  * or the suite head.
  */
 instances?: Array<string>, 
@@ -17,9 +17,8 @@ sample?: number, seed?: number,
 /**
  * Do not OFFER an instance a citizen already resolved on this node (its verdict
  * file says `resolved`). The instance stays in the sample and its score — it is
- * simply not work again. Dispatch has done this since 2026-09-07 (re-offering
- * re-staged an August checkout and overwrote a first citizen's outcome); the
- * authored round must offer exactly what dispatch offers. Default true.
+ * simply not work again (2026-09-07: re-offering re-staged an August checkout and
+ * overwrote a first citizen's outcome). Default true.
  */
 skipAlreadyResolved: boolean, 
 /**
@@ -29,7 +28,7 @@ repo: string | null,
 /**
  * Cap on cards offered, applied AFTER the gate. `None`/0 = every card the selection
  * drew. The gym suites do not sample (a suite IS its task list), so this is how a
- * round takes the first N of `hard-rs` — dispatch's `limit`, kept.
+ * round takes the first N of `hard-rs`.
  */
 limit?: number, 
 /**

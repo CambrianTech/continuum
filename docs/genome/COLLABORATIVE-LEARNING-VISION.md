@@ -262,7 +262,7 @@ Human: "Yes, and let's add a pre-commit hook for this"
 ### Phase 3: LoRA Fine-Tuning
 
 - [ ] Export training data to JSONL
-- [ ] Unsloth integration for fine-tuning
+- [ ] Fine-tuning integration (in-engine llama.cpp fork training; `mlx_lm.lora` on Apple silicon)
 - [ ] LoRA layer management (register, activate, evict)
 - [ ] Scope-based layer storage
 

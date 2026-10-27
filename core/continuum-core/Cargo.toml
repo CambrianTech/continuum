@@ -1,11 +1,14 @@
 [package]
 name = "continuum-core"
+# Read by `repo_registry::own_checkout` (env!("CARGO_PKG_REPOSITORY")): which recorded
+# checkout is this core's own. Never the process cwd (card 2a2cd6f1).
+repository = "https://github.com/CambrianTech/continuum"
 edition.workspace = true
 version.workspace = true
 authors.workspace = true
 
 [lib]
-crate-type = ["cdylib", "rlib"]  # cdylib for FFI, rlib for other Rust
+crate-type = ["rlib"]
 
 [[bin]]
 name = "continuum-core-server"
@@ -34,7 +37,7 @@ name = "cargo-continuum-vdd"
 path = "src/bin/cargo-continuum-vdd.rs"
 
 # The forge custodian sidecar — the continuum-owned daemon that converts a
-# trained MLX LoRA into a pageable GGUF gene (the one capability unsloth-studio
+# trained MLX LoRA into a pageable GGUF gene (the one capability the serving engine
 # lacked). Declared explicitly (not just autobins-discovered) so it's an
 # intentional, contract-bearing artifact: it serves the `forge::protocol` wire
 # contract a forge daemon will grid-negotiate against.
@@ -43,12 +46,34 @@ name = "forge-custodian"
 path = "src/bin/forge_custodian.rs"
 
 [dependencies]
+continuum-git = { path = "../continuum-git" } # the deploy tree's stale index.lock (bin/continuum deploy_ledger)
+tool-working-set = { path = "../tool-working-set" }  # one relevance seam: commands/help ranks a query the way the learned tool head reads relevance
+continuum-tool-protocol = { path = "../continuum-tool-protocol" }
 tokio.workspace = true
 expert-pager-policy = { path = "../expert-pager-policy" }
 serde.workspace = true
 serde_json.workspace = true
 ron = "0.12"     # RON scene descriptions (Bevy-idiomatic on-disk format)
 uuid.workspace = true
+continuum-base = { path = "../continuum-base" }
+continuum-host = { path = "../continuum-host" }
+continuum-kernel = { path = "../continuum-kernel" }
+continuum-perception = { path = "../continuum-perception" }
+continuum-sentinel = { path = "../continuum-sentinel" }
+continuum-mind = { path = "../continuum-mind" }
+continuum-memory = { path = "../continuum-memory" }
+continuum-academy = { path = "../continuum-academy" }  # commands::hf re-exports its hf/* (#5452): a normal dependency, not only a test one
+continuum-dreaming = { path = "../continuum-dreaming" }
+continuum-live = { path = "../continuum-live" }
+continuum-hands = { path = "../continuum-hands" }
+continuum-engine = { path = "../continuum-engine" }
+continuum-service = { path = "../continuum-service" }  # each resident's window judged, and the alarm the beacon carries (card 1c157668)
+continuum-models = { path = "../continuum-models" }
+continuum-serving = { path = "../continuum-serving" }
+continuum-embedding = { path = "../continuum-embedding" }
+continuum-store = { path = "../continuum-store" }  # the data layer and its commands (card 2709ec6d)
+continuum-grid = { path = "../continuum-grid" }  # grid discovery, trust and routing with their commands (plan phase 2)
+continuum-context = { path = "../continuum-context" }
 # JSON Schema generation from serde types — the runtime param schema every SDK
 # (CLI/web/mobile/RAG-tools) adapts from. Derived automatically by the command
 # base traits; uuid1 so Uuid fields schema-ize as string. See COMMAND-ORGANIZATION.md.
@@ -66,6 +91,7 @@ continuum-airc-protocol = { path = "../continuum-airc-protocol" }
 # `WsServerMessage`. The `CommandDispatch` seam keeps continuum-positron free
 # of a continuum-core dependency (no cycle — this crate implements the trait).
 continuum-positron = { path = "../continuum-positron" }
+continuum-text-analysis = { path = "../continuum-text-analysis" }
 # The client SDK. `InProcessTransport` (runtime/in_process_transport.rs)
 # implements `continuum_client::Transport` so an in-core citizen (persona,
 # foundry) holds the SAME `Connection` every external client uses — citizens
@@ -86,6 +112,7 @@ inventory = "0.3"
 libc = "0.2"     # Process group management (setsid, kill -pgid)
 fs2 = "0.4"      # Cross-platform advisory file locks (flock / LockFileEx)
 toml = "0.8"     # Avatar model manifest parsing
+continuum-cli-lifecycle = { path = "../continuum-cli-lifecycle" }  # the CLI's platform lifecycle; its tests must not link this crate
 base64 = "0.22"  # Base64 encoding for audio data
 sha2 = "0.10"   # SHA-256 for OAuth 2.0 PKCE code challenges (RFC 7636) + L1-6 contract canonical hash
 zip = "0.6"     # Extract .vrm from downloaded VRoid avatar archives (provisioning fetch executor)
@@ -98,6 +125,7 @@ ed25519-dalek = { version = "2", features = ["rand_core", "serde"] }  # L1-6 con
 airc-ipc.workspace = true
 airc-bus.workspace = true
 airc-core.workspace = true
+airc-blobs.workspace = true
 airc-protocol.workspace = true
 # airc-lib: high-level SDK helpers. `decode_wire_event` (the canonical
 # Vec<u8> → TranscriptEvent decoder for `Response::Event { envelope }`)
@@ -159,14 +187,12 @@ tokenizers = { workspace = true, features = ["onig"] }
 
 # Pocket-TTS (Kyutai, 100M, Candle-based CPU TTS with voice cloning)
 # Uses candle 0.9 (separate from our 0.8) — CPU-only, no Metal flag to avoid conflicts
-pocket-tts = { version = "0.6", default-features = false }
 
 # Model loading (for inference module)
 safetensors.workspace = true  # Model weight files
 hf-hub.workspace = true       # HuggingFace model downloads
 half = "2.4"                  # f16/bf16 handling for LoRA
 earshot = "0.1"  # Fast VAD (WebRTC-style)
-msedge-tts.workspace = true  # Edge-TTS (free Microsoft TTS API)
 tracing.workspace = true
 tracing-subscriber.workspace = true
 tracing-appender.workspace = true
@@ -174,7 +200,7 @@ rand.workspace = true  # For test audio generation
 ts-rs.workspace = true  # TypeScript type generation
 
 # Memory/Hippocampus — pure compute engine (data from TS ORM via IPC).
-# NOTE: embedding is async + adapter-routed (unsloth /v1/embeddings via the
+# NOTE: embedding is async + adapter-routed (llama-server /v1/embeddings via the
 # AIProviderAdapter, see cognition::embedding) — NOT an in-process ONNX model.
 # The fastembed crate was removed in task #40. `ort` stays for live audio
 # (tts/stt/vad), which is a separate concern (task #41).
@@ -184,7 +210,6 @@ ts-rs.workspace = true  # TypeScript type generation
 # LiveKit server runs as its own container; this is only for Rust-side agent participation.
 # MIGRATION: bridge_client.rs replaces direct LiveKit usage. These deps will be removed
 # once bridge_client is fully validated. livekit-bridge binary handles WebRTC.
-livekit = { version = "0.7", features = ["native-tls"], optional = true }
 livekit-api = { version = "0.4", features = ["native-tls"], optional = true }
 
 # Bridge protocol — shared types for livekit-bridge IPC (no heavy deps)
@@ -199,29 +224,9 @@ continuum-bridge-protocol = { path = "../livekit-protocol" }
 # WindowPlugin (from bevy_window, pulled in by bevy_render) registers the
 # Events<WindowResized> that camera_system needs — no winit required.
 # ScheduleRunnerPlugin drives the headless frame loop.
-bevy = { version = "0.18", default-features = false, features = [
-    "bevy_render",
-    "bevy_core_pipeline",
-    "bevy_asset",
-    "bevy_pbr",
-    "bevy_scene",
-    "bevy_gltf",
-    "bevy_animation",
-    "bevy_mesh",          # Split from bevy_render in 0.17 — MorphWeights, mesh types
-    "bevy_color",
-    "bevy_state",
-    "bevy_window",        # WindowPlugin (registers Events<WindowResized>) — NOT bevy_winit
-    "reflect_auto_register",  # Auto-register ALL Reflect types in TypeRegistry (scene spawning needs this)
-    "png",
-    "jpeg",                   # JPEG texture format — required by webaverse VRM models (wv-kanji, wv-ruike)
-    "ktx2",                   # KTX2 texture format — required for VRM 1.0 models
-    "basis-universal",        # Basis Universal decompression — KTX2 textures use this codec
-] }
+#
+# OPTIONAL — only compiled under the `avatar-3d` feature (see [features]).
 
-# wgpu HAL access — needed for Metal texture extraction (GPU→GPU pipeline)
-# Version matches Bevy 0.18's wgpu dependency
-wgpu = "27"
-wgpu-hal = "27"
 
 arc-swap = "1.7"           # Wait-free policy publish for SubstrateGovernor (Lane H)
 notify = "8"               # Policy directory watch + hot reload for SubstrateGovernor
@@ -248,13 +253,7 @@ regex = "1"                      # Regex search for code search
 # Windows incremental cache masked it.
 scraper = "0.21"
 
-# ORM module — database-agnostic storage with adapter traits
-rusqlite = { version = "0.32", features = ["bundled"] }  # SQLite adapter
-deadpool-postgres.workspace = true                        # Postgres connection pool
-tokio-postgres.workspace = true                           # Postgres async driver
 rustpython-parser = "0.4.0"
-syn = { version = "2", features = ["full", "parsing", "extra-traits"] }
-proc-macro2 = { version = "1.0.107", features = ["span-locations"] }
 
 # jemalloc EVERYWHERE EXCEPT windows-msvc. jemalloc-sys builds its vendored
 # jemalloc via an autotools `configure` shell script that fails under
@@ -272,7 +271,7 @@ tikv-jemallocator = "0.6"
 # The CLI's detached spawn also uses an explicit native handle allow-list so
 # background cores do not retain their launcher's output-pipe writers.
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.60", features = ["Win32_System_ProcessStatus", "Win32_Foundation", "Win32_Globalization", "Win32_Security", "Win32_System_Threading", "Win32_System_Pipes"] }
+windows-sys = { version = "0.60", features = ["Win32_System_SystemInformation", "Win32_System_ProcessStatus", "Win32_Storage_FileSystem", "Win32_Foundation", "Win32_Globalization", "Win32_Security", "Win32_Security_AppLocker", "Win32_System_Threading", "Win32_System_Pipes", "Win32_System_JobObjects", "Win32_System_Console", "Win32_System_Environment", "Win32_System_SystemServices"] }
 # Tokio's Mio sockets must not survive a core restart inside preserved children.
 # Keep the fixed release as a resolution floor, including without our lockfile.
 # Mio #1946 creates sockets with WSA_FLAG_NO_HANDLE_INHERIT (since 1.2.1).
@@ -280,9 +279,13 @@ mio = { version = "1.2.3", default-features = false }
 
 # Metal API — GPU detection (VRAM), compute shaders (RGBA→NV12 on GPU)
 # Version 0.32 matches wgpu-hal 27 (Bevy 0.18) for type compatibility
+[target.'cfg(target_os = "linux")'.dependencies]
+# A citizen's child processes are confined in-kernel (code/confinement.rs): landlock
+# needs no helper binary, so a fresh clone confines on first boot.
+landlock = "0.4"
+
 [target.'cfg(target_os = "macos")'.dependencies]
 metal = "0.32"
-objc = "0.2"    # Objective-C runtime — for Metal APIs not wrapped by metal crate
 # MLX — Apple Silicon native inference runtime. Phase A of continuum#897
 # only flags the module on via the `mlx` feature; the actual `mlx-rs` crate
 # dep lands in phase B when we implement forward() and have the full-Xcode
@@ -303,28 +306,49 @@ objc = "0.2"    # Objective-C runtime — for Metal APIs not wrapped by metal cr
 #   Linux + CUDA:          cargo build --features cuda,load-dynamic-ort
 #   Linux CPU / WSL2-Ubuntu / Windows: cargo build  (no GPU features)
 #
-# `scripts/shared/cargo-features.sh` already detects the right set per
-# uname; `npm start` and the docker builds source it. The only cost is
-# a Mac dev typing `cargo build` directly without features now gets a
-# CPU-only build — paid by the dev who knows to add the flags. The
-# benefit is docker / CI / cross-platform builds stop pulling Apple-
-# only crates into their dep tree on every host.
-default = ["livekit-webrtc"]
-livekit-webrtc = ["dep:livekit", "dep:livekit-api"]
-# Legacy TypeScript-SDK generator (sdk_codegen::emit). OFF by default: nothing
-# live consumes its output (the new client SDKs are independent), so it's pure
-# CI/compile cost + a tempting-but-wrong extension point. The HEADLESS command
-# framework (registry, dispatch, descriptors, AccessLevel) is always compiled;
-# only the .ts emitter + its tests are gated here. Regenerate the TS SDK with
-# `cargo test --features ts-codegen` on the (rare) occasions it's needed.
-ts-codegen = []
-metal = ["candle-core/metal", "candle-nn/metal", "candle-transformers/metal", "llama/metal", "ort/coreml"]
-cuda = ["candle-core/cuda", "candle-nn/cuda", "candle-transformers/cuda", "llama/cuda", "ort/cuda"]
+# HEADLESS BY DEFAULT (Joel 2026-10-19: "headless with desktop clients, so you can operate
+# more easily in things like AWS"). Calls (`livekit-webrtc`) and 3D avatars (`avatar-3d`)
+# are what a NODE hosts, not what the crate is: every deploy path takes them from the
+# node's profile, `CONTINUUM_NODE_FEATURES` in ~/.continuum/config.env, through ONE
+# function, tools/scripts/lib/core-features.sh `select_core_features` (which also detects
+# the platform GPU set above). A node with no profile builds headless and the build says
+# so. A plain `cargo check` / `cargo test` therefore compiles neither Bevy+wgpu nor
+# LiveKit; name them to work on those paths:
+#   cargo check -p continuum-core --features metal,accelerate,livekit-webrtc,avatar-3d
+default = []
+livekit-webrtc = ["dep:livekit-api", "continuum-live/livekit-webrtc"]
+# 3D VRM avatar rendering — the headless Bevy renderer (live/video/bevy_renderer),
+# its GPU→GPU frame converters (wgpu / Metal-via-wgpu-hal), the `bevy_3d` avatar
+# backend, the AvatarModule snapshot path and the BevyConsumer residency shedder.
+# Split out of the always-on set because headless and CPU-only nodes don't render
+# 3D, and bevy was ~16% of the core binary and ~24% of the CLI's (card 0bff1a0a;
+# Joel 2026-10-03: "bevy is unrealistic and unused for some headless forms and
+# some machines"). OFF by default; a node that renders avatars names it in its
+# profile (CONTINUUM_NODE_FEATURES, see above). Without
+# it the pure avatar types (Emotion, Gesture, slot/resolution constants in
+# live/video/avatar_types.rs) and the live2d/procedural backends remain; any
+# request for 3D rendering fails loudly naming this feature — never a silent
+# substitute.
+avatar-3d = ["continuum-live/avatar-3d"]
+# Pocket-TTS (117M Candle, voice cloning, 23x slower than realtime on CPU). Backwards
+# compatibility only: Kokoro is the voice floor (#4698) and learned voices are the plan
+# (docs/planning/VOICE-ENGINE-PLAN.md). OFF by default because pocket-tts 0.6 pulls
+# intel-mkl-src even with default-features = false, which broke packaging the Windows CLI
+# (#4665, BIGGIEDESK). Enable it explicitly to get the adapter.
+pocket-tts = ["continuum-live/pocket-tts"]
+# TypeScript-SDK generator (sdk_codegen::emit). OFF by default (no compile cost in
+# ordinary builds). Its output is LIVE: sdk/typescript/generated/{CommandMap,CommandApi}.ts
+# and wire/** are imported by sdk/typescript/Commands.ts, which apps/tui, eye-node, desktop
+# and web depend on. Regenerate after a command changes:
+# `cargo test -p continuum-core --features ts-codegen generates_live_typescript_sdk`.
+ts-codegen = ["continuum-kernel/ts-codegen"]
+metal = ["candle-core/metal", "candle-nn/metal", "candle-transformers/metal", "llama/metal", "ort/coreml", "continuum-engine/metal", "continuum-serving/metal", "continuum-live/metal", "continuum-mind/metal", "continuum-dreaming/metal", "continuum-grid/metal"]
+cuda = ["candle-core/cuda", "candle-nn/cuda", "candle-transformers/cuda", "llama/cuda", "ort/cuda", "continuum-kernel/cuda", "continuum-engine/cuda", "continuum-mind/cuda", "continuum-dreaming/cuda", "continuum-grid/cuda"]
 # Vulkan is llama.cpp-only (Candle has no Vulkan backend). Used by the
 # Mac-Carl-in-container path: Podman + krunkit routes Vulkan API calls out
 # to MoltenVK on the host, which translates to Metal. Also valid on Linux
 # Nvidia/AMD hosts with libvulkan available.
-vulkan = ["llama/vulkan"]
+vulkan = ["llama/vulkan", "continuum-kernel/vulkan", "continuum-engine/vulkan", "continuum-mind/vulkan", "continuum-dreaming/vulkan", "continuum-grid/vulkan"]
 # ORT execution providers for the broader Carl-OOTB matrix (#964 series
 # follow-up). Each adds a cfg branch in inference/ort_providers.rs so
 # fastembed / Piper-TTS / Moonshine-STT / Kokoro / Orpheus / Silero VAD
@@ -337,15 +361,15 @@ vulkan = ["llama/vulkan"]
 #   directml → Windows native + DirectX 12 (Nvidia / AMD / Intel).
 #   openvino → Intel CPU/GPU/VPU (Linux + Windows). Different from CPU
 #              fallback: OpenVINO is Intel's GPU/NPU acceleration path.
-rocm = ["ort/rocm"]
-directml = ["ort/directml"]
-openvino = ["ort/openvino"]
+rocm = ["ort/rocm", "continuum-engine/rocm"]
+directml = ["ort/directml", "continuum-engine/directml"]
+openvino = ["ort/openvino", "continuum-engine/openvino"]
 # MLX — Apple Silicon native inference path (phases A–E of continuum#897).
 # Only compiles on macOS/aarch64; the adapter module is guarded by this feature
 # AND by cfg(target_os = "macos") so non-Mac targets simply don't see the code.
 # Phase A: flag only, no mlx-rs dep yet. Phase B will add `dep:mlx-rs` back
 # once we're writing forward() and can ensure full Xcode is installed.
-mlx = []
+mlx = ["continuum-engine/mlx"]
 accelerate = ["candle-core/accelerate", "candle-nn/accelerate", "candle-transformers/accelerate"]
 # Linux: swap ORT from static (download-binaries) to dynamic loading.
 # Avoids protobuf symbol conflict with webrtc-sys. macOS uses static (default).
@@ -368,7 +392,7 @@ load-dynamic-ort = ["ort/load-dynamic"]
 #     via `cargo test --features test-fixtures` or `--features test-fixtures`
 #     on the bin target.
 #   - Production: heuristic adapter doesn't exist in the binary at all.
-test-fixtures = []
+test-fixtures = ["continuum-kernel/test-fixtures", "continuum-engine/test-fixtures", "continuum-serving/test-fixtures", "continuum-hands/test-fixtures", "continuum-live/test-fixtures", "continuum-mind/test-fixtures", "continuum-dreaming/test-fixtures", "continuum-store/test-fixtures", "continuum-grid/test-fixtures"]
 
 # stress-tests: opts in concurrency / multi-thread / load tests that
 # pin substrate invariants under N-task simultaneous load. Each test
@@ -388,7 +412,7 @@ test-fixtures = []
 # `#[cfg(test)] mod tests` block (chat, generator, data cursors,
 # airc realtime_store as of this writing). Greppable by:
 #     grep -rln 'cfg(feature = "stress-tests")' src/
-stress-tests = []
+stress-tests = ["continuum-kernel/stress-tests", "continuum-mind/stress-tests", "continuum-dreaming/stress-tests", "continuum-store/stress-tests"]
 
 # Integration tests that link a `test-fixtures`-gated lib symbol (the
 # HeuristicInferenceAdapter stand-in, or the ChatQueueItem `compute_calls`
@@ -419,12 +443,41 @@ required-features = ["test-fixtures"]
 name = "persona_command_inbound_pump"
 required-features = ["test-fixtures"]
 
+# The avatar examples drive the Bevy renderer directly — they only exist with it.
+[[example]]
+name = "avatar_breathe"
+required-features = ["avatar-3d"]
+
+[[example]]
+name = "avatar_emote"
+required-features = ["avatar-3d"]
+
+[[example]]
+name = "avatar_livekit"
+required-features = ["avatar-3d"]
+
 [lints.rust]
 # objc 0.2's msg_send! macro uses the deprecated cargo-clippy cfg check.
 # Allow until we migrate to objc2.
 unexpected_cfgs = "allow"
 
 [dev-dependencies]
+continuum-kernel = { path = "../continuum-kernel", features = ["test-fixtures"] }
+continuum-engine = { path = "../continuum-engine", features = ["test-fixtures"] }
+continuum-serving = { path = "../continuum-serving", features = ["test-fixtures"] }
+continuum-hands = { path = "../continuum-hands", features = ["test-fixtures"] }
+continuum-live = { path = "../continuum-live", features = ["test-fixtures"] }
+continuum-mind = { path = "../continuum-mind", features = ["test-fixtures"] }
+continuum-dreaming = { path = "../continuum-dreaming", features = ["test-fixtures"] }
+continuum-genome = { path = "../continuum-genome", features = ["test-fixtures"] }
+continuum-experience = { path = "../continuum-experience", features = ["test-fixtures"] }
+continuum-academy = { path = "../continuum-academy", features = ["test-fixtures"] }
+continuum-positron = { path = "../continuum-positron", features = ["test-fixtures"] }
+# The hygiene ratchets moved to their own std-only crate so a contributor learns an
+# unwrap count rose in seconds instead of after a 12.4-minute build. Two `#[cfg(test)]`
+# call sites here still use its scanner helpers, so it is a DEV dependency — production
+# builds of continuum-core do not link it and never did.
+source-hygiene = { path = "../source-hygiene" }
 tokio-test = "0.4"
 tempfile = "3"                   # Temp directories for code module tests
 

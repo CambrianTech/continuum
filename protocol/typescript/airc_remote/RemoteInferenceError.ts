@@ -6,4 +6,4 @@
  * model's own error) — these are transport / discovery /
  * correlation failures the substrate-as-transport detected.
  */
-export type RemoteInferenceError = { "kind": "transport", message: string, } | { "kind": "no_peer_reachable", message: string, } | { "kind": "timeout", elapsed_ms: bigint, } | { "kind": "correlation_mismatch", expected: string, actual: string, } | { "kind": "peer_adapter_failed", message: string, } | { "kind": "policy_denied", reason: string, };
+export type RemoteInferenceError = { "kind": "transport", message: string, } | { "kind": "no_peer_reachable", message: string, } | { "kind": "timeout", elapsed_ms: bigint, } | { "kind": "correlation_mismatch", expected: string, actual: string, } | { "kind": "peer_adapter_failed", message: string, } | { "kind": "policy_denied", reason: string, } | { "kind": "seat_overloaded", message: string, };

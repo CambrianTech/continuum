@@ -654,7 +654,7 @@ const layers = await Commands.execute('genome/query', {
 
 ### Phase 4: Training Integration (PLANNED)
 - Export to JSONL
-- Unsloth fine-tuning
+- Engine LoRA fine-tuning (llama.cpp fork / `mlx_lm.lora`)
 - Layer versioning
 - Automated refinement
 
@@ -701,7 +701,7 @@ const layers = await Commands.execute('genome/query', {
   --output="cancer-training.jsonl" \
   --minQuality="high"
 
-# Fine-tune with Unsloth
+# Fine-tune
 ./jtag genome/train \
   --baseModel="llama-3-8b" \
   --trainingData="cancer-training.jsonl" \

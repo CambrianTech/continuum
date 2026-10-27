@@ -168,6 +168,16 @@ export interface ChatViewModel {
   /** No messages yet — the surface renders an honest empty state, not an error. */
   readonly isEmpty: boolean;
   readonly revision?: number;
+  /** Set when a target renders only part of `transcript` (the web windows it to
+   *  the rows near the viewport): the space the rows outside the window occupy,
+   *  which a pixel target draws as spacers and a text target ignores. */
+  readonly transcriptSpacers?: TranscriptSpacers;
+}
+
+/** The height the transcript rows outside a rendered window stand for. */
+export interface TranscriptSpacers {
+  readonly abovePx: number;
+  readonly belowPx: number;
 }
 
 /** `HH:MM` from unix-ms in the VIEWER's timezone — a transcript timestamp is

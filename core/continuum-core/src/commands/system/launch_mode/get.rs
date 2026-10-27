@@ -32,7 +32,7 @@ crate::action_command! {
     run(_this, _ctx, _p) => {
         // Unset (or unrecognized) ⇒ "auto" — the resolution into a concrete
         // headless/ui is the shell's boot-time job; this reports the stored setting.
-        let (mode, source) = match crate::config_env::read(LAUNCH_MODE_KEY) {
+        let (mode, source) = match continuum_base::config_env::read(LAUNCH_MODE_KEY) {
             Some(raw) => match normalize_mode(&raw) {
                 Some(m) => (m.to_string(), "config"),
                 None => ("auto".to_string(), "default"),

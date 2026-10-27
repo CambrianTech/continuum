@@ -103,7 +103,7 @@ Security AI: Identifies vulnerabilities
 - [ ] RAG system indexes the repo (docs/, system/, commands/)
 - [ ] PersonaUser queries RAG before responding
 - [ ] Training data from corrections improves responses
-- [ ] Basic LoRA fine-tuning (Unsloth integration)
+- [ ] Basic LoRA fine-tuning (engine LoRA training)
 
 **Test**:
 ```bash
@@ -197,7 +197,7 @@ TrainingDaemon:
 
 Weekly Fine-Tuning:
   ✓ Export training data to JSONL
-  ✓ Fine-tune helper-ai.lora with Unsloth
+  ✓ Fine-tune helper-ai.lora with the engine trainer
   ✓ Reload LoRA layer
   ✓ Next time: Correct answer
 ```
@@ -424,7 +424,7 @@ Helper AI, Teacher AI, CodeReview AI, etc. all running
 # Export training data to JSONL
 ./jtag genome/export-training --output="./training.jsonl"
 
-# Fine-tune with Unsloth
+# Fine-tune
 python3 scripts/fine-tune.py --input="training.jsonl" --output="helper-ai-v1.lora"
 
 # Load LoRA layer

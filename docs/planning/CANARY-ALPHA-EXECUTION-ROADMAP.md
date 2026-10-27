@@ -251,6 +251,38 @@ with no manual debugging required.
 **Group D done = Alpha public release = canary promotes to main with
 the `main-promotion-gate.sh` passing across all required receipts.**
 
+## main tracks canary on a cadence
+
+`main` is the front door: the README and `install.sh` send every outsider to
+it. On 2026-09-20 it was found three months behind canary — nothing was
+wrong with canary, no one had thought to promote (Joel: "no one thought to
+promote"). Promotion is a mechanism, not a person remembering:
+
+- **`.github/workflows/promote-main.yml`** runs daily (10:17 UTC) and on
+  `workflow_dispatch`. It exits with a notice when main already carries
+  canary's tree; it never promotes a tip whose own push checks are red or
+  pending (the same rule `track-canary.sh::tip_checks` and
+  `modules/deploy_tracker.rs::parse_tip_checks` apply).
+- **The recipe** (main disallows merge commits and its history diverged
+  from canary's, so a plain canary→main PR conflicts on add/add):
+  `git checkout -B promote/main-<date>-<tip> origin/canary && git merge -s
+  ours origin/main` — main's history is recorded, the tree is canary's byte
+  for byte — push, PR against `main`, **squash-merge**. The squash commit
+  carries `Promoted-Canary-Sha: <tip>`, the anchor the next run lists its
+  promoted commits from.
+- **Its failure is never a red tip.** The workflow runs on canary, so its
+  check-run lands on canary's tip; both deploy-verdict readers exclude it by
+  path (`NON_DEPLOY_WORKFLOW_PATHS`) so a failed promote can never refuse a
+  deploy the way the scheduled audit did (#4243).
+- **Token.** `GITHUB_TOKEN` suffices while main is unprotected. If protection
+  with required checks is added, set the `PROMOTE_TOKEN` repo secret (a
+  fine-grained PAT, contents + pull-requests: write) — GITHUB_TOKEN pushes do
+  not start workflows, so the PR's checks would never appear.
+
+`scripts/main-promotion-gate.sh` remains the deeper per-host release receipt
+(Carl/Docker/GPU matrix); the cadence promote does not run it. It gates a
+tagged release, not the daily front door.
+
 ## How this composes with ALPHA-GAP-ANALYSIS.md
 
 [ALPHA-GAP-ANALYSIS.md](ALPHA-GAP-ANALYSIS.md) owns active lane execution

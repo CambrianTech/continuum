@@ -55,11 +55,11 @@ crate::action_command! {
             ))
         })?;
 
-        let previous = crate::config_env::read(LAUNCH_MODE_KEY)
+        let previous = continuum_base::config_env::read(LAUNCH_MODE_KEY)
             .and_then(|raw| normalize_mode(&raw).map(str::to_string))
             .unwrap_or_default();
 
-        crate::config_env::upsert(LAUNCH_MODE_KEY, mode).map_err(CommandError::Internal)?;
+        continuum_base::config_env::upsert(LAUNCH_MODE_KEY, mode).map_err(CommandError::Internal)?;
 
         // Fire-and-forget: a running UI tears down/attaches its overlay.
         this.state.publish_changed(mode, &previous);

@@ -12,7 +12,7 @@
 //! knows a call started (`join_call`) and holds the call id — which IS the airc
 //! room id — and never tells the orchestrator. Every path into
 //! `register_session` is a client calling in, so that orchestration only ever
-//! existed in 162 lines of Node in `legacy/`. iOS, Android and TUI citizens are
+//! existed in 162 lines of Node in `legacy/` (tag legacy-archive-2026-10-23). iOS, Android and TUI citizens are
 //! therefore structurally voiceless, not merely buggy.
 //!
 //! The legacy code names the symptom itself: *"Without this, `isInCall()`

@@ -7,7 +7,7 @@ export type AgentWaitParams = {
 /**
  * The agent handle returned by `agent/start`.
  */
-handle: string, 
+agentHandle: string, 
 /**
  * Max milliseconds to wait before returning a timeout error (default 300000).
  */

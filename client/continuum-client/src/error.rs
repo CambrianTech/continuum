@@ -17,8 +17,19 @@ pub enum ClientError {
     Closed,
 
     /// Substrate accepted the command but returned an error.
+    ///
+    /// `outcome` is the command's OWN typed result when the refusal carried one — a
+    /// handler that answers `{ success: false, errorKind, nextHistoryOffset, … }` is
+    /// refusing with data, and that data must reach the caller (card f4d2fa49:
+    /// `genome/job-status`'s HistoryIncomplete/HistoryCorrupt lost their continuation
+    /// offset and malformed count at this boundary and arrived as prose). `None` when
+    /// the refusal was a transport or gate string with nothing structured behind it.
     #[error("substrate refused command `{command}`: {reason}")]
-    Refused { command: String, reason: String },
+    Refused {
+        command: String,
+        reason: String,
+        outcome: Option<serde_json::Value>,
+    },
 
     /// Serialization or deserialization of params/result failed at the
     /// client boundary.

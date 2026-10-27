@@ -47,18 +47,21 @@ crate::action_command! {
     run(_this, _ctx, p) => {
         let device_spec = pipeline::parse_device_spec(p.device_spec.as_deref().unwrap_or("32gb"))?;
 
-        let output_path = p.output_path.map(PathBuf::from).unwrap_or_else(|| {
-            let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
-            PathBuf::from(home)
-                .join(".continuum/genome/models")
+        // Beside the genome's models, under the one continuum home; with no home the command
+        // refuses rather than writing a model into a guessed directory.
+        let output_path = match p.output_path {
+            Some(path) => PathBuf::from(path),
+            None => crate::paths::ContinuumLayout::home()
+                .map_err(crate::sdk_codegen::CommandError::Internal)?
+                .genome_models()
                 .join(format!(
                     "{}-compressed.gguf",
                     PathBuf::from(&p.model_path)
                         .file_name()
                         .and_then(|n| n.to_str())
                         .unwrap_or("model")
-                ))
-        });
+                )),
+        };
 
         let architecture = p.architecture.unwrap_or_else(|| "qwen2".to_string());
 

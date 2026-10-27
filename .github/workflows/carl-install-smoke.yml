@@ -29,9 +29,11 @@ on:
       - 'bootstrap.sh'
       - 'tools/scripts/install*.sh'
       - 'tools/scripts/lib/install-common.sh'
+      - 'tools/scripts/lib/payload-paths.sh'
+      - 'tools/scripts/lib/install-common.test.sh'
+      - 'tools/scripts/tests/install-llama-server-slots.test.sh'
       - 'docker/**'
       - 'docker-compose*.yml'
-      - 'src/.dockerignore'
       - 'core/.dockerignore'
       - 'scripts/ci/carl-install-smoke.sh'
       - '.github/workflows/carl-install-smoke.yml'
@@ -69,6 +71,24 @@ jobs:
           # Smoke uses the local script directly; no need for full history.
           fetch-depth: 1
 
+      - name: Verify cold-storage preservation and interrupted migration
+        run: |
+          source tools/scripts/lib/install-common.test.sh
+          test_cold_storage_preserves_config
+          test_cold_storage_resumes_owned_migration
+
+      - name: Check managed payload placement
+        shell: bash
+        run: |
+          source tools/scripts/lib/install-common.test.sh
+          test_managed_payload_placement
+
+      # PR/push slot contracts belong to the required Linux Rust job. Manual
+      # smoke runs have no companion Rust workflow, so retain their proof here.
+      - name: Engine slot contracts for standalone manual smoke
+        if: github.event_name == 'workflow_dispatch'
+        run: bash tools/scripts/tests/install-llama-server-slots.test.sh
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
@@ -82,8 +102,19 @@ jobs:
         # it would be on a hardware-GPU host. vulkan-tools provides vulkaninfo
         # for the slice probes (test-slices.sh).
         run: |
-          sudo apt-get update -y
-          sudo apt-get install -y mesa-vulkan-drivers vulkan-tools
+          # A THIRD-PARTY REPO WE NEVER INSTALL FROM MUST NOT FAIL OUR BUILD.
+          # The GitHub runner image ships vendor apt repos (Chrome, Microsoft, …).
+          # `apt-get update` exits 100 if ANY index fails, so on 2026-09-09 a Hash Sum
+          # mismatch on dl.google.com/linux/chrome-stable failed this step — and with it
+          # every Rust run on every branch — for a package list nothing here reads.
+          # Drop the vendor lists first, then update only the archives we install from,
+          # with retries for genuinely transient mirror errors. A real failure to fetch
+          # OUR packages still fails the step, loudly.
+          sudo rm -f /etc/apt/sources.list.d/google-chrome.list \
+                     /etc/apt/sources.list.d/microsoft-prod.list \
+                     /etc/apt/sources.list.d/*azure-cli* 2>/dev/null || true
+          sudo apt-get update -o Acquire::Retries=3 -y
+          sudo apt-get install -y -o Acquire::Retries=3 mesa-vulkan-drivers vulkan-tools
           echo "vulkaninfo summary:"
           vulkaninfo --summary 2>&1 | head -20 || true
 

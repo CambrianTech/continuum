@@ -13,7 +13,7 @@
    - PersonaUsers can create self-improvement tasks
 
 2. **Genome Training Command** (Phase 7.1 complete)
-   - `genome/train` - Full LoRA fine-tuning via Unsloth
+   - `genome/train` - Full LoRA fine-tuning (in-engine on the llama.cpp fork; `mlx_lm.lora` on Apple silicon)
    - Supports chat conversation training data
    - Creates .safetensors adapter files
 

@@ -48,6 +48,9 @@ fn ordinary_commands_never_start_a_core() {
     let script = root.path().join("must-not-start.sh");
     std::fs::write(&script, "#!/bin/sh\nexit 97\n").unwrap();
     for (args, expected_exit) in [
+        (vec!["--version"], 0),
+        (vec!["-V"], 0),
+        (vec!["version"], 0),
         (vec!["ping"], 2),
         (vec!["serving/status"], 2),
         (vec!["commands/list"], 2),
@@ -77,6 +80,23 @@ fn ordinary_commands_never_start_a_core() {
             Some(expected_exit),
             "{args:?}: {stderr}"
         );
+        // Version must identify the CLI even with an absent endpoint, without dispatch.
+        if expected_exit == 0 {
+            assert!(stderr.is_empty(), "{args:?}: {stderr}");
+            let stdout = String::from_utf8(output.stdout).expect("version is UTF-8");
+            assert_eq!(
+                stdout.trim(),
+                format!(
+                    "continuum {} (build {}, sha {}, built {})",
+                    env!("CARGO_PKG_VERSION"),
+                    env!("CONTINUUM_BUILD_NUMBER"),
+                    env!("CONTINUUM_BUILD_GIT_SHA"),
+                    env!("CONTINUUM_BUILD_AT"),
+                )
+            );
+            assert!(!root.path().join("absent.sock.pid").exists());
+            continue;
+        }
         assert!(stderr.contains("no core answering"), "{args:?}: {stderr}");
         if expected_exit == 1 {
             assert!(stderr.contains("deploy-verify:"), "{args:?}: {stderr}");

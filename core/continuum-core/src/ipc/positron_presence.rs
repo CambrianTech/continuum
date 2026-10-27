@@ -57,6 +57,7 @@ use std::time::Duration;
 use uuid::Uuid;
 
 use crate::ipc::positron_source::{AircPresenceUpdate, PRESENCE_UPDATED};
+use crate::cognition::room_directory::{load_directory, persist_directory};
 use crate::persona::room_roster_source::AircRosterReader;
 use crate::persona::room_roster_source::{PRESENCE_WINDOW, ROSTER_SCAN};
 use crate::runtime::MessageBus;
@@ -85,105 +86,6 @@ const EMIT_INTERVAL: Duration = Duration::from_secs(2);
 const MEMBERSHIP_WINDOW: Duration = Duration::from_secs(14 * 24 * 3600);
 const MEMBERSHIP_SCAN: usize = 4000;
 
-/// On-disk room directory: every `RosterSlotView` this node has ever
-/// projected for the room, keyed by member id. The sibling of the airc
-/// attach-cursor file — node-local durable state under `~/.continuum/state/`.
-fn directory_path(room_id: &Uuid) -> Option<PathBuf> {
-    dirs::home_dir().map(|h| {
-        h.join(".continuum")
-            .join("state")
-            .join(format!("room-directory-{room_id}.json"))
-    })
-}
-
-/// Every slot in EVERY room directory on this node — the scope-wide "who
-/// exists" read `presence/directory` unions (duplicates across rooms
-/// included; the caller merges by member id, newest sighting winning).
-/// Files, not daemon paging: existence must survive restarts and benchmark
-/// bursts, and the recent-events page provably doesn't (2026-08-31: a
-/// 4000-event page during a solve burst hid every quiet peer).
-pub fn scope_directory_slots() -> Vec<RosterSlotView> {
-    let Some(state) = dirs::home_dir().map(|h| h.join(".continuum").join("state")) else {
-        return Vec::new();
-    };
-    let Ok(entries) = std::fs::read_dir(&state) else {
-        return Vec::new();
-    };
-    let mut slots = Vec::new();
-    for entry in entries.flatten() {
-        let name = entry.file_name();
-        let Some(name) = name.to_str() else { continue };
-        let Some(room) = name
-            .strip_prefix("room-directory-")
-            .and_then(|r| r.strip_suffix(".json"))
-        else {
-            continue;
-        };
-        let Ok(room_id) = Uuid::parse_str(room) else {
-            continue;
-        };
-        slots.extend(load_directory(&room_id).into_values());
-    }
-    slots
-}
-
-/// Is this peer a HUMAN on this node — a directory slot whose runtime is the
-/// interactive client (`SenderKind::from_runtime`)? The ONE directory
-/// (`scope_directory_slots`), memoised for a minute: the persona loop head
-/// asks it per drained line, and a work-holding citizen wakes for a human
-/// line or an @mention, never for agent status traffic (2026-09-04: every
-/// agent line in #academy woke all twelve holders — 8 work turns an hour).
-pub fn is_human_peer(peer: Uuid) -> bool {
-    static HUMANS: std::sync::LazyLock<std::sync::Mutex<(Option<std::time::Instant>, std::collections::HashSet<Uuid>)>> =
-        std::sync::LazyLock::new(|| std::sync::Mutex::new((None, std::collections::HashSet::new())));
-    let mut memo = HUMANS.lock().unwrap_or_else(|e| e.into_inner()); // poisoned lock = read the last state, same policy as every lock in this crate
-    let stale = memo.0.is_none_or(|at| at.elapsed() > Duration::from_secs(60));
-    if stale {
-        memo.1 = scope_directory_slots()
-            .into_iter()
-            .filter(|s| matches!(s.kind, continuum_positron::SenderKind::Human))
-            .map(|s| s.member_id)
-            .collect();
-        memo.0 = Some(std::time::Instant::now());
-    }
-    memo.1.contains(&peer)
-}
-
-fn load_directory(room_id: &Uuid) -> HashMap<Uuid, RosterSlotView> {
-    let Some(path) = directory_path(room_id) else {
-        return HashMap::new();
-    };
-    let Ok(bytes) = std::fs::read(&path) else {
-        return HashMap::new(); // first boot — honest empty, filled by the deep scan
-    };
-    match serde_json::from_slice::<Vec<RosterSlotView>>(&bytes) {
-        Ok(slots) => slots.into_iter().map(|s| (s.member_id, s)).collect(),
-        Err(err) => {
-            tracing::warn!(%err, ?path, "room directory unreadable — starting fresh (will re-seed from the deep scan)");
-            HashMap::new()
-        }
-    }
-}
-
-fn persist_directory(room_id: &Uuid, dir: &HashMap<Uuid, RosterSlotView>) {
-    let Some(path) = directory_path(room_id) else {
-        return;
-    };
-    if let Some(parent) = path.parent() {
-        let _ = std::fs::create_dir_all(parent);
-    }
-    let mut slots: Vec<&RosterSlotView> = dir.values().collect();
-    slots.sort_by_key(|s| s.member_id); // deterministic file → clean diffs
-    match serde_json::to_vec_pretty(&slots) {
-        Ok(bytes) => {
-            if let Err(err) = std::fs::write(&path, bytes) {
-                tracing::warn!(%err, ?path, "room directory persist failed — membership survives in memory only this session");
-            }
-        }
-        Err(err) => tracing::warn!(%err, "room directory serialize failed"),
-    }
-}
-
 /// Fold freshly-projected live slots into the directory. Newest sighting
 /// wins wholesale — EXCEPT a real display name never regresses to the
 /// provisional `peer-xxxx` label (identity is adopted once; a card that
@@ -196,7 +98,7 @@ fn fold_into_directory(dir: &mut HashMap<Uuid, RosterSlotView>, live: &[RosterSl
             Some(existing) => {
                 let mut incoming = slot.clone();
                 let provisional =
-                    crate::ipc::positron_source::provisional_sender_name(slot.member_id);
+                    crate::persona::roster_slot::provisional_sender_name(slot.member_id);
                 if incoming.display_name == provisional && existing.display_name != provisional {
                     incoming.display_name = existing.display_name.clone();
                 }
@@ -322,7 +224,7 @@ pub(crate) fn scan_avatar_store_for_directory() -> HashMap<Uuid, String> {
 }
 
 pub(crate) fn avatar_store_dir() -> Option<PathBuf> {
-    dirs::home_dir().map(|h| h.join(".continuum").join("avatars"))
+    crate::paths::continuum_home().ok().map(|h| h.join("avatars"))
 }
 
 /// Scan the avatar store once: every `<uuid>.png` becomes `peer id →
@@ -368,7 +270,7 @@ pub(crate) fn project_presence(
         .map(|m| {
             // #262: the CARDS projection — pronouns/role/bio/integrations
             // from each peer's published identity card ride into every slot.
-            let mut slot = crate::ipc::positron_source::roster_slot_from_card(m);
+            let mut slot = crate::persona::roster_slot::roster_slot_from_card(m);
             // Enrich with the node's stored avatar image, when one exists for
             // this peer — the URL only; absent stays honestly absent.
             slot.avatar_url = avatars.get(&slot.member_id).cloned();
@@ -595,7 +497,7 @@ const NODE_PRESENCE_READER_NAME: &str = "continuum-node";
 /// The widget roster must survive **zero resident personas** — a chat
 /// window with no persona present still shows its human occupants. So the
 /// reader is node-scoped, not borrowed from a persona lifecycle. It reuses
-/// the exact non-persona attach shape [`crate::context::agent`] uses
+/// the exact non-persona attach shape the removed agent context used
 /// (`Airc::attach_as` → `AircHandleAdapter`), attaching a heartbeat-less
 /// lurker at a stable node home. `room_roster` routes through the daemon
 /// (`page_recent` is daemon-aware), so the lurker reads every *other*
@@ -644,7 +546,7 @@ pub fn spawn_node_presence_emitter(
         };
         // Join by NAME (never UUID-as-string, which derives a *different*
         // channel — the recurring hazard documented in
-        // `context::agent` + `PersonaAircRuntime`). The reader must share
+        // the removed agent context + `PersonaAircRuntime`). The reader must share
         // the operator's channel or its roster reads land in an empty
         // derived room.
         if let Err(err) = airc.join(&room_name).await {
@@ -755,7 +657,7 @@ pub fn spawn_node_presence_emitter(
                 if let Some(reg) = crate::airc::inbound_attach::AttachRegistry::try_global() {
                     reg.ensure_attached(airc_core::RoomId::from_uuid(id));
                 }
-                crate::probe!(
+                continuum_base::probe!(
                     class = "presence.room.adopted",
                     room_id = %id,
                     room = %name,
@@ -768,373 +670,4 @@ pub fn spawn_node_presence_emitter(
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use airc_core::PeerId;
-    use airc_lib::AircError;
-    use airc_lib::RoomMember;
-    use async_trait::async_trait;
-    // The module proper no longer names `SenderKind` (the coarse kind is
-    // derived inside the shared `roster_slot_from_member` projection now);
-    // the tests still assert on the projected slot's `kind`.
-    use continuum_positron::SenderKind;
-
-    /// A roster reader that returns a fixed member list — enough to drive
-    /// [`emit_once`]'s read → project → publish path without a daemon.
-    struct StubRosterReader {
-        members: Vec<airc_lib::RoomMemberCard>,
-    }
-
-    #[async_trait]
-    impl AircRosterReader for StubRosterReader {
-        fn self_peer_id(&self) -> PeerId {
-            PeerId::new()
-        }
-
-        async fn room_roster(
-            &self,
-            _within: Duration,
-            _window: usize,
-            _room: Option<uuid::Uuid>,
-        ) -> Result<Vec<RoomMember>, AircError> {
-            Ok(self
-                .members
-                .iter()
-                .map(|c| RoomMember {
-                    peer_id: c.peer_id,
-                    display_name: c.identity.as_ref().map(|i| i.name.clone()),
-                    runtime: c.runtime.clone(),
-                    availability: c.availability,
-                    last_seen_ms: c.last_seen_ms,
-                })
-                .collect())
-        }
-
-        async fn room_roster_cards(
-            &self,
-            _within: Duration,
-            _window: usize,
-            _room: Option<uuid::Uuid>,
-        ) -> Result<Vec<airc_lib::RoomMemberCard>, AircError> {
-            Ok(self.members.clone())
-        }
-    }
-
-    /// Build a `RoomMember` — `name: Some` mirrors a peer that published
-    /// an identity card; `None` mirrors present-but-unnamed. Mirrors the
-    /// `room_roster_source` test builder so both sides describe the same
-    /// airc shape.
-    fn member(peer: PeerId, runtime: &str, name: Option<&str>) -> airc_lib::RoomMemberCard {
-        airc_lib::RoomMemberCard {
-            peer_id: peer,
-            runtime: runtime.to_string(),
-            availability: None,
-            last_seen_ms: 1_000_000,
-            identity: name.map(|s| airc_core::identity::Identity::new(s.to_string())),
-        }
-    }
-
-    // what this catches: the identity card the emitter produces must
-    // carry the member's verifiable origin (provenance.runtime, verbatim)
-    // AND a coarse neutral kind — the accountability guarantee Commit 2
-    // exists to weave in. A regression that dropped provenance, or that
-    // string-matched runtime into kind instead of carrying it whole,
-    // would leave every rendered row unattributable.
-    #[test]
-    fn project_carries_origin_verbatim_and_coarse_kind() {
-        let named = PeerId::new();
-        let unnamed = PeerId::new();
-        let human = PeerId::new();
-        let update = project_presence(
-            vec![
-                member(named, "claude", Some("win-claude")),
-                member(unnamed, "codex", None),
-                member(human, "interactive", Some("Operator")),
-            ],
-            Uuid::from_u128(0xa),
-            "general".into(),
-            &HashMap::new(),
-        );
-        assert_eq!(update.roster.len(), 3, "every present member is a slot");
-
-        let card = &update.roster[0];
-        assert_eq!(card.member_id, named.as_uuid());
-        assert_eq!(card.display_name, "win-claude");
-        assert_eq!(card.kind, SenderKind::Agent);
-        assert_eq!(
-            card.provenance.runtime, "claude",
-            "the full runtime origin is carried verbatim, not lost to the coarse kind"
-        );
-        assert!(
-            card.integrations.is_empty(),
-            "no airc badge map yet — empty is honest, not fabricated"
-        );
-        assert!(card.active, "a present member is active");
-
-        // Unnamed peer → the SAME provisional short-peer label the
-        // consumer uses; still an Agent by its codex runtime.
-        let anon = &update.roster[1];
-        assert!(
-            anon.display_name.starts_with("peer-"),
-            "unnamed citizen is labelled, never invisible"
-        );
-        assert_eq!(anon.kind, SenderKind::Agent);
-        assert_eq!(anon.provenance.runtime, "codex");
-
-        // The one interactive runtime → Human (the coarse hint), origin
-        // still whole in provenance.
-        let carbon = &update.roster[2];
-        assert_eq!(carbon.kind, SenderKind::Human);
-        assert_eq!(carbon.provenance.runtime, "interactive");
-    }
-
-    // what this catches: #258/#262 grey-not-gone (Joel 2026-07-30: "Why won't
-    // bigmama's persona ever show up?"). (1) A remembered member absent from
-    // the live read joins the published roster as an `active: false` ghost
-    // with stale liveness signals (availability/vitals) cleared — never
-    // vanished, never lying about liveness. (2) A real display name adopted
-    // once never regresses to the provisional peer label on a card-less
-    // sighting. (3) A member reappearing live replaces its ghost. Before
-    // this, anyone silent >120s ceased to exist in the roster — BigMama's
-    // citizens were perpetually unborn on this node.
-    #[test]
-    fn directory_keeps_offline_members_grey_and_names_never_regress() {
-        let kimi = PeerId::new();
-        let local = PeerId::new();
-        // Sighting 1: Kimi live, named (her card crossed once).
-        let named = crate::ipc::positron_source::roster_slot_from_card(&member(
-            kimi,
-            "persona",
-            Some("Kimi"),
-        ));
-        let mut dir = HashMap::new();
-        assert!(fold_into_directory(&mut dir, std::slice::from_ref(&named)));
-
-        // Her node drops off: live read has only the local member.
-        let live = vec![crate::ipc::positron_source::roster_slot_from_card(&member(
-            local,
-            "interactive",
-            Some("Operator"),
-        ))];
-        let published = union_with_directory(live.clone(), &dir);
-        let ghost = published
-            .iter()
-            .find(|s| s.member_id == kimi.as_uuid())
-            .expect("remembered member must stay in the roster");
-        assert!(!ghost.active, "unreachable member renders grey, not gone");
-        assert_eq!(
-            ghost.display_name, "Kimi",
-            "adopted identity survives the outage"
-        );
-        assert!(
-            ghost.availability.is_none() && ghost.vitals.is_empty(),
-            "stale liveness signals cleared — the roster never lies about liveness"
-        );
-        assert!(published[0].active, "active members sort before ghosts");
-
-        // Later sighting WITHOUT a card (provisional label) must not erase her name.
-        let unnamed =
-            crate::ipc::positron_source::roster_slot_from_card(&member(kimi, "persona", None));
-        fold_into_directory(&mut dir, std::slice::from_ref(&unnamed));
-        assert_eq!(
-            dir[&kimi.as_uuid()].display_name,
-            "Kimi",
-            "a card-less sighting never regresses an adopted name"
-        );
-
-        // She reappears live: the ghost is replaced by the live slot.
-        let back = vec![crate::ipc::positron_source::roster_slot_from_card(&member(
-            kimi,
-            "persona",
-            Some("Kimi"),
-        ))];
-        let published = union_with_directory(back, &dir);
-        assert_eq!(
-            published
-                .iter()
-                .filter(|s| s.member_id == kimi.as_uuid())
-                .count(),
-            1
-        );
-        assert!(
-            published
-                .iter()
-                .find(|s| s.member_id == kimi.as_uuid())
-                .unwrap()
-                .active
-        );
-    }
-
-    // what this catches: the avatar-image enrichment — a peer with a stored
-    // `<uuid>.png` carries its URL on the slot, everyone else stays honestly
-    // absent (glyph fallback, never a broken image). And the store scan maps
-    // ONLY uuid-named .png files — named art / emote subdirs are not member
-    // avatars and must not leak onto arbitrary slots.
-    #[test]
-    fn avatar_url_enriches_only_members_with_a_stored_image() {
-        let pictured = PeerId::new();
-        let plain = PeerId::new();
-        let mut avatars = HashMap::new();
-        avatars.insert(
-            pictured.as_uuid(),
-            format!("/avatars/{}.png", pictured.as_uuid()),
-        );
-        let update = project_presence(
-            vec![
-                member(pictured, "claude", Some("win-claude")),
-                member(plain, "codex", None),
-            ],
-            Uuid::from_u128(0xd),
-            "general".into(),
-            &avatars,
-        );
-        assert_eq!(
-            update.roster[0].avatar_url.as_deref(),
-            Some(format!("/avatars/{}.png", pictured.as_uuid()).as_str()),
-            "a stored avatar rides the slot as its URL"
-        );
-        assert_eq!(
-            update.roster[1].avatar_url, None,
-            "no stored image → honest absent, never a fabricated face"
-        );
-
-        // The store scan: uuid-named .png only.
-        let dir = std::env::temp_dir().join(format!("avatar-scan-{}", Uuid::new_v4()));
-        std::fs::create_dir_all(&dir).expect("mk tmp store");
-        let id = Uuid::new_v4();
-        std::fs::write(dir.join(format!("{id}.png")), b"png").expect("write");
-        std::fs::write(dir.join("asha.png"), b"png").expect("write");
-        std::fs::write(dir.join(format!("{id}-happy.png")), b"png").expect("write");
-        std::fs::create_dir_all(dir.join("emote")).expect("subdir");
-        let map = scan_avatar_store(&dir);
-        assert_eq!(
-            map.len(),
-            1,
-            "only exact <uuid>.png names are member avatars"
-        );
-        assert_eq!(
-            map.get(&id).map(String::as_str),
-            Some(format!("/avatars/{id}.png").as_str())
-        );
-        std::fs::remove_dir_all(&dir).ok();
-    }
-
-    // what this catches: the widget roster must include self — unlike the
-    // persona-grounding roster (which drops self). A regression that
-    // copied the self-exclusion here would erase the local user from
-    // their own room roster.
-    #[test]
-    fn self_is_included_in_the_widget_roster() {
-        let me = PeerId::new();
-        let update = project_presence(
-            vec![member(me, "interactive", Some("Operator"))],
-            Uuid::from_u128(0xb),
-            "general".into(),
-            &HashMap::new(),
-        );
-        assert_eq!(update.roster.len(), 1);
-        assert_eq!(update.roster[0].member_id, me.as_uuid());
-    }
-
-    // what this catches: the emitter's serialized output must survive a
-    // round-trip through the exact wire structs the consumer
-    // deserializes — the "both sides agree by construction" contract. A
-    // divergence (e.g. a rename_all mismatch or a non-serde field) would
-    // silently drop the roster on the consumer side.
-    #[test]
-    fn serialized_update_round_trips_the_wire_shape() {
-        let update = project_presence(
-            vec![member(PeerId::new(), "claude", Some("win-claude"))],
-            Uuid::from_u128(0xc),
-            "general".into(),
-            &HashMap::new(),
-        );
-        let json = serde_json::to_value(&update).expect("serializes");
-        let back: AircPresenceUpdate = serde_json::from_value(json).expect("round-trips");
-        assert_eq!(update, back);
-    }
-
-    // what this catches: the late-subscriber gap (#118). The idle tick
-    // dedups an unchanged roster (publishes nothing on the second call);
-    // a resync cue must set `force` and re-publish the SAME roster anyway,
-    // so a projector that booted after the emitter's one-and-only publish
-    // still receives presence. A regression that let the dedup swallow a
-    // forced emit would leave that projector roster-empty forever.
-    #[tokio::test]
-    async fn resync_forces_republish_of_unchanged_roster() {
-        let reader: Arc<dyn AircRosterReader> = Arc::new(StubRosterReader {
-            members: vec![member(PeerId::new(), "claude", Some("win-claude"))],
-        });
-        let bus = MessageBus::new();
-        let mut rx = bus.receiver();
-        let room = Uuid::from_u128(0x1);
-        let mut last = None;
-        let mut dir = HashMap::new();
-
-        // First idle emit publishes (roster changed None → Some).
-        emit_once(
-            &reader,
-            room,
-            "general",
-            &bus,
-            &mut last,
-            &HashMap::new(),
-            &mut dir,
-            false,
-        )
-        .await;
-        let first = rx
-            .try_recv()
-            .expect("first emit publishes presence:updated");
-        assert_eq!(first.name, PRESENCE_UPDATED);
-
-        // Second idle emit dedups — nothing published.
-        emit_once(
-            &reader,
-            room,
-            "general",
-            &bus,
-            &mut last,
-            &HashMap::new(),
-            &mut dir,
-            false,
-        )
-        .await;
-        assert!(
-            rx.try_recv().is_err(),
-            "an unchanged roster dedups on the idle path"
-        );
-
-        // A resync cue forces a re-publish of the unchanged roster.
-        emit_once(
-            &reader,
-            room,
-            "general",
-            &bus,
-            &mut last,
-            &HashMap::new(),
-            &mut dir,
-            true,
-        )
-        .await;
-        let forced = rx
-            .try_recv()
-            .expect("a resync forces a re-publish even when the roster is unchanged");
-        assert_eq!(forced.name, PRESENCE_UPDATED);
-    }
-
-    // what this catches: the consumer-side half of the cue — a booting
-    // projector must actually emit `presence:resync` on the bus so the
-    // emitter's select arm fires. A regression that renamed the event or
-    // dropped the publish would silently reopen the late-subscriber gap.
-    #[tokio::test]
-    async fn request_presence_resync_publishes_the_cue() {
-        let bus = MessageBus::new();
-        let mut rx = bus.receiver();
-        request_presence_resync(&bus);
-        let cue = rx
-            .try_recv()
-            .expect("request_presence_resync publishes a cue event");
-        assert_eq!(cue.name, PRESENCE_RESYNC);
-    }
-}
+mod tests;

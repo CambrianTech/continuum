@@ -12,46 +12,41 @@
 //!   module's `commands()`, NOT by the shared [`command_objects`] below.
 //!
 //! The dep-holding members are wired together by [`command_objects`], which the
-//! owning [`PersonaInstanceManagerModule`](crate::modules::persona_instance_manager)
+//! owning [`PersonaInstanceManagerModule`](crate::persona::instance_manager)
 //! calls in one place — it holds the `continuum_root` + the late-bound executor that
 //! `persona/reassign-model` needs, plus the registry the `instances/*` verbs share.
 
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use crate::modules::persona_instance_manager::PersonaBirth;
+use crate::persona::instance_manager::PersonaBirth;
 use crate::persona::PersonaAircRuntimeRegistry;
 use crate::runtime::{CommandExecutor, LateBound};
 use crate::sdk_codegen::DynCommand;
 
+// Moved to continuum-mind (plan phase 2); the old paths still resolve.
+pub use continuum_mind::commands::persona::{allocate, catalog, identity, instances, live_state, placement_reserve, rag_inspect, reassign_model, spawn, turn_frame};
+
 pub mod vitals;
-pub mod allocate;
-pub mod catalog;
-pub mod identity;
-pub mod instances;
-pub mod placement_reserve;
-pub mod rag_inspect;
-pub mod reassign_model;
-pub mod spawn;
-pub mod turn_frame;
 pub mod wall;
 
 use reassign_model::PersonaReassignModel;
 use spawn::PersonaSpawn;
 
 /// All dep-holding `persona/*` command objects the
-/// [`PersonaInstanceManagerModule`](crate::modules::persona_instance_manager::PersonaInstanceManagerModule)
+/// [`PersonaInstanceManagerModule`](crate::persona::instance_manager::PersonaInstanceManagerModule)
 /// contributes to the kernel's typed object map: the `instances/*` roster verbs
 /// (sharing the one live registry) plus `persona/reassign-model` (which resolves
 /// persona homes under `continuum_root` and composes `serving/pin` through the
 /// late-bound substrate `executor`).
 pub fn command_objects(
     registry: PersonaAircRuntimeRegistry,
+    dormancy: Arc<LateBound<crate::persona::dormancy::DormancyLedger>>,
     continuum_root: PathBuf,
     executor: Arc<LateBound<CommandExecutor>>,
     birth: Arc<PersonaBirth>,
 ) -> Vec<Arc<dyn DynCommand>> {
-    let mut objects = instances::command_objects(registry.clone());
+    let mut objects = instances::command_objects(registry.clone(), dormancy);
     objects.extend(wall::command_objects(registry));
     // `persona/vitals` is a unit-struct command: the `action_command!` macro
     // auto-registers it onto the ONE registry — pushing it here registered it

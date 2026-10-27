@@ -235,3 +235,13 @@ mod tests {
         assert!(display.contains("stale socket"));
     }
 }
+
+impl crate::runtime::MeshPresence for AircDiscovery {
+    fn can_host_personas(&self) -> bool {
+        AircDiscovery::can_host_personas(self)
+    }
+
+    fn kind(&self) -> &'static str {
+        AircDiscovery::kind(self)
+    }
+}

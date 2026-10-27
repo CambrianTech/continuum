@@ -37,6 +37,11 @@ data root. A selected legacy snapshot is not an acknowledged final-turn flush.
 
 ## 2. The Brain Pipeline — the verbs that exist
 
+Proposed extension: [adversarial hypothesis reasoning](ADVERSARIAL-HYPOTHESIS-REASONING.md)
+describes competing explanations, source provenance, bounded adversarial
+simulation, and calibrated action under uncertainty. It is a design placeholder,
+not implemented runtime behavior; integrate through the live owners below.
+
 This is the cognition cycle PER PERSONA, PER TURN. The verbs exist in `core/continuum-core/src/cognition/` and `core/continuum-core/src/persona/`. Do not re-implement. Do not parallel.
 
 **Status column added 2026-08-14 (citizenship audit):** the LIVE turn path is the
@@ -53,7 +58,7 @@ path — reuse it when the capability returns, do not write a parallel one.
 | 2 | `full_evaluate(...)` | `persona/evaluator/mod.rs` | dormant (command `cognition/full-evaluate` only) | Fast-path gates: sleep mode, undirected-persona chatter, self-message dedup, fast-path priority. Sub-1ms. Silence = first-class outcome. |
 | 3 | `cognition::analyze(AnalysisInput)` | `cognition/shared_analysis/mod.rs` | dormant (respond path only) | ONE inference per chat message via single-flight DashMap cache. N personas analyzing the same message coalesce into one inference. |
 | 4 | `score_persona(slot, analysis)` | `cognition/response_orchestrator.rs` | dormant (respond path only) | Per-persona relevance via specialty match. Returns `ResponderDecision`. |
-| 5 | `genome_engine.activate_skill(domain, now_ms)` | `persona/genome_paging.rs` | dormant (command `cognition/genome-activate-skill` only) | L1-L5 LoRA paging — page in the adapter for this domain. LRU evicts under pressure. |
+| 5 | `genome::composer::compose(persona, perception)` | `continuum-genome/src/genome/composer.rs` (residency: `gene_residency.rs`) | live (both turn sites) | Her phenotype by distance: every gene whose region the turn is inside, weighted by depth, held while the set holds; the node's residency owner keeps her genes on the device and pages cold ones to host RAM under the one device budget. |
 | 6 | `PersonaCognition::compose_for_turn(profile, now_ms)` | `persona/unified.rs` | **live** (WorkspaceCycle RAG) | Brain RAG composition: `engram_source + airc_source + roster/doctrine/bench sources` via `FlexboxRagBudgetAdapter`. |
 | 7 | `cognition::generate_response::evaluate_response(...)` | `cognition/generate_response.rs` | dormant (command wrapper + respond path; the live turn infers via `llm_deliberation_faculty`) | Agent inference through the provider registry. Typed errors (no silent fallback). |
 | 8 | `cognition::clean_and_validate(...)` | `cognition/response_validator.rs` | dormant (test-only today) | Output cleaning + validation. `ValidationOutcome`. |
@@ -119,21 +124,32 @@ What is true now:
   never be quoted as evidence about production. Two different personas return
   byte-identical numbers from it, which is the tell.
 
-### The cost that came with the removal, and is still open
+### Historical recorder gap at bypass removal (2026-09-06)
+
+**Status correction, 2026-10-01:** the observations below describe the September 6
+recorder gap, not the current live capture path. `WorkspaceCycle` now produces
+prompt-capture submitted/completed records. Kimi's retained request
+`58bcb3a5-b8bb-4c69-bc02-6554c15c6e34` on build `0ecab116d` includes a native PDF
+image whose decoded SHA-256 is
+`b30c13aba0e7c9857350070a9bb71bca1e773ae7b8132e291d6b482b6256309b`.
+This proves that input reached the captured request; it does not establish every
+modality, successful learning, or lossless recovery. Inspect current capture
+receipts before diagnosing a missing recorder; do not restore the old bypass.
 
 `persona::recorder::record_turn` was called from `persona/response.rs` — i.e. from
 inside `respond()`. **When `respond()` stopped being the citizens' path, the turn
-recorder silently went with it.** Nothing re-attached it to the WorkspaceCycle.
+recorder silently went with it.** At the September 6 inspection, nothing had
+re-attached it to the WorkspaceCycle.
 
 Measured on BigMama 2026-09-06: `~/.continuum/fixtures/persona-respond/` holds 12
 records (Alpha, Beta, Helper — paths that still go through `respond()`), and ZERO
 for the live citizens, who have produced hundreds of turns. `persona-turn-frame/`
 holds 4, all synthetic smoke turns with an empty system prompt.
 
-So **no live citizen turn has ever been captured on this box**, which is why
-questions like "why does this persona re-open the same turn?" cannot currently be
-answered from evidence — there is no artifact of what she actually received. That
-is card 99801322. The fix is to record from the WorkspaceCycle path; it is NOT to
+At that inspection, **no live citizen turn had been captured on that box**, so
+questions like "why does this persona re-open the same turn?" could not be
+answered from evidence. That was card 99801322. The required fix was to record
+from the WorkspaceCycle path; it was NOT to
 re-add a `respond()` call, which would resurrect the deleted fallback this section
 just told you to keep deleted.
 
@@ -152,6 +168,20 @@ still exists and still has files in it, which reads as "working".
 - **DO NOT** hardcode latency clamps (`max_tokens`, `airc_max`) that handicap capable models. Budgets scale with `profile.context_length` and (future) `profile`-borne characteristics. Constants for LCD tier make 5090 + frontier models mediocre.
 - **DO NOT** read `rag_inspect.rs` for production patterns. Read `cognition/generate_response.rs` and `cognition/shared_analysis/mod.rs`.
 - **DO NOT** dedupe items in the RAG composer, filter "echo-storm" via heuristics in the substrate, or override the persona's decision with substrate rules. **The LLM decides. The substrate provides context and tools.** ([[no-if-statements-use-llms-for-cognition]])
+- **DO NOT** clip the newest end of anything she reads. Her latest result is the step that
+  moves the recursion toward its base case: what she just did, and what it returned, is the only
+  thing that changes her next input. Keep the head and drop the end (`chars().take(N)`,
+  `head_to_tokens`, first-line-only, `[..N]`, `.take(N)` over an oldest-first list) and her next
+  input can equal her last: the same decision, the same call, the same clipped result, a fixed
+  point she cannot leave. A decisive line can sit anywhere in output (often the end: a test
+  summary, an exit status), so no fixed slice is safe. On the M5
+  (2026-10-20), Benchy's required input was refused on every act and she repeated one act every
+  18 s, 125 times in an hour. When anything must shrink: through the ONE budget, oldest first,
+  collapsed to a handle she can expand (`Contribution::with_parts` + `grounding_plan` +
+  `expand_command`, or `tool_executor::spill`), keeping the newest interaction whole and the full
+  result reachable through its handle. One source that
+  shrinks itself by its own number breaks the budget for every other source. Guarded by
+  `source-hygiene::head_cuts`; a cut that never reaches a prompt says `head-cut-ok: <why>`.
 - **DO NOT** silently substitute defaults when something fails. Surface typed errors. The operator decides policy. ([[no-fallbacks-ever]])
 
 ---
@@ -182,11 +212,14 @@ Specifically because it keeps coming up under amnesia:
 - `AircRagSource::page_recent(50)` returns the 50 newest events from the daemon in chronological order. **Validated** with the per-item trace.
 - `compose_for_turn` (on the brain) routes engram + airc through `FlexboxRagBudgetAdapter` and emits `TurnStart`/`BudgetAllocated`/`TurnEnd` capture events for replay. **Validated** with 9/9 unit tests in `unified.rs`.
 
-What is **not** real end-to-end yet (the gap this doc anchors against):
+The original June validation left the cycle, tool execution and multimodal input
+unproven. Those are historical gaps, not a description of the current wiring:
 
-- The cycle in section 2 from `service_loop`. Service_loop still calls the bypass. Task #160.
-- Multi-modal `MediaItemRequest` flowing into `ContentPart::Image/Audio/Video`. Pieces exist; not threaded through.
-- `ToolExecutor` invoked from the cycle. Module exists; not wired into service_loop.
+- `service_loop` drives `WorkspaceCycle`; the bypass is removed (section 4).
+- The live act path invokes `ToolExecutor` and retains correlated observations
+  in working memory. Follow `cognition/act_observe/apply.rs` for that boundary.
+- Native image input has concrete capture evidence above. Do not generalize that
+  result to audio/video, all adapters, or a complete edit/see/revise/deploy loop.
 
 ---
 
@@ -236,8 +269,12 @@ The persona that talks to her host in three months and recalls things from today
 | Validation | `cognition/response_validator.rs::clean_and_validate` | Output hygiene. |
 | Tool execution | `cognition/tool_executor/` | Multi-modal-aware tool runner. |
 | Audit | `cognition/audit.rs` | Forensic record. |
-| RAG sources | implement `persona::rag_budget::RagSource` | `engram_source`, `airc_source`, future `code_source`, `tool_source`, `identity_source`. Bound on the brain at boot. |
-| Budgeter | `persona/rag_budget.rs::FlexboxRagBudgetAdapter` | The only budgeter. Used by `compose_for_turn`. |
+| RAG sources | implement `cognition::rag_budget::RagSource` | `engram_source`, `airc_source`, future `code_source`, `tool_source`, `identity_source`. Bound on the brain at boot. |
+| Budgeter | `cognition/rag_budget.rs::FlexboxRagBudgetAdapter` | The only budgeter. Used by `compose_for_turn`. |
+| Her genome on a turn | `genome/gene_trial.rs` (today: per-card arm, being retired) → per-turn selection by signature distance (`GENE-REUSE-FORK-MINT.md` §3d) | Genes follow her mind, never her workload: every turn pages the genes whose region her perception is inside (automatic floor, several at once), each turn's probe names why, and fitness is the world's surprise on the turns a gene ran plus an offline gene-off replay of the same turns. Never a card, room or randomized arm deciding what she thinks with. Never per call: the genome never changes beneath a request. |
+| Admitted-turn obligations (durable custody) | `persona/obligation.rs` (`PersonaObligation`, `Obligations`) | The durable half of `wake_backlog::PendingInput`: one row per admitted turn, recorded before her context is composed and closed when the turn ends. Not a second recovery manager; re-admission goes back through `PendingInput`'s retry path (card 920619c5). |
+| Privacy of thought (her mind room) | `persona/mind_room.rs` (`mind_room_id`, `is_private_room`, `note_withheld`) | A turn is private because of the room it runs in: her mind room, a local id derived from her identity, never an airc channel. Every capture sink asks the ONE predicate at its own seam and writes nothing for a private turn (`docs/architecture/PRIVACY-OF-THOUGHT.md` §4). A new sink asks it too. |
+| Prompt order (stable prefix first) | `cognition/deliberation_prompt.rs::stable_prefix_order` (+ `PromptScope`, `PromptChurn`) | The ONE rule every grounding renderer lays blocks down by: churn class, then name — never salience, never arrival. The prompt cache reuses only a common prefix; a block that moves forfeits everything behind it. Card c119ace7. |
 
 If a new concept needs a new location, that location goes in this table in the same commit that introduces it. **Do not let the map drift from the territory.**
 
@@ -248,3 +285,237 @@ If a new concept needs a new location, that location goes in this table in the s
 Written 2026-06-03 after a session that re-discovered the entire pipeline three times under context compression and produced a `will_respond + response_text` chatbot wrapper that posted to airc but bypassed every brain layer. The pattern that caused this is exactly the failure mode this doc exists to break: the model reads the bypass, infers the contract from the bypass, and rebuilds the bypass instead of using the verbs.
 
 This doc is pinned in `CLAUDE.md` as required-first-read for any work on persona / cognition / service_loop. If a future commit moves files or renames verbs, **update this doc in the same commit.** An outdated anchor is worse than no anchor.
+
+## 10. Operational continuity and acceptance contracts
+
+A passing build or responsive server is not evidence that a citizen can work.
+The existing owners must preserve these distinct facts; no separate recovery
+manager or shadow task registry is introduced.
+
+| Boundary | Authoritative state | Required invariant and evidence |
+| --- | --- | --- |
+| Hosting | `ServingSnapshot`, allocator roster, persona registry | An offer uses live served geometry, never proposed configuration. Non-ready retained geometry is not capacity. Verify the same persona identity appears in the runtime registry. |
+| Task choice | AIRC accepted claim and optional selection amendment | Record explicit versus automatic choice at its caller. Heartbeat changes liveness, not intent. Unknown legacy history stays unknown. |
+| Focus and recovery | `persona/work_focus.rs` over projected claims | The latest explicit choice outranks automatic recency. Recovery preserves decision time. An already-held explicit selection changes no lease or dispatch. |
+| Reconciliation | Existing `benchmark_resume` owner | Release only surplus current claims; delayed releases cannot remove a newer claim. Use the same explicit-choice ordering as turn focus. |
+| Coding acceptance | Actual tool result, workspace diff, test receipt | A hosted instance, submitted inference, claimed card, or narration is insufficient. Require the citizen's own useful edit and relevant passing tests, then observe claim survival through a real reconciliation cycle. |
+| Learning acceptance | Existing curriculum, job, evaluation and adoption owners | Collection is not training. Admission is not completion. Training is not improvement. Require linked curriculum provenance, actual trained artifact, held-out comparison, adoption receipt and subsequent work evidence. |
+
+Claim contract regression coverage lives in the existing AIRC projection/replay
+and SDK tests plus Core `work_focus` and `benchmark_resume` fixtures. Mixed-version
+readers tolerate optional claim fields but do not acquire intent-aware behavior;
+full continuity requires the upgraded consumer. Live coding and learning remain
+separate acceptance gates; source tests do not establish them.
+
+### 10.1. Iteration, playback and learning around a continuing citizen
+
+This is the required process, not a claim that its outstanding runtime boundaries
+are already implemented. A deployment may not count as recovery until the live
+acceptance evidence below exists.
+
+1. Integrate related recovery changes on one shared feature branch. Contributors
+   use separate worktrees and agreed file ownership; integration does not mean
+   concurrent writes to one checkout. Run focused existing checks during editing,
+   cheap source checks first, and the full required gate on the integrated revision.
+   Promote one exact tested revision. Record time-to-first-failure and time-to-live.
+2. Use the existing capture and playback owners to inspect a selected episode by
+   persona, task, cycle and request handles. Recorded playback is read-only: it
+   must not execute tools, renew claims, enqueue training or dispatch inference.
+   Missing capture and version mismatches are visible, never filled by invention.
+   A new model run is an explicitly labelled experiment in an isolated workspace;
+   it is not playback and cannot publish effects into the live citizen's task.
+3. Expose a bounded operational view: identity, selected task and claim, active
+   request, serving lane, queue age, last observable tool result, workspace change,
+   test result, recovery state and exact refusal. Keep private reasoning excluded.
+   Distinguish unavailable telemetry, waiting, active work and failure. Silence or
+   an empty preview cannot establish cognitive failure.
+4. Build beside the serving runtime when its existing admission permits. Before
+   handoff, the existing lifecycle owners must drain or reach a supported durable
+   boundary, preserving identity, task choice, completed tool effects and pending
+   input. Acknowledged durable state precedes release of the old owner. Never
+   represent killing a process as graceful checkpointing. Where a boundary is
+   unsupported, defer a routine handoff rather than silently discard a live turn.
+5. Collect eligible experience from real work continuously. The existing resource
+   and training owners admit training on verified spare capacity or an explicit
+   bounded window; waiting admission alone is not scheduling. Publish the reason
+   for waiting and training age alongside inference latency. Yield requires a
+   durable checkpoint receipt (optimizer, RNG and data position as applicable)
+   before releasing a training lease. Cancellation does not imply resumability.
+6. Evaluate a candidate against the serving genome on held-out tasks, retaining
+   provenance, correctness and resource measurements. Adopt only on recorded
+   acceptance at a supported turn/session boundary, preserving the prior artifact
+   for rollback. Prove gain on subsequent useful work. Never change the genome
+   beneath an in-flight request or equate a training completion with improvement.
+
+The first demonstration is one Kimi-authored useful change, its tool and test
+receipts visible in playback, and her same identity/task surviving a real
+reconciliation and supported handoff. The second is a linked learning candidate,
+held-out comparison, adoption receipt and subsequent work measurement. Current
+missing checkpoint/yield and live acceptance remain explicit engineering gaps;
+this contract does not close them by documentation.
+
+
+### 10.2. Repeated requests are observations, not cached success
+
+A prior tool call does not establish that its result remains current or available
+in the next prompt. The act seam executes repeated requests through the same
+command executor, preserving authorization, scoped workspace resolution and each
+command's own idempotency contract. The existing repetition count is feedback
+only; it does not assert unchanged output or retained content. Different help
+queries and directory surveys must not be collapsed into one orientation class.
+
+The settling driver uses its caller's act budget, declared discovery budget and
+existing lifecycle/deadline controls. It does not withdraw tools solely because
+inputs repeated. Three consecutive repeats of both the request and its actual result yield the
+turn without declaring work complete. Changed results reset the streak; missing,
+spilled or declared-running evidence cannot establish it. Unlimited productive
+work remains unlimited. Resource
+policy belongs to the existing scheduling/budget owners, not a guessed diagnosis
+that a requested observation is useless. Legacy suppression statuses remain
+readable in stored observations but are no longer produced by new execution.
+
+A future result cache must prove validity and return the actual correlated result.
+FileEngine change IDs invalidate tracked edits; their absence cannot prove that
+shell, Git or external writes did not occur. Missing freshness or missing content
+must never become an AlreadySatisfied outcome.
+
+### Workspace binding evidence (card 81097858, implementation boundary)
+
+The successful `persona_workspace::bind_card` seam owns which card's claim the
+hands actually reached. Both held-work and room turns must stamp the handoff there.
+A seam board refresh may update that exact card/claim or invalidate it; it must
+never select another held card and describe it beside the old staged checkout.
+A retained ledger remains attributed to its own card, including when it is not
+for the bound card. This reuses handoff storage and the existing claim binding;
+there is no new task registry, selection policy, or background worker.
+
+Repository evidence comes from AIRC's shared allocation owner. Core passes the
+card repository to `WorktreeSpec`; an implicit start point uses the same configured
+integration branch as CLI allocation. AIRC records the resolved start ref and
+creation commit together under private Git refs. The workspace map reads that
+immutable receipt through the owned async Git bridge and AIRC's shared decoder.
+All three root readers use the same layout/evidence read. Actual HEAD, branch and
+shallow observations remain distinct from allocation intent. Legacy allocation
+receipts remain unknown; current HEAD is never backfilled as intended base.
+The existing workspace invalidation events refresh this projection after actions.
+
+The regression contracts are a stale review ledger beside a different bound
+claim, failed binding preserving the prior claim, and a shallow main checkout
+whose recorded allocation names a different integration branch. The ledger keeps
+its own card identity even after the binding ends.
+
+The existing event-invalidated `CachedRagSource` retains the complete projection
+between relevant events. On a dirty refresh, the shared layout reader re-observes
+checkout state and both private refs. Its single-entry memo reuses only a validated
+immutable allocation blob keyed by blob OID and creation SHA; errors and absence
+are not memoized. A replaced checkout therefore cannot inherit an old receipt by
+path. Plain non-repository roots add no Git block and launch no Git commands;
+broken repository markers remain visible failures. No background refresh is added.
+
+M5 latency measurement remains pending: Codex helper owning card 81097858 will
+measure cold/dirty/cached workspace-map milliseconds per turn after supported
+candidate deployment, before closing the card. Process-call reduction is a source
+property (four to two for a validated receipt on dirty refresh), not a measured
+latency improvement.
+
+### Attention admission (60c4f8bb)
+
+The existing conversation pump queues typed attention envelopes, not arbitrary
+transport frames. One classifier uses the existing room/work decoders for live
+input and durable catch-up. Known telemetry, protocol and presence frames remain
+with their existing owners; speech/media and work facts retain the raw event and
+once-decoded perception together. Decode faults retain their named diagnostics.
+The consumer still owns the asynchronous work bridge and retains the envelope
+across cancellation; self-authored work must reach that bridge before self-filtering.
+An exhausted cooperative scan slice is not an empty inbox. It yields to the runtime
+and continues under the existing caller deadline, without a new timer or larger cap.
+The real-pump regression covers more than one page of non-chat envelopes before
+speech, work-fact survival, decode faults, duplicates and lag through the same setup.
+
+### Deferred perception scope (04dc5e95)
+
+The resolved activity room and wake room travel together through the existing
+DeferredFaculty input and last-good finding. The worker reconstructs both before
+calling its inner faculty; source-owned room selection therefore behaves the same
+on the direct and deferred paths. A cached result is eligible only when both rooms
+match, including a late completion after an activity switch within one wake room.
+Cold-start and directed results seed that same identity. No new cache, refresh
+policy, task selection, or speech attribution is introduced.
+
+Acceptance remains owned by Codex helper on card 04dc5e95: after supported
+deployment, observe a natural ambient Kimi request whose task board and ledger
+match the bound activity while wake attribution remains unchanged. Unit fixtures
+prove the wrapper contract; they do not establish a useful authored code change.
+
+### Concern-scoped workspace evidence (32d3569c)
+
+The act owner records the existing before/after checkout measurement on its
+bounded typed batch receipt. It does not attribute a batch change to an arbitrary
+call. Legacy snapshots have unknown measurement. Successful mutating command
+outcomes and measured checkout changes feed the same progress evidence; failed,
+running and undecodable command results do not establish a completed mutation.
+Ongoing Act reads after the last settlement boundary; Speak reads the concern
+ending at the boundary it just recorded. This changes evidence, not the caller's
+workspace-deliverable contract or the citizen's ability to answer by speaking.
+
+### Admission-deferred directed input (2e3f0eab)
+
+The wake owner retains an admitted priority message when the entire settle attempt
+never dispatched a generation or performed an action. This is a distinct deferred
+outcome, not a voluntary Pass. The existing heartbeat retries the exact event,
+room, media, admitted attention and causal engram without repeating input admission
+or heard receipts. Changing peer presence does not reclassify that admitted input.
+New arrivals remain in the existing conversation inbox and can be perceived during
+the retry. A completed decision or prior dispatched work does not replay the input;
+ambient input keeps its existing transcript/re-perception policy. This custody is
+local to the running loop, not a claim of durable restart recovery.
+
+### Admitted-turn obligations (920619c5)
+
+The durable half of that custody is `persona/obligation.rs`: one `persona_obligation`
+row per admitted turn, written after `admit_trigger` and before `compose_turn` (which
+marks the trigger read), and deleted when the turn ends. An input `PendingInput` still
+retains (a capacity refusal, a deferral) keeps its row, and its retry continues it.
+A row still open at the loop's next start names a turn a stop or crash cut; the start
+reports it once (`persona.obligation.interrupted`) and stamps it.
+
+Effects are marked before they happen (S2, card 68811445). A turn runs only on a
+CONFIRMED obligation: a write whose reply was lost is read back by its id before the
+turn is refused, since "the write failed" is not "no row". Each effect is recorded on
+the row first: the tool batch before `apply_act` dispatches anything (foreground or
+background, with its call ids) and her reply before `publish_own_speech`. The live
+typing preview is visible but is not a durable post, so it is not a boundary. The mark
+rides the turn (`Burst::effects` into its `ActChain`), so it can never mark another
+turn's effects. A mark that cannot be confirmed refuses the effect: a tool batch does
+not run and she is told why in working memory; a reply is not posted and its row stays
+open. Store failures back off (doubling, capped) and raise
+`persona.obligation.unconfirmed`, so a failing store slows her loudly and never spins.
+
+Recovery at start (S3, card afaa0a3e, `obligation/recover.rs`): every open row gets a
+notice in her existing notices stream (`pin_fact("obligation:<row>")`, rendered from the
+row's fields, so a second start re-pins the same notice rather than adding one; closing
+the row unpins it). A row with no recorded effect is handed back through
+`PendingInput::readmit` with its original engram and row id, so it is retried on the
+capacity-retry path and reconciles its own row; its attention is derived again from the
+stored trigger by the same function, never stored twice. A row that recorded an effect
+is never retried: the notice names what was begun (her reply, or each tool with its call
+id), `persona.obligation.uncertain` is raised, and `PendingInput` holds the row until a
+turn on the cycle that carries the notice (her mind cycle in her private room, her live
+cycle elsewhere) SERVES a generation: the notice is required prompt input there, so a
+served receipt is the evidence she read it; a failed inference or a pass that served
+nothing answers nothing. Then the row closes. Writes
+use the substrate connection: her own identity is Trusted, and Trusted may not update
+or delete. The supervisor builds the store from the executor boot wired and hands it to
+the loop as a required argument, so a loop that records nothing cannot be constructed.
+
+### Generation admission ownership (6780e79b)
+
+A deliberation call resolves its placement switch to one concrete adapter before
+admission, and dispatches through that same retained handle. The adapter declares
+whether it consumes the shared local serving endpoint or owns admission itself.
+The HTTP adapter uses the existing published endpoint identity; protocol names and
+`is_local` capability labels do not establish resource ownership. Remote peers and
+dedicated engines admit their own calls. The existing local hold, priority lane,
+and prefill permits remain together and release on cancellation or completion.
+A subsequent fall-home call resolves again and must acquire local admission.
+This does not change remote timeout/backoff or prove improved live throughput.

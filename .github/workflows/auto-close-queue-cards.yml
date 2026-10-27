@@ -100,6 +100,9 @@ jobs:
         uses: Swatinem/rust-cache@v2
         with:
           workspaces: .airc-src
+          # PR runs restore canary's cache and never save their own: the repo's 10 GB cache
+          # quota is nearly filled by canary's caches, and one PR save evicted core-binaries.
+          save-if: ${{ github.event_name != 'pull_request' }}
 
       - name: Build AIRC CLI
         run: |

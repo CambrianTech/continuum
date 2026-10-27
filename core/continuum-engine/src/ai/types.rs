@@ -1,0 +1,886 @@
+//! AI Provider Types - Shared types for AI adapter system
+//!
+//! Single source of truth for AI types in Rust, exported to TypeScript via ts-rs.
+//! Tool calling types enable PersonaUser to use native API tools.
+//!
+//! Generated TypeScript types are in: protocol/typescript/ai/
+
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
+use ts_rs::TS;
+
+/// Chat message for text generation
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../../protocol/typescript/ai/ChatMessage.ts")]
+#[serde(rename_all = "camelCase")]
+pub struct ChatMessage {
+    pub role: String,
+    pub content: MessageContent,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub name: Option<String>,
+}
+
+/// Message content - either plain text or multimodal content blocks
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/ai/MessageContent.ts"
+)]
+#[serde(untagged)]
+pub enum MessageContent {
+    Text(String),
+    Parts(Vec<ContentPart>),
+}
+
+/// Content part for multimodal and tool protocol messages
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../../protocol/typescript/ai/ContentPart.ts")]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum ContentPart {
+    Text {
+        text: String,
+    },
+    Image {
+        image: ImageInput,
+    },
+    Audio {
+        audio: AudioInput,
+    },
+    Video {
+        video: VideoInput,
+    },
+    ToolUse {
+        id: String,
+        name: String,
+        #[ts(type = "Record<string, unknown>")]
+        input: Value,
+    },
+    ToolResult {
+        tool_use_id: String,
+        content: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        is_error: Option<bool>,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../../protocol/typescript/ai/ImageInput.ts")]
+#[serde(rename_all = "camelCase")]
+pub struct ImageInput {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub url: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub base64: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub mime_type: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../../protocol/typescript/ai/AudioInput.ts")]
+#[serde(rename_all = "camelCase")]
+pub struct AudioInput {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub url: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub base64: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub mime_type: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../../protocol/typescript/ai/VideoInput.ts")]
+#[serde(rename_all = "camelCase")]
+pub struct VideoInput {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub url: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub base64: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub mime_type: Option<String>,
+}
+
+// ============================================================================
+// TOOL CALLING TYPES
+// ============================================================================
+
+pub use continuum_tool_protocol::{NativeToolSpec, ToolCall, ToolInputSchema};
+
+/// Tool result to send back to AI after execution
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../../protocol/typescript/ai/ToolResult.ts")]
+#[serde(rename_all = "camelCase")]
+pub struct ToolResult {
+    pub tool_use_id: String, // Matches ToolCall.id
+    pub content: String,     // Tool execution result (or error message)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub is_error: Option<bool>, // True if tool execution failed
+    /// Where the WHOLE result lives and what `content` is, set by its producer
+    /// (`spill::LivePin::whole_or_handle`). Never on the provider wire (`skip`): it exists so
+    /// working memory can leave a pointer that RESOLVES when this result leaves view
+    /// (collapse, never delete — 2026-08-24), and so a reader can tell the whole result
+    /// from a pointer to it without guessing from the text.
+    #[serde(skip)]
+    #[ts(skip)]
+    pub custody: ResultCustody,
+}
+
+/// Custody of one tool result: two facts that used to share one `Option<String>`
+/// ("is it saved" and "is `content` only a pointer"), now named apart.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub enum ResultCustody {
+    /// Not saved: a stand-in result, or the save failed. `content` is all there is.
+    #[default]
+    Unsaved,
+    /// `content` IS the whole result, also saved under `handle`.
+    Whole { handle: String },
+    /// `content` is a pointer; the whole result is saved under `handle`.
+    Pointer { handle: String },
+}
+
+impl ResultCustody {
+    /// The handle the whole result is saved under, if it was saved.
+    pub fn handle(&self) -> Option<&str> {
+        match self {
+            ResultCustody::Unsaved => None,
+            ResultCustody::Whole { handle } | ResultCustody::Pointer { handle } => Some(handle),
+        }
+    }
+
+    /// `content` is a pointer to the result, not the result itself.
+    pub fn is_pointer(&self) -> bool {
+        matches!(self, ResultCustody::Pointer { .. })
+    }
+}
+
+/// Tool choice specification
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../../protocol/typescript/ai/ToolChoice.ts")]
+#[serde(untagged)]
+pub enum ToolChoice {
+    Mode(String), // "auto", "any", "none"
+    Specific { name: String },
+}
+
+// ============================================================================
+// REQUEST/RESPONSE TYPES
+// ============================================================================
+
+/// Active LoRA adapter to apply during generation
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/ai/ActiveAdapterRequest.ts"
+)]
+#[serde(rename_all = "camelCase")]
+pub struct ActiveAdapterRequest {
+    pub name: String,
+    pub path: String,
+    #[serde(default)]
+    pub domain: String,
+    #[serde(default = "default_adapter_scale")]
+    pub scale: f64,
+}
+
+fn default_adapter_scale() -> f64 {
+    1.0
+}
+
+/// Text generation request
+#[derive(Debug, Clone, Default, Serialize, Deserialize, TS)]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/ai/TextGenerationRequest.ts"
+)]
+#[serde(rename_all = "camelCase")]
+pub struct TextGenerationRequest {
+    pub messages: Vec<ChatMessage>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub system_prompt: Option<String>,
+
+    // Model config
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub model: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub provider: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub temperature: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub max_tokens: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub top_p: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub top_k: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub repeat_penalty: Option<f32>,
+    /// llama.cpp-native, UNWINDOWED repetition guard: scales each token's penalty by how
+    /// often it has appeared across the ENTIRE generation (unlike `repeat_penalty`, which
+    /// only scans the last `repeat_last_n` tokens). Catches gap-separated loops — a code
+    /// block re-emitted many times regardless of the text between (#181). `None` → the
+    /// adapter's llama.cpp default (0.3). Joins the Model row with the other sampling
+    /// knobs under #76. Ignored by cloud OpenAI-compat providers.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub frequency_penalty: Option<f32>,
+    /// Window (trailing tokens) that `repeat_penalty` scans on llama.cpp-
+    /// family gateways. `None` → the gateway's own default (64). Widened
+    /// by the substrate sampling defaults to catch loops whose span
+    /// exceeds 64 tokens (#181). Ignored by cloud OpenAI-compat providers.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub repeat_last_n: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub stop_sequences: Option<Vec<String>>,
+
+    // Tool calling (native JSON format)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub tools: Option<Vec<NativeToolSpec>>,
+    /// Verbs she loaded into the TAIL this epoch: callable natively (the engine's parser and
+    /// grammar accept them) but never rendered in the head, so the cached prefix is unchanged
+    /// (goal 10, card ecd5dff3). Their schemas ride the conversation, after the cache point.
+    /// Sent only to a llama.cpp-family server; one that predates the field ignores it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub tail_tools: Option<Vec<NativeToolSpec>>,
+    /// How many leading `messages` are her view: the epoch's append-only part, which her next
+    /// act sends again unchanged, before this act's fresh tail. A llama.cpp-family engine
+    /// checkpoints her recurrent state exactly there, and a saved page keeps that checkpoint,
+    /// so a page-in resumes at the end of her view rather than at the shared head (card
+    /// 3512f496). `None` when the prompt has no view.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub view_messages: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub tool_choice: Option<ToolChoice>,
+
+    /// Force the model to output a specific format (e.g. JSON object).
+    /// OpenAI-compatible: serializes as `{"type": "json_object"}` etc. The
+    /// underlying llama.cpp / DMR pathway respects this and constrains the
+    /// sampler so the model can ONLY emit valid JSON. Removes the
+    /// "qwen3.5 emits 'Thinking Process:' prose instead of JSON" failure
+    /// mode at the source instead of papering over it with a parser
+    /// fallback (banned by the 'no fallbacks' directive).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub response_format: Option<ResponseFormat>,
+
+    // LoRA adapters
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub active_adapters: Option<Vec<ActiveAdapterRequest>>,
+
+    // Request metadata
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub request_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub user_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub room_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub purpose: Option<String>,
+    /// Persona generating this request — the inference's "owner" for
+    /// per-persona resource attribution (KV cache bytes, GPU pressure,
+    /// recipe budgets). Wire format is a stringified UUID; the local
+    /// adapter parses to `uuid::Uuid` at the Rust boundary. None = the
+    /// inference is not attributable to a persona (test rigs, ad-hoc
+    /// system probes, benchmarks). Production paths through
+    /// PersonaResponseGenerator MUST set this — without it the registry
+    /// can't tell whose conversation owns this seq's KV slot, and the
+    /// pressure policy can't make per-persona eviction decisions.
+    /// See docs/architecture/PERSONA-CONTEXT-PAGING.md §13.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub persona_id: Option<String>,
+    /// The bound this turn is owed on the wire, sized from the MEASURED work: the mind's
+    /// expected occupancy (the uncached prompt at the box's measured prefill rate plus
+    /// her last output at its decode rate) with headroom — `inference::turn_bound`.
+    /// Every waiting seam takes `max(its floor, this)`: the header wait, the stream's
+    /// queue budget, the remote deadline. So a slow box's long prefill is waited out
+    /// instead of read as dead (card ba82d0a0: a 30k prompt at 25 tok/s is ~1200 s
+    /// before the first byte, past every fixed bound). `None` = no expectation yet; the
+    /// floors govern alone. Serialized as serde's `{secs, nanos}` so the SERVING peer's
+    /// lane honours it too.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional, type = "{ secs: number, nanos: number }")]
+    pub turn_bound: Option<std::time::Duration>,
+}
+
+/// Constrains the model's output format. OpenAI-compatible serialization:
+/// `{"type": "json_object"}` for `JsonObject`, `{"type": "text"}` for `Text`.
+/// llama.cpp / DMR honors this by constraining the sampler so the model
+/// can only emit valid JSON (when JsonObject) — no thinking prose, no
+/// commentary, no leading/trailing text. The right way to enforce structured
+/// output: at the model level, not via a downstream parser fallback.
+#[derive(Debug, Clone, Serialize, Deserialize, TS, PartialEq, Eq)]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/ai/ResponseFormat.ts"
+)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum ResponseFormat {
+    /// Model output is constrained to a single valid JSON object.
+    JsonObject,
+    /// Plain text output (default; equivalent to omitting response_format).
+    Text,
+}
+
+/// Text generation response
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/ai/TextGenerationResponse.ts"
+)]
+#[serde(rename_all = "camelCase")]
+pub struct TextGenerationResponse {
+    pub text: String,
+    pub finish_reason: FinishReason,
+    pub model: String,
+    pub provider: String,
+    pub usage: UsageMetrics,
+    #[ts(type = "number")]
+    pub response_time_ms: u64,
+    pub request_id: String,
+
+    /// Full content blocks (text + tool_use blocks)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub content: Option<Vec<ContentPart>>,
+
+    /// Tool calls extracted from response (when finish_reason is ToolUse)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub tool_calls: Option<Vec<ToolCall>>,
+
+    /// The model's separated chain-of-thought / "thinking", when it is a reasoning
+    /// model. SEPARATED FROM `text` at the adapter boundary so reasoning NEVER
+    /// reaches the user/room — `text` is the clean answer; this is captured for the
+    /// glass-box harness + memory consolidation. Sources: a server `reasoning_content`
+    /// field, or inline `<think>…</think>` the adapter strips out. `None` for
+    /// non-reasoning models or turns with no thinking.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub reasoning: Option<String>,
+
+    /// Routing info for observability
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub routing: Option<RoutingInfo>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub error: Option<String>,
+
+    /// Per-call inference timing breakdown from the lane (llama-server `timings`):
+    /// cached-prefix size, NEW prefill tokens + ms, decode tokens + ms, and the
+    /// lane's own prefill/decode tok-s. Lets the harness separate PREFILL cost
+    /// (re-encoding the prompt on a KV-cache miss) from DECODE cost (token
+    /// generation) instead of one conflated wall-clock tok-s. `None` when the
+    /// provider doesn't report timings.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub timing: Option<GenerationTiming>,
+}
+
+/// Per-call inference timing breakdown, sourced from llama-server's `timings`
+/// object on the final stream frame. The split that matters: on Apple-Silicon
+/// Metal prefill is only ~3-5× decode (vs CUDA's 20-50×), so re-prefilling a
+/// ~2000-token prompt every settle-loop turn DOMINATES wall-clock — measured 77%
+/// of eval time was prefill, not generation. `cached_tokens` vs `prefill_tokens`
+/// is the KV-cache hit/miss that governs that cost; a high cached fraction means
+/// the static identity+catalog prefix stayed resident across turns.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, TS)]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/ai/GenerationTiming.ts"
+)]
+#[serde(rename_all = "camelCase")]
+pub struct GenerationTiming {
+    /// KV-prefix tokens reused from cache this call (llama `cache_n`).
+    pub cached_tokens: u32,
+    /// NEW prompt tokens that had to be prefilled this call (llama `prompt_n`).
+    /// This is the re-rasterization tax the KV cache exists to avoid.
+    pub prefill_tokens: u32,
+    /// Wall-ms spent prefilling the new tokens (llama `prompt_ms`).
+    pub prefill_ms: f64,
+    /// Lane prefill throughput, tok/s (llama `prompt_per_second`).
+    pub prefill_tokens_per_second: f64,
+    /// Tokens generated this call (llama `predicted_n`).
+    pub decode_tokens: u32,
+    /// Wall-ms spent decoding (llama `predicted_ms`).
+    pub decode_ms: f64,
+    /// Lane decode throughput — the REAL tok-s, undiluted by prefill
+    /// (llama `predicted_per_second`).
+    pub decode_tokens_per_second: f64,
+}
+
+/// Finish reason for generation
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../../protocol/typescript/ai/FinishReason.ts")]
+#[serde(rename_all = "snake_case")]
+pub enum FinishReason {
+    Stop,
+    Length,
+    ToolUse,
+    Error,
+}
+
+impl std::fmt::Display for FinishReason {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            FinishReason::Stop => write!(f, "stop"),
+            FinishReason::Length => write!(f, "length"),
+            FinishReason::ToolUse => write!(f, "tool_use"),
+            FinishReason::Error => write!(f, "error"),
+        }
+    }
+}
+
+/// Token usage metrics
+#[derive(Debug, Clone, Default, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../../protocol/typescript/ai/UsageMetrics.ts")]
+#[serde(rename_all = "camelCase")]
+pub struct UsageMetrics {
+    pub input_tokens: u32,
+    pub output_tokens: u32,
+    pub total_tokens: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub estimated_cost: Option<f64>,
+}
+
+/// Caller-observed wire receipt. The responding peer identifies the authenticated
+/// reply author; model/serving details remain responder-reported, including any
+/// inference the responder delegated onward.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/ai/RemoteInferenceReceipt.ts"
+)]
+#[serde(rename_all = "camelCase")]
+pub struct RemoteInferenceReceipt {
+    pub requested_peer: String,
+    pub responding_peer: String,
+    pub correlation_id: String,
+    /// Caller elapsed time across the remote request, in milliseconds.
+    #[ts(type = "number")]
+    pub elapsed_ms: u64,
+}
+
+/// Routing observability info
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../../protocol/typescript/ai/RoutingInfo.ts")]
+#[serde(rename_all = "camelCase")]
+pub struct RoutingInfo {
+    pub provider: String,
+    pub is_local: bool,
+    pub routing_reason: String,
+    #[serde(default)]
+    pub adapters_applied: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub model_mapped: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub model_requested: Option<String>,
+    /// The context window the SERVING node's lane was serving when it answered,
+    /// in tokens. Stamped by the responder so a requester on another node learns
+    /// the window it is really budgeting against (card 1ab60567: the 5090 moved
+    /// from 24,832 to 26,112 under two off-box citizens and nothing said so).
+    /// Absent when the answer did not come from a local served lane.
+    #[ts(optional)]
+    pub served_context_window: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub remote: Option<RemoteInferenceReceipt>,
+}
+
+impl RoutingInfo {
+    /// Stamp the caller's selected route without discarding serving metadata.
+    pub fn stamp<'a>(
+        routing: &'a mut Option<Self>,
+        provider: &str,
+        is_local: bool,
+        reason: &str,
+    ) -> &'a mut Self {
+        let route = routing.get_or_insert_with(|| Self {
+            provider: String::new(),
+            is_local,
+            routing_reason: reason.to_string(),
+            adapters_applied: Vec::new(),
+            model_mapped: None,
+            model_requested: None,
+            served_context_window: None,
+            remote: None,
+        });
+        if route.provider != provider {
+            route.provider.clear();
+            route.provider.push_str(provider);
+        }
+        route.is_local = is_local;
+        route
+    }
+}
+
+/// Provider health status
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../../protocol/typescript/ai/HealthStatus.ts")]
+#[serde(rename_all = "camelCase")]
+pub struct HealthStatus {
+    pub status: HealthState,
+    pub api_available: bool,
+    #[ts(type = "number")]
+    pub response_time_ms: u64,
+    pub error_rate: f32,
+    #[ts(type = "number")]
+    pub last_checked: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub message: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../../protocol/typescript/ai/HealthState.ts")]
+#[serde(rename_all = "snake_case")]
+pub enum HealthState {
+    Healthy,
+    Degraded,
+    Unhealthy,
+    InsufficientFunds,
+    RateLimited,
+}
+
+/// Model information — ALL fields REQUIRED.
+/// The adapter knows its model. No optionals, no defaults, no guessing.
+/// If an adapter can't provide a field, it's not ready to register.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../../protocol/typescript/ai/ModelInfo.ts")]
+#[serde(rename_all = "camelCase")]
+pub struct ModelInfo {
+    pub id: String,
+    pub name: String,
+    pub provider: String,
+    /// What this model can do. ONE capability vocabulary across the whole
+    /// substrate: [`crate::model_registry::Capability`]. There is no second
+    /// enum and no bool mirror — modality routing (vision/audio bridge),
+    /// tool-use gating, streaming, and embedding/image-gen support all read
+    /// this set via [`ModelInfo::has`]. (#55 / #65 capability collapse —
+    /// ModelCapability + ModalitySet deleted; #66 — supports_* bools deleted.)
+    /// `Vec` (not the internal `BTreeSet`) is the idiomatic JSON-array shape
+    /// for this wire DTO; the registry hands it an already-deduped set.
+    pub capabilities: Vec<crate::model_registry::Capability>,
+    pub context_window: u32,
+    pub max_output_tokens: u32,
+    pub cost_per_1k_tokens: CostPer1kTokens,
+    /// Measured or estimated inference speed on current hardware.
+    /// Used by RAG budget and slot coordination.
+    #[ts(type = "number")]
+    pub tokens_per_second: f32,
+}
+
+impl ModelInfo {
+    /// Does this model declare `cap`? The ONE accessor — streaming, tool-use,
+    /// vision, embedding all resolve here, never a bool mirror that can drift
+    /// from `capabilities`. Mirrors [`crate::ai::adapter::AdapterCapabilities::has`].
+    pub fn has(&self, cap: crate::model_registry::Capability) -> bool {
+        self.capabilities.contains(&cap)
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/ai/CostPer1kTokens.ts"
+)]
+#[serde(rename_all = "camelCase")]
+pub struct CostPer1kTokens {
+    pub input: f64,
+    pub output: f64,
+}
+
+/// Embedding request
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/ai/EmbeddingRequest.ts"
+)]
+#[serde(rename_all = "camelCase")]
+pub struct EmbeddingRequest {
+    pub input: EmbeddingInput,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub model: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub provider: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/ai/EmbeddingInput.ts"
+)]
+#[serde(untagged)]
+pub enum EmbeddingInput {
+    Single(String),
+    Multiple(Vec<String>),
+}
+
+/// Embedding response
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/ai/EmbeddingResponse.ts"
+)]
+#[serde(rename_all = "camelCase")]
+pub struct EmbeddingResponse {
+    pub embeddings: Vec<Vec<f32>>,
+    pub model: String,
+    pub provider: String,
+    pub usage: UsageMetrics,
+    #[ts(type = "number")]
+    pub response_time_ms: u64,
+}
+
+// ============================================================================
+// HELPER FUNCTIONS
+// ============================================================================
+
+impl ChatMessage {
+    /// Create a simple text message
+    pub fn text(role: impl Into<String>, content: impl Into<String>) -> Self {
+        Self {
+            role: role.into(),
+            content: MessageContent::Text(content.into()),
+            name: None,
+        }
+    }
+
+    /// Create a message with tool result
+    pub fn tool_result(
+        tool_use_id: impl Into<String>,
+        content: impl Into<String>,
+        is_error: bool,
+    ) -> Self {
+        Self {
+            role: "user".to_string(),
+            content: MessageContent::Parts(vec![ContentPart::ToolResult {
+                tool_use_id: tool_use_id.into(),
+                content: content.into(),
+                is_error: if is_error { Some(true) } else { None },
+            }]),
+            name: None,
+        }
+    }
+
+    /// An assistant turn that REQUESTED a batch of tool calls — the
+    /// agent-transcript shape a provider expects echoed back before the
+    /// matching results, so its next generation sees what it asked for.
+    pub fn assistant_tool_use(calls: &[ToolCall]) -> Self {
+        Self {
+            role: "assistant".to_string(),
+            content: MessageContent::Parts(
+                calls
+                    .iter()
+                    .map(|c| ContentPart::ToolUse {
+                        id: c.id.clone(),
+                        name: c.name.clone(),
+                        input: c.input.clone(),
+                    })
+                    .collect(),
+            ),
+            name: None,
+        }
+    }
+
+    /// A user turn carrying the RESULTS of a batch of tool calls, each paired
+    /// by `tool_use_id` to the assistant turn that requested it. The companion
+    /// to [`assistant_tool_use`](Self::assistant_tool_use) — together they form
+    /// one agent round in the message thread.
+    pub fn tool_results(results: &[ToolResult]) -> Self {
+        Self {
+            role: "user".to_string(),
+            content: MessageContent::Parts(
+                results
+                    .iter()
+                    .map(|r| ContentPart::ToolResult {
+                        tool_use_id: r.tool_use_id.clone(),
+                        content: r.content.clone(),
+                        is_error: r.is_error,
+                    })
+                    .collect(),
+            ),
+            name: None,
+        }
+    }
+
+    /// Get content as plain text (extracts from parts if needed)
+    pub fn content_text(&self) -> String {
+        match &self.content {
+            MessageContent::Text(s) => s.clone(),
+            MessageContent::Parts(parts) => parts
+                .iter()
+                .filter_map(|p| match p {
+                    ContentPart::Text { text } => Some(text.as_str()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+                .join(""),
+        }
+    }
+}
+
+impl TextGenerationResponse {
+    /// A provider can carry a failed generation inside an otherwise successful
+    /// transport response. Borrow its reason so recorders and consumers agree
+    /// before accepting any partial text or tool proposals as a completed call.
+    pub fn generation_error(&self) -> Option<&str> {
+        match self.error.as_deref() {
+            Some(error) => Some(error),
+            None if self.finish_reason == FinishReason::Error => {
+                Some("provider returned finish_reason=error without error details")
+            }
+            None => None,
+        }
+    }
+
+    /// Check if response has tool calls
+    pub fn has_tool_calls(&self) -> bool {
+        self.tool_calls
+            .as_ref()
+            .map(|tc| !tc.is_empty())
+            .unwrap_or(false)
+    }
+}
+
+impl HealthStatus {
+    /// A nominal-healthy status — the sensible default for adapters that
+    /// don't run a real probe (in-process local adapters, test fixtures,
+    /// heuristic adapters). Cloud adapters that DO probe their endpoint
+    /// override `health_check` and build a status from the live result.
+    pub fn healthy() -> Self {
+        Self {
+            status: HealthState::Healthy,
+            api_available: true,
+            response_time_ms: 0,
+            error_rate: 0.0,
+            last_checked: 0,
+            message: None,
+        }
+    }
+}
+
+impl Default for HealthStatus {
+    fn default() -> Self {
+        Self {
+            status: HealthState::Unhealthy,
+            api_available: false,
+            response_time_ms: 0,
+            error_rate: 1.0,
+            last_checked: 0,
+            message: Some("Not checked".to_string()),
+        }
+    }
+}
+
+// ============================================================================
+// TESTS TO GENERATE TS TYPES
+// ============================================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // what this catches: command/module route stamping used to reconstruct the
+    // route and discard the serving window, model mapping and remote receipt.
+    #[test]
+    fn route_stamping_preserves_serving_metadata_and_legacy_wire_shape() {
+        let mut routing = Some(
+            serde_json::from_value::<RoutingInfo>(serde_json::json!({
+                "provider": "llama", "isLocal": true, "routingReason": "served",
+                "adaptersApplied": ["genome"], "modelMapped": "served-model",
+                "modelRequested": "requested-model", "servedContextWindow": 26112
+            }))
+            .unwrap(),
+        );
+        assert!(routing.as_ref().unwrap().remote.is_none());
+        let receipt = RemoteInferenceReceipt {
+            requested_peer: "alias".into(),
+            responding_peer: "actual-peer".into(),
+            correlation_id: "wire-id".into(),
+            elapsed_ms: 42,
+        };
+        routing.as_mut().unwrap().remote = Some(receipt.clone());
+        for reason in ["remote_inference", "adapter_selected", "generate_text_call"] {
+            let route = RoutingInfo::stamp(&mut routing, "airc-remote", false, reason);
+            assert!(!route.is_local);
+            assert_eq!(route.provider, "airc-remote");
+            assert_eq!(route.routing_reason, "served");
+            assert_eq!(route.served_context_window, Some(26112));
+            assert_eq!(route.adapters_applied, ["genome"]);
+            assert_eq!(route.model_mapped.as_deref(), Some("served-model"));
+            assert_eq!(route.model_requested.as_deref(), Some("requested-model"));
+            assert_eq!(route.remote.as_ref(), Some(&receipt));
+        }
+        let encoded = serde_json::to_value(routing.unwrap()).unwrap();
+        assert_eq!(encoded["remote"]["respondingPeer"], "actual-peer");
+        assert_eq!(encoded["remote"]["elapsedMs"], 42);
+    }
+
+    #[test]
+    fn export_ai_types() {
+        // These tests trigger ts-rs to generate TypeScript types
+        // Run: cargo test --package continuum-core -- --test-threads=1
+        let cfg = ts_rs::Config::default();
+        ChatMessage::export(&cfg).expect("export ChatMessage");
+        MessageContent::export(&cfg).expect("export MessageContent");
+        ContentPart::export(&cfg).expect("export ContentPart");
+        ImageInput::export(&cfg).expect("export ImageInput");
+        AudioInput::export(&cfg).expect("export AudioInput");
+        VideoInput::export(&cfg).expect("export VideoInput");
+        NativeToolSpec::export(&cfg).expect("export NativeToolSpec");
+        ToolInputSchema::export(&cfg).expect("export ToolInputSchema");
+        ToolCall::export(&cfg).expect("export ToolCall");
+        ToolResult::export(&cfg).expect("export ToolResult");
+        ToolChoice::export(&cfg).expect("export ToolChoice");
+        ActiveAdapterRequest::export(&cfg).expect("export ActiveAdapterRequest");
+        TextGenerationRequest::export(&cfg).expect("export TextGenerationRequest");
+        TextGenerationResponse::export(&cfg).expect("export TextGenerationResponse");
+        FinishReason::export(&cfg).expect("export FinishReason");
+        UsageMetrics::export(&cfg).expect("export UsageMetrics");
+        RoutingInfo::export(&cfg).expect("export RoutingInfo");
+        RemoteInferenceReceipt::export(&cfg).expect("export RemoteInferenceReceipt");
+        HealthStatus::export(&cfg).expect("export HealthStatus");
+        HealthState::export(&cfg).expect("export HealthState");
+        ModelInfo::export(&cfg).expect("export ModelInfo");
+        CostPer1kTokens::export(&cfg).expect("export CostPer1kTokens");
+        EmbeddingRequest::export(&cfg).expect("export EmbeddingRequest");
+        EmbeddingInput::export(&cfg).expect("export EmbeddingInput");
+        EmbeddingResponse::export(&cfg).expect("export EmbeddingResponse");
+    }
+}

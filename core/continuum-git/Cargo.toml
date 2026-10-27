@@ -1,0 +1,13 @@
+[package]
+name = "continuum-git"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Git's working-tree residue, judged once: a git that died mid-write leaves its index.lock, and every later git write in that tree fails until it is removed. The verdict (stale, held, absent), the conservative live-git check and the removal live here so the deploy consumer and a citizen's hands make the same decision."
+
+[dependencies]
+continuum-host = { path = "../continuum-host" } # file identity: unlink only the lock that was judged
+sysinfo = "0.33" # the one process scan: is any git working in this tree?
+
+[dev-dependencies]
+tempfile = "3"

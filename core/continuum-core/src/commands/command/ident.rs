@@ -68,7 +68,9 @@ impl CommandIdent {
             }
         }
 
-        let verb = segments.last().expect("non-empty checked above").clone();
+        let Some(verb) = segments.last().cloned() else {
+            return Err(CommandError::Invalid("command name has no segments".to_string()));
+        };
         let mod_stem = verb.replace('-', "_");
         let struct_name = segments.iter().map(|s| pascal(s)).collect::<String>();
         let params_type = format!("{struct_name}Params");

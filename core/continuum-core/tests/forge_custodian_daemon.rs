@@ -22,18 +22,15 @@
 use std::io::Write;
 use std::path::PathBuf;
 use std::process::Command;
-use std::time::{Duration, Instant, SystemTime};
+use std::time::{Duration, Instant};
 
 use continuum_core::forge::custodian_client::{ForgeCustodian, ForgeCustodianHttp};
 use continuum_core::forge::protocol::{CAPABILITY_GGUF_LORA, CONTRACT_VERSION};
 
-/// A unique temp dir under the system temp root (no external tempdir crate).
+/// A unique temp dir under the system temp root (no external tempdir crate). Named by a random
+/// id, not the clock: two tests starting in the same tick must not share a directory.
 fn unique_tmp(tag: &str) -> PathBuf {
-    let nanos = SystemTime::now()
-        .duration_since(SystemTime::UNIX_EPOCH)
-        .map(|d| d.as_nanos())
-        .unwrap_or(0);
-    let dir = std::env::temp_dir().join(format!("fc-it-{tag}-{}-{nanos}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("fc-it-{tag}-{}", uuid::Uuid::new_v4().simple()));
     std::fs::create_dir_all(&dir).expect("create temp dir");
     dir
 }
@@ -62,11 +59,14 @@ async fn custodian_daemon_boots_serves_health_and_shuts_down_gracefully() {
     // Throwaway config.env: bind addr + an advertised capacity of 3 slots.
     write_file(
         &home.join(".continuum/config.env"),
-        &format!("FORGE_CUSTODIAN_ADDR={addr}\nFORGE_MAX_CONCURRENT=3\n"),
+        &format!(
+            "FORGE_CUSTODIAN_ADDR={addr}\nFORGE_MAX_CONCURRENT=3\nFORGE_LLAMA_CPP_DIR={}\n",
+            home.join("llama.cpp").display()
+        ),
     );
     // Stub converter so readiness probes true (we never invoke it in this test).
     write_file(
-        &home.join(".unsloth/llama.cpp/convert_lora_to_gguf.py"),
+        &home.join("llama.cpp/convert_lora_to_gguf.py"),
         "# stub for readiness probe\n",
     );
 

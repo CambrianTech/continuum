@@ -24,7 +24,22 @@ frequencyPenalty?: number,
  * by the substrate sampling defaults to catch loops whose span
  * exceeds 64 tokens (#181). Ignored by cloud OpenAI-compat providers.
  */
-repeatLastN?: number, stopSequences?: Array<string>, tools?: Array<NativeToolSpec>, toolChoice?: ToolChoice, 
+repeatLastN?: number, stopSequences?: Array<string>, tools?: Array<NativeToolSpec>, 
+/**
+ * Verbs she loaded into the TAIL this epoch: callable natively (the engine's parser and
+ * grammar accept them) but never rendered in the head, so the cached prefix is unchanged
+ * (goal 10, card ecd5dff3). Their schemas ride the conversation, after the cache point.
+ * Sent only to a llama.cpp-family server; one that predates the field ignores it.
+ */
+tailTools?: Array<NativeToolSpec>, 
+/**
+ * How many leading `messages` are her view: the epoch's append-only part, which her next
+ * act sends again unchanged, before this act's fresh tail. A llama.cpp-family engine
+ * checkpoints her recurrent state exactly there, and a saved page keeps that checkpoint,
+ * so a page-in resumes at the end of her view rather than at the shared head (card
+ * 3512f496). `None` when the prompt has no view.
+ */
+viewMessages?: number, toolChoice?: ToolChoice, 
 /**
  * Force the model to output a specific format (e.g. JSON object).
  * OpenAI-compatible: serializes as `{"type": "json_object"}` etc. The
@@ -47,4 +62,16 @@ responseFormat?: ResponseFormat, activeAdapters?: Array<ActiveAdapterRequest>, r
  * pressure policy can't make per-persona eviction decisions.
  * See docs/architecture/PERSONA-CONTEXT-PAGING.md §13.
  */
-personaId?: string, };
+personaId?: string, 
+/**
+ * The bound this turn is owed on the wire, sized from the MEASURED work: the mind's
+ * expected occupancy (the uncached prompt at the box's measured prefill rate plus
+ * her last output at its decode rate) with headroom — `inference::turn_bound`.
+ * Every waiting seam takes `max(its floor, this)`: the header wait, the stream's
+ * queue budget, the remote deadline. So a slow box's long prefill is waited out
+ * instead of read as dead (card ba82d0a0: a 30k prompt at 25 tok/s is ~1200 s
+ * before the first byte, past every fixed bound). `None` = no expectation yet; the
+ * floors govern alone. Serialized as serde's `{secs, nanos}` so the SERVING peer's
+ * lane honours it too.
+ */
+turnBound?: { secs: number, nanos: number }, };

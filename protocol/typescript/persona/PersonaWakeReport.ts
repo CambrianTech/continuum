@@ -3,10 +3,14 @@ import type { RestingSeatView } from "./RestingSeatView";
 
 export type PersonaWakeReport = { 
 /**
- * Who was woken by this call (empty on a read, or when nobody by that name rested).
+ * Who was woken by this call (empty on a read).
  */
 woke?: string, 
 /**
- * Who still rests after this call.
+ * Seats the substrate paged out that still rest after this call.
  */
-resting: Array<RestingSeatView>, detail: string, };
+resting: Array<RestingSeatView>, 
+/**
+ * Dormant homes after this call: never resumed until woken.
+ */
+dormant: Array<RestingSeatView>, detail: string, };

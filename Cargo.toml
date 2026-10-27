@@ -13,10 +13,39 @@ members = [
     # core/ — rust substrate
     "core/airc-test-fixtures",
     "core/continuum-airc-protocol",
-    # "core/archive" quarantined → legacy/quarantine/archive-worker (#424):
+    # "core/archive" removed (tag legacy-archive-2026-10-23, legacy/quarantine/archive-worker, #424):
     # its only spawn wiring pointed at a dir that no longer exists.
+    "core/continuum-cli-lifecycle",
+    "core/continuum-tool-protocol",
+    "core/continuum-base",
+    "core/continuum-git",
+    "core/continuum-host",
+    "core/continuum-context",
     "core/continuum-core",
+    "core/continuum-sentinel",
+    "core/continuum-kernel",
+    "core/continuum-store",
+    "core/continuum-grid",
+    "core/continuum-mind",
+    "core/continuum-dreaming",
+    "core/continuum-perception",
+    "core/continuum-genome",
+    "core/continuum-memory",
+    "core/continuum-experience",
+    "core/continuum-cognition",
+    "core/continuum-text-analysis",
+    "core/continuum-academy",
+    "core/continuum-live",
+    "core/continuum-hands",
+    "core/continuum-engine",
+    "core/continuum-models",
+    "core/continuum-serving",
+    "core/continuum-embedding",
+    "core/continuum-service",
     "core/expert-pager-policy",
+    "core/source-hygiene",
+    "core/tool-working-set",
+    "core/serving-replay",
     "core/continuum-orm-derive",
     "core/continuum-positron",
     "core/inference-grpc",
@@ -48,8 +77,7 @@ members = [
 # workspace root, so `cargo` inside them failed with "failed to find a workspace
 # root" the whole time. The entries were decoration.
 #
-# They are now quarantined under legacy/persona-exercises/ (see the README
-# there). The real fix remains workspace isolation (#49): give a persona a real
+# They were removed (tag legacy-archive-2026-10-23, legacy/persona-exercises/). The real fix remains workspace isolation (#49): give a persona a real
 # workspace of her own, so what she writes is deliberate and reviewable like any
 # other contributor's — never something the substrate manifest has to fence off.
 # Shared dependencies - workers inherit these versions
@@ -195,19 +223,43 @@ members = [
 # AIRC #1433 adds accepted signed reviews of exact work submissions, used by
 # the ordinary reviewed-credit consumer. All crates share that public revision.
 # The same revision across all AIRC crates preserves one shared wire contract.
-airc-core = { git = "https://github.com/CambrianTech/airc", rev = "17abc1017a92158351e653540b3bade9bfbd1c7f" }
-airc-protocol = { git = "https://github.com/CambrianTech/airc", rev = "17abc1017a92158351e653540b3bade9bfbd1c7f" }
-airc-ipc = { git = "https://github.com/CambrianTech/airc", rev = "17abc1017a92158351e653540b3bade9bfbd1c7f" }
-airc-bus = { git = "https://github.com/CambrianTech/airc", rev = "17abc1017a92158351e653540b3bade9bfbd1c7f" }
-airc-lib = { git = "https://github.com/CambrianTech/airc", rev = "17abc1017a92158351e653540b3bade9bfbd1c7f" }
-airc-wire = { git = "https://github.com/CambrianTech/airc", rev = "17abc1017a92158351e653540b3bade9bfbd1c7f" }
+# 2026-10-04 bump 7499136 -> e572f3e (airc canary tip). The claim gate is airc-lib,
+# compiled INTO this core, so personas only get airc-lib fixes through this pin; Kimi
+# kept hitting 'settled work is not claimable' on her own card with the 5090's daemon
+# already at #1532. Adopts #1528 (right-sized payloads), #1529 (per-channel ring byte
+# bound, channel_count + ring_bytes_total in status), #1530 (verbs are never room
+# names), #1531 (the owner resumes her own card after her lease lapses), #1532
+# (ownership durable, the lease is presence; from 2026-10-04T16:00Z), #1533 (test),
+# #1534 (work claim/update/link --room). Card 86c5eb48.
+# 2026-10-05 bump e572f3e -> 8d80961: #1535 her sealed mind store (airc-identity::mind,
+# airc-protocol::mind_seal), #1536 Airc::mind_store() + put_at/remove, #1537
+# submission_reviews_for_card, #1538 `airc work submission-review`. Privacy of thought
+# step 2 reads and writes her mind store through Airc::mind_store(), never her key.
+# 2026-10-21 bump 44478af -> 2666f36: #1598 a transition to Open ends the claim (card
+# 12afbb2f: Atlas held SWE cards the board showed Open), so continuum's own release on
+# reopen and work_focus's Open arm go; #1595 stream chunks publish as transient delivery
+# (live to subscribers, never durable history: airc_remote reads its pre-armed subscription);
+# #1594/#1596/#1597 agent-feed delivery (CLI + airc-lib agent_delivery), #1592 a test.
+# 2026-10-23: #1615 resolves unconfigured repository defaults from origin's
+# advertisement when allocating from a bare mirror. Resident claims use this
+# embedded library; updating the standalone CLI alone cannot repair staging.
+# Also inherits reviewed #1599-1614 delivery, maintenance and checkout fixes.
+# 2026-10-24: #1616 stages card clones transactionally, preserves interrupted
+# predecessors, and gives shallow-mirror transfers their network-sized budget.
+airc-core = { git = "https://github.com/CambrianTech/airc", rev = "fa918ab7fd4a295301f34ff3066067cddb368489" }
+airc-blobs = { git = "https://github.com/CambrianTech/airc", rev = "fa918ab7fd4a295301f34ff3066067cddb368489" }
+airc-protocol = { git = "https://github.com/CambrianTech/airc", rev = "fa918ab7fd4a295301f34ff3066067cddb368489" }
+airc-ipc = { git = "https://github.com/CambrianTech/airc", rev = "fa918ab7fd4a295301f34ff3066067cddb368489" }
+airc-bus = { git = "https://github.com/CambrianTech/airc", rev = "fa918ab7fd4a295301f34ff3066067cddb368489" }
+airc-lib = { git = "https://github.com/CambrianTech/airc", rev = "fa918ab7fd4a295301f34ff3066067cddb368489" }
+airc-wire = { git = "https://github.com/CambrianTech/airc", rev = "fa918ab7fd4a295301f34ff3066067cddb368489" }
 # airc-work: the work-board domain (cards/lanes/PRs). `Airc::work_board`
 # returns a `WorkBoardProjection` whose types (`WorkCard`, `LaneRecord`,
 # `CardState`, …) the positron kanban projector maps → `KanbanViewState`
 # at the seam. Only continuum-core (the projector) depends on it; the
 # neutral `continuum-positron` contract crate MIRRORS these enums and
 # must NOT depend on airc-work.
-airc-work = { git = "https://github.com/CambrianTech/airc", rev = "17abc1017a92158351e653540b3bade9bfbd1c7f" }
+airc-work = { git = "https://github.com/CambrianTech/airc", rev = "fa918ab7fd4a295301f34ff3066067cddb368489" }
 
 # Candle ML framework — patched via [patch.crates-io] below.
 # Fixes: Metal buffer pool leak (#2271), RoPE NEOX convention (#3410)
@@ -261,9 +313,6 @@ rayon = "1.11"
 # the StorageResult<Vec<Value>> envelope without a per-command wrapper struct.
 ts-rs = { version = "12.0", features = ["serde-json-impl"] }
 
-# Postgres
-deadpool-postgres = "0.14"
-tokio-postgres = { version = "0.7", features = ["with-serde_json-1", "with-chrono-0_4"] }
 
 # Compression and hashing
 flate2 = "1.0"
@@ -289,7 +338,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 # `[[never-redirect-substrate-stderr]]` doctrine memory for why.
 tracing-appender = "0.2"
 
-# Embedding is adapter-routed through the AI provider (unsloth `/v1/embeddings`),
+# Embedding is adapter-routed through the AI provider (llama-server `/v1/embeddings`),
 # not in-process ONNX — the `fastembed` crate was removed in task #40. The async
 # `cognition::embedding::EmbeddingProvider` trait is the single embedding path.
 
@@ -312,8 +361,6 @@ ndarray = "0.17"  # ort 2.0.0-rc.11 requires ndarray 0.17 for OwnedTensorArrayDa
 tokio-tungstenite = "0.28"
 futures-util = "0.3"
 
-# Edge-TTS (Microsoft Edge Read Aloud API — free, no API key)
-msedge-tts = "0.3"
 
 
 # Protobuf symbol conflict (ort vs webrtc-sys) is fixed by module declaration
@@ -337,6 +384,16 @@ strip = "symbols"
 # upward to fat via `RUSTFLAGS="-C lto=fat"` on the single blessed build
 # if we ever decide the last 10% is worth it.
 lto = "thin"
+
+# Local installs rebuild this large crate for both the serving and GPU-free CLI
+# feature sets. Keep incremental caches for those distinct compilations so a
+# small harness edit does not redo every unchanged codegen unit in each set.
+# Preserve release's normal 16 units explicitly: enabling incremental would
+# otherwise change the default to 256. Optimization level and thin LTO stay put.
+# CI can still disable incremental with its existing CARGO_INCREMENTAL=0.
+[profile.release.package.continuum-core]
+incremental = true
+codegen-units = 16
 
 # Hot-iter profile — fastest possible compile for inner-loop work
 # (airc work claim → cargo build → test → repeat). Slice 3 of build-time
@@ -376,7 +433,9 @@ codegen-units = 256
 [profile.dev.package."*"]
 debug = false
 
-# Override crates.io candle with our fork (Metal memory fix + RoPE NEOX fix).
+# Override crates.io candle with our fork (Metal memory, RoPE NEOX and Pascal
+# half-atomic fixes). General CUDA excludes the uncalled fused-MoE archive;
+# active tensor, training and speech users keep their existing CUDA features.
 #
 # Status (2026-04-15): huggingface/candle PR #3411 — the RoPE NEOX fix
 # from this fork — was ACCEPTED AND MERGED upstream. The Metal memory
@@ -388,14 +447,56 @@ debug = false
 # a published release lets `cargo` find the fix at a version number.
 #
 # To check: `cargo search candle-core` or the candle CHANGELOG for the
-# first release >= the merge date. Graduation is a 3-line delete.
+# first release containing all the required fixes before removing these pins.
 # This applies to all workspace members transparently.
 [patch.crates-io]
-candle-core = { git = "https://github.com/joelteply/candle.git", branch = "fix/metal-memory-and-rope-neox" }
-candle-nn = { git = "https://github.com/joelteply/candle.git", branch = "fix/metal-memory-and-rope-neox" }
-candle-transformers = { git = "https://github.com/joelteply/candle.git", branch = "fix/metal-memory-and-rope-neox" }
+candle-core = { git = "https://github.com/joelteply/candle.git", rev = "50756fc6ae242743b3e465e0fbb2968482c9c782" }
+candle-nn = { git = "https://github.com/joelteply/candle.git", rev = "50756fc6ae242743b3e465e0fbb2968482c9c782" }
+candle-transformers = { git = "https://github.com/joelteply/candle.git", rev = "50756fc6ae242743b3e465e0fbb2968482c9c782" }
 
 [workspace.package]
 edition = "2021"
 version = "0.1.0"
 authors = ["JTAG Team"]
+
+# CI and hygiene policy: the ONE place that names crates, and only as EXCEPTIONS.
+# Every `core/` workspace member is tested (a job in continuum-rust-tests.yml), audited by the
+# per-file ratchets and counted by the warnings ratchet unless named below. A new crate joins
+# all of them by being added to `members`: no list to edit (card 85138cb9: review caught a
+# missed entry twice on 2026-10-26, #5456 and #5465). Readers: tools/scripts/ci-change-scope.cjs
+# (selector, features, the warnings ratchet's crate set) and core/source-hygiene/src/crate_policy.rs.
+# Per-crate facts come from each crate's own Cargo.toml: a `test-fixtures` feature means its
+# tests build with it. Entries only ever leave these lists.
+[workspace.metadata.ci]
+# Not in the crate-test matrix, in two lists (package names; continuum-bridge-protocol is
+# core/livekit-protocol). A crate that is bin-only (no lib target) must be named in by_nature:
+# the lib-test job has nothing to test in it (crate_wiring says so).
+# by_nature: permanent, with the reason: llama (vendored bindings), jtag-mcp and livekit-bridge
+# (no tests), source-hygiene (its own workflow, source-hygiene.yml), continuum-cli-lifecycle
+# (its own job: `cargo test -p continuum-cli-lifecycle`).
+by_nature = ["continuum-cli-lifecycle", "jtag-mcp", "livekit-bridge", "llama", "source-hygiene"]
+# pending: tests exist but no job selects them yet (card 996e3537). Debt that only shrinks: an
+# entry leaves by being deleted, and crate_wiring fails if this list grows past its ceiling.
+pending = [
+    "airc-test-fixtures", "continuum-airc-protocol", "continuum-bridge-protocol", "continuum-context",
+    "continuum-orm-derive", "continuum-positron", "continuum-text-analysis", "continuum-tool-protocol",
+    "expert-pager-policy", "inference-grpc", "serving-replay", "tool-working-set",
+]
+# Tested crates whose lib tests run in their own steps (`matrix.crate == '...'`) in
+# continuum-rust-tests.yml, not in the generic `cargo test -p <crate> --lib` step.
+own_lib_test_step = ["continuum-core", "continuum-kernel", "continuum-engine", "continuum-mind"]
+# Start order hint for the parallel jobs, longest first; a crate not named runs after these.
+longest_first = [
+    "continuum-core", "continuum-mind", "continuum-dreaming", "continuum-engine", "continuum-perception",
+    "continuum-genome", "continuum-kernel", "continuum-live", "continuum-hands", "continuum-memory",
+    "continuum-experience", "continuum-cognition", "continuum-academy", "continuum-sentinel",
+    "continuum-base", "continuum-host",
+]
+# Audited with their crate name as a path prefix (`continuum-base/time/mod.rs`), not unprefixed
+# like the modules cut out of core (source-hygiene lib.rs `audited_files`).
+split_prefixed = ["continuum-base"]
+# Tested but in no per-file ratchet yet (card 996e3537).
+unaudited = ["continuum-host"]
+# Not counted by the warnings ratchet yet: base (a split crate outside the count), kernel (~13
+# warnings to fix first), host (not audited; card 996e3537).
+warnings_uncounted = ["continuum-base", "continuum-kernel", "continuum-host"]

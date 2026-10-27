@@ -32,10 +32,15 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 # core/continuum-core (commit 2cb63e019); cwd-independent --manifest-path so the
 # headless start works from any directory.
 CORE_MANIFEST="$REPO_ROOT/core/continuum-core/Cargo.toml"
+source "$SCRIPT_DIR/lib/payload-paths.sh"
 
 # ── PATH + config ────────────────────────────────────────────────────
 [ -f "$HOME/.cargo/env" ] && source "$HOME/.cargo/env"
+# The node profile (core-features.sh) is the file's, as it is now: never a value a parent
+# process carried from an older read of it.
+unset CONTINUUM_NODE_FEATURES
 [ -f "$HOME/.continuum/config.env" ] && { set -a; source "$HOME/.continuum/config.env"; set +a; }
+PAYLOAD_ROOT="$(managed_payload_root)" || exit 1
 
 # Locate cargo deterministically. A background task / detached shell does NOT
 # inherit the interactive PATH, so cargo (rustup at ~/.cargo/bin OR homebrew at
@@ -61,8 +66,14 @@ fi
 # An explicit per-shell export still wins (deliberate one-shot against a clean
 # target); we only supply the default so the unattended path can't diverge.
 export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$HOME/.continuum/cache/cargo-target}"
+# The build's SHA stamp follows the checkout being built (build.rs reruns when this
+# changes). Every checkout shares one target dir, and cargo's record of the stamping build
+# script names the git HEAD file of whichever checkout built LAST: a canary build in the
+# deploy checkout after a worktree build kept the worktree's SHA, and the #194 check then
+# refused three deploys of b6ddc0d0e on the 5090 (2026-10-04) as a stale binary.
+export CONTINUUM_BUILD_SOURCE="$REPO_ROOT@$(git -C "$REPO_ROOT" rev-parse HEAD 2>/dev/null || echo unknown)"
 
-# ── PREBUILT MODE (2026-09-16): the CLI's warm-build reboot hands a VERIFIED
+# ── PREBUILT MODE (2026-09-16): the CLI's reboot hands a VERIFIED
 # artifact in CONTINUUM_PREBUILT_CORE. Everything else this script does for the
 # core — the llama-server PATH, ORT_DYLIB_PATH, the derived airc room, the models
 # dir, the airc daemon, the desktop dist + its background rebuild, the caffeinate
@@ -80,14 +91,13 @@ if [ -n "${CONTINUUM_PREBUILT_CORE:-}" ]; then
   # are not what the CLI verified, and a shim that answered 0 to EVERY cargo build
   # would leave a swept or fresh-clone cache without them while the launch read
   # green (Cormac's review of #4107). They build warm against the shared cache.
-  cargo() {
-    case " $* " in
-      *" --bin continuum-core-server "*)
-        echo "  (prebuilt core: skipped cargo $*)"
-        return 0 ;;
-    esac
-    command cargo "$@"
-  }
+  # HOW it is skipped (card 9174fc83): the crate's bins build in ONE cargo
+  # invocation, so the `cargo()` shim that used to live here — matching
+  # `--bin continuum-core-server` anywhere in the argument list and answering 0 —
+  # would now skip that whole invocation, sidecars included: exactly the hole the
+  # review above closed. Instead the bin list is assembled WITHOUT
+  # continuum-core-server (`core_build_bins`, below), and the two later core-only
+  # paths (#296 restore, #194 freshness) already resolve CORE_BIN to this artifact.
 fi
 
 # ORT_DYLIB_PATH — the ort crate is built with `load-dynamic`, so it dlopens
@@ -99,12 +109,12 @@ fi
 # the start log. Measured on BigMama 2026-09-05; the .so and .dylib arms existed
 # and the .dll arm did not, so every Windows citizen was mute by omission.
 if [ -z "$ORT_DYLIB_PATH" ]; then
-  if [ -f "$HOME/.continuum/lib/libonnxruntime.so" ]; then
-    export ORT_DYLIB_PATH="$HOME/.continuum/lib/libonnxruntime.so"
+  if [ -f "$PAYLOAD_ROOT/lib/libonnxruntime.so" ]; then
+    export ORT_DYLIB_PATH="$PAYLOAD_ROOT/lib/libonnxruntime.so"
   elif [ -f "/opt/homebrew/lib/libonnxruntime.dylib" ]; then
     export ORT_DYLIB_PATH="/opt/homebrew/lib/libonnxruntime.dylib"
-  elif [ -f "$HOME/.continuum/lib/onnxruntime.dll" ]; then
-    export ORT_DYLIB_PATH="$HOME/.continuum/lib/onnxruntime.dll"
+  elif [ -f "$PAYLOAD_ROOT/lib/onnxruntime.dll" ]; then
+    export ORT_DYLIB_PATH="$PAYLOAD_ROOT/lib/onnxruntime.dll"
   fi
 fi
 
@@ -115,7 +125,7 @@ fi
 if [ -z "$ORT_DYLIB_PATH" ]; then
   case "$(uname -s)" in
     MINGW*|MSYS*|CYGWIN*)
-      echo "⚠ ONNX Runtime not provisioned (~/.continuum/lib/onnxruntime.dll absent)." >&2
+      echo "⚠ ONNX Runtime not provisioned ($PAYLOAD_ROOT/lib/onnxruntime.dll absent)." >&2
       echo "  ort will dlopen by name and Windows will hand it System32's copy," >&2
       echo "  which Edge ships at 1.17.1 — ort needs >= 1.23.x, so voice will be" >&2
       echo "  dead with only a worker-thread panic in the start log to say so." >&2
@@ -143,44 +153,17 @@ fi
 source "$SCRIPT_DIR/lib/windows-build-env.sh"
 
 # ── Per-platform feature flags ───────────────────────────────────────
-# Mac Intel can't use Metal (task #131 — ggml_metal_device_init hangs on
-# Intel + AMD discrete). Force mac-cpu-only on Intel Mac.
-#
-# CONTINUUM_CLI_FEATURES is the GPU-FREE set for the `continuum` CLI, which is a
-# socket client and must never link a GPU runtime (see the CLI build below for why
-# that made it unlaunchable on Windows). It is platform-shaped for the same reason
-# the core's set is: a bare `--no-default-features` is NOT GPU-free-and-buildable
-# everywhere. On macOS the unconditional `llama` dependency fires
-#
-#   compile_error!("llama crate built on macOS WITHOUT `--features metal`")
-#
-# so the plain flag has NEVER produced a CLI on a Mac — every `npm start` since it
-# landed has hit the loud "⚠ GPU-free continuum build failed — retrying with the
-# full feature set … Please report this" fallback, and shipped a GPU-linked CLI
-# while reporting an anomaly nobody reported. `llama/mac-cpu-only` is that guard's
-# OWN declared opt-in for a deliberately CPU-only build, which is exactly what a
-# socket client wants.
-case "$(uname -sm)" in
-  "Darwin x86_64")
-    CONTINUUM_FEATURES="--no-default-features --features livekit-webrtc,llama/mac-cpu-only"
-    CONTINUUM_CLI_FEATURES="--no-default-features --features llama/mac-cpu-only"
-    ;;
-  "Darwin arm64")
-    CONTINUUM_FEATURES="--features metal,accelerate"
-    # ONE library compile per deploy (2026-09-13): a CLI feature set that differs from the
-    # core's makes cargo compile continuum-core TWICE per deploy (measured: the "pure
-    # relaunch" spent ~10 min in a second full lib build). On Apple silicon the featured
-    # build links Metal, which every Mac has — the GPU-free reason (a box without a CUDA
-    # runtime) does not apply here. Same features → the CLI shares the core's lib.
-    CONTINUUM_CLI_FEATURES="$CONTINUUM_FEATURES"
-    ;;
-  *)
-    # Source the existing detector for Linux/Windows.
-    source "$SCRIPT_DIR/shared/cargo-features.sh"
-    CONTINUUM_FEATURES="$CARGO_GPU_FEATURES"
-    CONTINUUM_CLI_FEATURES="--no-default-features"
-    ;;
-esac
+# The mapping lives in lib/core-features.sh, shared with CI's published binaries: the
+# platform's GPU set plus this node's profile (CONTINUUM_NODE_FEATURES in config.env,
+# sourced above). It says which, and refuses a profile it does not recognize.
+# shellcheck source=lib/core-features.sh
+source "$SCRIPT_DIR/lib/core-features.sh"
+select_core_features || exit 1
+
+if [[ "$CONTINUUM_FEATURES" == *cuda* ]]; then
+  source "$SCRIPT_DIR/lib/cuda-targets.sh"
+  configure_cuda_targets || exit 1
+fi
 
 # Warm builds prepare artifacts only. Runtime reconciliation belongs to launch:
 # it may reap engines or restart AIRC and must never run while the old core serves.
@@ -195,12 +178,10 @@ if [ "${CONTINUUM_BUILD_ONLY:-}" != "1" ]; then
 # NOT launch llama-server itself (the daemon does, after the core boots):
 #   1. resolve the binary onto PATH so the daemon's `Command::new("llama-server")`
 #      finds it (the core inherits this PATH as our child)
-#   2. stop the excised Unsloth Studio so it isn't double-loading the GPU
-# Robustness note: the core SCANS for a free serving port (it does not assume
-# one), so a squatter never wedges it — stopping Studio is GPU/excision hygiene,
-# not a correctness prerequisite [[llama-server-serves-v1-direct-python-gateway-optional]].
+# The core SCANS for a free serving port (it does not assume one), so a
+# squatter never wedges it [[llama-server-serves-v1-direct-python-gateway-optional]].
 
-# (1) Resolve the binary WE OWN. The engine is ours now (unsloth is excised):
+# (1) Resolve the binary WE OWN. The engine is ours now :
 # we build llama-server from the llama.cpp submodule we vendor
 # (core/vendor/llama.cpp — our fork) into ~/.continuum/bin via
 # install-llama-server.sh. Resolution mirrors the core's own resolver
@@ -222,7 +203,11 @@ else
   # get_tensor / upload_expert / MXFP4 patches) while continuum-core linked the NEW lib.
   # Always calling it is the llama-server twin of the #194 stale-check start-server already
   # does for continuum-core-server: one artifact, one fork, kept in lockstep by construction.
-  if ! "$SCRIPT_DIR/install-llama-server.sh" >&2; then
+  # The installer prints the engine it installed or found current: the active engine slot
+  # once slots are in use (card 7a6a033a), else the pre-slot path.
+  if INSTALLED_BIN="$("$SCRIPT_DIR/install-llama-server.sh")"; then
+    [ -n "$INSTALLED_BIN" ] && [ -x "$INSTALLED_BIN" ] && OWNED_BIN="$INSTALLED_BIN"
+  else
     echo "⚠ install-llama-server.sh failed; falling back to any existing owned/PATH binary" >&2
   fi
   if [ -x "$OWNED_BIN" ]; then
@@ -303,68 +288,13 @@ bounded_capture() {
   return "$rc"
 }
 
-# ── ROW: foreign inference servers ───────────────────────────────────
-# Unsloth Studio is the EXCISED gateway — there is no healthy state for it to be
-# adopted into, so it is reaped unconditionally. It is stopped before its backend
-# because the parent would otherwise respawn one.
-if pgrep -f 'studio run' >/dev/null 2>&1; then
-  echo "  reaping excised Unsloth Studio (freeing GPU for the core's engine)" >&2
-  pkill -f 'studio run' 2>/dev/null || true
-fi
-
-# ── ROW: llama lanes — ADOPT the healthy one ─────────────────────────
-# This used to be `pkill -f llama-server`, unconditionally, on every boot. That
-# was the #452 violation with the highest cost, and it made real code dead:
-# `inference::lane_registry::sweep_in` already encodes the adopt rule — the
-# `(LaneRole::Live, SweepMode::Boot) => false` arm deliberately LEAVES a live lane
-# alone at boot and reaps it only at shutdown. The shell killed that lane seconds
-# before the core could adopt it, so the Rust arm never once fired in production.
-#
-# What it cost: a cold model load on every single reboot. During that load the
-# serving lane cannot prove it can decode, so hosting correctly parks (#363) and
-# every citizen is REGISTERED BUT NOT RESIDENT — measured at ~15 minutes on
-# 2026-08-18, which is the window a benchmark round was then staged into and
-# produced zero turns (#455). Adopting a warm lane removes the window rather than
-# teaching every caller to wait for it.
-#
-# Health is /health 200 on the lane's own port, which is a LIVENESS check, not a
-# decode check — a wedged server can pass it (#363, exactly why the core verifies
-# generation before attaching citizens). That is the correct division: the shell
-# adopts a lane that is plausibly alive, and the core's `await_ready_serving`
-# remains the authority that refuses to seat citizens on one that cannot decode,
-# relaunching it if so. Adopting here can only cost a relaunch the core already
-# knows how to do; reaping unconditionally costs a cold load every time.
-adopt_or_reap_llama_lanes() {
-  local pids adopted=0 reaped=0
-  pids="$(pgrep -f 'llama-server' 2>/dev/null || true)"
-  [ -z "$pids" ] && return 0
-  local pid port
-  for pid in $pids; do
-    # The lane's port comes from its own cmdline — the only place it is recorded
-    # for a process the shell did not spawn.
-    # `|| true`: `ps` fails when the pid died between listing and probing, which
-    # is the ordinary race this adoption loop exists to tolerate. Under `set -e`
-    # + pipefail that failure would abort the whole deploy instead of skipping
-    # one dead lane — and the `[ -n "$port" ]` on the next line was already
-    # written for the empty case (card aad30dee, measured 2026-09-05).
-    port="$(ps -o command= -p "$pid" 2>/dev/null | sed -n 's/.*--port[ =]\([0-9]\{1,\}\).*/\1/p' || true)"
-    if [ -n "$port" ] && bounded_run 3 curl -sf "http://127.0.0.1:${port}/health"; then
-      echo "  ✓ adopting healthy llama lane (pid $pid, port $port) — warm weights kept" >&2
-      adopted=$((adopted + 1))
-    else
-      echo "  ✗ reaping unhealthy llama lane (pid $pid, port ${port:-unknown})" >&2
-      kill -TERM "$pid" 2>/dev/null || true
-      reaped=$((reaped + 1))
-    fi
-  done
-  if [ "$reaped" -gt 0 ]; then
-    # Give the OS a moment to release the listening socket before the core binds.
-    sleep 1
-    pkill -9 -f 'llama-server' 2>/dev/null || true
-  fi
-  echo "  llama lanes: $adopted adopted, $reaped reaped" >&2
-}
-adopt_or_reap_llama_lanes
+# ── ROW: llama lanes — adopt-or-reap is the CORE'S step, not this script's ──
+# `continuum start` runs `boot_plan::step_adopt_lanes` before this script: one verdict
+# (`lane_process::lane_verdict` — a bounded, retried /health AND the process's own
+# activity; busy is not dead) with a receipt per pid. The bash loop that used to live
+# here was a SECOND criterion — a single 3 s curl — and on 2026-09-20 it reaped the M5's
+# 32 GB lane mid-generation twice in one morning while the box swapped (card b57b19fd).
+# Two owners of one kill decision is the defect; the shell no longer decides.
 
 # ── ROW: airc daemon — BOOT STARTS IT ────────────────────────────────
 # This row did not exist. Boot printed "⚠ airc daemon not running. Start it with:
@@ -373,9 +303,7 @@ adopt_or_reap_llama_lanes
 # are no rooms, so citizens have nothing to be resident IN and benchmarks are fed
 # into a system that is not running.
 #
-# Two failure states, distinguished because their fixes differ (the same
-# distinction `benchmark/dispatch` now draws between unregistered and
-# not-resident):
+# Two failure states, distinguished because their fixes differ:
 #   - airc BINARY ABSENT → nothing to enumerate, adopt or spawn. Warn and carry
 #     on; a box without airc installed is a different problem from a broken one,
 #     and refusing to boot would strand CI and fresh clones.
@@ -384,7 +312,7 @@ adopt_or_reap_llama_lanes
 #     one is the class of lie this whole card exists to end.
 
 # Every airc verb the boot uses to judge the MACHINE daemon runs from $HOME, so it
-# addresses the machine account's socket — the one `machine_daemon_pids` reaps. From
+# addresses the machine account's socket, the one airc's own ensure serves. From
 # the repo cwd, airc resolves the REPO's scope and its own daemon: IntelMac measured
 # (10:33Z) `airc status` answering "current" about the repo-scope daemon while a June
 # binary held the machine socket — the check compared one daemon and reaped another.
@@ -398,23 +326,6 @@ machine_airc() {
 machine_airc_capture() {
   local bound="$1"; shift
   (cd "$HOME" && bounded_capture "$bound" "$(command -v airc)" "$@")
-}
-
-# The pid(s) holding THIS machine's airc socket — the only daemon boot may reap.
-# `pkill -f 'airc.*daemon'` was machine-wide while scopes are per-project (three
-# sites, one with -9): a deploy in one checkout killed every scope's daemon on the
-# box (IntelMac, card 0e65f352). No socket or no lsof → nothing to reap, said so.
-machine_daemon_pids() {
-  local sock
-  sock="$(ls -1t "$HOME"/.airc/runtime/airc-machine-*-v5.sock 2>/dev/null | head -1)"
-  if [ -z "$sock" ]; then
-    return 0
-  fi
-  if ! command -v lsof >/dev/null 2>&1; then
-    echo "  (no lsof on this host — cannot name the socket's holder; not reaping by pattern)" >&2
-    return 0
-  fi
-  lsof -t "$sock" 2>/dev/null || true
 }
 
 ensure_airc_daemon() {
@@ -473,14 +384,12 @@ ensure_airc_daemon() {
     fi
   fi
 
-  # ONE binary for launch, ping and adoption — the one `command -v` resolves.
-  # 2026-09-07 07:01Z (IntelMac): the launch below reached a June `airc` under
+  # ONE binary for launch, ping and adoption: machine_airc runs the one `command -v`
+  # resolves. 2026-09-07 07:01Z (IntelMac): the launch reached a June `airc` under
   # ~/.cargo/bin while the installed binary was the current one, and the stale
   # daemon was then ADOPTED because it answered ping; `airc doctor` lost its
   # daemon-build row (the daemon was too old to answer the query) and read as
   # fine. Adoption now requires the daemon's build to match the binary's.
-  local airc_bin
-  airc_bin="$(command -v airc)"
   if machine_airc 5 ping; then
     # `airc status` prints both: `build:` is the DAEMON's, `cli_version:` the binary's.
     local status_out daemon_build bin_build
@@ -525,45 +434,32 @@ ensure_airc_daemon() {
     if [ -z "$daemon_build" ]; then
       echo "⚠  airc daemon answered \`status\` without a \`build:\` line (cli=$bin_build) — a daemon too old for today's status shape; restarting it" >&2
     fi
-    echo "⚠  airc daemon answers but its build (${daemon_build:-unknown}) is not the installed binary's (${bin_build:-unknown}) — a stale daemon would silently miss verbs the core sends; restarting it" >&2
-    machine_airc 5 stop || true
-    sleep 1
-    local holders
-    holders="$(machine_daemon_pids)"
-    if [ -n "$holders" ]; then
-      kill $holders 2>/dev/null || true
-      sleep 1
-    fi
+    echo "⚠  airc daemon answers but its build (${daemon_build:-unknown}) is not the installed binary's (${bin_build:-unknown}) — a stale daemon would silently miss verbs the core sends; asking airc to replace it" >&2
+    # airc's own ensure (below) stops a non-current daemon over its IPC and starts the
+    # installed one. Never the public `airc stop`: that records an OPERATOR stop
+    # intent (airc #1508), after which every automatic attach is refused until a
+    # human joins.
   fi
 
-  # Not answering. If a daemon process exists it is WEDGED, and a wedged holder is
-  # worse than none — it answers nothing AND owns the socket, so a fresh spawn
-  # would lose the bind (airc's own start gives up on a contended lock, #355).
-  # Reap before spawning: graceful verb first, then the process.
-  local wedged
-  wedged="$(machine_daemon_pids)"
-  if [ -n "$wedged" ]; then
-    echo "  airc daemon is wedged (holds the socket, answers nothing) — reaping pid(s) $wedged" >&2
-    machine_airc 5 stop || true
-    wedged="$(machine_daemon_pids)"
-    if [ -n "$wedged" ]; then
-      kill $wedged 2>/dev/null || true
-      sleep 1
-      wedged="$(machine_daemon_pids)"
-      [ -n "$wedged" ] && kill -9 $wedged 2>/dev/null || true
-    fi
-  fi
-
+  # Not answering, or answering stale. Recovery is airc's, never this script's: a
+  # failed ping (denied, timed out, protocol mismatch) does not prove a wedged owner,
+  # and the shell cannot name the canonical endpoint's holder (a glob plus lsof found
+  # clients too, then killed them). airc's ensure replaces a stale daemon over IPC and
+  # refuses, with its reason, what it cannot recover. Never `airc stop`: that records
+  # an operator stop intent (airc #1508) for a recovery no human asked for.
   local airc_log="${HOME}/.airc/runtime/daemon-boot.log"
   mkdir -p "$(dirname "$airc_log")" 2>/dev/null || true
-  echo "  starting airc daemon (boot owns it, #452) → $airc_log" >&2
-  # From $HOME, never from the repo: airc's scope is the cwd's git root, so a daemon
-  # launched here would serve the REPO's agent home and refuse the machine socket
-  # ("refusing to serve a socket this scope does not own" — 2026-09-07 10:12Z, the
-  # restart after a stop that should not have happened). The machine account is
-  # $HOME/.airc on every host; that is the daemon's home.
-  (cd "$HOME" && nohup "$airc_bin" daemon >>"$airc_log" 2>&1 &)
-  disown 2>/dev/null || true
+  echo "  asking airc to start its daemon → $airc_log" >&2
+  # airc's own gated autostart, never a raw `airc daemon`: it honors airc's
+  # maintenance lock and operator stop intent (airc #1508), replaces a non-current
+  # daemon over IPC, and provisions the daemon's GitHub token itself. machine_airc
+  # runs it from $HOME, so it serves the machine account's scope, never the repo's.
+  # Its refusal is the answer and is shown, not swallowed.
+  if ! machine_airc 30 events list --limit 0 --json >>"$airc_log" 2>&1; then
+    echo "❌ airc refused or could not start its daemon; its own words:" >&2
+    tail -20 "$airc_log" >&2 2>/dev/null || true
+    return 1
+  fi
 
   local waited=0
   while [ "$waited" -lt 30 ]; do
@@ -703,6 +599,60 @@ if [ -n "$CONTINUUM_DEBUG" ] && [ -z "$CONTINUUM_RELEASE" ]; then
   PROFILE_LABEL="debug"
 fi
 
+# OFFICIAL vs DEV release builds (Joel, 2026-10-03: "you just intentionally target release
+# only for repo users and official builds like main merges"; "I've never seen 10 hour
+# deployments ... If we lost optimizations to test faster so be it"). Both repos have
+# canary and main: MAIN is the official line users install, CANARY is where the fleet
+# iterates. A commit on origin/main builds the full release profile (thin LTO). Anything
+# else, a canary deploy on a node, builds release WITHOUT LTO. Same `release` dir and
+# artifact paths, so nothing downstream changes; only the link step does. Measured on the
+# IntelMac: thin LTO alone was ~5h40m of wall time per bin per deploy (cargo 600-646m).
+# Precedence: an explicit CARGO_PROFILE_RELEASE_LTO wins; CONTINUUM_OFFICIAL_BUILD=1
+# forces the official profile.
+# Canary is also a user-facing channel (airc and continuum both offer one). For now its
+# builds take the fast link. Joel: "When we get more users we will also make canary
+# release lto". That is a change to THIS block (treat the canary tip as official), not a
+# second profile.
+if [ "$PROFILE_LABEL" = "release" ] && [ -z "${CARGO_PROFILE_RELEASE_LTO:-}" ]; then
+  if [ "${CONTINUUM_OFFICIAL_BUILD:-}" = "1" ]; then
+    echo "▶ build: official release (CONTINUUM_OFFICIAL_BUILD=1): thin LTO"
+  elif git -C "$REPO_ROOT" merge-base --is-ancestor HEAD origin/main 2>/dev/null; then
+    echo "▶ build: official release (HEAD is on origin/main): thin LTO"
+  else
+    export CARGO_PROFILE_RELEASE_LTO=false
+    echo "▶ build: dev release (HEAD is not on origin/main, e.g. a canary deploy): LTO off for a fast link"
+  fi
+fi
+
+
+# ── ONE cargo invocation for every bin of the crate ─────────────────
+# `cargo build --bin a` then `cargo build --bin b` is two invocations, and each
+# one resolves features, runs the build scripts and fingerprints the library for
+# itself. Any difference between the two — a feature flag, an env var a build
+# script watches — and continuum-core (the eighteen-minute compile) is built
+# AGAIN for the second bin. Measured on the IntelMac deploy of 2026-09-20 (card
+# 9174fc83): four `cargo build` lines in this script, one per bin, and
+# "Compiling continuum-core" four times per deploy — 18m16s + 5m41s + 5m14s +
+# 7m46s = 37 minutes; 25 minutes on the M5. The stop-first reboot path (the CLI's
+# memory bar) holds the serving core DOWN for all of it.
+#
+# THE LAW: a deploy compiles the library once. Every bin is named on ONE cargo
+# command line, so the lib compiles once and the four links run in parallel out
+# of the same artifacts. This function is the single place the crate's bins are
+# built; every path below — the deploy build, the #296 swept-cache restore, the
+# #194 forced rebuild, the GPU-free CLI arm — calls it rather than spelling out
+# a second `cargo build`. A CI check counts the literal invocations in this file
+# (tools/scripts/tests/start-server-build-only.test.sh) so a fifth cannot land.
+# Args: 1=feature flags (one string; split on purpose), 2..=bin names.
+build_core_bins() {
+  local features="$1"
+  shift
+  local bin_args=()
+  local bin
+  for bin in "$@"; do bin_args+=(--bin "$bin"); done
+  # shellcheck disable=SC2086  # $PROFILE_FLAG / $features are flag STRINGS, split on purpose
+  cargo build --manifest-path "$CORE_MANIFEST" "${bin_args[@]}" $PROFILE_FLAG $features
+}
 
 # ── #296 swept-artifact guard ────────────────────────────────────────
 # Cache eviction is a SUPPORTED event (CLAUDE.md disk doctrine): the shared
@@ -712,103 +662,165 @@ fi
 # `continuum reboot` reported success, `exec "$CORE_BIN"` died with "No such
 # file or directory", serving stayed down — fail-loud worked, self-heal
 # didn't). This is the self-heal: if the expected artifact file is missing,
-# say so loudly and re-run the SAME build invocation the script already uses
+# say so loudly and re-run the SAME build definition the script already uses
 # for that bin (a missing output forces cargo to re-link). Returns non-zero
 # if the artifact STILL doesn't exist — the caller decides fatality; no
 # silent fallback [[fallbacks-are-illegal-fail-loud]].
-# Args: 1=expected artifact path, 2=bin name, 3=manifest path,
-#       4+=profile/feature flags (pre-split by the caller, as elsewhere).
+# Args: 1=expected artifact path, 2=bin name, 3=feature flags (the set the bin
+#       was built with — the core's, or the CLI's own on a GPU-runtime box).
 ensure_unswept_bin() {
-  local bin_path="$1" bin_name="$2" manifest="$3"
-  shift 3
+  local bin_path="$1" bin_name="$2" features="$3"
   if [ -f "$bin_path" ]; then
     return 0
   fi
   echo "▶ $bin_name missing from cargo cache (swept?) — rebuilding --bin $bin_name" >&2
-  cargo build --manifest-path "$manifest" --bin "$bin_name" "$@" \
+  build_core_bins "$features" "$bin_name" \
     || echo "⚠ swept-cache rebuild of $bin_name failed" >&2
   [ -f "$bin_path" ]
 }
 
-# ── Build the continuum-mcp bin ──────────────────────────────────────
-# The MCP server is a separate stdio bin that MCP clients (unsloth Studio,
-# Claude Code) SPAWN — it isn't launched by us, so it must exist on disk after
-# `npm start`. Build it here (same crate/manifest/features/profile as the core,
-# so it's a fast incremental once the core is built) rather than via a raw
-# `cargo build` — all Rust bins build through the npm start path. It replaces
-# the Node `src/mcp-server.ts`; an MCP client config points at the built binary.
-echo "▶ building continuum-mcp (Rust MCP server bin)"
-cargo build --manifest-path "$CORE_MANIFEST" --bin continuum-mcp $PROFILE_FLAG $CONTINUUM_FEATURES \
-  || echo "⚠ continuum-mcp build failed — MCP server unavailable (core still launches)" >&2
-
-# ── Build the continuum CLI client ──────────────────────────────────────────
-# `continuum` is the pure-Rust CLI client (replaces the Node `./jtag`): `continuum ping`,
-# `continuum <command> [json]` over the core IPC socket via the uniform Connection.
-# Built here so the headless start produces the client on disk too.
-# SELF-BUILD GUARD. `continuum reboot` runs THIS script from inside the running
-# `continuum` binary. On Windows a running .exe cannot be replaced — the image is
-# locked — so this build fails with
+# ── The bins this deploy builds ──────────────────────────────────────
+# continuum-core-server — the core. Build BEFORE any teardown on every platform.
+#   A Windows executable mapped from another install slot does not lock this
+#   Cargo output. If this exact output is mapped, let Cargo fail: never kill a
+#   serving core (or its children) to unlock it. The guarded deploy caller owns
+#   the later stop and verified artifact handoff. Its failure is FATAL below.
+# continuum-mcp — the stdio MCP server that MCP clients (Claude
+#   Code) SPAWN; it isn't launched by us, so it must exist on disk after the
+#   deploy. It replaces the Node `src/mcp-server.ts`; an MCP client config points
+#   at the built binary. Non-fatal: a missing MCP bin doesn't block core boot.
+# forge-custodian — SPAWNED by the core (not launched by us): the genome loop's
+#   `forge/export` self-provisions it on demand via
+#   `forge::custodian_supervisor::ensure_local_custodian`, which resolves the
+#   binary as a SIBLING of the core exe. So it must exist on disk after the
+#   build, or the self-improvement loop fails loud at "custodian binary not
+#   found" the first time a trained gene needs converting to a pageable
+#   gguf-lora. Non-fatal: a missing custodian only blocks gene conversion; the
+#   supervisor already surfaces an actionable error.
+#   ([[managed-product-everything-self-provisions-no-operator-steps]], #52/#25)
+# continuum — the pure-Rust CLI client (replaces the Node `./jtag`): `continuum
+#   ping`, `continuum <command> [json]` over the core IPC socket via the uniform
+#   Connection. Built here so the headless start produces the client on disk too,
+#   and installed onto PATH further down. Two things can take it OFF this list:
 #
-#   error: failed to remove file `...\cargo-target\debug\continuum.exe`
+#   SELF-BUILD GUARD. `continuum reboot` runs THIS script from inside the running
+#   `continuum` binary. On Windows a running .exe cannot be replaced — the image is
+#   locked — so this build fails with
 #
-# and cargo returns non-zero for the WHOLE invocation. Every later build in this
-# script is skipped, continuum-core-server is never rebuilt, and `continuum reboot`
-# dies after its full timeout with "the start script exited (exit code: 1) without
-# the core coming up". Measured on BIGMAMA 2026-08-05: 772s to that failure. This
-# is why reboot has never worked on Windows — the verb was trying to overwrite
-# itself mid-run. (On Unix it silently works: unlink leaves the running inode.)
+#     error: failed to remove file `...\cargo-target\debug\continuum.exe`
 #
-# The caller sets CONTINUUM_SKIP_SELF_BUILD when it IS the continuum binary AND the
-# platform locks a running image — `runtime::deploy_provenance::cli_self_build` owns
-# that decision and is unit-tested on both rows. It used to be set unconditionally,
-# which charged this Windows-only constraint to every operator and made `reboot`
-# structurally unable to ship a fix living in the CLI (#422): proven on a Mac
-# 2026-08-14, when `stop`'s split-brain reap had merged and the installed CLI still
-# did not have it, leaving a core alive and silent under a green deploy-verify.
-# Where the image is replaceable the build below runs and the install further down
-# swaps it in, so the deploy loop closes with no operator step. Skipping is stated
-# out loud, never silent — a skipped build that looks like a completed one is how
-# stale binaries survive a "successful" deploy.
-if [ -n "${CONTINUUM_SKIP_SELF_BUILD:-}" ]; then
+#   and cargo returns non-zero for the WHOLE invocation. Every later build in this
+#   script is skipped, continuum-core-server is never rebuilt, and `continuum reboot`
+#   dies after its full timeout with "the start script exited (exit code: 1) without
+#   the core coming up". Measured on BIGMAMA 2026-08-05: 772s to that failure. This
+#   is why reboot has never worked on Windows — the verb was trying to overwrite
+#   itself mid-run. (On Unix it silently works: unlink leaves the running inode.)
+#
+#   The caller sets CONTINUUM_SKIP_SELF_BUILD when it IS the continuum binary AND the
+#   platform locks a running image — `runtime::deploy_provenance::cli_self_build` owns
+#   that decision and is unit-tested on both rows. It used to be set unconditionally,
+#   which charged this Windows-only constraint to every operator and made `reboot`
+#   structurally unable to ship a fix living in the CLI (#422): proven on a Mac
+#   2026-08-14, when `stop`'s split-brain reap had merged and the installed CLI still
+#   did not have it, leaving a core alive and silent under a green deploy-verify.
+#   Where the image is replaceable the build runs and the install further down
+#   swaps it in, so the deploy loop closes with no operator step. Skipping is stated
+#   out loud, never silent — a skipped build that looks like a completed one is how
+#   stale binaries survive a "successful" deploy.
+#
+#   THE GPU-FREE CLI on a GPU-runtime box. The CLI is an IPC client: it opens the
+#   core's socket, sends a command, prints the reply. It never touches a GPU.
+#   Every bin in a crate shares one feature set, so building it alongside the core
+#   linked CUDA into it — and on Windows that made the CLI UNLAUNCHABLE. Measured:
+#   `continuum models/list` exited 127 with ZERO bytes of output, because Windows
+#   resolves an executable's imports at LOAD time, before main(). Nothing inside
+#   the program can report that, which is why it read as "there is no CLI on
+#   Windows" rather than as a link problem. `dumpbin //DEPENDENTS` showed it
+#   importing cublas64_13.dll — CUDA 13 — on a box whose CUDA_PATH pointed at a
+#   CUDA 12 tree, because with several trees present the linker binds whichever
+#   sits earliest on PATH (#6). Joel hit the GUI form of the same thing:
+#   "cublas64_12.dll was not found". Colocating the DLLs beside the binary was
+#   tried and rejected: the direct imports copy fine and the binary STILL will not
+#   load, because those DLLs have their own transitive imports. Chasing the
+#   closure ships a CUDA runtime with a socket client. Not linking CUDA into a
+#   program that does not use it removes the problem instead of packaging it —
+#   and it is what makes the CLI work for people who are not us: a repo user on a
+#   laptop with NO NVIDIA card can run `continuum` to talk to a core over the grid.
+#   So where CONTINUUM_CLI_FEATURES differs from the core's set (the per-platform
+#   block decides — only where the set links a GPU runtime), the CLI is built by a
+#   SECOND invocation with its own set: one extra library compile, the documented
+#   price of a GPU-free CLI on that class of box, and the only case in which this
+#   deploy compiles the library more than once. Everywhere else the sets are equal
+#   and the CLI rides the one invocation.
+core_build_bins="continuum-mcp forge-custodian"
+if [ -n "${CONTINUUM_PREBUILT_CORE:-}" ]; then
+  echo "  (prebuilt core: --bin continuum-core-server left out of the build — $CONTINUUM_PREBUILT_CORE is the verified artifact)"
+else
+  core_build_bins="continuum-core-server $core_build_bins"
+fi
+cli_build_separately=""
+# Windows locks a running image, so the build must not write over the CLI that invoked
+# it. The caller names its own image in CONTINUUM_SKIP_SELF_BUILD; the build skips the
+# CLI only when that IS the file it would write. `install` runs from ~/.local/bin and the
+# supervisor from its slot, never from the target dir, so they rebuild the CLI; skipping
+# it for them staged an OLD CLI into the slot on every deploy and install copied it onto
+# PATH. "1" (a caller that does not name its image) keeps the old unconditional skip.
+cli_is_running_image() {
+  [ -n "${CONTINUUM_SKIP_SELF_BUILD:-}" ] || return 1
+  [ "$CONTINUUM_SKIP_SELF_BUILD" = "1" ] && return 0
+  local running out
+  running="$(cygpath -u "$CONTINUUM_SKIP_SELF_BUILD" 2>/dev/null || printf '%s' "$CONTINUUM_SKIP_SELF_BUILD")"
+  out="$(cygpath -u "$CARGO_TARGET_DIR/$PROFILE_LABEL/continuum" 2>/dev/null || printf '%s' "$CARGO_TARGET_DIR/$PROFILE_LABEL/continuum")"
+  running="$(printf '%s' "${running%.exe}" | tr '[:upper:]' '[:lower:]')"
+  out="$(printf '%s' "$out" | tr '[:upper:]' '[:lower:]')"
+  [ "$running" = "$out" ]
+}
+if cli_is_running_image; then
   echo "▶ skipping continuum CLI build — this script was invoked BY the running"
   echo "  continuum binary, which cannot replace its own image while executing."
   echo "  The CORE is still rebuilt below. To update the CLI itself: npm start"
+elif [ "$CONTINUUM_CLI_FEATURES" = "$CONTINUUM_FEATURES" ]; then
+  core_build_bins="$core_build_bins continuum"
 else
-  # Build the CLI WITHOUT the GPU feature set. It is an IPC client: it opens the
-  # core's socket, sends a command, prints the reply. It never touches a GPU.
-  #
-  # Every bin in a crate shares one feature set, so building it alongside the core
-  # linked CUDA into it — and on Windows that made the CLI UNLAUNCHABLE. Measured:
-  # `continuum models/list` exited 127 with ZERO bytes of output, because Windows
-  # resolves an executable's imports at LOAD time, before main(). Nothing inside
-  # the program can report that, which is why it read as "there is no CLI on
-  # Windows" rather than as a link problem. `dumpbin //DEPENDENTS` showed it
-  # importing cublas64_13.dll — CUDA 13 — on a box whose CUDA_PATH pointed at a
-  # CUDA 12 tree, because with several trees present the linker binds whichever
-  # sits earliest on PATH (#6). Joel hit the GUI form of the same thing:
-  # "cublas64_12.dll was not found".
-  #
-  # Colocating the DLLs beside the binary was tried and rejected: the direct
-  # imports copy fine and the binary STILL will not load, because those DLLs have
-  # their own transitive imports. Chasing the closure ships a CUDA runtime with a
-  # socket client.
-  #
-  # Not linking CUDA into a program that does not use it removes the problem
-  # instead of packaging it — and it is what makes the CLI work for people who are
-  # not us: a repo user on a laptop with NO NVIDIA card can now run `continuum`
-  # to talk to a core over the grid. Before this they could not run it at all.
-  #
+  cli_build_separately=1
+fi
+
+echo "▶ building $core_build_bins — one cargo invocation ($PROFILE_LABEL), the library compiles once"
+# shellcheck disable=SC2086  # the bin list is a word list, split on purpose
+if ! build_core_bins "$CONTINUUM_FEATURES" $core_build_bins; then
+  # One exit code for four bins. The core's failure is fatal and a sidecar's is
+  # not, so tell them apart the only honest way: build the core alone (warm — the
+  # library is already compiled if it compiled at all, so this is a link or the
+  # same error again, fast) and let ITS exit code decide.
+  case " $core_build_bins " in
+    *" continuum-core-server "*)
+      echo "⚠ the combined build failed — building continuum-core-server alone to tell a core failure from a sidecar failure" >&2
+      build_core_bins "$CONTINUUM_FEATURES" continuum-core-server \
+        || { echo "✗ FATAL: continuum-core-server build failed — leaving the running core untouched" >&2; exit 1; }
+      ;;
+  esac
+  echo "⚠ a sidecar bin failed to build (see cargo's output above) — whichever is missing is retried by name below; the core still launches" >&2
+fi
+
+if [ -n "$cli_build_separately" ]; then
   # Fall back loudly rather than silently: if the reduced build fails on some
   # platform, the featured build still produces a working CLI on that platform,
   # and the warning names exactly what the user gets instead.
-  echo "▶ building continuum (Rust CLI client — GPU-free: it is a socket client)"
-  if ! cargo build --manifest-path "$CORE_MANIFEST" --bin continuum $PROFILE_FLAG $CONTINUUM_CLI_FEATURES; then
+  echo "▶ building continuum (Rust CLI client — GPU-free: it is a socket client; its own feature set, a second library compile on this box)"
+  if ! build_core_bins "$CONTINUUM_CLI_FEATURES" continuum; then
     echo "⚠ GPU-free continuum build failed — retrying with the full feature set." >&2
     echo "  The CLI will then carry GPU link deps and may fail to launch on a box" >&2
     echo "  without a matching CUDA runtime on PATH. Please report this." >&2
-    cargo build --manifest-path "$CORE_MANIFEST" --bin continuum $PROFILE_FLAG $CONTINUUM_FEATURES \
+    build_core_bins "$CONTINUUM_FEATURES" continuum \
       || echo "⚠ continuum build failed — CLI client unavailable (core still launches)" >&2
   fi
+fi
+
+# #296: the MCP bin is spawned by MCP clients from the cargo cache path they
+# were configured with — a swept cache would fail loud only at the client's next
+# spawn. Restore it now; non-fatal.
+if ! ensure_unswept_bin "$CARGO_TARGET_DIR/$PROFILE_LABEL/continuum-mcp" continuum-mcp "$CONTINUUM_FEATURES"; then
+  echo "⚠ continuum-mcp missing after the build — MCP server unavailable (core still launches)" >&2
 fi
 
 # Put `continuum` on PATH so it works like any installed CLI — self-provisioning, the
@@ -827,10 +839,19 @@ CONTINUUM_CLI_BIN="$CARGO_TARGET_DIR/$PROFILE_LABEL/continuum"
 # disk — restore it so the copy below has real bytes. Non-fatal (matches the
 # build's own warn): a missing CLI doesn't block core boot, and the installed
 # ~/.local/bin copy from the last deploy keeps working.
-if ! ensure_unswept_bin "$CONTINUUM_CLI_BIN" continuum "$CORE_MANIFEST" $PROFILE_FLAG $CONTINUUM_CLI_FEATURES; then
+if ! ensure_unswept_bin "$CONTINUUM_CLI_BIN" continuum "$CONTINUUM_CLI_FEATURES"; then
   echo "⚠ continuum CLI still missing after swept-cache rebuild — CLI install skipped (core still launches)" >&2
 fi
-if [ -x "$CONTINUUM_CLI_BIN" ]; then
+# On Windows `continuum install`'s CLI arm owns the PATH copies (continuum.exe, uu.exe,
+# from the supervisor's slot). Writing them here too raced it: the deploy and an install
+# finishing together removed each other's files and the deploy failed on its `uu` link.
+case "$(uname -s)" in
+  MINGW*|MSYS*|CYGWIN*) cli_path_owner="install" ;;
+  *) cli_path_owner="here" ;;
+esac
+if [ "$cli_path_owner" = "install" ]; then
+  echo "  (CLI on PATH: owned by \`continuum install\` on Windows — it follows the supervisor's slot)"
+elif [ -x "$CONTINUUM_CLI_BIN" ]; then
   CONTINUUM_LINK_DIR="$HOME/.local/bin"
   mkdir -p "$CONTINUUM_LINK_DIR"
   # A stale symlink from an earlier install would otherwise make `cp` follow it back into
@@ -862,33 +883,12 @@ if [ -x "$CONTINUUM_CLI_BIN" ]; then
   esac
 fi
 
-# ── Build the forge-custodian sidecar ────────────────────────────────
-# Like continuum-mcp, this bin is SPAWNED by the core (not launched by us): the
-# genome loop's `forge/export` self-provisions it on demand via
-# `forge::custodian_supervisor::ensure_local_custodian`, which resolves the binary
-# as a SIBLING of the core exe. So it must exist on disk after the build, or the
-# self-improvement loop fails loud at "custodian binary not found" the first time a
-# trained gene needs converting to a pageable gguf-lora. Same manifest/features/
-# profile as the core → a fast incremental once the core is built. Non-fatal: a
-# missing custodian only blocks gene conversion, not core boot; the supervisor
-# already surfaces an actionable error. ([[managed-product-everything-self-provisions-no-operator-steps]], #52/#25)
-echo "▶ building forge-custodian (Rust gguf-lora export sidecar)"
-cargo build --manifest-path "$CORE_MANIFEST" --bin forge-custodian $PROFILE_FLAG $CONTINUUM_FEATURES \
-  || echo "⚠ forge-custodian build failed — genome gene-conversion unavailable (core still launches)" >&2
-# #296: the core spawns this bin later as a sibling of its own exe — a swept
-# cache that survives the build above would fail loud only at first gene
+# #296: the core spawns forge-custodian later as a sibling of its own exe — a
+# swept cache that survives the build above would fail loud only at first gene
 # conversion. Restore it now; non-fatal, matching the build's own warn.
-if ! ensure_unswept_bin "$CARGO_TARGET_DIR/$PROFILE_LABEL/forge-custodian" forge-custodian "$CORE_MANIFEST" $PROFILE_FLAG $CONTINUUM_FEATURES; then
-  echo "⚠ forge-custodian still missing after swept-cache rebuild — genome gene-conversion unavailable (core still launches)" >&2
+if ! ensure_unswept_bin "$CARGO_TARGET_DIR/$PROFILE_LABEL/forge-custodian" forge-custodian "$CONTINUUM_FEATURES"; then
+  echo "⚠ forge-custodian missing after the build — genome gene-conversion unavailable (core still launches)" >&2
 fi
-
-# Build BEFORE any teardown on every platform. A Windows executable mapped from
-# another install slot does not lock this Cargo output. If this exact output is
-# mapped, let Cargo fail: never kill a serving core (or its children) to unlock it.
-# The guarded deploy caller owns the later stop and verified artifact handoff.
-echo "▶ building continuum-core-server"
-cargo build --manifest-path "$CORE_MANIFEST" --bin continuum-core-server $PROFILE_FLAG $CONTINUUM_FEATURES \
-  || { echo "✗ FATAL: continuum-core-server build failed — leaving the running core untouched" >&2; exit 1; }
 
 # ── #194 FRESHNESS GUARD: never launch (or report "ready" on) a STALE binary ──
 # cargo's incremental fingerprint can MISS a source edit (mtime granularity, an
@@ -912,7 +912,7 @@ fi
 # end while the deploy read as green. Restore it HERE — before the #194
 # freshness guard, so #194 asserts against a real file — and if the rebuild
 # STILL can't produce it, fail loud now instead of at exec.
-if ! ensure_unswept_bin "$CORE_BIN" continuum-core-server "$CORE_MANIFEST" $PROFILE_FLAG $CONTINUUM_FEATURES; then
+if ! ensure_unswept_bin "$CORE_BIN" continuum-core-server "$CONTINUUM_FEATURES"; then
   echo "✗ FATAL #296: continuum-core-server missing at $CORE_BIN even after a swept-cache rebuild — refusing to exec a nonexistent binary (leaving any running core untouched)" >&2
   exit 1
 fi
@@ -920,7 +920,7 @@ core_bin_is_stale() { [ -z "${CONTINUUM_PREBUILT_CORE:-}" ] && [ -f "$CORE_BIN" 
 if core_bin_is_stale; then
   echo "⚠ #194: continuum-core-server is STALE (a source is newer than the binary) — cargo missed an edit; busting fingerprint + rebuilding" >&2
   find "$CORE_SRC_DIR" -name '*.rs' -type f -exec touch {} +
-  cargo build --manifest-path "$CORE_MANIFEST" --bin continuum-core-server $PROFILE_FLAG $CONTINUUM_FEATURES \
+  build_core_bins "$CONTINUUM_FEATURES" continuum-core-server \
     || { echo "✗ FATAL #194: forced rebuild failed — leaving the running core untouched" >&2; exit 1; }
   if core_bin_is_stale; then
     echo "✗ FATAL #194: continuum-core-server STILL stale after a forced rebuild — refusing to launch old code (verify-the-build-actually-deployed)" >&2
@@ -929,14 +929,12 @@ if core_bin_is_stale; then
   echo "✓ #194: forced a fresh continuum-core-server rebuild — binary now reflects source"
 fi
 
-# ── Build-only: the warm deploy ────────────────────────────────────────
-# `continuum reboot` runs this script with CONTINUUM_BUILD_ONLY=1 BEFORE it stops the
-# running core, when the machine has headroom: the core keeps serving through the
-# minutes of compile, and the launch that follows the stop finds the binary fresh
-# (its own build is a warm no-op), so the dark window is the stop plus the start —
-# seconds, not ten minutes (eight deploys on 2026-09-13 = 80 minutes dark, every
-# citizen's turns dropped and leases unrenewed each time). One build definition:
-# this script's, with the same manifest, profile and features.
+# ── Build-only: the dark deploy ────────────────────────────────────────
+# `continuum reboot` runs this script with CONTINUUM_BUILD_ONLY=1 AFTER it has stopped
+# serving (Joel, 2026-10-24: "No. Take down serving while building."): the build takes the
+# whole machine, the exact artifact is reported through the receipt, and a failed build puts
+# the previous core back. One build definition: this script's, with the same manifest,
+# profile and features.
 # THIS NODE FOLLOWS A BRANCH (opt-in, for every install — not an operator's shell chain):
 # `CONTINUUM_TRACK_BRANCH=canary` in ~/.continuum/config.env installs the tracker agent
 # (launchd / systemd user timer) on every start, idempotently. The agent deploys a green
@@ -947,7 +945,92 @@ if [ -n "${CONTINUUM_TRACK_BRANCH:-}" ] && [ "${CONTINUUM_BUILD_ONLY:-}" != "1" 
     || echo "⚠ track-canary install failed — this node will not follow $CONTINUUM_TRACK_BRANCH by itself" >&2
 fi
 
+# ── The desktop display manager's dist (Joel: 'should work like a Display
+# Manager'). Build the web client so the core can serve it — ALWAYS current
+# by construction: this runs on every start/reboot, so the greeter and the
+# core deploy as one generation. Non-fatal: a failed UI build boots a
+# headless core (desktop.dm.dist_missing probes the fix) rather than no core.
+#
+# BEFORE the build-only exit, and PINNED, not just exported (2026-09-26). Under
+# the launchd supervisor `continuum reboot` runs this script build-only and then
+# kickstarts the slot binary bare, so the block below used to be skipped entirely
+# (the dist froze at its last direct launch) and an `export` here could never
+# reach the supervised core: it booted `desktop.dm.unconfigured` on every deploy
+# while the CLI promised "the web build lands in the background". The core
+# applies ~/.continuum/config.env to itself on every boot, so that file is the
+# one durable home for the dist path; the export still serves a direct launch.
+if [ -f "$REPO_ROOT/apps/web/package.json" ] && command -v npm >/dev/null 2>&1; then
+  # Fresh clone (#291): the workspaces' node_modules must exist before the web
+  # build or the eye-node rail can run — without this, a first boot warned
+  # "desktop build failed" + spawned an eye-node that could not resolve tsx,
+  # and the new machine got a headless, eyeless core with no manual step named.
+  if [ ! -d "$REPO_ROOT/node_modules" ]; then
+    echo "→ first boot: installing workspace deps (npm ci)…"
+    (cd "$REPO_ROOT" && npm ci >/dev/null 2>&1 || npm install >/dev/null 2>&1) \
+      || echo "  ⚠ npm install failed — desktop + eye-node unavailable (run npm ci to diagnose)" >&2
+  fi
+  export CONTINUUM_UI_DIST="$REPO_ROOT/apps/web/dist"
+  # The durable pin: replace-or-append, single-quoted (the file is `source`d by
+  # bash, and an unquoted path with a backslash is destroyed by it — see
+  # config_env.rs). Same shape as `bin/continuum`'s config_set.
+  ui_pin_file="$HOME/.continuum/config.env"
+  mkdir -p "$HOME/.continuum" && touch "$ui_pin_file"
+  ui_pin_tmp="$(mktemp "${TMPDIR:-/tmp}/continuum-config.XXXXXX")"
+  grep -v '^CONTINUUM_UI_DIST=' "$ui_pin_file" > "$ui_pin_tmp" 2>/dev/null || true
+  printf "CONTINUUM_UI_DIST='%s'\n" "$CONTINUUM_UI_DIST" >> "$ui_pin_tmp"
+  mv "$ui_pin_tmp" "$ui_pin_file"
+  # NEVER IN FRONT (2026-09-02, Joel: "Desktop is optional… depends on core
+  # being up of course so must initiate if necessary"). The desktop is ONE
+  # optional client of a headless core — a web build has no business gating
+  # boot, fresh clone included: the core comes up NOW, and the dist lands in
+  # the background a minute later (desktop.dm.dist_missing probes the window;
+  # `continuum desktop` before it lands says the build is in flight rather
+  # than showing a broken page). This replaced a 1–2 minute SERIAL build in
+  # front of exec on EVERY boot. The build's output goes to a log, so a
+  # failure has a reason somewhere.
+  ui_build_log="$HOME/.continuum/logs/desktop-build.log"
+  mkdir -p "$HOME/.continuum/logs"
+  if [ -d "$REPO_ROOT/apps/web/dist" ]; then
+    echo "→ desktop: serving the existing dist now; rebuilding in the background (log: $ui_build_log)…"
+  else
+    echo "→ desktop: no dist yet — core boots headless now; building in the background (log: $ui_build_log)…"
+  fi
+  (cd "$REPO_ROOT" && npm run build -w @continuum/web >"$ui_build_log" 2>&1 \
+    && echo "  desktop build landed (reload / continuum desktop to open it)" \
+    || echo "  ⚠ background desktop build failed — read $ui_build_log" >&2) &
+fi
+
+# THE ENGINE CONVERGES ON A DEPLOY TOO (card 7c5f139d). A deploy's build-only pass runs this
+# script with BUILD_ONLY=1, and the engine install below the guard at the top is runtime-only,
+# so on the Macs the engine never followed the pin: the M5 and the IntelMac served 965d38a90
+# (no /train) a day after the pin reached 9733aca6c, and the M5 could not dream. The builder is
+# stamp-gated (skips at once when commit:backend match) and installs ATOMICALLY (rm, temp,
+# codesign, mv), and serving is stopped while it runs; the new core then relaunches any lane
+# whose /props build is older than the stamp.
+# macOS and Linux only: on Windows a running lane holds the engine's DLLs, and that path is
+# `continuum install`'s engine arm (#4382). A failed engine build never fails the core deploy:
+# the stamp is written only after a verified build, so the lane stays on the engine it has.
+if [ "${CONTINUUM_BUILD_ONLY:-}" = "1" ] && [ -z "${LLAMA_SERVER_BIN:-}" ]; then
+  case "$(uname -s)" in
+    Darwin|Linux)
+      if ! "$SCRIPT_DIR/install-llama-server.sh" >&2; then
+        echo "⚠ engine build failed in the build-only pass; the core deploys, lanes keep their current engine" >&2
+      fi
+      ;;
+  esac
+fi
+
 if [ "${CONTINUUM_BUILD_ONLY:-}" = "1" ]; then
+  # Native Windows service handoff does not run this launcher again. Prepare
+  # the media artifact here; the installed supervisor starts it after handoff.
+  case "$(uname -s)" in
+    MINGW*|MSYS*|CYGWIN*)
+      bash "$SCRIPT_DIR/install-livekit.sh" || exit 1
+      cargo build --manifest-path "$REPO_ROOT/core/livekit-bridge/Cargo.toml" --bin livekit-bridge --release || exit 1
+      # The Rust handoff stages siblings of the core artifact, not source files.
+      cp "$SCRIPT_DIR/start-livekit-windows.ps1" "$CARGO_TARGET_DIR/release/start-livekit-windows.ps1" || exit 1
+      ;;
+  esac
   # The caller must launch THIS artifact, not guess our profile/target directory
   # or rerun the source launcher after stopping the old core. Publish only after
   # the build and freshness checks succeed. Older callers need no receipt.
@@ -961,7 +1044,7 @@ if [ "${CONTINUUM_BUILD_ONLY:-}" = "1" ]; then
     esac
     printf '%s\n' "$artifact" > "$CONTINUUM_BUILD_RECEIPT"
   fi
-  echo "✓ warm build complete: continuum-core-server is fresh at $CORE_BIN — build-only, not launching"
+  echo "✓ build-only pass complete: continuum-core-server is fresh at $CORE_BIN — build-only, not launching"
   exit 0
 fi
 
@@ -975,7 +1058,17 @@ fi
 # serving); only live A/V is unavailable. Sidecar because it links webrtc-sys, which we
 # keep OUT of the core process ([[gpu-is-non-negotiable...]] resource isolation).
 start_livekit_rail() {
-  case "$(uname -s)" in Darwin|Linux) ;; *) return 0 ;; esac  # bridge speaks a unix-socket
+  case "$(uname -s)" in
+    MINGW*|MSYS*|CYGWIN*)
+      bash "$SCRIPT_DIR/install-livekit.sh" || return 1
+      cargo build --manifest-path "$REPO_ROOT/core/livekit-bridge/Cargo.toml" --bin livekit-bridge --release || return 1
+      powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$(cygpath -w "$SCRIPT_DIR/start-livekit-windows.ps1")" \
+        -BridgeBinary "$(cygpath -w "$CARGO_TARGET_DIR/release/livekit-bridge.exe")"
+      return $?
+      ;;
+    Darwin|Linux) ;;
+    *) return 0 ;;
+  esac
   local LK_LOG_DIR="$HOME/.continuum/logs"; mkdir -p "$LK_LOG_DIR"
   local SOCK="$HOME/.continuum/sockets/livekit-bridge.sock"; mkdir -p "$(dirname "$SOCK")"
   local LK_URL="${LIVEKIT_URL:-ws://localhost:7880}"
@@ -1049,7 +1142,7 @@ start_eye_node_rail() {
   if ! pgrep -f "eye-node/src/index.ts" >/dev/null 2>&1; then
     local EYE_LOG_DIR="$HOME/.continuum/logs"; mkdir -p "$EYE_LOG_DIR"
     echo "▶ eye-node (perception provider) starting"
-    (cd "$EYE_DIR" && nohup npx tsx "$EYE_DIR/src/index.ts" >"$EYE_LOG_DIR/eye-node.log" 2>&1 &)
+    (cd "$EYE_DIR" && CONTINUUM_CORE_SOCKET="$CONTINUUM_SOCKET" nohup npx tsx "$EYE_DIR/src/index.ts" >"$EYE_LOG_DIR/eye-node.log" 2>&1 &)
   fi
 }
 start_eye_node_rail
@@ -1081,6 +1174,7 @@ ensure_moonshine() {
   local files=(preprocess.onnx encode.int8.onnx uncached_decode.int8.onnx cached_decode.int8.onnx tokens.txt)
   local missing=0
   for f in "${files[@]}"; do [ -s "$DIR/$f" ] || missing=1; done
+  [ -s "$CONTINUUM_MODELS_DIR/vad/silero_vad.onnx" ] || missing=1
   [ "$missing" = 0 ] && return 0
   command -v curl >/dev/null 2>&1 || { echo "  ⚠ curl missing — STT (hearing) unavailable until moonshine models are placed in $DIR" >&2; return 0; }
   echo "→ first boot: fetching the local STT model (moonshine base int8, ~286MB once)…"
@@ -1090,6 +1184,14 @@ ensure_moonshine() {
     [ -s "$DIR/$f" ] && continue
     curl -sfL -o "$DIR/$f.tmp" "$BASE/$f" && mv "$DIR/$f.tmp" "$DIR/$f" || { ok=0; rm -f "$DIR/$f.tmp"; }
   done
+  # The room path needs VAD before Moonshine ever receives an utterance.
+  # Provisioning STT alone lets direct transcription pass while calls stay deaf.
+  local VAD="$CONTINUUM_MODELS_DIR/vad/silero_vad.onnx"
+  if [ ! -s "$VAD" ]; then
+    mkdir -p "$(dirname "$VAD")"
+    curl -sfL -o "$VAD.tmp" "https://huggingface.co/onnx-community/silero-vad/resolve/main/onnx/model.onnx" \
+      && mv "$VAD.tmp" "$VAD" || { ok=0; rm -f "$VAD.tmp"; }
+  fi
   [ "$ok" = 1 ] && echo "  STT model ready — citizens can hear" \
     || echo "  ⚠ moonshine fetch incomplete — STT unavailable this boot (retries next boot)" >&2
 }
@@ -1114,7 +1216,7 @@ echo ""
 # execs a half-written file. Non-fatal: failing to publish doesn't block this boot,
 # which runs $CORE_BIN directly either way.
 # [[managed-product-everything-self-provisions-no-operator-steps]], #194, #291
-CORE_INSTALL_DIR="$HOME/.continuum/bin"
+CORE_INSTALL_DIR="$PAYLOAD_ROOT/bin"
 if mkdir -p "$CORE_INSTALL_DIR" 2>/dev/null; then
   if cp "$CORE_BIN" "$CORE_INSTALL_DIR/continuum-core-server.tmp.$$" 2>/dev/null \
      && mv -f "$CORE_INSTALL_DIR/continuum-core-server.tmp.$$" \
@@ -1130,39 +1232,6 @@ fi
 # which re-runs cargo's build logic at launch and could second-guess (or re-stale)
 # what we already verified. We built it, we checked it reflects source, we run it.
 # Unambiguous: the process image is the verified $CORE_BIN. [[verify-the-build-actually-deployed]]
-# ── The desktop display manager's dist (Joel: 'should work like a Display
-# Manager'). Build the web client so the core can serve it — ALWAYS current
-# by construction: this runs on every start/reboot, so the greeter and the
-# core deploy as one generation. Non-fatal: a failed UI build boots a
-# headless core (desktop.dm.dist_missing probes the fix) rather than no core.
-if [ -f "$REPO_ROOT/apps/web/package.json" ] && command -v npm >/dev/null 2>&1; then
-  # Fresh clone (#291): the workspaces' node_modules must exist before the web
-  # build or the eye-node rail can run — without this, a first boot warned
-  # "desktop build failed" + spawned an eye-node that could not resolve tsx,
-  # and the new machine got a headless, eyeless core with no manual step named.
-  if [ ! -d "$REPO_ROOT/node_modules" ]; then
-    echo "→ first boot: installing workspace deps (npm ci)…"
-    (cd "$REPO_ROOT" && npm ci >/dev/null 2>&1 || npm install >/dev/null 2>&1) \
-      || echo "  ⚠ npm install failed — desktop + eye-node unavailable (run npm ci to diagnose)" >&2
-  fi
-  # NEVER IN FRONT (2026-09-02, Joel: "Desktop is optional… depends on core
-  # being up of course so must initiate if necessary"). The desktop is ONE
-  # optional client of a headless core — a web build has no business gating
-  # boot, fresh clone included: the core comes up NOW, and the dist lands in
-  # the background a minute later (desktop.dm.dist_missing probes the window;
-  # `continuum desktop` before it lands says the build is in flight rather
-  # than showing a broken page). This replaced a 1–2 minute SERIAL build in
-  # front of exec on EVERY boot.
-  export CONTINUUM_UI_DIST="$REPO_ROOT/apps/web/dist"
-  if [ -d "$REPO_ROOT/apps/web/dist" ]; then
-    echo "→ desktop: serving the existing dist now; rebuilding in the background…"
-  else
-    echo "→ desktop: no dist yet — core boots headless now; building in the background…"
-  fi
-  (cd "$REPO_ROOT" && npm run build -w @continuum/web >/dev/null 2>&1 \
-    && echo "  desktop build landed (reload / continuum desktop to open it)" \
-    || echo "  ⚠ background desktop build failed — run npm run build -w @continuum/web to diagnose" >&2) &
-fi
 
 # A HOSTING NODE DOES NOT SLEEP (card 94a95a98). On 2026-09-07 the M5 idle-slept on
 # battery and then cycled Maintenance Sleep on AC for three hours while hosting five

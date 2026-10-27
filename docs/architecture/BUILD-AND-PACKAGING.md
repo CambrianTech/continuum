@@ -1,5 +1,8 @@
 # Build, Startup, Testing & Packaging — the Foundation
 
+> `legacy/` was deleted 2026-10-23; every `legacy/` path below is at git tag `legacy-archive-2026-10-23` (restore: `git checkout legacy-archive-2026-10-23 -- legacy/<path>`).
+
+
 > **Premise** (Joel, 2026-06-21): *"Startup and testing are major weaknesses. We wanted clean startup, so good that reliably these personas are on airc for you to code with, across our grid too, as a foundation, from install to our iterative development, so we can build task trays, web, mobile, on top anew, in dockerized nodes we can roll out like kubernetes. We need adherence to strict principles and design first."*
 
 This is the **design-first** contract for how the system is installed, started, tested, packaged, and rolled out. It is deliberately strict: startup and testing have been the two weakest links, and the cost of leaving them ad-hoc is the recurring "old Node tangent" that derails real work. Everything below exists to make the **foundation reliable** — a headless Rust core with personas live on airc — so that task trays, web, and mobile can be built *on top, anew*, and rolled out as dockerized nodes.
@@ -27,12 +30,12 @@ The bottom of the stack — **install → start → personas on airc** — must 
 ## 2. Strict principles (non-negotiable)
 
 1. **Design first.** A new startup path, test layer, or deployable unit gets designed here before it gets code. No second start orchestrator, no parallel test framework, no bespoke Dockerfile that duplicates an existing one.
-2. **One reliable startup, pure Rust.** The headless core starts via **`continuum start`** → `tools/scripts/start-server.sh` → `cargo run` the `continuum-core-server`. No Node in the core start/build/test path. The legacy Node orchestrator is quarantined (`legacy/`), out of every build/CI/Docker path. (`[[validate-via-pure-rust-not-npm-jtag]]`, `[[rust-is-the-core-node-is-the-shell]]`.)
+2. **One reliable startup, pure Rust.** The headless core starts via **`continuum start`** → `tools/scripts/start-server.sh` → `cargo run` the `continuum-core-server`. No Node in the core start/build/test path. The legacy Node orchestrator is deleted (tag `legacy-archive-2026-10-23`), out of every build/CI/Docker path. (`[[validate-via-pure-rust-not-npm-jtag]]`, `[[rust-is-the-core-node-is-the-shell]]`.)
 3. **The core is headless; clients are equal consumers.** Desktop/web/mobile/CLI/task-trays all ride the uniform `continuum_client` `Connection` over a transport; none is privileged (`[[headless-core-many-clients]]`, `[[client-sdk-platform-architecture]]`). `continuum` is the reference CLI client *and* the lifecycle surface.
 4. **Modular units = build units = containers.** Each deployable is a workspace member → a binary → (optionally) a container. The unit boundary is the same at every layer; you don't re-slice the system per packaging target.
-5. **Testing is a first-class deliverable, layered and deterministic.** Unit + integration tests are pure `cargo test` with **zero live deps** (no airc, no unsloth, no models, no network). Live behavior is proven by an explicit, opt-in smoke path (`continuum start` + `continuum ping` + a persona turn), never baked into CI's default gate. (Reinforces the test doctrine in CLAUDE.md: one test mod per file, stress behind `stress-tests`, fixtures behind `test-fixtures`, every test names the invariant it guards.)
+5. **Testing is a first-class deliverable, layered and deterministic.** Unit + integration tests are pure `cargo test` with **zero live deps** (no airc, no models, no network). Live behavior is proven by an explicit, opt-in smoke path (`continuum start` + `continuum ping` + a persona turn), never baked into CI's default gate. (Reinforces the test doctrine in CLAUDE.md: one test mod per file, stress behind `stress-tests`, fixtures behind `test-fixtures`, every test names the invariant it guards.)
 6. **No Node in the foundation.** Node exists only to *build the web client SDK/app* — a leaf consumer. It is never a dependency of core build, core start, core test, or the grid. If a foundation step reaches for `npm`/`tsx`, that's the bug.
-7. **Move-first to excise legacy.** Retiring something means moving it to `legacy/` and letting the build/refs break to map the coupling, then fixing to the pure replacement — never patching the old thing in place (`[[move-first-let-compiler-find-the-smell]]`).
+7. **Move-first to excise legacy.** Retiring something means deleting it (it stays at tag `legacy-archive-2026-10-23`) and letting the build/refs break to map the coupling, then fixing to the pure replacement — never patching the old thing in place (`[[move-first-let-compiler-find-the-smell]]`).
 8. **Single dynamic command surface — no duplicated lists, ever.** Every command is callable through `continuum <command> [json]` because `continuum` forwards the command *string* to the core and the core routes it through the ONE registry (`command_registry` + the `DynCommand` object map). `continuum` enumerates nothing; the persona tool surface, the ACL, and codegen all read the *same* registry. A command is declared in exactly ONE file (its `CommandSpec`/`ActionCommand` + `register_command!`); removing or renaming it updates that one place and everything follows. **No central command list, no switch-on-name, no per-caller catalog** — if removing a command means editing 20 strings or `match` arms, that's the bug (the anti-pattern CLAUDE.md forbids). Command *discovery* is dynamic too: `commands/list` returns the live registry, so clients/trays never hardcode a catalog.
 
 ---
@@ -48,7 +51,7 @@ The Cargo workspace (root `Cargo.toml`) is the single source of build units. The
 | **CLI / lifecycle** | `core/continuum-core` (bin) → **should migrate to `apps/cli`** | `continuum` | n/a (or thin) | `continuum start`/`stop` (lifecycle) + `continuum <command>` (uniform client). Replaces Node `./jtag`. |
 | **Inference** | `core/inference-grpc` | `inference-grpc` | (per topology) | GPU inference lane host. |
 | **LiveKit bridge** | `core/livekit-bridge` | `livekit-bridge` | `docker/livekit-bridge.Dockerfile` | Realtime media bridge. |
-| **unsloth gateway** | *external* | — | external service | Universal model gateway (`/v1` chat+embeddings, `/api`). Not ours to build; a service we address. (`[[unsloth-universal-model-gateway]]`) |
+| **llama-server** | *engine* | — | separate process | Our llama.cpp fork (`core/vendor/llama.cpp`): serving (`/v1` chat+embeddings), in-engine LoRA training, KV paging, multi-adapter serving. Addressed over `/v1`. |
 | **Clients (new)** | `client/*`, `apps/*` | web / mobile / desktop / task-trays | `docker/node-server.Dockerfile`, `docker/widget-server.Dockerfile` | Built ON TOP, on the uniform client SDK. Node only here. |
 
 **Principle 4 in practice:** `continuum`'s correct long-term home is `apps/cli` (it's a client, not core). It currently lives as a `continuum-core` bin for fast iteration (precedent: `continuum-mcp`); migrating it to `apps/cli` is tracked, not blocking.
@@ -69,29 +72,88 @@ continuum stop       # stop the detached core (process-group SIGTERM)
 - `start-server.sh` is the **implementation detail**: pure-Rust `cargo run` with per-platform features (Darwin arm64 → `metal,accelerate`; Intel Mac → cpu-only; Linux/Windows → detected), airc context auto-discovered, builds core + mcp + continuum. **No Node.**
 - `npm start` (root and `src/`) just calls `start-server.sh` — kept only as muscle-memory alias; it is not a Node orchestrator.
 
+### Node profile: calls and avatars are what a node hosts
+
+The crate builds **headless by default** (`default = []`): no LiveKit, no Bevy/wgpu. A plain
+`cargo check`/`cargo test` compiles neither. What a node hosts beyond the headless core is its
+**profile**, one line in `~/.continuum/config.env`:
+
+```bash
+CONTINUUM_NODE_FEATURES=livekit-webrtc,avatar-3d   # calls + 3D avatars (the M5, the 5090)
+CONTINUUM_NODE_FEATURES=livekit-webrtc             # calls, no Bevy (the IntelMac)
+# absent or empty                                   # headless (an AWS node, a fresh install)
+```
+
+ONE function resolves it, together with the platform GPU set:
+`tools/scripts/lib/core-features.sh` `select_core_features`. Every deploy path calls it:
+`start-server.sh` (`continuum start` / `reboot`), the deploy consumer judging a published
+core (`continuum.rs` `local_core_features`), the Windows developer install
+(`win-modules.ps1` `Mod-BuildCore`, through `resolve_node_features`) and CI's published
+binaries (`core-binaries.yml`, which builds each platform with `published_node_features`).
+A word outside `livekit-webrtc avatar-3d` refuses the build, naming it; no profile builds
+headless and the build says so. A published core carries its platform's published profile;
+a node hosting a subset of it (headless included) takes that core, and a node hosting more
+builds its own. After editing the line, `continuum reboot` builds with it.
+
 **Forbidden:** a second start script; reintroducing `parallel-start.sh` (quarantined in `legacy/node-startup/`); any start step that blocks on a flaky external (model download, scene-gen) — those are separate, optional, and must degrade, never gate the core coming up.
 
-**Graceful degrade is mandatory.** A missing optional dependency (ONNX/ORT dylib, unsloth embeddings, STT model, Tailscale) logs a WARN and the core still serves. The live boot already demonstrates this (unsloth `/v1/embeddings` 501 → lexical fallback; ORT missing → isolated). A missing *optional* must never abort startup. (`#26`: faculties degrade, never panic.)
+**Graceful degrade is mandatory.** A missing optional dependency (ONNX/ORT dylib, engine embeddings, STT model, Tailscale) logs a WARN and the core still serves. The live boot already demonstrates this (engine `/v1/embeddings` unavailable → lexical fallback; ORT missing → isolated). A missing *optional* must never abort startup. (`#26`: faculties degrade, never panic.)
 
 ---
 
 ## 5. Testing (weakness #2 — the discipline)
 
-Three layers, strictly separated by their dependency surface:
+Choose the smallest build boundary that owns the changed behavior. The local
+edit/verify loop must not require the whole core test executable.
 
-| Layer | Command | Deps | Gate |
-|---|---|---|---|
-| **Unit + integration** | `cargo test -p continuum-core` | NONE (no airc/unsloth/models/network) | CI default — must be green |
-| **Stress / concurrency** | `cargo test --features stress-tests … stress` | in-process only | opt-in; sign-off + perf curves |
-| **Live smoke** | `continuum start && continuum ping && <persona turn>` | airc + a model | manual / scheduled; never the CI default |
+| Layer | Command / procedure | What it establishes |
+|---|---|---|
+| **Component** | `cargo test -p continuum-tool-protocol --lib` (parser); `cargo test -p continuum-cli-lifecycle --lib` (CLI lifecycle) | Local contracts using existing fixtures; no core build or serving process |
+| **Composition** | `cargo check -p continuum-core --lib` after a shared interface changes | The actual core consumer compiles; not runtime integration evidence |
+| **In-process core suite** | `cargo test -p continuum-core` | Broader regression coverage, separate from each local edit; no real model/network acceptance claim |
+| **Stress / concurrency** | `cargo test --features stress-tests ... stress` | Opt-in concurrency and performance sign-off |
+| **Live integration** | Reuse the owned serving session and resident activity; verify capture -> prompt -> outgoing media -> generation -> intended tool execution -> recapture | Actual cross-component behavior, including the model and browser; unit results cannot replace this |
+
+For live integration, establish the session once and exercise successive steps
+against it. Retain request IDs and artifact hashes across steps so a result from
+another request cannot satisfy the check. A successful screenshot capture alone
+is insufficient: the resident must consume it and perform an intended action.
+Do not start a second daemon or reset a resident's activity for each assertion.
+Installation and restart remain coordinated lifecycle operations.
 
 Rules (extend, don't reinvent — these are the CLAUDE.md test rules, restated as foundation policy):
-- **Deterministic by default.** Anything depending on airc/unsloth/models/network is a *live smoke*, not a unit test. The persona→command path is proven deterministically (`cognition::tool_executor::…::persona_executes_ping_via_typed_object_path`) with no live deps — that is the pattern.
+- **Deterministic by default.** Anything depending on airc/models/network is a *live integration test*, not a unit test. The persona→command path is proven deterministically (`cognition::tool_executor::…::persona_executes_ping_via_typed_object_path`) with no live deps — that is the pattern.
 - **One `#[cfg(test)] mod` per file**; stress behind `#[cfg(feature = "stress-tests")]`; fixtures behind `#[cfg(any(test, feature = "test-fixtures"))]`.
 - **Every test names the invariant it guards** (`// what this catches:`), and regressions link the issue/commit.
 - **Shared cargo target.** Always `export CARGO_TARGET_DIR="$HOME/.continuum/cache/cargo-target"` for hand-run cargo so artifacts land in the one cache, not ghost `target/` dirs.
 
 The integration-smoke gap (`#22`: boot core + continuum-mcp smoke) is the next test investment: a scripted `continuum start` → assert socket + `continuum ping` + one persona turn, run on demand, so "did the wiring actually come up" is a one-command answer.
+
+---
+
+## 5b. Two audiences, both fast: builds happen in CI, machines download
+
+Joel, 2026-10-03: *"separate end users of this repo from US our engineering efforts, both of which be fast"* and *"end users do not compile."* One rule serves both: **a commit is built once per platform in CI; every machine that runs it downloads it.**
+
+| | End users of the repo | Us (fleet engineering) |
+|---|---|---|
+| Wants | one-command install, never compile, fast runtime | a merged fix running on every node in minutes |
+| Branch | `main` | `canary` |
+| Built by | CI, once per platform | CI, once per platform |
+| Profile | full release (thin LTO), signed | release without LTO: fastest correct binary |
+| On the machine | installer / `continuum update` downloads, verifies, swaps | the node's deploy consumer downloads its platform's artifact, verifies, hands off |
+| Compiles locally? | never | never, except a developer iterating on their own unmerged change |
+
+**Platforms:** macOS arm64 (Metal), macOS x86_64 (CPU), Linux (CPU / CUDA / Vulkan), Windows.
+
+**Status (2026-10-03).**
+- **Docker:** `docker-images.yml` already builds and pushes `ghcr.io/cambriantech/continuum-core*` on push to `main`.
+- **Native macOS and Windows:** these installs still compile on the user's machine.
+- **Fleet nodes:** every node compiles canary on itself. The IntelMac took ~10 h per deploy, and the M5's launchd refused freshly built cores with OS_REASON_CODESIGNING.
+- **Stopgaps that only make on-node compiles hurt less:** canary builds without LTO (#4687), warm builds unthrottled (#4689), bevy behind `avatar-3d` (#4688).
+- **The fix** is the artifact pipeline above. It also gives one signing point for macOS.
+
+**Rule for changes here:** speed of iteration first. A build is not a runtime feature; never throttle it to protect a node's runtime. And don't add process (new jobs, new gates) where a download would remove the work entirely.
 
 ---
 
@@ -103,7 +165,7 @@ The Docker surface already exists and is the rollout unit:
 - **Per-unit Dockerfiles:** `docker/continuum-core.Dockerfile` (+`-cuda`, `-vulkan` for GPU backends), `docker/livekit-bridge.Dockerfile`, `docker/model-init.Dockerfile`, plus client images (`node-server`, `widget-server`).
 - **Build/push:** `scripts/ensure-docker.sh`, `scripts/push-current-arch.sh`, `scripts/push-image.sh` (`npm run docker:push*`).
 
-**Target shape (design, not all built):** each modular unit (§3) is one container image; a **continuum node** = `{ continuum-core + continuum-mcp + continuum }` co-located, addressing the local core over its IPC socket, joining the grid over airc. A node is the **kubernetes rollout unit** — replicate nodes across the grid, each a citizen-host (`[[docker-personas-as-grid-peers]]`). unsloth is a sibling service addressed over `/v1`, scaled independently. Clients (task trays/web/mobile) are separate deployments consuming the grid through the SDK.
+**Target shape (design, not all built):** each modular unit (§3) is one container image; a **continuum node** = `{ continuum-core + continuum-mcp + continuum }` co-located, addressing the local core over its IPC socket, joining the grid over airc. A node is the **kubernetes rollout unit** — replicate nodes across the grid, each a citizen-host (`[[docker-personas-as-grid-peers]]`). The engine (`llama-server`) is a sibling service addressed over `/v1`, scaled independently. Clients (task trays/web/mobile) are separate deployments consuming the grid through the SDK.
 
 **Addressing per topology** (`#23`, `#27`): in-node = IPC socket; cross-node = airc peer URI; the command/route layer already abstracts both (`COMMAND-ORGANIZATION.md` §"agnostic of machine and environment"). k8s service discovery maps onto airc peer discovery, not a parallel mechanism.
 
@@ -126,7 +188,7 @@ Node/TS is **only** for building the web client SDK and the web/desktop apps tha
 
 **Next (design-first, in order):**
 1. **Live-smoke harness** (`#22`): scripted `continuum start → ping → persona turn` assertion.
-2. **unsloth `/v1/embeddings`** (`#40`): neural recall instead of lexical fallback.
+2. **engine `/v1/embeddings`** (`#40`): neural recall instead of lexical fallback.
 3. **`continuum` → `apps/cli`** migration (unit boundary hygiene, §3).
 4. **`node` compose profile + k8s manifest** (§6): the rollout unit, bundled and addressable.
 5. **Clients anew** (`#29`): task trays / web / mobile on the uniform SDK, as containers.

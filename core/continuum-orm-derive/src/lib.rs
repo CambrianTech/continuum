@@ -108,19 +108,21 @@ use syn::{
 /// or `crate` when the consumer IS continuum-core itself (matches
 /// the `extern crate self as continuum_core;` self-alias).
 fn resolve_continuum_core_path() -> proc_macro2::TokenStream {
-    match crate_name("continuum-core") {
-        Ok(FoundCrate::Itself) => quote!(crate),
-        Ok(FoundCrate::Name(name)) => {
-            let ident = syn::Ident::new(&name, proc_macro2::Span::call_site());
-            quote!(::#ident)
+    // The ORM lives in continuum-kernel (the microkernel cut); continuum-core re-exports it,
+    // so a crate that depends on core alone still resolves `<core>::orm`. Kernel first.
+    for owner in ["continuum-kernel", "continuum-core"] {
+        match crate_name(owner) {
+            Ok(FoundCrate::Itself) => return quote!(crate),
+            Ok(FoundCrate::Name(name)) => {
+                let ident = syn::Ident::new(&name, proc_macro2::Span::call_site());
+                return quote!(::#ident);
+            }
+            Err(_) => continue,
         }
-        // If the consumer's Cargo.toml doesn't list continuum-core
-        // at all, the user is using the derive macro standalone —
-        // not supported, but we fall back to the conventional name
-        // so the diagnostic at compile time is clear ("can't find
-        // continuum_core in the crate root").
-        Err(_) => quote!(::continuum_core),
     }
+    // Neither listed: the derive used standalone, which is not supported; the conventional
+    // name makes the compile error name what is missing.
+    quote!(::continuum_kernel)
 }
 
 /// Derive `impl OrmEntity for #name { ... }` from the struct
@@ -739,7 +741,9 @@ fn infer_field_type(ty: &Type) -> InferredFieldType {
         // PathBuf / Path serdes as String; without this branch they
         // fall to the "any other named type → Json" tail.
         Some("PathBuf" | "Path") => InferredFieldType::String,
-        Some("Uuid") => InferredFieldType::Uuid,
+        // airc's actor and room ids are `#[serde(transparent)]` UUID newtypes: a Uuid column,
+        // indexable, not the Json tail every other named type falls to.
+        Some("Uuid" | "PeerId" | "RoomId") => InferredFieldType::Uuid,
         Some("bool") => InferredFieldType::Boolean,
         Some(
             "u8" | "u16" | "u32" | "u64" | "u128" | "usize" | "i8" | "i16" | "i32" | "i64"

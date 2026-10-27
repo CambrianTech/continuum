@@ -83,7 +83,7 @@ fn install_shutdown_handlers() {
                 // modules), then the fast _exit that skips llama.cpp's
                 // double-free-prone static destructors (note above).
                 continuum_core::runtime::run_signal_shutdown().await;
-                continuum_core::modules::sentinel::shutdown_all_sentinels();
+                continuum_sentinel::shutdown_all_sentinels();
                 unsafe { libc::_exit(0) };
             }
         });
@@ -96,7 +96,7 @@ fn install_shutdown_handlers() {
                 sig.recv().await;
                 eprintln!("[continuum-core] SIGINT — save-and-join broadcast, then exit");
                 continuum_core::runtime::run_signal_shutdown().await;
-                continuum_core::modules::sentinel::shutdown_all_sentinels();
+                continuum_sentinel::shutdown_all_sentinels();
                 unsafe { libc::_exit(0) };
             }
         });
@@ -153,20 +153,19 @@ fn install_shutdown_handlers() {
             // are killed after (they are children, not modules), then the fast `_exit`
             // that skips llama.cpp's double-free-prone static destructors.
             continuum_core::runtime::run_signal_shutdown().await;
-            continuum_core::modules::sentinel::shutdown_all_sentinels();
+            continuum_sentinel::shutdown_all_sentinels();
             unsafe { libc::_exit(0) };
         });
     }
 }
 
-/// Short human-readable description of each `BootMode` — surfaces
-/// in the boot banner so the operator can see at a glance what the
-/// substrate is expected to support in this run.
 /// Register a BevyMemoryReporter with the pressure monitor once the
 /// Bevy renderer's ready edge fires. Pulled out of the inline async
 /// task so the subscribe-and-await loop reads as one signal-shaped
 /// block. Called at most once per process lifetime; a Bevy restart
 /// would re-fire the edge but the existing reporter stays valid.
+/// Only exists under `avatar-3d` — no renderer, no reporter.
+#[cfg(feature = "avatar-3d")]
 fn register_bevy_reporter(
     pressure_monitor: &std::sync::Arc<continuum_core::system_resources::MemoryPressureMonitor>,
 ) {
@@ -188,6 +187,9 @@ fn register_bevy_reporter(
     tracing::info!("🧠 Bevy memory reporter registered via ready edge");
 }
 
+/// Short human-readable description of each `BootMode` — surfaces
+/// in the boot banner so the operator can see at a glance what the
+/// substrate is expected to support in this run.
 fn boot_mode_description(mode: continuum_core::runtime::BootMode) -> &'static str {
     use continuum_core::runtime::BootMode;
     match mode {
@@ -207,33 +209,65 @@ fn boot_mode_description(mode: continuum_core::runtime::BootMode) -> &'static st
 // `libloading::Library::new("libonnxruntime.dylib")` dlopen probe.
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // Explicit validation is a short-lived child of the prebuilt validator.
+    // Dispatch before config, Tokio, tracing, sockets, personas or persistence.
+    let probe_args: Vec<_> = std::env::args_os().collect();
+    if probe_args.get(1).is_some_and(|arg| arg == "--build-sha") {
+        if probe_args.len() == 3
+            && probe_args[2] == continuum_cli_lifecycle::prebuilt_validation::CAPABILITIES_FLAG
+        {
+            println!(
+                "{}",
+                serde_json::to_string( // Child stdout protocol to the parent prebuilt validator.
+                    &continuum_cli_lifecycle::prebuilt_validation::Capabilities {
+                        build_sha: env!("CONTINUUM_BUILD_GIT_SHA").to_string(),
+                        embedding_probe: 1,
+                    }
+                )?
+            );
+        } else if probe_args.len() == 2 {
+            println!("{}", env!("CONTINUUM_BUILD_GIT_SHA"));
+        } else {
+            return Err("invalid --build-sha validation arguments".into());
+        }
+        return Ok(());
+    }
+    if probe_args
+        .get(1)
+        .is_some_and(|arg| arg == continuum_cli_lifecycle::prebuilt_validation::EMBEDDING_FLAG)
+    {
+        if probe_args.len() != 3 {
+            return Err("embedding validation requires exactly one local GGUF path".into());
+        }
+        let report = continuum_core::inference::backends::llamacpp::validate_embedding_model(
+            std::path::Path::new(&probe_args[2]),
+        )?;
+        println!("{}", serde_json::to_string(&report)?); // Child stdout receipt consumed by the parent prebuilt validator.
+        return Ok(());
+    }
     // `~/.continuum/config.env` is THIS process's to apply, on every boot, before any
     // thread exists (`set_var` must not race a reader). A launcher that applied it to the
     // child froze it into a supervisor's plist/task at install time; the core owning it
     // means "edit the file, reboot" holds under launchd exactly as on the direct path.
-    let applied = continuum_core::config_env::apply_to_process();
+    let applied = continuum_base::config_env::apply_to_process();
     if applied > 0 {
         eprintln!("continuum-core: applied {applied} assignment(s) from config.env");
     }
+    // The one continuum home, resolved once config.env has had its say and before anything
+    // reads it. A retired $CONTINUUM_ROOT, or no home at all, refuses the boot here with the
+    // reason, instead of each later `continuum_home().ok()` quietly switching its feature off
+    // (card e7c258a5).
+    let home = continuum_core::paths::continuum_home()
+        .map_err(|error| format!("continuum-core: {error}"))?;
     tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?
-        .block_on(async_main())
+        .block_on(async_main(home))
 }
 
-async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
+async fn async_main(home: std::path::PathBuf) -> Result<(), Box<dyn std::error::Error>> {
     let boot_entry = std::time::Instant::now();
     continuum_core::runtime::boot_clock::mark();
-    // Deploy-verification (#194). `continuum-core-server --build-sha` prints the git commit
-    // THIS binary was built from and exits immediately (before any tracing/socket/side-effect),
-    // so `continuum reboot` can prove the running core is the freshly-built one — not a stale cached
-    // binary that answered on the same socket and reported success. A reboot that silently runs
-    // old code is a lie; this makes it impossible.
-    if std::env::args().nth(1).as_deref() == Some("--build-sha") {
-        println!("{}", env!("CONTINUUM_BUILD_GIT_SHA"));
-        return Ok(());
-    }
-
     // Raise our own fd ceiling BEFORE opening any socket or file sink. The core is the
     // grid's hub — it opens many airc unix sockets and sqlite handles by design — and a
     // low inherited RLIMIT_NOFILE wedges it on ORDINARY load: 2026-09-17 the M5 inherited
@@ -291,7 +325,10 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
         }));
     }
 
-    let probe_install = install_probe_tracing(ProbeTracingConfig::from_env("info"))?;
+    let probe_install = install_probe_tracing(
+        ProbeTracingConfig::from_env("info"),
+        continuum_core::modules::logger_clog_sink::LoggerQueueSink,
+    )?;
     if let Some(ref path) = probe_install.probe_log_path {
         // Use println so it appears even when RUST_LOG filters out
         // info-level tracing events — the operator who just set the
@@ -446,7 +483,7 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
          in-process Qwen3-Embedding on first recall) — no gateway probe on the boot path"
     );
     let embedding_provider: Arc<dyn continuum_core::memory::EmbeddingProvider> =
-        Arc::new(continuum_core::cognition::embedding::LazyRecallEmbedder::new());
+        Arc::new(continuum_core::ai::embedding::LazyRecallEmbedder::new());
     let memory_manager = Arc::new(PersonaMemoryManager::new(embedding_provider));
 
     // Persist the process-global embedding cache across restarts. This is the ONE
@@ -457,16 +494,10 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
     // Own background task, snapshot on a slow cadence, best-effort (a lost snapshot
     // just re-embeds). Off the boot critical path — the load is a fast file read,
     // no gateway/GPU probe.
-    if let Some(home) = dirs::home_dir() {
-        let cache_path = home
-            .join(".continuum")
-            .join("cache")
-            .join("embedding-cache.bin");
-        continuum_core::cognition::embedding::spawn_embedding_cache_persistence(
-            continuum_core::cognition::embedding::global_embedding_cache(),
-            cache_path,
-        );
-    }
+    continuum_core::ai::embedding::spawn_embedding_cache_persistence(
+        continuum_core::ai::embedding::global_embedding_cache(),
+        home.join("cache").join("embedding-cache.bin"),
+    );
 
     // Capture tokio runtime handle for async operations from IPC thread
     let rt_handle = tokio::runtime::Handle::current();
@@ -493,13 +524,42 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
     // known cache class now reports through a TrackedDir fed by the
     // DiskUsageScanner daemon (one slow walker; reporters read atomics
     // within the 100 ms budget).
+    // The continuum classes follow the one resolved continuum home (card 4dedb177).
     let tracked_dirs = continuum_core::system_resources::standard_tracked_dirs(
-        &dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("/")),
+        &dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("/")), // JUSTIFIED unwrap_or_else: unchanged here; with no resolvable home airc's classes point at /.airc, which nothing writes
+        &home,
     );
     // Process-wide registry: the IPC thread's broker block fetches the
     // SAME TrackedDir instances to build eviction pools over (one
     // measurement per cache class, shared by reporter + pool).
-    continuum_core::system_resources::install_tracked_dirs(tracked_dirs.clone());
+    let tracked_dirs = continuum_core::system_resources::install_tracked_dirs(tracked_dirs).await;
+    let configured_root = std::env::current_dir().map_err(|error| error.to_string())
+        .and_then(|cwd| continuum_core::paths::cargo::target_dir(&cwd))
+        ;
+    match configured_root {
+        Ok(target) => if let Err(error) = continuum_core::system_resources::disk_reporters::register_cargo_target(&target).await {
+            eprintln!("Configured Cargo root could not be registered: {error}");
+        },
+        Err(error) => eprintln!("Configured Cargo root could not be registered: {error}"),
+    }
+    // Build trees agents named for themselves under the cache (`CARGO_TARGET_DIR` per session):
+    // found by what cargo wrote, never by name, and registered with the same owner so pressure
+    // can evict them (the M5, 2026-10-26: ~110 GB of unnamed build caches, KV page saves refused).
+    // The listing reads the filesystem: off the async runtime (Cormac on #5439).
+    let cache = home.join("cache");
+    // A panicked or cancelled listing discovers nothing; the named classes stand.
+    let discovered = match tokio::task::spawn_blocking(move || continuum_core::system_resources::cargo_discovery::cargo_targets_under(&cache)).await {
+        Ok(found) => found,
+        Err(error) => {
+            eprintln!("Cargo build-tree discovery did not finish: {error}");
+            Vec::new()
+        }
+    };
+    for target in discovered {
+        if let Err(error) = continuum_core::system_resources::disk_reporters::register_cargo_target(&target).await {
+            eprintln!("Discovered Cargo root {} could not be registered: {error}", target.display());
+        }
+    }
     let _disk_usage_scanner =
         continuum_core::system_resources::DiskUsageScanner::start(tracked_dirs.clone());
     let disk_pressure_monitor = continuum_core::system_resources::DiskPressureMonitor::start(
@@ -519,8 +579,8 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
     let ipc_memory_manager = memory_manager.clone();
     let ipc_pressure_monitor = pressure_monitor.clone();
     let ipc_disk_pressure_monitor = disk_pressure_monitor.clone();
-    let mut ipc_ready_rx = continuum_core::ipc::subscribe_ready();
-    continuum_core::probe!(
+    let mut ipc_ready_rx = continuum_core::runtime::ipc_ready::subscribe_ready();
+    continuum_base::probe!(
         class = "boot.phase",
         phase = "main_to_ipc_thread",
         ms = boot_entry.elapsed().as_millis() as u64,
@@ -616,7 +676,10 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
     // updater stopped it, failed the install, and the node was dark for 100 minutes).
     continuum_core::airc::daemon_liveness::spawn();
 
+    // Built without `avatar-3d` there is no renderer, so no ready edge to wait on.
+    #[cfg(feature = "avatar-3d")]
     let pm_clone = pressure_monitor.clone();
+    #[cfg(feature = "avatar-3d")]
     tokio::spawn(async move {
         let mut rx = continuum_core::live::video::bevy_renderer::subscribe_ready();
         // Fast path: bevy already up before we subscribed.
@@ -636,7 +699,7 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
         }
     });
 
-    // (Removed the legacy unsloth auto-fuel spawn. Bringing up the served model
+    // (Removed the legacy auto-fuel spawn. Bringing up the served model
     // is the ServingDaemonModule's job now — the ever-present control loop owns
     // model load/reconcile and publishes the ready snapshot (Contract A). A
     // second fire-and-forget loader here was a duplicate owner of that concern;

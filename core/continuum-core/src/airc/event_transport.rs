@@ -59,10 +59,8 @@ impl AircEventTransport for StoreAircEventTransport {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::airc::{
-        AircRealtimeEnvelope, AircRealtimePayload, AircRealtimePayloadRef, AircRealtimeSchema,
-        InMemoryAircRealtimeStore,
-    };
+    use crate::airc::InMemoryAircRealtimeStore;
+    use crate::routing::airc_realtime::{AircRealtimeEnvelope, AircRealtimePayload, AircRealtimePayloadRef, AircRealtimeSchema};
     use serde_json::json;
     use uuid::Uuid;
 

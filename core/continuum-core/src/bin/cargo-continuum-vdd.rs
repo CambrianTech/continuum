@@ -38,8 +38,14 @@ async fn main() {
     let result = match command {
         Command::List => unreachable!("list command returned before harness execution"),
         Command::Run(HarnessId::ChatRoundtripLive) => {
-            let runner =
-                ChatRoundtripHarness::new(LiveChatProbe, ArtifactWriter::continuum_default());
+            let writer = match ArtifactWriter::continuum_default() {
+                Ok(writer) => writer,
+                Err(error) => {
+                    eprintln!("continuum-vdd: {error}");
+                    std::process::exit(1);
+                }
+            };
+            let runner = ChatRoundtripHarness::new(LiveChatProbe, writer);
             let config = match ChatRoundtripConfig::from_env() {
                 Ok(config) => config,
                 Err(error) => {

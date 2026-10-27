@@ -17,6 +17,10 @@ use crate::modules::agent::{AgentService, AgentStatusInfo};
 )]
 pub struct AgentStatusParams {
     /// The agent handle returned by `agent/start`.
+    // `agentHandle` on the wire, NOT `handle`: the envelope owns that name and refuses a
+    // string for it (`expected struct HandleRef`), so this verb could not be called through
+    // the envelope at all — card ea28d2f6. The Rust field keeps its name.
+    #[serde(rename = "agentHandle")]
     pub handle: String,
 }
 

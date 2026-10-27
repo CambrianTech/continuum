@@ -6,6 +6,19 @@ export type ChatHistoryParams = {
  */
 roomId: string, 
 /**
- * Max messages to return (newest window). Defaults to 50.
+ * Max messages to return. Defaults to 50.
  */
-limit?: number, };
+limit?: number, 
+/**
+ * The scroll-back cursor: the oldest message the reader already holds. The page
+ * is the `limit` messages just before it; absent = the newest page. Without it
+ * every scroll-up re-read the newest page, the reader deduped it to nothing and
+ * took the room's history for exhausted.
+ */
+beforeMessageId?: string, 
+/**
+ * The page-down cursor: the newest message the reader holds when it dropped the
+ * rows below it (a reader parked far up keeps a bounded span). The page is the
+ * `limit` messages just after it. Mutually exclusive with `beforeMessageId`.
+ */
+afterMessageId?: string, };

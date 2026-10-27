@@ -3,7 +3,7 @@ import type { Mood } from "../persona/Mood";
 
 /**
  * The persona's live cognitive state — a camelCase projection of
- * [`PersonaState`](crate::persona::PersonaState) plus the derived service cadence.
+ * [`PersonaState`](crate::cognition::conversation::types::PersonaState) plus the derived service cadence.
  */
 export type GetStateResult = { 
 /**

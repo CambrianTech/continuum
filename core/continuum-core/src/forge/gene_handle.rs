@@ -4,7 +4,7 @@
 //! produced gene is referenced by a handle the *producer records*, never guessed
 //! from disk (the PEFT `adapter_config.json:base_model_name_or_path` is an HF id
 //! that never string-matches the served continuum registry id — see
-//! `adapter_manifest`). [`TrainedAdapter`](super::adapter_manifest::TrainedAdapter)
+//! `adapter_manifest`). [`TrainedAdapter`](crate::genome::adapter_manifest::TrainedAdapter)
 //! is that record *locally*. [`GeneHandle`] is its **grid extension**: the same
 //! honest gene→served-model record, plus enough to locate, attribute, and
 //! trust-gate the gene when it crosses node boundaries.
@@ -47,9 +47,9 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use ts_rs::TS;
 
-use super::adapter_manifest::TrainedAdapter;
+use crate::genome::adapter_manifest::TrainedAdapter;
 use crate::identity::PeerId;
-use crate::modules::grid::node::TrustLevel;
+use crate::routing::trust_level::TrustLevel;
 
 /// Content-addressed provenance of a gene — the forge-alloy `sha256:…` hash of
 /// the populated artifact (FORGE-ALLOY-SPEC: *what it is, how it was made*). A
@@ -140,22 +140,20 @@ impl GeneHandle {
     }
 }
 
-impl TrainedAdapter {
-    /// Project this local manifest record into a node-aware [`GeneHandle`]: the
-    /// bytes are local ([`GeneLocator::Local`]), the gene is `Owner`-scoped (it
-    /// was forged on this node), and it carries no alloy provenance yet (`None` —
-    /// a locally-forged gene predates its attestation). This is the honest local
-    /// degenerate case; Pass 5/6 mint `Node`-located, grid-trust-scoped handles.
-    pub fn as_gene_handle(&self) -> GeneHandle {
-        GeneHandle {
-            alias: self.alias.clone(),
-            base_model_id: self.base_model_id.clone(),
-            locator: GeneLocator::Local {
-                path: self.path.clone(),
-            },
-            provenance: None,
-            trust_scope: TrustLevel::Owner,
-        }
+/// Project a local manifest record into a node-aware [`GeneHandle`]: the
+/// bytes are local ([`GeneLocator::Local`]), the gene is `Owner`-scoped (it
+/// was forged on this node), and it carries no alloy provenance yet (`None` —
+/// a locally-forged gene predates its attestation). This is the honest local
+/// degenerate case; Pass 5/6 mint `Node`-located, grid-trust-scoped handles.
+pub fn local_gene_handle(adapter: &TrainedAdapter) -> GeneHandle {
+    GeneHandle {
+        alias: adapter.alias.clone(),
+        base_model_id: adapter.base_model_id.clone(),
+        locator: GeneLocator::Local {
+            path: adapter.path.clone(),
+        },
+        provenance: None,
+        trust_scope: TrustLevel::Owner,
     }
 }
 
@@ -175,7 +173,7 @@ mod tests {
             path: PathBuf::from("/genes/coder.gguf"),
             base_model_id: "continuum-ai/qwen3.5-4b-code-forged-GGUF".into(),
         };
-        let h = ta.as_gene_handle();
+        let h = local_gene_handle(&ta);
         assert_eq!(h.alias, "coder-v1");
         assert_eq!(h.base_model_id, ta.base_model_id);
         assert!(h.is_local(), "a manifest gene lives on this node");

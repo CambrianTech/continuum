@@ -1,0 +1,318 @@
+//! Template interpolation for pipeline variable substitution
+//!
+//! Handles {{variable}} substitution in strings and JSON values.
+//! Pure functions — no state needed, just the ExecutionContext.
+//!
+//! Supported paths:
+//! - `{{steps.N.output}}` — output of step N
+//! - `{{steps.N.data.field}}` — nested data from step N
+//! - `{{input.name}}` / `{{inputs.name}}` — pipeline inputs
+//! - `{{named.label.output}}` — named step output
+//! - `{{env.VAR}}` — environment variable
+
+use regex::Regex;
+use serde_json::Value;
+use std::sync::LazyLock;
+
+use super::types::ExecutionContext;
+
+/// Matches innermost {{...}} patterns (no { or } inside the braces).
+/// This enables multi-pass resolution for nested interpolation:
+/// `{{steps.0.output.topics.{{input.iteration}}.name}}`
+///   Pass 1: resolves `{{input.iteration}}` → `0`
+///   Pass 2: resolves `{{steps.0.output.topics.0.name}}` → topic name
+static INTERPOLATION_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\{\{([^{}\n]+)\}\}").unwrap());
+
+/// Interpolate {{variable}} references in a template string.
+/// Runs multiple passes to resolve nested interpolation.
+pub fn interpolate(template: &str, ctx: &ExecutionContext) -> String {
+    let mut result = template.to_string();
+    // Multi-pass: resolve innermost patterns first, then outer patterns
+    // Safety limit of 5 passes prevents infinite loops
+    for _ in 0..5 {
+        let new_result = INTERPOLATION_RE
+            .replace_all(&result, |caps: &regex::Captures| {
+                let path = caps.get(1).map(|m| m.as_str().trim()).unwrap_or("");
+                resolve_path(path, ctx)
+            })
+            .to_string();
+
+        if new_result == result {
+            break; // No more substitutions
+        }
+        result = new_result;
+    }
+    result
+}
+
+/// Interpolate {{variable}} references in a JSON value recursively
+pub fn interpolate_value(value: &Value, ctx: &ExecutionContext) -> Value {
+    match value {
+        Value::String(s) => {
+            let interpolated = interpolate(s, ctx);
+            // Try to parse as JSON if the entire string was a single interpolation
+            // This preserves types: {{steps.0.data}} returns object, not stringified JSON
+            if s.starts_with("{{") && s.ends_with("}}") && s.matches("{{").count() == 1 {
+                if let Ok(parsed) = serde_json::from_str::<Value>(&interpolated) {
+                    if !parsed.is_string() {
+                        return parsed;
+                    }
+                }
+            }
+            Value::String(interpolated)
+        }
+        Value::Array(arr) => Value::Array(arr.iter().map(|v| interpolate_value(v, ctx)).collect()),
+        Value::Object(obj) => {
+            let mut new_obj = serde_json::Map::new();
+            for (k, v) in obj {
+                new_obj.insert(k.clone(), interpolate_value(v, ctx));
+            }
+            Value::Object(new_obj)
+        }
+        _ => value.clone(),
+    }
+}
+
+/// Evaluate a condition expression (after interpolation)
+pub fn evaluate_condition(condition: &str) -> bool {
+    let trimmed = condition.trim();
+
+    if trimmed == "true" {
+        return true;
+    }
+    if trimmed == "false" {
+        return false;
+    }
+
+    // Non-empty string is truthy
+    if !trimmed.is_empty() && trimmed != "0" && trimmed != "null" && trimmed != "undefined" {
+        return true;
+    }
+
+    false
+}
+
+/// Resolve a variable path like "steps.0.output", "input.name", or "named.build.output"
+fn resolve_path(path: &str, ctx: &ExecutionContext) -> String {
+    let parts: Vec<&str> = path.split('.').collect();
+    if parts.is_empty() {
+        return format!("{{{{{path}}}}}");
+    }
+
+    match parts[0] {
+        "steps" => resolve_steps_path(&parts[1..], ctx),
+        "input" | "inputs" => resolve_input_path(&parts[1..], ctx),
+        "named" => resolve_named_path(&parts[1..], ctx),
+        "loop" => resolve_loop_path(&parts[1..], ctx),
+        "env" => {
+            if parts.len() < 2 {
+                return "".to_string();
+            }
+            std::env::var(parts[1]).unwrap_or_default()
+        }
+        _ => format!("{{{{{path}}}}}"),
+    }
+}
+
+/// Resolve steps.N.field paths
+///
+/// Searches by `step_index` rather than array position because loop sub-steps
+/// push results to the shared `step_results` array, shifting positions. Top-level
+/// pipeline steps always have `step_index` matching their pipeline definition order.
+/// Search from the end (`.rev()`) so top-level results (pushed after sub-steps)
+/// take priority over sub-steps that may share the same index value.
+fn resolve_steps_path(parts: &[&str], ctx: &ExecutionContext) -> String {
+    if parts.is_empty() {
+        return "".to_string();
+    }
+
+    let target_index: usize = parts[0].parse().unwrap_or(usize::MAX);
+
+    // Search from end so top-level pipeline results shadow loop sub-step results
+    let result = ctx
+        .step_results
+        .iter()
+        .rev()
+        .find(|r| r.step_index == target_index);
+
+    match result {
+        Some(r) => resolve_step_result_field(r, &parts[1..]),
+        None => "".to_string(),
+    }
+}
+
+/// Resolve named.label.field paths
+fn resolve_named_path(parts: &[&str], ctx: &ExecutionContext) -> String {
+    if parts.is_empty() {
+        return "".to_string();
+    }
+
+    let label = parts[0];
+    match ctx.named_outputs.get(label) {
+        Some(result) => resolve_step_result_field(result, &parts[1..]),
+        None => "".to_string(),
+    }
+}
+
+/// Resolve loop.N.field paths — relative step referencing within a loop iteration.
+///
+/// `{{loop.0.data.field}}` resolves to step_results[_loop_base + 0].data.field
+/// where `_loop_base` is set by the loop executor at the start of each iteration.
+/// This enables stable referencing of sub-steps within a loop body regardless
+/// of how many iterations have completed.
+fn resolve_loop_path(parts: &[&str], ctx: &ExecutionContext) -> String {
+    if parts.is_empty() {
+        return "".to_string();
+    }
+
+    let base = ctx
+        .inputs
+        .get("_loop_base")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0) as usize;
+
+    let relative_index: usize = parts[0].parse().unwrap_or(usize::MAX);
+    let absolute_index = base + relative_index;
+
+    if absolute_index >= ctx.step_results.len() {
+        return "".to_string();
+    }
+
+    let result = &ctx.step_results[absolute_index];
+    resolve_step_result_field(result, &parts[1..])
+}
+
+/// Resolve input.field paths
+fn resolve_input_path(parts: &[&str], ctx: &ExecutionContext) -> String {
+    if parts.is_empty() {
+        return "".to_string();
+    }
+    ctx.inputs
+        .get(parts[0])
+        .map(|v| match v {
+            Value::String(s) => s.clone(),
+            _ => v.to_string(),
+        })
+        .unwrap_or_default()
+}
+
+/// Strip markdown code fences from LLM output.
+///
+/// LLMs frequently wrap JSON output in ` ```json ... ``` ` fences.
+/// This strips those fences so the inner content can be JSON-parsed.
+fn strip_markdown_fences(s: &str) -> Option<String> {
+    let trimmed = s.trim();
+    if trimmed.starts_with("```") {
+        if let Some(first_newline) = trimmed.find('\n') {
+            let inner = &trimmed[first_newline + 1..];
+            if let Some(closing) = inner.rfind("```") {
+                let content = inner[..closing].trim();
+                if !content.is_empty() {
+                    return Some(content.to_string());
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Traverse a JSON value using dot-separated path parts.
+///
+/// Supports:
+/// - Object key access: `data.field.nested`
+/// - Array indexing: `topics.0.name` (numeric path parts index into arrays)
+/// - Wildcard collection: `iterations.*.4.data.layerId` collects the field
+///   from each array element, returning a JSON array of the collected values.
+/// - JSON string auto-parsing: if a value is a string containing JSON,
+///   it's automatically parsed for deeper traversal (enables accessing
+///   structured LLM output like `steps.0.output.topics.0.name`)
+/// - Markdown fence stripping: LLM output wrapped in ` ```json ... ``` `
+///   is unwrapped before JSON parsing
+fn traverse_json_path(root: &Value, parts: &[&str]) -> String {
+    let mut current = root.clone();
+
+    for (i, part) in parts.iter().enumerate() {
+        // Auto-parse JSON strings during traversal
+        if let Value::String(ref s) = current {
+            if let Ok(parsed) = serde_json::from_str::<Value>(s) {
+                current = parsed;
+            } else if let Some(stripped) = strip_markdown_fences(s) {
+                if let Ok(parsed) = serde_json::from_str::<Value>(&stripped) {
+                    current = parsed;
+                }
+            }
+        }
+
+        // Wildcard: collect remaining path from each array element
+        if *part == "*" {
+            if let Value::Array(arr) = &current {
+                let remaining = &parts[i + 1..];
+                let collected: Vec<Value> = arr
+                    .iter()
+                    .map(|elem| {
+                        let s = traverse_json_path(elem, remaining);
+                        // Try to preserve the original type (number, bool, etc.)
+                        serde_json::from_str::<Value>(&s).unwrap_or(Value::String(s))
+                    })
+                    .filter(|v| !v.is_null() && *v != Value::String(String::new()))
+                    .collect();
+                return serde_json::to_string(&collected).unwrap_or_else(|_| "[]".to_string());
+            }
+            return "[]".to_string();
+        }
+
+        // Try numeric index for arrays, string key for objects
+        current = if let Ok(idx) = part.parse::<usize>() {
+            current.get(idx).cloned().unwrap_or(Value::Null)
+        } else {
+            current.get(*part).cloned().unwrap_or(Value::Null)
+        };
+    }
+
+    match &current {
+        Value::String(s) => s.clone(),
+        Value::Null => "".to_string(),
+        _ => current.to_string(),
+    }
+}
+
+/// Extract a field from a StepResult given the remaining path parts
+fn resolve_step_result_field(result: &super::types::StepResult, parts: &[&str]) -> String {
+    if parts.is_empty() {
+        return result.output.clone().unwrap_or_default();
+    }
+
+    match parts[0] {
+        "output" => {
+            if parts.len() > 1 {
+                // Traverse into output (which may be a JSON string from LLM)
+                let output_val = result
+                    .output
+                    .as_ref()
+                    .map(|s| Value::String(s.clone()))
+                    .unwrap_or(Value::Null);
+                traverse_json_path(&output_val, &parts[1..])
+            } else {
+                result.output.clone().unwrap_or_default()
+            }
+        }
+        "success" => result.success.to_string(),
+        "error" => result.error.clone().unwrap_or_default(),
+        "exitCode" | "exit_code" => result.exit_code.map(|c| c.to_string()).unwrap_or_default(),
+        "data" => {
+            if parts.len() > 1 {
+                traverse_json_path(&result.data, &parts[1..])
+            } else {
+                result.data.to_string()
+            }
+        }
+        "type" | "stepType" => result.step_type.clone(),
+        "index" | "stepIndex" => result.step_index.to_string(),
+        "durationMs" | "duration_ms" => result.duration_ms.to_string(),
+        _ => "".to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests;

@@ -32,6 +32,6 @@ timedOut: boolean,
  * The interpreter / toolchain that ran the code, as a path or PATH name — so a
  * "no module named numpy" is read against the environment it actually ran in
  * (card 533c2d78: a held checkout's prepared env python when there is one, else
- * the PATH `python3`; `rustc` for Rust).
+ * the resolved system Python executable; `rustc` for Rust).
  */
 interpreter: string, };

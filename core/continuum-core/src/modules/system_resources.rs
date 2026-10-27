@@ -10,7 +10,7 @@
 //! service holds it behind a shared `OnceLock` — the command objects read whatever
 //! value is current, never a stale clone.
 
-use crate::modules::docker_tier_pool::DockerTierStats;
+use crate::docker_tier_pool::DockerTierStats;
 use crate::runtime::{CommandResult, ModuleConfig, ModuleContext, ModulePriority, ServiceModule};
 use crate::system_resources::{
     CpuStats, MemoryBudgetSnapshot, MemoryPressureMonitor, MemoryStats, PressureSnapshot,
@@ -127,7 +127,7 @@ impl SystemResourceService {
     /// Docker storage-tier stats (capacity/used/pressure/detected). One probe; always
     /// returns the full shape even when Docker is absent (`detected: false` + zeros).
     pub fn docker_tier_stats(&self) -> Result<DockerTierStats, String> {
-        Ok(crate::modules::docker_tier_pool::DockerTierPool::snapshot_stats())
+        Ok(crate::docker_tier_pool::DockerTierPool::snapshot_stats())
     }
 }
 

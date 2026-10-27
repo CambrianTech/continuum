@@ -37,7 +37,9 @@ case "$(uname -s)" in
   MINGW*|MSYS*|CYGWIN*|Windows_NT)
     SOCKET="${CONTINUUM_CORE_SOCKET:-${CONTINUUM_SOCKET:-$(cygpath -w "${TEMP:-/tmp}")\\continuum-core.sock}}" ;;
 esac
-DATA="$HOME/.continuum"
+DATA="${CONTINUUM_HOME:-$HOME/.continuum}"
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/payload-paths.sh"
+PAYLOAD_ROOT="$(managed_payload_root "$DATA")" || exit 1
 LOG_DIR="$DATA/logs"
 SVC_USER="$(id -un)"
 
@@ -56,7 +58,7 @@ resolve_core_bin() {
     echo "$CONTINUUM_CORE_BIN"; return 0
   fi
   local tgt="${CARGO_TARGET_DIR:-$DATA/cache/cargo-target}" p
-  for p in /usr/local/bin/continuum-core-server "$DATA/bin/continuum-core-server" \
+  for p in /usr/local/bin/continuum-core-server "$PAYLOAD_ROOT/bin/continuum-core-server" \
            "$tgt/release/continuum-core-server" "$tgt/debug/continuum-core-server"; do
     [ -x "$p" ] && { echo "$p"; return 0; }
   done
@@ -66,8 +68,8 @@ resolve_core_bin() {
 ort_dylib() {
   case "$(uname -s)" in
     Darwin) echo "/opt/homebrew/lib/libonnxruntime.dylib" ;;
-    MINGW*|MSYS*|CYGWIN*|Windows_NT) cygpath -w "$DATA/lib/onnxruntime.dll" ;;
-    *) echo "$DATA/lib/libonnxruntime.so" ;;
+    MINGW*|MSYS*|CYGWIN*|Windows_NT) cygpath -w "$PAYLOAD_ROOT/lib/onnxruntime.dll" ;;
+    *) echo "$PAYLOAD_ROOT/lib/libonnxruntime.so" ;;
   esac
 }
 

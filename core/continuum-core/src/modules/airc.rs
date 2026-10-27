@@ -1,7 +1,7 @@
 //! ServiceModule adapter for Rust-native AIRC commands.
 
 use crate::airc::{
-    AircEventTransport, AircQueueClient, AircRealtimeStore,
+    AircEventTransport, AircQueueClient,
     CliAircQueueClient, DaemonAircEventTransport, InMemoryAircRealtimeStore,
     StoreAircEventTransport, TokioAircCommandRunner,
 };
@@ -142,32 +142,6 @@ impl AircModule {
             event_transport: Arc::new(StoreAircEventTransport::new(Arc::new(
                 InMemoryAircRealtimeStore::default(),
             ))),
-            attach_socket_path: None,
-            attach_channel: None,
-            attach_room_name: None,
-        }
-    }
-
-    pub fn with_clients(
-        queue_client: Arc<dyn AircQueueClient>,
-        realtime_store: Arc<dyn AircRealtimeStore>,
-    ) -> Self {
-        Self {
-            queue_client,
-            event_transport: Arc::new(StoreAircEventTransport::new(realtime_store)),
-            attach_socket_path: None,
-            attach_channel: None,
-            attach_room_name: None,
-        }
-    }
-
-    pub fn with_event_transport(
-        queue_client: Arc<dyn AircQueueClient>,
-        event_transport: Arc<dyn AircEventTransport>,
-    ) -> Self {
-        Self {
-            queue_client,
-            event_transport,
             attach_socket_path: None,
             attach_channel: None,
             attach_room_name: None,

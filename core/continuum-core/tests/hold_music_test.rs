@@ -4,7 +4,7 @@
 //! This is the SIMPLEST test - no TTS, no AI, just verify audio mixing works.
 
 use continuum_core::live::transport::call_server::CallManager;
-use continuum_core::utils::audio::{calculate_rms, is_silence};
+use continuum_core::live::audio::pcm::{calculate_rms, is_silence};
 use std::time::Duration;
 
 #[tokio::test]

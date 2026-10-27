@@ -120,7 +120,7 @@ impl ActionCommand for BenchmarkVerify {
         let mut swept = 0u64;
         let mut healed = 0u64;
         let mut unshielded = 0u64;
-        let peers = crate::commands::benchmark::continuum_home()?
+        let peers = crate::paths::continuum_home()?
             .join("citizens")
             .join("peers");
         if let Ok(citizens) = std::fs::read_dir(&peers) {
@@ -156,7 +156,7 @@ impl ActionCommand for BenchmarkVerify {
         // The verdict also rides the event stream, not only this caller's result:
         // the academy widgets (and any citizen's perception) watch events, and a
         // verify that only answered the invoker would be invisible to the room.
-        crate::probe!(
+        continuum_base::probe!(
             class = "benchmark.verify",
             ok = %ok,
             stale_gyms = %gyms.iter().filter(|g| g.state == "stale").count(),

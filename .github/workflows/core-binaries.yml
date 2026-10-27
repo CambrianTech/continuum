@@ -1,0 +1,556 @@
+# Card 30a8b3ac — a commit is compiled ONCE per platform, here; every machine that runs it
+# downloads that build.
+#
+# THE GAP THIS CLOSES: every node compiled every canary commit itself. On the IntelMac a
+# deploy of 63d0e4ee6 took ~10 h end to end (2026-10-03), so a merged fix reached that node
+# the next day, and the M5's launchd refused freshly compiled, ad-hoc-signed cores
+# (OS_REASON_CODESIGNING). Joel, 2026-10-03: "end users do not compile. We host the
+# binary." The two audiences are in docs/architecture/BUILD-AND-PACKAGING.md §5b:
+#   - canary (this workflow): no LTO, for fast turnaround; the fleet deploys it.
+#   - main: full LTO, signed, for users (a later slice of the same card).
+#
+# WHAT IT PUBLISHES: one prerelease per canary commit, tagged `canary-<sha12>`, with one
+# asset per platform: `continuum-core-<platform>.tar.gz` (continuum-core-server, continuum,
+# continuum-mcp, forge-custodian) plus its `.sha256` and a `.json` manifest carrying the
+# full sha and the exact cargo features. The features come from
+# tools/scripts/lib/core-features.sh, the same function the on-node build calls, with the
+# platform's published node profile (published_node_features: calls and 3D avatars where
+# that platform's fleet node hosts them), so a downloaded binary is the program the node
+# would have compiled.
+#
+# PLATFORMS: the two Mac outliers (Metal on arm64; CPU-only on x86_64, where Metal hangs the
+# hardware) and Windows + NVIDIA (cuda,directml), so a Windows node never compiles its own core
+# (BigMama measured 16-50 min for the core plus 19 min for the CLI per deploy, 2026-10-06). A
+# GPU flavor is named per leg ("Windows-NVIDIA x86_64"), because cargo-features.sh probes the
+# machine it runs on and a CI runner has no GPU. A Linux leg follows the same way.
+#
+# Hourly admission dispatches the latest unpublished canary. Active publication is
+# never cancelled by a newer tip. Old canary releases are pruned to the newest 20.
+
+name: core-binaries
+
+on:
+  # A PR that changes HOW the binaries are built proves both legs before merge (build and
+  # package, never publish). Ordinary core PRs wait for hourly publication.
+  pull_request:
+    paths:
+      - 'tools/scripts/lib/**'
+      - 'tools/scripts/shared/cargo-features.sh'
+      - '.github/workflows/core-binaries.yml'
+      - 'tools/scripts/tests/publish-core-package.test.sh'
+      - 'tools/scripts/ci-change-scope.cjs'
+      - 'tools/scripts/tests/ci-change-scope.test.cjs'
+  workflow_dispatch:
+
+# A canary dispatch must never cancel the canary build in progress. Each canary tip's core is what
+# the deploy consumers download (card 50ca737e); the build takes 45-73 min and canary merges land
+# every 15-30 min, so cancel-in-progress cancelled EVERY build after b6ddc0d0e on 2026-10-04 and
+# no node could download anything. Without cancellation GitHub keeps one run going and only the
+# NEWEST dispatch queued behind it (older queued dispatches are dropped), so a build always finishes and
+# the queue cannot grow. Pull requests still cancel their own superseded runs.
+concurrency:
+  group: core-binaries-${{ github.head_ref || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: write
+
+jobs:
+  publication-scope:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      publication: ${{ steps.select.outputs.publication }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: node --test tools/scripts/tests/ci-change-scope.test.cjs
+      - if: github.event_name == 'pull_request'
+        run: npm install --prefix "$RUNNER_TEMP/publication-yaml" --ignore-scripts --no-package-lock --no-audit --no-fund yaml@2.8.1
+      - uses: actions/github-script@v7
+        id: select
+        with:
+          script: |
+            const { selectChecks } = require('./tools/scripts/ci-change-scope.cjs');
+            let publication = true;
+            try {
+              if (context.eventName === 'pull_request') {
+                const files = await github.paginate(github.rest.pulls.listFiles, {
+                  ...context.repo, pull_number: context.issue.number, per_page: 100
+                });
+                const evidence = { eventName: context.eventName,
+                  complete: files.length === context.payload.pull_request.changed_files && files.length < 3000 };
+                const path = '.github/workflows/core-binaries.yml';
+                if (files.some(f => f.filename === path || f.previous_filename === path)) {
+                  const YAML = require(`${process.env.RUNNER_TEMP}/publication-yaml/node_modules/yaml`);
+                  const read = async ref => {
+                    const { data } = await github.rest.repos.getContent({ ...context.repo, path, ref });
+                    if (data.type !== 'file' || data.encoding !== 'base64') throw new Error('Missing workflow source');
+                    const document = YAML.parseDocument(Buffer.from(data.content, 'base64').toString('utf8'), { uniqueKeys: true });
+                    if (document.errors.length) throw document.errors[0];
+                    return document.toJS();
+                  };
+                  evidence.publicationBefore = await read(context.payload.pull_request.base.sha);
+                  evidence.publicationAfter = await read(context.payload.pull_request.head.sha);
+                }
+                publication = selectChecks(files, evidence).publication;
+              }
+            } catch (error) {
+              core.warning(`Cannot prove publication unchanged; running build: ${error.message}`);
+            }
+            core.setOutput('publication', String(publication));
+  build:
+    needs: publication-scope
+    # Only proven equivalence skips compilation; a failed/missing selector retains it.
+    if: ${{ !cancelled() && needs.publication-scope.outputs.publication != 'false' }}
+    name: core binaries (${{ matrix.platform }})
+    runs-on: ${{ matrix.runner }}
+    # Run 38995887152: Windows core 85m17 + engine 58m32 + package 2m28
+    # exhausted 150m during upload. Allow 30m for publication and runner variation.
+    timeout-minutes: ${{ matrix.platform == 'windows-x86_64' && 180 || 150 }}
+    strategy:
+      # Every leg runs even when one fails: a broken Intel leg must not hide a good arm64 one.
+      fail-fast: false
+      matrix:
+        include:
+          - platform: macos-arm64
+            runner: macos-latest
+            uname: Darwin arm64
+          - platform: macos-x86_64
+            runner: macos-15-intel
+            uname: Darwin x86_64
+          # VS2022 (14.4x) is nvcc 12.x's host compiler; windows-build-env.sh selects it.
+          - platform: windows-x86_64
+            runner: windows-2022
+            uname: Windows-NVIDIA x86_64
+    env:
+      # The canary profile: no LTO, for a fast link (#4687). main keeps LTO.
+      CARGO_PROFILE_RELEASE_LTO: 'false'
+      # Pinned so a runner-image bump can't silently raise the oldest macOS these run on
+      # (Fable, #4691 review: minos is 11.0 today).
+      MACOSX_DEPLOYMENT_TARGET: '11.0'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # build.rs stamps CONTINUUM_BUILD_NUMBER from `git rev-list --count HEAD`; a
+          # shallow clone would stamp 1. Blobless keeps the full history cheap.
+          fetch-depth: 0
+          filter: blob:none
+          submodules: recursive
+
+      - name: Install Rust toolchain from rust-toolchain.toml
+        run: |
+          rustup show active-toolchain || rustup show
+          rustc --version
+          cmake --version
+
+      # The installer's own CUDA module, from install-manifest.toml's pinned NVIDIA redist, so
+      # the published build links the CUDA major a user's install provides at launch.
+      # The toolkit is a pure function of the pinned redist in the manifest projection, so it is
+      # cached on that file: assembling it from NVIDIA's archives took 24 min on the first run.
+      - name: Restore the CUDA toolkit (Windows)
+        id: cuda-cache
+        if: runner.os == 'Windows'
+        uses: actions/cache/restore@v4
+        with:
+          path: ~/.continuum/cuda-toolkit
+          key: cuda-toolkit-${{ hashFiles('tools/scripts/generated/manifest.windows.ps1') }}
+
+      - name: Provision the CUDA toolkit (Windows)
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          # Windows PowerShell's progress bar throttles Invoke-WebRequest to a crawl.
+          $ProgressPreference = 'SilentlyContinue'
+          . ./tools/scripts/lib/install-common.ps1
+          . ./tools/scripts/lib/win-modules.ps1
+          Mod-CUDA -BuildHost
+
+      # Saved as soon as it is assembled, not at job end, so a later failing step does not
+      # send the next run back to NVIDIA's archives.
+      - name: Save the CUDA toolkit (Windows)
+        if: runner.os == 'Windows' && steps.cuda-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ~/.continuum/cuda-toolkit
+          key: cuda-toolkit-${{ hashFiles('tools/scripts/generated/manifest.windows.ps1') }}
+
+      - name: Cache cargo state
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: core-binaries-${{ matrix.platform }}
+          cache-on-failure: true
+
+      - name: Build
+        shell: bash
+        env:
+          # Published x86 binaries must run beyond this runner's CPU. The shared
+          # llama build owner pins baseline instructions, including reused caches.
+          CONTINUUM_PORTABLE_CPU: "1"
+        run: |
+          set -euo pipefail
+          if [ "$RUNNER_OS" = Windows ]; then
+            # The node's own build environment (MSVC, the CUDA tree, +crt-static), so CI
+            # compiles what start-server.sh would. The lib is written for start-server.sh's
+            # shell, which has no nounset, and reads optional variables bare.
+            set +u; source tools/scripts/lib/windows-build-env.sh; set -u
+          fi
+          source tools/scripts/lib/core-features.sh
+          # The runner is no node: it names the profile this platform's core is published
+          # with (calls / 3D avatars), which every node hosting a subset of it accepts.
+          CONTINUUM_NODE_FEATURES="$(published_node_features "${{ matrix.uname }}")"
+          export CONTINUUM_NODE_FEATURES
+          select_core_features "${{ matrix.uname }}"
+          echo "features: core '$CONTINUUM_FEATURES', CLI '$CONTINUUM_CLI_FEATURES'"
+          echo "CONTINUUM_FEATURES=$CONTINUUM_FEATURES" >> "$GITHUB_ENV"
+          cuda_version=""
+          if [[ "$CONTINUUM_FEATURES" == *cuda* ]]; then
+            source tools/scripts/lib/cuda-targets.sh
+            configure_published_cuda_targets
+            cuda_version="$(nvcc --version | sed -n 's/.*release \([0-9][0-9]*\.[0-9][0-9]*\).*/\1/p')"
+            [ -n "$cuda_version" ] || { echo "::error::nvcc reported no release"; exit 1; }
+            echo "CUDA_COMPUTE_CAP=$CUDA_COMPUTE_CAP" >> "$GITHUB_ENV"
+            echo "CMAKE_CUDA_ARCHITECTURES=$CMAKE_CUDA_ARCHITECTURES" >> "$GITHUB_ENV"
+          fi
+          echo "CUDA_VERSION=$cuda_version" >> "$GITHUB_ENV"
+          manifest=core/continuum-core/Cargo.toml
+          if [ "$CONTINUUM_CLI_FEATURES" = "$CONTINUUM_FEATURES" ]; then
+            # One cargo call, one library compile, all four bins (both Macs).
+            # shellcheck disable=SC2086  # the feature string is split on purpose
+            cargo build --manifest-path "$manifest" --release \
+              --bin continuum-core-server --bin continuum --bin continuum-mcp --bin forge-custodian \
+              $CONTINUUM_FEATURES
+          else
+            # The CLI is a socket client and must never link a GPU runtime (core-features.sh),
+            # so it builds separately with its own set, as start-server.sh does.
+            # shellcheck disable=SC2086
+            cargo build --manifest-path "$manifest" --release \
+              --bin continuum-core-server --bin continuum-mcp --bin forge-custodian \
+              $CONTINUUM_FEATURES
+            # shellcheck disable=SC2086
+            cargo build --manifest-path "$manifest" --release --bin continuum $CONTINUUM_CLI_FEATURES
+          fi
+          if [ "$RUNNER_OS" = Windows ]; then
+            # The Windows handoff stages the voice sidecar beside the core and refuses a core
+            # without it (continuum.rs, PreparedCoreService::stage), as start-server.sh's warm
+            # build provides it.
+            cargo build --manifest-path core/livekit-bridge/Cargo.toml --bin livekit-bridge --release
+          fi
+
+      # The published engine is a pure function of the pinned llama.cpp (core/vendor/LLAMA_CPP_PIN),
+      # the scripts that build it, and the CUDA contract the Build step records. Rebuilding it on
+      # every canary merge cost 26.7 min of a ~80 min Windows run (2026-10-11, run 38115399314)
+      # for a byte-identical engine. Restored here, Mod-LlamaServer's own stamp (submodule HEAD,
+      # backend, CUDA targets) still decides whether it is current, so this cache only gives the
+      # one owner its last output back; it never decides currency itself. The runner image is in
+      # the key too (Fable): a new image's compiler rebuilds it once, never reuses an old build.
+      # The runner image's version is in the runner's process environment, which the `env`
+      # context does not see (Cormac on #4941), so it is read into a step output; empty fails
+      # here rather than keying every image the same.
+      - name: Read the runner image (Windows)
+        id: runner-image
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          [ -n "${ImageVersion:-}" ] || { echo "::error::the runner exports no ImageVersion; the engine cache cannot key on its toolchain"; exit 1; }
+          echo "version=$ImageVersion" >> "$GITHUB_OUTPUT"
+          echo "runner image $ImageVersion"
+          # The engine's toolchain, named explicitly in its key (card af648389): CUDA by the nvcc it
+          # measured (CUDA_VERSION), MSVC by the runner image above, and CMake by its pin, since
+          # Mod-CMake provisions it only inside the engine build, after this key is taken. The key
+          # no longer hashes the whole installer, so a toolchain change must show up here.
+          cmake=$(awk '/^id = "cmake"/{f=1} f&&/^url = /{print; exit}' tools/scripts/install-manifest.toml | sed -n 's|.*/download/v\([0-9][0-9.]*\)/cmake-.*|\1|p')
+          [ -n "$cmake" ] || { echo "::error::no CMake pin in install-manifest.toml; the engine cache cannot key on its toolchain"; exit 1; }
+          echo "cmake=$cmake" >> "$GITHUB_OUTPUT"
+          echo "engine cmake pin $cmake"
+
+      # The engine is an IMMUTABLE artifact named by everything that decides its bytes, so it is a
+      # release asset, not an Actions-cache entry. The repo's Actions cache sits at its 10 GB limit
+      # and LRU-evicts: the 2.4-2.6 GB cargo caches pushed this 523 MB engine out within hours, and
+      # it was rebuilt on 5 of 5 canary runs (16-26 min each, card 2a805524). A release asset is
+      # never evicted; the prune job below keeps the newest few.
+      - name: Restore the published engine (Windows NVIDIA)
+        id: engine-cache
+        if: runner.os == 'Windows'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ENGINE_KEY: published-engine-windows-${{ hashFiles('core/vendor/LLAMA_CPP_PIN', 'tools/scripts/lib/win-engine.ps1', 'tools/scripts/lib/cuda-targets.ps1', 'tools/scripts/lib/install-common.ps1', 'tools/scripts/lib/cuda-targets.sh', 'core/llama/cpu_target_cli.rs') }}-cuda${{ env.CUDA_VERSION }}-sm${{ env.CUDA_COMPUTE_CAP }}-image${{ steps.runner-image.outputs.version }}-cmake${{ steps.runner-image.outputs.cmake }}
+        # The completion contract: `published-engine.ready` is uploaded LAST and names the archive
+        # by its sha256; a reader trusts nothing else. Any failure here (no release, no marker yet,
+        # a partial download, a checksum mismatch, a release pruned mid-download) is a MISS and the
+        # engine is built below, never a failed job (Astra on #4974).
+        run: |
+          set -uo pipefail
+          tag="engine-windows-$(printf '%s' "$ENGINE_KEY" | sha256sum | cut -c1-16)"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "engine key $ENGINE_KEY -> $tag"
+          miss() { echo "engine not restored: $1"; echo "cache-hit=false" >> "$GITHUB_OUTPUT"; exit 0; }
+          dl="$RUNNER_TEMP/engine-download"
+          mkdir -p "$dl"
+          gh release download "$tag" -D "$dl" -p published-engine.ready || miss "no complete publication for $tag"
+          read -r want archive < "$dl/published-engine.ready" || miss "unreadable marker"
+          gh release download "$tag" -D "$dl" -p "$archive" || miss "archive $archive unavailable"
+          # Relative name from inside the directory: GNU sha256sum (Git for Windows) prefixes
+          # its line with a backslash when the path holds one (D:\a\_temp), which read back as
+          # a "\<hex>" digest in run 38238808902.
+          got="$(cd "$dl" && sha256sum "$archive" | cut -d' ' -f1)"
+          [ "$got" = "$want" ] || miss "checksum mismatch on $archive"
+          mkdir -p "$RUNNER_TEMP/published-engine"
+          # Relative names from inside the directory, as Package does below: GNU tar (Git for
+          # Windows) reads `D:\...` as host:path (canary run 38223974097 failed on exactly that).
+          (cd "$RUNNER_TEMP/published-engine" && tar -xzf "../engine-download/$archive") \
+            || { rm -rf "$RUNNER_TEMP/published-engine"; miss "archive did not unpack"; }
+          echo "restored $archive from $tag"
+          echo "cache-hit=true" >> "$GITHUB_OUTPUT"
+
+      - name: Build the receipted inference engine (Windows NVIDIA)
+        if: runner.os == 'Windows'
+        shell: powershell
+        env:
+          CONTINUUM_PORTABLE_CPU: "1"
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $ProgressPreference = 'SilentlyContinue'
+          if (-not $env:CUDA_VERSION -or -not $env:CUDA_COMPUTE_CAP -or -not $env:CMAKE_CUDA_ARCHITECTURES) { throw 'Published NVIDIA engine requires the core CUDA contract.' }
+          . ./tools/scripts/lib/install-common.ps1
+          . ./tools/scripts/lib/win-modules.ps1
+          $policy = Join-Path $env:RUNNER_TEMP 'cpu-target-policy.exe'
+          rustc --edition 2021 core/llama/cpu_target_cli.rs -o $policy
+          if ($LASTEXITCODE -ne 0) { throw 'Cannot prepare shared CPU build policy.' }
+          $definitions = @(& $policy)
+          if ($LASTEXITCODE -ne 0) { throw 'Cannot read shared CPU build policy.' }
+          $engine = Join-Path $env:RUNNER_TEMP 'published-engine'
+          Mod-LlamaServer -RepoRoot $PWD.Path -InstallDirectory $engine -RequireReceipt `
+            -PublishedCudaArchitectures $env:CMAKE_CUDA_ARCHITECTURES -PublishedCpuDefinitions $definitions
+          Get-CoreEngineReceipt -Directory $engine | Out-Null
+
+      # Saved as soon as it is built and receipted, not at job end, so a later failing step does
+      # not send the next run back to a 27-minute rebuild.
+      - name: Save the published engine (Windows NVIDIA)
+        if: runner.os == 'Windows' && steps.engine-cache.outputs.cache-hit != 'true' && github.event_name != 'pull_request'
+        # The engine cache is an optimization; the core binary is the product. A failed save
+        # shows as this step failing (and the run annotated), never as an unpublished binary:
+        # run 38238808902 built the engine and core for the 5090 and published neither,
+        # because this step failed (card 5793d2c6).
+        continue-on-error: true
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        # Archive first, under its own sha256, then the marker that names it: a concurrent publisher
+        # uploads its own archive before replacing the marker, so the marker always names a
+        # complete archive. Any key that did not restore (no marker, or a marker naming a missing
+        # or mismatched archive) is repaired here, never left permanently broken.
+        run: |
+          set -euo pipefail
+          tag="${{ steps.engine-cache.outputs.tag }}"
+          # Relative names from inside the directory: GNU tar (Git for Windows) reads `D:\...` as
+          # host:path, which failed canary run 38223974097 at exactly this line.
+          (cd "$RUNNER_TEMP/published-engine" && tar -czf ../published-engine.tar.gz .)
+          # Relative name, for the same backslash-escape reason as the restore's check above.
+          sum="$(cd "$RUNNER_TEMP" && sha256sum published-engine.tar.gz | cut -d' ' -f1)"
+          archive="published-engine-${sum:0:16}.tar.gz"
+          mv "$RUNNER_TEMP/published-engine.tar.gz" "$RUNNER_TEMP/$archive"
+          printf '%s %s\n' "$sum" "$archive" > "$RUNNER_TEMP/published-engine.ready"
+          # This step runs only when the restore MISSED, so whatever is published for this key did
+          # not restore (absent, partial, or a marker naming a missing or mismatched archive).
+          # Republish rather than trust the marker's existence: archive first, then the marker
+          # that names it (Astra on #4974).
+          gh release view "$tag" >/dev/null 2>&1 \
+            || gh release create "$tag" --prerelease --target "$GITHUB_SHA" --title "$tag" \
+                 --notes "Published Windows NVIDIA engine, built by core-binaries.yml. Its tag is the hash of every input that decides its bytes; published-engine.ready names the complete archive." \
+            || gh release view "$tag" >/dev/null
+          gh release upload "$tag" --clobber "$RUNNER_TEMP/$archive"
+          gh release upload "$tag" --clobber "$RUNNER_TEMP/published-engine.ready"
+
+      - name: Package
+        id: package
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Windows runners name it `python`; the Macs, `python3`.
+          py="$(command -v python3 || command -v python)"
+          exe=""; [ "$RUNNER_OS" = Windows ] && exe=".exe"
+          target_dir="$(cargo metadata --manifest-path core/continuum-core/Cargo.toml --format-version 1 --no-deps | "$py" -c 'import json,sys; print(json.load(sys.stdin)["target_directory"])')"
+          name="continuum-core-${{ matrix.platform }}"
+          stage="$RUNNER_TEMP/$name"
+          mkdir -p "$stage"
+          for bin in continuum-core-server continuum continuum-mcp forge-custodian; do
+            cp "$target_dir/release/$bin$exe" "$stage/"
+          done
+          runtime_libs=""
+          if [ "$RUNNER_OS" = Windows ]; then
+            set +u; source tools/scripts/lib/windows-build-env.sh; set -u   # dumpbin and CUDA_PATH (no nounset, as in the Build step)
+            cp "$target_dir/release/livekit-bridge.exe" tools/scripts/start-livekit-windows.ps1 "$stage/"
+            cp -R "$RUNNER_TEMP/published-engine" "$stage/engine"
+            # The same dependency owner used by the engine captures every bin,
+            # including the first CLI and its non-OS VC/OpenMP redistributables.
+            CONTINUUM_PACKAGE_DIR="$(cygpath -w "$stage")" powershell.exe -NoProfile -NonInteractive -Command \
+              '$ErrorActionPreference = "Stop"; . ./tools/scripts/lib/install-common.ps1; . ./tools/scripts/lib/win-modules.ps1; Publish-CoreWindowsRuntime -Directory $env:CONTINUUM_PACKAGE_DIR'
+            runtime_libs="$(tr '\r\n' '  ' < "$stage/runtime-libs.txt")"
+            powershell.exe -NoProfile -NonInteractive -ExecutionPolicy RemoteSigned -File \
+              tools/scripts/tests/windows-process.test.ps1 -PrebuiltCli "$(cygpath -w "$stage/continuum.exe")"
+          fi
+          if [ "$RUNNER_OS" = macOS ]; then
+            # A downloaded binary must launch on a Mac that has nothing but macOS: every linked
+            # library is the system's. Homebrew openssl (/usr/local or /opt/homebrew) was linked
+            # until the cloud TTS crate left (card ab567967); this keeps anything like it out.
+            for bin in continuum-core-server continuum continuum-mcp forge-custodian; do
+              foreign="$(otool -L "$stage/$bin" | tail -n +2 | awk '{print $1}' | grep -vE '^(/usr/lib/|/System/)' || true)"
+              if [ -n "$foreign" ]; then
+                echo "::error::$bin links libraries a plain Mac does not have:"; echo "$foreign"; exit 1
+              fi
+            done
+          fi
+          # The binary must report the commit it was built from: the deploy verifies the
+          # running core's sha, and an artifact stamped with the wrong one would be refused.
+          version="$("$stage/continuum$exe" --version)"
+          echo "$version"
+          case "$version" in
+            *"sha ${GITHUB_SHA:0:9}"*) ;;
+            *) echo "::error::continuum --version does not report ${GITHUB_SHA:0:9}"; exit 1 ;;
+          esac
+          # Relative names from inside the dir: GNU tar (Git for Windows) reads `D:\...` as a
+          # remote host `D` and fails "Cannot connect to D: resolve failed".
+          (cd "$RUNNER_TEMP" && tar -czf "$name.tar.gz" "$name")
+          (cd "$RUNNER_TEMP" && { command -v sha256sum >/dev/null && sha256sum "$name.tar.gz" || shasum -a 256 "$name.tar.gz"; } > "$name.tar.gz.sha256")
+          # Values reach Python as argv, never inside its string literals: a Windows path
+          # (D:\a\_temp) in a literal would read `\a` as an escape.
+          "$py" - "$RUNNER_TEMP/$name.json" "$RUNNER_TEMP/$name.tar.gz.sha256" "${{ matrix.platform }}" \
+            "${{ matrix.uname }}" "$GITHUB_SHA" "$CONTINUUM_FEATURES" "$name.tar.gz" \
+            "$CUDA_VERSION" "${CUDA_COMPUTE_CAP:-}" "$runtime_libs" "$stage" <<'EOF'
+          import json, os, sys
+          from pathlib import Path
+          out, sums, platform, uname, sha, features, archive, cuda_version, cuda_cap, libs, stage = sys.argv[1:]
+          manifest = {
+              "platform": platform,
+              "uname": uname,
+              "git_sha": sha,
+              "features": features,
+              "profile": "release, lto=false (canary)",
+              "archive": archive,
+              "sha256": open(sums).read().split()[0],
+              "bins": ["continuum-core-server", "continuum", "continuum-mcp", "forge-custodian"],
+          }
+          # A CUDA build carries its runtime (runtime_libs, beside the exe; staging copies them
+          # with the core), needs a driver that runs this CUDA version, and a GPU at least at
+          # this compute capability (the PTX floor).
+          if cuda_version:
+              manifest["cuda_version"] = cuda_version
+              manifest["cuda_compute_cap"] = int(cuda_cap)
+              # the engine's CMake targets (its SASS, and 80's PTX floor), for a reader of the manifest;
+              # no consumer selects on it yet (card 9b27d49b)
+              manifest["cuda_engine_architectures"] = os.environ["CMAKE_CUDA_ARCHITECTURES"]
+              manifest["runtime_libs"] = libs.split()
+              bootstrap = (Path(stage) / "bootstrap-runtime-libs.txt").read_text(encoding="utf-8-sig").split()
+              if not set(bootstrap).issubset(set(manifest["runtime_libs"])):
+                  raise ValueError("CLI bootstrap runtime must be a subset of the packaged application runtime")
+              manifest["bootstrap_runtime_libs"] = bootstrap
+              engine = json.loads((Path(stage) / "engine" / "engine-install.json").read_text(encoding="utf-8-sig"))
+              if engine["backend"] != "cuda":
+                  raise ValueError("NVIDIA artifact must carry its matching CUDA engine")
+              manifest["engine"] = {"source_revision": engine["source_revision"], "backend": engine["backend"], "relative_path": "engine"}
+          json.dump(manifest, open(out, "w"), indent=2)
+          EOF
+          ls -la "$RUNNER_TEMP/$name".*
+          echo "name=$name" >> "$GITHUB_OUTPUT"
+
+      # The package also leaves the build as an artifact, so the publish-check job can
+      # republish it WITHOUT recompiling. Run 38588068431 (715874db2): the macos-x86_64 leg
+      # built fine, then "error connecting to api.github.com" x2 failed its publish after
+      # 78 minutes, and the only recovery was a full rebuild. Uploaded on PRs too, so a PR that
+      # changes the package proves this step (measured 8 s per macOS leg on run 38613217742).
+      - name: Hand the package to publish-check
+        uses: actions/upload-artifact@v4
+        with:
+          name: core-${{ steps.package.outputs.name }}
+          path: |
+            ${{ runner.temp }}/${{ steps.package.outputs.name }}.tar.gz
+            ${{ runner.temp }}/${{ steps.package.outputs.name }}.tar.gz.sha256
+            ${{ runner.temp }}/${{ steps.package.outputs.name }}.json
+          if-no-files-found: error
+          # long enough to rerun a failed publish-check the same day; the release is the durable copy
+          retention-days: 1
+
+      # Each leg still publishes itself the moment it is built: no leg waits on the slowest
+      # (Windows). A failure here does not fail the leg, because publish-check below verifies
+      # every built leg actually reached the release, republishes any that didn't from its
+      # artifact, and fails the run if one still hasn't.
+      - name: Publish
+        if: github.event_name != 'pull_request'
+        continue-on-error: true
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          NAME: ${{ steps.package.outputs.name }}
+          DIR: ${{ runner.temp }}
+        run: bash "$GITHUB_WORKSPACE/tools/scripts/lib/publish-core-package.sh" publish "$DIR" "$NAME"
+
+  # The publish/republish owner's failure paths, proven with a fake gh on every run (PRs too):
+  # a clean dispatch can't exercise them (Codex helper on #5043).
+  publish-script-test:
+    name: publish script failure paths
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: tools/scripts
+      - run: bash tools/scripts/tests/publish-core-package.test.sh
+
+  publish-check:
+    name: verify every built leg is published
+    needs: build
+    # !cancelled(): a leg that fails to BUILD must not stop the others from being checked and
+    # published (715874db2 still shipped arm64). Only legs that were built have an artifact.
+    if: ${{ !cancelled() && github.event_name != 'pull_request' }}
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: tools/scripts/lib
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: core-*
+          path: dist
+          merge-multiple: true
+      - name: Republish any built leg not on the release as built
+        run: bash tools/scripts/lib/publish-core-package.sh check dist
+
+  prune:
+    name: prune old canary releases
+    needs: publish-check
+    if: ${{ !cancelled() && github.event_name != 'pull_request' }}
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Keep the newest 20 canary releases
+        run: |
+          set -euo pipefail
+          gh release list -R "$GITHUB_REPOSITORY" --limit 200 --json tagName,createdAt \
+            -q '[.[] | select(.tagName | startswith("canary-"))] | sort_by(.createdAt) | reverse | .[20:][] | .tagName' \
+          | while read -r tag; do
+              echo "pruning $tag"
+              gh release delete "$tag" -R "$GITHUB_REPOSITORY" --yes --cleanup-tag
+            done
+
+      # The engine's drain. A pruned engine is never a failure: a reader that loses it (even
+      # mid-download) reads a miss and builds. Keeping the newest 3 keys means the current key
+      # and the two before it (a pin bump or a runner-image change) still restore.
+      - name: Keep the newest 3 published engines
+        run: |
+          set -euo pipefail
+          gh release list -R "$GITHUB_REPOSITORY" --limit 200 --json tagName,createdAt \
+            -q '[.[] | select(.tagName | startswith("engine-windows-"))] | sort_by(.createdAt) | reverse | .[3:][] | .tagName' \
+          | while read -r tag; do
+              echo "pruning $tag"
+              gh release delete "$tag" -R "$GITHUB_REPOSITORY" --yes --cleanup-tag
+            done

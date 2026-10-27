@@ -290,7 +290,7 @@ This is personalized model compression. Your model, your data, your hardware, yo
 ## File Structure
 
 ```
-core/continuum-core/src/modules/plasticity/
+core/continuum-engine/src/plasticity/
 ├── mod.rs          — IPC routing, handle_command
 ├── types.rs        — HeadTopology, CompressionRecipe, DeviceSpec, GgufQuantType
 ├── scoring.rs      — Per-head gradient utilization scoring

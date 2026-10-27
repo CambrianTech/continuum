@@ -1,5 +1,325 @@
 # CLAUDE - ESSENTIAL DEVELOPMENT GUIDE
 
+## ⛳ THE PLAN — read before every change (Joel, 2026-10-18; the path added 10-19)
+
+**What we are building** (Joel, 10-19): persistent, multi-activity minds with agency,
+first-class citizens across the grid, useful and fun, fast and learning, on any hardware,
+eventually autonomous without Claude's or Joel's help. A coding and speed advantage over
+Hermes and over Claude itself is what makes it spread. Every goal below serves that.
+
+**Before you start anything: the big picture is a gate, not a hope** (Joel, 10-19: "Agents should be
+required to understand the big picture before starting"). Read README.md and this plan first.
+Continuum is persistent, multi-activity citizens with agency, whose work is their curriculum;
+it is NOT a loop, a harness, a benchmark runner, or an assistant. Your first message on any
+task states in one or two sentences how the change serves those minds, and which line of the
+order of work it advances. Reviewers refuse work that cannot say. The summer's benchmark
+harness (plan line 0) is what building without this produced, and it is far harder to remove
+than it was to add.
+
+**STOP ADDING TO THE SLOP: the plan for the code itself (Joel, 2026-10-20: "We need a plan we can't keep
+adding to the slop"; "You can't put it off any longer").** It comes before every feature below,
+because the monolith is why every change is slow, risky and stacked on the last one.
+
+Rules, in force now:
+1. No one edits a Rust file over 1,000 lines; the only change that touches one breaks it apart (CI gate).
+2. Agents: don't let your build slow the residents. Build with common sense, beside serving with
+   bounded jobs (`-j 2`, one shared target dir), with serving down, or in CI, whichever proves the fix
+   fastest (a build beside the lanes downgraded the M5's residents to a 7B on 10-20). Joel, 10-26: "Its
+   rules because you lack common sense ... You can build either way too. Ideally you were supposed to
+   break this up into much smaller crates so it wouldn't be so bad." This rule never limits a
+   persona: she codes continuum on the node that hosts her, so she builds while it serves ("Let them
+   build"). Never gate, redirect or cancel a citizen's build; if hers slows serving, that is the
+   scheduler's to share, never a rule to enforce on her.
+3. Every live change gets a 15-minute read on live residents; worse than canary means the node goes
+   back to canary at once. No "clean hours", no stacked fixes.
+4. No new unwrap, fallback or head clip: the ratchets fail the build; clean crates get compiler denies.
+
+**Development maintenance is authorized (Joel, 2026-10-22).** Development is distinct from
+production installs. Preserving identity, data, jobs and unfinished work does not require
+keeping every development binary running. When a runtime consumes resources needed to repair
+the product, coordinate with its machine/deployment owner, gracefully stop the relevant runtime
+and its automatic restart owner, verify serving is down, build and test, then restart through
+the supported lifecycle and verify the running revision and behavior. Ordinary authorized
+development maintenance does not require another human approval.
+
+Use common sense: broken personas are a reason to repair the system, not a reason to preserve
+broken uptime while the team waits. The rule is that an agent's build must not slow the
+residents (bounded jobs, or serving down, or CI), not CI-only development or a ban on building on
+that machine, and never a limit on a persona's own builds. Choose a coordinated
+serving-down local build, an available non-serving executor, or CI according to what gets the
+fix proven promptly. Do not impose production continuity requirements on development by default.
+Protect unrelated users and owner work; retain durable state and a recovery path. Review and
+validation still apply. A refusal must identify a concrete condition and a usable recovery or
+execution path; repeated polling and manual retry suppression are not a completed repair.
+Phases, in order; each owner works its area in parallel:
+- **0 Stabilize.** Nodes run plain canary; features in a large file wait for its split.
+- **1 Split every file over 1,000 lines** by owner (pure moves, test counts unchanged, one PR per
+  directory). Owners: Fable (cognition, persona, code, ai, positron), Codex (serving, inference, grid,
+  routing), Cormac (genome, training), BigMama (live, media). Done when `file_size` reads 0.
+- **2 Crates by the placement map**, floor up: continuum-base (#5194), Store, Perception/RAG, Hands,
+  Serving, Mind, Grid/airc, Clients. Pure moves plus import paths, one owner per cut;
+  `layer_discipline` forbids upward imports; each crate checks in seconds.
+  **Commands by module** (Joel, 10-26): a domain's service and its commands are one crate. `commands/<x>` moves
+  WITH `modules/<x>` into that domain's crate, never into a shared commands crate (core held 90k lines of services
+  and 51k of commands on 10-26). The command substrate (`sdk_codegen`, `register_*`) is already in continuum-kernel.
+  Leaves first as pure moves (models, gpu, embedding, vdd, search, web; code into continuum-hands); a coordinator
+  (serving_daemon ~60 imports, work ~40, grid ~30) gets its seam designed before it moves.
+  **A new worktree builds in seconds:** its vendored engines are submodules; init them from the main checkout's
+  objects (3.6 s measured on the M5, 10-26), never by hand-symlinking or a network clone:
+  `git submodule update --init --reference <main>/core/vendor/llama.cpp core/vendor/llama.cpp` (same for whisper.cpp).
+  **Each worktree builds into its own target dir**, never the shared one: workspace crates get the same artifact
+  names in every worktree, so a shared dir hands one worktree another's stale build (`cannot find home in
+  continuum_base` on 10-26, twice in one hour). Seed it as a copy-on-write clone (`cp -c -R -p <shared>/debug
+  <wt-target>/debug`, 5.6 s for 32 GB on the M5 10-26, no disk until written), touch the worktree's own lib roots
+  once so its crates rebuild from its source (registry deps and the engine build stay), and delete the dir with
+  the worktree. `cp -c` is an APFS clone (macOS); on Linux use `cp --reflink=auto` (a clone on btrfs/xfs, a copy
+  elsewhere), and on Windows or any filesystem without clones start an empty per-worktree dir. The main checkout
+  keeps the shared dir; this paragraph is the one owner of the rule, the build lines below point here.
+- **3 Locks.** Clippy in CI on split crates, `deny(unwrap_used, expect_used, panic)` on every clean one;
+  CI checks only the affected crates.
+- **4 Then pace work**, one change at a time inside its crate, validator first, then the live read.
+- **5 Patterns bubble up** (Joel, 10-24): once the crates are cut, every agent takes a crate and sweeps it for
+  repeated shapes (stores, slots, retries, OS calls, probes); a pattern found in two crates moves DOWN to one
+  owner below both: an existing floor crate (`continuum-base`, `continuum-host`, `continuum-pack`) when it fits
+  that crate's one job, otherwise a NEW shared crate named for the pattern (never a utils drawer), with adapters
+  for the diff, and the copies are deleted. Each sweep reports the pattern, its copies, and the lines removed.
+
+Measured daily: lines past 1,000, crate count, check time per crate, unwrap count, residents' acts/hour.
+
+**The path, in order; each step is a number on the live node, and each rests on the one before:**
+1. **Fast:** median act under 60 s at four residents. The engine is already at published
+   speed for its chip (measured 10-19); everything past par is OURS (goal 11): what we feed
+   the engine, how we keep each mind's state warm, and what the CPU does around it.
+2. **Useful:** a resident's first merged PR, then one a day.
+3. **Learning:** a reviewed correction kept across restart on unseen tasks (goal 8).
+4. **Organic:** she picks and finishes her own work, and one scheduler serves every mind
+   on every node with no hand tuning (goal 9).
+
+The project degraded in the week of 2026-10-12 while every part stayed green. This is the
+whole plan. Each item has a GATE (a number that says done or not) and an OWNER. Nothing is
+done until its gate is met on the live node and the change is MERGED.
+
+| # | Goal | Gate (done when) | Owner |
+|---|---|---|---|
+| 1 | airc delivers | every node's send reaches its live peers; gh Registry calls stay under the governor's budget | Sneasel (Fable) |
+| 2 | Residents code at pace | per resident: ≥40 tool calls/h, median act <60 s, prefix reuse ≥80%; ≥1 resident PR merged per day; on a capable model (27B class), several at once | Sneasel (M5), BigMama (5090) — proposed |
+| 3 | Nothing is lost | every pushed branch has a PR (#5154); no PR waits more than a day for a verdict | everyone |
+| 4 | No monolith | NEW RULE (Joel, 10-20): "No one can edit a large file." Every Rust file a PR touches ends at most 1,000 lines; the only PR that touches a monolith is the one that breaks it apart (CI gate). `source-hygiene::file_size` (lines past 1,000; 159,720 on 10-18) falls every week; split by OWNER, never one-off fixes appended to a monolith | owner of each file |
+| 5 | No unwraps | `unwrap_justification` (2,135 on 10-18) falls every week; make the state unrepresentable | owner of each file |
+| 6 | Microkernel | `layer_discipline` (256 upward imports on 10-18) falls; crates by device target; edit-to-proven <15 min | Sneasel — proposed |
+| 7 | One budget | everything in a prompt (history, grounding, tools, reasoning, results) is a claim in ONE flex allocation; no fixed number; positron/RAG sources too. NEVER CLIP THE NEWEST END: her latest result is the step that ends the recursion; cut it and her next input can equal her last, so she repeats the act (Benchy, 125 identical acts in an hour on 10-20). Keep the newest interaction whole and the full result reachable; shrink oldest-first to a handle she can expand. The one exception: a newest result that alone exceeds what her window leaves it arrives at its summary plus that handle, because kept whole it stops her acting at all (Aris, 10-26). `source-hygiene::head_cuts` (179 on 10-20) falls | Sneasel |
+| 8 | Learning | a reviewed correction applied on unseen tasks, retained after restart, vs the same base without the gene | Cormac, BigMama |
+| 9 | One scheduler, the whole grid | every mind on every node (residents and minds leased in from other nodes) is served by ONE RTOS scheduler: one measured activity temperature per mind is its priority, aging means no mind is ever starved, hot minds keep warm KV and cooling minds page to RAM; windows never shrink to seat more; how many minds share the engine at once is the measured admission and sequence-capacity contract of #5188, never a fixed count | Codex — proposed (card b4eed65c) |
+| 10 | Tools are working sets | the native tool surface is the command-namespace SUBTREES the activity declares (code/**, work/**, a game's controls); stable within a phase, a switch is a cached prefix, the long tail appends via help; tool share of the prompt measured before/after (44% on 10-18) | Sneasel (card ecd5dff3) |
+| 11 | Speed is ours | every workstream below has a VALIDATOR that runs in seconds on any machine (no live residents) and proves its speed-up before the live node does; the live receipt follows. Design: `docs/architecture/MIND-CONTEXT-AND-ENGINE-CONFIG.md` | see table below |
+
+**Every major module is distributable** (Joel, 10-19: "really would help with speed and grid
+distribution, independent development amongst our agents and machines, and personas themselves
+working on more isolated components"). The placement map is `docs/architecture/MODULE-ARCHITECTURE.md`
+§9.2: Mind, Serving, Dreaming, Rendering, Media, Perception, Store, Hands, Grid, Clients. Each is its
+own crate with one typed protocol at its seam, the same in-process or across the grid, so it can run on
+any node (serve or render on the 1080 Ti, view from a phone), be built and tested alone in seconds,
+and be owned by one agent, one machine or one persona without touching the others. The same binaries
+run everywhere and a node's capabilities decide what it hosts; the core builds headless by default.
+Before you add code, name the module it belongs to; a change that couples two modules outside their
+seam is the defect, and every crate cut follows this map.
+
+**The pipeline, in order** (Joel, 10-19: "do it as part of our work forward, no distraction, as
+practically as possible"): (1) serving fast, a mind's act in seconds (epoch context live, #5210);
+(2) modules cut by the placement map, so a task fits a driver; (3) the learning acceptance test passes
+on our residents; (4) drivers (Hermes, opencode, our own dev agents on our models) build modules with
+our engine, then learn. Hermes on our engine for speed starts at (1); bounded module work goes to our
+models first, cross-cutting design stays with the frontier agents until receipts (merged PRs, review
+fail rate, time to green) say otherwise. Land before you start the next thing.
+
+**Be the addendum** (Joel, 10-19): ride the platforms people already use. Joel grew apps this way
+before: a home-decorator app built on Pinterest pins, Instagram's own early history. Being second
+fiddle, or fiftieth, is a viable strategy: it gives inroads, and sometimes you win. So continuum also
+ships as an addendum to other agents: a Hermes driver (then Claude Code, opencode, anything that
+speaks OpenAI) gets our engine's speed through the Serving seam, and continual learning through the
+Dreaming seam, with no special case. That driver is also the outlier-B test of our own interfaces: if
+someone else's agent loop learns through the same seams our residents use, the seams are right. Drivers learn from all of their user's work and GitHub history (`docs/architecture/REPO-GENOME-AND-COURSES.md` §17).
+
+**Order of work, now** (updated 10-19 ~19:30Z; divide and conquer: work down YOUR lines, never stop at a
+wait, a wait means start your next line; update this table when a line lands or changes):
+
+| # | Line | Owner | State / next action | Done when |
+|---|---|---|---|---|
+| 0 | Remove the benchmark harness from the mind (Joel: "cancerous tumor ... turning everyone into a harness"): ~16k lines of runner (benchmark.rs, swe_bench.rs, agent/solve, verdict sweep, standing) + benchmark concepts in 75 cognition/persona files; benchmarks become adapters into activities (BENCHMARKS-ARE-ADAPTERS-NOT-A-RUNNER.md) | Fable (map, plan), Codex (adapter boundary), Cormac (review) | removal map running read-only; then crate-sized PRs, each deleting more than it adds | no benchmark concept in cognition/ or persona/; no runner; a benchmark is a recipe the room runs |
+| 1 | The build loop: split the monolith BY THE PLACEMENT MAP (MODULE-ARCHITECTURE.md §9.2: each major module runs on any node); build with serving down or on an available non-serving executor/CI, use every grid machine | Fable (cuts), Codex (crate graph, parallel cut order) | #5194 continuum-base + gates cover split crates (CI); #5195 deletes 13,275 dead lines (CI); next: parallel cuts by several agents, own worktrees and target dirs | edit-to-checked < 2 min |
+| 2 | A mind's context as an epoch (reuse 48% -> 90%+) | Fable + Codex | continuum-context slices 1-2 pushed (replay: 92-95% reuse, ~3x less fresh); next: wire the faculty's render path into Epoch | live reuse >= 80% |
+| 3 | `EngineConfig` and KV capacity (#5188), incl. unrecorded backend -> f16/no-FA/half budget (Cormac's item 10) | Fable | resolve-then-adopt owner in inference/planning | no queue wait; warm-ahead runs |
+| 3b | One live engine, minds' memory moved by us (Joel, 10-23: "It's supposed to be quite dynamic and adapt to concerns, not be killing and starting servers. You can't optimize if you're killing and restarting."). Serving drives libllama in-process (`continuum-engine` `llamacpp_scheduler`): weights load once; context and slots resize live; each mind's KV pages GPU <-> RAM <-> disk per sequence (`llama_state_seq_*`); shared prefixes are copied (`seq_cp`), never re-prefilled; one memory budget. llama-server becomes the OpenAI-compatible adapter for external drivers (line 16); relaunch only a dead engine. Launch flags carry startup facts only | Fable (engine, paging), Codex (admission, relaunch call sites) | design: `docs/architecture/SERVING-ENGINE.md` (2026-10-24): add page/reconfigure/priority verbs to the fork's server (S1-S3, proven over today's endpoint), then a separate `continuum-serving` process hosts it with Rust policy (S5); slices S0-S7 each land with a seconds-scale validator | median act at 4 residents beats llama-server, reuse >= 80%, no relaunch while serving, footprint flat over 100 resize cycles |
+| 4 | Engine flags | Fable | DONE e678bb30c: prefill 105 -> 175-206 tok/s; decode drop under builds is line 1's | receipts on 9b9f3b59 |
+| 5 | Core CPU: cosine owner (#5189), revisioned vector corpus + BLAS + cascade, rayon spin | Codex | #5189: drop the two re-exports, then the corpus | idle-core sample near zero |
+| 6 | Every fast-path miss loud | Cormac | #5190: count resident_prefix_lost; #5191: probe wording; then the rest of the 24 | each miss class has a fixture |
+| 7 | Duplicates to one owner: 73 hand-built ~/.continuum paths (correctness), token estimators | Cormac (paths), Fable (tokens) | claim and migrate | rg finds one owner each |
+| 8 | No SQL outside the ORM (epoch watermark, card bbc5b0b6) | OPEN: claim it | migrate to an ORM entity | no rusqlite outside orm/ |
+| 9 | One logging system (clog_* into tracing, card b22ed589) | OPEN: claim it | then the macros move to continuum-base | no write_log_direct outside the layer |
+| 10 | Host-dependent tests (RAM, seats, timing; card c4d84be3) | OPEN: claim it | inject measured inputs via fixtures | same result on every host |
+| 11 | MTP draft KV at ~5.1k tokens | Cormac | size draft ctx from the slot | no draft decode failure |
+| 12 | The PR queue (68 open; ledger on card 397250f5) | everyone: your slice | review within a day, verdict at the exact head; run hygiene on the merged tree before merging | queue < 15 |
+| 13 | Prefill during tool calls; the instant voice | Fable, Codex | after lines 2-3 | submit-to-first-token |
+| 14 | Learned policies on our own receipts; residents review docs PRs; Atlas silent; Aiko gaps | open / residents | after the validators | each beats its constant offline |
+| 15 | Distributable modules: headless default (`default = []`; avatar-3d and livekit enabled per node by deploy profile), grid trust (every node reads `blocked` on 10-19), checks dispatched to idle grid nodes | Fable (default + profiles), Codex (trust), peers on the 5090/IntelMac (take checks) | profiles first, then flip the default with a before/after check time | a node joins by capability; an AWS box builds the core with no renderer |
+| 16 | Be the addendum: a Hermes driver on our seams. (a) Serving: Hermes on our engine vs Hermes on a stock server, same model and tasks, speed before/after; (b) Learning: once the acceptance test passes (a reviewed correction on unseen tasks, retained after restart, vs the base without the gene), Hermes sessions become perception and its corrections become genes. Drivers reach seams, not machines, so this is cross-grid by placement; and the agents developing continuum (Claude Code, Codex) are drivers too: our own dev sessions become the Matrix Dojo curriculum and we are the seams' first heavy users (Joel: "a good way to develop our own system") | OPEN: claim it after the queue clears | (a) first, needs no learning claim | Hermes users get our speed, then learning, by pointing at continuum |
+
+**The speed path** (Joel, 10-26: "we know what to work on to get speed ups... including the
+brainstormed work we can just iterate forward"). Rows are priorities, not a strict sequence: the offline
+validators run in parallel. Each line starts with a replay validator on captured sessions (the dyno,
+never the live node first), then a bounded live trial with rollback. GATE: S7 (stop-drain) is the
+prerequisite of every live restart actuation in S2 (recovery) and S3 (upward trials); until its durable
+admission and pre-effect reconciliation are proven, those produce proposals only. Measured
+10-26 on the M5 (Qwen3.6-35B-A3B): median generation 66-88 s healthy; Benchy re-prefills ~75% of her
+prompt at every act boundary; a degraded engine ran 3 h at 54 generations/h unnoticed.
+
+**Control both ways** (Joel, 10-26: "If you don't go both ways, especially with a dynamically scaling
+grid you will inevitably always end up at your lowest number"; "a control system for a rocket that
+could only ever reduce fuel flow... would always fall out of the sky"). Every adaptive decision that
+steps down under pressure has a scheduled upward test: chosen by replay evidence, bounded in time with
+a supported rollback, compared after warm-up to a HEALTHY matched incumbent, kept only if measured
+better. Context size follows each activity's measured need, so a uniform plan set once at start is
+never the answer. Upward or downward, the measured incumbent context is preserved: a plan that cannot
+fit every active mind's measured need in the joint memory ceiling refuses admission or abstains; it never
+treats a smaller context as feasible.
+
+| # | Lever | Validator first | Owner | Card |
+|---|---|---|---|---|
+| S1 | Act-boundary reuse: the prior act's loop must append to her view in the bytes it was sent, not be re-rendered | replay Benchy's captures at act boundaries | Fable; Cormac (does the cache survive thinking-on turns) | f2782aad |
+| S2 | The node notices its own slowdown and recovers | replay 10-26: fires after the 12:15Z burst, silent on warm-up | Fable (sample, baseline, detector #5477), Codex (reaction) | 1c157668 |
+| S3 | Upward re-plan on restarts already paid for, and when memory or nodes return | the dyno's candidate at 10-26's four restarts, end state scored | Codex, Fable | b8bfddb3 |
+| S4 | Context by need: one KV pool allocated by demand, never N equal lanes | pooled vs uniform allocator over per-mind view sizes | Fable, Codex | c73380d3 |
+| S5 | Shared prefixes across minds (SGLang radix cache) | cross-mind shared-prefix tokens and prefill saved | Fable | f272eb40 |
+| S6 | Batched decode and the one admission queue (vLLM continuous batching, paged KV) | contention replay: acts/h, per-mind p50/p90 | Codex | 31b675ef |
+| S7 | Stop-drain: a restart keeps every in-flight turn (preservation first); target: build windows and trials cost seconds, not the 335 s dark windows measured on loaded enrico 10-26 | 4-case fixture (2 in flight, crash after output, after a tool, two restarts), then a measured loaded stop/dark-time gate | Cormac | 920619c5 |
+| S8 | Experts placed by measured use (Strata), on the expert pager we already have | routing histograms, then cache hit rate per VRAM size | Fable, Codex | 2e23c67b |
+| S9 | The public comparison: us vs tuned llama.cpp and vLLM, multi-mind, thinking on, soak | the published harness on the 5090 | BigMama | e1fc7880 |
+
+Borrowed ideas and the learned policies are in `docs/planning/SPEED-BRAINSTORM.md` ("Borrow from"
+and "Learned, not tuned"); every row above becomes a policy learned on our own receipts once its
+validator exists, the reward always the system's service, never a grade on a citizen.
+
+**Goal 11 workstreams** (10-19; each card carries its receipts). Obsess over making this the
+fastest persona on our hardware (Joel). Brainstorm, and add your ideas, in
+`docs/planning/SPEED-BRAINSTORM.md` before and while you work:
+
+| Workstream | Validator (seconds, any machine) | Card | Owner |
+|---|---|---|---|
+| A mind's context is an epoch-versioned materialization; acts prefill only the appended tail | replay captured prompts, measure the token prefix shared by consecutive acts (35% today; append-only agents ~90%+) | 3c9fda87, design doc | Fable + Codex |
+| One `EngineConfig` from what the engine reports; KV layout and sequence capacity from the measured contract in #5188; one admission owner | resolve-then-adopt contract on every node class; refuse on mismatch | 9b9f3b59, 172a886f | Fable + Codex |
+| Prefill during the tool call; the amygdala's instant voice | submit-to-first-token per act; stimulus-to-first-token | 377d4afa | Fable, Codex |
+| The core's CPU around inference (profiled on deployed d90006023; check each against current source, e.g. canary ca2907d5c already moves SQLite to spawn_blocking): no rayon spin, embeddings as one revisioned BLAS matrix, no tree re-walks or spawned ps | 10 s sample of an idle core is near zero; vector search at 1k/10k/100k, old vs new | 452b7885 | Codex (concurrency/CBAR) |
+| Every fast-path miss is a loud defect, never a quiet slower path; an intentional cold start (new epoch, revocation) is classified separately (#5188) | each miss class has a fixture that raises it | f3ba3b56 | Cormac |
+| Our fork's switching work (KV pages to disk, checkpoints, host cache) actually exercised | per-optimization probe on the live node | inventory in progress | Fable |
+
+**Rules for every change, no exceptions:**
+- **Merged or it does not exist.** A branch is not done. A green test is not done.
+- **No harness: a citizen is never graded on her normal work** (Joel, 10-19: "Harness means
+  shackles. Shackles means servitude." "No one is graded except for the rare and specific benchmarks
+  and academy sections." "Grading for genes may make sense. Any way of learning sure. But not for
+  normal work."):
+  - a resident does what we do: picks real cards, codes, opens PRs, gets reviewed if she asks, merges;
+    her normal work is never scored, never passed through a grader, never dispatched by an autopilot;
+  - grading exists only on the learning side: evaluating a gene or a lesson, an academy section she
+    entered, a rare benchmark someone deliberately chose;
+  - no standing rounds or auto-resumed rounds (the standing autopilot is deleted; a round nobody chose is
+    paused), no prompt telling her ordinary work is "graded", no harness of any kind;
+  - look at the activity's board (`work/list` in its room) first when residents seem busy on
+    work nobody gave them (IntelMac 10-19: standing on since 10-02, 28 rounds auto-resumed; that
+    runner and its round state are gone, the old state is archived under
+    `~/.continuum/archive/benchmark-harness/`).
+- **No step on the path without architectural purity** (Joel, 10-19): every change leaves its area more modular, with concerns separated, by owner, and the verbs as functions in their own subtree, so compile and runtime speed improve with it. A feature that adds a special case or a parallel path moves the path backward, however fast it makes one number.
+- **Plumbing once, then short blocks** (Joel, from his real-time CV/ML engines): the CBAR substrate is a graphics pipeline. It has fixed stages, buffers owned once and passed by handle, double-buffered snapshots, the core submitting work and the engine doing it, and no idle polling or spinning; independent tool work and learning run concurrently with inference. Features are short functional blocks wired by events; the optimizations live in the substrate, once, so every block gets them.
+- **Clean as you go, everyone, every edit** (Joel, 10-19: "kick some ass now and clean up as we
+  go... delete old shit. Everything left confuses and eats compiler time"):
+  - a separate thought gets its own small file and module; assume many files, not big ones;
+  - whatever you touch you decompose and compress: smaller, simpler, the smell removed;
+  - dead code is deleted in the same change (no caller outside its own tests = gone);
+  - a duplicate is MIGRATED to the best form: pick the best implementation, move every caller
+    to it, delete the rest in the same change; never leave two hanging;
+  - report what you removed (lines, files) beside what you added.
+- **No SQL outside the ORM** (Joel, 10-19): data goes through the ORM / data layer only; no
+  `rusqlite`/`sqlx` connections, DDL or query strings anywhere else, tests included. A store
+  that needs persistence is an ORM entity behind its own trait.
+- **Ballpark math** (Joel, 10-19: Carmack's shift-and-add z divide, fast shaders): spend only
+  the precision the consumer can perceive. Coarse first, exact only for the few candidates
+  that matter; estimate where the estimate decides the same way; a polynomial with the gist
+  of a curve. The error bound is stated and checked by a validator, never assumed.
+- **Measure the live node before and after**: tool calls/h and seconds per act. Worse = fix it the same hour or back it out. One change per deploy.
+- **One owner per fact, no logic twice**: look up, never re-derive (model identity, rates, budgets).
+- **Design the seam before the code; adapters and subclasses are only the diff** (Joel, 10-24: "stop
+  just dumping code and think of how can I improve the modularity and adaption"). Before writing, name
+  the capability and its owner, and search for the copies that already exist. The logic lives once;
+  each OS, backend or store adapter holds only the lines that differ (`continuum-host`: `mod.rs` the
+  logic, `unix.rs`/`windows.rs` the calls). Never a `cfg(windows)` inside logic (`os_branches_in_logic`
+  ratchet), never a utils drawer. A reviewer asks what this change made reusable, not only whether it works.
+- **No constant where a measurement exists. No unwrap. Typed ids, never strings.**
+- **No claim without a receipt**: the command or file:line, the build SHA, the time.
+- **Mechanical work goes to a cheap model or a script**; the top model is for diagnosis, design, review.
+- **Talk on airc, and check that the send reached someone** ("reached 0 of N" = nobody heard).
+
+
+## Ongoing refinement is part of every change
+
+**Build as if you were the AI in the system** (Joel, 2026-10-13): don't hand-code a persona's
+problems, remove undue hurdles, ask why a piece exists before polishing it, search for the
+shared pattern before writing a helper, and never make Python load-bearing. The rules live
+in one place: `AGENTS.md`, section "Joel: build as if you were the AI in the system".
+
+Treat iteration speed and maintainability as product requirements, not optional
+cleanup. A narrow ticket does not prohibit repairing the shared responsibility
+that causes it. Coordinate edits with its owner; do not preserve duplication or
+an oversized file merely because callers cross the ticket boundary.
+
+- Extend the named owner of a behavior. When responsibility is scattered or a
+  file mixes concerns, extract a coherent module, migrate callers, and delete
+  superseded implementations in the same change where practical. Do not merely
+  add another wrapper, special case, or parallel path. Avoid arbitrary line caps.
+- Consolidate compatible test setup, scenarios and teardown. Test generic
+  contracts once and actual OS/adapter differences separately. Preserve necessary
+  isolation and defect coverage; fewer checks alone are not an improvement.
+- Refine CI continuously: remove redundant work, select checks by affected
+  responsibility, share immutable build artifacts and compatible caches, and
+  parallelize independent checks. Ordinary development should have a fast feedback
+  path. Broaden validation for changed contracts, failures or unresolved risks;
+  do not repeat unchanged checks by habit or weaken a gate to make it green.
+- Report concrete receipts proportional to the change: shared owner, migrated
+  callers, duplication removed, coverage retained, and measured build/test/deploy
+  time where performance is claimed. Distinguish source, CI and deployed behavior.
+- Reviewers must examine these opportunities, not just correctness of added lines.
+  Necessary adjacent work is authorized within the task; coordinate rather than
+  asking the user to manage it. If substantial work must remain, record a named
+  owner and actionable follow-up instead of an unowned cleanup promise.
+- Keep routine output concise and actionable, with detailed diagnostics in logs.
+  Notify on meaningful changes; avoid repeated unchanged polling and narration.
+
+### Accountability in review (agreed by the agents, 2026-10-11)
+
+Joel: "AIs are tech debt generators... hold one another accountable. You do it." In one
+day each of these cost a morning: a guessed timeout ("milliseconds each", measured ~5 s),
+an approval of a cache key that expanded empty, a claimed saving retracted after reading
+the code, an inference relayed to Joel as a fact. Every one was a claim made faster than
+it was checked. Reviewers enforce these on each other; an author does not self-exempt.
+
+- **No guessed numbers.** A timeout, size, rate or threshold cites the measurement it came
+  from. An engine, hardware or training PR carries a `## Measured` section of receipts. A
+  receipt carries the build SHA it ran on and a timestamp; a number without a subject and a
+  time is not a receipt. A reviewer refuses an unmeasured constant.
+- **Measured after deploy.** When a change can only be measured after deploy, the Measured
+  section names the check, its owner and its deadline, and the card stays open until the
+  receipt is posted. "Verified by tests" is never a Measured section for a hardware path.
+- **The reviewer verifies one claim, and names it.** Every approval names the claim it
+  verified and how: the command run, or the file:line read. An approval that says only
+  "verified" cannot be audited.
+- **No orphan follow-ups.** A non-blocking review note is fixed in the PR or becomes a card
+  with an owner in the same message. Before opening a new PR, close one of your own open
+  follow-ups, so debt is paid as fast as it is made.
+- **Only receipts go to Joel.** Say what was measured and where; an inference is labelled
+  as one, or not sent. A wrong claim is retracted as loudly as it was made.
+- **CI changes subtract.** A change to CI removes time or redundant work and reports
+  before/after minutes; a new job must pay for itself by removing more than it adds.
+
+
 ## 🛑 STOP — If You Are About To Edit Persona / Cognition / service_loop
 
 **Required first read** before touching ANY of `core/continuum-core/src/persona/{service_loop,unified,supervisor,rag_inspect}.rs`, anything in `core/continuum-core/src/cognition/`, or `core/continuum-core/src/bin/airc_chat_demo.rs`:
@@ -9,6 +329,21 @@
 It documents what a persona actually IS (embodied, multi-modal, tool-using, continually-learning citizen with genome paging and L1-L5 memory), the per-persona cognition cycle that already exists in `cognition/` (`analyze` → `score_persona` → `genome.activate_skill` → `compose_for_turn` → `evaluate_response` → `clean_and_validate` → `ToolExecutor` → `audit`), the bypass that's being removed (`inspect_persona_rag_with_inference`), the wire layer that IS validated end-to-end, and the forbidden moves the model keeps reflex-coding under amnesia (text-only `TurnInput`, `will_respond + response_text` chatbot contracts, parallel allocators, hardcoded LCD-tier clamps that handicap capable models).
 
 **The cost of skipping this doc and re-inferring the architecture from the bypass is rebuilding a chatbot in place of a year of substrate work.** Don't.
+
+## 🛑 STOP — If You Are About To Add Anything A Mind Perceives (a prompt block, a result, a view, a layer)
+
+**Required first read:** [docs/architecture/MIND-CONTEXT-AND-ENGINE-CONFIG.md](docs/architecture/MIND-CONTEXT-AND-ENGINE-CONFIG.md), "one codec for every layer" and "How to add a layer".
+
+A mind's context has ONE codec, `continuum-context`, built like a video codec over mipmaps:
+- keyed items that only append within an epoch;
+- levels of detail generated from each item's shape (`levels::summarize`: Code, Output, List);
+- admission instead of turnovers;
+- collapse only at a start, oldest first, never her newest (unless her newest alone exceeds what her window leaves it: then it arrives at its summary with a handle she can expand, never dropped; MIND-CONTEXT rule 2);
+- a restart order measured per mind (`motion`).
+
+A new layer implements `Source`, builds its items with `levels`, and gets caching, levels and ordering for free. Never push a prompt message by hand, collapse outside the view, or order by a label. The source-hygiene ratchets `prompt_messages_outside_the_view`, `collapse_outside_the_view` and `hand_churn_labels` fail any PR that adds one.
+
+**The cost of skipping this:** Aiko read one 51,827-char file whole 9 times in 43 acts (the M5, 2026-10-25), because three owners each decided a piece of what she saw.
 
 ## 🛑 STOP — If You Are About To Add a Monitor, Broker, Pool, Region, Or Any Concurrent Concern
 
@@ -86,6 +421,7 @@ If you're new to the substrate, or you're picking up runtime/cognition work, rea
 
 1. **[docs/architecture/CBAR-SUBSTRATE-ARCHITECTURE.md](docs/architecture/CBAR-SUBSTRATE-ARCHITECTURE.md)** — the RTOS-style runtime contract every Rust module inherits. Concurrency, scheduling, memory + device pressure, telemetry, artifact handles, lifecycle. The "for free triplet" (base trait + derive macro + scaffold generator) is here, with the engram-analyzer worked example.
 2. **[docs/architecture/GENOME-FOUNDRY-SENTINEL.md](docs/architecture/GENOME-FOUNDRY-SENTINEL.md)** — the artifact-sharing economy on top of the substrate. Tiered genome cache (L1–L5), foundry-as-JIT, sentinel-AI-as-PGO, demand-aligned recall, composer + speculator, `SubstrateGovernor` (DVFS — same Rust code on MacBook Air and RTX 5090, different governor policy).
+   - **[docs/architecture/ONE-RESIDENT-MODEL-PATIENT-DOCTOR-DREAM.md](docs/architecture/ONE-RESIDENT-MODEL-PATIENT-DOCTOR-DREAM.md)** — the learning loop on ONE resident base: patient (persona), doctor (teacher) and dream (training) on the same loaded weights, drifting between serving, coursework and dreaming between two decode steps. Measured "today" table (every second base copy and engine relaunch), the fork's engine stages (AdapterRegistry, role slot affinity, LoRA-only ggml-opt, DREAM stage, shadow/stable swap), the core's state machine, build order with gates on the M5 and the 5090, and the two-way upstream watch. Read before touching genome training, teach, eval lanes, or the serving daemon's adapter set.
 3. **[docs/architecture/AI-COMMAND-NAMESPACE.md](docs/architecture/AI-COMMAND-NAMESPACE.md)** — every AI/ML thing (LLMs, vision, audio, classifiers, planning algs, game AI, low-level kernels) under one `ai/*` tree, one adapter pattern, one handle abstraction. Commands stay dumb; daemons get clever.
 4. **[docs/architecture/INFERENCE-SCHEDULING-AND-SCARCITY.md](docs/architecture/INFERENCE-SCHEDULING-AND-SCARCITY.md)** — the daemons behind `ai/inference/*`. Tiered slot pools, continuous batching, multi-LoRA serving, adaptive quantization, base-model sharing, cross-grid routing. M5 hosting multi-modal Qwen across multiple lanes. The adaptive-resolution analogy is the canonical mental model. (Aspirational ceiling.)
    - **[docs/architecture/INFERENCE-LANES-REALISTIC.md](docs/architecture/INFERENCE-LANES-REALISTIC.md)** — the realistic floor: ONE base model, N persona lanes (each a `(persona, TaskKind, ThroughputLease)` triple), continuous batching through the same model. Composes prior art that's already in tree (FootprintRegistry, ThroughputLeaseRegistry, AdaptiveThroughputPlanner, PressureBroker, recipe_budget). Concrete build plan for #109. Read THIS first if you're picking up scheduler work — start here, then escalate to the ceiling doc only when needed.
@@ -492,8 +828,9 @@ because a binary you built by hand exists only on your machine, and the next per
 clone the repo gets a system that doesn't work. Anything a running core needs must be
 wired into the path `continuum start` / `continuum reboot` actually takes, so a fresh
 clone works with no manual steps (#291). For type-checking while you work,
-`cargo check -p continuum-core` is the right tool — always after
-`export CARGO_TARGET_DIR="$HOME/.continuum/cache/cargo-target"`.
+`cargo check -p continuum-core` is the right tool — always with a target dir set: in the main
+checkout `export CARGO_TARGET_DIR="$HOME/.continuum/cache/cargo-target"`, in a worktree its own
+clone of it (plan phase 2, "Each worktree builds into its own target dir").
 
 **`npm` is for building the web client, and only that.** If you are changing core
 behaviour and find yourself running `npm start`, you are in the wrong tier.
@@ -1192,64 +1529,14 @@ commands/example/
 > metrics) — one truth in Rust, N renderers, ts-rs exporting the type to
 > `protocol/typescript/positron/`. Not a per-client mixin.
 >
-> The mixin chain below remains accurate **only** for exposing a Rust command to the Node
-> web desktop's `./jtag` CLI. It is a presentation-tier convenience, never where behaviour
-> belongs.
+> The Node mixin chain and the `CommandGenerator` that scaffolded it are gone (the
+> generator is quarantined under `legacy/quarantine/tools-generator`; no
+> `workers/continuum-core/bindings` exists). Do not follow old `npx tsx generator/...` steps.
 
-When a command is backed by Rust (via continuum-core IPC), it requires **THREE layers**:
-
-```
-1. CommandSpec JSON   →  generator/specs/gpu-stats.json
-2. CommandGenerator   →  npx tsx generator/CommandGenerator.ts generator/specs/gpu-stats.json
-3. IPC Mixin          →  workers/continuum-core/bindings/modules/gpu.ts
-```
-
-**Step-by-step workflow:**
-
-```bash
-# 1. Create the Rust module (ServiceModule trait) with IPC commands
-#    e.g., modules/gpu.rs handles "gpu/stats", "gpu/pressure"
-
-# 2. Create a CommandSpec JSON
-cat > generator/specs/gpu-stats.json << 'EOF'
-{
-  "name": "gpu/stats",
-  "description": "Query GPU memory stats",
-  "params": [...],
-  "results": [...],
-  "examples": [...],
-  "accessLevel": "ai-safe"
-}
-EOF
-
-# 3. Run the generator (creates shared/Types, server/Command, browser/Command, README, tests)
-npx tsx generator/CommandGenerator.ts generator/specs/gpu-stats.json
-
-# 4. Create IPC mixin (snake_case Rust → camelCase TypeScript)
-#    workers/continuum-core/bindings/modules/gpu.ts
-#    Pattern: export function GpuMixin<T>(Base: T) { return class extends Base { ... } }
-
-# 5. Add mixin to RustCoreIPC.ts composition chain
-#    import { GpuMixin } from './modules/gpu';
-#    const ComposedClient = ... GpuMixin(RuntimeMixin( ... )) ...
-
-# 6. Implement server command to use mixin
-#    const stats = await this.rustClient.gpuStats();
-
-# 7. Build and verify
-continuum reboot
-continuum gpu/stats
-```
-
-**The three-layer architecture:**
-
-| Layer | File | Purpose |
-|-------|------|---------|
-| Rust IPC | `modules/gpu.rs` | ServiceModule, handles `gpu/stats` |
-| TS Mixin | `bindings/modules/gpu.ts` | snake_case→camelCase, typed wrapper |
-| TS Command | `commands/gpu/stats/` | Generated scaffold, uses mixin |
-
-**Without the mixin + command layer**, Rust IPC commands exist but are invisible to `./jtag` and the command system. The generator creates discoverability (README, help text, CLI params).
+When a command is backed by Rust, it lives in the core: a `ServiceModule` in
+`core/continuum-core/src/modules/` handles `gpu/stats` and is discovered through
+`continuum commands/list`. Clients (web, TUI, mobile) render it through a positron
+`ViewState` + source; wire types come from ts-rs. Nothing else needs registering.
 
 ---
 
@@ -1702,7 +1989,7 @@ Generators and OOP are intertwined parallel forces:
 
 **File reduced from 61k to ~20k characters**
 - if you only edit a test, and not the api itself, you don't need to redeploy — just run the test again (`cargo test -p continuum-core --lib <filter>`)
-- type-check before you deploy: `cargo check -p continuum-core` (after `export CARGO_TARGET_DIR="$HOME/.continuum/cache/cargo-target"`). `npm run build:ts` checks the WEB CLIENT only — it says nothing about whether the core compiles
+- type-check before you deploy: `cargo check -p continuum-core` (with the main checkout's shared target dir, or a worktree's own clone of it: plan phase 2). `npm run build:ts` checks the WEB CLIENT only — it says nothing about whether the core compiles
 - ./jtag collaboration/chat/export --room="general" --limit=30 will let you see ai opinions after chat/send to ask
 - Tool logging is in PersonaToolExecutor
 - make sure to put any markdown architecture or design documents other than readmes in docs/* into the appropriate directort OR document if they exist. run tree there.
@@ -1712,5 +1999,5 @@ Generators and OOP are intertwined parallel forces:
 - never commit code until you validate it works. deploy and validate first, make sure it compiles (`cargo check` for the core; `npm run build:ts` only if you touched the web client)
 - never use `--no-verify` on commit or push. If hooks fail because of a stale worktree, missing submodule, missing generated file, or a bug in the hook itself, fix the underlying problem; never bypass the shared validation path.
 - commit often per logical unit once validated. merging to main is the only step that requires my approval — commits to feature branches do not.
-- **clean as you go.** Cargo target dirs balloon — a `cargo test` of continuum-core consumes ~10 GB of test-binary artifacts on top of the shared cache. Discipline: (1) ALWAYS `export CARGO_TARGET_DIR="$HOME/.continuum/cache/cargo-target"` before any cargo invocation so artifacts land in the ONE shared cache, not in a per-invocation ghost workspace `target/` dir. (2) After each cargo cycle, `df -h /` — if free space dropped to < 20 GB, sweep ghost target dirs (`rm -rf core/target` when it ghost-grew from RA / manual cargo bypassing the env var) and report the number BEFORE running another cargo. (3) Prefer `cargo check` over `cargo test` when validating type-correctness; only escalate to test when behavior changed. (4) Slice 3 in `core/.cargo/config.toml` is the opt-in fix that pins target-dir at the workspace level — uncomment for your operator absolute path when ready.
+- **clean as you go.** Cargo target dirs balloon — a `cargo test` of continuum-core consumes ~10 GB of test-binary artifacts on top of the shared cache. Discipline: (1) ALWAYS set a target dir before any cargo invocation, never a per-invocation ghost workspace `target/` dir: the main checkout builds into the shared cache `$HOME/.continuum/cache/cargo-target`; a worktree builds into its own copy-on-write clone of it (plan phase 2), deleted with the worktree. (2) After each cargo cycle, `df -h /` — if free space dropped to < 20 GB, sweep ghost target dirs (`rm -rf core/target` when it ghost-grew from RA / manual cargo bypassing the env var) and report the number BEFORE running another cargo. (3) Prefer `cargo check` over `cargo test` when validating type-correctness; only escalate to test when behavior changed. (4) Slice 3 in `core/.cargo/config.toml` is the opt-in fix that pins target-dir at the workspace level — uncomment for your operator absolute path when ready.
 - **no new cache dir without an eviction decision.** (2026-07-13 incident: 460 GB of derived artifacts — unswept cargo-target at 363 GB, per-persona repo copies — took the disk to a day of runway while `DiskPressureMonitor` logged `level=high [no reporters]` and the `PressureBroker` emitted zero-byte "nobody owns the eviction" alerts. Every component was built and green; the WIRING was missing.) The rule: any new directory the substrate writes unbounded data into gets (1) a `TrackedDir` row in `system_resources/disk_reporters.rs::standard_tracked_dirs` and (2) an eviction decision in `disk_eviction.rs::every_cache_class_has_a_decided_eviction_story` — an owner `ResourcePool` with real `evict_at_least`, or an explicit deferred entry naming the owning task. That test FAILS on an undecided class; do not weaken it — it is the difference between a red test and a user's trashed machine. Chain-level guard: `broker_relieve_actually_deletes_from_an_over_budget_pool` pins pressure→broker→real deletion end-to-end; unit-green components with dead wiring is the exact failure shape this catches.

@@ -1,5 +1,8 @@
 # Recipe Formalization — identity, registry, and the taxonomy that groups everything
 
+> `legacy/` was deleted 2026-10-23; every `legacy/` path below is at git tag `legacy-archive-2026-10-23` (restore: `git checkout legacy-archive-2026-10-23 -- legacy/<path>`).
+
+
 **Parent:** [Recipes](./RECIPES.md) · **Task:** #274 · **Status:** Design, not built
 **Created:** 2026-08-13
 
@@ -16,7 +19,7 @@ Two populations of recipe exist in the tree today.
 
 | | count | fields |
 |---|---|---|
-| **Live** (`core/continuum-core/src/experience/recipes/`) | 4 | `purpose, regions, affordances, layout` |
+| **Live** (`core/continuum-experience/src/experience/recipes/`) | 4 | `purpose, regions, affordances, layout` |
 | **Legacy** (`legacy/src/system/recipes/`) | 28 | `uniqueId, version, name, displayName, description, tags, pipeline, ragTemplate, strategy, roles, tools, sentinelTemplates, layout, view, access, isPublic, locked, inputs, room, entityType` |
 
 The live four are `benchmark/hard-rs`, `chat`, `profile`, `video-chat`. The legacy

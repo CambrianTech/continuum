@@ -1,0 +1,25 @@
+[package]
+name = "serving-replay"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = """
+Slice S0 of docs/architecture/SERVING-ENGINE.md (plan line 3b): the validator every
+serving slice proves its gain on before it reaches the live node. It replays act
+sequences (real prompt captures, or synthetic multi-mind interleavings) against an
+engine behind the `ServingTarget` seam and reports per-act reuse, fresh prefill
+tokens, page-ins by kind, relaunches and wall time, with no residents and no core.
+
+HARD CONSTRAINT: std + serde only. No continuum-core, no async runtime, no HTTP
+crate: the engine is on loopback and one blocking request per act is all the
+replay needs, so the crate builds alone in seconds.
+"""
+
+[features]
+# The scripted `FakeTarget` the replay's own tests drive (CLAUDE.md: fixtures are
+# gated so a production binary cannot link them).
+test-fixtures = []
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }

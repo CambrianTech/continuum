@@ -1,5 +1,8 @@
 # Alpha Completion Blueprint — make the README real, alive, screenshotted
 
+> `legacy/` was deleted 2026-10-23; every `legacy/` path below is at git tag `legacy-archive-2026-10-23` (restore: `git checkout legacy-archive-2026-10-23 -- legacy/<path>`).
+
+
 > **Status:** governing plan (2026-07-04). The architecture is settled; this is *execution*.
 > **The bar:** the main `README.md` becomes literally true — a distributed AI world on the Grid,
 > personas with faces/voices/memory/genome, the Factory forging live, avatars + animations that

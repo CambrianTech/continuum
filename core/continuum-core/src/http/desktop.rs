@@ -39,9 +39,9 @@ pub fn spawn_if_configured(rt: &tokio::runtime::Handle) {
     let configured = std::env::var("CONTINUUM_UI_DIST")
         .ok()
         .filter(|v| !v.trim().is_empty())
-        .or_else(|| crate::config_env::read("CONTINUUM_UI_DIST"));
+        .or_else(|| continuum_base::config_env::read("CONTINUUM_UI_DIST"));
     let Some(dist) = configured.map(PathBuf::from) else {
-        crate::probe!(
+        continuum_base::probe!(
             class = "desktop.dm.unconfigured",
             "no CONTINUUM_UI_DIST — the core serves no desktop this boot \
              (continuum start sets it after building the web client)"
@@ -49,7 +49,7 @@ pub fn spawn_if_configured(rt: &tokio::runtime::Handle) {
         return;
     };
     if !dist.join("index.html").is_file() {
-        crate::probe!(
+        continuum_base::probe!(
             class = "desktop.dm.dist_missing",
             dist = %dist.display(),
             "CONTINUUM_UI_DIST has no index.html — build the web client \
@@ -59,7 +59,7 @@ pub fn spawn_if_configured(rt: &tokio::runtime::Handle) {
     }
     let port: u16 = std::env::var("CONTINUUM_UI_PORT")
         .ok()
-        .or_else(|| crate::config_env::read("CONTINUUM_UI_PORT"))
+        .or_else(|| continuum_base::config_env::read("CONTINUUM_UI_PORT"))
         .and_then(|v| v.parse().ok())
         .unwrap_or(8975); // unwrap_or: the documented default port, beside WS 8974
     let index = dist.join("index.html");
@@ -79,7 +79,7 @@ pub fn spawn_if_configured(rt: &tokio::runtime::Handle) {
         let listener = match tokio::net::TcpListener::bind(&bind).await {
             Ok(l) => l,
             Err(e) => {
-                crate::probe!(
+                continuum_base::probe!(
                     class = "desktop.dm.bind_failed",
                     bind = %bind,
                     error = %e,
@@ -88,14 +88,14 @@ pub fn spawn_if_configured(rt: &tokio::runtime::Handle) {
                 return;
             }
         };
-        crate::probe!(
+        continuum_base::probe!(
             class = "desktop.dm.online",
             url = %format!("http://{bind}/"),
             dist = %dist.display(),
             "desktop display manager online — the core serves its own UI (continuum desktop opens it)"
         );
         if let Err(e) = axum::serve(listener, app).await {
-            crate::probe!(
+            continuum_base::probe!(
                 class = "desktop.dm.exited",
                 error = %e,
                 "desktop display manager exited"

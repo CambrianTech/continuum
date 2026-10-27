@@ -1,6 +1,6 @@
 //! `forge-custodian` — the continuum-owned forge custodian sidecar.
 //!
-//! This process implements the ONE capability unsloth-studio lacks: exporting a
+//! This process implements the capability the serving engine lacks: exporting a
 //! trained LoRA as a **GGUF LoRA adapter** — the pageable gene `llama-server
 //! --lora` loads and the genome pages in/out (memory
 //! `model-endpoint-fabric-adapter-router`, slice 1 supply side).
@@ -49,7 +49,7 @@
 //!   FORGE_MAX_CONCURRENT        — concurrent conversion slots (default 1)
 //!   FORGE_CONVERT_TIMEOUT_SECS  — per-conversion wall-clock deadline (default 1800)
 //!   FORGE_LLAMA_CPP_DIR         — dir holding `convert_lora_to_gguf.py`
-//!                                 (default `~/.unsloth/llama.cpp`)
+//!                                 (default `core/vendor/llama.cpp`, our fork)
 //!   FORGE_PYTHON                — python interpreter with the converter's deps
 //!                                 (default `python3`)
 
@@ -60,8 +60,8 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
-use continuum_core::config_env;
-use continuum_core::forge::lora_convert::mlx_adapters_to_peft;
+use continuum_base::config_env;
+use continuum_core::forge::lora_convert::{mlx_adapters_to_peft, PeftLoraConfig};
 // The wire contract is single-sourced in `forge::protocol` so this server and
 // the core-side client can never drift (see that module's docs). This binary is
 // the SERVER half; it imports the SAME request/response/health types a client
@@ -265,13 +265,30 @@ async fn gguf_lora_handler(
 /// addressed so an identical re-request short-circuits (R6).
 fn convert_gguf_lora(req: &GgufLoraRequest, timeout: Duration) -> Result<ExportResult, String> {
     let checkpoint = Path::new(&req.checkpoint);
-    let mlx_safetensors = resolve_mlx_adapter(checkpoint)?;
+    let mlx_safetensors = match req.checkpoint_format {
+        continuum_core::forge::protocol::AdapterCheckpointFormat::Mlx => resolve_mlx_adapter(checkpoint)?,
+        continuum_core::forge::protocol::AdapterCheckpointFormat::Peft => checkpoint.join("adapter_model.safetensors"),
+    };
     let config_path = checkpoint.join("adapter_config.json");
     let config_bytes =
         std::fs::read(&config_path).map_err(|e| format!("read {}: {e}", config_path.display()))?;
-    let mlx_config: Value = serde_json::from_slice(&config_bytes)
-        .map_err(|e| format!("parse {}: {e}", config_path.display()))?;
-    let (rank, alpha) = parse_mlx_lora_params(&mlx_config)?;
+    enum CheckpointConfig {
+        Mlx { rank: usize, alpha: u32 },
+        Peft(PeftLoraConfig),
+    }
+    let configuration = match req.checkpoint_format {
+        continuum_core::forge::protocol::AdapterCheckpointFormat::Peft =>
+            CheckpointConfig::Peft(PeftLoraConfig::parse(&config_bytes, &req.base_model_id)?),
+        continuum_core::forge::protocol::AdapterCheckpointFormat::Mlx => {
+            let (rank, alpha) = parse_mlx_lora_params(&serde_json::from_slice(&config_bytes)
+                .map_err(|e| format!("parse {}: {e}", config_path.display()))?)?;
+            CheckpointConfig::Mlx { rank, alpha }
+        }
+    };
+    let (rank, alpha) = match &configuration {
+        CheckpointConfig::Mlx { rank, alpha } => (*rank, *alpha),
+        CheckpointConfig::Peft(config) => (config.rank.get(), config.alpha.get()),
+    };
 
     // R6: content-addressed job id over (weights ⊕ base ⊕ outtype). The output
     // name embeds it so an identical re-POST resolves to the same path and a
@@ -308,8 +325,17 @@ fn convert_gguf_lora(req: &GgufLoraRequest, timeout: Duration) -> Result<ExportR
         }
     }
 
-    let peft_dir = save_dir.join(format!("peft-{job}"));
-    let conv = mlx_adapters_to_peft(&mlx_safetensors, &peft_dir, &req.base_model_id, rank, alpha)?;
+    let (peft_dir, conv) = match &configuration {
+        CheckpointConfig::Mlx { .. } => {
+            let directory = save_dir.join(format!("peft-{job}"));
+            let converted = mlx_adapters_to_peft(&mlx_safetensors, &directory, &req.base_model_id, rank, alpha)?;
+            (directory, converted)
+        }
+        CheckpointConfig::Peft(config) => {
+            let converted = continuum_core::forge::lora_convert::inspect_peft_adapter(checkpoint, config)?;
+            (checkpoint.to_path_buf(), converted)
+        },
+    };
 
     let base_dir = resolve_hf_base_dir(&req.base_model_id)?;
     let converter = llama_cpp_converter()?;
@@ -348,17 +374,14 @@ fn convert_gguf_lora(req: &GgufLoraRequest, timeout: Duration) -> Result<ExportR
 
     Ok(ExportResult {
         success: true,
-        message: format!(
-            "wrote GGUF LoRA ({} tensors, r={})",
-            conv.tensor_count, conv.rank
-        ),
+        message: format!("wrote GGUF LoRA (r={rank})"),
         details: json!({
             "output": outfile.to_string_lossy(),
             "peft_dir": peft_dir.to_string_lossy(),
+            "rank": rank,
             "tensor_count": conv.tensor_count,
-            "rank": conv.rank,
-            "lora_alpha": alpha,
             "target_modules": conv.target_modules,
+            "lora_alpha": alpha,
             "base_model_dir": base_dir.to_string_lossy(),
             "job_id": job,
             "idempotent": false,
@@ -380,8 +403,12 @@ fn run_with_deadline(mut cmd: Command, timeout: Duration) -> Result<std::process
 
     // Drain the pipes concurrently — a converter that writes more than a pipe
     // buffer would otherwise block forever on write while we wait on exit.
-    let mut child_stdout = child.stdout.take().expect("stdout piped");
-    let mut child_stderr = child.stderr.take().expect("stderr piped");
+    let (Some(mut child_stdout), Some(mut child_stderr)) =
+        (child.stdout.take(), child.stderr.take())
+    else {
+        let _ = child.kill();
+        return Err("child stdout/stderr were not piped".to_string());
+    };
     let out_h = std::thread::spawn(move || {
         let mut b = Vec::new();
         let _ = child_stdout.read_to_end(&mut b);
@@ -530,8 +557,7 @@ fn resolve_hf_base_dir(model_id: &str) -> Result<PathBuf, String> {
 ///
 /// Default is the llama.cpp WE vendor (`core/vendor/llama.cpp` — our fork),
 /// resolved from the crate dir; the custodian is a training-time tool that runs
-/// where the source tree exists. We do NOT borrow `~/.unsloth` anymore (unsloth
-/// is excised; the convert script is ours, in the submodule). `FORGE_LLAMA_CPP_DIR`
+/// where the source tree exists (the convert script is in the submodule). `FORGE_LLAMA_CPP_DIR`
 /// overrides for deployments that stage the script elsewhere.
 fn llama_cpp_converter() -> Result<PathBuf, String> {
     let dir = config_env::read("FORGE_LLAMA_CPP_DIR").unwrap_or_else(|| {
@@ -565,7 +591,7 @@ mod tests {
         let cfg = json!({
             "fine_tune_type": "lora",
             "lora_parameters": { "rank": 8, "dropout": 0.0, "scale": 20.0 },
-            "model": "unsloth/Qwen2.5-0.5B-Instruct"
+            "model": "Qwen/Qwen2.5-0.5B-Instruct"
         });
         let (rank, alpha) = parse_mlx_lora_params(&cfg).unwrap();
         assert_eq!(rank, 8);

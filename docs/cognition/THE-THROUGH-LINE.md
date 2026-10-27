@@ -114,7 +114,7 @@ This is the "how," in dependency order. Each link is a real, named subsystem.
    persisted per-persona, recalled by semantic similarity into the working set.
    This is the continuity advantage made concrete. ([[recall-is-semantic-capable-but-underpowered]])
 5. **The genome loop.** Room turns → recorder → `dataset/from-turns` ShareGPT
-   JSONL → `mlx_lm.lora` (Mac) / unsloth (NVIDIA) train → GGUF-lora → page-in →
+   JSONL → `mlx_lm.lora` (Mac) / in-engine LoRA training on the llama.cpp fork (NVIDIA) train → GGUF-lora → page-in →
    `cognition/eval` LIFT. The specialization advantage made measurable. THIS is
    the load-bearing unproven step (#32) — until the number moves, we are a fast
    retriever, not a learner.
@@ -130,7 +130,7 @@ Heterogeneity is a feature once nodes stop pretending to be symmetric:
 - **5090 (32GB Blackwell)** — heavy lane + foundry: serves the 30B base, trains
   LoRAs, holds the 16TB cold store. ([[shared-gpu-engine-and-cold-store]])
 - **M5 64GB** — second heavy node: big unified-memory model + MLX LoRA training
-  (`mlx_lm.lora` works here — [[unsloth-mlx-train-broken-on-mac]]).
+  (`mlx_lm.lora` works here).
 - **3×1080ti (Pascal, old)** — NOT reasoning nodes. Cheap parallel lanes:
   embeddings, draft models for speculative decoding, classifiers, the
   always-running deferred concerns. The async hint-makers.

@@ -15,7 +15,7 @@ This doc describes the architectural endpoint. The codebase is partway there. Kn
 - `cognition/response_orchestrator.rs` — score_persona / DEFAULT_RELEVANCE_THRESHOLD
 - `cognition/types.rs` — shared types
 - `persona/response.rs` — `respond()` entry point + `strip_thinks_emit_events`
-- `persona/prompt_assembly.rs` — initial prompt build, multi_party_strategy enum, NamePrefixed/SingleUserTurn variants
+- `cognition/prompt_assembly.rs` — initial prompt build, multi_party_strategy enum, NamePrefixed/SingleUserTurn variants
 - `persona/inbox.rs`, `persona/channel_*.rs` — message routing and prioritization
 - `persona/genome_paging.rs` — LoRA adapter LRU + activation tracking (the §11 substrate already exists)
 - `memory/cache.rs`, `memory/recall.rs`, `memory/embedding.rs`, `memory/timeline.rs`, etc. — substantial memory infra (~2800 lines)
@@ -1262,8 +1262,8 @@ Substeps in dependency order (each TDD/VDD'd):
 
 - ~~**0.5.1** `PersonaResponseValidator` (110 lines) → `cognition::response_validator`~~  
   Rust impl shipped earlier in PR #949; TS file deleted in `54c49009e`. **DONE.**
-- ~~**0.5.2** `PersonaPromptAssembler` turn-N (343 lines) → extend `persona::prompt_assembly`~~  
-  Discovered DEAD post-cutover; deleted in `54c49009e`. No port needed — initial assembly lives in `persona::prompt_assembly`; turn-N "delta" was a misread of TS API (the dead `assembleMessages` was a single function, not a delta call). **DONE.**
+- ~~**0.5.2** `PersonaPromptAssembler` turn-N (343 lines) → extend `cognition::prompt_assembly`~~  
+  Discovered DEAD post-cutover; deleted in `54c49009e`. No port needed — initial assembly lives in `cognition::prompt_assembly`; turn-N "delta" was a misread of TS API (the dead `assembleMessages` was a single function, not a delta call). **DONE.**
 - **0.5.3-trait** `cognition::tool_executor` trait + ts-rs types — **DONE** (`a14c08c28`)
   - Survey 2026-04-21: PersonaToolExecutor is 150 LOC of persona-specific orchestration (workspace bootstrap, sentinel auto-config, ChatMessage storage, media filtering, event emission, telemetry) wrapping ~486 LOC of delegation to `AgentToolExecutor` (sibling 'universal' class under `src/system/tools/server`). Tool implementations themselves (`code/*`, `interface/*`, `collaboration/*`, `data/*`) are a thousand-line constellation that doesn't need to move now.
   - Rust defines `cognition::tool_executor::ToolExecutor` trait + types (`ToolInvocation`, `ToolExecutionContext`, `ToolOutcome`, `MediaItemLite`, `NativeBatchOutcome`, `ParsedToolBatch`, `PersonaMediaConfigLite` — all `#[derive(TS)]` → `shared/generated/cognition/`). Async methods: `execute_native_batch` / `parse_response` / `store_outcome`. 3 VDD-validated round-trip tests + 7 ts-rs export-bindings tests.

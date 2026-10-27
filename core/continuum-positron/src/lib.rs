@@ -118,7 +118,6 @@
 //!    and call [`Substrate::store`] on each change, so the projection
 //!    tracks the airc-owned truth (see "State ownership" above).
 
-pub mod bench;
 pub mod broadcast;
 pub mod canvas;
 pub mod cache;

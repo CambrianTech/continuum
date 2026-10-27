@@ -13,7 +13,7 @@ name: string,
  */
 provider: string, 
 /**
- * When the key takes effect. Secrets load once at boot ([`crate::secrets`]),
+ * When the key takes effect. Secrets load once at boot ([`continuum_base::secrets`]),
  * so a newly set key activates on the next core start — stated honestly
  * rather than pretending hot-reload.
  */

@@ -1,7 +1,0 @@
-[package]
-name = "work-wordstats"
-edition.workspace = true
-version.workspace = true
-authors.workspace = true
-
-[dependencies]

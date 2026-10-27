@@ -1,0 +1,89 @@
+# THE RATCHETS, IN UNDER A MINUTE.
+#
+# Measured 2026-09-22: four of four CI reds that day were ratchet failures, not failing
+# tests — unwrap counts, boundary-serialization counts, rustc warnings. Half of them were
+# these source scans, and every one cost its author the full 12.4-minute continuum-core
+# build to learn that a number went 2264 -> 2265. Time-to-red is what a contributor pays.
+#
+# `source-hygiene` is std-only and dependency-free, so this job compiles and runs the
+# whole ratchet suite in seconds (measured locally: cargo check 0.77 s, 26 tests 3.4 s).
+# It is a SEPARATE workflow, not another job in continuum-rust-tests.yml, so it reports
+# in about a minute whatever the Rust suite is doing.
+#
+# This does NOT replace a gate. The same tests run in the same crate; this runs them
+# EARLY. Nothing was made conditional and nothing was removed.
+name: Source Hygiene Ratchets
+
+on:
+  pull_request:
+  push:
+    branches: [canary, main]
+
+concurrency:
+  group: source-hygiene-${{ github.head_ref || github.run_id }}
+  cancel-in-progress: true
+
+jobs:
+  ratchets:
+    name: source-hygiene ratchets (fast)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # The scans read `core/continuum-core/src`; vendor_pin additionally asks git
+          # for the recorded submodule pointer, so the checkout must be able to answer.
+          submodules: recursive
+          # The oversized-edit gate diffs against the PR's base.
+          fetch-depth: 0
+
+      # crate_wiring runs tools/scripts/ci-change-scope.cjs through node to check that the selector
+      # and this crate derive the same crate sets; the guard fails when node is missing.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      # NEW RULE (Joel, 2026-10-20): "No one can edit a large file." Every Rust file a PR adds or
+      # modifies is at most 1,000 lines at the PR's head: the only PR that touches a monolith is
+      # the one that breaks it apart. The PR's final state is judged, so its commits may split
+      # step by step. Seconds, no build.
+      - name: no edit to an oversized file without breaking it apart
+        if: github.event_name == 'pull_request'
+        run: |
+          tools/scripts/tests/oversized-edits.test.sh
+          tools/scripts/oversized-edits.sh "origin/${{ github.base_ref }}"
+
+      - name: Install Rust toolchain from rust-toolchain.toml
+        run: rustup show active-toolchain || rustup show
+
+      - name: Cache cargo state
+        uses: Swatinem/rust-cache@v2
+        with:
+          # Its OWN key. Sharing continuum-core's would make a one-minute job wait on
+          # (and then save) a multi-gigabyte cache for a crate with zero dependencies.
+          shared-key: source-hygiene
+          # PR runs restore canary's cache and never save their own: the repo's 10 GB cache
+          # quota is nearly filled by canary's caches, and one PR save evicted core-binaries.
+          save-if: ${{ github.event_name != 'pull_request' }}
+          cache-on-failure: true
+
+      # Every ratchet is judged against the tree this one is based on, measured by this tree's
+      # rules (src/ratchet.rs): no count is written into the source, so two PRs that each lower
+      # a count no longer conflict. The head run is the full test suite; the base run only
+      # records counts. Replaces the single `cargo test -p source-hygiene` (same tests, plus one
+      # scan of the base tree).
+      - name: ratchets, judged against the base
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            base="origin/${{ github.base_ref }}"
+          else
+            base="${{ github.event.before }}"
+            # A new branch pushes with an all-zero 'before', and a force push can leave it
+            # unreachable: judge against canary then, and say so, rather than erroring.
+            if [ -z "$base" ] || [ "$base" = "0000000000000000000000000000000000000000" ] \
+               || ! git cat-file -e "${base}^{commit}" 2>/dev/null; then
+              echo "::notice::push base '${base}' is absent or unreachable (new branch or force push); judging ratchets against origin/canary"
+              base="origin/canary"
+            fi
+          fi
+          cargo run -q -p source-hygiene --bin ratchets -- "$base"

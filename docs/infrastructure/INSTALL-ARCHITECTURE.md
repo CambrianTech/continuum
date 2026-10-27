@@ -430,3 +430,54 @@ To do before merge (consolidation):
 - Add `continuum-core-cuda` CI job.
 - Add PR-gated smoke build in the workflow.
 - BigMama e2e dry-run documenting results in PR description.
+
+## Shared Windows elevation artifact (2026-10-01 repair)
+
+`tools/scripts/lib/windows-elevation.ps1` now contains the existing Windows
+acquire/invoke/clear implementation and its PATH/admin probes. `install-common.ps1`
+imports it. The helper has no application-module or logging-library dependency.
+Package installation also uses this helper instead of invoking gsudo separately.
+The gsudo package source is declared in `install-manifest.toml` and passed from
+its generated Windows projection. Standalone consumers supply that same source
+descriptor with the helper; missing or non-user acquisition scope fails before
+installing anything. The helper contains no separate package-ID choice.
+
+The outer installer now exports a versioned PID/start-time context. Children
+validate the owner's process identity and ancestry before borrowing it. The first
+admin operation acquires a cache scoped to that owner and its descendants; its
+idle lifetime spans builds. The outermost finally closes that process's cache,
+including child-first acquisition, and owner process exit also ends it. Child
+cleanup cannot dispose the parent's cache. No global cache setting is changed.
+
+A pre-existing caller cache is borrowed without extending or closing it. If it
+expires, setup fails explicitly instead of silently seeking another approval.
+Native executable resolution excludes aliases and Bash wrappers. Prepare-only
+installation does not initialize an elevation session.
+
+Regression coverage includes acquisition diagnostics, child-first ownership,
+borrowed cleanup, pre-existing cache preservation/expiry, stale-owner rejection,
+and real PowerShell child ancestry both directly and through Git Bash. These
+checks do not establish live UAC or public-entry installation success.
+
+AIRC PR #1470 now acquires immutable SHA256-verified copies of this helper and the
+generated manifest without requiring a Continuum application install. Its full
+coordinator fixture exposed an MSYS process ancestry defect missed by the shorter
+adapter test; waiting subshells preserve the native owner chain. The fix is under
+Windows CI validation, with local full-boundary regression coverage passing.
+
+Continuum's AIRC firewall module now invokes the same manifest-selected public
+installer with `-FirewallOnly -AircPath <installed executable>`. That mode acquires
+compatible setup sources and verifies/repairs AIRC's canonical policy without
+building, authenticating or restarting AIRC. Failed verification stops Continuum;
+there is no independent broad allow rule or name-only success check. The existing
+native service suite covers manifest selection, child owner/path preservation,
+local-only skip and failure propagation. AIRC's new public mode must land on
+canary before this Continuum consumer merges. Live single-consent installation,
+fresh prerequisites, idempotent rerun and two-way peer delivery remain OPEN.
+
+The existing Windows service fixture includes the extracted file in its disposable
+installer checkouts. Hidden PS5.1 ConsoleHost on BIGGIEDESK returned exit 1 without
+redirected terminating-error text; fixture child wrappers now emit the caught
+exception and preserve exit 1. Both refusal diagnostics and exit status remain
+required. This fixture correction does not suppress installer failures or change
+host policy. Live public-entry and idempotent rerun evidence remain outstanding.

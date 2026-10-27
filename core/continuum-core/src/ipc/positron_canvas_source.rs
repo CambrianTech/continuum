@@ -12,6 +12,7 @@
 //! the websocket store human eyes read AND the mind substrate a citizen's
 //! grounding reads, same revision in both.
 
+use continuum_base::time::EpochMs;
 use std::sync::{Mutex, OnceLock};
 
 use continuum_positron::canvas::{CanvasViewState, CanvasViewport};
@@ -39,6 +40,9 @@ pub fn install(substrate: Substrate) {
     {
         panic!("positron_canvas_source::install called twice — one canvas feed per process");
     }
+    // The feed renders what a persona's hands returned, so it taps the act seam the
+    // mind owns; the mind never names this surface.
+    crate::cognition::tool_executor::result_tap::install(maybe_publish_observation);
 }
 
 /// Publish one observation frame. Callable from any in-core seam that holds
@@ -60,19 +64,16 @@ pub fn publish(mut view: CanvasViewState) {
 }
 
 /// Fold a persona's observe/hot-edit TOOL RESULT into a frame and publish it.
-/// The result content is the bare `ObserveResult` JSON the eye-node returned;
-/// anything unparseable is silently not a frame (the tool's own error path
+/// The result is the bare `ObserveResult` JSON the eye-node returned, as the act
+/// seam decoded it; anything that is not an observation is silently not a frame (the tool's own error path
 /// already reports to the persona — this feed never invents observations).
-pub fn maybe_publish_observation(persona: &str, tool_name: &str, result_content: &str) {
+pub fn maybe_publish_observation(persona: &str, tool_name: &str, obs: &serde_json::Value) {
     if !matches!(tool_name, "perception/observe" | "perception/hot-edit") {
         return;
     }
     if FEED.get().is_none() {
         return; // not wired on this process — skip the parse entirely
     }
-    let Ok(obs) = serde_json::from_str::<serde_json::Value>(result_content) else {
-        return;
-    };
     if obs.get("success").and_then(|v| v.as_bool()) != Some(true) {
         return; // a failed observation is not a frame
     }
@@ -90,7 +91,7 @@ pub fn maybe_publish_observation(persona: &str, tool_name: &str, result_content:
             .and_then(|v| v.as_str())
             .map(str::to_string),
         persona: Some(persona.to_string()),
-        observed_at_ms: Some(crate::persona::trace::now_ms()),
+        observed_at_ms: Some(EpochMs::now().millis()),
         viewport: image.and_then(|i| {
             Some(CanvasViewport {
                 width: i.get("width")?.as_u64()? as u32,
@@ -119,13 +120,13 @@ mod tests {
     // uninstalled and a panic here would take the act loop down with it.
     #[test]
     fn uninstalled_feed_is_a_noop_and_only_real_observations_frame() {
-        maybe_publish_observation("Atlas", "code/write", "{\"success\":true}");
-        maybe_publish_observation("Atlas", "perception/observe", "not json");
-        maybe_publish_observation("Atlas", "perception/observe", "{\"success\":false}");
+        maybe_publish_observation("Atlas", "code/write", &serde_json::json!({"success": true}));
+        maybe_publish_observation("Atlas", "perception/observe", &serde_json::json!("not an object"));
+        maybe_publish_observation("Atlas", "perception/observe", &serde_json::json!({"success": false}));
         maybe_publish_observation(
             "Atlas",
             "perception/observe",
-            "{\"success\":true,\"url\":\"file:///tmp/index.html\"}",
+            &serde_json::json!({"success": true, "url": "file:///tmp/index.html"}),
         );
         // No panic, no publish (FEED uninstalled) — reaching here IS the assertion.
     }

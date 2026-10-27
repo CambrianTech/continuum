@@ -15,6 +15,7 @@
 //! DISCOVERED default room (AircModule discovery, same dep the persona bootstrap and
 //! node-presence emitter consume) — never a hardcoded id (#124).
 
+use continuum_base::time::EpochMs;
 use std::any::Any;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -25,9 +26,7 @@ use serde_json::{json, Value};
 
 use crate::capacity::gossip::{global_ledger, CapacityOffer, PUBLISH_INTERVAL_MS};
 use crate::resources::{ResourceDaemon, ResourceKind};
-use crate::runtime::{
-    CommandExecutor, CommandResult, LateBound, ModuleConfig, ModulePriority, ServiceModule,
-};
+use crate::runtime::{CommandExecutor, CommandResult, LateBound, ModuleConfig, ModulePriority, ServiceModule};
 use airc_core::RoomId;
 
 pub struct GridCapacityModule {
@@ -35,6 +34,9 @@ pub struct GridCapacityModule {
     /// The node's discovered default room — where the grid rendezvous happens today.
     room: RoomId,
     executor_slot: Arc<LateBound<CommandExecutor>>,
+    /// The module registry, to ask the genome module which bases this host trains (card
+    /// 6f05b89d). Read at offer time, so the order modules initialize in never matters.
+    modules: LateBound<crate::runtime::ModuleRegistry>,
     /// Last probed free-GB value — the glass box speaks on CHANGE, not on every beat
     /// (a steady offer is silence; u64::MAX = never probed, so the first beat speaks).
     last_probed_free_gb: AtomicU64,
@@ -46,6 +48,7 @@ impl GridCapacityModule {
             resource_daemon,
             room,
             executor_slot: Arc::new(LateBound::new("grid-capacity::executor")),
+            modules: LateBound::new("grid-capacity::modules"),
             last_probed_free_gb: AtomicU64::new(u64::MAX),
         }
     }
@@ -55,16 +58,19 @@ impl GridCapacityModule {
     /// and offering a guess would be exactly the fabricated-capacity lie the grid's
     /// per-node-fit honesty exists to prevent.
     fn current_offer(&self) -> Option<CapacityOffer> {
-        offer_from_board(&self.resource_daemon.board(), now_ms())
+        offer_from_board(&self.resource_daemon.board(), EpochMs::now().millis(), local_bases(), |base| self.trains_base_here(base))
     }
-}
 
-fn now_ms() -> u64 {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0)
+    /// Whether a trainer on this host takes LoRA jobs for `base`. Without the genome module
+    /// (not registered, or not yet initialized) nothing is trainable here: the honest answer.
+    fn trains_base_here(&self, base: &str) -> bool {
+        self.modules.cloned().and_then(|modules| modules.get_by_name("genome")).is_some_and(|module| {
+            module
+                .as_any()
+                .downcast_ref::<crate::modules::genome::GenomeModule>()
+                .is_some_and(|genome| genome.trains_base_here(base))
+        })
+    }
 }
 
 #[async_trait]
@@ -81,7 +87,8 @@ impl ServiceModule for GridCapacityModule {
         }
     }
 
-    async fn initialize(&self, _ctx: &crate::runtime::ModuleContext) -> Result<(), String> {
+    async fn initialize(&self, ctx: &crate::runtime::ModuleContext) -> Result<(), String> {
+        self.modules.install(Arc::clone(&ctx.registry));
         Ok(())
     }
 
@@ -107,7 +114,7 @@ impl ServiceModule for GridCapacityModule {
                 .swap(u64::MAX - 1, Ordering::AcqRel)
                 != u64::MAX - 1
             {
-                crate::probe!(
+                continuum_base::probe!(
                     class = "grid.capacity.ungoverned",
                     "no governed memory on this node (neither VRAM nor RAM) — no capacity offer published",
                 );
@@ -138,7 +145,7 @@ impl ServiceModule for GridCapacityModule {
         // Glass box: speak on change (rounded GB), silent on a steady offer.
         let free_gb = offer.gpu_free_bytes_live / 1_000_000_000;
         if self.last_probed_free_gb.swap(free_gb, Ordering::AcqRel) != free_gb {
-            crate::probe!(
+            continuum_base::probe!(
                 class = "grid.capacity.offer",
                 free_gb = free_gb,
                 total_gb = (offer.gpu_total_bytes / 1_000_000_000),
@@ -164,7 +171,12 @@ impl ServiceModule for GridCapacityModule {
 /// lie the grid's per-node-fit honesty exists to prevent). Before 2026-09-14 a
 /// RAM-only host (IntelMac's CPU node) never beaconed at all — one offer all day,
 /// invisible to grid/nodes, the fleet fold and placement (card deb26770).
-pub(crate) fn offer_from_board(board: &crate::resources::LeaseBoard, at_ms: u64) -> Option<CapacityOffer> {
+pub(crate) fn offer_from_board(
+    board: &crate::resources::LeaseBoard,
+    at_ms: u64,
+    local: Vec<String>,
+    trains_here: impl Fn(&str) -> bool,
+) -> Option<CapacityOffer> {
     let serving = crate::inference::llama_server::current_serving();
     let vram = board.kinds.iter().find(|k| k.kind == ResourceKind::Vram);
     let ram = board.kinds.iter().find(|k| k.kind == ResourceKind::Ram);
@@ -188,9 +200,46 @@ pub(crate) fn offer_from_board(board: &crate::resources::LeaseBoard, at_ms: u64)
         // flight on them, local and leased-in alike, minus the slots it has GRANTED to
         // spillers that have not arrived yet (card c84d885a, S1) — one owner for the number.
         free_slots_live: crate::persona::placement_reservation::free_slots_live_now(serving.lanes, at_ms),
-        lane_wait_p50_ms: crate::cognition::resource_admission::leased_in_wait_p50_ms().0,
-        lane_wait_samples: crate::cognition::resource_admission::leased_in_wait_p50_ms().1,
+        lane_wait_p50_ms: crate::inference::resource_admission::leased_in_wait_p50_ms().0,
+        lane_wait_samples: crate::inference::resource_admission::leased_in_wait_p50_ms().1,
+        served_context_window: serving.served_context_window,
+        // This seat's measured speed for what it serves, so peers can ORDER placement by it
+        // (card 86fef3c3); unmeasured beacons 0.
+        decode_tps_milli: serving
+            .active_model
+            .as_deref()
+            .map_or(0, |model| crate::capacity::gossip::beacon_decode_milli(&crate::inference::decode_knee::rate_for(model))),
+        // The affirmative capability list — one emission source (card 8bd75362, doctrine #3941):
+        // a gate checks membership here and refuses on absence; an older core advertises
+        // nothing (serde default), so typed absence is safe by construction.
+        capabilities: crate::capacity::gossip::this_build_capabilities(),
+        // What a peer may lease training to us for (card 6f05b89d).
+        trainable_bases: trainable_bases(serving.active_model.as_deref(), local, trains_here),
+        // The residents this node last judged stalled or regressed (card 1c157668).
+        resident_alarms: crate::modules::citizen_health::current_resident_alarms(),
     })
+}
+
+/// The registry models whose weights are on this node (a resolved local GGUF): the bases a
+/// trainer here could load without a download.
+fn local_bases() -> Vec<String> {
+    crate::model_registry::try_global()
+        .map(|registry| registry.models().filter(|model| model.gguf_local_path.is_some()).map(|model| model.id.clone()).collect())
+        .unwrap_or_default() // unwrap_or_default: no registry yet = no local bases, the truth at boot
+}
+
+/// Every base a peer may lease training to this node for: the served one and every base whose
+/// weights are here, each only when a trainer on this host would take it (`trains_here`, the
+/// coordinator's own gate). Only the served model used to be asked, so a node serving one base
+/// never advertised another its engine lane would train from local weights, and a lease for
+/// that base found no receiver (Codex on card 92cd2251). Sorted and unique, so the beacon is
+/// stable. Admission is the lease's own (a lane's headroom is checked when it trains).
+fn trainable_bases(served: Option<&str>, local: Vec<String>, trains_here: impl Fn(&str) -> bool) -> Vec<String> {
+    let mut bases: Vec<String> = served.map(str::to_owned).into_iter().chain(local).collect();
+    bases.sort();
+    bases.dedup();
+    bases.retain(|base| trains_here(base));
+    bases
 }
 
 #[cfg(test)]
@@ -206,9 +255,22 @@ mod tests {
             leases: Vec::new(),
             attributions: Vec::new(),
         };
-        let o = offer_from_board(&ram_only, 7).expect("RAM alone is a capacity"); // JUSTIFIED: the invariant under test
+        let o = offer_from_board(&ram_only, 7, Vec::new(), |_| false).expect("RAM alone is a capacity"); // JUSTIFIED: the invariant under test
         assert_eq!(o.gpu_total_bytes, 0);
         assert_eq!(o.system_ram_free_bytes, 8 << 30);
-        assert!(offer_from_board(&LeaseBoard { kinds: Vec::new(), leases: Vec::new(), attributions: Vec::new() }, 7).is_none(), "nothing governed = no offer");
+        assert!(offer_from_board(&LeaseBoard { kinds: Vec::new(), leases: Vec::new(), attributions: Vec::new() }, 7, Vec::new(), |_| false).is_none(), "nothing governed = no offer");
+    }
+
+    // what this catches (Codex on card 92cd2251): a node advertising only the base it serves,
+    // so a base its engine lane would train from local weights never reached the grid and a
+    // lease for it found no receiver. Every local base a trainer here takes is advertised,
+    // sorted and unique; one no trainer takes is not; with nothing served the locals still count.
+    #[test]
+    fn every_base_a_trainer_here_takes_is_advertised_not_only_the_served_one() {
+        let trainable = |base: &str| base != "no-trainer";
+        let local = vec!["qwen-0.5b".to_string(), "no-trainer".to_string(), "qwen-1.5b".to_string()];
+        assert_eq!(trainable_bases(Some("qwen-1.5b"), local.clone(), trainable), ["qwen-0.5b", "qwen-1.5b"]);
+        assert_eq!(trainable_bases(None, local, trainable), ["qwen-0.5b", "qwen-1.5b"]);
+        assert!(trainable_bases(Some("qwen-1.5b"), Vec::new(), |_| false).is_empty(), "no trainer here, nothing advertised");
     }
 }

@@ -45,9 +45,9 @@ use async_trait::async_trait;
 use uuid::Uuid;
 
 use crate::ai::adapter::AIProviderAdapter;
-use crate::context::citizens_kind_dir;
+use crate::identity::citizen_path::citizens_kind_dir;
 use crate::identity::IdentityKind;
-use crate::persona::airc_source::AircTranscriptReader;
+use crate::cognition::conversation::transcript_reader::AircTranscriptReader;
 use crate::persona::seed::read_seed;
 
 use super::persona_rag_inspect::{PersonaResolution, PersonaResolver};

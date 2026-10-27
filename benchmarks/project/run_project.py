@@ -97,31 +97,6 @@ def run_persona_on(workspace_root, prompt, note, max_acts=25):
     print("[run] WARN: run did not land in the ledger window (may still be working)")
 
 
-def run_persona_agent(workspace_root, prompt, note, max_acts=25,
-                      base_model="unsloth/Devstral-Small-2507-GGUF"):
-    """The proven whole-being driver (agent/solve: drive_to_settle + idiom-lifted
-    tool parsing + workspace grounding — the 87-93% t1 path). Detached + polled
-    via the run ledger (#86)."""
-    pid, name = resolve_persona()
-    print(f"[persona] {name} ({pid})")
-    run_id = f"proj-{note}"
-    ledger = os.path.expanduser(f"~/.continuum/progress/agent-solve-{run_id}.json")
-    if os.path.exists(ledger):
-        os.remove(ledger)
-    print(f"[agent] dispatching {run_id} (workspace={workspace_root}, max_acts={max_acts})")
-    sh([UU, "agent/solve", "--persona-id", pid, "--base-model-id", base_model,
-        "--task", prompt, "--workspace", workspace_root, "--max-acts", str(max_acts),
-        "--learn", "true", "--detach", "true", "--run-id", run_id], check=False)
-    for _ in range(120):
-        time.sleep(30)
-        if os.path.exists(ledger):
-            led = json.load(open(ledger))
-            print(f"[agent] landed: acts={led.get('acts')} failed={led.get('failed')} "
-                  f"error={led.get('error') or '-'}")
-            return
-    print("[agent] WARN: ledger did not land in the poll window (may still be working)")
-
-
 def append_ledger(benchmark, model, arm, result):
     row = {"benchmark": benchmark, "model": model, "arm": arm,
            "score": result.get("passed"), "total": result.get("total"),
@@ -339,8 +314,6 @@ def main():
     ap.add_argument("--instance", help="instance id / repo url")
     ap.add_argument("--workdir", default=None)
     ap.add_argument("--max-acts", type=int, default=25)
-    ap.add_argument("--solver", choices=["agent", "eval"], default="agent",
-                    help="agent = the proven agent/solve whole-being driver; eval = legacy cognition/eval")
     ap.add_argument("--list", action="store_true")
     args = ap.parse_args()
 
@@ -361,8 +334,7 @@ def main():
     print(f"[{args.benchmark}] instance={args.instance} workdir={wd}")
     task = adapter.fetch(args.instance)
     ws = adapter.setup(task, wd)
-    driver = run_persona_agent if args.solver == "agent" else run_persona_on
-    driver(ws, adapter.prompt(task), f"{args.benchmark}-{args.instance}", args.max_acts)
+    run_persona_on(ws, adapter.prompt(task), f"{args.benchmark}-{args.instance}", args.max_acts)
     result = adapter.grade(task, ws)
     print(f"[grade] {json.dumps(result)}")
     append_ledger(args.benchmark, "resident-persona", "OURS", result)

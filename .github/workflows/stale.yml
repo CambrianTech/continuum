@@ -31,3 +31,51 @@ jobs:
         days-before-issue-close: 30
         operations-per-run: 100
       continue-on-error: true  # Don't fail if labels can't be created
+
+  # Work that sits on a branch with no pull request is lost: nobody reviews it, nothing
+  # lands it, and no agent remembers it across sessions. On 2026-10-18 there were 192 such
+  # branches (of 364 not merged into canary). This keeps ONE issue, "Branches with no pull
+  # request", listing every branch older than a day with no PR, grouped by its prefix (the
+  # owner's convention), so every agent and Joel see lost work daily without anyone having
+  # to remember to look. API calls only; no checkout, no build.
+  orphan-branches:
+    runs-on: ubuntu-latest
+    if: github.repository_owner == 'CambrianTech'
+    permissions:
+      issues: write
+      contents: read
+      pull-requests: read
+    steps:
+      - name: Report branches with no pull request
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          title="Branches with no pull request"
+          cutoff=$(date -u -d '1 day ago' +%s)
+          gh api --paginate "repos/$REPO/pulls?state=all&per_page=100" --jq '.[].head.ref' | sort -u > with_pr.txt
+          gh api --paginate "repos/$REPO/branches?per_page=100" --jq '.[] | select(.protected | not) | .name' > branches.txt
+          : > orphans.txt
+          while read -r b; do
+            grep -qxF "$b" with_pr.txt && continue
+            when=$(gh api "repos/$REPO/commits/$(printf %s "$b" | jq -sRr @uri)" --jq '.commit.committer.date' 2>/dev/null || echo "")
+            [ -n "$when" ] || continue
+            [ "$(date -u -d "$when" +%s)" -lt "$cutoff" ] || continue
+            printf '%s %s\n' "${when%%T*}" "$b" >> orphans.txt
+          done < branches.txt
+          {
+            echo "Updated $(date -u +%Y-%m-%dT%H:%MZ) by the daily hygiene job. $(wc -l < orphans.txt | tr -d ' ') branches older than a day have no pull request."
+            echo
+            echo "Each one is unreviewed work that nothing will land. Its owner opens a PR, or deletes the branch with a one-line reason in this issue."
+            echo
+            awk '{split($2,p,"/"); print (index($2,"/")?p[1]:"(no prefix)") "\t" $1 "\t" $2}' orphans.txt | sort | awk -F'\t' '
+              $1!=last { if (last!="") print ""; print "### " $1; last=$1 }
+              { print "- `" $3 "` (last commit " $2 ")" }'
+          } > body.md
+          num=$(gh issue list --repo "$REPO" --state open --search "\"$title\" in:title" --json number --jq '.[0].number // empty')
+          if [ -n "$num" ]; then
+            gh issue edit "$num" --repo "$REPO" --body-file body.md
+          else
+            gh issue create --repo "$REPO" --title "$title" --body-file body.md
+          fi

@@ -29,7 +29,7 @@ mod common;
 use continuum_client::Connection;
 use continuum_core::modules::mcp_protocol::McpServer;
 use continuum_core::modules::mcp_transport::ConnectionDispatch;
-use continuum_core::runtime::core_ipc_transport::CoreIpcTransport;
+use continuum_client::core_ipc::CoreIpcTransport;
 
 /// Build the same `McpServer` the `continuum-mcp` bin builds, pointed at the
 /// live core's IPC socket. Returns `None` (after printing SKIP) when no core is

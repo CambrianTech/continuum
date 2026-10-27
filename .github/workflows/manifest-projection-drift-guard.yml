@@ -24,6 +24,7 @@ on:
       - 'tools/scripts/install-manifest.toml'
       - 'tools/scripts/generated/**'
       - 'tools/manifest-gen/**'
+      - 'core/continuum-kernel/src/paging/disk_capacity.rs'
       - '.github/workflows/manifest-projection-drift-guard.yml'
   push:
     branches: [canary, main]
@@ -52,6 +53,9 @@ jobs:
         uses: Swatinem/rust-cache@v2
         with:
           shared-key: manifest-gen
+          # PR runs restore canary's cache and never save their own: the repo's 10 GB cache
+          # quota is nearly filled by canary's caches, and one PR save evicted core-binaries.
+          save-if: ${{ github.event_name != 'pull_request' }}
           cache-on-failure: true
 
       # The gate. --check regenerates the projections in memory and diffs them

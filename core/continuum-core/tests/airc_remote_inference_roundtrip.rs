@@ -58,7 +58,7 @@ use continuum_core::ai::types::{
     UsageMetrics,
 };
 use continuum_core::inference::airc_remote::{AircLiveTransport, AircRemoteInferenceAdapter};
-use continuum_core::routing::CommandRequestHandler;
+use continuum_core::ipc::command_ingress::CommandRequestHandler;
 use continuum_core::runtime::command_executor::CommandExecutor;
 use continuum_core::runtime::ModuleRegistry;
 use futures::stream::StreamExt;

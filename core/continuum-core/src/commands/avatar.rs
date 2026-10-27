@@ -1,11 +1,11 @@
 //! `avatar/snapshot` — render a persona's 3D avatar to a profile PNG.
 //!
 //! Stateless: the Bevy-render domain logic lives on
-//! [`crate::modules::avatar::AvatarModule`] (shared with its tick-driven
+//! [`continuum_live::consumers::avatar::AvatarModule`] (shared with its tick-driven
 //! auto-refresh); this command orchestrates the on-disk cache check and runs the
 //! blocking capture off the async thread.
 
-use crate::live::video::bevy_renderer::{Emotion, Gesture};
+use crate::live::video::avatar_types::{Emotion, Gesture};
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
@@ -38,8 +38,8 @@ async fn pin_from_live_runtime(uuid: uuid::Uuid) -> Option<String> {
 /// so scan the durable persona seeds and match by persona_id. The pin survives on
 /// disk, so a cold render is still correct — no re-derivation, no thrash.
 async fn pin_from_seed_scan(uuid: uuid::Uuid) -> Option<String> {
-    let root = dirs::home_dir()?.join(".continuum");
-    let dir = crate::context::citizen_path::citizens_kind_dir(
+    let root = crate::paths::continuum_home().ok()?;
+    let dir = crate::identity::citizen_path::citizens_kind_dir(
         &root,
         crate::identity::IdentityKind::Persona,
     );
@@ -131,13 +131,8 @@ crate::action_command! {
         let pose = p.pose;
         let mouth = p.mouth;
 
-        let avatar_dir = dirs::home_dir()
-            .ok_or_else(|| {
-                crate::sdk_codegen::CommandError::Internal(
-                    "Cannot determine home directory".to_string(),
-                )
-            })?
-            .join(".continuum")
+        let avatar_dir = crate::paths::continuum_home()
+            .map_err(|e| crate::sdk_codegen::CommandError::Internal(format!("no continuum home for avatars: {e}")))?
             .join("avatars");
 
         // State-suffixed filename so an expression/pose caches independently of the
@@ -172,7 +167,7 @@ crate::action_command! {
         // Bevy slot allocation + frame capture is blocking — off the async thread.
         let stem_for_task = stem.clone();
         let relative_path = tokio::task::spawn_blocking(move || {
-            crate::modules::avatar::AvatarModule::capture_snapshot(
+            continuum_live::consumers::avatar::AvatarModule::capture_snapshot(
                 &identity, width, height, &avatar_dir, pinned, expression, pose, mouth,
                 &stem_for_task,
             )

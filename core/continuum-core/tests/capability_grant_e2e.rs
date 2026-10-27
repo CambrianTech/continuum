@@ -7,8 +7,8 @@
 //! Two REAL airc peers over the loopback fixture (mutual enrolment + LAN), the
 //! production install path (`PersonaCommandInboundPump` + `build_grant_authorizer`),
 //! the production gate (`GridTrustAuthPolicy`), and the production send path
-//! (`AircTransport` + `InMemoryPresentedGrantStore`). No mock transport, no manual
-//! handler wiring.
+//! (`AircTransport` + `InMemoryPresentedGrantStore`). No mock transport or
+//! mock handlers; the fixture installs the same handler factory as boot.
 //!
 //! what this catches: a regression anywhere in issue → present → verify → dispatch
 //! that would either (a) let a tier-denied command through WITHOUT a grant
@@ -16,7 +16,6 @@
 //! can't sell compute). Both are asserted.
 
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use airc_core::PeerId;
 use airc_test_fixtures::TwoAircLoopback;
@@ -26,7 +25,8 @@ use continuum_core::persona::command_inbound_pump::{
 };
 use continuum_core::routing::grant_issuance::{issue_grant, IssueGrantParams};
 use continuum_core::routing::presented_grant_store::InMemoryPresentedGrantStore;
-use continuum_core::routing::{route, AircTransport, CommandUri, GridTrustAuthPolicy, Transport};
+use continuum_core::routing::{route, AircTransport, CommandUri, Transport};
+use continuum_core::modules::grid::{GridTrustAuthPolicy};
 use continuum_core::runtime::command_executor::CommandExecutor;
 use continuum_core::runtime::{
     CommandResult, ModuleConfig, ModuleContext, ModulePriority, ModuleRegistry, ServiceModule,
@@ -66,15 +66,17 @@ impl ServiceModule for EchoModule {
     }
 }
 
-fn now_ms() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0)
-}
-
 #[tokio::test]
 async fn owner_signed_grant_lets_grantee_run_a_tier_denied_command() {
+    // This integration-test process does not execute start_server. Install its
+    // production responder before the pump checks the required boot dependency.
+    continuum_core::persona::command_inbound_pump::install_command_handler(
+        |airc, executor, grants| {
+            continuum_core::ipc::command_ingress::CommandRequestHandler::with_grant_authorizer(
+                airc, executor, grants,
+            )
+        },
+    );
     let loop_back = TwoAircLoopback::new().await.expect("loopback fixture");
     let owner = loop_back.peer_a(); // issuer + verifier (the compute seller)
     let grantee = loop_back.peer_b(); // buyer presenting the grant
@@ -122,11 +124,11 @@ async fn owner_signed_grant_lets_grantee_run_a_tier_denied_command() {
     // + the owner's mesh + the owner's signature, all from the owner handle).
     let grant_b64 = issue_grant(
         owner,
-        now_ms(),
+        continuum_base::time::EpochMs::now().millis(),
         IssueGrantParams {
             grantee: PeerId(grantee_id),
             capabilities: vec!["compute/echo".to_string()],
-            expires_at_ms: Some(now_ms() + 3_600_000),
+            expires_at_ms: Some(continuum_base::time::EpochMs::now().millis() + 3_600_000),
             epoch: 1,
         },
     )

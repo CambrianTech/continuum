@@ -151,3 +151,29 @@ design's breakpoint discipline applied to minds. Extensible + automatic:
 density selection is a policy input to the compositor, not per-callsite
 hand-tuning; "more ideal as you go" = each density tier is measured (ledger
 rows) and re-calibrated as models/genomes improve.
+
+## Required substrate notices (2026-10-15)
+
+Working-memory facts and keyed pins remain in their existing scoped store, with
+its existing expiry and replacement rules. The `memory_notices` registry source
+projects them once with typed `Notice` placement, independently of the optional
+thought bid. The ledger likewise declares its placement rather than relying on
+its rendered banner. Ordinary perception facts retain their history placement.
+
+The existing prompt budget prices notices as required input: attention cannot
+evict them, and history fitting cannot silently discard them. An oversized
+required payload produces the existing explicit fit refusal. The entry ring is
+count-bounded; fact text and keyed pins do not have an intrinsic byte ceiling.
+This change adds no clipping limit, storage owner, act cap, or behavioral command.
+
+The regression uses seven real attention bids, then the actual prompt projection
+and budget fit, including fact-only memory. Deployed acceptance still requires
+canonical notice presence after that attention eviction and a separate public
+coding outcome; source and CI alone do not establish persona recovery.
+
+The card-ledger producer is expandable rather than intrinsically size-bounded.
+Its keyed pin carries a required attribution/card/time and `work/get` reference,
+plus optional inline detail from the same saved ledger. Detail uses the existing
+history budget; the reference survives when detail yields. Both projections share
+one pin replacement/expiry owner. This retains inline re-entry context when it
+fits, without making arbitrary ledger author text a required turn-sized payload.

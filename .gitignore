@@ -21,15 +21,6 @@ continuum-jtag-*.tgz
 /target/
 **/target/
 
-# Generated CSS-in-JS modules emitted by the legacy Node shell's compile-sass.ts
-# from sibling .scss source files. Pure build output — never hand-edited.
-# (Old Node/TS system moved to legacy/src/ — task #83.)
-legacy/src/widgets/**/public/*.styles.ts
-legacy/src/widgets/**/styles/*.styles.ts
-
-# Generated manifest files (use generated.ts instead)
-legacy/src/manifests/
-
 # Generated test files
 test-config.md
 tdd-config.md
@@ -247,3 +238,6 @@ benchmarks/swe/.venv/
 # Ad-hoc instruments, not project tooling; regenerated on demand.
 .gymtool/
 models/whisper/
+
+# confinement tests build a fake home beside the crate (never under the temp root, which is a citizen write root)
+core/continuum-core/.confinement-test-home-*

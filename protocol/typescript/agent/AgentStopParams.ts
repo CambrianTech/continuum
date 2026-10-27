@@ -7,4 +7,4 @@ export type AgentStopParams = {
 /**
  * The agent handle returned by `agent/start`.
  */
-handle: string, };
+agentHandle: string, };

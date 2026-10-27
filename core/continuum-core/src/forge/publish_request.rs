@@ -32,7 +32,7 @@ pub enum PublishError {
     /// The layer did not beat its baseline (held-out lift ≤ 0) — refused so a
     /// regressing/overfit layer never enters the catalog peers cosine-search.
     LiftGate { lift_pct: f64 },
-    /// The HF repo id is not a well-formed `namespace/name`.
+    /// The repo id is not a well-formed `namespace/name`.
     InvalidRepoId { repo_id: String, reason: String },
     /// The gguf-lora gene file to upload is missing/empty.
     MissingGene { detail: String },
@@ -43,6 +43,13 @@ pub enum PublishError {
     /// validation refusals: this was a good, gated request that couldn't be
     /// delivered (a caller may retry / try another publisher), not a bad request.
     Transport { transport: String, detail: String },
+    /// A destination served a bundle whose identity differs from the one staged: the
+    /// publication is not proven (read-back is the proof, never an upload's exit status).
+    DigestMismatch { transport: String, staged: String, served: String },
+    /// Whether the destination holds the bundle could not be determined (auth, network,
+    /// timeout, an unreadable fetch). Nothing is overwritten on a guess: the caller retries or
+    /// reports it, never re-uploads over a copy it could not judge (Codex, Cormac on #4529).
+    Uncertain { transport: String, detail: String },
 }
 
 impl std::fmt::Display for PublishError {
@@ -65,51 +72,23 @@ impl std::fmt::Display for PublishError {
             Self::Transport { transport, detail } => {
                 write!(f, "publish via {transport} failed: {detail}")
             }
+            Self::Uncertain { transport, detail } => {
+                write!(f, "publish via {transport} uncertain, nothing overwritten: {detail}")
+            }
+            Self::DigestMismatch { transport, staged, served } => write!(
+                f,
+                "publish via {transport} not proven: it serves bundle {served}, but {staged} was staged"
+            ),
         }
     }
 }
 impl std::error::Error for PublishError {}
 
-/// A validated HuggingFace repo id (`namespace/name`) — a newtype so an unchecked
-/// string can never reach the upload transport. Both segments must be non-empty
-/// and use only `[A-Za-z0-9._-]` (HF's allowed set), with no path traversal.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct HfRepoId(String);
+pub use continuum_base::repo_id::{InvalidRepoId, RepoId};
 
-impl HfRepoId {
-    pub fn parse(raw: &str) -> Result<Self, PublishError> {
-        let raw = raw.trim();
-        let bad = |reason: &str| PublishError::InvalidRepoId {
-            repo_id: raw.to_string(),
-            reason: reason.to_string(),
-        };
-        let (ns, name) = raw
-            .split_once('/')
-            .ok_or_else(|| bad("expected 'namespace/name'"))?;
-        if name.contains('/') {
-            return Err(bad("more than one '/' — expected exactly 'namespace/name'"));
-        }
-        for (seg, label) in [(ns, "namespace"), (name, "name")] {
-            if seg.is_empty() {
-                return Err(bad(&format!("{label} segment is empty")));
-            }
-            if !seg
-                .chars()
-                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
-            {
-                return Err(bad(&format!(
-                    "{label} '{seg}' has characters outside [A-Za-z0-9._-]"
-                )));
-            }
-            if seg == "." || seg == ".." {
-                return Err(bad(&format!("{label} may not be '.' or '..'")));
-            }
-        }
-        Ok(Self(raw.to_string()))
-    }
-
-    pub fn as_str(&self) -> &str {
-        &self.0
+impl From<InvalidRepoId> for PublishError {
+    fn from(e: InvalidRepoId) -> Self {
+        Self::InvalidRepoId { repo_id: e.repo_id, reason: e.reason }
     }
 }
 
@@ -119,7 +98,7 @@ impl HfRepoId {
 #[derive(Debug, Clone, PartialEq)]
 pub struct PublishRequest {
     /// Validated target repo (`namespace/name`).
-    pub repo_id: HfRepoId,
+    pub repo_id: RepoId,
     /// Local gguf-lora gene file to upload.
     pub gene_path: PathBuf,
     /// Standardized `continuum:*` + HF tags (the market's facet filter).
@@ -212,7 +191,7 @@ impl PublishRequest {
             });
         }
         // 3. Repo id.
-        let repo_id = HfRepoId::parse(&inputs.repo_id)?;
+        let repo_id = RepoId::parse(&inputs.repo_id)?;
         // 4. Gene present.
         if inputs.gene_path.as_os_str().is_empty() {
             return Err(PublishError::MissingGene {
@@ -286,6 +265,11 @@ mod tests {
         assert!(req
             .tags
             .contains(&"continuum:base=devstral-small-2507-gguf".to_string()));
+        // a malformed HF target is refused at the build gate as the forge's own error
+        // (the id's shapes are pinned in continuum-base beside `RepoId`).
+        let mut bad = good_inputs();
+        bad.repo_id = "noSlash".to_string();
+        assert!(matches!(PublishRequest::build(&bad, |_| true), Err(PublishError::InvalidRepoId { .. })));
     }
 
     // what this catches: the market boundary must REFUSE a layer that didn't beat
@@ -300,31 +284,6 @@ mod tests {
                 Err(PublishError::LiftGate { .. })
             ));
         }
-    }
-
-    // what this catches: malformed HF targets never reach the network.
-    #[test]
-    fn malformed_repo_ids_are_refused() {
-        for bad in [
-            "noSlash",
-            "too/many/slashes",
-            "/name",
-            "ns/",
-            "ns/na me",
-            "ns/../x",
-        ] {
-            let mut i = good_inputs();
-            i.repo_id = bad.to_string();
-            assert!(
-                matches!(
-                    PublishRequest::build(&i, |_| true),
-                    Err(PublishError::InvalidRepoId { .. })
-                ),
-                "'{bad}' should be rejected"
-            );
-        }
-        // a normal one parses.
-        assert!(HfRepoId::parse("continuum-ai/qwen3-coder-30b").is_ok());
     }
 
     // what this catches: never publish a phantom — the gene file must exist.

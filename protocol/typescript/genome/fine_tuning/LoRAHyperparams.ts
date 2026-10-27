@@ -32,4 +32,13 @@ dropout: number,
  * Empty `Vec` lets the adapter pick provider defaults
  * (usually `q_proj` + `v_proj`).
  */
-targetModules: Array<string>, };
+targetModules: Array<string>, 
+/**
+ * Adapt only the last `top_layers` transformer blocks; `None` adapts every block. The
+ * backward pass stops at the lowest adapted block, so the training graph's memory falls
+ * roughly linearly with this (fork #27: Qwen2.5-1.5B at window 512, 2576 MiB for all 28
+ * blocks, 1316 MiB for the last 7). A full-depth 27B run did not fit beside its serving
+ * context (41.5 GB at window 1536), so a resident dream chooses a depth. Only the
+ * in-engine trainer reads it; other adapters ignore it and train every block.
+ */
+topLayers?: number, };

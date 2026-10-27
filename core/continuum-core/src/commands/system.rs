@@ -27,6 +27,7 @@ pub mod memory_budget;
 pub mod memory_gate;
 pub mod pressure;
 pub mod pressure_broker_state;
+pub mod reclaim_build_residue;
 pub mod resources;
 // `system/shutdown` holds no deps, so `action_command!`'s stateless arm registers it
 // onto the one registry by itself — it is deliberately NOT in `command_objects` below,

@@ -68,7 +68,7 @@ use continuum_core::model_registry::Capability;
 use continuum_core::persona::cognition_io::{
     build_respond_input, PersonaContext, Signal, SignalKind, SignalOriginator,
 };
-use continuum_core::persona::prompt_assembly::PromptMessage;
+use continuum_core::cognition::prompt_assembly::PromptMessage;
 use continuum_core::persona::response::build_messages_with_media;
 use serde_json::Value;
 use std::collections::HashSet;
@@ -485,7 +485,7 @@ async fn ensure_llamacpp_qwen2vl_registered() -> Option<()> {
     }
 
     REGISTER_ONCE.call_once(|| {});
-    let registry_arc = continuum_core::modules::ai_provider::global_registry();
+    let registry_arc = continuum_core::ai::adapter::global_registry();
     let mut registry_lock = registry_arc.write().await;
 
     // Mirror production registration: walk every llamacpp-local row whose

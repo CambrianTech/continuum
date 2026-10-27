@@ -225,7 +225,7 @@ impl StateSource for CompositeCache {
         } else if PER_ROOM_KINDS.contains(&kind) {
             self.per_room.cache().get(kind)
         } else {
-            // Node-global kinds — bench, serving, system-metrics. They describe the
+            // Node-global kinds — serving, system-metrics. They describe the
             // NODE, not a room or a citizen, so they have no scope to route to.
             self.node.cache().get(kind)
         }

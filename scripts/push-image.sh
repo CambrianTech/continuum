@@ -64,15 +64,15 @@ fi
 
 case "$VARIANT" in
   core)        DOCKERFILE="docker/continuum-core.Dockerfile"; IMAGE="continuum-core"
-               GPU_FEATURES="--no-default-features --features load-dynamic-ort"
+               GPU_FEATURES="--no-default-features --features load-dynamic-ort,avatar-3d"
                DEFAULT_PLATFORMS="linux/amd64,linux/arm64"
                ;;
   cuda)        DOCKERFILE="docker/continuum-core-cuda.Dockerfile"; IMAGE="continuum-core-cuda"
-               GPU_FEATURES="--no-default-features --features load-dynamic-ort,cuda"
+               GPU_FEATURES="--no-default-features --features load-dynamic-ort,cuda,avatar-3d"
                DEFAULT_PLATFORMS="linux/amd64"
                ;;
   vulkan)      DOCKERFILE="docker/continuum-core-vulkan.Dockerfile"; IMAGE="continuum-core-vulkan"
-               GPU_FEATURES="--no-default-features --features load-dynamic-ort,vulkan"
+               GPU_FEATURES="--no-default-features --features load-dynamic-ort,vulkan,avatar-3d"
                DEFAULT_PLATFORMS="linux/amd64,linux/arm64"
                ;;
   livekit-bridge)

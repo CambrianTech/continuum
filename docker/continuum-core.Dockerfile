@@ -40,8 +40,8 @@ ARG CUDA_VERSION=12.8
 ARG GPU_FEATURES=""
 
 # Build dependencies from recipe (CACHED — this is the big win)
-# --no-default-features excludes livekit-webrtc: WebRTC is handled by the
-# livekit-bridge binary (separate process, separate protobuf address space).
+# The crate is headless by default (no livekit-webrtc, no avatar-3d): WebRTC is handled
+# by the livekit-bridge binary (separate process, separate protobuf address space).
 # load-dynamic-ort loads ONNX Runtime as shared library at runtime.
 COPY --from=planner /app/recipe.json recipe.json
 RUN cargo chef cook --release ${GPU_FEATURES} --recipe-path recipe.json
@@ -54,10 +54,6 @@ COPY . .
 # relative path the `COPY . .` above already provides (the file is checked in). No
 # `--from=shared*` build-context needed; models.json is unreferenced by the Rust core.
 
-# src/shared/models.json is the model-registry SSOT. candle_adapter.rs embeds it
-# via include_str!("../../../../shared/models.json"), which resolves to
-# /shared/models.json from this Docker build layout.
-COPY --from=shared models.json /shared/models.json
 
 # Fail fast if the host forgot to init submodules. Without this, cmake's
 # CMakeLists-not-found error surfaces ~15 min into the cargo build —

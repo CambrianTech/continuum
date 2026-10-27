@@ -2,10 +2,8 @@
 # install-llama-server.sh — build the inference engine WE OWN.
 #
 # continuum's serving daemon launches `llama-server` (llama.cpp's OpenAI-/v1
-# gateway). That binary is OURS now, not a borrowed one: we excised unsloth, so
-# depending on `~/.unsloth/llama.cpp/build/bin/llama-server` made our inference
-# hostage to a tool we no longer ship — and a freshly-cloned public machine has
-# no `~/.unsloth` at all. This script builds llama-server from the llama.cpp
+# gateway). That binary is OURS now, not a borrowed one: a third-party
+# llama-server would make our inference hostage to a tool we do not ship. This script builds llama-server from the llama.cpp
 # submodule we already vendor and build for the in-process FFI lib
 # (core/vendor/llama.cpp — our fork, github.com/CambrianTech/llama.cpp), into a
 # continuum-owned path. ONE llama.cpp source of truth for both the lib and the
@@ -28,11 +26,13 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 SUBMODULE="$REPO_ROOT/core/vendor/llama.cpp"
 
 CONTINUUM_HOME="${CONTINUUM_HOME:-$HOME/.continuum}"
-INSTALL_DIR="$CONTINUUM_HOME/bin"
+source "$SCRIPT_DIR/lib/payload-paths.sh"
+PAYLOAD_ROOT="$(managed_payload_root "$CONTINUUM_HOME")" || exit 1
+INSTALL_DIR="$PAYLOAD_ROOT/bin"
 INSTALL_BIN="$INSTALL_DIR/llama-server"
 STAMP_FILE="$INSTALL_DIR/.llama-server.stamp"
 # One shared build cache; source ownership is checked before configuring it.
-BUILD_DIR="$CONTINUUM_HOME/cache/llama-server-build"
+BUILD_DIR="${CONTINUUM_STORAGE_PATH:-$PAYLOAD_ROOT}/cache/llama-server-build"
 
 # ── toolchain ────────────────────────────────────────────────────────
 # cmake on PATH, else the manifest install location — a user who provisioned via
@@ -40,7 +40,7 @@ BUILD_DIR="$CONTINUUM_HOME/cache/llama-server-build"
 # PATH (Windows especially). Discover it rather than falsely failing. (CONTINUUM_HOME is
 # already resolved above.)
 if ! command -v cmake >/dev/null 2>&1; then
-  for c in "$CONTINUUM_HOME/tools/cmake/bin/cmake" "$CONTINUUM_HOME/tools/cmake/bin/cmake.exe"; do
+  for c in "$PAYLOAD_ROOT/tools/cmake/bin/cmake" "$PAYLOAD_ROOT/tools/cmake/bin/cmake.exe"; do
     if [ -x "$c" ]; then PATH="$(dirname "$c"):$PATH"; export PATH; break; fi
   done
 fi
@@ -101,7 +101,7 @@ else
   case "$OS" in
     MINGW*|MSYS*|CYGWIN*)
       EXE=".exe"
-      if command -v nvcc >/dev/null 2>&1 || [ -x "$CONTINUUM_HOME/cuda-toolkit/bin/nvcc.exe" ]; then
+      if command -v nvcc >/dev/null 2>&1 || [ -x "$PAYLOAD_ROOT/cuda-toolkit/bin/nvcc.exe" ]; then
         BACKEND="cuda"; WIN_CUDA=1
         # arch=native → build for THIS machine's GPU (portable; NOT a hardcoded sm_120).
         BACKEND_DEFS=(-DGGML_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=native)
@@ -109,6 +109,14 @@ else
       # non-NVIDIA Windows falls through to the CPU build (llama.cpp CPU works on Win).
       ;;
   esac
+fi
+if [[ "$BACKEND" == cuda ]]; then
+  if ! command -v nvcc >/dev/null 2>&1 && [[ -x "$PAYLOAD_ROOT/cuda-toolkit/bin/nvcc.exe" ]]; then
+    export CUDA_PATH="$PAYLOAD_ROOT/cuda-toolkit"
+  fi
+  source "$SCRIPT_DIR/lib/cuda-targets.sh"
+  configure_cuda_targets || exit 1
+  BACKEND_DEFS=(-DGGML_CUDA=ON "-DCMAKE_CUDA_ARCHITECTURES=$CMAKE_CUDA_ARCHITECTURES")
 fi
 # Windows binaries carry .exe — apply the suffix to the installed path now, before the
 # idempotency check and every downstream use.
@@ -135,13 +143,127 @@ config_env_upsert() {
 }
 if [ "$BACKEND" = "cpu" ]; then
   config_env_upsert CONTINUUM_SERVING_PLACEMENT cpu
-  echo "serving placement: cpu (backend=$BACKEND) — recorded in ~/.continuum/config.env"
+  echo "serving placement: cpu (backend=$BACKEND) — recorded in ~/.continuum/config.env" >&2
 else
   config_env_upsert CONTINUUM_SERVING_PLACEMENT gpu
-  echo "serving placement: gpu (backend=$BACKEND) — recorded in ~/.continuum/config.env"
+  echo "serving placement: gpu (backend=$BACKEND) — recorded in ~/.continuum/config.env" >&2
 fi
 
 STAMP_WANT="$SUBMODULE_HEAD:$BACKEND"
+if [[ "$BACKEND" == cuda ]]; then STAMP_WANT+=":$CMAKE_CUDA_ARCHITECTURES"; fi
+
+# ── engine slot (card 7a6a033a; the core half is #4491) ──────────────
+# A deploy builds the engine into the IDLE slot the core names
+# (`<home>/bin/engine-{a,b,c}`, the one no live lane runs and `current` does not name) and
+# then PROMOTES it. Nothing a running lane executes is ever replaced: on POSIX that only
+# worked because a live process keeps its unlinked inode, and on Windows it cannot work at
+# all. The core resolves `current` at every launch, and #4464's convergence relaunches the
+# lanes onto it. Windows keeps its PowerShell slot path here (`continuum install`'s engine
+# arm), which moves to the same verbs in its own half.
+#
+# VERSION SKEW: the first deploy carrying the verbs is run by the OLD deployed CLI, which does
+# not know them. Then this deploy installs the pre-slot way, says so, and the next deploy
+# (run by the new CLI) uses the slots.
+SLOT=""
+CLI="${CONTINUUM_CLI:-$(command -v continuum || true)}"
+engine_cli() { CONTINUUM_HOME="$CONTINUUM_HOME" "$CLI" engine "$@"; }
+promote_slot() {
+  local result=0
+  engine_cli promote "$SLOT" "$STAMP_WANT" >&2 || result=$?
+  if [ "$result" -eq 4 ]; then
+    echo "Engine attempt deferred; verified current engine preserved." >&2
+    local kept
+    kept="$(tr -d '[:space:]' < "$INSTALL_DIR/current")"
+    case "$kept" in engine-a|engine-b|engine-c) ;; *) exit 1 ;; esac
+    printf '%s\n' "$INSTALL_DIR/$kept/llama-server"
+    exit 0
+  fi
+  if [ "$result" -ne 0 ]; then
+    echo "✗ FATAL: the engine in $SLOT verified but was not promoted; the lanes keep the engine they have." >&2
+    exit 1
+  fi
+}
+case "$(uname -s)" in
+  Darwin|Linux)
+    if [ -z "$CLI" ] || ! "$CLI" --help 2>&1 | grep -q "continuum engine idle-slot"; then
+      echo "→ the deployed CLI has no engine slots yet: installing to $INSTALL_DIR this once; the next deploy uses the slots" >&2
+    else
+      current_slot="$(tr -d '[:space:]' < "$INSTALL_DIR/current" 2>/dev/null || true)"
+      case "$current_slot" in engine-a|engine-b|engine-c) ;; *) current_slot="" ;; esac
+      if [ "$FORCE" -eq 0 ] && [ -n "$current_slot" ] && [ -x "$INSTALL_DIR/$current_slot/llama-server" ] \
+         && [ "$(cat "$INSTALL_DIR/$current_slot/.llama-server.stamp" 2>/dev/null)" = "$STAMP_WANT" ]; then
+        echo "✓ llama-server already current in $current_slot ($STAMP_WANT)" >&2
+        echo "$INSTALL_DIR/$current_slot/llama-server"
+        exit 0
+      fi
+      # A slot that ALREADY holds this pin is promoted as is, before any build (card 6d5bacab):
+      # a build whose promotion never happened. Promotion overwrites nothing, so it needs no
+      # proof the slot is idle; with every slot populated and a lane that predates engine
+      # records, idle-slot would skip every deploy and that engine would never be used.
+      if [ "$FORCE" -eq 0 ]; then
+        for built in engine-a engine-b engine-c; do
+          [ "$built" = "$current_slot" ] && continue
+          if [ -x "$INSTALL_DIR/$built/llama-server" ] \
+             && [ "$(cat "$INSTALL_DIR/$built/.llama-server.stamp" 2>/dev/null)" = "$STAMP_WANT" ]; then
+            SLOT="$built"
+            echo "→ engine slot: $built already holds $STAMP_WANT, promoting it without a build" >&2
+            promote_slot
+            echo "$INSTALL_DIR/$built/llama-server"
+            exit 0
+          fi
+        done
+      fi
+      set +e
+      slot_dir="$(engine_cli idle-slot)"
+      rc=$?
+      set -e
+      if [ "$rc" -eq 3 ]; then
+        echo "⚠ every engine slot is current or run by a live lane: the engine build is skipped this deploy; the lanes keep their engine" >&2
+        exit 0
+      elif [ "$rc" -ne 0 ] || [ -z "$slot_dir" ]; then
+        echo "✗ FATAL: \`continuum engine idle-slot\` failed (exit $rc); no slot can be proven idle, so nothing is built." >&2
+        exit 1
+      fi
+      SLOT="$(basename "$slot_dir")"
+      LEGACY_BIN="$INSTALL_BIN"
+      LEGACY_STAMP="$STAMP_FILE"
+      INSTALL_DIR="$slot_dir"
+      INSTALL_BIN="$INSTALL_DIR/llama-server"
+      STAMP_FILE="$INSTALL_DIR/.llama-server.stamp"
+      mkdir -p "$INSTALL_DIR"
+      echo "→ engine slot: building into $SLOT (current: ${current_slot:-none})" >&2
+      # A slot that already holds this pin (built, then its promote failed) is promoted as is.
+      if [ "$FORCE" -eq 0 ] && [ -x "$INSTALL_BIN" ] && [ "$(cat "$STAMP_FILE" 2>/dev/null)" = "$STAMP_WANT" ]; then
+        promote_slot
+        echo "$INSTALL_BIN"
+        exit 0
+      fi
+      # MIGRATION without a rebuild: the pre-slot engine already verified at this pin is copied
+      # into the slot (same atomic copy + re-sign as a fresh build) and promoted. A rebuild would
+      # cost hours on a CPU-served node for a binary that is already here.
+      if [ "$FORCE" -eq 0 ] && [ -z "$current_slot" ] && [ -x "$LEGACY_BIN" ] \
+         && [ "$(cat "$LEGACY_STAMP" 2>/dev/null)" = "$STAMP_WANT" ]; then
+        rm -f "$INSTALL_BIN" "$STAMP_FILE"
+        cp "$LEGACY_BIN" "$INSTALL_BIN.tmp.$$"
+        if [ "$(uname -s)" = "Darwin" ]; then
+          codesign -s - --force "$INSTALL_BIN.tmp.$$" 2>/dev/null \
+            || echo "⚠ codesign ad-hoc re-sign failed — the version check below is the gate" >&2
+        fi
+        mv -f "$INSTALL_BIN.tmp.$$" "$INSTALL_BIN"
+        chmod +x "$INSTALL_BIN"
+        "$INSTALL_BIN" --version >/dev/null 2>&1 || {
+          echo "✗ FATAL: the copied pre-slot engine does not run from $SLOT; not promoted." >&2
+          exit 1
+        }
+        echo "$STAMP_WANT" > "$STAMP_FILE"
+        echo "→ migrated the pre-slot engine ($STAMP_WANT) into $SLOT, no rebuild" >&2
+        promote_slot
+        echo "$INSTALL_BIN"
+        exit 0
+      fi
+    fi
+    ;;
+esac
 
 # ── idempotency ──────────────────────────────────────────────────────
 if [ "$FORCE" -eq 0 ] && [ -x "$INSTALL_BIN" ] && [ -f "$STAMP_FILE" ] \
@@ -193,7 +315,9 @@ declare -a CMAKE_ARGS=(
 )
 
 # Parallelism: nproc (Linux) / sysctl (macOS), default 4.
-JOBS="$( (command -v nproc >/dev/null 2>&1 && nproc) || sysctl -n hw.ncpu 2>/dev/null || echo 4)"
+# A warm build beside a CPU-served lane is given one job (card 682a5abf); that budget
+# arrives as CARGO_BUILD_JOBS and holds for the engine build too.
+JOBS="${CARGO_BUILD_JOBS:-$( (command -v nproc >/dev/null 2>&1 && nproc) || sysctl -n hw.ncpu 2>/dev/null || echo 4)}"
 
 # A reboot may build from a different worktree. Keep incremental metadata only
 # when it belongs to this source; the native installer uses the same guard.
@@ -220,9 +344,9 @@ if [ "$WIN_CUDA" -eq 1 ]; then
   vcvars="$vs_path\\VC\\Auxiliary\\Build\\vcvars64.bat"
   # Ninja + nvcc: on PATH, else the manifest install locations (a manifest-provisioned box
   # has these under ~/.continuum but may not export them on PATH).
-  ninja_exe="$(command -v ninja 2>/dev/null || echo "$CONTINUUM_HOME/tools/ninja/ninja.exe")"
+  ninja_exe="$(command -v ninja 2>/dev/null || echo "$PAYLOAD_ROOT/tools/ninja/ninja.exe")"
   [ -x "$ninja_exe" ] || { echo "✗ FATAL: ninja not found (install-manifest toolchain)." >&2; exit 1; }
-  nvcc_exe="$(command -v nvcc 2>/dev/null || echo "$CONTINUUM_HOME/cuda-toolkit/bin/nvcc.exe")"
+  nvcc_exe="$(command -v nvcc 2>/dev/null || echo "$PAYLOAD_ROOT/cuda-toolkit/bin/nvcc.exe")"
   [ -x "$nvcc_exe" ] || { echo "✗ FATAL: nvcc not found (install-manifest 'cuda' module)." >&2; exit 1; }
   cmake_exe="$(command -v cmake)"
   # Windows-native paths for the cmd context.
@@ -444,6 +568,9 @@ if [ "$BACKEND" != "cpu" ]; then
 fi
 
 echo "$STAMP_WANT" > "$STAMP_FILE"   # stamp LAST — only a verified-good binary is blessed
+# A slot build becomes the engine only now: verified, stamped, then promoted (the core
+# re-checks binary and stamp before it flips `current`).
+[ -n "$SLOT" ] && promote_slot
 
 echo "✓ llama-server installed: $INSTALL_BIN ($STAMP_WANT)" >&2
 echo "$INSTALL_BIN"

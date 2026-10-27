@@ -1,7 +1,7 @@
 //! Event-driven SWE grade-on-done — closes the kanban benchmark loop.
 //!
 //! Subscribes to `work.card.state_changed` (emitted by `work/state`, see
-//! [`crate::modules::work::WORK_CARD_STATE_CHANGED`]) and, when a benchmark SWE card
+//! [`crate::persona::work_board::events::WORK_CARD_STATE_CHANGED`]) and, when a benchmark SWE card
 //! (`[bench swe-*]`) reaches a terminal state, grades the citizen's workspace diff against
 //! the HELD-OUT oracle and posts the verdict into the room. The whole system is
 //! event-based, never polling ([[the-whole-system-is-event-based-not-polling]]): nothing
@@ -19,10 +19,9 @@ use std::any::Any;
 use async_trait::async_trait;
 use serde_json::Value;
 
-use airc_lib::CardState;
-
-use crate::commands::benchmark::{grade_swe, known_benchmarks, SweGradeParams};
-use crate::modules::work::WORK_CARD_STATE_CHANGED;
+use crate::commands::benchmark::{grade_swe, SweGradeParams};
+use crate::recipe::benchmark_catalog::known_benchmarks;
+use crate::persona::work_board::events::WORK_CARD_STATE_CHANGED;
 use crate::persona::PersonaAircRuntimeRegistry;
 use crate::runtime::{CommandResult, ModuleConfig, ModuleContext, ModulePriority, ServiceModule};
 
@@ -35,7 +34,7 @@ fn is_terminal(state: &str) -> bool {
     crate::cognition::bench_round::is_terminal_card_state(state)
 }
 
-use crate::commands::benchmark::parse_card_title as parse_bench_title;
+use crate::recipe::bench_title::parse_card_title as parse_bench_title;
 
 /// The grade-on-done subscriber. Holds a persona-airc registry so it can author the grade
 /// through a live citizen — whoever this machine has online (never a hardcoded name), the
@@ -61,77 +60,23 @@ impl ServiceModule for BenchmarkGradeModule {
             event_subscriptions: &[WORK_CARD_STATE_CHANGED],
             needs_dedicated_thread: false,
             max_concurrency: 0,
-            // The one periodic ACTUATOR (doctrine: actuators may tick; condition-polls
-            // may not): lease expiry is a TIME fact with no wire event, so a bench card
-            // whose owner wrote the artifact but whose work session died before `done`
-            // would rot as Claimed forever. The sweep detects exactly that state and
-            // CLOSES the card — the close's wire echo then drives the normal
-            // bridge→grade tail. One grade path; the sweeper is only a detector.
             tick_interval: Some(std::time::Duration::from_secs(180)),
         }
     }
 
     async fn tick(&self) -> Result<(), String> {
-        // Finished work is graded on the tick, not at the next boot: the verdict
-        // sweep starts here when something is pending and none is in flight
-        // (one sweep at a time; it scans directories, then grades serially).
-        if crate::cognition::swe_verdict_sweep::sweep_if_due() {
-            crate::probe!(
-                class = "benchmark.verdict.sweep_started_by_tick",
-                "pending citizen work found on the tick — grading now, not at the next boot"
-            );
-        }
+        // No desk sweep: a hand-in is graded when it is submitted (`grade_submission`,
+        // fired by work/submit), never by scanning citizens' workspaces on a clock.
         // THE VERDICT LAW on the tick (card 52842311): verdicts on file settle the
         // cards the board left open — review-parked parents, unpulled review cards.
         crate::modules::verdict_board::reconcile_verdicted().await;
-        sweep_lapsed_bench_cards(&self.registry).await
+        Ok(())
     }
 
     async fn initialize(&self, ctx: &ModuleContext) -> Result<(), String> {
-        // RECONCILE the artifacts already on disk, once, as this module comes up.
-        //
-        // Grading belongs to the benchmark recipe — it IS the activity's outcome score
-        // (docs/architecture/BENCHMARKS-ARE-ADAPTERS-NOT-A-RUNNER.md), so it is owned HERE,
-        // by the module that owns every other grade path, and never by some unrelated daemon's
-        // boot sequence. (Written after doing exactly that and being corrected: a sweep hung
-        // off `serving_daemon` start is the parallel-runner shape this repo has a whole
-        // document forbidding. Joel: "Grading is supposed to be part of the regular benchmark
-        // recipe".)
-        //
-        // Why a reconciliation exists at all, next to two event paths that are both correct:
-        // the grade-on-done subscriber fires on a card TRANSITION, and the tick sweep detects
-        // a LAPSED lease. Neither can see an artifact with no card — detached `agent/solve`
-        // runs (#425) produce exactly that, and 17 unscored citizen patches were sitting on
-        // this box the night it was written, two of them PASSES over a day old. This is the
-        // same reap-or-adopt boot owns for every other resource (#452): an orphaned ARTIFACT
-        // is an orphaned run.
-        //
-        // Deterministic and idempotent (see the sweep's module doc), so it is a reconciliation
-        // and not the forbidden condition-poll: it enumerates ALL staged instances in sorted
-        // order with no cap and no recency sort, skips anything already carrying a verdict, and
-        // refuses ambiguity rather than guessing. Same disk, same outcome, every time.
-        //
-        // DETACHED because each grade is a fresh clone plus a real test suite — minutes apiece.
-        // Module init must not block on it, and the citizens' first turn must not queue behind
-        // it.
-        tokio::spawn(async {
-            // The boot sweep holds the same in-flight guard the tick honours:
-            // on 0babe4c78 the 180 s tick started a SECOND sweep at 15:33Z while
-            // the boot's was still grading (the guard only knew about ticks).
-            use std::sync::atomic::Ordering;
-            if crate::cognition::swe_verdict_sweep::SWEEP_IN_FLIGHT.swap(true, Ordering::AcqRel) {
-                return;
-            }
-            let report = crate::cognition::swe_verdict_sweep::sweep().await;
-            crate::cognition::swe_verdict_sweep::SWEEP_IN_FLIGHT.store(false, Ordering::Release);
-            if report.graded > 0 {
-                tracing::info!(
-                    graded = report.graded,
-                    resolved = report.resolved,
-                    "benchmark artifact reconciliation scored citizen work that had no verdict"
-                );
-            }
-        });
+        // No boot reconciliation of desks: grading is of hand-ins (`grade_submission`,
+        // fired by work/submit). The desk sweep graded every staged copy in every
+        // citizen's workspace, including citizens who chose no benchmark (2026-10-05).
         // THE live wiring. `config().event_subscriptions` installs a SYNCHRONOUS-tier
         // subscription the registry marks `synchronous: false` — which `publish()`
         // filters OUT, and runtime.rs:99 says so out loud: "event_subscriptions are
@@ -142,11 +87,6 @@ impl ServiceModule for BenchmarkGradeModule {
         // handle_event probes). This is the prescribed receiver task, same shape as
         // chat::spawn_persist_listener.
         let mut rx = ctx.bus.receiver();
-        // A5 BOOT RESUME: rejoin surviving Working rounds once serving + residency
-        // are back — the benchmark side owns re-firing (the serving daemon's reap
-        // refuses to, correctly). One-shot; the card-settled edge chains onward.
-        crate::modules::benchmark_resume::spawn_boot_resume(self.registry.clone());
-
         let registry = self.registry.clone();
         ctx.runtime.spawn(async move {
             loop {
@@ -210,55 +150,6 @@ fn on_card_state_changed(registry: &PersonaAircRuntimeRegistry, payload: &Value)
     if card_id.is_empty() {
         return;
     }
-    // A4 FOLLOW-ON — the card-settled edge of the ONE driver decision
-    // (bench_round::next_unworked_after; dispatch and boot-resume are the other
-    // two edges). A settled card frees serving capacity; the round's next
-    // unworked card fires NOW instead of starving behind the initial
-    // solve_cap = lanes (dispatched − solves_fired stops being permanent).
-    // The in-flight guard inside dispatch_staged_swe_solve makes double-fire
-    // impossible even if two settle events race.
-    if let Ok(settled_uuid) = card_id.parse::<uuid::Uuid>() {
-        if let Some(next) = crate::cognition::bench_round::next_unworked_after(settled_uuid) {
-            let reg = registry.clone();
-            tokio::spawn(async move {
-                let airc = reg
-                    .get(next.assignee)
-                    .or_else(|| reg.any_live_citizen())
-                    .map(|rt| rt.airc().clone());
-                let Some(airc) = airc else {
-                    crate::probe!(
-                        class = "bench.round.follow_on_blocked",
-                        card_id = %next.card,
-                        "next card is due but no live citizen can carry the dispatch —                          the boot-resume edge retries"
-                    );
-                    return;
-                };
-                crate::probe!(
-                    class = "bench.round.follow_on",
-                    settled = %settled_uuid,
-                    next_card = %next.card,
-                    assignee = %next.assignee,
-                    "card settled — firing the round's next unworked card"
-                );
-                crate::modules::work::dispatch_staged_swe_solve(
-                    &Default::default(),
-                    &airc,
-                    crate::modules::work::StagedSolveDispatch {
-                        claimer: crate::identity::PeerId::from_uuid(next.assignee),
-                        card: airc_work::WorkCardId::from_uuid(next.card),
-                        room: airc_core::RoomId::from_u128(next.run_room.as_u128()),
-                        // The card's RECORDED team rides every driver edge (gap 3).
-                        teammates: next
-                            .teammates
-                            .iter()
-                            .map(|t| crate::identity::PeerId::from_uuid(*t))
-                            .collect(),
-                    },
-                )
-                .await;
-            });
-        }
-    }
     // The card's room, from the wire event (bridge payload contract). Boards are
     // per-room: without this the grade read whatever room the grading citizen
     // happened to be in — the #345 wrong-room trap, hit live 2026-08-15.
@@ -269,14 +160,14 @@ fn on_card_state_changed(registry: &PersonaAircRuntimeRegistry, payload: &Value)
 
     let registry = registry.clone();
     tokio::spawn(async move {
-        crate::probe!(
+        continuum_base::probe!(
             class = "benchmark_grade.start",
             card_id = %card_id,
             room_id = %room_id.map(|r| r.to_string()).unwrap_or_default(),
             "grade-on-done fired — reading the card's own room board"
         );
         if let Err(e) = grade_card(&registry, &card_id, room_id).await {
-            crate::probe!(
+            continuum_base::probe!(
                 class = "benchmark_grade.error",
                 card_id = %card_id,
                 error = %e,
@@ -333,13 +224,13 @@ async fn grade_card(
     // The event carries whatever id the citizen passed to work/state (short 8-char or full).
     // Normalize to simple hex; a short id is a prefix of the full simple form.
     let want = card_id.replace('-', "").to_ascii_lowercase();
-    let (title, owner) = {
+    let (title, owner, graded_card) = {
         let card = board
             .cards
             .iter()
             .find(|c| c.card_id.as_uuid().simple().to_string().starts_with(&want))
             .ok_or_else(|| format!("card {card_id} not on the board"))?;
-        (card.title.clone(), card.owner)
+        (card.title.clone(), card.owner, card.card_id.as_uuid())
     };
 
     let Some((bench, instance)) = parse_bench_title(&title) else {
@@ -353,8 +244,10 @@ async fn grade_card(
     // and the board sat at 0-resolved while kickoffs promised a grade (2026-08-15).
     let spec = known_benchmarks().iter().find(|b| b.name == bench);
     let Some(dataset) = spec.and_then(|s| s.swe_dataset()) else {
-        if let Some(spec) = spec.filter(|s| s.eval_set.is_some()) {
-            return grade_gym_card(&airc, spec, &instance, owner, &bench, room_id).await;
+        // A gym suite, registered or a coursework lesson set: the ONE resolver turns the
+        // title's suite name into the eval set the oracle is read from.
+        if let Some(reference) = crate::commands::benchmark::eval_set_reference(&bench) {
+            return grade_gym_card(&airc, &reference, &instance, owner, &bench, room_id, graded_card).await;
         }
         return Ok(()); // catalogued-but-not-runnable, or a bench name we don't know
     };
@@ -363,7 +256,7 @@ async fn grade_card(
         owner.ok_or_else(|| format!("bench card {card_id} has no owner — nobody worked it"))?;
     // The staged checkout: <home>/citizens/peers/<owner>/workspace/swe/<instance>, exactly
     // where benchmark/swe-setup put it. Graded in a FRESH clone, so this tree is READ only.
-    let workspace = crate::commands::benchmark::continuum_home()
+    let workspace = crate::paths::continuum_home()
         .map_err(|e| format!("{e:?}"))?
         .join("citizens")
         .join("peers")
@@ -384,7 +277,7 @@ async fn grade_card(
 
     // Post the verdict into the CARD'S room as a participant — the run room the
     // citizens are standing in, not the grading citizen's current room.
-    crate::probe!(
+    continuum_base::probe!(
         class = "benchmark_grade.verdict",
         card_id = %card_id,
         room_id = %room_id,
@@ -403,11 +296,80 @@ async fn grade_card(
     Ok(())
 }
 
+/// Grade a HAND-IN: the patch a citizen submitted on a SWE bench card, graded the moment she
+/// submits it. A grader grades what was handed in, never a desk (Joel and Cormac,
+/// 2026-10-05: "read the nouns literally"). Before this, a 180 s sweep graded every staged
+/// copy in every citizen's workspace, so it kept diffing Kimi's autopilot-staged copies
+/// though she had chosen no benchmark (385 unreadable diffs in 50 minutes on her desk).
+///
+/// The patch is read back from the artifact store by the hash she published, so the grade
+/// is exactly her submission even if her checkout moved on. `grade_swe` grades it in a
+/// fresh clone at the base, records the verdict and follows it onto the board, as every
+/// grade path does. Not a bench card, or not a SWE one: nothing to grade, returns quietly.
+pub(crate) async fn grade_submission(
+    airc: std::sync::Arc<airc_lib::Airc>,
+    room_id: uuid::Uuid,
+    card_title: String,
+    instance: String,
+    patch: airc_blobs::MediaRef,
+) {
+    let Some((bench, dataset)) = crate::recipe::benchmark_catalog::submission_oracle_dataset(&card_title) else {
+        return;
+    };
+    let patch_hash = patch.hash.to_hex();
+    let patch = match crate::media::artifact::read_text_blob(&patch) {
+        Ok(p) => p,
+        Err(why) => {
+            continuum_base::probe!(
+                class = "benchmark.grade.submission_unreadable",
+                instance = %instance,
+                hash = %patch_hash,
+                why = %why,
+                "the submitted patch could not be read back from the artifact store — not graded"
+            );
+            return;
+        }
+    };
+    continuum_base::probe!(class = "benchmark.grade.submission", instance = %instance, room_id = %room_id, "grading a hand-in");
+    match grade_swe(SweGradeParams {
+        instance: instance.clone(),
+        dataset: Some(dataset.to_string()),
+        gold: None,
+        patch: Some(patch),
+        workspace: None,
+    })
+    .await
+    {
+        Ok(verdict) => {
+            if let Some(err) = &verdict.error {
+                // The refusal record the desk sweep used to write: an env fault stands so
+                // card selection and import skip what this box cannot grade.
+                crate::cognition::swe_verdict_sweep::record_refusal(&instance, err, None);
+                let msg = format!("🧪 [bench {bench}] {instance} — grade could not run (infra, not a score): {err}");
+                if let Err(e) = crate::persona::airc_citizen::publish_text_in_room(&airc, room_id, &msg).await {
+                    continuum_base::probe!(
+                        class = "benchmark.grade.submission_unposted",
+                        instance = %instance,
+                        error = %e,
+                        "the infra-error line for a hand-in could not be posted to its room"
+                    );
+                }
+            }
+        }
+        Err(e) => continuum_base::probe!(
+            class = "benchmark.grade.submission_failed",
+            instance = %instance,
+            error = ?e,
+            "grading the hand-in failed before a verdict"
+        ),
+    }
+}
+
 /// Resolve one gym task by id and normalize it with the SAME `require_hands_for_code`
 /// rule dispatch applies before composing the card — so the `solution_file` this grader
 /// reads is byte-for-byte the path the card told her to write. Pure over the embedded
 /// gym text; the unit test below pins the agreement.
-fn normalized_gym_task(
+pub(crate) fn normalized_gym_task(
     reference: &str,
     task_id: &str,
 ) -> Result<crate::cognition::eval::EvalTask, String> {
@@ -473,38 +435,26 @@ fn gym_verdict(
 /// normalized by the SAME `require_hands_for_code` rule — so the path graded here is
 /// byte-for-byte the path the card told her to write. Verdict is posted into the room;
 /// a missing/empty artifact is an ABSENCE message (never a silent skip or fake fail),
-/// same honesty rule as the SWE arm's infra line.
+/// same honesty rule as the SWE arm's infra line. A workspace task (`dod_shell`) is graded
+/// by running its definition of done, then its held-out check, in her workspace.
 async fn grade_gym_card(
     airc: &std::sync::Arc<airc_lib::Airc>,
-    spec: &crate::commands::benchmark::BenchmarkSpec,
+    reference: &str,
     task_id: &str,
     owner: Option<impl std::fmt::Display>,
     bench: &str,
     room_id: uuid::Uuid,
+    graded_card: uuid::Uuid,
 ) -> Result<(), String> {
     let owner = owner
         .ok_or_else(|| format!("bench card {task_id} has no owner — nobody worked it"))?
         .to_string();
-    let reference = spec
-        .eval_set
-        .ok_or_else(|| format!("gym benchmark '{bench}' has no eval_set"))?;
     let task = normalized_gym_task(reference, task_id)?;
-    let Some(test) = task.test.clone() else {
-        return Ok(()); // expect-graded knowledge task — nothing file-shaped to grade
-    };
-    let lang = task.lang.clone().unwrap_or_else(|| "rust".to_string());
-    let solution_file = task
-        .solution_file
-        .clone()
-        .unwrap_or_else(|| format!("{}.rs", task.id));
     // Her workspace root — the same layout every other per-citizen path uses.
-    let path = crate::commands::benchmark::continuum_home()
-        .map_err(|e| format!("{e:?}"))?
-        .join("citizens")
-        .join("peers")
-        .join(&owner)
-        .join("workspace")
-        .join(&solution_file);
+    let workspace = crate::persona::card_checkout::gym_workspace(
+        &crate::paths::continuum_home().map_err(|e| format!("{e:?}"))?,
+        owner.parse().map_err(|e| format!("invalid gym owner {owner}: {e}"))?,
+    );
     // The graded OUTCOME is carried as a value, and the room line is rendered FROM it.
     // It used to be the other way round: the only typed thing was the prose, and the
     // probe recovered the score by reading its own emoji back out of the message. A fact
@@ -512,53 +462,82 @@ async fn grade_gym_card(
     // which is exactly how four real gym passes on this box left no trace anywhere but
     // chat ([[stdout-is-never-a-transport]]).
     //
-    // `None` is an ABSENCE, not a zero: an unwritten or empty artifact means nobody was
-    // measured, and it must never be banked as a failed attempt — the same rule
-    // `record_verdict` already enforces for errored SWE verdicts.
-    let outcome: Option<(bool, String)> = match std::fs::read_to_string(&path) {
-        Ok(code) if !code.trim().is_empty() => {
-            Some(crate::cognition::gym_grader::test_grade(&code, &lang, &test).await)
+    // `None` is an ABSENCE, not a zero: an unwritten or empty artifact, or a grader that
+    // could not run, means nobody was measured, and it must never be banked as a failed
+    // attempt — the same rule `record_verdict` already enforces for errored SWE verdicts.
+    let (outcome, msg): (Option<(bool, String)>, String) = if let Some(dod) = task.dod_shell.clone() {
+        // A WORKSPACE task (the eval's order: a definition of done supersedes `test`): the
+        // card told her the DoD, and the grade runs it, then the held-out check the card
+        // never showed, through the same composition the eval grades with. Before this arm
+        // a dod_shell card closed with no verdict at all, as if it were expect-graded.
+        use crate::cognition::eval::DodVerdict;
+        let verdict = crate::cognition::eval::run_workspace_grade(Some(&workspace), &task, &dod).await;
+        // the DoD's output can run pages; the room gets the head, enough to act on
+        let head: String = verdict.message().chars().take(600).collect();
+        match verdict {
+            DodVerdict::Pass(m) => (
+                Some((true, m)),
+                format!("\u{2705} [bench {bench}] {task_id} RESOLVED — the definition of done passed in your workspace. Nice work."),
+            ),
+            DodVerdict::Fail(m) => (
+                Some((false, m)),
+                format!("\u{274c} [bench {bench}] {task_id} not resolved — {head}"),
+            ),
+            DodVerdict::InfraError(_) => (
+                None,
+                format!("\u{1f9ea} [bench {bench}] {task_id} — the grader could not run here, so this is not scored: {head}"),
+            ),
         }
-        Ok(_) | Err(_) => None,
-    };
-    let msg = match &outcome {
-        Some((true, _)) => format!(
-            "\u{2705} [bench {bench}] {task_id} RESOLVED — `{solution_file}` compiled and \
-             passed the held-out tests. Nice work."
-        ),
-        Some((false, detail)) => {
-            // rustc output can run pages; the room gets the head, enough to act on.
-            let head: String = detail.chars().take(600).collect();
-            format!("\u{274c} [bench {bench}] {task_id} not resolved — `{solution_file}`: {head}")
-        }
-        None if path.exists() => format!(
-            "\u{1f9ea} [bench {bench}] {task_id} — `{solution_file}` exists but is EMPTY; \
-             nothing to grade."
-        ),
-        None => format!(
-            "\u{1f9ea} [bench {bench}] {task_id} — no `{solution_file}` in the owner's workspace. \
-             The card is graded on the file her hands write (code/write); it was never written."
-        ),
+    } else if let Some(test) = task.test.clone() {
+        let lang = task.lang.clone().unwrap_or_else(|| "rust".to_string()); // unwrap_or_else: a row with no lang is rust, the gym's documented default
+        let solution_file = task
+            .solution_file
+            .clone()
+            .unwrap_or_else(|| format!("{}.rs", task.id)); // unwrap_or_else: require_hands_for_code's derived name, the path the card told her
+        let path = workspace.join(&solution_file);
+        let outcome: Option<(bool, String)> = match std::fs::read_to_string(&path) {
+            Ok(code) if !code.trim().is_empty() => {
+                Some(crate::genome::gym_grader::test_grade(&code, &lang, &test).await)
+            }
+            Ok(_) | Err(_) => None,
+        };
+        let msg = match &outcome {
+            Some((true, _)) => format!(
+                "\u{2705} [bench {bench}] {task_id} RESOLVED — `{solution_file}` compiled and \
+                 passed the held-out tests. Nice work."
+            ),
+            Some((false, detail)) => {
+                // rustc output can run pages; the room gets the head, enough to act on.
+                let head: String = detail.chars().take(600).collect();
+                format!("\u{274c} [bench {bench}] {task_id} not resolved — `{solution_file}`: {head}")
+            }
+            None if path.exists() => format!(
+                "\u{1f9ea} [bench {bench}] {task_id} — `{solution_file}` exists but is EMPTY; \
+                 nothing to grade."
+            ),
+            None => format!(
+                "\u{1f9ea} [bench {bench}] {task_id} — no `{solution_file}` in the owner's workspace. \
+                 The card is graded on the file her hands write (code/write); it was never written."
+            ),
+        };
+        (outcome, msg)
+    } else {
+        return Ok(()); // expect-graded knowledge task — nothing file-shaped to grade
     };
 
-    // DURABLE, through the ONE seam every other verdict passes: `record_verdict` stamps
-    // harness build, served model and grade time, refuses to let a later failure erase a
-    // recorded resolve, and — the reason this call IS the fix — puts the row exactly where
-    // `scan_verdict_cards` already looks. Every consumer downstream (`benchmark/runs`, the
-    // positron bench board, the run-room scoreboard) projects the verdict store and never
-    // this module, so until the gym arm wrote here a graded gym round was invisible to all
-    // of them: rounds reached `done`, cards genuinely RESOLVED, and the board honestly
-    // reported `attempted=0 resolved=0` because nothing gym-shaped had ever been recorded
-    // ([[silently-unwired-capability]] — two correct halves, no join key).
+    // DURABLE, through the ONE seam every other verdict passes: the record stamps harness
+    // build, served model and grade time, refuses to let a later failure erase a recorded
+    // resolve, and settles the card's staged training credit.
     if let Some((passed, detail)) = &outcome {
         let verdict = gym_verdict(task_id, bench, &owner, *passed, detail);
         // A record that cannot be written is LOUD. Dropping it quietly would restore the
         // exact invisibility this call exists to end.
-        crate::cognition::swe_bench::record_verdict(&verdict, false)
+        crate::cognition::swe_bench::record_card_verdict(&verdict, graded_card)
+            .await
             .map_err(|e| format!("record gym verdict for {task_id}: {e}"))?;
     }
 
-    crate::probe!(
+    continuum_base::probe!(
         class = "benchmark_grade.verdict",
         card_id = %task_id,
         room_id = %room_id,
@@ -575,318 +554,9 @@ async fn grade_gym_card(
     Ok(())
 }
 
-/// Most closes a single sweep will perform. A burst of lapsed cards (e.g. a whole round's
-/// worth after a long outage) grades a few per tick instead of storming the room; the rest
-/// are still lapsed next tick.
-const SWEEP_MAX_CLOSES_PER_TICK: usize = 3;
-
-/// How long after a claim LAPSES a still-resident owner is presumed to be
-/// mid-resume rather than done-and-gone. A reboot lapses every lease at once and
-/// the resume machinery renews them on the claim cadence (TTL/3); within this
-/// window a resident owner may still be catching up, so her artifact is left to
-/// her. Beyond it, a lapsed claim on a resident owner means she is NOT renewing =
-/// NOT actively working the card (an actively-worked card stays `Held`), so her
-/// done-but-unclosed artifact must be graded, not stranded forever. Sized well
-/// above a worst-case reboot+resume (the 35B lane's build+load alone is ~10min)
-/// and far below the multi-hour wedge this un-strands (measured 2026-09-02:
-/// rounds stalled ~20h with artifacts present, owner resident, never graded).
-// One grace for the sweep and the pull (card_holder::claimable_by).
-use crate::persona::card_holder::RESIDENT_OWNER_GRACE_MS;
-
-/// A resident owner with a LAPSED claim is presumed "still working" only inside
-/// the post-lapse resume window. Pure so the boundary is unit-testable.
-fn resident_owner_still_working(lapsed_for_ms: u64) -> bool {
-    lapsed_for_ms < RESIDENT_OWNER_GRACE_MS
-}
-
-/// The sweep decision, pure so the truth table is unit-testable: a bench card is
-/// auto-closeable exactly when a person CLAIMED it, their lease LAPSED (work session
-/// died — `card_holder::hold_of`, the one lease predicate, #357), and their hands left
-/// a real artifact behind. A LIVE claim is never preempted; an unclaimed card was never
-/// worked; no artifact means there is nothing to grade — dispatch re-offer (#419) is
-/// that card's path, not a grade.
-/// Whether the card's owner is a citizen this node hosts right now.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum OwnerPresence {
-    /// A resident citizen owns it — her pump renews and reclaims her own holds.
-    Resident,
-    /// The owner is not hosted here (despawned, another node, gone).
-    Absent,
-    /// The card names no owner at all.
-    Nobody,
-}
-
-/// What the sweep does with one bench card. ONE decision, typed, so the truth
-/// table below is the whole safety envelope and a new arm is a new variant with
-/// a name — never a second boolean beside the first.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum SweepVerdict {
-    /// Not the sweeper's business: a live claim, a terminal card, a resident
-    /// owner's lapsed hold (her pump reclaims it), or an unclaimed Open card.
-    Leave,
-    /// A lapsed claim with a written artifact and no `done` — close it so the
-    /// grade can run (the 2026-08 rule).
-    Close,
-    /// A hold NOBODY holds: `owner: None` in Claimed/InProgress, or a lapsed claim
-    /// whose owner is not resident and who left no artifact. Nothing else can
-    /// return it to the deck — `claimable_now` takes an unclaimed card only when
-    /// it is Open, and the pull reads that — so the sweep reopens it. This is
-    /// the hole that starved a five-citizen round on 2026-09-11: three cards
-    /// sat in_progress with no owner for days after the roster went 12→5.
-    Reopen,
-}
-
-fn sweep_verdict(
-    state: &CardState,
-    hold: crate::persona::card_holder::Hold,
-    owner: OwnerPresence,
-    artifact_present: bool,
-) -> SweepVerdict {
-    use crate::persona::card_holder::Hold;
-    if !matches!(state, CardState::Claimed | CardState::InProgress) {
-        return SweepVerdict::Leave;
-    }
-    match (hold, owner, artifact_present) {
-        // A live claim is NEVER preempted, whoever holds it.
-        (Hold::Held, _, _) => SweepVerdict::Leave,
-        // Claimed/InProgress with no owner: held by nobody. Reopen.
-        (Hold::Unclaimed, _, _) | (_, OwnerPresence::Nobody, _) => SweepVerdict::Reopen,
-        // Lapsed with an artifact: grade it (the resident grace is applied by the caller).
-        (Hold::Lapsed, _, true) => SweepVerdict::Close,
-        // Lapsed, no artifact, owner gone: the deck gets it back.
-        (Hold::Lapsed, OwnerPresence::Absent, false) => SweepVerdict::Reopen,
-        // Lapsed, no artifact, owner resident: hers to reclaim (the pump does).
-        (Hold::Lapsed, OwnerPresence::Resident, false) => SweepVerdict::Leave,
-    }
-}
-
-/// Did the owner's hands leave something gradeable? Mirrors the grade arms' own path
-/// derivations exactly — gym: the task's `solution_file` exists non-empty under her
-/// workspace root; SWE: the staged checkout exists AND the tree is dirty (an untouched
-/// clone graded would burn a fake capability-zero for a dead session, the #384 class).
-fn bench_artifact_present(bench: &str, instance: &str, owner: &str) -> bool {
-    let Some(spec) = known_benchmarks().iter().find(|b| b.name == bench) else {
-        return false;
-    };
-    let Ok(home) = crate::commands::benchmark::continuum_home() else {
-        return false;
-    };
-    let workspace = home
-        .join("citizens")
-        .join("peers")
-        .join(owner)
-        .join("workspace");
-    if spec.swe_dataset().is_some() {
-        let tree = workspace.join("swe").join(instance);
-        if !tree.is_dir() {
-            return false;
-        }
-        return std::process::Command::new("git")
-            .arg("-C")
-            .arg(&tree)
-            .args(["status", "--porcelain"])
-            .output()
-            .map(|o| o.status.success() && !o.stdout.is_empty())
-            .unwrap_or(false);
-    }
-    let Some(reference) = spec.eval_set else {
-        return false;
-    };
-    let Ok(task) = normalized_gym_task(reference, instance) else {
-        return false;
-    };
-    if task.test.is_none() {
-        return false; // expect-graded knowledge task — nothing file-shaped to sweep
-    }
-    let solution_file = task
-        .solution_file
-        .clone()
-        .unwrap_or_else(|| format!("{}.rs", task.id));
-    std::fs::read_to_string(workspace.join(solution_file))
-        .map(|code| !code.trim().is_empty())
-        .unwrap_or(false)
-}
-
-/// The algorithm of the operator's manual flip (2026-08-15, the first graded pass):
-/// a citizen writes the artifact but her work session dies before she says `done`,
-/// so the card rots as a lapsed claim and the grade never runs. The sweep detects
-/// exactly that state and CLOSES the card as her would-have-been `done` — the close's
-/// wire echo then drives the normal bridge→grade tail. ONE grade path; this is only
-/// a detector. A citizen who says `done` herself beats the sweeper (card goes
-/// terminal, sweep skips it); a citizen still working is never preempted (Held).
-async fn sweep_lapsed_bench_cards(
-    registry: &PersonaAircRuntimeRegistry,
-) -> Result<(), String> {
-    // Boot / no citizens online yet: quietly nothing to do — same posture as grade_card,
-    // but a tick must not error every 3 minutes of a citizen-less core.
-    let Some(rt) = registry.any_live_citizen() else {
-        return Ok(());
-    };
-    let airc = rt.airc().clone();
-    let set = airc
-        .subscription_set()
-        .await
-        .map_err(|e| format!("subscription set: {e}"))?;
-    let now_ms = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_err(|e| e.to_string())?
-        .as_millis() as u64;
-
-    let mut closed = 0usize;
-    for room in set.all().map(|sub| sub.as_room()) {
-        // Rooms without a board (or with a transiently unreadable one) are not sweep
-        // targets this tick; the board is durable, next tick sees it.
-        let Ok(board) = airc.work_board_in(&room).await else {
-            continue;
-        };
-        for card in &board.snapshot().cards {
-            if closed >= SWEEP_MAX_CLOSES_PER_TICK {
-                return Ok(());
-            }
-            let Some((bench, instance)) = parse_bench_title(&card.title) else {
-                continue; // normal work cards are NEVER the sweeper's business
-            };
-            let hold = crate::persona::card_holder::hold_of(card, now_ms);
-            let presence = match card.owner {
-                None => OwnerPresence::Nobody,
-                Some(o) if registry.get(o.as_uuid()).is_some() => OwnerPresence::Resident,
-                Some(_) => OwnerPresence::Absent,
-            };
-            let artifact = card
-                .owner
-                .is_some_and(|o| bench_artifact_present(&bench, &instance, &o.to_string()));
-            let verdict = sweep_verdict(&card.state, hold, presence, artifact);
-            if verdict == SweepVerdict::Reopen {
-                let room_id = room.channel.as_uuid();
-                crate::probe!(
-                    class = "benchmark_grade.sweep_reopened",
-                    card_id = %card.card_id.as_uuid(),
-                    room_id = %room_id,
-                    bench = %bench,
-                    instance = %instance,
-                    state = ?card.state,
-                    owner = %card.owner.map(|o| o.as_uuid().to_string()).unwrap_or_default(),
-                    "a hold nobody holds — reopened so the deck offers it again"
-                );
-                match airc
-                    .change_work_card_state_in(
-                        &room,
-                        airc_lib::ChangeWorkCardState { card_id: card.card_id, state: CardState::Open },
-                    )
-                    .await
-                {
-                    Ok(_) => {
-                        closed += 1; // the per-tick bound covers reopens too
-                        let note = format!(
-                            "♻️ [bench {bench}] {instance} — its holder is gone and left no \
-                             artifact; reopened so a resident can take it."
-                        );
-                        if let Err(e) =
-                            crate::persona::airc_citizen::publish_text_in_room(&airc, room_id, &note).await
-                        {
-                            crate::probe!(
-                                class = "benchmark_grade.sweep_note_failed",
-                                card_id = %card.card_id.as_uuid(),
-                                error = %e,
-                                "card reopened but the provenance note did not post"
-                            );
-                        }
-                    }
-                    Err(e) => crate::probe!(
-                        class = "benchmark_grade.sweep_reopen_failed",
-                        card_id = %card.card_id.as_uuid(),
-                        error = %e,
-                        "reopen refused — the card stays where it is, said out loud"
-                    ),
-                }
-                continue;
-            }
-            if verdict != SweepVerdict::Close {
-                continue;
-            }
-            let Some(owner) = card.owner else { continue }; // Close always has an owner (artifact needs one)
-            let lapsed_for_ms = card
-                .claim_expires_at_ms
-                .map(|e| now_ms.saturating_sub(e))
-                .unwrap_or(u64::MAX); // no expiry recorded = not renewing = gradeable
-            if presence == OwnerPresence::Resident && resident_owner_still_working(lapsed_for_ms) {
-                crate::probe!(
-                    class = "benchmark_grade.sweep_deferred_owner_online",
-                    card_id = %card.card_id.as_uuid(),
-                    owner = %owner.as_uuid(),
-                    bench = %bench,
-                    instance = %instance,
-                    lapsed_ms = lapsed_for_ms,
-                    "lapsed claim with artifact, owner RESIDENT and within the resume \
-                     grace — left to her, not confiscated"
-                );
-                continue;
-            }
-            let room_id = room.channel.as_uuid();
-            crate::probe!(
-                class = "benchmark_grade.sweep_close",
-                card_id = %card.card_id.as_uuid(),
-                room_id = %room_id,
-                bench = %bench,
-                instance = %instance,
-                "lapsed claim with a written artifact — auto-closing so the grade can run"
-            );
-            // Close FIRST, provenance note only on success: a persistently-failing close
-            // must not post a note into the room every tick (the first live tick failed
-            // ALL 21 closes silently — 21 probes in 0.6s straight past the 3-close cap,
-            // which only counts successes; without an error probe the whole failure mode
-            // was invisible). The note still lands before the verdict — grading takes
-            // seconds, the note posts immediately after the close.
-            // Room-SCOPED mutate (airc #1363): the close targets the room the card
-            // actually lives in. The current-room verb refused all 21 of the first
-            // tick's closes — every target card was in a room the authoring citizen
-            // wasn't standing in (the WRITE half of the #345 class).
-            match airc
-                .change_work_card_state_in(
-                    &room,
-                    airc_lib::ChangeWorkCardState {
-                        card_id: card.card_id,
-                        state: CardState::Closed,
-                    },
-                )
-                .await
-            {
-                Ok(_) => {
-                    closed += 1;
-                    let note = format!(
-                        "⏱️ [bench {bench}] {instance} — the claim lapsed with a written \
-                         artifact and no `done`; auto-closed so the grade can run. (A live \
-                         claim is never preempted.)"
-                    );
-                    if let Err(e) =
-                        crate::persona::airc_citizen::publish_text_in_room(&airc, room_id, &note)
-                            .await
-                    {
-                        crate::probe!(
-                            class = "benchmark_grade.sweep_note_failed",
-                            card_id = %card.card_id.as_uuid(),
-                            error = %e,
-                            "card closed but the provenance note did not post"
-                        );
-                    }
-                }
-                Err(e) => {
-                    crate::probe!(
-                        class = "benchmark_grade.sweep_close_failed",
-                        card_id = %card.card_id.as_uuid(),
-                        room_id = %room_id,
-                        error = %e,
-                        "auto-close refused — card stays as-is, retried next tick"
-                    );
-                }
-            }
-        }
-    }
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
+
     use super::*;
 
     // what this catches: the title parse must extract (bench, instance) from the EXACT
@@ -900,59 +570,6 @@ mod tests {
         assert_eq!(i, "sympy__sympy-24152");
         assert!(parse_bench_title("a normal work card").is_none());
         assert!(parse_bench_title("[bench frontier-rs] task-1: gist").is_some());
-    }
-
-    // what this catches: the sweep's whole safety envelope in one truth table — a LIVE
-    // claim is never preempted, an unclaimed/terminal card is never touched, a lapsed
-    // claim without an artifact is dispatch's re-offer problem (#419) not a grade, and
-    // ONLY lapsed+claimed+artifact auto-closes, and a hold NOBODY holds (owner None, or a
-    // gone owner who left nothing) is REOPENED — regression for 2026-09-11, when three
-    // in_progress cards with owner None starved a five-citizen round for days. Drift here
-    // either preempts working citizens or lets the deck starve silently again.
-    #[test]
-    fn sweep_verdict_truth_table() {
-        use crate::persona::card_holder::Hold;
-        use OwnerPresence::*;
-        use SweepVerdict::*;
-        let v = sweep_verdict;
-        // the auto-close case (and its InProgress sibling), owner present or not
-        assert_eq!(v(&CardState::Claimed, Hold::Lapsed, Resident, true), Close);
-        assert_eq!(v(&CardState::InProgress, Hold::Lapsed, Absent, true), Close);
-        // a live claim is NEVER preempted
-        assert_eq!(v(&CardState::Claimed, Hold::Held, Resident, true), Leave);
-        assert_eq!(v(&CardState::InProgress, Hold::Held, Absent, false), Leave);
-        // lapsed, no artifact, owner RESIDENT: hers to reclaim (her pump does)
-        assert_eq!(v(&CardState::Claimed, Hold::Lapsed, Resident, false), Leave);
-        // THE 2026-09-11 HOLE: held by nobody → reopened, artifact or not
-        assert_eq!(v(&CardState::InProgress, Hold::Unclaimed, Nobody, false), Reopen);
-        assert_eq!(v(&CardState::Claimed, Hold::Unclaimed, Nobody, true), Reopen);
-        // lapsed, no artifact, owner GONE: the deck gets it back
-        assert_eq!(v(&CardState::InProgress, Hold::Lapsed, Absent, false), Reopen);
-        // never-claimed Open and terminal cards are untouchable regardless
-        assert_eq!(v(&CardState::Open, Hold::Unclaimed, Nobody, true), Leave);
-        assert_eq!(v(&CardState::Closed, Hold::Lapsed, Absent, true), Leave);
-        assert_eq!(v(&CardState::Merged, Hold::Lapsed, Absent, true), Leave);
-        assert_eq!(v(&CardState::Review, Hold::Lapsed, Absent, false), Leave);
-    }
-
-    // what this catches: the resident-owner defer is BOUNDED to the resume
-    // window, so done-but-unclosed work stops stranding rounds forever. regression
-    // for the 2026-09-02 stall: rounds wedged ~20h with an artifact present and a
-    // resident owner whose claim had lapsed hours earlier — the sweep deferred
-    // every tick because the owner was resident, so the round never finished and
-    // standing rounds piled up unstarted. Inside the grace she is left alone;
-    // just past it her artifact grades.
-    #[test]
-    fn resident_owner_defer_is_bounded_to_the_resume_window() {
-        // fresh lapse (mid-reboot-resume) → still hers, not confiscated
-        assert!(resident_owner_still_working(0));
-        assert!(resident_owner_still_working(RESIDENT_OWNER_GRACE_MS - 1));
-        // past the window → not renewing = not working → gradeable
-        assert!(!resident_owner_still_working(RESIDENT_OWNER_GRACE_MS));
-        // the measured 20h wedge is decisively past the window
-        assert!(!resident_owner_still_working(20 * 60 * 60 * 1000));
-        // the window must clear a worst-case 35B reboot+resume (~10min) with margin
-        assert!(RESIDENT_OWNER_GRACE_MS >= 15 * 60 * 1000);
     }
 
     // what this catches: only terminal states fire the grade. An in_progress/review

@@ -2,7 +2,7 @@
 
 /**
  * The room → recipe pointer, as published by `activity/spawn` and read back by
- * [`crate::ipc::recipe_room_purpose::RecipeRoomPurpose`].
+ * `ipc::recipe_room_purpose::RecipeRoomPurpose`.
  */
 export type RoomRecipeBinding = { 
 /**

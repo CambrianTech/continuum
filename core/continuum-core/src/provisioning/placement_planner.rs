@@ -20,7 +20,7 @@
 
 use crate::capacity::grid::GridSnapshot;
 use crate::capacity::SystemProfile;
-use crate::cognition::serving_plan::{plan_serving, HostBudget, ModelFootprint, ServingDemand};
+use crate::inference::planning::serving_plan::{plan_serving, HostBudget, ModelFootprint, ServingDemand};
 use crate::identity::PeerId;
 use crate::model_registry::types::Model;
 
@@ -91,7 +91,7 @@ pub fn resolve_from_footprint(
     // `plan_serving` returns `Some` even when nothing fits (its honest-degrade path,
     // `fits_on_gpu = false`); `None` only for an empty candidate slice, which a
     // single-element slice never is — so `unwrap_or(false)` is the not-empty floor.
-    let fits = plan_serving(host, std::slice::from_ref(fp), ServingDemand::new(1, None))
+    let fits = plan_serving(&host, std::slice::from_ref(fp), &ServingDemand::new(1, None))
         .map(|p| p.fits_on_gpu)
         .unwrap_or(false);
 
@@ -127,20 +127,20 @@ pub fn resolve_from_footprint(
 ///
 /// `is_moe` is the caller's GGUF-derived verdict — MoE-ness is a FACT the GGUF
 /// carries (`{arch}.expert_count`), read via
-/// [`locate_layer_sets`](crate::genome::expert_layout::locate_layer_sets) /
+/// [`locate_layer_sets`](crate::inference_capability::expert_layout::locate_layer_sets) /
 /// `gguf_keys::expert_count` at the site that already loads the header — NOT a
 /// hand-authored catalog field (the catalog's "ask the GGUF" discipline). `grid` is
 /// the live [`GridSnapshot`] (`None` on a solo box); the grid verdict is derived from
 /// it via [`grid_has_fit`].
 ///
-/// [`footprint_for`]: crate::modules::serving_daemon::footprint_for
+/// [`footprint_for`]: crate::inference::planning::serving_plan::footprint::footprint_for
 pub fn resolve_placement(
     profile: &SystemProfile,
     model: &Model,
     is_moe: bool,
     grid: Option<&GridSnapshot>,
 ) -> PlacementResolution {
-    let fp = crate::modules::serving_daemon::footprint_for(model);
+    let fp = crate::inference::planning::serving_plan::footprint::footprint_for(model);
     let grid_fit = match (grid, fp.as_ref()) {
         (Some(snapshot), Some(f)) => grid_has_fit(snapshot, f),
         _ => false,
@@ -172,10 +172,9 @@ pub fn select_grid_peer(snapshot: &GridSnapshot, footprint: &ModelFootprint) -> 
                 perf_cores: 1,
             };
             plan_serving(
-                host,
+                &host,
                 std::slice::from_ref(footprint),
-                ServingDemand::new(1, None),
-            )
+                &ServingDemand::new(1, None))
             .map(|plan| plan.fits_on_gpu)
             .unwrap_or(false)
         })
@@ -194,8 +193,8 @@ pub fn grid_has_fit(snapshot: &GridSnapshot, footprint: &ModelFootprint) -> bool
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::capacity::{DeviceCapacity, DriveInfo, DriveRole};
-    use crate::governor::types::{HardwareClass, PowerSource, TargetSilicon, ThermalClass};
+    use crate::capacity::DeviceCapacity;
+    use crate::system_resources::drives::{DriveInfo, DriveRole};
 
     const GB: u64 = 1024 * 1024 * 1024;
 
@@ -214,25 +213,7 @@ mod tests {
                 role: DriveRole::Cold,
             });
         }
-        SystemProfile::from_parts(
-            HardwareClass {
-                silicon: TargetSilicon::NvidiaCuda,
-                silicon_model: "test".into(),
-                vram_mb: vram_gb * 1024,
-                system_ram_mb: 128 * 1024,
-                power_source: PowerSource::Plugged,
-                thermal_class: ThermalClass::Workstation,
-                battery_pct: None,
-                thermal_headroom_pct: None,
-            },
-            DeviceCapacity {
-                gpu_total_bytes: vram_gb * GB,
-                gpu_free_bytes_live: gpu_free_gb * GB,
-                system_ram_free_bytes: 100 * GB,
-            },
-            drives,
-            24,
-        )
+        crate::capacity::profile_fixtures::discrete_fixture(vram_gb, gpu_free_gb, drives)
     }
 
     fn footprint(weights_gb: u64) -> ModelFootprint {

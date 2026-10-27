@@ -123,8 +123,10 @@ pub(crate) fn log_command_rss_delta(command: &str, before_mb: u64, after_mb: u64
 }
 
 /// Dump accumulated memory deltas — call periodically to see which commands leak.
-pub(crate) fn dump_memory_report() {
-    let rss = current_rss_mb();
+/// Takes the RSS reading its caller already holds: the memguard loop read it twice per
+/// tick (once here, once for the limit check) — one process refresh, passed by value
+/// (card 948c30c2, row 18).
+pub(crate) fn dump_memory_report(rss: u64) {
     if let Ok(map) = COMMAND_MEMORY_DELTAS.lock() {
         if map.is_empty() {
             eprintln!("[MEMLEAK] RSS={}MB, no command deltas yet", rss);

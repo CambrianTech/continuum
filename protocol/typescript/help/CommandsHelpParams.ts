@@ -6,4 +6,8 @@ export type CommandsHelpParams = {
  * command you can call (name + one-line description) — your starting point when
  * you don't yet know which tool to use.
  */
-name?: string, };
+name?: string, 
+/**
+ * What you want to do, when you do not know the command's name: the best matches, ranked.
+ */
+query?: string, };

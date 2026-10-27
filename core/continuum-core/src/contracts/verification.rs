@@ -10,10 +10,8 @@ use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::airc::{
-    AircPeerManifest, AircRealtimeEnvelope, AircRealtimePayload, AircRealtimeReplayResult,
-    AircRealtimeSchema,
-};
+use crate::airc::AircRealtimeReplayResult;
+use crate::routing::airc_realtime::{AircPeerManifest, AircRealtimeEnvelope, AircRealtimePayload, AircRealtimeSchema};
 use crate::contracts::{
     ContractAcceptedPayload, ContractBidPayload, ContractDeliveredPayload, ContractDisputedPayload,
     ContractExecutingPayload, ContractPaidPayload, ContractProposedPayload,
@@ -292,9 +290,7 @@ fn verify_manifest_binding(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::airc::{
-        AircPeerCapability, AircRealtimeDelivery, AircRealtimePayloadRef, AircReplayCursor,
-    };
+    use crate::routing::airc_realtime::{AircPeerCapability, AircRealtimeDelivery, AircRealtimePayloadRef, AircReplayCursor};
     use crate::contracts::{ContractSigningKey, EVENT_CONTRACT_PROPOSED};
     use airc_core::PeerId;
 

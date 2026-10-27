@@ -11,6 +11,7 @@
 //! allocated + reclaimed like any other machine resource. Owner-scoped: the local
 //! `uu` operator opens their own box's desktop; no persona identity required.
 
+use continuum_base::time::EpochMs;
 use std::path::PathBuf;
 
 use async_trait::async_trait;
@@ -69,17 +70,9 @@ struct DesktopSession {
 }
 
 fn session_path() -> Result<PathBuf, CommandError> {
-    let home = dirs::home_dir().ok_or_else(|| {
-        CommandError::Internal("no home directory for the desktop session marker".into())
-    })?;
-    Ok(home.join(".continuum").join("desktop").join("session.json"))
-}
-
-fn now_ms() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0)
+    let home = crate::paths::continuum_home()
+        .map_err(|e| CommandError::Internal(format!("no continuum home for the desktop session marker: {e}")))?;
+    Ok(home.join("desktop").join("session.json"))
 }
 
 /// Resolve the URL: explicit param → `CONTINUUM_DESKTOP_URL` → built-in default.
@@ -171,7 +164,7 @@ impl ActionCommand for Desktop {
         }
         let session = DesktopSession {
             url: url.clone(),
-            opened_at_ms: now_ms(),
+            opened_at_ms: EpochMs::now().millis(),
         };
         let bytes = serde_json::to_vec_pretty(&session)
             .map_err(|e| CommandError::Internal(format!("encode desktop session: {e}")))?;

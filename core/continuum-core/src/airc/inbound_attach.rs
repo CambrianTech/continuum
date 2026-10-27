@@ -4,6 +4,7 @@
 //! transport, trust, replay, and live delivery; Continuum subscribes through
 //! typed IPC and republishes valid EventBridge envelopes into MessageBus.
 
+use continuum_base::time::EpochMs;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -13,10 +14,9 @@ use airc_ipc::{codec::read_frame, AttachRequest, AttachStart, DaemonClient, IpcC
 use airc_lib::decode_wire_event;
 use tracing::warn;
 
-use crate::airc::realtime::AircRealtimeEnvelope;
-use crate::airc::realtime_wire::{
-    bus_event_from_envelope, chat_transcript_message, envelope_from_event,
-};
+use crate::routing::airc_realtime::AircRealtimeEnvelope;
+use crate::cognition::conversation::room_event::chat_transcript_message;
+use crate::routing::airc_realtime_wire::{bus_event_from_envelope, envelope_from_event};
 use crate::ipc::positron_kanban_source::KANBAN_CHANGED;
 use crate::ipc::positron_source::CHAT_POSTED;
 use crate::ipc::positron_wall_source::WALL_CHANGED;
@@ -43,6 +43,12 @@ impl AttachRegistry {
     /// Install the process-wide registry (AircModule::initialize owns this).
     /// Idempotent; the first install wins.
     pub fn install(socket: PathBuf, bus: Arc<MessageBus>, rt: tokio::runtime::Handle) -> Arc<Self> {
+        // A mind's perception feed attaches the rooms her region holds through this registry.
+        crate::persona::perception_feed::install_room_attacher(|room| {
+            if let Some(registry) = AttachRegistry::try_global() {
+                registry.ensure_attached(room);
+            }
+        });
         ATTACHES
             .get_or_init(|| {
                 Arc::new(Self {
@@ -67,7 +73,7 @@ impl AttachRegistry {
             .unwrap_or_else(|e| e.into_inner())
             .insert(room);
         if fresh {
-            crate::probe!(
+            continuum_base::probe!(
                 class = "airc.attach.room_bridged",
                 room = %room.as_uuid(),
                 "daemon attach spawned for an adopted room — its transcript now reaches the projection bus"
@@ -133,15 +139,27 @@ pub fn spawn_daemon_attach(
 /// the gap instead of replaying the room's entire history into the UI and
 /// every persona's perception (glass-boxed three times on 2026-07-30 — each
 /// reboot re-fed days of transcript as fresh inbox to every mind).
-fn cursor_path(channel: &RoomId) -> PathBuf {
-    let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
-    PathBuf::from(home)
-        .join(".continuum/state")
-        .join(format!("airc-attach-cursor-{}.json", channel.as_uuid()))
+///
+/// Under the canonical continuum home, never a cwd-relative `.`: on the 5090
+/// (2026-10-06) the Windows service had no `HOME`, the old `unwrap_or(".")`
+/// resolved `.\.continuum\state` against an unwritable working directory, and
+/// 592 persists failed "Access is denied", so every core restart re-fed the
+/// room into the desktop, the human views and every persona as if it were new.
+fn cursor_path(channel: &RoomId) -> Result<PathBuf, String> {
+    Ok(crate::paths::continuum_home()?
+        .join("state")
+        .join(format!("airc-attach-cursor-{}.json", channel.as_uuid())))
 }
 
 fn load_cursor(channel: &RoomId) -> Option<IpcCursor> {
-    let raw = std::fs::read_to_string(cursor_path(channel)).ok()?;
+    let path = match cursor_path(channel) {
+        Ok(path) => path,
+        Err(error) => {
+            warn!("airc attach cursor has no home ({error}): this attach starts as a first attach");
+            return None;
+        }
+    };
+    let raw = std::fs::read_to_string(path).ok()?;
     // A corrupt watermark degrades to first-attach semantics (one full seed) —
     // annoying, never wrong. It is presentation-adjacent state, not truth: the
     // durable transcript is the storage of record either way.
@@ -149,7 +167,13 @@ fn load_cursor(channel: &RoomId) -> Option<IpcCursor> {
 }
 
 fn persist_cursor(channel: &RoomId, cursor: &IpcCursor) {
-    let path = cursor_path(channel);
+    let path = match cursor_path(channel) {
+        Ok(path) => path,
+        Err(error) => {
+            warn!("failed to persist airc attach cursor: no continuum home ({error})");
+            return;
+        }
+    };
     if let Some(dir) = path.parent() {
         let _ = std::fs::create_dir_all(dir);
     }
@@ -170,8 +194,10 @@ fn persist_cursor(channel: &RoomId, cursor: &IpcCursor) {
 /// "When you join a Discord channel do you read the whole history from 10
 /// years back? No — one page"). The daemon streams the newest
 /// `FIRST_ATTACH_PAGE` backlog events at the catch-up seam and coalesces
-/// everything older into the watermark summary (airc PR #1312).
-const FIRST_ATTACH_PAGE: u32 = 32;
+/// everything older into the watermark summary (airc PR #1312). Ten, not a
+/// screenful (Joel, 2026-10-06: "no bookmark should also default to like last N
+/// being like 10"); with the bookmark persisting, a first attach is rare.
+const FIRST_ATTACH_PAGE: u32 = 10;
 
 /// Build the attach request for this consumer's cursor state (#295).
 ///
@@ -182,12 +208,26 @@ const FIRST_ATTACH_PAGE: u32 = 32;
 /// correctness, coalesce the deep backlog into one summary frame so history
 /// never floods the bus, the personas, or the CPU — but keep one page of
 /// recent tail so the room isn't a void on join.
+///
+/// BOTH arms ASK for the daemon's cursor heartbeat. This consumer persists its
+/// watermark and (per the WATERMARK DISCIPLINE below) the heartbeat is its SOLE
+/// advance source — airc #1417 made that frame opt-in per attach to end the WARN
+/// floods on airc-lib's subscribe streams (cards c5466b56 / e28889cc), and this
+/// request never opted in. From that afternoon (2026-09-14 16:27) every cursor
+/// file under `~/.continuum/state/` froze, and every core boot on every node
+/// resumed each room from a week-old watermark: 7,700 events of the fleet room
+/// replayed in three minutes on the IntelMac at 18:15Z on 2026-09-21, feeding the
+/// bus, the chat projection and the capacity ledger (whose fold then judged three
+/// nodes "behind" from beacons published days earlier). Card ac4bca50.
 fn attach_request_for_cursor(channel: RoomId, cursor: Option<IpcCursor>) -> AttachRequest {
     match cursor {
-        Some(cursor) => AttachRequest::new(channel, AttachStart::After(cursor)),
+        Some(cursor) => {
+            AttachRequest::new(channel, AttachStart::After(cursor)).with_cursor_heartbeat()
+        }
         None => AttachRequest::new(channel, AttachStart::FromTranscriptStart)
             .with_coalesced_backlog()
-            .with_backlog_tail(FIRST_ATTACH_PAGE),
+            .with_backlog_tail(FIRST_ATTACH_PAGE)
+            .with_cursor_heartbeat(),
     }
 }
 
@@ -278,7 +318,7 @@ pub async fn handle_attach_response(response: Response, bus: &MessageBus) -> Res
         // TranscriptEvent. A malformed buffer is logged + skipped (the
         // live stream shouldn't die because one event failed to parse).
         Response::Event { envelope } => match decode_wire_event(envelope) {
-            Ok(event) => publish_transcript_event(&event, bus).await,
+            Ok(event) => publish_transcript_event(&Arc::new(event), bus).await,
             Err(error) => {
                 warn!("Skipping malformed airc daemon event: {error}");
                 Ok(())
@@ -296,9 +336,28 @@ pub async fn handle_attach_response(response: Response, bus: &MessageBus) -> Res
 }
 
 pub async fn publish_transcript_event(
-    event: &airc_core::TranscriptEvent,
+    event: &Arc<airc_core::TranscriptEvent>,
     bus: &MessageBus,
 ) -> Result<(), String> {
+    // ONE FEED (EVENT-MIND.md §1b, 2026-10-04): every resident persona's perception
+    // region is fed from this seam, the one place each room event crosses once per
+    // core, instead of from a per-persona subscription (which on the 5090 never
+    // carried other peers' durable pushes while this path did). Synchronous and
+    // cheap: one classification, one lock per resident, no await.
+    let fed = crate::persona::perception_feed::feed(event, EpochMs::now().millis());
+    if fed > 0 {
+        continuum_base::probe!(
+            class = "mind.feed.event",
+            room = %event.room_id.as_uuid(),
+            from = %event.peer_id.as_uuid(),
+            residents = fed,
+            "a room event fed to resident minds"
+        );
+    }
+    // The room's verdict settles staged credit in `reviewed::bridge_review`, AFTER the
+    // review is verified (signed by its author, accepted in the room's projection,
+    // admitted by the room's self-review policy). It used to settle here, on any
+    // review-shaped event, unchecked.
     let envelope = match envelope_from_event(event) {
         Ok(Some(envelope)) => envelope,
         // Not a Continuum EventBridge envelope. Before dropping it, try
@@ -319,7 +378,7 @@ pub async fn publish_transcript_event(
                 // the room. This is the seam a client's live read surface
                 // (positron ChatViewState) is fed from — probe it so the turn
                 // stream is glass-box (did the say traverse daemon→attach→bus?).
-                crate::probe!(
+                continuum_base::probe!(
                     class = "airc.chat.projected",
                     sender_id = %event.peer_id.as_uuid(),
                     room_id = %event.room_id.as_uuid(),
@@ -364,14 +423,11 @@ pub async fn publish_transcript_event(
         // process-global ledger, keyed on the WIRE's peer id (airc's authenticated
         // transport identity — the payload declares no identity to spoof). Our own
         // echoed offer lands here too: that IS the one-node-grid loopback proof.
-        let now_ms = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_millis() as u64)
-            .unwrap_or(0);
+        let now_ms = EpochMs::now().millis();
         let is_new =
             crate::capacity::gossip::global_ledger().hear(event.peer_id.as_uuid(), offer.clone(), now_ms);
         if is_new {
-            crate::probe!(
+            continuum_base::probe!(
                 class = "grid.capacity.heard",
                 from_peer = %event.peer_id.as_uuid(),
                 free_gb = (offer.gpu_free_bytes_live / 1_000_000_000),
@@ -380,7 +436,7 @@ pub async fn publish_transcript_event(
             );
         }
     } else if let Some((name, payload)) = chat_posted_from_envelope(&envelope, event) {
-        crate::probe!(
+        continuum_base::probe!(
             class = "airc.chat.projected",
             sender_id = %payload["senderId"],
             room_id = %event.room_id.as_uuid(),
@@ -421,7 +477,7 @@ fn chat_posted_from_envelope(
 ) -> Option<(&'static str, serde_json::Value)> {
     let (sender_id, content) = chat_transcript_message(envelope, event.peer_id.as_uuid())?;
     let message_id = match &envelope.payload {
-        crate::airc::realtime::AircRealtimePayload::ExistingSchema { payload } => payload
+        crate::routing::airc_realtime::AircRealtimePayload::ExistingSchema { payload } => payload
             .inline
             .as_ref()
             .and_then(|i| i.get("messageId"))
@@ -447,11 +503,11 @@ fn chat_posted_from_envelope(
 fn capacity_offer_from_envelope(
     envelope: &AircRealtimeEnvelope,
 ) -> Option<crate::capacity::gossip::CapacityOffer> {
-    let crate::airc::realtime::AircRealtimePayload::ExistingSchema { payload } = &envelope.payload
+    let crate::routing::airc_realtime::AircRealtimePayload::ExistingSchema { payload } = &envelope.payload
     else {
         return None;
     };
-    if payload.schema != crate::airc::realtime::AircRealtimeSchema::GridCapacity {
+    if payload.schema != crate::routing::airc_realtime::AircRealtimeSchema::GridCapacity {
         return None;
     }
     // Borrow-decode: this runs per inbound event, and `.clone()?` copied the
@@ -538,13 +594,9 @@ fn kanban_changed_from_event(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::airc::realtime::{
-        AircRealtimeEnvelope, AircRealtimePayload, AircRealtimePayloadRef, AircRealtimeSchema,
-    };
-    use crate::airc::realtime_wire::headers_for_envelope;
-    use airc_core::{
-        Body, ClientId, EventId, MentionTarget, PeerId, RoomId, TranscriptEvent, TranscriptKind,
-    };
+    use crate::routing::airc_realtime::{AircRealtimeEnvelope, AircRealtimePayload, AircRealtimePayloadRef, AircRealtimeSchema};
+    use crate::routing::airc_realtime_wire::headers_for_envelope;
+    use airc_core::{Body, ClientId, EventId, MentionTarget, PeerId, RoomId, TranscriptEvent, TranscriptKind};
     use serde_json::json;
     use tokio::time::{timeout, Duration};
     use uuid::Uuid;
@@ -582,6 +634,29 @@ mod tests {
         assert!(
             !resumed.coalesces_backlog(),
             "gap replay after a watermark feeds the transcript writer — never coalesced"
+        );
+    }
+
+    // what this catches (card ac4bca50): the persisted watermark advances ONLY on the
+    // daemon's `AttachCursorAdvanced` heartbeat, and airc #1417 made that frame opt-in
+    // per attach. A request that does not ask never advances its cursor, so every boot
+    // resumes from the last cursor ever written — a week of every room replayed into
+    // perception and the capacity ledger on the IntelMac, 2026-09-21. Both arms must ask.
+    #[test]
+    fn every_attach_asks_for_the_cursor_heartbeat_it_persists() {
+        let channel = RoomId::from_u128(7);
+        assert!(
+            attach_request_for_cursor(channel, None).wants_cursor_heartbeat(),
+            "first attach: the seam summary advances once; the heartbeat keeps it moving"
+        );
+        let cursor = IpcCursor {
+            epoch: 3,
+            counter: 42,
+            event_id: EventId::from_u128(9),
+        };
+        assert!(
+            attach_request_for_cursor(channel, Some(cursor)).wants_cursor_heartbeat(),
+            "resume: no coalesced seam, so the heartbeat is the ONLY advance source"
         );
     }
 
@@ -632,7 +707,7 @@ mod tests {
             headers_for_envelope(&envelope),
         );
 
-        publish_transcript_event(&event, &bus).await.unwrap();
+        publish_transcript_event(&Arc::new(event), &bus).await.unwrap();
 
         let delivered = timeout(Duration::from_millis(200), receiver.recv())
             .await
@@ -686,7 +761,7 @@ mod tests {
             headers_for_envelope(&envelope),
         );
 
-        publish_transcript_event(&event, &bus).await.unwrap();
+        publish_transcript_event(&Arc::new(event), &bus).await.unwrap();
 
         let delivered = timeout(Duration::from_millis(200), receiver.recv())
             .await
@@ -721,7 +796,7 @@ mod tests {
             Default::default(),
         );
 
-        publish_transcript_event(&event, &bus).await.unwrap();
+        publish_transcript_event(&Arc::new(event), &bus).await.unwrap();
 
         assert!(timeout(Duration::from_millis(20), receiver.recv())
             .await
@@ -743,7 +818,7 @@ mod tests {
         let mut receiver = bus.receiver();
         let event = transcript_event(Some(Body::text("hello room")), Default::default());
 
-        publish_transcript_event(&event, &bus).await.unwrap();
+        publish_transcript_event(&Arc::new(event), &bus).await.unwrap();
 
         let delivered = timeout(Duration::from_millis(200), receiver.recv())
             .await
@@ -778,7 +853,7 @@ mod tests {
         let mut event = transcript_event(None, Default::default());
         event.kind = TranscriptKind::Receipt;
 
-        publish_transcript_event(&event, &bus).await.unwrap();
+        publish_transcript_event(&Arc::new(event), &bus).await.unwrap();
 
         assert!(timeout(Duration::from_millis(20), receiver.recv())
             .await
@@ -800,7 +875,7 @@ mod tests {
         let mut event = transcript_event(None, Default::default());
         event.kind = TranscriptKind::WallPostPublished;
 
-        publish_transcript_event(&event, &bus).await.unwrap();
+        publish_transcript_event(&Arc::new(event), &bus).await.unwrap();
 
         let delivered = timeout(Duration::from_millis(200), receiver.recv())
             .await
@@ -843,7 +918,7 @@ mod tests {
         let mut event = transcript_event(Some(body), headers);
         event.kind = TranscriptKind::System;
 
-        publish_transcript_event(&event, &bus).await.unwrap();
+        publish_transcript_event(&Arc::new(event), &bus).await.unwrap();
 
         let delivered = timeout(Duration::from_millis(200), receiver.recv())
             .await
@@ -866,7 +941,7 @@ mod tests {
             headers_for_envelope(&envelope),
         );
 
-        publish_transcript_event(&event, &bus).await.unwrap();
+        publish_transcript_event(&Arc::new(event), &bus).await.unwrap();
 
         assert!(timeout(Duration::from_millis(20), receiver.recv())
             .await

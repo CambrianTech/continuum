@@ -244,6 +244,7 @@ mod tests {
             channel: None,
             limit: None,
             kinds: None,
+            before: None,
         }
     }
 

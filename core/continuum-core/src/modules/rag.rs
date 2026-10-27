@@ -391,7 +391,7 @@ impl RagState {
     /// Load memory source using multi-layer recall.
     ///
     /// Async: `multi_layer_recall` pre-computes the query embedding through the
-    /// adapter-routed [`EmbeddingProvider`] (unsloth `/v1/embeddings`, task #40)
+    /// adapter-routed [`EmbeddingProvider`] (llama-server `/v1/embeddings`, task #40)
     /// before its sync Rayon recall layers run.
     async fn load_memory_source(
         &self,
@@ -433,7 +433,7 @@ impl RagState {
                     })
                     .collect();
 
-                let tokens_used = sections.iter().map(|s| s.content.len() / 4).sum();
+                let tokens_used = sections.iter().map(|s| continuum_base::token_estimate::estimate_prompt_tokens(&s.content) as usize).sum();
 
                 let layers_str = resp
                     .layer_timings
@@ -506,7 +506,7 @@ impl RagState {
                     vec![]
                 };
 
-                let tokens_used = sections.iter().map(|s| s.content.len() / 4).sum();
+                let tokens_used = sections.iter().map(|s| continuum_base::token_estimate::estimate_prompt_tokens(&s.content) as usize).sum();
 
                 RagSourceResult {
                     source_type: "consciousness".to_string(),
@@ -584,7 +584,7 @@ impl RagState {
 
         let tokens_used = sections
             .iter()
-            .map(|s| s.content.len() / 4)
+            .map(|s| continuum_base::token_estimate::estimate_prompt_tokens(&s.content) as usize)
             .sum::<usize>()
             .min(budget_tokens);
 
@@ -634,7 +634,7 @@ impl RagState {
 
         let tokens_used = sections
             .iter()
-            .map(|s| s.content.len() / 4)
+            .map(|s| continuum_base::token_estimate::estimate_prompt_tokens(&s.content) as usize)
             .sum::<usize>()
             .min(budget_tokens);
 
@@ -671,7 +671,7 @@ impl RagState {
 
         let tokens_used = sections
             .iter()
-            .map(|s| s.content.len() / 4)
+            .map(|s| continuum_base::token_estimate::estimate_prompt_tokens(&s.content) as usize)
             .sum::<usize>()
             .min(budget_tokens);
 

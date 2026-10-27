@@ -18,7 +18,6 @@ import './theme.css';
 import { ChatWidget, type SendHandler } from './chat/ChatWidget';
 import type { CanvasViewState, ChatState } from '@continuum/chat-view';
 import type {
-  BenchViewState,
   KanbanViewState,
   NavViewState,
   RosterSlotView,
@@ -30,80 +29,6 @@ import type {
 void ChatWidget;
 
 /** A roster member with sensible defaults — override only what a fixture varies. */
-// `?fixture=bench` — the ACADEMY BENCH BOARD in the contextual rail (#329):
-// rows mirroring a REAL round (2026-08-12's 19-instance rerun): a working
-// graded row with a p2p REGRESSION alarm, a working row patch-forming, a
-// queued row (no generations yet), a stalled row, and a resolved row.
-const BENCH_FIXTURE: BenchViewState = {
-  sample_interval_ms: 5000,
-  runs: [
-    {
-      run_id: 'claim-c4a91802', instance: 'sympy__sympy-21055', solver: 'Anon',
-      phase: 'active', stalled: false, attempt: 2, max_attempts: 3, age_secs: 420,
-      acts: 10, patch_bytes: 1295, resolved: false, fail_to_pass: '0/1',
-      pass_to_pass: '31/34', failed_tests: ['test_refine_complex'], 
-    },
-    {
-      run_id: 'claim-92ae38af', instance: 'sympy__sympy-13647', solver: 'Anwen',
-      phase: 'active', stalled: false, attempt: 1, max_attempts: 3, age_secs: 180,
-      acts: 17, patch_bytes: 812, failed_tests: [],
-    },
-    {
-      run_id: 'claim-9d3268b6', instance: 'pytest-dev__pytest-5413', solver: 'Asha',
-      phase: 'active', stalled: false, attempt: 1, max_attempts: 3, age_secs: 12,
-      failed_tests: [],
-    },
-    {
-      run_id: 'claim-c995488a', instance: 'sympy__sympy-24066', solver: 'Anon',
-      phase: 'quiet', stalled: true, attempt: 1, max_attempts: 3, age_secs: 3900,
-      acts: 2, failed_tests: [],
-    },
-    {
-      run_id: 'claim-24152', instance: 'sympy__sympy-24152', solver: 'Anwen',
-      phase: 'resolved', stalled: false, attempt: 1, max_attempts: 3, age_secs: 7200,
-      acts: 9, patch_bytes: 974, resolved: true, fail_to_pass: '1/1',
-      pass_to_pass: '6/6', failed_tests: [],
-    },
-  ],
-  // In-flight ROUNDS (#371) — mirrors the real 2026-08-22 board the hour the
-  // rows landed: the DS-1000 maiden round at done (4/4, the first external
-  // round ever to complete) beside a working SWE round.
-  rounds: [
-    {
-      run_room: '',
-      round_id: '2d6decb3-1beb-5ac7-9ded-ee186c7deb7f', benchmark: 'ds-1000',
-      stage: 'done', dispatched: 4, settled: 4, remaining: 0, driver: 'citizen',
-      verdict: 'done', cards: [],
-    },
-    {
-      run_room: '',
-      round_id: 'bf08832d-c7e2-5bc9-a858-5447c15ccbfe', benchmark: 'swe-bench-lite',
-      stage: 'working', dispatched: 4, settled: 1, remaining: 3, driver: 'citizen',
-      // The 2026-09-01 sensor: two cards grinding, one never started — the
-      // roll-call strip and the verdict chip both exercise here.
-      verdict: 'grinding', idle_secs: 140,
-      cards: [
-        {
-          card_id: '31c00000-0000-0000-0000-000000000001',
-          instance: 'sympy__sympy-24152', assignee: 'Anwen',
-          solve_room_name: 'swe--sympy__sympy-24152--31c00000',
-          state: 'active', acts: 9, patch_bytes: 974, last_act_secs: 140,
-          owner: '',
-          board_state: '',
-        },
-        {
-          card_id: '31c00000-0000-0000-0000-000000000002',
-          instance: 'django__django-11211', assignee: 'Kira',
-          solve_room_name: 'swe--django__django-11211--31c00000',
-          state: 'unstarted',
-          owner: '',
-          board_state: '',
-        },
-      ],
-    },
-  ],
-};
-
 // `?fixture=canvas` — the design-bench CANVAS region's deterministic ground
 // state (DESIGN-BENCH-VISUAL-CRAFT.md §5): a small self-contained pricing-card
 // page as the live-rendered artifact (inline HTML → the sandboxed stage), a
@@ -442,18 +367,6 @@ function main(): void {
     widget.nav = NAV_FIXTURES.rooms;
     widget.sys = SYS_FIXTURE;
   }
-  // `?fixture=bench` — the academy room with the LIVE bench board filling the
-  // contextual rail (#329's render-proof reference input).
-  if (name === 'bench') {
-    const base = FIXTURES.roster;
-    if (base) {
-      widget.state = { ...base, room_name: 'academy', purpose: 'chat' };
-    }
-    widget.nav = NAV_FIXTURES.rooms;
-    widget.sys = SYS_FIXTURE;
-    widget.bench = BENCH_FIXTURE;
-  }
-
   // `?fixture=canvas` — the design-bench CANVAS region center-stage
   // (purpose="canvas"): the persona's page rendered live in the sandboxed
   // stage + the craft scorecard mid-iteration. The face's ground state.
@@ -595,6 +508,53 @@ function main(): void {
     setTimeout(() => {
       widget.dispatchEvent(new CustomEvent('settings-face-toggle', { detail: { open: true }, bubbles: true }));
     }, 50);
+  }
+  // `?fixture=long` — a long room (`&rows=`, default 50,000 stored) for paging and
+  // the retention bound: the live window holds the newest 100, the stub history
+  // serves pages by the same cursor contract as `chat/history`, and a new live row
+  // lands every `&every=` ms (default 2,000) so rows retire out of the live window
+  // while the reader scrolls back.
+  if (name === 'long') {
+    const params = new URLSearchParams(location.search);
+    const stored = Array.from({ length: Number(params.get('rows') ?? 50_000) }, (_, i) => ({
+      id: `h${String(i).padStart(5, '0')}`,
+      senderId: i % 3 === 0 ? 'solenne' : 'asha',
+      timestamp: new Date(1_700_000_000_000 + i * 60_000).toISOString(),
+      content: { text: `Stored line ${i}${i % 7 === 0 ? ' — a longer one that wraps onto a second line in a narrow column, as real turns do.' : ''}` },
+    }));
+    const live = (i: number): ChatState['messages'][number] =>
+      message({ id: `h${String(i).padStart(5, '0')}`, content: `Live line ${i}`, timestamp: 1_700_000_000_000 + i * 60_000 });
+    let next = stored.length;
+    const liveRows = Array.from({ length: 100 }, (_, k) => live(next - 100 + k));
+    widget.state = { kind: 'chat', revision: 1, room_id: 'general', room_name: 'general', purpose: 'chat', roster, messages: liveRows, acts: [] };
+    // The store a real core holds: the seeded rows plus every live row since.
+    const row = (i: number): unknown =>
+      stored[i] ?? {
+        id: `h${String(i).padStart(5, '0')}`,
+        senderId: 'asha',
+        timestamp: new Date(1_700_000_000_000 + i * 60_000).toISOString(),
+        content: { text: `Live line ${i}` },
+      };
+    const indexOf = (id: string): number => Number(id.slice(1));
+    widget.historyHandler = async (_room, cursor, limit) => {
+      await new Promise((resolve) => setTimeout(resolve, 30));
+      let from: number;
+      let to: number;
+      if (cursor.afterMessageId !== undefined) {
+        from = indexOf(cursor.afterMessageId) + 1;
+        to = Math.min(next, from + limit);
+      } else {
+        to = cursor.beforeMessageId !== undefined ? indexOf(cursor.beforeMessageId) : next;
+        from = Math.max(0, to - limit);
+      }
+      return Array.from({ length: Math.max(0, to - from) }, (_, k) => row(from + k));
+    };
+    setInterval(() => {
+      const prior = widget.state;
+      if (!prior) return;
+      widget.state = { ...prior, revision: (prior.revision ?? 0) + 1, messages: [...prior.messages.slice(1), live(next)] };
+      next += 1;
+    }, Number(params.get('every') ?? 2000));
   }
   // A no-op send handler so the input area is live for interaction shots without a socket.
   const noop: SendHandler = async () => {

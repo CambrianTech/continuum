@@ -1,0 +1,23 @@
+[package]
+name = "source-hygiene"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = """
+The source-scanning hygiene ratchets as a leaf crate. These rules open `.rs`
+files and count things — unjustified unwraps, unbounded constants, boundary
+serialization, test-mod singularity, vendor pins. They need no compiler, no
+linker, and nothing from continuum-core, yet they lived inside it as
+`#[cfg(test)]` modules, so learning that an unwrap count went 2264 -> 2265 cost
+a 12.4-minute build. Measured 2026-09-22: four of four CI reds that day were
+ratchets and half were these. Time-to-red is what a contributor actually pays.
+
+Split out for the same reason expert-pager-policy was: continuum-core's size is
+the cost, and this code needs none of it. continuum-core keeps the rules as a
+dev-dependency for the two test call sites that use the scanner helpers.
+
+HARD CONSTRAINT: std only, zero dependencies. The moment this crate grows one it
+stops compiling in seconds and the extraction has bought nothing.
+"""
+
+[dependencies]

@@ -4,7 +4,7 @@
 //! message string in, an optional response string out. This slice gives it:
 //!
 //! - [`StdioRunner`] — the newline-delimited-JSON stdio loop MCP clients
-//!   (unsloth Studio, Claude Code) speak. Generic over any async reader/writer
+//!   (Claude Code) speak. Generic over any async reader/writer
 //!   so it's unit-tested with in-memory pipes, not a real process.
 //! - [`ConnectionDispatch`] — the production [`CommandDispatch`]: forwards each
 //!   MCP `tools/call` to the headless core over a `continuum_client::Connection`

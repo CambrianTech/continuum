@@ -17,6 +17,7 @@ consolidated: number,
  * Newest timestamp in the contiguous prefix of fully accepted timestamp groups.
  * No refused or unprocessed lesson is skipped. `None` if no group completed, even
  * when part of the first group was accepted. Retrying a partial group can replay
- * accepted examples; DispatchFailed also retains examples in a volatile bucket.
+ * accepted examples with the same durable identity. Dispatch failure after
+ * acceptance does not prevent advancing: the destination owns that retry.
  */
 latest_consolidated_ts?: string, };

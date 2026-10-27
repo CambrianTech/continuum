@@ -102,11 +102,11 @@ crate::action_command! {
         // persona/identity/get. What a surface displays (8-char short form), its
         // verbs must accept.
         let persona_id =
-            crate::id_resolve::resolve(p.persona_id.as_str(), &crate::persona::card::ids(), "persona")
+            continuum_base::id_resolve::resolve(p.persona_id.as_str(), &crate::persona::card::ids(), "persona")
                 .map_err(CommandError::Invalid)?;
         let supersedes = match p.supersedes.as_deref() {
             Some(s) => Some(Uuid::parse_str(s).map_err(|e| {
-                CommandError::Invalid(format!("supersedes '{s}' is not a valid post_id uuid: {e}"))
+                CommandError::Arguments(format!("supersedes '{s}' is not a valid post_id uuid: {e}"))
             })?),
             None => None,
         };
@@ -166,11 +166,11 @@ mod tests {
         assert!(matches!(err, CommandError::Invalid(_)), "got {err:?}");
     }
 
-    // what this catches: a mal-formed supersedes id is rejected as Invalid even
+    // what this catches: a mal-formed supersedes id is rejected as Arguments even
     // when the persona_id is well-formed — an edit pointer typo fails loud rather
     // than silently pinning a fresh post that loses the supersede link.
     #[tokio::test]
-    async fn pin_with_malformed_supersedes_is_invalid() {
+    async fn pin_with_malformed_supersedes_is_argument_refusal() {
         use crate::sdk_codegen::{ActionCommand, Ctx};
         let cmd = PersonaWallPin {
             registry: PersonaAircRuntimeRegistry::new(),
@@ -187,7 +187,7 @@ mod tests {
             )
             .await
             .expect_err("malformed supersedes must fail loud");
-        assert!(matches!(err, CommandError::Invalid(_)), "got {err:?}");
+        assert!(matches!(err, CommandError::Arguments(_)), "got {err:?}");
     }
 
     // what this catches: a well-formed but offline persona_id fails loud as
