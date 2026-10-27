@@ -232,6 +232,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         return Ok(());
     }
+    // An engine's log relay (card 1d7d6d4c): spawned by the core in the engine's process group,
+    // it outlives the core, so it starts nothing a core starts.
+    {
+        use continuum_core::inference::stderr_relay::process as relay;
+        if probe_args.get(1).is_some_and(|arg| arg == relay::FLAG) {
+            relay::main(relay::parse(&probe_args[2..])?)?;
+            return Ok(());
+        }
+    }
     if probe_args
         .get(1)
         .is_some_and(|arg| arg == continuum_cli_lifecycle::prebuilt_validation::EMBEDDING_FLAG)
