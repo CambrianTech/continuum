@@ -164,6 +164,7 @@ impl CitizenHealthModule {
             moves_opportunity,
             moves_failure,
             oldest_dormant_turn_age_ms: oldest_dormant_turn_age_ms(),
+            held_for: serving.held_for.clone(),
         }
     }
 }
@@ -290,6 +291,7 @@ impl ServiceModule for CitizenHealthModule {
                     moves_opportunity: LEDGER.moves_opportunity.load(Ordering::Relaxed),
                     moves_failure: LEDGER.moves_failure.load(Ordering::Relaxed),
                     oldest_dormant_turn_age_ms: oldest_dormant_turn_age_ms(),
+                    held_for: crate::inference::llama_server::current_serving().held_for,
                 };
                 let v = verdict(&h);
                 let deploy = continuum_cli_lifecycle::deploy_health::read(

@@ -417,6 +417,10 @@ pub struct ServingDaemonModule {
     /// stamp it has not seen is a lane that just came READY, and a launch settles AFTER
     /// it is ready — see [`ready_edge`]. 0 = none yet.
     settled_ready_at_ms: Arc<std::sync::atomic::AtomicU64>,
+    /// The hold live work puts on the engine, as last published ([`hold`]): kept here, not read
+    /// back from the snapshot, because other publishers replace the snapshot whole, and the
+    /// hold's start must survive them.
+    serving_hold: Arc<parking_lot::Mutex<Option<crate::inference::llama_server::serving_hold::ServingHold>>>,
     /// Per-persona MEASURED turn demand — the window half of `serving_demand()`.
     /// Personas write (their deliberation faculty records every turn's unclamped
     /// cost); this daemon reads the ceiling when it plans. Replaces the
@@ -590,6 +594,7 @@ impl ServingDaemonModule {
             pending_model_change: Arc::new(std::sync::Mutex::new(None)),
             rehome_cooldown: Arc::new(std::sync::atomic::AtomicU32::new(0)),
             settled_ready_at_ms: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            serving_hold: Arc::new(parking_lot::Mutex::new(None)),
             downshift_streak: Arc::new(std::sync::atomic::AtomicU32::new(0)),
             last_plan_probe: Arc::new(std::sync::Mutex::new(None)),
             working_set: crate::cognition::working_set::global(),
@@ -713,6 +718,7 @@ use launch_window::adopted_prompt_cache_mib;
 use launch_window::{sticky_served_window, wedge_heal_floor};
 mod launch;
 mod planning;
+mod hold;
 mod reconcile;
 mod tick;
 
