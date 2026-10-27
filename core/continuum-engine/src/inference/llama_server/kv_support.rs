@@ -30,6 +30,7 @@ pub(super) async fn ensure_engine_kv_support_recorded(bin: &str, mut command: to
                 text.push('\n');
                 text.push_str(&String::from_utf8_lossy(&out.stderr.bytes));
                 ENGINE_TRAIN_DIR.store(engine_help_lists_train_dir(&text), std::sync::atomic::Ordering::Relaxed);
+                ENGINE_CACHE_DISK.store(engine_help_lists_cache_disk(&text), std::sync::atomic::Ordering::Relaxed);
                 match crate::inference::kv_cache_plan::parse_engine_kv_support(&text) {
                     Some(v) => ("answered", Some(v), String::new()),
                     None => ("did_not_enumerate", None, String::new()),
@@ -38,7 +39,7 @@ pub(super) async fn ensure_engine_kv_support_recorded(bin: &str, mut command: to
         },
     };
     crate::inference::kv_cache_plan::record_engine_quantized_kv_support(support); // None = unanswered: the backend table decides
-    if matches!(outcome, "answered" | "did_not_enumerate") { *ANSWERED_BY.lock() = Some(bin.to_owned()) } else { ENGINE_TRAIN_DIR.store(false, std::sync::atomic::Ordering::Relaxed) }
+    if matches!(outcome, "answered" | "did_not_enumerate") { *ANSWERED_BY.lock() = Some(bin.to_owned()) } else { ENGINE_TRAIN_DIR.store(false, std::sync::atomic::Ordering::Relaxed); ENGINE_CACHE_DISK.store(false, std::sync::atomic::Ordering::Relaxed) }
     continuum_base::probe!(target: "continuum_core::inference::llama_server", class = "serving.kv_cache.engine_support",
         bin = bin,
         outcome = outcome,

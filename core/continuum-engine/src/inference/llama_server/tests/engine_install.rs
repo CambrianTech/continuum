@@ -31,6 +31,20 @@ fn train_dir_is_accepted_only_when_the_engines_help_lists_it() {
     assert!(!engine_help_lists_train_dir(""));
 }
 
+// what this catches: an engine older than --cache-disk handed the flag (it refuses to start),
+// or one that lists only --cache-disk-mib read as listing --cache-disk.
+#[test]
+fn cache_disk_is_accepted_only_when_the_engines_help_lists_it() {
+    use super::engine_help_lists_cache_disk;
+    let new = "--cache-ram N    set the maximum cache size\n--cache-disk DIR                        a disk tier for the prompt cache\n--cache-disk-mib N   limit\n";
+    let only_limit = "--cache-ram N\n--cache-disk-mib N   limit\n";
+    let mention = "--cache-ram N   see also --cache-disk\n";
+    assert!(engine_help_lists_cache_disk(new));
+    assert!(!engine_help_lists_cache_disk(only_limit));
+    assert!(!engine_help_lists_cache_disk(mention));
+    assert!(!engine_help_lists_cache_disk(""));
+}
+
 // regression for card 8c06f778 (BigMama, 2026-09-26 14:24:55Z): a /slots read that
 // timed out mid-restore was read as a dead engine and cost the node an engine
 // replacement.
