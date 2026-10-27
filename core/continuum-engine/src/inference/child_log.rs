@@ -89,7 +89,9 @@ impl LineWatch for () {
 pub fn drain_capped(stderr: tokio::process::ChildStderr, path: PathBuf, pid: Option<u32>, watch: Box<dyn LineWatch>) {
     let clock = start_clock(pid);
     tokio::spawn(async move {
-        if let Err(error) = pump(stderr, &path, watch, clock).await {
+        let result = pump(stderr, &path, watch, Arc::clone(&clock)).await;
+        retire_clock(pid, &clock);
+        if let Err(error) = result {
             tracing::warn!(
                 probe_class = "serving.llama.log_sink_ended",
                 path = %path.display(),
@@ -128,6 +130,16 @@ fn start_clock(pid: Option<u32>) -> Arc<AtomicU64> {
         LAST_LINE_MS.lock().insert(pid, Arc::clone(&clock));
     }
     clock
+}
+
+/// Forget child `pid`'s clock when its sink ends, but only if the map still holds THIS sink's
+/// clock: a replacement child that reused the pid keeps its own (Codex on #5528).
+fn retire_clock(pid: Option<u32>, clock: &Arc<AtomicU64>) {
+    let Some(pid) = pid else { return };
+    let mut clocks = LAST_LINE_MS.lock();
+    if clocks.get(&pid).is_some_and(|held| Arc::ptr_eq(held, clock)) {
+        clocks.remove(&pid);
+    }
 }
 
 /// Drain `reader` into `path`, rotating whenever the live file would exceed [`MAX_BYTES`].
@@ -201,8 +213,13 @@ mod tests {
         assert_eq!(silent_ms(pid), None, "no sink for this pid, no clock");
         start_clock(Some(pid)).store(1, Ordering::Relaxed); // the old child: silent since 1970
         assert!(silent_ms(pid).is_some_and(|ms| ms > 1_000_000));
-        let _fresh = start_clock(Some(pid));
+        let old = LAST_LINE_MS.lock().get(&pid).cloned().expect("the old clock");
+        let fresh = start_clock(Some(pid));
         assert!(silent_ms(pid).is_some_and(|ms| ms < 60_000), "the new child's clock starts now");
+        retire_clock(Some(pid), &old);
+        assert!(silent_ms(pid).is_some(), "the old sink ending never removes its replacement's clock");
+        retire_clock(Some(pid), &fresh);
+        assert_eq!(silent_ms(pid), None, "a sink that ends retires its own clock");
     }
 
     // what this catches: THE outage. A writer that never stops must not be able to grow the

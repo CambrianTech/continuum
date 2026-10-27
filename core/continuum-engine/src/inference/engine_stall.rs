@@ -105,19 +105,28 @@ fn sample(pid: u32, log: &Path) -> Result<PathBuf, String> {
         .ok_or("this host has no stack sampler")?;
     let args: Vec<&str> = sampler.args.iter().map(String::as_str).collect();
     let timeout = Duration::from_secs(u64::from(SAMPLE_SECONDS)) + SAMPLER_GRACE;
-    match bounded_command::probe(sampler.program, &args, timeout) {
-        Probed::Exited { success: true, stdout } => {
-            if !sampler.writes_out {
-                std::fs::write(&out, stdout).map_err(|e| format!("writing {}: {e}", out.display()))?;
-            }
+    let taken = match bounded_command::probe(sampler.program, &args, timeout) {
+        Probed::Exited { success: true, stdout } if !sampler.writes_out => {
+            std::fs::write(&out, stdout).map_err(|e| format!("writing {}: {e}", out.display()))
         }
-        Probed::Exited { success: false, stdout } => return Err(format!("{} failed: {}", sampler.program, stdout.trim())),
-        Probed::Truncated => return Err(format!("{}'s output passed the capture limit", sampler.program)),
-        Probed::TimedOut => return Err(format!("{} did not finish within {timeout:?}", sampler.program)),
-        Probed::Unstartable { error } => return Err(format!("{} could not start: {error}", sampler.program)),
+        Probed::Exited { success: true, .. } => Ok(()),
+        Probed::Exited { success: false, stdout } => Err(format!("{} failed: {}", sampler.program, stdout.trim())),
+        Probed::Truncated => Err(format!("{}'s output passed the capture limit", sampler.program)),
+        Probed::TimedOut => Err(format!("{} did not finish within {timeout:?}", sampler.program)),
+        Probed::Unstartable { error } => Err(format!("{} could not start: {error}", sampler.program)),
+    };
+    settle(dir, out, taken)
+}
+
+/// Every attempt ends here: a failed one leaves no partial sample (the macOS sampler writes its
+/// file as it goes), and the directory is pruned either way, so the bound holds however the
+/// sampler ends (Codex on #5528).
+fn settle(dir: &Path, out: PathBuf, taken: Result<(), String>) -> Result<PathBuf, String> {
+    if taken.is_err() {
+        let _ = std::fs::remove_file(&out); // a partial sample is removed; one never written is the outcome wanted
     }
     prune(dir, KEEP);
-    Ok(out)
+    taken.map(|()| out)
 }
 
 /// Keep the newest `keep` stall samples in `dir`.
@@ -159,6 +168,27 @@ mod tests {
             "pid": pid, "port": port, "role": "live", "started_s": started_s
         }))
         .expect("a lane record fixture")
+    }
+
+    // what this catches (Codex on #5528): a sampler that fails part-way leaving its partial file,
+    // and failures skipping the prune, so failed captures pile up past the bound.
+    #[test]
+    fn a_failed_sample_leaves_nothing_and_every_attempt_prunes() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        for n in 0..5 {
+            std::fs::write(dir.path().join(format!("engine-stall-1-{n}.txt")), "stack").expect("write");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let partial = dir.path().join("engine-stall-1-9.txt");
+        std::fs::write(&partial, "half a stack").expect("write");
+        assert!(settle(dir.path(), partial.clone(), Err("sample did not finish".into())).is_err());
+        assert!(!partial.exists(), "the partial sample is removed");
+        let left = std::fs::read_dir(dir.path()).expect("read").count();
+        assert_eq!(left, KEEP, "a failed attempt still prunes to the bound");
+        let whole = dir.path().join("engine-stall-1-10.txt");
+        std::fs::write(&whole, "stack").expect("write");
+        assert_eq!(settle(dir.path(), whole.clone(), Ok(())), Ok(whole.clone()));
+        assert!(whole.exists());
     }
 
     // what this catches (Codex on #5528): sampling some other engine in the failed endpoint's
