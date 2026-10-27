@@ -89,9 +89,10 @@ fn recovery_refusal(
     None
 }
 
-/// A kept launch held across a readiness wait. Only a finished wait consumes it: a wait that
-/// fails slow keeps it ([`Kept::settle`]), and a wait that is cancelled puts it back on drop, so
-/// recovery is never lost to a cancelled launch (Codex on #5545).
+/// A kept launch held across the readiness wait AND publication. Only a committed publication
+/// spends it: a wait that fails slow keeps it ([`Kept::settle`]), and a wait or a publication that
+/// fails or is cancelled puts it back on drop, so recovery is never lost to a cancelled or failed
+/// launch (Codex on #5545).
 struct Kept<'a> {
     process: &'a LlamaServerProcess,
     tail: Option<ReadyTail>,
@@ -102,9 +103,14 @@ impl<'a> Kept<'a> {
         Self { process, tail: Some(tail) }
     }
 
-    /// The tail, for publishing a ready engine.
-    fn consume(mut self) -> Option<ReadyTail> {
-        self.tail.take()
+    /// The launch, borrowed for publishing; the keeper stays armed meanwhile.
+    fn launch(&self) -> Option<&ReadyTail> {
+        self.tail.as_ref()
+    }
+
+    /// Publication committed: the launch is spent and nothing is kept.
+    fn disarm(mut self) {
+        self.tail = None;
     }
 
     /// After a failed wait: kept when the engine is alive and was only slow, else discarded.
@@ -134,16 +140,20 @@ impl LlamaServerProcess {
         tail: ReadyTail,
     ) -> Result<(), LlamaServerError> {
         let kept = Kept::new(self, tail);
-        match self.wait_ready().await {
-            Ok(()) => match kept.consume() {
-                Some(tail) => self.publish_ready(transition, tail).await,
-                None => Err(LlamaServerError::Spawn("the launch to publish was already consumed".into())),
-            },
-            Err(error) => {
-                kept.settle(&error);
-                Err(error)
-            }
+        if let Err(error) = self.wait_ready().await {
+            kept.settle(&error);
+            return Err(error);
         }
+        let Some(launch) = kept.launch() else {
+            return Err(LlamaServerError::Spawn("the launch to publish was already spent".into()));
+        };
+        // Armed through publication: a publish that fails, or is cancelled at any await before
+        // the ledger commits, puts the launch back while its engine lives.
+        let published = self.publish_ready(transition, launch).await;
+        if published.is_ok() {
+            kept.disarm();
+        }
+        published
     }
 
     /// Keep a launch whose engine is alive, so a later launch can finish it. A restore or an
@@ -270,7 +280,7 @@ mod tests {
 
     /// A fake engine whose `/health` answers 503 "loading" until `ready` is set, then 200; with
     /// an empty `/slots`, a decode that counts, `/props` with its window and slots, and its model.
-    async fn fake_engine(ready: Arc<std::sync::atomic::AtomicBool>) -> String {
+    async fn fake_engine(ready: Arc<std::sync::atomic::AtomicBool>, props_open: Arc<std::sync::atomic::AtomicBool>) -> String {
         let app = axum::Router::new()
             .route("/health", axum::routing::get(move || {
                 let ready = Arc::clone(&ready);
@@ -285,8 +295,15 @@ mod tests {
                 }
             }))
             .route("/slots", axum::routing::get(|| async { axum::Json(serde_json::json!([])) }))
-            .route("/props", axum::routing::get(|| async {
-                axum::Json(serde_json::json!({ "default_generation_settings": { "n_ctx": 32768 }, "total_slots": 1 }))
+            .route("/props", axum::routing::get(move || {
+                let props_open = Arc::clone(&props_open);
+                async move {
+                    // Held until opened: a publication reading it stalls here, cancellable.
+                    while !props_open.load(std::sync::atomic::Ordering::SeqCst) {
+                        tokio::time::sleep(Duration::from_millis(20)).await;
+                    }
+                    axum::Json(serde_json::json!({ "default_generation_settings": { "n_ctx": 32768 }, "total_slots": 1 }))
+                }
             }))
             .route("/v1/models", axum::routing::get(|| async {
                 axum::Json(serde_json::json!({ "data": [{ "id": "late-model" }] }))
@@ -420,7 +437,7 @@ mod tests {
             return;
         }
         let dir = tempfile::tempdir().expect("tempdir");
-        let root = fake_engine(ready(true)).await;
+        let root = fake_engine(ready(true), ready(true)).await;
         let (process, generation, pid, _held) = timed_out_launch(&root, prepared(&root, dir.path(), "16384"), TEST).await;
         assert!(!ledger_published(&root, &generation).await, "before: the generation has no ledger (the Windows refusal)");
 
@@ -448,7 +465,7 @@ mod tests {
         }
         let dir = tempfile::tempdir().expect("tempdir");
         let engine_ready = ready(false);
-        let root = fake_engine(Arc::clone(&engine_ready)).await;
+        let root = fake_engine(Arc::clone(&engine_ready), ready(true)).await;
         let (process, generation, pid, _held) = timed_out_launch(&root, prepared(&root, dir.path(), "16384"), TEST).await;
         let process = Arc::new(process);
 
@@ -477,12 +494,48 @@ mod tests {
     // reconcile, serving the target model, without relaunching it.
     #[tokio::test]
     async fn a_restarted_core_adopts_a_healthy_engine_it_never_spawned() {
-        let root = fake_engine(ready(true)).await;
+        let root = fake_engine(ready(true), ready(true)).await;
         let fresh = LlamaServerProcess::with_root(root.clone());
         let mut target = super::super::test_fixtures::target("late-model");
         target.placement = LanePlacement::Cpu;
         let outcome = ensure_model_serving_if_current(&fresh, &target, false, &|| true).await;
         assert!(matches!(outcome, EnsureOutcome::AlreadyServing), "a healthy engine is adopted, not replaced: {outcome:?}");
         assert!(!fresh.owns_child(), "the restarted core spawned nothing");
+    }
+
+    // what this catches (Codex on #5545): a publication cancelled after the engine answered
+    // ready but before its ledger committed (here at the `/props` geometry read) losing the only
+    // kept launch, which recreates the trap. The keeper stays armed until the ledger commits:
+    // the abort leaves the launch kept, and the original retry finishes the same engine.
+    #[tokio::test]
+    async fn a_publication_cancelled_before_its_ledger_keeps_the_launch() {
+        const TEST: &str = "a_publication_cancelled_before_its_ledger_keeps_the_launch";
+        if serve_as_stand_in() {
+            return;
+        }
+        let dir = tempfile::tempdir().expect("tempdir");
+        let props_open = ready(false);
+        let root = fake_engine(ready(true), Arc::clone(&props_open)).await;
+        let (process, generation, pid, _held) = timed_out_launch(&root, prepared(&root, dir.path(), "16384"), TEST).await;
+        let process = Arc::new(process);
+
+        let publishing = tokio::spawn({
+            let (process, launch) = (Arc::clone(&process), prepared(&root, dir.path(), "16384"));
+            async move { process.launch_prepared(launch, &|| true, None, None).await }
+        });
+        tokio::time::sleep(Duration::from_millis(800)).await;
+        assert!(!publishing.is_finished(), "publication is held at the /props read");
+        publishing.abort();
+        assert!(publishing.await.is_err_and(|e| e.is_cancelled()));
+        assert!(process.loading.lock().is_some(), "the cancelled publication put the launch back");
+        assert!(!ledger_published(&root, &generation).await, "nothing was committed");
+
+        props_open.store(true, std::sync::atomic::Ordering::SeqCst);
+        process.launch_prepared(prepared(&root, dir.path(), "16384"), &|| true, None, None).await.expect("the original retry finishes the same engine");
+        assert!(ledger_published(&root, &generation).await, "the same generation's ledger is published");
+        assert_eq!(owned_pid(&process), pid);
+        if let Ok(process) = Arc::try_unwrap(process) {
+            release(process).await;
+        }
     }
 }

@@ -15,13 +15,17 @@ pub(super) struct ReadyTail {
 
 impl LlamaServerProcess {
     /// Publish a ready engine: the debug-build and placement gates, the page dir, the live slot
-    /// geometry, the pool and ledger (`transition.ready`) and the verified target.
+    /// geometry, the pool and ledger (`transition.ready`) and the verified target. The launch is
+    /// borrowed, not taken: its keeper stays armed until publication has committed, so a
+    /// publication cancelled at any await before the ledger leaves the launch kept (Codex on
+    /// #5545).
     pub(super) async fn publish_ready(
         &self,
         transition: &crate::inference::slots::EndpointTransition,
-        tail: ReadyTail,
+        tail: &ReadyTail,
     ) -> Result<(), LlamaServerError> {
         let ReadyTail { prepared, generation, child_pid, page_dir_ready, debug_flag, restoring } = tail;
+        let (child_pid, page_dir_ready, restoring) = (*child_pid, *page_dir_ready, *restoring);
         let target = &prepared.target;
         let gguf = prepared.gguf.clone();
         let slot_save_dir = prepared.slot_save_dir.clone();
