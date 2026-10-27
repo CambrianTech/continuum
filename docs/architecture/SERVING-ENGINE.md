@@ -90,12 +90,87 @@ Joel: "you can't get anything to work unless there is one daemon and centralized
 - public `take_resident` / `forget_resident` / `plan_paging` / `note_saved` / `note_page_lost`;
 - `trim_page_store_after_save`, which has no caller; the page store's trim moves into the owner or is deleted.
 
+**The API (published for the callers' migration; Codex's review of 2bd37de22 is built into the types).**
+
+```rust
+/// Which engine process a receipt or seat belongs to: its generation, and for an adopted
+/// engine the OS incarnation (pid, start time) verified independently of any launch handle.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct EngineIdentity { pub generation: Uuid, pub incarnation: Option<(u32, u64)> }
+
+pub enum Purpose { Turn, WarmAhead, Transient }
+
+/// Where a seated mind's KV came from. Every cold seat names why.
+pub enum Resumed { Resident, Restored, Cold(ColdCause) }
+pub enum ColdCause { FirstVisit, PageRefused, DiscardedUnsaved(LossCause), Quarantined }
+
+/// RAII. The slot is pinned while the seat lives. `completed` commits the mind's attribution
+/// (and her tail size, the eviction price); a seat dropped without it detaches the slot.
+/// A Transient seat never holds a mind: it borrows the cheapest resident's slot, which is
+/// saved (confirmed) before the seat is granted, and is not a driver session (drivers seat
+/// as Turn with `PageKey::driver`).
+pub struct Seat { /* slot, key, resumed, engine */ }
+impl Seat {
+    pub fn slot(&self) -> u32;
+    pub fn resumed(&self) -> &Resumed;
+    pub fn engine(&self) -> EngineIdentity;
+    pub fn completed(self, tail_tokens: u64);
+}
+
+pub enum PauseWhy { Relaunch, Academy, Idle, AdoptedRetirement, Stop }
+pub enum LossCause { SaveFailed(String), DeadlineSpent, EngineExited, PagingUncertain }
+
+/// Not Clone, not serializable: one pause, one consumer. Bound to the engine it paused.
+pub struct PauseReceipt { /* engine, why, ... */ }
+impl PauseReceipt {
+    pub fn engine(&self) -> EngineIdentity;
+    pub fn saved(&self) -> &[PageKey];                    // confirmed by the engine's ack
+    pub fn lost(&self) -> &[(PageKey, LossCause)];        // named, and recorded for the successor
+    pub fn unresolved(&self) -> &[PageKey];               // IO whose outcome is unknown: quarantined
+}
+
+pub enum Attach { Launched, Adopted { incarnation: (u32, u64) } }
+
+impl MindMemory {
+    /// The only way onto a slot. Refused while paused, or once the deadline passes.
+    pub async fn seat(&self, key: Option<PageKey>, purpose: Purpose, deadline: Instant) -> Result<Seat, SeatRefused>;
+
+    /// Close seating, wait for every open seat to close (a seat closes BEFORE its slot is
+    /// detached or saved), then save every resident with a confirmed save. Returns only when
+    /// no page IO it started is in flight: IO still running at the deadline is listed
+    /// `unresolved` and the endpoint is quarantined, so a retirement can never race it.
+    pub async fn pause(&self, why: PauseWhy, deadline: Instant) -> Result<PauseReceipt, PauseRefused>;
+
+    /// Reopen the SAME engine (an academy batch done). Refused for a receipt of another
+    /// engine, for a quarantined endpoint, and for a Stop pause (an operator stop stays stopped).
+    pub fn resume(&self, receipt: PauseReceipt) -> Result<(), ResumeRefused>;
+
+    /// The engine may now be killed. Consumes the receipt; its losses go to the ledger the
+    /// successor reads. Refused for a receipt whose engine is not the current one.
+    pub fn retire(&self, receipt: PauseReceipt) -> Result<Retired, RetireRefused>;
+
+    /// Boot, relaunch or adopt: bind a new engine and load the one ledger by the one rule
+    /// (page-format fingerprint; residents in place only for an Adopted engine whose
+    /// incarnation matches the ledger's). Seats nothing.
+    pub async fn attach(&self, engine: EngineIdentity, how: Attach) -> Result<Attached, AttachRefused>;
+
+    /// A page whose KV no longer means what it did is never offered again.
+    pub fn forget(&self, key: PageKey, why: ForgetWhy);
+
+    /// For the one scheduler (G2, Codex): per mind, residency, frontier and last activity,
+    /// residents and drivers alike, as a watched snapshot.
+    pub fn snapshot(&self) -> tokio::sync::watch::Receiver<MemorySnapshot>;
+}
+```
+
 **Validator (S0 for this owner).** `turn_admission/tests/lifecycle.rs` already runs a fake engine whose slots hold `mind:tokens`, through turns, a stop and a boot. It moves to `MindMemory`'s own tests and gains:
 - a relaunch;
 - an adoption;
 - idle retirement;
 - an in-place gene change;
 - transient borrowing.
+
+The validator drives the actual retirement callers (relaunch, academy, idle, adopted retirement, stop) through `pause` and then `retire` or `resume`, never the checkpoint helper alone, including a second stop after an adoption (Codex).
 
 Each scenario asserts where every mind resumes, in seconds, before any live read.
 
