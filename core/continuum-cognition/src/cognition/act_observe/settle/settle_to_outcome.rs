@@ -797,7 +797,11 @@ pub(super) async fn settle_to_outcome<'c>(
                 // turn; it must never HIDE the fault). Only a SUSTAINED fault
                 // (budget spent) surrenders the turn with inference_error, exactly
                 // as before.
-                if delib_retries < DELIBERATION_RETRY_BUDGET {
+                // A generation the act deadline dropped in flight is no transient fault: its
+                // retry waits out another whole bound on the same engine (up to three, so one
+                // turn held four). It surrenders now, a failed act: demand and a failure for
+                // the resident ledger, never a completion (Fable on #5498).
+                if delib_retries < DELIBERATION_RETRY_BUDGET && !dropped_in_flight {
                     delib_retries += 1;
                     continuum_base::probe!(
                         class = "persona.settle.deliberation_retry",
