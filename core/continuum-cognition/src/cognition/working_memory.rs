@@ -699,6 +699,7 @@ mod perception;
 
 pub use faculty::WorkingMemoryFaculty;
 pub(crate) use faculty::render_dispatched;
+pub(crate) use ledger::operation_level;
 
 impl Drop for WorkingMemory {
     /// A mind that is gone points at nothing: its saved results may be evicted again.

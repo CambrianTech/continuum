@@ -123,6 +123,12 @@ impl WorkingMemory {
         format!("Full result of your most recent action ({attribution}):\n{full}")
     }
 
+    /// The handle the saved whole of act `seq` is reopened by (`tool/output`), `None` when its
+    /// save failed: such a result has no other copy, so it is never shown as less than whole.
+    pub(crate) fn saved_handle(&self, seq: u64) -> Option<String> {
+        self.actions.lock().get(seq).and_then(|record| record.handle.clone())
+    }
+
     /// The provenance of the act whose native results the turn carries: `[result #n; room …;
     /// operation …; output handle …]`, the label every result of hers wears in her view.
     /// A label, not a header: rendered as "Full result of your most recent action (…):"

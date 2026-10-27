@@ -471,6 +471,17 @@ pub(super) fn call_args(input: &serde_json::Value, value_chars: usize) -> String
     shown(input, value_chars).to_string()
 }
 
+/// One operation's summary level by its typed verb (`continuum_context::levels`): a read's
+/// outline, else (and for any other output) its head and tail. `None` when the text is its own
+/// best summary. The one owner of that choice, for a receipt in the ring and for the newest
+/// result her view cannot hold whole (`prompt/newest_result.rs`).
+pub(crate) fn operation_level(text: &str, act: Option<&Observation>) -> Option<String> {
+    use continuum_context::levels::{summarize, Shape};
+    let read = act.is_some_and(|act| act.output.verb == crate::cognition::act_observe::ToolVerb::Read);
+    let code = read.then(|| summarize(text, Shape::Code(&crate::code::file_engine::gutter_split))).flatten();
+    code.or_else(|| summarize(text, Shape::Output))
+}
+
 /// A receipt's summary level, built per OPERATION by its typed verb (`continuum_context::levels`):
 /// a read's outline (else its ends), any other output's head and tail. A receipt of several
 /// operations summarizes each under its call's name, a part with no smaller level kept whole, so
@@ -478,12 +489,8 @@ pub(super) fn call_args(input: &serde_json::Value, value_chars: usize) -> String
 /// batch dropped every unnumbered line after the first numbered one (Codex on #5422). `None` when
 /// the result is its own best summary (more than a quarter of it).
 fn result_summary(result: &str, acts: &[Observation], budget: &crate::cognition::context_budget::ContextBudget) -> Option<String> {
-    use continuum_context::levels::{summarize, Shape, LEVEL_RATIO};
-    let level = |text: &str, act: Option<&Observation>| {
-        let read = act.is_some_and(|act| act.output.verb == crate::cognition::act_observe::ToolVerb::Read);
-        let code = read.then(|| summarize(text, Shape::Code(&crate::code::file_engine::gutter_split))).flatten();
-        code.or_else(|| summarize(text, Shape::Output))
-    };
+    use continuum_context::levels::LEVEL_RATIO;
+    let level = operation_level;
     match acts {
         [] => level(result, None),
         [one] => level(result, Some(one)),
