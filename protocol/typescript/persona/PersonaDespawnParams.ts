@@ -9,4 +9,12 @@ export type PersonaDespawnParams = {
  * The persona's id as it appears in `persona/instances/list` (the airc
  * peer_id Uuid). Fails loud if mal-formed or not currently online.
  */
-persona_id: PersonaRef, };
+persona_id: PersonaRef, 
+/**
+ * Leave her DORMANT: no restart resumes her home until `persona/instances/wake`.
+ */
+dormant: boolean, 
+/**
+ * Why she sleeps (with `dormant`): carried into every skip probe.
+ */
+reason?: string, };

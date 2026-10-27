@@ -169,6 +169,9 @@ pub fn plan_for_roles(
 pub struct OperatorRoster {
     pub hold: Option<crate::persona::roster_hold::RosterHold>,
     pub resting: Vec<crate::persona::resting_seat::RestingSeat>,
+    /// Durably dormant minds (`persona::dormancy`): never drawn, never counted as seats.
+    /// `Unavailable` (the ledger has not loaded) blocks every home resumed from disk.
+    pub dormant: crate::persona::dormancy::DormantSet,
 }
 
 impl OperatorRoster {
@@ -177,11 +180,16 @@ impl OperatorRoster {
         Self {
             hold: crate::persona::roster_hold::active(),
             resting: crate::persona::resting_seat::resting(),
+            dormant: crate::persona::dormancy::dormant_set(),
         }
     }
 
     fn is_resting(&self, agent_name: &str) -> bool {
         self.resting.iter().any(|s| s.agent_name.eq_ignore_ascii_case(agent_name))
+    }
+
+    fn is_dormant(&self, agent_name: &str) -> bool {
+        self.dormant.contains(agent_name)
     }
 }
 
@@ -410,8 +418,8 @@ impl PersonaSpawnerModule {
         roster
     }
 
-    /// How many citizens this node seats: the configured population under any hold,
-    /// minus resting seats, BOUNDED by the warm slots (`bounded_by_warm_slots`).
+    /// How many citizens this node seats: the configured population minus dormant homes,
+    /// under any hold, minus resting seats, BOUNDED by the warm slots (`bounded_by_warm_slots`).
     ///
     /// THE REVERSAL (Joel, 2026-09-20, card 7c38ff6f). On 2026-09-13 the rule was "the
     /// lane count is NOT a cap: N minds over M slots is the design, KV pages to disk and
@@ -425,7 +433,10 @@ impl PersonaSpawnerModule {
     /// minds that ARE seated.
     pub fn seats(&self) -> usize {
         let operator = self.operator_roster();
-        let unbounded = seats_under(self.population, operator.hold.as_ref()).saturating_sub(operator.resting.len());
+        // A dormant home is not part of the population that may sit: out BEFORE the hold
+        // bounds it (a four-name hold over twelve dormant homes still seats four).
+        let awake = self.population.saturating_sub(operator.dormant.len());
+        let unbounded = seats_under(awake, operator.hold.as_ref()).saturating_sub(operator.resting.len());
         let lanes = self.warm_lanes();
         // The allocation's seat count for this node owns the lane-side bound once
         // published (card 10bba591); the warm-slot bound is the prior before it.
@@ -602,7 +613,7 @@ pub struct MaterializedPersonaPlan {
 /// never reached — two hosted, three seats empty, the round dead. Under a hold,
 /// provider exhaustion fills fewer seats loudly (a probe per held-out identity)
 /// instead of failing the boot: the operator asked for those names, and only those.
-async fn draw_intents(
+pub(crate) async fn draw_intents(
     provider: &mut dyn crate::persona::identity_provider::PersonaIdentityProvider,
     plan: &[DesiredRole],
     operator: &OperatorRoster,
@@ -667,6 +678,28 @@ async fn draw_intents(
                 class = "persona.host.resting",
                 agent = %intent.agent_name,
                 "resting seat: identity drawn is paged out until a change — seat goes to the next one"
+            );
+            continue;
+        }
+        // A DORMANT mind (`persona::dormancy`) is never resumed by the reconciler: she
+        // returns on `persona/instances/wake`, never on a clock or a restart.
+        // FAIL CLOSED: with the ledger unavailable nobody knows who sleeps, so no home is
+        // resumed from disk (a fresh mint is still a birth, never a dormant mind).
+        if operator.dormant == crate::persona::dormancy::DormantSet::Unavailable
+            && intent.source == crate::persona::identity_provider::PersonaIdentitySource::ResumedFromDisk
+        {
+            continuum_base::probe!(
+                class = "persona.dormancy.ledger_unavailable",
+                agent = %intent.agent_name,
+                "the wakefulness ledger has not loaded: no home is resumed from disk until it does (persona/spawn still births)"
+            );
+            continue;
+        }
+        if operator.is_dormant(&intent.agent_name) {
+            continuum_base::probe!(
+                class = "persona.host.dormant",
+                agent = %intent.agent_name,
+                "dormant home: the reconciler does not resume her until she is woken — seat goes to the next one"
             );
             continue;
         }

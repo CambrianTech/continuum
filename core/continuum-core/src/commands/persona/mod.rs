@@ -41,11 +41,12 @@ use spawn::PersonaSpawn;
 /// late-bound substrate `executor`).
 pub fn command_objects(
     registry: PersonaAircRuntimeRegistry,
+    dormancy: Arc<LateBound<crate::persona::dormancy::DormancyLedger>>,
     continuum_root: PathBuf,
     executor: Arc<LateBound<CommandExecutor>>,
     birth: Arc<PersonaBirth>,
 ) -> Vec<Arc<dyn DynCommand>> {
-    let mut objects = instances::command_objects(registry.clone());
+    let mut objects = instances::command_objects(registry.clone(), dormancy);
     objects.extend(wall::command_objects(registry));
     // `persona/vitals` is a unit-struct command: the `action_command!` macro
     // auto-registers it onto the ONE registry — pushing it here registered it

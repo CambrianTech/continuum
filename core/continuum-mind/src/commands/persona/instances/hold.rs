@@ -10,6 +10,10 @@
 //! then stops undoing you. An explicit `persona/spawn` stays sovereign over
 //! the hold (a human's direct command beats standing intent).
 //!
+//! A hold is a measurement window and expires within a day. A population decision is
+//! durable: `persona/instances/despawn --dormant` (and `wake` to undo it), recorded in
+//! `persona::dormancy`, survives every restart.
+//!
 //! ## Gating
 //!
 //! `Privileged` — it gates which citizens the substrate will host.
