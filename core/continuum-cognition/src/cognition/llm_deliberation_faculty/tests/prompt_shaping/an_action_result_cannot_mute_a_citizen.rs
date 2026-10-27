@@ -179,6 +179,8 @@ mod the_newest_result_over_her_window {
     use crate::cognition::working_memory::WorkingMemory;
 
     /// Her slot on the M5 (2026-10-26).
+    // context-budget-exempt: the MEASURED served window in Aris's incident (serving/status on the M5,
+    // 2026-10-26 22:22Z), a fixture input that reproduces it, not a budget the code sizes anything by.
     const ARIS_WINDOW: u32 = 187_136;
     const HANDLE: &str = "aris-evidence";
 
