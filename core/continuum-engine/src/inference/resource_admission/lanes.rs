@@ -154,6 +154,14 @@ impl LanePriority {
 /// implementation of it. Tests build their own with [`LaneAdmission::new`].
 pub(super) static LANES: LaneAdmission = LaneAdmission::new();
 
+pub fn resident_seated(persona: uuid::Uuid) {
+    LANES.resident_seated(persona);
+}
+
+pub fn resident_departed(persona: uuid::Uuid) {
+    LANES.resident_departed(persona);
+}
+
 /// Physical decode lanes on the shared serving target — the LIVE served count when
 /// serving has come up, else the planner's `MAX_LANES` ceiling as the boot-time fallback.
 /// Floored at 1. Read live by the saturation gauge; captured at lazy-init by the lane

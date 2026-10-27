@@ -63,6 +63,7 @@ async fn cancelled_ambient_retry_keeps_age_and_enters_fifo() {
     let gate: &'static LaneAdmission = Box::leak(Box::new(LaneAdmission::new()));
     gate.set_served_lane_count(2);
     let persona = uuid::Uuid::new_v4();
+    gate.resident_seated(persona);
     let first = gate.acquire_serving_lane(None, LanePriority::Work, None).await;
     let (_, attempt) = gate.serving_lane_request(Some(persona), LanePriority::Ambient, None);
     let mut attempt = Box::pin(attempt);
@@ -82,4 +83,28 @@ async fn cancelled_ambient_retry_keeps_age_and_enters_fifo() {
     pending(later.as_mut()).await;
     drop(retry);
     drop(granted(later.as_mut()).await);
+}
+
+// Leaving a seat forgives debt, even when a stale observer survives departure.
+#[tokio::test]
+async fn ambient_debt_follows_the_seat_lifetime() {
+    let gate: &'static LaneAdmission = Box::leak(Box::new(LaneAdmission::new()));
+    gate.set_served_lane_count(2);
+    let persona = uuid::Uuid::new_v4();
+    gate.resident_seated(persona);
+    let (old, guard) = gate.observe(Some(persona), LanePriority::Ambient);
+    let origin = old.ambient_origin(1);
+    drop(gate.acquire_serving_lane(None, LanePriority::Work, None).await);
+    assert!(old.ambient_aged(origin));
+    let (retry, retry_guard) = gate.observe(Some(persona), LanePriority::Ambient);
+    assert_eq!(retry.ambient_origin(5), origin, "retry retains debt while seated");
+    gate.resident_departed(persona);
+    let departed = old.ambient_origin(2);
+    assert_ne!(departed.0, origin.0, "departure forgives existing debt");
+    drop(gate.acquire_serving_lane(None, LanePriority::Work, None).await);
+    gate.resident_seated(persona);
+    assert_ne!(retry.ambient_origin(3).0, departed.0, "stale observer cannot retain debt while unseated");
+    drop(retry_guard);
+    drop(guard);
+    gate.resident_departed(persona);
 }

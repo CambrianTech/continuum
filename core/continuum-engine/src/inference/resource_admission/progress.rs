@@ -1,6 +1,6 @@
 //! Evidence owned by one admission gate, including the budget actually blocking a request.
 use super::{LaneAdmission, LanePriority};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Debug, Default)]
 pub(super) struct ProgressLedger {
@@ -9,6 +9,7 @@ pub(super) struct ProgressLedger {
     budget_grants: u64,
     entries: BTreeMap<u64, Entry>,
     ambient_age: BTreeMap<uuid::Uuid, (u64, u64)>,
+    seated: BTreeSet<uuid::Uuid>,
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Phase {
@@ -67,6 +68,19 @@ impl Drop for ProgressGuard {
     }
 }
 impl LaneAdmission {
+    /// Debt belongs to a resident's seat, not to an expiring retry or a timer.
+    /// Process restart forgives this debt; S3 readmits the interrupted turn.
+    pub fn resident_seated(&self, persona: uuid::Uuid) {
+        self.progress.lock().seated.insert(persona);
+    }
+
+    /// Called after the resident's loop stops or its seat leaves this node.
+    pub fn resident_departed(&self, persona: uuid::Uuid) {
+        let mut ledger = self.progress.lock();
+        ledger.seated.remove(&persona);
+        ledger.ambient_age.remove(&persona);
+    }
+
     pub(super) fn observe(
         &'static self,
         persona: Option<uuid::Uuid>,
@@ -131,6 +145,7 @@ impl ProgressLedger {
             budget_grants: 0,
             entries: BTreeMap::new(),
             ambient_age: BTreeMap::new(),
+            seated: BTreeSet::new(),
         }
     }
 }
@@ -148,8 +163,9 @@ impl LaneWait {
         let now = ledger.budget_grants;
         let persona = ledger.entries.get(&self.id).and_then(|entry| entry.persona);
         match persona {
-            Some(persona) => *ledger.ambient_age.entry(persona).or_insert((now, cohort.max(1))),
-            None => (now, cohort.max(1)),
+            Some(persona) if ledger.seated.contains(&persona) =>
+                *ledger.ambient_age.entry(persona).or_insert((now, cohort.max(1))),
+            _ => (now, cohort.max(1)),
         }
     }
 
