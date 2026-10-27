@@ -147,8 +147,13 @@ fn retire_clock(pid: Option<u32>, clock: &Arc<AtomicU64>) {
 // derived-or-floor: a FLOOR on retry spacing for a log sink; it bounds syscalls on a failed disk, never serving.
 const REOPEN_AFTER_LINES: u64 = 1024;
 
-async fn open_append(path: &Path) -> io::Result<tokio::fs::File> {
-    tokio::fs::OpenOptions::new().create(true).append(true).open(path).await
+/// Open `path` to append, with the bytes it already holds. A length that cannot be read counts
+/// as full, so the next line rotates: the cap holds even for a file reopened after a failure
+/// (Codex on #5532).
+async fn open_counted(path: &Path) -> io::Result<(tokio::fs::File, u64)> {
+    let file = tokio::fs::OpenOptions::new().create(true).append(true).open(path).await?;
+    let held = file.metadata().await.map_or(MAX_BYTES, |m| m.len()); // map_or: an unreadable length is treated as full, never as empty
+    Ok((file, held))
 }
 
 /// Drain `reader` into `path`, rotating whenever the live file would exceed [`MAX_BYTES`].
@@ -165,10 +170,9 @@ async fn pump(
     last_line: Arc<AtomicU64>,
 ) -> io::Result<()> {
     let mut reader = BufReader::new(reader);
-    let mut file = open_append(path).await.ok();
-    let mut written = match &file {
-        Some(file) => file.metadata().await.map(|m| m.len()).unwrap_or(0), // unwrap_or: an unreadable length starts the count at zero; rotation still bounds the file
-        None => 0,
+    let (mut file, mut written) = match open_counted(path).await {
+        Ok((file, held)) => (Some(file), held),
+        Err(_) => (None, 0),
     };
     let (mut degraded, mut discarded) = (file.is_none(), 0u64);
     if degraded {
@@ -191,11 +195,10 @@ async fn pump(
             if discarded % REOPEN_AFTER_LINES != 0 {
                 continue;
             }
-            file = open_append(path).await.ok();
-            if file.is_none() {
-                continue;
+            match open_counted(path).await {
+                Ok((reopened, held)) => (file, written) = (Some(reopened), held),
+                Err(_) => continue,
             }
-            written = 0;
         }
         match write_line(&mut file, path, &line, &mut written).await {
             Ok(()) => {
@@ -229,8 +232,9 @@ async fn write_line(file: &mut Option<tokio::fs::File>, path: &Path, line: &str,
             old.flush().await?;
         }
         rotate(path).await?;
-        *file = Some(open_append(path).await?);
-        *written = 0;
+        let (fresh, held) = open_counted(path).await?;
+        *file = Some(fresh);
+        *written = held;
     }
     let Some(live) = file.as_mut() else { return Err(io::Error::other("no open log file")) };
     live.write_all(line.as_bytes()).await?;
@@ -297,6 +301,38 @@ mod tests {
         assert!(status.success());
         assert!(drained.await.expect("the drain task").is_ok(), "the drain ends when the child does");
         assert!(!path.exists());
+    }
+
+    // what this catches (Codex on #5532): a sink reopened after a failure counting the file it
+    // found as empty, so repeated reopens grew one file past MAX_BYTES. The directory is missing
+    // at first; while the child pauses a near-full log appears there, and the reopen counts it
+    // and rotates, so neither generation passes the cap.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_reopened_sink_counts_the_file_it_finds() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let logs = dir.path().join("logs");
+        let path = logs.join("engine.log");
+        let script = "i=0; while [ $i -lt 1000 ]; do echo \"early $i\" >&2; i=$((i+1)); done; sleep 2; i=0; while [ $i -lt 1100 ]; do echo \"late $i\" >&2; i=$((i+1)); done";
+        let mut child = tokio::process::Command::new("sh")
+            .args(["-c", script])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .expect("sh runs in the test");
+        let stderr = child.stderr.take().expect("piped stderr");
+        let drained = tokio::spawn({
+            let path = path.clone();
+            async move { pump(stderr, &path, Box::new(()), Arc::new(AtomicU64::new(0))).await }
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(800)).await;
+        std::fs::create_dir_all(&logs).expect("the log directory appears");
+        std::fs::write(&path, vec![b'x'; (MAX_BYTES - 64) as usize]).expect("a near-full log");
+        child.wait().await.expect("the child is reaped");
+        drained.await.expect("the drain task").expect("the drain ends cleanly");
+        let live = std::fs::metadata(&path).expect("the live log").len();
+        let rotated = std::fs::metadata(path.with_extension("log.1")).expect("the reopen rotated").len();
+        assert!(live <= MAX_BYTES && rotated <= MAX_BYTES, "live {live}, rotated {rotated}, cap {MAX_BYTES}");
     }
 
     // what this catches (card a6481313): a line that is not UTF-8 ending the drain. It is logged
