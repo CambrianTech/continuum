@@ -163,8 +163,8 @@ async fn open_counted(path: &Path) -> io::Result<(tokio::fs::File, u64)> {
 /// keeps draining and discards, said once, because a full pipe would block the child (card
 /// a6481313). Lines are read as bytes and decoded lossily, so output that is not UTF-8 is
 /// logged with replacement characters instead of ending the drain.
-async fn pump(
-    reader: tokio::process::ChildStderr,
+pub(crate) async fn pump<R: tokio::io::AsyncRead + Unpin>(
+    reader: R,
     path: &Path,
     mut watch: Box<dyn LineWatch>,
     last_line: Arc<AtomicU64>,
