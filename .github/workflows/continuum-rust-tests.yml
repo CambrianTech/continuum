@@ -104,6 +104,12 @@ jobs:
         if: matrix.crate == 'continuum-core'
         run: cargo test -p continuum-core --test capability_grant_e2e --test log_relay_e2e --profile dev-fast --features "$FEATURES"
 
+      # continuum-host's real-process fixtures fork, so they live in their own test binary, apart from
+      # the lib tests' sockets (a fork can carry a socket being created into the child; card 1d7d6d4c).
+      - name: continuum-host process fixtures
+        if: matrix.crate == 'continuum-host'
+        run: cargo test -p continuum-host --test output_handoff --profile dev-fast --features "$FEATURES"
+
       # ---- continuum-core: script fixtures, the warnings ratchet, the core lib binary ----
       - name: cargo test -p continuum-core --lib
         if: matrix.crate == 'continuum-core'
