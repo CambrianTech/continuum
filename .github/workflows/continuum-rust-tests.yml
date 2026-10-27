@@ -269,56 +269,6 @@ jobs:
             fi
           done
 
-  # The shared target cache every Linux Rust job restores. Built COLD at one canary commit, so
-  # every unit in it is from that commit and `settle` (tools/scripts/ci-cargo-freshness.cjs) can
-  # mark exactly what differs; a cache that accumulated units across commits could not say which
-  # commit a stale unit came from. It builds what every crate job and the CLI job build, with the
-  # same features (the selector's TEST_FEATURES), then drops the test executables, which a
-  # crate job always rebuilds. Not a gate: a failed warm-up only leaves the previous cache.
-  warm-cache:
-    name: Warm the shared Rust build cache
-    if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/canary' }}
-    runs-on: ubuntu-latest
-    timeout-minutes: 120
-    # One warm-up at a time; a newer push queues behind it rather than cancelling it, so a
-    # steady stream of merges still saves a cache.
-    concurrency:
-      group: continuum-rust-warm-cache-${{ github.ref }}
-      cancel-in-progress: false
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          submodules: recursive
-      - uses: ./.github/actions/rust-ci-setup
-        id: setup
-        with:
-          restore-target: 'false'
-          save-apt: 'true'
-      - name: Build every crate job's tests and the CLI's (no run)
-        run: |
-          mapfile -t targets < <(node -e '
-            const { TEST_FEATURES } = require("./tools/scripts/ci-change-scope.cjs");
-            for (const [crate, features] of Object.entries(TEST_FEATURES)) console.log(`${crate}\t${features}`);')
-          for target in "${targets[@]}"; do
-            IFS=$'\t' read -r crate features <<< "$target"
-            echo "::group::$crate ($features)"
-            cargo test -p "$crate" --lib --profile dev-fast --features "$features" --no-run --message-format=json >> warm.jsonl
-            echo "::endgroup::"
-          done
-          core_features=$(node -p 'require("./tools/scripts/ci-change-scope.cjs").TEST_FEATURES["continuum-core"]')
-          cargo test -p continuum-core --bin continuum --profile dev-fast --features "$core_features" --no-run --message-format=json >> warm.jsonl
-          node tools/scripts/ci-cargo-freshness.cjs prune-test-executables warm.jsonl
-          du -sh target ~/.cargo/registry ~/.cargo/git
-      - name: Save the shared target cache
-        uses: actions/cache/save@v4
-        with:
-          path: |
-            target
-            ~/.cargo/registry/index
-            ~/.cargo/registry/cache
-            ~/.cargo/git/db
-          key: ${{ steps.setup.outputs.cache-prefix }}${{ github.sha }}
-
   # The required check context. It passes when every selected crate job and the CLI job (when
   # selected) passed, or when nothing was selected (docs, installer-only, or a crate nothing
   # tested depends on). A failed selector is red, never a successful skip.
