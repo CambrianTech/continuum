@@ -91,6 +91,8 @@ impl PromptFeedback {
 pub(in super::super) struct Streams {
     pub(in super::super) conversation: crate::cognition::context_streams::conversation::Conversation,
     pub(in super::super) blocks: Vec<crate::cognition::context_streams::blocks::Grounding>,
+    /// What arrived in her rooms during this drive: items of her view, never a re-sent tail.
+    pub(in super::super) room_updates: crate::cognition::context_streams::room_updates::RoomUpdates,
 }
 
 /// Prompt roles are provider-facing; these slots retain the substrate's meaning
@@ -111,7 +113,6 @@ pub struct PromptMessages {
     pub latest_result: Vec<ChatMessage>,
     /// Public action text retains assistant provenance and required-input pricing.
     pub(in super::super) action_statement: Option<ChatMessage>,
-    pub(in super::super) room_updates: Vec<ChatMessage>,
 }
 
 /// Her OWN most recent move and its outcome, priced — the SUFFIX of the optional history
@@ -301,8 +302,6 @@ impl PromptMessages {
         };
         RequiredParts {
             stimulus: cost(&mut self.stimulus.iter()),
-            room_updates: cost(&mut self.room_updates.iter()),
-            room_update_count: self.room_updates.len(),
             action_statement: cost(&mut self.action_statement.iter()),
             latest_result: cost(&mut self.latest_result.iter()),
             latest_result_count: self.latest_result.len(),
@@ -319,8 +318,6 @@ impl PromptMessages {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct RequiredParts {
     pub stimulus: usize,
-    pub room_updates: usize,
-    pub room_update_count: usize,
     pub action_statement: usize,
     pub latest_result: usize,
     pub latest_result_count: usize,
@@ -329,7 +326,7 @@ pub struct RequiredParts {
 
 impl RequiredParts {
     pub fn total(&self) -> usize {
-        self.stimulus + self.room_updates + self.action_statement + self.latest_result + self.grounding
+        self.stimulus + self.action_statement + self.latest_result + self.grounding
     }
 }
 

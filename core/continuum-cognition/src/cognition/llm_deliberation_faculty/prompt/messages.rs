@@ -100,17 +100,19 @@ impl LlmDeliberationFaculty {
                 stimulus = Some(ChatMessage::text(role, line));
                 continue;
             }
-            let key = match turn.occurred_at_ms {
-                Some(ms) => format!("{ms}/{}", turn.author),
+            let key = match (turn.event_id, turn.occurred_at_ms) {
+                // The room event: the same key a room update for it has.
+                (Some(event_id), _) => event_id.to_string(),
+                (None, Some(ms)) => format!("{ms}/{}", turn.author),
                 // An opaque stimulus has no time: its position among the turns is its identity.
-                None => format!("#{index}"),
+                (None, None) => format!("#{index}"),
             };
             let role = if turn.is_self {
                 crate::cognition::context_streams::Role::Assistant
             } else {
                 crate::cognition::context_streams::Role::User
             };
-            turns.push(crate::cognition::context_streams::conversation::Turn { key, role, line });
+            turns.push(crate::cognition::context_streams::conversation::Turn { key, role, line, event_id: turn.event_id });
         }
         // What follows the view in this act's prompt: facts, the clock, demoted payloads.
         let mut messages: Vec<ChatMessage> = Vec::new();
@@ -337,17 +339,11 @@ impl LlmDeliberationFaculty {
             stimulus = Some(ChatMessage::text("user", ws.world_state.clone()));
         }
         input.update([(!latest_result.is_empty()) as u8]);
-        // Demoted room updates ride in ordinary history: still shown when the window
-        // has room, trimmed by the existing front-drop only under pressure. They are
-        // chronologically newer than prior history, so they append to its end.
-        let (room_updates, demoted_updates) = self.split_room_updates(ws);
         let mut messages = messages;
-        // The action result's demoted TAIL rides the same way, and goes in FIRST: it is
-        // the outcome of the act that preceded these room updates, so appending it before
-        // them keeps history in the order it happened. Without this the tail would be
-        // silently dropped, which is the discarding this whole split exists to avoid.
+        // The action result's demoted TAIL rides in ordinary history, still shown when the
+        // window has room. Without this the tail would be silently dropped, which is the
+        // discarding the split exists to avoid.
         messages.extend(demoted_result);
-        messages.extend(demoted_updates);
         let action_statement = self
             .working_memory
             .as_ref()
@@ -360,6 +356,10 @@ impl LlmDeliberationFaculty {
             input_identity: input.finalize().into(),
             history: messages,
             streams: super::types::Streams {
+                room_updates: crate::cognition::context_streams::room_updates::RoomUpdates {
+                    updates: std::sync::Arc::clone(&ws.room_updates),
+                    in_transcript: turns.iter().filter_map(|turn| turn.event_id).collect(),
+                },
                 conversation: crate::cognition::context_streams::conversation::Conversation { turns },
                 blocks,
             },
@@ -369,28 +369,9 @@ impl LlmDeliberationFaculty {
             stimulus,
             latest_result,
             action_statement,
-            room_updates,
         }
     }
 
-    /// Split this turn's room updates into the part that is REQUIRED and the part
-    /// that merely wants to be there. Nothing is discarded.
-    ///
-    /// Room updates are required input — `required_tokens` counts them and
-    /// `fit_messages` never drops them — so an unbounded room is a citizen who can
-    /// no longer think. But simply CUTTING the excess would be worse than the bug:
-    /// a task, a correction, or an instruction that arrived earlier in the batch
-    /// would be deleted before she ever read it, and she would have no way to know
-    /// something was taken.
-    ///
-    /// So the overflow is DEMOTED, not dropped. The newest share stays required; the
-    /// older remainder is returned to be appended to ordinary history, where it is
-    /// still shown whenever the window has room and is trimmed by the existing
-    /// front-drop only under real pressure — the same treatment every other past
-    /// message gets. The information survives; only its claim on the required budget
-    /// does not.
-    ///
-    /// Returns `(required_newest, demoted_older)`, both chronological.
     /// Split the action result into the REQUIRED head and a DEMOTED tail.
     ///
     /// The result of the citizen's last act is required input — she cannot reason about
@@ -471,45 +452,5 @@ impl LlmDeliberationFaculty {
             "the action result exceeded its share of the window — its ending stays              REQUIRED and the earlier part was demoted to ordinary history, still rendered              when the window allows and still re-readable via its spill handle. Nothing              was discarded: an unbounded required result is what makes one big tool output              a mute citizen."
         );
         (tail_msg, Some(head_msg))
-    }
-
-    pub(in super::super) fn split_room_updates(&self, ws: &Workspace) -> (Vec<ChatMessage>, Vec<ChatMessage>) {
-        let window = self.binding.load().context_window as usize;
-        let cap = window / Self::ROOM_UPDATE_SHARE_DENOM as usize;
-        let mut required: Vec<ChatMessage> = Vec::new();
-        let mut demoted: Vec<ChatMessage> = Vec::new();
-        let mut used = 0usize;
-        // Newest first so the REQUIRED half is the freshest room state.
-        for message in ws.room_updates.iter().rev() {
-            let rendered = ChatMessage::text("user", message.render_room_update());
-            let cost = Self::messages_cost(std::slice::from_ref(&rendered));
-            // The newest update is always required, even if it alone exceeds the
-            // share: one oversized message must not silently demote the very
-            // stimulus the turn exists to answer. If it genuinely cannot fit, the
-            // existing capacity fault says so honestly.
-            if required.is_empty() || used.saturating_add(cost) <= cap {
-                used += cost;
-                required.push(rendered);
-            } else {
-                demoted.push(rendered);
-            }
-        }
-        required.reverse();
-        demoted.reverse();
-        if !demoted.is_empty() {
-            let demoted_tokens = Self::messages_cost(&demoted);
-            continuum_base::probe!(
-                class = "delib.room_updates.demoted",
-                persona = %self.persona_name,
-                window = window,
-                cap = cap,
-                required = required.len(),
-                required_tokens = used,
-                demoted = demoted.len(),
-                demoted_tokens = demoted_tokens,
-                "required room payload exceeded its share of the window — the newest                  stay REQUIRED and the older were demoted to ordinary history, which                  is still rendered when the window allows. Nothing was discarded: an                  unbounded required payload is what makes a busy room a mute citizen."
-            );
-        }
-        (required, demoted)
     }
 }
