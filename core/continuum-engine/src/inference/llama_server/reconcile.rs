@@ -87,15 +87,14 @@ pub async fn ensure_model_serving_if_current<C: LlamaServerControl + ?Sized>(
 }
 
 /// Engine replacement alone is not permission to apply a different geometry.
-/// A separately admitted resize still uses the planner's target and trade guards.
+/// Geometry changes are reconsidered separately after convergence, under the trade guards.
 pub(super) fn engine_convergence_target(
     planned: &ServingTarget,
     served_window: u32,
     served_lanes: u32,
-    resize_admitted: bool,
 ) -> Result<ServingTarget, String> {
     let mut selected = planned.clone();
-    if !resize_admitted {
+    {
         if served_window == 0 || served_lanes == 0 {
             return Err("engine convergence requires the incumbent's observed window and lane count; geometry is unknown".to_string());
         }
@@ -443,7 +442,7 @@ async fn serve_or_adopt<C: LlamaServerControl + ?Sized>(
             *ENGINE_STALE.lock() = (!engine_current).then(|| pair.clone());
             if !engine_ok {
                 let resize_admitted = false; // Engine convergence and geometry resize are separate lifecycle decisions.
-                match engine_convergence_target(target, served_window_n, served_lanes_n, resize_admitted) {
+                match engine_convergence_target(target, served_window_n, served_lanes_n) {
                     Ok(selected) => convergence_target = Some(selected),
                     Err(reason) => return EnsureOutcome::Degraded { reason },
                 }

@@ -114,7 +114,7 @@ fn engine_only_convergence_preserves_incumbent_launch_arguments() {
         let mut planned = target("convergence-fixture");
         planned.lanes = 1;
         planned.context_window = planned_window;
-        let selected = super::super::reconcile::engine_convergence_target(&planned, window, lanes, false).unwrap();
+        let selected = super::super::reconcile::engine_convergence_target(&planned, window, lanes).unwrap();
         let invocation = crate::inference::lane_args::base_invocation(
             Path::new("fixture.gguf"), selected.model_id(), "127.0.0.1", 1,
             selected.parallel_lanes(), selected.served_total_ctx(),
@@ -122,10 +122,8 @@ fn engine_only_convergence_preserves_incumbent_launch_arguments() {
         );
         assert_eq!(invocation.value_of("--parallel"), Some(lanes.to_string().as_str()));
         assert_eq!(invocation.value_of("-c"), Some((lanes * window).to_string().as_str()));
-        let resized = super::super::reconcile::engine_convergence_target(&planned, window, lanes, true).unwrap();
-        assert_eq!((resized.lanes, resized.context_window), (planned.lanes, planned.context_window));
     }
     let planned = target("convergence-fixture");
-    assert!(super::super::reconcile::engine_convergence_target(&planned, 0, 2, false).is_err());
-    assert!(super::super::reconcile::engine_convergence_target(&planned, 76032, 0, false).is_err());
+    assert!(super::super::reconcile::engine_convergence_target(&planned, 0, 2).is_err());
+    assert!(super::super::reconcile::engine_convergence_target(&planned, 76032, 0).is_err());
 }
