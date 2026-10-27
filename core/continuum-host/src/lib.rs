@@ -6,3 +6,4 @@
 pub mod durable;
 pub mod file_identity;
 pub mod positioned;
+pub mod stack_sample;
