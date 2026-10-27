@@ -33,12 +33,12 @@ chrono.workspace = true
 candle-core.workspace = true
 tracing.workspace = true
 ts-rs.workspace = true
-schemars = { version = "0.8", features = ["uuid1"] }
-dashmap = "6.1"
-base64 = "0.22"
-sha2 = "0.10"
-csv = "1"
-inventory = "0.3"
+schemars = { workspace = true }
+dashmap = { workspace = true }
+base64 = { workspace = true }
+sha2 = { workspace = true }
+csv = { workspace = true }
+inventory = { workspace = true }
 
 [dev-dependencies]
 continuum-mind = { path = "../continuum-mind", features = ["test-fixtures"] }
@@ -47,7 +47,7 @@ continuum-genome = { path = "../continuum-genome", features = ["test-fixtures"] 
 continuum-client = { path = "../../client/continuum-client", features = ["test-fixtures"] }
 airc-core.workspace = true
 tokio = { workspace = true, features = ["test-util"] }
-tempfile = "3"
+tempfile = { workspace = true }
 
 [features]
 default = []

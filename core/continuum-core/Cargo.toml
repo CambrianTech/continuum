@@ -54,7 +54,7 @@ tokio.workspace = true
 expert-pager-policy = { path = "../expert-pager-policy" }
 serde.workspace = true
 serde_json.workspace = true
-ron = "0.12"     # RON scene descriptions (Bevy-idiomatic on-disk format)
+ron = { workspace = true }     # RON scene descriptions (Bevy-idiomatic on-disk format)
 uuid.workspace = true
 continuum-base = { path = "../continuum-base" }
 continuum-host = { path = "../continuum-host" }
@@ -78,7 +78,7 @@ continuum-context = { path = "../continuum-context" }
 # JSON Schema generation from serde types — the runtime param schema every SDK
 # (CLI/web/mobile/RAG-tools) adapts from. Derived automatically by the command
 # base traits; uuid1 so Uuid fields schema-ize as string. See COMMAND-ORGANIZATION.md.
-schemars = { version = "0.8", features = ["uuid1"] }
+schemars = { workspace = true }
 # Procedural derive macros for ORM entities — #[derive(Entity)].
 # Same crate would be path-deps elsewhere; explicit path makes the
 # dev loop tight (no version juggle while the macro evolves).
@@ -101,23 +101,23 @@ continuum-text-analysis = { path = "../continuum-text-analysis" }
 continuum-client = { path = "../../client/continuum-client" }
 reqwest = { workspace = true, features = ["json", "multipart", "stream"] }
 thiserror.workspace = true
-dashmap = "6.1"  # Lock-free concurrent HashMap
+dashmap = { workspace = true }  # Lock-free concurrent HashMap
 # Distributed compile-time registration: each `CommandSpec` self-registers at its
 # own declaration site (sdk_codegen), so the command registry assembles itself —
 # no hand-maintained list (infinitely-extensible / on-the-fly commands make a
 # static list immediately stale). dtolnay's inventory; link-time collection.
-inventory = "0.3"
+inventory = { workspace = true }
 # jemalloc lives in a target block below (gated off windows-msvc, where
 # jemalloc-sys's autotools build fails); see the `not(target_env = "msvc")`
 # block near the macOS deps + the gated #[global_allocator] in main.rs.
-libc = "0.2"     # Process group management (setsid, kill -pgid)
-fs2 = "0.4"      # Cross-platform advisory file locks (flock / LockFileEx)
-toml = "0.8"     # Avatar model manifest parsing
+libc = { workspace = true }     # Process group management (setsid, kill -pgid)
+fs2 = { workspace = true }      # Cross-platform advisory file locks (flock / LockFileEx)
+toml = { workspace = true }     # Avatar model manifest parsing
 continuum-cli-lifecycle = { path = "../continuum-cli-lifecycle" }  # the CLI's platform lifecycle; its tests must not link this crate
-base64 = "0.22"  # Base64 encoding for audio data
-sha2 = "0.10"   # SHA-256 for OAuth 2.0 PKCE code challenges (RFC 7636) + L1-6 contract canonical hash
+base64 = { workspace = true }  # Base64 encoding for audio data
+sha2 = { workspace = true }   # SHA-256 for OAuth 2.0 PKCE code challenges (RFC 7636) + L1-6 contract canonical hash
 zip = "0.6"     # Extract .vrm from downloaded VRoid avatar archives (provisioning fetch executor)
-ed25519-dalek = { version = "2", features = ["rand_core", "serde"] }  # L1-6 contract event signatures (matches airc-protocol's pinned version)
+ed25519-dalek = { workspace = true }  # L1-6 contract event signatures (matches airc-protocol's pinned version)
 
 # Direct dep on the airc daemon's local IPC contract. No subprocess; no
 # JSON re-encoding in the hot path. CBOR over length-prefixed frames
@@ -145,7 +145,7 @@ chrono.workspace = true
 
 # HTTP server for Anthropic-compatible local inference endpoint
 # Claude Code sends POST /v1/messages — we serve it from Candle
-axum = "0.8"
+axum = { workspace = true }
 tower = "0.5"
 tower-http = { version = "0.6", features = ["cors", "fs"] }
 parking_lot.workspace = true
@@ -154,10 +154,10 @@ tokio-stream.workspace = true
 # Voice processing dependencies
 tokio-tungstenite.workspace = true  # WebSocket server for voice calls
 futures-util.workspace = true
-futures = "0.3"  # For VAD block_on in audio thread
-hound = "3.5"  # WAV file reading/writing
+futures = { workspace = true }  # For VAD block_on in audio thread
+hound = { workspace = true }  # WAV file reading/writing
 once_cell.workspace = true
-rubato = "0.15"  # High-quality audio resampling
+rubato = { workspace = true }  # High-quality audio resampling
 # TEMPORARY: whisper-rs vendors its own ggml and appears to collide with
 # our llama crate's ggml_backend registry — server segfaults in
 # ggml_backend_dev_type during llama_model_load even with
@@ -168,12 +168,12 @@ rubato = "0.15"  # High-quality audio resampling
 ort.workspace = true  # ONNX Runtime for TTS
 rayon.workspace = true
 ndarray.workspace = true
-num_cpus = "1.16"  # CPU count detection
-wide = "0.7"  # Portable SIMD (f32x8) for embedding similarity math — NEON on
+num_cpus = { workspace = true }  # CPU count detection
+wide = { workspace = true }  # Portable SIMD (f32x8) for embedding similarity math — NEON on
               # aarch64 (Mac) / AVX on x86 (Linux grid), guaranteed vectorization
               # at any opt-level (not auto-vec, which only fires in release).
-dirs = "5.0"  # User directories for model paths
-sysinfo = "0.33"  # Cross-platform CPU, memory, system resource monitoring
+dirs = { workspace = true }  # User directories for model paths
+sysinfo = { workspace = true }  # Cross-platform CPU, memory, system resource monitoring
 
 # llama — our owned substrate for inference (67.8 tok/s on M5 Metal).
 # Vendored llama.cpp built via cmake, features gate metal/cuda.
@@ -192,8 +192,8 @@ tokenizers = { workspace = true, features = ["onig"] }
 # Model loading (for inference module)
 safetensors.workspace = true  # Model weight files
 hf-hub.workspace = true       # HuggingFace model downloads
-half = "2.4"                  # f16/bf16 handling for LoRA
-earshot = "0.1"  # Fast VAD (WebRTC-style)
+half = { workspace = true }                  # f16/bf16 handling for LoRA
+earshot = { workspace = true }  # Fast VAD (WebRTC-style)
 tracing.workspace = true
 tracing-subscriber.workspace = true
 tracing-appender.workspace = true
@@ -229,18 +229,18 @@ continuum-bridge-protocol = { path = "../livekit-protocol" }
 # OPTIONAL — only compiled under the `avatar-3d` feature (see [features]).
 
 
-arc-swap = "1.7"           # Wait-free policy publish for SubstrateGovernor (Lane H)
-notify = "8"               # Policy directory watch + hot reload for SubstrateGovernor
-crossbeam-channel = "0.5"  # Frame delivery from Bevy render thread to LiveKit
-image = "0.25"             # RGBA → PNG encoding for avatar snapshots
+arc-swap = { workspace = true }           # Wait-free policy publish for SubstrateGovernor (Lane H)
+notify = { workspace = true }               # Policy directory watch + hot reload for SubstrateGovernor
+crossbeam-channel = { workspace = true }  # Frame delivery from Bevy render thread to LiveKit
+image = { workspace = true }             # RGBA → PNG encoding for avatar snapshots
 
 # Dataset module — CSV parsing for training data import
-csv = "1"
+csv = { workspace = true }
 
 # Code module — file operations, change tracking, code intelligence
-similar = "2.6"                  # Unified diff computation
-ignore = "0.4"                   # .gitignore-aware file walking (from ripgrep)
-regex = "1"                      # Regex search for code search
+similar = { workspace = true }                  # Unified diff computation
+ignore = { workspace = true }                   # .gitignore-aware file walking (from ripgrep)
+regex = { workspace = true }                      # Regex search for code search
 
 # Static-HTML eye: parse a persona's rendered artifact (index.html) into the
 # perception ProbeNode tree so the headless eval core can grade structural
@@ -252,9 +252,9 @@ regex = "1"                      # Regex search for code search
 # previously mis-placed under the macOS-only target block, which broke the
 # Linux continuum-core build (grid Docker images) while native macOS + a stale
 # Windows incremental cache masked it.
-scraper = "0.21"
+scraper = { workspace = true }
 
-rustpython-parser = "0.4.0"
+rustpython-parser = { workspace = true }
 
 # jemalloc EVERYWHERE EXCEPT windows-msvc. jemalloc-sys builds its vendored
 # jemalloc via an autotools `configure` shell script that fails under
@@ -272,7 +272,7 @@ tikv-jemallocator = "0.6"
 # The CLI's detached spawn also uses an explicit native handle allow-list so
 # background cores do not retain their launcher's output-pipe writers.
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.60", features = ["Win32_System_SystemInformation", "Win32_System_ProcessStatus", "Win32_Storage_FileSystem", "Win32_Foundation", "Win32_Globalization", "Win32_Security", "Win32_Security_AppLocker", "Win32_System_Threading", "Win32_System_Pipes", "Win32_System_JobObjects", "Win32_System_Console", "Win32_System_Environment", "Win32_System_SystemServices"] }
+windows-sys = { workspace = true, features = ["Win32_Globalization", "Win32_Security", "Win32_Security_AppLocker", "Win32_Storage_FileSystem", "Win32_System_Console", "Win32_System_Environment", "Win32_System_JobObjects", "Win32_System_Pipes", "Win32_System_ProcessStatus", "Win32_System_SystemInformation", "Win32_System_SystemServices", "Win32_System_Threading"] }
 # Tokio's Mio sockets must not survive a core restart inside preserved children.
 # Keep the fixed release as a resolution floor, including without our lockfile.
 # Mio #1946 creates sockets with WSA_FLAG_NO_HANDLE_INHERIT (since 1.2.1).
@@ -283,10 +283,10 @@ mio = { version = "1.2.3", default-features = false }
 [target.'cfg(target_os = "linux")'.dependencies]
 # A citizen's child processes are confined in-kernel (code/confinement.rs): landlock
 # needs no helper binary, so a fresh clone confines on first boot.
-landlock = "0.4"
+landlock = { workspace = true }
 
 [target.'cfg(target_os = "macos")'.dependencies]
-metal = "0.32"
+metal = { workspace = true }
 # MLX — Apple Silicon native inference runtime. Phase A of continuum#897
 # only flags the module on via the `mlx` feature; the actual `mlx-rs` crate
 # dep lands in phase B when we implement forward() and have the full-Xcode
@@ -480,7 +480,7 @@ continuum-positron = { path = "../continuum-positron", features = ["test-fixture
 # builds of continuum-core do not link it and never did.
 source-hygiene = { path = "../source-hygiene" }
 tokio-test = "0.4"
-tempfile = "3"                   # Temp directories for code module tests
+tempfile = { workspace = true }                   # Temp directories for code module tests
 
 # Enable continuum-client's test-fixtures (the `mock` transport) in TEST builds
 # only — production links the regular dep above without it. Lets tests drive a
@@ -494,4 +494,4 @@ continuum-client = { path = "../../client/continuum-client", features = ["test-f
 # `continuum_client::Transport` in production code, not just tests.
 airc-test-fixtures = { path = "../airc-test-fixtures" }
 airc-protocol = { workspace = true }
-futures = "0.3"
+futures = { workspace = true }

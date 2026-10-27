@@ -20,25 +20,25 @@ tokio.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 uuid.workspace = true
-schemars = { version = "0.8", features = ["uuid1"] }
+schemars = { workspace = true }
 reqwest = { workspace = true, features = ["json", "multipart", "stream"] }
 thiserror.workspace = true
-dashmap = "6.1"  # Lock-free concurrent HashMap
-inventory = "0.3"  # recall decisions register their protected collection
-sha2 = "0.10"
+dashmap = { workspace = true }  # Lock-free concurrent HashMap
+inventory = { workspace = true }  # recall decisions register their protected collection
+sha2 = { workspace = true }
 async-trait.workspace = true
 parking_lot.workspace = true
-futures = "0.3"
+futures = { workspace = true }
 candle-core.workspace = true
 candle-nn.workspace = true  # For VarBuilder
 tracing.workspace = true
 ts-rs.workspace = true  # TypeScript type generation
-tempfile = { version = "3", optional = true }  # test-fixtures: the job board's test storage
+tempfile = { workspace = true, optional = true }  # test-fixtures: the job board's test storage
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util"] }
-tempfile = "3"
-axum = "0.8"  # tests: a stand-in engine training endpoint
+tempfile = { workspace = true }
+axum = { workspace = true }  # tests: a stand-in engine training endpoint
 # The lower layers' test helpers (test_home, CountingEmbedder, fresh_adapter, expert fixtures).
 continuum-kernel = { path = "../continuum-kernel", features = ["test-fixtures"] }
 continuum-engine = { path = "../continuum-engine", features = ["test-fixtures"] }

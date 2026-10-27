@@ -16,19 +16,19 @@ tokio.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 uuid.workspace = true
-schemars = { version = "0.8", features = ["uuid1"] }
+schemars = { workspace = true }
 async-trait.workspace = true
-inventory = "0.3"
+inventory = { workspace = true }
 tracing.workspace = true
 ts-rs.workspace = true
 parking_lot.workspace = true
-futures = "0.3"
-num_cpus = "1.16"
+futures = { workspace = true }
+num_cpus = { workspace = true }
 reqwest = { workspace = true, features = ["json"] }
-tempfile = { version = "3", optional = true }
+tempfile = { workspace = true, optional = true }
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.60", features = ["Win32_System_ProcessStatus", "Win32_Foundation"] }
+windows-sys = { workspace = true, features = ["Win32_System_ProcessStatus"] }
 
 [dev-dependencies]
 continuum-kernel = { path = "../continuum-kernel", features = ["test-fixtures"] }  # every test build gets the per-process continuum home (card d11d9827)
@@ -36,8 +36,8 @@ continuum-engine = { path = "../continuum-engine", features = ["test-fixtures"] 
 continuum-mind = { path = "../continuum-mind", features = ["test-fixtures"] }
 continuum-dreaming = { path = "../continuum-dreaming", features = ["test-fixtures"] }
 tokio = { workspace = true, features = ["test-util"] }
-tempfile = "3"
-axum = "0.8"
+tempfile = { workspace = true }
+axum = { workspace = true }
 
 [features]
 default = []

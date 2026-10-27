@@ -10,9 +10,9 @@ proc-macro = true
 [dependencies]
 # Standard proc-macro toolchain. Same versions as ts-rs uses
 # transitively, so the workspace's resolver picks one copy of each.
-syn = { version = "2", features = ["full", "extra-traits"] }
+syn = { workspace = true }
 quote = "1"
-proc-macro2 = "1"
+proc-macro2 = { workspace = true }
 # Detects the consumer's chosen name for `continuum-core` in their
 # Cargo.toml so the macro emits paths that resolve under any rename.
 # Per Reviewer 1 #7: absolute `::continuum_core::*` paths fail when

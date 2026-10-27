@@ -16,19 +16,19 @@ tokio.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 uuid.workspace = true
-schemars = { version = "0.8", features = ["uuid1"] }
+schemars = { workspace = true }
 async-trait.workspace = true
 tracing.workspace = true
 ts-rs.workspace = true  # TypeScript type generation
-inventory = "0.3"  # register_command! submits into the kernel's command registry
-image = "0.25"
-scraper = "0.21"
-base64 = "0.22"  # perception/look encodes a captured frame as a data URL
+inventory = { workspace = true }  # register_command! submits into the kernel's command registry
+image = { workspace = true }
+scraper = { workspace = true }
+base64 = { workspace = true }  # perception/look encodes a captured frame as a data URL
 
 [dev-dependencies]
 continuum-kernel = { path = "../continuum-kernel", features = ["test-fixtures"] }  # every test build of this crate gets the per-process continuum home (card d11d9827)
 tokio = { workspace = true, features = ["test-util"] }
-tempfile = "3"
+tempfile = { workspace = true }
 airc-blobs.workspace = true  # tests: frames retained into a real blob store
 
 [features]
