@@ -111,9 +111,7 @@ impl<R: AircWorkReader + ?Sized> ClaimFollowingCapture<R> {
         // card go belongs to the card it let go, so a released segment keeps it.
         let (end_act, end_receipt) = if now.is_some() { (this_act, act_start) } else { (acts.len(), receipts.len()) };
         if let Some(mut done) = self.current.take() {
-            // unwrap_or_default: a segment never begins past the turn it is part of; an empty
-            // slice stages nothing (`record` refuses an empty snapshot).
-            let acts_of = acts.get(done.from_act..end_act).unwrap_or_default();
+            let acts_of = acts.get(done.from_act..end_act).unwrap_or_default(); // unwrap_or_default: a segment begins inside its turn; an empty slice stages nothing
             let receipts_of = receipts.get(done.from_receipt..end_receipt).unwrap_or_default(); // unwrap_or_default: as above
             done.capture.record(acts_of, receipts_of, None, true).await;
         }
