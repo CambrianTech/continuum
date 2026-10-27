@@ -390,6 +390,44 @@ futures-util = "0.3"
 # codegen-units was set to 1 as defense-in-depth but that forces LLVM to run
 # single-threaded, pinning one core at 99% during compilation. The symbol conflict
 # is a link-time issue unaffected by codegen units. Default 16 enables parallel LLVM.
+
+# Shared by 2+ crates (Joel 2026-10-27): declared once here; members say `workspace = true` plus only their own extras.
+arc-swap = "1.7"
+axum = "0.8"
+base64 = "0.22"
+crossbeam-channel = "0.5"
+csv = "1"
+dashmap = "6.1"
+dirs = "5.0"
+earshot = "0.1"
+ed25519-dalek = { version = "2", features = ["rand_core", "serde"] }
+fs2 = "0.4"
+futures = "0.3"
+hound = "3.5"
+ignore = "0.4"
+image = "0.25"
+inventory = "0.3"
+landlock = "0.4"
+libc = "0.2"
+metal = "0.32"
+notify = "8"
+num_cpus = "1.16"
+objc = "0.2"
+positron-core = { git = "https://github.com/CambrianTech/positron", tag = "v0.1.1" }
+proc-macro2 = "1.0.107"
+regex = "1"
+ron = "0.12"
+rubato = "0.15"
+rustpython-parser = "0.4.0"
+schemars = { version = "0.8", features = ["uuid1"] }
+scraper = "0.21"
+similar = "2.6"
+syn = { version = "2", features = ["extra-traits", "full"] }
+sysinfo = "0.33"
+tempfile = "3"
+toml = "0.8"
+wide = "0.7"
+windows-sys = { version = "0.60", features = ["Win32_Foundation"] }
 [profile.release]
 # codegen-units = 1  # REMOVED — was single-threading rustc compilation for no benefit
 # Strip debug symbols — continuum-core-server is ~200MB+ without this, mostly

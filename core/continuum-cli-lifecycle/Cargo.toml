@@ -17,21 +17,21 @@ edition = "2021"
 [dependencies]
 continuum-host = { path = "../continuum-host" } # durable placement of the recovery journal
 async-trait = "0.1" # shared deploy-source contract; no server implementation dependency
-serde = { version = "1.0", features = ["derive"] }
-serde_json = "1.0"
+serde = { workspace = true }
+serde_json = { workspace = true }
 tokio = { version = "1", features = ["time", "process", "rt", "macros"] }  # launchd interval + supervisor_install process/timeout — PRODUCTION code, not tests
-sha2 = "0.10"
-sysinfo = "0.33" # process::is_alive, the one pid-liveness check (deploy_claim, lane reaping)
-base64 = "0.22"
+sha2 = { workspace = true }
+sysinfo = { workspace = true } # process::is_alive, the one pid-liveness check (deploy_claim, lane reaping)
+base64 = { workspace = true }
 
 [target.'cfg(unix)'.dependencies]
-libc = "0.2"     # launchd.rs: geteuid() for the root check
+libc = { workspace = true }     # launchd.rs: geteuid() for the root check
 
 [dev-dependencies]
-tempfile = "3"   # install_cli / supervisor_install tests write into a temp root
+tempfile = { workspace = true }   # install_cli / supervisor_install tests write into a temp root
 uuid = { version = "1", features = ["v4"] }  # test-only: unique temp dirs
 
 [target.'cfg(windows)'.dependencies]
 chrono = "0.4"
 same-file = "1.0" # verify uu.exe and continuum.exe name the same NTFS file
-windows-sys = { version = "0.60", features = ["Win32_Foundation", "Win32_Storage_FileSystem", "Win32_Globalization", "Win32_Security", "Win32_System_Threading", "Win32_System_Pipes", "Win32_System_JobObjects", "Win32_Security_AppLocker", "Win32_System_Console", "Win32_System_Environment", "Win32_System_SystemServices"] }
+windows-sys = { workspace = true, features = ["Win32_Globalization", "Win32_Security", "Win32_Security_AppLocker", "Win32_Storage_FileSystem", "Win32_System_Console", "Win32_System_Environment", "Win32_System_JobObjects", "Win32_System_Pipes", "Win32_System_SystemServices", "Win32_System_Threading"] }

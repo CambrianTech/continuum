@@ -13,4 +13,4 @@ path = "src/main.rs"
 # itself a dev-tier manifest module, so the toolchain builds it early/cheap).
 [dependencies]
 serde = { workspace = true }
-toml = "0.8"
+toml = { workspace = true }
