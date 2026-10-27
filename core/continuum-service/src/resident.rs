@@ -102,7 +102,7 @@ impl ResidentLedger {
     /// Close the window `span`: its turns move into the summary, the parked refusal stays
     /// standing. `in_flight_since_ms` is when her unsettled turn started, if one is in flight:
     /// a turn that has run since before the window opened is demand the window never saw settle
-    /// (Eitan, enrico 2026-10-26: one turn, 4,500 s at the lane gate). A turn that began INSIDE
+    /// (Eitan, enrico 2026-10-26: one turn, 4,500 s in flight on slot 1). A turn that began INSIDE
     /// the window is not counted yet, so a long turn that will complete never alarms its own
     /// window; if it never settles, it spans the next window whole and is counted there.
     pub fn close(&mut self, span: Window, in_flight_since_ms: Option<u64>) -> ResidentWindow {

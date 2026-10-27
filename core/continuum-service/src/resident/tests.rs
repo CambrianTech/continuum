@@ -132,7 +132,7 @@ fn the_dominant_refusal_is_the_class_met_most_at_its_latest_numbers() {
 }
 
 // what this catches (Cormac on #5496): a turn in flight is invisible to the window it spans.
-// Eitan's one turn waited 4,500 s at the lane gate and Paige's one cycle took 3,103 s (enrico,
+// Eitan's one turn was in flight on slot 1 for 4,500 s and Paige's one cycle took 3,103 s (enrico,
 // 2026-10-26); counting only settled turns read those hours as idle. A turn begun before the
 // window and still unsettled at its close is demand with nothing completed: a stall, and the
 // alarm says how long the turn has run. A mind whose turn never settles may have no settled

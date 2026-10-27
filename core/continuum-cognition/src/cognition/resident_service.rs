@@ -45,7 +45,7 @@ pub fn unpark(persona: Uuid) {
 /// Close every resident's window `span`: the turns settled since the last close, who is
 /// still parked, and whose turn has been in flight since before the window opened. A mind
 /// whose first turn of this boot never settles has no ledger yet, so the turns in flight
-/// open one: Eitan waited 4,500 s at the gate in ONE turn (enrico, 2026-10-26), and a window
+/// open one: Eitan was in flight on slot 1 for 4,500 s in ONE turn (enrico, 2026-10-26), and a window
 /// that only counted settled turns read him as idle.
 pub fn close_windows(span: Window) -> Vec<(Uuid, ResidentWindow)> {
     let in_flight = crate::cognition::turn_ledger::in_flight_starts();
