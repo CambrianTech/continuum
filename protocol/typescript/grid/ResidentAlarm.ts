@@ -11,6 +11,10 @@ export type ResidentAlarm = { persona_id: string, name: string, state: ResidentA
  */
 refusals: number, parked: boolean, 
 /**
+ * When her unsettled turn started, if one has been in flight since before the window.
+ */
+in_flight_since_ms: number | null, 
+/**
  * The refusal class she met most, at its latest numbers.
  */
 refusal: ResidentRefusal | null, };

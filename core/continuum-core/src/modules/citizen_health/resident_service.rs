@@ -77,7 +77,6 @@ fn stream_facts(residents_active: u32) -> StreamFacts {
 /// Close and judge every live resident's window ending at `now_ms`; probe and publish the
 /// alarms. Returns them for the hour's line.
 pub(super) async fn judge_residents(now_ms: u64) -> Vec<ResidentAlarm> {
-    let windows = crate::cognition::resident_service::close_windows();
     let registry = crate::persona::airc_runtime_registry::PersonaAircRuntimeRegistry::try_global();
     let live: HashSet<Uuid> = registry.as_ref().map(|r| r.live_personas().into_iter().collect()).unwrap_or_default(); // unwrap_or_default: no registry = no residents to judge
     let facts = stream_facts(live.len() as u32);
@@ -85,6 +84,7 @@ pub(super) async fn judge_residents(now_ms: u64) -> Vec<ResidentAlarm> {
     let window_ms = HEALTH_WINDOW.as_millis() as u64;
     let span = Window { start_ms: streams.last_close_ms.unwrap_or(now_ms.saturating_sub(window_ms)), end_ms: now_ms }; // unwrap_or: the first window is the tick's own interval
     streams.last_close_ms = Some(now_ms);
+    let windows = crate::cognition::resident_service::close_windows(span);
     streams.states.retain(|id, _| live.contains(id));
     let mut alarms = Vec::new();
     for (persona, window) in windows.into_iter().filter(|(id, _)| live.contains(id)) {
@@ -124,6 +124,7 @@ fn probe(alarm: &ResidentAlarm) {
             completions = alarm.completions,
             refusals = alarm.refusals,
             parked = alarm.parked,
+            in_flight_since_ms = alarm.in_flight_since_ms.unwrap_or(0), // unwrap_or: 0 = no turn in flight across the window
             refusal = refusal,
             required_tokens = required_tokens,
             budget_tokens = budget_tokens,

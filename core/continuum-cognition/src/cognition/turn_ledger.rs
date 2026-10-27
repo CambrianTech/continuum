@@ -102,6 +102,16 @@ pub fn turn_in_flight(persona: uuid::Uuid) -> bool {
     IN_FLIGHT.lock().contains(&persona)
 }
 
+/// Every mind with a turn in flight right now, and when that turn started (ms, the clock
+/// [`begin_turn`] was stamped with). A resident's service window reads this so a turn that
+/// never settles still counts as demand (card 1c157668). Locks taken one at a time.
+pub fn in_flight_starts() -> Vec<(uuid::Uuid, u64)> {
+    let personas: Vec<uuid::Uuid> = IN_FLIGHT.lock().iter().copied().collect();
+    let starts = LAST_TURN_MS.lock();
+    // begin_turn stamps the start before marking in flight, so a mind in flight has a start.
+    personas.into_iter().filter_map(|p| starts.get(&p).map(|s| (p, *s))).collect()
+}
+
 /// Every turn in flight right now, as (ms it has run, her typical turn ms — `None` until
 /// she has finished one this boot). The settle before a stop sizes its wait from this
 /// ([`crate::cognition::turn_ingress::settle_bound_ms`]). `now_ms` is the clock

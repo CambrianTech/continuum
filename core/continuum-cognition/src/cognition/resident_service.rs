@@ -11,6 +11,7 @@
 use std::sync::LazyLock;
 
 use continuum_service::resident::{Completion, Refusal, ResidentLedger, ResidentWindow, Turn};
+use continuum_service::sample::Window;
 use dashmap::DashMap;
 use uuid::Uuid;
 
@@ -41,9 +42,24 @@ pub fn unpark(persona: Uuid) {
     }
 }
 
-/// Close every resident's window: the turns since the last close, and who is still parked.
-pub fn close_windows() -> Vec<(Uuid, ResidentWindow)> {
-    LEDGERS.iter_mut().map(|mut entry| (*entry.key(), entry.value_mut().close())).collect()
+/// Close every resident's window `span`: the turns settled since the last close, who is
+/// still parked, and whose turn has been in flight since before the window opened. A mind
+/// whose first turn of this boot never settles has no ledger yet, so the turns in flight
+/// open one: Eitan waited 4,500 s at the gate in ONE turn (enrico, 2026-10-26), and a window
+/// that only counted settled turns read him as idle.
+pub fn close_windows(span: Window) -> Vec<(Uuid, ResidentWindow)> {
+    let in_flight = crate::cognition::turn_ledger::in_flight_starts();
+    for (persona, _) in &in_flight {
+        LEDGERS.entry(*persona).or_default();
+    }
+    LEDGERS
+        .iter_mut()
+        .map(|mut entry| {
+            let persona = *entry.key();
+            let since = in_flight.iter().find(|(p, _)| *p == persona).map(|(_, start)| *start);
+            (persona, entry.value_mut().close(span, since))
+        })
+        .collect()
 }
 
 /// What one driven turn asked of the engine and got. A turn that served at least one

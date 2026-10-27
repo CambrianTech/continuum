@@ -99,17 +99,24 @@ impl ResidentLedger {
         self.parked_on = None;
     }
 
-    /// Close the window: its turns move into the summary, the parked refusal stays standing.
-    pub fn close(&mut self) -> ResidentWindow {
-        ResidentWindow::of(std::mem::take(&mut self.turns), self.parked_on, &self.model)
+    /// Close the window `span`: its turns move into the summary, the parked refusal stays
+    /// standing. `in_flight_since_ms` is when her unsettled turn started, if one is in flight:
+    /// a turn that has run since before the window opened is demand the window never saw settle
+    /// (Eitan, enrico 2026-10-26: one turn, 4,500 s at the lane gate). A turn that began INSIDE
+    /// the window is not counted yet, so a long turn that will complete never alarms its own
+    /// window; if it never settles, it spans the next window whole and is counted there.
+    pub fn close(&mut self, span: Window, in_flight_since_ms: Option<u64>) -> ResidentWindow {
+        let spanning = in_flight_since_ms.filter(|start| *start <= span.start_ms);
+        ResidentWindow::of(std::mem::take(&mut self.turns), self.parked_on, spanning, &self.model)
     }
 }
 
 /// One closed window of one resident's turns.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ResidentWindow {
-    /// Turns that asked the engine for something, plus one for a refusal parked across the
-    /// whole window (a parked mind asks again only when capacity changes, and it may never).
+    /// Turns that asked the engine for something; with none settled, one for a refusal parked
+    /// across the window (a parked mind asks again only when capacity changes, and it may
+    /// never) or for a turn in flight across the whole window.
     pub offered: u32,
     pub completions: u32,
     pub generations: u32,
@@ -124,13 +131,15 @@ pub struct ResidentWindow {
     pub model: String,
     /// Still parked on a refusal when the window closed.
     pub parked: bool,
+    /// When her unsettled turn started, if it has been in flight since before the window.
+    pub in_flight_since_ms: Option<u64>,
     /// The refusal class she met most this window, at its latest numbers, and how often; the
     /// parked refusal with a count of 0 when she met none this window but is still parked.
     pub dominant: Option<(Refusal, u32)>,
 }
 
 impl ResidentWindow {
-    fn of(turns: Vec<Turn>, parked_on: Option<Refusal>, model: &str) -> Self {
+    fn of(turns: Vec<Turn>, parked_on: Option<Refusal>, in_flight_since_ms: Option<u64>, model: &str) -> Self {
         let completed: Vec<&Completion> = turns.iter().filter_map(|t| t.completion.as_ref()).collect();
         let refusals: Vec<Refusal> = turns.iter().filter_map(|t| t.refusal).collect();
         let mut wall: Vec<u64> = completed.iter().map(|c| c.wall_ms).collect();
@@ -150,7 +159,7 @@ impl ResidentWindow {
         };
         let dominant = dominant(&refusals).or(parked_on.map(|r| (r, 0)));
         Self {
-            offered: (turns.len() as u32) + u32::from(turns.is_empty() && parked_on.is_some()),
+            offered: (turns.len() as u32) + u32::from(turns.is_empty() && (parked_on.is_some() || in_flight_since_ms.is_some())),
             completions: completed.len() as u32,
             generations: completed.iter().map(|c| c.generations).sum(),
             acts: completed.iter().map(|c| c.acts).sum(),
@@ -163,6 +172,7 @@ impl ResidentWindow {
             warmup,
             model: model.to_string(),
             parked: parked_on.is_some(),
+            in_flight_since_ms,
             dominant,
         }
     }
@@ -249,6 +259,9 @@ pub struct ResidentAlarm {
     /// Turns refused this window (every class).
     pub refusals: u32,
     pub parked: bool,
+    /// When her unsettled turn started, if one has been in flight since before the window.
+    #[ts(type = "number | null")]
+    pub in_flight_since_ms: Option<u64>,
     /// The refusal class she met most, at its latest numbers.
     pub refusal: Option<Refusal>,
 }
@@ -280,6 +293,7 @@ impl ResidentAlarm {
             completions: window.completions,
             refusals: window.refused,
             parked: window.parked,
+            in_flight_since_ms: window.in_flight_since_ms,
             refusal: window.dominant.map(|(r, _)| r),
         })
     }
@@ -307,7 +321,11 @@ impl ResidentAlarm {
             None => String::new(),
         };
         let parked = if self.parked { ", parked" } else { "" };
-        format!("{} {what}{why}{parked}", self.name)
+        let in_flight = match self.in_flight_since_ms {
+            Some(start) => format!(", one turn in flight {} s", self.window_end_ms.saturating_sub(start) / 1000),
+            None => String::new(),
+        };
+        format!("{} {what}{why}{parked}{in_flight}", self.name)
     }
 }
 

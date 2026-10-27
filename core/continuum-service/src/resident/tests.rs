@@ -63,7 +63,7 @@ fn every_turn_refused_at_capacity_is_a_stall_within_one_window_naming_the_number
     for _ in 0..12 {
         ledger.note(refused(KIMI));
     }
-    let window = ledger.close();
+    let window = ledger.close(span(0), None);
     let verdict = judge(&mut state, &policy(), &window, span(0), &stream());
     assert_eq!(verdict, Verdict::Stalled { offered: 12, failures: 12 });
     let kimi = Uuid::from_u128(0x5090);
@@ -73,7 +73,7 @@ fn every_turn_refused_at_capacity_is_a_stall_within_one_window_naming_the_number
     assert!(alarm.parked);
     assert_eq!(alarm.line(), "Kimi stalled: 12 asked, 0 completed, prompt capacity 26101 > 17829 at context 49152, parked");
 
-    let parked = ledger.close();
+    let parked = ledger.close(span(1), None);
     assert_eq!((parked.offered, parked.dominant), (1, Some((KIMI, 0))));
     assert_eq!(judge(&mut state, &policy(), &parked, span(1), &stream()), Verdict::Stalled { offered: 1, failures: 0 });
 }
@@ -89,7 +89,7 @@ fn a_working_resident_is_healthy_and_a_completed_turn_that_then_parks_stalls_the
         for wall_ms in [50_000, 55_000, 60_000] {
             ledger.note(completed(wall_ms));
         }
-        let window = ledger.close();
+        let window = ledger.close(span(hour), None);
         assert_eq!(window.warmup, Warmup::Warm);
         let verdict = judge(&mut state, &policy(), &window, span(hour), &stream());
         let expected = if hour < 3 { Verdict::Insufficient(Insufficient::NoReference) } else { Verdict::Healthy };
@@ -100,8 +100,8 @@ fn a_working_resident_is_healthy_and_a_completed_turn_that_then_parks_stalls_the
     let sahar = Refusal::PromptCapacity { required_tokens: 63_840, budget_tokens: 49_152, context_window: Some(49_152) };
     ledger.note(completed(55_000));
     ledger.note(Turn { completion: None, refusal: Some(sahar) });
-    assert_eq!(judge(&mut state, &policy(), &ledger.close(), span(4), &stream()), Verdict::Healthy);
-    assert!(matches!(judge(&mut state, &policy(), &ledger.close(), span(5), &stream()), Verdict::Stalled { .. }));
+    assert_eq!(judge(&mut state, &policy(), &ledger.close(span(4), None), span(4), &stream()), Verdict::Healthy);
+    assert!(matches!(judge(&mut state, &policy(), &ledger.close(span(5), None), span(5), &stream()), Verdict::Stalled { .. }));
 }
 
 // what this catches: an idle resident (nothing asked) and a stopped one (her loop ended while
@@ -111,15 +111,15 @@ fn a_working_resident_is_healthy_and_a_completed_turn_that_then_parks_stalls_the
 fn an_idle_or_stopped_resident_is_insufficient_never_stalled() {
     let (mut ledger, mut state) = (ResidentLedger::default(), ServiceState::default());
     ledger.note(Turn { completion: None, refusal: None });
-    let idle = ledger.close();
+    let idle = ledger.close(span(0), None);
     let verdict = judge(&mut state, &policy(), &idle, span(0), &stream());
     assert_eq!(verdict, Verdict::Insufficient(Insufficient::NoDemand));
     assert_eq!(ResidentAlarm::of(Uuid::nil(), "Atlas", &idle, span(0), &verdict), None);
 
     ledger.note(refused(KIMI));
     ledger.unpark();
-    assert!(matches!(judge(&mut state, &policy(), &ledger.close(), span(1), &stream()), Verdict::Stalled { .. }), "the refused hour itself was a stall");
-    assert_eq!(judge(&mut state, &policy(), &ledger.close(), span(2), &stream()), Verdict::Insufficient(Insufficient::NoDemand), "stopped, not stalled");
+    assert!(matches!(judge(&mut state, &policy(), &ledger.close(span(1), None), span(1), &stream()), Verdict::Stalled { .. }), "the refused hour itself was a stall");
+    assert_eq!(judge(&mut state, &policy(), &ledger.close(span(2), None), span(2), &stream()), Verdict::Insufficient(Insufficient::NoDemand), "stopped, not stalled");
 }
 
 // what this catches: the dominant refusal is the class met MOST, at its latest numbers, so a
@@ -127,6 +127,43 @@ fn an_idle_or_stopped_resident_is_insufficient_never_stalled() {
 #[test]
 fn the_dominant_refusal_is_the_class_met_most_at_its_latest_numbers() {
     let earlier = Refusal::PromptCapacity { required_tokens: 25_000, budget_tokens: 17_829, context_window: None };
-    let window = ResidentWindow::of(vec![refused(earlier), refused(KIMI), refused(Refusal::LaneStarved)], None, "");
+    let window = ResidentWindow::of(vec![refused(earlier), refused(KIMI), refused(Refusal::LaneStarved)], None, None, "");
     assert_eq!(window.dominant, Some((KIMI, 2)));
+}
+
+// what this catches (Cormac on #5496): a turn in flight is invisible to the window it spans.
+// Eitan's one turn waited 4,500 s at the lane gate and Paige's one cycle took 3,103 s (enrico,
+// 2026-10-26); counting only settled turns read those hours as idle. A turn begun before the
+// window and still unsettled at its close is demand with nothing completed: a stall, and the
+// alarm says how long the turn has run. A mind whose turn never settles may have no settled
+// turn at all, so this holds on an empty ledger.
+#[test]
+fn a_turn_in_flight_across_the_whole_window_is_a_stall_never_idle() {
+    let (mut ledger, mut state) = (ResidentLedger::default(), ServiceState::default());
+    let started = span(1).start_ms - 900_000;
+    let window = ledger.close(span(1), Some(started));
+    let verdict = judge(&mut state, &policy(), &window, span(1), &stream());
+    assert_eq!(verdict, Verdict::Stalled { offered: 1, failures: 0 });
+    let Some(alarm) = ResidentAlarm::of(Uuid::from_u128(7), "Eitan", &window, span(1), &verdict) else { panic!("a stuck turn raises an alarm") };
+    assert_eq!(alarm.in_flight_since_ms, Some(started));
+    assert_eq!(alarm.line(), "Eitan stalled: 1 asked, 0 completed, one turn in flight 4500 s");
+}
+
+// what this catches: the fix must not cry wolf on a long turn that completes. A 40-minute turn
+// that began mid-window and is unsettled at the close is not counted against that window
+// (NoDemand, no alarm); it settles in the next one, which reads healthy work, not a stall.
+#[test]
+fn a_long_turn_that_began_inside_the_window_never_alarms_it() {
+    let (mut ledger, mut state) = (ResidentLedger::default(), ServiceState::default());
+    let started = span(0).start_ms + 1_800_000;
+    let window = ledger.close(span(0), Some(started));
+    let verdict = judge(&mut state, &policy(), &window, span(0), &stream());
+    assert_eq!(verdict, Verdict::Insufficient(Insufficient::NoDemand));
+    assert_eq!(ResidentAlarm::of(Uuid::nil(), "Paige", &window, span(0), &verdict), None);
+
+    ledger.note(completed(2_400_000));
+    let settled = ledger.close(span(1), None);
+    let verdict = judge(&mut state, &policy(), &settled, span(1), &stream());
+    assert_eq!(verdict, Verdict::Insufficient(Insufficient::NoReference), "her first measured hour, not a stall");
+    assert_eq!(ResidentAlarm::of(Uuid::nil(), "Paige", &settled, span(1), &verdict), None);
 }
