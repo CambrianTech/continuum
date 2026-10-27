@@ -275,13 +275,11 @@ impl LlmDeliberationFaculty {
         // 2026-07-20 humaneval fix); her notices ride her view, ahead of all of this.
         if !prompt.latest_result.is_empty() {
             prompt.history.extend(prompt.stimulus);
-            prompt.history.extend(prompt.room_updates);
             prompt.history.extend(prompt.action_statement);
             prompt.history.extend(prompt.latest_result);
         } else {
             prompt.history.extend(prompt.action_statement);
             prompt.history.extend(prompt.stimulus);
-            prompt.history.extend(prompt.room_updates);
         }
         Ok(FittedMessages {
             messages: prompt.history,
@@ -335,7 +333,6 @@ impl LlmDeliberationFaculty {
             stimulus: None,
             latest_result: required,
             action_statement: None,
-            room_updates: Vec::new(),
         };
         let mut fitted = self.fit_messages(prompt, input_budget
             .saturating_sub(fixed_tokens).saturating_sub(frozen_grounding_tokens))?;

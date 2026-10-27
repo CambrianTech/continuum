@@ -84,17 +84,12 @@ async fn substrate_notices_survive_attention_and_history_pressure_once() {
     assert_eq!(view.messages.iter().filter(|message| message.content_text().contains("[no-deliverable]")).count(), 1);
 }
 
-// what this catches: an UNBOUNDED required room payload making a citizen mute.
-// Room updates are required input — `required_tokens` counts them and
-// `fit_messages` never drops them — so before this bound a busy room drove the
-// required side past the whole window, `grounding_budget` saturated to 0, and
-// every turn was refused. Measured live 2026-09-09: conversation_tokens=53522
-// against a 23,040 window, 192 of 229 cognition cycles refused (84%), both
-// citizens mute for hours while serving reported ready.
-//
-// Mutation check: delete the cap in `bounded_room_updates` (collect every
-// update instead) and this goes RED with a capacity_error — which is exactly
-// the production symptom.
+// what this catches: a busy room making a citizen mute. Room updates were required input,
+// so before they were bounded a busy room drove the required side past the whole window and
+// every turn was refused (2026-09-09: conversation_tokens=53522 against a 23,040 window, 192
+// of 229 cognition cycles refused, both citizens mute for hours while serving reported
+// ready). They are now items of her view, weighed like her conversation: the newest reaches
+// her whole and the window never refuses her for the room's volume.
 #[tokio::test]
 async fn a_busy_room_cannot_make_a_citizen_mute() {
     let adapter: Arc<dyn AIProviderAdapter> = Arc::new(HeuristicInferenceAdapter::new());
@@ -129,37 +124,9 @@ async fn a_busy_room_cannot_make_a_citizen_mute() {
         view.capacity_error
     );
 
-    // The NEWEST updates stay REQUIRED; the older ones are DEMOTED, not
-    // deleted. Joel, 2026-09-09: "maybe trim clipped or killed important
-    // information the persona needed to complete things" — a task or a
-    // correction that arrived earlier in the batch must not vanish before
-    // she reads it, so the overflow rides in ordinary history instead.
-    let (required, demoted) = faculty.split_room_updates(&ws);
-    assert!(!required.is_empty(), "the newest update is always required");
     assert!(
-        !demoted.is_empty(),
-        "an over-share payload must actually be demoted"
-    );
-    assert_eq!(
-        required.len() + demoted.len(),
-        40,
-        "every update survives somewhere — demotion must not DELETE"
-    );
-    assert!(
-        required
-            .last()
-            .expect("required is non-empty")
-            .content_text()
-            .contains("update 39"),
-        "the NEWEST update must stay required"
-    );
-    assert!(
-        demoted
-            .first()
-            .expect("demoted is non-empty")
-            .content_text()
-            .contains("update 0"),
-        "the OLDEST update is the one demoted, and it is still present"
+        view.messages.iter().any(|message| message.content_text().contains("update 39")),
+        "the newest update reaches her"
     );
 }
 

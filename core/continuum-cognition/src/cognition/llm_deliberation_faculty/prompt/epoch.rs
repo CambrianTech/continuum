@@ -332,7 +332,7 @@ impl LlmDeliberationFaculty {
 
     /// Her sources in the order an epoch start renders them, the front that survives a
     /// turnover first: the settled blocks (standing and board churn, in their canonical
-    /// order), her actions, her conversation, the blocks that count or change within an
+    /// order), her actions, her conversation and what reached her rooms during this drive, the blocks that count or change within an
     /// epoch (the kanban's claims, recall, awareness, an unknown block), her thoughts, her open
     /// views, then the notices her substrate posted, whose investigation tally changes most acts. Within an epoch the order cannot matter (every act appends), so it is
     /// chosen for the one rewrite an epoch costs: a turnover keeps the prefix up to the
@@ -363,6 +363,7 @@ impl LlmDeliberationFaculty {
             streams.blocks.iter().filter(settled).map(as_source).collect();
         sources.extend(memory.map(|m| &m.actions as &dyn Source<ContextMessage>));
         sources.push(&streams.conversation);
+        sources.push(&streams.room_updates);
         sources.extend(streams.blocks.iter().filter(|block| !settled(block)).map(as_source));
         sources.extend(memory.map(|m| &m.thoughts as &dyn Source<ContextMessage>));
         sources.extend(memory.map(|m| &m.open_views as &dyn Source<ContextMessage>));

@@ -123,7 +123,6 @@ fn fit_receipt_names_what_it_dropped_and_when_it_emptied_the_history() {
         history,
         stimulus: Some(stimulus.clone()),
         latest_result: Vec::new(), action_statement: None,
-        room_updates: Vec::new(),
     };
     let required = prompt(Vec::new()).required_tokens();
     let total: usize = history.iter().map(LlmDeliberationFaculty::message_cost).sum();
@@ -186,7 +185,6 @@ fn fit_front_advances_in_quanta_not_per_act() {
                     history: msgs[..n].to_vec(),
                     stimulus: None,
                     latest_result: Vec::new(), action_statement: None,
-                    room_updates: Vec::new(),
                 },
                 budget,
             )
@@ -238,7 +236,6 @@ fn fit_front_advances_in_quanta_not_per_act() {
                 history: clustered,
                 stimulus: None,
                 latest_result: Vec::new(), action_statement: None,
-                room_updates: Vec::new(),
             },
             budget,
         )
@@ -269,7 +266,6 @@ fn fit_front_advances_in_quanta_not_per_act() {
         ],
         stimulus: None,
         latest_result: Vec::new(), action_statement: None,
-        room_updates: Vec::new(),
     };
     let ambient_cost =
         LlmDeliberationFaculty::message_cost(ambient().history.last().unwrap());
@@ -296,19 +292,15 @@ fn the_pinned_result_rides_last_and_nothing_rides_after_the_ask() {
         history: vec![ChatMessage::text("user", "[work turn] fix the bug")],
         stimulus: Some(ChatMessage::text("user", "the ask")),
         latest_result: result.then(|| ChatMessage::text("user", "Full result of your most recent action")).into_iter().collect(), action_statement: None,
-        room_updates: vec![ChatMessage::text("user", "[Room message received during this turn] hi")],
     };
     let order = |result: bool| -> Vec<String> {
         faculty.fit_messages(prompt(result), 100_000).expect("test: fits").messages.iter()
             .map(|m| m.content_text().lines().next().unwrap_or("").to_string()).collect()
     };
     assert_eq!(order(true), vec![
-        "[work turn] fix the bug", "the ask", "[Room message received during this turn] hi",
-        "Full result of your most recent action",
+        "[work turn] fix the bug", "the ask", "Full result of your most recent action",
     ]);
-    assert_eq!(order(false), vec![
-        "[work turn] fix the bug", "the ask", "[Room message received during this turn] hi",
-    ]);
+    assert_eq!(order(false), vec!["[work turn] fix the bug", "the ask"]);
 }
 
 // Regression for #4290: a follow-up must not erase protection for the act it asks about.
@@ -325,7 +317,7 @@ fn continuity_followup_keeps_completed_action_evidence() {
         streams: Default::default(),
         result_pointers: Vec::new(),
         input_identity: [0; 32], grounding_tokens: 0, grounding_at: 0,
-        history, stimulus: None, latest_result: Vec::new(), action_statement: None, room_updates: Vec::new(),
+        history, stimulus: None, latest_result: Vec::new(), action_statement: None,
     };
     assert!(prompt.recent_move_evidence().tokens >= expected,
         "a new follow-up cannot make the preceding action and result disposable");
@@ -345,7 +337,7 @@ fn continuity_insufficient_capacity_refuses_instead_of_dropping_evidence() {
             ChatMessage::text("assistant", "calling code/write: completed.py ".repeat(30)),
             ChatMessage::text("user", "Full result of code/write: file written successfully."),
         ],
-        stimulus: None, latest_result: Vec::new(), action_statement: None, room_updates: Vec::new(),
+        stimulus: None, latest_result: Vec::new(), action_statement: None,
     };
     let insufficient = prompt.recent_move_evidence().tokens - 1;
     assert!(faculty.fit_messages(prompt, insufficient).is_err(),

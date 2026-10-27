@@ -12,6 +12,7 @@ pub(crate) mod blocks;
 pub(crate) mod conversation;
 pub(crate) mod notices;
 pub(crate) mod open_views;
+pub(crate) mod room_updates;
 pub(crate) mod thoughts;
 
 use continuum_context::epoch::Block;

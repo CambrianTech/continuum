@@ -6,6 +6,7 @@ use continuum_context::source::Source;
 
 use super::actions::Actions;
 use super::notices::Notices;
+use super::room_updates::RoomUpdates;
 use crate::cognition::working_memory::WorkingMemory;
 
 fn rendered(memory: &WorkingMemory) -> String {
@@ -134,4 +135,44 @@ fn a_thought_renders_the_same_whatever_the_served_window() {
     let narrow = render(&memory);
     memory.set_served_window(131_072);
     assert_eq!(render(&memory), narrow, "the window changed and the thought's rendering did not");
+}
+
+// what this catches: what reached her rooms during a drive re-sent below every act. As one list
+// placed after her view, each act moved all of it behind the act before: Aris on the M5
+// (2026-10-27) re-prefilled 59 room messages, 12-13k tokens, on every act while each act added
+// ~1k. As items, an act with no new message appends nothing, a new one appends only itself,
+// and everything she read before stays a prefix of what she reads next.
+#[test]
+fn a_room_message_reaches_her_view_once_where_it_arrived() {
+    use continuum_context::view::{Claim, View};
+    use uuid::Uuid;
+
+    let message = |n: u64| {
+        Arc::new(crate::cognition::conversation::IncomingMessage {
+            work: None,
+            media: Vec::new(),
+            event_id: Uuid::new_v4(),
+            lamport: n,
+            peer_id: Uuid::new_v4(),
+            room_id: Uuid::new_v4(),
+            text: format!("card {n} moved to Closed"),
+        })
+    };
+    let first = vec![message(1), message(2)];
+    let updates = RoomUpdates { updates: Arc::new(first.clone()) };
+    let whole = |claims: &[Claim]| claims.iter().map(|claim| claim.full_chars).collect();
+    let (mut view, _) = View::start(Vec::new(), &[&updates as &dyn Source<_>], whole).unwrap();
+    let text = |view: &View<super::ContextMessage>| view.render().map(|m| m.text.clone()).collect::<Vec<_>>().join("\n");
+    let before = text(&view);
+    assert!(before.contains("card 1 moved") && before.contains("card 2 moved"), "{before}");
+
+    assert_eq!(view.advance(&[&updates as &dyn Source<_>]).chars, 0, "the same messages append nothing");
+
+    let mut grown = first;
+    grown.push(message(3));
+    let updates = RoomUpdates { updates: Arc::new(grown) };
+    let added = view.advance(&[&updates as &dyn Source<_>]);
+    assert_eq!(added.items, 1, "only the new message is appended");
+    let after = text(&view);
+    assert!(after.starts_with(&before) && after.ends_with("card 3 moved to Closed"), "{after}");
 }

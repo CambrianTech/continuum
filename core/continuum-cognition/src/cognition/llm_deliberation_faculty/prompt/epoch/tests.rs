@@ -26,6 +26,7 @@ fn streams(first_turn: usize, recall: &str) -> Streams {
             block("room-kanban", "BOARD: you hold 1 card; 3 claimable"),
             block("recall", recall),
         ],
+        room_updates: Default::default(),
     }
 }
 
