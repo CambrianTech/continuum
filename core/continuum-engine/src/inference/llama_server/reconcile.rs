@@ -555,6 +555,7 @@ async fn serve_or_adopt<C: LlamaServerControl + ?Sized>(
             // relaunched lane starts clean" — this is the site that makes it true.
             reset_real_decode_failures();
             mark_engine_proven(ctrl.owned_serving_target().map(|t| t.engine_program));
+            observe_launched_engine(ctrl).await;
             EnsureOutcome::Spawned {
                 model: target.model_id().to_string(),
             }
@@ -573,6 +574,7 @@ async fn serve_or_adopt<C: LlamaServerControl + ?Sized>(
                 Ok(()) => {
                     reset_real_decode_failures();
                     mark_engine_proven(ctrl.owned_serving_target().map(|t| t.engine_program));
+                    observe_launched_engine(ctrl).await;
                     EnsureOutcome::Spawned {
                         model: target.model_id().to_string(),
                     }
@@ -602,6 +604,14 @@ static REPLACEMENT_REFUSED: parking_lot::Mutex<Option<String>> = parking_lot::Mu
 /// engine, or the lane's own `/slots` account when every slot holds a mind, so it never decodes
 /// over a mind's KV, #5405). Anything else stays degraded: a condemned engine is never
 /// advertised ready. The probe below says each refusal once.
+/// A lane this reconcile launched answered ready: read its own build now, not at the next
+/// reconcile that happens to pass the convergence check, so her tool head is decided by what the
+/// running engine says before her acts reach it.
+async fn observe_launched_engine<C: LlamaServerControl + ?Sized>(ctrl: &C) {
+    let probe = ctrl.served_engine_build().await;
+    observe_served_engine(ctrl.served_incarnation(), probe.as_ref().map(Option::as_deref).map_err(|_| ()));
+}
+
 async fn keep_incumbent<C: LlamaServerControl + ?Sized>(
     ctrl: &C,
     target: &ServingTarget,
