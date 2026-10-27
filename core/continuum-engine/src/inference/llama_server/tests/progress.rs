@@ -2,6 +2,23 @@
 #![cfg(test)]
 use super::*;
 
+// what this catches (card 9c67e5fe; Fable on #5500): 'condemned' read from the readiness bit, so a
+// transient not-ready (a 0 /props window under AlreadyServing) ended acts at their checkpoints and
+// stalled queue waits. Condemned is a condemnation no ready engine has answered: a ready publish
+// alone condemns nothing, and the replacement's ready answers every condemnation before it.
+#[test]
+fn condemned_means_a_condemnation_no_ready_engine_has_answered() {
+    let condemnations = Condemnations::new();
+    assert!(!condemnations.pending(), "nothing served, nothing condemned");
+    condemnations.recovered();
+    assert!(!condemnations.pending(), "a ready publish alone condemns nothing");
+    condemnations.condemn();
+    condemnations.condemn();
+    assert!(condemnations.pending(), "decided teardowns are pending until a ready engine answers");
+    condemnations.recovered();
+    assert!(!condemnations.pending(), "the replacement's ready answers every condemnation before it");
+}
+
 // what this catches (card 4d2a64a2; Fable on #5500): a condemnation an in-flight wait cannot
 // hear until its next checkpoint, and a wait that hears something that is not one. The wait
 // resolves at the next condemnation after it began, not at one before it, and never on a

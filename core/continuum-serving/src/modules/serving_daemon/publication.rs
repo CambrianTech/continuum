@@ -153,6 +153,11 @@ impl ServingDaemonModule {
     /// materialized view; THIS is the canonical fan-out that reaches every
     /// subscriber, including a grid allocator on a remote node.
     pub(super) fn emit_serving(bus: Option<&Arc<MessageBus>>, snapshot: &ServingSnapshot) {
+        // Every publish passes here: a ready one answers every condemnation so far, so
+        // `engine_condemned` reads the condemnation, never the readiness bit (card 9c67e5fe).
+        if snapshot.ready {
+            crate::inference::llama_server::note_serving_ready();
+        }
         if let Some(bus) = bus {
             if let Ok(payload) = serde_json::to_value(snapshot) {
                 bus.publish_async_only(SERVING_SNAPSHOT_EVENT, payload);

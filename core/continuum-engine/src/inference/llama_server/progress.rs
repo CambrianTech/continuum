@@ -63,31 +63,66 @@ pub(crate) enum EngineProbe {
 
 
 /// The engine this node serves is being replaced: the serving daemon admitted a lifecycle
-/// transition (a relaunch after failed generations, a quarantine) and flipped its snapshot
-/// not-ready. Everything in flight on it will be cut by that relaunch, and the relaunch's
-/// drain (`transition_if`, a write on the endpoint gate) waits for every admitted turn to
-/// drop its guard, with new admissions barred behind it. So a wait that keeps renewing on a
-/// condemned engine because it is still busy keeps the whole node dark: the IntelMac on
-/// 2026-09-27 went 25 min (15:44-16:09Z) and then 46 min (16:33-17:19Z) with no lane while
-/// header waits rode a prefilling, condemned engine (card 682a5abf's sibling, Cormac).
-/// `false` until the daemon installs its state: nothing is condemned that was never served.
+/// transition (a relaunch, a quarantine, a convergence) and no replacement has published ready
+/// since. Everything in flight on it will be cut by that relaunch, and the relaunch's drain
+/// (`transition_if`, a write on the endpoint gate) waits for every admitted turn to drop its
+/// guard, with new admissions barred behind it. So a wait that keeps renewing on a condemned
+/// engine because it is still busy keeps the whole node dark: the IntelMac on 2026-09-27 went
+/// 25 min (15:44-16:09Z) and then 46 min (16:33-17:19Z) with no lane while header waits rode a
+/// prefilling, condemned engine (card 682a5abf's sibling, Cormac). The condemnation itself,
+/// never the readiness bit: a transient not-ready (a 0 `/props` window under AlreadyServing)
+/// condemns nothing (card 9c67e5fe, after Fable on #5500).
 pub fn engine_condemned() -> bool {
-    SERVING_STATE.get().is_some_and(|rx| !rx.borrow().ready)
+    CONDEMNATIONS.pending()
 }
 
-/// How many times the serving daemon has DECIDED to tear the engine down while work may hold
-/// it (a quarantine, a wedged-lane relaunch). Not the readiness bit: `ready=false` is also
-/// published for a transient `/props` read while the engine stays up, and an act abandoned
-/// for that loses its whole prefill (Fable on #5500).
-static CONDEMNATIONS: std::sync::LazyLock<watch::Sender<u64>> = std::sync::LazyLock::new(|| watch::channel(0).0);
+/// The daemon published a ready snapshot (`emit_serving`): every condemnation so far is answered.
+pub fn note_serving_ready() {
+    CONDEMNATIONS.recovered();
+}
+
+/// How many times the serving daemon has DECIDED to tear the engine down while work may hold it,
+/// and the generation its last ready snapshot answered. Not the readiness bit (Fable on #5500).
+pub(crate) struct Condemnations {
+    generation: watch::Sender<u64>,
+    recovered: std::sync::atomic::AtomicU64,
+}
+
+impl Condemnations {
+    pub(crate) fn new() -> Self {
+        Self { generation: watch::channel(0).0, recovered: std::sync::atomic::AtomicU64::new(0) }
+    }
+
+    /// One more condemnation; its generation.
+    pub(crate) fn condemn(&self) -> u64 {
+        self.generation.send_modify(|generation| *generation += 1);
+        *self.generation.borrow()
+    }
+
+    /// A ready engine answers every condemnation made so far.
+    pub(crate) fn recovered(&self) {
+        self.recovered.store(*self.generation.borrow(), std::sync::atomic::Ordering::Release);
+    }
+
+    /// A condemnation no ready engine has answered yet.
+    pub(crate) fn pending(&self) -> bool {
+        *self.generation.borrow() > self.recovered.load(std::sync::atomic::Ordering::Acquire)
+    }
+
+    pub(crate) fn subscribe(&self) -> watch::Receiver<u64> {
+        self.generation.subscribe()
+    }
+}
+
+static CONDEMNATIONS: std::sync::LazyLock<Condemnations> = std::sync::LazyLock::new(Condemnations::new);
 
 /// The daemon decided to replace the engine and its relaunch will drain every admitted turn:
 /// every act in flight ends now instead of holding that drain to its next checkpoint.
 pub fn condemn(reason: &str) {
-    CONDEMNATIONS.send_modify(|generation| *generation += 1);
+    let generation = CONDEMNATIONS.condemn();
     continuum_base::probe!(
         class = "serving.engine.condemned",
-        generation = *CONDEMNATIONS.borrow(),
+        generation = generation,
         reason = reason,
         "the engine is being replaced: acts in flight on it end now, so its drain is not held"
     );
