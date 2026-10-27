@@ -380,16 +380,14 @@ impl DeployTrackerModule {
         let Some(dir) = checkout_now().ok().map(|p| p.to_string_lossy().into_owned()) else {
             return false;
         };
-        let out = crate::system_resources::bounded_command::probe(
-            "git",
-            // TRACKED changes only. An untracked file cannot change what a detached checkout
-            // of the tip builds, and the 5090's first unattended deploy sat at RefuseDirty
-            // behind a stale sock lock and five locally regenerated ts-rs bindings
-            // (2026-09-19 03:3xZ). Same rule the consumer applies before it checks the tip out.
-            &["-C", &dir, "status", "--porcelain", "--untracked-files=no"],
-            GIT_TIMEOUT,
-        );
-        out.stdout_if_ok().map(|s| !s.trim().is_empty()).unwrap_or(false) // unwrap_or: an unreadable git status = assume clean; a real dirty tree still refuses via the guard
+        // TRACKED changes only (an untracked file cannot change what a detached checkout of the
+        // tip builds: the 5090 sat at RefuseDirty behind regenerated ts-rs bindings, 2026-09-19),
+        // judged by the consumer's own predicate, so a moved submodule pointer the consumer
+        // aligns is never dirt here (enrico read RefuseDirty on one for hours, card a1e1af51).
+        let mut args = vec!["-C", dir.as_str()];
+        args.extend(continuum_git::submodules::STATUS_ARGS);
+        let out = crate::system_resources::bounded_command::probe("git", &args, GIT_TIMEOUT);
+        out.stdout_if_ok().map(|s| continuum_git::submodules::has_operator_work(&s)).unwrap_or(false) // unwrap_or: an unreadable git status = assume clean; a real dirty tree still refuses via the guard
     }
 }
 

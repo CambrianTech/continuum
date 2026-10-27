@@ -285,7 +285,7 @@ async fn pinned_act_result_reaches_the_prompt_even_with_an_empty_broadcast() {
         refit: roomy.refit, system: String::new(), input_identity: [0; 32],
         estimated_prompt_tokens: estimate, completion_reserve: 0,
         capacity_error: None, budget_fault: None, protocol_error: None, segments: Vec::new(),
-        newest_result_reduced: false,
+        newest_result_reduced: false, newest_result_tokens: 0,
         messages: roomy.messages,
     };
     let corrected = faculty.refit_rejected_prompt(snapshot, estimate as u32 + 1, estimate as u32, 0).unwrap();
