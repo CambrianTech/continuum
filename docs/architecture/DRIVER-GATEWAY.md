@@ -106,8 +106,21 @@ A driver session is perception like a resident's act. It is learned from under t
 | G2 | Session identity: `PageKey::driver`, seated through `MindMemory::seat` (needs §1a step 1). | Replay a captured agent session: prefix reuse per step at least 90%, and no resident evicted unsaved. | **The speed gate:** the same agent and model on the gateway vs stock llama-server, with four residents running. Time per agent step and re-prefilled tokens. | Fable (seat), Codex (scheduling temperature) |
 | G3 | Capture to the perception stream, under the scope rules. | A captured session yields perception rows and no secret. | — | Cormac (learning side) |
 | G4 | Driver genes: selected by what the session is on, served to the session. | — | **The learning gate** (§17's proof): correct an agent once, restart, give it an unseen related task. It succeeds; without the gene it fails. | Cormac, Fable |
+| G5 | **Org genomes** (Joel, 2026-10-27: "genome is also given to them; shared … learned repos shared within an org"). A repo's gene is learned from every developer's agent sessions in that repo, plus the repo's history (REPO-GENOME-AND-COURSES §17). Every org member's agent wears it the first time it works there. Private repos' genes stay on the org's own nodes over the grid; publishing beyond the org is an explicit act; secrets never enter. Fitness is usage across the org; revocation removes the skill. | A gene learned from one member's corrected session passes the acceptance test on another member's agent in the same repo. | An org of two (two machines, two agents, one repo): a correction made on one machine is applied on an unseen task by the other's agent after a restart. | Cormac (genome), Codex (grid trust), Fable (gateway serving) |
 
 G0 and G1 can start now. G2 waits on MindMemory's `seat`, and G4 on the residents passing the learning acceptance test (plan pipeline step 3).
+
+## Crate divisions this work exposes (Joel: "if you see more crate divisions note or build them")
+
+| Crate | State | From | Why it is its own crate |
+|---|---|---|---|
+| `continuum-gateway` | BUILT 10-27 | `continuum-core/src/http` (Anthropic-only endpoint deleted) | The Serving seam's door; depends only on the engine and capture. |
+| `continuum-capture` | BUILT 10-27 | `continuum-cognition`: `prompt_capture`, its store and owner, `mind_room`, `fixture_dir` (1,920 lines moved with history, 38 callers) | One capture and one privacy gate below every writer (faculty, gateway) and reader (inspector, replay, Dreaming). |
+| `continuum-mind-memory` | NEXT | `continuum-engine/src/inference/slots/*` plus the paging block of `turn_admission.rs` | SERVING-ENGINE §1a's owner. A crate keeps every other path from reaching `holders` or the ledger again. |
+| `continuum-providers` | NOTED | the AI provider module's registration in `continuum-core` | The lean `continuum-serve` and the full core must register adapters the same way, without the core. |
+| `continuum-serve` (bin) | NOTED | — | G-lean: the Serving seam alone, learning opt-in. |
+| `*-types` crates | NOTED | wire types shared by two crates (for example `TextGenerationRequest` and the capture records) | Grok Build's pattern (`xai-grok-config-types`): consumers depend on types, not on the engine. Cut where a reader such as `serving-replay` or the act inspector needs records without the engine. |
+| `wire_tap` | NOTED | `continuum-engine/src/inference/wire_tap.rs` | The raw-stream tap is armed only by the capture lease: it may belong in `continuum-capture`, behind a trait the engine calls. |
 
 ## Measured before and after
 
