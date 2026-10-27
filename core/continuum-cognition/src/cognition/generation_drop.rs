@@ -120,6 +120,9 @@ impl InFlight {
         turn_bound: Option<Duration>,
         chunks: Option<UnboundedReceiver<GenerationChunk>>,
     ) -> Self {
+        // The step's deadline must know a generation is in flight: one it ends from here is
+        // a drop, not a lane wait, though it leaves no receipt behind.
+        crate::cognition::llm_deliberation_faculty::admission_clock::note_dispatched();
         Self {
             persona: persona.to_string(),
             turn_bound,

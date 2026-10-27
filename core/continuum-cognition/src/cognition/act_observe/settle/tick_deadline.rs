@@ -20,12 +20,15 @@ pub(super) const ACT_EXTENSIONS: u32 = 2;
 /// slot while relevant grants or blocking holders advance at each act-bound
 /// checkpoint. A stalled/unknown queue ends the act. On grant the unspent budget
 /// resumes; no other await gets this exemption.
+///
+/// `Err` says whether the step's generation was already dispatched: a step ended after
+/// that point dropped a generation in flight and must never be counted as a lane wait.
 pub(super) async fn until_act_stalls<F: std::future::Future>(
     deadline: tokio::time::Instant,
     bound: std::time::Duration,
     persona: Option<uuid::Uuid>,
     step: F,
-) -> Result<F::Output, ()> {
+) -> Result<F::Output, Abandoned> {
     use crate::cognition::llm_deliberation_faculty::admission_clock;
     let (queue_tx, mut queue_rx) = tokio::sync::watch::channel(admission_clock::QueueTime::new(deadline, bound));
     let step = admission_clock::scope(queue_tx.clone(), step);
@@ -45,7 +48,7 @@ pub(super) async fn until_act_stalls<F: std::future::Future>(
                     None => std::future::pending::<()>().await,
                 }
             } => {
-                if state.stalled { return Err(()); }
+                if state.stalled { return Err(Abandoned::at(&queue_rx)); }
                 let pinned = persona.and_then(crate::inference::llama_server::in_flight_slot);
                 let now = match &pinned {
                     Some(p) => crate::inference::llama_server::slot_work(&p.root, p.slot, act_probe_client()).await,
@@ -57,7 +60,7 @@ pub(super) async fn until_act_stalls<F: std::future::Future>(
                     || crate::inference::llama_server::engine_condemned()
                     || !crate::inference::llama_server::slot_advanced(previous, now)
                 {
-                    return Err(());
+                    return Err(Abandoned::at(&queue_rx));
                 }
                 extensions += 1;
                 previous = now;
@@ -71,6 +74,18 @@ pub(super) async fn until_act_stalls<F: std::future::Future>(
                 );
             }
         }
+    }
+}
+
+/// A step its deadline ended, and whether its generation had been dispatched by then.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct Abandoned {
+    pub(super) dispatched: bool,
+}
+
+impl Abandoned {
+    fn at(clock: &tokio::sync::watch::Receiver<crate::cognition::llm_deliberation_faculty::admission_clock::QueueTime>) -> Self {
+        Self { dispatched: clock.borrow().dispatched }
     }
 }
 
