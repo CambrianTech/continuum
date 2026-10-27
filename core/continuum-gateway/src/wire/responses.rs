@@ -4,7 +4,7 @@
 //! mind's memory, which arrives with session identity (DRIVER-GATEWAY.md G2); until then a
 //! call that names one is refused rather than answered without its history.
 
-use super::{chat, event, input_schema, sampling, stopped_for_tools, text_of, tool_calls, BadRequest, Call, ErrorKind, Frame, Wire};
+use super::{chat, event, input_schema, place_system, sampling, stopped_for_tools, text_of, tool_calls, BadRequest, Call, ErrorKind, Frame, Wire};
 use continuum_engine::ai::adapter::GenerationChunk;
 use continuum_engine::ai::{ChatMessage, ContentPart, MessageContent, NativeToolSpec, TextGenerationRequest, TextGenerationResponse};
 use serde_json::{json, Value};
@@ -44,6 +44,7 @@ impl Wire for Responses {
             ..Default::default()
         };
         sampling(&body, &mut request);
+        (request.system_prompt, request.messages) = place_system(request.system_prompt.take(), std::mem::take(&mut request.messages));
         Ok(Call { request, stream: body.get("stream").and_then(Value::as_bool).unwrap_or(false) }) // unwrap_or: the API's default is not streamed
     }
 
@@ -179,7 +180,6 @@ fn items_to_messages(items: &[Value]) -> Result<Vec<ChatMessage>, BadRequest> {
         match kind {
             "message" => {
                 let role = item.get("role").and_then(Value::as_str).ok_or_else(|| BadRequest("a message item has no `role`".into()))?;
-                let role = if role == "developer" { "system" } else { role };
                 out.push(ChatMessage { role: role.to_owned(), content: content(item.get("content").unwrap_or(&Value::Null)), name: None });
             }
             "function_call" => {
@@ -207,18 +207,7 @@ fn items_to_messages(items: &[Value]) -> Result<Vec<ChatMessage>, BadRequest> {
             _ => {} // reasoning and other items carry nothing the engine renders
         }
     }
-    // The engine's templates take one system message, at the start (as in Chat Completions).
-    let mut kept = Vec::with_capacity(out.len());
-    for (i, mut m) in out.into_iter().enumerate() {
-        if m.role == "system" && i > 0 {
-            m.role = "user".into();
-            if let MessageContent::Text(text) = &m.content {
-                m.content = MessageContent::Text(format!("[system] {text}"));
-            }
-        }
-        kept.push(m);
-    }
-    Ok(kept)
+    Ok(out)
 }
 
 fn content(value: &Value) -> MessageContent {
