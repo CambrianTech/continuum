@@ -345,7 +345,7 @@ pub fn inputs_key(inputs: &GridInputs) -> u64 {
         }
     }
     for hold in &inputs.holds {
-        (hold.node, &hold.only, hold.exclusive).hash(&mut h);
+        (hold.node, &hold.only, hold.unresolved, hold.exclusive).hash(&mut h);
     }
     for f in &inputs.floors {
         (f.role, f.min_seats).hash(&mut h);
@@ -362,7 +362,8 @@ pub fn inputs_key(inputs: &GridInputs) -> u64 {
 /// a second decision about the same seats in a second place.
 ///
 /// EXCLUSIVE (the operator's file): on `node` only the named minds sit, and the node has
-/// at most `only.len()` seats — the hold DEFINES that node's roster, so nothing is minted
+/// at most its declared population in seats, including names not registered yet,
+/// so startup cannot shrink the capacity needed for those names to register. Nothing is minted
 /// for a held box. An exclusive hold naming nobody restricts nothing (the file's own
 /// semantics in `seats_under`). DERIVED (a working round's team, not exclusive): the named
 /// minds seat FIRST on that node and everyone else after — never fewer minds.
@@ -370,7 +371,16 @@ pub fn inputs_key(inputs: &GridInputs) -> u64 {
 pub struct Hold {
     pub node: Uuid,
     pub only: Vec<Uuid>,
+    /// Named members without a live runtime yet. Capacity includes them; admission
+    /// still requires a resolved identity, never a fabricated citizen id.
+    pub unresolved: usize,
     pub exclusive: bool,
+}
+
+impl Hold {
+    fn population(&self) -> usize {
+        self.only.len().saturating_add(self.unresolved)
+    }
 }
 
 /// A recipe's declared team: at least `min_seats` of this role are seated before any
@@ -485,6 +495,8 @@ pub struct GridAllocation {
     pub role_unservable: Vec<Uuid>,
     /// Seats no existing mind fills — what the spawner may mint, per node and role.
     pub open: Vec<OpenSeats>,
+    /// Held names still registering. These permit resumption, never new identities.
+    pub resuming: Vec<OpenSeats>,
 }
 
 /// One node's roster as the allocation reads it: the minds seated there and the seats
@@ -493,11 +505,12 @@ pub struct GridAllocation {
 pub struct GridRoster {
     pub seated: u32,
     pub open: u32,
+    pub resuming: u32,
 }
 
 impl GridRoster {
     pub fn seats(self) -> u32 {
-        self.seated.saturating_add(self.open)
+        self.seated.saturating_add(self.open).saturating_add(self.resuming)
     }
 }
 
@@ -513,6 +526,7 @@ impl GridAllocation {
         Some(GridRoster {
             seated: self.seated.iter().filter(|s| s.node == node).count() as u32,
             open: self.open.iter().filter(|o| o.node == node && o.owner == owner).map(|o| o.count).sum(),
+            resuming: self.resuming.iter().filter(|o| o.node == node && o.owner == owner).map(|o| o.count).sum(),
         })
     }
     /// The plan the node a mind is seated on serves — what her seat IS, for a comparison.
@@ -630,7 +644,7 @@ fn decide_node(offer: &NodeOffer, roles: &[Role], minds_per_lane: u32, hold: Opt
             let warm = plan.lanes.saturating_mul(minds_per_lane);
             // An exclusive hold naming anyone DEFINES this node's roster: its seats.
             let seats = match hold {
-                Some(h) if h.exclusive && !h.only.is_empty() => warm.min(h.only.len() as u32),
+                Some(h) if h.exclusive && h.population() > 0 => warm.min(h.population().min(u32::MAX as usize) as u32),
                 _ => warm,
             };
             return NodeAllocation {
@@ -677,7 +691,7 @@ pub fn allocate(inputs: &GridInputs) -> GridAllocation {
     // then her owner's own node freely, another owner's within its terms.
     let admits = |i: usize, m: &Mind, lent_now: u32| -> bool {
         let named = match inputs.hold_on(nodes[i].node) {
-            Some(h) if h.exclusive && !h.only.is_empty() => h.only.contains(&m.id),
+            Some(h) if h.exclusive && h.population() > 0 => h.only.contains(&m.id),
             _ => true,
         };
         let offer = &inputs.nodes[i];
@@ -768,7 +782,7 @@ pub fn allocate(inputs: &GridInputs) -> GridAllocation {
     // what the node is best at. A box under an exclusive hold is never minted for: the
     // hold names its roster. Every row carries the node's owner (#4263): a loan is never
     // minted for.
-    let held = |node: Uuid| inputs.hold_on(node).is_some_and(|h| h.exclusive && !h.only.is_empty());
+    let held = |node: Uuid| inputs.hold_on(node).is_some_and(|h| h.exclusive && h.population() > 0);
     let mut open: Vec<OpenSeats> = Vec::new();
     for role in 0..inputs.roles.len() {
         let have = seated.iter().filter(|s| s.role == role).count() as u32;
@@ -791,7 +805,16 @@ pub fn allocate(inputs: &GridInputs) -> GridAllocation {
             open.push(OpenSeats { node: n.node, owner: offer.owner, role: *role, count: f });
         }
     }
-    GridAllocation { nodes, seated, dormant, role_unservable, open }
+    let resuming = nodes.iter().zip(free.iter()).zip(inputs.nodes.iter())
+        .filter_map(|((n, &available), offer)| {
+            let hold = inputs.hold_on(n.node)?;
+            let NodeVerdict::Hosts { role } = &n.verdict else { return None };
+            let count = available.min(hold.unresolved.min(u32::MAX as usize) as u32);
+            (hold.exclusive && count > 0).then_some(OpenSeats {
+                node: n.node, owner: offer.owner, role: *role, count,
+            })
+        }).collect();
+    GridAllocation { nodes, seated, dormant, role_unservable, open, resuming }
 }
 
 #[cfg(test)]

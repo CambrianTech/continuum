@@ -159,7 +159,7 @@
         assert_eq!(on(&free, a_box).len(), 4, "without a hold: four at home, two spill");
         assert_eq!(on(&free, b_box).len(), 2);
         let mut i = inputs(vec![big_box(a_box), big_box(b_box)], m.clone());
-        i.holds.push(Hold { node: a_box, only: vec![m[4].id, m[5].id], exclusive: true });
+        i.holds.push(Hold { node: a_box, only: vec![m[4].id, m[5].id], unresolved: 0, exclusive: true });
         let held = allocate(&i);
         assert_eq!(held.node(a_box).unwrap().seats, 2, "the hold defines the roster: two seats");
         assert_eq!(on(&held, a_box), vec![m[4].id, m[5].id], "only the named sit there — and they sit FIRST, though last in order");
@@ -190,7 +190,7 @@
         let n = Uuid::new_v4();
         let m = minds(0, Some(n), 6);
         let mut i = inputs(vec![big_box(n)], m.clone());
-        i.holds.push(Hold { node: n, only: vec![m[5].id, m[4].id], exclusive: false });
+        i.holds.push(Hold { node: n, only: vec![m[5].id, m[4].id], unresolved: 0, exclusive: false });
         let a = allocate(&i);
         assert_eq!(a.node(n).unwrap().seats, 4, "a derived hold does not cap the seats");
         let seated = on(&a, n);
@@ -201,7 +201,7 @@
         let mut away = minds(0, Some(Uuid::new_v4()), 1);
         away.extend(minds(0, Some(n), 4));
         let mut i = inputs(vec![big_box(n)], away.clone());
-        i.holds.push(Hold { node: n, only: vec![away[0].id], exclusive: false });
+        i.holds.push(Hold { node: n, only: vec![away[0].id], unresolved: 0, exclusive: false });
         assert_eq!(on(&allocate(&i), n)[0], away[0].id, "the hold's node is her home first");
     }
 
@@ -594,9 +594,9 @@
     fn a_nodes_roster_is_what_is_seated_there_plus_what_is_open_for_that_owner() {
         let n = Uuid::new_v4();
         let a = allocate(&inputs(vec![big_box(n)], minds(0, Some(n), 1)));
-        assert_eq!(a.roster_on(n, US), Some(GridRoster { seated: 1, open: 3 }));
+        assert_eq!(a.roster_on(n, US), Some(GridRoster { seated: 1, open: 3, resuming: 0 }));
         assert_eq!(a.roster_on(n, US).map(GridRoster::seats), Some(4), "one seated, three to mint: four seats");
-        assert_eq!(a.roster_on(n, Uuid::from_u128(0xB0B)), Some(GridRoster { seated: 1, open: 0 }), "the open seats are the owner's, not a stranger's");
+        assert_eq!(a.roster_on(n, Uuid::from_u128(0xB0B)), Some(GridRoster { seated: 1, open: 0, resuming: 0 }), "the open seats are the owner's, not a stranger's");
         assert_eq!(a.roster_on(Uuid::new_v4(), US), None, "a node that made no offer is an absence");
         assert_eq!(a.plan_of_seat(a.seated[0].mind).map(|p| p.lanes), Some(2));
     }
@@ -635,4 +635,44 @@
         };
         assert_eq!(a.node(n).unwrap().verdict, expected);
         assert!(lane.window < coder().requirement.window, "the shape this fixture pins: two lanes on 25 GB do not reach the coder window");
+    }
+
+    // M5 2026-10-27: two live members of a four-name hold published only two
+    // roster seats; the other two could never register. Reserve their resume
+    // capacity without advertising it as room to mint unrelated identities.
+    #[test]
+    fn held_members_can_register_before_the_roster_is_full() {
+        let n = Uuid::new_v4();
+        let members = minds(0, Some(n), 4);
+        let mut i = inputs(vec![big_box(n)], members[..2].to_vec());
+        i.holds.push(Hold { node: n, only: members[..2].iter().map(|m| m.id).collect(), unresolved: 2, exclusive: true });
+        let a = allocate(&i);
+        assert_eq!(a.roster_on(n, US), Some(GridRoster { seated: 2, open: 0, resuming: 2 }));
+        assert_eq!(a.roster_on(n, US).unwrap().seats(), 4);
+        assert_eq!(a.open_total(), 0, "reserved names cannot mint unrelated citizens");
+        assert_eq!(a.roster_on(n, Uuid::new_v4()).unwrap().resuming, 0);
+        let k = inputs_key(&i);
+        i.holds[0].unresolved = 1;
+        assert_ne!(inputs_key(&i), k, "pending membership is a real input");
+        i.holds[0].unresolved = 0;
+        i.holds[0].only = members.iter().map(|m| m.id).collect();
+        i.minds = members;
+        let registered = allocate(&i);
+        assert_eq!(registered.roster_on(n, US), Some(GridRoster { seated: 4, open: 0, resuming: 0 }));
+    }
+
+    #[test]
+    fn an_unresolved_hold_stays_exclusive_and_grows_with_lane_capacity() {
+        let n = Uuid::new_v4();
+        let mut i = inputs(vec![offer(n, vec![plan("27b", 9, 131_072, 1, Some(14.0))])], minds(0, Some(n), 1));
+        i.holds.push(Hold { node: n, only: vec![], unresolved: 4, exclusive: true });
+        let a = allocate(&i);
+        assert!(on(&a, n).is_empty(), "unresolved membership is not an empty unrestricted hold");
+        assert_eq!(a.roster_on(n, US), Some(GridRoster { seated: 0, open: 0, resuming: 2 }));
+        let k = inputs_key(&i);
+        i.nodes = vec![big_box(n)];
+        assert_ne!(inputs_key(&i), k);
+        let a = allocate(&i);
+        assert_eq!(a.roster_on(n, US), Some(GridRoster { seated: 0, open: 0, resuming: 4 }));
+        assert_eq!(a.open_total(), 0);
     }
