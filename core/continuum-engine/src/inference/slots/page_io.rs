@@ -60,29 +60,25 @@ impl crate::runtime::extensions::SettleBeforeStop for PageIoSettle {
     }
 }
 
-/// Save every resident of every endpoint whose engine this core owns, within `cap`. An
-/// adopted or exited engine refuses the checkpoint, and it is named, never retried. The
-/// endpoint stays suspended afterwards: the node is stopping.
+/// Save every resident of every endpoint whose engine this core owns, within `cap`.
 async fn checkpoint_every_endpoint(cap: Duration) {
+    if cap.is_zero() {
+        // The turns used the stop's whole budget: a save begun now would be cut by the exit.
+        // Residents resume from their last page, which is still a prefix of what they hold.
+        continuum_base::probe!(class = "inference.kv_page.stop_checkpoint_skipped", reason = "no_budget_left",
+            "the stop's budget was spent settling turns; residents resume from their last saved page");
+        return;
+    }
     let client = reqwest::Client::new();
     let endpoints: Vec<(String, std::sync::Arc<super::EndpointSlots>)> =
         super::directory().endpoints.iter().map(|e| (e.key().clone(), e.value().clone())).collect();
     let deadline = std::time::Instant::now() + cap;
     for (root, endpoint) in endpoints {
-        let Some(generation) = endpoint.state.lock().generation.clone() else {
-            continue; // never launched here: nothing resident
-        };
         let started = std::time::Instant::now();
         let left = deadline.saturating_duration_since(started);
-        let outcome = tokio::time::timeout(left, async {
-            let mut transition = endpoint
-                .transition_for_generation(&generation)
-                .await
-                .map_err(|()| "the engine changed before the stop's checkpoint".to_owned())?;
-            transition.checkpoint_residents(&client, &root).await.map(|_| ())
-        })
-        .await
-        .unwrap_or_else(|_| Err(format!("the stop's cap ({} ms) ran out", left.as_millis())));
+        let Some(outcome) = checkpoint_endpoint(&client, &root, &endpoint, left).await else {
+            continue; // never launched here: nothing resident
+        };
         continuum_base::probe!(
             class = "inference.kv_page.stop_checkpoint",
             endpoint = %root,
@@ -92,6 +88,29 @@ async fn checkpoint_every_endpoint(cap: Duration) {
             "every resident a slot holds saved before the stop, so each returns where she left off"
         );
     }
+}
+
+/// Save every resident `endpoint`'s slots hold, within `cap`, through the relaunch
+/// checkpoint (the drained writer, confirmed saves). `None` when no engine was launched
+/// there. An adopted or exited engine refuses, and it is named, never retried. The endpoint
+/// stays suspended afterwards: the node is stopping.
+pub(crate) async fn checkpoint_endpoint(
+    client: &reqwest::Client,
+    root: &str,
+    endpoint: &std::sync::Arc<super::EndpointSlots>,
+    cap: Duration,
+) -> Option<Result<(), String>> {
+    let generation = endpoint.state.lock().generation.clone()?;
+    let outcome = tokio::time::timeout(cap, async {
+        let mut transition = endpoint
+            .transition_for_generation(&generation)
+            .await
+            .map_err(|()| "the engine changed before the stop's checkpoint".to_owned())?;
+        transition.checkpoint_residents(client, root).await.map(|_| ())
+    })
+    .await
+    .unwrap_or_else(|_| Err(format!("the stop's cap ({} ms) ran out", cap.as_millis())));
+    Some(outcome)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

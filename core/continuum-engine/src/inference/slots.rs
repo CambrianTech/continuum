@@ -59,7 +59,7 @@ pub use engine_generation::*;
 mod placement;
 pub use placement::*;
 mod page_io;
-pub(crate) use page_io::admit as admit_page_io;
+pub(crate) use page_io::{admit as admit_page_io, checkpoint_endpoint};
 pub use page_io::PageIoSettle;
 
 #[cfg(test)]
