@@ -140,6 +140,16 @@ impl ServingDaemonModule {
         }
 
         let active_artifact = self.active_artifact.clone();
+        continuum_base::probe!(
+            target: "continuum_core::modules::serving_daemon", class = "serving.launch.plan",
+            model = desired.as_str(),
+            intent_revision = planned.intent_revision,
+            lanes_bound = ?planned.plan.as_ref().map(|p| p.lanes_bound),
+            plan_lanes = lanes,
+            plan_window = served_ctx,
+            host_prompt_cache_mib,
+            "reconcile launch requested from this plan; engine convergence may retain incumbent geometry",
+        );
         let served_resident = self.served_resident.clone();
         let division = self.division.clone();
         // Consume any pending force-relaunch the liveness heartbeat raised: it means the

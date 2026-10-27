@@ -86,6 +86,25 @@ pub async fn ensure_model_serving_if_current<C: LlamaServerControl + ?Sized>(
     outcome
 }
 
+/// Engine replacement alone is not permission to apply a different geometry.
+/// A separately admitted resize still uses the planner's target and trade guards.
+pub(super) fn engine_convergence_target(
+    planned: &ServingTarget,
+    served_window: u32,
+    served_lanes: u32,
+    resize_admitted: bool,
+) -> Result<ServingTarget, String> {
+    let mut selected = planned.clone();
+    if !resize_admitted {
+        if served_window == 0 || served_lanes == 0 {
+            return Err("engine convergence requires the incumbent's observed window and lane count; geometry is unknown".to_string());
+        }
+        selected.context_window = served_window;
+        selected.lanes = served_lanes;
+    }
+    Ok(selected)
+}
+
 async fn serve_or_adopt<C: LlamaServerControl + ?Sized>(
     ctrl: &C,
     target: &ServingTarget,
@@ -99,6 +118,7 @@ async fn serve_or_adopt<C: LlamaServerControl + ?Sized>(
     current: &ServingLifecycleCheck<'_>,
 ) -> EnsureOutcome {
     let mut convergence_pair = None;
+    let mut convergence_target = None;
     let active = match ctrl.active_model().await {
         Ok(active) => active,
         Err(LlamaServerError::Unreachable(_)) => None,
@@ -422,12 +442,22 @@ async fn serve_or_adopt<C: LlamaServerControl + ?Sized>(
             };
             *ENGINE_STALE.lock() = (!engine_current).then(|| pair.clone());
             if !engine_ok {
+                let resize_admitted = (!window_ok || !lanes_ok) && !refused_trade && !refused_pressure;
+                match engine_convergence_target(target, served_window_n, served_lanes_n, resize_admitted) {
+                    Ok(selected) => convergence_target = Some(selected),
+                    Err(reason) => return EnsureOutcome::Degraded { reason },
+                }
                 continuum_base::probe!(target: "continuum_core::inference::llama_server", class = "serving.engine.converged",
                     model = target.model_id(),
                     from = served_engine.as_deref().unwrap_or(""), // probe field: engine_ok=false implies both are known
                     to = installed_engine.as_deref().unwrap_or(""), // probe field: as above
+                    resize_admitted,
+                    incumbent_lanes = served_lanes_n,
+                    incumbent_window = served_window_n,
+                    plan_lanes = target.lanes,
+                    plan_window = target.context_window,
                     "the running lane is on an engine older than the installed one: relaunching \
-                     onto the installed binary (same size; a deploy converges the engine too)"
+                     onto the installed binary; preserve incumbent geometry unless a separate resize was admitted"
                 );
             }
             if !engine_ok
@@ -510,6 +540,7 @@ async fn serve_or_adopt<C: LlamaServerControl + ?Sized>(
 
     // Drop also runs on cancellation: only an actual launch-stage advance consumes
     // this pair. A refused checkpoint must remain eligible on the next tick.
+    let target = convergence_target.as_ref().unwrap_or(target); // unwrap_or: absent convergence retains the ordinary planned launch
     let _attempt = super::convergence_attempt::ConvergenceAttempt::new(ctrl, convergence_pair);
     match ctrl.serve_if_current(target, current).await {
         Ok(()) => {
