@@ -251,7 +251,12 @@ no faculty re-implements them:
    place collapse happens.
 2. The newest arrival stays whole unless it alone exceeds what a start would grant it. In that
    case it arrives at its summary (admission, `View::readmit`); otherwise the view turns over and
-   shrinks the oldest first (goal 7).
+   shrinks the oldest first (goal 7). The same rule covers her newest native tool result
+   (`prompt/newest_result.rs`): when it alone exceeds what the window leaves it after the
+   irreducible parts (#5481's `required_parts`), it is shown at its summary level with its handle
+   and a note saying how to read the rest, never dropped. Kept whole, it made every request
+   overflow and she could not act at all (Aris, 2026-10-26: a 340,832-char result, 0 acts for a
+   day). A result that fits is never touched.
 3. A start gives each item the most detail that fits, newest first. One oversized item never
    collapses the others (`levels`).
 4. Restart order comes from measured motion (`kept / (1 - p)` per source), never a label.
