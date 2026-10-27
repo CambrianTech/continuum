@@ -336,7 +336,14 @@ impl TurnCreditCapture {
     /// that held because that generation was not staged yet can bind now. Re-drives through
     /// the one replay registration uses (idempotent), only when a pending generation staged.
     async fn redrive_held_reviews(&self, receipts: &[crate::ai::provenance::GenerationReceipt]) {
-        match reviewed::issues_pending(&self.conn, &self.persona_name, self.credit.card_id, receipts).await {
+        // A held review binds once its generation is staged; a reviewed credit the trigger
+        // refused is submitted again (card 99b2773a). Both are one more idempotent pass.
+        let wanted = match reviewed::issues_pending(&self.conn, &self.persona_name, self.credit.card_id, receipts).await {
+            Ok(true) => Ok(true),
+            Ok(false) => reviewed::refused_credit_waiting(&self.conn, &self.persona_name).await,
+            Err(error) => Err(error),
+        };
+        match wanted {
             Ok(false) => {}
             Ok(true) => {
                 let Some(runtime) = crate::persona::PersonaAircRuntimeRegistry::try_global()
@@ -351,7 +358,7 @@ impl TurnCreditCapture {
                 persona = %self.persona_name,
                 card = %self.credit.card_id,
                 error = %error,
-                "pending submissions on this card could not be read after staging: a held review waits for the next review event or registration"
+                "pending submissions or refused credits could not be read after staging: they wait for the next review event or registration"
             ),
         }
     }

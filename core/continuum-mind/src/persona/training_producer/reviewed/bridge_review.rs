@@ -532,6 +532,7 @@ pub async fn ensure_storage<T: Transport>(
         CreditGenerationReservation::COLLECTION,
         CreditReviewDecision::COLLECTION,
         CreditReviewAcceptance::COLLECTION,
+        CreditSubmitRefusal::COLLECTION,
         boundaries::ProcessedReviewBoundary::COLLECTION,
     ] {
         let result = conn

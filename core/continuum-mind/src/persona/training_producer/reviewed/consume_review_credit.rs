@@ -173,6 +173,26 @@ pub(super) async fn consume_review_credit<T: Transport>(
         .as_ref()
         .is_none_or(|accepted| accepted.submission_id != row.id)
     {
+        // Kept, so her status names why the credit waits and her next staging asks again
+        // (card 99b2773a); a refusal that cannot be kept is said, and the decision stands.
+        continuum_base::probe!(
+            class = "training.credit.submit_refused",
+            persona = %persona_name,
+            submission = %id,
+            revision = %row.id,
+            error_kind = ?receipt.error_kind,
+            error = ?receipt.error,
+            "the training trigger answered a reviewed credit without accepting it: kept, retried at her next staging"
+        );
+        if let Err(error) = record_refusal(conn, persona_name, id, &receipt).await {
+            continuum_base::probe!(
+                class = "training.credit.submit_refusal_unkept",
+                persona = %persona_name,
+                submission = %id,
+                error = %error,
+                "a refused reviewed credit could not be kept: it waits for a review event or her registration"
+            );
+        }
         result.destination = Some(receipt);
         return Ok(result);
     }
@@ -183,7 +203,7 @@ pub(super) async fn consume_review_credit<T: Transport>(
         receipt,
     };
     if let Err(error) =
-        write_batch(conn, persona_name, vec![create(id.to_string(), &accepted)?]).await
+        write_batch(conn, persona_name, vec![create(id.to_string(), &accepted)?, clear_refusal(id)]).await
     {
         let prior =
             read_one::<_, CreditReviewAcceptance>(conn, persona_name, &id.to_string()).await?;
@@ -217,6 +237,11 @@ pub async fn credit_status<T: Transport>(
     };
     let decision = read_one::<_, CreditReviewDecision>(conn, persona_name, &id).await?;
     let accepted = read_one::<_, CreditReviewAcceptance>(conn, persona_name, &id).await?;
+    // A decided credit the trigger refused names the refusal as its destination (card 99b2773a).
+    let refused = match (&accepted, &decision) {
+        (None, Some(_)) => read_one::<_, CreditSubmitRefusal>(conn, persona_name, &id).await?.map(|r| r.receipt),
+        _ => None,
+    };
     if accepted.as_ref().is_some_and(|accepted| {
         accepted.decision_id != submission_id
             || decision.as_ref().is_none_or(|decision| {
@@ -243,7 +268,7 @@ pub async fn credit_status<T: Transport>(
         },
         staged_revision_id: Some(binding.selection.staged_revision_id),
         decision_review_id: decision.map(|d| d.review.review_id.as_uuid()),
-        destination: accepted.map(|a| a.receipt),
+        destination: accepted.map(|a| a.receipt).or(refused),
     })
 }
 
