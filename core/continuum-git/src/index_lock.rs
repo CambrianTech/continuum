@@ -230,6 +230,7 @@ mod tests {
     // `.git` is a file, is found without running git and removed; a tree without one is untouched.
     #[test]
     fn a_dead_gits_lock_is_found_in_a_clone_and_a_worktree_and_removed() {
+        let _no_git_running = crate::GIT_PROCESSES.lock().unwrap_or_else(|poisoned| poisoned.into_inner()); // unwrap_or_else: a neighbour's failure must not fail this test too
         let clone = tempfile::tempdir().expect("clone");
         std::fs::create_dir(clone.path().join(".git")).expect(".git");
         assert!(matches!(settle(clone.path(), Duration::ZERO), Settled::Absent), "no lock");
