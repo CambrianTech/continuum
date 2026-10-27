@@ -16,8 +16,8 @@ pub(super) fn register_closing_modules(
     let sentinel_module = Arc::new(SentinelModule::new());
     runtime.register(sentinel_module.clone());
     continuum_sentinel::register_for_shutdown(sentinel_module);
-    // The local-inference HTTP endpoint commands (sentinel/local-inference-*) live beside http/.
-    runtime.register(Arc::new(crate::http::LocalInferenceModule));
+    // The driver gateway: the one door external agents call (docs/architecture/DRIVER-GATEWAY.md).
+    runtime.register(Arc::new(continuum_gateway::GatewayModule::default()));
 
     // PlasticityModule: Adaptive neural plasticity optimization engine
     // Provides plasticity/analyze, plasticity/compact, plasticity/topology
