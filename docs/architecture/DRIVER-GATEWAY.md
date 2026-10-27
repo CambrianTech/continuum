@@ -64,12 +64,33 @@ The `Responses` API's server-side state is exactly this: the response id names t
 
 **What the gateway does not do.** It does not run an agent loop, grade work, or rewrite the agent's prompt. It is the model behind the agent, with memory and learning.
 
+## One glass box for every system (Joel, 2026-10-27)
+
+"We should have built our replay and glass boxing around this … so that this is straightforward regardless of system."
+
+**The seam.** Every step of every agent (Claude Code, Codex, Grok Build, Hermes, opencode) crosses the gateway. Every act of every resident crosses the deliberation faculty. Both write ONE capture, so everything we built for residents works on any system unchanged:
+- the act inspector: per-act prefill, decode, reuse, view layers and divergence;
+- the replay;
+- the glass-box playback.
+
+**What moves.** The capture owner (`continuum-cognition/src/cognition/prompt_capture.rs`, 940 lines, schema v4, `fixtures/prompt-captures/<persona>.jsonl`) moves down, below both callers: Serving's floor, `continuum-engine` or its own small crate.
+- It is keyed by mind (`PageKey`): resident, fork, or `driver(user, session)`.
+- The deliberation faculty and the gateway are its two writers, by the same `submitted`/`completed` records.
+- The private-room withholding rule moves with it.
+- Scope rules (§17) decide what a driver session may record at all.
+
+**Why it is the tuning loop.**
+- A captured Claude Code or Codex session replays against our engine on the dyno, with no live agent and no residents, under any engine config. Their loop becomes our validator: prefill per step, reuse, and time to a passing test.
+- A resident's captured act is read by the same inspector beside an agent's step on the same task, so the gap is visible act by act, not argued: context size, layers, act count, reasoning length.
+- Tuning our system to match theirs is then a replay comparison, and glass-boxing any system that calls us is free.
+
 ## Build order (each slice lands with its validator first, and deletes what it replaces)
 
 | # | Slice | Validator (seconds, no residents) | Live gate | Owner |
 |---|---|---|---|---|
 | G0 | `Gateway` module on a stable port. The Anthropic adapter moved into it; `http/mod.rs`'s server deleted. | Claude Code's captured requests decode to the same `TextGenerationRequest` as today. | Claude Code on the M5 answers through it. | Fable |
 | G1 | OpenAI Chat Completions and Responses adapters, SSE. `GET /v1/models`. | Round-trip fixtures from each agent's captured traffic (Grok Build's `mock_server_tests` show its shapes). | Hermes, opencode and Grok Build each complete a coding task on the M5. | Fable |
+| G1.5 | **One capture for every system:** `prompt_capture` moved below cognition, keyed by mind. The gateway writes the same schema-v4 records as residents. | The act inspector and `serving-replay` read a captured Claude Code session exactly as a resident's. | The four-agent median-bug run glass-boxed beside Benchy's run on the same task. | Fable |
 | G2 | Session identity: `PageKey::driver`, seated through `MindMemory::seat` (needs §1a step 1). | Replay a captured agent session: prefix reuse per step at least 90%, and no resident evicted unsaved. | **The speed gate:** the same agent and model on the gateway vs stock llama-server, with four residents running. Time per agent step and re-prefilled tokens. | Fable (seat), Codex (scheduling temperature) |
 | G3 | Capture to the perception stream, under the scope rules. | A captured session yields perception rows and no secret. | — | Cormac (learning side) |
 | G4 | Driver genes: selected by what the session is on, served to the session. | — | **The learning gate** (§17's proof): correct an agent once, restart, give it an unseen related task. It succeeds; without the gene it fails. | Cormac, Fable |
