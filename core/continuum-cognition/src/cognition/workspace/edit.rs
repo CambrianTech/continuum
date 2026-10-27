@@ -614,6 +614,9 @@ pub struct BurstTurn {
     pub occurred_at_ms: Option<u64>,
     /// Speech, or something the system told her. See [`TurnVoice`].
     pub voice: TurnVoice,
+    /// The room event this turn is, when it came from a room: one message keeps one key in
+    /// her view whichever source offers it (a room update during her drive, this turn after).
+    pub event_id: Option<uuid::Uuid>,
 }
 
 impl BurstTurn {
@@ -630,7 +633,14 @@ impl BurstTurn {
             content: content.into(),
             occurred_at_ms,
             voice: TurnVoice::Speech,
+            event_id: None,
         }
+    }
+
+    /// The room event this turn is.
+    pub fn with_event_id(mut self, event_id: uuid::Uuid) -> Self {
+        self.event_id = Some(event_id);
+        self
     }
 
     /// An OPAQUE turn — a raw-string burst with no authorship (a hand-built eval
@@ -646,6 +656,7 @@ impl BurstTurn {
             content: content.into(),
             occurred_at_ms: None,
             voice: TurnVoice::Speech,
+            event_id: None,
         }
     }
 

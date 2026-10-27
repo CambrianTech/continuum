@@ -335,6 +335,13 @@ impl<T: Block> View<T> {
         self.epoch.render()
     }
 
+    /// Does this epoch hold `item` from `source`? A message two sources can offer (a room
+    /// update during her drive, the same message as a turn later) asks before it is offered
+    /// again under the other source's key.
+    pub fn holds(&self, source: &str, item: &str) -> bool {
+        self.epoch.holds(&key(source, item))
+    }
+
     /// How each source moved across this view's starts.
     pub fn motion(&self) -> &Motion {
         &self.motion

@@ -12,7 +12,7 @@ fn block(faculty: &str, text: &str) -> Grounding {
 }
 
 fn turn(n: usize) -> Turn {
-    Turn { key: format!("turn-{n}"), role: Role::User, line: format!("[occurred {n}] Operator: turn {n}") }
+    Turn { key: format!("turn-{n}"), role: Role::User, line: format!("[occurred {n}] Operator: turn {n}"), event_id: None }
 }
 
 /// One act's sources: a room window of six turns starting at `first_turn`, a settled map, the
@@ -38,7 +38,7 @@ fn ordered<'a>(
     conversation_first: bool,
 ) -> Vec<&'a dyn Source<ContextMessage>> {
     if !conversation_first {
-        return LlmDeliberationFaculty::view_sources(streams, Some(memory));
+        return LlmDeliberationFaculty::view_sources(streams, &streams.conversation, Some(memory));
     }
     let mut sources: Vec<&dyn Source<ContextMessage>> = vec![&streams.conversation, &memory.actions];
     sources.extend(streams.blocks.iter().map(|block| block as &dyn Source<ContextMessage>));
@@ -100,7 +100,7 @@ fn consecutive_acts_share_the_whole_view_and_a_turnover_keeps_the_settled_front(
     let memory_streams = MemoryStreams::of(&memory);
     let now = streams(0, "RECALL: one");
     let names: Vec<&str> =
-        LlmDeliberationFaculty::view_sources(&now, Some(&memory_streams)).iter().map(|s| s.name()).collect();
+        LlmDeliberationFaculty::view_sources(&now, &now.conversation, Some(&memory_streams)).iter().map(|s| s.name()).collect();
     assert_eq!(
         names,
         ["workspace-map", "actions", "conversation", "room-updates", "room-kanban", "recall", "thoughts", "open-views", "notices"],

@@ -159,7 +159,7 @@ fn a_room_message_reaches_her_view_once_where_it_arrived() {
         })
     };
     let first = vec![message(1), message(2)];
-    let updates = RoomUpdates { updates: Arc::new(first.clone()) };
+    let updates = RoomUpdates { updates: Arc::new(first.clone()), ..Default::default() };
     let whole = |claims: &[Claim]| claims.iter().map(|claim| claim.full_chars).collect();
     let (mut view, _) = View::start(Vec::new(), &[&updates as &dyn Source<_>], whole).unwrap();
     let text = |view: &View<super::ContextMessage>| view.render().map(|m| m.text.clone()).collect::<Vec<_>>().join("\n");
@@ -170,9 +170,62 @@ fn a_room_message_reaches_her_view_once_where_it_arrived() {
 
     let mut grown = first;
     grown.push(message(3));
-    let updates = RoomUpdates { updates: Arc::new(grown) };
+    let updates = RoomUpdates { updates: Arc::new(grown), ..Default::default() };
     let added = view.advance(&[&updates as &dyn Source<_>]);
     assert_eq!(added.items, 1, "only the new message is appended");
     let after = text(&view);
     assert!(after.starts_with(&before) && after.ends_with("card 3 moved to Closed"), "{after}");
+}
+
+/// What this catches: one room message appended twice in one epoch. It arrives during her
+/// drive as a room update; on her next act it is a turn of the room's transcript, and the
+/// view keys each source apart (Cormac on #5526).
+#[test]
+fn a_room_message_that_becomes_a_turn_stays_one_item_in_her_view() {
+    use continuum_context::view::{Claim, View};
+    use uuid::Uuid;
+
+    use super::conversation::{Conversation, Turn, Unheld};
+    use super::Role;
+
+    let event_id = Uuid::new_v4();
+    let update = Arc::new(crate::cognition::conversation::IncomingMessage {
+        work: None,
+        media: Vec::new(),
+        event_id,
+        lamport: 1,
+        peer_id: Uuid::new_v4(),
+        room_id: Uuid::new_v4(),
+        text: "card 7 moved to Closed".to_string(),
+    });
+    let turn = |key: &str, line: &str, event_id: Option<Uuid>| Turn { key: key.to_string(), role: Role::User, line: line.to_string(), event_id };
+    let whole = |claims: &[Claim]| claims.iter().map(|claim| claim.full_chars).collect();
+    let text = |view: &View<super::ContextMessage>| view.render().map(|m| m.text.clone()).collect::<Vec<_>>().join("\n");
+
+    // Act 1: the message arrives during her drive.
+    let before = Conversation { turns: vec![turn("1/Joel", "Joel: start", None)] };
+    let updates = RoomUpdates { updates: Arc::new(vec![update]), ..Default::default() };
+    let (mut view, _) = View::start(Vec::new(), &[&before as &dyn Source<_>, &updates], whole).unwrap();
+    assert!(text(&view).contains("card 7 moved"));
+
+    // Act 2: the transcript now carries it as a turn, and her next turn after it.
+    let after = Conversation {
+        turns: vec![
+            turn("1/Joel", "Joel: start", None),
+            turn(&event_id.to_string(), "Peer: card 7 moved to Closed", Some(event_id)),
+            turn("3/Joel", "Joel: next", None),
+        ],
+    };
+    let updates = RoomUpdates { in_transcript: [event_id].into(), ..Default::default() };
+    let conversation = Unheld::of(&after, Some(&view));
+    let added = view.advance(&[&conversation as &dyn Source<_>, &updates]);
+    assert_eq!(added.items, 1, "only her next turn is new");
+    let rendered = text(&view);
+    assert_eq!(rendered.matches("card 7 moved to Closed").count(), 1, "{rendered}");
+    assert!(rendered.ends_with("Joel: next"), "{rendered}");
+
+    // A new epoch holds nothing: the message is the conversation's turn, offered once.
+    let start = Unheld::of(&after, None);
+    let (fresh, _) = View::start(Vec::new(), &[&start as &dyn Source<_>, &updates], whole).unwrap();
+    assert_eq!(text(&fresh).matches("card 7 moved to Closed").count(), 1);
 }

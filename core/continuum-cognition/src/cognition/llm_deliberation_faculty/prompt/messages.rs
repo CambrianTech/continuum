@@ -100,17 +100,19 @@ impl LlmDeliberationFaculty {
                 stimulus = Some(ChatMessage::text(role, line));
                 continue;
             }
-            let key = match turn.occurred_at_ms {
-                Some(ms) => format!("{ms}/{}", turn.author),
+            let key = match (turn.event_id, turn.occurred_at_ms) {
+                // The room event: the same key a room update for it has.
+                (Some(event_id), _) => event_id.to_string(),
+                (None, Some(ms)) => format!("{ms}/{}", turn.author),
                 // An opaque stimulus has no time: its position among the turns is its identity.
-                None => format!("#{index}"),
+                (None, None) => format!("#{index}"),
             };
             let role = if turn.is_self {
                 crate::cognition::context_streams::Role::Assistant
             } else {
                 crate::cognition::context_streams::Role::User
             };
-            turns.push(crate::cognition::context_streams::conversation::Turn { key, role, line });
+            turns.push(crate::cognition::context_streams::conversation::Turn { key, role, line, event_id: turn.event_id });
         }
         // What follows the view in this act's prompt: facts, the clock, demoted payloads.
         let mut messages: Vec<ChatMessage> = Vec::new();
@@ -354,11 +356,12 @@ impl LlmDeliberationFaculty {
             input_identity: input.finalize().into(),
             history: messages,
             streams: super::types::Streams {
-                conversation: crate::cognition::context_streams::conversation::Conversation { turns },
-                blocks,
                 room_updates: crate::cognition::context_streams::room_updates::RoomUpdates {
                     updates: std::sync::Arc::clone(&ws.room_updates),
+                    in_transcript: turns.iter().filter_map(|turn| turn.event_id).collect(),
                 },
+                conversation: crate::cognition::context_streams::conversation::Conversation { turns },
+                blocks,
             },
             result_pointers,
             grounding_tokens: 0,

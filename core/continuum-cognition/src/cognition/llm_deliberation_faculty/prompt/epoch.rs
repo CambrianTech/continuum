@@ -18,6 +18,7 @@ use continuum_context::source::Source;
 use continuum_context::view::{Claim, View};
 
 use super::*;
+use crate::cognition::context_streams::conversation::Unheld;
 use crate::cognition::context_streams::{ContextMessage, MemoryStreams};
 use crate::cognition::working_memory::WorkingMemory;
 
@@ -58,7 +59,7 @@ impl LlmDeliberationFaculty {
     pub(in super::super) fn view_claims(&self, streams: &Streams) -> Vec<crate::cognition::rag_budget::RagSourceBudget> {
         let memory = self.working_memory.as_deref();
         let memory_streams = memory.map(MemoryStreams::of);
-        Self::view_sources(streams, memory_streams.as_ref())
+        Self::view_sources(streams, &streams.conversation, memory_streams.as_ref())
             .into_iter()
             .map(|source| {
                 let items = source.items();
@@ -182,13 +183,14 @@ impl LlmDeliberationFaculty {
     fn advance_view(&self, streams: &Streams) -> (Vec<ChatMessage>, bool) {
         let memory = self.working_memory.as_deref();
         let memory_streams = memory.map(MemoryStreams::of);
-        let sources = Self::view_sources(streams, memory_streams.as_ref());
         let mut held = self.context_view.lock();
         // A restart resumes the view her checkpoint kept, the same bytes the engine's saved
         // page holds, instead of starting a new epoch cold.
         if held.is_none() {
             *held = memory.and_then(WorkingMemory::take_view);
         }
+        let conversation = Unheld::of(&streams.conversation, held.as_ref());
+        let sources = Self::view_sources(streams, &conversation, memory_streams.as_ref());
         let started = held.is_none();
         if let Some(view) = held.as_mut() {
             let advance = view.advance(&sources);
@@ -232,8 +234,9 @@ impl LlmDeliberationFaculty {
     fn admit_view(&self, streams: &Streams, view_tokens: usize, budget_tokens: usize) -> Option<Vec<ChatMessage>> {
         let memory = self.working_memory.as_deref();
         let memory_streams = memory.map(MemoryStreams::of);
-        let sources = Self::view_sources(streams, memory_streams.as_ref());
         let mut held = self.context_view.lock();
+        let conversation = Unheld::of(&streams.conversation, held.as_ref());
+        let sources = Self::view_sources(streams, &conversation, memory_streams.as_ref());
         let view = held.as_mut()?;
         let limit = (budget_tokens as u128 * view.chars() as u128 / view_tokens.max(1) as u128) as usize;
         // What a start would grant one arrival at most: `start_grants` gives her growing
@@ -265,7 +268,7 @@ impl LlmDeliberationFaculty {
     ) -> Vec<ChatMessage> {
         let memory = self.working_memory.as_deref();
         let memory_streams = memory.map(MemoryStreams::of);
-        let mut sources = Self::view_sources(streams, memory_streams.as_ref());
+        let mut sources = Self::view_sources(streams, &streams.conversation, memory_streams.as_ref());
         sources.retain(|source| !shed.contains(&source.name()));
         let mut held = self.context_view.lock();
         let started = if let Some(view) = held.as_mut() {
@@ -314,7 +317,7 @@ impl LlmDeliberationFaculty {
     pub(in super::super) fn whole_view(&self, streams: &Streams) -> Vec<ChatMessage> {
         let memory = self.working_memory.as_deref();
         let memory_streams = memory.map(MemoryStreams::of);
-        let sources = Self::view_sources(streams, memory_streams.as_ref());
+        let sources = Self::view_sources(streams, &streams.conversation, memory_streams.as_ref());
         let whole = |claims: &[Claim]| claims.iter().map(|claim| claim.full_chars).collect();
         match View::start(Vec::new(), &sources, whole) {
             Ok((view, _)) => Self::render(Some(&view)),
@@ -350,6 +353,7 @@ impl LlmDeliberationFaculty {
     /// recall's "N ago" ages, awareness and her thoughts.
     fn view_sources<'a>(
         streams: &'a Streams,
+        conversation: &'a dyn Source<ContextMessage>,
         memory: Option<&'a MemoryStreams<'a>>,
     ) -> Vec<&'a dyn Source<ContextMessage>> {
         use crate::cognition::deliberation_prompt::{churn_of, PromptChurn};
@@ -362,7 +366,7 @@ impl LlmDeliberationFaculty {
         let mut sources: Vec<&dyn Source<ContextMessage>> =
             streams.blocks.iter().filter(settled).map(as_source).collect();
         sources.extend(memory.map(|m| &m.actions as &dyn Source<ContextMessage>));
-        sources.push(&streams.conversation);
+        sources.push(conversation);
         sources.push(&streams.room_updates);
         sources.extend(streams.blocks.iter().filter(|block| !settled(block)).map(as_source));
         sources.extend(memory.map(|m| &m.thoughts as &dyn Source<ContextMessage>));

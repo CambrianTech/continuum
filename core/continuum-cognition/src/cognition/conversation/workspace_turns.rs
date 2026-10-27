@@ -238,7 +238,12 @@ pub fn build_workspace_turns(
                 names.get(who_raw).copied().unwrap_or(who_raw)
             };
             let occurred_at_ms = item.metadata.get("occurred_at_ms").and_then(|v| v.as_u64());
-            BurstTurn::attributed(is_self, author, item.content.clone(), occurred_at_ms)
+            let turn = BurstTurn::attributed(is_self, author, item.content.clone(), occurred_at_ms);
+            // The source writes the event's uuid (`airc_source.rs`); eval deliveries carry none.
+            match item.metadata.get("event_id").and_then(|v| v.as_str()).map(uuid::Uuid::parse_str) {
+                Some(Ok(event_id)) => turn.with_event_id(event_id),
+                _ => turn,
+            }
         })
         .collect();
 
