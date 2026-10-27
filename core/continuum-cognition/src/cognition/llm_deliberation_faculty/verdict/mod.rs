@@ -1,6 +1,7 @@
 use super::*;
 
 mod contribute;
+mod newest_refit;
 
 /// The working-memory record of a cut act: that it did not land, how long it ran, and
 /// how it began and ended, so the next generation starts from what she was composing

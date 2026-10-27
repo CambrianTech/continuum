@@ -416,6 +416,10 @@ pub struct DeliberationPromptView {
     /// Estimated tokens (chars/4 class), so attribution is segment-scale
     /// (thousands of tokens), never byte-exact — which is all promotion needs.
     pub segments: Vec<(&'static str, u32)>,
+    /// Her newest result is shown smaller than whole in this view, at its summary or pointer
+    /// with its handle (`fit_newest_result`). A refusal of a view where it was whole may be
+    /// the one her measured density shrinks (`verdict/newest_refit.rs`).
+    pub newest_result_reduced: bool,
 }
 
 impl DeliberationPromptView {
