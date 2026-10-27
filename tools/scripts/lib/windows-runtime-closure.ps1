@@ -14,7 +14,8 @@ function Get-CoreRuntimeDirectories {
     # FindOpenSSL selects headers/libraries outside PATH (e.g. the hosted
     # runner's Program Files/OpenSSL). Its adjacent bin directory owns the
     # matching TLS runtime; never substitute a different PATH installation.
-    if ($CMakeCache -match '(?m)^OPENSSL_INCLUDE_DIR:PATH=([^\r\n]+)\r?$') {
+    if ($CMakeCache -match '(?m)^OPENSSL_INCLUDE_DIR:PATH=([^\r\n]+)\r?$' -and
+        $Matches[1] -notlike '*-NOTFOUND') {
         $include = ConvertTo-CoreImagePath $Matches[1]
         Assert-CorePreparedPath -Path $include -Expected $include
         if ((Split-Path $include -Leaf) -ine 'include') { throw 'Configured OpenSSL include layout has no known runtime directory.' }
