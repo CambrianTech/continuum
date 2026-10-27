@@ -735,7 +735,13 @@ fn tool_surface_is_a_category_index_plus_discovery_pair() {
     // `query`, the way a mind finds a verb by what she wants to do once her learned head no
     // longer lists every verb. Its text was cut to one line (it measured 17427 first); the
     // 37 left are the param itself, the feature. Measured locally at 17335.
-    const AGENTIC_SURFACE_CEILING: u32 = 17335;
+    // 17335 -> 17486 (#5504, card for Aris 84a6fd1c's sibling, 2026-10-27): work/submission gains
+    // evidence_rows / evidence_offset / evidence_limit, so include_staged_evidence answers with a
+    // summary and pages rows on request instead of one 340,832-char result (Aris: 578 rows, ~183k
+    // tokens of a 187,136 slot, 0 acts for a day). The docs were cut to a few words each (it
+    // measured 17650 first); the 151 left are the three fields themselves, the same trade as
+    // #5112's work/list limit. Measured locally at 17486.
+    const AGENTIC_SURFACE_CEILING: u32 = 17486;
     let surface = faculty.describe_tool_tokens() as u32 + faculty.framing_floor_tokens();
     println!("agentic surface: {surface} guard tokens; ceiling {AGENTIC_SURFACE_CEILING}");
     assert!(

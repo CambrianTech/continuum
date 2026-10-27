@@ -41,10 +41,8 @@ pub struct StagedEvidenceSummary {
 #[serde(rename_all = "snake_case")]
 #[ts(export, export_to = "../../../protocol/typescript/work/StagedEvidenceRows.ts")]
 pub enum StagedEvidenceRows {
-    /// The rows that do not match this submission's claim: the ones that need a decision.
     #[default]
     NotMatchingClaim,
-    /// Every staged row.
     All,
 }
 
