@@ -57,6 +57,16 @@ pub struct PingResult {
     /// number orders SOURCE, sha names it, built-at dates the BINARY — catching
     /// a rebuild of old source after a fix landed, which number+sha both miss).
     pub built_at: String,
+    /// The llama.cpp fork commit this core's source pins (`vendor/LLAMA_CPP_PIN`): the engine
+    /// it holds its node to (card a3e92354).
+    #[serde(default)]
+    pub engine_pin: String,
+    /// The stamp of the engine slot this node runs (`<commit>:<backend>`); absent under an
+    /// operator's own engine or with no owned install. `deploy-verify` fails a deploy whose
+    /// stamp does not name `engine_pin`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub engine_stamp: Option<String>,
 }
 
 /// `ping` — the canonical self-routing command. As an [`ActionCommand`] it gets
@@ -82,6 +92,8 @@ impl ActionCommand for PingCommand {
             build_sha: env!("CONTINUUM_BUILD_GIT_SHA").to_string(),
             build_number: env!("CONTINUUM_BUILD_NUMBER").parse().unwrap_or(0),
             built_at: env!("CONTINUUM_BUILD_AT").to_string(),
+            engine_pin: continuum_engine::inference::llama_server::pinned_engine().to_string(),
+            engine_stamp: continuum_engine::inference::llama_server::current_engine_stamp(),
         })
     }
 }

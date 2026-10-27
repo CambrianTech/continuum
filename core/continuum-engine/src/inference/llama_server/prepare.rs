@@ -20,6 +20,8 @@ impl LlamaServerProcess {
         // The engine is resolved per launch, never cached on the process: after a promote the
         // next launch must take the slot `current` now names (card 2c5d0ec0), or #4464's
         // convergence relaunches onto the binary it is trying to leave.
+        // The slot this core's source pins, never whichever one `current` was left naming.
+        super::engine_pin::hold_current_engine_to_pin();
         let bin = self.engine_bin()?;
         crate::inference::engine_slots::note_unowned_launch(&bin, super::engine_install::engine_override().is_some());
         // Resolve the GGUF from the model struct already in hand — no re-fetch by
