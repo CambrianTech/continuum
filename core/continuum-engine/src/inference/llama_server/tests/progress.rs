@@ -2,25 +2,21 @@
 #![cfg(test)]
 use super::*;
 
-// what this catches (card 4d2a64a2): a condemnation an in-flight wait cannot hear until its
-// next checkpoint. The wait resolves the moment a ready snapshot turns not-ready, waits
-// through a not-ready start (nothing was served to condemn), and never on a closed channel.
+// what this catches (card 4d2a64a2; Fable on #5500): a condemnation an in-flight wait cannot
+// hear until its next checkpoint, and a wait that hears something that is not one. The wait
+// resolves at the next condemnation after it began, not at one before it, and never on a
+// closed channel.
 #[tokio::test(start_paused = true)]
-async fn a_wait_hears_the_engine_condemned_the_moment_it_happens() {
-    let mut ready = ServingSnapshot::empty();
-    ready.ready = true;
-    let (tx, rx) = tokio::sync::watch::channel(ServingSnapshot::empty());
-    let wait = tokio::spawn(until_condemned_on(rx));
-    tokio::task::yield_now().await;
-    assert!(!wait.is_finished(), "not ready at the start is not a condemnation");
-    tx.send_replace(ready.clone());
-    tokio::task::yield_now().await;
-    assert!(!wait.is_finished(), "serving: nothing condemned");
-    tx.send_replace(ServingSnapshot::empty());
+async fn a_wait_hears_the_next_condemnation_the_moment_it_happens() {
+    let (tx, _) = tokio::sync::watch::channel(0u64);
+    tx.send_replace(1); // a condemnation before the act began: not hers to hear
+    let wait = tokio::spawn(until_condemned_on(tx.subscribe()));
+    tokio::time::sleep(std::time::Duration::from_secs(3600)).await;
+    assert!(!wait.is_finished(), "an earlier condemnation does not end a later act");
+    tx.send_modify(|generation| *generation += 1);
     tokio::time::timeout(std::time::Duration::from_millis(1), wait).await.unwrap().unwrap(); // unwrap: the wait must resolve at once
 
-    let (tx, rx) = tokio::sync::watch::channel(ready);
-    let wait = tokio::spawn(until_condemned_on(rx));
+    let wait = tokio::spawn(until_condemned_on(tx.subscribe()));
     drop(tx);
     tokio::time::sleep(std::time::Duration::from_secs(3600)).await;
     assert!(!wait.is_finished(), "a closed channel never condemns");

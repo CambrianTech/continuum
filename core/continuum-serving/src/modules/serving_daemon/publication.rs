@@ -211,6 +211,11 @@ impl ServingDaemonModule {
         let _ = verified.send_replace(None);
         Self::emit_serving(bus, &snapshot);
         let _ = serving.send_replace(snapshot);
+        // THE condemnation: every transition admitted here drains the endpoint's admitted
+        // turns (`transition_if`), so acts in flight on it end now instead of holding the
+        // drain to their next checkpoint (card 4d2a64a2). A transient not-ready publish (a
+        // 0 `/props` window under AlreadyServing) never reaches here (Fable on #5500).
+        crate::inference::llama_server::condemn("serving lifecycle transition admitted");
     }
 
     /// Subscribe to the published serving SNAPSHOT — the live `(active_model,

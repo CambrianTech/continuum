@@ -26,7 +26,8 @@ pub(super) const ACT_EXTENSIONS: u32 = 2;
 ///
 /// A condemned engine ends the step AT ONCE, not at its next checkpoint: the relaunch's
 /// drain waits for this step's guard, so every second held here is the whole node dark
-/// (card 4d2a64a2: 23 minutes on enrico, 2026-10-26).
+/// (card 4d2a64a2: 23 minutes on enrico, 2026-10-26). Condemned means the daemon decided to
+/// replace the engine (`llama_server::condemn`), never a transient not-ready snapshot.
 pub(super) async fn until_act_stalls<F: std::future::Future>(
     deadline: tokio::time::Instant,
     bound: std::time::Duration,

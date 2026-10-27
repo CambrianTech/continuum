@@ -75,22 +75,39 @@ pub fn engine_condemned() -> bool {
     SERVING_STATE.get().is_some_and(|rx| !rx.borrow().ready)
 }
 
-/// Resolves the moment the engine is condemned after having been ready: the daemon flips its
-/// snapshot not-ready BEFORE the relaunch's drain, so a wait that reads [`engine_condemned`]
-/// only at its next checkpoint holds that drain for up to a whole act bound. enrico,
-/// 2026-10-26 (core 839f70216): a quarantine at 21:10:02Z, then `ensure_serving` wedged 23 min
-/// until an act's next checkpoint at 21:33:18 let its guard go (card 4d2a64a2). Never
-/// resolves where no daemon installed its state: nothing was served, so nothing is condemned.
-pub async fn until_condemned() {
-    match SERVING_STATE.get() {
-        Some(rx) => until_condemned_on(rx.clone()).await,
-        None => std::future::pending().await,
-    }
+/// How many times the serving daemon has DECIDED to tear the engine down while work may hold
+/// it (a quarantine, a wedged-lane relaunch). Not the readiness bit: `ready=false` is also
+/// published for a transient `/props` read while the engine stays up, and an act abandoned
+/// for that loses its whole prefill (Fable on #5500).
+static CONDEMNATIONS: std::sync::LazyLock<watch::Sender<u64>> = std::sync::LazyLock::new(|| watch::channel(0).0);
+
+/// The daemon decided to replace the engine and its relaunch will drain every admitted turn:
+/// every act in flight ends now instead of holding that drain to its next checkpoint.
+pub fn condemn(reason: &str) {
+    CONDEMNATIONS.send_modify(|generation| *generation += 1);
+    continuum_base::probe!(
+        class = "serving.engine.condemned",
+        generation = *CONDEMNATIONS.borrow(),
+        reason = reason,
+        "the engine is being replaced: acts in flight on it end now, so its drain is not held"
+    );
 }
 
-/// [`until_condemned`] on one receiver: ready, then not ready. A closed channel never resolves.
-pub(crate) async fn until_condemned_on(mut rx: watch::Receiver<ServingSnapshot>) {
-    if rx.wait_for(|s| s.ready).await.is_err() || rx.wait_for(|s| !s.ready).await.is_err() {
+/// Resolves at the next condemnation after the call: enrico, 2026-10-26 (core 839f70216), a
+/// quarantine at 21:10:02Z, then `ensure_serving` wedged 23 min until an act's next checkpoint
+/// at 21:33:18 let its guard go (card 4d2a64a2).
+pub async fn until_condemned() {
+    until_condemned_on(condemnations()).await
+}
+
+/// A receiver of the condemnation generation, marked seen: it changes at the next one.
+pub fn condemnations() -> watch::Receiver<u64> {
+    CONDEMNATIONS.subscribe()
+}
+
+/// [`until_condemned`] on one receiver: the next generation after it was subscribed.
+pub(crate) async fn until_condemned_on(mut rx: watch::Receiver<u64>) {
+    if rx.changed().await.is_err() {
         std::future::pending::<()>().await;
     }
 }

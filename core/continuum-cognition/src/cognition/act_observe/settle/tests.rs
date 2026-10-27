@@ -259,6 +259,7 @@
         assert!(!settled.deferred_before_dispatch, "never a lane wait");
         assert!(settled.generation_receipts.is_empty(), "no completion");
         assert_eq!(start.elapsed(), crate::inference::turn_bound::TICK_DEADLINE, "one bound, no in-place retry");
+    }
 
     // what this catches (card 4d2a64a2): an act on a condemned engine holding the relaunch's
     // drain until its next checkpoint. enrico, 2026-10-26: the quarantine flipped serving
