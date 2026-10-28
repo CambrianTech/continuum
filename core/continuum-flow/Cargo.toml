@@ -1,0 +1,8 @@
+[package]
+name = "continuum-flow"
+version = "0.1.0"
+edition = "2021"
+description = "Work flows through queues, never locks: quality-of-service classes, a serial queue per owner, and one event-driven dispatcher per capacity that owns its ready heap, ages waiting work so nothing starves, and asks lower classes to yield. SERVING-ENGINE §1c."
+
+[dependencies]
+tokio = { workspace = true }
