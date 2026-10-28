@@ -386,7 +386,13 @@ jobs:
             'inference::lane_process::kill9::windows_termination_tests::live_process_access_denial_remains_a_refusal',
             'model_registry::artifacts::expert_placement::tests::online_preparation_preserves_readers_until_explicit_final_exclusion',
             'model_registry::artifacts::expert_placement::tests::actual_lazy_reader_excludes_freeze_until_its_lifetime_ends',
-            'inference::engine_install::tests::installed_engine_receipt_binds_bytes_and_candidate_membership'
+            'inference::engine_install::tests::installed_engine_receipt_binds_bytes_and_candidate_membership',
+            # The late-ready recovery repairs a Windows failure (engine 3548, 2026-10-27); its
+            # launch-level fixtures run here with the test binary as the stand-in engine.
+            'inference::llama_server::late_ready::tests::a_changed_request_leaves_the_late_engine_for_the_launch_that_started_it',
+            'inference::llama_server::late_ready::tests::a_cancelled_wait_keeps_the_launch_for_the_next_one',
+            'inference::llama_server::late_ready::tests::a_publication_cancelled_before_its_ledger_keeps_the_launch',
+            'inference::llama_server::late_ready::tests::a_restarted_core_adopts_a_healthy_engine_it_never_spawned'
           )) {
             $output = & cargo test -p continuum-engine --lib --profile dev-fast --features test-fixtures $test -- --exact --nocapture 2>&1
             $result = $LASTEXITCODE

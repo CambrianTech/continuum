@@ -28,6 +28,9 @@ pub struct LlamaServerProcess {
     pub(super) pending_resource_reservation: parking_lot::Mutex<Option<crate::resources::LeaseGuard>>,
     // Retains the exact startup generation even when readiness already retired it.
     pub(super) last_started: parking_lot::Mutex<Option<crate::inference::slots::EngineGeneration>>,
+    /// A launch whose readiness wait ended while its engine still loaded ([`super::late_ready`]):
+    /// the next launch finishes that engine instead of replacing it, when it is still the same.
+    pub(super) loading: parking_lot::Mutex<Option<super::late_ready::LoadingLaunch>>,
     /// A signalled adopted predecessor stays fenced across timeout/cancellation.
     pub(super) retiring_adopted: parking_lot::Mutex<Option<crate::inference::engine_residency::EngineIncarnation>>,
     /// The residents that predecessor loses unsaved, recorded only once its exit is observed
@@ -135,6 +138,7 @@ impl LlamaServerProcess {
             child: Arc::new(StdMutex::new(None)),
             pending_resource_reservation: parking_lot::Mutex::new(None),
             last_started: parking_lot::Mutex::new(None),
+            loading: parking_lot::Mutex::new(None),
             retiring_adopted: parking_lot::Mutex::new(None),
             retiring_discard: parking_lot::Mutex::new(None),
             served_adapters: Arc::new(StdMutex::new(Vec::new())),
@@ -169,6 +173,7 @@ impl LlamaServerProcess {
             child: Arc::new(StdMutex::new(None)),
             pending_resource_reservation: parking_lot::Mutex::new(None),
             last_started: parking_lot::Mutex::new(None),
+            loading: parking_lot::Mutex::new(None),
             retiring_adopted: parking_lot::Mutex::new(None),
             retiring_discard: parking_lot::Mutex::new(None),
             served_adapters: Arc::new(StdMutex::new(Vec::new())),
