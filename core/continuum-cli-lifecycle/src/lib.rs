@@ -33,6 +33,7 @@ pub mod windows_launch;
 
 // Shared pure policies: the CLI must not import these through the server crate.
 pub mod core_bind_guard;
+pub mod deploy_hold;
 pub mod deploy_provenance;
 pub mod deploy_claim;
 pub mod deploy_tracker;
