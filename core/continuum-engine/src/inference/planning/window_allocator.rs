@@ -56,9 +56,6 @@ pub enum RequirementSource {
     /// No turn measured yet: resolved by the allocator to the largest requirement on
     /// the seat, else the model's trained window (what fits at one lane).
     Unknown,
-    /// Her lived examples waiting to train need a larger window than her turns do: the
-    /// target is the window that trains them whole (card ea157b1a).
-    TrainingDemand,
 }
 
 /// What one mind requires of a lane.
@@ -80,7 +77,9 @@ pub struct LaneRequirement {
     #[serde(default)]
     pub need: Option<u32>,
     /// Her parked training examples' reservation (card ea157b1a): the window that trains them
-    /// whole and the training graph it costs. A target and a reservation, never a floor.
+    /// whole and the training graph it costs. Carried BESIDE her conversational `window` and
+    /// `need`, never folded into them: the allocator grows toward it only from what is left
+    /// once the conversational geometry is packed, so learning can never mute her.
     pub training: Option<TrainingReserve>,
 }
 
@@ -115,21 +114,12 @@ impl LaneRequirement {
         Self { persona, window: Some(window), source: RequirementSource::Declared, need: None, training: None }
     }
 
-    /// Carry her parked training examples' reservation (card ea157b1a) and raise her TARGET to its
-    /// window, never her need: training's demand grows her lane when the budget holds it and the
-    /// training it reserves, and when it cannot she is still served for her turns between her need
-    /// and that target, so learning never mutes her. Only a MEASURED reservation raises the target:
-    /// one whose bytes are unknown keeps her conversational target, so an unknown training demand
-    /// can never spend capacity (Codex on ea157b1a). The window is already rounded to the
-    /// engine's granularity, so no headroom is applied again.
+    /// Carry her parked training examples' reservation (card ea157b1a). Her conversational
+    /// target, source and need stay exactly as her turns measured them (Codex on #5557: a target
+    /// overwritten here loses the geometry the allocator must preserve, and with no held turn her
+    /// floor would become the training window). A zero window reserves nothing.
     pub fn with_training(mut self, reserve: Option<TrainingReserve>) -> Self {
-        if let Some(r) = reserve.filter(|r| r.window > 0) {
-            if r.bytes.is_some() && self.window.is_none_or(|w| r.window > w) {
-                self.window = Some(r.window);
-                self.source = RequirementSource::TrainingDemand;
-            }
-            self.training = Some(r);
-        }
+        self.training = reserve.filter(|r| r.window > 0);
         self
     }
 
@@ -513,25 +503,22 @@ mod tests {
         }
     }
 
-    // what this catches (card ea157b1a, gate 3): Kimi's reviewed correction (11 lived turns,
-    // 51,670-64,041 tokens) parked for good at a served window of 49,664, her lane sized from her
-    // conversation alone. A MEASURED training reservation raises her TARGET and is carried for
-    // the allocator; it never raises her need (learning never mutes her), and an unmeasured one
-    // (bytes unknown) changes no target at all, so it cannot spend capacity (Codex on ea157b1a).
+    // what this catches (card ea157b1a, gate 3; Codex on #5557): a training reservation folded
+    // into her conversational target, so the allocator can no longer see the geometry it must
+    // preserve, and with no held turn her floor becomes the training window: a mind that fit
+    // for conversation muted by learning. The reservation travels beside, labeled.
     #[test]
-    fn a_measured_training_reserve_raises_her_target_never_her_need() {
-        let her = LaneRequirement::from_demand(Uuid::new_v4(), 40_000, 1.25).with_need(30_000);
+    fn a_training_reserve_travels_beside_her_conversation_never_into_it() {
         let job = Uuid::from_u128(0x1e02);
         let measured = TrainingReserve { window: 64_256, bytes: Some(6_000_000_000), source: Some(crate::inference::planning::training_plan::NeedSource::LowerBound), job };
-        let learning = her.clone().with_training(Some(measured));
-        assert_eq!((learning.window, learning.need, learning.source), (Some(64_256), Some(30_000), RequirementSource::TrainingDemand));
-        assert_eq!(learning.training, Some(measured), "the reservation travels to the allocator, its source labeled");
-        let unmeasured = TrainingReserve { bytes: None, source: None, ..measured };
-        let unknown = her.clone().with_training(Some(unmeasured));
-        assert_eq!((unknown.window, unknown.source), (her.window, RequirementSource::MeasuredDemand), "an unmeasured reservation grows nothing");
-        assert_eq!(unknown.training, Some(unmeasured), "but is still carried, to be reported unresolved");
-        let smaller = her.clone().with_training(Some(TrainingReserve { window: 20_000, ..measured }));
-        assert_eq!(smaller.window, her.window, "a smaller training window changes no target");
+        for her in [LaneRequirement::from_demand(Uuid::new_v4(), 40_000, 1.25).with_need(30_000), LaneRequirement::from_demand(Uuid::new_v4(), 40_000, 1.25)] {
+            let learning = her.clone().with_training(Some(measured));
+            assert_eq!((learning.window, learning.need, learning.source), (her.window, her.need, her.source), "conversation untouched");
+            assert_eq!(learning.floor(50_000), her.floor(50_000), "no held turn or one: her floor is her conversation's, never the training window");
+            assert_eq!(learning.training, Some(measured), "the reservation travels to the allocator, its source labeled");
+        }
+        let her = LaneRequirement::from_demand(Uuid::new_v4(), 40_000, 1.25);
+        assert_eq!(her.clone().with_training(Some(TrainingReserve { window: 0, ..measured })), her, "a zero window reserves nothing");
         assert_eq!(her.clone().with_training(None), her, "nothing parked, nothing changes");
     }
 }
