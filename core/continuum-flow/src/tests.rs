@@ -178,3 +178,56 @@ async fn a_running_dream_hears_the_yield_when_a_reply_arrives() {
     drop(dream);
     assert!(reply.await.expect("reply task")); // expect: the assertion itself
 }
+
+// what this catches (Codex on the FLOW plan): a tool result riding a queue that drops. A reliable
+// stage hands a result back when full and never loses one; only a signal stage drops, and only
+// its oldest wakes.
+#[tokio::test(start_paused = true)]
+async fn a_reliable_stage_never_drops_a_result_and_a_signal_stage_keeps_the_newest() {
+    use std::sync::{Arc, Mutex};
+    struct Results(Arc<Mutex<Vec<u32>>>, Arc<tokio::sync::Notify>);
+    impl Stage for Results {
+        type Input = u32;
+        const QOS: Qos = Qos::Work;
+        const DEPTH: usize = 2;
+        async fn handle(&mut self, input: u32) {
+            self.1.notified().await; // hold the worker so the queue fills
+            self.0.lock().unwrap_or_else(|e| e.into_inner()).push(input); // test: plain data
+        }
+    }
+    struct Wakes(Arc<Mutex<Vec<u32>>>, Arc<tokio::sync::Notify>);
+    impl Stage for Wakes {
+        type Input = u32;
+        const QOS: Qos = Qos::Utility;
+        const DEPTH: usize = 1;
+        const OVERFLOW: Overflow = Overflow::KeepNewest;
+        async fn handle(&mut self, input: u32) {
+            self.1.notified().await;
+            self.0.lock().unwrap_or_else(|e| e.into_inner()).push(input); // test: plain data
+        }
+    }
+    let (got, gate) = (Arc::new(Mutex::new(Vec::new())), Arc::new(tokio::sync::Notify::new()));
+    let results = spawn_stage(Results(Arc::clone(&got), Arc::clone(&gate)));
+    assert_eq!(results.push(1), Ok(0));
+    tokio::task::yield_now().await; // the worker takes 1 and waits on the gate
+    assert_eq!(results.push(2), Ok(0));
+    assert_eq!(results.push(3), Ok(0));
+    assert_eq!(results.push(4), Err(4), "full: the producer gets its result back, nothing is dropped");
+    for _ in 0..3 {
+        gate.notify_one();
+        tokio::task::yield_now().await;
+    }
+    assert_eq!(*got.lock().unwrap_or_else(|e| e.into_inner()), vec![1, 2, 3]); // test: plain data
+
+    let (seen, hold) = (Arc::new(Mutex::new(Vec::new())), Arc::new(tokio::sync::Notify::new()));
+    let wakes = spawn_stage(Wakes(Arc::clone(&seen), Arc::clone(&hold)));
+    assert_eq!(wakes.push(1), Ok(0));
+    tokio::task::yield_now().await;
+    assert_eq!(wakes.push(2), Ok(0));
+    assert_eq!(wakes.push(3), Ok(1), "a signal stage drops its oldest wake");
+    for _ in 0..2 {
+        hold.notify_one();
+        tokio::task::yield_now().await;
+    }
+    assert_eq!(*seen.lock().unwrap_or_else(|e| e.into_inner()), vec![1, 3], "the newest wake is handled"); // test: plain data
+}
