@@ -12,6 +12,7 @@
 mod module;
 mod route;
 mod server;
+mod session;
 mod wire;
 
 pub use module::GatewayModule;

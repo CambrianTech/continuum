@@ -50,6 +50,9 @@ pub const DELIBERATION_PURPOSE: &str = "cognition/deliberation";
 /// beside the living one. The same reasoning budgets as [`ACT_PURPOSE`] and
 /// [`DELIBERATION_PURPOSE`]; only the page differs: a fork warms its own page per room,
 /// never the mind's one page (`slots::PageKey::Fork`), and never waits on her act gate.
+/// An external agent's call through the driver gateway: a Turn of its session's mind, so the
+/// session keeps a warm, paged page exactly as a resident does (DRIVER-GATEWAY.md G2).
+pub const DRIVER_PURPOSE: &str = "driver";
 pub const FORK_ACT_PURPOSE: &str = "cognition/fork-act";
 pub const FORK_DELIBERATION_PURPOSE: &str = "cognition/fork-deliberation";
 
