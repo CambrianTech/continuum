@@ -213,7 +213,7 @@ async fn prompt_preserves_stimulus_and_large_action_on_the_wire() {
             crate::cognition::tool_surface::tool_surface_tokens_of(request.tools.as_ref().unwrap());
         assert_eq!(
             schema_tokens,
-            faculty.select_tool_surface(&ws).tokens
+            faculty.prompt_view(&ws).tools.tokens
         );
         let wire_tokens =
             LlmDeliberationFaculty::framing_cost(request.system_prompt.as_ref().unwrap())
@@ -581,7 +581,7 @@ async fn a_refused_tail_rebuilds_her_request_without_it_once() {
         let rebuilt = &seen[1];
         assert!(rebuilt.tail_tools.is_none(), "the rebuilt request carries no tail");
         let offered: Vec<&str> = rebuilt.tools.iter().flatten().map(|tool| tool.name.as_str()).collect();
-        let activity = faculty.select_activity_surface(&ws);
+        let activity = faculty.tool_surface().select_granted(&ws.room_affordances, faculty.prompt_view(&ws).tools_grant).expect("activity fits granted tools");
         let expected: Vec<&str> = activity.specs.iter().flat_map(|specs| specs.iter()).map(|tool| tool.name.as_str()).collect();
         assert!(!offered.is_empty() && offered == expected, "she is offered exactly her activity's surface: {offered:?}");
         if refusals == 1 {

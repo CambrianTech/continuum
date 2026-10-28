@@ -6,19 +6,13 @@
 
 use super::*;
 
-/// The smallest 1 KiB-aligned window whose tool share ADMITS her whole hands, and the
-/// largest that does not.
-///
-/// ASKED of [`ContextBudget`], never re-derived from its denominator: a window constant
-/// here would not scale with the share it straddles, and spelling `/ 4` would duplicate
-/// `TOOL_SURFACE_DENOM`. The share is the SERVED window's (`from_window_unbounded`): the
-/// schemas sit in the cached prefix, so the surface never follows a turn's prefill rate.
+/// The first aligned window whose shared allocation admits whole hands, and its predecessor.
 fn calibrated_windows() -> (u32, u32) {
     let hands = faculty_with_the_real_registry(1024).tool_surface().hands_tokens();
     let admits = (1..=512)
         .map(|k| k * 1024)
         .find(|w| {
-            crate::cognition::context_budget::ContextBudget::from_window_unbounded(*w).tool_surface_tokens() >= hands
+            faculty_with_the_real_registry(*w).prompt_view(&work_turn()).tools.tokens >= hands
         })
         .expect("some served window admits her hands");
     (admits, admits - 1024)
@@ -51,7 +45,7 @@ fn a_turn_is_budgeted_for_her_hands_not_for_the_registry() {
     let (fits, _narrow) = calibrated_windows();
     let faculty = faculty_with_the_real_registry(fits);
     for ws in [work_turn(), Workspace::new("anything open?")] {
-        let selected = faculty.select_tool_surface(&ws);
+        let selected = faculty.prompt_view(&ws).tools;
         assert_eq!(selected.reason, SurfaceReason::Hands);
         assert_eq!(selected.tokens, faculty.tool_surface().hands_tokens(), "charged for what goes on the wire");
         assert!(
@@ -72,7 +66,7 @@ fn a_turn_is_budgeted_for_her_hands_not_for_the_registry() {
 fn a_window_withheld_surface_still_reports_her_whole_hands_as_demand() {
     let (_fits, narrow) = calibrated_windows();
     let faculty = faculty_with_the_real_registry(narrow);
-    let selected = faculty.select_tool_surface(&Workspace::new("anything open?"));
+    let selected = faculty.prompt_view(&Workspace::new("anything open?")).tools;
     assert_eq!(selected.reason, SurfaceReason::CoreHandsForWindow, "this window's share cannot hold her hands");
     assert!(selected.tokens < faculty.tool_surface().hands_tokens(), "she is SENT her core hands");
     assert_eq!(
@@ -88,7 +82,7 @@ fn a_window_withheld_surface_still_reports_her_whole_hands_as_demand() {
 fn an_untruncated_surface_does_not_inflate_demand() {
     let (fits, _narrow) = calibrated_windows();
     let faculty = faculty_with_the_real_registry(fits);
-    let selected = faculty.select_tool_surface(&work_turn());
+    let selected = faculty.prompt_view(&work_turn()).tools;
     assert_eq!(selected.demand_tokens(), selected.tokens);
 }
 
@@ -100,7 +94,7 @@ fn the_cost_reported_is_always_the_cost_of_the_surface_reported() {
     let (fits, narrow) = calibrated_windows();
     for (label, window) in [("hands", fits), ("core/window", narrow)] {
         let faculty = faculty_with_the_real_registry(window);
-        let selected = faculty.select_tool_surface(&work_turn());
+        let selected = faculty.prompt_view(&work_turn()).tools;
         let specs = selected.specs.as_deref().expect("a tool surface was offered");
         assert_eq!(
             selected.tokens,
